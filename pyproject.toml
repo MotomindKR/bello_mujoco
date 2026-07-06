@@ -1,0 +1,46 @@
+[project]
+name = "bello-mujoco"
+version = "0.1.0"
+description = "MuJoCo/MJX robot-learning environment managed by uv."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "aim>=3.29.1",
+  "chex>=0.1.90",
+  "equinox>=0.12.0",
+  "fast-simplification>=0.1.12",
+  "hydra-core>=1.3.2",
+  "jax[cuda13]>=0.6.0",
+  "jaxtyping>=0.3.0",
+  "mujoco>=3.3.0",
+  "mujoco-mjx>=3.3.0",
+  "optax>=0.2.4",
+  "orbax-checkpoint>=0.11.0",
+  "rerun-sdk>=0.21.0",
+  "rlax>=0.1.7",
+  "trimesh>=4.6.0",
+  "tyro>=0.9.0",
+]
+
+[project.scripts]
+bello-prepare-assets = "bello_mujoco.tools.prepare_assets:main"
+bello-smoke-env = "bello_mujoco.tools.smoke_env:main"
+bello-train-ppo = "bello_mujoco.tools.train_ppo:entrypoint"
+bello-ppo-cartpole-smoke = "bello_mujoco.tools.ppo_cartpole_smoke:entrypoint"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bello_mujoco"]
+
+[tool.pytest.ini_options]
+markers = [
+  "integration: slower end-to-end tests that compile and run training loops",
+]
