@@ -121,6 +121,46 @@ Batch timing is handled by the benchmark command:
 bello-benchmark-env --batch-size 512 --step-count 5
 ```
 
+## Training and Aim
+
+`bello-train-ppo` is dry-run only by default. Use it first to verify the resolved model, batch shapes, and config:
+
+```bash
+bello-train-ppo
+```
+
+Run a tiny end-to-end PPO smoke without Aim:
+
+```bash
+bello-train-ppo --no-dry-run --config.total-timesteps 4 --config.num-envs 2 --config.num-steps 2
+```
+
+Enable Aim for experiment tracking:
+
+```bash
+bello-train-ppo \
+  --no-dry-run \
+  --aim-config.enabled \
+  --aim-config.repo .aim \
+  --aim-config.experiment bello-ppo
+```
+
+The CLI logs the PPO, asset, reward, command, done, warp, and resolved environment config blocks. Scalar PPO metrics and reward components are tracked against environment steps. View runs with:
+
+```bash
+aim up --repo .aim
+```
+
+Reward, command, and done configs are tyro-exposed nested dataclasses:
+
+```bash
+bello-train-ppo \
+  --no-dry-run \
+  --reward-config.lin-vel-tracking-weight 1.2 \
+  --done-config.min-base-height 0.75 \
+  --command-config.lin-vel-x -0.2 0.6
+```
+
 ## Vectorized API
 
 The environment exposes both single-env and batched methods:

@@ -1,9 +1,13 @@
+from dataclasses import replace
+
+import jax
 import jax.numpy as jnp
 import pytest
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import FRAME_OBS_DIM
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv, DoneConfig
+from bello_mujoco.envs.rewards import CommandConfig
 
 
 def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
@@ -43,6 +47,65 @@ def test_reset_batch_broadcasts_command(full_body_asset: PreparedAsset) -> None:
 
     assert obs.shape == (3, env.observation_size)
     assert jnp.all(state.command == command)
+
+
+def test_reset_batch_samples_commands_with_rng(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = replace(
+        BelloLocomotionEnv.load_prepared(full_body_asset),
+        command_config=CommandConfig(
+            lin_vel_x=(0.2, 0.2),
+            lin_vel_y=(0.1, 0.1),
+            ang_vel_yaw=(-0.2, -0.2),
+            standing_probability=0.0,
+        ),
+    )
+    state, obs = env.reset_batch(4, rng=jax.random.PRNGKey(0))
+
+    assert obs.shape == (4, env.observation_size)
+    assert jnp.all(state.command == jnp.asarray([0.2, 0.1, -0.2]))
+
+
+def test_step_batch_reports_reward_and_auto_resets_done_envs(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = replace(BelloLocomotionEnv.load_prepared(full_body_asset), max_episode_steps=1)
+    state, _ = env.reset_batch(2)
+    next_state, next_obs, reward, done, info = env.step_batch(
+        state,
+        jnp.zeros((2, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(1),
+    )
+
+    assert next_obs.shape == (2, env.observation_size)
+    assert reward.shape == (2,)
+    assert done.shape == (2,)
+    assert jnp.all(done)
+    assert jnp.all(next_state.step_count == 0)
+    assert jnp.all(info["returned_episode"])
+    assert info["episode_return"].shape == (2,)
+    assert info["reward/track_lin_vel_xy"].shape == (2,)
+    assert jnp.all(jnp.isfinite(reward))
+
+
+def test_done_config_can_disable_timeout(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = replace(
+        BelloLocomotionEnv.load_prepared(full_body_asset),
+        max_episode_steps=1,
+        done_config=DoneConfig(terminate_on_timeout=False),
+    )
+    state, _ = env.reset_batch(2)
+    next_state, _, _, done, info = env.step_batch(
+        state,
+        jnp.zeros((2, env.action_size), dtype=jnp.float32),
+    )
+
+    assert not bool(jnp.any(done))
+    assert jnp.all(next_state.step_count == 1)
+    assert not bool(jnp.any(info["returned_episode"]))
 
 
 def test_observation_size_tracks_loaded_model_action_size(

@@ -343,6 +343,14 @@ def safe_returned_mean(info: dict[str, jax.Array]) -> jax.Array:
     return jnp.sum(episode_return * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
 
+def reward_component_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        f"mean_{name}": value.mean()
+        for name, value in info.items()
+        if name.startswith("reward/")
+    }
+
+
 def collect_rollout(
     env: BelloLocomotionEnv,
     model: ActorCritic,
@@ -355,9 +363,11 @@ def collect_rollout(
         carry: tuple[BelloState, jax.Array, jax.Array], _: None
     ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
         state, last_obs, key = carry
-        key, action_key = jax.random.split(key)
+        key, action_key, env_key = jax.random.split(key, 3)
         action, log_prob, value = sample_action(model, last_obs, action_key)
-        next_state, next_obs, reward, done, info = env.step_batch(state, action)
+        next_state, next_obs, reward, done, info = env.step_batch(
+            state, action, rng=env_key
+        )
         transition = Transition(done, action, value, reward, log_prob, last_obs, info)
         return (next_state, next_obs, key), transition
 
@@ -370,12 +380,12 @@ def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
     env = BelloLocomotionEnv.load(batch_size=config.num_envs) if env is None else env
 
     def train(rng: jax.Array):
-        rng, init_key = jax.random.split(rng)
+        rng, init_key, env_key = jax.random.split(rng, 3)
         train_state, optimizer = init_train_state(
             init_key, env.observation_size, env.action_size, config
         )
         init_params, static_model = eqx.partition(train_state.model, eqx.is_array)
-        env_state, obs = env.reset_batch(config.num_envs)
+        env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
 
         def update_step(carry, _: None):
             params, opt_state, update_count, e_state, last_obs, key = carry
@@ -399,6 +409,7 @@ def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
                 "max_episode_return": transitions.info.get(
                     "episode_return", jnp.zeros_like(transitions.reward)
                 ).max(),
+                **reward_component_means(transitions.info),
             }
             return (
                 params,

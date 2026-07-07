@@ -48,9 +48,9 @@ class ContinuousCartPoleEnv:
         return 4
 
     def reset(
-        self, command: jax.Array | None = None
+        self, command: jax.Array | None = None, rng: jax.Array | None = None
     ) -> tuple[CartPoleState, jax.Array]:
-        del command
+        del command, rng
         obs = jnp.asarray([0.0, 0.0, 0.05, 0.0], dtype=jnp.float32)
         state = CartPoleState(
             obs=obs,
@@ -63,9 +63,12 @@ class ContinuousCartPoleEnv:
         return state, obs
 
     def reset_batch(
-        self, batch_size: int, command: jax.Array | None = None
+        self,
+        batch_size: int,
+        command: jax.Array | None = None,
+        rng: jax.Array | None = None,
     ) -> tuple[CartPoleState, jax.Array]:
-        del command
+        del command, rng
         offsets = jnp.linspace(-0.04, 0.04, batch_size, dtype=jnp.float32)
         obs = jnp.stack(
             [
@@ -140,6 +143,10 @@ class ContinuousCartPoleEnv:
         return next_state, next_state.obs, reward, done, info
 
     def step_batch(
-        self, state: CartPoleState, action: jax.Array
+        self,
+        state: CartPoleState,
+        action: jax.Array,
+        rng: jax.Array | None = None,
     ) -> tuple[CartPoleState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
+        del rng
         return jax.vmap(self.step)(state, action)

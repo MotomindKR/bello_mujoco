@@ -16,6 +16,11 @@ from bello_mujoco.contracts import (
     MAX_EPISODE_STEPS,
     POLICY_JOINT_ORDER,
 )
+from bello_mujoco.envs.rewards import (
+    CommandConfig,
+    RewardConfig,
+    compute_velocity_reward,
+)
 from bello_mujoco.sim import (
     BelloModel,
     WarpConfig,
@@ -31,6 +36,21 @@ class BelloState:
     last_action: jax.Array
     command: jax.Array
     step_count: jax.Array
+    episode_return: jax.Array
+    episode_length: jax.Array
+    last_episode_return: jax.Array
+    last_episode_length: jax.Array
+
+
+@dataclass(frozen=True)
+class DoneConfig:
+    """Termination thresholds for Bello episodes."""
+
+    min_base_height: float = 0.80
+    max_abs_roll: float = 1.0
+    max_abs_pitch: float = 1.0
+    terminate_on_timeout: bool = True
+    terminate_on_nonfinite: bool = True
 
 
 @dataclass(frozen=True)
@@ -44,6 +64,9 @@ class BelloLocomotionEnv:
     model: BelloModel
     decimation: int = CONTROL_DECIMATION
     max_episode_steps: int = MAX_EPISODE_STEPS
+    reward_config: RewardConfig = RewardConfig()
+    command_config: CommandConfig = CommandConfig()
+    done_config: DoneConfig = DoneConfig()
 
     @classmethod
     def load(
@@ -78,12 +101,10 @@ class BelloLocomotionEnv:
     def observation_size(self) -> int:
         return 9 + 3 * self.action_size
 
-    def reset(self, command: jax.Array | None = None) -> tuple[BelloState, jax.Array]:
-        command = (
-            jnp.zeros(3, dtype=jnp.float32)
-            if command is None
-            else jnp.asarray(command, dtype=jnp.float32)
-        )
+    def reset(
+        self, command: jax.Array | None = None, rng: jax.Array | None = None
+    ) -> tuple[BelloState, jax.Array]:
+        command = self._resolve_command(command, rng)
         data = self.model.make_data()
         data = data.replace(
             qpos=jnp.asarray(self.model.default_qpos),
@@ -95,18 +116,20 @@ class BelloLocomotionEnv:
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
             command=command,
             step_count=jnp.asarray(0, dtype=jnp.int32),
+            episode_return=jnp.asarray(0.0, dtype=jnp.float32),
+            episode_length=jnp.asarray(0, dtype=jnp.int32),
+            last_episode_return=jnp.asarray(0.0, dtype=jnp.float32),
+            last_episode_length=jnp.asarray(0, dtype=jnp.int32),
         )
         return state, self.observation(state)
 
     def reset_batch(
-        self, batch_size: int, command: jax.Array | None = None
+        self,
+        batch_size: int,
+        command: jax.Array | None = None,
+        rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array]:
-        if command is None:
-            command = jnp.zeros((batch_size, 3), dtype=jnp.float32)
-        else:
-            command = jnp.asarray(command, dtype=jnp.float32)
-            if command.shape == (3,):
-                command = jnp.repeat(command[None, :], batch_size, axis=0)
+        command = self._resolve_batch_command(batch_size, command, rng)
         return jax.vmap(self.reset)(command)
 
     def step(
@@ -124,16 +147,57 @@ class BelloLocomotionEnv:
             last_action=action,
             command=state.command,
             step_count=state.step_count + 1,
+            episode_return=state.episode_return,
+            episode_length=state.episode_length,
+            last_episode_return=state.last_episode_return,
+            last_episode_length=state.last_episode_length,
         )
-        reward = jnp.asarray(0.0, dtype=jnp.float32)
         done = self._done(next_state)
-        info = {"base_height": self._base_height(next_state)}
+        reward, reward_info = self._reward(state, next_state, action, done)
+        episode_return = state.episode_return + reward
+        episode_length = state.episode_length + 1
+        next_state = BelloState(
+            data=next_state.data,
+            last_action=next_state.last_action,
+            command=next_state.command,
+            step_count=next_state.step_count,
+            episode_return=episode_return,
+            episode_length=episode_length,
+            last_episode_return=jnp.where(
+                done, episode_return, state.last_episode_return
+            ),
+            last_episode_length=jnp.where(
+                done, episode_length, state.last_episode_length
+            ),
+        )
+        info = {
+            "base_height": self._base_height(next_state),
+            "episode_return": jnp.where(done, episode_return, 0.0),
+            "episode_length": jnp.where(done, episode_length, 0),
+            "returned_episode": done,
+            **reward_info,
+        }
         return next_state, self.observation(next_state), reward, done, info
 
     def step_batch(
-        self, state: BelloState, action: jax.Array
+        self,
+        state: BelloState,
+        action: jax.Array,
+        rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
-        return jax.vmap(self.step)(state, action)
+        stepped_state, stepped_obs, reward, done, info = jax.vmap(self.step)(
+            state, action
+        )
+        batch_size = int(action.shape[0])
+        reset_command = (
+            stepped_state.command
+            if rng is None
+            else self.command_config.sample(rng, (batch_size,))
+        )
+        reset_state, reset_obs = self.reset_batch(batch_size, command=reset_command)
+        next_state = tree_where(done, reset_state, stepped_state)
+        next_obs = jnp.where(done[:, None], reset_obs, stepped_obs)
+        return next_state, next_obs, reward, done, info
 
     def observation(self, state: BelloState) -> jax.Array:
         base_ang_vel, projected_gravity, command, joint_pos, joint_vel, last_action = (
@@ -165,6 +229,30 @@ class BelloLocomotionEnv:
         )
         return scale.at[jnp.asarray(self.model.policy_ctrl_indices)].set(lower_scale)
 
+    def _resolve_command(
+        self, command: jax.Array | None, rng: jax.Array | None
+    ) -> jax.Array:
+        if command is not None:
+            return jnp.asarray(command, dtype=jnp.float32)
+        if rng is not None:
+            return self.command_config.sample(rng)
+        return jnp.zeros(3, dtype=jnp.float32)
+
+    def _resolve_batch_command(
+        self,
+        batch_size: int,
+        command: jax.Array | None,
+        rng: jax.Array | None,
+    ) -> jax.Array:
+        if command is None:
+            if rng is not None:
+                return self.command_config.sample(rng, (batch_size,))
+            return jnp.zeros((batch_size, 3), dtype=jnp.float32)
+        command = jnp.asarray(command, dtype=jnp.float32)
+        if command.shape == (3,):
+            return jnp.repeat(command[None, :], batch_size, axis=0)
+        return command
+
     def _frame_terms(self, state: BelloState) -> tuple[jax.Array, ...]:
         data = state.data
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
@@ -188,22 +276,77 @@ class BelloLocomotionEnv:
         )
 
     def _done(self, state: BelloState) -> jax.Array:
+        config = self.done_config
         root_qpos = int(self.model.root_qpos_adr)
         quat = state.data.qpos[root_qpos + 3 : root_qpos + 7]
         roll, pitch = roll_pitch_from_quat(quat)
         bad_pose = (
-            (self._base_height(state) < 0.80)
-            | (jnp.abs(roll) > 1.0)
-            | (jnp.abs(pitch) > 1.0)
+            (self._base_height(state) < config.min_base_height)
+            | (jnp.abs(roll) > config.max_abs_roll)
+            | (jnp.abs(pitch) > config.max_abs_pitch)
         )
-        timeout = state.step_count >= self.max_episode_steps
+        timeout = (
+            state.step_count >= self.max_episode_steps
+            if config.terminate_on_timeout
+            else jnp.asarray(False)
+        )
         finite = jnp.all(jnp.isfinite(state.data.qpos)) & jnp.all(
             jnp.isfinite(state.data.qvel)
         )
-        return bad_pose | timeout | (~finite)
+        nonfinite = ~finite if config.terminate_on_nonfinite else jnp.asarray(False)
+        return bad_pose | timeout | nonfinite
 
     def _base_height(self, state: BelloState) -> jax.Array:
         return state.data.qpos[int(self.model.root_qpos_adr) + 2]
+
+    def _reward(
+        self,
+        state: BelloState,
+        next_state: BelloState,
+        action: jax.Array,
+        done: jax.Array,
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        (
+            base_ang_vel,
+            projected_gravity,
+            command,
+            joint_pos,
+            joint_vel,
+            _,
+        ) = self._frame_terms(next_state)
+        root_qpos = int(self.model.root_qpos_adr)
+        root_qvel = int(self.model.root_qvel_adr)
+        quat = next_state.data.qpos[root_qpos + 3 : root_qpos + 7]
+        qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
+        base_lin_vel = quat_rotate_inverse(
+            quat, next_state.data.qvel[root_qvel : root_qvel + 3]
+        )
+        return compute_velocity_reward(
+            config=self.reward_config,
+            command=command,
+            base_lin_vel=base_lin_vel,
+            base_ang_vel=base_ang_vel,
+            projected_gravity=projected_gravity,
+            base_height=self._base_height(next_state),
+            joint_pos=next_state.data.qpos[qpos_idx],
+            joint_pos_rel=joint_pos,
+            joint_vel=joint_vel,
+            action=action,
+            last_action=state.last_action,
+            actuator_force=next_state.data.actuator_force,
+            joint_limit_low=self._actuator_joint_limit_low(),
+            joint_limit_high=self._actuator_joint_limit_high(),
+            fixed_joint_indices=jnp.asarray(self.model.fixed_ctrl_indices),
+            done=done,
+        )
+
+    def _actuator_joint_limit_low(self) -> jax.Array:
+        joint_ids = self.model.mj_model.actuator_trnid[:, 0]
+        return jnp.asarray(self.model.mj_model.jnt_range[joint_ids, 0])
+
+    def _actuator_joint_limit_high(self) -> jax.Array:
+        joint_ids = self.model.mj_model.actuator_trnid[:, 0]
+        return jnp.asarray(self.model.mj_model.jnt_range[joint_ids, 1])
 
 
 def quat_rotate_inverse(quat_wxyz: jax.Array, vec: jax.Array) -> jax.Array:
@@ -222,3 +365,13 @@ def roll_pitch_from_quat(quat_wxyz: jax.Array) -> tuple[jax.Array, jax.Array]:
     sinp = 2.0 * (w * y - z * x)
     pitch = jnp.arcsin(jnp.clip(sinp, -1.0, 1.0))
     return roll, pitch
+
+
+def tree_where(mask: jax.Array, true_tree, false_tree):
+    def select(true_value, false_value):
+        if true_value.ndim < mask.ndim or true_value.shape[: mask.ndim] != mask.shape:
+            return false_value
+        select_mask = mask.reshape(mask.shape + (1,) * (true_value.ndim - mask.ndim))
+        return jnp.where(select_mask, true_value, false_value)
+
+    return jax.tree_util.tree_map(select, true_tree, false_tree)
