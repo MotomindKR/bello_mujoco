@@ -345,6 +345,11 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert jnp.all(next_state.last_episode_return == info["episode_return"])
     assert jnp.all(next_state.last_episode_length == info["episode_length"])
     assert jnp.all(info["returned_episode"])
+    assert jnp.all(info["done/any"])
+    assert jnp.all(info["done/timeout"])
+    assert not bool(jnp.any(info["done/base_height"]))
+    assert not bool(jnp.any(info["done/roll_pitch"]))
+    assert not bool(jnp.any(info["done/nonfinite"]))
     assert info["episode_return"].shape == (2,)
     assert info["reward/track_lin_vel_xy"].shape == (2,)
     assert info["reward/foot_contact"].shape == (2,)
@@ -419,6 +424,8 @@ def test_done_config_can_disable_timeout(
     assert not bool(jnp.any(done))
     assert jnp.all(next_state.step_count == 1)
     assert not bool(jnp.any(info["returned_episode"]))
+    assert not bool(jnp.any(info["done/any"]))
+    assert not bool(jnp.any(info["done/timeout"]))
 
 
 def test_observation_size_tracks_loaded_model_action_size(

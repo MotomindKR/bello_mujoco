@@ -7,6 +7,7 @@ from bello_mujoco.train.ppo import (
     PPOConfig,
     Transition,
     compute_gae,
+    done_reason_means,
     init_train_state,
     make_train,
     ppo_loss,
@@ -151,6 +152,20 @@ def test_safe_returned_max_is_nan_without_completed_episode() -> None:
     }
 
     assert bool(jnp.isnan(safe_returned_max(info)))
+
+
+def test_done_reason_means_reports_done_component_rates() -> None:
+    info = {
+        "done/any": jnp.asarray([[True, False], [False, True]]),
+        "done/timeout": jnp.asarray([[True, False], [False, False]]),
+        "reward/alive": jnp.ones((2, 2), dtype=jnp.float32),
+    }
+
+    metrics = done_reason_means(info)
+
+    assert metrics.keys() == {"mean_done/any", "mean_done/timeout"}
+    assert float(metrics["mean_done/any"]) == 0.5
+    assert float(metrics["mean_done/timeout"]) == 0.25
 
 
 def test_ppo_config_rejects_zero_update_runs() -> None:

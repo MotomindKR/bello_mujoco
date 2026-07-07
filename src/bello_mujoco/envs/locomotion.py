@@ -437,7 +437,8 @@ class BelloLocomotionEnv:
             last_episode_return=state.last_episode_return,
             last_episode_length=state.last_episode_length,
         )
-        done = self._done(next_state)
+        done_flags = self._done_flags(next_state)
+        done = done_flags["done/any"]
         reward, reward_info = self._reward(state, next_state, action, done, 0)
         episode_return = state.episode_return + reward
         episode_length = state.episode_length + 1
@@ -460,6 +461,7 @@ class BelloLocomotionEnv:
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_length": jnp.where(done, episode_length, 0),
             "returned_episode": done,
+            **done_flags,
             **reward_info,
         }
         return next_state, self.observation(next_state), reward, done, info
@@ -495,7 +497,8 @@ class BelloLocomotionEnv:
             last_episode_return=state.last_episode_return,
             last_episode_length=state.last_episode_length,
         )
-        done = jax.vmap(self._done)(stepped_state)
+        done_flags = jax.vmap(self._done_flags)(stepped_state)
+        done = done_flags["done/any"]
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         reward, reward_info = jax.vmap(self._reward)(
             state, stepped_state, action, done, world_ids
@@ -524,6 +527,7 @@ class BelloLocomotionEnv:
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_length": jnp.where(done, episode_length, 0),
             "returned_episode": done,
+            **done_flags,
             **reward_info,
         }
         reset_command = self._reset_batch_command(
@@ -726,6 +730,9 @@ class BelloLocomotionEnv:
         )
 
     def _done(self, state: BelloState) -> jax.Array:
+        return self._done_flags(state)["done/any"]
+
+    def _done_flags(self, state: BelloState) -> dict[str, jax.Array]:
         config = self.done_config
         quat = self._link_quat(state, self._done_link(config.roll_pitch))
         roll, pitch = roll_pitch_from_quat(quat)
@@ -751,7 +758,14 @@ class BelloLocomotionEnv:
             jnp.isfinite(state.data.qvel)
         )
         nonfinite = ~finite if config.nonfinite.enabled else jnp.asarray(False)
-        return bad_pose | timeout | nonfinite
+        done = bad_pose | timeout | nonfinite
+        return {
+            "done/any": done,
+            "done/base_height": bad_height,
+            "done/roll_pitch": bad_orientation,
+            "done/timeout": timeout,
+            "done/nonfinite": nonfinite,
+        }
 
     def _base_height(self, state: BelloState) -> jax.Array:
         return self._link_height(

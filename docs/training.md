@@ -470,6 +470,11 @@ entropy
 approx_kl
 mean_reward
 mean_done
+mean_done/any
+mean_done/base_height
+mean_done/roll_pitch
+mean_done/timeout
+mean_done/nonfinite
 mean_episode_return
 max_episode_return
 ```
@@ -479,6 +484,15 @@ Reward component metrics are emitted as:
 ```text
 mean_reward/<term_name>
 ```
+
+Done reason metrics are emitted as:
+
+```text
+mean_done/<reason_name>
+```
+
+These show the fraction of rollout steps terminated by each done condition.
+`mean_done/any` is the per-reason equivalent of `mean_done`.
 
 `mean_episode_return` averages only completed episodes in the rollout. If no
 episode completed, it returns `0.0`.

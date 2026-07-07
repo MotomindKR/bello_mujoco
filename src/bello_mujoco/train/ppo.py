@@ -282,6 +282,14 @@ def reward_component_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def done_reason_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        f"mean_{name}": value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("done/")
+    }
+
+
 def collect_rollout(
     env: BelloLocomotionEnv,
     policy: ActorCritic,
@@ -372,6 +380,7 @@ def update_runner_state(
         "mean_done": transitions.done.astype(jnp.float32).mean(),
         "mean_episode_return": safe_returned_mean(transitions.info),
         "max_episode_return": safe_returned_max(transitions.info),
+        **done_reason_means(transitions.info),
         **reward_component_means(transitions.info),
     }
     return (
