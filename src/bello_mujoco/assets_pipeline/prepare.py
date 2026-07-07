@@ -30,7 +30,7 @@ from bello_mujoco.assets_pipeline.mjcf import (
 )
 from bello_mujoco.actuators import ActuatorConfig
 
-AssetName = Literal["full_body", "lower_body", "upper_body", "down_body"]
+AssetName = Literal["full_body", "lower_body", "upper_body"]
 ASSET_CACHE_VERSION = 1
 
 
@@ -164,7 +164,7 @@ def prepare_asset_unlocked(
 def canonical_asset(
     asset: AssetName,
 ) -> Literal["full_body", "lower_body", "upper_body"]:
-    return "lower_body" if asset == "down_body" else asset
+    return asset
 
 
 def actuated_urdf_joint_names(urdf_path: Path) -> tuple[str, ...]:

@@ -7,7 +7,8 @@ import jax.numpy as jnp
 import tyro
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
-from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
+from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import (
     DEFAULT_CONTACT_BUDGET_PER_ENV,
     DEFAULT_WARP_NJMAX,
@@ -18,6 +19,9 @@ from bello_mujoco.sim import (
 def main(
     asset_config: AssetPrepConfig = AssetPrepConfig(),
     env_config: BelloEnvConfig = BelloEnvConfig(),
+    reward_config: RewardConfig = RewardConfig(),
+    command_config: CommandConfig = CommandConfig(),
+    done_config: DoneConfig = DoneConfig(),
     batch_size: int = 512,
     step_count: int = 5,
     contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
@@ -36,6 +40,9 @@ def main(
         warp=warp,
         batch_size=batch_size,
         env_config=env_config,
+        reward_config=reward_config,
+        command_config=command_config,
+        done_config=done_config,
     )
     state, obs = env.reset_batch(batch_size)
     obs.block_until_ready()

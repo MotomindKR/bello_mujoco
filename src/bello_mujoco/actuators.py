@@ -103,43 +103,29 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             soft_limit=(-0.07857, 0.07857),
             gains=(40.0, 2.0),
         ),
-        "waist_yaw_joint": JointActuatorConfig(mode="hold", gains=(180.0, 12.0)),
-        "waist_roll_joint": JointActuatorConfig(mode="hold", gains=(240.0, 20.0)),
-        "waist_pitch_joint": JointActuatorConfig(mode="hold", gains=(240.0, 20.0)),
-        "neck_yaw_joint": JointActuatorConfig(mode="hold", gains=(5.5, 0.5)),
-        "head_pitch_joint": JointActuatorConfig(mode="hold", gains=(5.5, 0.5)),
-        "right_shoulder_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(70.0, 2.0)
-        ),
-        "right_shoulder_roll_joint": JointActuatorConfig(
-            mode="hold", gains=(70.0, 2.0)
-        ),
-        "right_shoulder_yaw_joint": JointActuatorConfig(mode="hold", gains=(20.0, 1.0)),
-        "right_elbow_pitch_joint": JointActuatorConfig(mode="hold", gains=(40.0, 2.0)),
-        "right_elbow_yaw_joint": JointActuatorConfig(mode="hold", gains=(20.0, 1.0)),
-        "right_wrist_pitch_joint": JointActuatorConfig(mode="hold", gains=(10.0, 1.0)),
-        "right_wrist_yaw_joint": JointActuatorConfig(mode="hold", gains=(10.0, 1.0)),
-        "left_shoulder_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(70.0, 2.0)
-        ),
-        "left_shoulder_roll_joint": JointActuatorConfig(mode="hold", gains=(70.0, 2.0)),
-        "left_shoulder_yaw_joint": JointActuatorConfig(mode="hold", gains=(20.0, 1.0)),
-        "left_elbow_pitch_joint": JointActuatorConfig(mode="hold", gains=(40.0, 2.0)),
-        "left_elbow_yaw_joint": JointActuatorConfig(mode="hold", gains=(20.0, 1.0)),
-        "left_wrist_pitch_joint": JointActuatorConfig(mode="hold", gains=(10.0, 1.0)),
-        "left_wrist_yaw_joint": JointActuatorConfig(mode="hold", gains=(10.0, 1.0)),
-        "right_finger_right_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0)
-        ),
-        "right_finger_left_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0)
-        ),
-        "left_finger_right_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0)
-        ),
-        "left_finger_left_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0)
-        ),
+        "waist_yaw_joint": JointActuatorConfig(gains=(180.0, 12.0)),
+        "waist_roll_joint": JointActuatorConfig(gains=(240.0, 20.0)),
+        "waist_pitch_joint": JointActuatorConfig(gains=(240.0, 20.0)),
+        "neck_yaw_joint": JointActuatorConfig(gains=(5.5, 0.5)),
+        "head_pitch_joint": JointActuatorConfig(gains=(5.5, 0.5)),
+        "right_shoulder_pitch_joint": JointActuatorConfig(gains=(70.0, 2.0)),
+        "right_shoulder_roll_joint": JointActuatorConfig(gains=(70.0, 2.0)),
+        "right_shoulder_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
+        "right_elbow_pitch_joint": JointActuatorConfig(gains=(40.0, 2.0)),
+        "right_elbow_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
+        "right_wrist_pitch_joint": JointActuatorConfig(gains=(10.0, 1.0)),
+        "right_wrist_yaw_joint": JointActuatorConfig(gains=(10.0, 1.0)),
+        "left_shoulder_pitch_joint": JointActuatorConfig(gains=(70.0, 2.0)),
+        "left_shoulder_roll_joint": JointActuatorConfig(gains=(70.0, 2.0)),
+        "left_shoulder_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
+        "left_elbow_pitch_joint": JointActuatorConfig(gains=(40.0, 2.0)),
+        "left_elbow_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
+        "left_wrist_pitch_joint": JointActuatorConfig(gains=(10.0, 1.0)),
+        "left_wrist_yaw_joint": JointActuatorConfig(gains=(10.0, 1.0)),
+        "right_finger_right_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
+        "right_finger_left_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
+        "left_finger_right_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
+        "left_finger_left_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
     }
 
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
 
 import imageio.v2 as imageio
 import jax
@@ -22,6 +23,15 @@ from bello_mujoco.tracking import (
 from bello_mujoco.policy import apply_policy
 
 
+@dataclass(frozen=True)
+class CameraConfig:
+    mode: Literal["follow", "fixed"] = "follow"
+    distance: float = 3.0
+    azimuth: float = 135.0
+    elevation: float = -18.0
+    lookat_offset: tuple[float, float, float] = (0.0, 0.0, 0.35)
+
+
 def main(
     checkpoint_path: Path,
     output_path: Path = Path("outputs/eval_rollout.mp4"),
@@ -31,6 +41,7 @@ def main(
     height: int = 480,
     fps: int = 50,
     stop_on_done: bool = True,
+    camera_config: CameraConfig = CameraConfig(),
     log_wandb: bool = False,
     wandb_config: WandbConfig = WandbConfig(),
 ) -> None:
@@ -40,9 +51,6 @@ def main(
         warp=metadata.warp,
         batch_size=1,
         env_config=metadata.env,
-    )
-    env = replace(
-        env,
         reward_config=metadata.reward,
         command_config=metadata.command,
         done_config=metadata.done,
@@ -58,6 +66,7 @@ def main(
         height=height,
         fps=fps,
         stop_on_done=stop_on_done,
+        camera_config=camera_config,
     )
 
     run = create_wandb_run(
@@ -75,6 +84,7 @@ def main(
                     "height": height,
                     "fps": fps,
                     "stop_on_done": stop_on_done,
+                    "camera": camera_config,
                 },
             },
         )
@@ -102,22 +112,26 @@ def render_policy_rollout(
     height: int,
     fps: int,
     stop_on_done: bool,
+    camera_config: CameraConfig,
 ) -> None:
     state, obs = env.reset(jnp.asarray(command, dtype=jnp.float32))
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     renderer = mujoco.Renderer(mj_model, height=height, width=width)
+    camera = make_camera(mj_model, camera_config)
     writer = imageio.get_writer(output_path, fps=fps)
     try:
         for _ in range(steps):
             sync_mj_data(mj_model, mj_data, state)
-            renderer.update_scene(mj_data)
+            update_camera(camera, mj_model, mj_data, camera_config)
+            renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
             mean, _, _ = apply_policy(policy, obs)
             state, obs, _, done, _ = env.step(state, mean)
             if stop_on_done and bool(jax.device_get(done)):
                 sync_mj_data(mj_model, mj_data, state)
-                renderer.update_scene(mj_data)
+                update_camera(camera, mj_model, mj_data, camera_config)
+                renderer.update_scene(mj_data, camera=camera)
                 writer.append_data(renderer.render())
                 break
     finally:
@@ -130,6 +144,30 @@ def sync_mj_data(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, state) -> Non
     mj_data.qvel[:] = np.asarray(jax.device_get(state.data.qvel))
     mj_data.ctrl[:] = np.asarray(jax.device_get(state.data.ctrl))
     mujoco.mj_forward(mj_model, mj_data)
+
+
+def make_camera(mj_model: mujoco.MjModel, config: CameraConfig) -> mujoco.MjvCamera:
+    camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(mj_model, camera)
+    camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+    camera.distance = config.distance
+    camera.azimuth = config.azimuth
+    camera.elevation = config.elevation
+    return camera
+
+
+def update_camera(
+    camera: mujoco.MjvCamera,
+    mj_model: mujoco.MjModel,
+    mj_data: mujoco.MjData,
+    config: CameraConfig,
+) -> None:
+    if config.mode != "follow":
+        return
+    root_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "bello_root")
+    if root_body_id < 0:
+        raise ValueError("follow camera requires body 'bello_root'")
+    camera.lookat[:] = mj_data.xpos[root_body_id] + np.asarray(config.lookat_offset)
 
 
 def entrypoint() -> None:

@@ -11,7 +11,11 @@ from bello_mujoco.checkpoint import (
     restore_training_checkpoint,
     save_training_checkpoint,
 )
-from bello_mujoco.envs.locomotion import BelloEnvConfig, DoneConfig
+from bello_mujoco.envs.locomotion import (
+    BaseHeightDoneConfig,
+    BelloEnvConfig,
+    DoneConfig,
+)
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import TerrainConfig
@@ -33,7 +37,7 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
         asset=AssetPrepConfig(output_root=tmp_path / "assets"),
         reward=RewardConfig(),
         command=CommandConfig(lin_vel_x=(-0.2, 0.3)),
-        done=DoneConfig(min_base_height=0.7),
+        done=DoneConfig(base_height=BaseHeightDoneConfig(min_height=0.7)),
         env=BelloEnvConfig(
             decimation=4,
             max_episode_steps=123,

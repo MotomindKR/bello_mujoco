@@ -7,7 +7,9 @@ from typing import Literal
 import chex
 import jax
 import jax.numpy as jnp
+import mujoco
 from mujoco import mjx
+import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
@@ -26,7 +28,6 @@ from bello_mujoco.sim import (
     WarpConfig,
     load_bello_model,
     load_prepared_bello_model,
-    require_full_body_config,
 )
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 
@@ -44,19 +45,65 @@ class BelloState:
 
 
 @dataclass(frozen=True)
+class BaseDoneConfig:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class BaseHeightDoneConfig(BaseDoneConfig):
+    min_height: float = 0.80
+    link: str = "bello_root"
+
+
+@dataclass(frozen=True)
+class RollPitchDoneConfig(BaseDoneConfig):
+    max_abs_roll: float = 1.0
+    max_abs_pitch: float = 1.0
+    link: str = "bello_root"
+
+
+@dataclass(frozen=True)
+class TimeoutDoneConfig(BaseDoneConfig):
+    pass
+
+
+@dataclass(frozen=True)
+class NonfiniteDoneConfig(BaseDoneConfig):
+    pass
+
+
+@dataclass(frozen=True)
 class DoneConfig:
     """Termination thresholds for Bello episodes."""
 
-    min_base_height: float = 0.80
-    max_abs_roll: float = 1.0
-    max_abs_pitch: float = 1.0
-    terminate_on_timeout: bool = True
-    terminate_on_nonfinite: bool = True
+    base_height: BaseHeightDoneConfig = BaseHeightDoneConfig()
+    roll_pitch: RollPitchDoneConfig = RollPitchDoneConfig()
+    timeout: TimeoutDoneConfig = TimeoutDoneConfig()
+    nonfinite: NonfiniteDoneConfig = NonfiniteDoneConfig()
+
+    @property
+    def enabled_link_names(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    term.link
+                    for term in (self.base_height, self.roll_pitch)
+                    if term.enabled
+                }
+            )
+        )
 
 
 @dataclass(frozen=True)
 class ObservationConfig:
     joint_mode: Literal["all_actuated", "policy"] = "all_actuated"
+    base_ang_vel: bool = True
+    projected_gravity: bool = True
+    command: bool = True
+    joint_pos: bool = True
+    joint_vel: bool = True
+    actuator_force: bool = True
+    last_action: bool = True
 
 
 @dataclass(frozen=True)
@@ -83,6 +130,9 @@ class BelloLocomotionEnv:
     command_config: CommandConfig = CommandConfig()
     done_config: DoneConfig = DoneConfig()
 
+    def __post_init__(self) -> None:
+        self._validate_model_metadata()
+
     @classmethod
     def load(
         cls,
@@ -92,8 +142,10 @@ class BelloLocomotionEnv:
         batch_size: int = 1,
         env_config: BelloEnvConfig = BelloEnvConfig(),
         terrain: TerrainConfig | None = None,
+        reward_config: RewardConfig = RewardConfig(),
+        command_config: CommandConfig = CommandConfig(),
+        done_config: DoneConfig = DoneConfig(),
     ) -> "BelloLocomotionEnv":
-        require_full_body_config(config)
         env_config = (
             env_config if terrain is None else replace(env_config, terrain=terrain)
         )
@@ -105,6 +157,9 @@ class BelloLocomotionEnv:
                 terrain=env_config.terrain,
             ),
             config=env_config,
+            reward_config=reward_config,
+            command_config=command_config,
+            done_config=done_config,
         )
 
     @classmethod
@@ -117,9 +172,10 @@ class BelloLocomotionEnv:
         env_config: BelloEnvConfig = BelloEnvConfig(),
         terrain: TerrainConfig | None = None,
         actuator_config: ActuatorConfig = ActuatorConfig(),
+        reward_config: RewardConfig = RewardConfig(),
+        command_config: CommandConfig = CommandConfig(),
+        done_config: DoneConfig = DoneConfig(),
     ) -> "BelloLocomotionEnv":
-        if prepared.name != "full_body":
-            raise ValueError("BelloLocomotionEnv currently requires a full_body asset")
         env_config = (
             env_config if terrain is None else replace(env_config, terrain=terrain)
         )
@@ -132,6 +188,9 @@ class BelloLocomotionEnv:
                 actuator_config=actuator_config,
             ),
             config=env_config,
+            reward_config=reward_config,
+            command_config=command_config,
+            done_config=done_config,
         )
 
     @property
@@ -152,13 +211,122 @@ class BelloLocomotionEnv:
 
     @property
     def observation_size(self) -> int:
-        return 9 + 2 * self.observed_joint_count + self.action_size
+        observation = self.config.observation
+        return (
+            (3 if observation.base_ang_vel else 0)
+            + (3 if observation.projected_gravity else 0)
+            + self.command_observation_size
+            + (self.observed_joint_count if observation.joint_pos else 0)
+            + (self.observed_joint_count if observation.joint_vel else 0)
+            + (self.observed_actuator_count if observation.actuator_force else 0)
+            + (self.action_size if observation.last_action else 0)
+        )
+
+    @property
+    def command_observation_size(self) -> int:
+        return (
+            3 if self.config.observation.command and self.command_config.enabled else 0
+        )
 
     @property
     def observed_joint_count(self) -> int:
         if self.config.observation.joint_mode == "policy":
             return int(self.model.policy_ctrl_indices.size)
         return int(self.model.mj_model.nu)
+
+    @property
+    def observed_actuator_count(self) -> int:
+        if self.config.observation.joint_mode == "policy":
+            return int(self.model.policy_ctrl_indices.size)
+        return int(self.model.mj_model.nu)
+
+    def _validate_model_metadata(self) -> None:
+        model = self.model
+        mj_model = model.mj_model
+        require_index_range(
+            "policy_ctrl_indices", model.policy_ctrl_indices, mj_model.nu
+        )
+        require_index_range("hold_ctrl_indices", model.hold_ctrl_indices, mj_model.nu)
+        require_disjoint(
+            "policy_ctrl_indices",
+            model.policy_ctrl_indices,
+            "hold_ctrl_indices",
+            model.hold_ctrl_indices,
+        )
+        require_index_range(
+            "actuator_qpos_indices", model.actuator_qpos_indices, mj_model.nq
+        )
+        require_index_range(
+            "actuator_qvel_indices", model.actuator_qvel_indices, mj_model.nv
+        )
+        require_index_range(
+            "policy_qpos_indices", model.policy_qpos_indices, mj_model.nq
+        )
+        require_index_range(
+            "policy_qvel_indices", model.policy_qvel_indices, mj_model.nv
+        )
+        require_index_range("foot_body_ids", model.foot_body_ids, mj_model.nbody)
+        require_index_range("foot_geom_ids", model.foot_geom_ids, mj_model.ngeom)
+        require_index_range("terrain_geom_ids", model.terrain_geom_ids, mj_model.ngeom)
+        require_index_range(
+            "nonfoot_robot_geom_ids", model.nonfoot_robot_geom_ids, mj_model.ngeom
+        )
+        for link_name in (
+            *self.reward_config.enabled_link_names,
+            *self.done_config.enabled_link_names,
+        ):
+            if self._link_body_id(link_name) < 0:
+                raise ValueError(f"configured link/body not found: {link_name!r}")
+
+        if model.policy_action_scale.shape != model.policy_ctrl_indices.shape:
+            raise ValueError(
+                "policy_action_scale must have one value per policy action, got "
+                f"{model.policy_action_scale.shape} for "
+                f"{model.policy_ctrl_indices.shape} policy controls"
+            )
+        if model.actuator_qpos_indices.shape != (mj_model.nu,):
+            raise ValueError(
+                "actuator_qpos_indices must have one entry per actuator, got "
+                f"{model.actuator_qpos_indices.shape} for nu={mj_model.nu}"
+            )
+        if model.actuator_qvel_indices.shape != (mj_model.nu,):
+            raise ValueError(
+                "actuator_qvel_indices must have one entry per actuator, got "
+                f"{model.actuator_qvel_indices.shape} for nu={mj_model.nu}"
+            )
+        if self.reward_config.uses_foot_metadata and model.foot_body_ids.shape != (2,):
+            raise ValueError(
+                "enabled foot reward terms require exactly two foot bodies, got "
+                f"{model.foot_body_ids.shape}. Disable foot_contact, foot_slip, and "
+                "foot_clearance rewards for assets without feet."
+            )
+        if self.reward_config.uses_foot_metadata and model.foot_geom_ids.size == 0:
+            raise ValueError(
+                "enabled foot reward terms require foot collision geoms. Disable "
+                "foot_contact, foot_slip, and foot_clearance rewards for assets "
+                "without feet."
+            )
+        if (
+            self.terrain_config.mode != "none"
+            and self.reward_config.uses_terrain_contact_metadata
+            and model.terrain_geom_ids.size == 0
+        ):
+            raise ValueError(
+                f"terrain mode {self.terrain_config.mode!r} requires a terrain geom "
+                f"named {self.terrain_config.name!r} for enabled contact rewards"
+            )
+        if model.default_qpos.shape != (mj_model.nq,):
+            raise ValueError(
+                f"default_qpos shape {model.default_qpos.shape} does not match nq={mj_model.nq}"
+            )
+        if model.default_qvel.shape != (mj_model.nv,):
+            raise ValueError(
+                f"default_qvel shape {model.default_qvel.shape} does not match nv={mj_model.nv}"
+            )
+        if model.default_ctrl.shape != (mj_model.nu,):
+            raise ValueError(
+                f"default_ctrl shape {model.default_ctrl.shape} does not match nu={mj_model.nu}"
+            )
 
     def reset(
         self, command: jax.Array | None = None, rng: jax.Array | None = None
@@ -259,19 +427,34 @@ class BelloLocomotionEnv:
         return next_state, next_obs, reward, done, info
 
     def observation(self, state: BelloState) -> jax.Array:
-        base_ang_vel, projected_gravity, command, joint_pos, joint_vel, last_action = (
-            self._frame_terms(state)
-        )
-        return jnp.concatenate(
-            [
-                base_ang_vel,
-                projected_gravity,
-                command,
-                joint_pos,
-                joint_vel,
-                last_action,
-            ]
-        )
+        (
+            base_ang_vel,
+            projected_gravity,
+            command,
+            joint_pos,
+            joint_vel,
+            actuator_force,
+            last_action,
+        ) = self._frame_terms(state)
+        observation = self.config.observation
+        parts = []
+        if observation.base_ang_vel:
+            parts.append(base_ang_vel)
+        if observation.projected_gravity:
+            parts.append(projected_gravity)
+        if observation.command and self.command_config.enabled:
+            parts.append(command)
+        if observation.joint_pos:
+            parts.append(joint_pos)
+        if observation.joint_vel:
+            parts.append(joint_vel)
+        if observation.actuator_force:
+            parts.append(actuator_force)
+        if observation.last_action:
+            parts.append(last_action)
+        if not parts:
+            return jnp.zeros((0,), dtype=jnp.float32)
+        return jnp.concatenate(parts)
 
     def _action_to_ctrl(self, action: jax.Array) -> jax.Array:
         default = jnp.asarray(self.model.default_ctrl)
@@ -287,6 +470,8 @@ class BelloLocomotionEnv:
     def _resolve_command(
         self, command: jax.Array | None, rng: jax.Array | None
     ) -> jax.Array:
+        if not self.command_config.enabled:
+            return jnp.zeros(3, dtype=jnp.float32)
         if command is not None:
             return jnp.asarray(command, dtype=jnp.float32)
         if rng is not None:
@@ -299,6 +484,8 @@ class BelloLocomotionEnv:
         command: jax.Array | None,
         rng: jax.Array | None,
     ) -> jax.Array:
+        if not self.command_config.enabled:
+            return jnp.zeros((batch_size, 3), dtype=jnp.float32)
         if command is None:
             if rng is not None:
                 return self.command_config.sample(rng, (batch_size,))
@@ -312,8 +499,10 @@ class BelloLocomotionEnv:
         data = state.data
         qpos_idx = jnp.asarray(self._observed_qpos_indices())
         qvel_idx = jnp.asarray(self._observed_qvel_indices())
+        actuator_idx = jnp.asarray(self._observed_actuator_indices())
         joint_pos = data.qpos[qpos_idx] - jnp.asarray(self.model.default_qpos)[qpos_idx]
         joint_vel = data.qvel[qvel_idx]
+        actuator_force = data.actuator_force[actuator_idx]
         root_qpos = int(self.model.root_qpos_adr)
         root_qvel = int(self.model.root_qvel_adr)
         quat = data.qpos[root_qpos + 3 : root_qpos + 7]
@@ -327,6 +516,7 @@ class BelloLocomotionEnv:
             state.command,
             joint_pos,
             joint_vel,
+            actuator_force,
             state.last_action,
         )
 
@@ -340,6 +530,11 @@ class BelloLocomotionEnv:
             return self.model.policy_qvel_indices
         return self.model.actuator_qvel_indices
 
+    def _observed_actuator_indices(self):
+        if self.config.observation.joint_mode == "policy":
+            return self.model.policy_ctrl_indices
+        return np.arange(self.model.mj_model.nu, dtype=np.int32)
+
     def _all_actuator_joint_terms(
         self, state: BelloState
     ) -> tuple[jax.Array, jax.Array]:
@@ -351,29 +546,74 @@ class BelloLocomotionEnv:
         joint_vel = state.data.qvel[qvel_idx]
         return joint_pos, joint_vel
 
+    def _link_body_id(self, link_name: str) -> int:
+        return int(
+            mujoco.mj_name2id(self.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
+        )
+
+    def _link_quat(self, state: BelloState, link_name: str) -> jax.Array:
+        if link_name == "bello_root":
+            root_qpos = int(self.model.root_qpos_adr)
+            return state.data.qpos[root_qpos + 3 : root_qpos + 7]
+        return state.data.xquat[self._link_body_id(link_name)]
+
+    def _link_height(self, state: BelloState, link_name: str) -> jax.Array:
+        if link_name == "bello_root":
+            return state.data.qpos[int(self.model.root_qpos_adr) + 2]
+        return state.data.xpos[self._link_body_id(link_name), 2]
+
+    def _link_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
+        if link_name == "bello_root":
+            root_qpos = int(self.model.root_qpos_adr)
+            root_qvel = int(self.model.root_qvel_adr)
+            quat = state.data.qpos[root_qpos + 3 : root_qpos + 7]
+            return quat_rotate_inverse(quat, state.data.qvel[root_qvel : root_qvel + 3])
+        return state.data.cvel[self._link_body_id(link_name), 3:6]
+
+    def _link_ang_vel(self, state: BelloState, link_name: str) -> jax.Array:
+        if link_name == "bello_root":
+            root_qvel = int(self.model.root_qvel_adr)
+            return state.data.qvel[root_qvel + 3 : root_qvel + 6]
+        return state.data.cvel[self._link_body_id(link_name), :3]
+
+    def _link_projected_gravity(self, state: BelloState, link_name: str) -> jax.Array:
+        return quat_rotate_inverse(
+            self._link_quat(state, link_name),
+            jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
+        )
+
     def _done(self, state: BelloState) -> jax.Array:
         config = self.done_config
-        root_qpos = int(self.model.root_qpos_adr)
-        quat = state.data.qpos[root_qpos + 3 : root_qpos + 7]
+        quat = self._link_quat(state, self._done_link(config.roll_pitch))
         roll, pitch = roll_pitch_from_quat(quat)
-        bad_pose = (
-            (self._base_height(state) < config.min_base_height)
-            | (jnp.abs(roll) > config.max_abs_roll)
-            | (jnp.abs(pitch) > config.max_abs_pitch)
+        bad_height = (
+            self._link_height(state, self._done_link(config.base_height))
+            < config.base_height.min_height
+            if config.base_height.enabled
+            else jnp.asarray(False)
         )
+        bad_orientation = (
+            (jnp.abs(roll) > config.roll_pitch.max_abs_roll)
+            | (jnp.abs(pitch) > config.roll_pitch.max_abs_pitch)
+            if config.roll_pitch.enabled
+            else jnp.asarray(False)
+        )
+        bad_pose = bad_height | bad_orientation
         timeout = (
             state.step_count >= self.max_episode_steps
-            if config.terminate_on_timeout
+            if config.timeout.enabled
             else jnp.asarray(False)
         )
         finite = jnp.all(jnp.isfinite(state.data.qpos)) & jnp.all(
             jnp.isfinite(state.data.qvel)
         )
-        nonfinite = ~finite if config.terminate_on_nonfinite else jnp.asarray(False)
+        nonfinite = ~finite if config.nonfinite.enabled else jnp.asarray(False)
         return bad_pose | timeout | nonfinite
 
     def _base_height(self, state: BelloState) -> jax.Array:
-        return state.data.qpos[int(self.model.root_qpos_adr) + 2]
+        return self._link_height(
+            state, self._reward_link(self.reward_config.base_height)
+        )
 
     def _reward(
         self,
@@ -382,32 +622,39 @@ class BelloLocomotionEnv:
         action: jax.Array,
         done: jax.Array,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
-        (
-            base_ang_vel,
-            projected_gravity,
-            command,
-            _,
-            _,
-            _,
-        ) = self._frame_terms(next_state)
-        root_qpos = int(self.model.root_qpos_adr)
-        root_qvel = int(self.model.root_qvel_adr)
-        quat = next_state.data.qpos[root_qpos + 3 : root_qpos + 7]
+        _, _, command, _, _, _, _ = self._frame_terms(next_state)
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
         joint_pos_rel, joint_vel = self._all_actuator_joint_terms(next_state)
-        base_lin_vel = quat_rotate_inverse(
-            quat, next_state.data.qvel[root_qvel : root_qvel + 3]
-        )
         foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
             self._contact_terms(next_state)
+        )
+        lin_vel_xy = self._link_lin_vel(
+            next_state, self._reward_link(self.reward_config.track_lin_vel_xy)
+        )[:2]
+        yaw_vel_z = self._link_ang_vel(
+            next_state, self._reward_link(self.reward_config.track_ang_vel_z)
+        )[2]
+        lin_vel_z = self._link_lin_vel(
+            next_state, self._reward_link(self.reward_config.lin_vel_z)
+        )[2]
+        ang_vel_xy = self._link_ang_vel(
+            next_state, self._reward_link(self.reward_config.ang_vel_xy)
+        )[:2]
+        projected_gravity = self._link_projected_gravity(
+            next_state, self._reward_link(self.reward_config.flat_orientation)
+        )
+        base_height = self._link_height(
+            next_state, self._reward_link(self.reward_config.base_height)
         )
         return compute_velocity_reward(
             config=self.reward_config,
             command=command,
-            base_lin_vel=base_lin_vel,
-            base_ang_vel=base_ang_vel,
+            lin_vel_xy=lin_vel_xy,
+            yaw_vel_z=yaw_vel_z,
+            lin_vel_z=lin_vel_z,
+            ang_vel_xy=ang_vel_xy,
             projected_gravity=projected_gravity,
-            base_height=self._base_height(next_state),
+            base_height=base_height,
             joint_pos=next_state.data.qpos[qpos_idx],
             joint_pos_rel=joint_pos_rel,
             joint_vel=joint_vel,
@@ -423,6 +670,12 @@ class BelloLocomotionEnv:
             undesired_contact=undesired_contact,
             done=done,
         )
+
+    def _reward_link(self, term) -> str:
+        return term.link if term.enabled else "bello_root"
+
+    def _done_link(self, term) -> str:
+        return term.link if term.enabled else "bello_root"
 
     def _contact_terms(
         self, state: BelloState
@@ -527,3 +780,28 @@ def pair_contains_each(pair: jax.Array, candidates) -> jax.Array:
     if candidates.size == 0:
         return jnp.zeros((pair.shape[0], 0), dtype=bool)
     return jnp.any(pair[:, :, None] == candidates[None, None, :], axis=1)
+
+
+def require_index_range(name: str, indices: np.ndarray, upper_bound: int) -> None:
+    indices = np.asarray(indices)
+    if indices.size == 0:
+        return
+    if np.any(indices < 0) or np.any(indices >= upper_bound):
+        raise ValueError(
+            f"{name} contains out-of-range references for upper bound {upper_bound}: "
+            f"{indices.tolist()}"
+        )
+
+
+def require_disjoint(
+    left_name: str,
+    left: np.ndarray,
+    right_name: str,
+    right: np.ndarray,
+) -> None:
+    overlap = sorted(set(np.asarray(left).tolist()) & set(np.asarray(right).tolist()))
+    if overlap:
+        raise ValueError(
+            f"{left_name} must not reference held actuator controls in {right_name}: "
+            f"{overlap}"
+        )

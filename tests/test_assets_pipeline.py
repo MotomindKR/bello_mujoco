@@ -14,7 +14,21 @@ from bello_mujoco.assets_pipeline.prepare import (
     resolved_output_root,
     write_prepared_asset_manifest,
 )
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import (
+    BaseHeightDoneConfig,
+    BelloLocomotionEnv,
+    DoneConfig,
+    RollPitchDoneConfig,
+)
+from bello_mujoco.envs.rewards import (
+    AngVelXYRewardConfig,
+    BaseHeightRewardConfig,
+    FlatOrientationRewardConfig,
+    LinVelZRewardConfig,
+    RewardConfig,
+    TrackAngVelZRewardConfig,
+    TrackLinVelXYRewardConfig,
+)
 
 
 def test_end_effector_sphere_replacement_prunes_selected_subtree() -> None:
@@ -54,17 +68,44 @@ def test_end_effector_sphere_replacement_prunes_selected_subtree() -> None:
 
 def test_observation_size_tracks_reduced_actuator_count() -> None:
     model = SimpleNamespace(
-        mj_model=SimpleNamespace(nu=29),
-        policy_ctrl_indices=np.zeros(6, dtype=np.int32),
+        mj_model=SimpleNamespace(nu=29, nq=40, nv=39, nbody=4, ngeom=5),
+        policy_ctrl_indices=np.arange(6, dtype=np.int32),
+        hold_ctrl_indices=np.asarray([], dtype=np.int32),
+        actuator_qpos_indices=np.arange(29, dtype=np.int32),
+        actuator_qvel_indices=np.arange(29, dtype=np.int32),
+        policy_qpos_indices=np.arange(6, dtype=np.int32),
+        policy_qvel_indices=np.arange(6, dtype=np.int32),
+        policy_action_scale=np.ones(6, dtype=np.float32),
+        foot_body_ids=np.asarray([2, 3], dtype=np.int32),
+        foot_geom_ids=np.asarray([2, 3], dtype=np.int32),
+        terrain_geom_ids=np.asarray([0], dtype=np.int32),
+        nonfoot_robot_geom_ids=np.asarray([1, 4], dtype=np.int32),
+        default_qpos=np.zeros(40, dtype=np.float32),
+        default_qvel=np.zeros(39, dtype=np.float32),
+        default_ctrl=np.zeros(29, dtype=np.float32),
     )
-    env = BelloLocomotionEnv(model)
+    env = BelloLocomotionEnv(
+        model,
+        reward_config=RewardConfig(
+            track_lin_vel_xy=TrackLinVelXYRewardConfig(enabled=False),
+            track_ang_vel_z=TrackAngVelZRewardConfig(enabled=False),
+            lin_vel_z=LinVelZRewardConfig(enabled=False),
+            ang_vel_xy=AngVelXYRewardConfig(enabled=False),
+            flat_orientation=FlatOrientationRewardConfig(enabled=False),
+            base_height=BaseHeightRewardConfig(enabled=False),
+        ),
+        done_config=DoneConfig(
+            base_height=BaseHeightDoneConfig(enabled=False),
+            roll_pitch=RollPitchDoneConfig(enabled=False),
+        ),
+    )
 
     assert env.action_size == 6
-    assert env.observation_size == 73
+    assert env.observation_size == 102
 
 
 def test_lower_body_rejects_end_effector_sphere_mode() -> None:
-    config = AssetPrepConfig(asset="down_body", end_effector_sphere_mode="both")
+    config = AssetPrepConfig(asset="lower_body", end_effector_sphere_mode="both")
 
     with pytest.raises(ValueError, match="requires arm joints"):
         prepare_asset(config)

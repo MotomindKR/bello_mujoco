@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import equinox as eqx
 import jax
 import tyro
@@ -57,9 +55,6 @@ def main(
         warp=warp,
         batch_size=config.num_envs,
         env_config=env_config,
-    )
-    env = replace(
-        env,
         reward_config=reward_config,
         command_config=command_config,
         done_config=done_config,

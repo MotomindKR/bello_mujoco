@@ -41,7 +41,7 @@ def dummy_transitions(config: PPOConfig, obs_size: int, action_size: int) -> Tra
 
 def test_actor_critic_sample_shapes() -> None:
     config = small_config()
-    obs_size = 114
+    obs_size = 149
     action_size = 35
     state, _ = init_train_state(jax.random.PRNGKey(0), obs_size, action_size, config)
     obs = jnp.zeros((config.num_envs, obs_size), dtype=jnp.float32)
@@ -55,7 +55,7 @@ def test_actor_critic_sample_shapes() -> None:
 
 def test_gae_and_loss_shapes() -> None:
     config = small_config()
-    obs_size = 114
+    obs_size = 149
     action_size = 35
     state, _ = init_train_state(jax.random.PRNGKey(0), obs_size, action_size, config)
     transitions = dummy_transitions(config, obs_size, action_size)
@@ -87,7 +87,7 @@ def test_gae_and_loss_shapes() -> None:
 
 def test_update_ppo_runs_on_dummy_batch() -> None:
     config = small_config()
-    obs_size = 114
+    obs_size = 149
     action_size = 35
     train_state, optimizer = init_train_state(
         jax.random.PRNGKey(0), obs_size, action_size, config

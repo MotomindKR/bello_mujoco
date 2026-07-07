@@ -1,5 +1,4 @@
 import mujoco
-import pytest
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
@@ -15,7 +14,7 @@ from bello_mujoco.terrain import (
 )
 
 
-def test_full_body_model_loads_with_policy_and_hold_actuators(
+def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(full_body_asset)
@@ -23,9 +22,9 @@ def test_full_body_model_loads_with_policy_and_hold_actuators(
     assert model.mj_model.nq == 42
     assert model.mj_model.nv == 41
     assert model.mj_model.nu == 35
-    assert model.policy_ctrl_indices.tolist() == list(range(12))
-    assert len(model.hold_ctrl_indices) == 23
-    assert model.policy_action_scale.shape == (12,)
+    assert model.policy_ctrl_indices.tolist() == list(range(35))
+    assert len(model.hold_ctrl_indices) == 0
+    assert model.policy_action_scale.shape == (35,)
 
 
 def test_joint_actuator_mode_controls_policy_action_partition(
@@ -35,7 +34,7 @@ def test_joint_actuator_mode_controls_policy_action_partition(
     joints = {
         name: (
             JointActuatorConfig(
-                mode="policy",
+                mode="hold",
                 default_pos=config.default_pos,
                 action_scale=0.1,
                 soft_limit=config.soft_limit,
@@ -52,8 +51,8 @@ def test_joint_actuator_mode_controls_policy_action_partition(
     )
 
     assert model.mj_model.nu == 35
-    assert len(model.policy_ctrl_indices) == 13
-    assert len(model.hold_ctrl_indices) == 22
+    assert len(model.policy_ctrl_indices) == 34
+    assert len(model.hold_ctrl_indices) == 1
 
 
 def test_model_partitions_actuators_by_joint_not_actuator_name(
@@ -76,8 +75,8 @@ def test_model_partitions_actuators_by_joint_not_actuator_name(
         )
     )
 
-    assert len(model.policy_ctrl_indices) == 12
-    assert len(model.hold_ctrl_indices) == 23
+    assert len(model.policy_ctrl_indices) == 35
+    assert len(model.hold_ctrl_indices) == 0
 
 
 def test_training_model_uses_simplified_mesh_collision_profile(
@@ -214,9 +213,12 @@ def test_split_body_models_load_with_asset_specific_actuators(
     assert "left_wrist_yaw_joint" in upper_actuated_joints
 
 
-def test_config_loader_rejects_upper_body_policy_metadata() -> None:
-    with pytest.raises(ValueError, match="requires full_body or lower_body"):
-        load_bello_model(AssetPrepConfig(asset="upper_body"))
+def test_config_loader_loads_upper_body_model_metadata() -> None:
+    model = load_bello_model(AssetPrepConfig(asset="upper_body"))
+
+    assert model.mj_model.nu == 22
+    assert model.foot_body_ids.size == 0
+    assert len(model.policy_ctrl_indices) == 22
 
 
 def actuated_joint_names(model: mujoco.MjModel) -> list[str]:

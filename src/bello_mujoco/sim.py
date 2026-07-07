@@ -13,7 +13,6 @@ from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
-    canonical_asset,
     prepare_asset,
 )
 from bello_mujoco.contracts import (
@@ -87,10 +86,6 @@ def load_bello_model(
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
 ) -> BelloModel:
-    if canonical_asset(config.asset) == "upper_body":
-        raise ValueError(
-            "load_bello_model currently requires full_body or lower_body locomotion joints"
-        )
     prepared = prepare_asset(config)
     return load_prepared_bello_model(
         prepared,
@@ -262,13 +257,8 @@ def actuator_action_scale(
     return scale.astype(np.float32)
 
 
-def require_full_body_config(config: AssetPrepConfig) -> None:
-    if canonical_asset(config.asset) != "full_body":
-        raise ValueError("BelloLocomotionEnv currently requires asset='full_body'")
-
-
 def foot_body_indices(mj_model: mujoco.MjModel) -> np.ndarray:
-    ids = np.asarray(
+    return np.asarray(
         [
             body_id
             for body_id in range(mj_model.nbody)
@@ -278,11 +268,6 @@ def foot_body_indices(mj_model: mujoco.MjModel) -> np.ndarray:
         ],
         dtype=np.int32,
     )
-    if ids.size != 2:
-        raise ValueError(
-            f"expected two foot bodies ending in ankle_roll_link, got {ids.size}"
-        )
-    return ids
 
 
 def is_foot_body_name(name: str | None) -> bool:
