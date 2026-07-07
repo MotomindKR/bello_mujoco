@@ -1,14 +1,15 @@
 import mujoco
+import pytest
 
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import POLICY_JOINT_ORDER
-from bello_mujoco.sim import load_bello_model
+from bello_mujoco.sim import load_bello_model, load_prepared_bello_model
 
 
 def test_full_body_model_loads_with_policy_actuators_first(
     full_body_asset: PreparedAsset,
 ) -> None:
-    model = load_bello_model(full_body_asset.mjcf_path)
+    model = load_prepared_bello_model(full_body_asset)
 
     assert model.mj_model.nq == 42
     assert model.mj_model.nv == 41
@@ -20,7 +21,7 @@ def test_full_body_model_loads_with_policy_actuators_first(
 def test_training_model_uses_simplified_mesh_collision_profile(
     full_body_asset: PreparedAsset,
 ) -> None:
-    model = load_bello_model(full_body_asset.mjcf_path).mj_model
+    model = load_prepared_bello_model(full_body_asset).mj_model
     mesh_geoms = [
         geom_id
         for geom_id, geom_type in enumerate(model.geom_type)
@@ -90,6 +91,11 @@ def test_split_body_models_load_with_asset_specific_actuators(
     assert set(upper_actuated_joints).isdisjoint(POLICY_JOINT_ORDER)
     assert "right_wrist_yaw_joint" in upper_actuated_joints
     assert "left_wrist_yaw_joint" in upper_actuated_joints
+
+
+def test_config_loader_rejects_upper_body_policy_metadata() -> None:
+    with pytest.raises(ValueError, match="requires full_body or lower_body"):
+        load_bello_model(AssetPrepConfig(asset="upper_body"))
 
 
 def actuated_joint_names(model: mujoco.MjModel) -> list[str]:

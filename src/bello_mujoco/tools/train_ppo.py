@@ -3,6 +3,7 @@ from __future__ import annotations
 import jax
 import tyro
 
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.sim import (
     DEFAULT_CONTACT_BUDGET_PER_ENV,
@@ -14,6 +15,7 @@ from bello_mujoco.train.ppo import PPOConfig, init_train_state, make_train
 
 def main(
     config: PPOConfig = PPOConfig(),
+    asset_config: AssetPrepConfig = AssetPrepConfig(),
     dry_run: bool = True,
     jit: bool = True,
     contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
@@ -28,6 +30,7 @@ def main(
         njmax=warp_njmax,
     )
     env = BelloLocomotionEnv.load(
+        asset_config,
         warp=warp,
         batch_size=config.num_envs,
     )

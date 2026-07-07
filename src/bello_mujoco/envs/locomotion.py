@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-
 import chex
 import jax
 import jax.numpy as jnp
 from mujoco import mjx
 
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import (
     ACTION_CLIP,
     ACTION_SCALE,
@@ -17,7 +16,13 @@ from bello_mujoco.contracts import (
     MAX_EPISODE_STEPS,
     POLICY_JOINT_ORDER,
 )
-from bello_mujoco.sim import BelloModel, WarpConfig, load_bello_model
+from bello_mujoco.sim import (
+    BelloModel,
+    WarpConfig,
+    load_bello_model,
+    load_prepared_bello_model,
+    require_full_body_config,
+)
 
 
 @chex.dataclass(frozen=True)
@@ -43,12 +48,27 @@ class BelloLocomotionEnv:
     @classmethod
     def load(
         cls,
-        xml_path: Path | None = None,
+        config: AssetPrepConfig = AssetPrepConfig(),
         *,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
     ) -> "BelloLocomotionEnv":
-        return cls(load_bello_model(xml_path, warp=warp, batch_size=batch_size))
+        require_full_body_config(config)
+        return cls(load_bello_model(config, warp=warp, batch_size=batch_size))
+
+    @classmethod
+    def load_prepared(
+        cls,
+        prepared: PreparedAsset,
+        *,
+        warp: WarpConfig = WarpConfig(),
+        batch_size: int = 1,
+    ) -> "BelloLocomotionEnv":
+        if prepared.name != "full_body":
+            raise ValueError("BelloLocomotionEnv currently requires a full_body asset")
+        return cls(
+            load_prepared_bello_model(prepared, warp=warp, batch_size=batch_size)
+        )
 
     @property
     def action_size(self) -> int:

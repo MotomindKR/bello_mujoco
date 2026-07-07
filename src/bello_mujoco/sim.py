@@ -9,7 +9,12 @@ import mujoco
 from mujoco import mjx
 import numpy as np
 
-from bello_mujoco.assets import generated_model_path
+from bello_mujoco.assets_pipeline.prepare import (
+    AssetPrepConfig,
+    PreparedAsset,
+    canonical_asset,
+    prepare_asset,
+)
 from bello_mujoco.contracts import (
     DEFAULT_JOINT_POS,
     DEFAULT_ROOT_POS,
@@ -66,16 +71,39 @@ class BelloModel:
 
 
 def load_bello_model(
-    xml_path: Path | None = None,
+    config: AssetPrepConfig = AssetPrepConfig(),
     *,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
 ) -> BelloModel:
-    path = generated_model_path("full_body") if xml_path is None else Path(xml_path)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} does not exist; run `python -m bello_mujoco.tools.prepare_assets`"
+    if canonical_asset(config.asset) == "upper_body":
+        raise ValueError(
+            "load_bello_model currently requires full_body or lower_body policy joints"
         )
+    prepared = prepare_asset(config)
+    return load_prepared_bello_model(prepared, warp=warp, batch_size=batch_size)
+
+
+def load_prepared_bello_model(
+    prepared: PreparedAsset,
+    *,
+    warp: WarpConfig = WarpConfig(),
+    batch_size: int = 1,
+) -> BelloModel:
+    return load_bello_model_from_path(
+        prepared.mjcf_path, warp=warp, batch_size=batch_size
+    )
+
+
+def load_bello_model_from_path(
+    xml_path: Path,
+    *,
+    warp: WarpConfig = WarpConfig(),
+    batch_size: int = 1,
+) -> BelloModel:
+    path = Path(xml_path)
+    if not path.exists():
+        raise FileNotFoundError(path)
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
     mjx_model = mjx.put_model(mj_model, impl="warp")
@@ -161,6 +189,11 @@ def load_bello_model(
         root_qpos_adr=root_qpos_adr,
         root_qvel_adr=root_qvel_adr,
     )
+
+
+def require_full_body_config(config: AssetPrepConfig) -> None:
+    if canonical_asset(config.asset) != "full_body":
+        raise ValueError("BelloLocomotionEnv currently requires asset='full_body'")
 
 
 def joint_qpos_index(model: mujoco.MjModel, joint_name: str) -> int:

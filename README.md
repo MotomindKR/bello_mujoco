@@ -126,7 +126,9 @@ bello-benchmark-env --batch-size 512 --step-count 5
 The environment exposes both single-env and batched methods:
 
 ```python
-env = BelloLocomotionEnv.load()
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+
+env = BelloLocomotionEnv.load(AssetPrepConfig(asset="full_body"))
 state, obs = env.reset()
 state, obs, reward, done, info = env.step(state, action)
 

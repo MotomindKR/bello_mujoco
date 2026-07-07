@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import tyro
 
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.sim import (
     DEFAULT_CONTACT_BUDGET_PER_ENV,
@@ -13,12 +14,16 @@ from bello_mujoco.sim import (
 
 
 def main(
+    asset_config: AssetPrepConfig = AssetPrepConfig(),
     step: bool = False,
     contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
     warp_njmax: int | None = DEFAULT_WARP_NJMAX,
 ) -> None:
     env = BelloLocomotionEnv.load(
-        warp=WarpConfig(contact_budget_per_env=contact_budget_per_env, njmax=warp_njmax)
+        asset_config,
+        warp=WarpConfig(
+            contact_budget_per_env=contact_budget_per_env, njmax=warp_njmax
+        ),
     )
     state, obs = env.reset()
     obs.block_until_ready()
