@@ -4,7 +4,13 @@ from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.assets_pipeline.prepare import actuated_urdf_joint_names
 from bello_mujoco.assets import source_assets_root
-from bello_mujoco.sim import load_bello_model, load_prepared_bello_model
+from bello_mujoco.contracts import DEFAULT_SPAWN_CLEARANCE
+from bello_mujoco.sim import (
+    load_bello_model,
+    load_prepared_bello_model,
+    robot_geom_min_z,
+    terrain_surface_upper_bound,
+)
 from bello_mujoco.terrain import (
     FLAT_TERRAIN,
     ROBOT_ONLY_TERRAIN,
@@ -187,6 +193,38 @@ def test_runtime_rough_terrain_seed_changes_scene(
     assert scene_a.xml_path != scene_b.xml_path
     assert rough_height_data(terrain_a) == rough_height_data(terrain_a)
     assert rough_height_data(terrain_a) != rough_height_data(terrain_b)
+
+
+def test_default_spawn_pose_starts_above_flat_terrain(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    min_robot_z = robot_geom_min_z(model.mj_model, model.default_qpos)
+    target_min_z = terrain_surface_upper_bound(FLAT_TERRAIN) + DEFAULT_SPAWN_CLEARANCE
+
+    assert min_robot_z is not None
+    assert abs(min_robot_z - target_min_z) < 1.0e-5
+
+
+def test_spawn_pose_lifts_for_high_rough_terrain(
+    full_body_asset: PreparedAsset,
+) -> None:
+    flat_model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    rough_terrain = TerrainConfig(
+        mode="rough",
+        hfield_resolution=17,
+        hfield_amplitude=0.25,
+    )
+    rough_model = load_prepared_bello_model(full_body_asset, terrain=rough_terrain)
+    min_robot_z = robot_geom_min_z(rough_model.mj_model, rough_model.default_qpos)
+    target_min_z = terrain_surface_upper_bound(rough_terrain) + DEFAULT_SPAWN_CLEARANCE
+
+    assert (
+        rough_model.default_qpos[rough_model.root_qpos_adr + 2]
+        > flat_model.default_qpos[flat_model.root_qpos_adr + 2]
+    )
+    assert min_robot_z is not None
+    assert abs(min_robot_z - target_min_z) < 1.0e-5
 
 
 def test_split_body_models_load_with_asset_specific_actuators(

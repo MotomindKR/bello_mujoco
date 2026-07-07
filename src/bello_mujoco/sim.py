@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import math
 
 import mujoco
 from mujoco import mjx
@@ -18,6 +19,7 @@ from bello_mujoco.assets_pipeline.prepare import (
 from bello_mujoco.contracts import (
     DEFAULT_ROOT_POS,
     DEFAULT_ROOT_QUAT,
+    DEFAULT_SPAWN_CLEARANCE,
 )
 from bello_mujoco.terrain import (
     ROBOT_ONLY_TERRAIN,
@@ -85,6 +87,7 @@ def load_bello_model(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
+    spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
 ) -> BelloModel:
     prepared = prepare_asset(config)
     return load_prepared_bello_model(
@@ -93,6 +96,7 @@ def load_bello_model(
         batch_size=batch_size,
         terrain=terrain,
         actuator_config=config.actuator_config,
+        spawn_clearance=spawn_clearance,
     )
 
 
@@ -103,6 +107,7 @@ def load_prepared_bello_model(
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
     actuator_config: ActuatorConfig = ActuatorConfig(),
+    spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
 ) -> BelloModel:
     return _load_bello_model_from_path(
         prepared.mjcf_path,
@@ -110,6 +115,7 @@ def load_prepared_bello_model(
         batch_size=batch_size,
         terrain=terrain,
         actuator_config=actuator_config,
+        spawn_clearance=spawn_clearance,
     )
 
 
@@ -120,7 +126,12 @@ def _load_bello_model_from_path(
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
     actuator_config: ActuatorConfig = ActuatorConfig(),
+    spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
 ) -> BelloModel:
+    if not math.isfinite(spawn_clearance) or spawn_clearance < 0.0:
+        raise ValueError(
+            f"spawn_clearance must be a finite nonnegative value, got {spawn_clearance}"
+        )
     path = Path(xml_path)
     if not path.exists():
         raise FileNotFoundError(path)
@@ -183,6 +194,13 @@ def _load_bello_model_from_path(
     default_qpos[root_qpos_adr + 3 : root_qpos_adr + 7] = np.asarray(
         DEFAULT_ROOT_QUAT, dtype=np.float32
     )
+    default_qpos = place_root_above_terrain(
+        mj_model,
+        default_qpos,
+        root_qpos_adr=root_qpos_adr,
+        terrain=terrain,
+        clearance=spawn_clearance,
+    )
     policy_action_scale = actuator_action_scale(
         mj_model, actuator_joint_names, policy_ctrl_indices, actuator_config
     )
@@ -238,6 +256,87 @@ def model_home_state(
         np.zeros(mj_model.nv, dtype=np.float32),
         np.zeros(mj_model.nu, dtype=np.float32),
     )
+
+
+def place_root_above_terrain(
+    mj_model: mujoco.MjModel,
+    qpos: np.ndarray,
+    *,
+    root_qpos_adr: int,
+    terrain: TerrainConfig,
+    clearance: float,
+) -> np.ndarray:
+    """Place the lowest robot geom at the requested terrain clearance."""
+
+    min_robot_z = robot_geom_min_z(mj_model, qpos)
+    if min_robot_z is None:
+        return qpos
+    target_min_z = terrain_surface_upper_bound(terrain) + clearance
+    if not math.isfinite(target_min_z):
+        return qpos
+    adjusted = qpos.copy()
+    adjusted[root_qpos_adr + 2] += target_min_z - min_robot_z
+    return adjusted
+
+
+def terrain_surface_upper_bound(terrain: TerrainConfig) -> float:
+    if terrain.mode == "none":
+        return float("-inf")
+    if terrain.mode == "plane":
+        return float(terrain.pos[2])
+    if terrain.mode == "rough":
+        return float(terrain.pos[2] + terrain.hfield_amplitude)
+    raise ValueError(f"unsupported terrain mode: {terrain.mode!r}")
+
+
+def robot_geom_min_z(
+    mj_model: mujoco.MjModel,
+    qpos: np.ndarray,
+) -> float | None:
+    data = mujoco.MjData(mj_model)
+    data.qpos[:] = qpos
+    mujoco.mj_forward(mj_model, data)
+    min_z: float | None = None
+    for geom_id in range(mj_model.ngeom):
+        if mj_model.geom_bodyid[geom_id] == 0:
+            continue
+        geom_min_z = geom_lower_z(mj_model, data, geom_id)
+        min_z = geom_min_z if min_z is None else min(min_z, geom_min_z)
+    return min_z
+
+
+def geom_lower_z(
+    mj_model: mujoco.MjModel,
+    data: mujoco.MjData,
+    geom_id: int,
+) -> float:
+    geom_type = mj_model.geom_type[geom_id]
+    if geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+        mesh_id = int(mj_model.geom_dataid[geom_id])
+        vert_adr = int(mj_model.mesh_vertadr[mesh_id])
+        vert_num = int(mj_model.mesh_vertnum[mesh_id])
+        vertices = mj_model.mesh_vert[vert_adr : vert_adr + vert_num]
+        return transformed_vertices_min_z(data, geom_id, vertices)
+    if geom_type == mujoco.mjtGeom.mjGEOM_BOX:
+        sx, sy, sz = mj_model.geom_size[geom_id]
+        corners = np.asarray(
+            [(x, y, z) for x in (-sx, sx) for y in (-sy, sy) for z in (-sz, sz)],
+            dtype=np.float64,
+        )
+        return transformed_vertices_min_z(data, geom_id, corners)
+    if geom_type == mujoco.mjtGeom.mjGEOM_SPHERE:
+        return float(data.geom_xpos[geom_id, 2] - mj_model.geom_size[geom_id, 0])
+    return float(data.geom_xpos[geom_id, 2] - mj_model.geom_rbound[geom_id])
+
+
+def transformed_vertices_min_z(
+    data: mujoco.MjData,
+    geom_id: int,
+    vertices: np.ndarray,
+) -> float:
+    geom_xmat = data.geom_xmat[geom_id].reshape(3, 3)
+    world_vertices = data.geom_xpos[geom_id] + vertices @ geom_xmat.T
+    return float(np.min(world_vertices[:, 2]))
 
 
 def actuator_action_scale(

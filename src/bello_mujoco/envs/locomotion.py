@@ -20,6 +20,7 @@ from bello_mujoco.contracts import (
     CONTROL_DECIMATION,
     MAX_EPISODE_STEPS,
     SIM_TIMESTEP,
+    DEFAULT_SPAWN_CLEARANCE,
 )
 from bello_mujoco.envs.rewards import (
     CommandConfig,
@@ -111,12 +112,18 @@ class ObservationConfig:
 
 
 @dataclass(frozen=True)
+class SpawnConfig:
+    clearance: float = DEFAULT_SPAWN_CLEARANCE
+
+
+@dataclass(frozen=True)
 class BelloEnvConfig:
     """Runtime environment settings that affect stepping and model loading."""
 
     decimation: int = CONTROL_DECIMATION
     max_episode_steps: int = MAX_EPISODE_STEPS
     terrain: TerrainConfig = FLAT_TERRAIN
+    spawn: SpawnConfig = SpawnConfig()
     observation: ObservationConfig = ObservationConfig()
 
 
@@ -144,6 +151,14 @@ class BelloLocomotionEnv:
         if self.max_episode_steps <= 0:
             raise ValueError(
                 f"max_episode_steps must be positive, got {self.max_episode_steps}"
+            )
+        if (
+            not math.isfinite(self.config.spawn.clearance)
+            or self.config.spawn.clearance < 0.0
+        ):
+            raise ValueError(
+                "spawn.clearance must be a finite nonnegative value, got "
+                f"{self.config.spawn.clearance}"
             )
         if self.config.observation.joint_mode not in {"all_actuated", "policy"}:
             raise ValueError(
@@ -188,6 +203,7 @@ class BelloLocomotionEnv:
                 warp=warp,
                 batch_size=batch_size,
                 terrain=env_config.terrain,
+                spawn_clearance=env_config.spawn.clearance,
             ),
             config=env_config,
             reward_config=reward_config,
@@ -215,6 +231,7 @@ class BelloLocomotionEnv:
                 batch_size=batch_size,
                 terrain=env_config.terrain,
                 actuator_config=actuator_config,
+                spawn_clearance=env_config.spawn.clearance,
             ),
             config=env_config,
             reward_config=reward_config,
