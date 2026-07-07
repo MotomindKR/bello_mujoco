@@ -44,6 +44,10 @@ class ContinuousCartPoleEnv:
         return 1
 
     @property
+    def action_clip(self) -> float:
+        return 1.0
+
+    @property
     def observation_size(self) -> int:
         return 4
 

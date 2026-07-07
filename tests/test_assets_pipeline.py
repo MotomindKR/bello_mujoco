@@ -5,10 +5,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.mesh import replace_end_effectors_with_spheres
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
+    asset_config_hash,
     prepare_asset,
     read_prepared_asset_manifest,
     resolved_output_root,
@@ -70,7 +72,7 @@ def test_observation_size_tracks_reduced_actuator_count() -> None:
     model = SimpleNamespace(
         mj_model=SimpleNamespace(nu=29, nq=40, nv=39, nbody=4, ngeom=5),
         policy_ctrl_indices=np.arange(6, dtype=np.int32),
-        hold_ctrl_indices=np.asarray([], dtype=np.int32),
+        hold_ctrl_indices=np.arange(6, 29, dtype=np.int32),
         actuator_qpos_indices=np.arange(29, dtype=np.int32),
         actuator_qvel_indices=np.arange(29, dtype=np.int32),
         policy_qpos_indices=np.arange(6, dtype=np.int32),
@@ -153,10 +155,78 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
     write_prepared_asset_manifest(
         PreparedAsset("full_body", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
         manifest_path,
+        "cache-a",
     )
     assert (
         read_prepared_asset_manifest(
-            "full_body", urdf_path, mjcf_path, viewer_mjcf_path, manifest_path
+            "full_body",
+            urdf_path,
+            mjcf_path,
+            viewer_mjcf_path,
+            manifest_path,
+            "cache-a",
         )
         is None
     )
+
+
+def test_cached_manifest_requires_matching_cache_key(tmp_path: Path) -> None:
+    asset_dir = tmp_path / "full_body"
+    mjcf_dir = asset_dir / "mjcf"
+    urdf_dir = asset_dir / "urdf"
+    mjcf_dir.mkdir(parents=True)
+    urdf_dir.mkdir(parents=True)
+    urdf_path = urdf_dir / "bello_full_body.urdf"
+    mjcf_path = mjcf_dir / "bello_full_body.xml"
+    viewer_mjcf_path = mjcf_dir / "bello_full_body_viewer.xml"
+    manifest_path = asset_dir / "asset_manifest.json"
+    urdf_path.write_text("<robot />")
+    mjcf_path.write_text("<mujoco><asset /></mujoco>")
+    viewer_mjcf_path.write_text("<mujoco><asset /></mujoco>")
+    write_prepared_asset_manifest(
+        PreparedAsset("full_body", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
+        manifest_path,
+        "cache-a",
+    )
+
+    assert (
+        read_prepared_asset_manifest(
+            "full_body",
+            urdf_path,
+            mjcf_path,
+            viewer_mjcf_path,
+            manifest_path,
+            "cache-b",
+        )
+        is None
+    )
+    assert (
+        read_prepared_asset_manifest(
+            "full_body",
+            urdf_path,
+            mjcf_path,
+            viewer_mjcf_path,
+            manifest_path,
+            "cache-a",
+        )
+        is not None
+    )
+
+
+def test_asset_cache_key_tracks_prep_config() -> None:
+    base = AssetPrepConfig(asset="full_body", mesh_face_budget=1000)
+    changed = AssetPrepConfig(asset="full_body", mesh_face_budget=500)
+
+    assert asset_config_hash(base, "full_body") != asset_config_hash(
+        changed, "full_body"
+    )
+
+
+def test_actuator_config_does_not_expose_mutable_joint_mapping() -> None:
+    config = ActuatorConfig(joints={"joint": JointActuatorConfig(default_pos=0.1)})
+    by_name = config.by_name
+    by_name["joint"] = JointActuatorConfig(default_pos=0.2)
+
+    assert config.joints["joint"].default_pos == 0.1
+    with pytest.raises(TypeError, match="FrozenDict"):
+        config.joints["joint"] = JointActuatorConfig(default_pos=0.3)

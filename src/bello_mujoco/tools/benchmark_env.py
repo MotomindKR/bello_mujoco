@@ -10,8 +10,6 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import (
-    DEFAULT_CONTACT_BUDGET_PER_ENV,
-    DEFAULT_WARP_NJMAX,
     WarpConfig,
 )
 
@@ -24,17 +22,8 @@ def main(
     done_config: DoneConfig = DoneConfig(),
     batch_size: int = 512,
     step_count: int = 5,
-    contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
-    warp_naconmax: int | None = None,
-    warp_naccdmax: int | None = None,
-    warp_njmax: int | None = DEFAULT_WARP_NJMAX,
+    warp: WarpConfig = WarpConfig(),
 ) -> None:
-    warp = WarpConfig(
-        contact_budget_per_env=contact_budget_per_env,
-        naconmax=warp_naconmax,
-        naccdmax=warp_naccdmax,
-        njmax=warp_njmax,
-    )
     env = BelloLocomotionEnv.load(
         asset_config,
         warp=warp,
@@ -48,9 +37,11 @@ def main(
     obs.block_until_ready()
     actions = jnp.zeros((batch_size, env.action_size), dtype=jnp.float32)
     step = jax.jit(lambda s, a: env.step_batch(s, a))
+    state, obs, reward, done, _ = step(state, actions)
+    obs.block_until_ready()
+    reward.block_until_ready()
+    done.block_until_ready()
 
-    reward = jnp.zeros(batch_size, dtype=jnp.float32)
-    done = jnp.zeros(batch_size, dtype=bool)
     step_seconds: list[float] = []
     for _ in range(step_count):
         start = time.perf_counter()

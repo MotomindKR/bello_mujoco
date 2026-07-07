@@ -8,7 +8,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -44,7 +44,7 @@ class AssetPrepConfig:
     collision_mode: CollisionMode = "mesh"
     end_effector_sphere_mode: EndEffectorSphereMode = "none"
     neighbor_exclusion_depth: int = 2
-    actuator_config: ActuatorConfig = ActuatorConfig()
+    actuator_config: ActuatorConfig = field(default_factory=ActuatorConfig)
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ class PreparedAsset:
 
 
 def prepare_asset(config: AssetPrepConfig) -> PreparedAsset:
-    asset = canonical_asset(config.asset)
+    asset = config.asset
     validate_asset_config(asset, config)
     output_root = resolved_output_root(config, asset)
     lock_path = output_root.parent / f"{output_root.name}.lock"
@@ -82,8 +82,9 @@ def prepare_asset_unlocked(
     out_mjcf = generated_model_path(asset, output_root)
     out_viewer_mjcf = generated_viewer_model_path(asset, output_root)
     manifest_path = output_root / asset / "asset_manifest.json"
+    cache_key = asset_config_hash(config, asset)
     cached = read_prepared_asset_manifest(
-        asset, out_urdf, out_mjcf, out_viewer_mjcf, manifest_path
+        asset, out_urdf, out_mjcf, out_viewer_mjcf, manifest_path, cache_key
     )
     if cached is not None:
         return cached
@@ -157,14 +158,8 @@ def prepare_asset_unlocked(
         len(mesh_sources.collision),
         len(mesh_sources.visual),
     )
-    write_prepared_asset_manifest(prepared, manifest_path)
+    write_prepared_asset_manifest(prepared, manifest_path, cache_key)
     return prepared
-
-
-def canonical_asset(
-    asset: AssetName,
-) -> Literal["full_body", "lower_body", "upper_body"]:
-    return asset
 
 
 def actuated_urdf_joint_names(urdf_path: Path) -> tuple[str, ...]:
@@ -206,9 +201,23 @@ def asset_config_hash(
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
         "actuator_config": asdict(config.actuator_config),
+        "source": source_asset_fingerprint(asset),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def source_asset_fingerprint(
+    asset: Literal["full_body", "lower_body", "upper_body"],
+) -> str:
+    source_root = source_assets_root() / asset
+    hasher = hashlib.sha256()
+    for path in sorted(p for p in source_root.rglob("*") if p.is_file()):
+        hasher.update(path.relative_to(source_root).as_posix().encode())
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 @contextmanager
@@ -228,6 +237,7 @@ def read_prepared_asset_manifest(
     mjcf_path: Path,
     viewer_mjcf_path: Path,
     manifest_path: Path,
+    cache_key: str,
 ) -> PreparedAsset | None:
     if not (
         manifest_path.exists()
@@ -244,6 +254,8 @@ def read_prepared_asset_manifest(
         return None
     if data.get("name") != asset:
         return None
+    if data.get("cache_key") != cache_key:
+        return None
     try:
         return PreparedAsset(
             asset,
@@ -257,8 +269,11 @@ def read_prepared_asset_manifest(
         return None
 
 
-def write_prepared_asset_manifest(prepared: PreparedAsset, manifest_path: Path) -> None:
+def write_prepared_asset_manifest(
+    prepared: PreparedAsset, manifest_path: Path, cache_key: str
+) -> None:
     data = {
+        "cache_key": cache_key,
         "name": prepared.name,
         "collision_mesh_count": prepared.collision_mesh_count,
         "visual_mesh_count": prepared.visual_mesh_count,

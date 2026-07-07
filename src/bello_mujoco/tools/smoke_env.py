@@ -8,8 +8,6 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import (
-    DEFAULT_CONTACT_BUDGET_PER_ENV,
-    DEFAULT_WARP_NJMAX,
     WarpConfig,
 )
 
@@ -21,14 +19,11 @@ def main(
     command_config: CommandConfig = CommandConfig(),
     done_config: DoneConfig = DoneConfig(),
     step: bool = False,
-    contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
-    warp_njmax: int | None = DEFAULT_WARP_NJMAX,
+    warp: WarpConfig = WarpConfig(),
 ) -> None:
     env = BelloLocomotionEnv.load(
         asset_config,
-        warp=WarpConfig(
-            contact_budget_per_env=contact_budget_per_env, njmax=warp_njmax
-        ),
+        warp=warp,
         env_config=env_config,
         reward_config=reward_config,
         command_config=command_config,

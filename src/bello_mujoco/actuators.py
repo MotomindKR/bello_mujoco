@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Literal
 
 ActuatorMode = Literal["policy", "hold"]
+VALID_ACTUATOR_MODES = {"policy", "hold"}
+
+
+class FrozenDict(dict):
+    def _raise_frozen(self, *args, **kwargs) -> None:
+        raise TypeError("FrozenDict cannot be mutated")
+
+    __setitem__ = _raise_frozen
+    __delitem__ = _raise_frozen
+    clear = _raise_frozen
+    pop = _raise_frozen
+    popitem = _raise_frozen
+    setdefault = _raise_frozen
+    update = _raise_frozen
 
 
 @dataclass(frozen=True)
@@ -136,9 +151,57 @@ class ActuatorConfig:
     )
     default_action_scale_ratio: float = 0.25
 
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.default_action_scale_ratio)
+            or self.default_action_scale_ratio <= 0
+        ):
+            raise ValueError(
+                "default_action_scale_ratio must be positive, got "
+                f"{self.default_action_scale_ratio}"
+            )
+        for name, config in self.joints.items():
+            if config.mode not in VALID_ACTUATOR_MODES:
+                raise ValueError(
+                    f"actuator config for joint {name!r} has invalid mode "
+                    f"{config.mode!r}; expected one of {sorted(VALID_ACTUATOR_MODES)}"
+                )
+            if len(config.gains) != 2:
+                raise ValueError(
+                    f"actuator config for joint {name!r} must provide [kp, kv] gains"
+                )
+            if not all(math.isfinite(gain) for gain in config.gains):
+                raise ValueError(
+                    f"actuator config for joint {name!r} has nonfinite gains "
+                    f"{config.gains}"
+                )
+            if config.action_scale is not None and (
+                not math.isfinite(config.action_scale) or config.action_scale <= 0
+            ):
+                raise ValueError(
+                    f"actuator config for joint {name!r} has invalid action_scale "
+                    f"{config.action_scale}; expected a positive finite value"
+                )
+            if (
+                config.soft_limit is not None
+                and config.soft_limit[0] >= config.soft_limit[1]
+            ):
+                raise ValueError(
+                    f"actuator config for joint {name!r} has invalid soft_limit "
+                    f"{config.soft_limit}; expected lower < upper"
+                )
+            if config.soft_limit is not None and not all(
+                math.isfinite(limit) for limit in config.soft_limit
+            ):
+                raise ValueError(
+                    f"actuator config for joint {name!r} has nonfinite soft_limit "
+                    f"{config.soft_limit}"
+                )
+        object.__setattr__(self, "joints", FrozenDict(self.joints))
+
     @property
     def by_name(self) -> dict[str, JointActuatorConfig]:
-        return self.joints
+        return dict(self.joints)
 
     @property
     def default_joint_pos_by_name(self) -> dict[str, float]:

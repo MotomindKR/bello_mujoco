@@ -49,7 +49,8 @@ def runtime_mjcf_path(robot_mjcf_path: Path, config: TerrainConfig) -> Path:
         raise ValueError(f"unsupported terrain mode: {config.mode!r}")
 
     scene_path = robot_mjcf_path.with_name(
-        f"{robot_mjcf_path.stem}.scene.{terrain_config_hash(config)}.xml"
+        f"{robot_mjcf_path.stem}.scene."
+        f"{robot_mjcf_hash(robot_mjcf_path)}.{terrain_config_hash(config)}.xml"
     )
     if scene_path.exists():
         return scene_path
@@ -88,6 +89,12 @@ def add_plane(root: ET.Element, config: TerrainConfig) -> None:
             },
         ),
     )
+
+
+def robot_mjcf_hash(path: Path) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(Path(path).read_bytes())
+    return hasher.hexdigest()[:16]
 
 
 def add_hfield(root: ET.Element, config: TerrainConfig) -> None:

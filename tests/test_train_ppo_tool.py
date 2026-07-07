@@ -1,0 +1,97 @@
+import pytest
+import jax.numpy as jnp
+from types import SimpleNamespace
+
+import bello_mujoco.tools.train_ppo as train_ppo
+from bello_mujoco.tools.train_ppo import (
+    TrainingVideoConfig,
+    render_training_video,
+    should_render_training_video,
+    validate_video_config,
+)
+
+
+def test_training_video_schedule_skips_zero_update() -> None:
+    config = TrainingVideoConfig(enabled=True, every_updates=2, render_final=True)
+
+    assert not should_render_training_video(0, 10, config)
+
+
+def test_training_video_schedule_skips_disabled_config() -> None:
+    config = TrainingVideoConfig(enabled=False, every_updates=1, render_final=True)
+
+    assert not should_render_training_video(1, 1, config)
+
+
+def test_training_video_schedule_uses_interval_and_final() -> None:
+    config = TrainingVideoConfig(enabled=True, every_updates=3, render_final=True)
+
+    assert not should_render_training_video(1, 10, config)
+    assert should_render_training_video(3, 10, config)
+    assert should_render_training_video(10, 10, config)
+
+
+def test_training_video_schedule_can_disable_final() -> None:
+    config = TrainingVideoConfig(enabled=True, every_updates=4, render_final=False)
+
+    assert not should_render_training_video(10, 10, config)
+
+
+def test_validate_video_config_is_noop_when_disabled() -> None:
+    validate_video_config(TrainingVideoConfig(enabled=False, every_updates=0))
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (
+            TrainingVideoConfig(enabled=True, every_updates=0),
+            "every_updates must be positive",
+        ),
+        (TrainingVideoConfig(enabled=True, steps=0), "steps must be positive"),
+        (TrainingVideoConfig(enabled=True, width=0), "width and .*height"),
+        (TrainingVideoConfig(enabled=True, fps=0), "fps must be positive"),
+    ],
+)
+def test_validate_video_config_rejects_invalid_enabled_config(
+    config: TrainingVideoConfig, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_video_config(config)
+
+
+def test_render_training_video_writes_expected_path_and_tracks(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake_runner_train_state(runner_state, static_policy):
+        return SimpleNamespace(policy="policy")
+
+    def fake_render_policy_rollout(*args, **kwargs):
+        calls["render"] = (args, kwargs)
+
+    def fake_track_video(*args, **kwargs):
+        calls["track"] = (args, kwargs)
+
+    monkeypatch.setattr(train_ppo, "runner_train_state", fake_runner_train_state)
+    monkeypatch.setattr(train_ppo, "render_policy_rollout", fake_render_policy_rollout)
+    monkeypatch.setattr(train_ppo, "track_video", fake_track_video)
+
+    output_path = render_training_video(
+        env="env",
+        runner_state=SimpleNamespace(update=jnp.asarray(7)),
+        static_policy="static",
+        config=TrainingVideoConfig(
+            enabled=True,
+            output_dir=tmp_path,
+            filename_prefix="eval",
+            fps=12,
+            wandb_name="video",
+        ),
+        run="run",
+        env_steps=128,
+    )
+
+    assert output_path == tmp_path / "eval_000007.mp4"
+    assert calls["render"][1]["output_path"] == output_path
+    assert calls["track"][0] == ("run", output_path)
+    assert calls["track"][1]["step"] == 128

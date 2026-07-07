@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import tyro
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
@@ -13,9 +17,8 @@ from bello_mujoco.checkpoint import (
 )
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
+from bello_mujoco.render import CameraConfig, render_policy_rollout
 from bello_mujoco.sim import (
-    DEFAULT_CONTACT_BUDGET_PER_ENV,
-    DEFAULT_WARP_NJMAX,
     WarpConfig,
 )
 from bello_mujoco.tracking import (
@@ -24,8 +27,38 @@ from bello_mujoco.tracking import (
     create_wandb_run,
     log_config,
     track_metric_history,
+    track_video,
 )
-from bello_mujoco.train.ppo import PPOConfig, TrainState, init_train_state, make_train
+from bello_mujoco.train.ppo import (
+    PPOConfig,
+    RunnerState,
+    TrainState,
+    init_runner_state,
+    init_train_state,
+    make_train,
+    runner_train_state,
+    update_runner_state,
+    validate_ppo_config,
+)
+
+
+@dataclass(frozen=True)
+class TrainingVideoConfig:
+    enabled: bool = False
+    every_updates: int = 10
+    render_initial: bool = False
+    render_final: bool = True
+    output_dir: Path = Path("outputs/train_videos")
+    filename_prefix: str = "rollout"
+    command: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    steps: int = 250
+    width: int = 640
+    height: int = 480
+    fps: int = 50
+    stop_on_done: bool = True
+    log_wandb: bool = True
+    wandb_name: str = "train/rollout"
+    camera_config: CameraConfig = CameraConfig()
 
 
 def main(
@@ -37,19 +70,13 @@ def main(
     env_config: BelloEnvConfig = BelloEnvConfig(),
     checkpoint_config: CheckpointConfig = CheckpointConfig(),
     wandb_config: WandbConfig = WandbConfig(),
+    video_config: TrainingVideoConfig = TrainingVideoConfig(),
+    warp: WarpConfig = WarpConfig(),
     dry_run: bool = True,
     jit: bool = True,
-    contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
-    warp_naconmax: int | None = None,
-    warp_naccdmax: int | None = None,
-    warp_njmax: int | None = DEFAULT_WARP_NJMAX,
 ) -> None:
-    warp = WarpConfig(
-        contact_budget_per_env=contact_budget_per_env,
-        naconmax=warp_naconmax,
-        naccdmax=warp_naccdmax,
-        njmax=warp_njmax,
-    )
+    validate_ppo_config(config)
+    validate_video_config(video_config)
     env = BelloLocomotionEnv.load(
         asset_config,
         warp=warp,
@@ -81,38 +108,18 @@ def main(
                 "batch_action_shape": tuple(batch_state.last_action.shape),
                 "checkpoint_enabled": checkpoint_config.enabled,
                 "wandb_enabled": wandb_config.enabled,
+                "video_enabled": video_config.enabled,
                 "params_leaves": len(jax.tree.leaves(state.policy)),
             }
         )
         return
 
-    train = make_train(config, env)
-    train = jax.jit(train) if jit else train
-    out = train(rng)
-    metrics = jax.tree_util.tree_map(
-        lambda x: x[-1] if getattr(x, "ndim", 0) > 0 else x, out["metrics"]
-    )
-    checkpoint_dir = None
-    if checkpoint_config.enabled:
-        checkpoint_dir = checkpoint_path(checkpoint_config, config)
-        final_state = final_train_state(out, env, config)
-        save_training_checkpoint(
-            checkpoint_dir,
-            final_state,
-            CheckpointMetadata(
-                ppo=config,
-                asset=asset_config,
-                reward=reward_config,
-                command=command_config,
-                done=done_config,
-                env=env_config,
-                warp=warp,
-                obs_size=env.observation_size,
-                action_size=env.action_size,
-            ),
-            overwrite=checkpoint_config.overwrite,
-        )
     run = create_wandb_run(wandb_config)
+    checkpoint_dir = (
+        checkpoint_path(checkpoint_config, config)
+        if checkpoint_config.enabled
+        else None
+    )
     try:
         log_config(
             run,
@@ -124,6 +131,7 @@ def main(
                 "done": done_config,
                 "env_config": env_config,
                 "checkpoint": checkpoint_config,
+                "video": video_config,
                 "warp": warp,
                 "env": {
                     "obs_size": env.observation_size,
@@ -134,23 +142,171 @@ def main(
                 },
             },
         )
+        if video_config.enabled:
+            out = train_with_video(env, config, rng, video_config, run, jit)
+        else:
+            train = make_train(config, env)
+            train = jax.jit(train) if jit else train
+            out = train(rng)
+
+        metrics = jax.tree_util.tree_map(
+            lambda x: x[-1] if getattr(x, "ndim", 0) > 0 else x, out["metrics"]
+        )
+        if checkpoint_config.enabled:
+            final_state = final_train_state(out, env, config)
+            save_training_checkpoint(
+                checkpoint_dir,
+                final_state,
+                CheckpointMetadata(
+                    ppo=config,
+                    asset=asset_config,
+                    reward=reward_config,
+                    command=command_config,
+                    done=done_config,
+                    env=env_config,
+                    warp=warp,
+                    obs_size=env.observation_size,
+                    action_size=env.action_size,
+                ),
+                overwrite=checkpoint_config.overwrite,
+            )
         track_metric_history(
             run,
             out["metrics"],
             samples_per_update=config.num_envs * config.num_steps,
             context={"phase": "train"},
         )
+        print(metrics)
+        if checkpoint_dir is not None:
+            print({"checkpoint_path": str(checkpoint_dir)})
     finally:
         close_run(run)
-    print(metrics)
-    if checkpoint_dir is not None:
-        print({"checkpoint_path": str(checkpoint_dir)})
+
+
+def train_with_video(
+    env: BelloLocomotionEnv,
+    config: PPOConfig,
+    rng: jax.Array,
+    video_config: TrainingVideoConfig,
+    run,
+    jit: bool,
+) -> dict:
+    runner_state, static_policy, optimizer = init_runner_state(rng, env, config)
+
+    def update_fn(state):
+        return update_runner_state(state, static_policy, optimizer, env, config)
+
+    update_fn = jax.jit(update_fn) if jit else update_fn
+    metrics_history = []
+    if video_config.render_initial:
+        render_training_video(
+            env,
+            runner_state,
+            static_policy,
+            video_config,
+            run,
+            env_steps=0,
+        )
+    for _ in range(config.num_updates):
+        runner_state, metrics = update_fn(runner_state)
+        metrics = jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
+        metrics_history.append(metrics)
+        update = int(jax.device_get(runner_state.update))
+        if should_render_training_video(update, config.num_updates, video_config):
+            render_training_video(
+                env,
+                runner_state,
+                static_policy,
+                video_config,
+                run,
+                env_steps=update * config.num_envs * config.num_steps,
+            )
+    return {
+        "runner_state": runner_state,
+        "metrics": stack_metric_history(metrics_history),
+    }
+
+
+def should_render_training_video(
+    update: int, num_updates: int, config: TrainingVideoConfig
+) -> bool:
+    if not config.enabled:
+        return False
+    if update <= 0:
+        return False
+    if config.render_final and update == num_updates:
+        return True
+    return update % config.every_updates == 0
+
+
+def render_training_video(
+    env: BelloLocomotionEnv,
+    runner_state: RunnerState,
+    static_policy,
+    config: TrainingVideoConfig,
+    run,
+    *,
+    env_steps: int,
+) -> Path:
+    update = int(jax.device_get(runner_state.update))
+    output_path = config.output_dir / f"{config.filename_prefix}_{update:06d}.mp4"
+    train_state = runner_train_state(runner_state, static_policy)
+    render_policy_rollout(
+        env,
+        train_state.policy,
+        output_path=output_path,
+        command=config.command,
+        steps=config.steps,
+        width=config.width,
+        height=config.height,
+        fps=config.fps,
+        stop_on_done=config.stop_on_done,
+        camera_config=config.camera_config,
+    )
+    if config.log_wandb:
+        track_video(
+            run,
+            output_path,
+            name=config.wandb_name,
+            step=env_steps,
+            fps=config.fps,
+            caption=f"update={update}",
+        )
+    return output_path
+
+
+def stack_metric_history(metrics_history: list[dict[str, jax.Array]]) -> dict:
+    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *metrics_history)
+
+
+def validate_video_config(config: TrainingVideoConfig) -> None:
+    if not config.enabled:
+        return
+    if config.every_updates <= 0:
+        raise ValueError(
+            f"video_config.every_updates must be positive, got {config.every_updates}"
+        )
+    if config.steps <= 0:
+        raise ValueError(f"video_config.steps must be positive, got {config.steps}")
+    if config.width <= 0 or config.height <= 0:
+        raise ValueError(
+            "video_config.width and video_config.height must be positive, got "
+            f"{config.width}x{config.height}"
+        )
+    if config.fps <= 0:
+        raise ValueError(f"video_config.fps must be positive, got {config.fps}")
 
 
 def final_train_state(
     out: dict, env: BelloLocomotionEnv, config: PPOConfig
 ) -> TrainState:
-    params, opt_state, update, *_ = out["runner_state"]
+    runner_state = out["runner_state"]
+    if isinstance(runner_state, RunnerState):
+        params = runner_state.params
+        opt_state = runner_state.opt_state
+        update = runner_state.update
+    else:
+        params, opt_state, update, *_ = runner_state
     template_state, _ = init_train_state(
         jax.random.PRNGKey(config.seed),
         env.observation_size,

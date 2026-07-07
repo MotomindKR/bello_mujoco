@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -15,7 +16,7 @@ LOG_2PI = jnp.log(2.0 * jnp.pi)
 class ActorCriticConfig:
     hidden_size: int = 256
     hidden_depth: int = 2
-    activation: str = "tanh"
+    activation: Literal["tanh", "relu"] = "tanh"
     init_log_std: float = -0.5
 
 
@@ -33,7 +34,7 @@ class ActorCritic(eqx.Module):
         key: jax.Array,
     ):
         actor_key, critic_key = jax.random.split(key)
-        activation_fn = jax.nn.relu if config.activation == "relu" else jnp.tanh
+        activation_fn = activation_function(config.activation)
         self.actor = eqx.nn.MLP(
             obs_size,
             action_size,
@@ -78,11 +79,16 @@ def apply_policy(
 
 
 def sample_action(
-    policy: ActorCritic, obs: jax.Array, rng: jax.Array
+    policy: ActorCritic,
+    obs: jax.Array,
+    rng: jax.Array,
+    action_clip: float | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     mean, log_std, value = apply_policy(policy, obs)
     noise = jax.random.normal(rng, mean.shape)
     action = mean + jnp.exp(log_std) * noise
+    if action_clip is not None:
+        action = jnp.clip(action, -action_clip, action_clip)
     log_prob = gaussian_log_prob(mean, log_std, action)
     return action, log_prob, value
 
@@ -92,7 +98,7 @@ def evaluate_actions(
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     mean, log_std, value = apply_policy(policy, obs)
     log_prob = gaussian_log_prob(mean, log_std, action)
-    entropy = jnp.ones_like(log_prob) * gaussian_entropy(log_std)
+    entropy = gaussian_entropy(log_std)
     return log_prob, entropy, value
 
 
@@ -107,4 +113,12 @@ def gaussian_log_prob(
 
 def gaussian_entropy(log_std: jax.Array) -> jax.Array:
     entropy = 0.5 * (1.0 + LOG_2PI) + log_std
-    return jnp.sum(entropy)
+    return jnp.sum(entropy, axis=-1)
+
+
+def activation_function(name: str):
+    if name == "tanh":
+        return jnp.tanh
+    if name == "relu":
+        return jax.nn.relu
+    raise ValueError(f"unsupported activation: {name!r}")

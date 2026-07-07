@@ -172,7 +172,7 @@ def _load_bello_model_from_path(
 
     root_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, "root_free")
     if root_id < 0:
-        raise ValueError("generated full-body MJCF must include root_free")
+        raise ValueError("generated Bello MJCF must include root_free")
     root_qpos_adr = int(mj_model.jnt_qposadr[root_id])
     root_qvel_adr = int(mj_model.jnt_dofadr[root_id])
 

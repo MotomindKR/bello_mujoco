@@ -1,11 +1,14 @@
 import jax.numpy as jnp
+import pytest
 
 from bello_mujoco.envs.rewards import (
+    CommandConfig,
     FootClearanceRewardConfig,
     FootContactRewardConfig,
     FootSlipRewardConfig,
     RewardConfig,
     TerminationRewardConfig,
+    TrackLinVelXYRewardConfig,
     UndesiredContactRewardConfig,
     compute_velocity_reward,
 )
@@ -47,6 +50,16 @@ def test_velocity_reward_prefers_matching_command() -> None:
     assert matching_reward > mismatched_reward
     assert matching_terms["reward/track_lin_vel_xy"].shape == ()
     assert jnp.all(jnp.isfinite(matching_reward))
+
+
+def test_reward_config_rejects_nonpositive_tracking_sigma() -> None:
+    with pytest.raises(ValueError, match="track_lin_vel_xy.sigma"):
+        RewardConfig(track_lin_vel_xy=TrackLinVelXYRewardConfig(sigma=0.0))
+
+
+def test_command_config_rejects_invalid_resample_seconds() -> None:
+    with pytest.raises(ValueError, match="resample_seconds must be positive"):
+        CommandConfig(resample_seconds=0.0)
 
 
 def test_velocity_reward_penalizes_termination() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import jax
 import jax.numpy as jnp
@@ -12,19 +13,32 @@ import jax.numpy as jnp
 class CommandConfig:
     """Uniform velocity command sampler.
 
-    Commands are `[lin_vel_x, lin_vel_y, yaw_vel]`. The limit ranges are kept for
-    later curriculum code; the v1 environment samples from the initial ranges.
+    Commands are `[lin_vel_x, lin_vel_y, yaw_vel]`.
     """
 
     enabled: bool = True
     lin_vel_x: tuple[float, float] = (-0.1, 0.1)
     lin_vel_y: tuple[float, float] = (-0.1, 0.1)
     ang_vel_yaw: tuple[float, float] = (-0.1, 0.1)
-    limit_lin_vel_x: tuple[float, float] = (-0.5, 1.0)
-    limit_lin_vel_y: tuple[float, float] = (-0.3, 0.3)
-    limit_ang_vel_yaw: tuple[float, float] = (-0.2, 0.2)
     standing_probability: float = 0.02
     resample_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        validate_range("lin_vel_x", self.lin_vel_x)
+        validate_range("lin_vel_y", self.lin_vel_y)
+        validate_range("ang_vel_yaw", self.ang_vel_yaw)
+        if (
+            not math.isfinite(self.standing_probability)
+            or not 0.0 <= self.standing_probability <= 1.0
+        ):
+            raise ValueError(
+                "standing_probability must be in [0, 1], got "
+                f"{self.standing_probability}"
+            )
+        if not math.isfinite(self.resample_seconds) or self.resample_seconds <= 0:
+            raise ValueError(
+                f"resample_seconds must be positive, got {self.resample_seconds}"
+            )
 
     def sample(self, rng: jax.Array, shape: tuple[int, ...] = ()) -> jax.Array:
         if not self.enabled:
@@ -167,6 +181,9 @@ class RewardConfig:
     )
     termination: TerminationRewardConfig = TerminationRewardConfig(weight=-1.0)
 
+    def __post_init__(self) -> None:
+        validate_reward_config(self)
+
     @property
     def uses_foot_metadata(self) -> bool:
         return (
@@ -220,7 +237,6 @@ def compute_velocity_reward(
     done: jax.Array,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
-
     lin_vel_error = jnp.sum((lin_vel_xy - command[:2]) ** 2)
     yaw_vel_error = (yaw_vel_z - command[2]) ** 2
 
@@ -339,3 +355,57 @@ def weighted_term(enabled: bool, weight: float, value: jax.Array) -> jax.Array:
     if not enabled:
         return jnp.zeros_like(value, dtype=jnp.float32)
     return weight * value
+
+
+def validate_reward_config(config: RewardConfig) -> None:
+    if config.track_lin_vel_xy.enabled and (
+        not math.isfinite(config.track_lin_vel_xy.sigma)
+        or config.track_lin_vel_xy.sigma <= 0
+    ):
+        raise ValueError(
+            "track_lin_vel_xy.sigma must be positive when enabled, got "
+            f"{config.track_lin_vel_xy.sigma}"
+        )
+    if config.track_ang_vel_z.enabled and (
+        not math.isfinite(config.track_ang_vel_z.sigma)
+        or config.track_ang_vel_z.sigma <= 0
+    ):
+        raise ValueError(
+            "track_ang_vel_z.sigma must be positive when enabled, got "
+            f"{config.track_ang_vel_z.sigma}"
+        )
+    for name, term in reward_terms(config).items():
+        if not math.isfinite(term.weight):
+            raise ValueError(f"{name}.weight must be finite, got {term.weight}")
+
+
+def reward_terms(config: RewardConfig):
+    return {
+        "track_lin_vel_xy": config.track_lin_vel_xy,
+        "track_ang_vel_z": config.track_ang_vel_z,
+        "alive": config.alive,
+        "lin_vel_z": config.lin_vel_z,
+        "ang_vel_xy": config.ang_vel_xy,
+        "flat_orientation": config.flat_orientation,
+        "base_height": config.base_height,
+        "joint_vel": config.joint_vel,
+        "action_rate": config.action_rate,
+        "energy": config.energy,
+        "joint_limit": config.joint_limit,
+        "hold_joint_deviation": config.hold_joint_deviation,
+        "foot_contact": config.foot_contact,
+        "foot_slip": config.foot_slip,
+        "foot_clearance": config.foot_clearance,
+        "undesired_contact": config.undesired_contact,
+        "termination": config.termination,
+    }
+
+
+def validate_range(name: str, bounds: tuple[float, float]) -> None:
+    if len(bounds) != 2:
+        raise ValueError(f"{name} must have exactly two bounds, got {bounds}")
+    low, high = bounds
+    if not math.isfinite(low) or not math.isfinite(high):
+        raise ValueError(f"{name} bounds must be finite, got {bounds}")
+    if low > high:
+        raise ValueError(f"{name} lower bound must be <= upper bound, got {bounds}")

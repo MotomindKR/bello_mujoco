@@ -80,13 +80,7 @@ uv run pytest
 
 ## Documentation
 
-- [Repository spec](docs/spec.md)
-- [Setup and local caches](docs/setup.md)
-- [Asset pipeline](docs/assets.md)
-- [Environment API, actions, observations, rewards, and dones](docs/environment.md)
-- [Configuration tree](docs/configuration.md)
-- [Training, checkpointing, W&B, and evaluation](docs/training.md)
-- [Testing and audit checklist](docs/testing.md)
+- [Repository reference](docs/index.md)
 - [Contribution guide](CONTRIBUTION.md)
 - [Agent instructions](AGENTS.md)
 
@@ -101,7 +95,6 @@ uv run pytest
 - Tracking: W&B
 - Checkpointing: Orbax
 - Visualization/video: MuJoCo renderer/viewer, `imageio[ffmpeg]`
-- Installed but not currently wired into runtime flows: `rerun-sdk`
 - Config CLI: `tyro`
 
 ## Generated Files
@@ -113,6 +106,9 @@ Generated assets, Python environments, and runtime caches are local artifacts an
 .uv-cache/
 .uv-python/
 .warp-cache/
+.wandb/
+checkpoints/
+outputs/
 /tmp/bello-mujoco-assets/<config-hash>/
 ```
 

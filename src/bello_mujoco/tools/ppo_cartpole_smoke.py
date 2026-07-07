@@ -29,7 +29,7 @@ def run_cartpole_ppo(config: PPOConfig) -> dict[str, float | int | list[float] |
         "last_mean_reward": float(rewards[-1]),
         "first_episode_return": float(episode_returns[0]),
         "last_episode_return": float(episode_returns[-1]),
-        "max_episode_return": float(jnp.max(max_episode_returns)),
+        "max_episode_return": float(jnp.nanmax(max_episode_returns)),
         "last_loss": float(losses[-1]),
         "episode_return_trace": [float(episode_returns[i]) for i in trace_idx],
     }

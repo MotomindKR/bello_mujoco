@@ -14,7 +14,6 @@ dependencies = [
   "mujoco-mjx[warp]>=3.3.0",
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
-  "rerun-sdk>=0.21.0",
   "rlax>=0.1.7",
   "trimesh>=4.6.0",
   "tyro>=0.9.0",

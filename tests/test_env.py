@@ -29,6 +29,7 @@ from bello_mujoco.envs.rewards import (
     TrackAngVelZRewardConfig,
     TrackLinVelXYRewardConfig,
 )
+from bello_mujoco.sim import WarpConfig
 
 
 def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
@@ -168,6 +169,22 @@ def test_reset_batch_broadcasts_command(full_body_asset: PreparedAsset) -> None:
 
     assert obs.shape == (3, env.observation_size)
     assert jnp.all(state.command == command)
+
+
+def test_reset_rejects_invalid_command_shape(full_body_asset: PreparedAsset) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+
+    with pytest.raises(ValueError, match="command must have shape"):
+        env.reset(command=jnp.asarray([0.1, 0.2], dtype=jnp.float32))
+
+
+def test_reset_batch_rejects_invalid_command_shape(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+
+    with pytest.raises(ValueError, match="batch command must have shape"):
+        env.reset_batch(3, command=jnp.ones((2, 3), dtype=jnp.float32))
 
 
 def test_reset_batch_samples_commands_with_rng(
@@ -325,6 +342,8 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert done.shape == (2,)
     assert jnp.all(done)
     assert jnp.all(next_state.step_count == 0)
+    assert jnp.all(next_state.last_episode_return == info["episode_return"])
+    assert jnp.all(next_state.last_episode_length == info["episode_length"])
     assert jnp.all(info["returned_episode"])
     assert info["episode_return"].shape == (2,)
     assert info["reward/track_lin_vel_xy"].shape == (2,)
@@ -333,6 +352,54 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert info["reward/foot_clearance"].shape == (2,)
     assert info["reward/undesired_contact"].shape == (2,)
     assert jnp.all(jnp.isfinite(reward))
+
+
+def test_step_batch_contact_rewards_are_world_local(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        warp=WarpConfig(contact_budget_per_env=64),
+        batch_size=2,
+    )
+    state, _ = env.reset_batch(2)
+    root_z = env.model.root_qpos_adr + 2
+    qpos = state.data.qpos.at[0, root_z].set(0.2).at[1, root_z].set(2.0)
+    state = state.replace(data=state.data.replace(qpos=qpos))
+
+    _, _, _, _, info = env.step_batch(
+        state,
+        jnp.zeros((2, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(0),
+    )
+
+    assert info["reward/foot_contact"][0] > info["reward/foot_contact"][1]
+    assert info["reward/undesired_contact"][0] < info["reward/undesired_contact"][1]
+
+
+def test_step_batch_resamples_commands_periodically(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=2,
+        command_config=CommandConfig(
+            lin_vel_x=(0.2, 0.2),
+            lin_vel_y=(0.1, 0.1),
+            ang_vel_yaw=(-0.2, -0.2),
+            standing_probability=0.0,
+            resample_seconds=1.0e-9,
+        ),
+    )
+    state, _ = env.reset_batch(2, command=jnp.zeros(3, dtype=jnp.float32))
+    next_state, _, _, done, _ = env.step_batch(
+        state,
+        jnp.zeros((2, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(0),
+    )
+
+    assert not bool(jnp.any(done))
+    assert jnp.all(next_state.command == jnp.asarray([0.2, 0.1, -0.2]))
 
 
 def test_done_config_can_disable_timeout(

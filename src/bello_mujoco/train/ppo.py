@@ -9,6 +9,7 @@ single-file implementation style while using Equinox for the actor-critic.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import NamedTuple
 
 import chex
@@ -76,6 +77,15 @@ class Transition(NamedTuple):
     info: dict[str, jax.Array]
 
 
+class RunnerState(NamedTuple):
+    params: eqx.Module
+    opt_state: optax.OptState
+    update: jax.Array
+    env_state: BelloState
+    obs: jax.Array
+    rng: jax.Array
+
+
 def init_train_state(
     rng: jax.Array,
     obs_size: int,
@@ -91,6 +101,7 @@ def init_train_state(
 
 
 def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
+    validate_ppo_config(config)
     if config.anneal_lr:
 
         def schedule(count: jax.Array) -> jax.Array:
@@ -187,7 +198,7 @@ def update_ppo(
     init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
 
     def update_epoch(carry, _: None):
-        params, opt_state, update_count, key = carry
+        params, opt_state, key = carry
         key, perm_key = jax.random.split(key)
         permutation = jax.random.permutation(perm_key, config.batch_size)
         shuffled = jax.tree_util.tree_map(lambda x: x[permutation], batch)
@@ -199,7 +210,7 @@ def update_ppo(
         )
 
         def update_minibatch(carry, minibatch: tuple[Transition, jax.Array, jax.Array]):
-            params, opt_state, update_count = carry
+            params, opt_state = carry
             mb_transitions, mb_advantages, mb_targets = minibatch
 
             def loss_fn(params):
@@ -214,18 +225,18 @@ def update_ppo(
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
             metrics = {**metrics, "loss": loss_value}
-            return (params, opt_state, update_count + 1), metrics
+            return (params, opt_state), metrics
 
-        (params, opt_state, update_count), metrics = jax.lax.scan(
+        (params, opt_state), metrics = jax.lax.scan(
             update_minibatch,
-            (params, opt_state, update_count),
+            (params, opt_state),
             minibatches,
         )
-        return (params, opt_state, update_count, key), metrics
+        return (params, opt_state, key), metrics
 
-    (params, opt_state, update_count, _), metrics = jax.lax.scan(
+    (params, opt_state, _), metrics = jax.lax.scan(
         update_epoch,
-        (init_params, train_state.opt_state, train_state.update, rng),
+        (init_params, train_state.opt_state, rng),
         None,
         config.update_epochs,
     )
@@ -233,7 +244,7 @@ def update_ppo(
     train_state = TrainState(
         policy=eqx.combine(params, static_policy),
         opt_state=opt_state,
-        update=update_count,
+        update=train_state.update + 1,
     )
     return train_state, metrics
 
@@ -251,6 +262,16 @@ def safe_returned_mean(info: dict[str, jax.Array]) -> jax.Array:
         return jnp.asarray(0.0, dtype=jnp.float32)
     mask = returned_episode.astype(jnp.float32)
     return jnp.sum(episode_return * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+
+
+def safe_returned_max(info: dict[str, jax.Array]) -> jax.Array:
+    episode_return = info.get("episode_return")
+    returned_episode = info.get("returned_episode")
+    if episode_return is None or returned_episode is None:
+        return jnp.asarray(jnp.nan, dtype=jnp.float32)
+    mask = returned_episode.astype(bool)
+    masked_return = jnp.where(mask, episode_return, -jnp.inf)
+    return jnp.where(jnp.any(mask), jnp.max(masked_return), jnp.nan)
 
 
 def reward_component_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
@@ -274,7 +295,9 @@ def collect_rollout(
     ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
         state, last_obs, key = carry
         key, action_key, env_key = jax.random.split(key, 3)
-        action, log_prob, value = sample_action(policy, last_obs, action_key)
+        action, log_prob, value = sample_action(
+            policy, last_obs, action_key, action_clip=getattr(env, "action_clip", None)
+        )
         next_state, next_obs, reward, done, info = env.step_batch(
             state, action, rng=env_key
         )
@@ -284,63 +307,163 @@ def collect_rollout(
     return jax.lax.scan(env_step, (env_state, obs, rng), None, config.num_steps)
 
 
+def init_runner_state(
+    rng: jax.Array,
+    env: BelloLocomotionEnv,
+    config: PPOConfig,
+) -> tuple[RunnerState, eqx.Module, optax.GradientTransformation]:
+    rng, init_key, env_key = jax.random.split(rng, 3)
+    train_state, optimizer = init_train_state(
+        init_key, env.observation_size, env.action_size, config
+    )
+    params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
+    env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
+    return (
+        RunnerState(
+            params=params,
+            opt_state=train_state.opt_state,
+            update=train_state.update,
+            env_state=env_state,
+            obs=obs,
+            rng=rng,
+        ),
+        static_policy,
+        optimizer,
+    )
+
+
+def runner_train_state(
+    runner_state: RunnerState,
+    static_policy: eqx.Module,
+) -> TrainState:
+    return TrainState(
+        policy=eqx.combine(runner_state.params, static_policy),
+        opt_state=runner_state.opt_state,
+        update=runner_state.update,
+    )
+
+
+def update_runner_state(
+    runner_state: RunnerState,
+    static_policy: eqx.Module,
+    optimizer: optax.GradientTransformation,
+    env: BelloLocomotionEnv,
+    config: PPOConfig,
+) -> tuple[RunnerState, dict[str, jax.Array]]:
+    key, rollout_key, update_key = jax.random.split(runner_state.rng, 3)
+    policy = eqx.combine(runner_state.params, static_policy)
+    train_state = TrainState(
+        policy=policy,
+        opt_state=runner_state.opt_state,
+        update=runner_state.update,
+    )
+    (env_state, obs, _), transitions = collect_rollout(
+        env, policy, runner_state.env_state, runner_state.obs, rollout_key, config
+    )
+    _, _, last_value = apply_policy(policy, obs)
+    advantages, targets = compute_gae(transitions, last_value, config)
+    train_state, metrics = update_ppo(
+        train_state, optimizer, transitions, advantages, targets, update_key, config
+    )
+    params, _ = eqx.partition(train_state.policy, eqx.is_array)
+    metrics = {
+        **metrics,
+        "mean_reward": transitions.reward.mean(),
+        "mean_done": transitions.done.astype(jnp.float32).mean(),
+        "mean_episode_return": safe_returned_mean(transitions.info),
+        "max_episode_return": safe_returned_max(transitions.info),
+        **reward_component_means(transitions.info),
+    }
+    return (
+        RunnerState(
+            params=params,
+            opt_state=train_state.opt_state,
+            update=train_state.update,
+            env_state=env_state,
+            obs=obs,
+            rng=key,
+        ),
+        metrics,
+    )
+
+
 def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
-    if config.batch_size % config.num_minibatches != 0:
-        raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
+    validate_ppo_config(config)
     env = BelloLocomotionEnv.load(batch_size=config.num_envs) if env is None else env
 
     def train(rng: jax.Array):
-        rng, init_key, env_key = jax.random.split(rng, 3)
-        train_state, optimizer = init_train_state(
-            init_key, env.observation_size, env.action_size, config
-        )
-        init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
-        env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
+        runner_state, static_policy, optimizer = init_runner_state(rng, env, config)
 
-        def update_step(carry, _: None):
-            params, opt_state, update_count, e_state, last_obs, key = carry
-            key, rollout_key, update_key = jax.random.split(key, 3)
-            policy = eqx.combine(params, static_policy)
-            state = TrainState(policy=policy, opt_state=opt_state, update=update_count)
-            (e_state, last_obs, _), transitions = collect_rollout(
-                env, policy, e_state, last_obs, rollout_key, config
+        def update_step(carry: RunnerState, _: None):
+            return update_runner_state(
+                carry,
+                static_policy,
+                optimizer,
+                env,
+                config,
             )
-            _, _, last_value = apply_policy(policy, last_obs)
-            advantages, targets = compute_gae(transitions, last_value, config)
-            state, metrics = update_ppo(
-                state, optimizer, transitions, advantages, targets, update_key, config
-            )
-            params, _ = eqx.partition(state.policy, eqx.is_array)
-            metrics = {
-                **metrics,
-                "mean_reward": transitions.reward.mean(),
-                "mean_done": transitions.done.astype(jnp.float32).mean(),
-                "mean_episode_return": safe_returned_mean(transitions.info),
-                "max_episode_return": transitions.info.get(
-                    "episode_return", jnp.zeros_like(transitions.reward)
-                ).max(),
-                **reward_component_means(transitions.info),
-            }
-            return (
-                params,
-                state.opt_state,
-                state.update,
-                e_state,
-                last_obs,
-                key,
-            ), metrics
 
-        runner_state = (
-            init_params,
-            train_state.opt_state,
-            train_state.update,
-            env_state,
-            obs,
-            rng,
-        )
         runner_state, metrics = jax.lax.scan(
             update_step, runner_state, None, config.num_updates
         )
         return {"runner_state": runner_state, "metrics": metrics}
 
     return train
+
+
+def validate_ppo_config(config: PPOConfig) -> None:
+    positive_ints = {
+        "total_timesteps": config.total_timesteps,
+        "num_envs": config.num_envs,
+        "num_steps": config.num_steps,
+        "update_epochs": config.update_epochs,
+        "num_minibatches": config.num_minibatches,
+    }
+    for name, value in positive_ints.items():
+        if value <= 0:
+            raise ValueError(f"{name} must be positive, got {value}")
+    if config.num_updates <= 0:
+        raise ValueError(
+            "total_timesteps must cover at least one rollout batch, got "
+            f"total_timesteps={config.total_timesteps}, "
+            f"num_envs={config.num_envs}, num_steps={config.num_steps}"
+        )
+    if config.batch_size % config.num_minibatches != 0:
+        raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
+    if config.learning_rate <= 0:
+        raise ValueError(f"learning_rate must be positive, got {config.learning_rate}")
+    if not math.isfinite(config.learning_rate):
+        raise ValueError(f"learning_rate must be finite, got {config.learning_rate}")
+    if not 0.0 <= config.gamma <= 1.0:
+        raise ValueError(f"gamma must be in [0, 1], got {config.gamma}")
+    if not 0.0 <= config.gae_lambda <= 1.0:
+        raise ValueError(f"gae_lambda must be in [0, 1], got {config.gae_lambda}")
+    if not math.isfinite(config.clip_eps) or config.clip_eps <= 0:
+        raise ValueError(f"clip_eps must be positive, got {config.clip_eps}")
+    if not math.isfinite(config.ent_coef) or config.ent_coef < 0:
+        raise ValueError(
+            f"ent_coef must be nonnegative and finite, got {config.ent_coef}"
+        )
+    if not math.isfinite(config.vf_coef) or config.vf_coef < 0:
+        raise ValueError(
+            f"vf_coef must be nonnegative and finite, got {config.vf_coef}"
+        )
+    if not math.isfinite(config.max_grad_norm) or config.max_grad_norm <= 0:
+        raise ValueError(f"max_grad_norm must be positive, got {config.max_grad_norm}")
+    if config.policy.hidden_size <= 0:
+        raise ValueError(
+            f"policy.hidden_size must be positive, got {config.policy.hidden_size}"
+        )
+    if config.policy.hidden_depth < 0:
+        raise ValueError(
+            f"policy.hidden_depth must be nonnegative, got {config.policy.hidden_depth}"
+        )
+    if config.policy.activation not in {"tanh", "relu"}:
+        raise ValueError(
+            "policy.activation must be 'tanh' or 'relu', got "
+            f"{config.policy.activation!r}"
+        )
+    if not math.isfinite(config.policy.init_log_std):
+        raise ValueError(
+            f"policy.init_log_std must be finite, got {config.policy.init_log_std}"
+        )

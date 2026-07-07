@@ -1,9 +1,11 @@
-"""Minimal full-body Bello MuJoCo/MJX environment scaffold."""
+"""Bello MuJoCo/MJX locomotion environment scaffold."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+import math
 from typing import Literal
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -17,11 +19,13 @@ from bello_mujoco.contracts import (
     ACTION_CLIP,
     CONTROL_DECIMATION,
     MAX_EPISODE_STEPS,
+    SIM_TIMESTEP,
 )
 from bello_mujoco.envs.rewards import (
     CommandConfig,
     RewardConfig,
     compute_velocity_reward,
+    validate_reward_config,
 )
 from bello_mujoco.sim import (
     BelloModel,
@@ -118,10 +122,10 @@ class BelloEnvConfig:
 
 @dataclass(frozen=True)
 class BelloLocomotionEnv:
-    """Full-body sim scaffold with actuator-order action and observation.
+    """Bello sim scaffold with actuator-order action and observation.
 
-    Action is full-body actuator residuals in MuJoCo actuator order. Zero action
-    keeps every actuator at its default target.
+    Action contains policy-controlled actuator residuals. Held actuators stay at
+    their configured default targets.
     """
 
     model: BelloModel
@@ -131,7 +135,40 @@ class BelloLocomotionEnv:
     done_config: DoneConfig = DoneConfig()
 
     def __post_init__(self) -> None:
+        self._validate_config()
         self._validate_model_metadata()
+
+    def _validate_config(self) -> None:
+        if self.decimation <= 0:
+            raise ValueError(f"decimation must be positive, got {self.decimation}")
+        if self.max_episode_steps <= 0:
+            raise ValueError(
+                f"max_episode_steps must be positive, got {self.max_episode_steps}"
+            )
+        if self.config.observation.joint_mode not in {"all_actuated", "policy"}:
+            raise ValueError(
+                "observation.joint_mode must be 'all_actuated' or 'policy', got "
+                f"{self.config.observation.joint_mode!r}"
+            )
+        validate_reward_config(self.reward_config)
+        if self.done_config.base_height.enabled and not math.isfinite(
+            self.done_config.base_height.min_height
+        ):
+            raise ValueError(
+                "done_config.base_height.min_height must be finite, got "
+                f"{self.done_config.base_height.min_height}"
+            )
+        if self.done_config.roll_pitch.enabled:
+            if self.done_config.roll_pitch.max_abs_roll < 0:
+                raise ValueError(
+                    "done_config.roll_pitch.max_abs_roll must be nonnegative, got "
+                    f"{self.done_config.roll_pitch.max_abs_roll}"
+                )
+            if self.done_config.roll_pitch.max_abs_pitch < 0:
+                raise ValueError(
+                    "done_config.roll_pitch.max_abs_pitch must be nonnegative, got "
+                    f"{self.done_config.roll_pitch.max_abs_pitch}"
+                )
 
     @classmethod
     def load(
@@ -141,14 +178,10 @@ class BelloLocomotionEnv:
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         env_config: BelloEnvConfig = BelloEnvConfig(),
-        terrain: TerrainConfig | None = None,
         reward_config: RewardConfig = RewardConfig(),
         command_config: CommandConfig = CommandConfig(),
         done_config: DoneConfig = DoneConfig(),
     ) -> "BelloLocomotionEnv":
-        env_config = (
-            env_config if terrain is None else replace(env_config, terrain=terrain)
-        )
         return cls(
             load_bello_model(
                 config,
@@ -170,15 +203,11 @@ class BelloLocomotionEnv:
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         env_config: BelloEnvConfig = BelloEnvConfig(),
-        terrain: TerrainConfig | None = None,
         actuator_config: ActuatorConfig = ActuatorConfig(),
         reward_config: RewardConfig = RewardConfig(),
         command_config: CommandConfig = CommandConfig(),
         done_config: DoneConfig = DoneConfig(),
     ) -> "BelloLocomotionEnv":
-        env_config = (
-            env_config if terrain is None else replace(env_config, terrain=terrain)
-        )
         return cls(
             load_prepared_bello_model(
                 prepared,
@@ -204,6 +233,10 @@ class BelloLocomotionEnv:
     @property
     def terrain_config(self) -> TerrainConfig:
         return self.config.terrain
+
+    @property
+    def action_clip(self) -> float:
+        return ACTION_CLIP
 
     @property
     def action_size(self) -> int:
@@ -253,6 +286,12 @@ class BelloLocomotionEnv:
             "hold_ctrl_indices",
             model.hold_ctrl_indices,
         )
+        if model.policy_ctrl_indices.size + model.hold_ctrl_indices.size != mj_model.nu:
+            raise ValueError(
+                "policy_ctrl_indices and hold_ctrl_indices must cover every actuator "
+                f"exactly once, got {model.policy_ctrl_indices.size} policy and "
+                f"{model.hold_ctrl_indices.size} hold controls for nu={mj_model.nu}"
+            )
         require_index_range(
             "actuator_qpos_indices", model.actuator_qpos_indices, mj_model.nq
         )
@@ -357,7 +396,9 @@ class BelloLocomotionEnv:
         rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array]:
         command = self._resolve_batch_command(batch_size, command, rng)
-        return jax.vmap(self.reset)(command)
+        state, obs = jax.vmap(self.reset)(command)
+        data = state.data.replace(_impl=state.data._impl.replace(nworld=batch_size))
+        return state.replace(data=data), obs
 
     def step(
         self, state: BelloState, action: jax.Array
@@ -380,7 +421,7 @@ class BelloLocomotionEnv:
             last_episode_length=state.last_episode_length,
         )
         done = self._done(next_state)
-        reward, reward_info = self._reward(state, next_state, action, done)
+        reward, reward_info = self._reward(state, next_state, action, done, 0)
         episode_return = state.episode_return + reward
         episode_length = state.episode_length + 1
         next_state = BelloState(
@@ -412,16 +453,70 @@ class BelloLocomotionEnv:
         action: jax.Array,
         rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
-        stepped_state, stepped_obs, reward, done, info = jax.vmap(self.step)(
-            state, action
-        )
         batch_size = int(action.shape[0])
-        reset_command = (
-            stepped_state.command
-            if rng is None
-            else self.command_config.sample(rng, (batch_size,))
+        resample_rng = reset_rng = None
+        if rng is not None:
+            resample_rng, reset_rng = jax.random.split(rng)
+        action = jnp.clip(
+            jnp.asarray(action, dtype=jnp.float32), -ACTION_CLIP, ACTION_CLIP
+        )
+        ctrl = jax.vmap(self._action_to_ctrl)(action)
+        data = state.data.replace(
+            ctrl=ctrl,
+            _impl=state.data._impl.replace(nworld=batch_size),
+        )
+        data = jax.lax.fori_loop(
+            0, self.decimation, lambda _, d: mjx.step(self.model.mjx_model, d), data
+        )
+        stepped_state = BelloState(
+            data=data,
+            last_action=action,
+            command=state.command,
+            step_count=state.step_count + 1,
+            episode_return=state.episode_return,
+            episode_length=state.episode_length,
+            last_episode_return=state.last_episode_return,
+            last_episode_length=state.last_episode_length,
+        )
+        done = jax.vmap(self._done)(stepped_state)
+        world_ids = jnp.arange(batch_size, dtype=jnp.int32)
+        reward, reward_info = jax.vmap(self._reward)(
+            state, stepped_state, action, done, world_ids
+        )
+        episode_return = state.episode_return + reward
+        episode_length = state.episode_length + 1
+        stepped_state = BelloState(
+            data=stepped_state.data,
+            last_action=stepped_state.last_action,
+            command=self._maybe_resample_batch_command(
+                stepped_state, done, resample_rng
+            ),
+            step_count=stepped_state.step_count,
+            episode_return=episode_return,
+            episode_length=episode_length,
+            last_episode_return=jnp.where(
+                done, episode_return, state.last_episode_return
+            ),
+            last_episode_length=jnp.where(
+                done, episode_length, state.last_episode_length
+            ),
+        )
+        stepped_obs = jax.vmap(self.observation)(stepped_state)
+        info = {
+            "base_height": jax.vmap(self._base_height)(stepped_state),
+            "episode_return": jnp.where(done, episode_return, 0.0),
+            "episode_length": jnp.where(done, episode_length, 0),
+            "returned_episode": done,
+            **reward_info,
+        }
+        reset_command = self._reset_batch_command(
+            stepped_state.command, batch_size, reset_rng
         )
         reset_state, reset_obs = self.reset_batch(batch_size, command=reset_command)
+        reset_state = reset_state.replace(
+            last_episode_return=stepped_state.last_episode_return,
+            last_episode_length=stepped_state.last_episode_length,
+        )
         next_state = tree_where(done, reset_state, stepped_state)
         next_obs = jnp.where(done[:, None], reset_obs, stepped_obs)
         return next_state, next_obs, reward, done, info
@@ -473,7 +568,10 @@ class BelloLocomotionEnv:
         if not self.command_config.enabled:
             return jnp.zeros(3, dtype=jnp.float32)
         if command is not None:
-            return jnp.asarray(command, dtype=jnp.float32)
+            command = jnp.asarray(command, dtype=jnp.float32)
+            if command.shape != (3,):
+                raise ValueError(f"command must have shape (3,), got {command.shape}")
+            return command
         if rng is not None:
             return self.command_config.sample(rng)
         return jnp.zeros(3, dtype=jnp.float32)
@@ -493,7 +591,35 @@ class BelloLocomotionEnv:
         command = jnp.asarray(command, dtype=jnp.float32)
         if command.shape == (3,):
             return jnp.repeat(command[None, :], batch_size, axis=0)
+        if command.shape != (batch_size, 3):
+            raise ValueError(
+                "batch command must have shape (3,) or "
+                f"({batch_size}, 3), got {command.shape}"
+            )
         return command
+
+    def _maybe_resample_batch_command(
+        self, state: BelloState, done: jax.Array, rng: jax.Array | None
+    ) -> jax.Array:
+        if rng is None or not self.command_config.enabled:
+            return state.command
+        resample_steps = max(
+            1, int(round(self.command_config.resample_seconds / self.control_timestep))
+        )
+        resample = (state.step_count % resample_steps == 0) & ~done
+        sampled = self.command_config.sample(rng, (int(state.command.shape[0]),))
+        return jnp.where(resample[:, None], sampled, state.command)
+
+    def _reset_batch_command(
+        self, command: jax.Array, batch_size: int, rng: jax.Array | None
+    ) -> jax.Array:
+        if rng is None:
+            return command
+        return self.command_config.sample(rng, (batch_size,))
+
+    @property
+    def control_timestep(self) -> float:
+        return self.decimation * SIM_TIMESTEP
 
     def _frame_terms(self, state: BelloState) -> tuple[jax.Array, ...]:
         data = state.data
@@ -621,12 +747,13 @@ class BelloLocomotionEnv:
         next_state: BelloState,
         action: jax.Array,
         done: jax.Array,
+        world_id: jax.Array,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         _, _, command, _, _, _, _ = self._frame_terms(next_state)
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
         joint_pos_rel, joint_vel = self._all_actuator_joint_terms(next_state)
         foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
-            self._contact_terms(next_state)
+            self._contact_terms(next_state, world_id)
         )
         lin_vel_xy = self._link_lin_vel(
             next_state, self._reward_link(self.reward_config.track_lin_vel_xy)
@@ -678,7 +805,7 @@ class BelloLocomotionEnv:
         return term.link if term.enabled else "bello_root"
 
     def _contact_terms(
-        self, state: BelloState
+        self, state: BelloState, world_id: jax.Array
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         foot_body_ids = jnp.asarray(self.model.foot_body_ids)
         foot_count = foot_body_ids.shape[0]
@@ -694,7 +821,10 @@ class BelloLocomotionEnv:
         contact_geom = jnp.asarray(impl.contact__geom, dtype=jnp.int32)
         contact_geom = jnp.clip(contact_geom, 0, self.model.mj_model.ngeom - 1)
         nacon = jnp.ravel(jnp.asarray(impl.nacon, dtype=jnp.int32))[0]
-        active = jnp.arange(contact_geom.shape[0], dtype=jnp.int32) < nacon
+        contact_worldid = jnp.asarray(impl.contact__worldid, dtype=jnp.int32)
+        active = (jnp.arange(contact_geom.shape[0], dtype=jnp.int32) < nacon) & (
+            contact_worldid == jnp.asarray(world_id, dtype=jnp.int32)
+        )
 
         geom_body_ids = jnp.asarray(self.model.geom_body_ids)
         contact_body = geom_body_ids[contact_geom]

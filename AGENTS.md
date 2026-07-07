@@ -1,114 +1,64 @@
 # Agent Instructions
 
-This file is for automated coding agents working in this repo.
+This file defines how automated coding agents should work in this repository.
+It is not the product documentation. Use it as a local operating guide, then
+follow the linked docs for repository behavior and user-facing contracts.
 
-## First Principles
+## Working Philosophy
 
-- Read the existing code before editing.
-- Keep generated assets out of git.
-- Keep changes scoped to the user request.
-- Prefer existing dataclass config patterns and tyro CLI exposure.
-- Do not reintroduce external robot asset paths.
-- Do not add asset aliases.
+- Read before editing. Let the existing code, tests, and docs define the local
+  style before adding new patterns.
+- Prefer small, direct changes over broad rewrites. Refactor only when it
+  removes real ambiguity, duplication, or stale compatibility surface.
+- Treat generated files as disposable artifacts. Source robot descriptions live
+  in this repo; generated assets and caches do not.
+- Keep compatibility only when it is intentional. Do not add aliases, fallback
+  paths, or duplicate config routes unless the user explicitly asks for them.
+- Make behavior explicit. Silent fallbacks, inert CLI flags, and hidden defaults
+  should be removed or validated.
+- Keep the training hot path JAX/MJX-Warp compatible. Python-side convenience is
+  fine around setup, assets, logging, and tests, but not inside rollout math.
+- Favor dataclass configs and tyro exposure for user-facing knobs. Avoid ad hoc
+  parallel CLI arguments when a config object already exists.
+- Use the Nix/uv environment for repo work. Prefer `nix develop`, direnv, and
+  `uv run ...` over system Python or globally installed tools.
+- Keep all changes inside this repository unless the user explicitly asks for an
+  external change.
 
-## Environment
+## Coding Style
 
-Use the repo environment:
+- Use structured parsers for URDF/MJCF/XML edits. Avoid string surgery on robot
+  descriptions when `xml.etree.ElementTree` or MuJoCo APIs can express the
+  change.
+- Write Pythonic code: prefer clear names, simple control flow, standard library
+  types and helpers, dataclass defaults with `field(default_factory=...)` where
+  needed, and small functions with explicit inputs over clever or implicit code.
+- Prefer clear validation at initialization time for bad config, missing links,
+  missing joints, incompatible assets, and invalid dimensions.
+- Keep dataclasses immutable where practical. Do not expose mutable config
+  internals directly.
+- Keep comments sparse and useful. Add comments only where the code would be
+  difficult to audit without local context.
+- Use ASCII unless a file already requires non-ASCII content.
 
-```bash
-nix develop
-```
+## Repository Rules
 
-or rely on direnv:
+- Do not reintroduce external robot asset paths. The repo must use
+  `assets/source/bello/` as the robot source of truth.
+- Do not add asset aliases. Valid asset names are documented in
+  [docs/index.md](docs/index.md).
+- Do not commit generated assets, `.venv`, uv caches, Warp caches, W&B runs, or
+  checkpoint output.
+- Update user-facing docs when CLI flags, config trees, env spaces, rewards,
+  asset behavior, training behavior, or workflow commands change.
+- Do not revert user changes unless explicitly requested. If the worktree is
+  dirty, identify which edits are yours before committing.
 
-```bash
-direnv allow
-```
+## Important Docs
 
-Use uv for Python commands:
-
-```bash
-uv run ...
-```
-
-## Editing
-
-- Use structured parsers for URDF/MJCF/XML changes.
-- Use `apply_patch` for manual edits.
-- Do not commit generated outputs.
-- Keep ASCII unless editing a file that already requires non-ASCII.
-- Update docs when CLI/config/user-visible behavior changes.
-
-## Validation
-
-Standard checks:
-
-```bash
-uv run ruff format --check src tests
-uv run ruff check src tests
-uv run pytest
-```
-
-For simulation/training changes:
-
-```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-smoke-env --step
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train-ppo \
-  --no-dry-run \
-  --config.total-timesteps 4 \
-  --config.num-envs 2 \
-  --config.num-steps 2 \
-  --config.num-minibatches 1 \
-  --config.update-epochs 1
-```
-
-For CLI/config docs, verify help output:
-
-```bash
-uv run bello-train-ppo --help
-uv run bello-prepare-assets --help
-```
-
-## Current Contracts
-
-Default full-body env:
-
-```text
-asset: full_body
-terrain: plane
-mjx_impl: warp
-action_size: 35
-observation_size: 149
-```
-
-Valid assets:
-
-```text
-full_body
-lower_body
-upper_body
-```
-
-Default observation components:
-
-```text
-base_ang_vel
-projected_gravity
-command
-joint_pos
-joint_vel
-actuator_force
-last_action
-```
-
-## Git
-
-Before committing:
-
-```bash
-git status --short
-git diff --stat
-git diff --check
-```
-
-Do not revert user changes unless explicitly asked. If a worktree is dirty, distinguish your edits from pre-existing edits before committing.
+- Start with [README.md](README.md) for the high-level project shape and common
+  commands.
+- Use [CONTRIBUTION.md](CONTRIBUTION.md) for contribution workflow and git
+  hygiene.
+- Use [docs/index.md](docs/index.md) as the entry point for repository docs.
+  Follow links from there for topic-specific docs under `docs/`.
