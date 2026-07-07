@@ -170,7 +170,8 @@ dependencies = [
     { name = "jax", extra = ["cuda13"] },
     { name = "jaxtyping" },
     { name = "mujoco" },
-    { name = "mujoco-mjx" },
+    { name = "mujoco-mjx", extra = ["warp"] },
+    { name = "mujoco-warp" },
     { name = "optax" },
     { name = "orbax-checkpoint" },
     { name = "rerun-sdk" },
@@ -195,7 +196,8 @@ requires-dist = [
     { name = "jax", extras = ["cuda13"], specifier = ">=0.6.0" },
     { name = "jaxtyping", specifier = ">=0.3.0" },
     { name = "mujoco", specifier = ">=3.3.0" },
-    { name = "mujoco-mjx", specifier = ">=3.3.0" },
+    { name = "mujoco-mjx", extras = ["warp"], specifier = ">=3.3.0" },
+    { name = "mujoco-warp", specifier = ">=3.9.0.1" },
     { name = "optax", specifier = ">=0.2.4" },
     { name = "orbax-checkpoint", specifier = ">=0.11.0" },
     { name = "rerun-sdk", specifier = ">=0.21.0" },
@@ -854,6 +856,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/52/12/9a38fdf937c465e30824b01c015ea091dd2d66f7645b98e60e04b444f224/mujoco_mjx-3.10.0.tar.gz", hash = "sha256:f1a9d9b0e96d0678142d24b14d4d4d6c54b5766727468e4517227a7ca5938fe4", size = 7015200, upload-time = "2026-06-22T17:41:48.627Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/75/a5195ee4239baf62a5f2e6a40914c55ad78b0b429500ec67117bd41cded7/mujoco_mjx-3.10.0-py3-none-any.whl", hash = "sha256:ab7e92ababdbdb1b8202d27e428b266eda103466d8c30a234c34aa9c34a6dfa7", size = 7113829, upload-time = "2026-06-22T17:41:46.779Z" },
+]
+
+[package.optional-dependencies]
+warp = [
+    { name = "warp-lang" },
+]
+
+[[package]]
+name = "mujoco-warp"
+version = "3.9.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "absl-py" },
+    { name = "etils", extra = ["epath"] },
+    { name = "mujoco" },
+    { name = "numpy" },
+    { name = "warp-lang" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/df/713e655aae5498e60fc92f6cad868f9cb5f24f7e7e67ebd88fbcdaded72c/mujoco_warp-3.9.0.1.tar.gz", hash = "sha256:f6efacb2ac23041d34cee5208c6c95b4b34a071c8b5df5e223aa7a48a7aac431", size = 1981867, upload-time = "2026-05-27T16:10:19.096Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/9a/15fd259527550066b9f9a296fc24ac8c53019dcdcf817a3f89671da0c381/mujoco_warp-3.9.0.1-py3-none-any.whl", hash = "sha256:0ca40c4b4a8de11a7c2d293b049db73e0b2060a8787a37a81351324e60a55856", size = 2062165, upload-time = "2026-05-27T16:10:17.124Z" },
 ]
 
 [[package]]
@@ -1664,6 +1687,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1e/67/cbae4bf7683a64755c2c1778c418fea96d00e34395bb91743f08bd951571/wadler_lindig-0.1.7.tar.gz", hash = "sha256:81d14d3fe77d441acf3ebd7f4aefac20c74128bf460e84b512806dccf7b2cd55", size = 15842, upload-time = "2025-06-18T07:00:42.843Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8d/96/04e7b441807b26b794da5b11e59ed7f83b2cf8af202bd7eba8ad2fa6046e/wadler_lindig-0.1.7-py3-none-any.whl", hash = "sha256:e3ec83835570fd0a9509f969162aeb9c65618f998b1f42918cfc8d45122fe953", size = 20516, upload-time = "2025-06-18T07:00:41.684Z" },
+]
+
+[[package]]
+name = "warp-lang"
+version = "1.13.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/be/b79000cb5b551803416bc10c4fa43a37d31b48062683662a6c134d7452bc/warp_lang-1.13.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:4375f572301991fe0fbf0af29fc84d76cd27d531432d6df8452b25088c21ea5a", size = 24584304, upload-time = "2026-05-04T04:30:03.621Z" },
+    { url = "https://files.pythonhosted.org/packages/58/8e/b42f0ddeaca25251e5bbf7db6a89351a0722432ce075ebcdece9118e955a/warp_lang-1.13.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:ac2479c70ad410d58deb088c2a64168792be588efc1bec22dc51f92238e8c8c3", size = 138337580, upload-time = "2026-05-04T04:30:36.286Z" },
+    { url = "https://files.pythonhosted.org/packages/53/19/87b3a3a1a5e07ad34a3886ec38e96b6865359fd17a2511e78e5430c6bace/warp_lang-1.13.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:476b54f0dcf6767f23305a328660a9a74d01e371b6b7c3d77e03e18b4a1bb1a5", size = 139812627, upload-time = "2026-05-04T04:31:03.731Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/79/e4117177b88df67d7967c993a2234a3888d0e388076652e1f2a50551f95a/warp_lang-1.13.0-py3-none-win_amd64.whl", hash = "sha256:47975ea07252d45a4d09d2d1a6cffc55002fa7fbde771c8dceb1baf4b32d4fb8", size = 121601324, upload-time = "2026-05-04T04:31:37.814Z" },
 ]
 
 [[package]]

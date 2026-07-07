@@ -12,7 +12,8 @@ dependencies = [
   "jax[cuda13]>=0.6.0",
   "jaxtyping>=0.3.0",
   "mujoco>=3.3.0",
-  "mujoco-mjx>=3.3.0",
+  "mujoco-mjx[warp]>=3.3.0",
+  "mujoco-warp>=3.9.0.1",
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
   "rerun-sdk>=0.21.0",
@@ -24,6 +25,7 @@ dependencies = [
 [project.scripts]
 bello-prepare-assets = "bello_mujoco.tools.prepare_assets:main"
 bello-smoke-env = "bello_mujoco.tools.smoke_env:main"
+bello-mjwarp-smoke = "bello_mujoco.tools.mjwarp_smoke:main"
 bello-train-ppo = "bello_mujoco.tools.train_ppo:entrypoint"
 bello-ppo-cartpole-smoke = "bello_mujoco.tools.ppo_cartpole_smoke:entrypoint"
 

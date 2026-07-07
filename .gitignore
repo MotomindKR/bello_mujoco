@@ -1,6 +1,7 @@
 .venv/
 .uv-cache/
 .uv-python/
+.warp-cache/
 .direnv/
 .ruff_cache/
 .pytest_cache/

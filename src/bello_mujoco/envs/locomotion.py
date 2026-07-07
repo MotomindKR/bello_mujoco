@@ -17,7 +17,7 @@ from bello_mujoco.contracts import (
     MAX_EPISODE_STEPS,
     POLICY_JOINT_ORDER,
 )
-from bello_mujoco.sim import BelloModel, load_bello_model
+from bello_mujoco.sim import DEFAULT_MJX_IMPL, DEFAULT_WARP_NACONMAX, DEFAULT_WARP_NJMAX, BelloModel, MjxImpl, load_bello_model
 
 
 @chex.dataclass(frozen=True)
@@ -41,8 +41,22 @@ class BelloLocomotionEnv:
     max_episode_steps: int = MAX_EPISODE_STEPS
 
     @classmethod
-    def load(cls) -> "BelloLocomotionEnv":
-        return cls(load_bello_model())
+    def load(
+        cls,
+        *,
+        mjx_impl: MjxImpl = DEFAULT_MJX_IMPL,
+        warp_naconmax: int | None = DEFAULT_WARP_NACONMAX,
+        warp_naccdmax: int | None = None,
+        warp_njmax: int | None = DEFAULT_WARP_NJMAX,
+    ) -> "BelloLocomotionEnv":
+        return cls(
+            load_bello_model(
+                mjx_impl=mjx_impl,
+                warp_naconmax=warp_naconmax,
+                warp_naccdmax=warp_naccdmax,
+                warp_njmax=warp_njmax,
+            )
+        )
 
     @property
     def action_size(self) -> int:
@@ -54,7 +68,7 @@ class BelloLocomotionEnv:
 
     def reset(self, command: jax.Array | None = None) -> tuple[BelloState, jax.Array]:
         command = jnp.zeros(3, dtype=jnp.float32) if command is None else jnp.asarray(command, dtype=jnp.float32)
-        data = mjx.make_data(self.model.mjx_model)
+        data = self.model.make_data()
         data = data.replace(
             qpos=jnp.asarray(self.model.default_qpos),
             qvel=jnp.asarray(self.model.default_qvel),

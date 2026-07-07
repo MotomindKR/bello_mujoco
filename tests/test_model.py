@@ -13,9 +13,16 @@ def test_full_body_model_loads_with_policy_actuators_first() -> None:
     assert len(model.fixed_ctrl_indices) == 23
 
 
-def test_training_model_uses_simplified_mesh_collision() -> None:
+def test_training_model_uses_foot_mesh_collision_profile() -> None:
     model = load_bello_model().mj_model
-    geom_types = {int(value) for value in model.geom_type}
+    mesh_geom_names = [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+        for geom_id, geom_type in enumerate(model.geom_type)
+        if geom_type == mujoco.mjtGeom.mjGEOM_MESH
+    ]
 
-    assert mujoco.mjtGeom.mjGEOM_MESH in geom_types
-    assert mujoco.mjtGeom.mjGEOM_PLANE in geom_types
+    assert model.ngeom == 42
+    assert mesh_geom_names == ["left_ankle_roll_link_collision", "right_ankle_roll_link_collision"]
+    assert int((model.geom_type == mujoco.mjtGeom.mjGEOM_BOX).sum()) == 39
+    assert int((model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE).sum()) == 1
+    assert model.nexclude == 75

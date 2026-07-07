@@ -18,7 +18,7 @@ direnv allow
 
 ## Stack
 
-- Simulator/env: `mujoco`, `mujoco-mjx`
+- Simulator/env: `mujoco`, `mujoco-mjx[warp]`, `mujoco-warp`
 - JAX: `jax[cuda13]` from Python wheels
 - RL implementation style: local PureJaxRL-style code, `rlax`
 - NN/model: `equinox`
@@ -43,7 +43,28 @@ The generator reads the Bello URDF/STL description from `motomind_platform`, cop
 assets/generated/bello/full_body/mjcf/bello_full_body.xml
 ```
 
-The generated MJCF is full-body. The environment action is the full MuJoCo actuator vector (`nu=35`) in actuator order. The observation scaffold is a single-frame 114-dim vector: base angular velocity, projected gravity, command, full actuator joint positions, full actuator joint velocities, and previous full action. Collision geoms use simplified binary STL meshes generated from the robot description.
+The generated MJCF is full-body. The environment action is the full MuJoCo actuator vector (`nu=35`) in actuator order. The observation scaffold is a single-frame 114-dim vector: base angular velocity, projected gravity, command, full actuator joint positions, full actuator joint velocities, and previous full action.
+
+The default training collision profile keeps the left/right ankle-roll foot geoms as simplified mesh collision and converts the remaining robot mesh collision geoms to boxes derived from each mesh bound:
+
+```bash
+bello-prepare-assets --collision-mode foot-mesh
+```
+
+The generator also adds MuJoCo contact excludes for nearby robot bodies by default:
+
+```bash
+bello-prepare-assets --neighbor-exclusion-depth 2
+```
+
+Depth 2 excludes parent/child, grandparent/grandchild, and sibling body collision. This removes most mechanically-neighboring self-collision while preserving non-neighbor body and ground contacts.
+
+Other collision profiles are available when needed:
+
+```bash
+bello-prepare-assets --collision-mode mesh  # all simplified mesh collision; slow MJX compile
+bello-prepare-assets --collision-mode box   # all robot collision geoms as boxes
+```
 
 ## Smoke Test
 
@@ -59,7 +80,19 @@ action_size: 35
 observation_size: 114
 ```
 
-`bello-smoke-env --step` also runs one MJX step. With simplified mesh collision, that first step can compile slowly; the default smoke check verifies model load, GPU-backed MJX model creation, reset, and the action/observation contract.
+`bello-smoke-env --step` also times two jitted MJX steps by default and reports `step_seconds`. The default simulator backend is MJX-Warp on GPU; pass `--mjx-impl jax` to compare against MJX-JAX. The first entries include JIT/MJX lowering and GPU execution setup; with the default foot-mesh profile this is currently practical, while the all-mesh profile can compile very slowly. Use `--step-count N` to inspect later steady-state steps. The default smoke check verifies model load, GPU-backed MJX model creation, reset, and the action/observation contract.
+
+Batch timing:
+
+```bash
+bello-smoke-env --mjx-impl warp --batch-size 512 --step --step-count 5
+```
+
+Standalone MJWarp timing and JAX/Warp zero-copy check:
+
+```bash
+bello-mjwarp-smoke --nworld 512 --step-count 20
+```
 
 ## Vectorized API
 
@@ -74,7 +107,7 @@ batch_state, batch_obs = env.reset_batch(batch_size=1024)
 batch_state, batch_obs, reward, done, info = env.step_batch(batch_state, actions)
 ```
 
-`step_batch` is a `jax.vmap` wrapper over `step`; it has the same mesh-collision compile cost as the single step on first use.
+`step_batch` is a `jax.vmap` wrapper over `step`; it has the same collision-profile compile cost as the single step on first use. MJX-Warp is the default backend because it handles contact-heavy batched simulation much better than MJX-JAX on NVIDIA GPUs.
 
 ## PPO Scaffold
 

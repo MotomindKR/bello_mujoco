@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import mujoco
 from mujoco import mjx
@@ -18,12 +19,21 @@ from bello_mujoco.contracts import (
     POLICY_JOINT_ORDER,
 )
 
+MjxImpl = Literal["jax", "warp"]
+DEFAULT_MJX_IMPL: MjxImpl = "warp"
+DEFAULT_WARP_NACONMAX = 8192
+DEFAULT_WARP_NJMAX = 256
+
 
 @dataclass(frozen=True)
 class BelloModel:
     mj_model: mujoco.MjModel
     mjx_model: mjx.Model
+    mjx_impl: MjxImpl
     xml_path: Path
+    warp_naconmax: int | None
+    warp_naccdmax: int | None
+    warp_njmax: int | None
     policy_qpos_indices: np.ndarray
     policy_qvel_indices: np.ndarray
     policy_ctrl_indices: np.ndarray
@@ -36,14 +46,34 @@ class BelloModel:
     root_qpos_adr: int
     root_qvel_adr: int
 
+    def make_data(self) -> mjx.Data:
+        if self.mjx_impl == "warp":
+            return mjx.make_data(
+                self.mj_model,
+                impl="warp",
+                naconmax=self.warp_naconmax,
+                naccdmax=self.warp_naccdmax,
+                njmax=self.warp_njmax,
+            )
+        return mjx.make_data(self.mjx_model)
 
-def load_bello_model(xml_path: Path | None = None) -> BelloModel:
+
+def load_bello_model(
+    xml_path: Path | None = None,
+    *,
+    mjx_impl: MjxImpl = DEFAULT_MJX_IMPL,
+    warp_naconmax: int | None = DEFAULT_WARP_NACONMAX,
+    warp_naccdmax: int | None = None,
+    warp_njmax: int | None = DEFAULT_WARP_NJMAX,
+) -> BelloModel:
+    if mjx_impl not in ("jax", "warp"):
+        raise ValueError(f"unsupported MJX implementation: {mjx_impl!r}")
     path = generated_model_path("full_body") if xml_path is None else Path(xml_path)
     if not path.exists():
         raise FileNotFoundError(f"{path} does not exist; run `python -m bello_mujoco.tools.prepare_assets`")
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
-    mjx_model = mjx.put_model(mj_model)
+    mjx_model = mjx.put_model(mj_model, impl=mjx_impl)
 
     policy_qpos_indices = np.asarray([joint_qpos_index(mj_model, name) for name in POLICY_JOINT_ORDER], dtype=np.int32)
     policy_qvel_indices = np.asarray([joint_qvel_index(mj_model, name) for name in POLICY_JOINT_ORDER], dtype=np.int32)
@@ -89,7 +119,11 @@ def load_bello_model(xml_path: Path | None = None) -> BelloModel:
     return BelloModel(
         mj_model=mj_model,
         mjx_model=mjx_model,
+        mjx_impl=mjx_impl,
         xml_path=path,
+        warp_naconmax=warp_naconmax,
+        warp_naccdmax=warp_naccdmax,
+        warp_njmax=warp_njmax,
         policy_qpos_indices=policy_qpos_indices,
         policy_qvel_indices=policy_qvel_indices,
         policy_ctrl_indices=policy_ctrl_indices,

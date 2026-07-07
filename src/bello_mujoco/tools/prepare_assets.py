@@ -3,7 +3,8 @@
 The source robot descriptions use ASCII STL meshes. MuJoCo's STL loader expects
 binary STL and also rejects very large meshes, so this tool copies the source
 descriptions, writes simplified binary meshes, rewrites URDF mesh references,
-then compiles the URDF into MJCF and adds the lower-body position actuators.
+then compiles the URDF into MJCF, applies a training collision profile, and adds
+the lower-body position actuators.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import mujoco
 import fast_simplification
 import trimesh
@@ -34,6 +36,8 @@ DEFAULT_SOURCE_ROOT = Path(
     "/home/gmmyung/motomind_platform/systems/motomind_isaaclab/"
     "motomind_isaaclab/assets/data/bello"
 )
+FOOT_MESH_NAMES = frozenset({"left_ankle_roll_link", "right_ankle_roll_link"})
+COLLISION_MODES = ("mesh", "foot-mesh", "box")
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,8 @@ def main() -> None:
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--asset", choices=("full_body",), default="full_body")
     parser.add_argument("--mesh-face-budget", type=int, default=500)
+    parser.add_argument("--collision-mode", choices=COLLISION_MODES, default="foot-mesh")
+    parser.add_argument("--neighbor-exclusion-depth", type=int, default=2)
     parser.add_argument("--copy-source", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
@@ -58,6 +64,8 @@ def main() -> None:
             asset=name,
             source_root=args.source_root,
             mesh_face_budget=args.mesh_face_budget,
+            collision_mode=args.collision_mode,
+            neighbor_exclusion_depth=args.neighbor_exclusion_depth,
             copy_source=args.copy_source,
         )
         for name in assets
@@ -72,6 +80,8 @@ def prepare_asset(
     asset: str,
     source_root: Path = DEFAULT_SOURCE_ROOT,
     mesh_face_budget: int = 500,
+    collision_mode: str = "foot-mesh",
+    neighbor_exclusion_depth: int = 2,
     copy_source: bool = True,
 ) -> PreparedAsset:
     source_root = source_root.expanduser().resolve()
@@ -93,7 +103,12 @@ def prepare_asset(
     for src, dst_name in mesh_sources.items():
         export_binary_simplified_mesh(src, out_mesh_dir / dst_name, face_budget=mesh_face_budget)
 
-    compile_urdf_to_mjcf(out_urdf, out_mjcf)
+    compile_urdf_to_mjcf(
+        out_urdf,
+        out_mjcf,
+        collision_mode=collision_mode,
+        neighbor_exclusion_depth=neighbor_exclusion_depth,
+    )
     return PreparedAsset(asset, out_urdf, out_mjcf, len(mesh_sources))
 
 
@@ -171,7 +186,13 @@ def export_binary_simplified_mesh(src: Path, dst: Path, *, face_budget: int) -> 
     dst.write_bytes(stl.export_stl(mesh))
 
 
-def compile_urdf_to_mjcf(urdf_path: Path, mjcf_path: Path) -> None:
+def compile_urdf_to_mjcf(
+    urdf_path: Path,
+    mjcf_path: Path,
+    *,
+    collision_mode: str = "foot-mesh",
+    neighbor_exclusion_depth: int = 2,
+) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tmp_path = mjcf_path.with_suffix(".compiled.xml")
     mujoco.mj_saveLastXML(str(tmp_path), model)
@@ -181,6 +202,8 @@ def compile_urdf_to_mjcf(urdf_path: Path, mjcf_path: Path) -> None:
     ensure_option(root)
     ensure_ground_plane(root)
     ensure_free_root_joint(root)
+    apply_collision_mode(root, mjcf_path.parent, collision_mode)
+    ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
     ensure_position_actuators(root)
     ensure_home_keyframe(root)
 
@@ -190,6 +213,134 @@ def compile_urdf_to_mjcf(urdf_path: Path, mjcf_path: Path) -> None:
 
     # Validate the generated model immediately so failures point at the asset step.
     mujoco.MjModel.from_xml_path(str(mjcf_path))
+
+
+def apply_collision_mode(root: ET.Element, mjcf_dir: Path, collision_mode: str) -> None:
+    if collision_mode == "mesh":
+        return
+    if collision_mode not in COLLISION_MODES:
+        raise ValueError(f"unknown collision mode: {collision_mode}")
+
+    mesh_bounds = load_scaled_mesh_bounds(root, mjcf_dir)
+    keep_meshes = FOOT_MESH_NAMES if collision_mode == "foot-mesh" else frozenset()
+    for geom in root.findall(".//geom[@type='mesh']"):
+        mesh_name = geom.get("mesh")
+        if mesh_name is None or mesh_name in keep_meshes:
+            continue
+        if mesh_name not in mesh_bounds:
+            continue
+        center, half_size = mesh_bounds[mesh_name]
+        quat = parse_vec(geom.get("quat", "1 0 0 0"), 4, np.asarray([1.0, 0.0, 0.0, 0.0]))
+        pos = parse_vec(geom.get("pos", "0 0 0"), 3, np.zeros(3))
+        adjusted_pos = pos + quat_rotate(quat, center)
+        geom.attrib.pop("mesh", None)
+        geom.set("type", "box")
+        geom.set("pos", format_vec(adjusted_pos))
+        geom.set("size", format_vec(half_size))
+
+
+def load_scaled_mesh_bounds(root: ET.Element, mjcf_dir: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    bounds: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for mesh in root.findall("./asset/mesh"):
+        name = mesh.get("name")
+        file_attr = mesh.get("file")
+        if name is None or file_attr is None:
+            continue
+        mesh_path = (mjcf_dir / file_attr).resolve()
+        scale = parse_vec(mesh.get("scale", "1 1 1"), 3, np.ones(3))
+        tri_mesh = trimesh.load_mesh(mesh_path, process=False)
+        mesh_bounds = np.asarray(tri_mesh.bounds, dtype=np.float64) * scale
+        center = (mesh_bounds[0] + mesh_bounds[1]) * 0.5
+        half_size = np.maximum((mesh_bounds[1] - mesh_bounds[0]) * 0.5, 1.0e-4)
+        bounds[name] = (center, half_size)
+    return bounds
+
+
+def parse_vec(value: str, expected_size: int, default: np.ndarray) -> np.ndarray:
+    array = np.fromstring(value, sep=" ", dtype=np.float64)
+    if array.size != expected_size:
+        return default.astype(np.float64)
+    return array
+
+
+def quat_rotate(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
+    w, x, y, z = quat_wxyz
+    qvec = np.asarray([x, y, z], dtype=np.float64)
+    uv = np.cross(qvec, vec)
+    uuv = np.cross(qvec, uv)
+    return vec + 2.0 * (w * uv + uuv)
+
+
+def format_vec(values: np.ndarray) -> str:
+    return " ".join(f"{float(value):.8g}" for value in values)
+
+
+def ensure_neighbor_collision_excludes(root: ET.Element, *, depth: int) -> None:
+    if depth <= 0:
+        return
+    names, edges = body_graph(root)
+    graph = {name: set() for name in names}
+    for parent, child in edges:
+        graph[parent].add(child)
+        graph[child].add(parent)
+
+    contact = root.find("contact")
+    if contact is None:
+        contact = ET.SubElement(root, "contact")
+    existing = {
+        tuple(sorted((exclude.get("body1", ""), exclude.get("body2", ""))))
+        for exclude in contact.findall("exclude")
+    }
+
+    for body1, body2 in nearby_body_pairs(names, graph, depth):
+        key = tuple(sorted((body1, body2)))
+        if key in existing:
+            continue
+        ET.SubElement(contact, "exclude", {"body1": body1, "body2": body2})
+        existing.add(key)
+
+
+def body_graph(root: ET.Element) -> tuple[list[str], list[tuple[str, str]]]:
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        raise ValueError("MJCF has no worldbody")
+
+    names: list[str] = []
+    edges: list[tuple[str, str]] = []
+
+    def visit(body: ET.Element, parent_name: str | None) -> None:
+        name = body.get("name")
+        if name is None:
+            return
+        names.append(name)
+        if parent_name is not None:
+            edges.append((parent_name, name))
+        for child in body.findall("body"):
+            visit(child, name)
+
+    for body in worldbody.findall("body"):
+        visit(body, None)
+    return names, edges
+
+
+def nearby_body_pairs(names: list[str], graph: dict[str, set[str]], depth: int) -> list[tuple[str, str]]:
+    index = {name: i for i, name in enumerate(names)}
+    pairs: set[tuple[str, str]] = set()
+    for source in names:
+        frontier = {source}
+        visited = {source}
+        for _ in range(depth):
+            next_frontier = set()
+            for body in frontier:
+                next_frontier.update(graph[body] - visited)
+            for target in next_frontier:
+                if index[source] < index[target]:
+                    pairs.add((source, target))
+                elif index[target] < index[source]:
+                    pairs.add((target, source))
+            visited.update(next_frontier)
+            frontier = next_frontier
+    return sorted(pairs, key=lambda pair: (index[pair[0]], index[pair[1]]))
 
 
 def ensure_option(root: ET.Element) -> None:
