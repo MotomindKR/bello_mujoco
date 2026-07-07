@@ -1,10 +1,18 @@
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from bello_mujoco.assets_pipeline.mesh import replace_end_effectors_with_spheres
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
+from bello_mujoco.assets_pipeline.prepare import (
+    AssetPrepConfig,
+    PreparedAsset,
+    prepare_asset,
+    read_prepared_asset_manifest,
+    resolved_output_root,
+    write_prepared_asset_manifest,
+)
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 
 
@@ -55,3 +63,54 @@ def test_lower_body_rejects_end_effector_sphere_mode() -> None:
 
     with pytest.raises(ValueError, match="requires arm joints"):
         prepare_asset(config)
+
+
+def test_default_output_root_is_deterministic_tmp_cache() -> None:
+    config = AssetPrepConfig(asset="full_body")
+
+    assert resolved_output_root(config, "full_body") == resolved_output_root(
+        config, "full_body"
+    )
+    assert resolved_output_root(config, "full_body").parent == Path(
+        "/tmp/bello-mujoco-assets"
+    )
+
+
+def test_explicit_output_root_overrides_tmp_cache() -> None:
+    root = Path("/tmp/custom-bello-assets")
+
+    assert (
+        resolved_output_root(
+            AssetPrepConfig(asset="full_body", output_root=root), "full_body"
+        )
+        == root
+    )
+
+
+def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
+    asset_dir = tmp_path / "full_body"
+    mesh_dir = asset_dir / "meshes"
+    mjcf_dir = asset_dir / "mjcf"
+    urdf_dir = asset_dir / "urdf"
+    mesh_dir.mkdir(parents=True)
+    mjcf_dir.mkdir(parents=True)
+    urdf_dir.mkdir(parents=True)
+    urdf_path = urdf_dir / "bello_full_body.urdf"
+    mjcf_path = mjcf_dir / "bello_full_body.xml"
+    viewer_mjcf_path = mjcf_dir / "bello_full_body_viewer.xml"
+    manifest_path = asset_dir / "asset_manifest.json"
+    urdf_path.write_text("<robot />")
+    mjcf_path.write_text(
+        '<mujoco><asset><mesh name="body" file="../meshes/body.stl" /></asset></mujoco>'
+    )
+    viewer_mjcf_path.write_text("<mujoco><asset /></mujoco>")
+    write_prepared_asset_manifest(
+        PreparedAsset("full_body", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
+        manifest_path,
+    )
+    assert (
+        read_prepared_asset_manifest(
+            "full_body", urdf_path, mjcf_path, viewer_mjcf_path, manifest_path
+        )
+        is None
+    )

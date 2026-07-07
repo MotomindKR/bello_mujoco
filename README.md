@@ -39,26 +39,26 @@ bello-prepare-assets --asset full_body
 
 `full_body` is the default. The generator also supports `lower_body` and `upper_body`; `down_body` is accepted as an alias for `lower_body`.
 
-The generator reads the Bello URDF/STL description from the repository-local source assets in `assets/source/bello/<asset>` and writes a collision-only training MJCF to:
+The generator reads the Bello URDF/STL description from the repository-local source assets in `assets/source/bello/<asset>` and writes a collision-only training MJCF to a deterministic cache directory:
 
 ```text
-assets/generated/bello/<asset>/mjcf/bello_<asset>.xml
+/tmp/bello-mujoco-assets/<config-hash>/<asset>/mjcf/bello_<asset>.xml
 ```
 
-`assets/generated/` is ignored by git. These files are local build artifacts and should be regenerated with `bello-prepare-assets` after a fresh checkout.
+Generated files are local build artifacts and are not tracked by git. Asset preparation uses a file lock around each config-hash cache directory, so concurrent runs with the same config do not write the same directory at the same time.
 
-Tests generate their own assets under `/tmp/bello-mujoco-test-assets-*` and remove them when the pytest session exits. For manual generation into another location, pass `--output-root`; omitting it keeps the default `assets/generated/bello` path.
+Tests generate their own assets under `/tmp/bello-mujoco-test-assets-*` and remove them when the pytest session exits. For manual generation into another location, pass `--output-root`; omitting it uses the deterministic `/tmp/bello-mujoco-assets/<config-hash>` cache.
 
 It also writes a separate viewer MJCF with visual geoms:
 
 ```text
-assets/generated/bello/<asset>/mjcf/bello_<asset>_viewer.xml
+/tmp/bello-mujoco-assets/<config-hash>/<asset>/mjcf/bello_<asset>_viewer.xml
 ```
 
 Generated mesh assets are split by purpose:
 
-- `assets/generated/bello/<asset>/visual_meshes`: simplified visual STL meshes attached as non-colliding MuJoCo visual geoms for the viewer.
-- `assets/generated/bello/<asset>/meshes`: lower-budget simplified STL meshes used only by collision geoms.
+- `<output-root>/<asset>/visual_meshes`: simplified visual STL meshes attached as non-colliding MuJoCo visual geoms for the viewer.
+- `<output-root>/<asset>/meshes`: lower-budget simplified STL meshes used only by collision geoms.
 
 `visual_meshes` is generated locally and ignored by git. The training model does not include these render-only geoms. The default visual mesh budget is separate from the collision budget:
 

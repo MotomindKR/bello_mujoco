@@ -17,19 +17,15 @@ def source_assets_root() -> Path:
     return assets_root() / "source" / "bello"
 
 
-def generated_assets_root(output_root: Path | None = None) -> Path:
-    return assets_root() / "generated" / "bello" if output_root is None else output_root
+def generated_assets_root(output_root: Path) -> Path:
+    return output_root
 
 
-def generated_model_path(
-    asset: str = "full_body", output_root: Path | None = None
-) -> Path:
+def generated_model_path(asset: str, output_root: Path) -> Path:
     return generated_assets_root(output_root) / asset / "mjcf" / f"bello_{asset}.xml"
 
 
-def generated_viewer_model_path(
-    asset: str = "full_body", output_root: Path | None = None
-) -> Path:
+def generated_viewer_model_path(asset: str, output_root: Path) -> Path:
     return (
         generated_assets_root(output_root)
         / asset
@@ -38,7 +34,5 @@ def generated_viewer_model_path(
     )
 
 
-def generated_urdf_path(
-    asset: str = "full_body", output_root: Path | None = None
-) -> Path:
+def generated_urdf_path(asset: str, output_root: Path) -> Path:
     return generated_assets_root(output_root) / asset / "urdf" / f"bello_{asset}.urdf"
