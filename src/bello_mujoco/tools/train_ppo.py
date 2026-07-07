@@ -146,6 +146,19 @@ def run_training(run_config: TrainingRunConfig) -> None:
         command_config=command_config,
         done_config=done_config,
     )
+    render_env = (
+        BelloLocomotionEnv.load(
+            asset_config,
+            warp=warp,
+            batch_size=1,
+            env_config=env_config,
+            reward_config=reward_config,
+            command_config=command_config,
+            done_config=done_config,
+        )
+        if video_config.enabled
+        else env
+    )
     rng = jax.random.PRNGKey(config.seed)
     if dry_run:
         state, _ = init_train_state(rng, env.observation_size, env.action_size, config)
@@ -207,6 +220,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
         if video_config.enabled or stream_metrics:
             out = train_update_loop(
                 env,
+                render_env,
                 config,
                 rng,
                 video_config,
@@ -256,6 +270,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
 
 def train_update_loop(
     env: BelloLocomotionEnv,
+    render_env: BelloLocomotionEnv,
     config: PPOConfig,
     rng: jax.Array,
     video_config: TrainingVideoConfig,
@@ -273,7 +288,7 @@ def train_update_loop(
     metrics_history = []
     if video_config.render_initial:
         render_training_video(
-            env,
+            render_env,
             runner_state,
             static_policy,
             video_config,
@@ -296,7 +311,7 @@ def train_update_loop(
             )
         if should_render_training_video(update, config.num_updates, video_config):
             render_training_video(
-                env,
+                render_env,
                 runner_state,
                 static_policy,
                 video_config,
