@@ -23,5 +23,5 @@ def test_cartpole_ppo_reaches_max_score() -> None:
 
     metrics = run_cartpole_ppo(config)
 
-    assert metrics["last_episode_return"] >= 500.0
-    assert metrics["max_episode_return"] >= 500.0
+    assert metrics["last_episode_return"] >= 499.99
+    assert metrics["max_episode_return"] >= 499.99

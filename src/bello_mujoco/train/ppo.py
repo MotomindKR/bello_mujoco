@@ -134,14 +134,18 @@ def init_train_state(
     )
     optimizer = make_optimizer(config)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-    return TrainState(model=model, opt_state=opt_state, update=jnp.asarray(0, dtype=jnp.int32)), optimizer
+    return TrainState(
+        model=model, opt_state=opt_state, update=jnp.asarray(0, dtype=jnp.int32)
+    ), optimizer
 
 
 def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
     if config.anneal_lr:
 
         def schedule(count: jax.Array) -> jax.Array:
-            updates = jnp.maximum(config.num_updates * config.update_epochs * config.num_minibatches, 1)
+            updates = jnp.maximum(
+                config.num_updates * config.update_epochs * config.num_minibatches, 1
+            )
             frac = 1.0 - count / updates
             return config.learning_rate * jnp.maximum(frac, 0.0)
 
@@ -155,13 +159,17 @@ def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
     )
 
 
-def apply_model(model: ActorCritic, obs: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+def apply_model(
+    model: ActorCritic, obs: jax.Array
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     if obs.ndim == 1:
         return model(obs)
     return jax.vmap(model)(obs)
 
 
-def sample_action(model: ActorCritic, obs: jax.Array, rng: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+def sample_action(
+    model: ActorCritic, obs: jax.Array, rng: jax.Array
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     mean, log_std, value = apply_model(model, obs)
     noise = jax.random.normal(rng, mean.shape)
     action = mean + jnp.exp(log_std) * noise
@@ -169,14 +177,18 @@ def sample_action(model: ActorCritic, obs: jax.Array, rng: jax.Array) -> tuple[j
     return action, log_prob, value
 
 
-def evaluate_actions(model: ActorCritic, obs: jax.Array, action: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+def evaluate_actions(
+    model: ActorCritic, obs: jax.Array, action: jax.Array
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     mean, log_std, value = apply_model(model, obs)
     log_prob = gaussian_log_prob(mean, log_std, action)
     entropy = jnp.ones_like(log_prob) * gaussian_entropy(log_std)
     return log_prob, entropy, value
 
 
-def gaussian_log_prob(mean: jax.Array, log_std: jax.Array, action: jax.Array) -> jax.Array:
+def gaussian_log_prob(
+    mean: jax.Array, log_std: jax.Array, action: jax.Array
+) -> jax.Array:
     inv_std = jnp.exp(-log_std)
     normalized = (action - mean) * inv_std
     log_probs = -0.5 * (normalized**2 + 2.0 * log_std + LOG_2PI)
@@ -193,10 +205,14 @@ def compute_gae(
     last_value: jax.Array,
     config: PPOConfig,
 ) -> tuple[jax.Array, jax.Array]:
-    def scan_step(carry: tuple[jax.Array, jax.Array], transition: Transition) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
+    def scan_step(
+        carry: tuple[jax.Array, jax.Array], transition: Transition
+    ) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
         gae, next_value = carry
         not_done = 1.0 - transition.done.astype(jnp.float32)
-        delta = transition.reward + config.gamma * next_value * not_done - transition.value
+        delta = (
+            transition.reward + config.gamma * next_value * not_done - transition.value
+        )
         gae = delta + config.gamma * config.gae_lambda * not_done * gae
         return (gae, transition.value), gae
 
@@ -216,18 +232,28 @@ def ppo_loss(
     targets: jax.Array,
     config: PPOConfig,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    log_prob, entropy, value = evaluate_actions(model, transitions.obs, transitions.action)
+    log_prob, entropy, value = evaluate_actions(
+        model, transitions.obs, transitions.action
+    )
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1.0e-8)
 
     ratio = jnp.exp(log_prob - transitions.log_prob)
     actor_loss_1 = ratio * advantages
-    actor_loss_2 = jnp.clip(ratio, 1.0 - config.clip_eps, 1.0 + config.clip_eps) * advantages
+    actor_loss_2 = (
+        jnp.clip(ratio, 1.0 - config.clip_eps, 1.0 + config.clip_eps) * advantages
+    )
     actor_loss = -jnp.minimum(actor_loss_1, actor_loss_2).mean()
 
-    value_clipped = transitions.value + jnp.clip(value - transitions.value, -config.clip_eps, config.clip_eps)
-    value_loss = 0.5 * jnp.maximum((value - targets) ** 2, (value_clipped - targets) ** 2).mean()
+    value_clipped = transitions.value + jnp.clip(
+        value - transitions.value, -config.clip_eps, config.clip_eps
+    )
+    value_loss = (
+        0.5 * jnp.maximum((value - targets) ** 2, (value_clipped - targets) ** 2).mean()
+    )
     entropy_loss = entropy.mean()
-    total_loss = actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy_loss
+    total_loss = (
+        actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy_loss
+    )
     metrics = {
         "loss": total_loss,
         "actor_loss": actor_loss,
@@ -256,7 +282,9 @@ def update_ppo(
         permutation = jax.random.permutation(perm_key, config.batch_size)
         shuffled = jax.tree_util.tree_map(lambda x: x[permutation], batch)
         minibatches = jax.tree_util.tree_map(
-            lambda x: x.reshape((config.num_minibatches, config.minibatch_size) + x.shape[1:]),
+            lambda x: x.reshape(
+                (config.num_minibatches, config.minibatch_size) + x.shape[1:]
+            ),
             shuffled,
         )
 
@@ -266,9 +294,13 @@ def update_ppo(
 
             def loss_fn(params):
                 model = eqx.combine(params, static_model)
-                return ppo_loss(model, mb_transitions, mb_advantages, mb_targets, config)
+                return ppo_loss(
+                    model, mb_transitions, mb_advantages, mb_targets, config
+                )
 
-            (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+            (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+                params
+            )
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
             metrics = {**metrics, "loss": loss_value}
@@ -288,12 +320,18 @@ def update_ppo(
         config.update_epochs,
     )
     metrics = jax.tree_util.tree_map(lambda x: x.mean(), metrics)
-    train_state = TrainState(model=eqx.combine(params, static_model), opt_state=opt_state, update=update_count)
+    train_state = TrainState(
+        model=eqx.combine(params, static_model),
+        opt_state=opt_state,
+        update=update_count,
+    )
     return train_state, metrics
 
 
 def flatten_batch(batch):
-    return jax.tree_util.tree_map(lambda x: x.reshape((x.shape[0] * x.shape[1],) + x.shape[2:]), batch)
+    return jax.tree_util.tree_map(
+        lambda x: x.reshape((x.shape[0] * x.shape[1],) + x.shape[2:]), batch
+    )
 
 
 def safe_returned_mean(info: dict[str, jax.Array]) -> jax.Array:
@@ -313,7 +351,9 @@ def collect_rollout(
     rng: jax.Array,
     config: PPOConfig,
 ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
-    def env_step(carry: tuple[BelloState, jax.Array, jax.Array], _: None) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
+    def env_step(
+        carry: tuple[BelloState, jax.Array, jax.Array], _: None
+    ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
         state, last_obs, key = carry
         key, action_key = jax.random.split(key)
         action, log_prob, value = sample_action(model, last_obs, action_key)
@@ -331,7 +371,9 @@ def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
 
     def train(rng: jax.Array):
         rng, init_key = jax.random.split(rng)
-        train_state, optimizer = init_train_state(init_key, env.observation_size, env.action_size, config)
+        train_state, optimizer = init_train_state(
+            init_key, env.observation_size, env.action_size, config
+        )
         init_params, static_model = eqx.partition(train_state.model, eqx.is_array)
         env_state, obs = env.reset_batch(config.num_envs)
 
@@ -340,22 +382,44 @@ def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
             key, rollout_key, update_key = jax.random.split(key, 3)
             model = eqx.combine(params, static_model)
             state = TrainState(model=model, opt_state=opt_state, update=update_count)
-            (e_state, last_obs, _), transitions = collect_rollout(env, model, e_state, last_obs, rollout_key, config)
+            (e_state, last_obs, _), transitions = collect_rollout(
+                env, model, e_state, last_obs, rollout_key, config
+            )
             _, _, last_value = apply_model(model, last_obs)
             advantages, targets = compute_gae(transitions, last_value, config)
-            state, metrics = update_ppo(state, optimizer, transitions, advantages, targets, update_key, config)
+            state, metrics = update_ppo(
+                state, optimizer, transitions, advantages, targets, update_key, config
+            )
             params, _ = eqx.partition(state.model, eqx.is_array)
             metrics = {
                 **metrics,
                 "mean_reward": transitions.reward.mean(),
                 "mean_done": transitions.done.astype(jnp.float32).mean(),
                 "mean_episode_return": safe_returned_mean(transitions.info),
-                "max_episode_return": transitions.info.get("episode_return", jnp.zeros_like(transitions.reward)).max(),
+                "max_episode_return": transitions.info.get(
+                    "episode_return", jnp.zeros_like(transitions.reward)
+                ).max(),
             }
-            return (params, state.opt_state, state.update, e_state, last_obs, key), metrics
+            return (
+                params,
+                state.opt_state,
+                state.update,
+                e_state,
+                last_obs,
+                key,
+            ), metrics
 
-        runner_state = (init_params, train_state.opt_state, train_state.update, env_state, obs, rng)
-        runner_state, metrics = jax.lax.scan(update_step, runner_state, None, config.num_updates)
+        runner_state = (
+            init_params,
+            train_state.opt_state,
+            train_state.update,
+            env_state,
+            obs,
+            rng,
+        )
+        runner_state, metrics = jax.lax.scan(
+            update_step, runner_state, None, config.num_updates
+        )
         return {"runner_state": runner_state, "metrics": metrics}
 
     return train

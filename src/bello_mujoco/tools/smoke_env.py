@@ -5,18 +5,30 @@ import jax.numpy as jnp
 import tyro
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.sim import WarpConfig
+from bello_mujoco.sim import (
+    DEFAULT_CONTACT_BUDGET_PER_ENV,
+    DEFAULT_WARP_NJMAX,
+    WarpConfig,
+)
 
 
-def main(step: bool = False, contact_budget_per_env: int = 16, warp_njmax: int | None = 256) -> None:
-    env = BelloLocomotionEnv.load(warp=WarpConfig(contact_budget_per_env=contact_budget_per_env, njmax=warp_njmax))
+def main(
+    step: bool = False,
+    contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
+    warp_njmax: int | None = DEFAULT_WARP_NJMAX,
+) -> None:
+    env = BelloLocomotionEnv.load(
+        warp=WarpConfig(contact_budget_per_env=contact_budget_per_env, njmax=warp_njmax)
+    )
     state, obs = env.reset()
     obs.block_until_ready()
     reward = jnp.asarray(0.0)
     done = jnp.asarray(False)
     if step:
         step_fn = jax.jit(lambda s, a: env.step(s, a))
-        state, obs, reward, done, _ = step_fn(state, jnp.zeros(env.action_size, dtype=jnp.float32))
+        state, obs, reward, done, _ = step_fn(
+            state, jnp.zeros(env.action_size, dtype=jnp.float32)
+        )
         obs.block_until_ready()
         reward.block_until_ready()
         done.block_until_ready()

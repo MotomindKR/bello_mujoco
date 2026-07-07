@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Literal
@@ -28,6 +29,7 @@ def compile_urdf_to_mjcf(
     *,
     collision_mode: CollisionMode = "foot-mesh",
     neighbor_exclusion_depth: int = 2,
+    include_visuals: bool = False,
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tmp_path = mjcf_path.with_suffix(".compiled.xml")
@@ -36,9 +38,12 @@ def compile_urdf_to_mjcf(
     tree = ET.parse(tmp_path)
     root = tree.getroot()
     ensure_option(root)
-    ensure_ground_plane(root)
     ensure_free_root_joint(root)
+    ensure_visual_geoms(root)
     apply_collision_mode(root, mjcf_path.parent, collision_mode)
+    if include_visuals:
+        inject_visual_geoms(root, urdf_path, mjcf_path.parent)
+        ensure_visual_geoms(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
     ensure_position_actuators(root)
     ensure_home_keyframe(root)
@@ -50,20 +55,26 @@ def compile_urdf_to_mjcf(
     mujoco.MjModel.from_xml_path(str(mjcf_path))
 
 
-def apply_collision_mode(root: ET.Element, mjcf_dir: Path, collision_mode: CollisionMode) -> None:
+def apply_collision_mode(
+    root: ET.Element, mjcf_dir: Path, collision_mode: CollisionMode
+) -> None:
     if collision_mode == "mesh":
         return
 
     mesh_bounds = load_scaled_mesh_bounds(root, mjcf_dir)
     keep_meshes = FOOT_MESH_NAMES if collision_mode == "foot-mesh" else frozenset()
     for geom in root.findall(".//geom[@type='mesh']"):
+        if is_visual_geom(geom):
+            continue
         mesh_name = geom.get("mesh")
         if mesh_name is None or mesh_name in keep_meshes:
             continue
         if mesh_name not in mesh_bounds:
             continue
         center, half_size = mesh_bounds[mesh_name]
-        quat = parse_vec(geom.get("quat", "1 0 0 0"), 4, np.asarray([1.0, 0.0, 0.0, 0.0]))
+        quat = parse_vec(
+            geom.get("quat", "1 0 0 0"), 4, np.asarray([1.0, 0.0, 0.0, 0.0])
+        )
         pos = parse_vec(geom.get("pos", "0 0 0"), 3, np.zeros(3))
         adjusted_pos = pos + quat_rotate(quat, center)
         geom.attrib.pop("mesh", None)
@@ -72,7 +83,128 @@ def apply_collision_mode(root: ET.Element, mjcf_dir: Path, collision_mode: Colli
         geom.set("size", format_vec(half_size))
 
 
-def load_scaled_mesh_bounds(root: ET.Element, mjcf_dir: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+def ensure_visual_geoms(root: ET.Element) -> None:
+    for geom in root.findall(".//geom[@type='mesh']"):
+        if not is_visual_geom(geom):
+            continue
+        geom.set("contype", "0")
+        geom.set("conaffinity", "0")
+        geom.set("group", "1")
+
+
+def is_visual_geom(geom: ET.Element) -> bool:
+    name = geom.get("name", "")
+    mesh_name = geom.get("mesh", "")
+    return name.endswith("_visual") or mesh_name.endswith("_visual")
+
+
+def inject_visual_geoms(root: ET.Element, urdf_path: Path, mjcf_dir: Path) -> None:
+    asset = root.find("asset")
+    if asset is None:
+        asset = ET.Element("asset")
+        root.insert(0, asset)
+
+    bodies = bodies_by_name(root)
+    collision_bodies = bodies_by_collision_geom(root)
+    existing_meshes = {mesh.get("name") for mesh in asset.findall("mesh")}
+    existing_geoms = {geom.get("name") for geom in root.findall(".//geom")}
+
+    urdf_root = ET.parse(urdf_path).getroot()
+    for link in urdf_root.findall("link"):
+        link_name = link.get("name")
+        if link_name is None:
+            continue
+        body = bodies.get(link_name) or collision_bodies.get(f"{link_name}_collision")
+        if body is None:
+            continue
+        for visual in link.findall("visual"):
+            mesh = visual.find("./geometry/mesh")
+            if mesh is None:
+                continue
+            visual_name = visual.get("name", f"{link_name}_visual")
+            mesh_name = visual_name
+            mesh_file = mesh.get("filename")
+            if mesh_file is None:
+                continue
+            if mesh_name not in existing_meshes:
+                attrs = {
+                    "name": mesh_name,
+                    "file": format_mesh_file(urdf_path, mjcf_dir, mesh_file),
+                }
+                scale = mesh.get("scale")
+                if scale is not None:
+                    attrs["scale"] = scale
+                ET.SubElement(asset, "mesh", attrs)
+                existing_meshes.add(mesh_name)
+            if visual_name in existing_geoms:
+                continue
+            geom_attrs = {
+                "name": visual_name,
+                "type": "mesh",
+                "mesh": mesh_name,
+                "contype": "0",
+                "conaffinity": "0",
+                "group": "1",
+            }
+            origin = visual.find("origin")
+            if origin is not None:
+                xyz = origin.get("xyz")
+                rpy = origin.get("rpy")
+                if xyz is not None:
+                    geom_attrs["pos"] = xyz
+                if rpy is not None:
+                    geom_attrs["quat"] = format_vec(
+                        rpy_to_quat(parse_vec(rpy, 3, np.zeros(3)))
+                    )
+            body.append(ET.Element("geom", geom_attrs))
+            existing_geoms.add(visual_name)
+
+
+def bodies_by_name(root: ET.Element) -> dict[str, ET.Element]:
+    return {
+        body.get("name"): body
+        for body in root.findall(".//body")
+        if body.get("name") is not None
+    }
+
+
+def bodies_by_collision_geom(root: ET.Element) -> dict[str, ET.Element]:
+    bodies: dict[str, ET.Element] = {}
+    for body in root.findall(".//body"):
+        for geom in body.findall("geom"):
+            name = geom.get("name")
+            if name is not None:
+                bodies[name] = body
+    return bodies
+
+
+def format_mesh_file(urdf_path: Path, mjcf_dir: Path, mesh_file: str) -> str:
+    mesh_path = (urdf_path.parent / mesh_file).resolve()
+    return str(Path("..") / mesh_path.relative_to(mjcf_dir.resolve().parent))
+
+
+def rpy_to_quat(rpy: np.ndarray) -> np.ndarray:
+    roll, pitch, yaw = rpy
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    return np.asarray(
+        [
+            cy * cp * cr + sy * sp * sr,
+            cy * cp * sr - sy * sp * cr,
+            sy * cp * sr + cy * sp * cr,
+            sy * cp * cr - cy * sp * sr,
+        ],
+        dtype=np.float64,
+    )
+
+
+def load_scaled_mesh_bounds(
+    root: ET.Element, mjcf_dir: Path
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     bounds: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for mesh in root.findall("./asset/mesh"):
         name = mesh.get("name")
@@ -156,7 +288,9 @@ def body_graph(root: ET.Element) -> tuple[list[str], list[tuple[str, str]]]:
     return names, edges
 
 
-def nearby_body_pairs(names: list[str], graph: dict[str, set[str]], depth: int) -> list[tuple[str, str]]:
+def nearby_body_pairs(
+    names: list[str], graph: dict[str, set[str]], depth: int
+) -> list[tuple[str, str]]:
     index = {name: i for i, name in enumerate(names)}
     pairs: set[tuple[str, str]] = set()
     for source in names:
@@ -186,27 +320,6 @@ def ensure_option(root: ET.Element) -> None:
     option.set("integrator", "implicitfast")
 
 
-def ensure_ground_plane(root: ET.Element) -> None:
-    worldbody = root.find("worldbody")
-    if worldbody is None:
-        raise ValueError("MJCF has no worldbody")
-    if worldbody.find("./geom[@name='floor']") is not None:
-        return
-    floor = ET.Element(
-        "geom",
-        {
-            "name": "floor",
-            "type": "plane",
-            "size": "5 5 0.05",
-            "pos": "0 0 0",
-            "rgba": "0.22 0.24 0.26 1",
-            "condim": "3",
-            "friction": "0.8 0.02 0.001",
-        },
-    )
-    worldbody.insert(0, floor)
-
-
 def ensure_free_root_joint(root: ET.Element) -> None:
     worldbody = root.find("worldbody")
     if worldbody is None:
@@ -214,7 +327,7 @@ def ensure_free_root_joint(root: ET.Element) -> None:
     if worldbody.find(".//freejoint") is not None:
         return
 
-    robot_children = [child for child in list(worldbody) if child.get("name") != "floor"]
+    robot_children = list(worldbody)
     if not robot_children:
         raise ValueError("MJCF worldbody has no robot geoms or bodies to wrap")
     root_body = ET.Element("body", {"name": "bello_root"})
@@ -230,8 +343,9 @@ def ensure_position_actuators(root: ET.Element) -> None:
     if actuator is None:
         actuator = ET.SubElement(root, "actuator")
     existing = {item.get("joint") for item in actuator.findall("position")}
+    joints = {joint.get("name") for joint in root.findall(".//joint")}
     for joint_name in POLICY_JOINT_ORDER:
-        if joint_name in existing:
+        if joint_name in existing or joint_name not in joints:
             continue
         kp, kv = ACTUATOR_GAINS[joint_name]
         lo, hi = SOFT_JOINT_LIMITS[joint_name]
@@ -248,7 +362,10 @@ def ensure_position_actuators(root: ET.Element) -> None:
             },
         )
     for joint_name, target in FIXED_JOINT_DEFAULT_POS.items():
-        if joint_name in existing:
+        if (
+            joint_name in existing
+            or root.find(f".//joint[@name='{joint_name}']") is None
+        ):
             continue
         kp, kv = FIXED_JOINT_GAINS[joint_name]
         lo, hi = joint_range(root, joint_name)
@@ -275,15 +392,28 @@ def ensure_home_keyframe(root: ET.Element) -> None:
     if keyframe.find("./key[@name='home']") is not None:
         return
 
-    joint_qpos = [joint_default(joint.get("name", "")) for joint in root.findall(".//joint")]
-    qpos = " ".join(["0", "0", "0.91", "1", "0", "0", "0", *[f"{value:g}" for value in joint_qpos]])
-    ctrl = " ".join(
-        [
-            *[f"{DEFAULT_JOINT_POS[name]:g}" for name in POLICY_JOINT_ORDER],
-            *[f"{FIXED_JOINT_DEFAULT_POS[name]:g}" for name in FIXED_JOINT_DEFAULT_POS],
-        ]
+    joint_qpos = [
+        joint_default(joint.get("name", "")) for joint in root.findall(".//joint")
+    ]
+    qpos = " ".join(
+        ["0", "0", "0.91", "1", "0", "0", "0", *[f"{value:g}" for value in joint_qpos]]
     )
+    ctrl_values = []
+    for actuator in keyframe_actuators(root):
+        joint_name = actuator.get("joint", "")
+        if joint_name in DEFAULT_JOINT_POS:
+            ctrl_values.append(DEFAULT_JOINT_POS[joint_name])
+        elif joint_name in FIXED_JOINT_DEFAULT_POS:
+            ctrl_values.append(FIXED_JOINT_DEFAULT_POS[joint_name])
+    ctrl = " ".join(f"{value:g}" for value in ctrl_values)
     ET.SubElement(keyframe, "key", {"name": "home", "qpos": qpos, "ctrl": ctrl})
+
+
+def keyframe_actuators(root: ET.Element) -> list[ET.Element]:
+    actuator = root.find("actuator")
+    if actuator is None:
+        return []
+    return list(actuator.findall("position"))
 
 
 def joint_default(joint_name: str) -> float:
@@ -299,7 +429,9 @@ def joint_range(root: ET.Element, joint_name: str) -> tuple[float, float]:
         raise ValueError(f"joint not found in MJCF: {joint_name}")
     range_attr = joint.get("range")
     if range_attr is None:
-        value = FIXED_JOINT_DEFAULT_POS.get(joint_name, DEFAULT_JOINT_POS.get(joint_name, 0.0))
+        value = FIXED_JOINT_DEFAULT_POS.get(
+            joint_name, DEFAULT_JOINT_POS.get(joint_name, 0.0)
+        )
         return value - eps, value + eps
     lo_str, hi_str = range_attr.split()
     lo, hi = float(lo_str), float(hi_str)

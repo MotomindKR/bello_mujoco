@@ -4,7 +4,11 @@ import jax
 import tyro
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.sim import DEFAULT_CONTACT_BUDGET_PER_ENV, DEFAULT_WARP_NJMAX, WarpConfig
+from bello_mujoco.sim import (
+    DEFAULT_CONTACT_BUDGET_PER_ENV,
+    DEFAULT_WARP_NJMAX,
+    WarpConfig,
+)
 from bello_mujoco.train.ppo import PPOConfig, init_train_state, make_train
 
 
@@ -52,7 +56,9 @@ def main(
     train = make_train(config, env)
     train = jax.jit(train) if jit else train
     out = train(rng)
-    metrics = jax.tree_util.tree_map(lambda x: x[-1] if getattr(x, "ndim", 0) > 0 else x, out["metrics"])
+    metrics = jax.tree_util.tree_map(
+        lambda x: x[-1] if getattr(x, "ndim", 0) > 0 else x, out["metrics"]
+    )
     print(metrics)
 
 

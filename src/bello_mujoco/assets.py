@@ -25,5 +25,9 @@ def generated_model_path(asset: str = "full_body") -> Path:
     return generated_assets_root() / asset / "mjcf" / f"bello_{asset}.xml"
 
 
+def generated_viewer_model_path(asset: str = "full_body") -> Path:
+    return generated_assets_root() / asset / "mjcf" / f"bello_{asset}_viewer.xml"
+
+
 def generated_urdf_path(asset: str = "full_body") -> Path:
     return generated_assets_root() / asset / "urdf" / f"bello_{asset}.urdf"

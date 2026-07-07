@@ -1,4 +1,9 @@
-from bello_mujoco.contracts import ACTION_DIM, FRAME_OBS_DIM, FULL_BODY_ACTION_DIM, POLICY_JOINT_ORDER
+from bello_mujoco.contracts import (
+    ACTION_DIM,
+    FRAME_OBS_DIM,
+    FULL_BODY_ACTION_DIM,
+    POLICY_JOINT_ORDER,
+)
 
 
 def test_policy_contract_dimensions() -> None:

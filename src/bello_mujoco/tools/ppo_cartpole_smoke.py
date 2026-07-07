@@ -16,7 +16,9 @@ def run_cartpole_ppo(config: PPOConfig) -> dict[str, float | int | list[float] |
     episode_returns = out["metrics"]["mean_episode_return"]
     max_episode_returns = out["metrics"]["max_episode_return"]
     losses = out["metrics"]["loss"]
-    trace_idx = jnp.linspace(0, config.num_updates - 1, min(config.num_updates, 12), dtype=jnp.int32)
+    trace_idx = jnp.linspace(
+        0, config.num_updates - 1, min(config.num_updates, 12), dtype=jnp.int32
+    )
     return {
         "backend": jax.default_backend(),
         "updates": config.num_updates,

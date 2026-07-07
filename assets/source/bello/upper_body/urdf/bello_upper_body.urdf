@@ -7,28 +7,7 @@
 </material>
 
 <!-- Links -->
-<link name="base_link">
-  <inertial>
-    <origin xyz="-2.238777883157077e-15 -8.528677650122197e-16 -0.07192817872555789" rpy="0 0 0"/>
-    <mass value="1.382049107555175"/>
-    <inertia ixx="0.00206" iyy="0.004818" izz="0.006774" ixy="0.0" iyz="0.0" ixz="0.0"/>
-  </inertial>
-  <visual>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="../meshes/base_link.stl" scale="0.001 0.001 0.001"/>
-    </geometry>
-    <material name="silver"/>
-  </visual>
-  <collision>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="../meshes/base_link.stl" scale="0.001 0.001 0.001"/>
-    </geometry>
-  </collision>
-</link>
-
-<link name="waist_yaw_link_1">
+<link name="waist_yaw_link">
   <inertial>
     <origin xyz="0.0002482071760024766 0.011541091604791848 0.050931654049325224" rpy="0 0 0"/>
     <mass value="1.5103535678384636"/>
@@ -37,19 +16,19 @@
   <visual>
     <origin xyz="0.0 0.0 0.0575" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/waist_yaw_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/waist_yaw_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.0 0.0 0.0575" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/waist_yaw_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/waist_yaw_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="waist_roll_link_1">
+<link name="waist_roll_link">
   <inertial>
     <origin xyz="2.701604293384978e-15 -0.03999999999999973 -5.317274398564109e-14" rpy="0 0 0"/>
     <mass value="0.2181491079918397"/>
@@ -58,19 +37,19 @@
   <visual>
     <origin xyz="-0.0 -0.04 -0.052" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/waist_roll_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/waist_roll_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.0 -0.04 -0.052" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/waist_roll_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/waist_roll_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="torso_link_1">
+<link name="torso_link">
   <inertial>
     <origin xyz="-3.7207874637243513e-07 -0.009936876621712476 0.20120860663738488" rpy="0 0 0"/>
     <mass value="8.729773679110643"/>
@@ -79,19 +58,19 @@
   <visual>
     <origin xyz="-0.0 -0.0 -0.052" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/torso_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/torso_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.0 -0.0 -0.052" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/torso_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/torso_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="neck_link_1">
+<link name="neck_link">
   <inertial>
     <origin xyz="0.02496571500342607 -7.717043491101659e-05 0.04163660291735949" rpy="0 0 0"/>
     <mass value="0.12295125229838202"/>
@@ -100,19 +79,19 @@
   <visual>
     <origin xyz="-0.0 -0.01 -0.476" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/neck_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/neck_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.0 -0.01 -0.476" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/neck_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/neck_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="head_link_1">
+<link name="head_link">
   <inertial>
     <origin xyz="-0.0637102200616502 -0.002940533300600264 0.04099003248244659" rpy="0 0 0"/>
     <mass value="1.4642342556514492"/>
@@ -121,19 +100,19 @@
   <visual>
     <origin xyz="-0.063 -0.01 -0.530997" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/head_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/head_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.063 -0.01 -0.530997" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/head_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/head_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_shoulder_pitch_link_1">
+<link name="r_shoulder_pitch_link">
   <inertial>
     <origin xyz="0.07071616972834636 -0.001376837112219763 0.00047192316065458595" rpy="0 0 0"/>
     <mass value="1.1428259151505893"/>
@@ -142,19 +121,19 @@
   <visual>
     <origin xyz="-0.1095 -0.0 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_shoulder_pitch_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_shoulder_pitch_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.1095 -0.0 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_shoulder_pitch_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_shoulder_pitch_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_shoulder_roll_link_1">
+<link name="r_shoulder_roll_link">
   <inertial>
     <origin xyz="0.009187917042849159 0.025119320862130305 -0.04348585069413985" rpy="0 0 0"/>
     <mass value="1.0453311596609742"/>
@@ -163,19 +142,19 @@
   <visual>
     <origin xyz="-0.2005 0.0275 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_shoulder_roll_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_shoulder_roll_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.2005 0.0275 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_shoulder_roll_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_shoulder_roll_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_upper_arm_link_1">
+<link name="r_upper_arm_link">
   <inertial>
     <origin xyz="-0.00415711644548708 0.0038954924771729843 -0.08521702995700481" rpy="0 0 0"/>
     <mass value="0.943331324392577"/>
@@ -184,19 +163,19 @@
   <visual>
     <origin xyz="-0.218502 -0.0 -0.222501" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_upper_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_upper_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.218502 -0.0 -0.222501" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_upper_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_upper_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_elbow_link_1">
+<link name="r_elbow_link">
   <inertial>
     <origin xyz="0.012468329013447327 0.022815312198190402 -0.03601977602136072" rpy="0 0 0"/>
     <mass value="0.5474748954578743"/>
@@ -205,19 +184,19 @@
   <visual>
     <origin xyz="-0.203509 0.02575 -0.0605" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_elbow_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_elbow_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.203509 0.02575 -0.0605" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_elbow_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_elbow_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_lower_arm_link_1">
+<link name="r_lower_arm_link">
   <inertial>
     <origin xyz="0.00010480812262028683 1.0047804816865704e-05 -0.04088401018664662" rpy="0 0 0"/>
     <mass value="0.44200810899527526"/>
@@ -226,19 +205,19 @@
   <visual>
     <origin xyz="-0.228514 -0.0 0.057498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_lower_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_lower_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.228514 -0.0 0.057498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_lower_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_lower_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_wrist_link_1">
+<link name="r_wrist_link">
   <inertial>
     <origin xyz="-0.000132393882217946 -0.026091367999933657 -0.04406037219205339" rpy="0 0 0"/>
     <mass value="0.38491967179796927"/>
@@ -247,19 +226,19 @@
   <visual>
     <origin xyz="-0.228518 -0.0275 0.143498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_wrist_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_wrist_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.228518 -0.0275 0.143498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_wrist_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_wrist_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_eef_link_1">
+<link name="r_eef_link">
   <inertial>
     <origin xyz="0.0010660099741996165 1.7370524333372673e-07 -0.0024829036731042753" rpy="0 0 0"/>
     <mass value="0.03493336732839561"/>
@@ -268,19 +247,19 @@
   <visual>
     <origin xyz="-0.228523 -0.0 0.245498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_eef_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_eef_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.228523 -0.0 0.245498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_eef_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_eef_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_shoulder_pitch_link_1">
+<link name="l_shoulder_pitch_link">
   <inertial>
     <origin xyz="-0.07010118613120626 0.0011950292745490948 6.404621224587181e-06" rpy="0 0 0"/>
     <mass value="1.1579983175099802"/>
@@ -289,19 +268,19 @@
   <visual>
     <origin xyz="0.1095 0.0 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_shoulder_pitch_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_shoulder_pitch_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.1095 0.0 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_shoulder_pitch_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_shoulder_pitch_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_shoulder_roll_link_1">
+<link name="l_shoulder_roll_link">
   <inertial>
     <origin xyz="-0.009187915400223318 -0.025119307292302922 -0.043485852519853596" rpy="0 0 0"/>
     <mass value="1.0453311611165388"/>
@@ -310,19 +289,19 @@
   <visual>
     <origin xyz="0.2005 -0.0275 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_shoulder_roll_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_shoulder_roll_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.2005 -0.0275 -0.347" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_shoulder_roll_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_shoulder_roll_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_upper_arm_link_1">
+<link name="l_upper_arm_link">
   <inertial>
     <origin xyz="0.004160441391949016 0.0027299708404671013 -0.08977843011269812" rpy="0 0 0"/>
     <mass value="1.1805072167510853"/>
@@ -331,19 +310,19 @@
   <visual>
     <origin xyz="0.218502 -0.0 -0.222501" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_upper_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_upper_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.218502 -0.0 -0.222501" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_upper_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_upper_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_elbow_link_1">
+<link name="l_elbow_link">
   <inertial>
     <origin xyz="-0.012110761903903783 -0.023967544019741584 -0.03498681028777245" rpy="0 0 0"/>
     <mass value="0.5636373153246179"/>
@@ -352,19 +331,19 @@
   <visual>
     <origin xyz="0.203509 -0.02575 -0.0605" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_elbow_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_elbow_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.203509 -0.02575 -0.0605" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_elbow_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_elbow_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_lower_arm_link_1">
+<link name="l_lower_arm_link">
   <inertial>
     <origin xyz="2.746228299327358e-05 -1.212084505825797e-05 -0.04088320269246668" rpy="0 0 0"/>
     <mass value="0.4420083855088359"/>
@@ -373,19 +352,19 @@
   <visual>
     <origin xyz="0.228514 -0.0 0.057498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_lower_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_lower_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.228514 -0.0 0.057498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_lower_arm_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_lower_arm_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_wrist_link_1">
+<link name="l_wrist_link">
   <inertial>
     <origin xyz="0.00013239655591393285 0.026091524032503144 -0.044060357185148114" rpy="0 0 0"/>
     <mass value="0.38491929744609993"/>
@@ -394,19 +373,19 @@
   <visual>
     <origin xyz="0.228518 0.0275 0.143498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_wrist_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_wrist_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.228518 0.0275 0.143498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_wrist_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_wrist_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_eef_link_1">
+<link name="l_eef_link">
   <inertial>
     <origin xyz="-0.0010660099741994777 2.7471885034320395e-12 -0.002482903673129644" rpy="0 0 0"/>
     <mass value="0.03493336732839536"/>
@@ -415,19 +394,19 @@
   <visual>
     <origin xyz="0.228523 -0.0 0.245498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_eef_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_eef_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.228523 -0.0 0.245498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_eef_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_eef_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_wrist_camera_link_1">
+<link name="r_wrist_camera_link">
   <inertial>
     <origin xyz="0.02472610234465994 1.950206789457072e-05 -0.00967601797499168" rpy="0 0 0"/>
     <mass value="0.08728989404219215"/>
@@ -436,19 +415,19 @@
   <visual>
     <origin xyz="-0.28613 -0.0 0.264001" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_wrist_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_wrist_camera_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.28613 -0.0 0.264001" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_wrist_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_wrist_camera_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_finger_right_link_1">
+<link name="r_finger_right_link">
   <inertial>
     <origin xyz="-0.0002511541458402322 0.004902345432786889 -0.037679918824153336" rpy="0 0 0"/>
     <mass value="0.06152009711057252"/>
@@ -457,19 +436,19 @@
   <visual>
     <origin xyz="-0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_finger_right_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_finger_right_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_finger_right_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_finger_right_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_finger_left_link_1">
+<link name="r_finger_left_link">
   <inertial>
     <origin xyz="0.0002546382385111845 -0.0049024091318712795 -0.03767989944674727" rpy="0 0 0"/>
     <mass value="0.06152009711057157"/>
@@ -478,19 +457,19 @@
   <visual>
     <origin xyz="-0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_finger_left_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_finger_left_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_finger_left_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_finger_left_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_wrist_camera_link_1">
+<link name="l_wrist_camera_link">
   <inertial>
     <origin xyz="-0.024726102344659884 -1.9320833685905797e-05 -0.00967601798065909" rpy="0 0 0"/>
     <mass value="0.08728989404219377"/>
@@ -499,19 +478,19 @@
   <visual>
     <origin xyz="0.28613 -0.0 0.264001" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_wrist_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_wrist_camera_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.28613 -0.0 0.264001" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_wrist_camera_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_wrist_camera_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_finger_right_link_1">
+<link name="l_finger_right_link">
   <inertial>
     <origin xyz="0.00025115414583959383 -0.00490213815077784 -0.03767992025539113" rpy="0 0 0"/>
     <mass value="0.061520097110572526"/>
@@ -520,19 +499,19 @@
   <visual>
     <origin xyz="0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_finger_right_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_finger_right_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_finger_right_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_finger_right_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_finger_left_link_1">
+<link name="l_finger_left_link">
   <inertial>
     <origin xyz="-0.00025463823851085143 0.004902616413874239 -0.03767989801543098" rpy="0 0 0"/>
     <mass value="0.061520097110571076"/>
@@ -541,19 +520,19 @@
   <visual>
     <origin xyz="0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_finger_left_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_finger_left_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.228526 -0.0 0.325298" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_finger_left_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_finger_left_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_gripper_link_1">
+<link name="r_gripper_link">
   <inertial>
     <origin xyz="0.004587344603496746 2.7104767761076877e-06 -0.03806122694709679" rpy="0 0 0"/>
     <mass value="0.23410655123314275"/>
@@ -562,19 +541,19 @@
   <visual>
     <origin xyz="-0.228523 -0.0 0.250498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_gripper_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_gripper_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="-0.228523 -0.0 0.250498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/r_gripper_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/r_gripper_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="l_gripper_link_1">
+<link name="l_gripper_link">
   <inertial>
     <origin xyz="-0.00458735525156731 -2.4949088912282375e-06 -0.03806122773483256" rpy="0 0 0"/>
     <mass value="0.234106008061309"/>
@@ -583,19 +562,19 @@
   <visual>
     <origin xyz="0.228523 -0.0 0.250498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_gripper_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_gripper_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="silver"/>
   </visual>
   <collision>
     <origin xyz="0.228523 -0.0 0.250498" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="../meshes/l_gripper_link_1.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/l_gripper_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
 
-<link name="r_wrist_camera_frame_link_1">
+<link name="r_wrist_camera_frame_link">
   <inertial>
     <origin xyz="-0.305996 0.0 0.284591" rpy="0 0 0"/>
     <mass value="0.001"/>
@@ -603,7 +582,7 @@
   </inertial>
 </link>
 
-<link name="l_wrist_camera_frame_link_1">
+<link name="l_wrist_camera_frame_link">
   <inertial>
     <origin xyz="0.305996 0.0 0.284591" rpy="0 0 0"/>
     <mass value="0.001"/>
@@ -611,7 +590,7 @@
   </inertial>
 </link>
 
-<link name="head_camera_frame_link_1">
+<link name="head_camera_frame_link">
   <inertial>
     <origin xyz="-0.03 -0.073443 -0.55795" rpy="0 0 0"/>
     <mass value="0.001"/>
@@ -619,7 +598,7 @@
   </inertial>
 </link>
 
-<link name="head_left_camera_frame_link_1">
+<link name="head_left_camera_frame_link">
   <inertial>
     <origin xyz="0.071 0.01 -0.585997" rpy="0 0 0"/>
     <mass value="0.001"/>
@@ -627,7 +606,7 @@
   </inertial>
 </link>
 
-<link name="head_right_camera_frame_link_1">
+<link name="head_right_camera_frame_link">
   <inertial>
     <origin xyz="-0.071 0.01 -0.585997" rpy="0 0 0"/>
     <mass value="0.001"/>
@@ -636,242 +615,234 @@
 </link>
 
 <!-- Joints -->
-<joint name="Revolute 1" type="revolute">
-  <origin xyz="0.0 0.0 -0.0575" rpy="0 0 0"/>
-  <parent link="base_link"/>
-  <child link="waist_yaw_link_1"/>
-  <axis xyz="0.0 0.0 1.0"/>
-  <limit lower="-0.5" upper="0.5" velocity="30" effort="120.0"/>
-</joint>
-
-<joint name="Revolute 2" type="revolute">
+<joint name="waist_roll_joint" type="revolute">
   <origin xyz="0.0 0.04 0.1095" rpy="0 0 0"/>
-  <parent link="waist_yaw_link_1"/>
-  <child link="waist_roll_link_1"/>
+  <parent link="waist_yaw_link"/>
+  <child link="waist_roll_link"/>
   <axis xyz="0.0 -1.0 0.0"/>
   <limit lower="-0.4" upper="0.4" velocity="30" effort="120.0"/>
 </joint>
 
-<joint name="Revolute 3" type="revolute">
+<joint name="waist_pitch_joint" type="revolute">
   <origin xyz="0.0 -0.04 0.0" rpy="0 0 0"/>
-  <parent link="waist_roll_link_1"/>
-  <child link="torso_link_1"/>
+  <parent link="waist_roll_link"/>
+  <child link="torso_link"/>
   <axis xyz="-1.0 0.0 0.0"/>
   <limit lower="0.0" upper="0.8" velocity="30" effort="120.0"/>
 </joint>
 
-<joint name="Revolute 4" type="revolute">
+<joint name="neck_yaw_joint" type="revolute">
   <origin xyz="0.0 0.01 0.424" rpy="0 0 0"/>
-  <parent link="torso_link_1"/>
-  <child link="neck_link_1"/>
+  <parent link="torso_link"/>
+  <child link="neck_link"/>
   <axis xyz="0.0 0.0 1.0"/>
   <limit lower="-1.0" upper="1.0" velocity="30" effort="5.5"/>
 </joint>
 
-<joint name="Revolute 5" type="revolute">
+<joint name="head_pitch_joint" type="revolute">
   <origin xyz="0.063 0.0 0.054997" rpy="0 0 0"/>
-  <parent link="neck_link_1"/>
-  <child link="head_link_1"/>
+  <parent link="neck_link"/>
+  <child link="head_link"/>
   <axis xyz="1.0 0.0 -0.0"/>
   <limit lower="-0.8" upper="0.3" velocity="30" effort="5.5"/>
 </joint>
 
-<joint name="Revolute 6" type="revolute">
+<joint name="right_shoulder_pitch_joint" type="revolute">
   <origin xyz="0.1095 0.0 0.295" rpy="0 0 0"/>
-  <parent link="torso_link_1"/>
-  <child link="r_shoulder_pitch_link_1"/>
+  <parent link="torso_link"/>
+  <child link="r_shoulder_pitch_link"/>
   <axis xyz="1.0 0.0 0.0"/>
   <limit lower="-1.57" upper="1.57" velocity="30" effort="120.0"/>
 </joint>
 
-<joint name="Revolute 7" type="revolute">
+<joint name="right_shoulder_roll_joint" type="revolute">
   <origin xyz="0.091 -0.0275 0.0" rpy="0 0 0"/>
-  <parent link="r_shoulder_pitch_link_1"/>
-  <child link="r_shoulder_roll_link_1"/>
+  <parent link="r_shoulder_pitch_link"/>
+  <child link="r_shoulder_roll_link"/>
   <axis xyz="0.0 -1.0 -0.0"/>
   <limit lower="-1.57" upper="1.57" velocity="30" effort="60.0"/>
 </joint>
 
-<joint name="Revolute 8" type="revolute">
+<joint name="right_shoulder_yaw_joint" type="revolute">
   <origin xyz="0.018002 0.0275 -0.124499" rpy="0 0 0"/>
-  <parent link="r_shoulder_roll_link_1"/>
-  <child link="r_upper_arm_link_1"/>
+  <parent link="r_shoulder_roll_link"/>
+  <child link="r_upper_arm_link"/>
   <axis xyz="-4.4e-05 -0.0 1.0"/>
   <limit lower="-1.57" upper="1.57" velocity="30" effort="36.0"/>
 </joint>
 
-<joint name="Revolute 9" type="revolute">
+<joint name="right_elbow_pitch_joint" type="revolute">
   <origin xyz="-0.014993 -0.02575 -0.162001" rpy="0 0 0"/>
-  <parent link="r_upper_arm_link_1"/>
-  <child link="r_elbow_link_1"/>
+  <parent link="r_upper_arm_link"/>
+  <child link="r_elbow_link"/>
   <axis xyz="0.0 1.0 0.0"/>
   <limit lower="-1.57" upper="1.57" velocity="30" effort="36.0"/>
 </joint>
 
-<joint name="Revolute 10" type="revolute">
+<joint name="right_elbow_yaw_joint" type="revolute">
   <origin xyz="0.025005 0.02575 -0.117998" rpy="0 0 0"/>
-  <parent link="r_elbow_link_1"/>
-  <child link="r_lower_arm_link_1"/>
+  <parent link="r_elbow_link"/>
+  <child link="r_lower_arm_link"/>
   <axis xyz="-4.4e-05 -0.0 1.0"/>
   <limit lower="-0.523598776" upper="2.0943951" velocity="30" effort="14.0"/>
 </joint>
 
-<joint name="Revolute 11" type="revolute">
+<joint name="right_wrist_pitch_joint" type="revolute">
   <origin xyz="4e-06 0.0275 -0.086" rpy="0 0 0"/>
-  <parent link="r_lower_arm_link_1"/>
-  <child link="r_wrist_link_1"/>
+  <parent link="r_lower_arm_link"/>
+  <child link="r_wrist_link"/>
   <axis xyz="-0.0 -1.0 -0.0"/>
   <limit lower="-1.57" upper="1.57" velocity="30" effort="14.0"/>
 </joint>
 
-<joint name="Revolute 12" type="revolute">
+<joint name="right_wrist_yaw_joint" type="revolute">
   <origin xyz="5e-06 -0.0275 -0.102" rpy="0 0 0"/>
-  <parent link="r_wrist_link_1"/>
-  <child link="r_eef_link_1"/>
+  <parent link="r_wrist_link"/>
+  <child link="r_eef_link"/>
   <axis xyz="4.4e-05 0.0 -1.0"/>
   <limit lower="-1.57" upper="1.57" velocity="30" effort="5.5"/>
 </joint>
 
-<joint name="Revolute 13" type="revolute">
+<joint name="left_shoulder_pitch_joint" type="revolute">
   <origin xyz="-0.1095 -0.0 0.295" rpy="0 0 0"/>
-  <parent link="torso_link_1"/>
-  <child link="l_shoulder_pitch_link_1"/>
+  <parent link="torso_link"/>
+  <child link="l_shoulder_pitch_link"/>
   <axis xyz="-1.0 0.0 0.0"/>
   <limit lower="-1.5" upper="0.5" velocity="30" effort="120.0"/>
 </joint>
 
-<joint name="Revolute 14" type="revolute">
+<joint name="left_shoulder_roll_joint" type="revolute">
   <origin xyz="-0.091 0.0275 0.0" rpy="0 0 0"/>
-  <parent link="l_shoulder_pitch_link_1"/>
-  <child link="l_shoulder_roll_link_1"/>
+  <parent link="l_shoulder_pitch_link"/>
+  <child link="l_shoulder_roll_link"/>
   <axis xyz="0.0 1.0 -0.0"/>
   <limit lower="-0.2" upper="2.0" velocity="30" effort="60.0"/>
 </joint>
 
-<joint name="Revolute 15" type="revolute">
+<joint name="left_shoulder_yaw_joint" type="revolute">
   <origin xyz="-0.018002 -0.0275 -0.124499" rpy="0 0 0"/>
-  <parent link="l_shoulder_roll_link_1"/>
-  <child link="l_upper_arm_link_1"/>
+  <parent link="l_shoulder_roll_link"/>
+  <child link="l_upper_arm_link"/>
   <axis xyz="4.4e-05 0.0 1.0"/>
   <limit lower="-1.5" upper="2.0" velocity="30" effort="36.0"/>
 </joint>
 
-<joint name="Revolute 16" type="revolute">
+<joint name="left_elbow_pitch_joint" type="revolute">
   <origin xyz="0.014993 0.02575 -0.162001" rpy="0 0 0"/>
-  <parent link="l_upper_arm_link_1"/>
-  <child link="l_elbow_link_1"/>
+  <parent link="l_upper_arm_link"/>
+  <child link="l_elbow_link"/>
   <axis xyz="-0.0 -1.0 -0.0"/>
   <limit lower="-1.5" upper="2.4" velocity="30" effort="36.0"/>
 </joint>
 
-<joint name="Revolute 17" type="revolute">
+<joint name="left_elbow_yaw_joint" type="revolute">
   <origin xyz="-0.025005 -0.02575 -0.117998" rpy="0 0 0"/>
-  <parent link="l_elbow_link_1"/>
-  <child link="l_lower_arm_link_1"/>
+  <parent link="l_elbow_link"/>
+  <child link="l_lower_arm_link"/>
   <axis xyz="4.4e-05 -0.0 1.0"/>
   <limit lower="-2.0943951" upper="0.523598776" velocity="30" effort="14.0"/>
 </joint>
 
-<joint name="Revolute 18" type="revolute">
+<joint name="left_wrist_pitch_joint" type="revolute">
   <origin xyz="-4e-06 -0.0275 -0.086" rpy="0 0 0"/>
-  <parent link="l_lower_arm_link_1"/>
-  <child link="l_wrist_link_1"/>
+  <parent link="l_lower_arm_link"/>
+  <child link="l_wrist_link"/>
   <axis xyz="0.0 1.0 -0.0"/>
   <limit lower="-1.5" upper="1.5" velocity="30" effort="14.0"/>
 </joint>
 
-<joint name="Revolute 19" type="revolute">
+<joint name="left_wrist_yaw_joint" type="revolute">
   <origin xyz="-5e-06 0.0275 -0.102" rpy="0 0 0"/>
-  <parent link="l_wrist_link_1"/>
-  <child link="l_eef_link_1"/>
+  <parent link="l_wrist_link"/>
+  <child link="l_eef_link"/>
   <axis xyz="-4.4e-05 -0.0 -1.0"/>
   <limit lower="-1.57" upper="1.57" velocity="30" effort="5.5"/>
 </joint>
 
-<joint name="Rigid 20" type="fixed">
+<joint name="right_wrist_camera_joint" type="fixed">
   <origin xyz="0.057607 0.0 -0.013503" rpy="0 0 0"/>
-  <parent link="r_gripper_link_1"/>
-  <child link="r_wrist_camera_link_1"/>
+  <parent link="r_gripper_link"/>
+  <child link="r_wrist_camera_link"/>
 </joint>
 
-<joint name="Slider 21" type="prismatic">
+<joint name="right_finger_right_slide_joint" type="prismatic">
   <origin xyz="3e-06 0.0 -0.0748" rpy="0 0 0"/>
-  <parent link="r_gripper_link_1"/>
-  <child link="r_finger_right_link_1"/>
+  <parent link="r_gripper_link"/>
+  <child link="r_finger_right_link"/>
   <axis xyz="0.0 1.0 0.0"/>
   <limit upper="0.0" lower="0.0" effort="100" velocity="100"/>
 </joint>
 
-<joint name="Slider 22" type="prismatic">
+<joint name="right_finger_left_slide_joint" type="prismatic">
   <origin xyz="3e-06 0.0 -0.0748" rpy="0 0 0"/>
-  <parent link="r_gripper_link_1"/>
-  <child link="r_finger_left_link_1"/>
+  <parent link="r_gripper_link"/>
+  <child link="r_finger_left_link"/>
   <axis xyz="0.0 1.0 0.0"/>
   <limit upper="0.0" lower="0.0" effort="100" velocity="100"/>
 </joint>
 
-<joint name="Rigid 23" type="fixed">
+<joint name="left_wrist_camera_joint" type="fixed">
   <origin xyz="-0.057607 0.0 -0.013503" rpy="0 0 0"/>
-  <parent link="l_gripper_link_1"/>
-  <child link="l_wrist_camera_link_1"/>
+  <parent link="l_gripper_link"/>
+  <child link="l_wrist_camera_link"/>
 </joint>
 
-<joint name="Slider 24" type="prismatic">
+<joint name="left_finger_right_slide_joint" type="prismatic">
   <origin xyz="-3e-06 0.0 -0.0748" rpy="0 0 0"/>
-  <parent link="l_gripper_link_1"/>
-  <child link="l_finger_right_link_1"/>
+  <parent link="l_gripper_link"/>
+  <child link="l_finger_right_link"/>
   <axis xyz="0.0 1.0 -0.0"/>
   <limit upper="0.0" lower="0.0" effort="100" velocity="100"/>
 </joint>
 
-<joint name="Slider 25" type="prismatic">
+<joint name="left_finger_left_slide_joint" type="prismatic">
   <origin xyz="-3e-06 0.0 -0.0748" rpy="0 0 0"/>
-  <parent link="l_gripper_link_1"/>
-  <child link="l_finger_left_link_1"/>
-  <axis xyz="-4.4e-05 -0.0 -1.0"/>
+  <parent link="l_gripper_link"/>
+  <child link="l_finger_left_link"/>
+  <axis xyz="0.0 1.0 -0.0"/>
   <limit upper="0.0" lower="0.0" effort="100" velocity="100"/>
 </joint>
 
-<joint name="Rigid 26" type="fixed">
+<joint name="right_gripper_joint" type="fixed">
   <origin xyz="0.0 0.0 -0.005" rpy="0 0 0"/>
-  <parent link="r_eef_link_1"/>
-  <child link="r_gripper_link_1"/>
+  <parent link="r_eef_link"/>
+  <child link="r_gripper_link"/>
 </joint>
 
-<joint name="Rigid 27" type="fixed">
+<joint name="left_gripper_joint" type="fixed">
   <origin xyz="0.0 0.0 -0.005" rpy="0 0 0"/>
-  <parent link="l_eef_link_1"/>
-  <child link="l_gripper_link_1"/>
+  <parent link="l_eef_link"/>
+  <child link="l_gripper_link"/>
 </joint>
 
-<joint name="Rigid 28" type="fixed">
+<joint name="right_wrist_camera_frame_joint" type="fixed">
   <origin xyz="0.019866 0.0 -0.02059" rpy="0 0 0"/>
-  <parent link="r_wrist_camera_link_1"/>
-  <child link="r_wrist_camera_frame_link_1"/>
+  <parent link="r_wrist_camera_link"/>
+  <child link="r_wrist_camera_frame_link"/>
 </joint>
 
-<joint name="Rigid 29" type="fixed">
+<joint name="left_wrist_camera_frame_joint" type="fixed">
   <origin xyz="-0.019866 0.0 -0.02059" rpy="0 0 0"/>
-  <parent link="l_wrist_camera_link_1"/>
-  <child link="l_wrist_camera_frame_link_1"/>
+  <parent link="l_wrist_camera_link"/>
+  <child link="l_wrist_camera_frame_link"/>
 </joint>
 
-<joint name="Rigid 30" type="fixed">
+<joint name="head_camera_frame_joint" type="fixed">
   <origin xyz="-0.033 0.063443 0.026953" rpy="0 0 0"/>
-  <parent link="head_link_1"/>
-  <child link="head_camera_frame_link_1"/>
+  <parent link="head_link"/>
+  <child link="head_camera_frame_link"/>
 </joint>
 
-<joint name="Rigid 31" type="fixed">
+<joint name="head_left_camera_frame_joint" type="fixed">
   <origin xyz="-0.134 -0.02 0.055" rpy="0 0 0"/>
-  <parent link="head_link_1"/>
-  <child link="head_left_camera_frame_link_1"/>
+  <parent link="head_link"/>
+  <child link="head_left_camera_frame_link"/>
 </joint>
 
-<joint name="Rigid 32" type="fixed">
+<joint name="head_right_camera_frame_joint" type="fixed">
   <origin xyz="0.008 -0.02 0.055" rpy="0 0 0"/>
-  <parent link="head_link_1"/>
-  <child link="head_right_camera_frame_link_1"/>
+  <parent link="head_link"/>
+  <child link="head_right_camera_frame_link"/>
 </joint>
 
 </robot>

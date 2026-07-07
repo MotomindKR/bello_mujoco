@@ -31,25 +31,54 @@ direnv allow
 
 ## Assets
 
-Prepare the full-body Bello MuJoCo model:
+Prepare generated Bello MuJoCo models:
 
 ```bash
-bello-prepare-assets
+bello-prepare-assets --asset full_body
 ```
 
-The generator reads the Bello URDF/STL description from `motomind_platform`, copies source descriptions into `assets/source/bello`, converts ASCII STL files to simplified binary STL files, and writes the training MJCF to:
+`full_body` is the default. The generator also supports `lower_body` and `upper_body`; `down_body` is accepted as an alias for `lower_body`.
+
+The generator reads the Bello URDF/STL description from the repository-local source assets in `assets/source/bello/<asset>` and writes a collision-only training MJCF to:
 
 ```text
-assets/generated/bello/full_body/mjcf/bello_full_body.xml
+assets/generated/bello/<asset>/mjcf/bello_<asset>.xml
 ```
 
-The generated MJCF is full-body. The environment action is the full MuJoCo actuator vector (`nu=35`) in actuator order. The observation scaffold is a single-frame 114-dim vector: base angular velocity, projected gravity, command, full actuator joint positions, full actuator joint velocities, and previous full action.
+It also writes a separate viewer MJCF with visual geoms:
 
-The default training collision profile keeps the left/right ankle-roll foot geoms as simplified mesh collision and converts the remaining robot mesh collision geoms to boxes derived from each mesh bound:
+```text
+assets/generated/bello/<asset>/mjcf/bello_<asset>_viewer.xml
+```
+
+Generated mesh assets are split by purpose:
+
+- `assets/generated/bello/<asset>/visual_meshes`: simplified visual STL meshes attached as non-colliding MuJoCo visual geoms for the viewer.
+- `assets/generated/bello/<asset>/meshes`: lower-budget simplified STL meshes used only by collision geoms.
+
+`visual_meshes` is generated locally and ignored by git. The training model does not include these render-only geoms. The default visual mesh budget is separate from the collision budget:
 
 ```bash
-bello-prepare-assets --collision-mode foot-mesh
+bello-prepare-assets --visual-mesh-face-budget 200000 --mesh-face-budget 1000 --foot-collision-mesh-face-budget 1000
 ```
+
+For `full_body`, the environment action is the full MuJoCo actuator vector (`nu=35`) in actuator order. The observation scaffold is a single-frame 114-dim vector: base angular velocity, projected gravity, command, full actuator joint positions, full actuator joint velocities, and previous full action.
+
+The default training collision profile uses simplified mesh collision for every robot collision geom:
+
+```bash
+bello-prepare-assets --collision-mode mesh
+```
+
+The default generated full-body collision set has 40 mesh collision geoms. Body collision meshes are welded and simplified with a 1k-face target; the simplifier may stop above that target to preserve topology.
+
+Arm end-effectors can be replaced during asset preparation with 65 mm diameter spheres attached 20 mm below `right_wrist_yaw_joint` and/or `left_wrist_yaw_joint`. The selected revolute joint and every child link/joint below it are removed before the sphere is attached to the wrist link:
+
+```bash
+bello-prepare-assets --end-effector-sphere-mode both
+```
+
+Valid modes are `none`, `both`, `right`, and `left`.
 
 The generator also adds MuJoCo contact excludes for nearby robot bodies by default:
 
@@ -57,13 +86,13 @@ The generator also adds MuJoCo contact excludes for nearby robot bodies by defau
 bello-prepare-assets --neighbor-exclusion-depth 2
 ```
 
-Depth 2 excludes parent/child, grandparent/grandchild, and sibling body collision. This removes most mechanically-neighboring self-collision while preserving non-neighbor body and ground contacts.
+Depth 2 excludes parent/child, grandparent/grandchild, and sibling body collision. This removes most mechanically-neighboring self-collision while preserving non-neighbor body contacts. Ground or terrain should be added by the runtime that loads the robot model.
 
 Other collision profiles are available when needed:
 
 ```bash
-bello-prepare-assets --collision-mode mesh  # all simplified mesh collision; slow MJX compile
-bello-prepare-assets --collision-mode box   # all robot collision geoms as boxes
+bello-prepare-assets --collision-mode foot-mesh  # foot meshes, remaining robot collisions as boxes
+bello-prepare-assets --collision-mode box        # all robot collision geoms as boxes
 ```
 
 ## Smoke Test

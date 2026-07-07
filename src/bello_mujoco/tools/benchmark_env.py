@@ -7,7 +7,11 @@ import jax.numpy as jnp
 import tyro
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.sim import DEFAULT_CONTACT_BUDGET_PER_ENV, DEFAULT_WARP_NJMAX, WarpConfig
+from bello_mujoco.sim import (
+    DEFAULT_CONTACT_BUDGET_PER_ENV,
+    DEFAULT_WARP_NJMAX,
+    WarpConfig,
+)
 
 
 def main(

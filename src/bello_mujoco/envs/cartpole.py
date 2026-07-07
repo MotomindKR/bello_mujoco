@@ -47,7 +47,9 @@ class ContinuousCartPoleEnv:
     def observation_size(self) -> int:
         return 4
 
-    def reset(self, command: jax.Array | None = None) -> tuple[CartPoleState, jax.Array]:
+    def reset(
+        self, command: jax.Array | None = None
+    ) -> tuple[CartPoleState, jax.Array]:
         del command
         obs = jnp.asarray([0.0, 0.0, 0.05, 0.0], dtype=jnp.float32)
         state = CartPoleState(
@@ -60,7 +62,9 @@ class ContinuousCartPoleEnv:
         )
         return state, obs
 
-    def reset_batch(self, batch_size: int, command: jax.Array | None = None) -> tuple[CartPoleState, jax.Array]:
+    def reset_batch(
+        self, batch_size: int, command: jax.Array | None = None
+    ) -> tuple[CartPoleState, jax.Array]:
         del command
         offsets = jnp.linspace(-0.04, 0.04, batch_size, dtype=jnp.float32)
         obs = jnp.stack(
@@ -89,7 +93,9 @@ class ContinuousCartPoleEnv:
         force = self.force_mag * jnp.clip(action[0], -1.0, 1.0)
         costheta = jnp.cos(theta)
         sintheta = jnp.sin(theta)
-        temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
+        temp = (
+            force + self.polemass_length * theta_dot**2 * sintheta
+        ) / self.total_mass
         thetaacc = (self.gravity * sintheta - costheta * temp) / (
             self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
         )
@@ -119,8 +125,12 @@ class ContinuousCartPoleEnv:
             step_count=jnp.where(done, reset_state.step_count, next_step),
             episode_return=jnp.where(done, reset_state.episode_return, episode_return),
             episode_length=jnp.where(done, reset_state.episode_length, episode_length),
-            last_episode_return=jnp.where(done, episode_return, state.last_episode_return),
-            last_episode_length=jnp.where(done, episode_length, state.last_episode_length),
+            last_episode_return=jnp.where(
+                done, episode_return, state.last_episode_return
+            ),
+            last_episode_length=jnp.where(
+                done, episode_length, state.last_episode_length
+            ),
         )
         info = {
             "episode_return": jnp.where(done, episode_return, 0.0),

@@ -60,7 +60,9 @@ def test_gae_and_loss_shapes() -> None:
     action_size = 35
     state, _ = init_train_state(jax.random.PRNGKey(0), obs_size, action_size, config)
     transitions = dummy_transitions(config, obs_size, action_size)
-    advantages, targets = compute_gae(transitions, jnp.zeros((config.num_envs,)), config)
+    advantages, targets = compute_gae(
+        transitions, jnp.zeros((config.num_envs,)), config
+    )
 
     loss, metrics = ppo_loss(
         state.model,
@@ -88,9 +90,13 @@ def test_update_ppo_runs_on_dummy_batch() -> None:
     config = small_config()
     obs_size = 114
     action_size = 35
-    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), obs_size, action_size, config)
+    train_state, optimizer = init_train_state(
+        jax.random.PRNGKey(0), obs_size, action_size, config
+    )
     transitions = dummy_transitions(config, obs_size, action_size)
-    advantages, targets = compute_gae(transitions, jnp.zeros((config.num_envs,)), config)
+    advantages, targets = compute_gae(
+        transitions, jnp.zeros((config.num_envs,)), config
+    )
 
     next_state, metrics = update_ppo(
         train_state,

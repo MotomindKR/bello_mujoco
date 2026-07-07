@@ -18,7 +18,7 @@ from bello_mujoco.contracts import (
     POLICY_JOINT_ORDER,
 )
 
-DEFAULT_CONTACT_BUDGET_PER_ENV = 16
+DEFAULT_CONTACT_BUDGET_PER_ENV = 24
 DEFAULT_WARP_NJMAX = 256
 
 
@@ -73,17 +73,34 @@ def load_bello_model(
 ) -> BelloModel:
     path = generated_model_path("full_body") if xml_path is None else Path(xml_path)
     if not path.exists():
-        raise FileNotFoundError(f"{path} does not exist; run `python -m bello_mujoco.tools.prepare_assets`")
+        raise FileNotFoundError(
+            f"{path} does not exist; run `python -m bello_mujoco.tools.prepare_assets`"
+        )
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
     mjx_model = mjx.put_model(mj_model, impl="warp")
 
-    policy_qpos_indices = np.asarray([joint_qpos_index(mj_model, name) for name in POLICY_JOINT_ORDER], dtype=np.int32)
-    policy_qvel_indices = np.asarray([joint_qvel_index(mj_model, name) for name in POLICY_JOINT_ORDER], dtype=np.int32)
-    policy_ctrl_indices = np.asarray([actuator_index(mj_model, f"{name}_pos") for name in POLICY_JOINT_ORDER], dtype=np.int32)
+    policy_qpos_indices = np.asarray(
+        [joint_qpos_index(mj_model, name) for name in POLICY_JOINT_ORDER],
+        dtype=np.int32,
+    )
+    policy_qvel_indices = np.asarray(
+        [joint_qvel_index(mj_model, name) for name in POLICY_JOINT_ORDER],
+        dtype=np.int32,
+    )
+    policy_ctrl_indices = np.asarray(
+        [actuator_index(mj_model, f"{name}_pos") for name in POLICY_JOINT_ORDER],
+        dtype=np.int32,
+    )
     actuator_joint_ids = np.asarray(mj_model.actuator_trnid[:, 0], dtype=np.int32)
-    actuator_qpos_indices = np.asarray([int(mj_model.jnt_qposadr[joint_id]) for joint_id in actuator_joint_ids], dtype=np.int32)
-    actuator_qvel_indices = np.asarray([int(mj_model.jnt_dofadr[joint_id]) for joint_id in actuator_joint_ids], dtype=np.int32)
+    actuator_qpos_indices = np.asarray(
+        [int(mj_model.jnt_qposadr[joint_id]) for joint_id in actuator_joint_ids],
+        dtype=np.int32,
+    )
+    actuator_qvel_indices = np.asarray(
+        [int(mj_model.jnt_dofadr[joint_id]) for joint_id in actuator_joint_ids],
+        dtype=np.int32,
+    )
     fixed_ctrl_indices = np.asarray(
         [i for i in range(mj_model.nu) if i not in set(policy_ctrl_indices.tolist())],
         dtype=np.int32,
@@ -98,8 +115,12 @@ def load_bello_model(
         raise ValueError("generated full-body MJCF must include root_free")
     root_qpos_adr = int(mj_model.jnt_qposadr[root_id])
     root_qvel_adr = int(mj_model.jnt_dofadr[root_id])
-    default_qpos[root_qpos_adr : root_qpos_adr + 3] = np.asarray(DEFAULT_ROOT_POS, dtype=np.float32)
-    default_qpos[root_qpos_adr + 3 : root_qpos_adr + 7] = np.asarray(DEFAULT_ROOT_QUAT, dtype=np.float32)
+    default_qpos[root_qpos_adr : root_qpos_adr + 3] = np.asarray(
+        DEFAULT_ROOT_POS, dtype=np.float32
+    )
+    default_qpos[root_qpos_adr + 3 : root_qpos_adr + 7] = np.asarray(
+        DEFAULT_ROOT_QUAT, dtype=np.float32
+    )
 
     for joint_name, value in DEFAULT_JOINT_POS.items():
         default_qpos[joint_qpos_index(mj_model, joint_name)] = value
@@ -118,7 +139,9 @@ def load_bello_model(
             raise ValueError(f"no default target for actuator joint {joint_name!r}")
 
     if mj_model.nu < len(POLICY_JOINT_ORDER):
-        raise ValueError(f"expected at least {len(POLICY_JOINT_ORDER)} actuators, got {mj_model.nu}")
+        raise ValueError(
+            f"expected at least {len(POLICY_JOINT_ORDER)} actuators, got {mj_model.nu}"
+        )
     return BelloModel(
         mj_model=mj_model,
         mjx_model=mjx_model,

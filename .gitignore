@@ -21,6 +21,8 @@ multirun/
 runs/
 wandb/
 
+assets/generated/bello/*/visual_meshes/
+
 *.egg-info/
 dist/
 build/
