@@ -35,12 +35,8 @@ class CommandConfig:
             dtype=jnp.float32,
         )
         command_key, stand_key = jax.random.split(rng)
-        command = jax.random.uniform(
-            command_key, shape + (3,), minval=low, maxval=high
-        )
-        standing = jax.random.bernoulli(
-            stand_key, self.standing_probability, shape
-        )
+        command = jax.random.uniform(command_key, shape + (3,), minval=low, maxval=high)
+        standing = jax.random.bernoulli(stand_key, self.standing_probability, shape)
         return jnp.where(standing[..., None], jnp.zeros_like(command), command)
 
 
@@ -59,7 +55,7 @@ class RewardConfig:
     action_rate_weight: float = -0.05
     energy_weight: float = -2.0e-5
     joint_limit_weight: float = -5.0
-    fixed_joint_deviation_weight: float = -0.1
+    hold_joint_deviation_weight: float = -0.1
     termination_weight: float = -1.0
     lin_vel_tracking_sigma: float = 0.25
     yaw_vel_tracking_sigma: float = 0.25
@@ -82,7 +78,7 @@ def compute_velocity_reward(
     actuator_force: jax.Array,
     joint_limit_low: jax.Array,
     joint_limit_high: jax.Array,
-    fixed_joint_indices: jax.Array,
+    hold_joint_indices: jax.Array,
     done: jax.Array,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
@@ -105,29 +101,27 @@ def compute_velocity_reward(
     lower_violation = jnp.maximum(joint_limit_low - joint_pos, 0.0)
     upper_violation = jnp.maximum(joint_pos - joint_limit_high, 0.0)
     joint_limit = jnp.mean(lower_violation**2 + upper_violation**2)
-    fixed_joint_deviation = jnp.mean(jnp.abs(joint_pos_rel[fixed_joint_indices]))
+    hold_joint_deviation = (
+        jnp.mean(jnp.abs(joint_pos_rel[hold_joint_indices]))
+        if hold_joint_indices.size
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
     termination = done.astype(jnp.float32)
 
     terms = {
-        "reward/track_lin_vel_xy": (
-            config.lin_vel_tracking_weight * track_lin_vel_xy
-        ),
-        "reward/track_ang_vel_z": (
-            config.yaw_vel_tracking_weight * track_ang_vel_z
-        ),
+        "reward/track_lin_vel_xy": (config.lin_vel_tracking_weight * track_lin_vel_xy),
+        "reward/track_ang_vel_z": (config.yaw_vel_tracking_weight * track_ang_vel_z),
         "reward/alive": config.alive_weight * alive,
         "reward/lin_vel_z": config.lin_vel_z_weight * lin_vel_z,
         "reward/ang_vel_xy": config.ang_vel_xy_weight * ang_vel_xy,
-        "reward/flat_orientation": (
-            config.flat_orientation_weight * flat_orientation
-        ),
+        "reward/flat_orientation": (config.flat_orientation_weight * flat_orientation),
         "reward/base_height": config.base_height_weight * base_height_error,
         "reward/joint_vel": config.joint_vel_weight * joint_vel_l2,
         "reward/action_rate": config.action_rate_weight * action_rate_l2,
         "reward/energy": config.energy_weight * energy,
         "reward/joint_limit": config.joint_limit_weight * joint_limit,
-        "reward/fixed_joint_deviation": (
-            config.fixed_joint_deviation_weight * fixed_joint_deviation
+        "reward/hold_joint_deviation": (
+            config.hold_joint_deviation_weight * hold_joint_deviation
         ),
         "reward/termination": config.termination_weight * termination,
     }

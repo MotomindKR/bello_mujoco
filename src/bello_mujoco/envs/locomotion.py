@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Literal
 import chex
 import jax
 import jax.numpy as jnp
 from mujoco import mjx
 
+from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import (
     ACTION_CLIP,
-    ACTION_SCALE,
     CONTROL_DECIMATION,
     MAX_EPISODE_STEPS,
-    POLICY_JOINT_ORDER,
 )
 from bello_mujoco.envs.rewards import (
     CommandConfig,
@@ -55,6 +55,21 @@ class DoneConfig:
 
 
 @dataclass(frozen=True)
+class ObservationConfig:
+    joint_mode: Literal["all_actuated", "policy"] = "all_actuated"
+
+
+@dataclass(frozen=True)
+class BelloEnvConfig:
+    """Runtime environment settings that affect stepping and model loading."""
+
+    decimation: int = CONTROL_DECIMATION
+    max_episode_steps: int = MAX_EPISODE_STEPS
+    terrain: TerrainConfig = FLAT_TERRAIN
+    observation: ObservationConfig = ObservationConfig()
+
+
+@dataclass(frozen=True)
 class BelloLocomotionEnv:
     """Full-body sim scaffold with actuator-order action and observation.
 
@@ -63,12 +78,10 @@ class BelloLocomotionEnv:
     """
 
     model: BelloModel
-    decimation: int = CONTROL_DECIMATION
-    max_episode_steps: int = MAX_EPISODE_STEPS
+    config: BelloEnvConfig = BelloEnvConfig()
     reward_config: RewardConfig = RewardConfig()
     command_config: CommandConfig = CommandConfig()
     done_config: DoneConfig = DoneConfig()
-    terrain_config: TerrainConfig = FLAT_TERRAIN
 
     @classmethod
     def load(
@@ -77,14 +90,21 @@ class BelloLocomotionEnv:
         *,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
-        terrain: TerrainConfig = FLAT_TERRAIN,
+        env_config: BelloEnvConfig = BelloEnvConfig(),
+        terrain: TerrainConfig | None = None,
     ) -> "BelloLocomotionEnv":
         require_full_body_config(config)
+        env_config = (
+            env_config if terrain is None else replace(env_config, terrain=terrain)
+        )
         return cls(
             load_bello_model(
-                config, warp=warp, batch_size=batch_size, terrain=terrain
+                config,
+                warp=warp,
+                batch_size=batch_size,
+                terrain=env_config.terrain,
             ),
-            terrain_config=terrain,
+            config=env_config,
         )
 
     @classmethod
@@ -94,24 +114,51 @@ class BelloLocomotionEnv:
         *,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
-        terrain: TerrainConfig = FLAT_TERRAIN,
+        env_config: BelloEnvConfig = BelloEnvConfig(),
+        terrain: TerrainConfig | None = None,
+        actuator_config: ActuatorConfig = ActuatorConfig(),
     ) -> "BelloLocomotionEnv":
         if prepared.name != "full_body":
             raise ValueError("BelloLocomotionEnv currently requires a full_body asset")
+        env_config = (
+            env_config if terrain is None else replace(env_config, terrain=terrain)
+        )
         return cls(
             load_prepared_bello_model(
-                prepared, warp=warp, batch_size=batch_size, terrain=terrain
+                prepared,
+                warp=warp,
+                batch_size=batch_size,
+                terrain=env_config.terrain,
+                actuator_config=actuator_config,
             ),
-            terrain_config=terrain,
+            config=env_config,
         )
 
     @property
+    def decimation(self) -> int:
+        return self.config.decimation
+
+    @property
+    def max_episode_steps(self) -> int:
+        return self.config.max_episode_steps
+
+    @property
+    def terrain_config(self) -> TerrainConfig:
+        return self.config.terrain
+
+    @property
     def action_size(self) -> int:
-        return int(self.model.mj_model.nu)
+        return int(self.model.policy_ctrl_indices.size)
 
     @property
     def observation_size(self) -> int:
-        return 9 + 3 * self.action_size
+        return 9 + 2 * self.observed_joint_count + self.action_size
+
+    @property
+    def observed_joint_count(self) -> int:
+        if self.config.observation.joint_mode == "policy":
+            return int(self.model.policy_ctrl_indices.size)
+        return int(self.model.mj_model.nu)
 
     def reset(
         self, command: jax.Array | None = None, rng: jax.Array | None = None
@@ -229,17 +276,13 @@ class BelloLocomotionEnv:
     def _action_to_ctrl(self, action: jax.Array) -> jax.Array:
         default = jnp.asarray(self.model.default_ctrl)
         scale = self._action_scale()
-        ctrl = default + scale * action
+        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
+        ctrl = default.at[policy_indices].set(default[policy_indices] + scale * action)
         ctrlrange = jnp.asarray(self.model.mj_model.actuator_ctrlrange)
         return jnp.clip(ctrl, ctrlrange[:, 0], ctrlrange[:, 1])
 
     def _action_scale(self) -> jax.Array:
-        ctrlrange = jnp.asarray(self.model.mj_model.actuator_ctrlrange)
-        scale = 0.25 * (ctrlrange[:, 1] - ctrlrange[:, 0])
-        lower_scale = jnp.asarray(
-            [ACTION_SCALE[name] for name in POLICY_JOINT_ORDER], dtype=jnp.float32
-        )
-        return scale.at[jnp.asarray(self.model.policy_ctrl_indices)].set(lower_scale)
+        return jnp.asarray(self.model.policy_action_scale, dtype=jnp.float32)
 
     def _resolve_command(
         self, command: jax.Array | None, rng: jax.Array | None
@@ -267,8 +310,8 @@ class BelloLocomotionEnv:
 
     def _frame_terms(self, state: BelloState) -> tuple[jax.Array, ...]:
         data = state.data
-        qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
-        qvel_idx = jnp.asarray(self.model.actuator_qvel_indices)
+        qpos_idx = jnp.asarray(self._observed_qpos_indices())
+        qvel_idx = jnp.asarray(self._observed_qvel_indices())
         joint_pos = data.qpos[qpos_idx] - jnp.asarray(self.model.default_qpos)[qpos_idx]
         joint_vel = data.qvel[qvel_idx]
         root_qpos = int(self.model.root_qpos_adr)
@@ -286,6 +329,27 @@ class BelloLocomotionEnv:
             joint_vel,
             state.last_action,
         )
+
+    def _observed_qpos_indices(self):
+        if self.config.observation.joint_mode == "policy":
+            return self.model.policy_qpos_indices
+        return self.model.actuator_qpos_indices
+
+    def _observed_qvel_indices(self):
+        if self.config.observation.joint_mode == "policy":
+            return self.model.policy_qvel_indices
+        return self.model.actuator_qvel_indices
+
+    def _all_actuator_joint_terms(
+        self, state: BelloState
+    ) -> tuple[jax.Array, jax.Array]:
+        qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
+        qvel_idx = jnp.asarray(self.model.actuator_qvel_indices)
+        joint_pos = (
+            state.data.qpos[qpos_idx] - jnp.asarray(self.model.default_qpos)[qpos_idx]
+        )
+        joint_vel = state.data.qvel[qvel_idx]
+        return joint_pos, joint_vel
 
     def _done(self, state: BelloState) -> jax.Array:
         config = self.done_config
@@ -322,14 +386,15 @@ class BelloLocomotionEnv:
             base_ang_vel,
             projected_gravity,
             command,
-            joint_pos,
-            joint_vel,
+            _,
+            _,
             _,
         ) = self._frame_terms(next_state)
         root_qpos = int(self.model.root_qpos_adr)
         root_qvel = int(self.model.root_qvel_adr)
         quat = next_state.data.qpos[root_qpos + 3 : root_qpos + 7]
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
+        joint_pos_rel, joint_vel = self._all_actuator_joint_terms(next_state)
         base_lin_vel = quat_rotate_inverse(
             quat, next_state.data.qvel[root_qvel : root_qvel + 3]
         )
@@ -341,14 +406,14 @@ class BelloLocomotionEnv:
             projected_gravity=projected_gravity,
             base_height=self._base_height(next_state),
             joint_pos=next_state.data.qpos[qpos_idx],
-            joint_pos_rel=joint_pos,
+            joint_pos_rel=joint_pos_rel,
             joint_vel=joint_vel,
             action=action,
             last_action=state.last_action,
             actuator_force=next_state.data.actuator_force,
             joint_limit_low=self._actuator_joint_limit_low(),
             joint_limit_high=self._actuator_joint_limit_high(),
-            fixed_joint_indices=jnp.asarray(self.model.fixed_ctrl_indices),
+            hold_joint_indices=jnp.asarray(self.model.hold_ctrl_indices),
             done=done,
         )
 

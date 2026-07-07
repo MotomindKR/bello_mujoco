@@ -161,8 +161,7 @@ def rough_height_data(config: TerrainConfig) -> str:
                 0.50
                 + 0.25 * math.sin(frequency_x * math.pi * x + phase_x)
                 + 0.20 * math.sin(frequency_y * math.pi * y + phase_y)
-                + 0.05
-                * math.sin(frequency_diag * math.pi * (x + y) + phase_diag)
+                + 0.05 * math.sin(frequency_diag * math.pi * (x + y) + phase_diag)
             )
             values.append(
                 config.hfield_amplitude

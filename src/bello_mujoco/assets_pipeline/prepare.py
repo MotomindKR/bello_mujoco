@@ -8,7 +8,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -28,6 +28,7 @@ from bello_mujoco.assets_pipeline.mjcf import (
     CollisionMode,
     compile_urdf_to_mjcf,
 )
+from bello_mujoco.actuators import ActuatorConfig
 
 AssetName = Literal["full_body", "lower_body", "upper_body", "down_body"]
 ASSET_CACHE_VERSION = 1
@@ -43,6 +44,7 @@ class AssetPrepConfig:
     collision_mode: CollisionMode = "mesh"
     end_effector_sphere_mode: EndEffectorSphereMode = "none"
     neighbor_exclusion_depth: int = 2
+    actuator_config: ActuatorConfig = ActuatorConfig()
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,7 @@ def prepare_asset_unlocked(
         out_urdf,
         end_effector_sphere_mode=config.end_effector_sphere_mode,
     )
+    actuated_joint_order = actuated_urdf_joint_names(out_urdf)
     for src, dst_name in mesh_sources.collision.items():
         if (
             config.collision_mode in {"foot-mesh", "mesh"}
@@ -134,6 +137,8 @@ def prepare_asset_unlocked(
         collision_mode=config.collision_mode,
         neighbor_exclusion_depth=config.neighbor_exclusion_depth,
         include_visuals=False,
+        actuator_config=config.actuator_config,
+        actuated_joint_order=actuated_joint_order,
     )
     compile_urdf_to_mjcf(
         out_urdf,
@@ -141,6 +146,8 @@ def prepare_asset_unlocked(
         collision_mode=config.collision_mode,
         neighbor_exclusion_depth=config.neighbor_exclusion_depth,
         include_visuals=True,
+        actuator_config=config.actuator_config,
+        actuated_joint_order=actuated_joint_order,
     )
     prepared = PreparedAsset(
         asset,
@@ -158,6 +165,18 @@ def canonical_asset(
     asset: AssetName,
 ) -> Literal["full_body", "lower_body", "upper_body"]:
     return "lower_body" if asset == "down_body" else asset
+
+
+def actuated_urdf_joint_names(urdf_path: Path) -> tuple[str, ...]:
+    root = ET.parse(urdf_path).getroot()
+    names: list[str] = []
+    for joint in root.findall("joint"):
+        name = joint.get("name")
+        joint_type = joint.get("type")
+        if name is None or joint_type in {None, "fixed"}:
+            continue
+        names.append(name)
+    return tuple(names)
 
 
 def resolved_output_root(
@@ -186,6 +205,7 @@ def asset_config_hash(
         "collision_mode": config.collision_mode,
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
+        "actuator_config": asdict(config.actuator_config),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]

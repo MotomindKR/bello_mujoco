@@ -19,7 +19,7 @@ from bello_mujoco.tracking import (
     log_config,
     track_video,
 )
-from bello_mujoco.train.ppo import apply_model
+from bello_mujoco.policy import apply_policy
 
 
 def main(
@@ -39,7 +39,7 @@ def main(
         metadata.asset,
         warp=metadata.warp,
         batch_size=1,
-        terrain=metadata.terrain,
+        env_config=metadata.env,
     )
     env = replace(
         env,
@@ -50,7 +50,7 @@ def main(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     render_policy_rollout(
         env,
-        train_state.model,
+        train_state.policy,
         output_path=output_path,
         command=command,
         steps=steps,
@@ -93,7 +93,7 @@ def main(
 
 def render_policy_rollout(
     env: BelloLocomotionEnv,
-    model,
+    policy,
     *,
     output_path: Path,
     command: tuple[float, float, float],
@@ -113,7 +113,7 @@ def render_policy_rollout(
             sync_mj_data(mj_model, mj_data, state)
             renderer.update_scene(mj_data)
             writer.append_data(renderer.render())
-            mean, _, _ = apply_model(model, obs)
+            mean, _, _ = apply_policy(policy, obs)
             state, obs, _, done, _ = env.step(state, mean)
             if stop_on_done and bool(jax.device_get(done)):
                 sync_mj_data(mj_model, mj_data, state)

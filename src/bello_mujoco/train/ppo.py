@@ -18,8 +18,14 @@ import jax.numpy as jnp
 import optax
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv, BelloState
-
-LOG_2PI = jnp.log(2.0 * jnp.pi)
+from bello_mujoco.policy import (
+    ActorCritic,
+    ActorCriticConfig,
+    apply_policy,
+    evaluate_actions,
+    init_actor_critic,
+    sample_action,
+)
 
 
 @dataclass(frozen=True)
@@ -38,10 +44,7 @@ class PPOConfig:
     ent_coef: float = 0.0
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    hidden_size: int = 256
-    hidden_depth: int = 2
-    activation: str = "tanh"
-    init_log_std: float = -0.5
+    policy: ActorCriticConfig = ActorCriticConfig()
 
     @property
     def num_updates(self) -> int:
@@ -56,53 +59,9 @@ class PPOConfig:
         return self.batch_size // self.num_minibatches
 
 
-class ActorCritic(eqx.Module):
-    actor: eqx.nn.MLP
-    critic: eqx.nn.MLP
-    log_std: jax.Array
-
-    def __init__(
-        self,
-        obs_size: int,
-        action_size: int,
-        hidden_size: int,
-        hidden_depth: int,
-        activation: str,
-        init_log_std: float,
-        *,
-        key: jax.Array,
-    ):
-        actor_key, critic_key = jax.random.split(key)
-        activation_fn = jax.nn.relu if activation == "relu" else jnp.tanh
-        self.actor = eqx.nn.MLP(
-            obs_size,
-            action_size,
-            width_size=hidden_size,
-            depth=hidden_depth,
-            activation=activation_fn,
-            final_activation=lambda x: x,
-            key=actor_key,
-        )
-        self.critic = eqx.nn.MLP(
-            obs_size,
-            1,
-            width_size=hidden_size,
-            depth=hidden_depth,
-            activation=activation_fn,
-            final_activation=lambda x: x,
-            key=critic_key,
-        )
-        self.log_std = jnp.full((action_size,), init_log_std, dtype=jnp.float32)
-
-    def __call__(self, obs: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
-        mean = self.actor(obs)
-        value = jnp.squeeze(self.critic(obs), axis=-1)
-        return mean, self.log_std, value
-
-
 @chex.dataclass(frozen=True)
 class TrainState:
-    model: ActorCritic
+    policy: ActorCritic
     opt_state: optax.OptState
     update: jax.Array
 
@@ -123,19 +82,11 @@ def init_train_state(
     action_size: int,
     config: PPOConfig,
 ) -> tuple[TrainState, optax.GradientTransformation]:
-    model = ActorCritic(
-        obs_size,
-        action_size,
-        config.hidden_size,
-        config.hidden_depth,
-        config.activation,
-        config.init_log_std,
-        key=rng,
-    )
+    model = init_actor_critic(rng, obs_size, action_size, config.policy)
     optimizer = make_optimizer(config)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     return TrainState(
-        model=model, opt_state=opt_state, update=jnp.asarray(0, dtype=jnp.int32)
+        policy=model, opt_state=opt_state, update=jnp.asarray(0, dtype=jnp.int32)
     ), optimizer
 
 
@@ -157,47 +108,6 @@ def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
         optax.clip_by_global_norm(config.max_grad_norm),
         optax.adam(learning_rate=learning_rate, eps=1.0e-5),
     )
-
-
-def apply_model(
-    model: ActorCritic, obs: jax.Array
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    if obs.ndim == 1:
-        return model(obs)
-    return jax.vmap(model)(obs)
-
-
-def sample_action(
-    model: ActorCritic, obs: jax.Array, rng: jax.Array
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    mean, log_std, value = apply_model(model, obs)
-    noise = jax.random.normal(rng, mean.shape)
-    action = mean + jnp.exp(log_std) * noise
-    log_prob = gaussian_log_prob(mean, log_std, action)
-    return action, log_prob, value
-
-
-def evaluate_actions(
-    model: ActorCritic, obs: jax.Array, action: jax.Array
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    mean, log_std, value = apply_model(model, obs)
-    log_prob = gaussian_log_prob(mean, log_std, action)
-    entropy = jnp.ones_like(log_prob) * gaussian_entropy(log_std)
-    return log_prob, entropy, value
-
-
-def gaussian_log_prob(
-    mean: jax.Array, log_std: jax.Array, action: jax.Array
-) -> jax.Array:
-    inv_std = jnp.exp(-log_std)
-    normalized = (action - mean) * inv_std
-    log_probs = -0.5 * (normalized**2 + 2.0 * log_std + LOG_2PI)
-    return jnp.sum(log_probs, axis=-1)
-
-
-def gaussian_entropy(log_std: jax.Array) -> jax.Array:
-    entropy = 0.5 * (1.0 + LOG_2PI) + log_std
-    return jnp.sum(entropy)
 
 
 def compute_gae(
@@ -274,7 +184,7 @@ def update_ppo(
     config: PPOConfig,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
     batch = flatten_batch((transitions, advantages, targets))
-    init_params, static_model = eqx.partition(train_state.model, eqx.is_array)
+    init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
 
     def update_epoch(carry, _: None):
         params, opt_state, update_count, key = carry
@@ -293,7 +203,7 @@ def update_ppo(
             mb_transitions, mb_advantages, mb_targets = minibatch
 
             def loss_fn(params):
-                model = eqx.combine(params, static_model)
+                model = eqx.combine(params, static_policy)
                 return ppo_loss(
                     model, mb_transitions, mb_advantages, mb_targets, config
                 )
@@ -321,7 +231,7 @@ def update_ppo(
     )
     metrics = jax.tree_util.tree_map(lambda x: x.mean(), metrics)
     train_state = TrainState(
-        model=eqx.combine(params, static_model),
+        policy=eqx.combine(params, static_policy),
         opt_state=opt_state,
         update=update_count,
     )
@@ -353,7 +263,7 @@ def reward_component_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
 
 def collect_rollout(
     env: BelloLocomotionEnv,
-    model: ActorCritic,
+    policy: ActorCritic,
     env_state: BelloState,
     obs: jax.Array,
     rng: jax.Array,
@@ -364,7 +274,7 @@ def collect_rollout(
     ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
         state, last_obs, key = carry
         key, action_key, env_key = jax.random.split(key, 3)
-        action, log_prob, value = sample_action(model, last_obs, action_key)
+        action, log_prob, value = sample_action(policy, last_obs, action_key)
         next_state, next_obs, reward, done, info = env.step_batch(
             state, action, rng=env_key
         )
@@ -384,23 +294,23 @@ def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
         train_state, optimizer = init_train_state(
             init_key, env.observation_size, env.action_size, config
         )
-        init_params, static_model = eqx.partition(train_state.model, eqx.is_array)
+        init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
         env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
 
         def update_step(carry, _: None):
             params, opt_state, update_count, e_state, last_obs, key = carry
             key, rollout_key, update_key = jax.random.split(key, 3)
-            model = eqx.combine(params, static_model)
-            state = TrainState(model=model, opt_state=opt_state, update=update_count)
+            policy = eqx.combine(params, static_policy)
+            state = TrainState(policy=policy, opt_state=opt_state, update=update_count)
             (e_state, last_obs, _), transitions = collect_rollout(
-                env, model, e_state, last_obs, rollout_key, config
+                env, policy, e_state, last_obs, rollout_key, config
             )
-            _, _, last_value = apply_model(model, last_obs)
+            _, _, last_value = apply_policy(policy, last_obs)
             advantages, targets = compute_gae(transitions, last_value, config)
             state, metrics = update_ppo(
                 state, optimizer, transitions, advantages, targets, update_key, config
             )
-            params, _ = eqx.partition(state.model, eqx.is_array)
+            params, _ = eqx.partition(state.policy, eqx.is_array)
             metrics = {
                 **metrics,
                 "mean_reward": transitions.reward.mean(),

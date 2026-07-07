@@ -9,15 +9,8 @@ import mujoco
 import numpy as np
 import trimesh
 
-from bello_mujoco.contracts import (
-    ACTUATOR_GAINS,
-    DEFAULT_JOINT_POS,
-    FIXED_JOINT_DEFAULT_POS,
-    FIXED_JOINT_GAINS,
-    POLICY_JOINT_ORDER,
-    SIM_TIMESTEP,
-    SOFT_JOINT_LIMITS,
-)
+from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.contracts import SIM_TIMESTEP
 
 CollisionMode = Literal["mesh", "foot-mesh", "box"]
 FOOT_MESH_NAMES = frozenset({"left_ankle_roll_link", "right_ankle_roll_link"})
@@ -30,6 +23,8 @@ def compile_urdf_to_mjcf(
     collision_mode: CollisionMode = "foot-mesh",
     neighbor_exclusion_depth: int = 2,
     include_visuals: bool = False,
+    actuator_config: ActuatorConfig = ActuatorConfig(),
+    actuated_joint_order: tuple[str, ...] = (),
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tmp_path = mjcf_path.with_suffix(".compiled.xml")
@@ -45,8 +40,8 @@ def compile_urdf_to_mjcf(
         inject_visual_geoms(root, urdf_path, mjcf_path.parent)
         ensure_visual_geoms(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
-    ensure_position_actuators(root)
-    ensure_home_keyframe(root)
+    ensure_position_actuators(root, actuator_config, actuated_joint_order)
+    ensure_home_keyframe(root, actuator_config)
 
     ET.indent(tree, space="  ")
     tree.write(mjcf_path, encoding="utf-8", xml_declaration=True)
@@ -340,54 +335,46 @@ def ensure_free_root_joint(root: ET.Element) -> None:
     worldbody.append(root_body)
 
 
-def ensure_position_actuators(root: ET.Element) -> None:
+def ensure_position_actuators(
+    root: ET.Element,
+    config: ActuatorConfig,
+    actuated_joint_order: tuple[str, ...],
+) -> None:
     actuator = root.find("actuator")
     if actuator is None:
         actuator = ET.SubElement(root, "actuator")
     existing = {item.get("joint") for item in actuator.findall("position")}
     joints = {joint.get("name") for joint in root.findall(".//joint")}
-    for joint_name in POLICY_JOINT_ORDER:
+    joint_configs = config.by_name
+    for joint_name in actuated_joint_order:
         if joint_name in existing or joint_name not in joints:
             continue
-        kp, kv = ACTUATOR_GAINS[joint_name]
-        lo, hi = SOFT_JOINT_LIMITS[joint_name]
+        if joint_name not in joint_configs:
+            raise ValueError(f"missing actuator config for joint {joint_name!r}")
+        joint_config = joint_configs[joint_name]
+        kp, kv = joint_config.gains
+        lo, hi = (
+            joint_config.soft_limit
+            if joint_config.soft_limit is not None
+            else joint_range(root, joint_name, config)
+        )
+        suffix = "pos" if joint_config.mode == "policy" else "hold"
         ET.SubElement(
             actuator,
             "position",
             {
-                "name": f"{joint_name}_pos",
+                "name": f"{joint_name.replace(' ', '_')}_{suffix}",
                 "joint": joint_name,
                 "kp": f"{kp:g}",
                 "kv": f"{kv:g}",
                 "ctrlrange": f"{lo:g} {hi:g}",
                 "ctrllimited": "true",
-            },
-        )
-    for joint_name, target in FIXED_JOINT_DEFAULT_POS.items():
-        if (
-            joint_name in existing
-            or root.find(f".//joint[@name='{joint_name}']") is None
-        ):
-            continue
-        kp, kv = FIXED_JOINT_GAINS[joint_name]
-        lo, hi = joint_range(root, joint_name)
-        ET.SubElement(
-            actuator,
-            "position",
-            {
-                "name": f"{joint_name.replace(' ', '_')}_hold",
-                "joint": joint_name,
-                "kp": f"{kp:g}",
-                "kv": f"{kv:g}",
-                "ctrlrange": f"{lo:g} {hi:g}",
-                "ctrllimited": "true",
-                "forcelimited": "false",
-                "user": f"{target:g}",
+                "user": f"{joint_config.default_pos:g}",
             },
         )
 
 
-def ensure_home_keyframe(root: ET.Element) -> None:
+def ensure_home_keyframe(root: ET.Element, config: ActuatorConfig) -> None:
     keyframe = root.find("keyframe")
     if keyframe is None:
         keyframe = ET.SubElement(root, "keyframe")
@@ -395,7 +382,8 @@ def ensure_home_keyframe(root: ET.Element) -> None:
         return
 
     joint_qpos = [
-        joint_default(joint.get("name", "")) for joint in root.findall(".//joint")
+        joint_default(joint.get("name", ""), config)
+        for joint in root.findall(".//joint")
     ]
     qpos = " ".join(
         ["0", "0", "0.91", "1", "0", "0", "0", *[f"{value:g}" for value in joint_qpos]]
@@ -403,10 +391,9 @@ def ensure_home_keyframe(root: ET.Element) -> None:
     ctrl_values = []
     for actuator in keyframe_actuators(root):
         joint_name = actuator.get("joint", "")
-        if joint_name in DEFAULT_JOINT_POS:
-            ctrl_values.append(DEFAULT_JOINT_POS[joint_name])
-        elif joint_name in FIXED_JOINT_DEFAULT_POS:
-            ctrl_values.append(FIXED_JOINT_DEFAULT_POS[joint_name])
+        default_joint_pos = config.default_joint_pos_by_name
+        if joint_name in default_joint_pos:
+            ctrl_values.append(default_joint_pos[joint_name])
     ctrl = " ".join(f"{value:g}" for value in ctrl_values)
     ET.SubElement(keyframe, "key", {"name": "home", "qpos": qpos, "ctrl": ctrl})
 
@@ -418,22 +405,20 @@ def keyframe_actuators(root: ET.Element) -> list[ET.Element]:
     return list(actuator.findall("position"))
 
 
-def joint_default(joint_name: str) -> float:
-    if joint_name in DEFAULT_JOINT_POS:
-        return DEFAULT_JOINT_POS[joint_name]
-    return FIXED_JOINT_DEFAULT_POS.get(joint_name, 0.0)
+def joint_default(joint_name: str, config: ActuatorConfig) -> float:
+    return config.default_joint_pos_by_name.get(joint_name, 0.0)
 
 
-def joint_range(root: ET.Element, joint_name: str) -> tuple[float, float]:
+def joint_range(
+    root: ET.Element, joint_name: str, config: ActuatorConfig
+) -> tuple[float, float]:
     eps = 1.0e-6
     joint = root.find(f".//joint[@name='{joint_name}']")
     if joint is None:
         raise ValueError(f"joint not found in MJCF: {joint_name}")
     range_attr = joint.get("range")
     if range_attr is None:
-        value = FIXED_JOINT_DEFAULT_POS.get(
-            joint_name, DEFAULT_JOINT_POS.get(joint_name, 0.0)
-        )
+        value = config.default_joint_pos_by_name.get(joint_name, 0.0)
         return value - eps, value + eps
     lo_str, hi_str = range_attr.split()
     lo, hi = float(lo_str), float(hi_str)

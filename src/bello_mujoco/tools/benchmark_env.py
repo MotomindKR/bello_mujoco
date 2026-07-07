@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import tyro
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
 from bello_mujoco.sim import (
     DEFAULT_CONTACT_BUDGET_PER_ENV,
     DEFAULT_WARP_NJMAX,
@@ -17,6 +17,7 @@ from bello_mujoco.sim import (
 
 def main(
     asset_config: AssetPrepConfig = AssetPrepConfig(),
+    env_config: BelloEnvConfig = BelloEnvConfig(),
     batch_size: int = 512,
     step_count: int = 5,
     contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
@@ -30,7 +31,12 @@ def main(
         naccdmax=warp_naccdmax,
         njmax=warp_njmax,
     )
-    env = BelloLocomotionEnv.load(asset_config, warp=warp, batch_size=batch_size)
+    env = BelloLocomotionEnv.load(
+        asset_config,
+        warp=warp,
+        batch_size=batch_size,
+        env_config=env_config,
+    )
     state, obs = env.reset_batch(batch_size)
     obs.block_until_ready()
     actions = jnp.zeros((batch_size, env.action_size), dtype=jnp.float32)
@@ -52,6 +58,9 @@ def main(
             "backend": jax.default_backend(),
             "mjx_impl": "warp",
             "batch_size": batch_size,
+            "terrain": env_config.terrain.mode,
+            "decimation": env_config.decimation,
+            "max_episode_steps": env_config.max_episode_steps,
             "warp_naconmax": env.model.warp_naconmax,
             "warp_naccdmax": env.model.warp_naccdmax,
             "warp_njmax": env.model.warp_njmax,

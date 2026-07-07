@@ -6,8 +6,7 @@ import mujoco
 import pytest
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
-from bello_mujoco.contracts import FRAME_OBS_DIM
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, DoneConfig
+from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig
 
 
@@ -15,8 +14,9 @@ def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
     state, obs = env.reset()
 
-    assert env.action_size == 35
-    assert env.observation_size == FRAME_OBS_DIM
+    assert env.model.mj_model.nu == 35
+    assert env.action_size == 12
+    assert env.observation_size == 9 + 2 * env.model.mj_model.nu + env.action_size
     assert obs.shape == (env.observation_size,)
     assert state.last_action.shape == (env.action_size,)
     assert int(state.step_count) == 0
@@ -55,6 +55,24 @@ def test_reset_batch_shapes(full_body_asset: PreparedAsset) -> None:
     assert state.step_count.shape == (batch_size,)
 
 
+def test_policy_action_only_controls_policy_actuators(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    action = jnp.ones(env.action_size, dtype=jnp.float32)
+    ctrl = env._action_to_ctrl(action)
+    default_ctrl = jnp.asarray(env.model.default_ctrl)
+
+    assert ctrl.shape == (env.model.mj_model.nu,)
+    assert jnp.any(
+        ctrl[env.model.policy_ctrl_indices]
+        != default_ctrl[env.model.policy_ctrl_indices]
+    )
+    assert jnp.all(
+        ctrl[env.model.hold_ctrl_indices] == default_ctrl[env.model.hold_ctrl_indices]
+    )
+
+
 def test_reset_batch_broadcasts_command(full_body_asset: PreparedAsset) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
     command = jnp.asarray([0.1, 0.2, 0.3], dtype=jnp.float32)
@@ -85,7 +103,10 @@ def test_reset_batch_samples_commands_with_rng(
 def test_step_batch_reports_reward_and_auto_resets_done_envs(
     full_body_asset: PreparedAsset,
 ) -> None:
-    env = replace(BelloLocomotionEnv.load_prepared(full_body_asset), max_episode_steps=1)
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(max_episode_steps=1),
+    )
     state, _ = env.reset_batch(2)
     next_state, next_obs, reward, done, info = env.step_batch(
         state,
@@ -109,7 +130,7 @@ def test_done_config_can_disable_timeout(
 ) -> None:
     env = replace(
         BelloLocomotionEnv.load_prepared(full_body_asset),
-        max_episode_steps=1,
+        config=BelloEnvConfig(max_episode_steps=1),
         done_config=DoneConfig(terminate_on_timeout=False),
     )
     state, _ = env.reset_batch(2)
@@ -128,7 +149,7 @@ def test_observation_size_tracks_loaded_model_action_size(
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
 
-    assert env.observation_size == 9 + 3 * env.action_size
+    assert env.observation_size == 9 + 2 * env.model.mj_model.nu + env.action_size
 
 
 def test_locomotion_env_rejects_non_full_body_config() -> None:

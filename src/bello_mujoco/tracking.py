@@ -92,7 +92,11 @@ def track_video(
     import wandb
 
     run.log(
-        {name: wandb.Video(str(path), fps=fps, format=path.suffix.lstrip("."), caption=caption)},
+        {
+            name: wandb.Video(
+                str(path), fps=fps, format=path.suffix.lstrip("."), caption=caption
+            )
+        },
         step=step,
     )
 

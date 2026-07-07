@@ -13,14 +13,13 @@ from bello_mujoco.checkpoint import (
     checkpoint_path,
     save_training_checkpoint,
 )
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, DoneConfig
+from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import (
     DEFAULT_CONTACT_BUDGET_PER_ENV,
     DEFAULT_WARP_NJMAX,
     WarpConfig,
 )
-from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 from bello_mujoco.tracking import (
     WandbConfig,
     close_run,
@@ -37,7 +36,7 @@ def main(
     reward_config: RewardConfig = RewardConfig(),
     command_config: CommandConfig = CommandConfig(),
     done_config: DoneConfig = DoneConfig(),
-    terrain_config: TerrainConfig = FLAT_TERRAIN,
+    env_config: BelloEnvConfig = BelloEnvConfig(),
     checkpoint_config: CheckpointConfig = CheckpointConfig(),
     wandb_config: WandbConfig = WandbConfig(),
     dry_run: bool = True,
@@ -57,7 +56,7 @@ def main(
         asset_config,
         warp=warp,
         batch_size=config.num_envs,
-        terrain=terrain_config,
+        env_config=env_config,
     )
     env = replace(
         env,
@@ -73,7 +72,9 @@ def main(
             {
                 "backend": jax.default_backend(),
                 "mjx_impl": "warp",
-                "terrain": terrain_config.mode,
+                "terrain": env_config.terrain.mode,
+                "decimation": env_config.decimation,
+                "max_episode_steps": env_config.max_episode_steps,
                 "warp_naconmax": env.model.warp_naconmax,
                 "warp_njmax": env.model.warp_njmax,
                 "obs_size": env.observation_size,
@@ -85,7 +86,7 @@ def main(
                 "batch_action_shape": tuple(batch_state.last_action.shape),
                 "checkpoint_enabled": checkpoint_config.enabled,
                 "wandb_enabled": wandb_config.enabled,
-                "params_leaves": len(jax.tree.leaves(state.model)),
+                "params_leaves": len(jax.tree.leaves(state.policy)),
             }
         )
         return
@@ -109,7 +110,7 @@ def main(
                 reward=reward_config,
                 command=command_config,
                 done=done_config,
-                terrain=terrain_config,
+                env=env_config,
                 warp=warp,
                 obs_size=env.observation_size,
                 action_size=env.action_size,
@@ -126,7 +127,7 @@ def main(
                 "reward": reward_config,
                 "command": command_config,
                 "done": done_config,
-                "terrain": terrain_config,
+                "env_config": env_config,
                 "checkpoint": checkpoint_config,
                 "warp": warp,
                 "env": {
@@ -151,7 +152,9 @@ def main(
         print({"checkpoint_path": str(checkpoint_dir)})
 
 
-def final_train_state(out: dict, env: BelloLocomotionEnv, config: PPOConfig) -> TrainState:
+def final_train_state(
+    out: dict, env: BelloLocomotionEnv, config: PPOConfig
+) -> TrainState:
     params, opt_state, update, *_ = out["runner_state"]
     template_state, _ = init_train_state(
         jax.random.PRNGKey(config.seed),
@@ -159,9 +162,9 @@ def final_train_state(out: dict, env: BelloLocomotionEnv, config: PPOConfig) -> 
         env.action_size,
         config,
     )
-    _, static_model = eqx.partition(template_state.model, eqx.is_array)
+    _, static_policy = eqx.partition(template_state.policy, eqx.is_array)
     return TrainState(
-        model=eqx.combine(params, static_model),
+        policy=eqx.combine(params, static_policy),
         opt_state=opt_state,
         update=update,
     )

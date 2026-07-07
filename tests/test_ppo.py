@@ -1,13 +1,13 @@
 import jax
 import jax.numpy as jnp
 
+from bello_mujoco.policy import ActorCriticConfig, sample_action
 from bello_mujoco.train.ppo import (
     PPOConfig,
     Transition,
     compute_gae,
     init_train_state,
     ppo_loss,
-    sample_action,
     update_ppo,
 )
 
@@ -19,8 +19,7 @@ def small_config() -> PPOConfig:
         num_steps=8,
         update_epochs=2,
         num_minibatches=2,
-        hidden_size=16,
-        hidden_depth=1,
+        policy=ActorCriticConfig(hidden_size=16, hidden_depth=1),
         anneal_lr=False,
     )
 
@@ -47,7 +46,7 @@ def test_actor_critic_sample_shapes() -> None:
     state, _ = init_train_state(jax.random.PRNGKey(0), obs_size, action_size, config)
     obs = jnp.zeros((config.num_envs, obs_size), dtype=jnp.float32)
 
-    action, log_prob, value = sample_action(state.model, obs, jax.random.PRNGKey(1))
+    action, log_prob, value = sample_action(state.policy, obs, jax.random.PRNGKey(1))
 
     assert action.shape == (config.num_envs, action_size)
     assert log_prob.shape == (config.num_envs,)
@@ -65,7 +64,7 @@ def test_gae_and_loss_shapes() -> None:
     )
 
     loss, metrics = ppo_loss(
-        state.model,
+        state.policy,
         Transition(
             done=transitions.done.reshape((-1,)),
             action=transitions.action.reshape((-1, action_size)),

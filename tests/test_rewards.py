@@ -19,7 +19,7 @@ def test_velocity_reward_prefers_matching_command() -> None:
         "actuator_force": jnp.zeros(4, dtype=jnp.float32),
         "joint_limit_low": -jnp.ones(4, dtype=jnp.float32),
         "joint_limit_high": jnp.ones(4, dtype=jnp.float32),
-        "fixed_joint_indices": jnp.asarray([2, 3], dtype=jnp.int32),
+        "hold_joint_indices": jnp.asarray([2, 3], dtype=jnp.int32),
         "done": jnp.asarray(False),
     }
 
@@ -52,7 +52,7 @@ def test_velocity_reward_penalizes_termination() -> None:
         "actuator_force": jnp.zeros(2, dtype=jnp.float32),
         "joint_limit_low": -jnp.ones(2, dtype=jnp.float32),
         "joint_limit_high": jnp.ones(2, dtype=jnp.float32),
-        "fixed_joint_indices": jnp.asarray([1], dtype=jnp.int32),
+        "hold_joint_indices": jnp.asarray([1], dtype=jnp.int32),
     }
 
     alive_reward, _ = compute_velocity_reward(done=jnp.asarray(False), **common)

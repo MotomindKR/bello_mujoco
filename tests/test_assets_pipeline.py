@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from bello_mujoco.assets_pipeline.mesh import replace_end_effectors_with_spheres
@@ -52,10 +53,14 @@ def test_end_effector_sphere_replacement_prunes_selected_subtree() -> None:
 
 
 def test_observation_size_tracks_reduced_actuator_count() -> None:
-    env = BelloLocomotionEnv(SimpleNamespace(mj_model=SimpleNamespace(nu=29)))
+    model = SimpleNamespace(
+        mj_model=SimpleNamespace(nu=29),
+        policy_ctrl_indices=np.zeros(6, dtype=np.int32),
+    )
+    env = BelloLocomotionEnv(model)
 
-    assert env.action_size == 29
-    assert env.observation_size == 96
+    assert env.action_size == 6
+    assert env.observation_size == 73
 
 
 def test_lower_body_rejects_end_effector_sphere_mode() -> None:

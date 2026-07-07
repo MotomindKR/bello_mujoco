@@ -66,7 +66,13 @@ Generated mesh assets are split by purpose:
 bello-prepare-assets --visual-mesh-face-budget 200000 --mesh-face-budget 1000 --foot-collision-mesh-face-budget 1000
 ```
 
-For `full_body`, the environment action is the full MuJoCo actuator vector (`nu=35`) in actuator order. The observation scaffold is a single-frame 114-dim vector: base angular velocity, projected gravity, command, full actuator joint positions, full actuator joint velocities, and previous full action.
+For `full_body`, the generated MuJoCo model has 35 actuators by default. The policy action space only includes joints whose `JointActuatorConfig.mode` is `"policy"`; the default config exposes the 12 leg actuators and holds the remaining 23 actuators at their default targets. The default observation is a single-frame 91-dim vector: base angular velocity, projected gravity, command, all actuated joint positions, all actuated joint velocities, and previous policy action.
+
+Joint defaults, action scales, soft limits, actuator gains, and policy/hold mode live in per-joint `JointActuatorConfig` entries under `ActuatorConfig`:
+
+```bash
+bello-prepare-assets --help | rg actuator-config
+```
 
 The default training collision profile uses simplified mesh collision for every robot collision geom:
 
@@ -109,8 +115,8 @@ pytest
 Expected smoke-test shape:
 
 ```text
-action_size: 35
-observation_size: 114
+action_size: 12
+observation_size: 91
 ```
 
 `bello-smoke-env --step` also runs one jitted MJX-Warp step. The default smoke check verifies model load, GPU-backed MJX model creation, reset, and the action/observation contract.
@@ -172,7 +178,7 @@ bello-train-ppo \
   --wandb-config.mode offline
 ```
 
-The CLI logs the PPO, asset, reward, command, done, terrain, warp, and resolved environment config blocks. Scalar PPO metrics and reward components are tracked against environment steps. The evaluation CLI can log rollout videos to W&B.
+The CLI logs the PPO, asset, reward, command, done, env, warp, and resolved environment config blocks. Scalar PPO metrics and reward components are tracked against environment steps. The evaluation CLI can log rollout videos to W&B.
 
 Log an evaluation video to W&B:
 
@@ -197,25 +203,33 @@ bello-train-ppo \
 Terrain is also runtime-configured. The locomotion env and training CLI default to a flat MuJoCo plane without modifying generated robot assets:
 
 ```bash
-bello-train-ppo --terrain-config.mode plane
+bello-train-ppo --env-config.terrain.mode plane
 ```
 
 Use a simple deterministic heightfield for rough-terrain smoke runs:
 
 ```bash
 bello-train-ppo \
-  --terrain-config.mode rough \
-  --terrain-config.seed 3 \
-  --terrain-config.hfield-amplitude 0.04 \
-  --terrain-config.hfield-resolution 65
+  --env-config.terrain.mode rough \
+  --env-config.terrain.seed 3 \
+  --env-config.terrain.hfield-amplitude 0.04 \
+  --env-config.terrain.hfield-resolution 65
 ```
 
-The rough heightfield is fixed for a loaded model and shared by vectorized envs. Change `--terrain-config.seed` between runs to generate a different cached terrain scene.
+The rough heightfield is fixed for a loaded model and shared by vectorized envs. Change `--env-config.terrain.seed` between runs to generate a different cached terrain scene.
 
 Disable terrain for robot-only model debugging:
 
 ```bash
-bello-train-ppo --terrain-config.mode none
+bello-train-ppo --env-config.terrain.mode none
+```
+
+Control decimation and episode timeout through the same env config:
+
+```bash
+bello-train-ppo \
+  --env-config.decimation 10 \
+  --env-config.max-episode-steps 1000
 ```
 
 ## Vectorized API
@@ -235,11 +249,11 @@ batch_state, batch_obs, reward, done, info = env.step_batch(batch_state, actions
 
 `step_batch` is a `jax.vmap` wrapper over `step`; it has the same collision-profile compile cost as the single step on first use. MJX-Warp is the only simulator backend used by this project.
 
-## PPO Scaffold
+## Policy And PPO Scaffold
 
-The PPO implementation in [ppo.py](/home/gmmyung/bello_mujoco/src/bello_mujoco/train/ppo.py) follows the PureJaxRL training-loop style without depending on PureJaxRL as a package:
+The policy implementation in [policy.py](/home/gmmyung/bello_mujoco/src/bello_mujoco/policy.py) owns the Equinox actor-critic and diagonal Gaussian action distribution. The PPO implementation in [ppo.py](/home/gmmyung/bello_mujoco/src/bello_mujoco/train/ppo.py) owns rollout collection, GAE, losses, and optimizer updates, following the PureJaxRL training-loop style without depending on PureJaxRL as a package:
 
-- Equinox actor-critic with a diagonal Gaussian continuous-action policy
+- `ActorCriticConfig` for network width/depth, activation, and initial log std
 - Optax optimizer with global gradient clipping and optional linear LR annealing
 - `lax.scan` rollout collection
 - reverse-scan GAE

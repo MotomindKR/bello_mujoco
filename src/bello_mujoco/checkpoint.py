@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import Any, get_args, get_origin, get_type_hints
 
 import equinox as eqx
 import jax
@@ -13,10 +13,9 @@ import jax.numpy as jnp
 import orbax.checkpoint as ocp
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
-from bello_mujoco.envs.locomotion import DoneConfig
+from bello_mujoco.envs.locomotion import BelloEnvConfig, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
-from bello_mujoco.terrain import TerrainConfig
 from bello_mujoco.tracking import to_builtin
 from bello_mujoco.train.ppo import PPOConfig, TrainState, init_train_state
 
@@ -41,7 +40,7 @@ class CheckpointMetadata:
     reward: RewardConfig
     command: CommandConfig
     done: DoneConfig
-    terrain: TerrainConfig
+    env: BelloEnvConfig
     warp: WarpConfig
     obs_size: int
     action_size: int
@@ -61,9 +60,9 @@ def save_training_checkpoint(
 ) -> None:
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    params, _ = eqx.partition(train_state.model, eqx.is_array)
+    params, _ = eqx.partition(train_state.policy, eqx.is_array)
     item = {
-        "model": params,
+        "policy": params,
         "opt_state": train_state.opt_state,
         "update": train_state.update,
     }
@@ -82,15 +81,15 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
         metadata.action_size,
         metadata.ppo,
     )
-    params_template, static_model = eqx.partition(template_state.model, eqx.is_array)
+    params_template, static_policy = eqx.partition(template_state.policy, eqx.is_array)
     item_template = {
-        "model": params_template,
+        "policy": params_template,
         "opt_state": template_state.opt_state,
         "update": jnp.asarray(0, dtype=jnp.int32),
     }
     restored = ocp.PyTreeCheckpointer().restore(path / STATE_DIR, item=item_template)
     train_state = TrainState(
-        model=eqx.combine(restored["model"], static_model),
+        policy=eqx.combine(restored["policy"], static_policy),
         opt_state=restored["opt_state"],
         update=restored["update"],
     )
@@ -105,7 +104,7 @@ def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
         reward=dataclass_from_dict(RewardConfig, data["reward"]),
         command=dataclass_from_dict(CommandConfig, data["command"]),
         done=dataclass_from_dict(DoneConfig, data["done"]),
-        terrain=dataclass_from_dict(TerrainConfig, data["terrain"]),
+        env=dataclass_from_dict(BelloEnvConfig, data["env"]),
         warp=dataclass_from_dict(WarpConfig, data["warp"]),
         obs_size=int(data["obs_size"]),
         action_size=int(data["action_size"]),
@@ -114,10 +113,14 @@ def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
 
 def dataclass_from_dict(cls, data: dict[str, Any]):
     kwargs = {}
+    type_hints = get_type_hints(cls)
     for field in fields(cls):
         if field.name not in data:
             continue
-        kwargs[field.name] = coerce_value(field.type, data[field.name])
+        kwargs[field.name] = coerce_value(
+            type_hints.get(field.name, field.type),
+            data[field.name],
+        )
     return cls(**kwargs)
 
 
@@ -126,10 +129,26 @@ def coerce_value(annotation, value):
         return None
     if annotation is Path or annotation == "Path":
         return Path(value)
+    if isinstance(annotation, type) and is_dataclass(annotation):
+        return dataclass_from_dict(annotation, value)
     if "Path" in str(annotation) and "None" in str(annotation):
         return Path(value)
     origin = get_origin(annotation)
+    if origin is dict:
+        key_type, value_type = get_args(annotation)
+        return {
+            coerce_value(key_type, item_key): coerce_value(value_type, item_value)
+            for item_key, item_value in value.items()
+        }
     if origin is tuple:
+        args = get_args(annotation)
+        if len(args) == 2 and args[1] is Ellipsis:
+            return tuple(coerce_value(args[0], item) for item in value)
+        if args:
+            return tuple(
+                coerce_value(item_type, item)
+                for item_type, item in zip(args, value, strict=False)
+            )
         return tuple(value)
     if origin is not None and type(None) in get_args(annotation):
         non_none = [arg for arg in get_args(annotation) if arg is not type(None)]

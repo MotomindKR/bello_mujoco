@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import tyro
 
 from bello_mujoco.envs.cartpole import ContinuousCartPoleEnv
+from bello_mujoco.policy import ActorCriticConfig
 from bello_mujoco.train.ppo import PPOConfig, make_train
 
 
@@ -55,10 +56,12 @@ def main(
         update_epochs=update_epochs,
         num_minibatches=num_minibatches,
         learning_rate=learning_rate,
-        hidden_size=hidden_size,
-        hidden_depth=hidden_depth,
         ent_coef=ent_coef,
-        init_log_std=init_log_std,
+        policy=ActorCriticConfig(
+            hidden_size=hidden_size,
+            hidden_depth=hidden_depth,
+            init_log_std=init_log_std,
+        ),
         anneal_lr=True,
     )
     print(run_cartpole_ppo(config))
