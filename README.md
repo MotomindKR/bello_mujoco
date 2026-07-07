@@ -18,7 +18,7 @@ direnv allow
 
 ## Stack
 
-- Simulator/env: `mujoco`, `mujoco-mjx[warp]`, `mujoco-warp`
+- Simulator/env: `mujoco`, `mujoco-mjx[warp]`
 - JAX: `jax[cuda13]` from Python wheels
 - RL implementation style: local PureJaxRL-style code, `rlax`
 - NN/model: `equinox`
@@ -27,7 +27,7 @@ direnv allow
 - Checkpointing: `orbax-checkpoint`
 - Visualization/logging: `rerun-sdk`
 - Typing/asserts: `jaxtyping`, `chex`
-- Config: `tyro`, `hydra-core`
+- Config/CLI: `tyro`
 
 ## Assets
 
@@ -80,18 +80,12 @@ action_size: 35
 observation_size: 114
 ```
 
-`bello-smoke-env --step` also times two jitted MJX steps by default and reports `step_seconds`. The default simulator backend is MJX-Warp on GPU; pass `--mjx-impl jax` to compare against MJX-JAX. The first entries include JIT/MJX lowering and GPU execution setup; with the default foot-mesh profile this is currently practical, while the all-mesh profile can compile very slowly. Use `--step-count N` to inspect later steady-state steps. The default smoke check verifies model load, GPU-backed MJX model creation, reset, and the action/observation contract.
+`bello-smoke-env --step` also runs one jitted MJX-Warp step. The default smoke check verifies model load, GPU-backed MJX model creation, reset, and the action/observation contract.
 
-Batch timing:
-
-```bash
-bello-smoke-env --mjx-impl warp --batch-size 512 --step --step-count 5
-```
-
-Standalone MJWarp timing and JAX/Warp zero-copy check:
+Batch timing is handled by the benchmark command:
 
 ```bash
-bello-mjwarp-smoke --nworld 512 --step-count 20
+bello-benchmark-env --batch-size 512 --step-count 5
 ```
 
 ## Vectorized API
@@ -107,7 +101,7 @@ batch_state, batch_obs = env.reset_batch(batch_size=1024)
 batch_state, batch_obs, reward, done, info = env.step_batch(batch_state, actions)
 ```
 
-`step_batch` is a `jax.vmap` wrapper over `step`; it has the same collision-profile compile cost as the single step on first use. MJX-Warp is the default backend because it handles contact-heavy batched simulation much better than MJX-JAX on NVIDIA GPUs.
+`step_batch` is a `jax.vmap` wrapper over `step`; it has the same collision-profile compile cost as the single step on first use. MJX-Warp is the only simulator backend used by this project.
 
 ## PPO Scaffold
 

@@ -4,7 +4,7 @@ import jax
 import tyro
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.sim import DEFAULT_WARP_NACONMAX, DEFAULT_WARP_NJMAX, MjxImpl
+from bello_mujoco.sim import DEFAULT_CONTACT_BUDGET_PER_ENV, DEFAULT_WARP_NJMAX, WarpConfig
 from bello_mujoco.train.ppo import PPOConfig, init_train_state, make_train
 
 
@@ -12,16 +12,20 @@ def main(
     config: PPOConfig = PPOConfig(),
     dry_run: bool = True,
     jit: bool = True,
-    mjx_impl: MjxImpl = "warp",
-    warp_naconmax: int | None = DEFAULT_WARP_NACONMAX,
+    contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
+    warp_naconmax: int | None = None,
     warp_naccdmax: int | None = None,
     warp_njmax: int | None = DEFAULT_WARP_NJMAX,
 ) -> None:
+    warp = WarpConfig(
+        contact_budget_per_env=contact_budget_per_env,
+        naconmax=warp_naconmax,
+        naccdmax=warp_naccdmax,
+        njmax=warp_njmax,
+    )
     env = BelloLocomotionEnv.load(
-        mjx_impl=mjx_impl,
-        warp_naconmax=warp_naconmax,
-        warp_naccdmax=warp_naccdmax,
-        warp_njmax=warp_njmax,
+        warp=warp,
+        batch_size=config.num_envs,
     )
     rng = jax.random.PRNGKey(config.seed)
     if dry_run:
@@ -30,7 +34,9 @@ def main(
         print(
             {
                 "backend": jax.default_backend(),
-                "mjx_impl": env.model.mjx_impl,
+                "mjx_impl": "warp",
+                "warp_naconmax": env.model.warp_naconmax,
+                "warp_njmax": env.model.warp_njmax,
                 "obs_size": env.observation_size,
                 "action_size": env.action_size,
                 "num_envs": config.num_envs,

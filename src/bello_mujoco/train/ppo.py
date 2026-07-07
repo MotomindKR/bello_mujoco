@@ -327,7 +327,7 @@ def collect_rollout(
 def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
     if config.batch_size % config.num_minibatches != 0:
         raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
-    env = BelloLocomotionEnv.load() if env is None else env
+    env = BelloLocomotionEnv.load(batch_size=config.num_envs) if env is None else env
 
     def train(rng: jax.Array):
         rng, init_key = jax.random.split(rng)

@@ -17,7 +17,7 @@ from bello_mujoco.contracts import (
     MAX_EPISODE_STEPS,
     POLICY_JOINT_ORDER,
 )
-from bello_mujoco.sim import DEFAULT_MJX_IMPL, DEFAULT_WARP_NACONMAX, DEFAULT_WARP_NJMAX, BelloModel, MjxImpl, load_bello_model
+from bello_mujoco.sim import BelloModel, WarpConfig, load_bello_model
 
 
 @chex.dataclass(frozen=True)
@@ -44,19 +44,10 @@ class BelloLocomotionEnv:
     def load(
         cls,
         *,
-        mjx_impl: MjxImpl = DEFAULT_MJX_IMPL,
-        warp_naconmax: int | None = DEFAULT_WARP_NACONMAX,
-        warp_naccdmax: int | None = None,
-        warp_njmax: int | None = DEFAULT_WARP_NJMAX,
+        warp: WarpConfig = WarpConfig(),
+        batch_size: int = 1,
     ) -> "BelloLocomotionEnv":
-        return cls(
-            load_bello_model(
-                mjx_impl=mjx_impl,
-                warp_naconmax=warp_naconmax,
-                warp_naccdmax=warp_naccdmax,
-                warp_njmax=warp_njmax,
-            )
-        )
+        return cls(load_bello_model(warp=warp, batch_size=batch_size))
 
     @property
     def action_size(self) -> int:
