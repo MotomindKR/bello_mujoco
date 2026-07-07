@@ -135,6 +135,25 @@ Run a tiny end-to-end PPO smoke without W&B:
 bello-train-ppo --no-dry-run --config.total-timesteps 4 --config.num-envs 2 --config.num-steps 2
 ```
 
+Save a final Orbax checkpoint:
+
+```bash
+bello-train-ppo \
+  --no-dry-run \
+  --checkpoint-config.enabled \
+  --checkpoint-config.directory checkpoints \
+  --checkpoint-config.name flat-smoke
+```
+
+Render a deterministic checkpoint rollout to MP4:
+
+```bash
+bello-eval-policy \
+  --checkpoint-path checkpoints/flat-smoke \
+  --output-path outputs/flat-smoke.mp4 \
+  --steps 250
+```
+
 Enable W&B for experiment tracking:
 
 ```bash
@@ -153,7 +172,17 @@ bello-train-ppo \
   --wandb-config.mode offline
 ```
 
-The CLI logs the PPO, asset, reward, command, done, terrain, warp, and resolved environment config blocks. Scalar PPO metrics and reward components are tracked against environment steps. W&B also supports native video logging, which the evaluation workflow can use once policy checkpoint playback is wired.
+The CLI logs the PPO, asset, reward, command, done, terrain, warp, and resolved environment config blocks. Scalar PPO metrics and reward components are tracked against environment steps. The evaluation CLI can log rollout videos to W&B.
+
+Log an evaluation video to W&B:
+
+```bash
+bello-eval-policy \
+  --checkpoint-path checkpoints/flat-smoke \
+  --output-path outputs/flat-smoke.mp4 \
+  --log-wandb \
+  --wandb-config.project bello-mujoco
+```
 
 Reward, command, and done configs are tyro-exposed nested dataclasses:
 

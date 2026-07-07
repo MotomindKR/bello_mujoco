@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import equinox as eqx
 import jax
 import tyro
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.checkpoint import (
+    CheckpointConfig,
+    CheckpointMetadata,
+    checkpoint_path,
+    save_training_checkpoint,
+)
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import (
@@ -21,7 +28,7 @@ from bello_mujoco.tracking import (
     log_config,
     track_metric_history,
 )
-from bello_mujoco.train.ppo import PPOConfig, init_train_state, make_train
+from bello_mujoco.train.ppo import PPOConfig, TrainState, init_train_state, make_train
 
 
 def main(
@@ -31,6 +38,7 @@ def main(
     command_config: CommandConfig = CommandConfig(),
     done_config: DoneConfig = DoneConfig(),
     terrain_config: TerrainConfig = FLAT_TERRAIN,
+    checkpoint_config: CheckpointConfig = CheckpointConfig(),
     wandb_config: WandbConfig = WandbConfig(),
     dry_run: bool = True,
     jit: bool = True,
@@ -75,6 +83,7 @@ def main(
                 "num_updates": config.num_updates,
                 "batch_obs_shape": tuple(batch_obs.shape),
                 "batch_action_shape": tuple(batch_state.last_action.shape),
+                "checkpoint_enabled": checkpoint_config.enabled,
                 "wandb_enabled": wandb_config.enabled,
                 "params_leaves": len(jax.tree.leaves(state.model)),
             }
@@ -87,6 +96,26 @@ def main(
     metrics = jax.tree_util.tree_map(
         lambda x: x[-1] if getattr(x, "ndim", 0) > 0 else x, out["metrics"]
     )
+    checkpoint_dir = None
+    if checkpoint_config.enabled:
+        checkpoint_dir = checkpoint_path(checkpoint_config, config)
+        final_state = final_train_state(out, env, config)
+        save_training_checkpoint(
+            checkpoint_dir,
+            final_state,
+            CheckpointMetadata(
+                ppo=config,
+                asset=asset_config,
+                reward=reward_config,
+                command=command_config,
+                done=done_config,
+                terrain=terrain_config,
+                warp=warp,
+                obs_size=env.observation_size,
+                action_size=env.action_size,
+            ),
+            overwrite=checkpoint_config.overwrite,
+        )
     run = create_wandb_run(wandb_config)
     try:
         log_config(
@@ -98,12 +127,14 @@ def main(
                 "command": command_config,
                 "done": done_config,
                 "terrain": terrain_config,
+                "checkpoint": checkpoint_config,
                 "warp": warp,
                 "env": {
                     "obs_size": env.observation_size,
                     "action_size": env.action_size,
                     "mjx_impl": "warp",
                     "xml_path": env.model.xml_path,
+                    "checkpoint_path": checkpoint_dir,
                 },
             },
         )
@@ -116,6 +147,24 @@ def main(
     finally:
         close_run(run)
     print(metrics)
+    if checkpoint_dir is not None:
+        print({"checkpoint_path": str(checkpoint_dir)})
+
+
+def final_train_state(out: dict, env: BelloLocomotionEnv, config: PPOConfig) -> TrainState:
+    params, opt_state, update, *_ = out["runner_state"]
+    template_state, _ = init_train_state(
+        jax.random.PRNGKey(config.seed),
+        env.observation_size,
+        env.action_size,
+        config,
+    )
+    _, static_model = eqx.partition(template_state.model, eqx.is_array)
+    return TrainState(
+        model=eqx.combine(params, static_model),
+        opt_state=opt_state,
+        update=update,
+    )
 
 
 def entrypoint() -> None:
