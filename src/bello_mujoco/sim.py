@@ -26,7 +26,7 @@ from bello_mujoco.terrain import (
     runtime_mjcf_path,
 )
 
-DEFAULT_CONTACT_BUDGET_PER_ENV = 24
+DEFAULT_CONTACT_BUDGET_PER_ENV = 32
 DEFAULT_WARP_NJMAX = 256
 
 
@@ -59,6 +59,11 @@ class BelloModel:
     actuator_qvel_indices: np.ndarray
     hold_ctrl_indices: np.ndarray
     policy_action_scale: np.ndarray
+    geom_body_ids: np.ndarray
+    foot_body_ids: np.ndarray
+    foot_geom_ids: np.ndarray
+    terrain_geom_ids: np.ndarray
+    nonfoot_robot_geom_ids: np.ndarray
     default_qpos: np.ndarray
     default_qvel: np.ndarray
     default_ctrl: np.ndarray
@@ -186,6 +191,14 @@ def _load_bello_model_from_path(
     policy_action_scale = actuator_action_scale(
         mj_model, actuator_joint_names, policy_ctrl_indices, actuator_config
     )
+    foot_body_ids = foot_body_indices(mj_model)
+    foot_geom_ids = robot_collision_geom_indices(
+        mj_model, body_ids=set(foot_body_ids.tolist())
+    )
+    terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
+    nonfoot_robot_geom_ids = robot_collision_geom_indices(
+        mj_model, excluded_body_ids=set(foot_body_ids.tolist())
+    )
 
     return BelloModel(
         mj_model=mj_model,
@@ -202,6 +215,11 @@ def _load_bello_model_from_path(
         actuator_qvel_indices=actuator_qvel_indices,
         hold_ctrl_indices=hold_ctrl_indices,
         policy_action_scale=policy_action_scale,
+        geom_body_ids=np.asarray(mj_model.geom_bodyid, dtype=np.int32),
+        foot_body_ids=foot_body_ids,
+        foot_geom_ids=foot_geom_ids,
+        terrain_geom_ids=terrain_geom_ids,
+        nonfoot_robot_geom_ids=nonfoot_robot_geom_ids,
         default_qpos=default_qpos,
         default_qvel=default_qvel,
         default_ctrl=default_ctrl,
@@ -247,3 +265,62 @@ def actuator_action_scale(
 def require_full_body_config(config: AssetPrepConfig) -> None:
     if canonical_asset(config.asset) != "full_body":
         raise ValueError("BelloLocomotionEnv currently requires asset='full_body'")
+
+
+def foot_body_indices(mj_model: mujoco.MjModel) -> np.ndarray:
+    ids = np.asarray(
+        [
+            body_id
+            for body_id in range(mj_model.nbody)
+            if is_foot_body_name(
+                mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+            )
+        ],
+        dtype=np.int32,
+    )
+    if ids.size != 2:
+        raise ValueError(
+            f"expected two foot bodies ending in ankle_roll_link, got {ids.size}"
+        )
+    return ids
+
+
+def is_foot_body_name(name: str | None) -> bool:
+    return bool(name and name.endswith("ankle_roll_link"))
+
+
+def named_geom_indices(mj_model: mujoco.MjModel, name: str) -> np.ndarray:
+    return np.asarray(
+        [
+            geom_id
+            for geom_id in range(mj_model.ngeom)
+            if mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) == name
+        ],
+        dtype=np.int32,
+    )
+
+
+def robot_collision_geom_indices(
+    mj_model: mujoco.MjModel,
+    *,
+    body_ids: set[int] | None = None,
+    excluded_body_ids: set[int] | None = None,
+) -> np.ndarray:
+    body_ids = set() if body_ids is None else body_ids
+    excluded_body_ids = set() if excluded_body_ids is None else excluded_body_ids
+    ids: list[int] = []
+    for geom_id in range(mj_model.ngeom):
+        body_id = int(mj_model.geom_bodyid[geom_id])
+        if body_id == 0:
+            continue
+        if body_ids and body_id not in body_ids:
+            continue
+        if body_id in excluded_body_ids:
+            continue
+        if (
+            mj_model.geom_contype[geom_id] == 0
+            and mj_model.geom_conaffinity[geom_id] == 0
+        ):
+            continue
+        ids.append(geom_id)
+    return np.asarray(ids, dtype=np.int32)

@@ -398,6 +398,9 @@ class BelloLocomotionEnv:
         base_lin_vel = quat_rotate_inverse(
             quat, next_state.data.qvel[root_qvel : root_qvel + 3]
         )
+        foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
+            self._contact_terms(next_state)
+        )
         return compute_velocity_reward(
             config=self.reward_config,
             command=command,
@@ -414,8 +417,66 @@ class BelloLocomotionEnv:
             joint_limit_low=self._actuator_joint_limit_low(),
             joint_limit_high=self._actuator_joint_limit_high(),
             hold_joint_indices=jnp.asarray(self.model.hold_ctrl_indices),
+            foot_contact=foot_contact,
+            foot_height=foot_height,
+            foot_lateral_speed_sq=foot_lateral_speed_sq,
+            undesired_contact=undesired_contact,
             done=done,
         )
+
+    def _contact_terms(
+        self, state: BelloState
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
+        foot_count = foot_body_ids.shape[0]
+        if self.model.terrain_geom_ids.size == 0:
+            return (
+                jnp.zeros(foot_count, dtype=jnp.float32),
+                self._foot_height(state),
+                jnp.zeros(foot_count, dtype=jnp.float32),
+                jnp.asarray(0.0, dtype=jnp.float32),
+            )
+
+        impl = state.data._impl
+        contact_geom = jnp.asarray(impl.contact__geom, dtype=jnp.int32)
+        contact_geom = jnp.clip(contact_geom, 0, self.model.mj_model.ngeom - 1)
+        nacon = jnp.ravel(jnp.asarray(impl.nacon, dtype=jnp.int32))[0]
+        active = jnp.arange(contact_geom.shape[0], dtype=jnp.int32) < nacon
+
+        geom_body_ids = jnp.asarray(self.model.geom_body_ids)
+        contact_body = geom_body_ids[contact_geom]
+        terrain_contact = pair_contains(contact_geom, self.model.terrain_geom_ids)
+        foot_contact_slot = (
+            active
+            & terrain_contact
+            & pair_contains(contact_body, self.model.foot_body_ids)
+        )
+        foot_contact = jnp.any(
+            foot_contact_slot[:, None]
+            & pair_contains_each(contact_body, self.model.foot_body_ids),
+            axis=0,
+        ).astype(jnp.float32)
+        undesired_contact = jnp.sum(
+            (
+                active
+                & terrain_contact
+                & pair_contains(contact_geom, self.model.nonfoot_robot_geom_ids)
+            ).astype(jnp.float32)
+        )
+        return (
+            foot_contact,
+            self._foot_height(state),
+            self._foot_lateral_speed_sq(state),
+            undesired_contact,
+        )
+
+    def _foot_height(self, state: BelloState) -> jax.Array:
+        terrain_z = jnp.asarray(self.terrain_config.pos[2], dtype=jnp.float32)
+        return state.data.xpos[jnp.asarray(self.model.foot_body_ids), 2] - terrain_z
+
+    def _foot_lateral_speed_sq(self, state: BelloState) -> jax.Array:
+        foot_cvel = state.data.cvel[jnp.asarray(self.model.foot_body_ids)]
+        return jnp.sum(foot_cvel[:, 3:5] ** 2, axis=1)
 
     def _actuator_joint_limit_low(self) -> jax.Array:
         joint_ids = self.model.mj_model.actuator_trnid[:, 0]
@@ -452,3 +513,17 @@ def tree_where(mask: jax.Array, true_tree, false_tree):
         return jnp.where(select_mask, true_value, false_value)
 
     return jax.tree_util.tree_map(select, true_tree, false_tree)
+
+
+def pair_contains(pair: jax.Array, candidates) -> jax.Array:
+    candidates = jnp.asarray(candidates, dtype=pair.dtype)
+    if candidates.size == 0:
+        return jnp.zeros(pair.shape[0], dtype=bool)
+    return jnp.any(pair[:, :, None] == candidates[None, None, :], axis=(1, 2))
+
+
+def pair_contains_each(pair: jax.Array, candidates) -> jax.Array:
+    candidates = jnp.asarray(candidates, dtype=pair.dtype)
+    if candidates.size == 0:
+        return jnp.zeros((pair.shape[0], 0), dtype=bool)
+    return jnp.any(pair[:, :, None] == candidates[None, None, :], axis=1)

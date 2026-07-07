@@ -56,10 +56,15 @@ class RewardConfig:
     energy_weight: float = -2.0e-5
     joint_limit_weight: float = -5.0
     hold_joint_deviation_weight: float = -0.1
+    foot_contact_weight: float = 0.05
+    foot_slip_weight: float = -0.2
+    foot_clearance_weight: float = -2.0
+    undesired_contact_weight: float = -1.0
     termination_weight: float = -1.0
     lin_vel_tracking_sigma: float = 0.25
     yaw_vel_tracking_sigma: float = 0.25
     base_height_target: float = 0.91
+    foot_clearance_target: float = 0.08
 
 
 def compute_velocity_reward(
@@ -79,6 +84,10 @@ def compute_velocity_reward(
     joint_limit_low: jax.Array,
     joint_limit_high: jax.Array,
     hold_joint_indices: jax.Array,
+    foot_contact: jax.Array,
+    foot_height: jax.Array,
+    foot_lateral_speed_sq: jax.Array,
+    undesired_contact: jax.Array,
     done: jax.Array,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
@@ -106,6 +115,12 @@ def compute_velocity_reward(
         if hold_joint_indices.size
         else jnp.asarray(0.0, dtype=jnp.float32)
     )
+    foot_contact_rate = safe_mean(foot_contact)
+    foot_slip = safe_mean(foot_contact * foot_lateral_speed_sq)
+    swing = 1.0 - foot_contact
+    foot_clearance = safe_mean(
+        swing * jnp.maximum(config.foot_clearance_target - foot_height, 0.0) ** 2
+    )
     termination = done.astype(jnp.float32)
 
     terms = {
@@ -123,7 +138,19 @@ def compute_velocity_reward(
         "reward/hold_joint_deviation": (
             config.hold_joint_deviation_weight * hold_joint_deviation
         ),
+        "reward/foot_contact": config.foot_contact_weight * foot_contact_rate,
+        "reward/foot_slip": config.foot_slip_weight * foot_slip,
+        "reward/foot_clearance": config.foot_clearance_weight * foot_clearance,
+        "reward/undesired_contact": (
+            config.undesired_contact_weight * undesired_contact
+        ),
         "reward/termination": config.termination_weight * termination,
     }
     reward = sum(terms.values(), jnp.asarray(0.0, dtype=jnp.float32))
     return reward, terms
+
+
+def safe_mean(values: jax.Array) -> jax.Array:
+    if values.size == 0:
+        return jnp.asarray(0.0, dtype=jnp.float32)
+    return jnp.mean(values)

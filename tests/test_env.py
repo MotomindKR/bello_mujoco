@@ -22,6 +22,15 @@ def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
     assert int(state.step_count) == 0
 
 
+def test_model_exposes_contact_reward_sets(full_body_asset: PreparedAsset) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+
+    assert env.model.foot_body_ids.shape == (2,)
+    assert env.model.foot_geom_ids.shape == (2,)
+    assert env.model.terrain_geom_ids.shape == (1,)
+    assert env.model.nonfoot_robot_geom_ids.size > env.model.foot_geom_ids.size
+
+
 def test_locomotion_env_uses_flat_runtime_terrain_by_default(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -122,6 +131,10 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert jnp.all(info["returned_episode"])
     assert info["episode_return"].shape == (2,)
     assert info["reward/track_lin_vel_xy"].shape == (2,)
+    assert info["reward/foot_contact"].shape == (2,)
+    assert info["reward/foot_slip"].shape == (2,)
+    assert info["reward/foot_clearance"].shape == (2,)
+    assert info["reward/undesired_contact"].shape == (2,)
     assert jnp.all(jnp.isfinite(reward))
 
 
