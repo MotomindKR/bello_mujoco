@@ -74,6 +74,9 @@ wandb_config:
   dir: .wandb
   tags: []
 
+metric_config:
+  stream_updates: true
+
 video_config:
   enabled: false
   every_updates: 10

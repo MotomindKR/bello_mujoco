@@ -298,6 +298,7 @@ done_config: DoneConfig
 env_config: BelloEnvConfig
 checkpoint_config: CheckpointConfig
 wandb_config: WandbConfig
+metric_config: TrainingMetricConfig
 video_config: TrainingVideoConfig
 warp: WarpConfig
 dry_run: true
@@ -339,6 +340,8 @@ wandb_config.enabled: false
 wandb_config.project: bello-mujoco
 wandb_config.mode: online | offline | disabled
 wandb_config.dir: .wandb
+
+metric_config.stream_updates: true
 
 video_config.enabled: false
 video_config.every_updates: 10

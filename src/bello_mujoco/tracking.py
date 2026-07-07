@@ -64,18 +64,56 @@ def track_metric_history(
     update_count = metric_update_count(host_metrics)
     for update in range(update_count):
         env_steps = (update + 1) * samples_per_update
-        payload: dict[str, float | int] = {"update": update + 1}
-        for name, values in host_metrics.items():
-            array = np.asarray(values)
-            value = array if array.ndim == 0 else array[update]
-            payload[name] = float(value)
-        if context:
-            prefix = "/".join(str(value) for value in context.values())
-            payload = {
-                key if key == "update" else f"{prefix}/{key}": value
-                for key, value in payload.items()
-            }
+        payload = metric_payload(
+            {
+                name: select_metric_update(values, update)
+                for name, values in host_metrics.items()
+            },
+            update=update + 1,
+            context=context,
+        )
         run.log(payload, step=env_steps)
+
+
+def track_metric_snapshot(
+    run,
+    metrics: Mapping[str, Any],
+    *,
+    env_steps: int,
+    update: int,
+    context: Mapping[str, Any] | None = None,
+) -> None:
+    if run is None:
+        return
+    payload = metric_payload(
+        jax.device_get(metrics),
+        update=update,
+        context=context,
+    )
+    run.log(payload, step=env_steps)
+
+
+def metric_payload(
+    metrics: Mapping[str, Any],
+    *,
+    update: int,
+    context: Mapping[str, Any] | None = None,
+) -> dict[str, float | int]:
+    payload: dict[str, float | int] = {"update": update}
+    for name, value in metrics.items():
+        payload[name] = float(np.asarray(value))
+    if context:
+        prefix = "/".join(str(value) for value in context.values())
+        payload = {
+            key if key == "update" else f"{prefix}/{key}": value
+            for key, value in payload.items()
+        }
+    return payload
+
+
+def select_metric_update(values: Any, update: int) -> Any:
+    array = np.asarray(values)
+    return array if array.ndim == 0 else array[update]
 
 
 def track_video(

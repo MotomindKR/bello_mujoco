@@ -83,6 +83,7 @@ done_config: DoneConfig
 env_config: BelloEnvConfig
 checkpoint_config: CheckpointConfig
 wandb_config: WandbConfig
+metric_config: TrainingMetricConfig
 video_config: TrainingVideoConfig
 warp: WarpConfig
 dry_run: true
@@ -341,6 +342,21 @@ wandb_config:
   tags: []
 ```
 
+### TrainingMetricConfig
+
+```yaml
+metric_config:
+  stream_updates: true
+```
+
+When `wandb_config.enabled=true` and `metric_config.stream_updates=true`,
+training runs as a Python loop over JIT-compiled PPO updates and logs scalar
+metrics after every PPO update. With the `rtx5090_4096x256` preset, that means
+one W&B metric point every `4096 * 256 = 1048576` environment steps.
+
+If `stream_updates=false`, the fully JIT-compiled training function runs first
+and metrics are uploaded to W&B only after training returns.
+
 ### TrainingVideoConfig
 
 Training videos are rendered from the training loop after selected PPO updates.
@@ -537,6 +553,7 @@ When enabled:
 
 - the full run config is logged to `run.config`
 - training metrics are logged under `phase=train`
+- metrics stream after every PPO update when `metric_config.stream_updates=true`
 - the W&B logging step is environment steps
 - training videos can be logged when `video_config.enabled` and
   `video_config.log_wandb` are true

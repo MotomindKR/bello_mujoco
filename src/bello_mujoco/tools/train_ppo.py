@@ -29,6 +29,7 @@ from bello_mujoco.tracking import (
     create_wandb_run,
     log_config,
     track_metric_history,
+    track_metric_snapshot,
     track_video,
 )
 from bello_mujoco.train.ppo import (
@@ -64,6 +65,11 @@ class TrainingVideoConfig:
 
 
 @dataclass(frozen=True)
+class TrainingMetricConfig:
+    stream_updates: bool = True
+
+
+@dataclass(frozen=True)
 class TrainingRunConfig:
     config: PPOConfig = PPOConfig()
     asset_config: AssetPrepConfig = AssetPrepConfig()
@@ -73,6 +79,7 @@ class TrainingRunConfig:
     env_config: BelloEnvConfig = BelloEnvConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
+    metric_config: TrainingMetricConfig = TrainingMetricConfig()
     video_config: TrainingVideoConfig = TrainingVideoConfig()
     warp: WarpConfig = WarpConfig()
     dry_run: bool = True
@@ -88,6 +95,7 @@ def main(
     env_config: BelloEnvConfig = BelloEnvConfig(),
     checkpoint_config: CheckpointConfig = CheckpointConfig(),
     wandb_config: WandbConfig = WandbConfig(),
+    metric_config: TrainingMetricConfig = TrainingMetricConfig(),
     video_config: TrainingVideoConfig = TrainingVideoConfig(),
     warp: WarpConfig = WarpConfig(),
     dry_run: bool = True,
@@ -103,6 +111,7 @@ def main(
             env_config=env_config,
             checkpoint_config=checkpoint_config,
             wandb_config=wandb_config,
+            metric_config=metric_config,
             video_config=video_config,
             warp=warp,
             dry_run=dry_run,
@@ -120,6 +129,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
     env_config = run_config.env_config
     checkpoint_config = run_config.checkpoint_config
     wandb_config = run_config.wandb_config
+    metric_config = run_config.metric_config
     video_config = run_config.video_config
     warp = run_config.warp
     dry_run = run_config.dry_run
@@ -181,6 +191,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "done": done_config,
                 "env_config": env_config,
                 "checkpoint": checkpoint_config,
+                "metric": metric_config,
                 "video": video_config,
                 "warp": warp,
                 "env": {
@@ -192,8 +203,17 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 },
             },
         )
-        if video_config.enabled:
-            out = train_with_video(env, config, rng, video_config, run, jit)
+        stream_metrics = metric_config.stream_updates and run is not None
+        if video_config.enabled or stream_metrics:
+            out = train_update_loop(
+                env,
+                config,
+                rng,
+                video_config,
+                run,
+                jit,
+                stream_metrics=stream_metrics,
+            )
         else:
             train = make_train(config, env)
             train = jax.jit(train) if jit else train
@@ -220,12 +240,13 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 ),
                 overwrite=checkpoint_config.overwrite,
             )
-        track_metric_history(
-            run,
-            out["metrics"],
-            samples_per_update=config.num_envs * config.num_steps,
-            context={"phase": "train"},
-        )
+        if not stream_metrics:
+            track_metric_history(
+                run,
+                out["metrics"],
+                samples_per_update=config.num_envs * config.num_steps,
+                context={"phase": "train"},
+            )
         print(metrics)
         if checkpoint_dir is not None:
             print({"checkpoint_path": str(checkpoint_dir)})
@@ -233,13 +254,15 @@ def run_training(run_config: TrainingRunConfig) -> None:
         close_run(run)
 
 
-def train_with_video(
+def train_update_loop(
     env: BelloLocomotionEnv,
     config: PPOConfig,
     rng: jax.Array,
     video_config: TrainingVideoConfig,
     run,
     jit: bool,
+    *,
+    stream_metrics: bool,
 ) -> dict:
     runner_state, static_policy, optimizer = init_runner_state(rng, env, config)
 
@@ -262,6 +285,15 @@ def train_with_video(
         metrics = jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
         metrics_history.append(metrics)
         update = int(jax.device_get(runner_state.update))
+        env_steps = update * config.num_envs * config.num_steps
+        if stream_metrics:
+            track_metric_snapshot(
+                run,
+                metrics,
+                env_steps=env_steps,
+                update=update,
+                context={"phase": "train"},
+            )
         if should_render_training_video(update, config.num_updates, video_config):
             render_training_video(
                 env,
@@ -269,7 +301,7 @@ def train_with_video(
                 static_policy,
                 video_config,
                 run,
-                env_steps=update * config.num_envs * config.num_steps,
+                env_steps=env_steps,
             )
     return {
         "runner_state": runner_state,

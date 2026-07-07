@@ -24,6 +24,7 @@ def test_train_hydra_default_converts_to_training_config() -> None:
     assert config.config.num_envs == 64
     assert config.env_config.terrain.mode == "plane"
     assert config.env_config.spawn.clearance == 0.01
+    assert config.metric_config.stream_updates
 
 
 def test_rtx5090_train_preset_sets_measured_batch_shape() -> None:

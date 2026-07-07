@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 from bello_mujoco.tracking import log_config, metric_update_count, to_builtin
 from bello_mujoco.tracking import track_metric_history
+from bello_mujoco.tracking import track_metric_snapshot
 
 
 class FakeRun:
@@ -85,4 +86,30 @@ def test_track_metric_history_can_prefix_context() -> None:
 
     assert run.logged == [
         {"payload": {"update": 1, "train/mean_reward": 1.0}, "step": 8}
+    ]
+
+
+def test_track_metric_snapshot_logs_specific_update_and_step() -> None:
+    run = FakeRun()
+
+    track_metric_snapshot(
+        run,
+        {
+            "mean_reward": jnp.asarray(3.0, dtype=jnp.float32),
+            "loss": jnp.asarray(0.125, dtype=jnp.float32),
+        },
+        env_steps=32,
+        update=4,
+        context={"phase": "train"},
+    )
+
+    assert run.logged == [
+        {
+            "payload": {
+                "update": 4,
+                "train/loss": 0.125,
+                "train/mean_reward": 3.0,
+            },
+            "step": 32,
+        }
     ]
