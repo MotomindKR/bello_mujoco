@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ class TerrainConfig:
     rgba: tuple[float, float, float, float] = (0.45, 0.45, 0.45, 1.0)
     friction: tuple[float, float, float] = (1.0, 0.005, 0.0001)
     condim: int = 3
+    seed: int = 0
     hfield_resolution: int = 65
     hfield_amplitude: float = 0.04
     hfield_base_thickness: float = 0.01
@@ -144,17 +146,29 @@ def rough_height_data(config: TerrainConfig) -> str:
         raise ValueError("hfield_resolution must be at least 2")
     values: list[float] = []
     resolution = config.hfield_resolution
+    rng = random.Random(config.seed)
+    phase_x = rng.uniform(-math.pi, math.pi)
+    phase_y = rng.uniform(-math.pi, math.pi)
+    phase_diag = rng.uniform(-math.pi, math.pi)
+    frequency_x = config.hfield_frequency * rng.uniform(0.8, 1.2)
+    frequency_y = config.hfield_frequency * rng.uniform(0.8, 1.2)
+    frequency_diag = config.hfield_frequency * rng.uniform(0.4, 0.8)
     for row in range(resolution):
         y = 2.0 * row / (resolution - 1) - 1.0
         for col in range(resolution):
             x = 2.0 * col / (resolution - 1) - 1.0
             height = (
-                0.55
-                + 0.45
-                * math.sin(config.hfield_frequency * math.pi * x)
-                * math.sin(0.7 * config.hfield_frequency * math.pi * y)
+                0.50
+                + 0.25 * math.sin(frequency_x * math.pi * x + phase_x)
+                + 0.20 * math.sin(frequency_y * math.pi * y + phase_y)
+                + 0.05
+                * math.sin(frequency_diag * math.pi * (x + y) + phase_diag)
             )
-            values.append(config.hfield_amplitude * height / max(config.size[2], 1e-6))
+            values.append(
+                config.hfield_amplitude
+                * min(max(height, 0.0), 1.0)
+                / max(config.size[2], 1e-6)
+            )
     return " ".join(f"{value:.8g}" for value in values)
 
 

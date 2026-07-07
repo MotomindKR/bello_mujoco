@@ -172,9 +172,12 @@ Use a simple deterministic heightfield for rough-terrain smoke runs:
 ```bash
 bello-train-ppo \
   --terrain-config.mode rough \
+  --terrain-config.seed 3 \
   --terrain-config.hfield-amplitude 0.04 \
   --terrain-config.hfield-resolution 65
 ```
+
+The rough heightfield is fixed for a loaded model and shared by vectorized envs. Change `--terrain-config.seed` between runs to generate a different cached terrain scene.
 
 Disable terrain for robot-only model debugging:
 

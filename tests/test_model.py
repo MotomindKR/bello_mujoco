@@ -4,7 +4,13 @@ import pytest
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import POLICY_JOINT_ORDER
 from bello_mujoco.sim import load_bello_model, load_prepared_bello_model
-from bello_mujoco.terrain import FLAT_TERRAIN, ROBOT_ONLY_TERRAIN, ROUGH_TERRAIN
+from bello_mujoco.terrain import (
+    FLAT_TERRAIN,
+    ROBOT_ONLY_TERRAIN,
+    ROUGH_TERRAIN,
+    TerrainConfig,
+    rough_height_data,
+)
 
 
 def test_full_body_model_loads_with_policy_actuators_first(
@@ -115,6 +121,19 @@ def test_runtime_rough_terrain_uses_heightfield(
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, hfield_geoms[0])
         == "ground"
     )
+
+
+def test_runtime_rough_terrain_seed_changes_scene(
+    full_body_asset: PreparedAsset,
+) -> None:
+    terrain_a = TerrainConfig(mode="rough", seed=1, hfield_resolution=17)
+    terrain_b = TerrainConfig(mode="rough", seed=2, hfield_resolution=17)
+    scene_a = load_prepared_bello_model(full_body_asset, terrain=terrain_a)
+    scene_b = load_prepared_bello_model(full_body_asset, terrain=terrain_b)
+
+    assert scene_a.xml_path != scene_b.xml_path
+    assert rough_height_data(terrain_a) == rough_height_data(terrain_a)
+    assert rough_height_data(terrain_a) != rough_height_data(terrain_b)
 
 
 def test_split_body_models_load_with_asset_specific_actuators(
