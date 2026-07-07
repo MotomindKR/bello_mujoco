@@ -13,6 +13,7 @@ from bello_mujoco.sim import (
     DEFAULT_WARP_NJMAX,
     WarpConfig,
 )
+from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 from bello_mujoco.tracking import (
     AimConfig,
     close_run,
@@ -29,6 +30,7 @@ def main(
     reward_config: RewardConfig = RewardConfig(),
     command_config: CommandConfig = CommandConfig(),
     done_config: DoneConfig = DoneConfig(),
+    terrain_config: TerrainConfig = FLAT_TERRAIN,
     aim_config: AimConfig = AimConfig(),
     dry_run: bool = True,
     jit: bool = True,
@@ -47,6 +49,7 @@ def main(
         asset_config,
         warp=warp,
         batch_size=config.num_envs,
+        terrain=terrain_config,
     )
     env = replace(
         env,
@@ -62,6 +65,7 @@ def main(
             {
                 "backend": jax.default_backend(),
                 "mjx_impl": "warp",
+                "terrain": terrain_config.mode,
                 "warp_naconmax": env.model.warp_naconmax,
                 "warp_njmax": env.model.warp_njmax,
                 "obs_size": env.observation_size,
@@ -93,6 +97,7 @@ def main(
                 "reward": reward_config,
                 "command": command_config,
                 "done": done_config,
+                "terrain": terrain_config,
                 "warp": warp,
                 "env": {
                     "obs_size": env.observation_size,

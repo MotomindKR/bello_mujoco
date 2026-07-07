@@ -90,7 +90,7 @@ The generator also adds MuJoCo contact excludes for nearby robot bodies by defau
 bello-prepare-assets --neighbor-exclusion-depth 2
 ```
 
-Depth 2 excludes parent/child, grandparent/grandchild, and sibling body collision. This removes most mechanically-neighboring self-collision while preserving non-neighbor body contacts. Ground or terrain should be added by the runtime that loads the robot model.
+Depth 2 excludes parent/child, grandparent/grandchild, and sibling body collision. This removes most mechanically-neighboring self-collision while preserving non-neighbor body contacts. Ground or terrain is added only by the runtime that loads the robot model.
 
 Other collision profiles are available when needed:
 
@@ -159,6 +159,18 @@ bello-train-ppo \
   --reward-config.lin-vel-tracking-weight 1.2 \
   --done-config.min-base-height 0.75 \
   --command-config.lin-vel-x -0.2 0.6
+```
+
+Terrain is also runtime-configured. The locomotion env and training CLI default to a flat MuJoCo plane without modifying generated robot assets:
+
+```bash
+bello-train-ppo --terrain-config.mode plane
+```
+
+Disable terrain for robot-only model debugging:
+
+```bash
+bello-train-ppo --terrain-config.mode none
 ```
 
 ## Vectorized API

@@ -28,6 +28,7 @@ from bello_mujoco.sim import (
     load_prepared_bello_model,
     require_full_body_config,
 )
+from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 
 
 @chex.dataclass(frozen=True)
@@ -67,6 +68,7 @@ class BelloLocomotionEnv:
     reward_config: RewardConfig = RewardConfig()
     command_config: CommandConfig = CommandConfig()
     done_config: DoneConfig = DoneConfig()
+    terrain_config: TerrainConfig = FLAT_TERRAIN
 
     @classmethod
     def load(
@@ -75,9 +77,15 @@ class BelloLocomotionEnv:
         *,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
+        terrain: TerrainConfig = FLAT_TERRAIN,
     ) -> "BelloLocomotionEnv":
         require_full_body_config(config)
-        return cls(load_bello_model(config, warp=warp, batch_size=batch_size))
+        return cls(
+            load_bello_model(
+                config, warp=warp, batch_size=batch_size, terrain=terrain
+            ),
+            terrain_config=terrain,
+        )
 
     @classmethod
     def load_prepared(
@@ -86,11 +94,15 @@ class BelloLocomotionEnv:
         *,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
+        terrain: TerrainConfig = FLAT_TERRAIN,
     ) -> "BelloLocomotionEnv":
         if prepared.name != "full_body":
             raise ValueError("BelloLocomotionEnv currently requires a full_body asset")
         return cls(
-            load_prepared_bello_model(prepared, warp=warp, batch_size=batch_size)
+            load_prepared_bello_model(
+                prepared, warp=warp, batch_size=batch_size, terrain=terrain
+            ),
+            terrain_config=terrain,
         )
 
     @property

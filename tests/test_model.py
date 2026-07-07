@@ -4,6 +4,7 @@ import pytest
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import POLICY_JOINT_ORDER
 from bello_mujoco.sim import load_bello_model, load_prepared_bello_model
+from bello_mujoco.terrain import FLAT_TERRAIN, ROBOT_ONLY_TERRAIN
 
 
 def test_full_body_model_loads_with_policy_actuators_first(
@@ -70,6 +71,30 @@ def test_viewer_model_adds_non_colliding_visual_meshes(
 
     assert model.ngeom == 80
     assert len(visual_mesh_geoms) == 40
+
+
+def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
+    full_body_asset: PreparedAsset,
+) -> None:
+    robot_model = load_prepared_bello_model(
+        full_body_asset, terrain=ROBOT_ONLY_TERRAIN
+    ).mj_model
+    scene = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    scene_model = scene.mj_model
+    plane_geoms = [
+        geom_id
+        for geom_id, geom_type in enumerate(scene_model.geom_type)
+        if geom_type == mujoco.mjtGeom.mjGEOM_PLANE
+    ]
+
+    assert scene.xml_path != full_body_asset.mjcf_path
+    assert full_body_asset.mjcf_path.exists()
+    assert scene_model.ngeom == robot_model.ngeom + 1
+    assert len(plane_geoms) == 1
+    assert (
+        mujoco.mj_id2name(scene_model, mujoco.mjtObj.mjOBJ_GEOM, plane_geoms[0])
+        == "ground"
+    )
 
 
 def test_split_body_models_load_with_asset_specific_actuators(

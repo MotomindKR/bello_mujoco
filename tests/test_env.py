@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
+import mujoco
 import pytest
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
@@ -19,6 +20,20 @@ def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
     assert obs.shape == (env.observation_size,)
     assert state.last_action.shape == (env.action_size,)
     assert int(state.step_count) == 0
+
+
+def test_locomotion_env_uses_flat_runtime_terrain_by_default(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    plane_count = sum(
+        1
+        for geom_type in env.model.mj_model.geom_type
+        if geom_type == mujoco.mjtGeom.mjGEOM_PLANE
+    )
+
+    assert env.terrain_config.mode == "plane"
+    assert plane_count == 1
 
 
 def test_observation_is_finite_after_reset(full_body_asset: PreparedAsset) -> None:

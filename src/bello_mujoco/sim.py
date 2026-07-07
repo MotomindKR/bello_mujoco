@@ -22,6 +22,11 @@ from bello_mujoco.contracts import (
     FIXED_JOINT_DEFAULT_POS,
     POLICY_JOINT_ORDER,
 )
+from bello_mujoco.terrain import (
+    ROBOT_ONLY_TERRAIN,
+    TerrainConfig,
+    runtime_mjcf_path,
+)
 
 DEFAULT_CONTACT_BUDGET_PER_ENV = 24
 DEFAULT_WARP_NJMAX = 256
@@ -75,13 +80,16 @@ def load_bello_model(
     *,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
+    terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
 ) -> BelloModel:
     if canonical_asset(config.asset) == "upper_body":
         raise ValueError(
             "load_bello_model currently requires full_body or lower_body policy joints"
         )
     prepared = prepare_asset(config)
-    return load_prepared_bello_model(prepared, warp=warp, batch_size=batch_size)
+    return load_prepared_bello_model(
+        prepared, warp=warp, batch_size=batch_size, terrain=terrain
+    )
 
 
 def load_prepared_bello_model(
@@ -89,9 +97,10 @@ def load_prepared_bello_model(
     *,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
+    terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
 ) -> BelloModel:
     return _load_bello_model_from_path(
-        prepared.mjcf_path, warp=warp, batch_size=batch_size
+        prepared.mjcf_path, warp=warp, batch_size=batch_size, terrain=terrain
     )
 
 
@@ -100,10 +109,12 @@ def _load_bello_model_from_path(
     *,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
+    terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
 ) -> BelloModel:
     path = Path(xml_path)
     if not path.exists():
         raise FileNotFoundError(path)
+    path = runtime_mjcf_path(path, terrain)
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
     mjx_model = mjx.put_model(mj_model, impl="warp")
