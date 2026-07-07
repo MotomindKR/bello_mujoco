@@ -45,6 +45,8 @@ The generator reads the Bello URDF/STL description from the repository-local sou
 assets/generated/bello/<asset>/mjcf/bello_<asset>.xml
 ```
 
+`assets/generated/` is ignored by git. These files are local build artifacts and should be regenerated with `bello-prepare-assets` after a fresh checkout.
+
 It also writes a separate viewer MJCF with visual geoms:
 
 ```text

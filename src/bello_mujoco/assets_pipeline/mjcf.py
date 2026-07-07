@@ -114,7 +114,9 @@ def inject_visual_geoms(root: ET.Element, urdf_path: Path, mjcf_dir: Path) -> No
         link_name = link.get("name")
         if link_name is None:
             continue
-        body = bodies.get(link_name) or collision_bodies.get(f"{link_name}_collision")
+        body = bodies.get(link_name)
+        if body is None:
+            body = collision_bodies.get(f"{link_name}_collision")
         if body is None:
             continue
         for visual in link.findall("visual"):
