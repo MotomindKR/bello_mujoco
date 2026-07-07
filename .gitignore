@@ -14,12 +14,13 @@ __pycache__/
 .env.*
 !.envrc
 
-aim/
+.wandb/
+wandb/
 checkpoints/
 outputs/
 multirun/
 runs/
-wandb/
+MUJOCO_LOG.TXT
 
 assets/generated/
 

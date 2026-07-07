@@ -6,44 +6,49 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
+from typing import Literal
 
 import jax
 import numpy as np
 
 
 @dataclass(frozen=True)
-class AimConfig:
-    """Aim run configuration for command-line training."""
+class WandbConfig:
+    """Weights & Biases run configuration for command-line training."""
 
     enabled: bool = False
-    repo: str = ".aim"
-    experiment: str = "bello-ppo"
+    project: str = "bello-mujoco"
+    entity: str | None = None
+    group: str | None = None
+    job_type: str = "train"
     run_name: str | None = None
-    log_system_params: bool = True
-    capture_terminal_logs: bool = False
+    mode: Literal["online", "offline", "disabled"] = "online"
+    dir: str = ".wandb"
+    tags: tuple[str, ...] = ()
 
 
-def create_aim_run(config: AimConfig):
+def create_wandb_run(config: WandbConfig):
     if not config.enabled:
         return None
-    from aim import Run
+    import wandb
 
-    run = Run(
-        repo=config.repo,
-        experiment=config.experiment,
-        log_system_params=config.log_system_params,
-        capture_terminal_logs=config.capture_terminal_logs,
+    Path(config.dir).mkdir(parents=True, exist_ok=True)
+    return wandb.init(
+        project=config.project,
+        entity=config.entity,
+        group=config.group,
+        job_type=config.job_type,
+        name=config.run_name,
+        mode=config.mode,
+        dir=config.dir,
+        tags=list(config.tags),
     )
-    if config.run_name is not None:
-        run.name = config.run_name
-    return run
 
 
 def log_config(run, config: Mapping[str, Any]) -> None:
     if run is None:
         return
-    for key, value in config.items():
-        run.set(key, to_builtin(value), strict=False)
+    run.config.update(to_builtin(config), allow_val_change=True)
 
 
 def track_metric_history(
@@ -59,11 +64,37 @@ def track_metric_history(
     update_count = metric_update_count(host_metrics)
     for update in range(update_count):
         env_steps = (update + 1) * samples_per_update
-        run.track(update + 1, name="update", step=env_steps, context=context)
+        payload: dict[str, float | int] = {"update": update + 1}
         for name, values in host_metrics.items():
             array = np.asarray(values)
             value = array if array.ndim == 0 else array[update]
-            run.track(float(value), name=name, step=env_steps, context=context)
+            payload[name] = float(value)
+        if context:
+            prefix = "/".join(str(value) for value in context.values())
+            payload = {
+                key if key == "update" else f"{prefix}/{key}": value
+                for key, value in payload.items()
+            }
+        run.log(payload, step=env_steps)
+
+
+def track_video(
+    run,
+    path: Path,
+    *,
+    name: str,
+    step: int,
+    fps: int = 30,
+    caption: str | None = None,
+) -> None:
+    if run is None:
+        return
+    import wandb
+
+    run.log(
+        {name: wandb.Video(str(path), fps=fps, format=path.suffix.lstrip("."), caption=caption)},
+        step=step,
+    )
 
 
 def metric_update_count(metrics: Mapping[str, Any]) -> int:
@@ -76,7 +107,7 @@ def metric_update_count(metrics: Mapping[str, Any]) -> int:
 
 def close_run(run) -> None:
     if run is not None:
-        run.close()
+        run.finish()
 
 
 def to_builtin(value: Any) -> Any:

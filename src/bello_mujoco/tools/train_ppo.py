@@ -15,9 +15,9 @@ from bello_mujoco.sim import (
 )
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 from bello_mujoco.tracking import (
-    AimConfig,
+    WandbConfig,
     close_run,
-    create_aim_run,
+    create_wandb_run,
     log_config,
     track_metric_history,
 )
@@ -31,7 +31,7 @@ def main(
     command_config: CommandConfig = CommandConfig(),
     done_config: DoneConfig = DoneConfig(),
     terrain_config: TerrainConfig = FLAT_TERRAIN,
-    aim_config: AimConfig = AimConfig(),
+    wandb_config: WandbConfig = WandbConfig(),
     dry_run: bool = True,
     jit: bool = True,
     contact_budget_per_env: int = DEFAULT_CONTACT_BUDGET_PER_ENV,
@@ -75,7 +75,7 @@ def main(
                 "num_updates": config.num_updates,
                 "batch_obs_shape": tuple(batch_obs.shape),
                 "batch_action_shape": tuple(batch_state.last_action.shape),
-                "aim_enabled": aim_config.enabled,
+                "wandb_enabled": wandb_config.enabled,
                 "params_leaves": len(jax.tree.leaves(state.model)),
             }
         )
@@ -87,7 +87,7 @@ def main(
     metrics = jax.tree_util.tree_map(
         lambda x: x[-1] if getattr(x, "ndim", 0) > 0 else x, out["metrics"]
     )
-    run = create_aim_run(aim_config)
+    run = create_wandb_run(wandb_config)
     try:
         log_config(
             run,

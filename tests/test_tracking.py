@@ -9,16 +9,23 @@ from bello_mujoco.tracking import track_metric_history
 
 class FakeRun:
     def __init__(self) -> None:
-        self.params = {}
-        self.tracked = []
+        self.config = FakeConfig()
+        self.logged = []
+        self.finished = False
 
-    def set(self, key, value, strict=True) -> None:
-        self.params[key] = (value, strict)
+    def log(self, payload, step=None) -> None:
+        self.logged.append({"payload": payload, "step": step})
 
-    def track(self, value, name=None, step=None, context=None) -> None:
-        self.tracked.append(
-            {"value": value, "name": name, "step": step, "context": context}
-        )
+    def finish(self) -> None:
+        self.finished = True
+
+
+class FakeConfig:
+    def __init__(self) -> None:
+        self.updates = []
+
+    def update(self, value, allow_val_change=False) -> None:
+        self.updates.append((value, allow_val_change))
 
 
 @dataclass(frozen=True)
@@ -33,18 +40,17 @@ def test_to_builtin_handles_dataclass_paths_and_tuples() -> None:
     assert value == {"path": "/tmp/x", "bounds": [-1.0, 1.0]}
 
 
-def test_log_config_sets_top_level_blocks() -> None:
+def test_log_config_updates_wandb_config() -> None:
     run = FakeRun()
 
     log_config(run, {"nested": NestedConfig(path=Path("/tmp/x"), bounds=(0.0, 1.0))})
 
-    assert run.params["nested"] == (
-        {"path": "/tmp/x", "bounds": [0.0, 1.0]},
-        False,
-    )
+    assert run.config.updates == [
+        ({"nested": {"path": "/tmp/x", "bounds": [0.0, 1.0]}}, True)
+    ]
 
 
-def test_track_metric_history_uses_env_steps() -> None:
+def test_track_metric_history_logs_one_payload_per_update() -> None:
     run = FakeRun()
     metrics = {
         "mean_reward": jnp.asarray([1.0, 2.0], dtype=jnp.float32),
@@ -55,20 +61,28 @@ def test_track_metric_history_uses_env_steps() -> None:
         run,
         metrics,
         samples_per_update=8,
-        context={"phase": "train"},
     )
 
     assert metric_update_count(metrics) == 2
-    assert [entry["step"] for entry in run.tracked] == [8, 8, 8, 16, 16, 16]
-    assert run.tracked[0] == {
-        "value": 1,
-        "name": "update",
-        "step": 8,
-        "context": {"phase": "train"},
+    assert run.logged == [
+        {"payload": {"update": 1, "loss": 0.5, "mean_reward": 1.0}, "step": 8},
+        {"payload": {"update": 2, "loss": 0.25, "mean_reward": 2.0}, "step": 16},
+    ]
+
+
+def test_track_metric_history_can_prefix_context() -> None:
+    run = FakeRun()
+    metrics = {
+        "mean_reward": jnp.asarray([1.0], dtype=jnp.float32),
     }
-    first_step_metrics = {
-        entry["name"]: entry["value"]
-        for entry in run.tracked
-        if entry["step"] == 8 and entry["name"] != "update"
-    }
-    assert first_step_metrics == {"mean_reward": 1.0, "loss": 0.5}
+
+    track_metric_history(
+        run,
+        metrics,
+        samples_per_update=8,
+        context={"phase": "train"},
+    )
+
+    assert run.logged == [
+        {"payload": {"update": 1, "train/mean_reward": 1.0}, "step": 8}
+    ]

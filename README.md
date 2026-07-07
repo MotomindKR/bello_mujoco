@@ -23,7 +23,7 @@ direnv allow
 - RL implementation style: local PureJaxRL-style code, `rlax`
 - NN/model: `equinox`
 - Optimizer: `optax`
-- Experiment tracking: `aim`
+- Experiment tracking: `wandb`
 - Checkpointing: `orbax-checkpoint`
 - Visualization/logging: `rerun-sdk`
 - Typing/asserts: `jaxtyping`, `chex`
@@ -121,7 +121,7 @@ Batch timing is handled by the benchmark command:
 bello-benchmark-env --batch-size 512 --step-count 5
 ```
 
-## Training and Aim
+## Training and W&B
 
 `bello-train-ppo` is dry-run only by default. Use it first to verify the resolved model, batch shapes, and config:
 
@@ -129,27 +129,31 @@ bello-benchmark-env --batch-size 512 --step-count 5
 bello-train-ppo
 ```
 
-Run a tiny end-to-end PPO smoke without Aim:
+Run a tiny end-to-end PPO smoke without W&B:
 
 ```bash
 bello-train-ppo --no-dry-run --config.total-timesteps 4 --config.num-envs 2 --config.num-steps 2
 ```
 
-Enable Aim for experiment tracking:
+Enable W&B for experiment tracking:
 
 ```bash
 bello-train-ppo \
   --no-dry-run \
-  --aim-config.enabled \
-  --aim-config.repo .aim \
-  --aim-config.experiment bello-ppo
+  --wandb-config.enabled \
+  --wandb-config.project bello-mujoco
 ```
 
-The CLI logs the PPO, asset, reward, command, done, warp, and resolved environment config blocks. Scalar PPO metrics and reward components are tracked against environment steps. View runs with:
+For local/offline logging:
 
 ```bash
-aim up --repo .aim
+bello-train-ppo \
+  --no-dry-run \
+  --wandb-config.enabled \
+  --wandb-config.mode offline
 ```
+
+The CLI logs the PPO, asset, reward, command, done, terrain, warp, and resolved environment config blocks. Scalar PPO metrics and reward components are tracked against environment steps. W&B also supports native video logging, which the evaluation workflow can use once policy checkpoint playback is wired.
 
 Reward, command, and done configs are tyro-exposed nested dataclasses:
 
