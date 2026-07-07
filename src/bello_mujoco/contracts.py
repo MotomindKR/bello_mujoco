@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import numpy as np
-
 POLICY_JOINT_ORDER: tuple[str, ...] = (
     "left_hip_pitch_joint",
     "right_hip_pitch_joint",
@@ -155,31 +151,3 @@ CONTROL_TIMESTEP = 0.02
 CONTROL_DECIMATION = int(round(CONTROL_TIMESTEP / SIM_TIMESTEP))
 EPISODE_SECONDS = 20.0
 MAX_EPISODE_STEPS = int(round(EPISODE_SECONDS / CONTROL_TIMESTEP))
-
-
-@dataclass(frozen=True)
-class LowerBodyContract:
-    joint_order: tuple[str, ...] = POLICY_JOINT_ORDER
-    action_clip: float = ACTION_CLIP
-    sim_timestep: float = SIM_TIMESTEP
-    control_timestep: float = CONTROL_TIMESTEP
-    control_decimation: int = CONTROL_DECIMATION
-    max_episode_steps: int = MAX_EPISODE_STEPS
-
-    @property
-    def default_joint_pos(self) -> np.ndarray:
-        return ordered_values(DEFAULT_JOINT_POS)
-
-    @property
-    def action_scale(self) -> np.ndarray:
-        return ordered_values(ACTION_SCALE)
-
-    @property
-    def soft_joint_limits(self) -> np.ndarray:
-        return np.asarray(
-            [SOFT_JOINT_LIMITS[name] for name in self.joint_order], dtype=np.float32
-        )
-
-
-def ordered_values(values: dict[str, float]) -> np.ndarray:
-    return np.asarray([values[name] for name in POLICY_JOINT_ORDER], dtype=np.float32)

@@ -90,12 +90,12 @@ def load_prepared_bello_model(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
 ) -> BelloModel:
-    return load_bello_model_from_path(
+    return _load_bello_model_from_path(
         prepared.mjcf_path, warp=warp, batch_size=batch_size
     )
 
 
-def load_bello_model_from_path(
+def _load_bello_model_from_path(
     xml_path: Path,
     *,
     warp: WarpConfig = WarpConfig(),

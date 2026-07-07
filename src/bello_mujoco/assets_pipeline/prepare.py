@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Literal
 
 from bello_mujoco.assets import (
-    generated_assets_root,
     generated_model_path,
     generated_urdf_path,
     generated_viewer_model_path,
@@ -75,13 +74,12 @@ def prepare_asset_unlocked(
     if not source_urdf.exists():
         raise FileNotFoundError(source_urdf)
 
-    generated_root = generated_assets_root(output_root)
     out_urdf = generated_urdf_path(asset, output_root)
-    out_mesh_dir = generated_root / asset / "meshes"
-    out_visual_mesh_dir = generated_root / asset / "visual_meshes"
+    out_mesh_dir = output_root / asset / "meshes"
+    out_visual_mesh_dir = output_root / asset / "visual_meshes"
     out_mjcf = generated_model_path(asset, output_root)
     out_viewer_mjcf = generated_viewer_model_path(asset, output_root)
-    manifest_path = generated_root / asset / "asset_manifest.json"
+    manifest_path = output_root / asset / "asset_manifest.json"
     cached = read_prepared_asset_manifest(
         asset, out_urdf, out_mjcf, out_viewer_mjcf, manifest_path
     )
