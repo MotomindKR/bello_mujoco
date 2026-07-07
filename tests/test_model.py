@@ -4,7 +4,7 @@ import pytest
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import POLICY_JOINT_ORDER
 from bello_mujoco.sim import load_bello_model, load_prepared_bello_model
-from bello_mujoco.terrain import FLAT_TERRAIN, ROBOT_ONLY_TERRAIN
+from bello_mujoco.terrain import FLAT_TERRAIN, ROBOT_ONLY_TERRAIN, ROUGH_TERRAIN
 
 
 def test_full_body_model_loads_with_policy_actuators_first(
@@ -93,6 +93,26 @@ def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
     assert len(plane_geoms) == 1
     assert (
         mujoco.mj_id2name(scene_model, mujoco.mjtObj.mjOBJ_GEOM, plane_geoms[0])
+        == "ground"
+    )
+
+
+def test_runtime_rough_terrain_uses_heightfield(
+    full_body_asset: PreparedAsset,
+) -> None:
+    scene = load_prepared_bello_model(full_body_asset, terrain=ROUGH_TERRAIN)
+    model = scene.mj_model
+    hfield_geoms = [
+        geom_id
+        for geom_id, geom_type in enumerate(model.geom_type)
+        if geom_type == mujoco.mjtGeom.mjGEOM_HFIELD
+    ]
+
+    assert scene.xml_path != full_body_asset.mjcf_path
+    assert model.nhfield == 1
+    assert len(hfield_geoms) == 1
+    assert (
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, hfield_geoms[0])
         == "ground"
     )
 

@@ -167,6 +167,15 @@ Terrain is also runtime-configured. The locomotion env and training CLI default 
 bello-train-ppo --terrain-config.mode plane
 ```
 
+Use a simple deterministic heightfield for rough-terrain smoke runs:
+
+```bash
+bello-train-ppo \
+  --terrain-config.mode rough \
+  --terrain-config.hfield-amplitude 0.04 \
+  --terrain-config.hfield-resolution 65
+```
+
 Disable terrain for robot-only model debugging:
 
 ```bash
