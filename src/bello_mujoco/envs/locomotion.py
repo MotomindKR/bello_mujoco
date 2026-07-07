@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import chex
 import jax
@@ -42,11 +43,12 @@ class BelloLocomotionEnv:
     @classmethod
     def load(
         cls,
+        xml_path: Path | None = None,
         *,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
     ) -> "BelloLocomotionEnv":
-        return cls(load_bello_model(warp=warp, batch_size=batch_size))
+        return cls(load_bello_model(xml_path, warp=warp, batch_size=batch_size))
 
     @property
     def action_size(self) -> int:

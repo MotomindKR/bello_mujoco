@@ -29,6 +29,7 @@ AssetName = Literal["full_body", "lower_body", "upper_body", "down_body"]
 @dataclass(frozen=True)
 class AssetPrepConfig:
     asset: AssetName = "full_body"
+    output_root: Path | None = None
     mesh_face_budget: int = 1_000
     foot_collision_mesh_face_budget: int = 1_000
     visual_mesh_face_budget: int = 200_000
@@ -55,11 +56,12 @@ def prepare_asset(config: AssetPrepConfig) -> PreparedAsset:
     if not source_urdf.exists():
         raise FileNotFoundError(source_urdf)
 
-    out_urdf = generated_urdf_path(asset)
-    out_mesh_dir = generated_assets_root() / asset / "meshes"
-    out_visual_mesh_dir = generated_assets_root() / asset / "visual_meshes"
-    out_mjcf = generated_model_path(asset)
-    out_viewer_mjcf = generated_viewer_model_path(asset)
+    generated_root = generated_assets_root(config.output_root)
+    out_urdf = generated_urdf_path(asset, config.output_root)
+    out_mesh_dir = generated_root / asset / "meshes"
+    out_visual_mesh_dir = generated_root / asset / "visual_meshes"
+    out_mjcf = generated_model_path(asset, config.output_root)
+    out_viewer_mjcf = generated_viewer_model_path(asset, config.output_root)
     shutil.rmtree(out_mesh_dir, ignore_errors=True)
     shutil.rmtree(out_visual_mesh_dir, ignore_errors=True)
     out_urdf.parent.mkdir(parents=True, exist_ok=True)

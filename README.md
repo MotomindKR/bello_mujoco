@@ -47,6 +47,8 @@ assets/generated/bello/<asset>/mjcf/bello_<asset>.xml
 
 `assets/generated/` is ignored by git. These files are local build artifacts and should be regenerated with `bello-prepare-assets` after a fresh checkout.
 
+Tests generate their own assets under `/tmp/bello-mujoco-test-assets-*` and remove them when the pytest session exits. For manual generation into another location, pass `--output-root`; omitting it keeps the default `assets/generated/bello` path.
+
 It also writes a separate viewer MJCF with visual geoms:
 
 ```text
