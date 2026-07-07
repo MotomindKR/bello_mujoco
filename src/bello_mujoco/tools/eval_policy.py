@@ -5,12 +5,14 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-import tyro
+import hydra
+from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import CheckpointMetadata, restore_training_checkpoint
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
+from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.render import CameraConfig, RewardOverlayConfig, launch_policy_viewer
 from bello_mujoco.sim import WarpConfig
 
@@ -39,8 +41,14 @@ class EvalPolicyConfig:
     runtime: EvalRuntimeConfig = EvalRuntimeConfig()
 
 
+@dataclass(frozen=True)
+class EvalToolConfig:
+    checkpoint_path: Path | None = None
+    eval_config: EvalPolicyConfig = EvalPolicyConfig()
+
+
 def main(
-    checkpoint_path: tyro.conf.Positional[Path],
+    checkpoint_path: Path,
     eval_config: EvalPolicyConfig = EvalPolicyConfig(),
 ) -> None:
     validate_eval_config(eval_config)
@@ -188,7 +196,21 @@ def validate_checkpoint_shape(
 
 
 def entrypoint() -> None:
-    tyro.cli(main)
+    hydra_entrypoint()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("eval_policy"),
+    config_name="default",
+)
+def hydra_entrypoint(config: DictConfig) -> None:
+    cfg = structured_config(EvalToolConfig, config)
+    if cfg.checkpoint_path is None:
+        raise ValueError(
+            "checkpoint_path must be set, e.g. checkpoint_path=checkpoints/ppo_seed_0"
+        )
+    main(cfg.checkpoint_path, cfg.eval_config)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,27 @@
+# RTX 5090 baseline from local full-body mesh-collision benchmarks.
+# Rollout batch = 4096 envs * 256 steps = 1048576 samples.
+# PPO minibatch size = 1048576 / 8 = 131072 samples.
+defaults:
+  - default
+  - _self_
+
+dry_run: false
+
+config:
+  total_timesteps: 209715200
+  num_envs: 4096
+  num_steps: 256
+  update_epochs: 4
+  num_minibatches: 8
+
+checkpoint_config:
+  enabled: true
+  name: rtx5090_4096x256_seed0
+
+wandb_config:
+  run_name: rtx5090_4096x256_seed0
+  tags: [rtx5090, full-body, mesh-collision]
+
+video_config:
+  every_updates: 25
+  filename_prefix: rtx5090_4096x256

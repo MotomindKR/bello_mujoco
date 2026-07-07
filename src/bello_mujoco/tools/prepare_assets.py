@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import tyro
+import hydra
+from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
+from bello_mujoco.hydra_config import config_path, structured_config
 
 
 def run(config: AssetPrepConfig = AssetPrepConfig()) -> None:
@@ -15,7 +17,16 @@ def run(config: AssetPrepConfig = AssetPrepConfig()) -> None:
 
 
 def entrypoint() -> None:
-    run(tyro.cli(AssetPrepConfig))
+    hydra_entrypoint()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("prepare_assets"),
+    config_name="default",
+)
+def hydra_entrypoint(config: DictConfig) -> None:
+    run(structured_config(AssetPrepConfig, config))
 
 
 if __name__ == "__main__":

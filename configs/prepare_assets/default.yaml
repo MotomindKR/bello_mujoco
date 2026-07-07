@@ -1,0 +1,14 @@
+asset: full_body
+output_root: null
+mesh_face_budget: 1000
+foot_collision_mesh_face_budget: 1000
+visual_mesh_face_budget: 200000
+collision_mode: mesh
+end_effector_sphere_mode: none
+neighbor_exclusion_depth: 2
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/prepare_assets/${now:%Y-%m-%d}/${now:%H-%M-%S}

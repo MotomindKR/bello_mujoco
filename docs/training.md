@@ -22,19 +22,54 @@ tree, see [index.md](index.md).
 initializes the policy, resets a vectorized batch, prints shape/config metadata,
 and exits without optimization.
 
-`--no-dry-run` runs PPO. `jit=true` is the default and wraps the train function
+`dry_run=false` runs PPO. `jit=true` is the default and wraps the train function
 with `jax.jit`.
 
-## Full Config Tree
+## Hydra Configs
 
-Tyro maps nested dataclass fields to dotted flags. For example:
+Training configs live under `configs/train/`. The default config is used when no
+Hydra config name is provided:
+
+```bash
+bello-train-ppo
+```
+
+Use the measured RTX 5090 preset with:
+
+```bash
+bello-train-ppo --config-name rtx5090_4096x256
+```
+
+That preset uses:
+
+```yaml
+config.num_envs: 4096
+config.num_steps: 256
+config.num_minibatches: 8
+config.update_epochs: 4
+```
+
+The resulting rollout batch is `1048576` samples and the PPO minibatch size is
+`131072` samples. Override any field using Hydra dotlist syntax:
 
 ```bash
 bello-train-ppo \
-  --config.num-envs 512 \
-  --env-config.terrain.mode rough \
-  --reward-config.track-lin-vel-xy.weight 1.2 \
-  --asset-config.actuator-config.joints.left-shoulder-pitch-joint.mode hold
+  --config-name rtx5090_4096x256 \
+  dry_run=true \
+  config.total_timesteps=1048576 \
+  config.seed=1
+```
+
+## Full Config Tree
+
+Hydra maps nested dataclass fields to dotted overrides. For example:
+
+```bash
+bello-train-ppo \
+  config.num_envs=512 \
+  env_config.terrain.mode=rough \
+  reward_config.track_lin_vel_xy.weight=1.2 \
+  done_config.base_height.min_height=0.75
 ```
 
 The complete `bello-train-ppo` root tree is:
@@ -626,16 +661,16 @@ For training changes:
 
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train-ppo \
-  --no-dry-run \
-  --config.total-timesteps 4 \
-  --config.num-envs 2 \
-  --config.num-steps 2 \
-  --config.num-minibatches 1 \
-  --config.update-epochs 1
+  dry_run=false \
+  config.total_timesteps=4 \
+  config.num_envs=2 \
+  config.num_steps=2 \
+  config.num_minibatches=1 \
+  config.update_epochs=1
 ```
 
 For env changes that affect training:
 
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-smoke-env --step
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-smoke-env step=true
 ```

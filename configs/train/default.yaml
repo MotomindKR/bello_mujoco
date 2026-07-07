@@ -1,0 +1,109 @@
+dry_run: true
+jit: true
+
+config:
+  seed: 0
+  total_timesteps: 1000000
+  num_envs: 64
+  num_steps: 128
+  update_epochs: 4
+  num_minibatches: 4
+  learning_rate: 0.0003
+  anneal_lr: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  policy:
+    hidden_size: 256
+    hidden_depth: 2
+    activation: tanh
+    init_log_std: -0.5
+
+asset_config:
+  asset: full_body
+  collision_mode: mesh
+  mesh_face_budget: 1000
+  foot_collision_mesh_face_budget: 1000
+  visual_mesh_face_budget: 200000
+  end_effector_sphere_mode: none
+  neighbor_exclusion_depth: 2
+
+env_config:
+  decimation: 10
+  max_episode_steps: 1000
+  spawn:
+    clearance: 0.01
+  terrain:
+    mode: plane
+    seed: 0
+  observation:
+    joint_mode: all_actuated
+    base_ang_vel: true
+    projected_gravity: true
+    command: true
+    joint_pos: true
+    joint_vel: true
+    actuator_force: true
+    last_action: true
+
+command_config:
+  enabled: true
+  lin_vel_x: [-0.1, 0.1]
+  lin_vel_y: [-0.1, 0.1]
+  ang_vel_yaw: [-0.1, 0.1]
+  standing_probability: 0.02
+  resample_seconds: 10.0
+
+checkpoint_config:
+  enabled: false
+  directory: checkpoints
+  name: null
+  overwrite: true
+
+wandb_config:
+  enabled: false
+  project: bello-mujoco
+  entity: null
+  group: null
+  job_type: train
+  run_name: null
+  mode: online
+  dir: .wandb
+  tags: []
+
+video_config:
+  enabled: false
+  every_updates: 10
+  render_initial: false
+  render_final: true
+  output_dir: outputs/train_videos
+  filename_prefix: rollout
+  command: [0.0, 0.0, 0.0]
+  steps: 250
+  width: 640
+  height: 480
+  fps: 50
+  stop_on_done: true
+  log_wandb: true
+  wandb_name: train/rollout
+  camera_config:
+    mode: follow
+    distance: 3.0
+    azimuth: 135.0
+    elevation: -18.0
+    lookat_offset: [0.0, 0.0, 0.35]
+
+warp:
+  contact_budget_per_env: 32
+  naconmax: null
+  naccdmax: null
+  njmax: 256
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/train/${now:%Y-%m-%d}/${now:%H-%M-%S}

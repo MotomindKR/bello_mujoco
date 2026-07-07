@@ -11,7 +11,7 @@ checkpoint, rebuilds a single-environment Bello runtime, and runs the policy in
 MuJoCo's interactive viewer.
 
 ```bash
-uv run bello-eval-policy checkpoints/ppo_seed_0
+uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
 ```
 
 Evaluation is interactive inspection only:
@@ -24,13 +24,14 @@ Evaluation is interactive inspection only:
 
 ## Full Config Tree
 
-Tyro maps nested dataclass fields to dotted flags. For example:
+Hydra maps nested dataclass fields to dotted overrides. For example:
 
 ```bash
-uv run bello-eval-policy checkpoints/ppo_seed_0 \
-  --eval-config.command 0.1 0.0 0.0 \
-  --eval-config.camera-config.mode follow \
-  --eval-config.reward-overlay.position top_left
+uv run bello-eval-policy \
+  checkpoint_path=checkpoints/ppo_seed_0 \
+  'eval_config.command=[0.1,0.0,0.0]' \
+  eval_config.camera_config.mode=follow \
+  eval_config.reward_overlay.position=top_left
 ```
 
 The complete `bello-eval-policy` root tree is:
@@ -111,8 +112,9 @@ Reward components are weighted `reward/*` terms from the environment info dict.
 Disable the overlay:
 
 ```bash
-uv run bello-eval-policy checkpoints/ppo_seed_0 \
-  --eval-config.reward-overlay.no-enabled
+uv run bello-eval-policy \
+  checkpoint_path=checkpoints/ppo_seed_0 \
+  eval_config.reward_overlay.enabled=false
 ```
 
 ### EvalRuntimeConfig
@@ -151,10 +153,11 @@ or reward overlay debugging.
 Example terrain override:
 
 ```bash
-uv run bello-eval-policy checkpoints/ppo_seed_0 \
-  --eval-config.runtime.source override \
-  --eval-config.runtime.env-config.terrain.mode rough \
-  --eval-config.runtime.env-config.terrain.seed 3
+uv run bello-eval-policy \
+  checkpoint_path=checkpoints/ppo_seed_0 \
+  eval_config.runtime.source=override \
+  eval_config.runtime.env_config.terrain.mode=rough \
+  eval_config.runtime.env_config.terrain.seed=3
 ```
 
 Override mode must preserve checkpoint policy compatibility. If the rebuilt env
@@ -237,5 +240,5 @@ uv run pytest tests/test_eval_policy.py -q
 When a local display is available, manually inspect a checkpoint:
 
 ```bash
-uv run bello-eval-policy checkpoints/ppo_seed_0
+uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
 ```

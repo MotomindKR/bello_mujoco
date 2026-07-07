@@ -1,17 +1,32 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 
+import hydra
 import jax
 import jax.numpy as jnp
-import tyro
+from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
+from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.sim import (
     WarpConfig,
 )
+
+
+@dataclass(frozen=True)
+class BenchmarkEnvConfig:
+    asset_config: AssetPrepConfig = AssetPrepConfig()
+    env_config: BelloEnvConfig = BelloEnvConfig()
+    reward_config: RewardConfig = RewardConfig()
+    command_config: CommandConfig = CommandConfig()
+    done_config: DoneConfig = DoneConfig()
+    batch_size: int = 512
+    step_count: int = 5
+    warp: WarpConfig = WarpConfig()
 
 
 def main(
@@ -77,7 +92,26 @@ def main(
 
 
 def entrypoint() -> None:
-    tyro.cli(main)
+    hydra_entrypoint()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("benchmark_env"),
+    config_name="default",
+)
+def hydra_entrypoint(config: DictConfig) -> None:
+    cfg = structured_config(BenchmarkEnvConfig, config)
+    main(
+        asset_config=cfg.asset_config,
+        env_config=cfg.env_config,
+        reward_config=cfg.reward_config,
+        command_config=cfg.command_config,
+        done_config=cfg.done_config,
+        batch_size=cfg.batch_size,
+        step_count=cfg.step_count,
+        warp=cfg.warp,
+    )
 
 
 if __name__ == "__main__":

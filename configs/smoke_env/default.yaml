@@ -1,0 +1,23 @@
+step: false
+
+asset_config:
+  asset: full_body
+  collision_mode: mesh
+
+env_config:
+  terrain:
+    mode: plane
+  spawn:
+    clearance: 0.01
+
+warp:
+  contact_budget_per_env: 32
+  naconmax: null
+  naccdmax: null
+  njmax: 256
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/smoke_env/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -26,7 +26,7 @@ The shell hook:
 Run a basic environment check:
 
 ```bash
-bello-smoke-env --step
+bello-smoke-env step=true
 ```
 
 Expected default full-body contract:
@@ -43,7 +43,7 @@ terrain: plane
 Prepare assets:
 
 ```bash
-bello-prepare-assets --asset full_body
+bello-prepare-assets asset=full_body
 ```
 
 Dry-run training setup:
@@ -52,22 +52,28 @@ Dry-run training setup:
 bello-train-ppo
 ```
 
+Use the local RTX 5090 baseline config:
+
+```bash
+bello-train-ppo --config-name rtx5090_4096x256
+```
+
 Run a tiny PPO smoke:
 
 ```bash
 bello-train-ppo \
-  --no-dry-run \
-  --config.total-timesteps 4 \
-  --config.num-envs 2 \
-  --config.num-steps 2 \
-  --config.num-minibatches 1 \
-  --config.update-epochs 1
+  dry_run=false \
+  config.total_timesteps=4 \
+  config.num_envs=2 \
+  config.num_steps=2 \
+  config.num_minibatches=1 \
+  config.update_epochs=1
 ```
 
 Benchmark vectorized stepping:
 
 ```bash
-bello-benchmark-env --batch-size 512 --step-count 5
+bello-benchmark-env batch_size=512 step_count=5
 ```
 
 Run the test and lint gate:
@@ -95,7 +101,7 @@ uv run pytest
 - Tracking: W&B
 - Checkpointing: Orbax
 - Visualization/video: MuJoCo renderer/viewer, `imageio[ffmpeg]`
-- Config CLI: `tyro`
+- Config CLI: `hydra-core`
 
 ## Generated Files
 

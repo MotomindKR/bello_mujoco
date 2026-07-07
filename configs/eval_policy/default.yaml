@@ -1,0 +1,28 @@
+checkpoint_path: null
+
+eval_config:
+  command: [0.0, 0.0, 0.0]
+  steps: null
+  realtime: true
+  stop_on_done: false
+  camera_config:
+    mode: follow
+    distance: 3.0
+    azimuth: 135.0
+    elevation: -18.0
+    lookat_offset: [0.0, 0.0, 0.35]
+  reward_overlay:
+    enabled: true
+    position: top_right
+    font_scale: small
+    precision: 3
+    max_reward_terms: 12
+    show_components: true
+  runtime:
+    source: checkpoint
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/eval_policy/${now:%Y-%m-%d}/${now:%H-%M-%S}

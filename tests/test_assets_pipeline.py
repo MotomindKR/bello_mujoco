@@ -1,4 +1,5 @@
 import xml.etree.ElementTree as ET
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,8 +120,8 @@ def test_default_output_root_is_deterministic_tmp_cache() -> None:
     assert resolved_output_root(config, "full_body") == resolved_output_root(
         config, "full_body"
     )
-    assert resolved_output_root(config, "full_body").parent == Path(
-        "/tmp/bello-mujoco-assets"
+    assert resolved_output_root(config, "full_body").parent == (
+        Path(tempfile.gettempdir()) / "bello-mujoco-assets"
     )
 
 

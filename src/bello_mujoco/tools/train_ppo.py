@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import equinox as eqx
+import hydra
 import jax
 import jax.numpy as jnp
-import tyro
+from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
@@ -17,6 +18,7 @@ from bello_mujoco.checkpoint import (
 )
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
+from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.render import CameraConfig, render_policy_rollout
 from bello_mujoco.sim import (
     WarpConfig,
@@ -61,6 +63,22 @@ class TrainingVideoConfig:
     camera_config: CameraConfig = CameraConfig()
 
 
+@dataclass(frozen=True)
+class TrainingRunConfig:
+    config: PPOConfig = PPOConfig()
+    asset_config: AssetPrepConfig = AssetPrepConfig()
+    reward_config: RewardConfig = RewardConfig()
+    command_config: CommandConfig = CommandConfig()
+    done_config: DoneConfig = DoneConfig()
+    env_config: BelloEnvConfig = BelloEnvConfig()
+    checkpoint_config: CheckpointConfig = CheckpointConfig()
+    wandb_config: WandbConfig = WandbConfig()
+    video_config: TrainingVideoConfig = TrainingVideoConfig()
+    warp: WarpConfig = WarpConfig()
+    dry_run: bool = True
+    jit: bool = True
+
+
 def main(
     config: PPOConfig = PPOConfig(),
     asset_config: AssetPrepConfig = AssetPrepConfig(),
@@ -75,6 +93,38 @@ def main(
     dry_run: bool = True,
     jit: bool = True,
 ) -> None:
+    run_training(
+        TrainingRunConfig(
+            config=config,
+            asset_config=asset_config,
+            reward_config=reward_config,
+            command_config=command_config,
+            done_config=done_config,
+            env_config=env_config,
+            checkpoint_config=checkpoint_config,
+            wandb_config=wandb_config,
+            video_config=video_config,
+            warp=warp,
+            dry_run=dry_run,
+            jit=jit,
+        )
+    )
+
+
+def run_training(run_config: TrainingRunConfig) -> None:
+    config = run_config.config
+    asset_config = run_config.asset_config
+    reward_config = run_config.reward_config
+    command_config = run_config.command_config
+    done_config = run_config.done_config
+    env_config = run_config.env_config
+    checkpoint_config = run_config.checkpoint_config
+    wandb_config = run_config.wandb_config
+    video_config = run_config.video_config
+    warp = run_config.warp
+    dry_run = run_config.dry_run
+    jit = run_config.jit
+
     validate_ppo_config(config)
     validate_video_config(video_config)
     env = BelloLocomotionEnv.load(
@@ -322,7 +372,16 @@ def final_train_state(
 
 
 def entrypoint() -> None:
-    tyro.cli(main)
+    hydra_entrypoint()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("train"),
+    config_name="default",
+)
+def hydra_entrypoint(config: DictConfig) -> None:
+    run_training(structured_config(TrainingRunConfig, config))
 
 
 if __name__ == "__main__":

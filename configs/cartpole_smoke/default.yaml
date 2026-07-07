@@ -1,0 +1,17 @@
+seed: 0
+total_timesteps: 16384
+num_envs: 64
+num_steps: 64
+update_epochs: 4
+num_minibatches: 4
+learning_rate: 0.0003
+hidden_size: 64
+hidden_depth: 2
+ent_coef: 0.0
+init_log_std: -0.5
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/cartpole_smoke/${now:%Y-%m-%d}/${now:%H-%M-%S}

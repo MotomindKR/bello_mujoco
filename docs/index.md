@@ -18,7 +18,7 @@ The current stack is:
 - Optimizer: Optax
 - Checkpointing: Orbax
 - Tracking/video: W&B, MuJoCo renderer, `imageio[ffmpeg]`
-- Config CLI: tyro over dataclasses
+- Config CLI: Hydra over dataclasses
 - Package/env management: Nix shell plus uv-managed Python
 
 The simulation and PPO hot path is JAX-based: vectorized reset/step, reward and
@@ -52,7 +52,7 @@ repo-local:
 Run commands through uv when outside the activated shell:
 
 ```bash
-uv run bello-smoke-env --step
+uv run bello-smoke-env step=true
 ```
 
 Generated local artifacts should not be committed:
@@ -90,7 +90,7 @@ Do not add external robot asset paths or asset aliases.
 Prepare assets:
 
 ```bash
-bello-prepare-assets --asset full_body
+bello-prepare-assets asset=full_body
 ```
 
 Generated assets default to a deterministic cache under:
@@ -208,13 +208,13 @@ to valid links.
 
 ## Configuration
 
-All tools use tyro over dataclasses. Nested fields map to dotted CLI flags:
+All tools use Hydra over dataclasses. Nested fields map to dotted overrides:
 
 ```bash
 bello-train-ppo \
-  --env-config.observation.no-actuator-force \
-  --reward-config.track-lin-vel-xy.weight 1.2 \
-  --done-config.base-height.min-height 0.75
+  env_config.observation.actuator_force=false \
+  reward_config.track_lin_vel_xy.weight=1.2 \
+  done_config.base_height.min_height=0.75
 ```
 
 Important config roots:
@@ -277,7 +277,7 @@ PPOConfig:
   max_grad_norm: 0.5
 ```
 
-Use `--help` on each entry point for the current exhaustive CLI tree.
+Use `--help` and `--hydra-help` on each entry point for the current exhaustive CLI tree.
 
 ## Training
 
@@ -404,14 +404,14 @@ uv run pytest
 Simulation/training smoke:
 
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-smoke-env --step
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-smoke-env step=true
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train-ppo \
-  --no-dry-run \
-  --config.total-timesteps 4 \
-  --config.num-envs 2 \
-  --config.num-steps 2 \
-  --config.num-minibatches 1 \
-  --config.update-epochs 1
+  dry_run=false \
+  config.total_timesteps=4 \
+  config.num_envs=2 \
+  config.num_steps=2 \
+  config.num_minibatches=1 \
+  config.update_epochs=1
 ```
 
 Focused test sets:
@@ -429,8 +429,8 @@ Benchmark vectorized stepping:
 
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-benchmark-env \
-  --batch-size 512 \
-  --step-count 5
+  batch_size=512 \
+  step_count=5
 ```
 
 Expected smoke output on a CUDA-capable host includes:
