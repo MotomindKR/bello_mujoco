@@ -24,8 +24,12 @@ from bello_mujoco.policy import (
     ActorCriticConfig,
     apply_policy,
     evaluate_actions,
+    init_observation_stack,
     init_actor_critic,
+    policy_observation_size,
     sample_action,
+    stacked_observation,
+    update_observation_stack,
 )
 
 
@@ -82,7 +86,7 @@ class RunnerState(NamedTuple):
     opt_state: optax.OptState
     update: jax.Array
     env_state: BelloState
-    obs: jax.Array
+    obs_stack: jax.Array
     rng: jax.Array
 
 
@@ -294,25 +298,30 @@ def collect_rollout(
     env: BelloLocomotionEnv,
     policy: ActorCritic,
     env_state: BelloState,
-    obs: jax.Array,
+    obs_stack: jax.Array,
     rng: jax.Array,
     config: PPOConfig,
 ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
     def env_step(
         carry: tuple[BelloState, jax.Array, jax.Array], _: None
     ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
-        state, last_obs, key = carry
+        state, last_obs_stack, key = carry
         key, action_key, env_key = jax.random.split(key, 3)
+        policy_obs = stacked_observation(last_obs_stack)
         action, log_prob, value = sample_action(
-            policy, last_obs, action_key, action_clip=getattr(env, "action_clip", None)
+            policy,
+            policy_obs,
+            action_key,
+            action_clip=getattr(env, "action_clip", None),
         )
         next_state, next_obs, reward, done, info = env.step_batch(
             state, action, rng=env_key
         )
-        transition = Transition(done, action, value, reward, log_prob, last_obs, info)
-        return (next_state, next_obs, key), transition
+        next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
+        transition = Transition(done, action, value, reward, log_prob, policy_obs, info)
+        return (next_state, next_obs_stack, key), transition
 
-    return jax.lax.scan(env_step, (env_state, obs, rng), None, config.num_steps)
+    return jax.lax.scan(env_step, (env_state, obs_stack, rng), None, config.num_steps)
 
 
 def init_runner_state(
@@ -322,17 +331,21 @@ def init_runner_state(
 ) -> tuple[RunnerState, eqx.Module, optax.GradientTransformation]:
     rng, init_key, env_key = jax.random.split(rng, 3)
     train_state, optimizer = init_train_state(
-        init_key, env.observation_size, env.action_size, config
+        init_key,
+        policy_observation_size(env.observation_size, config.policy),
+        env.action_size,
+        config,
     )
     params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
     env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
+    obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
     return (
         RunnerState(
             params=params,
             opt_state=train_state.opt_state,
             update=train_state.update,
             env_state=env_state,
-            obs=obs,
+            obs_stack=obs_stack,
             rng=rng,
         ),
         static_policy,
@@ -365,10 +378,15 @@ def update_runner_state(
         opt_state=runner_state.opt_state,
         update=runner_state.update,
     )
-    (env_state, obs, _), transitions = collect_rollout(
-        env, policy, runner_state.env_state, runner_state.obs, rollout_key, config
+    (env_state, obs_stack, _), transitions = collect_rollout(
+        env,
+        policy,
+        runner_state.env_state,
+        runner_state.obs_stack,
+        rollout_key,
+        config,
     )
-    _, _, last_value = apply_policy(policy, obs)
+    _, _, last_value = apply_policy(policy, stacked_observation(obs_stack))
     advantages, targets = compute_gae(transitions, last_value, config)
     train_state, metrics = update_ppo(
         train_state, optimizer, transitions, advantages, targets, update_key, config
@@ -389,7 +407,7 @@ def update_runner_state(
             opt_state=train_state.opt_state,
             update=train_state.update,
             env_state=env_state,
-            obs=obs,
+            obs_stack=obs_stack,
             rng=key,
         ),
         metrics,
@@ -466,6 +484,11 @@ def validate_ppo_config(config: PPOConfig) -> None:
     if config.policy.hidden_depth < 0:
         raise ValueError(
             f"policy.hidden_depth must be nonnegative, got {config.policy.hidden_depth}"
+        )
+    if config.policy.obs_stack_size <= 0:
+        raise ValueError(
+            "policy.obs_stack_size must be positive, got "
+            f"{config.policy.obs_stack_size}"
         )
     if config.policy.activation not in {"tanh", "relu"}:
         raise ValueError(

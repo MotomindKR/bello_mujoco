@@ -13,6 +13,7 @@ from bello_mujoco.checkpoint import CheckpointMetadata, restore_training_checkpo
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.hydra_config import config_path, structured_config
+from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.render import CameraConfig, RewardOverlayConfig, launch_policy_viewer
 from bello_mujoco.sim import WarpConfig
 
@@ -75,6 +76,7 @@ def main(
         stop_on_done=eval_config.stop_on_done,
         camera_config=eval_config.camera_config,
         reward_overlay=eval_config.reward_overlay,
+        obs_stack_size=metadata.ppo.policy.obs_stack_size,
     )
 
 
@@ -183,10 +185,13 @@ def validate_checkpoint_shape(
     env: BelloLocomotionEnv,
     metadata: CheckpointMetadata,
 ) -> None:
-    if env.observation_size != metadata.obs_size:
+    expected_obs_size = policy_observation_size(
+        env.observation_size, metadata.ppo.policy
+    )
+    if expected_obs_size != metadata.obs_size:
         raise ValueError(
-            "eval runtime config produced observation_size="
-            f"{env.observation_size}, but checkpoint expects {metadata.obs_size}"
+            "eval runtime config produced policy observation_size="
+            f"{expected_obs_size}, but checkpoint expects {metadata.obs_size}"
         )
     if env.action_size != metadata.action_size:
         raise ValueError(

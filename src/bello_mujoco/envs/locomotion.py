@@ -58,7 +58,7 @@ class BaseDoneConfig:
 
 @dataclass(frozen=True)
 class BaseHeightDoneConfig(BaseDoneConfig):
-    min_height: float = 0.80
+    min_height: float = 0.75
     link: str = "bello_root"
 
 

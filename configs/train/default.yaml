@@ -21,6 +21,7 @@ config:
     hidden_depth: 2
     activation: tanh
     init_log_std: -0.5
+    obs_stack_size: 1
 
 asset_config:
   asset: full_body

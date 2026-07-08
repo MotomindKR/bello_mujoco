@@ -13,7 +13,12 @@ import mujoco.viewer
 import numpy as np
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.policy import apply_policy
+from bello_mujoco.policy import (
+    apply_policy,
+    init_observation_stack,
+    stacked_observation,
+    update_observation_stack,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,7 @@ def render_policy_rollout(
     stop_on_done: bool,
     camera_config: CameraConfig,
     simulation_backend: Literal["mjx", "mujoco"] = "mjx",
+    obs_stack_size: int = 1,
 ) -> None:
     if simulation_backend == "mujoco":
         render_policy_rollout_mujoco(
@@ -63,6 +69,7 @@ def render_policy_rollout(
             fps=fps,
             stop_on_done=stop_on_done,
             camera_config=camera_config,
+            obs_stack_size=obs_stack_size,
         )
         return
     if simulation_backend != "mjx":
@@ -70,6 +77,7 @@ def render_policy_rollout(
             f"simulation_backend must be 'mjx' or 'mujoco', got {simulation_backend!r}"
         )
     state, obs = env.reset(jnp.asarray(command, dtype=jnp.float32))
+    obs_stack = init_observation_stack(obs, obs_stack_size)
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     renderer = mujoco.Renderer(mj_model, height=height, width=width)
@@ -82,8 +90,11 @@ def render_policy_rollout(
             update_camera(camera, mj_model, mj_data, camera_config)
             renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
-            mean, _, _ = apply_policy(policy, obs)
+            mean, _, _ = apply_policy(policy, stacked_observation(obs_stack))
             state, obs, _, done, _ = env.step(state, mean)
+            obs_stack = update_observation_stack(
+                obs_stack, obs, stack_reset_done(done, stop_on_done=stop_on_done)
+            )
             if stop_on_done and bool(jax.device_get(done)):
                 sync_mj_data(mj_model, mj_data, state)
                 update_camera(camera, mj_model, mj_data, camera_config)
@@ -107,6 +118,7 @@ def render_policy_rollout_mujoco(
     fps: int,
     stop_on_done: bool,
     camera_config: CameraConfig,
+    obs_stack_size: int = 1,
 ) -> None:
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
@@ -118,6 +130,14 @@ def render_policy_rollout_mujoco(
     command_array = np.asarray(command, dtype=np.float32)
     last_action = np.zeros(env.action_size, dtype=np.float32)
     step_count = 0
+    obs = mujoco_policy_observation(
+        env,
+        mj_data,
+        command=command_array,
+        last_action=last_action,
+        step_count=step_count,
+    )
+    obs_stack = init_observation_stack(obs, obs_stack_size)
     renderer = mujoco.Renderer(mj_model, height=height, width=width)
     camera = make_camera(mj_model, camera_config)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,14 +147,7 @@ def render_policy_rollout_mujoco(
             update_camera(camera, mj_model, mj_data, camera_config)
             renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
-            obs = mujoco_policy_observation(
-                env,
-                mj_data,
-                command=command_array,
-                last_action=last_action,
-                step_count=step_count,
-            )
-            mean, _, _ = apply_policy(policy, obs)
+            mean, _, _ = apply_policy(policy, stacked_observation(obs_stack))
             action = np.asarray(jax.device_get(mean), dtype=np.float32)
             action = np.clip(action, -env.action_clip, env.action_clip)
             mj_data.ctrl[:] = mujoco_action_to_ctrl(env, action)
@@ -142,7 +155,20 @@ def render_policy_rollout_mujoco(
                 mujoco.mj_step(mj_model, mj_data)
             last_action = action
             step_count += 1
-            if stop_on_done and mujoco_done(env, mj_data, step_count):
+            done = mujoco_done(env, mj_data, step_count)
+            obs = mujoco_policy_observation(
+                env,
+                mj_data,
+                command=command_array,
+                last_action=last_action,
+                step_count=step_count,
+            )
+            obs_stack = update_observation_stack(
+                obs_stack,
+                obs,
+                stack_reset_done(done, stop_on_done=stop_on_done),
+            )
+            if stop_on_done and done:
                 update_camera(camera, mj_model, mj_data, camera_config)
                 renderer.update_scene(mj_data, camera=camera)
                 writer.append_data(renderer.render())
@@ -293,8 +319,10 @@ def launch_policy_viewer(
     stop_on_done: bool,
     camera_config: CameraConfig,
     reward_overlay: RewardOverlayConfig = RewardOverlayConfig(),
+    obs_stack_size: int = 1,
 ) -> None:
     state, obs = env.reset(jnp.asarray(command, dtype=jnp.float32))
+    obs_stack = init_observation_stack(obs, obs_stack_size)
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     camera_dt = env.control_timestep
@@ -319,8 +347,11 @@ def launch_policy_viewer(
                     info=info,
                 )
             viewer.sync()
-            mean, _, _ = apply_policy(policy, obs)
+            mean, _, _ = apply_policy(policy, stacked_observation(obs_stack))
             state, obs, reward, done, info = env.step(state, mean)
+            obs_stack = update_observation_stack(
+                obs_stack, obs, stack_reset_done(done, stop_on_done=stop_on_done)
+            )
             step_count += 1
             if stop_on_done and bool(jax.device_get(done)):
                 break
@@ -334,6 +365,13 @@ def sync_mj_data(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, state) -> Non
     mj_data.qvel[:] = np.asarray(jax.device_get(state.data.qvel))
     mj_data.ctrl[:] = np.asarray(jax.device_get(state.data.ctrl))
     mujoco.mj_forward(mj_model, mj_data)
+
+
+def stack_reset_done(done: jax.Array | bool, *, stop_on_done: bool) -> jax.Array:
+    done = jnp.asarray(done, dtype=bool)
+    if stop_on_done:
+        return done
+    return jnp.zeros_like(done, dtype=bool)
 
 
 def make_camera(mj_model: mujoco.MjModel, config: CameraConfig) -> mujoco.MjvCamera:
