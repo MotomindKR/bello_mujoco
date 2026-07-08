@@ -14,7 +14,7 @@ By default, the instance destroys itself after the training command exits.
 
 Options:
   --instance-id ID      Vast instance id. Defaults to .vast/instance_id.
-  --config-name NAME    Hydra train config. Default: vast_rtx5090.
+  --config-name NAME    Hydra train config. Default: vast_smoke.
   --session NAME        tmux session. Default: bello-train.
   --repo-dir PATH       Remote repo dir. Default: /workspace/bello_mujoco.
   --run-name NAME       W&B/checkpoint run name override.
@@ -54,7 +54,7 @@ fi
 
 WANDB_PROJECT="${WANDB_PROJECT:-bello-mujoco}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
-RUN_NAME="${RUN_NAME:-vast_rtx5090_seed0}"
+RUN_NAME="${RUN_NAME:-vast_smoke_seed0}"
 DESTROY_CMD=":"
 if [ "$DESTROY_ON_EXIT" -eq 1 ]; then
   VAST_DESTROY_API_KEY="$(vast_api_key)"
