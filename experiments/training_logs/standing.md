@@ -22,9 +22,10 @@ Config:
 - command and gait phase removed from observation
 - lower body plus waist controlled by policy, head/arms/fingers held
 - `obs_stack_size: 10`
-- `init_log_std: -2.0`
+- `ent_coef: 0.03`
+- `init_log_std: 1.8`
 - loose base-height and roll/pitch done checks enabled to reset fallen samples
-  without terminal reward
+  with the current `termination` reward left enabled
 
 ## Diagnostics
 
@@ -126,6 +127,33 @@ High-exploration follow-up:
   `ctrl_saturation_fraction ~= 0.58`. This is intentionally aggressive and
   should be compared against the previous foot-distance run for learning speed
   rather than treated as a stable final recipe.
+
+W&B run observed for high-exploration foot-distance diagnostic:
+
+- Run: `foot_distance_high_exploration_seed0`
+- URL: `https://wandb.ai/gyungmin/bello-mujoco/runs/7myi0i7s`
+- Around update 34:
+  - `mean_reward`: about `0.0243`
+  - previous normal foot-distance run reached about `0.0209` only at update 256
+  - `action_rms`: about `6.38`
+  - `action_mean_rms`: about `4.20`
+  - `ctrl_saturation_fraction`: about `0.65`
+  - `approx_kl`: about `0.023`
+  - `value_loss`: about `0.081`
+- Interpretation: exploration scale was a primary bottleneck for the
+  foot-distance diagnostic. The setting is intentionally violent and saturation
+  heavy, but it proves the policy/update path can discover the simple
+  geometric behavior quickly.
+
+Applied standing follow-up:
+
+- Config changed in `experiments/train/standing.yaml`.
+- `config.ent_coef`: `0.003 -> 0.03`
+- `config.policy.init_log_std`: `-0.5 -> 1.8`
+- Run/checkpoint/video names now use `standing_high_exploration_seed0` /
+  `standing_high_exploration`.
+- Reward shape is otherwise unchanged so this run isolates exploration scale on
+  the standing objective.
 
 ## Reward Tuning Lessons
 

@@ -160,9 +160,9 @@ config:
   anneal_lr: false
   gamma: 0.995
   clip_eps: 0.1
-  ent_coef: 0.003
+  ent_coef: 0.03
   policy:
-    init_log_std: -0.5
+    init_log_std: 1.8
     obs_stack_size: 10
 
 env_config:
@@ -248,16 +248,22 @@ done_config:
     max_abs_pitch: 1.35
 
 checkpoint_config:
-  name: standing_seed0
+  name: standing_high_exploration_seed0
 
 wandb_config:
   enabled: true
-  run_name: standing_seed0
-  tags: [standing, rtx5090, full-body, mesh-collision, sphere-end-effectors, high-exploration]
+  run_name: standing_high_exploration_seed0
+  tags:
+    - standing
+    - rtx5090
+    - full-body
+    - mesh-collision
+    - sphere-end-effectors
+    - high-exploration-x10
 
 video_config:
   enabled: true
-  filename_prefix: standing
+  filename_prefix: standing_high_exploration
   command: [0.0, 0.0, 0.0]
   steps: 500
   stop_on_done: false
