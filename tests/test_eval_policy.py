@@ -11,10 +11,13 @@ from bello_mujoco.render import (
     format_reward_overlay,
     mujoco_action_to_ctrl,
     mujoco_policy_observation,
+    stack_reset_done,
     sync_reward_overlay,
 )
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
 from bello_mujoco.terrain import TerrainConfig
+from bello_mujoco.policy import ActorCriticConfig
+from bello_mujoco.train.ppo import PPOConfig
 import bello_mujoco.tools.eval_policy as eval_policy
 from bello_mujoco.tools.eval_policy import (
     EvalPolicyConfig,
@@ -93,15 +96,19 @@ def test_eval_runtime_override_merges_nested_actuator_dicts() -> None:
 
 def test_validate_checkpoint_shape_rejects_observation_mismatch() -> None:
     env = SimpleNamespace(observation_size=3, action_size=2)
-    metadata = SimpleNamespace(obs_size=4, action_size=2)
+    metadata = SimpleNamespace(
+        ppo=PPOConfig(policy=ActorCriticConfig(obs_stack_size=2)),
+        obs_size=4,
+        action_size=2,
+    )
 
-    with pytest.raises(ValueError, match="observation_size=3"):
+    with pytest.raises(ValueError, match="policy observation_size=6"):
         validate_checkpoint_shape(env, metadata)
 
 
 def test_validate_checkpoint_shape_rejects_action_mismatch() -> None:
     env = SimpleNamespace(observation_size=4, action_size=1)
-    metadata = SimpleNamespace(obs_size=4, action_size=2)
+    metadata = SimpleNamespace(ppo=PPOConfig(), obs_size=4, action_size=2)
 
     with pytest.raises(ValueError, match="action_size=1"):
         validate_checkpoint_shape(env, metadata)
@@ -216,6 +223,13 @@ def test_mujoco_action_to_ctrl_matches_env_mapping(full_body_asset) -> None:
     assert jnp.allclose(actual, expected)
 
 
+def test_stack_reset_done_only_resets_when_rollout_stops() -> None:
+    done = jnp.asarray(True)
+
+    assert bool(stack_reset_done(done, stop_on_done=True))
+    assert not bool(stack_reset_done(done, stop_on_done=False))
+
+
 def test_eval_main_wires_checkpoint_env_and_viewer(monkeypatch) -> None:
     metadata = SimpleNamespace(
         asset="asset",
@@ -224,7 +238,8 @@ def test_eval_main_wires_checkpoint_env_and_viewer(monkeypatch) -> None:
         command="command",
         done="done",
         warp="warp",
-        obs_size=4,
+        ppo=PPOConfig(policy=ActorCriticConfig(obs_stack_size=3)),
+        obs_size=12,
         action_size=2,
     )
     train_state = SimpleNamespace(policy="policy")
@@ -265,6 +280,7 @@ def test_eval_main_wires_checkpoint_env_and_viewer(monkeypatch) -> None:
         },
     )
     assert loaded["launch"][1] == "policy"
+    assert loaded["launch"][2]["obs_stack_size"] == 3
 
 
 class FakeViewer:

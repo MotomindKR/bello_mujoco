@@ -335,6 +335,7 @@ config.policy.hidden_size: 256
 config.policy.hidden_depth: 2
 config.policy.activation: tanh | relu
 config.policy.init_log_std: -0.5
+config.policy.obs_stack_size: 1
 ```
 
 Training-adjacent flags:

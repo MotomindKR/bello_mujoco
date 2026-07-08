@@ -113,6 +113,7 @@ config:
     hidden_depth: 2
     activation: tanh  # tanh | relu
     init_log_std: -0.5
+    obs_stack_size: 1
 ```
 
 Derived values:
@@ -248,7 +249,7 @@ reward_config:
     enabled: true
     weight: -10.0
     link: bello_root
-    target: 0.91
+    target: 0.86
   joint_vel:
     enabled: true
     weight: -0.001
@@ -306,7 +307,7 @@ disabled for near-standing commands by `command_speed_threshold`.
 done_config:
   base_height:
     enabled: true
-    min_height: 0.80
+    min_height: 0.75
     link: bello_root
   roll_pitch:
     enabled: true
@@ -573,7 +574,7 @@ command config
 done config
 env config
 warp config
-obs_size
+obs_size  # policy input size, env.observation_size * obs_stack_size
 action_size
 ```
 
@@ -692,7 +693,15 @@ activation in {"tanh", "relu"}
 hidden_size > 0
 hidden_depth >= 0
 init_log_std is finite
+obs_stack_size > 0
 ```
+
+`obs_stack_size` controls policy-side observation stacking. The environment
+still emits one raw observation per step, but PPO repeats the initial
+observation on reset, shifts in each new observation, resets each completed
+env's stack to the reset observation, and feeds the flattened stack to the
+actor-critic. The policy input size is therefore
+`env.observation_size * config.policy.obs_stack_size`.
 
 Environment/model initialization also validates:
 

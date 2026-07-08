@@ -58,7 +58,7 @@ def save_training_checkpoint(
     *,
     overwrite: bool = True,
 ) -> None:
-    path = Path(path)
+    path = Path(path).resolve()
     path.mkdir(parents=True, exist_ok=True)
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
     item = {
@@ -73,7 +73,7 @@ def save_training_checkpoint(
 
 
 def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetadata]:
-    path = Path(path)
+    path = Path(path).resolve()
     metadata = load_checkpoint_metadata(path)
     template_state, _ = init_train_state(
         jax.random.PRNGKey(metadata.ppo.seed),
@@ -97,7 +97,7 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
 
 
 def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
-    data = json.loads((Path(path) / METADATA_FILE).read_text())
+    data = json.loads((Path(path).resolve() / METADATA_FILE).read_text())
     return CheckpointMetadata(
         ppo=dataclass_from_dict(PPOConfig, data["ppo"]),
         asset=dataclass_from_dict(AssetPrepConfig, data["asset"]),

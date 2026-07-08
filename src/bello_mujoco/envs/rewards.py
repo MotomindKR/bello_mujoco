@@ -100,7 +100,7 @@ class FlatOrientationRewardConfig(LinkRewardConfig):
 
 @dataclass(frozen=True)
 class BaseHeightRewardConfig(LinkRewardConfig):
-    target: float = 0.91
+    target: float = 0.86
 
 
 @dataclass(frozen=True)

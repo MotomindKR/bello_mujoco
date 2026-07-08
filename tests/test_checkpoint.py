@@ -3,7 +3,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 
-from bello_mujoco.policy import ActorCriticConfig, apply_policy
+import bello_mujoco.checkpoint as checkpoint
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
     CheckpointMetadata,
@@ -11,6 +11,7 @@ from bello_mujoco.checkpoint import (
     restore_training_checkpoint,
     save_training_checkpoint,
 )
+from bello_mujoco.policy import ActorCriticConfig, apply_policy
 from bello_mujoco.envs.locomotion import (
     BaseHeightDoneConfig,
     BelloEnvConfig,
@@ -62,3 +63,46 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
     assert restored_metadata.env.terrain.seed == 3
     assert restored_metadata.command.lin_vel_x == (-0.2, 0.3)
     assert disk_metadata.asset.output_root == tmp_path / "assets"
+
+
+def test_training_checkpoint_saves_relative_path_as_absolute(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    saved = {}
+
+    class FakeCheckpointer:
+        def save(self, path, item, *, force):
+            saved["path"] = path
+            saved["force"] = force
+            saved["item"] = item
+
+    monkeypatch.setattr(
+        checkpoint.ocp, "PyTreeCheckpointer", lambda: FakeCheckpointer()
+    )
+    config = PPOConfig(
+        seed=3,
+        policy=ActorCriticConfig(hidden_size=8, hidden_depth=1),
+        total_timesteps=8,
+        num_envs=2,
+        num_steps=2,
+        num_minibatches=1,
+    )
+    train_state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
+    metadata = CheckpointMetadata(
+        ppo=config,
+        asset=AssetPrepConfig(),
+        reward=RewardConfig(),
+        command=CommandConfig(),
+        done=DoneConfig(),
+        env=BelloEnvConfig(),
+        warp=WarpConfig(),
+        obs_size=4,
+        action_size=2,
+    )
+
+    save_training_checkpoint(Path("relative_ckpt"), train_state, metadata)
+
+    assert saved["path"].is_absolute()
+    assert saved["path"] == tmp_path / "relative_ckpt" / checkpoint.STATE_DIR
+    assert saved["force"] is True

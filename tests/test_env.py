@@ -388,6 +388,19 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert jnp.all(jnp.isfinite(reward))
 
 
+def test_default_base_height_threshold_is_below_nominal_reset(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env.reset()
+    base_height = float(env._base_height(state))
+
+    assert RewardConfig().base_height.target == pytest.approx(0.86)
+    assert DoneConfig().base_height.min_height == pytest.approx(0.75)
+    assert abs(base_height - RewardConfig().base_height.target) < 0.01
+    assert base_height - DoneConfig().base_height.min_height > 0.10
+
+
 def test_step_batch_contact_rewards_are_world_local(
     full_body_asset: PreparedAsset,
 ) -> None:

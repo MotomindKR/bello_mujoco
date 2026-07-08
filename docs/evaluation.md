@@ -161,10 +161,12 @@ uv run bello-eval-policy \
 ```
 
 Override mode must preserve checkpoint policy compatibility. If the rebuilt env
-changes `observation_size` or `action_size`, evaluation fails before opening the
-viewer. Because overrides are detected by comparing against repo defaults, use a
-new matching checkpoint when you need to change a runtime field back to its
-default value from a non-default checkpoint value.
+changes policy observation size or `action_size`, evaluation fails before
+opening the viewer. Policy observation size is
+`env.observation_size * metadata.ppo.policy.obs_stack_size`. Because overrides
+are detected by comparing against repo defaults, use a new matching checkpoint
+when you need to change a runtime field back to its default value from a
+non-default checkpoint value.
 
 ## Runtime Behavior
 
@@ -195,7 +197,7 @@ metadata.action_size
 After the eval runtime is rebuilt, it validates:
 
 ```text
-env.observation_size == metadata.obs_size
+env.observation_size * metadata.ppo.policy.obs_stack_size == metadata.obs_size
 env.action_size == metadata.action_size
 ```
 
@@ -222,7 +224,7 @@ steps is null or positive
 camera distance is positive
 reward overlay precision is nonnegative
 reward overlay max_reward_terms is nonnegative
-observation_size matches checkpoint metadata
+policy observation_size matches checkpoint metadata
 action_size matches checkpoint metadata
 follow camera requires body "bello_root"
 ```

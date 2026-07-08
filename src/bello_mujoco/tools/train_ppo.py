@@ -20,6 +20,7 @@ from bello_mujoco.checkpoint import (
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.hydra_config import config_path, structured_config
+from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.render import CameraConfig, render_policy_rollout
 from bello_mujoco.sim import (
     WarpConfig,
@@ -162,8 +163,9 @@ def run_training(run_config: TrainingRunConfig) -> None:
         else env
     )
     rng = jax.random.PRNGKey(config.seed)
+    policy_obs_size = policy_observation_size(env.observation_size, config.policy)
     if dry_run:
-        state, _ = init_train_state(rng, env.observation_size, env.action_size, config)
+        state, _ = init_train_state(rng, policy_obs_size, env.action_size, config)
         batch_state, batch_obs = env.reset_batch(config.num_envs)
         print(
             {
@@ -175,6 +177,8 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "warp_naconmax": env.model.warp_naconmax,
                 "warp_njmax": env.model.warp_njmax,
                 "obs_size": env.observation_size,
+                "policy_obs_size": policy_obs_size,
+                "obs_stack_size": config.policy.obs_stack_size,
                 "action_size": env.action_size,
                 "num_envs": config.num_envs,
                 "num_steps": config.num_steps,
@@ -211,6 +215,8 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "warp": warp,
                 "env": {
                     "obs_size": env.observation_size,
+                    "policy_obs_size": policy_obs_size,
+                    "obs_stack_size": config.policy.obs_stack_size,
                     "action_size": env.action_size,
                     "mjx_impl": "warp",
                     "xml_path": env.model.xml_path,
@@ -251,7 +257,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     done=done_config,
                     env=env_config,
                     warp=warp,
-                    obs_size=env.observation_size,
+                    obs_size=policy_obs_size,
                     action_size=env.action_size,
                 ),
                 overwrite=checkpoint_config.overwrite,
@@ -296,6 +302,7 @@ def train_update_loop(
             video_config,
             run,
             env_steps=0,
+            obs_stack_size=config.policy.obs_stack_size,
         )
     for _ in range(config.num_updates):
         runner_state, metrics = update_fn(runner_state)
@@ -319,6 +326,7 @@ def train_update_loop(
                 video_config,
                 run,
                 env_steps=env_steps,
+                obs_stack_size=config.policy.obs_stack_size,
             )
     return {
         "runner_state": runner_state,
@@ -346,6 +354,7 @@ def render_training_video(
     run,
     *,
     env_steps: int,
+    obs_stack_size: int = 1,
 ) -> Path:
     update = int(jax.device_get(runner_state.update))
     output_path = config.output_dir / f"{config.filename_prefix}_{update:06d}.mp4"
@@ -362,6 +371,7 @@ def render_training_video(
         stop_on_done=config.stop_on_done,
         camera_config=config.camera_config,
         simulation_backend=config.simulation_backend,
+        obs_stack_size=obs_stack_size,
     )
     if config.log_wandb:
         track_video(
@@ -414,7 +424,7 @@ def final_train_state(
         params, opt_state, update, *_ = runner_state
     template_state, _ = init_train_state(
         jax.random.PRNGKey(config.seed),
-        env.observation_size,
+        policy_observation_size(env.observation_size, config.policy),
         env.action_size,
         config,
     )

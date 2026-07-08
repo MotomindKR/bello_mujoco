@@ -2,7 +2,15 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from bello_mujoco.policy import ActorCriticConfig, gaussian_entropy, sample_action
+from bello_mujoco.policy import (
+    ActorCriticConfig,
+    gaussian_entropy,
+    init_observation_stack,
+    policy_observation_size,
+    sample_action,
+    stacked_observation,
+    update_observation_stack,
+)
 from bello_mujoco.train.ppo import (
     PPOConfig,
     Transition,
@@ -68,6 +76,28 @@ def test_sample_action_applies_configured_clip() -> None:
 
     assert jnp.all(action <= 0.01)
     assert jnp.all(action >= -0.01)
+
+
+def test_observation_stack_repeats_shifts_and_resets_done_envs() -> None:
+    obs = jnp.asarray([[1.0, 2.0], [3.0, 4.0]])
+    obs_stack = init_observation_stack(obs, 3)
+
+    assert obs_stack.shape == (2, 3, 2)
+    assert stacked_observation(obs_stack).shape == (2, 6)
+
+    next_obs = jnp.asarray([[5.0, 6.0], [7.0, 8.0]])
+    next_stack = update_observation_stack(
+        obs_stack,
+        next_obs,
+        jnp.asarray([False, True]),
+    )
+
+    assert jnp.allclose(
+        next_stack[0], jnp.asarray([[1.0, 2.0], [1.0, 2.0], [5.0, 6.0]])
+    )
+    assert jnp.allclose(
+        next_stack[1], jnp.asarray([[7.0, 8.0], [7.0, 8.0], [7.0, 8.0]])
+    )
 
 
 def test_gaussian_entropy_sums_only_action_axis() -> None:
@@ -187,3 +217,14 @@ def test_ppo_config_rejects_invalid_policy_architecture() -> None:
 
     with pytest.raises(ValueError, match="policy.hidden_size must be positive"):
         make_train(config, env=object())
+
+
+def test_ppo_config_rejects_invalid_observation_stack_size() -> None:
+    config = PPOConfig(policy=ActorCriticConfig(obs_stack_size=0))
+
+    with pytest.raises(ValueError, match="policy.obs_stack_size must be positive"):
+        make_train(config, env=object())
+
+
+def test_policy_observation_size_scales_with_stack_size() -> None:
+    assert policy_observation_size(12, ActorCriticConfig(obs_stack_size=4)) == 48
