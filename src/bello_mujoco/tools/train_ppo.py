@@ -32,6 +32,7 @@ from bello_mujoco.tracking import (
     log_config,
     track_metric_history,
     track_metric_snapshot,
+    track_checkpoint_artifact,
     track_video,
 )
 from bello_mujoco.train.ppo import (
@@ -262,6 +263,13 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 ),
                 overwrite=checkpoint_config.overwrite,
             )
+            if checkpoint_config.upload_wandb_artifact and run is not None:
+                track_checkpoint_artifact(
+                    run,
+                    checkpoint_dir,
+                    name=checkpoint_config.wandb_artifact_name or checkpoint_dir.name,
+                    artifact_type=checkpoint_config.wandb_artifact_type,
+                )
         if not stream_metrics:
             track_metric_history(
                 run,

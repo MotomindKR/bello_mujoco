@@ -347,6 +347,9 @@ checkpoint_config:
   directory: checkpoints
   name: null
   overwrite: true
+  upload_wandb_artifact: false
+  wandb_artifact_name: null
+  wandb_artifact_type: checkpoint
 ```
 
 If `name` is null, the checkpoint name is:
@@ -580,6 +583,10 @@ action_size
 
 Evaluation reconstructs the env and policy from checkpoint metadata. The
 checkpoint must match the code schema used to restore it.
+
+If `upload_wandb_artifact=true` and W&B is enabled, the final checkpoint
+directory is also logged as a W&B artifact after the local checkpoint save
+completes. `wandb_artifact_name=null` uses the checkpoint directory name.
 
 ## W&B
 

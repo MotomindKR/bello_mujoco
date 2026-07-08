@@ -1,9 +1,16 @@
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax.numpy as jnp
 
-from bello_mujoco.tracking import log_config, metric_update_count, to_builtin
+from bello_mujoco.tracking import (
+    log_config,
+    metric_update_count,
+    to_builtin,
+    track_checkpoint_artifact,
+)
 from bello_mujoco.tracking import track_metric_history
 from bello_mujoco.tracking import track_metric_snapshot
 
@@ -12,10 +19,14 @@ class FakeRun:
     def __init__(self) -> None:
         self.config = FakeConfig()
         self.logged = []
+        self.artifacts = []
         self.finished = False
 
     def log(self, payload, step=None) -> None:
         self.logged.append({"payload": payload, "step": step})
+
+    def log_artifact(self, artifact) -> None:
+        self.artifacts.append(artifact)
 
     def finish(self) -> None:
         self.finished = True
@@ -113,3 +124,38 @@ def test_track_metric_snapshot_logs_specific_update_and_step() -> None:
             "step": 32,
         }
     ]
+
+
+def test_track_checkpoint_artifact_logs_directory(monkeypatch, tmp_path) -> None:
+    artifacts = []
+
+    class FakeArtifact:
+        def __init__(self, *, name, type):
+            self.name = name
+            self.type = type
+            self.dirs = []
+            artifacts.append(self)
+
+        def add_dir(self, path) -> None:
+            self.dirs.append(path)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        SimpleNamespace(Artifact=FakeArtifact),
+    )
+    checkpoint_dir = tmp_path / "checkpoint"
+    checkpoint_dir.mkdir()
+    run = FakeRun()
+
+    track_checkpoint_artifact(
+        run,
+        checkpoint_dir,
+        name="checkpoint-name",
+        artifact_type="model",
+    )
+
+    assert run.artifacts == artifacts
+    assert artifacts[0].name == "checkpoint-name"
+    assert artifacts[0].type == "model"
+    assert artifacts[0].dirs == [str(checkpoint_dir)]

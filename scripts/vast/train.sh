@@ -60,7 +60,7 @@ if [ "$DESTROY_ON_EXIT" -eq 1 ]; then
   VAST_DESTROY_API_KEY="$(vast_api_key)"
   [ -n "$VAST_DESTROY_API_KEY" ] || die "Vast API key is required for default destroy-on-exit; run 'vastai set api-key', export VAST_API_KEY, or pass --keep-instance"
   printf -v VAST_DESTROY_API_KEY_Q '%q' "$VAST_DESTROY_API_KEY"
-  DESTROY_CMD="uvx --from vastai vastai destroy instance '$INSTANCE_ID' -y --api-key $VAST_DESTROY_API_KEY_Q || true"
+  DESTROY_CMD="printf 'y\n' | uvx --from vastai vastai destroy instance '$INSTANCE_ID' --api-key $VAST_DESTROY_API_KEY_Q || true"
 fi
 
 REMOTE_OVERRIDES=(
@@ -68,6 +68,7 @@ REMOTE_OVERRIDES=(
   "wandb_config.project=$WANDB_PROJECT"
   "wandb_config.run_name=$RUN_NAME"
   "checkpoint_config.name=$RUN_NAME"
+  "checkpoint_config.wandb_artifact_name=$RUN_NAME"
   "${OVERRIDES[@]}"
 )
 if [ -n "$WANDB_ENTITY" ]; then

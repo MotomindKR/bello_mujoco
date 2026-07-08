@@ -69,6 +69,9 @@ checkpoint_config:
   directory: checkpoints
   name: null
   overwrite: true
+  upload_wandb_artifact: false
+  wandb_artifact_name: null
+  wandb_artifact_type: checkpoint
 
 wandb_config:
   enabled: false

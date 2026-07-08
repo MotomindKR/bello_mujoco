@@ -139,6 +139,22 @@ def track_video(
     )
 
 
+def track_checkpoint_artifact(
+    run,
+    path: Path,
+    *,
+    name: str,
+    artifact_type: str = "checkpoint",
+) -> None:
+    if run is None:
+        return
+    import wandb
+
+    artifact = wandb.Artifact(name=name, type=artifact_type)
+    artifact.add_dir(str(path))
+    run.log_artifact(artifact)
+
+
 def metric_update_count(metrics: Mapping[str, Any]) -> int:
     for values in metrics.values():
         array = np.asarray(values)

@@ -345,6 +345,9 @@ checkpoint_config.enabled: false
 checkpoint_config.directory: checkpoints
 checkpoint_config.name: null
 checkpoint_config.overwrite: true
+checkpoint_config.upload_wandb_artifact: false
+checkpoint_config.wandb_artifact_name: null
+checkpoint_config.wandb_artifact_type: checkpoint
 
 wandb_config.enabled: false
 wandb_config.project: bello-mujoco
