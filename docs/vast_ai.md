@@ -2,8 +2,7 @@
 
 This workflow launches an RTX 5090 Vast.ai instance, bootstraps the repo with
 `uv`, and runs PPO training with W&B metrics and video logging. It intentionally
-does not use Nix on the remote host and does not upload checkpoints as W&B
-artifacts.
+does not use Nix on the remote host.
 
 ## Prerequisites
 
@@ -46,11 +45,17 @@ Dry-run the launch command:
 scripts/vast/launch.sh --dry-run
 ```
 
-Launch a default RTX 5090 instance:
+Launch a default RTX 5090 instance. The launcher searches offers, prints the
+selected server metadata, and asks for confirmation before renting:
 
 ```bash
-scripts/vast/launch.sh --repo-ref main
+scripts/vast/launch.sh --repo-ref test/vast-short-training
 ```
+
+Use `--yes` only when you intentionally want noninteractive rental. By default,
+the launcher waits until remote setup finishes successfully before printing the
+next training command. Use `--no-wait-setup` to return immediately after setup is
+started in tmux.
 
 Defaults:
 
@@ -71,11 +76,35 @@ The created instance id is stored in `.vast/instance_id`. The remote repo path i
 
 ## Remote Setup
 
-The Vast on-start command installs minimal OS packages, clones the repo, checks
-out the requested ref, and runs:
+The launcher exports the requested local Git ref into a temporary clean tree and
+copies that tree with `vastai copy`:
+
+```text
+git archive <repo-ref> -> local temporary tree
+vastai copy local:<temporary-tree>/ C.<instance-id>:/workspace/bello_mujoco/
+```
+
+This avoids copying `.git`, `.venv`, uv caches, W&B output, checkpoints, or dirty
+working-tree files. It also works for private repositories because the Vast
+instance does not need GitHub credentials.
+
+After the copy completes, setup runs in a remote tmux session named
+`bello-setup` and launch waits for it to finish:
 
 ```bash
 scripts/vast/remote_setup.sh
+```
+
+The setup log is written to:
+
+```text
+/workspace/bello_mujoco/outputs/vast/setup.log
+```
+
+The setup exit code is written to:
+
+```text
+/workspace/bello_mujoco/outputs/vast/setup.status
 ```
 
 Remote setup exports the useful environment from the local flake without using
@@ -95,6 +124,9 @@ uv python install 3.12
 uv sync
 uv run bello-train-ppo dry_run=true config.num_envs=1 config.num_steps=1 config.num_minibatches=1
 ```
+
+If the official `uv` installer stalls on the host, setup falls back to
+`python3 -m pip install uv`.
 
 ## Train
 
@@ -123,7 +155,7 @@ scripts/vast/train.sh -- \
   video_config.enabled=false
 ```
 
-The default config is `configs/train/vast_rtx5090.yaml`. It enables W&B,
+The default smoke config is `configs/train/vast_smoke.yaml`. It enables W&B,
 checkpointing, checkpoint artifact upload, and videos. Checkpoints are written
 locally on the instance under `checkpoints/` and uploaded as a W&B artifact
 after training completes.

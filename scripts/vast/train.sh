@@ -48,6 +48,16 @@ done
 
 INSTANCE_ID=$(instance_id_or_die "$INSTANCE_ID")
 wait_for_ssh "$INSTANCE_ID" 600 || die "SSH is not ready for instance $INSTANCE_ID; check with scripts/vast/status.sh and retry"
+remote_ssh "$INSTANCE_ID" "bash -lc $(printf '%q' "
+set -Eeuo pipefail
+cd '$VAST_REMOTE_DIR' 2>/dev/null || { echo 'repo dir missing: $VAST_REMOTE_DIR' >&2; exit 1; }
+if tmux has-session -t '$VAST_SETUP_SESSION' 2>/dev/null; then
+  echo 'remote setup is still running; monitor with scripts/vast/status.sh' >&2
+  exit 1
+fi
+source scripts/vast/remote_env.sh
+command -v uv >/dev/null || { echo 'uv is not installed; remote setup likely failed' >&2; exit 1; }
+")"
 
 if [ -z "${WANDB_API_KEY:-}" ]; then
   WANDB_API_KEY="$(secret_from_keyring wandb api_key)"

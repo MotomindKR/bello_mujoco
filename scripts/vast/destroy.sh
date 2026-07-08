@@ -30,5 +30,5 @@ if [ "$YES" -ne 1 ]; then
   esac
 fi
 
-vastai_cmd destroy instance "$INSTANCE_ID"
+printf 'y\n' | vastai_cmd destroy instance "$INSTANCE_ID"
 rm -f "$VAST_INSTANCE_FILE"

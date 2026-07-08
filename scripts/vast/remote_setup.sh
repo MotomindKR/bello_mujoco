@@ -26,12 +26,22 @@ if [ "$DRY_RUN" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
     libglib2.0-0 \
     libxrender1 \
     python3 \
+    python3-pip \
     tmux
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  run sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  if [ "$DRY_RUN" -eq 0 ]; then
+    echo "+ timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
+    timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
+  else
+    echo "+ timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
+  fi
   export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  run python3 -m pip install --break-system-packages --upgrade uv
 fi
 
 if [ "$DRY_RUN" -eq 0 ] && ! command -v uv >/dev/null 2>&1; then
