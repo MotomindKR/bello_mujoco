@@ -45,6 +45,22 @@ def test_rtx5090_train_preset_sets_measured_batch_shape() -> None:
     assert config.checkpoint_config.enabled
 
 
+def test_vast_rtx5090_train_preset_enables_remote_logging() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_tool_config("train", "vast_rtx5090"),
+    )
+
+    assert not config.dry_run
+    assert config.config.num_envs == 4096
+    assert config.config.num_steps == 256
+    assert config.wandb_config.enabled
+    assert config.wandb_config.run_name == "vast_rtx5090_seed0"
+    assert config.video_config.enabled
+    assert config.checkpoint_config.enabled
+    assert config.checkpoint_config.name == "vast_rtx5090_seed0"
+
+
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:
     config = structured_config(
         BenchmarkEnvConfig,
