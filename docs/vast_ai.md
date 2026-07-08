@@ -68,7 +68,7 @@ rentable=true
 cpu_ram>=64
 cuda_vers>=13.0
 disk=80GB
-image=nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+image=vastai/base-image:cuda-13.0.3-auto
 ```
 
 The created instance id is stored in `.vast/instance_id`. The remote repo path is
