@@ -57,6 +57,17 @@ secret_from_keyring() {
   keyring_cmd get "$service" "$username" 2>/dev/null || true
 }
 
+vast_api_key() {
+  if [ -n "${VAST_API_KEY:-}" ]; then
+    printf '%s\n' "$VAST_API_KEY"
+    return
+  fi
+  local key_file="${VAST_API_KEY_FILE:-$HOME/.config/vastai/vast_api_key}"
+  if [ -r "$key_file" ]; then
+    tr -d '[:space:]' < "$key_file"
+  fi
+}
+
 instance_id_or_die() {
   local instance_id="${1:-}"
   if [ -n "$instance_id" ]; then

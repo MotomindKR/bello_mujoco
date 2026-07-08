@@ -97,6 +97,17 @@ Start training in a remote `tmux` session:
 scripts/vast/train.sh
 ```
 
+By default, the remote instance destroys itself after the training command exits,
+whether training succeeds or fails. This stops billing but also deletes any
+remote-only checkpoints and logs, so make sure your separate checkpoint upload
+path is enabled before using the default.
+
+Keep the instance after training when debugging:
+
+```bash
+scripts/vast/train.sh --keep-instance
+```
+
 Pass Hydra overrides after `--`:
 
 ```bash
@@ -115,6 +126,11 @@ The training command exports:
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false
 ```
+
+Default self-destruction requires a Vast API key on the local machine so the
+script can pass it into the remote tmux command. The script uses `VAST_API_KEY`
+when set, otherwise it reads the key written by `vastai set api-key`. Use
+`--keep-instance` when you do not want that behavior.
 
 ## Monitor
 

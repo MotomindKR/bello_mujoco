@@ -10,6 +10,7 @@ Usage: scripts/vast/train.sh [options] [-- HYDRA_OVERRIDES...]
 
 Start PPO training on the Vast instance inside tmux.
 If WANDB_API_KEY is unset, the script tries `keyring get wandb api_key`.
+By default, the instance destroys itself after the training command exits.
 
 Options:
   --instance-id ID      Vast instance id. Defaults to .vast/instance_id.
@@ -17,6 +18,7 @@ Options:
   --session NAME        tmux session. Default: bello-train.
   --repo-dir PATH       Remote repo dir. Default: /workspace/bello_mujoco.
   --run-name NAME       W&B/checkpoint run name override.
+  --keep-instance       Do not destroy the Vast instance when training exits.
   --help                Show this help.
 
 Examples:
@@ -27,6 +29,7 @@ EOF
 
 INSTANCE_ID=""
 RUN_NAME=""
+DESTROY_ON_EXIT=1
 OVERRIDES=()
 
 while [ $# -gt 0 ]; do
@@ -36,6 +39,7 @@ while [ $# -gt 0 ]; do
     --session) VAST_TMUX_SESSION="$2"; shift 2 ;;
     --repo-dir) VAST_REMOTE_DIR="$2"; shift 2 ;;
     --run-name) RUN_NAME="$2"; shift 2 ;;
+    --keep-instance) DESTROY_ON_EXIT=0; shift ;;
     --help|-h) usage; exit 0 ;;
     --) shift; OVERRIDES=("$@"); break ;;
     *) OVERRIDES+=("$1"); shift ;;
@@ -51,6 +55,13 @@ fi
 WANDB_PROJECT="${WANDB_PROJECT:-bello-mujoco}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 RUN_NAME="${RUN_NAME:-vast_rtx5090_seed0}"
+DESTROY_CMD=":"
+if [ "$DESTROY_ON_EXIT" -eq 1 ]; then
+  VAST_DESTROY_API_KEY="$(vast_api_key)"
+  [ -n "$VAST_DESTROY_API_KEY" ] || die "Vast API key is required for default destroy-on-exit; run 'vastai set api-key', export VAST_API_KEY, or pass --keep-instance"
+  printf -v VAST_DESTROY_API_KEY_Q '%q' "$VAST_DESTROY_API_KEY"
+  DESTROY_CMD="uvx --from vastai vastai destroy instance '$INSTANCE_ID' -y --api-key $VAST_DESTROY_API_KEY_Q || true"
+fi
 
 REMOTE_OVERRIDES=(
   "wandb_config.enabled=true"
@@ -77,7 +88,12 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export WANDB_API_KEY="$WANDB_API_KEY"
 export WANDB_PROJECT="$WANDB_PROJECT"
 export WANDB_ENTITY="$WANDB_ENTITY"
+set +e
 uv run bello-train-ppo --config-name "$VAST_TRAIN_CONFIG" $OVERRIDE_TEXT 2>&1 | tee "outputs/vast/$RUN_NAME.log"
+train_status=\${PIPESTATUS[0]}
+set -e
+$DESTROY_CMD
+exit "\$train_status"
 '"'"''
 tmux ls
 EOF
@@ -87,6 +103,7 @@ remote_ssh "$INSTANCE_ID" "bash -lc $(printf '%q' "$REMOTE_CMD")"
 
 cat <<EOF
 Training started in tmux session '$VAST_TMUX_SESSION' on instance $INSTANCE_ID.
+Destroy on exit: $DESTROY_ON_EXIT
 
 Monitor:
   scripts/vast/status.sh
