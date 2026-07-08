@@ -41,6 +41,8 @@ from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 class BelloState:
     data: mjx.Data
     last_action: jax.Array
+    foot_air_time: jax.Array
+    last_foot_contact: jax.Array
     command: jax.Array
     step_count: jax.Array
     episode_return: jax.Array
@@ -104,6 +106,7 @@ class ObservationConfig:
     joint_mode: Literal["all_actuated", "policy"] = "all_actuated"
     base_ang_vel: bool = True
     projected_gravity: bool = True
+    gait_phase: bool = False
     command: bool = True
     joint_pos: bool = True
     joint_vel: bool = True
@@ -117,6 +120,14 @@ class SpawnConfig:
 
 
 @dataclass(frozen=True)
+class GaitConfig:
+    cycle_time: float = 0.80
+    duty_factor: float = 0.55
+    phase_offsets: tuple[float, float] = (0.0, 0.5)
+    standing_command_threshold: float = 0.05
+
+
+@dataclass(frozen=True)
 class BelloEnvConfig:
     """Runtime environment settings that affect stepping and model loading."""
 
@@ -124,6 +135,7 @@ class BelloEnvConfig:
     max_episode_steps: int = MAX_EPISODE_STEPS
     terrain: TerrainConfig = FLAT_TERRAIN
     spawn: SpawnConfig = SpawnConfig()
+    gait: GaitConfig = GaitConfig()
     observation: ObservationConfig = ObservationConfig()
 
 
@@ -164,6 +176,36 @@ class BelloLocomotionEnv:
             raise ValueError(
                 "observation.joint_mode must be 'all_actuated' or 'policy', got "
                 f"{self.config.observation.joint_mode!r}"
+            )
+        if (
+            not math.isfinite(self.config.gait.cycle_time)
+            or self.config.gait.cycle_time <= 0
+        ):
+            raise ValueError(
+                f"gait.cycle_time must be positive, got {self.config.gait.cycle_time}"
+            )
+        if not 0.0 <= self.config.gait.duty_factor <= 1.0:
+            raise ValueError(
+                "gait.duty_factor must be in [0, 1], got "
+                f"{self.config.gait.duty_factor}"
+            )
+        if len(self.config.gait.phase_offsets) != 2:
+            raise ValueError(
+                "gait.phase_offsets must have two values, got "
+                f"{self.config.gait.phase_offsets}"
+            )
+        if not all(math.isfinite(offset) for offset in self.config.gait.phase_offsets):
+            raise ValueError(
+                "gait.phase_offsets must be finite, got "
+                f"{self.config.gait.phase_offsets}"
+            )
+        if (
+            not math.isfinite(self.config.gait.standing_command_threshold)
+            or self.config.gait.standing_command_threshold < 0
+        ):
+            raise ValueError(
+                "gait.standing_command_threshold must be nonnegative, got "
+                f"{self.config.gait.standing_command_threshold}"
             )
         validate_reward_config(self.reward_config)
         if self.done_config.base_height.enabled and not math.isfinite(
@@ -265,6 +307,7 @@ class BelloLocomotionEnv:
         return (
             (3 if observation.base_ang_vel else 0)
             + (3 if observation.projected_gravity else 0)
+            + (2 if observation.gait_phase else 0)
             + self.command_observation_size
             + (self.observed_joint_count if observation.joint_pos else 0)
             + (self.observed_joint_count if observation.joint_vel else 0)
@@ -397,6 +440,8 @@ class BelloLocomotionEnv:
         state = BelloState(
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
+            foot_air_time=jnp.zeros(self.model.foot_body_ids.size, dtype=jnp.float32),
+            last_foot_contact=jnp.ones(self.model.foot_body_ids.size, dtype=bool),
             command=command,
             step_count=jnp.asarray(0, dtype=jnp.int32),
             episode_return=jnp.asarray(0.0, dtype=jnp.float32),
@@ -430,6 +475,8 @@ class BelloLocomotionEnv:
         next_state = BelloState(
             data=data,
             last_action=action,
+            foot_air_time=state.foot_air_time,
+            last_foot_contact=state.last_foot_contact,
             command=state.command,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
@@ -439,12 +486,29 @@ class BelloLocomotionEnv:
         )
         done_flags = self._done_flags(next_state)
         done = done_flags["done/any"]
-        reward, reward_info = self._reward(state, next_state, action, done, 0)
+        foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
+            self._contact_terms(next_state, 0)
+        )
+        reward, reward_info = self._reward(
+            state,
+            next_state,
+            action,
+            done,
+            foot_contact,
+            foot_height,
+            foot_lateral_speed_sq,
+            undesired_contact,
+        )
         episode_return = state.episode_return + reward
         episode_length = state.episode_length + 1
+        foot_air_time, last_foot_contact = self._next_foot_memory(
+            state, foot_contact, done
+        )
         next_state = BelloState(
             data=next_state.data,
             last_action=next_state.last_action,
+            foot_air_time=foot_air_time,
+            last_foot_contact=last_foot_contact,
             command=next_state.command,
             step_count=next_state.step_count,
             episode_return=episode_return,
@@ -490,6 +554,8 @@ class BelloLocomotionEnv:
         stepped_state = BelloState(
             data=data,
             last_action=action,
+            foot_air_time=state.foot_air_time,
+            last_foot_contact=state.last_foot_contact,
             command=state.command,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
@@ -500,14 +566,29 @@ class BelloLocomotionEnv:
         done_flags = jax.vmap(self._done_flags)(stepped_state)
         done = done_flags["done/any"]
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
+        foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = jax.vmap(
+            self._contact_terms
+        )(stepped_state, world_ids)
         reward, reward_info = jax.vmap(self._reward)(
-            state, stepped_state, action, done, world_ids
+            state,
+            stepped_state,
+            action,
+            done,
+            foot_contact,
+            foot_height,
+            foot_lateral_speed_sq,
+            undesired_contact,
         )
         episode_return = state.episode_return + reward
         episode_length = state.episode_length + 1
+        foot_air_time, last_foot_contact = jax.vmap(self._next_foot_memory)(
+            state, foot_contact, done
+        )
         stepped_state = BelloState(
             data=stepped_state.data,
             last_action=stepped_state.last_action,
+            foot_air_time=foot_air_time,
+            last_foot_contact=last_foot_contact,
             command=self._maybe_resample_batch_command(
                 stepped_state, done, resample_rng
             ),
@@ -546,6 +627,7 @@ class BelloLocomotionEnv:
         (
             base_ang_vel,
             projected_gravity,
+            gait_phase,
             command,
             joint_pos,
             joint_vel,
@@ -558,6 +640,8 @@ class BelloLocomotionEnv:
             parts.append(base_ang_vel)
         if observation.projected_gravity:
             parts.append(projected_gravity)
+        if observation.gait_phase:
+            parts.append(gait_phase)
         if observation.command and self.command_config.enabled:
             parts.append(command)
         if observation.joint_pos:
@@ -657,9 +741,11 @@ class BelloLocomotionEnv:
         projected_gravity = quat_rotate_inverse(
             quat, jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32)
         )
+        gait_phase = self._gait_phase_sin_cos(state)
         return (
             base_ang_vel,
             projected_gravity,
+            gait_phase,
             state.command,
             joint_pos,
             joint_vel,
@@ -778,14 +864,14 @@ class BelloLocomotionEnv:
         next_state: BelloState,
         action: jax.Array,
         done: jax.Array,
-        world_id: jax.Array,
+        foot_contact: jax.Array,
+        foot_height: jax.Array,
+        foot_lateral_speed_sq: jax.Array,
+        undesired_contact: jax.Array,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
-        _, _, command, _, _, _, _ = self._frame_terms(next_state)
+        _, _, _, command, _, _, _, _ = self._frame_terms(next_state)
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
         joint_pos_rel, joint_vel = self._all_actuator_joint_terms(next_state)
-        foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
-            self._contact_terms(next_state, world_id)
-        )
         lin_vel_xy = self._link_lin_vel(
             next_state, self._reward_link(self.reward_config.track_lin_vel_xy)
         )[:2]
@@ -825,8 +911,53 @@ class BelloLocomotionEnv:
             foot_contact=foot_contact,
             foot_height=foot_height,
             foot_lateral_speed_sq=foot_lateral_speed_sq,
+            gait_contact_mask=self._gait_contact_mask(next_state),
+            foot_air_time=state.foot_air_time,
+            last_foot_contact=state.last_foot_contact,
             undesired_contact=undesired_contact,
+            control_timestep=self.control_timestep,
             done=done,
+        )
+
+    def _gait_phase(self, state: BelloState) -> jax.Array:
+        phase = (
+            state.step_count.astype(jnp.float32)
+            * self.control_timestep
+            / self.config.gait.cycle_time
+        )
+        return jnp.mod(phase, 1.0)
+
+    def _gait_phase_sin_cos(self, state: BelloState) -> jax.Array:
+        angle = 2.0 * jnp.pi * self._gait_phase(state)
+        return jnp.stack([jnp.sin(angle), jnp.cos(angle)]).astype(jnp.float32)
+
+    def _gait_contact_mask(self, state: BelloState) -> jax.Array:
+        foot_count = self.model.foot_body_ids.size
+        phase_offsets = jnp.asarray(self.config.gait.phase_offsets, dtype=jnp.float32)[
+            :foot_count
+        ]
+        phase = jnp.mod(self._gait_phase(state) + phase_offsets, 1.0)
+        scheduled = phase < self.config.gait.duty_factor
+        standing = (
+            jnp.linalg.norm(state.command)
+            <= self.config.gait.standing_command_threshold
+        )
+        return jnp.where(standing, jnp.ones_like(scheduled), scheduled)
+
+    def _next_foot_memory(
+        self, state: BelloState, foot_contact: jax.Array, done: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+        contact = foot_contact.astype(bool)
+        next_air_time = jnp.where(
+            contact,
+            jnp.zeros_like(state.foot_air_time),
+            state.foot_air_time + self.control_timestep,
+        )
+        reset_air_time = jnp.zeros_like(next_air_time)
+        reset_contact = jnp.ones_like(contact)
+        return (
+            jnp.where(done, reset_air_time, next_air_time),
+            jnp.where(done, reset_contact, contact),
         )
 
     def _reward_link(self, term) -> str:

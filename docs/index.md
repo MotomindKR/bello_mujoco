@@ -172,7 +172,9 @@ last_action[35]
 `ObservationConfig` controls component inclusion. `joint_mode=policy` makes
 joint position, joint velocity, and actuator force observations use only policy
 actuator indices. Command observation is present only when both
-`ObservationConfig.command` and `CommandConfig.enabled` are true.
+`ObservationConfig.command` and `CommandConfig.enabled` are true. The training
+default YAML enables `ObservationConfig.gait_phase`, adding `[sin(phase),
+cos(phase)]` and raising the default full-body training observation size to 151.
 
 Commands are `[lin_vel_x, lin_vel_y, yaw_vel]`. With command generation enabled,
 `step_batch(..., rng=key)` periodically resamples according to
@@ -197,6 +199,8 @@ hold_joint_deviation
 foot_contact
 foot_slip
 foot_clearance
+gait_contact
+feet_air_time
 undesired_contact
 termination
 ```
@@ -225,6 +229,7 @@ ActuatorConfig
 BelloEnvConfig
 ObservationConfig
 TerrainConfig
+GaitConfig
 CommandConfig
 RewardConfig
 DoneConfig
@@ -255,6 +260,10 @@ BelloEnvConfig:
   decimation: 10
   max_episode_steps: 1000
   terrain.mode: plane
+  gait.cycle_time: 0.80
+  gait.duty_factor: 0.55
+  gait.phase_offsets: [0.0, 0.5]
+  gait.standing_command_threshold: 0.05
 
 WarpConfig:
   contact_budget_per_env: 32

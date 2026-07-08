@@ -24,6 +24,9 @@ def test_train_hydra_default_converts_to_training_config() -> None:
     assert config.config.num_envs == 64
     assert config.env_config.terrain.mode == "plane"
     assert config.env_config.spawn.clearance == 0.01
+    assert config.env_config.gait.cycle_time == 0.8
+    assert config.env_config.gait.duty_factor == 0.55
+    assert config.env_config.observation.gait_phase
     assert config.metric_config.stream_updates
 
 
