@@ -62,9 +62,23 @@ vast_api_key() {
     printf '%s\n' "$VAST_API_KEY"
     return
   fi
+  local keyring_key
+  keyring_key="$(secret_from_keyring vast api_key)"
+  if [ -n "$keyring_key" ]; then
+    printf '%s\n' "$keyring_key"
+    return
+  fi
   local key_file="${VAST_API_KEY_FILE:-$HOME/.config/vastai/vast_api_key}"
   if [ -r "$key_file" ]; then
     tr -d '[:space:]' < "$key_file"
+  fi
+}
+
+hydrate_vast_cli_key() {
+  local key
+  key="$(vast_api_key)"
+  if [ -n "$key" ]; then
+    vastai_cmd set api-key "$key" >/dev/null
   fi
 }
 

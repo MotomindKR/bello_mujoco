@@ -22,6 +22,7 @@ while [ $# -gt 0 ]; do
 done
 
 INSTANCE_ID=$(instance_id_or_die "$INSTANCE_ID")
+hydrate_vast_cli_key
 
 info "Vast instance:"
 vastai_cmd show instance "$INSTANCE_ID" || true

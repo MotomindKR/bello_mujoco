@@ -20,6 +20,7 @@ while [ $# -gt 0 ]; do
 done
 
 INSTANCE_ID=$(instance_id_or_die "$INSTANCE_ID")
+hydrate_vast_cli_key
 
 if [ "$YES" -ne 1 ]; then
   read -r -p "Destroy Vast instance $INSTANCE_ID and remove all remote data? [y/N] " answer

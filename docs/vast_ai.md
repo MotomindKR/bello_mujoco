@@ -15,6 +15,13 @@ vastai set api-key <VAST_API_KEY>
 vastai create ssh-key ~/.ssh/id_ed25519.pub
 ```
 
+The Vast scripts also accept a local keyring entry instead of a preconfigured
+CLI key file:
+
+```bash
+keyring set vast api_key
+```
+
 Training uses W&B:
 
 ```bash
@@ -129,8 +136,8 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 Default self-destruction requires a Vast API key on the local machine so the
 script can pass it into the remote tmux command. The script uses `VAST_API_KEY`
-when set, otherwise it reads the key written by `vastai set api-key`. Use
-`--keep-instance` when you do not want that behavior.
+when set, otherwise `keyring get vast api_key`, otherwise the key written by
+`vastai set api-key`. Use `--keep-instance` when you do not want that behavior.
 
 ## Monitor
 

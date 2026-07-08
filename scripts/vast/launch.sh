@@ -79,9 +79,7 @@ EOF
   exit 0
 fi
 
-if [ -n "${VAST_API_KEY:-}" ]; then
-  vastai_cmd set api-key "$VAST_API_KEY" >/dev/null
-fi
+hydrate_vast_cli_key
 
 if [ -z "$OFFER_ID" ]; then
   info "searching Vast offers: $QUERY"
