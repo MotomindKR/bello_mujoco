@@ -238,6 +238,7 @@ download_github_ref_to_instance() {
   local remote_dir="$4"
   local token repo_slug tarball_url exported_at
   local remote_dir_q tarball_url_q repo_url_q repo_ref_q repo_slug_q exported_at_q run_cmd
+  local source_file_q setup_file_q expected_ref_q expected_slug_q expected_transport_q expected_exported_at_q
 
   token="$(github_token)"
   [ -n "$token" ] || die "GitHub token is required for remote source download"
@@ -302,9 +303,18 @@ tar -xzf "$archive" --strip-components=1 -C "$remote_dir"
 REMOTE
 
   run_cmd="status=0; bash /tmp/bello_github_fetch.sh $remote_dir_q $tarball_url_q $repo_url_q $repo_ref_q $repo_slug_q $exported_at_q || status=\$?; rm -f /tmp/bello_github_fetch.sh; exit \$status"
-  printf '%s\n' "$token" | remote_ssh "$instance_id" "bash -lc $(printf '%q' "$run_cmd")"
+  if ! printf '%s\n' "$token" | remote_ssh "$instance_id" "bash -lc $(printf '%q' "$run_cmd")"; then
+    info "source download SSH command ended without a clean exit; verifying remote source"
+  fi
 
-  remote_ssh "$instance_id" "test -f $(printf '%q' "$remote_dir/scripts/vast/remote_setup.sh")" ||
+  printf -v source_file_q '%q' "$remote_dir/.vast_source"
+  printf -v setup_file_q '%q' "$remote_dir/scripts/vast/remote_setup.sh"
+  printf -v expected_ref_q '%q' "repo_ref=$repo_ref"
+  printf -v expected_slug_q '%q' "repo_slug=$repo_slug"
+  printf -v expected_transport_q '%q' "source_transport=github_tarball_https"
+  printf -v expected_exported_at_q '%q' "exported_at=$exported_at"
+
+  remote_ssh "$instance_id" "set -Eeuo pipefail; test -f $setup_file_q; grep -Fx -- $expected_ref_q $source_file_q >/dev/null; grep -Fx -- $expected_slug_q $source_file_q >/dev/null; grep -Fx -- $expected_transport_q $source_file_q >/dev/null; grep -Fx -- $expected_exported_at_q $source_file_q >/dev/null" ||
     die "GitHub source download did not produce $remote_dir/scripts/vast/remote_setup.sh"
 }
 
