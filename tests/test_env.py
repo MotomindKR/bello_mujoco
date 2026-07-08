@@ -24,6 +24,8 @@ from bello_mujoco.envs.rewards import (
     FootClearanceRewardConfig,
     FootContactRewardConfig,
     FootSlipRewardConfig,
+    FeetAirTimeRewardConfig,
+    GaitContactRewardConfig,
     LinVelZRewardConfig,
     RewardConfig,
     TrackAngVelZRewardConfig,
@@ -48,6 +50,8 @@ def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
     )
     assert obs.shape == (env.observation_size,)
     assert state.last_action.shape == (env.action_size,)
+    assert state.foot_air_time.shape == (2,)
+    assert state.last_foot_contact.shape == (2,)
     assert int(state.step_count) == 0
 
 
@@ -276,6 +280,31 @@ def test_observation_config_can_select_components(
     assert obs.shape == (env.observation_size,)
 
 
+def test_observation_config_can_include_gait_phase(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            observation=ObservationConfig(
+                base_ang_vel=False,
+                projected_gravity=False,
+                gait_phase=True,
+                command=False,
+                joint_pos=False,
+                joint_vel=False,
+                actuator_force=False,
+                last_action=False,
+            ),
+        ),
+    )
+    _, obs = env.reset()
+
+    assert env.observation_size == 2
+    assert obs.shape == (2,)
+    assert jnp.allclose(obs, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
+
+
 def test_observation_config_actuator_force_follows_joint_mode(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -491,4 +520,6 @@ def upper_body_reward_config() -> RewardConfig:
         foot_contact=FootContactRewardConfig(enabled=False),
         foot_slip=FootSlipRewardConfig(enabled=False),
         foot_clearance=FootClearanceRewardConfig(enabled=False),
+        gait_contact=GaitContactRewardConfig(enabled=False),
+        feet_air_time=FeetAirTimeRewardConfig(enabled=False),
     )

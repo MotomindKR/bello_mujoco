@@ -3,9 +3,11 @@ import pytest
 
 from bello_mujoco.envs.rewards import (
     CommandConfig,
+    FeetAirTimeRewardConfig,
     FootClearanceRewardConfig,
     FootContactRewardConfig,
     FootSlipRewardConfig,
+    GaitContactRewardConfig,
     RewardConfig,
     TerminationRewardConfig,
     TrackLinVelXYRewardConfig,
@@ -36,7 +38,11 @@ def test_velocity_reward_prefers_matching_command() -> None:
         "foot_contact": jnp.asarray([1.0, 1.0], dtype=jnp.float32),
         "foot_height": jnp.asarray([0.0, 0.0], dtype=jnp.float32),
         "foot_lateral_speed_sq": jnp.zeros(2, dtype=jnp.float32),
+        "gait_contact_mask": jnp.asarray([True, True]),
+        "foot_air_time": jnp.zeros(2, dtype=jnp.float32),
+        "last_foot_contact": jnp.asarray([True, True]),
         "undesired_contact": jnp.asarray(0.0, dtype=jnp.float32),
+        "control_timestep": 0.02,
         "done": jnp.asarray(False),
     }
 
@@ -85,7 +91,11 @@ def test_velocity_reward_penalizes_termination() -> None:
         "foot_contact": jnp.asarray([1.0, 1.0], dtype=jnp.float32),
         "foot_height": jnp.asarray([0.0, 0.0], dtype=jnp.float32),
         "foot_lateral_speed_sq": jnp.zeros(2, dtype=jnp.float32),
+        "gait_contact_mask": jnp.asarray([True, True]),
+        "foot_air_time": jnp.zeros(2, dtype=jnp.float32),
+        "last_foot_contact": jnp.asarray([True, True]),
         "undesired_contact": jnp.asarray(0.0, dtype=jnp.float32),
+        "control_timestep": 0.02,
     }
 
     alive_reward, _ = compute_velocity_reward(done=jnp.asarray(False), **common)
@@ -122,6 +132,10 @@ def test_contact_rewards_penalize_slip_and_undesired_contacts() -> None:
         "hold_joint_indices": jnp.asarray([], dtype=jnp.int32),
         "foot_contact": jnp.asarray([1.0, 0.0], dtype=jnp.float32),
         "foot_height": jnp.asarray([0.0, 0.2], dtype=jnp.float32),
+        "gait_contact_mask": jnp.asarray([True, False]),
+        "foot_air_time": jnp.zeros(2, dtype=jnp.float32),
+        "last_foot_contact": jnp.asarray([True, True]),
+        "control_timestep": 0.02,
         "done": jnp.asarray(False),
     }
 
@@ -168,9 +182,96 @@ def test_reward_terms_can_be_disabled_individually() -> None:
         foot_contact=jnp.asarray([1.0, 0.0], dtype=jnp.float32),
         foot_height=jnp.zeros(2, dtype=jnp.float32),
         foot_lateral_speed_sq=jnp.asarray([5.0, 0.0], dtype=jnp.float32),
+        gait_contact_mask=jnp.asarray([True, False]),
+        foot_air_time=jnp.zeros(2, dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([True, True]),
         undesired_contact=jnp.asarray(0.0, dtype=jnp.float32),
+        control_timestep=0.02,
         done=jnp.asarray(True),
     )
 
     assert terms["reward/foot_slip"] == 0.0
     assert terms["reward/termination"] == 0.0
+
+
+def test_gait_contact_penalizes_mismatched_contact_schedule() -> None:
+    config = RewardConfig(
+        gait_contact=GaitContactRewardConfig(weight=-1.0),
+        foot_contact=FootContactRewardConfig(weight=0.0),
+        foot_slip=FootSlipRewardConfig(weight=0.0),
+        foot_clearance=FootClearanceRewardConfig(weight=0.0),
+        feet_air_time=FeetAirTimeRewardConfig(weight=0.0),
+    )
+
+    _, terms = compute_velocity_reward(
+        config=config,
+        command=jnp.asarray([0.2, 0.0, 0.0], dtype=jnp.float32),
+        lin_vel_xy=jnp.zeros(2, dtype=jnp.float32),
+        yaw_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
+        lin_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
+        ang_vel_xy=jnp.zeros(2, dtype=jnp.float32),
+        projected_gravity=jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
+        base_height=jnp.asarray(config.base_height.target, dtype=jnp.float32),
+        joint_pos=jnp.zeros(2, dtype=jnp.float32),
+        joint_pos_rel=jnp.zeros(2, dtype=jnp.float32),
+        joint_vel=jnp.zeros(2, dtype=jnp.float32),
+        action=jnp.zeros(2, dtype=jnp.float32),
+        last_action=jnp.zeros(2, dtype=jnp.float32),
+        actuator_force=jnp.zeros(2, dtype=jnp.float32),
+        joint_limit_low=-jnp.ones(2, dtype=jnp.float32),
+        joint_limit_high=jnp.ones(2, dtype=jnp.float32),
+        hold_joint_indices=jnp.asarray([], dtype=jnp.int32),
+        foot_contact=jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        foot_height=jnp.zeros(2, dtype=jnp.float32),
+        foot_lateral_speed_sq=jnp.zeros(2, dtype=jnp.float32),
+        gait_contact_mask=jnp.asarray([True, False]),
+        foot_air_time=jnp.zeros(2, dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([True, True]),
+        undesired_contact=jnp.asarray(0.0, dtype=jnp.float32),
+        control_timestep=0.02,
+        done=jnp.asarray(False),
+    )
+
+    assert terms["reward/gait_contact"] == -1.0
+
+
+def test_feet_air_time_rewards_first_contact_after_swing() -> None:
+    config = RewardConfig(
+        feet_air_time=FeetAirTimeRewardConfig(
+            weight=1.0,
+            min_air_time=0.2,
+            max_air_time=0.6,
+            command_speed_threshold=0.05,
+        )
+    )
+
+    _, terms = compute_velocity_reward(
+        config=config,
+        command=jnp.asarray([0.2, 0.0, 0.0], dtype=jnp.float32),
+        lin_vel_xy=jnp.zeros(2, dtype=jnp.float32),
+        yaw_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
+        lin_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
+        ang_vel_xy=jnp.zeros(2, dtype=jnp.float32),
+        projected_gravity=jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
+        base_height=jnp.asarray(config.base_height.target, dtype=jnp.float32),
+        joint_pos=jnp.zeros(2, dtype=jnp.float32),
+        joint_pos_rel=jnp.zeros(2, dtype=jnp.float32),
+        joint_vel=jnp.zeros(2, dtype=jnp.float32),
+        action=jnp.zeros(2, dtype=jnp.float32),
+        last_action=jnp.zeros(2, dtype=jnp.float32),
+        actuator_force=jnp.zeros(2, dtype=jnp.float32),
+        joint_limit_low=-jnp.ones(2, dtype=jnp.float32),
+        joint_limit_high=jnp.ones(2, dtype=jnp.float32),
+        hold_joint_indices=jnp.asarray([], dtype=jnp.int32),
+        foot_contact=jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        foot_height=jnp.zeros(2, dtype=jnp.float32),
+        foot_lateral_speed_sq=jnp.zeros(2, dtype=jnp.float32),
+        gait_contact_mask=jnp.asarray([True, False]),
+        foot_air_time=jnp.asarray([0.28, 0.0], dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([False, False]),
+        undesired_contact=jnp.asarray(0.0, dtype=jnp.float32),
+        control_timestep=0.02,
+        done=jnp.asarray(False),
+    )
+
+    assert terms["reward/feet_air_time"] > 0.0

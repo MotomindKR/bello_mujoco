@@ -144,6 +144,18 @@ class FootClearanceRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class GaitContactRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
+class FeetAirTimeRewardConfig(WeightedRewardConfig):
+    min_air_time: float = 0.20
+    max_air_time: float = 0.60
+    command_speed_threshold: float = 0.05
+
+
+@dataclass(frozen=True)
 class UndesiredContactRewardConfig(WeightedRewardConfig):
     pass
 
@@ -176,6 +188,8 @@ class RewardConfig:
     foot_contact: FootContactRewardConfig = FootContactRewardConfig(weight=0.05)
     foot_slip: FootSlipRewardConfig = FootSlipRewardConfig(weight=-0.2)
     foot_clearance: FootClearanceRewardConfig = FootClearanceRewardConfig(weight=-2.0)
+    gait_contact: GaitContactRewardConfig = GaitContactRewardConfig(weight=-0.1)
+    feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(weight=0.2)
     undesired_contact: UndesiredContactRewardConfig = UndesiredContactRewardConfig(
         weight=-1.0
     )
@@ -190,6 +204,8 @@ class RewardConfig:
             self.foot_contact.enabled
             or self.foot_slip.enabled
             or self.foot_clearance.enabled
+            or self.gait_contact.enabled
+            or self.feet_air_time.enabled
         )
 
     @property
@@ -233,7 +249,11 @@ def compute_velocity_reward(
     foot_contact: jax.Array,
     foot_height: jax.Array,
     foot_lateral_speed_sq: jax.Array,
+    gait_contact_mask: jax.Array,
+    foot_air_time: jax.Array,
+    last_foot_contact: jax.Array,
     undesired_contact: jax.Array,
+    control_timestep: float,
     done: jax.Array,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
@@ -265,6 +285,24 @@ def compute_velocity_reward(
     swing = 1.0 - foot_contact
     foot_clearance = safe_mean(
         swing * jnp.maximum(config.foot_clearance.target - foot_height, 0.0) ** 2
+    )
+    gait_contact = safe_mean(
+        (foot_contact - gait_contact_mask.astype(jnp.float32)) ** 2
+    )
+    first_contact = foot_contact.astype(bool) & ~last_foot_contact.astype(bool)
+    completed_air_time = foot_air_time + control_timestep
+    max_bonus = config.feet_air_time.max_air_time - config.feet_air_time.min_air_time
+    air_time_bonus = jnp.clip(
+        completed_air_time - config.feet_air_time.min_air_time,
+        0.0,
+        max_bonus,
+    )
+    command_speed = jnp.linalg.norm(command)
+    feet_air_time = safe_mean(first_contact.astype(jnp.float32) * air_time_bonus)
+    feet_air_time = jnp.where(
+        command_speed > config.feet_air_time.command_speed_threshold,
+        feet_air_time,
+        jnp.asarray(0.0, dtype=jnp.float32),
     )
     termination = done.astype(jnp.float32)
 
@@ -328,6 +366,16 @@ def compute_velocity_reward(
             config.foot_clearance.weight,
             foot_clearance,
         ),
+        "reward/gait_contact": weighted_term(
+            config.gait_contact.enabled,
+            config.gait_contact.weight,
+            gait_contact,
+        ),
+        "reward/feet_air_time": weighted_term(
+            config.feet_air_time.enabled,
+            config.feet_air_time.weight,
+            feet_air_time,
+        ),
         "reward/undesired_contact": (
             weighted_term(
                 config.undesired_contact.enabled,
@@ -377,6 +425,32 @@ def validate_reward_config(config: RewardConfig) -> None:
     for name, term in reward_terms(config).items():
         if not math.isfinite(term.weight):
             raise ValueError(f"{name}.weight must be finite, got {term.weight}")
+    if config.feet_air_time.enabled:
+        if (
+            not math.isfinite(config.feet_air_time.min_air_time)
+            or config.feet_air_time.min_air_time < 0
+        ):
+            raise ValueError(
+                "feet_air_time.min_air_time must be nonnegative and finite, got "
+                f"{config.feet_air_time.min_air_time}"
+            )
+        if (
+            not math.isfinite(config.feet_air_time.max_air_time)
+            or config.feet_air_time.max_air_time <= config.feet_air_time.min_air_time
+        ):
+            raise ValueError(
+                "feet_air_time.max_air_time must be finite and greater than "
+                "min_air_time, got "
+                f"{config.feet_air_time.max_air_time}"
+            )
+        if (
+            not math.isfinite(config.feet_air_time.command_speed_threshold)
+            or config.feet_air_time.command_speed_threshold < 0
+        ):
+            raise ValueError(
+                "feet_air_time.command_speed_threshold must be nonnegative and "
+                f"finite, got {config.feet_air_time.command_speed_threshold}"
+            )
 
 
 def reward_terms(config: RewardConfig):
@@ -396,6 +470,8 @@ def reward_terms(config: RewardConfig):
         "foot_contact": config.foot_contact,
         "foot_slip": config.foot_slip,
         "foot_clearance": config.foot_clearance,
+        "gait_contact": config.gait_contact,
+        "feet_air_time": config.feet_air_time,
         "undesired_contact": config.undesired_contact,
         "termination": config.termination,
     }

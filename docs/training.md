@@ -169,10 +169,16 @@ env_config:
     hfield_amplitude: 0.04
     hfield_base_thickness: 0.01
     hfield_frequency: 2.5
+  gait:
+    cycle_time: 0.80
+    duty_factor: 0.55
+    phase_offsets: [0.0, 0.5]
+    standing_command_threshold: 0.05
   observation:
     joint_mode: all_actuated  # all_actuated | policy
     base_ang_vel: true
     projected_gravity: true
+    gait_phase: true
     command: true
     joint_pos: true
     joint_vel: true
@@ -183,6 +189,13 @@ env_config:
 `joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`. The command
 observation is emitted only when both `env_config.observation.command` and
 `command_config.enabled` are true.
+
+`gait` defines a deterministic two-foot contact schedule. `cycle_time` is the
+period in seconds, `duty_factor` is the stance fraction of each period,
+`phase_offsets` are per-foot phase offsets, and
+`standing_command_threshold` forces all feet scheduled in contact when command
+speed is near zero. `observation.gait_phase=true` appends `[sin(phase),
+cos(phase)]` to the policy observation.
 
 ### CommandConfig
 
@@ -261,6 +274,15 @@ reward_config:
     enabled: true
     weight: -2.0
     target: 0.08
+  gait_contact:
+    enabled: true
+    weight: -0.1
+  feet_air_time:
+    enabled: true
+    weight: 0.2
+    min_air_time: 0.20
+    max_air_time: 0.60
+    command_speed_threshold: 0.05
   undesired_contact:
     enabled: true
     weight: -1.0
@@ -269,9 +291,14 @@ reward_config:
     weight: -1.0
 ```
 
-Foot-dependent terms are `foot_contact`, `foot_slip`, and `foot_clearance`.
-Terrain-contact metadata is required for those terms and for `undesired_contact`
-when terrain is enabled.
+Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
+`gait_contact`, and `feet_air_time`. Terrain-contact metadata is required for
+those terms and for `undesired_contact` when terrain is enabled.
+
+`gait_contact` penalizes mismatch between detected foot contacts and the
+schedule from `env_config.gait`. `feet_air_time` rewards the first contact after
+a swing interval, clipped between `min_air_time` and `max_air_time`, and is
+disabled for near-standing commands by `command_speed_threshold`.
 
 ### DoneConfig
 

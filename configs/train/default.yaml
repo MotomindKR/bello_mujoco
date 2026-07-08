@@ -39,10 +39,16 @@ env_config:
   terrain:
     mode: plane
     seed: 0
+  gait:
+    cycle_time: 0.80
+    duty_factor: 0.55
+    phase_offsets: [0.0, 0.5]
+    standing_command_threshold: 0.05
   observation:
     joint_mode: all_actuated
     base_ang_vel: true
     projected_gravity: true
+    gait_phase: true
     command: true
     joint_pos: true
     joint_vel: true
