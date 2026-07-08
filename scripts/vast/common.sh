@@ -116,10 +116,26 @@ remote_ssh() {
   ssh \
     -o StrictHostKeyChecking=accept-new \
     -o ServerAliveInterval=30 \
-    -o ConnectTimeout=20 \
+    -o ConnectTimeout="${VAST_SSH_CONNECT_TIMEOUT:-20}" \
     -p "$port" \
     "$target" \
     "$@"
+}
+
+wait_for_ssh() {
+  local instance_id="$1"
+  local timeout_seconds="${2:-900}"
+  local deadline=$((SECONDS + timeout_seconds))
+
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if VAST_SSH_CONNECT_TIMEOUT=10 remote_ssh "$instance_id" "true" >/dev/null 2>&1; then
+      return 0
+    fi
+    info "waiting for SSH on instance $instance_id"
+    sleep 10
+  done
+
+  return 1
 }
 
 json_first_offer_id() {

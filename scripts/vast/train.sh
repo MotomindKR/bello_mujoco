@@ -47,6 +47,8 @@ while [ $# -gt 0 ]; do
 done
 
 INSTANCE_ID=$(instance_id_or_die "$INSTANCE_ID")
+wait_for_ssh "$INSTANCE_ID" 600 || die "SSH is not ready for instance $INSTANCE_ID; check with scripts/vast/status.sh and retry"
+
 if [ -z "${WANDB_API_KEY:-}" ]; then
   WANDB_API_KEY="$(secret_from_keyring wandb api_key)"
 fi

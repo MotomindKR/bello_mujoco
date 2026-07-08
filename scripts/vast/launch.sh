@@ -99,11 +99,13 @@ INSTANCE_ID=$(
 printf '%s\n' "$INSTANCE_ID" > "$VAST_INSTANCE_FILE"
 info "created instance $INSTANCE_ID; saved to $VAST_INSTANCE_FILE"
 
+RUNNING=0
 for _ in $(seq 1 60); do
   STATUS=$(vastai_cmd show instance "$INSTANCE_ID" --raw | json_instance_status || true)
   info "instance $INSTANCE_ID status: $STATUS"
   case "$STATUS" in
     running)
+      RUNNING=1
       break
       ;;
     exited|offline|unknown)
@@ -112,6 +114,9 @@ for _ in $(seq 1 60); do
   esac
   sleep 10
 done
+
+[ "$RUNNING" -eq 1 ] || die "instance did not reach running status within 10 minutes"
+wait_for_ssh "$INSTANCE_ID" 600 || die "SSH did not become ready within 10 minutes"
 
 info "ssh url:"
 vastai_cmd ssh-url "$INSTANCE_ID"
