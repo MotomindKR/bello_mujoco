@@ -395,6 +395,7 @@ video_config:
   every_updates: 10
   render_initial: false
   render_final: true
+  simulation_backend: mujoco  # mujoco | mjx
   output_dir: outputs/train_videos
   filename_prefix: rollout
   command: [0.0, 0.0, 0.0]
@@ -429,6 +430,13 @@ Videos are written as:
 
 If `wandb_config.enabled` and `video_config.log_wandb` are both true, each
 rendered file is also logged to W&B under `video_config.wandb_name`.
+
+`simulation_backend=mujoco` renders the rollout by stepping a single CPU MuJoCo
+`MjData` while still evaluating the current policy mean action. This is the
+default for training videos because it avoids allocating extra MJX-Warp contact
+buffers during an already memory-heavy PPO update loop. Use
+`simulation_backend=mjx` only when the video rollout must match the MJX-Warp
+step path exactly and the GPU has enough memory headroom.
 
 ### Root Runtime Flags
 

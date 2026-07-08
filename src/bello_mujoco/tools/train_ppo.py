@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import equinox as eqx
 import hydra
@@ -51,6 +52,7 @@ class TrainingVideoConfig:
     every_updates: int = 10
     render_initial: bool = False
     render_final: bool = True
+    simulation_backend: Literal["mjx", "mujoco"] = "mujoco"
     output_dir: Path = Path("outputs/train_videos")
     filename_prefix: str = "rollout"
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -359,6 +361,7 @@ def render_training_video(
         fps=config.fps,
         stop_on_done=config.stop_on_done,
         camera_config=config.camera_config,
+        simulation_backend=config.simulation_backend,
     )
     if config.log_wandb:
         track_video(
@@ -392,6 +395,11 @@ def validate_video_config(config: TrainingVideoConfig) -> None:
         )
     if config.fps <= 0:
         raise ValueError(f"video_config.fps must be positive, got {config.fps}")
+    if config.simulation_backend not in {"mjx", "mujoco"}:
+        raise ValueError(
+            "video_config.simulation_backend must be 'mjx' or 'mujoco', got "
+            f"{config.simulation_backend!r}"
+        )
 
 
 def final_train_state(

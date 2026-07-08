@@ -356,6 +356,7 @@ video_config.enabled: false
 video_config.every_updates: 10
 video_config.render_initial: false
 video_config.render_final: true
+video_config.simulation_backend: mujoco | mjx
 video_config.output_dir: outputs/train_videos
 video_config.command: [0.0, 0.0, 0.0]
 video_config.steps: 250

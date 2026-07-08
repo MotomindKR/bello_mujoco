@@ -28,6 +28,7 @@ def test_train_hydra_default_converts_to_training_config() -> None:
     assert config.env_config.gait.duty_factor == 0.55
     assert config.env_config.observation.gait_phase
     assert config.metric_config.stream_updates
+    assert config.video_config.simulation_backend == "mujoco"
 
 
 def test_rtx5090_train_preset_sets_measured_batch_shape() -> None:

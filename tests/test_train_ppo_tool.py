@@ -51,6 +51,10 @@ def test_validate_video_config_is_noop_when_disabled() -> None:
         (TrainingVideoConfig(enabled=True, steps=0), "steps must be positive"),
         (TrainingVideoConfig(enabled=True, width=0), "width and .*height"),
         (TrainingVideoConfig(enabled=True, fps=0), "fps must be positive"),
+        (
+            TrainingVideoConfig(enabled=True, simulation_backend="bad"),
+            "simulation_backend must be",
+        ),
     ],
 )
 def test_validate_video_config_rejects_invalid_enabled_config(
@@ -93,5 +97,6 @@ def test_render_training_video_writes_expected_path_and_tracks(monkeypatch, tmp_
 
     assert output_path == tmp_path / "eval_000007.mp4"
     assert calls["render"][1]["output_path"] == output_path
+    assert calls["render"][1]["simulation_backend"] == "mujoco"
     assert calls["track"][0] == ("run", output_path)
     assert calls["track"][1]["step"] == 128
