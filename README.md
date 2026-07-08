@@ -87,6 +87,7 @@ uv run pytest
 ## Documentation
 
 - [Repository reference](docs/index.md)
+- [Vast.ai workflow](docs/vast_ai.md)
 - [Contribution guide](CONTRIBUTION.md)
 - [Agent instructions](AGENTS.md)
 

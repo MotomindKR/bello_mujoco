@@ -3,6 +3,7 @@
 .uv-python/
 .warp-cache/
 .direnv/
+.vast/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
