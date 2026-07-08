@@ -59,6 +59,8 @@ def test_vast_rtx5090_train_preset_enables_remote_logging() -> None:
     assert config.video_config.enabled
     assert config.checkpoint_config.enabled
     assert config.checkpoint_config.name == "vast_rtx5090_seed0"
+    assert config.checkpoint_config.upload_wandb_artifact
+    assert config.checkpoint_config.wandb_artifact_name == "vast_rtx5090_seed0"
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

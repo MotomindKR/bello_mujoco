@@ -124,9 +124,9 @@ scripts/vast/train.sh -- \
 ```
 
 The default config is `configs/train/vast_rtx5090.yaml`. It enables W&B,
-checkpointing, and videos. Checkpoints are written locally on the instance under
-`checkpoints/`; upload or backup of those files is intentionally left to a
-separate workflow.
+checkpointing, checkpoint artifact upload, and videos. Checkpoints are written
+locally on the instance under `checkpoints/` and uploaded as a W&B artifact
+after training completes.
 
 The training command exports:
 

@@ -7,6 +7,8 @@ defaults:
 checkpoint_config:
   enabled: true
   name: vast_rtx5090_seed0
+  upload_wandb_artifact: true
+  wandb_artifact_name: vast_rtx5090_seed0
 
 wandb_config:
   enabled: true
