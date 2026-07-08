@@ -21,6 +21,14 @@ CLI key file:
 keyring set vast api_key
 ```
 
+The launcher downloads the private GitHub repo from the Vast instance over
+outbound HTTPS. Store a fine-grained token with `Contents: Read-only` permission
+for this repository:
+
+```bash
+keyring set github bello_mujoco_read_token
+```
+
 Training uses W&B:
 
 ```bash
@@ -76,24 +84,24 @@ The created instance id is stored in `.vast/instance_id`. The remote repo path i
 
 ## Remote Setup
 
-The launcher exports the requested local Git ref into a compressed archive,
-uploads it with legacy-protocol `scp`, and extracts it over the instance's root
-SSH connection:
+The launcher uses SSH only for control commands. Source bytes are not pushed
+through the Vast SSH proxy. Instead, the instance downloads a clean GitHub
+tarball for the requested ref with the local token passed over SSH stdin:
 
 ```text
-git archive --format=tar.gz <repo-ref> > /tmp/bello_mujoco.tar.gz
-scp -O /tmp/bello_mujoco.tar.gz root@<instance>:/tmp/
-ssh root@<instance> 'tar -xzf /tmp/bello_mujoco.tar.gz -C /workspace/bello_mujoco'
+curl -L -H 'Authorization: Bearer <GITHUB_TOKEN>' \
+  https://api.github.com/repos/MotomindKR/bello_mujoco/tarball/<repo-ref> \
+  -o /tmp/bello_mujoco.tar.gz
+tar -xzf /tmp/bello_mujoco.tar.gz --strip-components=1 -C /workspace/bello_mujoco
 ```
 
-This avoids copying `.git`, `.venv`, uv caches, W&B output, checkpoints, or dirty
-working-tree files. It also works for private repositories because the Vast
-instance does not need GitHub credentials.
+This avoids copying `.git`, `.venv`, uv caches, W&B output, checkpoints, or
+dirty working-tree files. It also avoids bulk transfer over the Vast SSH link.
 
-The launcher verifies that `scripts/vast/remote_setup.sh` exists after extraction
-and fails before setup if the repo copy is incomplete.
+The launcher verifies that `scripts/vast/remote_setup.sh` exists after
+extraction and fails before setup if the source download is incomplete.
 
-After the copy completes, setup runs in a remote tmux session named
+After the source download completes, setup runs in a remote tmux session named
 `bello-setup` and launch waits for it to finish:
 
 ```bash

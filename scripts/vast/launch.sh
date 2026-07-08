@@ -9,15 +9,16 @@ usage() {
 Usage: scripts/vast/launch.sh [options]
 
 Search and rent a Vast.ai RTX 5090 instance, then bootstrap this repo remotely.
-The repo is exported locally from the requested git ref and uploaded with
-legacy-protocol scp; the instance does not clone GitHub.
+The instance downloads the requested GitHub ref over HTTPS using a local token
+from GITHUB_TOKEN or keyring.
 
 Options:
   --dry-run             Print commands without searching or renting.
   --offer-id ID         Use a specific offer id instead of searching.
   --yes                 Skip the selected-offer confirmation prompt.
   --no-wait-setup       Return after starting remote setup instead of waiting.
-  --repo-ref REF        Local Git ref to export and copy. Default: test/vast-short-training.
+  --repo-ref REF        GitHub ref to download. Default: test/vast-short-training.
+  --repo-url URL        GitHub repository URL. Default: https://github.com/MotomindKR/bello_mujoco.git.
   --image IMAGE         Docker image. Default: vastai/base-image:cuda-13.0.3-auto.
   --disk GB            Disk size in GB. Default: 80.
   --ram-gb GB           Minimum CPU RAM in GB. Default: 64.
@@ -27,6 +28,7 @@ Options:
 
 Environment:
   VAST_API_KEY may be set, or run `vastai set api-key` beforehand.
+  GITHUB_TOKEN may be set, or store one with `keyring set github bello_mujoco_read_token`.
 EOF
 }
 
@@ -42,7 +44,7 @@ while [ $# -gt 0 ]; do
     --yes|-y) YES=1; shift ;;
     --no-wait-setup) WAIT_SETUP=0; shift ;;
     --repo-ref) VAST_REPO_REF="$2"; shift 2 ;;
-    --repo-url) VAST_REPO_URL="$2"; shift 2 ;; # accepted for compatibility; launch copies a local export
+    --repo-url) VAST_REPO_URL="$2"; shift 2 ;;
     --image) VAST_IMAGE="$2"; shift 2 ;;
     --disk) VAST_DISK_GB="$2"; shift 2 ;;
     --ram-gb) VAST_CPU_RAM_GB="$2"; shift 2 ;;
@@ -65,10 +67,9 @@ Search command:
 Create command:
   vastai create instance ${OFFER_ID:-OFFER_ID_FROM_SEARCH} --image '$VAST_IMAGE' --disk '$VAST_DISK_GB' --ssh --direct
 
-Source copy:
-  git archive --format=tar.gz '$VAST_REPO_REF' > /tmp/bello_mujoco.tar.gz
-  scp -O /tmp/bello_mujoco.tar.gz root@INSTANCE:/tmp/
-  ssh root@INSTANCE 'tar -xzf /tmp/bello_mujoco.tar.gz -C $VAST_REMOTE_DIR'
+Source download on instance:
+  curl -L -H 'Authorization: Bearer <GITHUB_TOKEN>' '$(github_tarball_url "$VAST_REPO_URL" "$VAST_REPO_REF")' -o /tmp/bello_mujoco.tar.gz
+  ssh root@INSTANCE 'tar -xzf /tmp/bello_mujoco.tar.gz --strip-components=1 -C $VAST_REMOTE_DIR'
 
 Remote setup:
   tmux session '$VAST_SETUP_SESSION'
@@ -80,6 +81,7 @@ fi
 
 hydrate_vast_cli_key
 require_vast_ssh_key
+require_github_token
 
 OFFER_JSON=""
 if [ -z "$OFFER_ID" ]; then
@@ -101,6 +103,7 @@ Launch settings:
        image: $VAST_IMAGE
         disk: $VAST_DISK_GB GB
     repo ref: $VAST_REPO_REF
+    repo url: $VAST_REPO_URL
   remote dir: $VAST_REMOTE_DIR
  setup tmux: $VAST_SETUP_SESSION
 EOF
@@ -140,8 +143,8 @@ done
 [ "$RUNNING" -eq 1 ] || die "instance did not reach running status within 10 minutes"
 wait_for_ssh "$INSTANCE_ID" 600 || die "SSH did not become ready within 10 minutes"
 
-info "copying clean local export of $VAST_REPO_REF to instance $INSTANCE_ID"
-copy_clean_ref_to_instance "$INSTANCE_ID" "$VAST_REPO_REF" "$VAST_REMOTE_DIR"
+info "downloading $VAST_REPO_REF from GitHub on instance $INSTANCE_ID"
+download_github_ref_to_instance "$INSTANCE_ID" "$VAST_REPO_URL" "$VAST_REPO_REF" "$VAST_REMOTE_DIR"
 
 info "starting remote setup in tmux session $VAST_SETUP_SESSION"
 start_remote_setup "$INSTANCE_ID" "$VAST_REMOTE_DIR" "$VAST_SETUP_SESSION"

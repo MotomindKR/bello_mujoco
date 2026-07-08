@@ -75,6 +75,26 @@ vast_api_key() {
   fi
 }
 
+github_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    printf '%s\n' "$GITHUB_TOKEN"
+    return
+  fi
+  local keyring_key
+  keyring_key="$(secret_from_keyring github bello_mujoco_read_token)"
+  if [ -n "$keyring_key" ]; then
+    printf '%s\n' "$keyring_key"
+  fi
+}
+
+require_github_token() {
+  local token
+  token="$(github_token)"
+  if [ -z "$token" ]; then
+    die "GitHub token is required for remote source download; export GITHUB_TOKEN or run: keyring set github bello_mujoco_read_token"
+  fi
+}
+
 hydrate_vast_cli_key() {
   local key
   key="$(vast_api_key)"
@@ -162,51 +182,130 @@ print(len(data if isinstance(data, list) else data.get("ssh_keys", [])))
   fi
 }
 
-copy_clean_ref_to_instance() {
-  local instance_id="$1"
+github_repo_slug() {
+  local repo_url="$1"
+  python3 - "$repo_url" <<'PY'
+import re
+import sys
+from urllib.parse import urlparse
+
+repo_url = sys.argv[1]
+if re.fullmatch(r"[^/]+/[^/]+(?:\.git)?", repo_url):
+    slug = repo_url
+elif repo_url.startswith("git@github.com:"):
+    slug = repo_url.removeprefix("git@github.com:")
+else:
+    parsed = urlparse(repo_url)
+    if parsed.netloc != "github.com":
+        raise SystemExit(f"expected a github.com repo URL, got: {repo_url}")
+    slug = parsed.path.lstrip("/")
+slug = slug.removesuffix(".git").strip("/")
+if slug.count("/") != 1:
+    raise SystemExit(f"could not determine GitHub owner/repo from: {repo_url}")
+print(slug)
+PY
+}
+
+github_tarball_url() {
+  local repo_url="$1"
   local repo_ref="$2"
-  local remote_dir="$3"
-  local commit short_commit target port exported_at
-  local archive_dir archive_path archive_name remote_archive
-  local remote_dir_q remote_archive_q repo_ref_q commit_q exported_at_q
+  python3 - "$repo_url" "$repo_ref" <<'PY'
+import re
+import sys
+from urllib.parse import quote, urlparse
 
-  commit=$(git rev-parse --verify "${repo_ref}^{commit}") || die "git ref not found locally: $repo_ref"
-  short_commit="${commit:0:12}"
-  archive_dir=$(mktemp -d "${TMPDIR:-/tmp}/bello-vast-copy.XXXXXX")
-  archive_name="bello_mujoco_${short_commit}.tar.gz"
-  archive_path="$archive_dir/$archive_name"
-  remote_archive="/tmp/$archive_name"
+repo_url, repo_ref = sys.argv[1], sys.argv[2]
+if re.fullmatch(r"[^/]+/[^/]+(?:\.git)?", repo_url):
+    slug = repo_url
+elif repo_url.startswith("git@github.com:"):
+    slug = repo_url.removeprefix("git@github.com:")
+else:
+    parsed = urlparse(repo_url)
+    if parsed.netloc != "github.com":
+        raise SystemExit(f"expected a github.com repo URL, got: {repo_url}")
+    slug = parsed.path.lstrip("/")
+slug = slug.removesuffix(".git").strip("/")
+if slug.count("/") != 1:
+    raise SystemExit(f"could not determine GitHub owner/repo from: {repo_url}")
+print(f"https://api.github.com/repos/{slug}/tarball/{quote(repo_ref, safe='')}")
+PY
+}
 
-  info "creating clean source archive for $repo_ref ($short_commit)"
-  git archive --format=tar.gz "$commit" > "$archive_path"
-  du -h "$archive_path" >&2 || true
+download_github_ref_to_instance() {
+  local instance_id="$1"
+  local repo_url="$2"
+  local repo_ref="$3"
+  local remote_dir="$4"
+  local token repo_slug tarball_url exported_at
+  local remote_dir_q tarball_url_q repo_url_q repo_ref_q repo_slug_q exported_at_q run_cmd
 
-  read -r target port < <(ssh_target "$instance_id")
-  info "uploading source archive with scp legacy protocol"
-  if ! scp \
-    -O \
-    -o StrictHostKeyChecking=accept-new \
-    -o ServerAliveInterval=30 \
-    -o ConnectTimeout="${VAST_SSH_CONNECT_TIMEOUT:-20}" \
-    -P "$port" \
-    "$archive_path" \
-    "$target:$remote_archive"; then
-    rm -rf "$archive_dir"
-    die "scp source archive failed"
-  fi
-
+  token="$(github_token)"
+  [ -n "$token" ] || die "GitHub token is required for remote source download"
+  repo_slug="$(github_repo_slug "$repo_url")"
+  tarball_url="$(github_tarball_url "$repo_url" "$repo_ref")"
   exported_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  info "downloading $repo_slug@$repo_ref on instance $instance_id over GitHub HTTPS"
   printf -v remote_dir_q '%q' "$remote_dir"
-  printf -v remote_archive_q '%q' "$remote_archive"
+  printf -v tarball_url_q '%q' "$tarball_url"
+  printf -v repo_url_q '%q' "$repo_url"
   printf -v repo_ref_q '%q' "$repo_ref"
-  printf -v commit_q '%q' "$commit"
+  printf -v repo_slug_q '%q' "$repo_slug"
   printf -v exported_at_q '%q' "$exported_at"
 
-  remote_ssh "$instance_id" "set -Eeuo pipefail; rm -rf $remote_dir_q; mkdir -p $remote_dir_q; tar -xzf $remote_archive_q -C $remote_dir_q; rm -f $remote_archive_q; { printf 'repo_ref=%s\n' $repo_ref_q; printf 'commit=%s\n' $commit_q; printf 'exported_at=%s\n' $exported_at_q; } > $remote_dir_q/.vast_source"
-  rm -rf "$archive_dir"
+  remote_ssh "$instance_id" "cat > /tmp/bello_github_fetch.sh && chmod 700 /tmp/bello_github_fetch.sh" <<'REMOTE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+remote_dir="$1"
+tarball_url="$2"
+repo_url="$3"
+repo_ref="$4"
+repo_slug="$5"
+exported_at="$6"
+archive="$(mktemp /tmp/bello_mujoco.XXXXXX.tar.gz)"
+
+cleanup() {
+  rm -f "$archive"
+}
+trap cleanup EXIT
+
+IFS= read -r github_token
+[ -n "$github_token" ] || { echo "missing GitHub token on stdin" >&2; exit 1; }
+command -v curl >/dev/null || { echo "curl is required for GitHub source download" >&2; exit 1; }
+command -v tar >/dev/null || { echo "tar is required for GitHub source download" >&2; exit 1; }
+
+mkdir -p "$(dirname "$remote_dir")"
+rm -rf "$remote_dir"
+mkdir -p "$remote_dir"
+
+curl \
+  --fail \
+  --location \
+  --show-error \
+  --config <(
+    printf 'header = "Authorization: Bearer %s"\n' "$github_token"
+    printf 'header = "Accept: application/vnd.github+json"\n'
+    printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
+  ) \
+  --output "$archive" \
+  "$tarball_url"
+
+tar -xzf "$archive" --strip-components=1 -C "$remote_dir"
+{
+  printf 'repo_url=%s\n' "$repo_url"
+  printf 'repo_ref=%s\n' "$repo_ref"
+  printf 'repo_slug=%s\n' "$repo_slug"
+  printf 'exported_at=%s\n' "$exported_at"
+  printf 'source_transport=github_tarball_https\n'
+} > "$remote_dir/.vast_source"
+REMOTE
+
+  run_cmd="status=0; bash /tmp/bello_github_fetch.sh $remote_dir_q $tarball_url_q $repo_url_q $repo_ref_q $repo_slug_q $exported_at_q || status=\$?; rm -f /tmp/bello_github_fetch.sh; exit \$status"
+  printf '%s\n' "$token" | remote_ssh "$instance_id" "bash -lc $(printf '%q' "$run_cmd")"
 
   remote_ssh "$instance_id" "test -f $(printf '%q' "$remote_dir/scripts/vast/remote_setup.sh")" ||
-    die "repo copy did not produce $remote_dir/scripts/vast/remote_setup.sh"
+    die "GitHub source download did not produce $remote_dir/scripts/vast/remote_setup.sh"
 }
 
 start_remote_setup() {
