@@ -9,8 +9,8 @@ usage() {
 Usage: scripts/vast/launch.sh [options]
 
 Search and rent a Vast.ai RTX 5090 instance, then bootstrap this repo remotely.
-The repo is exported locally from the requested git ref and copied to the
-instance with `vastai copy`; the instance does not clone from GitHub.
+The repo is exported locally from the requested git ref and streamed to the
+instance over the working root SSH connection; the instance does not clone GitHub.
 
 Options:
   --dry-run             Print commands without searching or renting.
@@ -66,8 +66,8 @@ Create command:
   vastai create instance ${OFFER_ID:-OFFER_ID_FROM_SEARCH} --image '$VAST_IMAGE' --disk '$VAST_DISK_GB' --ssh --direct
 
 Source copy:
-  git archive '$VAST_REPO_REF' -> temporary clean tree
-  vastai copy local:<clean-tree>/ C.INSTANCE_ID:$VAST_REMOTE_DIR/
+  git archive --format=tar.gz '$VAST_REPO_REF'
+  ssh root@INSTANCE 'tar -xzf - -C $VAST_REMOTE_DIR'
 
 Remote setup:
   tmux session '$VAST_SETUP_SESSION'

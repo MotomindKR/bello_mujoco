@@ -76,12 +76,11 @@ The created instance id is stored in `.vast/instance_id`. The remote repo path i
 
 ## Remote Setup
 
-The launcher exports the requested local Git ref into a temporary clean tree and
-copies that tree with `vastai copy`:
+The launcher exports the requested local Git ref and streams a compressed
+archive over the instance's root SSH connection:
 
 ```text
-git archive <repo-ref> -> local temporary tree
-vastai copy local:<temporary-tree>/ C.<instance-id>:/workspace/bello_mujoco/
+git archive --format=tar.gz <repo-ref> | ssh root@<instance> 'tar -xzf - -C /workspace/bello_mujoco'
 ```
 
 This avoids copying `.git`, `.venv`, uv caches, W&B output, checkpoints, or dirty
