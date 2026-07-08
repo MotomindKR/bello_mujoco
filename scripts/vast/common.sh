@@ -11,6 +11,7 @@ VAST_DISK_GB="${VAST_DISK_GB:-80}"
 VAST_GPU_NAME="${VAST_GPU_NAME:-RTX_5090}"
 VAST_CPU_RAM_GB="${VAST_CPU_RAM_GB:-64}"
 VAST_CUDA_VERSION_MIN="${VAST_CUDA_VERSION_MIN:-13.0}"
+VAST_SSH_IDENTITY="${VAST_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}"
 VAST_SETUP_SESSION="${VAST_SETUP_SESSION:-bello-setup}"
 VAST_TMUX_SESSION="${VAST_TMUX_SESSION:-bello-train}"
 VAST_TRAIN_CONFIG="${VAST_TRAIN_CONFIG:-vast_smoke}"
@@ -167,6 +168,7 @@ copy_clean_ref_to_instance() {
   local repo_ref="$2"
   local remote_dir="$3"
   local tmp_parent tmp_repo commit
+  local copy_args
 
   commit=$(git rev-parse --verify "${repo_ref}^{commit}") || die "git ref not found locally: $repo_ref"
   tmp_parent=$(mktemp -d)
@@ -181,8 +183,45 @@ exported_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
   remote_ssh "$instance_id" "rm -rf $(printf '%q' "$remote_dir") && mkdir -p $(printf '%q' "$remote_dir")"
-  vastai_cmd copy "local:$tmp_repo/" "C.$instance_id:$remote_dir/"
+  copy_args=("local:$tmp_repo/" "C.$instance_id:$remote_dir/")
+  if [ -r "$VAST_SSH_IDENTITY" ]; then
+    copy_args+=("--identity" "$VAST_SSH_IDENTITY")
+  fi
+  if vastai_cmd copy "${copy_args[@]}" &&
+    remote_ssh "$instance_id" "test -f $(printf '%q' "$remote_dir/scripts/vast/remote_setup.sh")"; then
+    rm -rf "$tmp_parent"
+    return 0
+  fi
+
   rm -rf "$tmp_parent"
+  info "vastai copy did not complete; falling back to compressed SSH archive transfer"
+  copy_archive_to_instance "$instance_id" "$repo_ref" "$commit" "$remote_dir"
+
+  remote_ssh "$instance_id" "test -f $(printf '%q' "$remote_dir/scripts/vast/remote_setup.sh")" ||
+    die "repo copy did not produce $remote_dir/scripts/vast/remote_setup.sh"
+}
+
+copy_archive_to_instance() {
+  local instance_id="$1"
+  local repo_ref="$2"
+  local commit="$3"
+  local remote_dir="$4"
+  local target port remote_dir_q repo_ref_q commit_q exported_at exported_at_q
+
+  read -r target port < <(ssh_target "$instance_id")
+  exported_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf -v remote_dir_q '%q' "$remote_dir"
+  printf -v repo_ref_q '%q' "$repo_ref"
+  printf -v commit_q '%q' "$commit"
+  printf -v exported_at_q '%q' "$exported_at"
+
+  git archive --format=tar.gz "$commit" | ssh \
+    -o StrictHostKeyChecking=accept-new \
+    -o ServerAliveInterval=30 \
+    -o ConnectTimeout="${VAST_SSH_CONNECT_TIMEOUT:-20}" \
+    -p "$port" \
+    "$target" \
+    "set -Eeuo pipefail; rm -rf $remote_dir_q; mkdir -p $remote_dir_q; tar -xzf - -C $remote_dir_q; { printf 'repo_ref=%s\n' $repo_ref_q; printf 'commit=%s\n' $commit_q; printf 'exported_at=%s\n' $exported_at_q; } > $remote_dir_q/.vast_source"
 }
 
 start_remote_setup() {

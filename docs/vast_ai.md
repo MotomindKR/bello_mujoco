@@ -88,6 +88,10 @@ This avoids copying `.git`, `.venv`, uv caches, W&B output, checkpoints, or dirt
 working-tree files. It also works for private repositories because the Vast
 instance does not need GitHub credentials.
 
+If Vast's container-copy backend fails, the launcher falls back to streaming a
+compressed `git archive` over the normal root SSH connection and verifies that
+`scripts/vast/remote_setup.sh` exists before starting setup.
+
 After the copy completes, setup runs in a remote tmux session named
 `bello-setup` and launch waits for it to finish:
 
