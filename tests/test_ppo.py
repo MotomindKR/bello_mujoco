@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 import jax
 import jax.numpy as jnp
@@ -14,11 +16,13 @@ from bello_mujoco.policy import (
 from bello_mujoco.train.ppo import (
     PPOConfig,
     Transition,
+    action_diagnostics,
     compute_gae,
     done_reason_means,
     init_train_state,
     make_train,
     ppo_loss,
+    safe_returned_mean,
     safe_returned_max,
     update_ppo,
 )
@@ -43,6 +47,7 @@ def dummy_transitions(config: PPOConfig, obs_size: int, action_size: int) -> Tra
     return Transition(
         done=jnp.zeros(shape, dtype=bool),
         action=action,
+        action_mean=action,
         value=jnp.zeros(shape, dtype=jnp.float32),
         reward=jnp.ones(shape, dtype=jnp.float32),
         log_prob=jnp.zeros(shape, dtype=jnp.float32),
@@ -123,6 +128,7 @@ def test_gae_and_loss_shapes() -> None:
         Transition(
             done=transitions.done.reshape((-1,)),
             action=transitions.action.reshape((-1, action_size)),
+            action_mean=transitions.action_mean.reshape((-1, action_size)),
             value=transitions.value.reshape((-1,)),
             reward=transitions.reward.reshape((-1,)),
             log_prob=transitions.log_prob.reshape((-1,)),
@@ -166,6 +172,77 @@ def test_update_ppo_runs_on_dummy_batch() -> None:
     assert metrics["loss"].shape == ()
 
 
+def test_action_diagnostics_reports_action_and_control_stats() -> None:
+    action = jnp.asarray(
+        [
+            [[0.0, 0.0], [1.0, -1.0]],
+            [[2.0, -2.0], [0.5, -0.5]],
+        ],
+        dtype=jnp.float32,
+    )
+    transitions = Transition(
+        done=jnp.zeros((2, 2), dtype=bool),
+        action=action,
+        action_mean=action * 0.5,
+        value=jnp.zeros((2, 2), dtype=jnp.float32),
+        reward=jnp.ones((2, 2), dtype=jnp.float32),
+        log_prob=jnp.zeros((2, 2), dtype=jnp.float32),
+        obs=jnp.zeros((2, 2, 4), dtype=jnp.float32),
+        info={},
+    )
+    env = SimpleNamespace(
+        action_size=2,
+        model=SimpleNamespace(
+            policy_ctrl_indices=jnp.asarray([0, 1]),
+            mj_model=SimpleNamespace(
+                actuator_ctrlrange=jnp.asarray(
+                    [[-1.0, 1.0], [-2.0, 2.0]], dtype=jnp.float32
+                )
+            ),
+        ),
+        _action_to_ctrl=lambda act: jnp.clip(
+            act,
+            jnp.asarray([-1.0, -2.0], dtype=jnp.float32),
+            jnp.asarray([1.0, 2.0], dtype=jnp.float32),
+        ),
+    )
+    policy = SimpleNamespace(log_std=jnp.asarray([-2.0, -1.0], dtype=jnp.float32))
+
+    metrics = action_diagnostics(transitions, env, policy)
+
+    assert float(metrics["action_rms"]) == pytest.approx(
+        float(jnp.sqrt(jnp.mean(action**2)))
+    )
+    assert float(metrics["action_abs_max"]) == pytest.approx(2.0)
+    assert float(metrics["action_mean_abs_max"]) == pytest.approx(1.0)
+    assert float(metrics["action_std_min"]) == pytest.approx(float(jnp.exp(-2.0)))
+    assert float(metrics["action_std_max"]) == pytest.approx(float(jnp.exp(-1.0)))
+    assert float(metrics["ctrl_saturation_fraction"]) == pytest.approx(0.375)
+    assert float(metrics["ctrl_margin_min"]) == pytest.approx(0.0)
+
+
+def test_action_diagnostics_omits_control_stats_for_generic_envs() -> None:
+    action = jnp.asarray([[[0.0], [1.0]]], dtype=jnp.float32)
+    transitions = Transition(
+        done=jnp.zeros((1, 2), dtype=bool),
+        action=action,
+        action_mean=action,
+        value=jnp.zeros((1, 2), dtype=jnp.float32),
+        reward=jnp.ones((1, 2), dtype=jnp.float32),
+        log_prob=jnp.zeros((1, 2), dtype=jnp.float32),
+        obs=jnp.zeros((1, 2, 4), dtype=jnp.float32),
+        info={},
+    )
+    env = SimpleNamespace(action_size=1)
+    policy = SimpleNamespace(log_std=jnp.asarray([-1.0], dtype=jnp.float32))
+
+    metrics = action_diagnostics(transitions, env, policy)
+
+    assert "action_rms" in metrics
+    assert "ctrl_saturation_fraction" not in metrics
+    assert "ctrl_margin_min" not in metrics
+
+
 def test_safe_returned_max_ignores_non_returned_zero_placeholders() -> None:
     info = {
         "episode_return": jnp.asarray([[-5.0, 0.0], [-2.0, 0.0]]),
@@ -182,6 +259,18 @@ def test_safe_returned_max_is_nan_without_completed_episode() -> None:
     }
 
     assert bool(jnp.isnan(safe_returned_max(info)))
+
+
+def test_safe_returned_mean_and_max_accept_episode_length_key() -> None:
+    info = {
+        "episode_length": jnp.asarray([[100, 0], [150, 0]], dtype=jnp.int32),
+        "returned_episode": jnp.asarray([[True, False], [True, False]]),
+    }
+
+    assert float(safe_returned_mean(info, key="episode_length")) == pytest.approx(
+        125.0
+    )
+    assert float(safe_returned_max(info, key="episode_length")) == pytest.approx(150.0)
 
 
 def test_done_reason_means_reports_done_component_rates() -> None:

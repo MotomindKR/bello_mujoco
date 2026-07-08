@@ -27,7 +27,7 @@ from bello_mujoco.policy import (
     init_observation_stack,
     init_actor_critic,
     policy_observation_size,
-    sample_action,
+    sample_action_with_mean,
     stacked_observation,
     update_observation_stack,
 )
@@ -74,6 +74,7 @@ class TrainState:
 class Transition(NamedTuple):
     done: jax.Array
     action: jax.Array
+    action_mean: jax.Array
     value: jax.Array
     reward: jax.Array
     log_prob: jax.Array
@@ -259,23 +260,29 @@ def flatten_batch(batch):
     )
 
 
-def safe_returned_mean(info: dict[str, jax.Array]) -> jax.Array:
-    episode_return = info.get("episode_return")
+def safe_returned_mean(
+    info: dict[str, jax.Array], key: str = "episode_return"
+) -> jax.Array:
+    value = info.get(key)
     returned_episode = info.get("returned_episode")
-    if episode_return is None or returned_episode is None:
+    if value is None or returned_episode is None:
         return jnp.asarray(0.0, dtype=jnp.float32)
     mask = returned_episode.astype(jnp.float32)
-    return jnp.sum(episode_return * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+    return jnp.sum(value.astype(jnp.float32) * mask) / jnp.maximum(
+        jnp.sum(mask), 1.0
+    )
 
 
-def safe_returned_max(info: dict[str, jax.Array]) -> jax.Array:
-    episode_return = info.get("episode_return")
+def safe_returned_max(
+    info: dict[str, jax.Array], key: str = "episode_return"
+) -> jax.Array:
+    value = info.get(key)
     returned_episode = info.get("returned_episode")
-    if episode_return is None or returned_episode is None:
+    if value is None or returned_episode is None:
         return jnp.asarray(jnp.nan, dtype=jnp.float32)
     mask = returned_episode.astype(bool)
-    masked_return = jnp.where(mask, episode_return, -jnp.inf)
-    return jnp.where(jnp.any(mask), jnp.max(masked_return), jnp.nan)
+    masked_value = jnp.where(mask, value.astype(jnp.float32), -jnp.inf)
+    return jnp.where(jnp.any(mask), jnp.max(masked_value), jnp.nan)
 
 
 def reward_component_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
@@ -294,6 +301,45 @@ def done_reason_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def action_diagnostics(
+    transitions: Transition,
+    env: BelloLocomotionEnv,
+    policy: ActorCritic,
+) -> dict[str, jax.Array]:
+    action = transitions.action
+    action_mean = transitions.action_mean
+    metrics = {
+        "action_rms": jnp.sqrt(jnp.mean(action**2)),
+        "action_abs_max": jnp.max(jnp.abs(action)),
+        "action_mean_rms": jnp.sqrt(jnp.mean(action_mean**2)),
+        "action_mean_abs_max": jnp.max(jnp.abs(action_mean)),
+        "action_std_mean": jnp.mean(jnp.exp(policy.log_std)),
+        "action_std_min": jnp.min(jnp.exp(policy.log_std)),
+        "action_std_max": jnp.max(jnp.exp(policy.log_std)),
+    }
+    if not hasattr(env, "_action_to_ctrl"):
+        return metrics
+
+    flat_action = action.reshape((-1, env.action_size))
+    ctrl = jax.vmap(env._action_to_ctrl)(flat_action)
+    policy_ctrl_indices = jnp.asarray(env.model.policy_ctrl_indices)
+    policy_ctrl = ctrl[:, policy_ctrl_indices]
+    ctrlrange = jnp.asarray(env.model.mj_model.actuator_ctrlrange)[
+        policy_ctrl_indices
+    ]
+    ctrl_low = ctrlrange[:, 0]
+    ctrl_high = ctrlrange[:, 1]
+    ctrl_margin = jnp.minimum(policy_ctrl - ctrl_low, ctrl_high - policy_ctrl)
+    saturated = (policy_ctrl <= ctrl_low + 1.0e-6) | (
+        policy_ctrl >= ctrl_high - 1.0e-6
+    )
+    return {
+        **metrics,
+        "ctrl_saturation_fraction": saturated.astype(jnp.float32).mean(),
+        "ctrl_margin_min": jnp.min(ctrl_margin),
+    }
+
+
 def collect_rollout(
     env: BelloLocomotionEnv,
     policy: ActorCritic,
@@ -308,7 +354,7 @@ def collect_rollout(
         state, last_obs_stack, key = carry
         key, action_key, env_key = jax.random.split(key, 3)
         policy_obs = stacked_observation(last_obs_stack)
-        action, log_prob, value = sample_action(
+        action, log_prob, value, action_mean = sample_action_with_mean(
             policy,
             policy_obs,
             action_key,
@@ -318,7 +364,9 @@ def collect_rollout(
             state, action, rng=env_key
         )
         next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
-        transition = Transition(done, action, value, reward, log_prob, policy_obs, info)
+        transition = Transition(
+            done, action, action_mean, value, reward, log_prob, policy_obs, info
+        )
         return (next_state, next_obs_stack, key), transition
 
     return jax.lax.scan(env_step, (env_state, obs_stack, rng), None, config.num_steps)
@@ -398,6 +446,13 @@ def update_runner_state(
         "mean_done": transitions.done.astype(jnp.float32).mean(),
         "mean_episode_return": safe_returned_mean(transitions.info),
         "max_episode_return": safe_returned_max(transitions.info),
+        "mean_episode_length": safe_returned_mean(
+            transitions.info, key="episode_length"
+        ),
+        "max_episode_length": safe_returned_max(
+            transitions.info, key="episode_length"
+        ),
+        **action_diagnostics(transitions, env, policy),
         **done_reason_means(transitions.info),
         **reward_component_means(transitions.info),
     }

@@ -1,0 +1,266 @@
+# Standing-only local training recipe. Run with:
+# uv run bello-train-ppo --config-dir "$PWD/experiments/train" --config-name standing
+defaults:
+  - rtx5090_4096x256
+  - _self_
+
+asset_config:
+  end_effector_sphere_mode: both
+  actuator_config:
+    joints:
+      left_hip_pitch_joint:
+        mode: policy
+        default_pos: -0.325
+        action_scale: 0.35
+        soft_limit: [-1.41372, 1.41372]
+        gains: [200.0, 5.0]
+      right_hip_pitch_joint:
+        mode: policy
+        default_pos: 0.325
+        action_scale: 0.35
+        soft_limit: [-1.41372, 1.41372]
+        gains: [200.0, 5.0]
+      left_hip_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        action_scale: 0.25
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+      right_hip_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        action_scale: 0.25
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+      left_hip_yaw_joint:
+        mode: policy
+        default_pos: 0.125
+        action_scale: 0.25
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+      right_hip_yaw_joint:
+        mode: policy
+        default_pos: -0.125
+        action_scale: 0.25
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+      left_knee_joint:
+        mode: policy
+        default_pos: 0.45
+        action_scale: 0.45
+        soft_limit: [0.10472, 1.98968]
+        gains: [220.0, 6.0]
+      right_knee_joint:
+        mode: policy
+        default_pos: 0.45
+        action_scale: 0.45
+        soft_limit: [0.10472, 1.98968]
+        gains: [220.0, 6.0]
+      left_ankle_pitch_joint:
+        mode: policy
+        default_pos: 0.30
+        action_scale: 0.20
+        soft_limit: [-0.44506, 0.96866]
+        gains: [22.0, 1.0]
+      right_ankle_pitch_joint:
+        mode: policy
+        default_pos: 0.30
+        action_scale: 0.20
+        soft_limit: [-0.44506, 0.96866]
+        gains: [22.0, 1.0]
+      left_ankle_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        action_scale: 0.05
+        soft_limit: [-0.07857, 0.07857]
+        gains: [22.0, 1.0]
+      right_ankle_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        action_scale: 0.05
+        soft_limit: [-0.07857, 0.07857]
+        gains: [22.0, 1.0]
+      waist_yaw_joint:
+        mode: hold
+        gains: [180.0, 12.0]
+      waist_roll_joint:
+        mode: hold
+        gains: [240.0, 20.0]
+      waist_pitch_joint:
+        mode: hold
+        gains: [240.0, 20.0]
+      neck_yaw_joint:
+        mode: hold
+        gains: [5.5, 0.5]
+      head_pitch_joint:
+        mode: hold
+        gains: [5.5, 0.5]
+      right_shoulder_pitch_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+      right_shoulder_roll_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+      right_shoulder_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+      right_elbow_pitch_joint:
+        mode: hold
+        gains: [40.0, 2.0]
+      right_elbow_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+      right_wrist_pitch_joint:
+        mode: hold
+        gains: [10.0, 1.0]
+      right_wrist_yaw_joint:
+        mode: hold
+        gains: [10.0, 1.0]
+      left_shoulder_pitch_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+      left_shoulder_roll_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+      left_shoulder_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+      left_elbow_pitch_joint:
+        mode: hold
+        gains: [40.0, 2.0]
+      left_elbow_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+      left_wrist_pitch_joint:
+        mode: hold
+        gains: [10.0, 1.0]
+      left_wrist_yaw_joint:
+        mode: hold
+        gains: [10.0, 1.0]
+      right_finger_right_slide_joint:
+        mode: hold
+        gains: [100.0, 5.0]
+      right_finger_left_slide_joint:
+        mode: hold
+        gains: [100.0, 5.0]
+      left_finger_right_slide_joint:
+        mode: hold
+        gains: [100.0, 5.0]
+      left_finger_left_slide_joint:
+        mode: hold
+        gains: [100.0, 5.0]
+
+config:
+  total_timesteps: 67108864
+  num_envs: 1024
+  num_steps: 256
+  update_epochs: 2
+  num_minibatches: 4
+  learning_rate: 0.0002
+  anneal_lr: false
+  gamma: 0.995
+  clip_eps: 0.1
+  ent_coef: 0.003
+  policy:
+    init_log_std: -0.5
+    obs_stack_size: 10
+
+env_config:
+  max_episode_steps: 256
+  observation:
+    joint_mode: policy
+    base_lin_vel: true
+    base_height: true
+    gait_phase: false
+    command: false
+    actuator_force: false
+
+command_config:
+  enabled: false
+  lin_vel_x: [0.0, 0.0]
+  lin_vel_y: [0.0, 0.0]
+  ang_vel_yaw: [0.0, 0.0]
+  standing_probability: 0.0
+  resample_seconds: 4.0
+
+reward_config:
+  dm_control_stand:
+    enabled: true
+    weight: 1.0
+    height_link: head_link
+    upright_link: torso_link
+    move_link: bello_root
+    stand_height: 1.4
+    stand_margin: 0.35
+    upright_threshold: 0.9
+    upright_margin: 1.9
+    move_margin: 2.0
+    action_margin: 5.0
+  track_lin_vel_xy:
+    enabled: false
+  track_ang_vel_z:
+    enabled: false
+  alive:
+    enabled: false
+  lin_vel_z:
+    enabled: false
+  ang_vel_xy:
+    enabled: false
+  flat_orientation:
+    enabled: false
+  base_height:
+    enabled: false
+  joint_vel:
+    enabled: false
+  action_rate:
+    enabled: false
+  energy:
+    enabled: false
+  joint_limit:
+    enabled: false
+  hold_joint_deviation:
+    enabled: false
+  policy_joint_deviation:
+    enabled: false
+  foot_contact:
+    enabled: false
+  foot_slip:
+    enabled: false
+  foot_clearance:
+    enabled: false
+  gait_contact:
+    enabled: false
+  feet_air_time:
+    enabled: false
+  undesired_contact:
+    enabled: false
+  termination:
+    enabled: true
+    weight: -1.0
+
+done_config:
+  base_height:
+    enabled: true
+    min_height: 0.55
+  roll_pitch:
+    enabled: true
+    max_abs_roll: 1.35
+    max_abs_pitch: 1.35
+
+checkpoint_config:
+  name: standing_seed0
+
+wandb_config:
+  enabled: true
+  run_name: standing_seed0
+  tags: [standing, rtx5090, full-body, mesh-collision, sphere-end-effectors, high-exploration]
+
+video_config:
+  enabled: true
+  filename_prefix: standing
+  command: [0.0, 0.0, 0.0]
+  steps: 500
+  stop_on_done: false
+
+warp:
+  contact_budget_per_env: 40

@@ -20,11 +20,12 @@ from bello_mujoco.envs.rewards import (
     AngVelXYRewardConfig,
     BaseHeightRewardConfig,
     CommandConfig,
+    FeetAirTimeRewardConfig,
     FlatOrientationRewardConfig,
     FootClearanceRewardConfig,
     FootContactRewardConfig,
+    FootDistanceRewardConfig,
     FootSlipRewardConfig,
-    FeetAirTimeRewardConfig,
     GaitContactRewardConfig,
     LinVelZRewardConfig,
     RewardConfig,
@@ -305,6 +306,35 @@ def test_observation_config_can_include_gait_phase(
     assert jnp.allclose(obs, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
 
 
+def test_observation_config_can_include_base_state(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            observation=ObservationConfig(
+                base_lin_vel=True,
+                base_ang_vel=False,
+                projected_gravity=False,
+                base_height=True,
+                command=False,
+                joint_pos=False,
+                joint_vel=False,
+                actuator_force=False,
+                last_action=False,
+            ),
+        ),
+    )
+    state, obs = env.reset()
+
+    assert env.observation_size == 4
+    assert obs.shape == (4,)
+    assert jnp.allclose(obs[:3], jnp.zeros(3, dtype=jnp.float32))
+    assert obs[3] == pytest.approx(
+        float(state.data.qpos[int(env.model.root_qpos_adr) + 2])
+    )
+
+
 def test_observation_config_actuator_force_follows_joint_mode(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -384,6 +414,7 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert info["reward/foot_contact"].shape == (2,)
     assert info["reward/foot_slip"].shape == (2,)
     assert info["reward/foot_clearance"].shape == (2,)
+    assert info["reward/foot_distance"].shape == (2,)
     assert info["reward/undesired_contact"].shape == (2,)
     assert jnp.all(jnp.isfinite(reward))
 
@@ -422,6 +453,39 @@ def test_step_batch_contact_rewards_are_world_local(
 
     assert info["reward/foot_contact"][0] > info["reward/foot_contact"][1]
     assert info["reward/undesired_contact"][0] < info["reward/undesired_contact"][1]
+
+
+def test_step_reports_enabled_foot_distance_reward(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        reward_config=RewardConfig(
+            foot_distance=FootDistanceRewardConfig(enabled=True, weight=1.0)
+        ),
+    )
+    state, _ = env.reset()
+    foot_body_ids = jnp.asarray(env.model.foot_body_ids)
+    xpos = (
+        state.data.xpos.at[foot_body_ids[0], :2]
+        .set(jnp.asarray([0.0, 0.0], dtype=jnp.float32))
+        .at[foot_body_ids[1], :2]
+        .set(jnp.asarray([0.3, 0.4], dtype=jnp.float32))
+    )
+    state = state.replace(data=state.data.replace(xpos=xpos))
+
+    _, info = env._reward(
+        state,
+        state,
+        jnp.zeros(env.action_size, dtype=jnp.float32),
+        jnp.asarray(False),
+        jnp.ones(2, dtype=jnp.float32),
+        env._foot_height(state),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+
+    assert info["reward/foot_distance"] == pytest.approx(0.01)
 
 
 def test_step_batch_resamples_commands_periodically(

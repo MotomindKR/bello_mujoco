@@ -1,0 +1,38 @@
+# Foot-distance-only pipeline diagnostic. Run with:
+# uv run bello-train-ppo --config-dir "$PWD/experiments/train" --config-name foot_distance
+defaults:
+  - standing
+  - _self_
+
+config:
+  ent_coef: 0.03
+  policy:
+    init_log_std: 1.8
+
+reward_config:
+  dm_control_stand:
+    enabled: false
+  foot_distance:
+    enabled: true
+    weight: 1.0
+  termination:
+    enabled: false
+
+done_config:
+  # Keep post-fall states in the rollout for this pipeline diagnostic.
+  base_height:
+    enabled: false
+  roll_pitch:
+    enabled: false
+
+checkpoint_config:
+  name: foot_distance_high_exploration_seed0
+
+wandb_config:
+  enabled: true
+  run_name: foot_distance_high_exploration_seed0
+  tags: [foot-distance, pipeline-test, high-exploration-x10, rtx5090, full-body, mesh-collision]
+
+video_config:
+  enabled: true
+  filename_prefix: foot_distance_high_exploration

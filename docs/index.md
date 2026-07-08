@@ -169,9 +169,11 @@ actuator_force[35]
 last_action[35]
 ```
 
-`ObservationConfig` controls component inclusion. `joint_mode=policy` makes
-joint position, joint velocity, and actuator force observations use only policy
-actuator indices. Command observation is present only when both
+`ObservationConfig` controls component inclusion. `base_lin_vel[3]` and
+`base_height[1]` are available as opt-in proprioceptive state for balance tasks.
+`joint_mode=policy` makes joint position, joint velocity, and actuator force
+observations use only policy actuator indices. Command observation is present
+only when both
 `ObservationConfig.command` and `CommandConfig.enabled` are true. The training
 default YAML enables `ObservationConfig.gait_phase`, adding `[sin(phase),
 cos(phase)]` and raising the default full-body training observation size to 151.
@@ -196,6 +198,8 @@ action_rate
 energy
 joint_limit
 hold_joint_deviation
+policy_joint_deviation
+dm_control_stand
 foot_contact
 foot_slip
 foot_clearance

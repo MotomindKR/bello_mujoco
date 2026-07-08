@@ -177,8 +177,10 @@ env_config:
     standing_command_threshold: 0.05
   observation:
     joint_mode: all_actuated  # all_actuated | policy
+    base_lin_vel: false
     base_ang_vel: true
     projected_gravity: true
+    base_height: false
     gait_phase: true
     command: true
     joint_pos: true
@@ -187,9 +189,10 @@ env_config:
     last_action: true
 ```
 
-`joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`. The command
-observation is emitted only when both `env_config.observation.command` and
-`command_config.enabled` are true.
+`joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`.
+`base_lin_vel` and `base_height` expose optional root state that is useful for
+standing and balance tasks. The command observation is emitted only when both
+`env_config.observation.command` and `command_config.enabled` are true.
 
 `gait` defines a deterministic two-foot contact schedule. `cycle_time` is the
 period in seconds, `duty_factor` is the stance fraction of each period,
@@ -217,6 +220,10 @@ step.
 ### RewardConfig
 
 Every reward term has `enabled` and `weight`. Link-aware terms also have `link`.
+Continuous reward components are multiplied by the environment control timestep
+before they are returned or logged under `reward/*`, so their weights are
+interpreted as per-second scales. Event-driven terms such as `feet_air_time` and
+`termination` keep their configured event magnitude.
 
 ```yaml
 reward_config:
@@ -265,6 +272,21 @@ reward_config:
   hold_joint_deviation:
     enabled: true
     weight: -0.1
+  policy_joint_deviation:
+    enabled: false
+    weight: -0.1
+  dm_control_stand:
+    enabled: false
+    weight: 1.0
+    height_link: head_link
+    upright_link: torso_link
+    move_link: bello_root
+    stand_height: 1.4
+    stand_margin: 0.35
+    upright_threshold: 0.9
+    upright_margin: 1.9
+    move_margin: 2.0
+    action_margin: 1.0
   foot_contact:
     enabled: true
     weight: 0.05
@@ -275,6 +297,9 @@ reward_config:
     enabled: true
     weight: -2.0
     target: 0.08
+  foot_distance:
+    enabled: false
+    weight: 1.0
   gait_contact:
     enabled: true
     weight: -0.1
@@ -293,8 +318,21 @@ reward_config:
 ```
 
 Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
-`gait_contact`, and `feet_air_time`. Terrain-contact metadata is required for
-those terms and for `undesired_contact` when terrain is enabled.
+`foot_distance`, `gait_contact`, and `feet_air_time`. `foot_distance` rewards
+the horizontal distance between the two foot bodies. Terrain-contact metadata is
+required for the contact-dependent foot terms and for `undesired_contact` when
+terrain is enabled.
+
+`hold_joint_deviation` penalizes default-pose deviation for held actuators.
+`policy_joint_deviation` does the same for policy-controlled actuators and is
+disabled by default so velocity-tracking presets keep their previous reward
+shape unless they opt into the pose regularizer.
+
+`dm_control_stand` is an opt-in bounded standing reward modeled after DM Control
+Humanoid Stand. It multiplies head-height standing, torso uprightness,
+near-zero horizontal velocity, and small action factors. It is disabled by
+default because it is a task-level alternative to the additive velocity-tracking
+reward shape.
 
 `gait_contact` penalizes mismatch between detected foot contacts and the
 schedule from `env_config.gait`. `feet_air_time` rewards the first contact after
@@ -516,6 +554,15 @@ mean_done/timeout
 mean_done/nonfinite
 mean_episode_return
 max_episode_return
+mean_episode_length
+max_episode_length
+action_rms
+action_abs_max
+action_mean_rms
+action_mean_abs_max
+action_std_mean
+action_std_min
+action_std_max
 ```
 
 Reward component metrics are emitted as:
@@ -539,6 +586,21 @@ episode completed, it returns `0.0`.
 `max_episode_return` considers only completed episodes. If no episode completed
 in the rollout, it returns `NaN`; this avoids reporting a fake `0` when real
 returns are negative or absent.
+
+`mean_episode_length` and `max_episode_length` use the same completed-episode
+mask as the return metrics. They are useful for standing and balance tasks where
+survival time is the main diagnostic signal.
+
+Bello locomotion runs also emit actuator-control diagnostics:
+
+```text
+ctrl_saturation_fraction
+ctrl_margin_min
+```
+
+`ctrl_saturation_fraction` is the fraction of policy controls exactly at their
+MuJoCo ctrl-range bounds. `ctrl_margin_min` is the smallest remaining distance
+to either bound across sampled policy controls in the rollout.
 
 ## Checkpoints
 

@@ -191,6 +191,13 @@ def mujoco_policy_observation(
     root_qpos = int(env.model.root_qpos_adr)
     root_qvel = int(env.model.root_qvel_adr)
     quat = np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32)
+    if observation.base_lin_vel:
+        parts.append(
+            quat_rotate_inverse_np(
+                quat,
+                np.asarray(mj_data.qvel[root_qvel : root_qvel + 3], dtype=np.float32),
+            )
+        )
     if observation.base_ang_vel:
         parts.append(
             np.asarray(mj_data.qvel[root_qvel + 3 : root_qvel + 6], dtype=np.float32)
@@ -202,6 +209,8 @@ def mujoco_policy_observation(
                 np.asarray([0.0, 0.0, -1.0], dtype=np.float32),
             )
         )
+    if observation.base_height:
+        parts.append(np.asarray([mj_data.qpos[root_qpos + 2]], dtype=np.float32))
     if observation.gait_phase:
         phase = (step_count * env.control_timestep / env.config.gait.cycle_time) % 1.0
         angle = 2.0 * np.pi * phase

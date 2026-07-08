@@ -111,13 +111,25 @@ def sample_action(
     rng: jax.Array,
     action_clip: float | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    action, log_prob, value, _ = sample_action_with_mean(
+        policy, obs, rng, action_clip=action_clip
+    )
+    return action, log_prob, value
+
+
+def sample_action_with_mean(
+    policy: ActorCritic,
+    obs: jax.Array,
+    rng: jax.Array,
+    action_clip: float | None = None,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     mean, log_std, value = apply_policy(policy, obs)
     noise = jax.random.normal(rng, mean.shape)
     action = mean + jnp.exp(log_std) * noise
     if action_clip is not None:
         action = jnp.clip(action, -action_clip, action_clip)
     log_prob = gaussian_log_prob(mean, log_std, action)
-    return action, log_prob, value
+    return action, log_prob, value, mean
 
 
 def evaluate_actions(
