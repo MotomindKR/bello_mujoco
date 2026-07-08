@@ -9,8 +9,8 @@ usage() {
 Usage: scripts/vast/launch.sh [options]
 
 Search and rent a Vast.ai RTX 5090 instance, then bootstrap this repo remotely.
-The repo is exported locally from the requested git ref and streamed to the
-instance over the working root SSH connection; the instance does not clone GitHub.
+The repo is exported locally from the requested git ref and uploaded with
+legacy-protocol scp; the instance does not clone GitHub.
 
 Options:
   --dry-run             Print commands without searching or renting.
@@ -18,7 +18,7 @@ Options:
   --yes                 Skip the selected-offer confirmation prompt.
   --no-wait-setup       Return after starting remote setup instead of waiting.
   --repo-ref REF        Local Git ref to export and copy. Default: test/vast-short-training.
-  --image IMAGE         Docker image. Default: NVIDIA CUDA Ubuntu devel.
+  --image IMAGE         Docker image. Default: vastai/base-image:cuda-13.0.3-auto.
   --disk GB            Disk size in GB. Default: 80.
   --ram-gb GB           Minimum CPU RAM in GB. Default: 64.
   --cuda-min VERSION    Minimum host CUDA capability. Default: 13.0.
@@ -67,7 +67,7 @@ Create command:
 
 Source copy:
   git archive --format=tar.gz '$VAST_REPO_REF' > /tmp/bello_mujoco.tar.gz
-  scp /tmp/bello_mujoco.tar.gz root@INSTANCE:/tmp/
+  scp -O /tmp/bello_mujoco.tar.gz root@INSTANCE:/tmp/
   ssh root@INSTANCE 'tar -xzf /tmp/bello_mujoco.tar.gz -C $VAST_REMOTE_DIR'
 
 Remote setup:

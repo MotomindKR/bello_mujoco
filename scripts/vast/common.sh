@@ -182,8 +182,9 @@ copy_clean_ref_to_instance() {
   du -h "$archive_path" >&2 || true
 
   read -r target port < <(ssh_target "$instance_id")
-  info "uploading source archive with scp"
+  info "uploading source archive with scp legacy protocol"
   if ! scp \
+    -O \
     -o StrictHostKeyChecking=accept-new \
     -o ServerAliveInterval=30 \
     -o ConnectTimeout="${VAST_SSH_CONNECT_TIMEOUT:-20}" \

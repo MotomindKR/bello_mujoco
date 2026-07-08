@@ -77,11 +77,12 @@ The created instance id is stored in `.vast/instance_id`. The remote repo path i
 ## Remote Setup
 
 The launcher exports the requested local Git ref into a compressed archive,
-uploads it with `scp`, and extracts it over the instance's root SSH connection:
+uploads it with legacy-protocol `scp`, and extracts it over the instance's root
+SSH connection:
 
 ```text
 git archive --format=tar.gz <repo-ref> > /tmp/bello_mujoco.tar.gz
-scp /tmp/bello_mujoco.tar.gz root@<instance>:/tmp/
+scp -O /tmp/bello_mujoco.tar.gz root@<instance>:/tmp/
 ssh root@<instance> 'tar -xzf /tmp/bello_mujoco.tar.gz -C /workspace/bello_mujoco'
 ```
 
