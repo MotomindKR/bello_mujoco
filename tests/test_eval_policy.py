@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import jax.numpy as jnp
+import mujoco
 import pytest
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
@@ -8,9 +9,11 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.render import (
     RewardOverlayConfig,
     format_reward_overlay,
+    mujoco_action_to_ctrl,
+    mujoco_policy_observation,
     sync_reward_overlay,
 )
-from bello_mujoco.envs.locomotion import BelloEnvConfig
+from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
 from bello_mujoco.terrain import TerrainConfig
 import bello_mujoco.tools.eval_policy as eval_policy
 from bello_mujoco.tools.eval_policy import (
@@ -181,6 +184,36 @@ def test_validate_eval_config_rejects_invalid_config(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         validate_eval_config(config)
+
+
+def test_mujoco_policy_observation_matches_env_shape(full_body_asset) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    mj_data = mujoco.MjData(env.model.mj_model)
+    mj_data.qpos[:] = env.model.default_qpos
+    mj_data.qvel[:] = env.model.default_qvel
+    mj_data.ctrl[:] = env.model.default_ctrl
+    mujoco.mj_forward(env.model.mj_model, mj_data)
+
+    obs = mujoco_policy_observation(
+        env,
+        mj_data,
+        command=jnp.zeros(3, dtype=jnp.float32),
+        last_action=jnp.zeros(env.action_size, dtype=jnp.float32),
+        step_count=0,
+    )
+
+    assert obs.shape == (env.observation_size,)
+    assert jnp.all(jnp.isfinite(obs))
+
+
+def test_mujoco_action_to_ctrl_matches_env_mapping(full_body_asset) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    action = jnp.linspace(-0.5, 0.5, env.action_size)
+
+    expected = env._action_to_ctrl(action)
+    actual = mujoco_action_to_ctrl(env, jnp.asarray(action))
+
+    assert jnp.allclose(actual, expected)
 
 
 def test_eval_main_wires_checkpoint_env_and_viewer(monkeypatch) -> None:

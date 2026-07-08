@@ -88,6 +88,7 @@ video_config:
   every_updates: 10
   render_initial: false
   render_final: true
+  simulation_backend: mujoco
   output_dir: outputs/train_videos
   filename_prefix: rollout
   command: [0.0, 0.0, 0.0]
