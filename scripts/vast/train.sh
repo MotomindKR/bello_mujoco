@@ -68,6 +68,7 @@ REMOTE_OVERRIDES=(
   "wandb_config.project=$WANDB_PROJECT"
   "wandb_config.run_name=$RUN_NAME"
   "checkpoint_config.name=$RUN_NAME"
+  "checkpoint_config.wandb_artifact_name=$RUN_NAME"
   "${OVERRIDES[@]}"
 )
 if [ -n "$WANDB_ENTITY" ]; then
