@@ -31,7 +31,7 @@ info "SSH URL:"
 vastai_cmd ssh-url "$INSTANCE_ID" || true
 
 info "remote training status:"
-remote_ssh "$INSTANCE_ID" "bash -lc $(printf '%q' "
+if ! remote_ssh "$INSTANCE_ID" "bash -lc $(printf '%q' "
 set -Eeuo pipefail
 cd '$VAST_REMOTE_DIR' 2>/dev/null || { echo 'repo dir missing: $VAST_REMOTE_DIR'; exit 0; }
 if tmux has-session -t '$VAST_TMUX_SESSION' 2>/dev/null; then
@@ -41,4 +41,6 @@ else
   echo 'tmux session: not running'
   ls -1t outputs/vast/*.log 2>/dev/null | head -1 | xargs -r tail -n '$TAIL_LINES'
 fi
-")"
+")"; then
+  echo "SSH is not ready yet; wait a bit and rerun scripts/vast/status.sh"
+fi
