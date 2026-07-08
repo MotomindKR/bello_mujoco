@@ -76,18 +76,20 @@ The created instance id is stored in `.vast/instance_id`. The remote repo path i
 
 ## Remote Setup
 
-The launcher exports the requested local Git ref and streams a compressed
-archive over the instance's root SSH connection:
+The launcher exports the requested local Git ref into a compressed archive,
+uploads it with `scp`, and extracts it over the instance's root SSH connection:
 
 ```text
-git archive --format=tar.gz <repo-ref> | ssh root@<instance> 'tar -xzf - -C /workspace/bello_mujoco'
+git archive --format=tar.gz <repo-ref> > /tmp/bello_mujoco.tar.gz
+scp /tmp/bello_mujoco.tar.gz root@<instance>:/tmp/
+ssh root@<instance> 'tar -xzf /tmp/bello_mujoco.tar.gz -C /workspace/bello_mujoco'
 ```
 
 This avoids copying `.git`, `.venv`, uv caches, W&B output, checkpoints, or dirty
 working-tree files. It also works for private repositories because the Vast
 instance does not need GitHub credentials.
 
-The launcher verifies that `scripts/vast/remote_setup.sh` exists after the copy
+The launcher verifies that `scripts/vast/remote_setup.sh` exists after extraction
 and fails before setup if the repo copy is incomplete.
 
 After the copy completes, setup runs in a remote tmux session named

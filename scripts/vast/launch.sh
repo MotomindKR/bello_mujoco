@@ -66,8 +66,9 @@ Create command:
   vastai create instance ${OFFER_ID:-OFFER_ID_FROM_SEARCH} --image '$VAST_IMAGE' --disk '$VAST_DISK_GB' --ssh --direct
 
 Source copy:
-  git archive --format=tar.gz '$VAST_REPO_REF'
-  ssh root@INSTANCE 'tar -xzf - -C $VAST_REMOTE_DIR'
+  git archive --format=tar.gz '$VAST_REPO_REF' > /tmp/bello_mujoco.tar.gz
+  scp /tmp/bello_mujoco.tar.gz root@INSTANCE:/tmp/
+  ssh root@INSTANCE 'tar -xzf /tmp/bello_mujoco.tar.gz -C $VAST_REMOTE_DIR'
 
 Remote setup:
   tmux session '$VAST_SETUP_SESSION'

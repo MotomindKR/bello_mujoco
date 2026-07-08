@@ -166,24 +166,43 @@ copy_clean_ref_to_instance() {
   local instance_id="$1"
   local repo_ref="$2"
   local remote_dir="$3"
-  local commit target port exported_at
-  local remote_dir_q repo_ref_q commit_q exported_at_q
+  local commit short_commit target port exported_at
+  local archive_dir archive_path archive_name remote_archive
+  local remote_dir_q remote_archive_q repo_ref_q commit_q exported_at_q
 
   commit=$(git rev-parse --verify "${repo_ref}^{commit}") || die "git ref not found locally: $repo_ref"
+  short_commit="${commit:0:12}"
+  archive_dir=$(mktemp -d "${TMPDIR:-/tmp}/bello-vast-copy.XXXXXX")
+  archive_name="bello_mujoco_${short_commit}.tar.gz"
+  archive_path="$archive_dir/$archive_name"
+  remote_archive="/tmp/$archive_name"
+
+  info "creating clean source archive for $repo_ref ($short_commit)"
+  git archive --format=tar.gz "$commit" > "$archive_path"
+  du -h "$archive_path" >&2 || true
+
   read -r target port < <(ssh_target "$instance_id")
+  info "uploading source archive with scp"
+  if ! scp \
+    -o StrictHostKeyChecking=accept-new \
+    -o ServerAliveInterval=30 \
+    -o ConnectTimeout="${VAST_SSH_CONNECT_TIMEOUT:-20}" \
+    -P "$port" \
+    "$archive_path" \
+    "$target:$remote_archive"; then
+    rm -rf "$archive_dir"
+    die "scp source archive failed"
+  fi
+
   exported_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf -v remote_dir_q '%q' "$remote_dir"
+  printf -v remote_archive_q '%q' "$remote_archive"
   printf -v repo_ref_q '%q' "$repo_ref"
   printf -v commit_q '%q' "$commit"
   printf -v exported_at_q '%q' "$exported_at"
 
-  git archive --format=tar.gz "$commit" | ssh \
-    -o StrictHostKeyChecking=accept-new \
-    -o ServerAliveInterval=30 \
-    -o ConnectTimeout="${VAST_SSH_CONNECT_TIMEOUT:-20}" \
-    -p "$port" \
-    "$target" \
-    "set -Eeuo pipefail; rm -rf $remote_dir_q; mkdir -p $remote_dir_q; tar -xzf - -C $remote_dir_q; { printf 'repo_ref=%s\n' $repo_ref_q; printf 'commit=%s\n' $commit_q; printf 'exported_at=%s\n' $exported_at_q; } > $remote_dir_q/.vast_source"
+  remote_ssh "$instance_id" "set -Eeuo pipefail; rm -rf $remote_dir_q; mkdir -p $remote_dir_q; tar -xzf $remote_archive_q -C $remote_dir_q; rm -f $remote_archive_q; { printf 'repo_ref=%s\n' $repo_ref_q; printf 'commit=%s\n' $commit_q; printf 'exported_at=%s\n' $exported_at_q; } > $remote_dir_q/.vast_source"
+  rm -rf "$archive_dir"
 
   remote_ssh "$instance_id" "test -f $(printf '%q' "$remote_dir/scripts/vast/remote_setup.sh")" ||
     die "repo copy did not produce $remote_dir/scripts/vast/remote_setup.sh"
