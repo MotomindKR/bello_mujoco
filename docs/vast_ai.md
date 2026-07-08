@@ -18,9 +18,18 @@ vastai create ssh-key ~/.ssh/id_ed25519.pub
 Training uses W&B:
 
 ```bash
-export WANDB_API_KEY=<WANDB_API_KEY>
 export WANDB_PROJECT=bello-mujoco
 ```
+
+`scripts/vast/train.sh` reads `WANDB_API_KEY` from the environment. If it is
+unset, it tries the local Python keyring entry:
+
+```bash
+keyring set wandb api_key
+```
+
+If `keyring` is not installed as a shell command, the script falls back to
+`uvx --from keyring keyring`.
 
 ## Launch
 
@@ -85,13 +94,13 @@ uv run bello-train-ppo dry_run=true config.num_envs=1 config.num_steps=1 config.
 Start training in a remote `tmux` session:
 
 ```bash
-WANDB_API_KEY=$WANDB_API_KEY scripts/vast/train.sh
+scripts/vast/train.sh
 ```
 
 Pass Hydra overrides after `--`:
 
 ```bash
-WANDB_API_KEY=$WANDB_API_KEY scripts/vast/train.sh -- \
+scripts/vast/train.sh -- \
   config.total_timesteps=1048576 \
   video_config.enabled=false
 ```

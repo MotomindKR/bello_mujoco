@@ -39,6 +39,24 @@ vastai_cmd() {
   fi
 }
 
+keyring_cmd() {
+  if command -v keyring >/dev/null 2>&1; then
+    keyring "$@"
+  elif command -v uvx >/dev/null 2>&1; then
+    uvx --from keyring keyring "$@"
+  elif command -v uv >/dev/null 2>&1; then
+    uv tool run --from keyring keyring "$@"
+  else
+    return 127
+  fi
+}
+
+secret_from_keyring() {
+  local service="$1"
+  local username="$2"
+  keyring_cmd get "$service" "$username" 2>/dev/null || true
+}
+
 instance_id_or_die() {
   local instance_id="${1:-}"
   if [ -n "$instance_id" ]; then

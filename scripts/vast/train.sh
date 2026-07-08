@@ -6,9 +6,10 @@ source scripts/vast/common.sh
 
 usage() {
   cat <<'EOF'
-Usage: WANDB_API_KEY=... scripts/vast/train.sh [options] [-- HYDRA_OVERRIDES...]
+Usage: scripts/vast/train.sh [options] [-- HYDRA_OVERRIDES...]
 
 Start PPO training on the Vast instance inside tmux.
+If WANDB_API_KEY is unset, the script tries `keyring get wandb api_key`.
 
 Options:
   --instance-id ID      Vast instance id. Defaults to .vast/instance_id.
@@ -19,8 +20,8 @@ Options:
   --help                Show this help.
 
 Examples:
-  WANDB_API_KEY=... scripts/vast/train.sh
-  WANDB_API_KEY=... scripts/vast/train.sh -- config.total_timesteps=1048576
+  scripts/vast/train.sh
+  scripts/vast/train.sh -- config.total_timesteps=1048576
 EOF
 }
 
@@ -42,7 +43,10 @@ while [ $# -gt 0 ]; do
 done
 
 INSTANCE_ID=$(instance_id_or_die "$INSTANCE_ID")
-[ -n "${WANDB_API_KEY:-}" ] || die "WANDB_API_KEY is required for Vast training"
+if [ -z "${WANDB_API_KEY:-}" ]; then
+  WANDB_API_KEY="$(secret_from_keyring wandb api_key)"
+fi
+[ -n "${WANDB_API_KEY:-}" ] || die "WANDB_API_KEY is required; export it or store it with: keyring set wandb api_key"
 
 WANDB_PROJECT="${WANDB_PROJECT:-bello-mujoco}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
