@@ -114,3 +114,30 @@ swing * max(target_height - foot_height, 0) ** 2
 The term is zero when the swing foot is at or above the clearance target and
 negative when the swing foot is too low. So the negative sign does not penalize
 lifting the foot; it penalizes dragging or low swing clearance.
+
+## Termination Scale
+
+Early locomotion run `h83zq3jp` showed frequent base-height terminal failures:
+
+```text
+mean_episode_length: about 74.5 steps
+done/terminal:       about 0.0134 per step
+reward/alive:        about +0.0025 per step
+reward/termination:  about -0.0033 per step
+```
+
+With `termination.weight: -0.25`, the average failed episode received only
+about `-0.25` event penalty. The accumulated alive reward over a 74.5-step
+episode was about `+0.186`, so alive plus termination was only mildly negative
+per failure. Dense velocity tracking before falling could still dominate this.
+
+Change:
+
+```yaml
+reward_config:
+  termination:
+    weight: -0.5
+```
+
+Keep `alive.weight: 0.125` unchanged for this test. Increasing alive at the same
+time would make short survival before falling more attractive.

@@ -251,7 +251,7 @@ reward_config:
     weight: -1.0
   termination:
     enabled: true
-    weight: -0.25
+    weight: -0.5
 
 done_config:
   base_height:
