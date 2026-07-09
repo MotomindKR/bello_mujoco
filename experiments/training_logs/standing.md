@@ -155,6 +155,99 @@ Applied standing follow-up:
 - Reward shape is otherwise unchanged so this run isolates exploration scale on
   the standing objective.
 
+Survival-only standing follow-up:
+
+- Config changed in `experiments/train/standing.yaml`.
+- Enabled reward terms are now only:
+  - `alive: enabled: true, weight: 1.0`
+  - `termination: enabled: true, weight: -1.0`
+- `dm_control_stand` and all pose, velocity, action, contact, and gait terms are
+  disabled.
+- With `control_timestep = 0.02`, alive reward contributes `0.02` per step, so a
+  256-step timeout is worth about `5.12` before any terminal penalty. A fall
+  still receives the event-driven `-1.0` termination penalty.
+- Run/checkpoint/video names now use
+  `standing_survival_high_exploration_seed0` /
+  `standing_survival_high_exploration`.
+- Purpose: isolate whether high exploration plus a pure survival objective is
+  enough for PPO to discover a stable balance behavior.
+
+W&B run observed for survival-only high-exploration standing:
+
+- Run: `standing_survival_high_exploration_seed0`
+- URL: `https://wandb.ai/gyungmin/bello-mujoco/runs/aroemmim`
+- Around update 162:
+  - `mean_episode_length`: about `53`
+  - `max_episode_length`: about `129`
+  - `mean_reward/alive`: about `0.020`
+  - `mean_reward/termination`: about `-0.019`
+  - `mean_reward`: about `0.0009`
+  - `ctrl_saturation_fraction`: about `0.71`
+  - `action_std_mean`: about `7.59`
+- Interpretation: survival-only is too sparse under the high-exploration PPO
+  setting. The positive alive reward and terminal penalty mostly cancel, while
+  the policy keeps high-entropy saturated actions and falls quickly. This
+  behaved similarly to the high-exploration `dm_control_stand + termination`
+  run, which also stayed dominated by fall rate.
+
+Applied next standing follow-up:
+
+- Config changed in `experiments/train/standing.yaml`.
+- `config.ent_coef`: `0.03 -> 0.01`
+- `config.policy.init_log_std`: `1.8 -> 0.65`
+- Reward terms are now:
+  - `alive: enabled: true, weight: 1.0`
+  - `foot_distance: enabled: true, weight: 1.0`
+  - `termination: enabled: true, weight: -1.0`
+- `dm_control_stand` remains disabled.
+- Run/checkpoint/video names now use
+  `standing_survival_stance_exploration_seed0` /
+  `standing_survival_stance_exploration`.
+- One-update smoke check stayed finite with `action_std_mean ~= 1.92`,
+  `ctrl_saturation_fraction ~= 0.33`, `mean_reward/alive = 0.02`, and
+  `mean_reward/foot_distance ~= 0.0056`.
+- This stance-width cue was later removed from the standing recipe after
+  deciding to keep the Unitree-style standing experiment survival-only.
+
+Applied Unitree/rsl_rl-style PPO follow-up:
+
+- Config changed in `experiments/train/standing.yaml`.
+- Current standing reward terms are survival-only:
+  - `alive: enabled: true, weight: 1.0`
+  - `termination: enabled: true, weight: -1.0`
+  - `foot_distance: enabled: false`
+  - `dm_control_stand: enabled: false`
+- Matched supported PPO parameters from the Unitree/rsl_rl config:
+  - `num_steps: 24`
+  - `total_timesteps: 1_228_800_000`, equivalent to 50,000 updates with 1,024
+    envs and 24 steps per env
+  - `update_epochs: 5`
+  - `num_minibatches: 4`
+  - `learning_rate: 0.001`
+  - `gamma: 0.99`
+  - `gae_lambda: 0.95`
+  - `clip_eps: 0.2`
+  - `ent_coef: 0.01`
+  - `max_grad_norm: 1.0`
+  - `policy.init_log_std: 0.0`, matching `init_noise_std: 1.0`
+- Did not change the MLP shape or activation. The local policy config does not
+  support separate actor/critic layer lists or ELU yet.
+- Did not implement `schedule: adaptive` / `desired_kl: 0.01`; the local PPO
+  currently supports fixed LR or linear annealing, not rsl_rl-style adaptive KL
+  scheduling.
+- Run/checkpoint/video names now use
+  `standing_unitree_ppo_survival_seed0` /
+  `standing_unitree_ppo_survival`.
+- Dry-run confirmed `num_updates: 50000` with `num_steps: 24`.
+- One-update smoke check with one env and 24 steps should show only
+  `mean_reward/alive` and `mean_reward/termination` as nonzero reward terms.
+  Tiny smoke batches can have high `approx_kl` because the local PPO does not
+  yet have adaptive KL scheduling.
+- Corrected smoke check after disabling `foot_distance` showed
+  `mean_reward/alive = 0.02`, `mean_reward/foot_distance = 0`,
+  `mean_reward/dm_control_stand = 0`, `mean_reward/termination = 0` on the
+  first non-terminal rollout.
+
 ## Reward Tuning Lessons
 
 Semantic simplicity does not mean the RL objective is simple.
@@ -1193,3 +1286,250 @@ Expected next-run signal:
   ceiling of roughly 185 and should make `done/timeout` clearly nonzero.
 - If the run still cannot exceed that ceiling, the likely next fix is not reward
   tuning but a robot model/home-stance/control-prior change.
+
+## 2026-07-09 - Unitree-style survival-only PPO collapse
+
+Run `standing_unitree_ppo_survival_seed0` (`pk3gu4m2`) reproduced the same
+failure signature as the previous long run (`o0xh9ftv`):
+
+```text
+_step: 22,831,104
+mean_reward: -0.0745
+mean_episode_length: 11
+max_episode_length: 11
+done/base_height: 0.0945
+done/roll_pitch: 0
+done/timeout: 0
+mean_reward/alive: 0.0200
+mean_reward/termination: -0.0945
+action_rms: NaN
+action_mean_rms: NaN
+action_std_mean: NaN
+approx_kl: NaN
+value_loss: NaN
+```
+
+This is not just poor reward shaping. Once action statistics, KL, and value loss
+are NaN, the policy/optimizer state is numerically invalid and the rest of the
+run should be ignored.
+
+Likely cause in this specific config:
+
+- We copied Unitree-style `learning_rate=1e-3`, `ent_coef=0.01`,
+  `num_steps_per_env=24`, and `init_noise_std=1.0`, but the local PPO does not
+  implement Unitree/rsl_rl's adaptive KL schedule.
+- With survival-only reward, the policy receives a weak action-dependent signal.
+  Entropy pressure plus the high fixed learning rate can push the Gaussian policy
+  scale until sampled actions/log-probs become nonfinite.
+- The configured `total_timesteps=1,228,800,000` is also too large for debugging:
+  `50,000 updates * 1024 envs * 24 steps`.
+
+Next debugging rule:
+
+- Treat any run with NaN `action_*`, `approx_kl`, or `value_loss` as dead.
+- Do not run Unitree-scale 50k iterations locally unless adaptive KL or an
+  equivalent policy-scale guard is implemented.
+- For short standing diagnostics, prefer a finite debug budget and either lower
+  entropy/LR or implement the missing adaptive KL behavior before comparing
+  reward variants.
+
+Applied PPO stability fix:
+
+- Added `config.schedule` with explicit `constant`, `linear`, and `adaptive`
+  modes. `schedule: null` keeps the old `anneal_lr` behavior for existing
+  configs.
+- Added Unitree/rsl_rl-style adaptive KL controls:
+  - `desired_kl: 0.01`
+  - `min_learning_rate: 1e-5`
+  - `max_learning_rate: 1e-2`
+  - `adaptive_lr_factor: 1.5`
+- Replaced hidden Optax LR scheduling with an explicit LR carried in
+  `RunnerState`; W&B now logs `train/learning_rate` and
+  `train/next_learning_rate`.
+- Added policy `min_log_std` / `max_log_std` bounds and clamp the learned
+  Gaussian log-std after each PPO minibatch update.
+- Switched PPO `approx_kl` to the nonnegative ratio-based estimator and clips
+  log-ratios before exponentiation to avoid overflow.
+- Wrapped the optimizer in Optax finite-update protection so nonfinite gradients
+  are not applied to parameters.
+- Updated `experiments/train/standing.yaml` to use `schedule: adaptive` and the
+  new run/checkpoint/video prefix
+  `standing_unitree_ppo_survival_adaptive_seed0`.
+
+Verified W&B result:
+
+- Run: `standing_unitree_ppo_survival_adaptive_seed0`
+- Run id: `1ccjt78y`
+- URL: `https://wandb.ai/gyungmin/bello-mujoco/runs/1ccjt78y`
+- At `_step = 17,178,624`:
+  - `mean_episode_length = 216.1`
+  - `max_episode_length = 256`
+  - `mean_done/timeout = 0.00240`
+  - `mean_done/base_height = 0.00106`
+  - `mean_done/roll_pitch = 0.00122`
+  - `mean_reward = 0.0154`
+  - `mean_reward/alive = 0.0200`
+  - `mean_reward/termination = -0.00456`
+  - `action_std_mean = 2.28`
+  - `ctrl_saturation_fraction = 0.383`
+  - `approx_kl = 0.0132`
+  - `value_loss = 0.0330`
+  - `learning_rate = 1.98e-4`
+- The immediately previous non-adaptive Unitree-style survival run
+  `pk3gu4m2` collapsed to `mean_episode_length = 11` with NaN action, KL, and
+  value metrics by `_step = 25,141,248`.
+
+Conclusion: the adaptive-KL / policy-scale guard was the missing PPO stability
+piece for this recipe. It did not merely improve the metric slightly; it moved
+survival-only standing from numerical collapse to frequent full-horizon
+episodes under the same reward family.
+
+Applied next recipe change:
+
+- Re-enabled `reward_config.dm_control_stand` with `weight: 1.0`.
+- Kept `alive` and `termination` enabled, so the objective is now:
+  - continuous alive reward
+  - continuous DM-Control-style stand/upright/small-motion reward
+  - event-driven termination penalty
+- Kept `dm_control_stand.action_margin: 5.0` to avoid suppressing the larger
+  balance actions that were needed for survival.
+- Renamed run/checkpoint/video prefix to
+  `standing_unitree_ppo_dm_control_stand_adaptive_seed0`.
+- Expected signal: `mean_episode_length` should stay near the successful
+  survival-only adaptive run, while `mean_reward/dm_control_stand` should become
+  nonzero and increase as the policy learns a taller/upright posture.
+
+Observed active DM-control adaptive run:
+
+- Run: `standing_unitree_ppo_dm_control_stand_adaptive_seed0`
+- Run id: `8gglk654`
+- Around `_step = 10M`, the run reached its best sampled reward:
+  - `mean_reward ~= 0.0327`
+  - `mean_episode_length ~= 217`
+  - `mean_reward/dm_control_stand ~= 0.0167`
+  - `action_std_mean ~= 1.55`
+  - `ctrl_saturation_fraction ~= 0.29`
+- By `_step = 37M`, the run had not numerically collapsed, but reward and
+  posture quality drifted down:
+  - `mean_reward ~= 0.0302`
+  - `mean_episode_length ~= 214`
+  - `mean_reward/dm_control_stand ~= 0.0147`
+  - `action_std_mean ~= 3.14`
+  - `ctrl_saturation_fraction ~= 0.48`
+
+Interpretation:
+
+- `max_episode_length = 256` means some episodes time out; it does not mean the
+  policy reliably stands.
+- The policy found a useful survival behavior, then continued becoming more
+  stochastic because `ent_coef = 0.01` still rewarded entropy.
+- Adaptive KL prevented NaNs, but it did not prevent late high-variance actions
+  and actuator saturation from degrading the DM-control posture reward.
+
+Applied stabilization follow-up:
+
+- Reduced `config.ent_coef: 0.01 -> 0.003`.
+- Tightened `config.policy.max_log_std: 2.0 -> 1.0`, capping learned action std
+  at `exp(1) ~= 2.72` instead of `exp(2) ~= 7.39`.
+- Reduced `config.total_timesteps` from `1,228,800,000` to `49,152,000`, i.e.
+  `2,000 updates * 1,024 envs * 24 steps`.
+- Renamed run/checkpoint/video prefix to
+  `standing_unitree_ppo_dm_control_stand_stable_seed0`.
+- Expected signal: preserve the early standing improvement while preventing
+  late entropy-driven growth in `action_std_mean` and `ctrl_saturation_fraction`.
+
+Value-loss follow-up on the stable DM-control run:
+
+- Active run `standing_unitree_ppo_dm_control_stand_stable_seed0` showed
+  value loss rising from roughly `0.01-0.02` early to `0.10-0.12` while
+  `mean_episode_return` rose from about `1.2` to `8.5+` and
+  `mean_episode_length` rose from about `60` to `245`.
+- This does not look like numerical divergence. It looks like critic lag after
+  the actor found longer-surviving rollouts and shifted the return target
+  distribution upward.
+- Applied `config.vf_coef: 1.0` for the standing recipe to match the usual
+  rsl_rl value-loss coefficient and give the critic more weight while fitting
+  the new return scale.
+- Expected signal: similar or better episode length/reward, with value loss
+  flattening sooner instead of continuing to climb as returns improve.
+
+Applied value-normalization follow-up:
+
+- Added PPO value normalization and enabled it in `experiments/train/standing.yaml`
+  with `config.normalize_value: true`.
+- The critic now learns normalized value targets when enabled, while rollout and
+  GAE denormalize critic predictions back into raw reward units.
+- Added W&B metrics:
+  - `train/value_loss`: normalized clipped value loss when value normalization is
+    enabled
+  - `train/value_loss_raw`: raw return-unit critic error for interpretability
+  - `train/value_norm_mean`, `train/value_norm_std`, `train/value_norm_count`
+- Renamed run/checkpoint/video prefix to
+  `standing_unitree_ppo_dm_control_stand_valuenorm_seed0`.
+- Expected signal: `value_loss` should be easier to interpret across the run,
+  while `value_loss_raw` may still rise when the policy discovers longer
+  survival rollouts.
+
+Applied timeout/termination semantics fix:
+
+- Found that `done/timeout` was included in the same `done` bit used by
+  `reward/termination` and PPO GAE masking.
+- This meant a successful episode-length timeout received the event-driven
+  termination penalty and was treated as a zero-value terminal state.
+- Added `done/terminal` for true failure conditions: base height, roll/pitch, or
+  nonfinite state.
+- Kept `done/any` as the reset/completed-episode flag, so timeouts still reset
+  envs and are logged as completed episodes.
+- Changed `reward/termination` to use `done/terminal`, so timeouts no longer get
+  the termination penalty.
+- Changed PPO GAE to bootstrap timeout transitions from the pre-reset timeout
+  observation while still cutting lambda continuation across the reset boundary.
+- Expected signal: `mean_reward/termination` should track actual falls, not
+  successful horizon timeouts; timeout-heavy successful runs should have less
+  value-target distortion.
+
+Applied native additive standing reward follow-up:
+
+- Removed the special `dm_control_stand` reward term from the package reward
+  config and from the active standing recipe.
+- Reformulated the standing objective using native reward-pipeline terms:
+  - `alive: weight 1.0`
+  - `track_lin_vel_xy: weight 0.5`, with command disabled so this tracks zero
+    horizontal velocity
+  - `track_ang_vel_z: weight 0.25`, tracking zero yaw velocity
+  - `base_height: weight -4.0, target 0.86`
+  - `flat_orientation: weight -1.0`
+  - `lin_vel_z: weight -0.5`
+  - `ang_vel_xy: weight -0.1`
+  - `joint_vel: weight -0.0005`
+  - `torque: weight -0.00001`
+  - `action_rate: weight -0.01`
+  - `termination: weight -1.0`, now only for true terminal failures, not timeout
+- Kept the penalties intentionally modest because all continuous terms are
+  multiplied by `control_timestep`; the objective should remain mostly positive
+  for near-standing rollouts instead of encouraging early failure to avoid
+  large per-step penalties.
+- Renamed run/checkpoint/video prefix to
+  `standing_unitree_ppo_native_stand_valuenorm_seed0`.
+- Expected signal: no `mean_reward/dm_control_stand` metric should be emitted.
+  Native terms should show `track_lin_vel_xy` and `track_ang_vel_z` positive,
+  while `base_height`, `flat_orientation`, `lin_vel_z`, `ang_vel_xy`,
+  `joint_vel`, `torque`, and `action_rate` move toward zero as standing
+  stabilizes.
+
+Default PPO/policy config follow-up:
+
+- Moved the reusable PPO/policy defaults from `experiments/train/standing.yaml`
+  into `configs/train/default.yaml` and the Python dataclass defaults:
+  - adaptive KL schedule with `learning_rate: 0.001`, `desired_kl: 0.01`
+  - `num_steps: 24`, `update_epochs: 5`, `num_minibatches: 4`
+  - `ent_coef: 0.003`, `vf_coef: 1.0`, `max_grad_norm: 1.0`
+  - `normalize_value: true`
+  - `policy.init_log_std: 0.0`, `policy.max_log_std: 1.0`
+  - `policy.obs_stack_size: 10`
+- Changed `standing.yaml` to inherit `default` directly instead of
+  `rtx5090_4096x256`, so those PPO/policy values are inherited rather than
+  repeated locally.
+- Left standing-specific settings in `standing.yaml`: 1,024 envs, 49.152M total
+  steps, standing observations, disabled command, standing reward, done limits,
+  actuator overrides, and logging/checkpoint names.

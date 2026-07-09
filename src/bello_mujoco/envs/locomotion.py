@@ -492,6 +492,7 @@ class BelloLocomotionEnv:
         )
         done_flags = self._done_flags(next_state)
         done = done_flags["done/any"]
+        terminal = done_flags["done/terminal"]
         foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
             self._contact_terms(next_state, 0)
         )
@@ -499,7 +500,7 @@ class BelloLocomotionEnv:
             state,
             next_state,
             action,
-            done,
+            terminal,
             foot_contact,
             foot_height,
             foot_lateral_speed_sq,
@@ -528,6 +529,7 @@ class BelloLocomotionEnv:
         )
         info = {
             "base_height": self._base_height(next_state),
+            "bootstrap_observation": self.observation(next_state),
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_length": jnp.where(done, episode_length, 0),
             "returned_episode": done,
@@ -571,6 +573,7 @@ class BelloLocomotionEnv:
         )
         done_flags = jax.vmap(self._done_flags)(stepped_state)
         done = done_flags["done/any"]
+        terminal = done_flags["done/terminal"]
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = jax.vmap(
             self._contact_terms
@@ -579,7 +582,7 @@ class BelloLocomotionEnv:
             state,
             stepped_state,
             action,
-            done,
+            terminal,
             foot_contact,
             foot_height,
             foot_lateral_speed_sq,
@@ -611,6 +614,7 @@ class BelloLocomotionEnv:
         stepped_obs = jax.vmap(self.observation)(stepped_state)
         info = {
             "base_height": jax.vmap(self._base_height)(stepped_state),
+            "bootstrap_observation": stepped_obs,
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_length": jnp.where(done, episode_length, 0),
             "returned_episode": done,
@@ -860,9 +864,11 @@ class BelloLocomotionEnv:
             jnp.isfinite(state.data.qvel)
         )
         nonfinite = ~finite if config.nonfinite.enabled else jnp.asarray(False)
-        done = bad_pose | timeout | nonfinite
+        terminal = bad_pose | nonfinite
+        done = terminal | timeout
         return {
             "done/any": done,
+            "done/terminal": terminal,
             "done/base_height": bad_height,
             "done/roll_pitch": bad_orientation,
             "done/timeout": timeout,
@@ -906,23 +912,6 @@ class BelloLocomotionEnv:
         base_height = self._link_height(
             next_state, self._reward_link(self.reward_config.base_height)
         )
-        dm_stand_config = self.reward_config.dm_control_stand
-        dm_stand_height_link = (
-            dm_stand_config.height_link if dm_stand_config.enabled else "bello_root"
-        )
-        dm_stand_upright_link = (
-            dm_stand_config.upright_link if dm_stand_config.enabled else "bello_root"
-        )
-        dm_stand_move_link = (
-            dm_stand_config.move_link if dm_stand_config.enabled else "bello_root"
-        )
-        dm_control_stand_height = self._link_height(next_state, dm_stand_height_link)
-        dm_control_stand_upright = -self._link_projected_gravity(
-            next_state, dm_stand_upright_link
-        )[2]
-        dm_control_stand_lin_vel_xy = self._link_lin_vel(
-            next_state, dm_stand_move_link
-        )[:2]
         return compute_velocity_reward(
             config=self.reward_config,
             command=command,
@@ -942,9 +931,6 @@ class BelloLocomotionEnv:
             joint_limit_high=self._actuator_joint_limit_high(),
             hold_joint_indices=jnp.asarray(self.model.hold_ctrl_indices),
             policy_joint_indices=jnp.asarray(self.model.policy_ctrl_indices),
-            dm_control_stand_height=dm_control_stand_height,
-            dm_control_stand_upright=dm_control_stand_upright,
-            dm_control_stand_lin_vel_xy=dm_control_stand_lin_vel_xy,
             foot_contact=foot_contact,
             foot_height=foot_height,
             foot_lateral_speed_sq=foot_lateral_speed_sq,

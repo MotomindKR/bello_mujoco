@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 from bello_mujoco.envs.cartpole import ContinuousCartPoleEnv
 from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.policy import ActorCriticConfig
-from bello_mujoco.train.ppo import PPOConfig, make_train
+from bello_mujoco.train.ppo import LearningRateSchedule, PPOConfig, make_train
 
 
 @dataclass(frozen=True)
@@ -22,10 +22,17 @@ class CartPoleSmokeConfig:
     update_epochs: int = 4
     num_minibatches: int = 4
     learning_rate: float = 3.0e-4
+    anneal_lr: bool = True
+    schedule: LearningRateSchedule | None = None
+    vf_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    normalize_value: bool = False
     hidden_size: int = 64
     hidden_depth: int = 2
     ent_coef: float = 0.0
     init_log_std: float = -0.5
+    max_log_std: float = 2.0
+    obs_stack_size: int = 1
 
     def ppo_config(self) -> PPOConfig:
         return PPOConfig(
@@ -37,12 +44,18 @@ class CartPoleSmokeConfig:
             num_minibatches=self.num_minibatches,
             learning_rate=self.learning_rate,
             ent_coef=self.ent_coef,
+            vf_coef=self.vf_coef,
+            max_grad_norm=self.max_grad_norm,
+            normalize_value=self.normalize_value,
             policy=ActorCriticConfig(
                 hidden_size=self.hidden_size,
                 hidden_depth=self.hidden_depth,
                 init_log_std=self.init_log_std,
+                max_log_std=self.max_log_std,
+                obs_stack_size=self.obs_stack_size,
             ),
-            anneal_lr=True,
+            anneal_lr=self.anneal_lr,
+            schedule=self.schedule,
         )
 
 
@@ -80,10 +93,17 @@ def main(
     update_epochs: int = 4,
     num_minibatches: int = 4,
     learning_rate: float = 3.0e-4,
+    anneal_lr: bool = True,
+    schedule: LearningRateSchedule | None = None,
+    vf_coef: float = 0.5,
+    max_grad_norm: float = 0.5,
+    normalize_value: bool = False,
     hidden_size: int = 64,
     hidden_depth: int = 2,
     ent_coef: float = 0.0,
     init_log_std: float = -0.5,
+    max_log_std: float = 2.0,
+    obs_stack_size: int = 1,
 ) -> None:
     print(
         run_cartpole_ppo(
@@ -95,10 +115,17 @@ def main(
                 update_epochs=update_epochs,
                 num_minibatches=num_minibatches,
                 learning_rate=learning_rate,
+                anneal_lr=anneal_lr,
+                schedule=schedule,
+                vf_coef=vf_coef,
+                max_grad_norm=max_grad_norm,
+                normalize_value=normalize_value,
                 hidden_size=hidden_size,
                 hidden_depth=hidden_depth,
                 ent_coef=ent_coef,
                 init_log_std=init_log_std,
+                max_log_std=max_log_std,
+                obs_stack_size=obs_stack_size,
             ).ppo_config()
         )
     )

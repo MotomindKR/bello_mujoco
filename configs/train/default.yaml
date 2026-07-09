@@ -5,23 +5,32 @@ config:
   seed: 0
   total_timesteps: 1000000
   num_envs: 64
-  num_steps: 128
-  update_epochs: 4
+  num_steps: 24
+  update_epochs: 5
   num_minibatches: 4
-  learning_rate: 0.0003
-  anneal_lr: true
+  learning_rate: 0.001
+  anneal_lr: false
+  schedule: adaptive
+  desired_kl: 0.01
+  min_learning_rate: 0.00001
+  max_learning_rate: 0.01
+  adaptive_lr_factor: 1.5
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.0
-  vf_coef: 0.5
-  max_grad_norm: 0.5
+  ent_coef: 0.003
+  vf_coef: 1.0
+  max_grad_norm: 1.0
+  normalize_value: true
+  value_norm_eps: 0.00000001
   policy:
     hidden_size: 256
     hidden_depth: 2
     activation: tanh
-    init_log_std: -0.5
-    obs_stack_size: 1
+    init_log_std: 0.0
+    min_log_std: -5.0
+    max_log_std: 1.0
+    obs_stack_size: 10
 
 asset_config:
   asset: full_body

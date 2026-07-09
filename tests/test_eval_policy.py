@@ -112,7 +112,11 @@ def test_validate_checkpoint_shape_rejects_observation_mismatch() -> None:
 
 def test_validate_checkpoint_shape_rejects_action_mismatch() -> None:
     env = SimpleNamespace(observation_size=4, action_size=1)
-    metadata = SimpleNamespace(ppo=PPOConfig(), obs_size=4, action_size=2)
+    metadata = SimpleNamespace(
+        ppo=PPOConfig(policy=ActorCriticConfig(obs_stack_size=1)),
+        obs_size=4,
+        action_size=2,
+    )
 
     with pytest.raises(ValueError, match="action_size=1"):
         validate_checkpoint_shape(env, metadata)

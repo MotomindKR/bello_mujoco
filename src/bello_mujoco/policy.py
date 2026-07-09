@@ -17,14 +17,18 @@ class ActorCriticConfig:
     hidden_size: int = 256
     hidden_depth: int = 2
     activation: Literal["tanh", "relu"] = "tanh"
-    init_log_std: float = -0.5
-    obs_stack_size: int = 1
+    init_log_std: float = 0.0
+    min_log_std: float = -5.0
+    max_log_std: float = 1.0
+    obs_stack_size: int = 10
 
 
 class ActorCritic(eqx.Module):
     actor: eqx.nn.MLP
     critic: eqx.nn.MLP
     log_std: jax.Array
+    min_log_std: float = eqx.field(static=True)
+    max_log_std: float = eqx.field(static=True)
 
     def __init__(
         self,
@@ -55,11 +59,13 @@ class ActorCritic(eqx.Module):
             key=critic_key,
         )
         self.log_std = jnp.full((action_size,), config.init_log_std, dtype=jnp.float32)
+        self.min_log_std = config.min_log_std
+        self.max_log_std = config.max_log_std
 
     def __call__(self, obs: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
         mean = self.actor(obs)
         value = jnp.squeeze(self.critic(obs), axis=-1)
-        return mean, self.log_std, value
+        return mean, policy_log_std(self), value
 
 
 def init_actor_critic(
@@ -69,6 +75,16 @@ def init_actor_critic(
     config: ActorCriticConfig = ActorCriticConfig(),
 ) -> ActorCritic:
     return ActorCritic(obs_size, action_size, config, key=rng)
+
+
+def policy_log_std(policy: ActorCritic) -> jax.Array:
+    min_log_std = getattr(policy, "min_log_std", -jnp.inf)
+    max_log_std = getattr(policy, "max_log_std", jnp.inf)
+    return jnp.clip(policy.log_std, min_log_std, max_log_std)
+
+
+def clamp_policy_log_std(policy: ActorCritic) -> ActorCritic:
+    return eqx.tree_at(lambda model: model.log_std, policy, policy_log_std(policy))
 
 
 def policy_observation_size(obs_size: int, config: ActorCriticConfig) -> int:

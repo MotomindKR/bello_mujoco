@@ -10,11 +10,49 @@ config:
     init_log_std: 1.8
 
 reward_config:
-  dm_control_stand:
+  track_lin_vel_xy:
+    enabled: false
+  track_ang_vel_z:
+    enabled: false
+  alive:
+    enabled: false
+  lin_vel_z:
+    enabled: false
+  ang_vel_xy:
+    enabled: false
+  flat_orientation:
+    enabled: false
+  base_height:
+    enabled: false
+  joint_vel:
+    enabled: false
+  action_rate:
+    enabled: false
+  energy:
+    enabled: false
+  torque:
+    enabled: false
+  joint_limit:
+    enabled: false
+  hold_joint_deviation:
+    enabled: false
+  policy_joint_deviation:
+    enabled: false
+  foot_contact:
     enabled: false
   foot_distance:
     enabled: true
     weight: 1.0
+  foot_slip:
+    enabled: false
+  foot_clearance:
+    enabled: false
+  gait_contact:
+    enabled: false
+  feet_air_time:
+    enabled: false
+  undesired_contact:
+    enabled: false
   termination:
     enabled: false
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import chex
 import equinox as eqx
@@ -23,14 +23,19 @@ from bello_mujoco.policy import (
     ActorCritic,
     ActorCriticConfig,
     apply_policy,
+    clamp_policy_log_std,
     evaluate_actions,
     init_observation_stack,
     init_actor_critic,
     policy_observation_size,
+    policy_log_std,
     sample_action_with_mean,
     stacked_observation,
     update_observation_stack,
 )
+
+LearningRateSchedule = Literal["constant", "linear", "adaptive"]
+LOG_RATIO_CLIP = 20.0
 
 
 @dataclass(frozen=True)
@@ -38,17 +43,24 @@ class PPOConfig:
     seed: int = 0
     total_timesteps: int = 1_000_000
     num_envs: int = 64
-    num_steps: int = 128
-    update_epochs: int = 4
+    num_steps: int = 24
+    update_epochs: int = 5
     num_minibatches: int = 4
-    learning_rate: float = 3.0e-4
-    anneal_lr: bool = True
+    learning_rate: float = 1.0e-3
+    anneal_lr: bool = False
+    schedule: LearningRateSchedule | None = "adaptive"
+    desired_kl: float = 0.01
+    min_learning_rate: float = 1.0e-5
+    max_learning_rate: float = 1.0e-2
+    adaptive_lr_factor: float = 1.5
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
-    ent_coef: float = 0.0
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
+    ent_coef: float = 0.003
+    vf_coef: float = 1.0
+    max_grad_norm: float = 1.0
+    normalize_value: bool = True
+    value_norm_eps: float = 1.0e-8
     policy: ActorCriticConfig = ActorCriticConfig()
 
     @property
@@ -73,6 +85,8 @@ class TrainState:
 
 class Transition(NamedTuple):
     done: jax.Array
+    terminal: jax.Array
+    bootstrap_value: jax.Array
     action: jax.Array
     action_mean: jax.Array
     value: jax.Array
@@ -82,6 +96,12 @@ class Transition(NamedTuple):
     info: dict[str, jax.Array]
 
 
+class ValueNormState(NamedTuple):
+    mean: jax.Array
+    var: jax.Array
+    count: jax.Array
+
+
 class RunnerState(NamedTuple):
     params: eqx.Module
     opt_state: optax.OptState
@@ -89,6 +109,8 @@ class RunnerState(NamedTuple):
     env_state: BelloState
     obs_stack: jax.Array
     rng: jax.Array
+    learning_rate: jax.Array
+    value_norm_state: ValueNormState
 
 
 def init_train_state(
@@ -107,23 +129,108 @@ def init_train_state(
 
 def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
     validate_ppo_config(config)
-    if config.anneal_lr:
-
-        def schedule(count: jax.Array) -> jax.Array:
-            updates = jnp.maximum(
-                config.num_updates * config.update_epochs * config.num_minibatches, 1
-            )
-            frac = 1.0 - count / updates
-            return config.learning_rate * jnp.maximum(frac, 0.0)
-
-        learning_rate = schedule
-    else:
-        learning_rate = config.learning_rate
-
-    return optax.chain(
-        optax.clip_by_global_norm(config.max_grad_norm),
-        optax.adam(learning_rate=learning_rate, eps=1.0e-5),
+    return optax.apply_if_finite(
+        optax.chain(
+            optax.clip_by_global_norm(config.max_grad_norm),
+            optax.scale_by_adam(eps=1.0e-5),
+        ),
+        max_consecutive_errors=1,
     )
+
+
+def effective_learning_rate_schedule(config: PPOConfig) -> LearningRateSchedule:
+    if config.schedule is not None:
+        return config.schedule
+    return "linear" if config.anneal_lr else "constant"
+
+
+def learning_rate_for_update(
+    config: PPOConfig,
+    update: jax.Array,
+    current_learning_rate: jax.Array,
+) -> jax.Array:
+    schedule = effective_learning_rate_schedule(config)
+    if schedule == "linear":
+        frac = 1.0 - update.astype(jnp.float32) / jnp.maximum(config.num_updates, 1)
+        return jnp.asarray(config.learning_rate, dtype=jnp.float32) * jnp.maximum(
+            frac, 0.0
+        )
+    if schedule == "constant":
+        return jnp.asarray(config.learning_rate, dtype=jnp.float32)
+    return current_learning_rate
+
+
+def adapt_learning_rate(
+    learning_rate: jax.Array,
+    approx_kl: jax.Array,
+    config: PPOConfig,
+) -> jax.Array:
+    if effective_learning_rate_schedule(config) != "adaptive":
+        return learning_rate
+    finite_kl = jnp.where(jnp.isfinite(approx_kl), approx_kl, jnp.inf)
+    low_kl = (finite_kl > 0.0) & (finite_kl < config.desired_kl / 2.0)
+    high_kl = finite_kl > config.desired_kl * 2.0
+    decreased = jnp.maximum(
+        learning_rate / config.adaptive_lr_factor,
+        jnp.asarray(config.min_learning_rate, dtype=jnp.float32),
+    )
+    increased = jnp.minimum(
+        learning_rate * config.adaptive_lr_factor,
+        jnp.asarray(config.max_learning_rate, dtype=jnp.float32),
+    )
+    return jnp.where(high_kl, decreased, jnp.where(low_kl, increased, learning_rate))
+
+
+def init_value_norm_state() -> ValueNormState:
+    return ValueNormState(
+        mean=jnp.asarray(0.0, dtype=jnp.float32),
+        var=jnp.asarray(1.0, dtype=jnp.float32),
+        count=jnp.asarray(0.0, dtype=jnp.float32),
+    )
+
+
+def value_norm_std(state: ValueNormState, config: PPOConfig) -> jax.Array:
+    return jnp.sqrt(jnp.maximum(state.var, config.value_norm_eps))
+
+
+def normalize_value(
+    value: jax.Array,
+    state: ValueNormState,
+    config: PPOConfig,
+) -> jax.Array:
+    if not config.normalize_value:
+        return value
+    return (value - state.mean) / value_norm_std(state, config)
+
+
+def denormalize_value(
+    value: jax.Array,
+    state: ValueNormState,
+    config: PPOConfig,
+) -> jax.Array:
+    if not config.normalize_value:
+        return value
+    return value * value_norm_std(state, config) + state.mean
+
+
+def update_value_norm_state(
+    state: ValueNormState,
+    targets: jax.Array,
+    config: PPOConfig,
+) -> ValueNormState:
+    if not config.normalize_value:
+        return state
+    batch_count = jnp.asarray(targets.size, dtype=jnp.float32)
+    batch_mean = jnp.mean(targets)
+    batch_var = jnp.var(targets)
+    delta = batch_mean - state.mean
+    total_count = state.count + batch_count
+    mean = state.mean + delta * batch_count / total_count
+    state_m2 = state.var * state.count
+    batch_m2 = batch_var * batch_count
+    correction = delta**2 * state.count * batch_count / total_count
+    var = (state_m2 + batch_m2 + correction) / total_count
+    return ValueNormState(mean=mean, var=var, count=total_count)
 
 
 def compute_gae(
@@ -135,11 +242,19 @@ def compute_gae(
         carry: tuple[jax.Array, jax.Array], transition: Transition
     ) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
         gae, next_value = carry
-        not_done = 1.0 - transition.done.astype(jnp.float32)
-        delta = (
-            transition.reward + config.gamma * next_value * not_done - transition.value
+        not_terminal = 1.0 - transition.terminal.astype(jnp.float32)
+        not_boundary = 1.0 - transition.done.astype(jnp.float32)
+        next_value = jnp.where(
+            transition.done & ~transition.terminal,
+            transition.bootstrap_value,
+            next_value,
         )
-        gae = delta + config.gamma * config.gae_lambda * not_done * gae
+        delta = (
+            transition.reward
+            + config.gamma * next_value * not_terminal
+            - transition.value
+        )
+        gae = delta + config.gamma * config.gae_lambda * not_boundary * gae
         return (gae, transition.value), gae
 
     _, advantages = jax.lax.scan(
@@ -157,25 +272,39 @@ def ppo_loss(
     advantages: jax.Array,
     targets: jax.Array,
     config: PPOConfig,
+    value_norm_state: ValueNormState | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     log_prob, entropy, value = evaluate_actions(
         model, transitions.obs, transitions.action
     )
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1.0e-8)
 
-    ratio = jnp.exp(log_prob - transitions.log_prob)
+    log_ratio = log_prob - transitions.log_prob
+    safe_log_ratio = jnp.clip(log_ratio, -LOG_RATIO_CLIP, LOG_RATIO_CLIP)
+    ratio = jnp.exp(safe_log_ratio)
     actor_loss_1 = ratio * advantages
     actor_loss_2 = (
         jnp.clip(ratio, 1.0 - config.clip_eps, 1.0 + config.clip_eps) * advantages
     )
     actor_loss = -jnp.minimum(actor_loss_1, actor_loss_2).mean()
 
-    value_clipped = transitions.value + jnp.clip(
-        value - transitions.value, -config.clip_eps, config.clip_eps
+    if value_norm_state is None:
+        value_norm_state = init_value_norm_state()
+    raw_value = denormalize_value(value, value_norm_state, config)
+    value_for_loss = value
+    old_value_for_loss = normalize_value(transitions.value, value_norm_state, config)
+    targets_for_loss = normalize_value(targets, value_norm_state, config)
+    value_clipped = old_value_for_loss + jnp.clip(
+        value_for_loss - old_value_for_loss, -config.clip_eps, config.clip_eps
     )
     value_loss = (
-        0.5 * jnp.maximum((value - targets) ** 2, (value_clipped - targets) ** 2).mean()
+        0.5
+        * jnp.maximum(
+            (value_for_loss - targets_for_loss) ** 2,
+            (value_clipped - targets_for_loss) ** 2,
+        ).mean()
     )
+    value_loss_raw = 0.5 * ((raw_value - targets) ** 2).mean()
     entropy_loss = entropy.mean()
     total_loss = (
         actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy_loss
@@ -184,8 +313,9 @@ def ppo_loss(
         "loss": total_loss,
         "actor_loss": actor_loss,
         "value_loss": value_loss,
+        "value_loss_raw": value_loss_raw,
         "entropy": entropy_loss,
-        "approx_kl": (transitions.log_prob - log_prob).mean(),
+        "approx_kl": ((ratio - 1.0) - safe_log_ratio).mean(),
     }
     return total_loss, metrics
 
@@ -198,9 +328,15 @@ def update_ppo(
     targets: jax.Array,
     rng: jax.Array,
     config: PPOConfig,
+    learning_rate: jax.Array | float | None = None,
+    value_norm_state: ValueNormState | None = None,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
     batch = flatten_batch((transitions, advantages, targets))
     init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
+    if learning_rate is None:
+        learning_rate = jnp.asarray(config.learning_rate, dtype=jnp.float32)
+    else:
+        learning_rate = jnp.asarray(learning_rate, dtype=jnp.float32)
 
     def update_epoch(carry, _: None):
         params, opt_state, key = carry
@@ -221,14 +357,24 @@ def update_ppo(
             def loss_fn(params):
                 model = eqx.combine(params, static_policy)
                 return ppo_loss(
-                    model, mb_transitions, mb_advantages, mb_targets, config
+                    model,
+                    mb_transitions,
+                    mb_advantages,
+                    mb_targets,
+                    config,
+                    value_norm_state,
                 )
 
             (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
                 params
             )
             updates, opt_state = optimizer.update(grads, opt_state, params)
+            updates = jax.tree_util.tree_map(
+                lambda update: -learning_rate * update, updates
+            )
             params = optax.apply_updates(params, updates)
+            policy = clamp_policy_log_std(eqx.combine(params, static_policy))
+            params, _ = eqx.partition(policy, eqx.is_array)
             metrics = {**metrics, "loss": loss_value}
             return (params, opt_state), metrics
 
@@ -247,7 +393,7 @@ def update_ppo(
     )
     metrics = jax.tree_util.tree_map(lambda x: x.mean(), metrics)
     train_state = TrainState(
-        policy=eqx.combine(params, static_policy),
+        policy=clamp_policy_log_std(eqx.combine(params, static_policy)),
         opt_state=opt_state,
         update=train_state.update + 1,
     )
@@ -268,9 +414,7 @@ def safe_returned_mean(
     if value is None or returned_episode is None:
         return jnp.asarray(0.0, dtype=jnp.float32)
     mask = returned_episode.astype(jnp.float32)
-    return jnp.sum(value.astype(jnp.float32) * mask) / jnp.maximum(
-        jnp.sum(mask), 1.0
-    )
+    return jnp.sum(value.astype(jnp.float32) * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
 
 def safe_returned_max(
@@ -308,14 +452,15 @@ def action_diagnostics(
 ) -> dict[str, jax.Array]:
     action = transitions.action
     action_mean = transitions.action_mean
+    log_std = policy_log_std(policy)
     metrics = {
         "action_rms": jnp.sqrt(jnp.mean(action**2)),
         "action_abs_max": jnp.max(jnp.abs(action)),
         "action_mean_rms": jnp.sqrt(jnp.mean(action_mean**2)),
         "action_mean_abs_max": jnp.max(jnp.abs(action_mean)),
-        "action_std_mean": jnp.mean(jnp.exp(policy.log_std)),
-        "action_std_min": jnp.min(jnp.exp(policy.log_std)),
-        "action_std_max": jnp.max(jnp.exp(policy.log_std)),
+        "action_std_mean": jnp.mean(jnp.exp(log_std)),
+        "action_std_min": jnp.min(jnp.exp(log_std)),
+        "action_std_max": jnp.max(jnp.exp(log_std)),
     }
     if not hasattr(env, "_action_to_ctrl"):
         return metrics
@@ -324,15 +469,11 @@ def action_diagnostics(
     ctrl = jax.vmap(env._action_to_ctrl)(flat_action)
     policy_ctrl_indices = jnp.asarray(env.model.policy_ctrl_indices)
     policy_ctrl = ctrl[:, policy_ctrl_indices]
-    ctrlrange = jnp.asarray(env.model.mj_model.actuator_ctrlrange)[
-        policy_ctrl_indices
-    ]
+    ctrlrange = jnp.asarray(env.model.mj_model.actuator_ctrlrange)[policy_ctrl_indices]
     ctrl_low = ctrlrange[:, 0]
     ctrl_high = ctrlrange[:, 1]
     ctrl_margin = jnp.minimum(policy_ctrl - ctrl_low, ctrl_high - policy_ctrl)
-    saturated = (policy_ctrl <= ctrl_low + 1.0e-6) | (
-        policy_ctrl >= ctrl_high - 1.0e-6
-    )
+    saturated = (policy_ctrl <= ctrl_low + 1.0e-6) | (policy_ctrl >= ctrl_high - 1.0e-6)
     return {
         **metrics,
         "ctrl_saturation_fraction": saturated.astype(jnp.float32).mean(),
@@ -347,6 +488,7 @@ def collect_rollout(
     obs_stack: jax.Array,
     rng: jax.Array,
     config: PPOConfig,
+    value_norm_state: ValueNormState,
 ) -> tuple[tuple[BelloState, jax.Array, jax.Array], Transition]:
     def env_step(
         carry: tuple[BelloState, jax.Array, jax.Array], _: None
@@ -360,12 +502,36 @@ def collect_rollout(
             action_key,
             action_clip=getattr(env, "action_clip", None),
         )
+        value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = env.step_batch(
             state, action, rng=env_key
         )
         next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
+        terminal = info.get("done/terminal", done)
+        bootstrap_obs = info.get("bootstrap_observation", next_obs)
+        bootstrap_obs_stack = update_observation_stack(
+            last_obs_stack, bootstrap_obs, terminal
+        )
+        _, _, bootstrap_value = apply_policy(
+            policy, stacked_observation(bootstrap_obs_stack)
+        )
+        bootstrap_value = denormalize_value(bootstrap_value, value_norm_state, config)
+        transition_info = {
+            name: value
+            for name, value in info.items()
+            if name != "bootstrap_observation"
+        }
         transition = Transition(
-            done, action, action_mean, value, reward, log_prob, policy_obs, info
+            done,
+            terminal,
+            bootstrap_value,
+            action,
+            action_mean,
+            value,
+            reward,
+            log_prob,
+            policy_obs,
+            transition_info,
         )
         return (next_state, next_obs_stack, key), transition
 
@@ -395,6 +561,8 @@ def init_runner_state(
             env_state=env_state,
             obs_stack=obs_stack,
             rng=rng,
+            learning_rate=jnp.asarray(config.learning_rate, dtype=jnp.float32),
+            value_norm_state=init_value_norm_state(),
         ),
         static_policy,
         optimizer,
@@ -433,15 +601,39 @@ def update_runner_state(
         runner_state.obs_stack,
         rollout_key,
         config,
+        runner_state.value_norm_state,
     )
     _, _, last_value = apply_policy(policy, stacked_observation(obs_stack))
+    last_value = denormalize_value(last_value, runner_state.value_norm_state, config)
     advantages, targets = compute_gae(transitions, last_value, config)
+    value_norm_state = update_value_norm_state(
+        runner_state.value_norm_state, targets, config
+    )
+    learning_rate = learning_rate_for_update(
+        config, runner_state.update, runner_state.learning_rate
+    )
     train_state, metrics = update_ppo(
-        train_state, optimizer, transitions, advantages, targets, update_key, config
+        train_state,
+        optimizer,
+        transitions,
+        advantages,
+        targets,
+        update_key,
+        config,
+        learning_rate=learning_rate,
+        value_norm_state=value_norm_state,
+    )
+    next_learning_rate = adapt_learning_rate(
+        learning_rate, metrics["approx_kl"], config
     )
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
     metrics = {
         **metrics,
+        "learning_rate": learning_rate,
+        "next_learning_rate": next_learning_rate,
+        "value_norm_mean": value_norm_state.mean,
+        "value_norm_std": value_norm_std(value_norm_state, config),
+        "value_norm_count": value_norm_state.count,
         "mean_reward": transitions.reward.mean(),
         "mean_done": transitions.done.astype(jnp.float32).mean(),
         "mean_episode_return": safe_returned_mean(transitions.info),
@@ -449,9 +641,7 @@ def update_runner_state(
         "mean_episode_length": safe_returned_mean(
             transitions.info, key="episode_length"
         ),
-        "max_episode_length": safe_returned_max(
-            transitions.info, key="episode_length"
-        ),
+        "max_episode_length": safe_returned_max(transitions.info, key="episode_length"),
         **action_diagnostics(transitions, env, policy),
         **done_reason_means(transitions.info),
         **reward_component_means(transitions.info),
@@ -464,6 +654,8 @@ def update_runner_state(
             env_state=env_state,
             obs_stack=obs_stack,
             rng=key,
+            learning_rate=next_learning_rate,
+            value_norm_state=value_norm_state,
         ),
         metrics,
     )
@@ -516,6 +708,39 @@ def validate_ppo_config(config: PPOConfig) -> None:
         raise ValueError(f"learning_rate must be positive, got {config.learning_rate}")
     if not math.isfinite(config.learning_rate):
         raise ValueError(f"learning_rate must be finite, got {config.learning_rate}")
+    if effective_learning_rate_schedule(config) not in {
+        "constant",
+        "linear",
+        "adaptive",
+    }:
+        raise ValueError(
+            "schedule must be one of 'constant', 'linear', or 'adaptive', got "
+            f"{config.schedule!r}"
+        )
+    if not math.isfinite(config.desired_kl) or config.desired_kl <= 0:
+        raise ValueError(
+            f"desired_kl must be positive and finite, got {config.desired_kl}"
+        )
+    if not math.isfinite(config.min_learning_rate) or config.min_learning_rate <= 0:
+        raise ValueError(
+            "min_learning_rate must be positive and finite, got "
+            f"{config.min_learning_rate}"
+        )
+    if not math.isfinite(config.max_learning_rate) or config.max_learning_rate <= 0:
+        raise ValueError(
+            "max_learning_rate must be positive and finite, got "
+            f"{config.max_learning_rate}"
+        )
+    if config.min_learning_rate > config.max_learning_rate:
+        raise ValueError(
+            "min_learning_rate must be <= max_learning_rate, got "
+            f"{config.min_learning_rate} > {config.max_learning_rate}"
+        )
+    if not math.isfinite(config.adaptive_lr_factor) or config.adaptive_lr_factor <= 1:
+        raise ValueError(
+            "adaptive_lr_factor must be finite and > 1, got "
+            f"{config.adaptive_lr_factor}"
+        )
     if not 0.0 <= config.gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {config.gamma}")
     if not 0.0 <= config.gae_lambda <= 1.0:
@@ -532,6 +757,10 @@ def validate_ppo_config(config: PPOConfig) -> None:
         )
     if not math.isfinite(config.max_grad_norm) or config.max_grad_norm <= 0:
         raise ValueError(f"max_grad_norm must be positive, got {config.max_grad_norm}")
+    if not math.isfinite(config.value_norm_eps) or config.value_norm_eps <= 0:
+        raise ValueError(
+            f"value_norm_eps must be positive and finite, got {config.value_norm_eps}"
+        )
     if config.policy.hidden_size <= 0:
         raise ValueError(
             f"policy.hidden_size must be positive, got {config.policy.hidden_size}"
@@ -553,4 +782,17 @@ def validate_ppo_config(config: PPOConfig) -> None:
     if not math.isfinite(config.policy.init_log_std):
         raise ValueError(
             f"policy.init_log_std must be finite, got {config.policy.init_log_std}"
+        )
+    if not math.isfinite(config.policy.min_log_std):
+        raise ValueError(
+            f"policy.min_log_std must be finite, got {config.policy.min_log_std}"
+        )
+    if not math.isfinite(config.policy.max_log_std):
+        raise ValueError(
+            f"policy.max_log_std must be finite, got {config.policy.max_log_std}"
+        )
+    if config.policy.min_log_std > config.policy.max_log_std:
+        raise ValueError(
+            "policy.min_log_std must be <= policy.max_log_std, got "
+            f"{config.policy.min_log_std} > {config.policy.max_log_std}"
         )

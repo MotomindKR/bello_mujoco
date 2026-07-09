@@ -196,10 +196,10 @@ base_height
 joint_vel
 action_rate
 energy
+torque
 joint_limit
 hold_joint_deviation
 policy_joint_deviation
-dm_control_stand
 foot_contact
 foot_slip
 foot_clearance
@@ -212,7 +212,8 @@ termination
 Reward and done terms have separate dataclass configs. Link-aware reward/done
 terms validate body names at env initialization. Upper-body assets require
 foot-dependent rewards and lower-body/base done terms to be disabled or changed
-to valid links.
+to valid links. Episode-length timeouts are truncations: they reset envs and
+emit `done/timeout`, but they do not receive the `termination` reward penalty.
 
 ## Configuration
 
@@ -278,16 +279,23 @@ WarpConfig:
 PPOConfig:
   total_timesteps: 1000000
   num_envs: 64
-  num_steps: 128
-  update_epochs: 4
+  num_steps: 24
+  update_epochs: 5
   num_minibatches: 4
-  learning_rate: 0.0003
+  learning_rate: 0.001
+  schedule: adaptive
+  desired_kl: 0.01
+  min_learning_rate: 0.00001
+  max_learning_rate: 0.01
+  adaptive_lr_factor: 1.5
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.0
-  vf_coef: 0.5
-  max_grad_norm: 0.5
+  ent_coef: 0.003
+  vf_coef: 1.0
+  max_grad_norm: 1.0
+  normalize_value: true
+  value_norm_eps: 0.00000001
 ```
 
 Use `--help` and `--hydra-help` on each entry point for the current exhaustive CLI tree.
@@ -324,22 +332,31 @@ Primary PPO flags:
 config.seed: 0
 config.total_timesteps: 1000000
 config.num_envs: 64
-config.num_steps: 128
-config.update_epochs: 4
+config.num_steps: 24
+config.update_epochs: 5
 config.num_minibatches: 4
-config.learning_rate: 0.0003
-config.anneal_lr: true
+config.learning_rate: 0.001
+config.anneal_lr: false
+config.schedule: null | constant | linear | adaptive
+config.desired_kl: 0.01
+config.min_learning_rate: 0.00001
+config.max_learning_rate: 0.01
+config.adaptive_lr_factor: 1.5
 config.gamma: 0.99
 config.gae_lambda: 0.95
 config.clip_eps: 0.2
-config.ent_coef: 0.0
-config.vf_coef: 0.5
-config.max_grad_norm: 0.5
+config.ent_coef: 0.003
+config.vf_coef: 1.0
+config.max_grad_norm: 1.0
+config.normalize_value: true
+config.value_norm_eps: 0.00000001
 config.policy.hidden_size: 256
 config.policy.hidden_depth: 2
 config.policy.activation: tanh | relu
-config.policy.init_log_std: -0.5
-config.policy.obs_stack_size: 1
+config.policy.init_log_std: 0.0
+config.policy.min_log_std: -5.0
+config.policy.max_log_std: 1.0
+config.policy.obs_stack_size: 10
 ```
 
 Training-adjacent flags:

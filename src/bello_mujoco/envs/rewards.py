@@ -119,6 +119,11 @@ class EnergyRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class TorqueRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
 class JointLimitRewardConfig(WeightedRewardConfig):
     pass
 
@@ -131,19 +136,6 @@ class HoldJointDeviationRewardConfig(WeightedRewardConfig):
 @dataclass(frozen=True)
 class PolicyJointDeviationRewardConfig(WeightedRewardConfig):
     pass
-
-
-@dataclass(frozen=True)
-class DMControlStandRewardConfig(WeightedRewardConfig):
-    height_link: str = "head_link"
-    upright_link: str = "torso_link"
-    move_link: str = "bello_root"
-    stand_height: float = 1.4
-    stand_margin: float = 0.35
-    upright_threshold: float = 0.9
-    upright_margin: float = 1.9
-    move_margin: float = 2.0
-    action_margin: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -204,15 +196,13 @@ class RewardConfig:
     joint_vel: JointVelRewardConfig = JointVelRewardConfig(weight=-0.001)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.05)
     energy: EnergyRewardConfig = EnergyRewardConfig(weight=-2.0e-5)
+    torque: TorqueRewardConfig = TorqueRewardConfig(enabled=False, weight=-1.0e-5)
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-5.0)
     hold_joint_deviation: HoldJointDeviationRewardConfig = (
         HoldJointDeviationRewardConfig(weight=-0.1)
     )
     policy_joint_deviation: PolicyJointDeviationRewardConfig = (
         PolicyJointDeviationRewardConfig(enabled=False, weight=-0.1)
-    )
-    dm_control_stand: DMControlStandRewardConfig = DMControlStandRewardConfig(
-        enabled=False, weight=1.0
     )
     foot_contact: FootContactRewardConfig = FootContactRewardConfig(weight=0.05)
     foot_slip: FootSlipRewardConfig = FootSlipRewardConfig(weight=-0.2)
@@ -248,7 +238,6 @@ class RewardConfig:
     def uses_terrain_contact_metadata(self) -> bool:
         return self.uses_foot_contact_metadata or self.undesired_contact.enabled
 
-
     @property
     def enabled_link_names(self) -> tuple[str, ...]:
         terms = [
@@ -259,14 +248,6 @@ class RewardConfig:
             self.flat_orientation,
             self.base_height,
         ]
-        if self.dm_control_stand.enabled:
-            terms.extend(
-                (
-                    LinkRewardConfig(link=self.dm_control_stand.height_link),
-                    LinkRewardConfig(link=self.dm_control_stand.upright_link),
-                    LinkRewardConfig(link=self.dm_control_stand.move_link),
-                )
-            )
         return tuple(
             sorted({term.link for term in terms if term.enabled and term.link})
         )
@@ -292,9 +273,6 @@ def compute_velocity_reward(
     joint_limit_high: jax.Array,
     hold_joint_indices: jax.Array,
     policy_joint_indices: jax.Array,
-    dm_control_stand_height: jax.Array,
-    dm_control_stand_upright: jax.Array,
-    dm_control_stand_lin_vel_xy: jax.Array,
     foot_contact: jax.Array,
     foot_height: jax.Array,
     foot_lateral_speed_sq: jax.Array,
@@ -321,6 +299,7 @@ def compute_velocity_reward(
     joint_vel_l2 = jnp.mean(joint_vel**2)
     action_rate_l2 = jnp.mean((action - last_action) ** 2)
     energy = jnp.mean(jnp.abs(actuator_force * joint_vel))
+    torque_l2 = jnp.mean(actuator_force**2)
 
     lower_violation = jnp.maximum(joint_limit_low - joint_pos, 0.0)
     upper_violation = jnp.maximum(joint_pos - joint_limit_high, 0.0)
@@ -359,13 +338,6 @@ def compute_velocity_reward(
         command_speed > config.feet_air_time.command_speed_threshold,
         feet_air_time,
         jnp.asarray(0.0, dtype=jnp.float32),
-    )
-    dm_control_stand = compute_dm_control_stand_reward(
-        config.dm_control_stand,
-        height=dm_control_stand_height,
-        upright=dm_control_stand_upright,
-        horizontal_velocity=dm_control_stand_lin_vel_xy,
-        action=action,
     )
     termination = done.astype(jnp.float32)
 
@@ -406,6 +378,9 @@ def compute_velocity_reward(
         "reward/energy": weighted_term(
             config.energy.enabled, config.energy.weight, energy
         ),
+        "reward/torque": weighted_term(
+            config.torque.enabled, config.torque.weight, torque_l2
+        ),
         "reward/joint_limit": weighted_term(
             config.joint_limit.enabled, config.joint_limit.weight, joint_limit
         ),
@@ -421,13 +396,6 @@ def compute_velocity_reward(
                 config.policy_joint_deviation.enabled,
                 config.policy_joint_deviation.weight,
                 policy_joint_deviation,
-            )
-        ),
-        "reward/dm_control_stand": (
-            weighted_term(
-                config.dm_control_stand.enabled,
-                config.dm_control_stand.weight,
-                dm_control_stand,
             )
         ),
         "reward/foot_contact": weighted_term(
@@ -487,90 +455,6 @@ def safe_mean(values: jax.Array) -> jax.Array:
     return jnp.mean(values)
 
 
-def compute_dm_control_stand_reward(
-    config: DMControlStandRewardConfig,
-    *,
-    height: jax.Array,
-    upright: jax.Array,
-    horizontal_velocity: jax.Array,
-    action: jax.Array,
-) -> jax.Array:
-    standing = tolerance(
-        height,
-        lower=config.stand_height,
-        margin=config.stand_margin,
-        sigmoid="gaussian",
-        value_at_margin=0.1,
-    )
-    upright_reward = tolerance(
-        upright,
-        lower=config.upright_threshold,
-        margin=config.upright_margin,
-        sigmoid="linear",
-        value_at_margin=0.0,
-    )
-    stand_reward = standing * upright_reward
-    dont_move = safe_mean(
-        tolerance(
-            horizontal_velocity,
-            lower=0.0,
-            upper=0.0,
-            margin=config.move_margin,
-            sigmoid="gaussian",
-            value_at_margin=0.1,
-        )
-    )
-    small_control = safe_mean(
-        tolerance(
-            action,
-            lower=0.0,
-            upper=0.0,
-            margin=config.action_margin,
-            sigmoid="quadratic",
-            value_at_margin=0.0,
-        )
-    )
-    small_control = (4.0 + small_control) / 5.0
-    return stand_reward * dont_move * small_control
-
-
-def tolerance(
-    value: jax.Array,
-    *,
-    lower: float,
-    upper: float = math.inf,
-    margin: float,
-    sigmoid: str,
-    value_at_margin: float,
-) -> jax.Array:
-    in_bounds = (value >= lower) & (value <= upper)
-    if margin == 0.0:
-        return jnp.where(in_bounds, 1.0, 0.0).astype(jnp.float32)
-    distance = jnp.where(value < lower, lower - value, value - upper) / margin
-    return jnp.where(
-        in_bounds,
-        jnp.asarray(1.0, dtype=jnp.float32),
-        sigmoid_reward(distance, value_at_margin, sigmoid),
-    )
-
-
-def sigmoid_reward(
-    distance: jax.Array, value_at_margin: float, sigmoid: str
-) -> jax.Array:
-    if sigmoid == "gaussian":
-        scale = jnp.sqrt(-2.0 * jnp.log(value_at_margin))
-        return jnp.exp(-0.5 * (distance * scale) ** 2)
-    if sigmoid == "linear":
-        scale = 1.0 - value_at_margin
-        scaled = distance * scale
-        return jnp.where(jnp.abs(scaled) < 1.0, 1.0 - scaled, 0.0)
-    if sigmoid == "quadratic":
-        scale = jnp.sqrt(1.0 - value_at_margin)
-        scaled = distance * scale
-        return jnp.where(jnp.abs(scaled) < 1.0, 1.0 - scaled**2, 0.0)
-    raise ValueError(f"unsupported sigmoid: {sigmoid!r}")
-
-
 def weighted_term(enabled: bool, weight: float, value: jax.Array) -> jax.Array:
     if not enabled:
         return jnp.zeros_like(value, dtype=jnp.float32)
@@ -623,31 +507,6 @@ def validate_reward_config(config: RewardConfig) -> None:
                 "feet_air_time.command_speed_threshold must be nonnegative and "
                 f"finite, got {config.feet_air_time.command_speed_threshold}"
             )
-    if config.dm_control_stand.enabled:
-        if (
-            not math.isfinite(config.dm_control_stand.stand_height)
-            or config.dm_control_stand.stand_height <= 0.0
-        ):
-            raise ValueError(
-                "dm_control_stand.stand_height must be positive and finite, got "
-                f"{config.dm_control_stand.stand_height}"
-            )
-        for name in (
-            "stand_margin",
-            "upright_margin",
-            "move_margin",
-            "action_margin",
-        ):
-            value = getattr(config.dm_control_stand, name)
-            if not math.isfinite(value) or value <= 0.0:
-                raise ValueError(
-                    f"dm_control_stand.{name} must be positive and finite, got {value}"
-                )
-        if not math.isfinite(config.dm_control_stand.upright_threshold):
-            raise ValueError(
-                "dm_control_stand.upright_threshold must be finite, got "
-                f"{config.dm_control_stand.upright_threshold}"
-            )
 
 
 def reward_terms(config: RewardConfig):
@@ -662,10 +521,10 @@ def reward_terms(config: RewardConfig):
         "joint_vel": config.joint_vel,
         "action_rate": config.action_rate,
         "energy": config.energy,
+        "torque": config.torque,
         "joint_limit": config.joint_limit,
         "hold_joint_deviation": config.hold_joint_deviation,
         "policy_joint_deviation": config.policy_joint_deviation,
-        "dm_control_stand": config.dm_control_stand,
         "foot_contact": config.foot_contact,
         "foot_slip": config.foot_slip,
         "foot_clearance": config.foot_clearance,

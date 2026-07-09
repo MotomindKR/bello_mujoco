@@ -1,28 +1,19 @@
 import pytest
 
-from bello_mujoco.policy import ActorCriticConfig
-from bello_mujoco.tools.ppo_cartpole_smoke import run_cartpole_ppo
-from bello_mujoco.train.ppo import PPOConfig
+from bello_mujoco.tools.ppo_cartpole_smoke import CartPoleSmokeConfig, run_cartpole_ppo
 
 
 @pytest.mark.integration
 def test_cartpole_ppo_reaches_max_score() -> None:
-    config = PPOConfig(
+    config = CartPoleSmokeConfig(
         seed=3,
         total_timesteps=8_388_608,
         num_envs=128,
         num_steps=128,
-        update_epochs=4,
         num_minibatches=8,
         learning_rate=1.0e-3,
-        ent_coef=0.0,
-        policy=ActorCriticConfig(
-            hidden_size=64,
-            hidden_depth=2,
-            init_log_std=-1.0,
-        ),
-        anneal_lr=True,
-    )
+        init_log_std=-1.0,
+    ).ppo_config()
 
     metrics = run_cartpole_ppo(config)
 

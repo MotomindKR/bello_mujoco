@@ -97,23 +97,32 @@ config:
   seed: 0
   total_timesteps: 1000000
   num_envs: 64
-  num_steps: 128
-  update_epochs: 4
+  num_steps: 24
+  update_epochs: 5
   num_minibatches: 4
-  learning_rate: 0.0003
-  anneal_lr: true
+  learning_rate: 0.001
+  anneal_lr: false
+  schedule: adaptive  # null uses anneal_lr; or constant | linear | adaptive
+  desired_kl: 0.01
+  min_learning_rate: 0.00001
+  max_learning_rate: 0.01
+  adaptive_lr_factor: 1.5
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.0
-  vf_coef: 0.5
-  max_grad_norm: 0.5
+  ent_coef: 0.003
+  vf_coef: 1.0
+  max_grad_norm: 1.0
+  normalize_value: true
+  value_norm_eps: 0.00000001
   policy:
     hidden_size: 256
     hidden_depth: 2
     activation: tanh  # tanh | relu
-    init_log_std: -0.5
-    obs_stack_size: 1
+    init_log_std: 0.0
+    min_log_std: -5.0
+    max_log_std: 1.0
+    obs_stack_size: 10
 ```
 
 Derived values:
@@ -223,7 +232,8 @@ Every reward term has `enabled` and `weight`. Link-aware terms also have `link`.
 Continuous reward components are multiplied by the environment control timestep
 before they are returned or logged under `reward/*`, so their weights are
 interpreted as per-second scales. Event-driven terms such as `feet_air_time` and
-`termination` keep their configured event magnitude.
+`termination` keep their configured event magnitude. The `termination` reward is
+applied only for terminal failure conditions, not for episode-length timeouts.
 
 ```yaml
 reward_config:
@@ -266,6 +276,9 @@ reward_config:
   energy:
     enabled: true
     weight: -0.00002
+  torque:
+    enabled: false
+    weight: -0.00001
   joint_limit:
     enabled: true
     weight: -5.0
@@ -275,18 +288,6 @@ reward_config:
   policy_joint_deviation:
     enabled: false
     weight: -0.1
-  dm_control_stand:
-    enabled: false
-    weight: 1.0
-    height_link: head_link
-    upright_link: torso_link
-    move_link: bello_root
-    stand_height: 1.4
-    stand_margin: 0.35
-    upright_threshold: 0.9
-    upright_margin: 1.9
-    move_margin: 2.0
-    action_margin: 1.0
   foot_contact:
     enabled: true
     weight: 0.05
@@ -323,16 +324,14 @@ the horizontal distance between the two foot bodies. Terrain-contact metadata is
 required for the contact-dependent foot terms and for `undesired_contact` when
 terrain is enabled.
 
+`joint_vel`, `action_rate`, `energy`, and `torque` are smoothness and effort
+regularizers. `energy` penalizes absolute actuator force times joint velocity;
+`torque` penalizes actuator-force magnitude directly.
+
 `hold_joint_deviation` penalizes default-pose deviation for held actuators.
 `policy_joint_deviation` does the same for policy-controlled actuators and is
 disabled by default so velocity-tracking presets keep their previous reward
 shape unless they opt into the pose regularizer.
-
-`dm_control_stand` is an opt-in bounded standing reward modeled after DM Control
-Humanoid Stand. It multiplies head-height standing, torso uprightness,
-near-zero horizontal velocity, and small action factors. It is disabled by
-default because it is a task-level alternative to the additive velocity-tracking
-reward shape.
 
 `gait_contact` penalizes mismatch between detected foot contacts and the
 schedule from `env_config.gait`. `feet_air_time` rewards the first contact after
@@ -357,6 +356,12 @@ done_config:
   nonfinite:
     enabled: true
 ```
+
+`done/any` is true for either terminal failure or timeout and drives env resets
+and completed-episode logging. `done/terminal` is true only for failure
+conditions, currently base height, roll/pitch, or nonfinite state. Timeout is
+treated as truncation: it resets the env and emits `done/timeout`, but does not
+receive the `reward/termination` penalty.
 
 `base_height` and `roll_pitch` validate their configured links during env
 initialization.
@@ -509,11 +514,22 @@ Per PPO update:
 
 1. Collect `num_steps` transitions across `num_envs`.
 2. Bootstrap value from the last observation.
-3. Compute GAE and value targets.
-4. Flatten `[num_steps, num_envs]` into one batch.
-5. Shuffle and split into `num_minibatches`.
-6. Run `update_epochs` passes over minibatches.
-7. Emit scalar metrics for the update.
+3. Compute GAE and raw value targets.
+4. If `normalize_value=true`, update the running target-return statistics.
+5. Flatten `[num_steps, num_envs]` into one batch.
+6. Shuffle and split into `num_minibatches`.
+7. Run `update_epochs` passes over minibatches.
+8. Emit scalar metrics for the update.
+
+When `normalize_value=true`, the critic predicts normalized values. Rollout and
+GAE denormalize those predictions back into raw reward units, while the value
+loss compares normalized critic outputs against normalized raw targets. Actor
+advantages remain based on raw rewards and are still normalized per minibatch.
+
+Timeouts are handled as time-limit truncations in PPO. They end the episode and
+reset the env, but GAE bootstraps from the pre-reset timeout observation instead
+of treating the transition as a zero-value terminal failure. Terminal failures
+still cut bootstrapping.
 
 `TrainState.update` counts PPO rollout updates, not optimizer minibatch steps.
 W&B scalar logging uses environment steps as the logging step:
@@ -543,12 +559,17 @@ Core metrics:
 loss
 actor_loss
 value_loss
+value_loss_raw
 entropy
 approx_kl
+value_norm_mean
+value_norm_std
+value_norm_count
 mean_reward
 mean_done
 mean_done/any
 mean_done/base_height
+mean_done/terminal
 mean_done/roll_pitch
 mean_done/timeout
 mean_done/nonfinite
@@ -577,8 +598,9 @@ Done reason metrics are emitted as:
 mean_done/<reason_name>
 ```
 
-These show the fraction of rollout steps terminated by each done condition.
+These show the fraction of rollout steps ended by each done condition.
 `mean_done/any` is the per-reason equivalent of `mean_done`.
+`mean_done/terminal` excludes timeouts.
 
 `mean_episode_return` averages only completed episodes in the rollout. If no
 episode completed, it returns `0.0`.
@@ -747,12 +769,19 @@ Scalar range conditions:
 
 ```text
 learning_rate > 0
+schedule in {null, "constant", "linear", "adaptive"}
+desired_kl > 0
+min_learning_rate > 0
+max_learning_rate > 0
+min_learning_rate <= max_learning_rate
+adaptive_lr_factor > 1
 0 <= gamma <= 1
 0 <= gae_lambda <= 1
 clip_eps > 0
 ent_coef >= 0
 vf_coef >= 0
 max_grad_norm > 0
+value_norm_eps > 0
 ```
 
 Policy config conditions:
@@ -762,6 +791,9 @@ activation in {"tanh", "relu"}
 hidden_size > 0
 hidden_depth >= 0
 init_log_std is finite
+min_log_std is finite
+max_log_std is finite
+min_log_std <= max_log_std
 obs_stack_size > 0
 ```
 

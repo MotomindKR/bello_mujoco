@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import equinox as eqx
 import pytest
 import jax
 import jax.numpy as jnp
@@ -17,13 +18,20 @@ from bello_mujoco.train.ppo import (
     PPOConfig,
     Transition,
     action_diagnostics,
+    adapt_learning_rate,
     compute_gae,
+    denormalize_value,
     done_reason_means,
+    effective_learning_rate_schedule,
+    init_value_norm_state,
     init_train_state,
+    learning_rate_for_update,
     make_train,
+    normalize_value,
     ppo_loss,
     safe_returned_mean,
     safe_returned_max,
+    update_value_norm_state,
     update_ppo,
 )
 
@@ -46,6 +54,8 @@ def dummy_transitions(config: PPOConfig, obs_size: int, action_size: int) -> Tra
     action = jnp.zeros(shape + (action_size,), dtype=jnp.float32)
     return Transition(
         done=jnp.zeros(shape, dtype=bool),
+        terminal=jnp.zeros(shape, dtype=bool),
+        bootstrap_value=jnp.zeros(shape, dtype=jnp.float32),
         action=action,
         action_mean=action,
         value=jnp.zeros(shape, dtype=jnp.float32),
@@ -127,6 +137,8 @@ def test_gae_and_loss_shapes() -> None:
         state.policy,
         Transition(
             done=transitions.done.reshape((-1,)),
+            terminal=transitions.terminal.reshape((-1,)),
+            bootstrap_value=transitions.bootstrap_value.reshape((-1,)),
             action=transitions.action.reshape((-1, action_size)),
             action_mean=transitions.action_mean.reshape((-1, action_size)),
             value=transitions.value.reshape((-1,)),
@@ -144,6 +156,64 @@ def test_gae_and_loss_shapes() -> None:
     assert metrics["actor_loss"].shape == ()
     assert advantages.shape == (config.num_steps, config.num_envs)
     assert targets.shape == (config.num_steps, config.num_envs)
+
+
+def test_gae_bootstraps_timeout_without_continuing_across_reset() -> None:
+    config = PPOConfig(
+        total_timesteps=2,
+        num_envs=1,
+        num_steps=2,
+        gamma=1.0,
+        gae_lambda=1.0,
+    )
+    transitions = Transition(
+        done=jnp.asarray([[False], [True]]),
+        terminal=jnp.asarray([[False], [False]]),
+        bootstrap_value=jnp.asarray([[0.0], [10.0]], dtype=jnp.float32),
+        action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        action_mean=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        value=jnp.zeros((2, 1), dtype=jnp.float32),
+        reward=jnp.zeros((2, 1), dtype=jnp.float32),
+        log_prob=jnp.zeros((2, 1), dtype=jnp.float32),
+        obs=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        info={},
+    )
+
+    advantages, targets = compute_gae(
+        transitions, jnp.zeros((config.num_envs,), dtype=jnp.float32), config
+    )
+
+    assert jnp.allclose(advantages, jnp.asarray([[10.0], [10.0]]))
+    assert jnp.allclose(targets, advantages)
+
+
+def test_gae_does_not_bootstrap_terminal_failure() -> None:
+    config = PPOConfig(
+        total_timesteps=1,
+        num_envs=1,
+        num_steps=1,
+        gamma=1.0,
+        gae_lambda=1.0,
+    )
+    transitions = Transition(
+        done=jnp.asarray([[True]]),
+        terminal=jnp.asarray([[True]]),
+        bootstrap_value=jnp.asarray([[10.0]], dtype=jnp.float32),
+        action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        action_mean=jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        value=jnp.zeros((1, 1), dtype=jnp.float32),
+        reward=jnp.zeros((1, 1), dtype=jnp.float32),
+        log_prob=jnp.zeros((1, 1), dtype=jnp.float32),
+        obs=jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        info={},
+    )
+
+    advantages, targets = compute_gae(
+        transitions, jnp.zeros((config.num_envs,), dtype=jnp.float32), config
+    )
+
+    assert jnp.allclose(advantages, 0.0)
+    assert jnp.allclose(targets, 0.0)
 
 
 def test_update_ppo_runs_on_dummy_batch() -> None:
@@ -172,6 +242,174 @@ def test_update_ppo_runs_on_dummy_batch() -> None:
     assert metrics["loss"].shape == ()
 
 
+def test_value_normalization_round_trips_and_updates_stats() -> None:
+    config = PPOConfig(normalize_value=True)
+    state = update_value_norm_state(
+        init_value_norm_state(),
+        jnp.asarray([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32),
+        config,
+    )
+
+    assert float(state.mean) == pytest.approx(2.5)
+    assert float(state.var) == pytest.approx(1.25)
+    assert float(state.count) == pytest.approx(4.0)
+
+    values = jnp.asarray([1.0, 2.5, 4.0], dtype=jnp.float32)
+    normalized = normalize_value(values, state, config)
+    denormalized = denormalize_value(normalized, state, config)
+
+    assert jnp.allclose(denormalized, values)
+
+
+def test_update_ppo_supports_normalized_value_loss() -> None:
+    config = PPOConfig(
+        total_timesteps=32,
+        num_envs=4,
+        num_steps=8,
+        update_epochs=1,
+        num_minibatches=2,
+        policy=ActorCriticConfig(hidden_size=16, hidden_depth=1),
+        anneal_lr=False,
+        normalize_value=True,
+    )
+    obs_size = 149
+    action_size = 35
+    train_state, optimizer = init_train_state(
+        jax.random.PRNGKey(0), obs_size, action_size, config
+    )
+    transitions = dummy_transitions(config, obs_size, action_size)
+    advantages, targets = compute_gae(
+        transitions, jnp.zeros((config.num_envs,)), config
+    )
+    value_norm_state = update_value_norm_state(init_value_norm_state(), targets, config)
+
+    next_state, metrics = update_ppo(
+        train_state,
+        optimizer,
+        transitions,
+        advantages,
+        targets,
+        jax.random.PRNGKey(1),
+        config,
+        value_norm_state=value_norm_state,
+    )
+
+    assert int(next_state.update) == 1
+    assert metrics["value_loss"].shape == ()
+    assert metrics["value_loss_raw"].shape == ()
+    assert jnp.isfinite(metrics["value_loss"])
+    assert jnp.isfinite(metrics["value_loss_raw"])
+
+
+def test_update_ppo_clamps_policy_log_std_after_update() -> None:
+    config = PPOConfig(
+        total_timesteps=32,
+        num_envs=4,
+        num_steps=8,
+        update_epochs=1,
+        num_minibatches=1,
+        policy=ActorCriticConfig(
+            hidden_size=16,
+            hidden_depth=1,
+            init_log_std=0.0,
+            min_log_std=-2.0,
+            max_log_std=0.0,
+        ),
+        anneal_lr=False,
+    )
+    obs_size = 8
+    action_size = 3
+    train_state, optimizer = init_train_state(
+        jax.random.PRNGKey(0), obs_size, action_size, config
+    )
+    policy = eqx.tree_at(
+        lambda model: model.log_std,
+        train_state.policy,
+        jnp.full((action_size,), 5.0, dtype=jnp.float32),
+    )
+    train_state = train_state.__class__(
+        policy=policy,
+        opt_state=train_state.opt_state,
+        update=train_state.update,
+    )
+    transitions = dummy_transitions(config, obs_size, action_size)
+    advantages, targets = compute_gae(
+        transitions, jnp.zeros((config.num_envs,)), config
+    )
+
+    next_state, _ = update_ppo(
+        train_state,
+        optimizer,
+        transitions,
+        advantages,
+        targets,
+        jax.random.PRNGKey(1),
+        config,
+    )
+
+    assert jnp.all(next_state.policy.log_std <= 0.0)
+    assert jnp.all(next_state.policy.log_std >= -2.0)
+
+
+def test_learning_rate_schedule_preserves_anneal_lr_compatibility() -> None:
+    linear = PPOConfig(
+        total_timesteps=40,
+        num_envs=2,
+        num_steps=2,
+        anneal_lr=True,
+        schedule=None,
+    )
+    constant = PPOConfig(
+        total_timesteps=40,
+        num_envs=2,
+        num_steps=2,
+        anneal_lr=False,
+        schedule=None,
+    )
+
+    assert effective_learning_rate_schedule(linear) == "linear"
+    assert effective_learning_rate_schedule(constant) == "constant"
+    assert float(
+        learning_rate_for_update(
+            linear,
+            jnp.asarray(5, dtype=jnp.int32),
+            jnp.asarray(123.0, dtype=jnp.float32),
+        )
+    ) == pytest.approx(linear.learning_rate * 0.5)
+    assert float(
+        learning_rate_for_update(
+            constant,
+            jnp.asarray(5, dtype=jnp.int32),
+            jnp.asarray(123.0, dtype=jnp.float32),
+        )
+    ) == pytest.approx(constant.learning_rate)
+
+
+def test_adaptive_learning_rate_reacts_to_kl_thresholds() -> None:
+    config = PPOConfig(
+        total_timesteps=40,
+        num_envs=2,
+        num_steps=2,
+        schedule="adaptive",
+        learning_rate=1.0e-3,
+        desired_kl=0.01,
+        min_learning_rate=1.0e-5,
+        max_learning_rate=1.0e-2,
+        adaptive_lr_factor=1.5,
+    )
+    learning_rate = jnp.asarray(1.0e-3, dtype=jnp.float32)
+
+    assert float(adapt_learning_rate(learning_rate, jnp.asarray(0.03), config)) == (
+        pytest.approx(1.0e-3 / 1.5)
+    )
+    assert float(adapt_learning_rate(learning_rate, jnp.asarray(0.001), config)) == (
+        pytest.approx(1.0e-3 * 1.5)
+    )
+    assert float(adapt_learning_rate(learning_rate, jnp.asarray(0.01), config)) == (
+        pytest.approx(1.0e-3)
+    )
+
+
 def test_action_diagnostics_reports_action_and_control_stats() -> None:
     action = jnp.asarray(
         [
@@ -182,6 +420,8 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
     )
     transitions = Transition(
         done=jnp.zeros((2, 2), dtype=bool),
+        terminal=jnp.zeros((2, 2), dtype=bool),
+        bootstrap_value=jnp.zeros((2, 2), dtype=jnp.float32),
         action=action,
         action_mean=action * 0.5,
         value=jnp.zeros((2, 2), dtype=jnp.float32),
@@ -225,6 +465,8 @@ def test_action_diagnostics_omits_control_stats_for_generic_envs() -> None:
     action = jnp.asarray([[[0.0], [1.0]]], dtype=jnp.float32)
     transitions = Transition(
         done=jnp.zeros((1, 2), dtype=bool),
+        terminal=jnp.zeros((1, 2), dtype=bool),
+        bootstrap_value=jnp.zeros((1, 2), dtype=jnp.float32),
         action=action,
         action_mean=action,
         value=jnp.zeros((1, 2), dtype=jnp.float32),
@@ -267,9 +509,7 @@ def test_safe_returned_mean_and_max_accept_episode_length_key() -> None:
         "returned_episode": jnp.asarray([[True, False], [True, False]]),
     }
 
-    assert float(safe_returned_mean(info, key="episode_length")) == pytest.approx(
-        125.0
-    )
+    assert float(safe_returned_mean(info, key="episode_length")) == pytest.approx(125.0)
     assert float(safe_returned_max(info, key="episode_length")) == pytest.approx(150.0)
 
 
