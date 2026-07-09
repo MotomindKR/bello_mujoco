@@ -238,13 +238,13 @@ reward_config:
     weight: -1.0
     target: 0.08
   gait_contact:
-    enabled: true
+    enabled: false
     weight: -0.2
   feet_air_time:
     enabled: true
-    weight: 0.05
+    weight: 0.2
     min_air_time: 0.15
-    max_air_time: 0.45
+    max_air_time: 0.60
     command_speed_threshold: 0.05
   undesired_contact:
     enabled: true

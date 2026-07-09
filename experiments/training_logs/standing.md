@@ -1594,7 +1594,8 @@ Added a standalone locomotion bootstrap recipe:
   - stronger forward/yaw velocity tracking than standing
   - keep alive, terminal, height, uprightness, vertical/angular velocity, torque,
     joint-velocity, and action-rate terms modest
-  - enable `gait_contact`, `foot_slip`, `foot_clearance`, `feet_air_time`,
-    `joint_limit`, and `undesired_contact`
+  - enable `foot_slip`, `foot_clearance`, `feet_air_time`, `joint_limit`, and
+    `undesired_contact`; leave `gait_contact` disabled until the policy has
+    discovered stepping behavior
   - leave `foot_contact` and `foot_distance` disabled so the policy is not
     rewarded for simply keeping both feet planted or widening stance forever
