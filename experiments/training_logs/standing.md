@@ -1587,7 +1587,7 @@ Added a standalone locomotion bootstrap recipe:
   - `gait_phase: true`
 - Reward is intentionally conservative:
   - stronger forward/yaw velocity tracking than standing
-  - keep alive, height, uprightness, vertical/angular velocity, torque,
+  - keep alive, terminal, height, uprightness, vertical/angular velocity, torque,
     joint-velocity, and action-rate terms modest
   - enable `gait_contact`, `foot_slip`, `foot_clearance`, `feet_air_time`,
     `joint_limit`, and `undesired_contact`

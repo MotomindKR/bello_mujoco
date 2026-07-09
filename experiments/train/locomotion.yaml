@@ -193,7 +193,7 @@ reward_config:
     sigma: 0.25
   alive:
     enabled: true
-    weight: 0.5
+    weight: 0.05
   lin_vel_z:
     enabled: true
     weight: -0.5
@@ -250,7 +250,7 @@ reward_config:
     weight: -1.0
   termination:
     enabled: true
-    weight: -1.0
+    weight: -0.1
 
 done_config:
   base_height:
