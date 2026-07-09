@@ -8,6 +8,7 @@ config:
   ent_coef: 0.03
   policy:
     init_log_std: 1.8
+    max_log_std: 1.8
 
 reward_config:
   track_lin_vel_xy:

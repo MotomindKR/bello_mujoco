@@ -118,6 +118,8 @@ High-exploration follow-up:
 - Config changed in `experiments/train/foot_distance.yaml`.
 - `config.ent_coef`: `0.003 -> 0.03`
 - `config.policy.init_log_std`: `-0.5 -> 1.8`
+- `config.policy.max_log_std`: explicitly set to `1.8`, so the diagnostic is
+  not clipped by the standing/default `max_log_std: 1.0`
 - This changes the initial action std from `exp(-0.5) ~= 0.61` to
   `exp(1.8) ~= 6.05`, about `10x`.
 - Run/checkpoint/video names now use `foot_distance_high_exploration_seed0` /
