@@ -160,6 +160,21 @@ The default actuator config contains every tracked actuated Bello joint. Setting
 a joint to `mode: hold` removes it from the policy action vector while keeping
 its default control target in the environment.
 
+Notable default full-body position-actuator gains are:
+
+```text
+hip_pitch: [200, 5]
+hip_roll:  [150, 5]
+hip_yaw:   [150, 5]
+knee:      [220, 6]
+ankle:     [22, 1]
+waist_yaw: [180, 12]
+```
+
+These are MuJoCo position-actuator `[kp, kv]` values. They affect the torque
+generated from target-position error and joint velocity; they are separate from
+reward weights and action scales.
+
 ### BelloEnvConfig
 
 ```yaml
@@ -484,6 +499,12 @@ default for training videos because it avoids allocating extra MJX-Warp contact
 buffers during an already memory-heavy PPO update loop. Use
 `simulation_backend=mjx` only when the video rollout must match the MJX-Warp
 step path exactly and the GPU has enough memory headroom.
+
+For stacked-observation policies, video rollouts use the checkpoint policy stack
+size. With `stop_on_done=false`, the rollout continues after done and keeps
+shifting the observation stack with subsequent observations; it does not replace
+the stack with repeated terminal observations. With `stop_on_done=true`, the
+rollout stops at the first done frame.
 
 ### Root Runtime Flags
 

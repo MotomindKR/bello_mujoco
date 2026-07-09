@@ -183,6 +183,12 @@ Each viewer loop iteration:
 The policy uses the Gaussian mean action for deterministic inspection rather
 than sampling stochastic actions.
 
+For stacked-observation policies, the viewer uses the checkpoint policy stack
+size. With `stop_on_done=false`, evaluation continues after done and keeps
+shifting the observation stack with subsequent observations; it does not replace
+history with repeated terminal observations. With `stop_on_done=true`, the
+viewer exits after the first done.
+
 ## Checkpoint Compatibility
 
 `bello-eval-policy` restores both policy parameters and checkpoint metadata.

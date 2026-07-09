@@ -22,6 +22,7 @@ The shell hook:
 - syncs dependencies into `.venv`
 - activates `.venv`
 - keeps uv and Warp caches repo-local via `.uv-cache` and `.warp-cache`
+- exports `MUJOCO_GL=egl` for MuJoCo rendering in the Nix shell
 
 Run a basic environment check:
 

@@ -41,8 +41,8 @@ direnv allow
 ```
 
 The shell hook installs uv-managed Python 3.12 into `.uv-python`, syncs
-dependencies into `.venv`, activates `.venv`, and keeps uv/Warp caches
-repo-local:
+dependencies into `.venv`, activates `.venv`, exports `MUJOCO_GL=egl` for
+MuJoCo rendering, and keeps uv/Warp caches repo-local:
 
 ```text
 .uv-cache/
@@ -156,6 +156,9 @@ ctrl[policy_ctrl_indices] = default_ctrl + policy_action_scale * action
 Input actions are clipped by `ACTION_CLIP = 10.0`, and resulting controls are
 clipped to MuJoCo actuator ranges. Joints configured as `mode="hold"` are
 removed from the policy action vector but still use default actuator controls.
+Default position-actuator gains are runtime `[kp, kv]` values. The full-body
+lower-body defaults are hip pitch `[200, 5]`, hip roll/yaw `[150, 5]`, knee
+`[220, 6]`, ankle `[22, 1]`, and waist yaw `[180, 12]`.
 
 Default observation layout:
 
