@@ -1566,3 +1566,30 @@ Default PPO/policy config follow-up:
 - Left standing-specific settings in `standing.yaml`: 1,024 envs, 49.152M total
   steps, standing observations, disabled command, standing reward, done limits,
   actuator overrides, and logging/checkpoint names.
+
+Added a standalone locomotion bootstrap recipe:
+
+- Config: `experiments/train/locomotion.yaml`
+- Run:
+  `uv run bello-train-ppo --config-dir "$PWD/experiments/train" --config-name locomotion`
+- It inherits only `configs/train/default.yaml`, not `standing.yaml`, so it does
+  not couple future walking experiments to standing-specific overrides.
+- It explicitly copies the stabilized standing actuator setup: lower body and
+  waist yaw are policy-controlled; waist roll/pitch, head, arms, and fingers are
+  held.
+- It keeps the standing PPO defaults, 1,024 envs, observation stacking, torso
+  root link, 40 ms contact debounce, and relaxed fall thresholds.
+- It re-enables command and gait observations for walking:
+  - `lin_vel_x: [0.0, 0.4]`
+  - `lin_vel_y: [-0.05, 0.05]`
+  - `ang_vel_yaw: [-0.2, 0.2]`
+  - `standing_probability: 0.2`
+  - `gait_phase: true`
+- Reward is intentionally conservative:
+  - stronger forward/yaw velocity tracking than standing
+  - keep alive, height, uprightness, vertical/angular velocity, torque,
+    joint-velocity, and action-rate terms modest
+  - enable `gait_contact`, `foot_slip`, `foot_clearance`, `feet_air_time`,
+    `joint_limit`, and `undesired_contact`
+  - leave `foot_contact` and `foot_distance` disabled so the policy is not
+    rewarded for simply keeping both feet planted or widening stance forever
