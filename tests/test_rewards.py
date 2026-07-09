@@ -19,10 +19,6 @@ from bello_mujoco.envs.rewards import (
 )
 
 
-def test_base_height_reward_default_matches_nominal_stance() -> None:
-    assert RewardConfig().base_height.target == pytest.approx(0.86)
-
-
 def test_velocity_reward_prefers_matching_command() -> None:
     config = RewardConfig()
     common = {

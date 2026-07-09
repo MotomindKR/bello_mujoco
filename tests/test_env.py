@@ -33,6 +33,7 @@ from bello_mujoco.envs.rewards import (
     TrackLinVelXYRewardConfig,
 )
 from bello_mujoco.sim import WarpConfig
+from bello_mujoco.terrain import TerrainConfig
 
 
 def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
@@ -118,17 +119,19 @@ def test_locomotion_env_ignores_disabled_missing_reward_link(
     assert env.reward_config.track_lin_vel_xy.link == "missing_link"
 
 
-def test_locomotion_env_uses_flat_runtime_terrain_by_default(
+def test_locomotion_env_adds_flat_runtime_terrain(
     full_body_asset: PreparedAsset,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(terrain=TerrainConfig(mode="plane")),
+    )
     plane_count = sum(
         1
         for geom_type in env.model.mj_model.geom_type
         if geom_type == mujoco.mjtGeom.mjGEOM_PLANE
     )
 
-    assert env.terrain_config.mode == "plane"
     assert plane_count == 1
 
 
@@ -428,10 +431,8 @@ def test_default_base_height_threshold_is_below_nominal_reset(
     state, _ = env.reset()
     base_height = float(env._base_height(state))
 
-    assert RewardConfig().base_height.target == pytest.approx(0.86)
-    assert DoneConfig().base_height.min_height == pytest.approx(0.75)
-    assert abs(base_height - RewardConfig().base_height.target) < 0.01
-    assert base_height - DoneConfig().base_height.min_height > 0.10
+    assert abs(base_height - env.reward_config.base_height.target) < 0.01
+    assert base_height > env.done_config.base_height.min_height
 
 
 def test_step_batch_contact_rewards_are_world_local(

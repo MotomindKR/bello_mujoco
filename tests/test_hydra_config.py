@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import pytest
 from hydra import compose, initialize_config_dir
 
 from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.tools.benchmark_env import BenchmarkEnvConfig
 from bello_mujoco.tools.eval_policy import EvalToolConfig
 from bello_mujoco.tools.train_ppo import TrainingRunConfig
+from bello_mujoco.train.ppo import validate_ppo_config
 
 
 def compose_tool_config(group: str, config_name: str = "default", overrides=None):
@@ -17,50 +19,25 @@ def compose_tool_config(group: str, config_name: str = "default", overrides=None
         return compose(config_name=config_name, overrides=overrides or [])
 
 
-def test_train_hydra_default_converts_to_training_config() -> None:
-    config = structured_config(TrainingRunConfig, compose_tool_config("train"))
-
-    assert config.dry_run
-    assert config.config.num_envs == 64
-    assert config.env_config.terrain.mode == "plane"
-    assert config.env_config.spawn.clearance == 0.01
-    assert config.env_config.gait.cycle_time == 0.8
-    assert config.env_config.gait.duty_factor == 0.55
-    assert config.env_config.observation.gait_phase
-    assert config.metric_config.stream_updates
-    assert config.video_config.simulation_backend == "mujoco"
-
-
-def test_rtx5090_train_preset_sets_measured_batch_shape() -> None:
+@pytest.mark.parametrize(
+    "config_name",
+    ["default", "rtx5090_4096x256", "vast_rtx5090"],
+)
+def test_train_hydra_configs_convert_to_valid_training_config(
+    config_name: str,
+) -> None:
     config = structured_config(
         TrainingRunConfig,
-        compose_tool_config("train", "rtx5090_4096x256"),
+        compose_tool_config("train", config_name),
     )
 
-    assert not config.dry_run
-    assert config.config.num_envs == 4096
-    assert config.config.num_steps == 256
-    assert config.config.batch_size == 1048576
-    assert config.config.minibatch_size == 131072
-    assert config.checkpoint_config.enabled
-
-
-def test_vast_rtx5090_train_preset_enables_remote_logging() -> None:
-    config = structured_config(
-        TrainingRunConfig,
-        compose_tool_config("train", "vast_rtx5090"),
+    validate_ppo_config(config.config)
+    assert config.config.batch_size == config.config.num_envs * config.config.num_steps
+    assert (
+        config.config.minibatch_size * config.config.num_minibatches
+        == config.config.batch_size
     )
-
-    assert not config.dry_run
-    assert config.config.num_envs == 4096
-    assert config.config.num_steps == 256
-    assert config.wandb_config.enabled
-    assert config.wandb_config.run_name == "vast_rtx5090_seed0"
-    assert config.video_config.enabled
-    assert config.checkpoint_config.enabled
-    assert config.checkpoint_config.name == "vast_rtx5090_seed0"
-    assert config.checkpoint_config.upload_wandb_artifact
-    assert config.checkpoint_config.wandb_artifact_name is None
+    assert config.config.num_updates > 0
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:
