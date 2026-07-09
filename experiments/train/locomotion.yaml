@@ -159,6 +159,7 @@ asset_config:
 config:
   total_timesteps: 98304000
   num_envs: 4096
+  num_steps: 150
 
 env_config:
   max_episode_steps: 512

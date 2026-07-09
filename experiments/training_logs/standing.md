@@ -1581,8 +1581,9 @@ Added a standalone locomotion bootstrap recipe:
 - It explicitly copies the stabilized standing actuator setup: lower body and
   waist yaw are policy-controlled; waist roll/pitch, head, arms, and fingers are
   held.
-- It keeps the standing PPO defaults, 4,096 envs, observation stacking, torso
-  root link, 40 ms contact debounce, and relaxed fall thresholds.
+- It keeps the standing PPO defaults, 4,096 envs, 150 rollout steps per env
+  (`150 * 0.02s = 3.0s`), observation stacking, torso root link, 40 ms contact
+  debounce, and relaxed fall thresholds.
 - It re-enables command and gait observations for walking:
   - `lin_vel_x: [0.0, 0.4]`
   - `lin_vel_y: [-0.05, 0.05]`
