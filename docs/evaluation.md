@@ -214,7 +214,7 @@ body selection, or action dimensions need a matching checkpoint.
 
 Evaluation runtime loading inherits environment/model validation:
 
-- configured reward/done link names must exist
+- `env_config.root_link` and configured reward/done link names must exist
 - enabled foot rewards require foot bodies and foot collision geoms
 - enabled terrain-contact rewards require a runtime terrain geom when terrain is enabled
 - policy and held actuator indices must be in range and disjoint

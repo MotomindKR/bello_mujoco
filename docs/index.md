@@ -175,9 +175,12 @@ last_action[35]
 
 `ObservationConfig` controls component inclusion. `base_lin_vel[3]` and
 `base_height[1]` are available as opt-in proprioceptive state for balance tasks.
-`joint_mode=policy` makes joint position, joint velocity, and actuator force
-observations use only policy actuator indices. Command observation is present
-only when both
+Base velocity, projected gravity, and base height are measured on
+`BelloEnvConfig.root_link`, which defaults to the generated floating body
+`bello_root`. Link-aware reward/done terms also use `root_link` when their
+own `link` is null. `joint_mode=policy` makes joint position, joint velocity,
+and actuator force observations use only policy actuator indices. Command
+observation is present only when both
 `ObservationConfig.command` and `CommandConfig.enabled` are true. The training
 default YAML enables `ObservationConfig.gait_phase`, adding `[sin(phase),
 cos(phase)]` and raising the default full-body training observation size to 151.
@@ -268,6 +271,7 @@ AssetPrepConfig:
 BelloEnvConfig:
   decimation: 10
   max_episode_steps: 1000
+  root_link: bello_root
   terrain.mode: plane
   gait.cycle_time: 0.80
   gait.duty_factor: 0.55

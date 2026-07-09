@@ -44,6 +44,7 @@ asset_config:
 env_config:
   decimation: 10
   max_episode_steps: 1000
+  root_link: bello_root
   spawn:
     clearance: 0.01
   terrain:

@@ -65,7 +65,7 @@ class WeightedRewardConfig:
 
 @dataclass(frozen=True)
 class LinkRewardConfig(WeightedRewardConfig):
-    link: str = "bello_root"
+    link: str | None = None
 
 
 @dataclass(frozen=True)

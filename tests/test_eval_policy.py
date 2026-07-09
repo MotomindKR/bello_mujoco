@@ -258,6 +258,47 @@ def test_mujoco_policy_observation_can_include_base_state(full_body_asset) -> No
     assert obs[3] == pytest.approx(mj_data.qpos[int(env.model.root_qpos_adr) + 2])
 
 
+def test_mujoco_policy_observation_uses_configured_root_link(full_body_asset) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            root_link="torso_link",
+            observation=ObservationConfig(
+                base_lin_vel=True,
+                base_ang_vel=False,
+                projected_gravity=False,
+                base_height=True,
+                command=False,
+                joint_pos=False,
+                joint_vel=False,
+                actuator_force=False,
+                last_action=False,
+            ),
+        ),
+    )
+    mj_data = mujoco.MjData(env.model.mj_model)
+    mj_data.qpos[:] = env.model.default_qpos
+    mj_data.qvel[:] = env.model.default_qvel
+    mj_data.ctrl[:] = env.model.default_ctrl
+    mujoco.mj_forward(env.model.mj_model, mj_data)
+    torso_id = mujoco.mj_name2id(
+        env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link"
+    )
+
+    obs = mujoco_policy_observation(
+        env,
+        mj_data,
+        command=jnp.zeros(3, dtype=jnp.float32),
+        last_action=jnp.zeros(env.action_size, dtype=jnp.float32),
+        step_count=0,
+    )
+
+    assert torso_id >= 0
+    assert env.observation_size == 4
+    assert obs.shape == (4,)
+    assert obs[3] == pytest.approx(mj_data.xpos[torso_id, 2])
+
+
 def test_mujoco_action_to_ctrl_matches_env_mapping(full_body_asset) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
     action = jnp.linspace(-0.5, 0.5, env.action_size)

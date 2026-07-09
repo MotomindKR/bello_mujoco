@@ -59,14 +59,14 @@ class BaseDoneConfig:
 @dataclass(frozen=True)
 class BaseHeightDoneConfig(BaseDoneConfig):
     min_height: float = 0.75
-    link: str = "bello_root"
+    link: str | None = None
 
 
 @dataclass(frozen=True)
 class RollPitchDoneConfig(BaseDoneConfig):
     max_abs_roll: float = 1.0
     max_abs_pitch: float = 1.0
-    link: str = "bello_root"
+    link: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,7 +95,7 @@ class DoneConfig:
                 {
                     term.link
                     for term in (self.base_height, self.roll_pitch)
-                    if term.enabled
+                    if term.enabled and term.link
                 }
             )
         )
@@ -135,6 +135,7 @@ class BelloEnvConfig:
 
     decimation: int = CONTROL_DECIMATION
     max_episode_steps: int = MAX_EPISODE_STEPS
+    root_link: str = "bello_root"
     terrain: TerrainConfig = FLAT_TERRAIN
     spawn: SpawnConfig = SpawnConfig()
     gait: GaitConfig = GaitConfig()
@@ -166,6 +167,8 @@ class BelloLocomotionEnv:
             raise ValueError(
                 f"max_episode_steps must be positive, got {self.max_episode_steps}"
             )
+        if not self.config.root_link:
+            raise ValueError("root_link must be a non-empty body name")
         if (
             not math.isfinite(self.config.spawn.clearance)
             or self.config.spawn.clearance < 0.0
@@ -374,12 +377,14 @@ class BelloLocomotionEnv:
         require_index_range(
             "nonfoot_robot_geom_ids", model.nonfoot_robot_geom_ids, mj_model.ngeom
         )
-        for link_name in (
-            *self.reward_config.enabled_link_names,
-            *self.done_config.enabled_link_names,
-        ):
-            if self._link_body_id(link_name) < 0:
-                raise ValueError(f"configured link/body not found: {link_name!r}")
+        if isinstance(mj_model, mujoco.MjModel):
+            for link_name in {
+                self.config.root_link,
+                *self.reward_config.enabled_link_names,
+                *self.done_config.enabled_link_names,
+            }:
+                if self._link_body_id(link_name) < 0:
+                    raise ValueError(f"configured link/body not found: {link_name!r}")
 
         if model.policy_action_scale.shape != model.policy_ctrl_indices.shape:
             raise ValueError(
@@ -750,15 +755,12 @@ class BelloLocomotionEnv:
         joint_pos = data.qpos[qpos_idx] - jnp.asarray(self.model.default_qpos)[qpos_idx]
         joint_vel = data.qvel[qvel_idx]
         actuator_force = data.actuator_force[actuator_idx]
-        root_qpos = int(self.model.root_qpos_adr)
-        root_qvel = int(self.model.root_qvel_adr)
-        quat = data.qpos[root_qpos + 3 : root_qpos + 7]
-        base_lin_vel = quat_rotate_inverse(quat, data.qvel[root_qvel : root_qvel + 3])
-        base_ang_vel = data.qvel[root_qvel + 3 : root_qvel + 6]
-        base_height = data.qpos[root_qpos + 2 : root_qpos + 3]
-        projected_gravity = quat_rotate_inverse(
-            quat, jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32)
+        base_lin_vel = self._link_lin_vel(state, self.config.root_link)
+        base_ang_vel = self._link_ang_vel(state, self.config.root_link)
+        base_height = jnp.asarray(
+            [self._link_height(state, self.config.root_link)], dtype=jnp.float32
         )
+        projected_gravity = self._link_projected_gravity(state, self.config.root_link)
         gait_phase = self._gait_phase_sin_cos(state)
         return (
             base_lin_vel,
@@ -985,10 +987,14 @@ class BelloLocomotionEnv:
         )
 
     def _reward_link(self, term) -> str:
-        return term.link if term.enabled else "bello_root"
+        if term.enabled and term.link is not None:
+            return term.link
+        return self.config.root_link
 
     def _done_link(self, term) -> str:
-        return term.link if term.enabled else "bello_root"
+        if term.enabled and term.link is not None:
+            return term.link
+        return self.config.root_link
 
     def _contact_terms(
         self, state: BelloState, world_id: jax.Array

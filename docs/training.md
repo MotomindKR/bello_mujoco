@@ -181,6 +181,7 @@ reward weights and action scales.
 env_config:
   decimation: 10
   max_episode_steps: 1000
+  root_link: bello_root
   terrain:
     mode: plane  # none | plane | rough
     name: ground
@@ -213,9 +214,14 @@ env_config:
     last_action: true
 ```
 
+`root_link` is the default measurement body for base observations and
+link-aware reward/done terms whose `link` is null. The package default is the
+generated floating wrapper body `bello_root`; standing/balance recipes can set
+it to a physical body such as `torso_link`.
+
 `joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`.
-`base_lin_vel` and `base_height` expose optional root state that is useful for
-standing and balance tasks. The command observation is emitted only when both
+`base_lin_vel`, `base_ang_vel`, `projected_gravity`, and `base_height` are
+measured on `root_link`. The command observation is emitted only when both
 `env_config.observation.command` and `command_config.enabled` are true.
 
 `gait` defines a deterministic two-foot contact schedule. `cycle_time` is the
@@ -243,7 +249,8 @@ step.
 
 ### RewardConfig
 
-Every reward term has `enabled` and `weight`. Link-aware terms also have `link`.
+Every reward term has `enabled` and `weight`. Link-aware terms also have `link`;
+`link: null` means use `env_config.root_link`.
 Continuous reward components are multiplied by the environment control timestep
 before they are returned or logged under `reward/*`, so their weights are
 interpreted as per-second scales. Event-driven terms such as `feet_air_time` and
@@ -255,12 +262,12 @@ reward_config:
   track_lin_vel_xy:
     enabled: true
     weight: 1.0
-    link: bello_root
+    link: null
     sigma: 0.25
   track_ang_vel_z:
     enabled: true
     weight: 0.5
-    link: bello_root
+    link: null
     sigma: 0.25
   alive:
     enabled: true
@@ -268,19 +275,19 @@ reward_config:
   lin_vel_z:
     enabled: true
     weight: -2.0
-    link: bello_root
+    link: null
   ang_vel_xy:
     enabled: true
     weight: -0.05
-    link: bello_root
+    link: null
   flat_orientation:
     enabled: true
     weight: -5.0
-    link: bello_root
+    link: null
   base_height:
     enabled: true
     weight: -10.0
-    link: bello_root
+    link: null
     target: 0.86
   joint_vel:
     enabled: true
@@ -360,12 +367,12 @@ done_config:
   base_height:
     enabled: true
     min_height: 0.75
-    link: bello_root
+    link: null
   roll_pitch:
     enabled: true
     max_abs_roll: 1.0
     max_abs_pitch: 1.0
-    link: bello_root
+    link: null
   timeout:
     enabled: true
   nonfinite:
@@ -379,7 +386,8 @@ treated as truncation: it resets the env and emits `done/timeout`, but does not
 receive the `reward/termination` penalty.
 
 `base_height` and `roll_pitch` validate their configured links during env
-initialization.
+initialization. When their `link` is null, `env_config.root_link` is validated
+and used.
 
 ### WarpConfig
 
@@ -832,7 +840,7 @@ Environment/model initialization also validates:
 - policy and held actuator indices are disjoint
 - policy and held actuator indices cover every actuator exactly once
 - actuator qpos/qvel metadata matches MuJoCo `nu`
-- configured reward/done link names exist
+- `env_config.root_link` and configured reward/done link names exist
 - explicit commands have shape `(3,)`
 - batch commands have shape `(3,)` or `(batch_size, 3)`
 - command ranges are finite and ordered

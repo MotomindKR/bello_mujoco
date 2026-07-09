@@ -107,6 +107,16 @@ def test_locomotion_env_rejects_enabled_missing_reward_link(
         BelloLocomotionEnv.load_prepared(full_body_asset, reward_config=reward_config)
 
 
+def test_locomotion_env_rejects_missing_root_link(
+    full_body_asset: PreparedAsset,
+) -> None:
+    with pytest.raises(ValueError, match="configured link/body not found"):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(root_link="missing_link"),
+        )
+
+
 def test_locomotion_env_ignores_disabled_missing_reward_link(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -336,6 +346,41 @@ def test_observation_config_can_include_base_state(
     assert obs[3] == pytest.approx(
         float(state.data.qpos[int(env.model.root_qpos_adr) + 2])
     )
+
+
+def test_root_link_controls_base_observation_and_default_measurement_link(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            root_link="torso_link",
+            observation=ObservationConfig(
+                base_lin_vel=True,
+                base_ang_vel=False,
+                projected_gravity=False,
+                base_height=True,
+                command=False,
+                joint_pos=False,
+                joint_vel=False,
+                actuator_force=False,
+                last_action=False,
+            ),
+        ),
+    )
+    state, obs = env.reset()
+    torso_id = mujoco.mj_name2id(
+        env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link"
+    )
+
+    assert torso_id >= 0
+    assert env.observation_size == 4
+    assert obs.shape == (4,)
+    assert obs[3] == pytest.approx(float(state.data.xpos[torso_id, 2]))
+    assert float(env._base_height(state)) == pytest.approx(
+        float(state.data.xpos[torso_id, 2])
+    )
+    assert env._done_link(env.done_config.base_height) == "torso_link"
 
 
 def test_observation_config_actuator_force_follows_joint_mode(

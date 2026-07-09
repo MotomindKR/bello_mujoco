@@ -188,29 +188,22 @@ def mujoco_policy_observation(
 ) -> jax.Array:
     observation = env.config.observation
     parts: list[np.ndarray] = []
-    root_qpos = int(env.model.root_qpos_adr)
-    root_qvel = int(env.model.root_qvel_adr)
-    quat = np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32)
+    root_link = env.config.root_link
     if observation.base_lin_vel:
-        parts.append(
-            quat_rotate_inverse_np(
-                quat,
-                np.asarray(mj_data.qvel[root_qvel : root_qvel + 3], dtype=np.float32),
-            )
-        )
+        parts.append(mujoco_link_lin_vel(env, mj_data, root_link))
     if observation.base_ang_vel:
-        parts.append(
-            np.asarray(mj_data.qvel[root_qvel + 3 : root_qvel + 6], dtype=np.float32)
-        )
+        parts.append(mujoco_link_ang_vel(env, mj_data, root_link))
     if observation.projected_gravity:
         parts.append(
             quat_rotate_inverse_np(
-                quat,
+                mujoco_link_quat(env, mj_data, root_link),
                 np.asarray([0.0, 0.0, -1.0], dtype=np.float32),
             )
         )
     if observation.base_height:
-        parts.append(np.asarray([mj_data.qpos[root_qpos + 2]], dtype=np.float32))
+        parts.append(
+            np.asarray([mujoco_link_height(env, mj_data, root_link)], dtype=np.float32)
+        )
     if observation.gait_phase:
         phase = (step_count * env.control_timestep / env.config.gait.cycle_time) % 1.0
         angle = 2.0 * np.pi * phase
@@ -259,12 +252,12 @@ def mujoco_done(
     bad_height = False
     if config.base_height.enabled:
         bad_height = (
-            mujoco_link_height(env, mj_data, config.base_height.link)
+            mujoco_link_height(env, mj_data, env._done_link(config.base_height))
             < config.base_height.min_height
         )
     bad_orientation = False
     if config.roll_pitch.enabled:
-        quat = mujoco_link_quat(env, mj_data, config.roll_pitch.link)
+        quat = mujoco_link_quat(env, mj_data, env._done_link(config.roll_pitch))
         roll, pitch = roll_pitch_from_quat_np(quat)
         bad_orientation = (
             abs(roll) > config.roll_pitch.max_abs_roll
@@ -298,6 +291,35 @@ def mujoco_link_height(
     if body_id < 0:
         raise ValueError(f"configured link/body not found: {link_name!r}")
     return float(mj_data.xpos[body_id, 2])
+
+
+def mujoco_link_lin_vel(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
+) -> np.ndarray:
+    if link_name == "bello_root":
+        root_qpos = int(env.model.root_qpos_adr)
+        root_qvel = int(env.model.root_qvel_adr)
+        quat = np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32)
+        return quat_rotate_inverse_np(
+            quat,
+            np.asarray(mj_data.qvel[root_qvel : root_qvel + 3], dtype=np.float32),
+        )
+    body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
+    if body_id < 0:
+        raise ValueError(f"configured link/body not found: {link_name!r}")
+    return np.asarray(mj_data.cvel[body_id, 3:6], dtype=np.float32)
+
+
+def mujoco_link_ang_vel(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
+) -> np.ndarray:
+    if link_name == "bello_root":
+        root_qvel = int(env.model.root_qvel_adr)
+        return np.asarray(mj_data.qvel[root_qvel + 3 : root_qvel + 6], dtype=np.float32)
+    body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
+    if body_id < 0:
+        raise ValueError(f"configured link/body not found: {link_name!r}")
+    return np.asarray(mj_data.cvel[body_id, :3], dtype=np.float32)
 
 
 def quat_rotate_inverse_np(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
