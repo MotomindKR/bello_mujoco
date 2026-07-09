@@ -102,7 +102,7 @@ metric_config:
 
 video_config:
   enabled: false
-  every_updates: 10
+  every_updates: 100
   render_initial: false
   render_final: true
   simulation_backend: mujoco

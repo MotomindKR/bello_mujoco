@@ -52,7 +52,7 @@ from bello_mujoco.train.ppo import (
 @dataclass(frozen=True)
 class TrainingVideoConfig:
     enabled: bool = False
-    every_updates: int = 10
+    every_updates: int = 100
     render_initial: bool = False
     render_final: bool = True
     simulation_backend: Literal["mjx", "mujoco"] = "mujoco"

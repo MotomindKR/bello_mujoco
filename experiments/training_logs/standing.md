@@ -1566,6 +1566,10 @@ Default PPO/policy config follow-up:
 - Left standing-specific settings in `standing.yaml`: 1,024 envs, 49.152M total
   steps, standing observations, disabled command, standing reward, done limits,
   actuator overrides, and logging/checkpoint names.
+- Increased the default training-video cadence from every 10 PPO updates to
+  every 100 PPO updates because video generation and W&B upload were too
+  frequent for long standing/locomotion runs. `render_final` still records the
+  final policy.
 
 Added a standalone locomotion bootstrap recipe:
 

@@ -472,7 +472,7 @@ Rendering is synchronous and uses the current policy checkpoint held in memory.
 ```yaml
 video_config:
   enabled: false
-  every_updates: 10
+  every_updates: 100
   render_initial: false
   render_final: true
   simulation_backend: mujoco  # mujoco | mjx
@@ -749,7 +749,7 @@ Root flags:
 ```yaml
 video_config:
   enabled: false
-  every_updates: 10
+  every_updates: 100
   render_initial: false
   render_final: true
   simulation_backend: mujoco

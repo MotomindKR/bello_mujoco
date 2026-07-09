@@ -389,7 +389,7 @@ wandb_config.dir: .wandb
 metric_config.stream_updates: true
 
 video_config.enabled: false
-video_config.every_updates: 10
+video_config.every_updates: 100
 video_config.render_initial: false
 video_config.render_final: true
 video_config.simulation_backend: mujoco | mjx
