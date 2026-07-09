@@ -21,7 +21,7 @@ def compose_tool_config(group: str, config_name: str = "default", overrides=None
 
 @pytest.mark.parametrize(
     "config_name",
-    ["default", "rtx5090_4096x256", "vast_rtx5090"],
+    ["default", "rtx5090_4096x256"],
 )
 def test_train_hydra_configs_convert_to_valid_training_config(
     config_name: str,

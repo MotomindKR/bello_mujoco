@@ -431,8 +431,6 @@ checkpoint observation and action sizes unchanged.
 
 Detailed training behavior is documented in [training.md](training.md). Detailed
 live evaluation behavior is documented in [evaluation.md](evaluation.md).
-Vast.ai launch and remote-training workflow is documented in
-[vast_ai.md](vast_ai.md).
 
 ## Testing
 
