@@ -242,6 +242,7 @@ BelloEnvConfig
 ObservationConfig
 TerrainConfig
 GaitConfig
+ContactConfig
 CommandConfig
 RewardConfig
 DoneConfig
@@ -277,6 +278,8 @@ BelloEnvConfig:
   gait.duty_factor: 0.55
   gait.phase_offsets: [0.0, 0.5]
   gait.standing_command_threshold: 0.05
+  contact.foot_contact_on_seconds: 0.0
+  contact.foot_contact_off_seconds: 0.0
 
 WarpConfig:
   contact_budget_per_env: 32

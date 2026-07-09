@@ -55,6 +55,9 @@ env_config:
     duty_factor: 0.55
     phase_offsets: [0.0, 0.5]
     standing_command_threshold: 0.05
+  contact:
+    foot_contact_on_seconds: 0.0
+    foot_contact_off_seconds: 0.0
   observation:
     joint_mode: all_actuated
     base_ang_vel: true

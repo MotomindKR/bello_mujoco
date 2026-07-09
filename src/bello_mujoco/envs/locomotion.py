@@ -42,6 +42,7 @@ class BelloState:
     data: mjx.Data
     last_action: jax.Array
     foot_air_time: jax.Array
+    foot_contact_debounce_time: jax.Array
     last_foot_contact: jax.Array
     command: jax.Array
     step_count: jax.Array
@@ -130,6 +131,12 @@ class GaitConfig:
 
 
 @dataclass(frozen=True)
+class ContactConfig:
+    foot_contact_on_seconds: float = 0.0
+    foot_contact_off_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
 class BelloEnvConfig:
     """Runtime environment settings that affect stepping and model loading."""
 
@@ -139,6 +146,7 @@ class BelloEnvConfig:
     terrain: TerrainConfig = FLAT_TERRAIN
     spawn: SpawnConfig = SpawnConfig()
     gait: GaitConfig = GaitConfig()
+    contact: ContactConfig = ContactConfig()
     observation: ObservationConfig = ObservationConfig()
 
 
@@ -211,6 +219,22 @@ class BelloLocomotionEnv:
             raise ValueError(
                 "gait.standing_command_threshold must be nonnegative, got "
                 f"{self.config.gait.standing_command_threshold}"
+            )
+        if (
+            not math.isfinite(self.config.contact.foot_contact_on_seconds)
+            or self.config.contact.foot_contact_on_seconds < 0.0
+        ):
+            raise ValueError(
+                "contact.foot_contact_on_seconds must be finite and nonnegative, got "
+                f"{self.config.contact.foot_contact_on_seconds}"
+            )
+        if (
+            not math.isfinite(self.config.contact.foot_contact_off_seconds)
+            or self.config.contact.foot_contact_off_seconds < 0.0
+        ):
+            raise ValueError(
+                "contact.foot_contact_off_seconds must be finite and nonnegative, got "
+                f"{self.config.contact.foot_contact_off_seconds}"
             )
         validate_reward_config(self.reward_config)
         if self.done_config.base_height.enabled and not math.isfinite(
@@ -452,6 +476,9 @@ class BelloLocomotionEnv:
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
             foot_air_time=jnp.zeros(self.model.foot_body_ids.size, dtype=jnp.float32),
+            foot_contact_debounce_time=jnp.zeros(
+                self.model.foot_body_ids.size, dtype=jnp.float32
+            ),
             last_foot_contact=jnp.ones(self.model.foot_body_ids.size, dtype=bool),
             command=command,
             step_count=jnp.asarray(0, dtype=jnp.int32),
@@ -487,6 +514,7 @@ class BelloLocomotionEnv:
             data=data,
             last_action=action,
             foot_air_time=state.foot_air_time,
+            foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
             step_count=state.step_count + 1,
@@ -498,8 +526,11 @@ class BelloLocomotionEnv:
         done_flags = self._done_flags(next_state)
         done = done_flags["done/any"]
         terminal = done_flags["done/terminal"]
-        foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
+        raw_foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
             self._contact_terms(next_state, 0)
+        )
+        foot_contact, foot_contact_debounce_time = self._debounce_foot_contact(
+            next_state, raw_foot_contact, done
         )
         reward, reward_info = self._reward(
             state,
@@ -520,6 +551,7 @@ class BelloLocomotionEnv:
             data=next_state.data,
             last_action=next_state.last_action,
             foot_air_time=foot_air_time,
+            foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=last_foot_contact,
             command=next_state.command,
             step_count=next_state.step_count,
@@ -537,6 +569,9 @@ class BelloLocomotionEnv:
             "bootstrap_observation": self.observation(next_state),
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_length": jnp.where(done, episode_length, 0),
+            "foot_contact/raw": raw_foot_contact,
+            "foot_contact/filtered": foot_contact,
+            "foot_contact/debounce_time": foot_contact_debounce_time,
             "returned_episode": done,
             **done_flags,
             **reward_info,
@@ -568,6 +603,7 @@ class BelloLocomotionEnv:
             data=data,
             last_action=action,
             foot_air_time=state.foot_air_time,
+            foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
             step_count=state.step_count + 1,
@@ -580,9 +616,12 @@ class BelloLocomotionEnv:
         done = done_flags["done/any"]
         terminal = done_flags["done/terminal"]
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
-        foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = jax.vmap(
-            self._contact_terms
-        )(stepped_state, world_ids)
+        raw_foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
+            jax.vmap(self._contact_terms)(stepped_state, world_ids)
+        )
+        foot_contact, foot_contact_debounce_time = jax.vmap(
+            self._debounce_foot_contact
+        )(stepped_state, raw_foot_contact, done)
         reward, reward_info = jax.vmap(self._reward)(
             state,
             stepped_state,
@@ -602,6 +641,7 @@ class BelloLocomotionEnv:
             data=stepped_state.data,
             last_action=stepped_state.last_action,
             foot_air_time=foot_air_time,
+            foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=last_foot_contact,
             command=self._maybe_resample_batch_command(
                 stepped_state, done, resample_rng
@@ -622,6 +662,9 @@ class BelloLocomotionEnv:
             "bootstrap_observation": stepped_obs,
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_length": jnp.where(done, episode_length, 0),
+            "foot_contact/raw": raw_foot_contact,
+            "foot_contact/filtered": foot_contact,
+            "foot_contact/debounce_time": foot_contact_debounce_time,
             "returned_episode": done,
             **done_flags,
             **reward_info,
@@ -969,6 +1012,36 @@ class BelloLocomotionEnv:
             <= self.config.gait.standing_command_threshold
         )
         return jnp.where(standing, jnp.ones_like(scheduled), scheduled)
+
+    def _debounce_foot_contact(
+        self, state: BelloState, raw_foot_contact: jax.Array, done: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+        raw_contact = raw_foot_contact.astype(bool)
+        previous_contact = state.last_foot_contact.astype(bool)
+        changed = raw_contact != previous_contact
+        on_threshold = jnp.asarray(
+            self.config.contact.foot_contact_on_seconds, dtype=jnp.float32
+        )
+        off_threshold = jnp.asarray(
+            self.config.contact.foot_contact_off_seconds, dtype=jnp.float32
+        )
+        threshold = jnp.where(raw_contact, on_threshold, off_threshold)
+        next_debounce_time = jnp.where(
+            changed,
+            state.foot_contact_debounce_time + self.control_timestep,
+            jnp.zeros_like(state.foot_contact_debounce_time),
+        )
+        accepted = changed & (next_debounce_time + 1e-6 >= threshold)
+        filtered_contact = jnp.where(accepted, raw_contact, previous_contact)
+        next_debounce_time = jnp.where(
+            accepted | ~changed,
+            jnp.zeros_like(next_debounce_time),
+            next_debounce_time,
+        )
+        return (
+            filtered_contact.astype(jnp.float32),
+            jnp.where(done, jnp.zeros_like(next_debounce_time), next_debounce_time),
+        )
 
     def _next_foot_memory(
         self, state: BelloState, foot_contact: jax.Array, done: jax.Array

@@ -200,6 +200,9 @@ env_config:
     duty_factor: 0.55
     phase_offsets: [0.0, 0.5]
     standing_command_threshold: 0.05
+  contact:
+    foot_contact_on_seconds: 0.0
+    foot_contact_off_seconds: 0.0
   observation:
     joint_mode: all_actuated  # all_actuated | policy
     base_lin_vel: false
@@ -230,6 +233,12 @@ period in seconds, `duty_factor` is the stance fraction of each period,
 `standing_command_threshold` forces all feet scheduled in contact when command
 speed is near zero. `observation.gait_phase=true` appends `[sin(phase),
 cos(phase)]` to the policy observation.
+
+`contact` debounces raw foot-ground contacts before they feed contact-dependent
+reward terms and foot-air-time memory. `foot_contact_on_seconds` is the required
+duration before a raw non-contact foot becomes filtered contact, and
+`foot_contact_off_seconds` is the required duration before a raw contact foot
+becomes filtered non-contact. `0.0` disables debounce for that transition.
 
 ### CommandConfig
 
@@ -344,7 +353,8 @@ Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
 `foot_distance`, `gait_contact`, and `feet_air_time`. `foot_distance` rewards
 the horizontal distance between the two foot bodies. Terrain-contact metadata is
 required for the contact-dependent foot terms and for `undesired_contact` when
-terrain is enabled.
+terrain is enabled. Contact-dependent terms use the debounced foot-contact
+signal from `env_config.contact`.
 
 `joint_vel`, `action_rate`, `energy`, and `torque` are smoothness and effort
 regularizers. `energy` penalizes absolute actuator force times joint velocity;

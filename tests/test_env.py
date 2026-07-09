@@ -11,6 +11,7 @@ from bello_mujoco.envs.locomotion import (
     BaseHeightDoneConfig,
     BelloEnvConfig,
     BelloLocomotionEnv,
+    ContactConfig,
     DoneConfig,
     ObservationConfig,
     RollPitchDoneConfig,
@@ -53,6 +54,7 @@ def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
     assert obs.shape == (env.observation_size,)
     assert state.last_action.shape == (env.action_size,)
     assert state.foot_air_time.shape == (2,)
+    assert state.foot_contact_debounce_time.shape == (2,)
     assert state.last_foot_contact.shape == (2,)
     assert int(state.step_count) == 0
 
@@ -117,6 +119,20 @@ def test_locomotion_env_rejects_missing_root_link(
         )
 
 
+def test_locomotion_env_rejects_negative_contact_debounce(
+    full_body_asset: PreparedAsset,
+) -> None:
+    with pytest.raises(
+        ValueError, match="contact.foot_contact_on_seconds must be finite"
+    ):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(
+                contact=ContactConfig(foot_contact_on_seconds=-0.01)
+            ),
+        )
+
+
 def test_locomotion_env_ignores_disabled_missing_reward_link(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -161,7 +177,80 @@ def test_reset_batch_shapes(full_body_asset: PreparedAsset) -> None:
     assert obs.shape == (batch_size, env.observation_size)
     assert state.last_action.shape == (batch_size, env.action_size)
     assert state.command.shape == (batch_size, 3)
+    assert state.foot_contact_debounce_time.shape == (batch_size, 2)
     assert state.step_count.shape == (batch_size,)
+
+
+def test_foot_contact_debounce_delays_contact_flips(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            contact=ContactConfig(
+                foot_contact_on_seconds=0.04,
+                foot_contact_off_seconds=0.04,
+            )
+        ),
+    )
+    state, _ = env.reset()
+    state = state.replace(
+        foot_contact_debounce_time=jnp.zeros(2, dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([False, True]),
+    )
+    raw_contact = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+
+    filtered, timers = env._debounce_foot_contact(
+        state, raw_contact, jnp.asarray(False)
+    )
+    np.testing.assert_array_equal(np.asarray(filtered), np.asarray([0.0, 1.0]))
+    np.testing.assert_allclose(np.asarray(timers), np.asarray([0.02, 0.02]))
+
+    filtered, timers = env._debounce_foot_contact(
+        state.replace(foot_contact_debounce_time=timers),
+        raw_contact,
+        jnp.asarray(False),
+    )
+    np.testing.assert_array_equal(np.asarray(filtered), np.asarray([1.0, 0.0]))
+    np.testing.assert_allclose(np.asarray(timers), np.zeros(2))
+
+
+def test_foot_contact_debounce_default_flips_immediately(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env.reset()
+    state = state.replace(
+        foot_contact_debounce_time=jnp.zeros(2, dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([False, True]),
+    )
+
+    filtered, timers = env._debounce_foot_contact(
+        state, jnp.asarray([1.0, 0.0], dtype=jnp.float32), jnp.asarray(False)
+    )
+
+    np.testing.assert_array_equal(np.asarray(filtered), np.asarray([1.0, 0.0]))
+    np.testing.assert_allclose(np.asarray(timers), np.zeros(2))
+
+
+def test_foot_contact_debounce_resets_timer_on_done(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(contact=ContactConfig(foot_contact_off_seconds=0.04)),
+    )
+    state, _ = env.reset()
+    state = state.replace(
+        foot_contact_debounce_time=jnp.asarray([0.02, 0.02], dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([True, True]),
+    )
+
+    _, timers = env._debounce_foot_contact(
+        state, jnp.zeros(2, dtype=jnp.float32), jnp.asarray(True)
+    )
+
+    np.testing.assert_allclose(np.asarray(timers), np.zeros(2))
 
 
 def test_policy_action_controls_all_default_actuators(

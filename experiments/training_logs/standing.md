@@ -426,6 +426,22 @@ done_config:
 This resets clearly falling samples earlier than the initial bootstrap threshold
 while still allowing some recoverable leaning states.
 
+Foot contact can be debounced before it feeds contact-dependent rewards and
+feet-air-time memory.
+
+```yaml
+env_config:
+  contact:
+    foot_contact_on_seconds: 0.04
+    foot_contact_off_seconds: 0.04
+```
+
+This requires two consecutive 20 ms control samples before a contact state flip
+is accepted. The native standing recipe currently disables locomotion contact
+rewards, but keeping this knob explicit prevents single-step contact chatter
+from dominating future `foot_contact`, `foot_slip`, `gait_contact`, or
+`feet_air_time` experiments.
+
 Initial action noise matters for balance.
 
 The current package default `init_log_std: 0.0` gives action std `1.0`, while

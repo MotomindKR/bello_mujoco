@@ -161,6 +161,9 @@ config:
 env_config:
   max_episode_steps: 256
   root_link: torso_link
+  contact:
+    foot_contact_on_seconds: 0.04
+    foot_contact_off_seconds: 0.04
   observation:
     joint_mode: policy
     base_lin_vel: true
