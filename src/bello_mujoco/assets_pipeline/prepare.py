@@ -29,6 +29,7 @@ from bello_mujoco.assets_pipeline.mjcf import (
     compile_urdf_to_mjcf,
 )
 from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.contracts import SIM_TIMESTEP
 
 AssetName = Literal["full_body", "lower_body", "upper_body"]
 ASSET_CACHE_VERSION = 1
@@ -200,6 +201,7 @@ def asset_config_hash(
         "collision_mode": config.collision_mode,
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
+        "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
         "source": source_asset_fingerprint(asset),
     }

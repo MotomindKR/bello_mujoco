@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -12,20 +13,57 @@ import jax.numpy as jnp
 LOG_2PI = jnp.log(2.0 * jnp.pi)
 
 
+def identity_activation(x: jax.Array) -> jax.Array:
+    return x
+
+
 @dataclass(frozen=True)
 class ActorCriticConfig:
     hidden_size: int = 256
     hidden_depth: int = 2
-    activation: Literal["tanh", "relu"] = "tanh"
+    hidden_dims: tuple[int, ...] | None = None
+    activation: Literal["tanh", "relu", "elu"] = "tanh"
     init_log_std: float = 0.0
     min_log_std: float = -5.0
     max_log_std: float = 1.0
     obs_stack_size: int = 10
 
 
+class LayeredMLP(eqx.Module):
+    layers: tuple[eqx.nn.Linear, ...]
+    activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
+    final_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
+
+    def __init__(
+        self,
+        in_size: int,
+        out_size: int,
+        hidden_dims: tuple[int, ...],
+        *,
+        activation: Callable[[jax.Array], jax.Array],
+        final_activation: Callable[[jax.Array], jax.Array],
+        key: jax.Array,
+    ):
+        dims = (in_size, *hidden_dims, out_size)
+        keys = jax.random.split(key, len(dims) - 1)
+        self.layers = tuple(
+            eqx.nn.Linear(input_size, output_size, key=layer_key)
+            for input_size, output_size, layer_key in zip(
+                dims[:-1], dims[1:], keys, strict=True
+            )
+        )
+        self.activation = activation
+        self.final_activation = final_activation
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        for layer in self.layers[:-1]:
+            x = self.activation(layer(x))
+        return self.final_activation(self.layers[-1](x))
+
+
 class ActorCritic(eqx.Module):
-    actor: eqx.nn.MLP
-    critic: eqx.nn.MLP
+    actor: eqx.Module
+    critic: eqx.Module
     log_std: jax.Array
     min_log_std: float = eqx.field(static=True)
     max_log_std: float = eqx.field(static=True)
@@ -40,22 +78,18 @@ class ActorCritic(eqx.Module):
     ):
         actor_key, critic_key = jax.random.split(key)
         activation_fn = activation_function(config.activation)
-        self.actor = eqx.nn.MLP(
-            obs_size,
-            action_size,
-            width_size=config.hidden_size,
-            depth=config.hidden_depth,
+        self.actor = make_mlp(
+            obs_size=obs_size,
+            output_size=action_size,
+            config=config,
             activation=activation_fn,
-            final_activation=lambda x: x,
             key=actor_key,
         )
-        self.critic = eqx.nn.MLP(
-            obs_size,
-            1,
-            width_size=config.hidden_size,
-            depth=config.hidden_depth,
+        self.critic = make_mlp(
+            obs_size=obs_size,
+            output_size=1,
+            config=config,
             activation=activation_fn,
-            final_activation=lambda x: x,
             key=critic_key,
         )
         self.log_std = jnp.full((action_size,), config.init_log_std, dtype=jnp.float32)
@@ -75,6 +109,34 @@ def init_actor_critic(
     config: ActorCriticConfig = ActorCriticConfig(),
 ) -> ActorCritic:
     return ActorCritic(obs_size, action_size, config, key=rng)
+
+
+def make_mlp(
+    *,
+    obs_size: int,
+    output_size: int,
+    config: ActorCriticConfig,
+    activation: Callable[[jax.Array], jax.Array],
+    key: jax.Array,
+) -> eqx.Module:
+    if config.hidden_dims is None:
+        return eqx.nn.MLP(
+            obs_size,
+            output_size,
+            width_size=config.hidden_size,
+            depth=config.hidden_depth,
+            activation=activation,
+            final_activation=identity_activation,
+            key=key,
+        )
+    return LayeredMLP(
+        obs_size,
+        output_size,
+        tuple(config.hidden_dims),
+        activation=activation,
+        final_activation=identity_activation,
+        key=key,
+    )
 
 
 def policy_log_std(policy: ActorCritic) -> jax.Array:
@@ -176,4 +238,6 @@ def activation_function(name: str):
         return jnp.tanh
     if name == "relu":
         return jax.nn.relu
+    if name == "elu":
+        return jax.nn.elu
     raise ValueError(f"unsupported activation: {name!r}")

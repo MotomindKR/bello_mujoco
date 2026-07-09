@@ -18,7 +18,7 @@ config:
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.003
+  ent_coef: 0.01
   vf_coef: 1.0
   max_grad_norm: 1.0
   normalize_value: true
@@ -26,6 +26,7 @@ config:
   policy:
     hidden_size: 256
     hidden_depth: 2
+    hidden_dims: null
     activation: tanh
     init_log_std: 0.0
     min_log_std: -5.0
@@ -42,7 +43,7 @@ asset_config:
   neighbor_exclusion_depth: 2
 
 env_config:
-  decimation: 10
+  decimation: 4
   max_episode_steps: 1000
   root_link: bello_root
   spawn:
@@ -58,6 +59,11 @@ env_config:
   contact:
     foot_contact_on_seconds: 0.0
     foot_contact_off_seconds: 0.0
+  random_push:
+    enabled: false
+    interval_seconds: 5.0
+    lin_vel_x: [-0.5, 0.5]
+    lin_vel_y: [-0.5, 0.5]
   observation:
     joint_mode: all_actuated
     base_ang_vel: true
@@ -68,6 +74,29 @@ env_config:
     joint_vel: true
     actuator_force: true
     last_action: true
+    scale:
+      base_lin_vel: 1.0
+      base_ang_vel: 1.0
+      projected_gravity: 1.0
+      base_height: 1.0
+      gait_phase: 1.0
+      command: 1.0
+      joint_pos: 1.0
+      joint_vel: 1.0
+      actuator_force: 1.0
+      last_action: 1.0
+    noise:
+      enabled: false
+      base_lin_vel: [0.0, 0.0]
+      base_ang_vel: [-0.2, 0.2]
+      projected_gravity: [-0.05, 0.05]
+      base_height: [0.0, 0.0]
+      gait_phase: [0.0, 0.0]
+      command: [0.0, 0.0]
+      joint_pos: [-0.01, 0.01]
+      joint_vel: [-1.5, 1.5]
+      actuator_force: [0.0, 0.0]
+      last_action: [0.0, 0.0]
 
 command_config:
   enabled: true
@@ -76,6 +105,14 @@ command_config:
   ang_vel_yaw: [-0.1, 0.1]
   standing_probability: 0.02
   resample_seconds: 10.0
+  curriculum:
+    enabled: false
+    limit_lin_vel_x: [-0.5, 1.0]
+    limit_lin_vel_y: [-0.3, 0.3]
+    limit_ang_vel_yaw: [-0.2, 0.2]
+    expand_ang_vel_yaw: false
+    increment: 0.1
+    success_threshold: 0.8
 
 checkpoint_config:
   enabled: false

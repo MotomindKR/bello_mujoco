@@ -1,4 +1,4 @@
-# Conservative locomotion recipe bootstrapped from the stabilized standing setup.
+# Unitree-aligned locomotion recipe bootstrapped from the stabilized standing setup.
 # This intentionally inherits only the base training defaults, not standing.yaml.
 # Run with:
 # uv run bello-train-ppo --config-dir "$PWD/experiments/train" --config-name locomotion
@@ -157,73 +157,104 @@ asset_config:
         gains: [100.0, 5.0]
 
 config:
-  total_timesteps: 98304000
+  total_timesteps: 4915200000
   num_envs: 4096
-  num_steps: 150
+  num_steps: 24
+  policy:
+    hidden_dims: [512, 256, 128]
+    activation: elu
+    obs_stack_size: 5
 
 env_config:
-  max_episode_steps: 512
+  max_episode_steps: 1000
   root_link: torso_link
   contact:
     foot_contact_on_seconds: 0.04
     foot_contact_off_seconds: 0.04
+  random_push:
+    enabled: true
+    interval_seconds: 5.0
+    lin_vel_x: [-0.5, 0.5]
+    lin_vel_y: [-0.5, 0.5]
   observation:
     joint_mode: policy
-    base_lin_vel: true
-    base_height: true
-    gait_phase: true
+    base_lin_vel: false
+    base_height: false
+    gait_phase: false
     command: true
     actuator_force: false
+    scale:
+      base_ang_vel: 0.2
+      joint_vel: 0.05
+    noise:
+      enabled: true
+      base_ang_vel: [-0.2, 0.2]
+      projected_gravity: [-0.05, 0.05]
+      joint_pos: [-0.01, 0.01]
+      joint_vel: [-1.5, 1.5]
 
 command_config:
   enabled: true
-  lin_vel_x: [0.0, 0.4]
-  lin_vel_y: [-0.05, 0.05]
-  ang_vel_yaw: [-0.2, 0.2]
-  standing_probability: 0.2
-  resample_seconds: 6.0
+  lin_vel_x: [-0.1, 0.1]
+  lin_vel_y: [-0.1, 0.1]
+  ang_vel_yaw: [-0.1, 0.1]
+  standing_probability: 0.02
+  resample_seconds: 10.0
+  curriculum:
+    enabled: true
+    limit_lin_vel_x: [-0.5, 1.0]
+    limit_lin_vel_y: [-0.3, 0.3]
+    limit_ang_vel_yaw: [-0.2, 0.2]
+    expand_ang_vel_yaw: false
+    increment: 0.1
+    success_threshold: 0.8
 
 reward_config:
   track_lin_vel_xy:
     enabled: true
-    weight: 1.5
+    weight: 1.0
     sigma: 0.25
   track_ang_vel_z:
     enabled: true
-    weight: 0.75
+    weight: 0.5
     sigma: 0.25
   alive:
     enabled: true
-    weight: 0.125
+    weight: 0.15
   lin_vel_z:
     enabled: true
-    weight: -0.5
+    weight: -2.0
   ang_vel_xy:
     enabled: true
-    weight: -0.1
+    weight: -0.05
   flat_orientation:
     enabled: true
-    weight: -1.0
+    weight: -5.0
   base_height:
     enabled: true
-    weight: -2.0
+    weight: -10.0
     target: 0.86
   joint_vel:
     enabled: true
-    weight: -0.0005
+    weight: -0.001
+  joint_acc:
+    enabled: true
+    weight: -0.00000025
   action_rate:
     enabled: true
-    weight: -0.01
+    weight: -0.05
   energy:
-    enabled: false
-  torque:
     enabled: true
+    weight: -0.00002
+  torque:
+    enabled: false
     weight: -0.00001
   joint_limit:
     enabled: true
-    weight: -2.0
+    weight: -5.0
   hold_joint_deviation:
-    enabled: false
+    enabled: true
+    weight: -0.1
   policy_joint_deviation:
     enabled: false
   foot_contact:
@@ -232,16 +263,19 @@ reward_config:
     enabled: false
   foot_slip:
     enabled: true
-    weight: -0.05
+    weight: -0.2
   foot_clearance:
     enabled: true
-    weight: -1.0
-    target: 0.08
+    weight: 1.0
+    target: 0.10
+    std: 0.05
+    tanh_mult: 2.0
   gait_contact:
-    enabled: false
-    weight: -0.2
-  feet_air_time:
     enabled: true
+    weight: 0.5
+    command_speed_threshold: 0.10
+  feet_air_time:
+    enabled: false
     weight: 0.2
     min_air_time: 0.15
     max_air_time: 0.60
@@ -250,7 +284,7 @@ reward_config:
     enabled: true
     weight: -1.0
   termination:
-    enabled: true
+    enabled: false
     weight: -0.5
 
 done_config:
@@ -264,16 +298,22 @@ done_config:
 
 checkpoint_config:
   enabled: true
-  name: locomotion_standing_bootstrap_seed0
+  name: locomotion_unitree_aligned_seed0
 
 wandb_config:
   enabled: true
-  run_name: locomotion_standing_bootstrap_seed0
+  run_name: locomotion_unitree_aligned_seed0
   tags:
     - locomotion
     - standing-bootstrap
     - native-locomotion-reward
     - gait-contact
+    - command-curriculum
+    - random-pushes
+    - observation-noise
+    - unitree-rollout-horizon
+    - unitree-policy-history
+    - unitree-policy-mlp
     - value-normalized
     - full-body
     - mesh-collision
@@ -281,7 +321,7 @@ wandb_config:
 
 video_config:
   enabled: true
-  filename_prefix: locomotion_standing_bootstrap
+  filename_prefix: locomotion_unitree_aligned
   command: [0.25, 0.0, 0.0]
   steps: 600
   stop_on_done: false

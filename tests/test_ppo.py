@@ -5,6 +5,11 @@ import pytest
 import jax
 import jax.numpy as jnp
 
+from bello_mujoco.envs.rewards import (
+    CommandConfig,
+    CommandCurriculumConfig,
+    RewardConfig,
+)
 from bello_mujoco.policy import (
     ActorCriticConfig,
     gaussian_entropy,
@@ -31,6 +36,7 @@ from bello_mujoco.train.ppo import (
     ppo_loss,
     safe_returned_mean,
     safe_returned_max,
+    update_command_curriculum_ranges,
     update_value_norm_state,
     update_ppo,
 )
@@ -80,6 +86,29 @@ def test_actor_critic_sample_shapes() -> None:
     assert value.shape == (config.num_envs,)
 
 
+def test_actor_critic_supports_nonuniform_hidden_dims_and_elu() -> None:
+    config = PPOConfig(
+        total_timesteps=8,
+        num_envs=2,
+        num_steps=4,
+        policy=ActorCriticConfig(
+            hidden_dims=(8, 4),
+            activation="elu",
+            obs_stack_size=1,
+        ),
+    )
+    obs_size = 6
+    action_size = 3
+    state, _ = init_train_state(jax.random.PRNGKey(0), obs_size, action_size, config)
+    obs = jnp.zeros((config.num_envs, obs_size), dtype=jnp.float32)
+
+    action, log_prob, value = sample_action(state.policy, obs, jax.random.PRNGKey(1))
+
+    assert action.shape == (config.num_envs, action_size)
+    assert log_prob.shape == (config.num_envs,)
+    assert value.shape == (config.num_envs,)
+
+
 def test_sample_action_applies_configured_clip() -> None:
     config = small_config()
     state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
@@ -113,6 +142,70 @@ def test_observation_stack_repeats_shifts_and_resets_done_envs() -> None:
     assert jnp.allclose(
         next_stack[1], jnp.asarray([[7.0, 8.0], [7.0, 8.0], [7.0, 8.0]])
     )
+
+
+def test_command_curriculum_expands_linear_ranges_after_success_interval() -> None:
+    env = SimpleNamespace(
+        command_config=CommandConfig(
+            curriculum=CommandCurriculumConfig(enabled=True),
+        ),
+        reward_config=RewardConfig(),
+        control_timestep=0.02,
+        max_episode_steps=1000,
+    )
+    config = PPOConfig(total_timesteps=10000, num_envs=4, num_steps=24)
+    ranges = env.command_config.range_array()
+    info = {
+        "returned_episode": jnp.asarray([True]),
+        "episode_reward/track_lin_vel_xy": jnp.asarray(
+            [
+                0.81
+                * env.reward_config.track_lin_vel_xy.weight
+                * env.max_episode_steps
+                * env.control_timestep
+            ]
+        ),
+    }
+
+    next_ranges = update_command_curriculum_ranges(
+        ranges, info, jnp.asarray(41, dtype=jnp.int32), env, config
+    )
+
+    assert next_ranges[0, 0] == pytest.approx(-0.2)
+    assert next_ranges[0, 1] == pytest.approx(0.2)
+    assert next_ranges[1, 0] == pytest.approx(-0.2)
+    assert next_ranges[1, 1] == pytest.approx(0.2)
+    assert jnp.all(next_ranges[2] == ranges[2])
+
+
+def test_command_curriculum_does_not_expand_without_completed_episode() -> None:
+    env = SimpleNamespace(
+        command_config=CommandConfig(
+            curriculum=CommandCurriculumConfig(enabled=True),
+        ),
+        reward_config=RewardConfig(),
+        control_timestep=0.02,
+        max_episode_steps=1000,
+    )
+    config = PPOConfig(total_timesteps=10000, num_envs=4, num_steps=24)
+    ranges = env.command_config.range_array()
+    info = {
+        "returned_episode": jnp.asarray([False]),
+        "episode_reward/track_lin_vel_xy": jnp.asarray(
+            [
+                0.99
+                * env.reward_config.track_lin_vel_xy.weight
+                * env.max_episode_steps
+                * env.control_timestep
+            ]
+        ),
+    }
+
+    next_ranges = update_command_curriculum_ranges(
+        ranges, info, jnp.asarray(41, dtype=jnp.int32), env, config
+    )
+
+    assert jnp.all(next_ranges == ranges)
 
 
 def test_gaussian_entropy_sums_only_action_axis() -> None:
@@ -545,6 +638,13 @@ def test_ppo_config_rejects_invalid_policy_architecture() -> None:
     config = PPOConfig(policy=ActorCriticConfig(hidden_size=0))
 
     with pytest.raises(ValueError, match="policy.hidden_size must be positive"):
+        make_train(config, env=object())
+
+
+def test_ppo_config_rejects_invalid_hidden_dims() -> None:
+    config = PPOConfig(policy=ActorCriticConfig(hidden_dims=(16, 0)))
+
+    with pytest.raises(ValueError, match="policy.hidden_dims entries must be positive"):
         make_train(config, env=object())
 
 

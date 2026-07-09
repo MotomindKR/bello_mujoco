@@ -27,6 +27,8 @@ reward_config:
     enabled: false
   joint_vel:
     enabled: false
+  joint_acc:
+    enabled: false
   action_rate:
     enabled: false
   energy:

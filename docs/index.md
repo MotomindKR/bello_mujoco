@@ -184,13 +184,20 @@ observation is present only when both
 `ObservationConfig.command` and `CommandConfig.enabled` are true. The training
 default YAML enables `ObservationConfig.gait_phase`, adding `[sin(phase),
 cos(phase)]` and raising the default full-body training observation size to 151.
+Observation term noise and scaling are configurable under
+`ObservationConfig.noise` and `ObservationConfig.scale`; noise is only applied
+when training supplies an observation RNG. `BelloEnvConfig.random_push` can set
+the floating-root XY velocity at a fixed interval during vectorized training,
+matching Unitree's push event shape.
 
 Commands are `[lin_vel_x, lin_vel_y, yaw_vel]`. With command generation enabled,
 `step_batch(..., rng=key)` periodically resamples according to
 `CommandConfig.resample_seconds`. If no RNG is passed, commands remain fixed
-until reset.
+until reset. PPO training can optionally enable `CommandConfig.curriculum` to
+expand the active linear command ranges when velocity tracking is good enough;
+the active ranges are logged under `train/command_range/*`.
 
-Default reward terms:
+Reward terms:
 
 ```text
 track_lin_vel_xy
@@ -201,6 +208,7 @@ ang_vel_xy
 flat_orientation
 base_height
 joint_vel
+joint_acc
 action_rate
 energy
 torque
@@ -270,7 +278,7 @@ AssetPrepConfig:
   neighbor_exclusion_depth: 2
 
 BelloEnvConfig:
-  decimation: 10
+  decimation: 4
   max_episode_steps: 1000
   root_link: bello_root
   terrain.mode: plane
@@ -302,12 +310,15 @@ PPOConfig:
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.003
+  ent_coef: 0.01
   vf_coef: 1.0
   max_grad_norm: 1.0
   normalize_value: true
   value_norm_eps: 0.00000001
 ```
+
+Generated MJCF assets use a `0.005s` MuJoCo timestep. With the default
+`decimation: 4`, one policy action still covers `0.02s`.
 
 Use `--help` and `--hydra-help` on each entry point for the current exhaustive CLI tree.
 
@@ -356,18 +367,37 @@ config.adaptive_lr_factor: 1.5
 config.gamma: 0.99
 config.gae_lambda: 0.95
 config.clip_eps: 0.2
-config.ent_coef: 0.003
+config.ent_coef: 0.01
 config.vf_coef: 1.0
 config.max_grad_norm: 1.0
 config.normalize_value: true
 config.value_norm_eps: 0.00000001
 config.policy.hidden_size: 256
 config.policy.hidden_depth: 2
-config.policy.activation: tanh | relu
+config.policy.hidden_dims: null
+config.policy.activation: tanh | relu | elu
 config.policy.init_log_std: 0.0
 config.policy.min_log_std: -5.0
 config.policy.max_log_std: 1.0
 config.policy.obs_stack_size: 10
+```
+
+Command flags:
+
+```yaml
+command_config.enabled: true
+command_config.lin_vel_x: [-0.1, 0.1]
+command_config.lin_vel_y: [-0.1, 0.1]
+command_config.ang_vel_yaw: [-0.1, 0.1]
+command_config.standing_probability: 0.02
+command_config.resample_seconds: 10.0
+command_config.curriculum.enabled: false
+command_config.curriculum.limit_lin_vel_x: [-0.5, 1.0]
+command_config.curriculum.limit_lin_vel_y: [-0.3, 0.3]
+command_config.curriculum.limit_ang_vel_yaw: [-0.2, 0.2]
+command_config.curriculum.expand_ang_vel_yaw: false
+command_config.curriculum.increment: 0.1
+command_config.curriculum.success_threshold: 0.8
 ```
 
 Training-adjacent flags:

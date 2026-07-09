@@ -23,11 +23,13 @@ Config:
   observation; base linear velocity and base height included for balance
 - `env_config.root_link: torso_link`, so base observations and null-link
   reward/done terms use the torso instead of the generated free-root wrapper
+- MuJoCo timestep `0.005s` with default `env_config.decimation: 4`, preserving
+  a `0.02s` policy control timestep
 - lower body and waist yaw controlled by policy; waist roll/pitch, head, arms,
   and fingers held
 - `obs_stack_size: 10`
 - default PPO settings inherited from `configs/train/default.yaml`, including
-  adaptive KL, value normalization, `ent_coef: 0.003`, `init_log_std: 0.0`,
+  adaptive KL, value normalization, `ent_coef: 0.01`, `init_log_std: 0.0`,
   `max_log_std: 1.0`, and `num_steps: 24`
 - native additive standing reward with `alive`, zero-velocity tracking,
   base-height/uprightness shaping, small joint-velocity/torque/action-rate
@@ -1556,7 +1558,7 @@ Default PPO/policy config follow-up:
   into `configs/train/default.yaml` and the Python dataclass defaults:
   - adaptive KL schedule with `learning_rate: 0.001`, `desired_kl: 0.01`
   - `num_steps: 24`, `update_epochs: 5`, `num_minibatches: 4`
-  - `ent_coef: 0.003`, `vf_coef: 1.0`, `max_grad_norm: 1.0`
+  - `ent_coef: 0.01`, `vf_coef: 1.0`, `max_grad_norm: 1.0`
   - `normalize_value: true`
   - `policy.init_log_std: 0.0`, `policy.max_log_std: 1.0`
   - `policy.obs_stack_size: 10`
@@ -1590,12 +1592,16 @@ Added a standalone locomotion bootstrap recipe:
   - `ang_vel_yaw: [-0.2, 0.2]`
   - `standing_probability: 0.2`
   - `gait_phase: true`
-- Reward is intentionally conservative:
+- Reward is aligned as closely as practical to Unitree G1:
   - stronger forward/yaw velocity tracking than standing
-  - keep alive, terminal, height, uprightness, vertical/angular velocity, torque,
-    joint-velocity, and action-rate terms modest
-  - enable `foot_slip`, `foot_clearance`, `feet_air_time`, `joint_limit`, and
-    `undesired_contact`; leave `gait_contact` disabled until the policy has
-    discovered stepping behavior
+  - use Unitree-style alive, height, uprightness, vertical/angular velocity,
+    joint-velocity, joint-acceleration, action-rate, energy, and joint-limit
+    weights
+  - enable `foot_slip`, Unitree-style positive `foot_clearance`, positive
+    command-gated `gait_contact`, `joint_limit`, and `undesired_contact`
+  - disable direct `torque` and explicit `termination` reward to match Unitree's
+    reward setup
+  - keep humanoid `feet_air_time` disabled; Unitree G1/H1 locomotion uses gait
+    contact and clearance shaping instead
   - leave `foot_contact` and `foot_distance` disabled so the policy is not
     rewarded for simply keeping both feet planted or widening stance forever

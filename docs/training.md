@@ -110,7 +110,7 @@ config:
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.003
+  ent_coef: 0.01
   vf_coef: 1.0
   max_grad_norm: 1.0
   normalize_value: true
@@ -118,7 +118,8 @@ config:
   policy:
     hidden_size: 256
     hidden_depth: 2
-    activation: tanh  # tanh | relu
+    hidden_dims: null  # optional explicit layer sizes, e.g. [512, 256, 128]
+    activation: tanh  # tanh | relu | elu
     init_log_std: 0.0
     min_log_std: -5.0
     max_log_std: 1.0
@@ -179,7 +180,7 @@ reward weights and action scales.
 
 ```yaml
 env_config:
-  decimation: 10
+  decimation: 4
   max_episode_steps: 1000
   root_link: bello_root
   terrain:
@@ -203,6 +204,11 @@ env_config:
   contact:
     foot_contact_on_seconds: 0.0
     foot_contact_off_seconds: 0.0
+  random_push:
+    enabled: false
+    interval_seconds: 5.0
+    lin_vel_x: [-0.5, 0.5]
+    lin_vel_y: [-0.5, 0.5]
   observation:
     joint_mode: all_actuated  # all_actuated | policy
     base_lin_vel: false
@@ -215,7 +221,33 @@ env_config:
     joint_vel: true
     actuator_force: true
     last_action: true
+    scale:
+      base_lin_vel: 1.0
+      base_ang_vel: 1.0
+      projected_gravity: 1.0
+      base_height: 1.0
+      gait_phase: 1.0
+      command: 1.0
+      joint_pos: 1.0
+      joint_vel: 1.0
+      actuator_force: 1.0
+      last_action: 1.0
+    noise:
+      enabled: false
+      base_lin_vel: [0.0, 0.0]
+      base_ang_vel: [-0.2, 0.2]
+      projected_gravity: [-0.05, 0.05]
+      base_height: [0.0, 0.0]
+      gait_phase: [0.0, 0.0]
+      command: [0.0, 0.0]
+      joint_pos: [-0.01, 0.01]
+      joint_vel: [-1.5, 1.5]
+      actuator_force: [0.0, 0.0]
+      last_action: [0.0, 0.0]
 ```
+
+The generated MuJoCo model timestep is `0.005s`, so the default
+`decimation: 4` gives a `0.02s` control timestep.
 
 `root_link` is the default measurement body for base observations and
 link-aware reward/done terms whose `link` is null. The package default is the
@@ -226,6 +258,17 @@ it to a physical body such as `torso_link`.
 `base_lin_vel`, `base_ang_vel`, `projected_gravity`, and `base_height` are
 measured on `root_link`. The command observation is emitted only when both
 `env_config.observation.command` and `command_config.enabled` are true.
+
+`observation.noise` applies additive uniform noise to enabled observation terms
+when an observation RNG is supplied by training. Noise is applied before
+`observation.scale`, matching IsaacLab's observation manager order. Evaluation
+and rendering call reset/step without an observation RNG by default, so they
+remain deterministic unless a caller explicitly passes one.
+
+`random_push` is a Unitree-style interval event. When enabled, vectorized
+training sets the floating-root XY velocity to a sampled value every
+`interval_seconds` per environment after the first step of an episode. Push
+diagnostics are logged under `train/mean_random_push/*`.
 
 `gait` defines a deterministic two-foot contact schedule. `cycle_time` is the
 period in seconds, `duty_factor` is the stance fraction of each period,
@@ -250,11 +293,30 @@ command_config:
   ang_vel_yaw: [-0.1, 0.1]
   standing_probability: 0.02
   resample_seconds: 10.0
+  curriculum:
+    enabled: false
+    limit_lin_vel_x: [-0.5, 1.0]
+    limit_lin_vel_y: [-0.3, 0.3]
+    limit_ang_vel_yaw: [-0.2, 0.2]
+    expand_ang_vel_yaw: false
+    increment: 0.1
+    success_threshold: 0.8
 ```
 
 Commands are `[lin_vel_x, lin_vel_y, yaw_vel]`. In vectorized stepping,
 `resample_seconds` is rounded to control-step count and clamped to at least one
 step.
+
+`command_config.curriculum` can expand the active command ranges during PPO
+training while leaving the configured initial ranges as the reset value. When
+enabled, the runner checks completed-episode `track_lin_vel_xy` reward sums and
+divides by full episode duration, matching Unitree's
+`episode_sums[track_lin_vel_xy] / max_episode_length_s` criterion. Ranges expand
+by `increment` when that normalized episode score exceeds
+`success_threshold * reward_config.track_lin_vel_xy.weight`. Expansion is
+evaluated when rollout collection crosses an episode-length boundary. Linear X/Y
+ranges expand toward their limits; yaw expansion is opt-in with
+`expand_ang_vel_yaw`.
 
 ### RewardConfig
 
@@ -301,6 +363,9 @@ reward_config:
   joint_vel:
     enabled: true
     weight: -0.001
+  joint_acc:
+    enabled: true
+    weight: -0.00000025
   action_rate:
     enabled: true
     weight: -0.05
@@ -327,16 +392,19 @@ reward_config:
     weight: -0.2
   foot_clearance:
     enabled: true
-    weight: -2.0
-    target: 0.08
+    weight: 1.0
+    target: 0.10
+    std: 0.05
+    tanh_mult: 2.0
   foot_distance:
     enabled: false
     weight: 1.0
   gait_contact:
     enabled: true
-    weight: -0.1
+    weight: 0.5
+    command_speed_threshold: 0.10
   feet_air_time:
-    enabled: true
+    enabled: false
     weight: 0.2
     min_air_time: 0.20
     max_air_time: 0.60
@@ -356,19 +424,29 @@ required for the contact-dependent foot terms and for `undesired_contact` when
 terrain is enabled. Contact-dependent terms use the debounced foot-contact
 signal from `env_config.contact`.
 
-`joint_vel`, `action_rate`, `energy`, and `torque` are smoothness and effort
-regularizers. `energy` penalizes absolute actuator force times joint velocity;
-`torque` penalizes actuator-force magnitude directly.
+`track_lin_vel_xy` uses yaw-frame linear velocity, matching the Unitree
+locomotion reward shape. `joint_vel`, `joint_acc`, `action_rate`, `energy`, and
+`torque` are smoothness and effort regularizers. `joint_vel`, `joint_acc`,
+`action_rate`, and `energy` sum over their selected dimensions; `joint_acc`
+penalizes finite-difference actuator joint acceleration. `energy` penalizes
+absolute actuator force times joint velocity; `torque` penalizes actuator-force
+magnitude directly. `joint_limit` sums absolute soft-limit violation, and
+`foot_slip` sums lateral foot speed while each foot is in contact.
 
 `hold_joint_deviation` penalizes default-pose deviation for held actuators.
 `policy_joint_deviation` does the same for policy-controlled actuators and is
 disabled by default so velocity-tracking presets keep their previous reward
 shape unless they opt into the pose regularizer.
 
-`gait_contact` penalizes mismatch between detected foot contacts and the
-schedule from `env_config.gait`. `feet_air_time` rewards the first contact after
-a swing interval, clipped between `min_air_time` and `max_air_time`, and is
-disabled for near-standing commands by `command_speed_threshold`.
+`gait_contact` rewards feet whose detected contact state matches the schedule
+from `env_config.gait`. It is disabled for near-standing commands by
+`command_speed_threshold`, matching the command-gated Unitree G1 gait reward
+shape. `foot_clearance` is a positive target-height reward for moving feet:
+lateral foot speed gates the height error with `tanh_mult`, and `std` controls
+the exponential falloff around `target`. `feet_air_time` rewards the first
+contact after a swing interval, clipped between `min_air_time` and
+`max_air_time`, and is disabled for near-standing commands by
+`command_speed_threshold`.
 
 ### DoneConfig
 
@@ -827,9 +905,10 @@ value_norm_eps > 0
 Policy config conditions:
 
 ```text
-activation in {"tanh", "relu"}
+activation in {"tanh", "relu", "elu"}
 hidden_size > 0
 hidden_depth >= 0
+hidden_dims is null, or every hidden_dims entry is > 0
 init_log_std is finite
 min_log_std is finite
 max_log_std is finite

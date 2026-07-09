@@ -10,6 +10,19 @@ import jax.numpy as jnp
 
 
 @dataclass(frozen=True)
+class CommandCurriculumConfig:
+    """Unitree-style command range expansion for velocity commands."""
+
+    enabled: bool = False
+    limit_lin_vel_x: tuple[float, float] = (-0.5, 1.0)
+    limit_lin_vel_y: tuple[float, float] = (-0.3, 0.3)
+    limit_ang_vel_yaw: tuple[float, float] = (-0.2, 0.2)
+    expand_ang_vel_yaw: bool = False
+    increment: float = 0.1
+    success_threshold: float = 0.8
+
+
+@dataclass(frozen=True)
 class CommandConfig:
     """Uniform velocity command sampler.
 
@@ -22,11 +35,17 @@ class CommandConfig:
     ang_vel_yaw: tuple[float, float] = (-0.1, 0.1)
     standing_probability: float = 0.02
     resample_seconds: float = 10.0
+    curriculum: CommandCurriculumConfig = CommandCurriculumConfig()
 
     def __post_init__(self) -> None:
         validate_range("lin_vel_x", self.lin_vel_x)
         validate_range("lin_vel_y", self.lin_vel_y)
         validate_range("ang_vel_yaw", self.ang_vel_yaw)
+        validate_range("curriculum.limit_lin_vel_x", self.curriculum.limit_lin_vel_x)
+        validate_range("curriculum.limit_lin_vel_y", self.curriculum.limit_lin_vel_y)
+        validate_range(
+            "curriculum.limit_ang_vel_yaw", self.curriculum.limit_ang_vel_yaw
+        )
         if (
             not math.isfinite(self.standing_probability)
             or not 0.0 <= self.standing_probability <= 1.0
@@ -39,18 +58,50 @@ class CommandConfig:
             raise ValueError(
                 f"resample_seconds must be positive, got {self.resample_seconds}"
             )
+        if (
+            not math.isfinite(self.curriculum.increment)
+            or self.curriculum.increment <= 0
+        ):
+            raise ValueError(
+                "curriculum.increment must be positive and finite, got "
+                f"{self.curriculum.increment}"
+            )
+        if (
+            not math.isfinite(self.curriculum.success_threshold)
+            or self.curriculum.success_threshold <= 0
+        ):
+            raise ValueError(
+                "curriculum.success_threshold must be positive and finite, got "
+                f"{self.curriculum.success_threshold}"
+            )
+        if self.curriculum.enabled:
+            validate_subrange(
+                "lin_vel_x", self.lin_vel_x, self.curriculum.limit_lin_vel_x
+            )
+            validate_subrange(
+                "lin_vel_y", self.lin_vel_y, self.curriculum.limit_lin_vel_y
+            )
+            validate_subrange(
+                "ang_vel_yaw", self.ang_vel_yaw, self.curriculum.limit_ang_vel_yaw
+            )
 
-    def sample(self, rng: jax.Array, shape: tuple[int, ...] = ()) -> jax.Array:
+    def range_array(self) -> jax.Array:
+        return jnp.asarray(
+            [self.lin_vel_x, self.lin_vel_y, self.ang_vel_yaw],
+            dtype=jnp.float32,
+        )
+
+    def sample(
+        self,
+        rng: jax.Array,
+        shape: tuple[int, ...] = (),
+        ranges: jax.Array | None = None,
+    ) -> jax.Array:
         if not self.enabled:
             return jnp.zeros(shape + (3,), dtype=jnp.float32)
-        low = jnp.asarray(
-            [self.lin_vel_x[0], self.lin_vel_y[0], self.ang_vel_yaw[0]],
-            dtype=jnp.float32,
-        )
-        high = jnp.asarray(
-            [self.lin_vel_x[1], self.lin_vel_y[1], self.ang_vel_yaw[1]],
-            dtype=jnp.float32,
-        )
+        ranges = self.range_array() if ranges is None else jnp.asarray(ranges)
+        low = ranges[:, 0].astype(jnp.float32)
+        high = ranges[:, 1].astype(jnp.float32)
         command_key, stand_key = jax.random.split(rng)
         command = jax.random.uniform(command_key, shape + (3,), minval=low, maxval=high)
         standing = jax.random.bernoulli(stand_key, self.standing_probability, shape)
@@ -109,6 +160,11 @@ class JointVelRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class JointAccRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
 class ActionRateRewardConfig(WeightedRewardConfig):
     pass
 
@@ -150,7 +206,9 @@ class FootSlipRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class FootClearanceRewardConfig(WeightedRewardConfig):
-    target: float = 0.08
+    target: float = 0.10
+    std: float = 0.05
+    tanh_mult: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -160,7 +218,7 @@ class FootDistanceRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class GaitContactRewardConfig(WeightedRewardConfig):
-    pass
+    command_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -194,6 +252,7 @@ class RewardConfig:
     )
     base_height: BaseHeightRewardConfig = BaseHeightRewardConfig(weight=-10.0)
     joint_vel: JointVelRewardConfig = JointVelRewardConfig(weight=-0.001)
+    joint_acc: JointAccRewardConfig = JointAccRewardConfig(weight=-2.5e-7)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.05)
     energy: EnergyRewardConfig = EnergyRewardConfig(weight=-2.0e-5)
     torque: TorqueRewardConfig = TorqueRewardConfig(enabled=False, weight=-1.0e-5)
@@ -206,12 +265,14 @@ class RewardConfig:
     )
     foot_contact: FootContactRewardConfig = FootContactRewardConfig(weight=0.05)
     foot_slip: FootSlipRewardConfig = FootSlipRewardConfig(weight=-0.2)
-    foot_clearance: FootClearanceRewardConfig = FootClearanceRewardConfig(weight=-2.0)
+    foot_clearance: FootClearanceRewardConfig = FootClearanceRewardConfig(weight=1.0)
     foot_distance: FootDistanceRewardConfig = FootDistanceRewardConfig(
         enabled=False, weight=1.0
     )
-    gait_contact: GaitContactRewardConfig = GaitContactRewardConfig(weight=-0.1)
-    feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(weight=0.2)
+    gait_contact: GaitContactRewardConfig = GaitContactRewardConfig(weight=0.5)
+    feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(
+        enabled=False, weight=0.2
+    )
     undesired_contact: UndesiredContactRewardConfig = UndesiredContactRewardConfig(
         weight=-1.0
     )
@@ -266,6 +327,7 @@ def compute_velocity_reward(
     joint_pos: jax.Array,
     joint_pos_rel: jax.Array,
     joint_vel: jax.Array,
+    last_joint_vel: jax.Array,
     action: jax.Array,
     last_action: jax.Array,
     actuator_force: jax.Array,
@@ -296,33 +358,41 @@ def compute_velocity_reward(
     ang_vel_xy = jnp.sum(ang_vel_xy**2)
     flat_orientation = jnp.sum(projected_gravity[:2] ** 2)
     base_height_error = (base_height - config.base_height.target) ** 2
-    joint_vel_l2 = jnp.mean(joint_vel**2)
-    action_rate_l2 = jnp.mean((action - last_action) ** 2)
-    energy = jnp.mean(jnp.abs(actuator_force * joint_vel))
+    joint_vel_l2 = jnp.sum(joint_vel**2)
+    joint_acc_l2 = jnp.sum(((joint_vel - last_joint_vel) / control_timestep) ** 2)
+    action_rate_l2 = jnp.sum((action - last_action) ** 2)
+    energy = jnp.sum(jnp.abs(actuator_force * joint_vel))
     torque_l2 = jnp.mean(actuator_force**2)
 
     lower_violation = jnp.maximum(joint_limit_low - joint_pos, 0.0)
     upper_violation = jnp.maximum(joint_pos - joint_limit_high, 0.0)
-    joint_limit = jnp.mean(lower_violation**2 + upper_violation**2)
+    joint_limit = jnp.sum(lower_violation + upper_violation)
     hold_joint_deviation = (
-        jnp.mean(jnp.abs(joint_pos_rel[hold_joint_indices]))
+        jnp.sum(jnp.abs(joint_pos_rel[hold_joint_indices]))
         if hold_joint_indices.size
         else jnp.asarray(0.0, dtype=jnp.float32)
     )
     policy_joint_deviation = (
-        jnp.mean(jnp.abs(joint_pos_rel[policy_joint_indices]))
+        jnp.sum(jnp.abs(joint_pos_rel[policy_joint_indices]))
         if policy_joint_indices.size
         else jnp.asarray(0.0, dtype=jnp.float32)
     )
     foot_contact_rate = safe_mean(foot_contact)
-    foot_slip = safe_mean(foot_contact * foot_lateral_speed_sq)
-    swing = 1.0 - foot_contact
-    foot_clearance = safe_mean(
-        swing * jnp.maximum(config.foot_clearance.target - foot_height, 0.0) ** 2
+    foot_lateral_speed = jnp.sqrt(jnp.maximum(foot_lateral_speed_sq, 0.0))
+    foot_slip = jnp.sum(foot_contact * foot_lateral_speed)
+    foot_clearance_error = (foot_height - config.foot_clearance.target) ** 2
+    moving_foot_gate = jnp.tanh(config.foot_clearance.tanh_mult * foot_lateral_speed)
+    foot_clearance = jnp.exp(
+        -jnp.sum(foot_clearance_error * moving_foot_gate) / config.foot_clearance.std
     )
     foot_distance = jnp.asarray(foot_distance, dtype=jnp.float32)
-    gait_contact = safe_mean(
-        (foot_contact - gait_contact_mask.astype(jnp.float32)) ** 2
+    command_speed = jnp.linalg.norm(command)
+    gait_match = foot_contact.astype(bool) == gait_contact_mask.astype(bool)
+    gait_contact = jnp.sum(gait_match.astype(jnp.float32))
+    gait_contact = jnp.where(
+        command_speed > config.gait_contact.command_speed_threshold,
+        gait_contact,
+        jnp.asarray(0.0, dtype=jnp.float32),
     )
     first_contact = foot_contact.astype(bool) & ~last_foot_contact.astype(bool)
     completed_air_time = foot_air_time + control_timestep
@@ -332,7 +402,6 @@ def compute_velocity_reward(
         0.0,
         max_bonus,
     )
-    command_speed = jnp.linalg.norm(command)
     feet_air_time = safe_mean(first_contact.astype(jnp.float32) * air_time_bonus)
     feet_air_time = jnp.where(
         command_speed > config.feet_air_time.command_speed_threshold,
@@ -371,6 +440,9 @@ def compute_velocity_reward(
         ),
         "reward/joint_vel": weighted_term(
             config.joint_vel.enabled, config.joint_vel.weight, joint_vel_l2
+        ),
+        "reward/joint_acc": weighted_term(
+            config.joint_acc.enabled, config.joint_acc.weight, joint_acc_l2
         ),
         "reward/action_rate": weighted_term(
             config.action_rate.enabled, config.action_rate.weight, action_rate_l2
@@ -481,6 +553,39 @@ def validate_reward_config(config: RewardConfig) -> None:
     for name, term in reward_terms(config).items():
         if not math.isfinite(term.weight):
             raise ValueError(f"{name}.weight must be finite, got {term.weight}")
+    if config.foot_clearance.enabled:
+        if (
+            not math.isfinite(config.foot_clearance.target)
+            or config.foot_clearance.target < 0
+        ):
+            raise ValueError(
+                "foot_clearance.target must be nonnegative and finite, got "
+                f"{config.foot_clearance.target}"
+            )
+        if (
+            not math.isfinite(config.foot_clearance.std)
+            or config.foot_clearance.std <= 0
+        ):
+            raise ValueError(
+                "foot_clearance.std must be positive when enabled, got "
+                f"{config.foot_clearance.std}"
+            )
+        if (
+            not math.isfinite(config.foot_clearance.tanh_mult)
+            or config.foot_clearance.tanh_mult < 0
+        ):
+            raise ValueError(
+                "foot_clearance.tanh_mult must be nonnegative and finite, got "
+                f"{config.foot_clearance.tanh_mult}"
+            )
+    if config.gait_contact.enabled and (
+        not math.isfinite(config.gait_contact.command_speed_threshold)
+        or config.gait_contact.command_speed_threshold < 0
+    ):
+        raise ValueError(
+            "gait_contact.command_speed_threshold must be nonnegative and "
+            f"finite, got {config.gait_contact.command_speed_threshold}"
+        )
     if config.feet_air_time.enabled:
         if (
             not math.isfinite(config.feet_air_time.min_air_time)
@@ -519,6 +624,7 @@ def reward_terms(config: RewardConfig):
         "flat_orientation": config.flat_orientation,
         "base_height": config.base_height,
         "joint_vel": config.joint_vel,
+        "joint_acc": config.joint_acc,
         "action_rate": config.action_rate,
         "energy": config.energy,
         "torque": config.torque,
@@ -544,3 +650,16 @@ def validate_range(name: str, bounds: tuple[float, float]) -> None:
         raise ValueError(f"{name} bounds must be finite, got {bounds}")
     if low > high:
         raise ValueError(f"{name} lower bound must be <= upper bound, got {bounds}")
+
+
+def validate_subrange(
+    name: str,
+    bounds: tuple[float, float],
+    limits: tuple[float, float],
+) -> None:
+    low, high = bounds
+    limit_low, limit_high = limits
+    if low < limit_low or high > limit_high:
+        raise ValueError(
+            f"{name} bounds {bounds} must be inside curriculum limits {limits}"
+        )

@@ -56,7 +56,7 @@ class PPOConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
-    ent_coef: float = 0.003
+    ent_coef: float = 0.01
     vf_coef: float = 1.0
     max_grad_norm: float = 1.0
     normalize_value: bool = True
@@ -108,6 +108,7 @@ class RunnerState(NamedTuple):
     update: jax.Array
     env_state: BelloState
     obs_stack: jax.Array
+    command_ranges: jax.Array
     rng: jax.Array
     learning_rate: jax.Array
     value_norm_state: ValueNormState
@@ -445,6 +446,14 @@ def done_reason_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def random_push_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        f"mean_{name}": value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("random_push/")
+    }
+
+
 def action_diagnostics(
     transitions: Transition,
     env: BelloLocomotionEnv,
@@ -486,6 +495,7 @@ def collect_rollout(
     policy: ActorCritic,
     env_state: BelloState,
     obs_stack: jax.Array,
+    command_ranges: jax.Array,
     rng: jax.Array,
     config: PPOConfig,
     value_norm_state: ValueNormState,
@@ -504,7 +514,7 @@ def collect_rollout(
         )
         value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = env.step_batch(
-            state, action, rng=env_key
+            state, action, rng=env_key, command_ranges=command_ranges
         )
         next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
         terminal = info.get("done/terminal", done)
@@ -551,7 +561,10 @@ def init_runner_state(
         config,
     )
     params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
-    env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
+    command_ranges = env.command_config.range_array()
+    env_state, obs = env.reset_batch(
+        config.num_envs, rng=env_key, command_ranges=command_ranges
+    )
     obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
     return (
         RunnerState(
@@ -560,6 +573,7 @@ def init_runner_state(
             update=train_state.update,
             env_state=env_state,
             obs_stack=obs_stack,
+            command_ranges=command_ranges,
             rng=rng,
             learning_rate=jnp.asarray(config.learning_rate, dtype=jnp.float32),
             value_norm_state=init_value_norm_state(),
@@ -599,6 +613,7 @@ def update_runner_state(
         policy,
         runner_state.env_state,
         runner_state.obs_stack,
+        runner_state.command_ranges,
         rollout_key,
         config,
         runner_state.value_norm_state,
@@ -627,6 +642,14 @@ def update_runner_state(
         learning_rate, metrics["approx_kl"], config
     )
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
+    reward_means = reward_component_means(transitions.info)
+    command_ranges = update_command_curriculum_ranges(
+        runner_state.command_ranges,
+        transitions.info,
+        runner_state.update,
+        env,
+        config,
+    )
     metrics = {
         **metrics,
         "learning_rate": learning_rate,
@@ -644,7 +667,9 @@ def update_runner_state(
         "max_episode_length": safe_returned_max(transitions.info, key="episode_length"),
         **action_diagnostics(transitions, env, policy),
         **done_reason_means(transitions.info),
-        **reward_component_means(transitions.info),
+        **random_push_means(transitions.info),
+        **reward_means,
+        **command_curriculum_metrics(command_ranges),
     }
     return (
         RunnerState(
@@ -653,6 +678,7 @@ def update_runner_state(
             update=train_state.update,
             env_state=env_state,
             obs_stack=obs_stack,
+            command_ranges=command_ranges,
             rng=key,
             learning_rate=next_learning_rate,
             value_norm_state=value_norm_state,
@@ -683,6 +709,83 @@ def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
         return {"runner_state": runner_state, "metrics": metrics}
 
     return train
+
+
+def update_command_curriculum_ranges(
+    ranges: jax.Array,
+    info: dict[str, jax.Array],
+    update: jax.Array,
+    env: BelloLocomotionEnv,
+    config: PPOConfig,
+) -> jax.Array:
+    curriculum = env.command_config.curriculum
+    if not env.command_config.enabled or not curriculum.enabled:
+        return ranges
+
+    reward_key = "episode_reward/track_lin_vel_xy"
+    returned_episode = info.get("returned_episode")
+    if reward_key not in info or returned_episode is None:
+        return ranges
+
+    episode_reward = safe_returned_mean(info, key=reward_key)
+    returned_count = jnp.sum(returned_episode.astype(jnp.float32))
+    normalized_reward = episode_reward / (env.max_episode_steps * env.control_timestep)
+    reward_threshold = (
+        env.reward_config.track_lin_vel_xy.weight * curriculum.success_threshold
+    )
+    old_period = (update * config.num_steps) // env.max_episode_steps
+    new_period = ((update + 1) * config.num_steps) // env.max_episode_steps
+    should_expand = (
+        (new_period > old_period)
+        & (returned_count > 0)
+        & (normalized_reward > reward_threshold)
+    )
+
+    x_range = expand_command_range(
+        ranges[0],
+        curriculum.limit_lin_vel_x,
+        curriculum.increment,
+        should_expand,
+    )
+    y_range = expand_command_range(
+        ranges[1],
+        curriculum.limit_lin_vel_y,
+        curriculum.increment,
+        should_expand,
+    )
+    yaw_range = expand_command_range(
+        ranges[2],
+        curriculum.limit_ang_vel_yaw,
+        curriculum.increment,
+        should_expand & curriculum.expand_ang_vel_yaw,
+    )
+    return jnp.stack([x_range, y_range, yaw_range])
+
+
+def expand_command_range(
+    command_range: jax.Array,
+    limits: tuple[float, float],
+    increment: float,
+    should_expand: jax.Array,
+) -> jax.Array:
+    limit = jnp.asarray(limits, dtype=jnp.float32)
+    expanded = jnp.clip(
+        command_range + jnp.asarray([-increment, increment], dtype=jnp.float32),
+        limit[0],
+        limit[1],
+    )
+    return jnp.where(should_expand, expanded, command_range)
+
+
+def command_curriculum_metrics(ranges: jax.Array) -> dict[str, jax.Array]:
+    return {
+        "command_range/lin_vel_x_min": ranges[0, 0],
+        "command_range/lin_vel_x_max": ranges[0, 1],
+        "command_range/lin_vel_y_min": ranges[1, 0],
+        "command_range/lin_vel_y_max": ranges[1, 1],
+        "command_range/ang_vel_yaw_min": ranges[2, 0],
+        "command_range/ang_vel_yaw_max": ranges[2, 1],
+    }
 
 
 def validate_ppo_config(config: PPOConfig) -> None:
@@ -769,14 +872,21 @@ def validate_ppo_config(config: PPOConfig) -> None:
         raise ValueError(
             f"policy.hidden_depth must be nonnegative, got {config.policy.hidden_depth}"
         )
+    if config.policy.hidden_dims is not None and any(
+        hidden_dim <= 0 for hidden_dim in config.policy.hidden_dims
+    ):
+        raise ValueError(
+            "policy.hidden_dims entries must be positive, got "
+            f"{config.policy.hidden_dims}"
+        )
     if config.policy.obs_stack_size <= 0:
         raise ValueError(
             "policy.obs_stack_size must be positive, got "
             f"{config.policy.obs_stack_size}"
         )
-    if config.policy.activation not in {"tanh", "relu"}:
+    if config.policy.activation not in {"tanh", "relu", "elu"}:
         raise ValueError(
-            "policy.activation must be 'tanh' or 'relu', got "
+            "policy.activation must be 'tanh', 'relu', or 'elu', got "
             f"{config.policy.activation!r}"
         )
     if not math.isfinite(config.policy.init_log_std):

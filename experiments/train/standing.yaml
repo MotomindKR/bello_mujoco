@@ -266,7 +266,6 @@ wandb_config:
     - full-body
     - mesh-collision
     - sphere-end-effectors
-    - lower-entropy
     - std-cap
 
 video_config:

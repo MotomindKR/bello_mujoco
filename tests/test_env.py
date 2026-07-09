@@ -14,12 +14,15 @@ from bello_mujoco.envs.locomotion import (
     ContactConfig,
     DoneConfig,
     ObservationConfig,
+    ObservationNoiseConfig,
+    RandomPushConfig,
     RollPitchDoneConfig,
     TimeoutDoneConfig,
 )
 from bello_mujoco.envs.rewards import (
     AngVelXYRewardConfig,
     BaseHeightRewardConfig,
+    CommandCurriculumConfig,
     CommandConfig,
     FeetAirTimeRewardConfig,
     FlatOrientationRewardConfig,
@@ -312,6 +315,26 @@ def test_reset_batch_samples_commands_with_rng(
     assert jnp.all(state.command == jnp.asarray([0.2, 0.1, -0.2]))
 
 
+def test_reset_batch_samples_commands_from_override_ranges(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = replace(
+        BelloLocomotionEnv.load_prepared(full_body_asset),
+        command_config=CommandConfig(
+            lin_vel_x=(-0.1, 0.1),
+            lin_vel_y=(-0.1, 0.1),
+            ang_vel_yaw=(-0.1, 0.1),
+            standing_probability=0.0,
+            curriculum=CommandCurriculumConfig(enabled=True),
+        ),
+    )
+    ranges = jnp.asarray([[0.2, 0.2], [0.1, 0.1], [-0.2, -0.2]], dtype=jnp.float32)
+    state, obs = env.reset_batch(4, rng=jax.random.PRNGKey(0), command_ranges=ranges)
+
+    assert obs.shape == (4, env.observation_size)
+    assert jnp.all(state.command == jnp.asarray([0.2, 0.1, -0.2]))
+
+
 def test_command_config_can_disable_command_observation_and_sampling(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -381,6 +404,65 @@ def test_observation_config_can_select_components(
 
     assert env.observation_size == 3 + 2 * env.model.mj_model.nu
     assert obs.shape == (env.observation_size,)
+
+
+def test_observation_noise_is_applied_when_rng_is_passed(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            observation=ObservationConfig(
+                base_ang_vel=True,
+                projected_gravity=False,
+                command=False,
+                joint_pos=False,
+                joint_vel=False,
+                actuator_force=False,
+                last_action=False,
+                noise=ObservationNoiseConfig(
+                    enabled=True,
+                    base_ang_vel=(0.5, 0.5),
+                ),
+            ),
+        ),
+    )
+    state, noisy_obs = env.reset_batch(2, rng=jax.random.PRNGKey(0))
+    clean_obs = jax.vmap(env.observation)(state)
+
+    assert noisy_obs.shape == clean_obs.shape
+    assert jnp.allclose(noisy_obs - clean_obs, 0.5)
+
+
+def test_random_push_sets_root_xy_velocity_on_interval(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=2,
+        env_config=BelloEnvConfig(
+            random_push=RandomPushConfig(
+                enabled=True,
+                interval_seconds=0.02,
+                lin_vel_x=(0.3, 0.3),
+                lin_vel_y=(-0.2, -0.2),
+            ),
+        ),
+    )
+    state, _ = env.reset_batch(2)
+    state = state.replace(step_count=jnp.ones((2,), dtype=jnp.int32))
+
+    data, push_applied, push_velocity = env._maybe_apply_random_push_batch(
+        state.data, state.step_count, jax.random.PRNGKey(0)
+    )
+
+    root_qvel = int(env.model.root_qvel_adr)
+    assert jnp.all(push_applied)
+    assert jnp.allclose(push_velocity, jnp.asarray([[0.3, -0.2], [0.3, -0.2]]))
+    assert jnp.allclose(
+        data.qvel[:, root_qvel : root_qvel + 2],
+        jnp.asarray([[0.3, -0.2], [0.3, -0.2]]),
+    )
 
 
 def test_observation_config_can_include_gait_phase(
