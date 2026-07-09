@@ -714,7 +714,7 @@ If W&B is disabled, tracking helpers are no-ops.
 When enabled:
 
 - the full run config is logged to `run.config`
-- training metrics are logged under `phase=train`
+- training metrics are logged with a `train/` metric-name prefix
 - metrics stream after every PPO update when `metric_config.stream_updates=true`
 - the W&B logging step is environment steps
 - training videos can be logged when `video_config.enabled` and
@@ -734,6 +734,7 @@ video_config:
   every_updates: 10
   render_initial: false
   render_final: true
+  simulation_backend: mujoco
   output_dir: outputs/train_videos
   filename_prefix: rollout
   command: [0.0, 0.0, 0.0]

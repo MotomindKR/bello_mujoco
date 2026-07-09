@@ -63,14 +63,14 @@ uv run pytest
 For simulation or training changes, also run:
 
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-smoke-env --step
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-smoke-env step=true
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train-ppo \
-  --no-dry-run \
-  --config.total-timesteps 4 \
-  --config.num-envs 2 \
-  --config.num-steps 2 \
-  --config.num-minibatches 1 \
-  --config.update-epochs 1
+  dry_run=false \
+  config.total_timesteps=4 \
+  config.num_envs=2 \
+  config.num_steps=2 \
+  config.num_minibatches=1 \
+  config.update_epochs=1
 ```
 
 See [docs/index.md](docs/index.md) for focused test sets, workflow-specific

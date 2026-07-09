@@ -19,13 +19,18 @@ Config:
 
 - `experiments/train/standing.yaml`
 - zero command task via `command_config.enabled: false`
-- command and gait phase removed from observation
-- lower body plus waist controlled by policy, head/arms/fingers held
+- command, gait phase, and actuator-force observations removed from the policy
+  observation; base linear velocity and base height included for balance
+- lower body controlled by policy; waist, head, arms, and fingers held
 - `obs_stack_size: 10`
-- `ent_coef: 0.03`
-- `init_log_std: 1.8`
-- loose base-height and roll/pitch done checks enabled to reset fallen samples
-  with the current `termination` reward left enabled
+- default PPO settings inherited from `configs/train/default.yaml`, including
+  adaptive KL, value normalization, `ent_coef: 0.003`, `init_log_std: 0.0`,
+  `max_log_std: 1.0`, and `num_steps: 24`
+- native additive standing reward with `alive`, zero-velocity tracking,
+  base-height/uprightness shaping, small joint-velocity/torque/action-rate
+  penalties, and terminal-failure penalty
+- `max_episode_steps: 256`, base-height done threshold `0.55`, roll/pitch
+  done threshold `1.35 rad`
 
 ## Diagnostics
 
@@ -42,9 +47,9 @@ After reducing exploration noise and relaxing base-height termination:
 - Initial stochastic policy survived at least 100 control steps, about `2.0s`.
 - This made PPO rollouts long enough to provide a useful learning signal.
 
-The current DM Control-style recipe keeps loose base-height and roll/pitch done
-checks enabled. This resets fallen samples and gives PPO fresh standing attempts,
-while `reward_config.termination.enabled: false` avoids a terminal reward spike.
+At this historical checkpoint, the recipe still used a DM-Control-style reward
+with loose base-height and roll/pitch done checks. The active recipe no longer
+has `dm_control_stand`; it uses the native additive reward summarized above.
 
 W&B run observed:
 
@@ -160,7 +165,7 @@ Applied standing follow-up:
 Survival-only standing follow-up:
 
 - Config changed in `experiments/train/standing.yaml`.
-- Enabled reward terms are now only:
+- Enabled reward terms for this run were only:
   - `alive: enabled: true, weight: 1.0`
   - `termination: enabled: true, weight: -1.0`
 - `dm_control_stand` and all pose, velocity, action, contact, and gait terms are
@@ -197,11 +202,11 @@ Applied next standing follow-up:
 - Config changed in `experiments/train/standing.yaml`.
 - `config.ent_coef`: `0.03 -> 0.01`
 - `config.policy.init_log_std`: `1.8 -> 0.65`
-- Reward terms are now:
+- Reward terms for this run became:
   - `alive: enabled: true, weight: 1.0`
   - `foot_distance: enabled: true, weight: 1.0`
   - `termination: enabled: true, weight: -1.0`
-- `dm_control_stand` remains disabled.
+- `dm_control_stand` remained disabled.
 - Run/checkpoint/video names now use
   `standing_survival_stance_exploration_seed0` /
   `standing_survival_stance_exploration`.
@@ -214,7 +219,7 @@ Applied next standing follow-up:
 Applied Unitree/rsl_rl-style PPO follow-up:
 
 - Config changed in `experiments/train/standing.yaml`.
-- Current standing reward terms are survival-only:
+- Standing reward terms for this run were survival-only:
   - `alive: enabled: true, weight: 1.0`
   - `termination: enabled: true, weight: -1.0`
   - `foot_distance: enabled: false`
@@ -232,19 +237,19 @@ Applied Unitree/rsl_rl-style PPO follow-up:
   - `ent_coef: 0.01`
   - `max_grad_norm: 1.0`
   - `policy.init_log_std: 0.0`, matching `init_noise_std: 1.0`
-- Did not change the MLP shape or activation. The local policy config does not
+- Did not change the MLP shape or activation. The local policy config did not
   support separate actor/critic layer lists or ELU yet.
-- Did not implement `schedule: adaptive` / `desired_kl: 0.01`; the local PPO
-  currently supports fixed LR or linear annealing, not rsl_rl-style adaptive KL
-  scheduling.
+- Did not implement `schedule: adaptive` / `desired_kl: 0.01` at this point;
+  the local PPO then supported fixed LR or linear annealing, not rsl_rl-style
+  adaptive KL scheduling.
 - Run/checkpoint/video names now use
   `standing_unitree_ppo_survival_seed0` /
   `standing_unitree_ppo_survival`.
 - Dry-run confirmed `num_updates: 50000` with `num_steps: 24`.
 - One-update smoke check with one env and 24 steps should show only
   `mean_reward/alive` and `mean_reward/termination` as nonzero reward terms.
-  Tiny smoke batches can have high `approx_kl` because the local PPO does not
-  yet have adaptive KL scheduling.
+  Tiny smoke batches could have high `approx_kl` because adaptive KL scheduling
+  had not been added yet.
 - Corrected smoke check after disabling `foot_distance` showed
   `mean_reward/alive = 0.02`, `mean_reward/foot_distance = 0`,
   `mean_reward/dm_control_stand = 0`, `mean_reward/termination = 0` on the
@@ -293,7 +298,7 @@ Useful standing terms for the additive velocity-tracking recipe:
 - `termination`: optional terminal event penalty; not scaled by
   `control_timestep`
 
-Useful standing term for the DM Control-style recipe:
+Useful standing term for the now-removed DM Control-style recipe:
 
 - `dm_control_stand`: bounded positive product of standing height, uprightness,
   near-zero horizontal velocity, and small action
@@ -320,18 +325,18 @@ regularization on policy-controlled joints.
 
 Reward scale matters. The local reward path now follows the Playground
 locomotion convention for continuous terms by multiplying them by
-`control_timestep`. At the default `0.02s` control timestep, a perfect
-`dm_control_stand` value with `weight: 1.0` contributes `0.02` per step. Event
-terms such as `feet_air_time` and `termination` are not timestep-scaled; their
-weights are event magnitudes.
+`control_timestep`. At the default `0.02s` control timestep, a continuous term
+with `weight: 1.0` and raw value `1.0` contributes `0.02` per step. Event terms
+such as `feet_air_time` and `termination` are not timestep-scaled; their weights
+are event magnitudes.
 
-For the current DM Control-style standing recipe, the `termination` reward
-remains disabled. Fall-based done checks are used as a sampling/reset mechanism,
-not as a reward term.
+## Historical DM-Control Reward Shape
 
-## Current Reward Shape
+This section is superseded. The package no longer defines `dm_control_stand`,
+and the active `standing.yaml` uses the native additive reward summarized in
+the current recipe section.
 
-The current standing recipe uses a DM Control-style bounded shape:
+The previous DM-Control-style standing recipe used:
 
 ```yaml
 reward_config:
@@ -387,7 +392,7 @@ reward_config:
 Rationale:
 
 - match DM Control Humanoid Stand's product-style reward as closely as the
-  current env abstraction allows
+  env abstraction allowed at that time
 - make reward bounded and mostly nonnegative
 - scale reward by control timestep so returns are roughly in seconds of good
   standing, not raw control-step count
@@ -402,17 +407,17 @@ Rationale:
 The base-height termination threshold is a curriculum knob for additive
 locomotion-style recipes.
 
-Current standing recipe:
+Current standing done thresholds:
 
 ```yaml
 done_config:
   base_height:
     enabled: true
-    min_height: 0.78
+    min_height: 0.55
   roll_pitch:
     enabled: true
-    max_abs_roll: 1.2
-    max_abs_pitch: 1.2
+    max_abs_roll: 1.35
+    max_abs_pitch: 1.35
 ```
 
 This resets clearly falling samples earlier than the initial bootstrap threshold
@@ -420,9 +425,11 @@ while still allowing some recoverable leaning states.
 
 Initial action noise matters for balance.
 
-Default `init_log_std: -0.5` gives action std about `0.61`, which is large for a
-standing balance task. `init_log_std: -2.0` gives std about `0.135`, which is
-much less disruptive at reset.
+The current package default `init_log_std: 0.0` gives action std `1.0`, while
+the standing recipe caps learned std at `exp(1.0) ~= 2.72`. Earlier lower-noise
+diagnostics used `init_log_std: -2.0` for std about `0.135`; the foot-distance
+pipeline diagnostic intentionally uses `init_log_std: 1.8` and `max_log_std:
+1.8` for aggressive exploration.
 
 Keep rollout videos with `stop_on_done: false` while debugging.
 
@@ -437,37 +444,42 @@ Primary progress signals:
   nonzero early if the policy is falling.
 - `train/mean_done/timeout` should become more common only as standing improves.
 - `train/mean_episode_return` should increase.
-- `train/max_episode_return` should approach about `20` for a full 20s episode.
+- `train/max_episode_return` should rise as episodes approach the 256-step
+  standing horizon.
 
 Reward component sanity checks:
 
-- `train/mean_reward/dm_control_stand` should trend toward `0.02` with the
-  default 20 ms control timestep.
+- `train/mean_reward/alive`, `train/mean_reward/track_lin_vel_xy`, and
+  `train/mean_reward/track_ang_vel_z` should stay positive for near-standing
+  rollouts.
 - `train/mean_reward/base_height`, `train/mean_reward/flat_orientation`,
-  `train/mean_reward/lin_vel_z`, and `train/mean_reward/ang_vel_xy` should move
-  toward zero as balance improves.
-- Disabled terms such as `termination` and `track_lin_vel_xy` should stay at
-  zero.
+  `train/mean_reward/lin_vel_z`, `train/mean_reward/ang_vel_xy`,
+  `train/mean_reward/joint_vel`, `train/mean_reward/torque`, and
+  `train/mean_reward/action_rate` should move toward zero as balance improves.
+- Disabled locomotion/contact terms such as `gait_contact`, `feet_air_time`,
+  and `foot_clearance` should stay at zero.
 
 If `mean_episode_return` improves but rollout videos still show collapse, the
 policy is probably learning to delay falling rather than solving standing.
 
-If `mean_reward` is positive while videos show collapse, inspect
-`reward/dm_control_stand`; the product should fall close to zero after collapse.
+If `mean_reward` is positive while videos show collapse, inspect the component
+terms. A collapsed policy may still earn some alive or zero-velocity reward
+unless base-height/uprightness penalties and terminal failures are visible in
+the breakdown.
 
 ## Next Likely Steps
 
-If the current DM Control-style recipe still plateaus around 2-4 seconds:
+If the native additive standing recipe still plateaus around 2-4 seconds:
 
-1. Check whether `reward/dm_control_stand` is near zero because height,
-   uprightness, horizontal velocity, or action magnitude is the limiting factor.
+1. Check whether `base_height`, `flat_orientation`, velocity penalties, or
+   terminal-failure rate is the limiting factor.
 2. Increase ankle/hip damping or gains if zero action continues to sink.
-3. Start with fewer policy joints, for example legs only, then add waist.
+3. Keep waist held until lower-body balance is reliable.
 4. If learning is too sparse after falls, relax `base_height.min_height` or
-   `roll_pitch` thresholds further, but keep
-   `reward_config.termination.enabled: false`.
-5. Add policy-pose regularization only if the bounded stand reward solves height
-   and uprightness but finds unnatural joint configurations.
+   `roll_pitch` thresholds further, but make sure `reward/termination` only
+   applies to true terminal failures, not timeouts.
+5. Add policy-pose regularization only if the native reward solves height and
+   uprightness but finds unnatural joint configurations.
 
 ## Actuator Gain Notes
 
@@ -677,7 +689,7 @@ without wasting 20 seconds of rollout after every fall.
 
 Live run inspected: `6bg52tpl`.
 
-Current config:
+Run config:
 
 ```text
 num_envs: 1024
@@ -758,7 +770,7 @@ run config:
   num_steps: 128
   max_episode_steps: 300
 
-current standing.yaml:
+repo standing.yaml at inspection time:
   num_steps: 256
   max_episode_steps: 256
 ```
@@ -793,7 +805,7 @@ Decision:
 
 - Do not use `6bg52tpl` as evidence for the `256/256` curriculum; it is running
   the previous config.
-- Stop/restart before judging the current recipe.
+- Stop/restart before judging the then-current recipe.
 
 ## 2026-07-08 PPO Conservatism Adjustment
 
@@ -1389,7 +1401,7 @@ episodes under the same reward family.
 Applied next recipe change:
 
 - Re-enabled `reward_config.dm_control_stand` with `weight: 1.0`.
-- Kept `alive` and `termination` enabled, so the objective is now:
+- Kept `alive` and `termination` enabled, so the objective for that run became:
   - continuous alive reward
   - continuous DM-Control-style stand/upright/small-motion reward
   - event-driven termination penalty

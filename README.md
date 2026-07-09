@@ -114,6 +114,7 @@ Generated assets, Python environments, and runtime caches are local artifacts an
 .uv-python/
 .warp-cache/
 .wandb/
+wandb/
 checkpoints/
 outputs/
 /tmp/bello-mujoco-assets/<config-hash>/

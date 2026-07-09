@@ -63,6 +63,7 @@ Generated local artifacts should not be committed:
 .uv-python/
 .warp-cache/
 .wandb/
+wandb/
 checkpoints/
 outputs/
 /tmp/bello-mujoco-assets/
