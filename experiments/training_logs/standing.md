@@ -23,7 +23,8 @@ Config:
   observation; base linear velocity and base height included for balance
 - `env_config.root_link: torso_link`, so base observations and null-link
   reward/done terms use the torso instead of the generated free-root wrapper
-- lower body controlled by policy; waist, head, arms, and fingers held
+- lower body and waist yaw controlled by policy; waist roll/pitch, head, arms,
+  and fingers held
 - `obs_stack_size: 10`
 - default PPO settings inherited from `configs/train/default.yaml`, including
   adaptive KL, value normalization, `ent_coef: 0.003`, `init_log_std: 0.0`,

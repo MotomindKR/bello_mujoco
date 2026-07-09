@@ -83,7 +83,9 @@ asset_config:
         soft_limit: [-0.07857, 0.07857]
         gains: [22.0, 1.0]
       waist_yaw_joint:
-        mode: hold
+        mode: policy
+        action_scale: 0.25
+        soft_limit: [-0.45, 0.45]
         gains: [180.0, 12.0]
       waist_roll_joint:
         mode: hold
