@@ -67,9 +67,8 @@ class BaseHeightDoneConfig(BaseDoneConfig):
 
 
 @dataclass(frozen=True)
-class RollPitchDoneConfig(BaseDoneConfig):
-    max_abs_roll: float = 1.0
-    max_abs_pitch: float = 1.0
+class BadOrientationDoneConfig(BaseDoneConfig):
+    limit_angle: float = 1.0
     link: str | None = None
 
 
@@ -88,7 +87,7 @@ class DoneConfig:
     """Termination thresholds for Bello episodes."""
 
     base_height: BaseHeightDoneConfig = BaseHeightDoneConfig()
-    roll_pitch: RollPitchDoneConfig = RollPitchDoneConfig()
+    bad_orientation: BadOrientationDoneConfig = BadOrientationDoneConfig()
     timeout: TimeoutDoneConfig = TimeoutDoneConfig()
     nonfinite: NonfiniteDoneConfig = NonfiniteDoneConfig()
 
@@ -98,7 +97,7 @@ class DoneConfig:
             sorted(
                 {
                     term.link
-                    for term in (self.base_height, self.roll_pitch)
+                    for term in (self.base_height, self.bad_orientation)
                     if term.enabled and term.link
                 }
             )
@@ -154,11 +153,19 @@ class ObservationConfig:
 @dataclass(frozen=True)
 class SpawnConfig:
     clearance: float = DEFAULT_SPAWN_CLEARANCE
+    root_xy_range: tuple[float, float] = (0.0, 0.0)
+    root_yaw_range: tuple[float, float] = (0.0, 0.0)
+    joint_pos_noise: tuple[float, float] = (0.0, 0.0)
+    joint_vel_range: tuple[float, float] = (0.0, 0.0)
+    stagger_initial_step_count: bool = False
 
 
 @dataclass(frozen=True)
 class GaitConfig:
     cycle_time: float = 0.80
+    command_speed_frequency_gain: float = 0.55
+    min_frequency: float = 1.20
+    max_frequency: float = 2.20
     duty_factor: float = 0.55
     phase_offsets: tuple[float, float] = (0.0, 0.5)
     standing_command_threshold: float = 0.05
@@ -168,6 +175,9 @@ class GaitConfig:
 class ContactConfig:
     foot_contact_on_seconds: float = 0.0
     foot_contact_off_seconds: float = 0.0
+    foot_contact_force_threshold: float = 1.0
+    undesired_contact_force_threshold: float = 1.0
+    self_collision_force_threshold: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -191,6 +201,7 @@ class BelloEnvConfig:
     contact: ContactConfig = ContactConfig()
     random_push: RandomPushConfig = RandomPushConfig()
     observation: ObservationConfig = ObservationConfig()
+    critic_observation: ObservationConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -228,18 +239,45 @@ class BelloLocomotionEnv:
                 "spawn.clearance must be a finite nonnegative value, got "
                 f"{self.config.spawn.clearance}"
             )
-        if self.config.observation.joint_mode not in {"all_actuated", "policy"}:
-            raise ValueError(
-                "observation.joint_mode must be 'all_actuated' or 'policy', got "
-                f"{self.config.observation.joint_mode!r}"
+        validate_range("spawn.root_xy_range", self.config.spawn.root_xy_range)
+        validate_range("spawn.root_yaw_range", self.config.spawn.root_yaw_range)
+        validate_range("spawn.joint_pos_noise", self.config.spawn.joint_pos_noise)
+        validate_range("spawn.joint_vel_range", self.config.spawn.joint_vel_range)
+        self._validate_observation_config("observation", self.config.observation)
+        if self.config.critic_observation is not None:
+            self._validate_observation_config(
+                "critic_observation", self.config.critic_observation
             )
-        self._validate_observation_config()
         if (
             not math.isfinite(self.config.gait.cycle_time)
             or self.config.gait.cycle_time <= 0
         ):
             raise ValueError(
                 f"gait.cycle_time must be positive, got {self.config.gait.cycle_time}"
+            )
+        if (
+            not math.isfinite(self.config.gait.command_speed_frequency_gain)
+            or self.config.gait.command_speed_frequency_gain < 0
+        ):
+            raise ValueError(
+                "gait.command_speed_frequency_gain must be finite and nonnegative, "
+                f"got {self.config.gait.command_speed_frequency_gain}"
+            )
+        if (
+            not math.isfinite(self.config.gait.min_frequency)
+            or self.config.gait.min_frequency <= 0
+        ):
+            raise ValueError(
+                "gait.min_frequency must be finite and positive, got "
+                f"{self.config.gait.min_frequency}"
+            )
+        if (
+            not math.isfinite(self.config.gait.max_frequency)
+            or self.config.gait.max_frequency < self.config.gait.min_frequency
+        ):
+            raise ValueError(
+                "gait.max_frequency must be finite and at least min_frequency, got "
+                f"{self.config.gait.max_frequency}"
             )
         if not 0.0 <= self.config.gait.duty_factor <= 1.0:
             raise ValueError(
@@ -281,6 +319,33 @@ class BelloLocomotionEnv:
                 f"{self.config.contact.foot_contact_off_seconds}"
             )
         if (
+            not math.isfinite(self.config.contact.foot_contact_force_threshold)
+            or self.config.contact.foot_contact_force_threshold < 0.0
+        ):
+            raise ValueError(
+                "contact.foot_contact_force_threshold must be finite and "
+                "nonnegative, got "
+                f"{self.config.contact.foot_contact_force_threshold}"
+            )
+        if (
+            not math.isfinite(self.config.contact.undesired_contact_force_threshold)
+            or self.config.contact.undesired_contact_force_threshold < 0.0
+        ):
+            raise ValueError(
+                "contact.undesired_contact_force_threshold must be finite and "
+                "nonnegative, got "
+                f"{self.config.contact.undesired_contact_force_threshold}"
+            )
+        if (
+            not math.isfinite(self.config.contact.self_collision_force_threshold)
+            or self.config.contact.self_collision_force_threshold < 0.0
+        ):
+            raise ValueError(
+                "contact.self_collision_force_threshold must be finite and "
+                "nonnegative, got "
+                f"{self.config.contact.self_collision_force_threshold}"
+            )
+        if (
             not math.isfinite(self.config.random_push.interval_seconds)
             or self.config.random_push.interval_seconds <= 0.0
         ):
@@ -298,28 +363,33 @@ class BelloLocomotionEnv:
                 "done_config.base_height.min_height must be finite, got "
                 f"{self.done_config.base_height.min_height}"
             )
-        if self.done_config.roll_pitch.enabled:
-            if self.done_config.roll_pitch.max_abs_roll < 0:
-                raise ValueError(
-                    "done_config.roll_pitch.max_abs_roll must be nonnegative, got "
-                    f"{self.done_config.roll_pitch.max_abs_roll}"
-                )
-            if self.done_config.roll_pitch.max_abs_pitch < 0:
-                raise ValueError(
-                    "done_config.roll_pitch.max_abs_pitch must be nonnegative, got "
-                    f"{self.done_config.roll_pitch.max_abs_pitch}"
-                )
+        if self.done_config.bad_orientation.enabled and (
+            not math.isfinite(self.done_config.bad_orientation.limit_angle)
+            or self.done_config.bad_orientation.limit_angle < 0
+        ):
+            raise ValueError(
+                "done_config.bad_orientation.limit_angle must be finite and "
+                "nonnegative, got "
+                f"{self.done_config.bad_orientation.limit_angle}"
+            )
 
-    def _validate_observation_config(self) -> None:
-        for name, value in self.config.observation.scale.__dict__.items():
+    def _validate_observation_config(
+        self, config_name: str, observation: ObservationConfig
+    ) -> None:
+        if observation.joint_mode not in {"all_actuated", "policy"}:
+            raise ValueError(
+                f"{config_name}.joint_mode must be 'all_actuated' or 'policy', got "
+                f"{observation.joint_mode!r}"
+            )
+        for name, value in observation.scale.__dict__.items():
             if not math.isfinite(value):
                 raise ValueError(
-                    f"observation.scale.{name} must be finite, got {value}"
+                    f"{config_name}.scale.{name} must be finite, got {value}"
                 )
-        for name, bounds in self.config.observation.noise.__dict__.items():
+        for name, bounds in observation.noise.__dict__.items():
             if name == "enabled":
                 continue
-            validate_range(f"observation.noise.{name}", bounds)
+            validate_range(f"{config_name}.noise.{name}", bounds)
 
     @classmethod
     def load(
@@ -332,6 +402,8 @@ class BelloLocomotionEnv:
         reward_config: RewardConfig = RewardConfig(),
         command_config: CommandConfig = CommandConfig(),
         done_config: DoneConfig = DoneConfig(),
+        use_viewer_model: bool = False,
+        load_mjx: bool = True,
     ) -> "BelloLocomotionEnv":
         return cls(
             load_bello_model(
@@ -340,6 +412,8 @@ class BelloLocomotionEnv:
                 batch_size=batch_size,
                 terrain=env_config.terrain,
                 spawn_clearance=env_config.spawn.clearance,
+                use_viewer_model=use_viewer_model,
+                load_mjx=load_mjx,
             ),
             config=env_config,
             reward_config=reward_config,
@@ -359,6 +433,8 @@ class BelloLocomotionEnv:
         reward_config: RewardConfig = RewardConfig(),
         command_config: CommandConfig = CommandConfig(),
         done_config: DoneConfig = DoneConfig(),
+        use_viewer_model: bool = False,
+        load_mjx: bool = True,
     ) -> "BelloLocomotionEnv":
         return cls(
             load_prepared_bello_model(
@@ -368,6 +444,8 @@ class BelloLocomotionEnv:
                 terrain=env_config.terrain,
                 actuator_config=actuator_config,
                 spawn_clearance=env_config.spawn.clearance,
+                use_viewer_model=use_viewer_model,
+                load_mjx=load_mjx,
             ),
             config=env_config,
             reward_config=reward_config,
@@ -397,35 +475,56 @@ class BelloLocomotionEnv:
 
     @property
     def observation_size(self) -> int:
-        observation = self.config.observation
+        return self._observation_size(self.config.observation)
+
+    @property
+    def critic_observation_config(self) -> ObservationConfig:
+        return self.config.critic_observation or self.config.observation
+
+    @property
+    def critic_observation_size(self) -> int:
+        return self._observation_size(self.critic_observation_config)
+
+    def _observation_size(self, observation: ObservationConfig) -> int:
         return (
             (3 if observation.base_lin_vel else 0)
             + (3 if observation.base_ang_vel else 0)
             + (3 if observation.projected_gravity else 0)
             + (1 if observation.base_height else 0)
             + (2 if observation.gait_phase else 0)
-            + self.command_observation_size
-            + (self.observed_joint_count if observation.joint_pos else 0)
-            + (self.observed_joint_count if observation.joint_vel else 0)
-            + (self.observed_actuator_count if observation.actuator_force else 0)
+            + self._command_observation_size(observation)
+            + (self._observed_joint_count(observation) if observation.joint_pos else 0)
+            + (self._observed_joint_count(observation) if observation.joint_vel else 0)
+            + (
+                self._observed_actuator_count(observation)
+                if observation.actuator_force
+                else 0
+            )
             + (self.action_size if observation.last_action else 0)
         )
 
     @property
     def command_observation_size(self) -> int:
-        return (
-            3 if self.config.observation.command and self.command_config.enabled else 0
-        )
+        return self._command_observation_size(self.config.observation)
+
+    def _command_observation_size(self, observation: ObservationConfig) -> int:
+        return 3 if observation.command and self.command_config.enabled else 0
 
     @property
     def observed_joint_count(self) -> int:
-        if self.config.observation.joint_mode == "policy":
+        return self._observed_joint_count(self.config.observation)
+
+    def _observed_joint_count(self, observation: ObservationConfig) -> int:
+        if observation.joint_mode == "policy":
             return int(self.model.policy_ctrl_indices.size)
         return int(self.model.mj_model.nu)
 
     @property
     def observed_actuator_count(self) -> int:
-        if self.config.observation.joint_mode == "policy":
+        return self._observed_actuator_count(self.config.observation)
+
+    def _observed_actuator_count(self, observation: ObservationConfig) -> int:
+        if observation.joint_mode == "policy":
             return int(self.model.policy_ctrl_indices.size)
         return int(self.model.mj_model.nu)
 
@@ -461,10 +560,14 @@ class BelloLocomotionEnv:
             "policy_qvel_indices", model.policy_qvel_indices, mj_model.nv
         )
         require_index_range("foot_body_ids", model.foot_body_ids, mj_model.nbody)
+        require_index_range("robot_geom_ids", model.robot_geom_ids, mj_model.ngeom)
         require_index_range("foot_geom_ids", model.foot_geom_ids, mj_model.ngeom)
         require_index_range("terrain_geom_ids", model.terrain_geom_ids, mj_model.ngeom)
         require_index_range(
             "nonfoot_robot_geom_ids", model.nonfoot_robot_geom_ids, mj_model.ngeom
+        )
+        require_index_range(
+            "nonfoot_robot_body_ids", model.nonfoot_robot_body_ids, mj_model.nbody
         )
         if isinstance(mj_model, mujoco.MjModel):
             for link_name in {
@@ -474,7 +577,6 @@ class BelloLocomotionEnv:
             }:
                 if self._link_body_id(link_name) < 0:
                     raise ValueError(f"configured link/body not found: {link_name!r}")
-
         if model.policy_action_scale.shape != model.policy_ctrl_indices.shape:
             raise ValueError(
                 "policy_action_scale must have one value per policy action, got "
@@ -533,9 +635,9 @@ class BelloLocomotionEnv:
         rng: jax.Array | None = None,
         command_ranges: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = obs_rng = rng
+        command_rng = reset_rng = obs_rng = rng
         if rng is not None:
-            command_rng, obs_rng = jax.random.split(rng)
+            command_rng, reset_rng, obs_rng = jax.random.split(rng, 3)
         command = self._resolve_command(command, command_rng, command_ranges)
         data = self.model.make_data()
         data = data.replace(
@@ -543,6 +645,8 @@ class BelloLocomotionEnv:
             qvel=jnp.asarray(self.model.default_qvel),
             ctrl=jnp.asarray(self.model.default_ctrl),
         )
+        data = self._apply_reset_randomization(data, reset_rng)
+        data = mjx.kinematics(self.model.mjx_model, data)
         state = BelloState(
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
@@ -550,7 +654,7 @@ class BelloLocomotionEnv:
             foot_contact_debounce_time=jnp.zeros(
                 self.model.foot_body_ids.size, dtype=jnp.float32
             ),
-            last_foot_contact=jnp.ones(self.model.foot_body_ids.size, dtype=bool),
+            last_foot_contact=jnp.zeros(self.model.foot_body_ids.size, dtype=bool),
             command=command,
             step_count=jnp.asarray(0, dtype=jnp.int32),
             episode_return=jnp.asarray(0.0, dtype=jnp.float32),
@@ -569,16 +673,86 @@ class BelloLocomotionEnv:
         rng: jax.Array | None = None,
         command_ranges: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = obs_rng = rng
+        command_rng = reset_rng = obs_rng = rng
         if rng is not None:
-            command_rng, obs_rng = jax.random.split(rng)
+            command_rng, reset_rng, obs_rng = jax.random.split(rng, 3)
         command = self._resolve_batch_command(
             batch_size, command, command_rng, command_ranges
         )
-        state, obs = jax.vmap(self.reset)(command)
+        if reset_rng is None:
+            state, _ = jax.vmap(self.reset)(command)
+        else:
+            reset_keys = jax.random.split(reset_rng, batch_size)
+            state, _ = jax.vmap(self.reset)(command, reset_keys)
         data = state.data.replace(_impl=state.data._impl.replace(nworld=batch_size))
         state = state.replace(data=data)
         return state, self.observation_batch(state, obs_rng)
+
+    def initial_step_counts(
+        self, batch_size: int, rng: jax.Array | None = None
+    ) -> jax.Array:
+        if rng is None or not self.config.spawn.stagger_initial_step_count:
+            return jnp.zeros((batch_size,), dtype=jnp.int32)
+        return jax.random.randint(
+            rng,
+            (batch_size,),
+            minval=0,
+            maxval=self.max_episode_steps,
+            dtype=jnp.int32,
+        )
+
+    def _apply_reset_randomization(
+        self, data: mjx.Data, rng: jax.Array | None
+    ) -> mjx.Data:
+        if rng is None:
+            return data
+        xy_key, yaw_key, qpos_key, qvel_key = jax.random.split(rng, 4)
+        root_qpos = int(self.model.root_qpos_adr)
+        qpos = data.qpos
+        root_xy = jax.random.uniform(
+            xy_key,
+            (2,),
+            minval=self.config.spawn.root_xy_range[0],
+            maxval=self.config.spawn.root_xy_range[1],
+            dtype=jnp.float32,
+        )
+        yaw = jax.random.uniform(
+            yaw_key,
+            (),
+            minval=self.config.spawn.root_yaw_range[0],
+            maxval=self.config.spawn.root_yaw_range[1],
+            dtype=jnp.float32,
+        )
+        qpos = (
+            qpos.at[root_qpos : root_qpos + 2]
+            .add(root_xy)
+            .at[root_qpos + 3 : root_qpos + 7]
+            .set(yaw_quat_from_angle(yaw))
+        )
+        qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
+        joint_noise = jax.random.uniform(
+            qpos_key,
+            qpos_idx.shape,
+            minval=self.config.spawn.joint_pos_noise[0],
+            maxval=self.config.spawn.joint_pos_noise[1],
+            dtype=jnp.float32,
+        )
+        joint_ids = jnp.asarray(self.model.mj_model.actuator_trnid[:, 0])
+        joint_range = jnp.asarray(self.model.mj_model.jnt_range)[joint_ids]
+        joint_pos = jnp.clip(
+            qpos[qpos_idx] + joint_noise, joint_range[:, 0], joint_range[:, 1]
+        )
+        qpos = qpos.at[qpos_idx].set(joint_pos)
+        qvel_idx = jnp.asarray(self.model.actuator_qvel_indices)
+        joint_vel = jax.random.uniform(
+            qvel_key,
+            qvel_idx.shape,
+            minval=self.config.spawn.joint_vel_range[0],
+            maxval=self.config.spawn.joint_vel_range[1],
+            dtype=jnp.float32,
+        )
+        qvel = data.qvel.at[qvel_idx].set(joint_vel)
+        return data.replace(qpos=qpos, qvel=qvel)
 
     def step(
         self, state: BelloState, action: jax.Array
@@ -608,9 +782,14 @@ class BelloLocomotionEnv:
         done_flags = self._done_flags(next_state)
         done = done_flags["done/any"]
         terminal = done_flags["done/terminal"]
-        raw_foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
-            self._contact_terms(next_state, 0)
-        )
+        (
+            raw_foot_contact,
+            foot_height,
+            foot_lateral_speed_sq,
+            foot_angular_speed,
+            undesired_contact,
+            self_collision,
+        ) = self._contact_terms(next_state, 0)
         foot_contact, foot_contact_debounce_time = self._debounce_foot_contact(
             next_state, raw_foot_contact, done
         )
@@ -622,7 +801,12 @@ class BelloLocomotionEnv:
             foot_contact,
             foot_height,
             foot_lateral_speed_sq,
+            foot_angular_speed,
             undesired_contact,
+            self_collision,
+        )
+        reward, reward_info = self._sanitize_nonfinite_reward(
+            reward, reward_info, done_flags
         )
         episode_return = state.episode_return + reward
         episode_track_lin_vel_xy = (
@@ -656,6 +840,7 @@ class BelloLocomotionEnv:
         info = {
             "base_height": self._base_height(next_state),
             "bootstrap_observation": self.observation(next_state),
+            "bootstrap_critic_observation": self.critic_observation(next_state),
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_reward/track_lin_vel_xy": jnp.where(
                 done, episode_track_lin_vel_xy, 0.0
@@ -716,9 +901,14 @@ class BelloLocomotionEnv:
         done = done_flags["done/any"]
         terminal = done_flags["done/terminal"]
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
-        raw_foot_contact, foot_height, foot_lateral_speed_sq, undesired_contact = (
-            jax.vmap(self._contact_terms)(stepped_state, world_ids)
-        )
+        (
+            raw_foot_contact,
+            foot_height,
+            foot_lateral_speed_sq,
+            foot_angular_speed,
+            undesired_contact,
+            self_collision,
+        ) = jax.vmap(self._contact_terms)(stepped_state, world_ids)
         foot_contact, foot_contact_debounce_time = jax.vmap(
             self._debounce_foot_contact
         )(stepped_state, raw_foot_contact, done)
@@ -730,7 +920,12 @@ class BelloLocomotionEnv:
             foot_contact,
             foot_height,
             foot_lateral_speed_sq,
+            foot_angular_speed,
             undesired_contact,
+            self_collision,
+        )
+        reward, reward_info = self._sanitize_nonfinite_reward(
+            reward, reward_info, done_flags
         )
         episode_return = state.episode_return + reward
         episode_track_lin_vel_xy = (
@@ -764,9 +959,11 @@ class BelloLocomotionEnv:
             ),
         )
         stepped_obs = self.observation_batch(stepped_state, obs_rng)
+        stepped_critic_obs = self.critic_observation_batch(stepped_state)
         info = {
             "base_height": jax.vmap(self._base_height)(stepped_state),
             "bootstrap_observation": stepped_obs,
+            "bootstrap_critic_observation": stepped_critic_obs,
             "episode_return": jnp.where(done, episode_return, 0.0),
             "episode_reward/track_lin_vel_xy": jnp.where(
                 done, episode_track_lin_vel_xy, 0.0
@@ -805,7 +1002,28 @@ class BelloLocomotionEnv:
         keys = jax.random.split(rng, int(state.command.shape[0]))
         return jax.vmap(self.observation)(state, keys)
 
+    def critic_observation_batch(
+        self, state: BelloState, rng: jax.Array | None = None
+    ) -> jax.Array:
+        if rng is None:
+            return jax.vmap(self.critic_observation)(state)
+        keys = jax.random.split(rng, int(state.command.shape[0]))
+        return jax.vmap(self.critic_observation)(state, keys)
+
     def observation(self, state: BelloState, rng: jax.Array | None = None) -> jax.Array:
+        return self._observation(state, self.config.observation, rng)
+
+    def critic_observation(
+        self, state: BelloState, rng: jax.Array | None = None
+    ) -> jax.Array:
+        return self._observation(state, self.critic_observation_config, rng)
+
+    def _observation(
+        self,
+        state: BelloState,
+        observation: ObservationConfig,
+        rng: jax.Array | None = None,
+    ) -> jax.Array:
         (
             base_lin_vel,
             base_ang_vel,
@@ -817,8 +1035,7 @@ class BelloLocomotionEnv:
             joint_vel,
             actuator_force,
             last_action,
-        ) = self._frame_terms(state)
-        observation = self.config.observation
+        ) = self._frame_terms(state, observation)
         scale = observation.scale
         noise = observation.noise
         keys = (
@@ -918,9 +1135,9 @@ class BelloLocomotionEnv:
         default = jnp.asarray(self.model.default_ctrl)
         scale = self._action_scale()
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        ctrl = default.at[policy_indices].set(default[policy_indices] + scale * action)
-        ctrlrange = jnp.asarray(self.model.mj_model.actuator_ctrlrange)
-        return jnp.clip(ctrl, ctrlrange[:, 0], ctrlrange[:, 1])
+        return default.at[policy_indices].set(
+            default[policy_indices] + scale * action
+        )
 
     def _action_scale(self) -> jax.Array:
         return jnp.asarray(self.model.policy_action_scale, dtype=jnp.float32)
@@ -1053,11 +1270,13 @@ class BelloLocomotionEnv:
     def control_timestep(self) -> float:
         return self.decimation * SIM_TIMESTEP
 
-    def _frame_terms(self, state: BelloState) -> tuple[jax.Array, ...]:
+    def _frame_terms(
+        self, state: BelloState, observation: ObservationConfig
+    ) -> tuple[jax.Array, ...]:
         data = state.data
-        qpos_idx = jnp.asarray(self._observed_qpos_indices())
-        qvel_idx = jnp.asarray(self._observed_qvel_indices())
-        actuator_idx = jnp.asarray(self._observed_actuator_indices())
+        qpos_idx = jnp.asarray(self._observed_qpos_indices(observation))
+        qvel_idx = jnp.asarray(self._observed_qvel_indices(observation))
+        actuator_idx = jnp.asarray(self._observed_actuator_indices(observation))
         joint_pos = data.qpos[qpos_idx] - jnp.asarray(self.model.default_qpos)[qpos_idx]
         joint_vel = data.qvel[qvel_idx]
         actuator_force = data.actuator_force[actuator_idx]
@@ -1081,18 +1300,18 @@ class BelloLocomotionEnv:
             state.last_action,
         )
 
-    def _observed_qpos_indices(self):
-        if self.config.observation.joint_mode == "policy":
+    def _observed_qpos_indices(self, observation: ObservationConfig):
+        if observation.joint_mode == "policy":
             return self.model.policy_qpos_indices
         return self.model.actuator_qpos_indices
 
-    def _observed_qvel_indices(self):
-        if self.config.observation.joint_mode == "policy":
+    def _observed_qvel_indices(self, observation: ObservationConfig):
+        if observation.joint_mode == "policy":
             return self.model.policy_qvel_indices
         return self.model.actuator_qvel_indices
 
-    def _observed_actuator_indices(self):
-        if self.config.observation.joint_mode == "policy":
+    def _observed_actuator_indices(self, observation: ObservationConfig):
+        if observation.joint_mode == "policy":
             return self.model.policy_ctrl_indices
         return np.arange(self.model.mj_model.nu, dtype=np.int32)
 
@@ -1142,9 +1361,12 @@ class BelloLocomotionEnv:
             self._link_quat(state, link_name), self._link_body_lin_vel(state, link_name)
         )
 
-    def _link_yaw_frame_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
+    def _link_yaw_frame_lin_vel(
+        self, state: BelloState, link_name: str, frame_link_name: str | None = None
+    ) -> jax.Array:
+        frame_link_name = link_name if frame_link_name is None else frame_link_name
         return quat_rotate_inverse(
-            yaw_quat(self._link_quat(state, link_name)),
+            yaw_quat(self._link_quat(state, frame_link_name)),
             self._link_world_lin_vel(state, link_name),
         )
 
@@ -1172,28 +1394,35 @@ class BelloLocomotionEnv:
 
     def _done_flags(self, state: BelloState) -> dict[str, jax.Array]:
         config = self.done_config
-        quat = self._link_quat(state, self._done_link(config.roll_pitch))
-        roll, pitch = roll_pitch_from_quat(quat)
         bad_height = (
             self._link_height(state, self._done_link(config.base_height))
             < config.base_height.min_height
             if config.base_height.enabled
             else jnp.asarray(False)
         )
-        bad_orientation = (
-            (jnp.abs(roll) > config.roll_pitch.max_abs_roll)
-            | (jnp.abs(pitch) > config.roll_pitch.max_abs_pitch)
-            if config.roll_pitch.enabled
-            else jnp.asarray(False)
-        )
+        if config.bad_orientation.enabled:
+            projected_gravity = self._link_projected_gravity(
+                state, self._done_link(config.bad_orientation)
+            )
+            bad_orientation = (
+                projected_gravity_tilt_angle(projected_gravity)
+                > config.bad_orientation.limit_angle
+            )
+        else:
+            bad_orientation = jnp.asarray(False)
         bad_pose = bad_height | bad_orientation
         timeout = (
             state.step_count >= self.max_episode_steps
             if config.timeout.enabled
             else jnp.asarray(False)
         )
-        finite = jnp.all(jnp.isfinite(state.data.qpos)) & jnp.all(
-            jnp.isfinite(state.data.qvel)
+        finite = (
+            jnp.all(jnp.isfinite(state.data.qpos))
+            & jnp.all(jnp.isfinite(state.data.qvel))
+            & jnp.all(jnp.isfinite(state.data.xpos))
+            & jnp.all(jnp.isfinite(state.data.xquat))
+            & jnp.all(jnp.isfinite(state.data.cvel))
+            & jnp.all(jnp.isfinite(state.data.actuator_force))
         )
         nonfinite = ~finite if config.nonfinite.enabled else jnp.asarray(False)
         terminal = bad_pose | nonfinite
@@ -1202,7 +1431,7 @@ class BelloLocomotionEnv:
             "done/any": done,
             "done/terminal": terminal,
             "done/base_height": bad_height,
-            "done/roll_pitch": bad_orientation,
+            "done/bad_orientation": bad_orientation,
             "done/timeout": timeout,
             "done/nonfinite": nonfinite,
         }
@@ -1221,14 +1450,18 @@ class BelloLocomotionEnv:
         foot_contact: jax.Array,
         foot_height: jax.Array,
         foot_lateral_speed_sq: jax.Array,
+        foot_angular_speed: jax.Array,
         undesired_contact: jax.Array,
+        self_collision: jax.Array,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         command = next_state.command
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
         joint_pos_rel, joint_vel = self._all_actuator_joint_terms(next_state)
         _, last_joint_vel = self._all_actuator_joint_terms(state)
         lin_vel_xy = self._link_yaw_frame_lin_vel(
-            next_state, self._reward_link(self.reward_config.track_lin_vel_xy)
+            next_state,
+            self._reward_link(self.reward_config.track_lin_vel_xy),
+            self._reward_frame_link(self.reward_config.track_lin_vel_xy),
         )[:2]
         yaw_vel_z = self._link_body_ang_vel(
             next_state, self._reward_link(self.reward_config.track_ang_vel_z)
@@ -1263,11 +1496,16 @@ class BelloLocomotionEnv:
             actuator_force=next_state.data.actuator_force,
             joint_limit_low=self._actuator_joint_limit_low(),
             joint_limit_high=self._actuator_joint_limit_high(),
+            action_target_default=self._policy_action_target_default(),
+            action_target_scale=self._action_scale(),
+            action_target_low=self._policy_action_target_low(),
+            action_target_high=self._policy_action_target_high(),
             hold_joint_indices=jnp.asarray(self.model.hold_ctrl_indices),
             policy_joint_indices=jnp.asarray(self.model.policy_ctrl_indices),
             foot_contact=foot_contact,
             foot_height=foot_height,
             foot_lateral_speed_sq=foot_lateral_speed_sq,
+            foot_angular_speed=foot_angular_speed,
             foot_distance=self._foot_distance(next_state),
             gait_contact_mask=self._gait_contact_mask(next_state),
             foot_air_time=state.foot_air_time,
@@ -1275,15 +1513,52 @@ class BelloLocomotionEnv:
             undesired_contact=undesired_contact,
             control_timestep=self.control_timestep,
             done=done,
+            self_collision=self_collision,
         )
 
-    def _gait_phase(self, state: BelloState) -> jax.Array:
+    def _sanitize_nonfinite_reward(
+        self,
+        reward: jax.Array,
+        reward_info: dict[str, jax.Array],
+        done_flags: dict[str, jax.Array],
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        nonfinite = done_flags["done/nonfinite"]
+        sanitized = {}
+        for name, value in reward_info.items():
+            if name == "reward/termination":
+                value = jnp.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
+                sanitized[name] = jnp.where(nonfinite, value, reward_info[name])
+            else:
+                sanitized[name] = jnp.where(
+                    nonfinite, jnp.zeros_like(value), reward_info[name]
+                )
+        return sum(sanitized.values(), jnp.zeros_like(reward)), sanitized
+
+    def _gait_frequency(self, command: jax.Array) -> jax.Array:
+        base_frequency = 1.0 / jnp.asarray(self.config.gait.cycle_time, dtype=jnp.float32)
+        command_speed = jnp.linalg.norm(command[:2])
+        frequency = (
+            base_frequency
+            + self.config.gait.command_speed_frequency_gain * command_speed
+        )
+        return jnp.clip(
+            frequency,
+            self.config.gait.min_frequency,
+            self.config.gait.max_frequency,
+        )
+
+    def _gait_phase_from_step_count(
+        self, step_count: jax.Array, command: jax.Array
+    ) -> jax.Array:
         phase = (
-            state.step_count.astype(jnp.float32)
+            step_count.astype(jnp.float32)
             * self.control_timestep
-            / self.config.gait.cycle_time
+            * self._gait_frequency(command)
         )
         return jnp.mod(phase, 1.0)
+
+    def _gait_phase(self, state: BelloState) -> jax.Array:
+        return self._gait_phase_from_step_count(state.step_count, state.command)
 
     def _gait_phase_sin_cos(self, state: BelloState) -> jax.Array:
         angle = 2.0 * jnp.pi * self._gait_phase(state)
@@ -1342,16 +1617,22 @@ class BelloLocomotionEnv:
             state.foot_air_time + self.control_timestep,
         )
         reset_air_time = jnp.zeros_like(next_air_time)
-        reset_contact = jnp.ones_like(contact)
         return (
             jnp.where(done, reset_air_time, next_air_time),
-            jnp.where(done, reset_contact, contact),
+            contact,
         )
 
     def _reward_link(self, term) -> str:
         if term.enabled and term.link is not None:
             return term.link
         return self.config.root_link
+
+    def _reward_frame_link(self, term) -> str:
+        velocity_link = self._reward_link(term)
+        frame_link = getattr(term, "frame_link", None)
+        if term.enabled and frame_link is not None:
+            return frame_link
+        return velocity_link
 
     def _done_link(self, term) -> str:
         if term.enabled and term.link is not None:
@@ -1360,14 +1641,16 @@ class BelloLocomotionEnv:
 
     def _contact_terms(
         self, state: BelloState, world_id: jax.Array
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         foot_body_ids = jnp.asarray(self.model.foot_body_ids)
         foot_count = foot_body_ids.shape[0]
-        if self.model.terrain_geom_ids.size == 0:
+        if self.model.terrain_geom_ids.size == 0 and self.model.robot_geom_ids.size == 0:
             return (
                 jnp.zeros(foot_count, dtype=jnp.float32),
                 self._foot_height(state),
                 jnp.zeros(foot_count, dtype=jnp.float32),
+                jnp.zeros(foot_count, dtype=jnp.float32),
+                jnp.asarray(0.0, dtype=jnp.float32),
                 jnp.asarray(0.0, dtype=jnp.float32),
             )
 
@@ -1379,13 +1662,37 @@ class BelloLocomotionEnv:
         active = (jnp.arange(contact_geom.shape[0], dtype=jnp.int32) < nacon) & (
             contact_worldid == jnp.asarray(world_id, dtype=jnp.int32)
         )
+        contact_efc_address = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)
+        normal_efc_address = contact_efc_address[:, 0]
+        efc_force = jnp.asarray(impl.efc__force, dtype=jnp.float32)
+        clipped_address = jnp.clip(normal_efc_address, 0, efc_force.shape[0] - 1)
+        normal_force = jnp.where(
+            normal_efc_address >= 0,
+            jnp.abs(efc_force[clipped_address]),
+            jnp.zeros_like(normal_efc_address, dtype=jnp.float32),
+        )
+        foot_forceful_contact = normal_force > jnp.asarray(
+            self.config.contact.foot_contact_force_threshold, dtype=jnp.float32
+        )
+        undesired_forceful_contact = normal_force > jnp.asarray(
+            self.config.contact.undesired_contact_force_threshold, dtype=jnp.float32
+        )
+        self_collision_forceful_contact = normal_force > jnp.asarray(
+            self.config.contact.self_collision_force_threshold, dtype=jnp.float32
+        )
 
         geom_body_ids = jnp.asarray(self.model.geom_body_ids)
         contact_body = geom_body_ids[contact_geom]
         terrain_contact = pair_contains(contact_geom, self.model.terrain_geom_ids)
+        self_collision_slot = (
+            active
+            & self_collision_forceful_contact
+            & pair_both_contained(contact_geom, self.model.robot_geom_ids)
+        )
         foot_contact_slot = (
             active
             & terrain_contact
+            & foot_forceful_contact
             & pair_contains(contact_body, self.model.foot_body_ids)
         )
         foot_contact = jnp.any(
@@ -1393,18 +1700,27 @@ class BelloLocomotionEnv:
             & pair_contains_each(contact_body, self.model.foot_body_ids),
             axis=0,
         ).astype(jnp.float32)
+        undesired_contact_slot = (
+            active
+            & terrain_contact
+            & undesired_forceful_contact
+            & pair_contains(contact_geom, self.model.nonfoot_robot_geom_ids)
+        )
         undesired_contact = jnp.sum(
-            (
-                active
-                & terrain_contact
-                & pair_contains(contact_geom, self.model.nonfoot_robot_geom_ids)
+            jnp.any(
+                undesired_contact_slot[:, None]
+                & pair_contains_each(contact_body, self.model.nonfoot_robot_body_ids),
+                axis=0,
             ).astype(jnp.float32)
         )
+        self_collision = jnp.sum(self_collision_slot.astype(jnp.float32))
         return (
             foot_contact,
             self._foot_height(state),
             self._foot_lateral_speed_sq(state),
+            self._foot_angular_speed(state),
             undesired_contact,
+            self_collision,
         )
 
     def _foot_height(self, state: BelloState) -> jax.Array:
@@ -1418,6 +1734,11 @@ class BelloLocomotionEnv:
         foot_world_vel = jax.vmap(quat_rotate)(foot_quat, foot_cvel)
         return jnp.sum(foot_world_vel[:, :2] ** 2, axis=1)
 
+    def _foot_angular_speed(self, state: BelloState) -> jax.Array:
+        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
+        foot_ang_vel = state.data.cvel[foot_body_ids, :3]
+        return jnp.linalg.norm(foot_ang_vel, axis=1)
+
     def _foot_distance(self, state: BelloState) -> jax.Array:
         if self.model.foot_body_ids.size != 2:
             return jnp.asarray(0.0, dtype=jnp.float32)
@@ -1425,12 +1746,22 @@ class BelloLocomotionEnv:
         return jnp.linalg.norm(foot_xy[0] - foot_xy[1])
 
     def _actuator_joint_limit_low(self) -> jax.Array:
-        joint_ids = self.model.mj_model.actuator_trnid[:, 0]
-        return jnp.asarray(self.model.mj_model.jnt_range[joint_ids, 0])
+        return jnp.asarray(self.model.mj_model.actuator_ctrlrange[:, 0])
 
     def _actuator_joint_limit_high(self) -> jax.Array:
-        joint_ids = self.model.mj_model.actuator_trnid[:, 0]
-        return jnp.asarray(self.model.mj_model.jnt_range[joint_ids, 1])
+        return jnp.asarray(self.model.mj_model.actuator_ctrlrange[:, 1])
+
+    def _policy_action_target_default(self) -> jax.Array:
+        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
+        return jnp.asarray(self.model.default_ctrl)[policy_indices]
+
+    def _policy_action_target_low(self) -> jax.Array:
+        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
+        return jnp.asarray(self.model.mj_model.actuator_ctrlrange)[policy_indices, 0]
+
+    def _policy_action_target_high(self) -> jax.Array:
+        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
+        return jnp.asarray(self.model.mj_model.actuator_ctrlrange)[policy_indices, 1]
 
 
 def quat_rotate_inverse(quat_wxyz: jax.Array, vec: jax.Array) -> jax.Array:
@@ -1457,14 +1788,16 @@ def yaw_quat(quat_wxyz: jax.Array) -> jax.Array:
     return jnp.stack([jnp.cos(half_yaw), zero, zero, jnp.sin(half_yaw)])
 
 
-def roll_pitch_from_quat(quat_wxyz: jax.Array) -> tuple[jax.Array, jax.Array]:
-    w, x, y, z = quat_wxyz
-    sinr_cosp = 2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = jnp.arctan2(sinr_cosp, cosr_cosp)
-    sinp = 2.0 * (w * y - z * x)
-    pitch = jnp.arcsin(jnp.clip(sinp, -1.0, 1.0))
-    return roll, pitch
+def yaw_quat_from_angle(yaw: jax.Array) -> jax.Array:
+    half_yaw = 0.5 * yaw
+    zero = jnp.asarray(0.0, dtype=jnp.float32)
+    return jnp.stack([jnp.cos(half_yaw), zero, zero, jnp.sin(half_yaw)]).astype(
+        jnp.float32
+    )
+
+
+def projected_gravity_tilt_angle(projected_gravity: jax.Array) -> jax.Array:
+    return jnp.arccos(jnp.clip(-projected_gravity[2], -1.0, 1.0))
 
 
 def tree_where(mask: jax.Array, true_tree, false_tree):
@@ -1489,6 +1822,14 @@ def pair_contains_each(pair: jax.Array, candidates) -> jax.Array:
     if candidates.size == 0:
         return jnp.zeros((pair.shape[0], 0), dtype=bool)
     return jnp.any(pair[:, :, None] == candidates[None, None, :], axis=1)
+
+
+def pair_both_contained(pair: jax.Array, candidates) -> jax.Array:
+    candidates = jnp.asarray(candidates, dtype=pair.dtype)
+    if candidates.size == 0:
+        return jnp.zeros(pair.shape[0], dtype=bool)
+    contained = jnp.any(pair[:, :, None] == candidates[None, None, :], axis=2)
+    return jnp.all(contained, axis=1)
 
 
 def require_index_range(name: str, indices: np.ndarray, upper_bound: int) -> None:

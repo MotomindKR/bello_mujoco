@@ -5,6 +5,8 @@ eval_config:
   steps: null
   realtime: true
   stop_on_done: false
+  stochastic_actions: false
+  action_seed: 0
   camera_config:
     mode: follow
     distance: 3.0
@@ -18,6 +20,18 @@ eval_config:
     precision: 3
     max_reward_terms: 12
     show_components: true
+  action_overlay:
+    enabled: true
+    max_actions: 13
+    bar_width: 12
+  joystick:
+    enabled: true
+    lin_vel_x_step: 0.05
+    lin_vel_y_step: 0.05
+    yaw_vel_step: 0.05
+    lin_vel_x_limit: [-1.0, 1.0]
+    lin_vel_y_limit: [-1.0, 1.0]
+    yaw_vel_limit: [-1.0, 1.0]
   runtime:
     source: checkpoint
 

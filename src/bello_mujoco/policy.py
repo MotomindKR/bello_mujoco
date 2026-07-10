@@ -74,9 +74,11 @@ class ActorCritic(eqx.Module):
         action_size: int,
         config: ActorCriticConfig = ActorCriticConfig(),
         *,
+        critic_obs_size: int | None = None,
         key: jax.Array,
     ):
         actor_key, critic_key = jax.random.split(key)
+        critic_obs_size = obs_size if critic_obs_size is None else critic_obs_size
         activation_fn = activation_function(config.activation)
         self.actor = make_mlp(
             obs_size=obs_size,
@@ -86,7 +88,7 @@ class ActorCritic(eqx.Module):
             key=actor_key,
         )
         self.critic = make_mlp(
-            obs_size=obs_size,
+            obs_size=critic_obs_size,
             output_size=1,
             config=config,
             activation=activation_fn,
@@ -96,10 +98,16 @@ class ActorCritic(eqx.Module):
         self.min_log_std = config.min_log_std
         self.max_log_std = config.max_log_std
 
-    def __call__(self, obs: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+    def __call__(
+        self, obs: jax.Array, critic_obs: jax.Array | None = None
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        critic_obs = obs if critic_obs is None else critic_obs
         mean = self.actor(obs)
-        value = jnp.squeeze(self.critic(obs), axis=-1)
+        value = jnp.squeeze(self.critic(critic_obs), axis=-1)
         return mean, policy_log_std(self), value
+
+    def action_mean(self, obs: jax.Array) -> jax.Array:
+        return self.actor(obs)
 
 
 def init_actor_critic(
@@ -107,8 +115,12 @@ def init_actor_critic(
     obs_size: int,
     action_size: int,
     config: ActorCriticConfig = ActorCriticConfig(),
+    *,
+    critic_obs_size: int | None = None,
 ) -> ActorCritic:
-    return ActorCritic(obs_size, action_size, config, key=rng)
+    return ActorCritic(
+        obs_size, action_size, config, critic_obs_size=critic_obs_size, key=rng
+    )
 
 
 def make_mlp(
@@ -176,11 +188,21 @@ def update_observation_stack(
 
 
 def apply_policy(
-    policy: ActorCritic, obs: jax.Array
+    policy: ActorCritic,
+    obs: jax.Array,
+    critic_obs: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    if critic_obs is None:
+        critic_obs = obs
     if obs.ndim == 1:
-        return policy(obs)
-    return jax.vmap(policy)(obs)
+        return policy(obs, critic_obs)
+    return jax.vmap(policy)(obs, critic_obs)
+
+
+def apply_actor(policy: ActorCritic, obs: jax.Array) -> jax.Array:
+    if obs.ndim == 1:
+        return policy.action_mean(obs)
+    return jax.vmap(policy.action_mean)(obs)
 
 
 def sample_action(
@@ -188,9 +210,10 @@ def sample_action(
     obs: jax.Array,
     rng: jax.Array,
     action_clip: float | None = None,
+    critic_obs: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     action, log_prob, value, _ = sample_action_with_mean(
-        policy, obs, rng, action_clip=action_clip
+        policy, obs, rng, action_clip=action_clip, critic_obs=critic_obs
     )
     return action, log_prob, value
 
@@ -200,8 +223,9 @@ def sample_action_with_mean(
     obs: jax.Array,
     rng: jax.Array,
     action_clip: float | None = None,
+    critic_obs: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    mean, log_std, value = apply_policy(policy, obs)
+    mean, log_std, value = apply_policy(policy, obs, critic_obs)
     noise = jax.random.normal(rng, mean.shape)
     action = mean + jnp.exp(log_std) * noise
     if action_clip is not None:
@@ -211,9 +235,12 @@ def sample_action_with_mean(
 
 
 def evaluate_actions(
-    policy: ActorCritic, obs: jax.Array, action: jax.Array
+    policy: ActorCritic,
+    obs: jax.Array,
+    action: jax.Array,
+    critic_obs: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    mean, log_std, value = apply_policy(policy, obs)
+    mean, log_std, value = apply_policy(policy, obs, critic_obs)
     log_prob = gaussian_log_prob(mean, log_std, action)
     entropy = gaussian_entropy(log_std)
     return log_prob, entropy, value

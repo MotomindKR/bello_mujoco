@@ -18,159 +18,207 @@ asset_config:
         action_scale: 0.35
         soft_limit: [-1.41372, 1.41372]
         gains: [200.0, 5.0]
+        effort_limit: 120.0
       right_hip_pitch_joint:
         mode: policy
         default_pos: 0.325
         action_scale: 0.35
         soft_limit: [-1.41372, 1.41372]
         gains: [200.0, 5.0]
+        effort_limit: 120.0
       left_hip_roll_joint:
         mode: policy
         default_pos: 0.0
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       right_hip_roll_joint:
         mode: policy
         default_pos: 0.0
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       left_hip_yaw_joint:
         mode: policy
         default_pos: 0.125
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       right_hip_yaw_joint:
         mode: policy
         default_pos: -0.125
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       left_knee_joint:
         mode: policy
         default_pos: 0.45
-        action_scale: 0.45
-        soft_limit: [0.10472, 1.98968]
+        action_scale: 0.06
+        soft_limit: [0.0, 1.98968]
         gains: [220.0, 6.0]
+        effort_limit: 120.0
       right_knee_joint:
         mode: policy
         default_pos: 0.45
-        action_scale: 0.45
-        soft_limit: [0.10472, 1.98968]
+        action_scale: 0.06
+        soft_limit: [0.0, 1.98968]
         gains: [220.0, 6.0]
+        effort_limit: 120.0
       left_ankle_pitch_joint:
         mode: policy
         default_pos: 0.30
-        action_scale: 0.20
+        action_scale: 0.12
         soft_limit: [-0.44506, 0.96866]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       right_ankle_pitch_joint:
         mode: policy
         default_pos: 0.30
-        action_scale: 0.20
+        action_scale: 0.12
         soft_limit: [-0.44506, 0.96866]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       left_ankle_roll_joint:
         mode: policy
         default_pos: 0.0
-        action_scale: 0.05
+        action_scale: 0.0125
         soft_limit: [-0.07857, 0.07857]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       right_ankle_roll_joint:
         mode: policy
         default_pos: 0.0
-        action_scale: 0.05
+        action_scale: 0.0125
         soft_limit: [-0.07857, 0.07857]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       waist_yaw_joint:
         mode: policy
-        action_scale: 0.25
+        action_scale: 0.07
         soft_limit: [-0.45, 0.45]
         gains: [180.0, 12.0]
+        effort_limit: 120.0
       waist_roll_joint:
         mode: hold
         gains: [240.0, 20.0]
+        effort_limit: 120.0
       waist_pitch_joint:
         mode: hold
         gains: [240.0, 20.0]
+        effort_limit: 120.0
       neck_yaw_joint:
         mode: hold
         gains: [5.5, 0.5]
+        effort_limit: 5.5
       head_pitch_joint:
         mode: hold
         gains: [5.5, 0.5]
+        effort_limit: 5.5
       right_shoulder_pitch_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 120.0
       right_shoulder_roll_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 60.0
       right_shoulder_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 36.0
       right_elbow_pitch_joint:
         mode: hold
         gains: [40.0, 2.0]
+        effort_limit: 36.0
       right_elbow_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 14.0
       right_wrist_pitch_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 14.0
       right_wrist_yaw_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 5.5
       left_shoulder_pitch_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 120.0
       left_shoulder_roll_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 60.0
       left_shoulder_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 36.0
       left_elbow_pitch_joint:
         mode: hold
         gains: [40.0, 2.0]
+        effort_limit: 36.0
       left_elbow_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 14.0
       left_wrist_pitch_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 14.0
       left_wrist_yaw_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 5.5
       right_finger_right_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
       right_finger_left_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
       left_finger_right_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
       left_finger_left_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
 
 config:
   total_timesteps: 4915200000
   num_envs: 4096
   num_steps: 24
+  target_kl: 0.02
+  ent_coef: 0.01
   policy:
     hidden_dims: [512, 256, 128]
     activation: elu
+    init_log_std: 0.0
+    max_log_std: 1.0
     obs_stack_size: 5
 
 env_config:
   max_episode_steps: 1000
   root_link: torso_link
+  spawn:
+    root_xy_range: [-0.5, 0.5]
+    root_yaw_range: [-3.14, 3.14]
+    joint_pos_noise: [0.0, 0.0]
+    joint_vel_range: [0.0, 0.0]
+    stagger_initial_step_count: false
   contact:
-    foot_contact_on_seconds: 0.04
-    foot_contact_off_seconds: 0.04
+    foot_contact_on_seconds: 0.0
+    foot_contact_off_seconds: 0.0
+    foot_contact_force_threshold: 1.0
+    undesired_contact_force_threshold: 1.0
+    self_collision_force_threshold: 1.0
   random_push:
     enabled: true
     interval_seconds: 5.0
@@ -180,7 +228,7 @@ env_config:
     joint_mode: policy
     base_lin_vel: false
     base_height: false
-    gait_phase: false
+    gait_phase: true
     command: true
     actuator_force: false
     scale:
@@ -192,18 +240,43 @@ env_config:
       projected_gravity: [-0.05, 0.05]
       joint_pos: [-0.01, 0.01]
       joint_vel: [-1.5, 1.5]
+  critic_observation:
+    joint_mode: policy
+    base_lin_vel: true
+    base_ang_vel: true
+    projected_gravity: true
+    base_height: false
+    gait_phase: true
+    command: true
+    joint_pos: true
+    joint_vel: true
+    actuator_force: false
+    last_action: true
+    scale:
+      base_lin_vel: 1.0
+      base_ang_vel: 0.2
+      projected_gravity: 1.0
+      base_height: 1.0
+      gait_phase: 1.0
+      command: 1.0
+      joint_pos: 1.0
+      joint_vel: 0.05
+      actuator_force: 1.0
+      last_action: 1.0
+    noise:
+      enabled: false
 
 command_config:
   enabled: true
   lin_vel_x: [-0.1, 0.1]
-  lin_vel_y: [-0.1, 0.1]
+  lin_vel_y: [0.15, 0.35]
   ang_vel_yaw: [-0.1, 0.1]
-  standing_probability: 0.02
+  standing_probability: 0.10
   resample_seconds: 10.0
   curriculum:
     enabled: true
-    limit_lin_vel_x: [-0.5, 1.0]
-    limit_lin_vel_y: [-0.3, 0.3]
+    limit_lin_vel_x: [-0.3, 0.3]
+    limit_lin_vel_y: [-0.5, 1.0]
     limit_ang_vel_yaw: [-0.2, 0.2]
     expand_ang_vel_yaw: false
     increment: 0.1
@@ -212,28 +285,35 @@ command_config:
 reward_config:
   track_lin_vel_xy:
     enabled: true
-    weight: 1.0
+    weight: 3.0
     sigma: 0.25
+    link: bello_root
+    frame_link: bello_root
   track_ang_vel_z:
     enabled: true
     weight: 0.5
     sigma: 0.25
+    link: bello_root
   alive:
     enabled: true
     weight: 0.15
   lin_vel_z:
     enabled: true
     weight: -2.0
+    link: torso_link
   ang_vel_xy:
     enabled: true
     weight: -0.05
+    link: torso_link
   flat_orientation:
     enabled: true
     weight: -5.0
+    link: torso_link
   base_height:
     enabled: true
     weight: -10.0
-    target: 0.86
+    link: torso_link
+    target: 1.03
   joint_vel:
     enabled: true
     weight: -0.001
@@ -250,8 +330,11 @@ reward_config:
     enabled: false
     weight: -0.00001
   joint_limit:
+    enabled: false
+    weight: -50.0
+  invalid_action:
     enabled: true
-    weight: -5.0
+    weight: -1.0
   hold_joint_deviation:
     enabled: true
     weight: -0.1
@@ -264,12 +347,14 @@ reward_config:
   foot_slip:
     enabled: true
     weight: -0.2
+    angular_speed_scale: 0.05
   foot_clearance:
     enabled: true
     weight: 1.0
     target: 0.10
     std: 0.05
     tanh_mult: 2.0
+    command_speed_threshold: 0.05
   gait_contact:
     enabled: true
     weight: 0.5
@@ -283,26 +368,30 @@ reward_config:
   undesired_contact:
     enabled: true
     weight: -1.0
+  self_collision:
+    enabled: true
+    weight: -1.0
   termination:
-    enabled: false
-    weight: -0.5
+    enabled: true
+    weight: -2.0
 
 done_config:
   base_height:
     enabled: true
-    min_height: 0.55
-  roll_pitch:
+    min_height: 0.20
+    link: bello_root
+  bad_orientation:
     enabled: true
-    max_abs_roll: 1.35
-    max_abs_pitch: 1.35
+    limit_angle: 0.80
+    link: bello_root
 
 checkpoint_config:
   enabled: true
-  name: locomotion_unitree_aligned_seed0
+  name: locomotion_step_entropy_safe_seed0
 
 wandb_config:
   enabled: true
-  run_name: locomotion_unitree_aligned_seed0
+  run_name: locomotion_step_entropy_safe_seed0
   tags:
     - locomotion
     - standing-bootstrap
@@ -315,16 +404,25 @@ wandb_config:
     - unitree-policy-history
     - unitree-policy-mlp
     - value-normalized
+    - forward-command-pressure
+    - step-pressure
+    - exploration-pressure
+    - safe-entropy
+    - stochastic-cpu-video
     - full-body
     - mesh-collision
     - sphere-end-effectors
 
 video_config:
   enabled: true
-  filename_prefix: locomotion_unitree_aligned
-  command: [0.25, 0.0, 0.0]
+  filename_prefix: locomotion_step_entropy_safe
+  simulation_backend: mujoco
+  command: [0.0, 0.3, 0.0]
   steps: 600
   stop_on_done: false
+  stochastic_actions: true
+  action_seed: 0
 
 warp:
   contact_budget_per_env: 40
+  njmax: 512

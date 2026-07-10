@@ -47,8 +47,9 @@ class WarpConfig:
 @dataclass(frozen=True)
 class BelloModel:
     mj_model: mujoco.MjModel
-    mjx_model: mjx.Model
+    mjx_model: mjx.Model | None
     xml_path: Path
+    viewer_xml_path: Path | None
     warp_naconmax: int | None
     warp_naccdmax: int | None
     warp_njmax: int | None
@@ -62,9 +63,11 @@ class BelloModel:
     policy_action_scale: np.ndarray
     geom_body_ids: np.ndarray
     foot_body_ids: np.ndarray
+    robot_geom_ids: np.ndarray
     foot_geom_ids: np.ndarray
     terrain_geom_ids: np.ndarray
     nonfoot_robot_geom_ids: np.ndarray
+    nonfoot_robot_body_ids: np.ndarray
     default_qpos: np.ndarray
     default_qvel: np.ndarray
     default_ctrl: np.ndarray
@@ -72,6 +75,11 @@ class BelloModel:
     root_qvel_adr: int
 
     def make_data(self) -> mjx.Data:
+        if self.mjx_model is None:
+            raise RuntimeError(
+                "this BelloModel was loaded without MJX; load with load_mjx=True "
+                "before using MJX reset/step APIs"
+            )
         return mjx.make_data(
             self.mj_model,
             impl="warp",
@@ -88,6 +96,8 @@ def load_bello_model(
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
+    use_viewer_model: bool = False,
+    load_mjx: bool = True,
 ) -> BelloModel:
     prepared = prepare_asset(config)
     return load_prepared_bello_model(
@@ -97,6 +107,8 @@ def load_bello_model(
         terrain=terrain,
         actuator_config=config.actuator_config,
         spawn_clearance=spawn_clearance,
+        use_viewer_model=use_viewer_model,
+        load_mjx=load_mjx,
     )
 
 
@@ -108,25 +120,32 @@ def load_prepared_bello_model(
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
     actuator_config: ActuatorConfig = ActuatorConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
+    use_viewer_model: bool = False,
+    load_mjx: bool = True,
 ) -> BelloModel:
+    xml_path = prepared.viewer_mjcf_path if use_viewer_model else prepared.mjcf_path
     return _load_bello_model_from_path(
-        prepared.mjcf_path,
+        xml_path,
+        viewer_xml_path=prepared.viewer_mjcf_path,
         warp=warp,
         batch_size=batch_size,
         terrain=terrain,
         actuator_config=actuator_config,
         spawn_clearance=spawn_clearance,
+        load_mjx=load_mjx,
     )
 
 
 def _load_bello_model_from_path(
     xml_path: Path,
     *,
+    viewer_xml_path: Path | None = None,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
     actuator_config: ActuatorConfig = ActuatorConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
+    load_mjx: bool = True,
 ) -> BelloModel:
     if not math.isfinite(spawn_clearance) or spawn_clearance < 0.0:
         raise ValueError(
@@ -136,9 +155,15 @@ def _load_bello_model_from_path(
     if not path.exists():
         raise FileNotFoundError(path)
     path = runtime_mjcf_path(path, terrain)
+    viewer_path = None
+    if viewer_xml_path is not None:
+        viewer_path = Path(viewer_xml_path)
+        if not viewer_path.exists():
+            raise FileNotFoundError(viewer_path)
+        viewer_path = runtime_mjcf_path(viewer_path, terrain)
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
-    mjx_model = mjx.put_model(mj_model, impl="warp")
+    mjx_model = mjx.put_model(mj_model, impl="warp") if load_mjx else None
 
     actuator_joint_ids = np.asarray(mj_model.actuator_trnid[:, 0], dtype=np.int32)
     actuator_joint_names = tuple(
@@ -205,6 +230,7 @@ def _load_bello_model_from_path(
         mj_model, actuator_joint_names, policy_ctrl_indices, actuator_config
     )
     foot_body_ids = foot_body_indices(mj_model)
+    robot_geom_ids = robot_collision_geom_indices(mj_model)
     foot_geom_ids = robot_collision_geom_indices(
         mj_model, body_ids=set(foot_body_ids.tolist())
     )
@@ -212,11 +238,15 @@ def _load_bello_model_from_path(
     nonfoot_robot_geom_ids = robot_collision_geom_indices(
         mj_model, excluded_body_ids=set(foot_body_ids.tolist())
     )
+    nonfoot_robot_body_ids = np.unique(
+        np.asarray(mj_model.geom_bodyid[nonfoot_robot_geom_ids], dtype=np.int32)
+    ).astype(np.int32)
 
     return BelloModel(
         mj_model=mj_model,
         mjx_model=mjx_model,
         xml_path=path,
+        viewer_xml_path=viewer_path,
         warp_naconmax=warp.resolved_naconmax(batch_size),
         warp_naccdmax=warp.naccdmax,
         warp_njmax=warp.njmax,
@@ -230,9 +260,11 @@ def _load_bello_model_from_path(
         policy_action_scale=policy_action_scale,
         geom_body_ids=np.asarray(mj_model.geom_bodyid, dtype=np.int32),
         foot_body_ids=foot_body_ids,
+        robot_geom_ids=robot_geom_ids,
         foot_geom_ids=foot_geom_ids,
         terrain_geom_ids=terrain_geom_ids,
         nonfoot_robot_geom_ids=nonfoot_robot_geom_ids,
+        nonfoot_robot_body_ids=nonfoot_robot_body_ids,
         default_qpos=default_qpos,
         default_qvel=default_qvel,
         default_ctrl=default_ctrl,
@@ -299,6 +331,11 @@ def robot_geom_min_z(
     min_z: float | None = None
     for geom_id in range(mj_model.ngeom):
         if mj_model.geom_bodyid[geom_id] == 0:
+            continue
+        if (
+            mj_model.geom_contype[geom_id] == 0
+            and mj_model.geom_conaffinity[geom_id] == 0
+        ):
             continue
         geom_min_z = geom_lower_z(mj_model, data, geom_id)
         min_z = geom_min_z if min_z is None else min(min_z, geom_min_z)

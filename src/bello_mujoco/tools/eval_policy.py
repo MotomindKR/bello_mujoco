@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
+import math
+import os
 from pathlib import Path
 from typing import Literal
+
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import hydra
 from omegaconf import DictConfig
@@ -14,7 +18,14 @@ from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, Don
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.policy import policy_observation_size
-from bello_mujoco.render import CameraConfig, RewardOverlayConfig, launch_policy_viewer
+from bello_mujoco.train.ppo import critic_observation_size
+from bello_mujoco.render import (
+    ActionOverlayConfig,
+    CameraConfig,
+    JoystickConfig,
+    RewardOverlayConfig,
+    launch_policy_viewer,
+)
 from bello_mujoco.sim import WarpConfig
 
 MISSING = object()
@@ -37,8 +48,12 @@ class EvalPolicyConfig:
     steps: int | None = None
     realtime: bool = True
     stop_on_done: bool = False
+    stochastic_actions: bool = False
+    action_seed: int = 0
     camera_config: CameraConfig = CameraConfig()
     reward_overlay: RewardOverlayConfig = RewardOverlayConfig()
+    action_overlay: ActionOverlayConfig = ActionOverlayConfig()
+    joystick: JoystickConfig = JoystickConfig()
     runtime: EvalRuntimeConfig = EvalRuntimeConfig()
 
 
@@ -65,10 +80,23 @@ def main(
         reward_config=reward_config,
         command_config=command_config,
         done_config=done_config,
+        load_mjx=False,
     )
     validate_checkpoint_shape(env, metadata)
+    viewer_env = BelloLocomotionEnv.load(
+        asset_config,
+        warp=warp,
+        batch_size=1,
+        env_config=env_config,
+        reward_config=reward_config,
+        command_config=command_config,
+        done_config=done_config,
+        use_viewer_model=True,
+        load_mjx=False,
+    )
+    validate_checkpoint_shape(viewer_env, metadata)
     launch_policy_viewer(
-        env,
+        viewer_env,
         train_state.policy,
         command=eval_config.command,
         steps=eval_config.steps,
@@ -76,7 +104,11 @@ def main(
         stop_on_done=eval_config.stop_on_done,
         camera_config=eval_config.camera_config,
         reward_overlay=eval_config.reward_overlay,
+        action_overlay=eval_config.action_overlay,
+        joystick_config=eval_config.joystick,
         obs_stack_size=metadata.ppo.policy.obs_stack_size,
+        stochastic_actions=eval_config.stochastic_actions,
+        action_seed=eval_config.action_seed,
     )
 
 
@@ -169,6 +201,10 @@ def validate_eval_config(config: EvalPolicyConfig) -> None:
             "eval_config.camera_config.distance must be positive, got "
             f"{config.camera_config.distance}"
         )
+    if config.action_seed < 0:
+        raise ValueError(
+            f"eval_config.action_seed must be nonnegative, got {config.action_seed}"
+        )
     if config.reward_overlay.precision < 0:
         raise ValueError(
             "eval_config.reward_overlay.precision must be nonnegative, got "
@@ -179,6 +215,39 @@ def validate_eval_config(config: EvalPolicyConfig) -> None:
             "eval_config.reward_overlay.max_reward_terms must be nonnegative, got "
             f"{config.reward_overlay.max_reward_terms}"
         )
+    if config.action_overlay.max_actions < 0:
+        raise ValueError(
+            "eval_config.action_overlay.max_actions must be nonnegative, got "
+            f"{config.action_overlay.max_actions}"
+        )
+    if config.action_overlay.bar_width <= 0:
+        raise ValueError(
+            "eval_config.action_overlay.bar_width must be positive, got "
+            f"{config.action_overlay.bar_width}"
+        )
+    validate_joystick_config(config.joystick)
+
+
+def validate_joystick_config(config: JoystickConfig) -> None:
+    for name in ("lin_vel_x_step", "lin_vel_y_step", "yaw_vel_step"):
+        value = getattr(config, name)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(
+                f"eval_config.joystick.{name} must be positive and finite, got "
+                f"{value}"
+            )
+    for name in ("lin_vel_x_limit", "lin_vel_y_limit", "yaw_vel_limit"):
+        bounds = getattr(config, name)
+        if len(bounds) != 2:
+            raise ValueError(
+                f"eval_config.joystick.{name} must have two values, got {bounds}"
+            )
+        low, high = bounds
+        if not math.isfinite(low) or not math.isfinite(high) or low > high:
+            raise ValueError(
+                f"eval_config.joystick.{name} must be finite and ordered, got "
+                f"{bounds}"
+            )
 
 
 def validate_checkpoint_shape(
@@ -188,10 +257,20 @@ def validate_checkpoint_shape(
     expected_obs_size = policy_observation_size(
         env.observation_size, metadata.ppo.policy
     )
+    expected_critic_obs_size = policy_observation_size(
+        critic_observation_size(env), metadata.ppo.policy
+    )
     if expected_obs_size != metadata.obs_size:
         raise ValueError(
             "eval runtime config produced policy observation_size="
             f"{expected_obs_size}, but checkpoint expects {metadata.obs_size}"
+        )
+    metadata_critic_obs_size = getattr(metadata, "critic_obs_size", None) or metadata.obs_size
+    if expected_critic_obs_size != metadata_critic_obs_size:
+        raise ValueError(
+            "eval runtime config produced critic observation_size="
+            f"{expected_critic_obs_size}, but checkpoint expects "
+            f"{metadata_critic_obs_size}"
         )
     if env.action_size != metadata.action_size:
         raise ValueError(

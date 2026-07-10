@@ -112,6 +112,10 @@ Asset prep supports:
 - optional hand/end-effector sphere replacement for `full_body` and `upper_body`
 - MuJoCo training MJCF and viewer MJCF generation
 
+The training MJCF keeps the selected collision geoms as the robot geometry. The
+viewer MJCF injects visual mesh geoms and makes collision geoms transparent, so
+`collision_mode: box` still renders the visual robot surface.
+
 Runtime terrain is added after robot asset generation. Source URDF/MJCF files do
 not include ground.
 
@@ -154,12 +158,26 @@ Actions are residual position targets for policy actuators:
 ctrl[policy_ctrl_indices] = default_ctrl + policy_action_scale * action
 ```
 
-Input actions are clipped by `ACTION_CLIP = 10.0`, and resulting controls are
-clipped to MuJoCo actuator ranges. Joints configured as `mode="hold"` are
-removed from the policy action vector but still use default actuator controls.
+Input actions are clipped by `ACTION_CLIP = 10.0`, but resulting control
+targets are not clipped to MuJoCo actuator ranges. Joints configured as
+`mode="hold"` are removed from the policy action vector but still use default
+actuator controls.
+The locomotion lower-body residual scales are deliberately smaller for
+narrow-range joints: knee `0.06`, ankle pitch `0.12`, ankle roll `0.0125`, and
+waist yaw `0.07`.
+The knee soft target range starts at the hard lower joint limit, `0.0` rad,
+with the upper soft limit at `1.98968` rad.
 Default position-actuator gains are runtime `[kp, kv]` values. The full-body
 lower-body defaults are hip pitch `[200, 5]`, hip roll/yaw `[150, 5]`, knee
 `[220, 6]`, ankle `[22, 1]`, and waist yaw `[180, 12]`.
+Generated position actuators are force-limited from URDF effort limits by
+default, with per-joint `ActuatorConfig.effort_limit` available as an explicit
+override. The current full-body effort limits use the Robstride peak-torque
+groups: hip pitch and knee `120 Nm`, hip roll/yaw `60 Nm`, ankle `36 Nm`,
+waist yaw `120 Nm`, shoulder pitch `120 Nm`, shoulder roll `60 Nm`, arm 3/4
+`36 Nm`, arm 5/6 `14 Nm`, and arm 7 `5.5 Nm`. Known Bello joint overrides must
+keep a positive `effort_limit`; this is validated so YAML recipes cannot
+accidentally generate uncapped actuators.
 
 Default observation layout:
 
@@ -189,13 +207,26 @@ Observation term noise and scaling are configurable under
 when training supplies an observation RNG. `BelloEnvConfig.random_push` can set
 the floating-root XY velocity at a fixed interval during vectorized training,
 matching Unitree's push event shape.
+`BelloEnvConfig.critic_observation` can optionally define a separate privileged
+critic stream. When absent, the critic uses the same stacked observations as the
+actor. The Unitree-aligned locomotion recipe uses a clean critic observation
+that adds `base_lin_vel[3]` while keeping actor observations noisy and
+proprioceptive.
+`BelloEnvConfig.spawn` controls reset randomization and optional initial
+step-count staggering for vectorized PPO runs. `ContactConfig` debounces foot
+contacts and sets the normal-force threshold for undesired non-foot contacts.
 
-Commands are `[lin_vel_x, lin_vel_y, yaw_vel]`. With command generation enabled,
-`step_batch(..., rng=key)` periodically resamples according to
-`CommandConfig.resample_seconds`. If no RNG is passed, commands remain fixed
-until reset. PPO training can optionally enable `CommandConfig.curriculum` to
-expand the active linear command ranges when velocity tracking is good enough;
-the active ranges are logged under `train/command_range/*`.
+Commands are `[lin_vel_x, lin_vel_y, yaw_vel]` in the robot yaw frame. The
+Bello source asset is Y-forward anatomically, so the current locomotion recipes
+put forward walking commands on `lin_vel_y`; `lin_vel_x` is lateral for this
+robot. With command generation enabled, `step_batch(..., rng=key)` periodically
+resamples according to `CommandConfig.resample_seconds`. If no RNG is passed,
+commands remain fixed until reset. PPO training can optionally enable
+`CommandConfig.curriculum` to expand the active linear command ranges when
+velocity tracking is good enough. Active ranges are logged under
+`train/command_range/*`, and curriculum decision state such as returned episode
+count, normalized tracking reward, threshold, period boundary, and expansion
+flags is logged under `train/command_curriculum/*`.
 
 Reward terms:
 
@@ -213,22 +244,35 @@ action_rate
 energy
 torque
 joint_limit
+invalid_action
 hold_joint_deviation
 policy_joint_deviation
 foot_contact
 foot_slip
 foot_clearance
+foot_distance
 gait_contact
 feet_air_time
 undesired_contact
+self_collision
 termination
 ```
 
 Reward and done terms have separate dataclass configs. Link-aware reward/done
 terms validate body names at env initialization. Upper-body assets require
 foot-dependent rewards and lower-body/base done terms to be disabled or changed
-to valid links. Episode-length timeouts are truncations: they reset envs and
-emit `done/timeout`, but they do not receive the `termination` reward penalty.
+to valid links. `track_lin_vel_xy.link` selects the velocity body, and optional
+`track_lin_vel_xy.frame_link` selects the body yaw frame for command comparison.
+Episode-length timeouts are truncations: they reset envs and emit
+`done/timeout`, but they do not receive the `termination` reward penalty.
+Bad-orientation termination uses an IsaacLab/Unitree-style projected-gravity
+tilt angle, not independent roll and pitch thresholds.
+`self_collision` penalizes active robot-robot contact slots above
+`contact.self_collision_force_threshold`. `feet_air_time` rewards first contact
+after a swing interval and is command-gated so near-zero commands can train
+standing without swing pressure. `invalid_action` penalizes requested actuator
+targets outside configured soft ranges as squared violations in policy action
+units, so small-scale joints receive comparable pressure to large-scale joints.
 
 ## Configuration
 
@@ -283,11 +327,23 @@ BelloEnvConfig:
   root_link: bello_root
   terrain.mode: plane
   gait.cycle_time: 0.80
+  gait.command_speed_frequency_gain: 0.55
+  gait.min_frequency: 1.20
+  gait.max_frequency: 2.20
   gait.duty_factor: 0.55
   gait.phase_offsets: [0.0, 0.5]
   gait.standing_command_threshold: 0.05
+  spawn.clearance: 0.01
+  spawn.root_xy_range: [0.0, 0.0]
+  spawn.root_yaw_range: [0.0, 0.0]
+  spawn.joint_pos_noise: [0.0, 0.0]
+  spawn.joint_vel_range: [0.0, 0.0]
+  spawn.stagger_initial_step_count: false
   contact.foot_contact_on_seconds: 0.0
   contact.foot_contact_off_seconds: 0.0
+  contact.foot_contact_force_threshold: 1.0
+  contact.undesired_contact_force_threshold: 1.0
+  contact.self_collision_force_threshold: 1.0
 
 WarpConfig:
   contact_budget_per_env: 32
@@ -304,6 +360,7 @@ PPOConfig:
   learning_rate: 0.001
   schedule: adaptive
   desired_kl: 0.01
+  target_kl: null
   min_learning_rate: 0.00001
   max_learning_rate: 0.01
   adaptive_lr_factor: 1.5
@@ -361,6 +418,7 @@ config.learning_rate: 0.001
 config.anneal_lr: false
 config.schedule: null | constant | linear | adaptive
 config.desired_kl: 0.01
+config.target_kl: null
 config.min_learning_rate: 0.00001
 config.max_learning_rate: 0.01
 config.adaptive_lr_factor: 1.5
@@ -389,7 +447,7 @@ command_config.enabled: true
 command_config.lin_vel_x: [-0.1, 0.1]
 command_config.lin_vel_y: [-0.1, 0.1]
 command_config.ang_vel_yaw: [-0.1, 0.1]
-command_config.standing_probability: 0.02
+command_config.standing_probability: 0.10
 command_config.resample_seconds: 10.0
 command_config.curriculum.enabled: false
 command_config.curriculum.limit_lin_vel_x: [-0.5, 1.0]
@@ -429,6 +487,8 @@ video_config.steps: 250
 video_config.width: 640
 video_config.height: 480
 video_config.fps: 50
+video_config.stochastic_actions: false
+video_config.action_seed: 0
 video_config.camera_config.mode: follow | fixed
 
 warp.contact_budget_per_env: 32

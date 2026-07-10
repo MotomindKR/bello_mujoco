@@ -16,154 +16,198 @@ asset_config:
         action_scale: 0.35
         soft_limit: [-1.41372, 1.41372]
         gains: [200.0, 5.0]
+        effort_limit: 120.0
       right_hip_pitch_joint:
         mode: policy
         default_pos: 0.325
         action_scale: 0.35
         soft_limit: [-1.41372, 1.41372]
         gains: [200.0, 5.0]
+        effort_limit: 120.0
       left_hip_roll_joint:
         mode: policy
         default_pos: 0.0
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       right_hip_roll_joint:
         mode: policy
         default_pos: 0.0
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       left_hip_yaw_joint:
         mode: policy
         default_pos: 0.125
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       right_hip_yaw_joint:
         mode: policy
         default_pos: -0.125
         action_scale: 0.25
         soft_limit: [-1.41372, 1.41372]
         gains: [150.0, 5.0]
+        effort_limit: 60.0
       left_knee_joint:
         mode: policy
         default_pos: 0.45
         action_scale: 0.45
-        soft_limit: [0.10472, 1.98968]
+        soft_limit: [0.0, 1.98968]
         gains: [220.0, 6.0]
+        effort_limit: 120.0
       right_knee_joint:
         mode: policy
         default_pos: 0.45
         action_scale: 0.45
-        soft_limit: [0.10472, 1.98968]
+        soft_limit: [0.0, 1.98968]
         gains: [220.0, 6.0]
+        effort_limit: 120.0
       left_ankle_pitch_joint:
         mode: policy
         default_pos: 0.30
         action_scale: 0.20
         soft_limit: [-0.44506, 0.96866]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       right_ankle_pitch_joint:
         mode: policy
         default_pos: 0.30
         action_scale: 0.20
         soft_limit: [-0.44506, 0.96866]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       left_ankle_roll_joint:
         mode: policy
         default_pos: 0.0
         action_scale: 0.05
         soft_limit: [-0.07857, 0.07857]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       right_ankle_roll_joint:
         mode: policy
         default_pos: 0.0
         action_scale: 0.05
         soft_limit: [-0.07857, 0.07857]
         gains: [22.0, 1.0]
+        effort_limit: 36.0
       waist_yaw_joint:
         mode: policy
         action_scale: 0.25
         soft_limit: [-0.45, 0.45]
         gains: [180.0, 12.0]
+        effort_limit: 120.0
       waist_roll_joint:
         mode: hold
         gains: [240.0, 20.0]
+        effort_limit: 120.0
       waist_pitch_joint:
         mode: hold
         gains: [240.0, 20.0]
+        effort_limit: 120.0
       neck_yaw_joint:
         mode: hold
         gains: [5.5, 0.5]
+        effort_limit: 5.5
       head_pitch_joint:
         mode: hold
         gains: [5.5, 0.5]
+        effort_limit: 5.5
       right_shoulder_pitch_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 120.0
       right_shoulder_roll_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 60.0
       right_shoulder_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 36.0
       right_elbow_pitch_joint:
         mode: hold
         gains: [40.0, 2.0]
+        effort_limit: 36.0
       right_elbow_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 14.0
       right_wrist_pitch_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 14.0
       right_wrist_yaw_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 5.5
       left_shoulder_pitch_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 120.0
       left_shoulder_roll_joint:
         mode: hold
         gains: [70.0, 2.0]
+        effort_limit: 60.0
       left_shoulder_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 36.0
       left_elbow_pitch_joint:
         mode: hold
         gains: [40.0, 2.0]
+        effort_limit: 36.0
       left_elbow_yaw_joint:
         mode: hold
         gains: [20.0, 1.0]
+        effort_limit: 14.0
       left_wrist_pitch_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 14.0
       left_wrist_yaw_joint:
         mode: hold
         gains: [10.0, 1.0]
+        effort_limit: 5.5
       right_finger_right_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
       right_finger_left_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
       left_finger_right_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
       left_finger_left_slide_joint:
         mode: hold
         gains: [100.0, 5.0]
+        effort_limit: 100.0
 
 config:
   total_timesteps: 49152000
   num_envs: 1024
+  # ent_coef: 0.003
+  target_kl: null
 
 env_config:
   max_episode_steps: 256
   root_link: torso_link
+  spawn:
+    joint_pos_noise: [0.0, 0.0]
+    joint_vel_range: [0.0, 0.0]
+    stagger_initial_step_count: false
   contact:
-    foot_contact_on_seconds: 0.04
-    foot_contact_off_seconds: 0.04
+    foot_contact_on_seconds: 0.0
+    foot_contact_off_seconds: 0.0
+    foot_contact_force_threshold: 1.0
+    undesired_contact_force_threshold: 1.0
+    self_collision_force_threshold: 1.0
   observation:
     joint_mode: policy
     base_lin_vel: true
@@ -204,7 +248,8 @@ reward_config:
   base_height:
     enabled: true
     weight: -4.0
-    target: 0.86
+    link: torso_link
+    target: 1.03
   joint_vel:
     enabled: true
     weight: -0.0005
@@ -236,6 +281,9 @@ reward_config:
     enabled: false
   undesired_contact:
     enabled: false
+  self_collision:
+    enabled: true
+    weight: -1.0
   termination:
     enabled: true
     weight: -1.0
@@ -244,10 +292,9 @@ done_config:
   base_height:
     enabled: true
     min_height: 0.55
-  roll_pitch:
+  bad_orientation:
     enabled: true
-    max_abs_roll: 1.35
-    max_abs_pitch: 1.35
+    limit_angle: 1.35
 
 checkpoint_config:
   enabled: true

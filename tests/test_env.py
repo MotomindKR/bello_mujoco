@@ -8,15 +8,18 @@ import pytest
 
 from bello_mujoco.assets_pipeline.prepare import PreparedAsset
 from bello_mujoco.envs.locomotion import (
+    BadOrientationDoneConfig,
     BaseHeightDoneConfig,
     BelloEnvConfig,
     BelloLocomotionEnv,
     ContactConfig,
     DoneConfig,
+    GaitConfig,
     ObservationConfig,
     ObservationNoiseConfig,
+    ObservationScaleConfig,
     RandomPushConfig,
-    RollPitchDoneConfig,
+    SpawnConfig,
     TimeoutDoneConfig,
 )
 from bello_mujoco.envs.rewards import (
@@ -33,11 +36,20 @@ from bello_mujoco.envs.rewards import (
     GaitContactRewardConfig,
     LinVelZRewardConfig,
     RewardConfig,
+    TerminationRewardConfig,
     TrackAngVelZRewardConfig,
     TrackLinVelXYRewardConfig,
 )
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import TerrainConfig
+
+
+def root_quat_from_roll_pitch(roll: float, pitch: float) -> jnp.ndarray:
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    return jnp.asarray([cr * cp, sr * cp, cr * sp, -sr * sp], dtype=jnp.float32)
 
 
 def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
@@ -68,6 +80,7 @@ def test_model_exposes_contact_reward_sets(full_body_asset: PreparedAsset) -> No
     assert env.model.foot_body_ids.shape == (2,)
     assert env.model.foot_geom_ids.shape == (2,)
     assert env.model.terrain_geom_ids.shape == (1,)
+    assert env.model.robot_geom_ids.size >= env.model.foot_geom_ids.size
     assert env.model.nonfoot_robot_geom_ids.size > env.model.foot_geom_ids.size
 
 
@@ -112,6 +125,19 @@ def test_locomotion_env_rejects_enabled_missing_reward_link(
         BelloLocomotionEnv.load_prepared(full_body_asset, reward_config=reward_config)
 
 
+def test_locomotion_env_rejects_enabled_missing_reward_frame_link(
+    full_body_asset: PreparedAsset,
+) -> None:
+    reward_config = RewardConfig(
+        track_lin_vel_xy=TrackLinVelXYRewardConfig(
+            link="pelvis_link", frame_link="missing_link"
+        )
+    )
+
+    with pytest.raises(ValueError, match="configured link/body not found"):
+        BelloLocomotionEnv.load_prepared(full_body_asset, reward_config=reward_config)
+
+
 def test_locomotion_env_rejects_missing_root_link(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -132,6 +158,20 @@ def test_locomotion_env_rejects_negative_contact_debounce(
             full_body_asset,
             env_config=BelloEnvConfig(
                 contact=ContactConfig(foot_contact_on_seconds=-0.01)
+            ),
+        )
+
+
+def test_locomotion_env_rejects_negative_foot_contact_force_threshold(
+    full_body_asset: PreparedAsset,
+) -> None:
+    with pytest.raises(
+        ValueError, match="contact.foot_contact_force_threshold must be finite"
+    ):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(
+                contact=ContactConfig(foot_contact_force_threshold=-0.01)
             ),
         )
 
@@ -256,6 +296,36 @@ def test_foot_contact_debounce_resets_timer_on_done(
     np.testing.assert_allclose(np.asarray(timers), np.zeros(2))
 
 
+def test_foot_memory_keeps_current_contact_on_done(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env.reset()
+    state = state.replace(
+        foot_air_time=jnp.asarray([0.1, 0.2], dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([False, False]),
+    )
+
+    air_time, last_contact = env._next_foot_memory(
+        state,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(True),
+    )
+
+    np.testing.assert_allclose(np.asarray(air_time), np.zeros(2))
+    np.testing.assert_array_equal(np.asarray(last_contact), np.asarray([True, False]))
+
+
+def test_reset_initializes_last_foot_contact_without_synthetic_contact(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+
+    state, _ = env.reset()
+
+    np.testing.assert_array_equal(np.asarray(state.last_foot_contact), np.zeros(2))
+
+
 def test_policy_action_controls_all_default_actuators(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -270,6 +340,18 @@ def test_policy_action_controls_all_default_actuators(
         ctrl[env.model.policy_ctrl_indices]
         != default_ctrl[env.model.policy_ctrl_indices]
     )
+
+
+def test_policy_action_can_request_unclipped_controls(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    action = jnp.full((env.action_size,), 10.0, dtype=jnp.float32)
+    ctrl = env._action_to_ctrl(action)
+    ctrlrange = jnp.asarray(env.model.mj_model.actuator_ctrlrange)
+    policy_indices = jnp.asarray(env.model.policy_ctrl_indices)
+
+    assert bool(jnp.any(ctrl[policy_indices] > ctrlrange[policy_indices, 1]))
 
 
 def test_reset_batch_broadcasts_command(full_body_asset: PreparedAsset) -> None:
@@ -313,6 +395,60 @@ def test_reset_batch_samples_commands_with_rng(
 
     assert obs.shape == (4, env.observation_size)
     assert jnp.all(state.command == jnp.asarray([0.2, 0.1, -0.2]))
+
+
+def test_reset_batch_can_randomize_spawn_state(full_body_asset: PreparedAsset) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            spawn=SpawnConfig(
+                root_xy_range=(0.1, 0.1),
+                root_yaw_range=(0.2, 0.2),
+                joint_pos_noise=(0.01, 0.01),
+                joint_vel_range=(0.3, 0.3),
+            )
+        ),
+    )
+    state, _ = env.reset_batch(2, rng=jax.random.PRNGKey(7))
+    root_qpos = int(env.model.root_qpos_adr)
+    root_qvel = int(env.model.root_qvel_adr)
+
+    np.testing.assert_allclose(
+        np.asarray(state.data.qpos[:, root_qpos : root_qpos + 2]),
+        np.tile(
+            np.asarray(env.model.default_qpos[root_qpos : root_qpos + 2]) + 0.1,
+            (2, 1),
+        ),
+    )
+    assert not jnp.allclose(
+        state.data.qpos[:, root_qpos + 3 : root_qpos + 7],
+        jnp.asarray(env.model.default_qpos[root_qpos + 3 : root_qpos + 7]),
+    )
+    np.testing.assert_allclose(
+        np.asarray(state.data.qvel[:, env.model.actuator_qvel_indices]),
+        np.full((2, env.model.mj_model.nu), 0.3, dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        np.asarray(state.data.qvel[:, root_qvel : root_qvel + 2]),
+        np.zeros((2, 2), dtype=np.float32),
+    )
+
+
+def test_initial_step_count_staggering_is_explicit(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            max_episode_steps=8,
+            spawn=SpawnConfig(stagger_initial_step_count=True),
+        ),
+    )
+    step_count = env.initial_step_counts(16, jax.random.PRNGKey(0))
+
+    assert step_count.shape == (16,)
+    assert jnp.any(step_count != 0)
+    assert jnp.all(step_count < 8)
 
 
 def test_reset_batch_samples_commands_from_override_ranges(
@@ -465,6 +601,42 @@ def test_random_push_sets_root_xy_velocity_on_interval(
     )
 
 
+def test_random_push_overwrites_existing_root_xy_velocity(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=1,
+        env_config=BelloEnvConfig(
+            random_push=RandomPushConfig(
+                enabled=True,
+                interval_seconds=0.02,
+                lin_vel_x=(0.3, 0.3),
+                lin_vel_y=(-0.2, -0.2),
+            ),
+        ),
+    )
+    state, _ = env.reset_batch(1)
+    root_qvel = int(env.model.root_qvel_adr)
+    qvel = state.data.qvel.at[:, root_qvel : root_qvel + 2].set(
+        jnp.asarray([[1.0, 1.0]], dtype=jnp.float32)
+    )
+    state = state.replace(
+        data=state.data.replace(qvel=qvel),
+        step_count=jnp.ones((1,), dtype=jnp.int32),
+    )
+
+    data, push_applied, _ = env._maybe_apply_random_push_batch(
+        state.data, state.step_count, jax.random.PRNGKey(0)
+    )
+
+    assert bool(push_applied[0])
+    assert jnp.allclose(
+        data.qvel[:, root_qvel : root_qvel + 2],
+        jnp.asarray([[0.3, -0.2]], dtype=jnp.float32),
+    )
+
+
 def test_observation_config_can_include_gait_phase(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -488,6 +660,33 @@ def test_observation_config_can_include_gait_phase(
     assert env.observation_size == 2
     assert obs.shape == (2,)
     assert jnp.allclose(obs, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
+
+
+def test_gait_frequency_tracks_command_speed(full_body_asset: PreparedAsset) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            gait=GaitConfig(
+                cycle_time=0.80,
+                command_speed_frequency_gain=0.55,
+                min_frequency=1.20,
+                max_frequency=2.20,
+            )
+        ),
+    )
+
+    assert float(env._gait_frequency(jnp.asarray([0.0, 0.0, 0.0]))) == pytest.approx(
+        1.25
+    )
+    assert float(env._gait_frequency(jnp.asarray([0.0, 0.5, 0.0]))) == pytest.approx(
+        1.525
+    )
+    assert float(env._gait_frequency(jnp.asarray([0.0, 0.5, 1.0]))) == pytest.approx(
+        1.525
+    )
+    assert float(env._gait_frequency(jnp.asarray([0.0, 10.0, 0.0]))) == pytest.approx(
+        2.20
+    )
 
 
 def test_observation_config_can_include_base_state(
@@ -548,6 +747,7 @@ def test_root_link_controls_base_observation_and_default_measurement_link(
     assert env.observation_size == 4
     assert obs.shape == (4,)
     assert obs[3] == pytest.approx(float(state.data.xpos[torso_id, 2]))
+    assert obs[3] > 0.5
     assert float(env._base_height(state)) == pytest.approx(
         float(state.data.xpos[torso_id, 2])
     )
@@ -601,6 +801,52 @@ def test_observation_config_allows_empty_observation(
     assert obs.shape == (0,)
 
 
+def test_critic_observation_config_can_be_privileged(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            observation=ObservationConfig(
+                joint_mode="policy",
+                base_ang_vel=True,
+                projected_gravity=True,
+                command=True,
+                joint_pos=True,
+                joint_vel=True,
+                actuator_force=False,
+                last_action=True,
+            ),
+            critic_observation=ObservationConfig(
+                joint_mode="policy",
+                base_lin_vel=True,
+                base_ang_vel=True,
+                projected_gravity=True,
+                base_height=False,
+                gait_phase=False,
+                command=True,
+                joint_pos=True,
+                joint_vel=True,
+                actuator_force=False,
+                last_action=True,
+                scale=ObservationScaleConfig(base_ang_vel=0.2, joint_vel=0.05),
+                noise=ObservationNoiseConfig(enabled=False),
+            ),
+        ),
+    )
+    state, obs = env.reset()
+    critic_obs = env.critic_observation(state, jax.random.PRNGKey(0))
+
+    assert env.observation_size == 9 + 3 * env.action_size
+    assert env.critic_observation_size == 12 + 3 * env.action_size
+    assert obs.shape == (env.observation_size,)
+    assert critic_obs.shape == (env.critic_observation_size,)
+    assert jnp.allclose(
+        critic_obs,
+        env.critic_observation(state, jax.random.PRNGKey(1)),
+    )
+
+
 def test_step_batch_reports_reward_and_auto_resets_done_envs(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -627,7 +873,7 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert jnp.all(info["done/timeout"])
     assert not bool(jnp.any(info["done/terminal"]))
     assert not bool(jnp.any(info["done/base_height"]))
-    assert not bool(jnp.any(info["done/roll_pitch"]))
+    assert not bool(jnp.any(info["done/bad_orientation"]))
     assert not bool(jnp.any(info["done/nonfinite"]))
     assert jnp.all(info["reward/termination"] == 0.0)
     assert info["episode_return"].shape == (2,)
@@ -638,6 +884,70 @@ def test_step_batch_reports_reward_and_auto_resets_done_envs(
     assert info["reward/foot_distance"].shape == (2,)
     assert info["reward/undesired_contact"].shape == (2,)
     assert jnp.all(jnp.isfinite(reward))
+
+
+def test_step_batch_sanitizes_nonfinite_terminal_rewards(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        reward_config=RewardConfig(
+            termination=TerminationRewardConfig(weight=-3.0),
+        ),
+    )
+    state, _ = env.reset_batch(2)
+    state = state.replace(
+        data=state.data.replace(qpos=state.data.qpos.at[0, 0].set(jnp.nan))
+    )
+
+    next_state, next_obs, reward, done, info = env.step_batch(
+        state,
+        jnp.zeros((2, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(1),
+    )
+
+    assert bool(done[0])
+    assert bool(info["done/nonfinite"][0])
+    assert int(next_state.step_count[0]) == 0
+    assert jnp.all(jnp.isfinite(next_obs[0]))
+    assert jnp.all(jnp.isfinite(reward))
+    for name, value in info.items():
+        if name.startswith("reward/"):
+            assert jnp.all(jnp.isfinite(value)), name
+    assert float(reward[0]) == pytest.approx(-3.0)
+    assert float(info["reward/termination"][0]) == pytest.approx(-3.0)
+    assert float(info["reward/base_height"][0]) == pytest.approx(0.0)
+    assert float(info["reward/joint_acc"][0]) == pytest.approx(0.0)
+    assert float(info["reward/energy"][0]) == pytest.approx(0.0)
+
+
+def test_bad_orientation_done_uses_projected_gravity_tilt(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        done_config=DoneConfig(
+            base_height=BaseHeightDoneConfig(enabled=False),
+            bad_orientation=BadOrientationDoneConfig(
+                limit_angle=0.8,
+                link="bello_root",
+            ),
+        ),
+    )
+    state, _ = env.reset()
+    root_qpos = int(env.model.root_qpos_adr)
+
+    qpos = state.data.qpos.at[root_qpos + 3 : root_qpos + 7].set(
+        root_quat_from_roll_pitch(0.4, 0.4)
+    )
+    below_limit = state.replace(data=state.data.replace(qpos=qpos))
+    assert not bool(env._done_flags(below_limit)["done/bad_orientation"])
+
+    qpos = state.data.qpos.at[root_qpos + 3 : root_qpos + 7].set(
+        root_quat_from_roll_pitch(0.7, 0.7)
+    )
+    above_limit = state.replace(data=state.data.replace(qpos=qpos))
+    assert bool(env._done_flags(above_limit)["done/bad_orientation"])
 
 
 def test_default_base_height_threshold_is_below_nominal_reset(
@@ -671,7 +981,70 @@ def test_step_batch_contact_rewards_are_world_local(
     )
 
     assert info["reward/foot_contact"][0] > info["reward/foot_contact"][1]
-    assert info["reward/undesired_contact"][0] < info["reward/undesired_contact"][1]
+
+
+def test_undesired_contact_uses_force_threshold(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        warp=WarpConfig(contact_budget_per_env=64),
+        batch_size=1,
+        env_config=BelloEnvConfig(
+            contact=ContactConfig(undesired_contact_force_threshold=1.0e9)
+        ),
+    )
+    state, _ = env.reset_batch(1)
+    root_z = env.model.root_qpos_adr + 2
+    state = state.replace(
+        data=state.data.replace(qpos=state.data.qpos.at[:, root_z].set(0.2))
+    )
+
+    _, _, _, _, info = env.step_batch(
+        state,
+        jnp.zeros((1, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(0),
+    )
+
+    assert jnp.all(info["reward/undesired_contact"] == 0.0)
+
+
+def test_locomotion_env_rejects_negative_self_collision_force_threshold(
+    full_body_asset: PreparedAsset,
+) -> None:
+    with pytest.raises(ValueError, match="contact.self_collision_force_threshold"):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(
+                contact=ContactConfig(self_collision_force_threshold=-0.01)
+            ),
+        )
+
+
+def test_foot_contact_uses_force_threshold(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        warp=WarpConfig(contact_budget_per_env=64),
+        batch_size=1,
+        env_config=BelloEnvConfig(
+            contact=ContactConfig(foot_contact_force_threshold=1.0e9)
+        ),
+    )
+    state, _ = env.reset_batch(1)
+    root_z = env.model.root_qpos_adr + 2
+    state = state.replace(
+        data=state.data.replace(qpos=state.data.qpos.at[:, root_z].set(0.2))
+    )
+
+    _, _, _, _, info = env.step_batch(
+        state,
+        jnp.zeros((1, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(0),
+    )
+
+    assert jnp.all(info["reward/foot_contact"] == 0.0)
 
 
 def test_step_reports_enabled_foot_distance_reward(
@@ -701,6 +1074,8 @@ def test_step_reports_enabled_foot_distance_reward(
         jnp.ones(2, dtype=jnp.float32),
         env._foot_height(state),
         jnp.zeros(2, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
         jnp.asarray(0.0, dtype=jnp.float32),
     )
 
@@ -793,7 +1168,7 @@ def test_locomotion_env_loads_upper_body_when_foot_rewards_are_disabled(
         reward_config=upper_body_reward_config(),
         done_config=DoneConfig(
             base_height=BaseHeightDoneConfig(enabled=False),
-            roll_pitch=RollPitchDoneConfig(enabled=False),
+            bad_orientation=BadOrientationDoneConfig(enabled=False),
         ),
     )
     state, obs = env.reset()

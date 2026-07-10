@@ -1,6 +1,10 @@
-import mujoco
+from dataclasses import replace
 
-from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
+import mujoco
+import numpy as np
+import pytest
+
+from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.assets_pipeline.prepare import actuated_urdf_joint_names
 from bello_mujoco.assets import source_assets_root
@@ -33,18 +37,26 @@ def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     assert model.policy_action_scale.shape == (35,)
 
 
+def test_model_can_load_without_mjx_for_cpu_only_viewers(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+
+    assert model.mjx_model is None
+    with pytest.raises(RuntimeError, match="loaded without MJX"):
+        model.make_data()
+
+
 def test_joint_actuator_mode_controls_policy_action_partition(
     full_body_asset: PreparedAsset,
 ) -> None:
     default_config = ActuatorConfig()
     joints = {
         name: (
-            JointActuatorConfig(
+            replace(
+                config,
                 mode="hold",
-                default_pos=config.default_pos,
                 action_scale=0.1,
-                soft_limit=config.soft_limit,
-                gains=config.gains,
             )
             if name == "waist_yaw_joint"
             else config
@@ -137,6 +149,30 @@ def test_viewer_model_adds_non_colliding_visual_meshes(
 
     assert model.ngeom == 80
     assert len(visual_mesh_geoms) == 40
+
+
+def test_loading_viewer_model_preserves_policy_contract(
+    full_body_asset: PreparedAsset,
+) -> None:
+    sim_model = load_prepared_bello_model(full_body_asset)
+    viewer_model = load_prepared_bello_model(full_body_asset, use_viewer_model=True)
+
+    assert viewer_model.xml_path == full_body_asset.viewer_mjcf_path
+    assert viewer_model.viewer_xml_path == full_body_asset.viewer_mjcf_path
+    assert viewer_model.mj_model.ngeom == sim_model.mj_model.ngeom + 40
+    assert viewer_model.mj_model.nq == sim_model.mj_model.nq
+    assert viewer_model.mj_model.nv == sim_model.mj_model.nv
+    assert viewer_model.mj_model.nu == sim_model.mj_model.nu
+    assert (
+        viewer_model.policy_ctrl_indices.tolist()
+        == sim_model.policy_ctrl_indices.tolist()
+    )
+    assert (
+        viewer_model.hold_ctrl_indices.tolist()
+        == sim_model.hold_ctrl_indices.tolist()
+    )
+    assert np.allclose(viewer_model.policy_action_scale, sim_model.policy_action_scale)
+    assert np.allclose(viewer_model.default_qpos, sim_model.default_qpos)
 
 
 def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(

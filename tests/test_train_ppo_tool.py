@@ -52,6 +52,10 @@ def test_validate_video_config_is_noop_when_disabled() -> None:
         (TrainingVideoConfig(enabled=True, width=0), "width and .*height"),
         (TrainingVideoConfig(enabled=True, fps=0), "fps must be positive"),
         (
+            TrainingVideoConfig(enabled=True, action_seed=-1),
+            "action_seed must be nonnegative",
+        ),
+        (
             TrainingVideoConfig(enabled=True, simulation_backend="bad"),
             "simulation_backend must be",
         ),
@@ -72,10 +76,19 @@ def test_render_training_video_writes_expected_path_and_tracks(monkeypatch, tmp_
 
     def fake_render_policy_rollout(*args, **kwargs):
         calls["render"] = (args, kwargs)
+        return {
+            "steps": 10,
+            "completed_episodes": 1,
+            "first_done_step": 4,
+            "first_done_seconds": 0.08,
+            "done/terminal": 1,
+            "done/timeout": 0,
+        }
 
     def fake_track_video(*args, **kwargs):
         calls["track"] = (args, kwargs)
 
+    run = SimpleNamespace()
     monkeypatch.setattr(train_ppo, "runner_train_state", fake_runner_train_state)
     monkeypatch.setattr(train_ppo, "render_policy_rollout", fake_render_policy_rollout)
     monkeypatch.setattr(train_ppo, "track_video", fake_track_video)
@@ -90,13 +103,19 @@ def test_render_training_video_writes_expected_path_and_tracks(monkeypatch, tmp_
             filename_prefix="eval",
             fps=12,
             wandb_name="video",
+            stochastic_actions=True,
+            action_seed=123,
         ),
-        run="run",
+        run=run,
         env_steps=128,
     )
 
     assert output_path == tmp_path / "eval_000007.mp4"
     assert calls["render"][1]["output_path"] == output_path
     assert calls["render"][1]["simulation_backend"] == "mujoco"
-    assert calls["track"][0] == ("run", output_path)
+    assert calls["render"][1]["stochastic_actions"]
+    assert calls["render"][1]["action_seed"] == 123
+    assert calls["track"][0] == (run, output_path)
     assert calls["track"][1]["step"] == 128
+    assert "first_done_step=4" in calls["track"][1]["caption"]
+    assert "metric_log" not in calls

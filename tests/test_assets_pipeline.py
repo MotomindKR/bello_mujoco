@@ -3,11 +3,14 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import mujoco
 import numpy as np
 import pytest
+import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.mesh import replace_end_effectors_with_spheres
+from bello_mujoco.assets_pipeline.mjcf import compile_urdf_to_mjcf
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
@@ -18,10 +21,10 @@ from bello_mujoco.assets_pipeline.prepare import (
     write_prepared_asset_manifest,
 )
 from bello_mujoco.envs.locomotion import (
+    BadOrientationDoneConfig,
     BaseHeightDoneConfig,
     BelloLocomotionEnv,
     DoneConfig,
-    RollPitchDoneConfig,
 )
 from bello_mujoco.envs.rewards import (
     AngVelXYRewardConfig,
@@ -80,9 +83,11 @@ def test_observation_size_tracks_reduced_actuator_count() -> None:
         policy_qvel_indices=np.arange(6, dtype=np.int32),
         policy_action_scale=np.ones(6, dtype=np.float32),
         foot_body_ids=np.asarray([2, 3], dtype=np.int32),
+        robot_geom_ids=np.asarray([1, 2, 3, 4], dtype=np.int32),
         foot_geom_ids=np.asarray([2, 3], dtype=np.int32),
         terrain_geom_ids=np.asarray([0], dtype=np.int32),
         nonfoot_robot_geom_ids=np.asarray([1, 4], dtype=np.int32),
+        nonfoot_robot_body_ids=np.asarray([1], dtype=np.int32),
         default_qpos=np.zeros(40, dtype=np.float32),
         default_qvel=np.zeros(39, dtype=np.float32),
         default_ctrl=np.zeros(29, dtype=np.float32),
@@ -99,7 +104,7 @@ def test_observation_size_tracks_reduced_actuator_count() -> None:
         ),
         done_config=DoneConfig(
             base_height=BaseHeightDoneConfig(enabled=False),
-            roll_pitch=RollPitchDoneConfig(enabled=False),
+            bad_orientation=BadOrientationDoneConfig(enabled=False),
         ),
     )
 
@@ -221,6 +226,109 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     assert asset_config_hash(base, "full_body") != asset_config_hash(
         changed, "full_body"
     )
+
+
+def test_generated_actuators_are_force_limited_from_effort(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+
+    assert not np.any(model.actuator_ctrllimited)
+    assert np.all(model.actuator_ctrlrange[:, 0] < model.actuator_ctrlrange[:, 1])
+    assert np.all(model.actuator_forcelimited)
+    assert np.all(model.actuator_forcerange[:, 0] < 0.0)
+    assert np.all(model.actuator_forcerange[:, 1] > 0.0)
+
+
+def test_actuator_force_observation_is_clamped_by_force_range(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    data = mujoco.MjData(model)
+    joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "neck_yaw_joint")
+    actuator_id = next(
+        actuator_id
+        for actuator_id, joint_pair in enumerate(model.actuator_trnid)
+        if int(joint_pair[0]) == joint_id
+    )
+    qpos_id = int(model.jnt_qposadr[joint_id])
+    dof_id = int(model.jnt_dofadr[joint_id])
+
+    data.qpos[qpos_id] = -1.0
+    data.ctrl[actuator_id] = 1.0
+    mujoco.mj_forward(model, data)
+
+    assert data.actuator_force[actuator_id] == pytest.approx(5.5)
+    assert data.qfrc_actuator[dof_id] == pytest.approx(5.5)
+
+
+def test_box_viewer_model_makes_collision_geoms_transparent(
+    tmp_path: Path,
+) -> None:
+    mesh_dir = tmp_path / "meshes"
+    visual_mesh_dir = tmp_path / "visual_meshes"
+    urdf_dir = tmp_path / "urdf"
+    mjcf_dir = tmp_path / "mjcf"
+    mesh_dir.mkdir()
+    visual_mesh_dir.mkdir()
+    urdf_dir.mkdir()
+    mjcf_dir.mkdir()
+    trimesh.creation.box(extents=(0.2, 0.1, 0.05)).export(
+        mesh_dir / "base_collision.stl"
+    )
+    trimesh.creation.box(extents=(0.3, 0.2, 0.08)).export(
+        visual_mesh_dir / "base_visual.stl"
+    )
+    urdf_path = urdf_dir / "robot.urdf"
+    urdf_path.write_text(
+        """
+<robot name="box_visual_test">
+  <link name="base">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+    <visual name="base_visual">
+      <geometry>
+        <mesh filename="../visual_meshes/base_visual.stl"/>
+      </geometry>
+    </visual>
+    <collision name="base_collision">
+      <geometry>
+        <mesh filename="../meshes/base_collision.stl"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>
+""".strip()
+    )
+    mjcf_path = mjcf_dir / "robot_viewer.xml"
+
+    compile_urdf_to_mjcf(
+        urdf_path,
+        mjcf_path,
+        collision_mode="box",
+        include_visuals=True,
+        actuated_joint_order=(),
+    )
+
+    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+    collision_geom_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_GEOM, "base_collision"
+    )
+    visual_geom_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_GEOM, "base_visual"
+    )
+
+    assert collision_geom_id >= 0
+    assert visual_geom_id >= 0
+    assert model.geom_type[collision_geom_id] == mujoco.mjtGeom.mjGEOM_BOX
+    assert model.geom_rgba[collision_geom_id, 3] == pytest.approx(0.0)
+    assert model.geom_type[visual_geom_id] == mujoco.mjtGeom.mjGEOM_MESH
+    assert model.geom_contype[visual_geom_id] == 0
+    assert model.geom_conaffinity[visual_geom_id] == 0
+    assert model.geom_rgba[visual_geom_id, 3] == pytest.approx(1.0)
 
 
 def test_actuator_config_does_not_expose_mutable_joint_mapping() -> None:

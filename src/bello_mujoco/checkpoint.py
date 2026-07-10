@@ -17,7 +17,12 @@ from bello_mujoco.envs.locomotion import BelloEnvConfig, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.tracking import to_builtin
-from bello_mujoco.train.ppo import PPOConfig, TrainState, init_train_state
+from bello_mujoco.train.ppo import (
+    PPOConfig,
+    TrainState,
+    ValueNormState,
+    init_train_state,
+)
 
 METADATA_FILE = "metadata.json"
 STATE_DIR = "state"
@@ -37,6 +42,13 @@ class CheckpointConfig:
 
 
 @dataclass(frozen=True)
+class ValueNormMetadata:
+    mean: float
+    var: float
+    count: float
+
+
+@dataclass(frozen=True)
 class CheckpointMetadata:
     ppo: PPOConfig
     asset: AssetPrepConfig
@@ -47,6 +59,8 @@ class CheckpointMetadata:
     warp: WarpConfig
     obs_size: int
     action_size: int
+    critic_obs_size: int | None = None
+    value_norm: ValueNormMetadata | None = None
 
 
 def checkpoint_path(config: CheckpointConfig, ppo_config: PPOConfig) -> Path:
@@ -83,6 +97,7 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
         metadata.obs_size,
         metadata.action_size,
         metadata.ppo,
+        critic_obs_size=metadata.critic_obs_size,
     )
     params_template, static_policy = eqx.partition(template_state.policy, eqx.is_array)
     item_template = {
@@ -90,7 +105,12 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
         "opt_state": template_state.opt_state,
         "update": jnp.asarray(0, dtype=jnp.int32),
     }
-    restored = ocp.PyTreeCheckpointer().restore(path / STATE_DIR, item=item_template)
+    restore_args = ocp.checkpoint_utils.construct_restore_args(item_template)
+    restored = ocp.PyTreeCheckpointer().restore(
+        path / STATE_DIR,
+        item=item_template,
+        restore_args=restore_args,
+    )
     train_state = TrainState(
         policy=eqx.combine(restored["policy"], static_policy),
         opt_state=restored["opt_state"],
@@ -111,6 +131,24 @@ def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
         warp=dataclass_from_dict(WarpConfig, data["warp"]),
         obs_size=int(data["obs_size"]),
         action_size=int(data["action_size"]),
+        critic_obs_size=(
+            int(data["critic_obs_size"]) if data.get("critic_obs_size") is not None else None
+        ),
+        value_norm=(
+            dataclass_from_dict(ValueNormMetadata, data["value_norm"])
+            if data.get("value_norm") is not None
+            else None
+        ),
+    )
+
+
+def value_norm_metadata(state: ValueNormState | None) -> ValueNormMetadata | None:
+    if state is None:
+        return None
+    return ValueNormMetadata(
+        mean=float(jax.device_get(state.mean)),
+        var=float(jax.device_get(state.var)),
+        count=float(jax.device_get(state.count)),
     )
 
 

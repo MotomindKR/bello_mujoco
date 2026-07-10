@@ -28,14 +28,61 @@ Config:
 - lower body and waist yaw controlled by policy; waist roll/pitch, head, arms,
   and fingers held
 - `obs_stack_size: 10`
-- default PPO settings inherited from `configs/train/default.yaml`, including
-  adaptive KL, value normalization, `ent_coef: 0.01`, `init_log_std: 0.0`,
-  `max_log_std: 1.0`, and `num_steps: 24`
+- standing overrides the shared locomotion-oriented PPO exploration scale with
+  `ent_coef: 0.003`, keeps adaptive KL learning-rate control enabled, and
+  leaves target-KL early stopping disabled with `target_kl: null`
+- value normalization, `init_log_std: 0.0`, `max_log_std: 1.0`, and
+  `num_steps: 24`
 - native additive standing reward with `alive`, zero-velocity tracking,
   base-height/uprightness shaping, small joint-velocity/torque/action-rate
   penalties, and terminal-failure penalty
 - `max_episode_steps: 256`, base-height done threshold `0.55`, roll/pitch
   done threshold `1.35 rad`
+- reset joint position/velocity noise and initial episode staggering are
+  disabled for the standing recipe to match the known-good native-stand run
+  `05y4y33w`
+
+## 2026-07-10 - Restore Known-Good Standing PPO Scope
+
+Run `gyungmin/bello-mujoco/05y4y33w` was the clean native standing reference:
+it reached `mean_episode_length ~= 254.5` on a 256-step episode and mostly
+terminated by timeout. The current standing run `fzjkru6x` regressed to
+`mean_episode_length ~= 37.5`, mostly `done/base_height`, while its value
+normalization stats exploded (`value_norm_mean ~= -7.95e4`,
+`value_norm_std ~= 2.15e7`).
+
+Config differences that mattered:
+
+- `ent_coef` had drifted from the known-good `0.003` to the shared locomotion
+  default `0.01`, keeping action std high on a fragile survival task.
+- target-KL early stopping was active through the default `target_kl: 0.02`,
+  while the known-good run used adaptive KL learning-rate control without
+  minibatch early stopping.
+- reset joint position/velocity randomization and staggered initial episode
+  lengths had been added to standing after the good run.
+- standing base-height shaping had moved to an explicit torso target of `1.03`;
+  keep that torso-height change for now because the torso is the body we want
+  to track for standing.
+
+Standing now restores the PPO/reset parts of the reference behavior while
+keeping the explicit torso-height target:
+
+```yaml
+config.ent_coef: 0.003
+config.target_kl: null
+env_config.spawn.joint_pos_noise: [0.0, 0.0]
+env_config.spawn.joint_vel_range: [0.0, 0.0]
+env_config.spawn.stagger_initial_step_count: false
+reward_config.base_height.link: torso_link
+reward_config.base_height.target: 1.03
+```
+
+Training videos still use the default CPU MuJoCo backend. An MJX video backend
+matches training physics more closely, but running that renderer inside the
+training loop can stall a GPU training run. If a CPU MuJoCo video falls while
+`train/mean_reward/termination` and `train/mean_done/terminal` are zero, treat
+the video as a backend/deterministic-rollout diagnostic rather than proof that
+the MJX training batch is terminating.
 
 ## Diagnostics
 
@@ -434,15 +481,16 @@ feet-air-time memory.
 ```yaml
 env_config:
   contact:
-    foot_contact_on_seconds: 0.04
-    foot_contact_off_seconds: 0.04
+    foot_contact_on_seconds: 0.0
+    foot_contact_off_seconds: 0.0
+    foot_contact_force_threshold: 1.0
+    undesired_contact_force_threshold: 1.0
 ```
 
-This requires two consecutive 20 ms control samples before a contact state flip
-is accepted. The native standing recipe currently disables locomotion contact
-rewards, but keeping this knob explicit prevents single-step contact chatter
-from dominating future `foot_contact`, `foot_slip`, `gait_contact`, or
-`feet_air_time` experiments.
+The native standing recipe currently disables locomotion contact rewards, but
+keeps contact settings explicit for future `foot_contact`, `foot_slip`,
+`gait_contact`, or `feet_air_time` experiments. Foot contact follows the
+Unitree/IsaacLab-style force-thresholded signal without extra debounce.
 
 Initial action noise matters for balance.
 
@@ -925,7 +973,7 @@ config:
   ent_coef: 0.001
 ```
 
-Added rollout diagnostics to PPO metrics:
+Added action/control diagnostics to PPO metrics:
 
 ```text
 action_rms
@@ -1387,6 +1435,12 @@ Applied PPO stability fix:
   log-ratios before exponentiation to avoid overflow.
 - Wrapped the optimizer in Optax finite-update protection so nonfinite gradients
   are not applied to parameters.
+- Added an explicit PPO nonfinite-update guard. If a minibatch loss, metric,
+  gradient, update, or next parameter is nonfinite, PPO keeps the previous
+  params/optimizer state, reports `train/nonfinite_update`, and the training CLI
+  raises immediately. This prevents failures like `o0xh9ftv` from silently
+  burning hundreds of millions of env steps after action/KL/value metrics become
+  NaN.
 - Updated `experiments/train/standing.yaml` to use `schedule: adaptive` and the
   new run/checkpoint/video prefix
   `standing_unitree_ppo_survival_adaptive_seed0`.
@@ -1605,3 +1659,77 @@ Added a standalone locomotion bootstrap recipe:
     contact and clearance shaping instead
   - leave `foot_contact` and `foot_distance` disabled so the policy is not
     rewarded for simply keeping both feet planted or widening stance forever
+
+Latest implementation diagnosis relevant to standing:
+
+- `reset()` now calls `mjx.kinematics` after setting qpos/qvel/ctrl. This
+  matters for standing because the active recipe uses `root_link: torso_link`;
+  without the kinematics pass, reset observations for named-body
+  height/orientation were stale until the first physics step. Full
+  `mjx.forward` is intentionally avoided here because batched auto-reset happens
+  inside the rollout hot path.
+- The standing recipe keeps `reward_config.base_height.link: torso_link` and
+  `target: 1.03` so height shaping tracks the torso body directly.
+
+## 2026-07-10 - Old 678M-step standing run diagnosis
+
+Run `standing_unitree_ppo_survival_seed0` (`o0xh9ftv`) was the older long
+standing run, not a locomotion/contact-reward run.
+
+Key facts:
+
+- final update: `27620`
+- env steps: `27620 * 1024 * 24 = 678,789,120`
+- configured budget: `50,000 * 1024 * 24 = 1,228,800,000` env steps
+- command was disabled
+- only `alive` and `termination` rewards were enabled
+- failure was by `done/base_height`, not roll/pitch or timeout
+
+Final behavior:
+
+```text
+mean_episode_length: 11
+max_episode_length: 11
+mean_episode_return: -0.78
+mean_reward/alive: 0.02
+mean_reward/termination: about -0.09
+approx_kl: NaN
+action_std_mean: NaN
+value_loss: NaN
+```
+
+The rollout video confirms the robot falls within the first few frames and then
+remains down. Many later rollout videos have the same hash, so the behavior was
+unchanged for most of the run.
+
+Conclusion: this run should have been stopped as soon as PPO metrics became
+NaN. The fix is not a foot-contact reward change; it is the PPO nonfinite guard
+plus the current shorter standing budget and adaptive/value-normalized PPO
+defaults.
+
+## 2026-07-10 - Preserve actuator force limits in experiment overrides
+
+Standing and locomotion both override every actuator joint entry in YAML. These
+overrides are full joint configs, so leaving out `effort_limit` does not keep
+the Python default from `actuators.py`; it produces prepared actuators without a
+force limit and generated MJCF position actuators without `forcerange`.
+
+That is a plausible contributor to contact overflow and huge reward/value
+spikes, because the policy can command effectively uncapped position actuators
+when the robot hits the ground hard.
+
+Fix:
+
+- `experiments/train/standing.yaml` now explicitly preserves the expected
+  effort limits for all overridden joints.
+- `experiments/train/locomotion.yaml` does the same.
+- Lower-body policy actuators now use Robstride peak-torque limits:
+  hip pitch `120 Nm`, hip roll/yaw `60 Nm`, knee `120 Nm`, and ankle `36 Nm`.
+- Waist yaw uses `120 Nm`.
+- Neck/head, arms, wrists, and finger slides use the same limits as the
+  full-body actuator defaults.
+- `experiments/train/foot_distance.yaml` inherits this through `standing.yaml`.
+
+Follow-up diagnostic: after composing a config, check the prepared MJCF for
+`forcerange` on the generated position actuators. A missing `forcerange` on
+policy-controlled joints is a bug, not an intentional high-torque setting.

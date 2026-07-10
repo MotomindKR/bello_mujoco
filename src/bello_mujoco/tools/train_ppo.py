@@ -16,6 +16,7 @@ from bello_mujoco.checkpoint import (
     CheckpointMetadata,
     checkpoint_path,
     save_training_checkpoint,
+    value_norm_metadata,
 )
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
@@ -39,6 +40,7 @@ from bello_mujoco.train.ppo import (
     PPOConfig,
     RunnerState,
     TrainState,
+    critic_observation_size,
     effective_learning_rate_schedule,
     init_runner_state,
     init_train_state,
@@ -64,6 +66,8 @@ class TrainingVideoConfig:
     height: int = 480
     fps: int = 50
     stop_on_done: bool = True
+    stochastic_actions: bool = False
+    action_seed: int = 0
     log_wandb: bool = True
     wandb_name: str = "train/rollout"
     camera_config: CameraConfig = CameraConfig()
@@ -160,14 +164,23 @@ def run_training(run_config: TrainingRunConfig) -> None:
             reward_config=reward_config,
             command_config=command_config,
             done_config=done_config,
+            use_viewer_model=True,
         )
         if video_config.enabled
         else env
     )
     rng = jax.random.PRNGKey(config.seed)
     policy_obs_size = policy_observation_size(env.observation_size, config.policy)
+    critic_obs_size = critic_observation_size(env)
+    critic_policy_obs_size = policy_observation_size(critic_obs_size, config.policy)
     if dry_run:
-        state, _ = init_train_state(rng, policy_obs_size, env.action_size, config)
+        state, _ = init_train_state(
+            rng,
+            policy_obs_size,
+            env.action_size,
+            config,
+            critic_obs_size=critic_policy_obs_size,
+        )
         batch_state, batch_obs = env.reset_batch(config.num_envs)
         print(
             {
@@ -182,6 +195,8 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "warp_njmax": env.model.warp_njmax,
                 "obs_size": env.observation_size,
                 "policy_obs_size": policy_obs_size,
+                "critic_obs_size": critic_obs_size,
+                "critic_policy_obs_size": critic_policy_obs_size,
                 "obs_stack_size": config.policy.obs_stack_size,
                 "action_size": env.action_size,
                 "num_envs": config.num_envs,
@@ -198,6 +213,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "learning_rate": config.learning_rate,
                 "learning_rate_schedule": effective_learning_rate_schedule(config),
                 "desired_kl": config.desired_kl,
+                "target_kl": config.target_kl,
                 "ent_coef": config.ent_coef,
                 "normalize_value": config.normalize_value,
                 "value_norm_eps": config.value_norm_eps,
@@ -234,6 +250,8 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "env": {
                     "obs_size": env.observation_size,
                     "policy_obs_size": policy_obs_size,
+                    "critic_obs_size": critic_obs_size,
+                    "critic_policy_obs_size": critic_policy_obs_size,
                     "obs_stack_size": config.policy.obs_stack_size,
                     "action_size": env.action_size,
                     "mjx_impl": "warp",
@@ -242,7 +260,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 },
             },
         )
-        stream_metrics = metric_config.stream_updates and run is not None
+        stream_metrics = metric_config.stream_updates
         if video_config.enabled or stream_metrics:
             out = train_update_loop(
                 env,
@@ -276,7 +294,9 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     env=env_config,
                     warp=warp,
                     obs_size=policy_obs_size,
+                    critic_obs_size=critic_policy_obs_size,
                     action_size=env.action_size,
+                    value_norm=value_norm_metadata(final_value_norm_state(out)),
                 ),
                 overwrite=checkpoint_config.overwrite,
             )
@@ -287,7 +307,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     name=checkpoint_config.wandb_artifact_name or checkpoint_dir.name,
                     artifact_type=checkpoint_config.wandb_artifact_type,
                 )
-        if not stream_metrics:
+        if not stream_metrics and run is not None:
             track_metric_history(
                 run,
                 out["metrics"],
@@ -332,10 +352,11 @@ def train_update_loop(
     for _ in range(config.num_updates):
         runner_state, metrics = update_fn(runner_state)
         metrics = jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
-        metrics_history.append(metrics)
         update = int(jax.device_get(runner_state.update))
+        raise_on_nonfinite_training_metrics(metrics, update)
+        metrics_history.append(metrics)
         env_steps = update * config.num_envs * config.num_steps
-        if stream_metrics:
+        if stream_metrics and run is not None:
             track_metric_snapshot(
                 run,
                 metrics,
@@ -384,7 +405,7 @@ def render_training_video(
     update = int(jax.device_get(runner_state.update))
     output_path = config.output_dir / f"{config.filename_prefix}_{update:06d}.mp4"
     train_state = runner_train_state(runner_state, static_policy)
-    render_policy_rollout(
+    rollout_stats = render_policy_rollout(
         env,
         train_state.policy,
         output_path=output_path,
@@ -397,6 +418,8 @@ def render_training_video(
         camera_config=config.camera_config,
         simulation_backend=config.simulation_backend,
         obs_stack_size=obs_stack_size,
+        stochastic_actions=config.stochastic_actions,
+        action_seed=config.action_seed,
     )
     if config.log_wandb:
         track_video(
@@ -405,13 +428,58 @@ def render_training_video(
             name=config.wandb_name,
             step=env_steps,
             fps=config.fps,
-            caption=f"update={update}",
+            caption=video_rollout_caption(update, rollout_stats),
         )
     return output_path
 
 
+def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:
+    first_done_step = int(stats.get("first_done_step", -1))
+    completed = int(stats.get("completed_episodes", 0))
+    if first_done_step < 0:
+        return f"update={update}, no_done, completed_episodes={completed}"
+    first_done_seconds = float(stats.get("first_done_seconds", -1.0))
+    terminal = int(stats.get("done/terminal", 0))
+    timeout = int(stats.get("done/timeout", 0))
+    return (
+        f"update={update}, first_done_step={first_done_step}, "
+        f"first_done_seconds={first_done_seconds:.2f}, "
+        f"completed_episodes={completed}, terminal={terminal}, timeout={timeout}"
+    )
+
+
 def stack_metric_history(metrics_history: list[dict[str, jax.Array]]) -> dict:
     return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *metrics_history)
+
+
+def raise_on_nonfinite_training_metrics(metrics: dict, update: int) -> None:
+    nonfinite_update = metrics.get("nonfinite_update")
+    if nonfinite_update is not None and float(jax.device_get(nonfinite_update)) > 0.0:
+        raise RuntimeError(
+            "PPO produced a nonfinite update at update "
+            f"{update}; skipped the poisoned optimizer step. "
+            "Lower learning_rate/init_log_std or inspect rewards/observations."
+        )
+    checked_keys = (
+        "loss",
+        "actor_loss",
+        "value_loss",
+        "value_loss_raw",
+        "entropy",
+        "approx_kl",
+        "action_std_mean",
+        "action_std_min",
+        "action_std_max",
+    )
+    for name in checked_keys:
+        value = metrics.get(name)
+        if value is None:
+            continue
+        if not bool(jnp.all(jnp.isfinite(jax.device_get(value)))):
+            raise RuntimeError(
+                f"PPO metric {name!r} became nonfinite at update {update}; "
+                "stopping training instead of continuing with invalid policy state."
+            )
 
 
 def validate_video_config(config: TrainingVideoConfig) -> None:
@@ -430,6 +498,10 @@ def validate_video_config(config: TrainingVideoConfig) -> None:
         )
     if config.fps <= 0:
         raise ValueError(f"video_config.fps must be positive, got {config.fps}")
+    if config.action_seed < 0:
+        raise ValueError(
+            f"video_config.action_seed must be nonnegative, got {config.action_seed}"
+        )
     if config.simulation_backend not in {"mjx", "mujoco"}:
         raise ValueError(
             "video_config.simulation_backend must be 'mjx' or 'mujoco', got "
@@ -452,6 +524,9 @@ def final_train_state(
         policy_observation_size(env.observation_size, config.policy),
         env.action_size,
         config,
+        critic_obs_size=policy_observation_size(
+            critic_observation_size(env), config.policy
+        ),
     )
     _, static_policy = eqx.partition(template_state.policy, eqx.is_array)
     return TrainState(
@@ -459,6 +534,15 @@ def final_train_state(
         opt_state=opt_state,
         update=update,
     )
+
+
+def final_value_norm_state(out: dict):
+    runner_state = out["runner_state"]
+    if isinstance(runner_state, RunnerState):
+        return runner_state.value_norm_state
+    if len(runner_state) >= 9:
+        return runner_state[-1]
+    return None
 
 
 def entrypoint() -> None:

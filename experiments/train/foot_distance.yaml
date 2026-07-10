@@ -56,6 +56,8 @@ reward_config:
     enabled: false
   undesired_contact:
     enabled: false
+  self_collision:
+    enabled: false
   termination:
     enabled: false
 
@@ -63,7 +65,7 @@ done_config:
   # Keep post-fall states in the rollout for this pipeline diagnostic.
   base_height:
     enabled: false
-  roll_pitch:
+  bad_orientation:
     enabled: false
 
 checkpoint_config:

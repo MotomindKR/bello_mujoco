@@ -33,7 +33,7 @@ class CommandConfig:
     lin_vel_x: tuple[float, float] = (-0.1, 0.1)
     lin_vel_y: tuple[float, float] = (-0.1, 0.1)
     ang_vel_yaw: tuple[float, float] = (-0.1, 0.1)
-    standing_probability: float = 0.02
+    standing_probability: float = 0.10
     resample_seconds: float = 10.0
     curriculum: CommandCurriculumConfig = CommandCurriculumConfig()
 
@@ -122,6 +122,7 @@ class LinkRewardConfig(WeightedRewardConfig):
 @dataclass(frozen=True)
 class TrackLinVelXYRewardConfig(LinkRewardConfig):
     sigma: float = 0.25
+    frame_link: str | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +186,11 @@ class JointLimitRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class InvalidActionRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
 class HoldJointDeviationRewardConfig(WeightedRewardConfig):
     pass
 
@@ -201,7 +207,7 @@ class FootContactRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class FootSlipRewardConfig(WeightedRewardConfig):
-    pass
+    angular_speed_scale: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -209,6 +215,7 @@ class FootClearanceRewardConfig(WeightedRewardConfig):
     target: float = 0.10
     std: float = 0.05
     tanh_mult: float = 2.0
+    command_speed_threshold: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -230,6 +237,11 @@ class FeetAirTimeRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class UndesiredContactRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
+class SelfCollisionRewardConfig(WeightedRewardConfig):
     pass
 
 
@@ -257,6 +269,9 @@ class RewardConfig:
     energy: EnergyRewardConfig = EnergyRewardConfig(weight=-2.0e-5)
     torque: TorqueRewardConfig = TorqueRewardConfig(enabled=False, weight=-1.0e-5)
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-5.0)
+    invalid_action: InvalidActionRewardConfig = InvalidActionRewardConfig(
+        enabled=False, weight=-1.0
+    )
     hold_joint_deviation: HoldJointDeviationRewardConfig = (
         HoldJointDeviationRewardConfig(weight=-0.1)
     )
@@ -276,6 +291,7 @@ class RewardConfig:
     undesired_contact: UndesiredContactRewardConfig = UndesiredContactRewardConfig(
         weight=-1.0
     )
+    self_collision: SelfCollisionRewardConfig = SelfCollisionRewardConfig(weight=-1.0)
     termination: TerminationRewardConfig = TerminationRewardConfig(weight=-1.0)
 
     def __post_init__(self) -> None:
@@ -309,9 +325,10 @@ class RewardConfig:
             self.flat_orientation,
             self.base_height,
         ]
-        return tuple(
-            sorted({term.link for term in terms if term.enabled and term.link})
-        )
+        links = {term.link for term in terms if term.enabled and term.link}
+        if self.track_lin_vel_xy.enabled and self.track_lin_vel_xy.frame_link:
+            links.add(self.track_lin_vel_xy.frame_link)
+        return tuple(sorted(links))
 
 
 def compute_velocity_reward(
@@ -345,6 +362,12 @@ def compute_velocity_reward(
     undesired_contact: jax.Array,
     control_timestep: float,
     done: jax.Array,
+    foot_angular_speed: jax.Array | None = None,
+    self_collision: jax.Array | None = None,
+    action_target_default: jax.Array | None = None,
+    action_target_scale: jax.Array | None = None,
+    action_target_low: jax.Array | None = None,
+    action_target_high: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
     lin_vel_error = jnp.sum((lin_vel_xy - command[:2]) ** 2)
@@ -352,7 +375,7 @@ def compute_velocity_reward(
 
     track_lin_vel_xy = jnp.exp(-lin_vel_error / config.track_lin_vel_xy.sigma)
     track_ang_vel_z = jnp.exp(-yaw_vel_error / config.track_ang_vel_z.sigma)
-    alive = jnp.asarray(1.0, dtype=jnp.float32)
+    alive = 1.0 - done.astype(jnp.float32)
 
     lin_vel_z = lin_vel_z**2
     ang_vel_xy = jnp.sum(ang_vel_xy**2)
@@ -362,11 +385,32 @@ def compute_velocity_reward(
     joint_acc_l2 = jnp.sum(((joint_vel - last_joint_vel) / control_timestep) ** 2)
     action_rate_l2 = jnp.sum((action - last_action) ** 2)
     energy = jnp.sum(jnp.abs(actuator_force * joint_vel))
-    torque_l2 = jnp.mean(actuator_force**2)
+    torque_l2 = jnp.sum(actuator_force**2)
 
     lower_violation = jnp.maximum(joint_limit_low - joint_pos, 0.0)
     upper_violation = jnp.maximum(joint_pos - joint_limit_high, 0.0)
     joint_limit = jnp.sum(lower_violation + upper_violation)
+    if config.invalid_action.enabled:
+        if (
+            action_target_default is None
+            or action_target_scale is None
+            or action_target_low is None
+            or action_target_high is None
+        ):
+            raise ValueError(
+                "invalid_action reward requires action target default, scale, "
+                "low, and high arrays"
+            )
+        action_target = action_target_default + action_target_scale * action
+        action_low_violation = jnp.maximum(action_target_low - action_target, 0.0)
+        action_high_violation = jnp.maximum(action_target - action_target_high, 0.0)
+        action_target_violation = action_low_violation + action_high_violation
+        action_unit_violation = action_target_violation / jnp.maximum(
+            jnp.abs(action_target_scale), 1.0e-6
+        )
+        invalid_action = jnp.sum(action_unit_violation**2)
+    else:
+        invalid_action = jnp.asarray(0.0, dtype=jnp.float32)
     hold_joint_deviation = (
         jnp.sum(jnp.abs(joint_pos_rel[hold_joint_indices]))
         if hold_joint_indices.size
@@ -379,14 +423,30 @@ def compute_velocity_reward(
     )
     foot_contact_rate = safe_mean(foot_contact)
     foot_lateral_speed = jnp.sqrt(jnp.maximum(foot_lateral_speed_sq, 0.0))
-    foot_slip = jnp.sum(foot_contact * foot_lateral_speed)
+    if foot_angular_speed is None:
+        foot_angular_speed = jnp.zeros_like(foot_lateral_speed)
+    foot_slip_speed = (
+        foot_lateral_speed
+        + config.foot_slip.angular_speed_scale * foot_angular_speed
+    )
+    foot_slip = jnp.sum(foot_contact * foot_slip_speed)
     foot_clearance_error = (foot_height - config.foot_clearance.target) ** 2
     moving_foot_gate = jnp.tanh(config.foot_clearance.tanh_mult * foot_lateral_speed)
-    foot_clearance = jnp.exp(
-        -jnp.sum(foot_clearance_error * moving_foot_gate) / config.foot_clearance.std
+    swing_gate = (1.0 - foot_contact) * moving_foot_gate
+    clearance_score = jnp.exp(-foot_clearance_error / config.foot_clearance.std)
+    active_swing = jnp.sum(swing_gate)
+    foot_clearance = jnp.where(
+        active_swing > 0.0,
+        jnp.sum(swing_gate * clearance_score) / jnp.maximum(active_swing, 1.0e-6),
+        jnp.asarray(0.0, dtype=jnp.float32),
     )
     foot_distance = jnp.asarray(foot_distance, dtype=jnp.float32)
     command_speed = jnp.linalg.norm(command)
+    foot_clearance = jnp.where(
+        command_speed > config.foot_clearance.command_speed_threshold,
+        foot_clearance,
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
     gait_match = foot_contact.astype(bool) == gait_contact_mask.astype(bool)
     gait_contact = jnp.sum(gait_match.astype(jnp.float32))
     gait_contact = jnp.where(
@@ -409,6 +469,11 @@ def compute_velocity_reward(
         jnp.asarray(0.0, dtype=jnp.float32),
     )
     termination = done.astype(jnp.float32)
+    self_collision = (
+        jnp.asarray(0.0, dtype=jnp.float32)
+        if self_collision is None
+        else jnp.asarray(self_collision, dtype=jnp.float32)
+    )
 
     raw_terms = {
         "reward/track_lin_vel_xy": weighted_term(
@@ -455,6 +520,11 @@ def compute_velocity_reward(
         ),
         "reward/joint_limit": weighted_term(
             config.joint_limit.enabled, config.joint_limit.weight, joint_limit
+        ),
+        "reward/invalid_action": weighted_term(
+            config.invalid_action.enabled,
+            config.invalid_action.weight,
+            invalid_action,
         ),
         "reward/hold_joint_deviation": (
             weighted_term(
@@ -505,6 +575,11 @@ def compute_velocity_reward(
                 undesired_contact,
             )
         ),
+        "reward/self_collision": weighted_term(
+            config.self_collision.enabled,
+            config.self_collision.weight,
+            self_collision,
+        ),
         "reward/termination": weighted_term(
             config.termination.enabled,
             config.termination.weight,
@@ -553,6 +628,14 @@ def validate_reward_config(config: RewardConfig) -> None:
     for name, term in reward_terms(config).items():
         if not math.isfinite(term.weight):
             raise ValueError(f"{name}.weight must be finite, got {term.weight}")
+    if config.foot_slip.enabled and (
+        not math.isfinite(config.foot_slip.angular_speed_scale)
+        or config.foot_slip.angular_speed_scale < 0
+    ):
+        raise ValueError(
+            "foot_slip.angular_speed_scale must be nonnegative and finite, got "
+            f"{config.foot_slip.angular_speed_scale}"
+        )
     if config.foot_clearance.enabled:
         if (
             not math.isfinite(config.foot_clearance.target)
@@ -577,6 +660,14 @@ def validate_reward_config(config: RewardConfig) -> None:
             raise ValueError(
                 "foot_clearance.tanh_mult must be nonnegative and finite, got "
                 f"{config.foot_clearance.tanh_mult}"
+            )
+        if (
+            not math.isfinite(config.foot_clearance.command_speed_threshold)
+            or config.foot_clearance.command_speed_threshold < 0
+        ):
+            raise ValueError(
+                "foot_clearance.command_speed_threshold must be nonnegative and "
+                f"finite, got {config.foot_clearance.command_speed_threshold}"
             )
     if config.gait_contact.enabled and (
         not math.isfinite(config.gait_contact.command_speed_threshold)
@@ -629,6 +720,7 @@ def reward_terms(config: RewardConfig):
         "energy": config.energy,
         "torque": config.torque,
         "joint_limit": config.joint_limit,
+        "invalid_action": config.invalid_action,
         "hold_joint_deviation": config.hold_joint_deviation,
         "policy_joint_deviation": config.policy_joint_deviation,
         "foot_contact": config.foot_contact,
@@ -638,6 +730,7 @@ def reward_terms(config: RewardConfig):
         "gait_contact": config.gait_contact,
         "feet_air_time": config.feet_air_time,
         "undesired_contact": config.undesired_contact,
+        "self_collision": config.self_collision,
         "termination": config.termination,
     }
 

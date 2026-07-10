@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import equinox as eqx
 import pytest
@@ -24,6 +25,7 @@ from bello_mujoco.train.ppo import (
     Transition,
     action_diagnostics,
     adapt_learning_rate,
+    collect_rollout,
     compute_gae,
     denormalize_value,
     done_reason_means,
@@ -32,14 +34,49 @@ from bello_mujoco.train.ppo import (
     init_train_state,
     learning_rate_for_update,
     make_train,
+    normalize_advantages,
     normalize_value,
     ppo_loss,
     safe_returned_mean,
     safe_returned_max,
+    update_command_curriculum,
     update_command_curriculum_ranges,
     update_value_norm_state,
     update_ppo,
 )
+
+
+class DummyRolloutState(NamedTuple):
+    obs: jax.Array
+
+
+class ConstantLargeActionPolicy:
+    log_std = jnp.asarray([0.0], dtype=jnp.float32)
+
+    def __call__(self, obs, critic_obs=None):
+        del obs, critic_obs
+        return (
+            jnp.asarray([100.0], dtype=jnp.float32),
+            self.log_std,
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+
+
+class ClippedActionEnv:
+    observation_size = 1
+    action_size = 1
+    action_clip = 1.0
+
+    def step_batch(self, state, action, *, rng):
+        del rng
+        next_obs = state.obs
+        reward = jnp.squeeze(action, axis=-1)
+        done = jnp.zeros(action.shape[0], dtype=bool)
+        info = {
+            "returned_episode": done,
+            "bootstrap_observation": next_obs,
+        }
+        return DummyRolloutState(next_obs), next_obs, reward, done, info
 
 
 def small_config() -> PPOConfig:
@@ -68,6 +105,7 @@ def dummy_transitions(config: PPOConfig, obs_size: int, action_size: int) -> Tra
         reward=jnp.ones(shape, dtype=jnp.float32),
         log_prob=jnp.zeros(shape, dtype=jnp.float32),
         obs=obs,
+        critic_obs=obs,
         info={},
     )
 
@@ -109,6 +147,28 @@ def test_actor_critic_supports_nonuniform_hidden_dims_and_elu() -> None:
     assert value.shape == (config.num_envs,)
 
 
+def test_actor_critic_supports_privileged_critic_observation_size() -> None:
+    config = small_config()
+    action_size = 3
+    state, _ = init_train_state(
+        jax.random.PRNGKey(0),
+        4,
+        action_size,
+        config,
+        critic_obs_size=7,
+    )
+    actor_obs = jnp.zeros((config.num_envs, 4), dtype=jnp.float32)
+    critic_obs = jnp.zeros((config.num_envs, 7), dtype=jnp.float32)
+
+    action, log_prob, value = sample_action(
+        state.policy, actor_obs, jax.random.PRNGKey(1), critic_obs=critic_obs
+    )
+
+    assert action.shape == (config.num_envs, action_size)
+    assert log_prob.shape == (config.num_envs,)
+    assert value.shape == (config.num_envs,)
+
+
 def test_sample_action_applies_configured_clip() -> None:
     config = small_config()
     state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
@@ -120,6 +180,37 @@ def test_sample_action_applies_configured_clip() -> None:
 
     assert jnp.all(action <= 0.01)
     assert jnp.all(action >= -0.01)
+
+
+def test_collect_rollout_stores_clipped_actions() -> None:
+    config = PPOConfig(
+        total_timesteps=4,
+        num_envs=2,
+        num_steps=2,
+        policy=ActorCriticConfig(obs_stack_size=1),
+    )
+    env = ClippedActionEnv()
+    obs = jnp.zeros((config.num_envs, env.observation_size), dtype=jnp.float32)
+    obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
+
+    _, transitions = collect_rollout(
+        env,
+        ConstantLargeActionPolicy(),
+        DummyRolloutState(obs),
+        obs_stack,
+        obs_stack,
+        jnp.zeros((3, 2), dtype=jnp.float32),
+        jax.random.PRNGKey(0),
+        config,
+        init_value_norm_state(),
+    )
+
+    assert jnp.all(transitions.action <= env.action_clip)
+    assert jnp.all(transitions.action >= -env.action_clip)
+    assert float(jnp.max(jnp.abs(transitions.action_mean))) == pytest.approx(100.0)
+    assert float(jnp.max(jnp.abs(transitions.reward))) == pytest.approx(
+        env.action_clip
+    )
 
 
 def test_observation_stack_repeats_shifts_and_resets_done_envs() -> None:
@@ -170,12 +261,28 @@ def test_command_curriculum_expands_linear_ranges_after_success_interval() -> No
     next_ranges = update_command_curriculum_ranges(
         ranges, info, jnp.asarray(41, dtype=jnp.int32), env, config
     )
+    _, metrics = update_command_curriculum(
+        ranges, info, jnp.asarray(41, dtype=jnp.int32), env, config
+    )
 
     assert next_ranges[0, 0] == pytest.approx(-0.2)
     assert next_ranges[0, 1] == pytest.approx(0.2)
     assert next_ranges[1, 0] == pytest.approx(-0.2)
     assert next_ranges[1, 1] == pytest.approx(0.2)
     assert jnp.all(next_ranges[2] == ranges[2])
+    assert metrics["command_curriculum/enabled"] == pytest.approx(1.0)
+    assert metrics["command_curriculum/returned_count"] == pytest.approx(1.0)
+    assert metrics["command_curriculum/normalized_track_lin_vel_xy"] == pytest.approx(
+        0.81 * env.reward_config.track_lin_vel_xy.weight
+    )
+    assert metrics["command_curriculum/reward_threshold"] == pytest.approx(
+        env.reward_config.track_lin_vel_xy.weight
+        * env.command_config.curriculum.success_threshold
+    )
+    assert metrics["command_curriculum/period_boundary"] == pytest.approx(1.0)
+    assert metrics["command_curriculum/success"] == pytest.approx(1.0)
+    assert metrics["command_curriculum/should_expand"] == pytest.approx(1.0)
+    assert metrics["command_curriculum/should_expand_yaw"] == pytest.approx(0.0)
 
 
 def test_command_curriculum_does_not_expand_without_completed_episode() -> None:
@@ -204,8 +311,15 @@ def test_command_curriculum_does_not_expand_without_completed_episode() -> None:
     next_ranges = update_command_curriculum_ranges(
         ranges, info, jnp.asarray(41, dtype=jnp.int32), env, config
     )
+    _, metrics = update_command_curriculum(
+        ranges, info, jnp.asarray(41, dtype=jnp.int32), env, config
+    )
 
     assert jnp.all(next_ranges == ranges)
+    assert metrics["command_curriculum/enabled"] == pytest.approx(1.0)
+    assert metrics["command_curriculum/returned_count"] == pytest.approx(0.0)
+    assert metrics["command_curriculum/success"] == pytest.approx(0.0)
+    assert metrics["command_curriculum/should_expand"] == pytest.approx(0.0)
 
 
 def test_gaussian_entropy_sums_only_action_axis() -> None:
@@ -238,6 +352,7 @@ def test_gae_and_loss_shapes() -> None:
             reward=transitions.reward.reshape((-1,)),
             log_prob=transitions.log_prob.reshape((-1,)),
             obs=transitions.obs.reshape((-1, obs_size)),
+            critic_obs=transitions.critic_obs.reshape((-1, obs_size)),
             info={},
         ),
         advantages.reshape((-1,)),
@@ -249,6 +364,16 @@ def test_gae_and_loss_shapes() -> None:
     assert metrics["actor_loss"].shape == ()
     assert advantages.shape == (config.num_steps, config.num_envs)
     assert targets.shape == (config.num_steps, config.num_envs)
+
+
+def test_advantage_normalization_is_rollout_global() -> None:
+    advantages = jnp.asarray([[1.0, 2.0], [3.0, 9.0]], dtype=jnp.float32)
+    normalized = normalize_advantages(advantages)
+
+    assert normalized.shape == advantages.shape
+    assert float(normalized.mean()) == pytest.approx(0.0, abs=1.0e-6)
+    assert float(normalized.std()) == pytest.approx(1.0)
+    assert not jnp.allclose(normalized[0], jnp.zeros(2, dtype=jnp.float32))
 
 
 def test_gae_bootstraps_timeout_without_continuing_across_reset() -> None:
@@ -269,6 +394,7 @@ def test_gae_bootstraps_timeout_without_continuing_across_reset() -> None:
         reward=jnp.zeros((2, 1), dtype=jnp.float32),
         log_prob=jnp.zeros((2, 1), dtype=jnp.float32),
         obs=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        critic_obs=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         info={},
     )
 
@@ -298,6 +424,7 @@ def test_gae_does_not_bootstrap_terminal_failure() -> None:
         reward=jnp.zeros((1, 1), dtype=jnp.float32),
         log_prob=jnp.zeros((1, 1), dtype=jnp.float32),
         obs=jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        critic_obs=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         info={},
     )
 
@@ -333,6 +460,42 @@ def test_update_ppo_runs_on_dummy_batch() -> None:
 
     assert int(next_state.update) == 1
     assert metrics["loss"].shape == ()
+
+
+def test_update_ppo_skips_nonfinite_minibatch_without_poisoning_policy() -> None:
+    config = small_config()
+    obs_size = 149
+    action_size = 35
+    train_state, optimizer = init_train_state(
+        jax.random.PRNGKey(0), obs_size, action_size, config
+    )
+    transitions = dummy_transitions(config, obs_size, action_size)
+    advantages = jnp.full(
+        (config.num_steps, config.num_envs), jnp.nan, dtype=jnp.float32
+    )
+    targets = jnp.zeros((config.num_steps, config.num_envs), dtype=jnp.float32)
+    initial_params, _ = eqx.partition(train_state.policy, eqx.is_array)
+
+    next_state, metrics = update_ppo(
+        train_state,
+        optimizer,
+        transitions,
+        advantages,
+        targets,
+        jax.random.PRNGKey(1),
+        config,
+    )
+    next_params, _ = eqx.partition(next_state.policy, eqx.is_array)
+
+    assert int(next_state.update) == 1
+    assert float(metrics["nonfinite_update"]) > 0.0
+    assert float(metrics["ppo_update_fraction"]) == 0.0
+    for before, after in zip(
+        jax.tree_util.tree_leaves(initial_params),
+        jax.tree_util.tree_leaves(next_params),
+        strict=True,
+    ):
+        assert jnp.allclose(before, after)
 
 
 def test_value_normalization_round_trips_and_updates_stats() -> None:
@@ -521,10 +684,12 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
         reward=jnp.ones((2, 2), dtype=jnp.float32),
         log_prob=jnp.zeros((2, 2), dtype=jnp.float32),
         obs=jnp.zeros((2, 2, 4), dtype=jnp.float32),
+        critic_obs=jnp.zeros((2, 2, 4), dtype=jnp.float32),
         info={},
     )
     env = SimpleNamespace(
         action_size=2,
+        action_clip=1.0,
         model=SimpleNamespace(
             policy_ctrl_indices=jnp.asarray([0, 1]),
             mj_model=SimpleNamespace(
@@ -547,10 +712,11 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
         float(jnp.sqrt(jnp.mean(action**2)))
     )
     assert float(metrics["action_abs_max"]) == pytest.approx(2.0)
+    assert float(metrics["env_action_abs_max"]) == pytest.approx(1.0)
     assert float(metrics["action_mean_abs_max"]) == pytest.approx(1.0)
     assert float(metrics["action_std_min"]) == pytest.approx(float(jnp.exp(-2.0)))
     assert float(metrics["action_std_max"]) == pytest.approx(float(jnp.exp(-1.0)))
-    assert float(metrics["ctrl_saturation_fraction"]) == pytest.approx(0.375)
+    assert float(metrics["ctrl_saturation_fraction"]) == pytest.approx(0.25)
     assert float(metrics["ctrl_margin_min"]) == pytest.approx(0.0)
 
 
@@ -566,6 +732,7 @@ def test_action_diagnostics_omits_control_stats_for_generic_envs() -> None:
         reward=jnp.ones((1, 2), dtype=jnp.float32),
         log_prob=jnp.zeros((1, 2), dtype=jnp.float32),
         obs=jnp.zeros((1, 2, 4), dtype=jnp.float32),
+        critic_obs=jnp.zeros((1, 2, 4), dtype=jnp.float32),
         info={},
     )
     env = SimpleNamespace(action_size=1)
@@ -631,6 +798,13 @@ def test_ppo_config_rejects_invalid_minibatch_count() -> None:
     config = PPOConfig(total_timesteps=8, num_envs=4, num_steps=2, num_minibatches=0)
 
     with pytest.raises(ValueError, match="num_minibatches must be positive"):
+        make_train(config, env=object())
+
+
+def test_ppo_config_rejects_invalid_target_kl() -> None:
+    config = PPOConfig(target_kl=0.0)
+
+    with pytest.raises(ValueError, match="target_kl must be null or positive"):
         make_train(config, env=object())
 
 

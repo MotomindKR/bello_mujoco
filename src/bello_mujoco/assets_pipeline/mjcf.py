@@ -14,6 +14,7 @@ from bello_mujoco.contracts import SIM_TIMESTEP
 
 CollisionMode = Literal["mesh", "foot-mesh", "box"]
 FOOT_MESH_NAMES = frozenset({"left_ankle_roll_link", "right_ankle_roll_link"})
+TRANSPARENT_COLLISION_RGBA = "0.8 0.8 0.8 0"
 
 
 def compile_urdf_to_mjcf(
@@ -39,6 +40,7 @@ def compile_urdf_to_mjcf(
     if include_visuals:
         inject_visual_geoms(root, urdf_path, mjcf_path.parent)
         ensure_visual_geoms(root)
+        ensure_collision_geoms_transparent(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
     ensure_position_actuators(root, actuator_config, actuated_joint_order)
     ensure_home_keyframe(root, actuator_config)
@@ -87,10 +89,25 @@ def ensure_visual_geoms(root: ET.Element) -> None:
         geom.set("group", "1")
 
 
+def ensure_collision_geoms_transparent(root: ET.Element) -> None:
+    for geom in root.findall(".//geom"):
+        if is_visual_geom(geom) or is_noncolliding_visual_geom(geom):
+            continue
+        geom.set("rgba", TRANSPARENT_COLLISION_RGBA)
+
+
 def is_visual_geom(geom: ET.Element) -> bool:
     name = geom.get("name", "")
     mesh_name = geom.get("mesh", "")
     return name.endswith("_visual") or mesh_name.endswith("_visual")
+
+
+def is_noncolliding_visual_geom(geom: ET.Element) -> bool:
+    return (
+        geom.get("contype") == "0"
+        and geom.get("conaffinity") == "0"
+        and geom.get("group") == "1"
+    )
 
 
 def inject_visual_geoms(root: ET.Element, urdf_path: Path, mjcf_dir: Path) -> None:
@@ -359,18 +376,24 @@ def ensure_position_actuators(
             else joint_range(root, joint_name, config)
         )
         suffix = "pos" if joint_config.mode == "policy" else "hold"
+        attributes = {
+            "name": f"{joint_name.replace(' ', '_')}_{suffix}",
+            "joint": joint_name,
+            "kp": f"{kp:g}",
+            "kv": f"{kv:g}",
+            "ctrlrange": f"{lo:g} {hi:g}",
+            "ctrllimited": "false",
+            "user": f"{joint_config.default_pos:g}",
+        }
+        force_range = actuator_force_range(root, joint_name, joint_config.effort_limit)
+        if force_range is not None:
+            force_low, force_high = force_range
+            attributes["forcerange"] = f"{force_low:g} {force_high:g}"
+            attributes["forcelimited"] = "true"
         ET.SubElement(
             actuator,
             "position",
-            {
-                "name": f"{joint_name.replace(' ', '_')}_{suffix}",
-                "joint": joint_name,
-                "kp": f"{kp:g}",
-                "kv": f"{kv:g}",
-                "ctrlrange": f"{lo:g} {hi:g}",
-                "ctrllimited": "true",
-                "user": f"{joint_config.default_pos:g}",
-            },
+            attributes,
         )
 
 
@@ -424,4 +447,22 @@ def joint_range(
     lo, hi = float(lo_str), float(hi_str)
     if lo == hi:
         return lo - eps, hi + eps
+    return lo, hi
+
+
+def actuator_force_range(
+    root: ET.Element, joint_name: str, effort_limit: float | None
+) -> tuple[float, float] | None:
+    if effort_limit is not None:
+        return -effort_limit, effort_limit
+    joint = root.find(f".//joint[@name='{joint_name}']")
+    if joint is None:
+        raise ValueError(f"joint not found in MJCF: {joint_name}")
+    range_attr = joint.get("actuatorfrcrange")
+    if range_attr is None:
+        return None
+    lo_str, hi_str = range_attr.split()
+    lo, hi = float(lo_str), float(hi_str)
+    if not math.isfinite(lo) or not math.isfinite(hi) or lo >= hi:
+        return None
     return lo, hi

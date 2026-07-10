@@ -30,6 +30,7 @@ class JointActuatorConfig:
     action_scale: float | None = None
     soft_limit: tuple[float, float] | None = None
     gains: tuple[float, float] = (40.0, 2.0)
+    effort_limit: float | None = None
 
 
 def default_joint_configs() -> dict[str, JointActuatorConfig]:
@@ -40,6 +41,7 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             action_scale=0.35,
             soft_limit=(-1.41372, 1.41372),
             gains=(200.0, 5.0),
+            effort_limit=120.0,
         ),
         "right_hip_pitch_joint": JointActuatorConfig(
             mode="policy",
@@ -47,6 +49,7 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             action_scale=0.35,
             soft_limit=(-1.41372, 1.41372),
             gains=(200.0, 5.0),
+            effort_limit=120.0,
         ),
         "left_hip_roll_joint": JointActuatorConfig(
             mode="policy",
@@ -54,6 +57,7 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
+            effort_limit=60.0,
         ),
         "right_hip_roll_joint": JointActuatorConfig(
             mode="policy",
@@ -61,6 +65,7 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
+            effort_limit=60.0,
         ),
         "left_hip_yaw_joint": JointActuatorConfig(
             mode="policy",
@@ -68,6 +73,7 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
+            effort_limit=60.0,
         ),
         "right_hip_yaw_joint": JointActuatorConfig(
             mode="policy",
@@ -75,72 +81,121 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
+            effort_limit=60.0,
         ),
         "left_knee_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.45,
-            action_scale=0.45,
-            soft_limit=(0.10472, 1.98968),
+            action_scale=0.06,
+            soft_limit=(0.0, 1.98968),
             gains=(220.0, 6.0),
+            effort_limit=120.0,
         ),
         "right_knee_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.45,
-            action_scale=0.45,
-            soft_limit=(0.10472, 1.98968),
+            action_scale=0.06,
+            soft_limit=(0.0, 1.98968),
             gains=(220.0, 6.0),
+            effort_limit=120.0,
         ),
         "left_ankle_pitch_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.30,
-            action_scale=0.20,
+            action_scale=0.12,
             soft_limit=(-0.44506, 0.96866),
             gains=(22.0, 1.0),
+            effort_limit=36.0,
         ),
         "right_ankle_pitch_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.30,
-            action_scale=0.20,
+            action_scale=0.12,
             soft_limit=(-0.44506, 0.96866),
             gains=(22.0, 1.0),
+            effort_limit=36.0,
         ),
         "left_ankle_roll_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.0,
-            action_scale=0.05,
+            action_scale=0.0125,
             soft_limit=(-0.07857, 0.07857),
             gains=(22.0, 1.0),
+            effort_limit=36.0,
         ),
         "right_ankle_roll_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.0,
-            action_scale=0.05,
+            action_scale=0.0125,
             soft_limit=(-0.07857, 0.07857),
             gains=(22.0, 1.0),
+            effort_limit=36.0,
         ),
-        "waist_yaw_joint": JointActuatorConfig(gains=(180.0, 12.0)),
-        "waist_roll_joint": JointActuatorConfig(gains=(240.0, 20.0)),
-        "waist_pitch_joint": JointActuatorConfig(gains=(240.0, 20.0)),
-        "neck_yaw_joint": JointActuatorConfig(gains=(5.5, 0.5)),
-        "head_pitch_joint": JointActuatorConfig(gains=(5.5, 0.5)),
-        "right_shoulder_pitch_joint": JointActuatorConfig(gains=(70.0, 2.0)),
-        "right_shoulder_roll_joint": JointActuatorConfig(gains=(70.0, 2.0)),
-        "right_shoulder_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
-        "right_elbow_pitch_joint": JointActuatorConfig(gains=(40.0, 2.0)),
-        "right_elbow_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
-        "right_wrist_pitch_joint": JointActuatorConfig(gains=(10.0, 1.0)),
-        "right_wrist_yaw_joint": JointActuatorConfig(gains=(10.0, 1.0)),
-        "left_shoulder_pitch_joint": JointActuatorConfig(gains=(70.0, 2.0)),
-        "left_shoulder_roll_joint": JointActuatorConfig(gains=(70.0, 2.0)),
-        "left_shoulder_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
-        "left_elbow_pitch_joint": JointActuatorConfig(gains=(40.0, 2.0)),
-        "left_elbow_yaw_joint": JointActuatorConfig(gains=(20.0, 1.0)),
-        "left_wrist_pitch_joint": JointActuatorConfig(gains=(10.0, 1.0)),
-        "left_wrist_yaw_joint": JointActuatorConfig(gains=(10.0, 1.0)),
-        "right_finger_right_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
-        "right_finger_left_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
-        "left_finger_right_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
-        "left_finger_left_slide_joint": JointActuatorConfig(gains=(100.0, 5.0)),
+        "waist_yaw_joint": JointActuatorConfig(
+            action_scale=0.07, gains=(180.0, 12.0), effort_limit=120.0
+        ),
+        "waist_roll_joint": JointActuatorConfig(
+            gains=(240.0, 20.0), effort_limit=120.0
+        ),
+        "waist_pitch_joint": JointActuatorConfig(
+            gains=(240.0, 20.0), effort_limit=120.0
+        ),
+        "neck_yaw_joint": JointActuatorConfig(gains=(5.5, 0.5), effort_limit=5.5),
+        "head_pitch_joint": JointActuatorConfig(gains=(5.5, 0.5), effort_limit=5.5),
+        "right_shoulder_pitch_joint": JointActuatorConfig(
+            gains=(70.0, 2.0), effort_limit=120.0
+        ),
+        "right_shoulder_roll_joint": JointActuatorConfig(
+            gains=(70.0, 2.0), effort_limit=60.0
+        ),
+        "right_shoulder_yaw_joint": JointActuatorConfig(
+            gains=(20.0, 1.0), effort_limit=36.0
+        ),
+        "right_elbow_pitch_joint": JointActuatorConfig(
+            gains=(40.0, 2.0), effort_limit=36.0
+        ),
+        "right_elbow_yaw_joint": JointActuatorConfig(
+            gains=(20.0, 1.0), effort_limit=14.0
+        ),
+        "right_wrist_pitch_joint": JointActuatorConfig(
+            gains=(10.0, 1.0), effort_limit=14.0
+        ),
+        "right_wrist_yaw_joint": JointActuatorConfig(
+            gains=(10.0, 1.0), effort_limit=5.5
+        ),
+        "left_shoulder_pitch_joint": JointActuatorConfig(
+            gains=(70.0, 2.0), effort_limit=120.0
+        ),
+        "left_shoulder_roll_joint": JointActuatorConfig(
+            gains=(70.0, 2.0), effort_limit=60.0
+        ),
+        "left_shoulder_yaw_joint": JointActuatorConfig(
+            gains=(20.0, 1.0), effort_limit=36.0
+        ),
+        "left_elbow_pitch_joint": JointActuatorConfig(
+            gains=(40.0, 2.0), effort_limit=36.0
+        ),
+        "left_elbow_yaw_joint": JointActuatorConfig(
+            gains=(20.0, 1.0), effort_limit=14.0
+        ),
+        "left_wrist_pitch_joint": JointActuatorConfig(
+            gains=(10.0, 1.0), effort_limit=14.0
+        ),
+        "left_wrist_yaw_joint": JointActuatorConfig(
+            gains=(10.0, 1.0), effort_limit=5.5
+        ),
+        "right_finger_right_slide_joint": JointActuatorConfig(
+            gains=(100.0, 5.0), effort_limit=100.0
+        ),
+        "right_finger_left_slide_joint": JointActuatorConfig(
+            gains=(100.0, 5.0), effort_limit=100.0
+        ),
+        "left_finger_right_slide_joint": JointActuatorConfig(
+            gains=(100.0, 5.0), effort_limit=100.0
+        ),
+        "left_finger_left_slide_joint": JointActuatorConfig(
+            gains=(100.0, 5.0), effort_limit=100.0
+        ),
     }
 
 
@@ -160,6 +215,11 @@ class ActuatorConfig:
                 "default_action_scale_ratio must be positive, got "
                 f"{self.default_action_scale_ratio}"
             )
+        default_effort_limits = {
+            name: config.effort_limit
+            for name, config in default_joint_configs().items()
+            if config.effort_limit is not None
+        }
         for name, config in self.joints.items():
             if config.mode not in VALID_ACTUATOR_MODES:
                 raise ValueError(
@@ -196,6 +256,19 @@ class ActuatorConfig:
                 raise ValueError(
                     f"actuator config for joint {name!r} has nonfinite soft_limit "
                     f"{config.soft_limit}"
+                )
+            if config.effort_limit is not None and (
+                not math.isfinite(config.effort_limit) or config.effort_limit <= 0
+            ):
+                raise ValueError(
+                    f"actuator config for joint {name!r} has invalid effort_limit "
+                    f"{config.effort_limit}; expected a positive finite value"
+                )
+            if name in default_effort_limits and config.effort_limit is None:
+                raise ValueError(
+                    f"actuator config for known Bello joint {name!r} must provide "
+                    "effort_limit; joint overrides replace default actuator "
+                    "settings"
                 )
         object.__setattr__(self, "joints", FrozenDict(self.joints))
 

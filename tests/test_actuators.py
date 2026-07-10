@@ -12,3 +12,8 @@ def test_actuator_config_rejects_invalid_mode() -> None:
                 )
             }
         )
+
+
+def test_actuator_config_requires_effort_limit_for_known_bello_joints() -> None:
+    with pytest.raises(ValueError, match="must provide effort_limit"):
+        ActuatorConfig(joints={"left_hip_pitch_joint": JointActuatorConfig()})

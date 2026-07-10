@@ -49,8 +49,12 @@ eval_config:
   steps: null
   realtime: true
   stop_on_done: false
+  stochastic_actions: false
+  action_seed: 0
   camera_config: CameraConfig
   reward_overlay: RewardOverlayConfig
+  action_overlay: ActionOverlayConfig
+  joystick: JoystickConfig
   runtime: EvalRuntimeConfig
 ```
 
@@ -66,6 +70,17 @@ after that many control steps.
 `stop_on_done=false` keeps the viewer open after terminal states. Set it true
 when debugging done conditions and you want evaluation to stop immediately on
 the first done.
+
+`stochastic_actions=false` evaluates the actor mean. Set it true to sample from
+the PPO Gaussian policy and clip the sampled action to the env action range.
+`action_seed` makes sampled eval actions reproducible.
+
+```bash
+uv run bello-eval-policy \
+  checkpoint_path=checkpoints/ppo_seed_0 \
+  eval_config.stochastic_actions=true \
+  eval_config.action_seed=123
+```
 
 ### CameraConfig
 
@@ -117,6 +132,63 @@ uv run bello-eval-policy \
   eval_config.reward_overlay.enabled=false
 ```
 
+### ActionOverlayConfig
+
+```yaml
+action_overlay:
+  enabled: true
+  max_actions: 13
+  bar_width: 12
+```
+
+The live viewer action overlay shows policy-action diagnostics as text bar
+graphs. Each action row shows `m` for the raw actor mean and `a` for the clipped
+action applied to the environment. Bars are scaled to the env action clip.
+
+Summary rows:
+
+```text
+action_mean_abs_max
+action_abs_max
+ctrl_saturation
+```
+
+`ctrl_saturation` is the fraction of policy-controlled actuator targets at or
+beyond their MuJoCo control-range limits. Set `max_actions` lower if the overlay
+is too tall.
+
+### JoystickConfig
+
+```yaml
+joystick:
+  enabled: true
+  lin_vel_x_step: 0.05
+  lin_vel_y_step: 0.05
+  yaw_vel_step: 0.05
+  lin_vel_x_limit: [-1.0, 1.0]
+  lin_vel_y_limit: [-1.0, 1.0]
+  yaw_vel_limit: [-1.0, 1.0]
+```
+
+The live viewer includes a keyboard joystick for command-conditioned policies.
+The command overlay shows the current `cmd_x`, `cmd_y`, and `cmd_yaw`.
+
+Controls:
+
+- `W` / `S`, or arrow up / down: increase/decrease `lin_vel_y`
+- `A` / `D`, or arrow left / right: decrease/increase `lin_vel_x`
+- `Q` / `E`: increase/decrease yaw velocity
+- `Space` or `0`: reset command to zero
+
+For Bello locomotion, forward walking commands usually use `lin_vel_y`.
+Disable keyboard command control with:
+
+```bash
+uv run bello-eval-policy \
+  checkpoint_path=checkpoints/ppo_seed_0 \
+  eval_config.joystick.enabled=false
+```
+
 ### EvalRuntimeConfig
 
 ```yaml
@@ -141,8 +213,14 @@ done config
 env config
 warp config
 obs_size
+critic_obs_size
 action_size
 ```
+
+Live eval does not allocate the MJX/Warp model, and the CLI defaults
+`JAX_PLATFORMS=cpu` for policy inference unless the environment already sets a
+different JAX platform. `warp config` is retained here only because it is part
+of checkpoint metadata and shared runtime config.
 
 `source=override` merges nested runtime configs from the eval CLI onto the
 checkpoint metadata. Fields that still equal the repo defaults keep their
@@ -161,33 +239,46 @@ uv run bello-eval-policy \
 ```
 
 Override mode must preserve checkpoint policy compatibility. If the rebuilt env
-changes policy observation size or `action_size`, evaluation fails before
-opening the viewer. Policy observation size is
-`env.observation_size * metadata.ppo.policy.obs_stack_size`. Because overrides
-are detected by comparing against repo defaults, use a new matching checkpoint
-when you need to change a runtime field back to its default value from a
-non-default checkpoint value.
+changes actor observation size, critic observation size, or `action_size`,
+evaluation fails before opening the viewer. Actor observation size is
+`env.observation_size * metadata.ppo.policy.obs_stack_size`; critic observation
+size uses `env_config.critic_observation` when configured and otherwise matches
+the actor size. Because overrides are detected by comparing against repo
+defaults, use a new matching checkpoint when you need to change a runtime field
+back to its default value from a non-default checkpoint value.
 
 ## Runtime Behavior
 
+Interactive evaluation validates checkpoint compatibility against the simulation
+MJCF, then launches a separate viewer environment from the viewer MJCF. Both
+models are loaded without MJX because live eval is an interactive CPU MuJoCo
+rollout. The viewer env has the same policy-facing joints and actuators, plus
+visual meshes and transparent collision geoms for display.
+
 Each viewer loop iteration:
 
-1. Syncs the current MJX state into a MuJoCo `MjData`.
-2. Updates the configured viewer camera.
-3. Updates the reward overlay text.
-4. Calls `viewer.sync()`.
-5. Computes the deterministic policy mean action.
-6. Steps the single environment once.
-7. Optionally sleeps to match real time.
+1. Reads the current CPU MuJoCo `MjData`.
+2. Computes the deterministic policy mean action and clipped env action.
+3. Updates the configured viewer camera.
+4. Draws red foot overlays when that foot has raw terrain contact.
+5. Applies any keyboard joystick command updates.
+6. Updates the reward/action overlay text.
+7. Calls `viewer.sync()`.
+8. Steps the single CPU MuJoCo environment once with `mujoco.mj_step`.
+9. Optionally sleeps to match real time.
 
-The policy uses the Gaussian mean action for deterministic inspection rather
-than sampling stochastic actions.
+By default the policy uses the Gaussian mean action for deterministic
+inspection. With `eval_config.stochastic_actions=true`, the viewer samples from
+the actor Gaussian each control step before action clipping.
+
+Rendered rollout videos use the same red foot-contact overlays before each
+frame is written.
 
 For stacked-observation policies, the viewer uses the checkpoint policy stack
-size. With `stop_on_done=false`, evaluation continues after done and keeps
-shifting the observation stack with subsequent observations; it does not replace
-history with repeated terminal observations. With `stop_on_done=true`, the
-viewer exits after the first done.
+size. When an episode ends, evaluation resets the env and rebuilds the stack
+from the reset observation. With `stop_on_done=false`, the viewer keeps running
+into the next episode; with `stop_on_done=true`, the viewer exits after the
+first done.
 
 ## Checkpoint Compatibility
 
@@ -197,6 +288,7 @@ The policy shape is recreated from:
 ```text
 metadata.ppo
 metadata.obs_size
+metadata.critic_obs_size
 metadata.action_size
 ```
 
@@ -204,6 +296,7 @@ After the eval runtime is rebuilt, it validates:
 
 ```text
 env.observation_size * metadata.ppo.policy.obs_stack_size == metadata.obs_size
+critic observation stack size == metadata.critic_obs_size, when present
 env.action_size == metadata.action_size
 ```
 

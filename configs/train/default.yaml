@@ -12,6 +12,7 @@ config:
   anneal_lr: false
   schedule: adaptive
   desired_kl: 0.01
+  target_kl: null
   min_learning_rate: 0.00001
   max_learning_rate: 0.01
   adaptive_lr_factor: 1.5
@@ -48,17 +49,28 @@ env_config:
   root_link: bello_root
   spawn:
     clearance: 0.01
+    root_xy_range: [0.0, 0.0]
+    root_yaw_range: [0.0, 0.0]
+    joint_pos_noise: [0.0, 0.0]
+    joint_vel_range: [0.0, 0.0]
+    stagger_initial_step_count: false
   terrain:
     mode: plane
     seed: 0
   gait:
     cycle_time: 0.80
+    command_speed_frequency_gain: 0.55
+    min_frequency: 1.20
+    max_frequency: 2.20
     duty_factor: 0.55
     phase_offsets: [0.0, 0.5]
     standing_command_threshold: 0.05
   contact:
     foot_contact_on_seconds: 0.0
     foot_contact_off_seconds: 0.0
+    foot_contact_force_threshold: 1.0
+    undesired_contact_force_threshold: 1.0
+    self_collision_force_threshold: 1.0
   random_push:
     enabled: false
     interval_seconds: 5.0
@@ -103,7 +115,7 @@ command_config:
   lin_vel_x: [-0.1, 0.1]
   lin_vel_y: [-0.1, 0.1]
   ang_vel_yaw: [-0.1, 0.1]
-  standing_probability: 0.02
+  standing_probability: 0.10
   resample_seconds: 10.0
   curriculum:
     enabled: false
@@ -151,6 +163,8 @@ video_config:
   height: 480
   fps: 50
   stop_on_done: true
+  stochastic_actions: false
+  action_seed: 0
   log_wandb: true
   wandb_name: train/rollout
   camera_config:

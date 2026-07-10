@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import jax
@@ -7,9 +8,11 @@ import bello_mujoco.checkpoint as checkpoint
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
     CheckpointMetadata,
+    ValueNormMetadata,
     load_checkpoint_metadata,
     restore_training_checkpoint,
     save_training_checkpoint,
+    value_norm_metadata,
 )
 from bello_mujoco.policy import ActorCriticConfig, apply_policy
 from bello_mujoco.envs.locomotion import (
@@ -20,7 +23,7 @@ from bello_mujoco.envs.locomotion import (
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import TerrainConfig
-from bello_mujoco.train.ppo import PPOConfig, init_train_state
+from bello_mujoco.train.ppo import PPOConfig, ValueNormState, init_train_state
 
 
 def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> None:
@@ -47,6 +50,7 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
         warp=WarpConfig(contact_budget_per_env=12),
         obs_size=4,
         action_size=2,
+        value_norm=ValueNormMetadata(mean=1.0, var=4.0, count=8.0),
     )
     obs = jnp.asarray([0.1, -0.2, 0.3, -0.4], dtype=jnp.float32)
     expected_mean, _, expected_value = apply_policy(train_state.policy, obs)
@@ -63,6 +67,7 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
     assert restored_metadata.env.terrain.seed == 3
     assert restored_metadata.command.lin_vel_x == (-0.2, 0.3)
     assert disk_metadata.asset.output_root == tmp_path / "assets"
+    assert disk_metadata.value_norm == ValueNormMetadata(mean=1.0, var=4.0, count=8.0)
 
 
 def test_training_checkpoint_saves_relative_path_as_absolute(
@@ -106,3 +111,73 @@ def test_training_checkpoint_saves_relative_path_as_absolute(
     assert saved["path"].is_absolute()
     assert saved["path"] == tmp_path / "relative_ckpt" / checkpoint.STATE_DIR
     assert saved["force"] is True
+
+
+def test_training_checkpoint_restore_uses_local_restore_args(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = PPOConfig(
+        seed=5,
+        policy=ActorCriticConfig(hidden_size=8, hidden_depth=1),
+        total_timesteps=8,
+        num_envs=2,
+        num_steps=2,
+        num_minibatches=1,
+    )
+    metadata = CheckpointMetadata(
+        ppo=config,
+        asset=AssetPrepConfig(),
+        reward=RewardConfig(),
+        command=CommandConfig(),
+        done=DoneConfig(),
+        env=BelloEnvConfig(),
+        warp=WarpConfig(),
+        obs_size=4,
+        action_size=2,
+    )
+    ckpt_path = tmp_path / "ckpt"
+    ckpt_path.mkdir()
+    (ckpt_path / checkpoint.METADATA_FILE).write_text(
+        json.dumps(checkpoint.to_builtin(metadata), indent=2, sort_keys=True)
+    )
+    restore_args_sentinel = object()
+    calls = {}
+
+    def fake_construct_restore_args(item):
+        calls["restore_args_item"] = item
+        return restore_args_sentinel
+
+    class FakeCheckpointer:
+        def restore(self, path, *, item, restore_args):
+            calls["path"] = path
+            calls["item"] = item
+            calls["restore_args"] = restore_args
+            return item
+
+    monkeypatch.setattr(
+        checkpoint.ocp.checkpoint_utils,
+        "construct_restore_args",
+        fake_construct_restore_args,
+    )
+    monkeypatch.setattr(
+        checkpoint.ocp, "PyTreeCheckpointer", lambda: FakeCheckpointer()
+    )
+
+    _, restored_metadata = restore_training_checkpoint(ckpt_path)
+
+    assert calls["path"] == ckpt_path.resolve() / checkpoint.STATE_DIR
+    assert calls["restore_args_item"] is calls["item"]
+    assert calls["restore_args"] is restore_args_sentinel
+    assert restored_metadata == metadata
+
+
+def test_value_norm_metadata_converts_runner_state_arrays() -> None:
+    metadata = value_norm_metadata(
+        ValueNormState(
+            mean=jnp.asarray(1.5, dtype=jnp.float32),
+            var=jnp.asarray(2.5, dtype=jnp.float32),
+            count=jnp.asarray(32.0, dtype=jnp.float32),
+        )
+    )
+
+    assert metadata == ValueNormMetadata(mean=1.5, var=2.5, count=32.0)
