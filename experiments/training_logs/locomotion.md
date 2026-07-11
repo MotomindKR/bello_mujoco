@@ -1144,3 +1144,10 @@ reward_config:
 At the same rollout state, this would roughly make yaw tracking worth up to
 `+0.02/step`, torso roll/pitch angular-velocity penalty about 4x larger,
 flat-orientation penalty about 5x larger, and torque penalty about 4x larger.
+
+Follow-up: torque was increased another 2x in `locomotion_hard.yaml`:
+
+```yaml
+reward_config:
+  torque.weight: -0.00004
+```

@@ -63,7 +63,7 @@ reward_config:
     weight: -10.0
   torque:
     enabled: true
-    weight: -0.00002
+    weight: -0.00004
   termination:
     enabled: true
     weight: -2.0
