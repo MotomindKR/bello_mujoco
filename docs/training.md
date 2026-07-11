@@ -622,7 +622,7 @@ checkpoint_config:
   directory: checkpoints
   name: null
   overwrite: false
-  upload_wandb_artifact: false
+  upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint
 ```
@@ -962,7 +962,9 @@ checkpoint must match the code schema used to restore it.
 
 If `upload_wandb_artifact=true` and W&B is enabled, the final checkpoint
 directory is also logged as a W&B artifact after the local checkpoint save
-completes. `wandb_artifact_name=null` uses the checkpoint directory name.
+completes. This is the default for training configs; it is inert unless both
+checkpointing and W&B are enabled. `wandb_artifact_name=null` uses the
+checkpoint directory name.
 
 ## W&B
 

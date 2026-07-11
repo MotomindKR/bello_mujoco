@@ -36,7 +36,7 @@ class CheckpointConfig:
     directory: Path = Path("checkpoints")
     name: str | None = None
     overwrite: bool = False
-    upload_wandb_artifact: bool = False
+    upload_wandb_artifact: bool = True
     wandb_artifact_name: str | None = None
     wandb_artifact_type: str = "checkpoint"
 
