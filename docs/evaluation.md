@@ -14,6 +14,16 @@ an interactive CPU MuJoCo viewer.
 uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
 ```
 
+Inside the Nix shell, prefer the viewer wrapper:
+
+```bash
+bello-eval-policy-viewer checkpoint_path=checkpoints/ppo_seed_0
+```
+
+On Apple Silicon macOS the wrapper runs this module through MuJoCo's `mjpython`
+launcher and uses the Nix shell's `MUJOCO_GL=glfw` setting. On Linux it
+delegates to `bello-eval-policy`.
+
 Evaluation is interactive inspection only:
 
 - it opens the MuJoCo/ImGui policy viewer
@@ -346,5 +356,5 @@ uv run pytest tests/test_eval_policy.py -q
 When a local display is available, manually inspect a checkpoint:
 
 ```bash
-uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
+bello-eval-policy-viewer checkpoint_path=checkpoints/ppo_seed_0
 ```
