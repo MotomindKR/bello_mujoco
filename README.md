@@ -24,6 +24,10 @@ The shell hook:
 - keeps uv and Warp caches repo-local via `.uv-cache` and `.warp-cache`
 - exports `MUJOCO_GL=egl` for MuJoCo rendering in the Nix shell
 
+Editable checkouts use `configs/` and `assets/source/` from the repository.
+Built wheels include those directories as package data so installed console
+scripts can resolve Hydra configs and Bello source assets without a repo root.
+
 Run a basic environment check:
 
 ```bash

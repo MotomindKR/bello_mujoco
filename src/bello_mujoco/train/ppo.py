@@ -50,7 +50,7 @@ class PPOConfig:
     anneal_lr: bool = False
     schedule: LearningRateSchedule | None = "adaptive"
     desired_kl: float = 0.01
-    target_kl: float | None = 0.02
+    target_kl: float | None = None
     min_learning_rate: float = 1.0e-5
     max_learning_rate: float = 1.0e-2
     adaptive_lr_factor: float = 1.5

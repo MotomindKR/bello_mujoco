@@ -7,6 +7,7 @@ from bello_mujoco.tools.train_ppo import (
     TrainingVideoConfig,
     render_training_video,
     should_render_training_video,
+    training_update_range,
     validate_video_config,
 )
 
@@ -35,6 +36,51 @@ def test_training_video_schedule_can_disable_final() -> None:
     config = TrainingVideoConfig(enabled=True, every_updates=4, render_final=False)
 
     assert not should_render_training_video(10, 10, config)
+
+
+def test_training_update_range_wraps_tqdm(monkeypatch) -> None:
+    calls = {}
+
+    def fake_tqdm(iterable, **kwargs):
+        calls["iterable"] = iterable
+        calls["kwargs"] = kwargs
+        return iterable
+
+    monkeypatch.setattr(train_ppo, "tqdm", fake_tqdm)
+
+    assert list(training_update_range(3)) == [0, 1, 2]
+    assert calls["kwargs"]["desc"] == "PPO updates"
+    assert calls["kwargs"]["unit"] == "update"
+    assert calls["kwargs"]["dynamic_ncols"] is True
+
+
+def test_run_training_initializes_wandb_before_env_load(monkeypatch) -> None:
+    events = []
+
+    def fake_create_wandb_run(config):
+        events.append("wandb")
+        return "run"
+
+    def fake_load(*args, **kwargs):
+        events.append("env")
+        raise RuntimeError("stop after env load")
+
+    def fake_close_run(run):
+        events.append(("close", run))
+
+    monkeypatch.setattr(train_ppo, "create_wandb_run", fake_create_wandb_run)
+    monkeypatch.setattr(train_ppo.BelloLocomotionEnv, "load", fake_load)
+    monkeypatch.setattr(train_ppo, "close_run", fake_close_run)
+
+    with pytest.raises(RuntimeError, match="stop after env load"):
+        train_ppo.run_training(
+            train_ppo.TrainingRunConfig(
+                dry_run=False,
+                wandb_config=train_ppo.WandbConfig(enabled=True),
+            )
+        )
+
+    assert events == ["wandb", "env", ("close", "run")]
 
 
 def test_validate_video_config_is_noop_when_disabled() -> None:

@@ -72,6 +72,10 @@ bello-train-ppo \
   done_config.base_height.min_height=0.75
 ```
 
+Unknown config keys are rejected during dataclass conversion. Use Hydra's `+`
+syntax only for keys that are intentionally consumed by Hydra itself; training
+runtime config fields must exist in the dataclass tree.
+
 The complete `bello-train-ppo` root tree is:
 
 ```yaml
@@ -617,7 +621,7 @@ checkpoint_config:
   enabled: false
   directory: checkpoints
   name: null
-  overwrite: true
+  overwrite: false
   upload_wandb_artifact: false
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint
@@ -628,6 +632,10 @@ If `name` is null, the checkpoint name is:
 ```text
 ppo_seed_<seed>
 ```
+
+`overwrite=false` is the default. Training fails if the checkpoint path already
+exists; set `checkpoint_config.overwrite=true` only when intentionally replacing
+an earlier run.
 
 ### WandbConfig
 
@@ -655,6 +663,10 @@ When `wandb_config.enabled=true` and `metric_config.stream_updates=true`,
 training runs as a Python loop over JIT-compiled PPO updates and logs scalar
 metrics after every PPO update. With the `rtx5090_4096x256` preset, that means
 one W&B metric point every `4096 * 256 = 1048576` environment steps.
+
+The per-update Python loop is wrapped with a tqdm `PPO updates` progress bar.
+This also covers training-video runs, because video rendering needs the
+host-side update loop.
 
 If `stream_updates=false`, the fully JIT-compiled training function runs first
 and metrics are uploaded to W&B only after training returns.
@@ -910,7 +922,7 @@ Checkpointing is controlled by `CheckpointConfig`:
 enabled: false
 directory: checkpoints
 name: null
-overwrite: true
+overwrite: false
 ```
 
 When enabled, training writes:
@@ -969,6 +981,10 @@ tags: []
 ```
 
 If W&B is disabled, tracking helpers are no-ops.
+
+For training runs, W&B is initialized before MuJoCo/MJX environment setup and
+uses W&B's thread start method. This avoids Python `os.fork()` warnings after
+JAX has initialized worker threads.
 
 When enabled:
 

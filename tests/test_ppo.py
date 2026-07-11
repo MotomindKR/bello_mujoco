@@ -815,6 +815,10 @@ def test_ppo_config_rejects_invalid_target_kl() -> None:
         make_train(config, env=object())
 
 
+def test_ppo_config_defaults_to_no_target_kl_stop() -> None:
+    assert PPOConfig().target_kl is None
+
+
 def test_ppo_config_rejects_invalid_policy_architecture() -> None:
     config = PPOConfig(policy=ActorCriticConfig(hidden_size=0))
 

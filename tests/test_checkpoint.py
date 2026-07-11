@@ -110,7 +110,55 @@ def test_training_checkpoint_saves_relative_path_as_absolute(
 
     assert saved["path"].is_absolute()
     assert saved["path"] == tmp_path / "relative_ckpt" / checkpoint.STATE_DIR
-    assert saved["force"] is True
+    assert saved["force"] is False
+
+
+def test_training_checkpoint_requires_explicit_overwrite(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+
+    class FakeCheckpointer:
+        def save(self, path, item, *, force):
+            calls.append((path, item, force))
+
+    monkeypatch.setattr(
+        checkpoint.ocp, "PyTreeCheckpointer", lambda: FakeCheckpointer()
+    )
+    config = PPOConfig(
+        seed=3,
+        policy=ActorCriticConfig(hidden_size=8, hidden_depth=1),
+        total_timesteps=8,
+        num_envs=2,
+        num_steps=2,
+        num_minibatches=1,
+    )
+    train_state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
+    metadata = CheckpointMetadata(
+        ppo=config,
+        asset=AssetPrepConfig(),
+        reward=RewardConfig(),
+        command=CommandConfig(),
+        done=DoneConfig(),
+        env=BelloEnvConfig(),
+        warp=WarpConfig(),
+        obs_size=4,
+        action_size=2,
+    )
+    ckpt_path = tmp_path / "existing_ckpt"
+    ckpt_path.mkdir()
+
+    try:
+        save_training_checkpoint(ckpt_path, train_state, metadata)
+    except FileExistsError as error:
+        assert "overwrite=true" in str(error)
+    else:
+        raise AssertionError("expected existing checkpoint path to require overwrite")
+
+    save_training_checkpoint(ckpt_path, train_state, metadata, overwrite=True)
+
+    assert len(calls) == 1
+    assert calls[0][2] is True
 
 
 def test_training_checkpoint_restore_uses_local_restore_args(

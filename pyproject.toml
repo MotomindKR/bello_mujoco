@@ -8,6 +8,7 @@ dependencies = [
   "equinox>=0.12.0",
   "fast-simplification>=0.1.12",
   "hydra-core>=1.3.2",
+  "imgui[glfw]>=2.0.0",
   "imageio[ffmpeg]>=2.37.3",
   "jax[cuda13]>=0.6.0",
   "jaxtyping>=0.3.0",
@@ -16,6 +17,7 @@ dependencies = [
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
   "rlax>=0.1.7",
+  "tqdm>=4.67.0",
   "trimesh>=4.6.0",
   "wandb>=0.28.0",
 ]
@@ -40,6 +42,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bello_mujoco"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"configs" = "bello_mujoco/configs"
+"assets/source" = "bello_mujoco/assets/source"
 
 [tool.pytest.ini_options]
 markers = [

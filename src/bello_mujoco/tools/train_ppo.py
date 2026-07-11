@@ -9,6 +9,7 @@ import hydra
 import jax
 import jax.numpy as jnp
 from omegaconf import DictConfig
+from tqdm.auto import tqdm
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
@@ -146,94 +147,94 @@ def run_training(run_config: TrainingRunConfig) -> None:
 
     validate_ppo_config(config)
     validate_video_config(video_config)
-    env = BelloLocomotionEnv.load(
-        asset_config,
-        warp=warp,
-        batch_size=config.num_envs,
-        env_config=env_config,
-        reward_config=reward_config,
-        command_config=command_config,
-        done_config=done_config,
-    )
-    render_env = (
-        BelloLocomotionEnv.load(
+    run = create_wandb_run(wandb_config) if not dry_run else None
+    try:
+        env = BelloLocomotionEnv.load(
             asset_config,
             warp=warp,
-            batch_size=1,
+            batch_size=config.num_envs,
             env_config=env_config,
             reward_config=reward_config,
             command_config=command_config,
             done_config=done_config,
-            use_viewer_model=True,
         )
-        if video_config.enabled
-        else env
-    )
-    rng = jax.random.PRNGKey(config.seed)
-    policy_obs_size = policy_observation_size(env.observation_size, config.policy)
-    critic_obs_size = critic_observation_size(env)
-    critic_policy_obs_size = policy_observation_size(critic_obs_size, config.policy)
-    if dry_run:
-        state, _ = init_train_state(
-            rng,
-            policy_obs_size,
-            env.action_size,
-            config,
-            critic_obs_size=critic_policy_obs_size,
+        render_env = (
+            BelloLocomotionEnv.load(
+                asset_config,
+                warp=warp,
+                batch_size=1,
+                env_config=env_config,
+                reward_config=reward_config,
+                command_config=command_config,
+                done_config=done_config,
+                use_viewer_model=True,
+            )
+            if video_config.enabled
+            else env
         )
-        batch_state, batch_obs = env.reset_batch(config.num_envs)
-        print(
-            {
-                "backend": jax.default_backend(),
-                "mjx_impl": "warp",
-                "terrain": env_config.terrain.mode,
-                "sim_timestep": env.model.mj_model.opt.timestep,
-                "decimation": env_config.decimation,
-                "control_timestep": env.control_timestep,
-                "max_episode_steps": env_config.max_episode_steps,
-                "warp_naconmax": env.model.warp_naconmax,
-                "warp_njmax": env.model.warp_njmax,
-                "obs_size": env.observation_size,
-                "policy_obs_size": policy_obs_size,
-                "critic_obs_size": critic_obs_size,
-                "critic_policy_obs_size": critic_policy_obs_size,
-                "obs_stack_size": config.policy.obs_stack_size,
-                "action_size": env.action_size,
-                "num_envs": config.num_envs,
-                "num_steps": config.num_steps,
-                "num_updates": config.num_updates,
-                "policy_hidden_dims": config.policy.hidden_dims,
-                "policy_activation": config.policy.activation,
-                "command_ranges": tuple(
-                    tuple(row) for row in command_config.range_array().tolist()
-                ),
-                "command_curriculum_enabled": command_config.curriculum.enabled,
-                "random_push_enabled": env_config.random_push.enabled,
-                "observation_noise_enabled": env_config.observation.noise.enabled,
-                "learning_rate": config.learning_rate,
-                "learning_rate_schedule": effective_learning_rate_schedule(config),
-                "desired_kl": config.desired_kl,
-                "target_kl": config.target_kl,
-                "ent_coef": config.ent_coef,
-                "normalize_value": config.normalize_value,
-                "value_norm_eps": config.value_norm_eps,
-                "batch_obs_shape": tuple(batch_obs.shape),
-                "batch_action_shape": tuple(batch_state.last_action.shape),
-                "checkpoint_enabled": checkpoint_config.enabled,
-                "wandb_enabled": wandb_config.enabled,
-                "video_enabled": video_config.enabled,
-                "params_leaves": len(jax.tree.leaves(state.policy)),
-            }
-        )
-        return
+        rng = jax.random.PRNGKey(config.seed)
+        policy_obs_size = policy_observation_size(env.observation_size, config.policy)
+        critic_obs_size = critic_observation_size(env)
+        critic_policy_obs_size = policy_observation_size(critic_obs_size, config.policy)
+        if dry_run:
+            state, _ = init_train_state(
+                rng,
+                policy_obs_size,
+                env.action_size,
+                config,
+                critic_obs_size=critic_policy_obs_size,
+            )
+            batch_state, batch_obs = env.reset_batch(config.num_envs)
+            print(
+                {
+                    "backend": jax.default_backend(),
+                    "mjx_impl": "warp",
+                    "terrain": env_config.terrain.mode,
+                    "sim_timestep": env.model.mj_model.opt.timestep,
+                    "decimation": env_config.decimation,
+                    "control_timestep": env.control_timestep,
+                    "max_episode_steps": env_config.max_episode_steps,
+                    "warp_naconmax": env.model.warp_naconmax,
+                    "warp_njmax": env.model.warp_njmax,
+                    "obs_size": env.observation_size,
+                    "policy_obs_size": policy_obs_size,
+                    "critic_obs_size": critic_obs_size,
+                    "critic_policy_obs_size": critic_policy_obs_size,
+                    "obs_stack_size": config.policy.obs_stack_size,
+                    "action_size": env.action_size,
+                    "num_envs": config.num_envs,
+                    "num_steps": config.num_steps,
+                    "num_updates": config.num_updates,
+                    "policy_hidden_dims": config.policy.hidden_dims,
+                    "policy_activation": config.policy.activation,
+                    "command_ranges": tuple(
+                        tuple(row) for row in command_config.range_array().tolist()
+                    ),
+                    "command_curriculum_enabled": command_config.curriculum.enabled,
+                    "random_push_enabled": env_config.random_push.enabled,
+                    "observation_noise_enabled": env_config.observation.noise.enabled,
+                    "learning_rate": config.learning_rate,
+                    "learning_rate_schedule": effective_learning_rate_schedule(config),
+                    "desired_kl": config.desired_kl,
+                    "target_kl": config.target_kl,
+                    "ent_coef": config.ent_coef,
+                    "normalize_value": config.normalize_value,
+                    "value_norm_eps": config.value_norm_eps,
+                    "batch_obs_shape": tuple(batch_obs.shape),
+                    "batch_action_shape": tuple(batch_state.last_action.shape),
+                    "checkpoint_enabled": checkpoint_config.enabled,
+                    "wandb_enabled": wandb_config.enabled,
+                    "video_enabled": video_config.enabled,
+                    "params_leaves": len(jax.tree.leaves(state.policy)),
+                }
+            )
+            return
 
-    run = create_wandb_run(wandb_config)
-    checkpoint_dir = (
-        checkpoint_path(checkpoint_config, config)
-        if checkpoint_config.enabled
-        else None
-    )
-    try:
+        checkpoint_dir = (
+            checkpoint_path(checkpoint_config, config)
+            if checkpoint_config.enabled
+            else None
+        )
         log_config(
             run,
             {
@@ -349,7 +350,7 @@ def train_update_loop(
             env_steps=0,
             obs_stack_size=config.policy.obs_stack_size,
         )
-    for _ in range(config.num_updates):
+    for _ in training_update_range(config.num_updates):
         runner_state, metrics = update_fn(runner_state)
         metrics = jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
         update = int(jax.device_get(runner_state.update))
@@ -378,6 +379,15 @@ def train_update_loop(
         "runner_state": runner_state,
         "metrics": stack_metric_history(metrics_history),
     }
+
+
+def training_update_range(num_updates: int):
+    return tqdm(
+        range(num_updates),
+        desc="PPO updates",
+        unit="update",
+        dynamic_ncols=True,
+    )
 
 
 def should_render_training_video(

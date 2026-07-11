@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 
 from bello_mujoco.tracking import (
+    WandbConfig,
+    create_wandb_run,
     log_config,
     metric_update_count,
     to_builtin,
@@ -61,6 +63,31 @@ def test_log_config_updates_wandb_config() -> None:
     assert run.config.updates == [
         ({"nested": {"path": "/tmp/x", "bounds": [0.0, 1.0]}}, True)
     ]
+
+
+def test_create_wandb_run_uses_thread_start_method(monkeypatch, tmp_path) -> None:
+    calls = {}
+
+    class FakeWandb:
+        @staticmethod
+        def Settings(**kwargs):
+            calls["settings"] = kwargs
+            return SimpleNamespace(**kwargs)
+
+        @staticmethod
+        def init(**kwargs):
+            calls["init"] = kwargs
+            return "run"
+
+    monkeypatch.setitem(sys.modules, "wandb", FakeWandb)
+
+    run = create_wandb_run(
+        WandbConfig(enabled=True, project="project", dir=str(tmp_path / "wandb"))
+    )
+
+    assert run == "run"
+    assert calls["settings"] == {"start_method": "thread"}
+    assert calls["init"]["settings"].start_method == "thread"
 
 
 def test_track_metric_history_logs_one_payload_per_update() -> None:

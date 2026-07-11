@@ -1,14 +1,14 @@
 # Evaluation Details
 
-This document covers live policy evaluation through MuJoCo's GUI viewer. For
-the compact repository reference, see [index.md](index.md). For checkpoint
-creation and PPO training behavior, see [training.md](training.md).
+This document covers live policy evaluation through the custom MuJoCo/ImGui
+viewer. For the compact repository reference, see [index.md](index.md). For
+checkpoint creation and PPO training behavior, see [training.md](training.md).
 
 ## Entry Point
 
 `bello-eval-policy` is the live evaluation entry point. It restores a training
 checkpoint, rebuilds a single-environment Bello runtime, and runs the policy in
-MuJoCo's interactive viewer.
+an interactive CPU MuJoCo viewer.
 
 ```bash
 uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
@@ -16,11 +16,11 @@ uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
 
 Evaluation is interactive inspection only:
 
-- it opens the MuJoCo GUI viewer
+- it opens the MuJoCo/ImGui policy viewer
 - it runs one environment
 - it does not write MP4 files
 - it does not log W&B artifacts
-- it can show reward values in a viewer text overlay
+- it can show status, command, reward, action, and control panels
 
 ## Full Config Tree
 
@@ -108,8 +108,8 @@ reward_overlay:
   show_components: true
 ```
 
-The overlay uses MuJoCo viewer text overlays and updates every displayed control
-step. It shows:
+The viewer draws ImGui status and reward panels over the MuJoCo render and
+updates them every displayed control step. It shows:
 
 ```text
 step
@@ -122,6 +122,7 @@ reward components
 ```
 
 Reward components are weighted `reward/*` terms from the environment info dict.
+`position` and `font_scale` place and scale the status/reward panels.
 `max_reward_terms` limits how many component rows are shown.
 
 Disable the overlay:
@@ -141,7 +142,7 @@ action_overlay:
   bar_width: 12
 ```
 
-The live viewer action overlay shows policy-action diagnostics as text bar
+The live viewer action panel shows policy-action diagnostics as text bar
 graphs. Each action row shows `m` for the raw actor mean and `a` for the clipped
 action applied to the environment. Bars are scaled to the env action clip.
 
@@ -171,7 +172,8 @@ joystick:
 ```
 
 The live viewer includes a keyboard joystick for command-conditioned policies.
-The command overlay shows the current `cmd_x`, `cmd_y`, and `cmd_yaw`.
+The command panel shows sliders for `cmd_x`, `cmd_y`, and `cmd_yaw`; the same
+limits are used by the keyboard joystick.
 
 Controls:
 
@@ -179,6 +181,9 @@ Controls:
 - `A` / `D`, or arrow left / right: decrease/increase `lin_vel_x`
 - `Q` / `E`: increase/decrease yaw velocity
 - `Space` or `0`: reset command to zero
+- `P`: pause/resume rollout stepping
+- `N`: single-step while paused
+- `R`: reset the current episode
 
 For Bello locomotion, forward walking commands usually use `lin_vel_y`.
 Disable keyboard command control with:
@@ -250,26 +255,26 @@ back to its default value from a non-default checkpoint value.
 ## Runtime Behavior
 
 Interactive evaluation validates checkpoint compatibility against the simulation
-MJCF, then launches a separate viewer environment from the viewer MJCF. Both
+MJCF, then launches a separate display environment from the viewer MJCF. Both
 models are loaded without MJX because live eval is an interactive CPU MuJoCo
-rollout. The viewer env has the same policy-facing joints and actuators, plus
+rollout. The display env has the same policy-facing joints and actuators, plus
 visual meshes and transparent collision geoms for display.
 
 Each viewer loop iteration:
 
 1. Reads the current CPU MuJoCo `MjData`.
 2. Computes the deterministic policy mean action and clipped env action.
-3. Updates the configured viewer camera.
+3. Updates the configured MuJoCo camera.
 4. Draws red foot overlays when that foot has raw terrain contact.
-5. Applies any keyboard joystick command updates.
-6. Updates the reward/action overlay text.
-7. Calls `viewer.sync()`.
-8. Steps the single CPU MuJoCo environment once with `mujoco.mj_step`.
-9. Optionally sleeps to match real time.
+5. Handles keyboard joystick, mouse camera, and ImGui panel input.
+6. Renders the MuJoCo scene and ImGui panels through GLFW/OpenGL.
+7. Steps the single CPU MuJoCo environment once with `mujoco.mj_step`, unless paused.
+8. Optionally sleeps to match real time.
 
 By default the policy uses the Gaussian mean action for deterministic
-inspection. With `eval_config.stochastic_actions=true`, the viewer samples from
-the actor Gaussian each control step before action clipping.
+inspection. With `eval_config.stochastic_actions=true`, or with the
+`Stochastic` checkbox enabled in the Controls panel, the viewer samples from the
+actor Gaussian each control step before action clipping.
 
 Rendered rollout videos use the same red foot-contact overlays before each
 frame is written.

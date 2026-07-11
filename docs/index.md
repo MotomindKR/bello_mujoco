@@ -55,6 +55,11 @@ Run commands through uv when outside the activated shell:
 uv run bello-smoke-env step=true
 ```
 
+Console scripts can run from an editable checkout or from an installed wheel.
+The wheel bundles `configs/` and `assets/source/` as package data so Hydra
+configs and robot source assets are available without walking back to a repo
+root.
+
 Generated local artifacts should not be committed:
 
 ```text
@@ -465,7 +470,7 @@ Training-adjacent flags:
 checkpoint_config.enabled: false
 checkpoint_config.directory: checkpoints
 checkpoint_config.name: null
-checkpoint_config.overwrite: true
+checkpoint_config.overwrite: false
 checkpoint_config.upload_wandb_artifact: false
 checkpoint_config.wandb_artifact_name: null
 checkpoint_config.wandb_artifact_type: checkpoint

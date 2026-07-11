@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TypeVar
 
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
+from bello_mujoco.assets import project_data_path
 from bello_mujoco.checkpoint import dataclass_from_dict
 
 T = TypeVar("T")
 
-CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
+CONFIG_ROOT = project_data_path("configs")
 
 
 def config_path(group: str) -> str:
@@ -21,7 +21,7 @@ def structured_config(cls: type[T], config: DictConfig) -> T:
     data = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
     if not isinstance(data, dict):
         raise TypeError(f"Hydra config for {cls.__name__} must be a mapping")
-    return dataclass_from_dict(cls, data)
+    return dataclass_from_dict(cls, data, strict=True)
 
 
 def clear_hydra() -> None:

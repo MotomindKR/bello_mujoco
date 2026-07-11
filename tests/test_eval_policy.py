@@ -22,8 +22,6 @@ from bello_mujoco.render import (
     rollout_policy_action,
     sync_foot_contact_colors,
     sync_foot_contact_markers,
-    sync_reward_overlay,
-    sync_viewer_overlay,
 )
 from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
@@ -735,69 +733,3 @@ def test_eval_main_wires_checkpoint_env_and_viewer(monkeypatch) -> None:
     assert loaded["launch"][2]["action_overlay"] == ActionOverlayConfig()
     assert not loaded["launch"][2]["stochastic_actions"]
     assert loaded["launch"][2]["action_seed"] == 0
-
-
-class FakeViewer:
-    def __init__(self) -> None:
-        self.texts = None
-        self.cleared = False
-
-    def set_texts(self, texts) -> None:
-        self.texts = texts
-
-    def clear_texts(self) -> None:
-        self.cleared = True
-
-
-def test_sync_viewer_overlay_combines_reward_and_action_text() -> None:
-    viewer = FakeViewer()
-    env = SimpleNamespace(
-        action_clip=10.0,
-        model=SimpleNamespace(
-            policy_ctrl_indices=np.asarray([0], dtype=np.int32),
-            actuator_joint_names=("left_hip_pitch_joint",),
-            mj_model=SimpleNamespace(
-                actuator_ctrlrange=np.asarray([[-1.0, 1.0]], dtype=np.float32)
-            ),
-        ),
-    )
-
-    sync_viewer_overlay(
-        viewer,
-        reward_config=RewardOverlayConfig(show_components=False),
-        action_config=ActionOverlayConfig(max_actions=1),
-        step_count=2,
-        reward=jnp.asarray(0.5),
-        done=jnp.asarray(False),
-        state=SimpleNamespace(
-            episode_return=jnp.asarray(1.0), episode_length=jnp.asarray(2)
-        ),
-        info={},
-        env=env,
-        action_mean=np.asarray([3.0], dtype=np.float32),
-        action=np.asarray([3.0], dtype=np.float32),
-        ctrl=np.asarray([0.2], dtype=np.float32),
-    )
-
-    assert viewer.texts is not None
-    assert "reward" in viewer.texts[2]
-    assert "action_abs_max" in viewer.texts[2]
-    assert "m +3.00" in viewer.texts[3]
-
-
-def test_sync_reward_overlay_can_disable_texts() -> None:
-    viewer = FakeViewer()
-
-    sync_reward_overlay(
-        viewer,
-        RewardOverlayConfig(enabled=False),
-        step_count=0,
-        reward=jnp.asarray(0.0),
-        done=jnp.asarray(False),
-        state=SimpleNamespace(
-            episode_return=jnp.asarray(0.0), episode_length=jnp.asarray(0)
-        ),
-        info={},
-    )
-
-    assert viewer.cleared

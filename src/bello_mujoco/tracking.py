@@ -42,6 +42,7 @@ def create_wandb_run(config: WandbConfig):
         mode=config.mode,
         dir=config.dir,
         tags=list(config.tags),
+        settings=wandb.Settings(start_method="thread"),
     )
 
 
