@@ -471,7 +471,6 @@ Training-adjacent flags:
 checkpoint_config.enabled: false
 checkpoint_config.directory: checkpoints
 checkpoint_config.name: null
-checkpoint_config.overwrite: false
 checkpoint_config.upload_wandb_artifact: true
 checkpoint_config.wandb_artifact_name: null
 checkpoint_config.wandb_artifact_type: checkpoint

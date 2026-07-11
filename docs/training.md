@@ -621,21 +621,19 @@ checkpoint_config:
   enabled: false
   directory: checkpoints
   name: null
-  overwrite: false
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint
 ```
 
-If `name` is null, the checkpoint name is:
+If `name` is null, the checkpoint directory base name is:
 
 ```text
 ppo_seed_<seed>
 ```
 
-`overwrite=false` is the default. Training fails if the checkpoint path already
-exists; set `checkpoint_config.overwrite=true` only when intentionally replacing
-an earlier run.
+Training appends a local timestamp to the base name before saving, for example
+`ppo_seed_0_20260712_013045_123456`. Checkpoints are never overwritten.
 
 ### WandbConfig
 
@@ -922,13 +920,12 @@ Checkpointing is controlled by `CheckpointConfig`:
 enabled: false
 directory: checkpoints
 name: null
-overwrite: false
 ```
 
 When enabled, training writes:
 
 ```text
-<directory>/<name-or-ppo_seed_N>/
+<directory>/<name-or-ppo_seed_N>_<YYYYMMDD_HHMMSS_microseconds>/
   metadata.json
   state/
 ```

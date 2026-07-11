@@ -299,7 +299,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     action_size=env.action_size,
                     value_norm=value_norm_metadata(final_value_norm_state(out)),
                 ),
-                overwrite=checkpoint_config.overwrite,
             )
             if checkpoint_config.upload_wandb_artifact and run is not None:
                 track_checkpoint_artifact(

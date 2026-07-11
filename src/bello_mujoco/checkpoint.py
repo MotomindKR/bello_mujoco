@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, fields, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -35,7 +36,6 @@ class CheckpointConfig:
     enabled: bool = False
     directory: Path = Path("checkpoints")
     name: str | None = None
-    overwrite: bool = False
     upload_wandb_artifact: bool = True
     wandb_artifact_name: str | None = None
     wandb_artifact_type: str = "checkpoint"
@@ -64,21 +64,32 @@ class CheckpointMetadata:
 
 
 def checkpoint_path(config: CheckpointConfig, ppo_config: PPOConfig) -> Path:
-    name = config.name or f"ppo_seed_{ppo_config.seed}"
+    name = timestamped_checkpoint_name(config, ppo_config)
     return config.directory / name
+
+
+def timestamped_checkpoint_name(
+    config: CheckpointConfig,
+    ppo_config: PPOConfig,
+    *,
+    timestamp: datetime | None = None,
+) -> str:
+    base_name = config.name or f"ppo_seed_{ppo_config.seed}"
+    checkpoint_time = timestamp or datetime.now()
+    suffix = checkpoint_time.strftime("%Y%m%d_%H%M%S_%f")
+    return f"{base_name}_{suffix}"
 
 
 def save_training_checkpoint(
     path: Path,
     train_state: TrainState,
     metadata: CheckpointMetadata,
-    *,
-    overwrite: bool = False,
 ) -> None:
     path = Path(path).resolve()
-    if path.exists() and not overwrite:
+    if path.exists():
         raise FileExistsError(
-            f"checkpoint path already exists: {path}. Set overwrite=true to replace it."
+            f"checkpoint path already exists: {path}. Checkpoint paths are "
+            "timestamped; choose a new path instead of overwriting."
         )
     path.mkdir(parents=True, exist_ok=True)
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
@@ -87,7 +98,7 @@ def save_training_checkpoint(
         "opt_state": train_state.opt_state,
         "update": train_state.update,
     }
-    ocp.PyTreeCheckpointer().save(path / STATE_DIR, item, force=overwrite)
+    ocp.PyTreeCheckpointer().save(path / STATE_DIR, item, force=False)
     (path / METADATA_FILE).write_text(
         json.dumps(to_builtin(metadata), indent=2, sort_keys=True)
     )

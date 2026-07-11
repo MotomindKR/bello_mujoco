@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 
 import jax
@@ -7,8 +8,10 @@ import jax.numpy as jnp
 import bello_mujoco.checkpoint as checkpoint
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
+    CheckpointConfig,
     CheckpointMetadata,
     ValueNormMetadata,
+    timestamped_checkpoint_name,
     load_checkpoint_metadata,
     restore_training_checkpoint,
     save_training_checkpoint,
@@ -113,7 +116,27 @@ def test_training_checkpoint_saves_relative_path_as_absolute(
     assert saved["force"] is False
 
 
-def test_training_checkpoint_requires_explicit_overwrite(
+def test_timestamped_checkpoint_name_appends_local_time() -> None:
+    name = timestamped_checkpoint_name(
+        CheckpointConfig(name="locomotion_hard_seed0"),
+        PPOConfig(seed=7),
+        timestamp=datetime(2026, 7, 12, 1, 30, 45, 123456),
+    )
+
+    assert name == "locomotion_hard_seed0_20260712_013045_123456"
+
+
+def test_timestamped_checkpoint_name_uses_seed_default() -> None:
+    name = timestamped_checkpoint_name(
+        CheckpointConfig(),
+        PPOConfig(seed=7),
+        timestamp=datetime(2026, 7, 12, 1, 30, 45, 123456),
+    )
+
+    assert name == "ppo_seed_7_20260712_013045_123456"
+
+
+def test_training_checkpoint_refuses_existing_path(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = []
@@ -151,14 +174,11 @@ def test_training_checkpoint_requires_explicit_overwrite(
     try:
         save_training_checkpoint(ckpt_path, train_state, metadata)
     except FileExistsError as error:
-        assert "overwrite=true" in str(error)
+        assert "timestamped" in str(error)
     else:
-        raise AssertionError("expected existing checkpoint path to require overwrite")
+        raise AssertionError("expected existing checkpoint path to be refused")
 
-    save_training_checkpoint(ckpt_path, train_state, metadata, overwrite=True)
-
-    assert len(calls) == 1
-    assert calls[0][2] is True
+    assert calls == []
 
 
 def test_training_checkpoint_restore_uses_local_restore_args(
