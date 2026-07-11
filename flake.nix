@@ -8,17 +8,39 @@
 
   outputs =
     { nixpkgs, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (
+    flake-utils.lib.eachSystem
+      [
+        "aarch64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
+      ]
+      (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
         };
+        mujocoGl = if pkgs.stdenv.isDarwin then "glfw" else "egl";
+        evalPolicyViewer = pkgs.writeShellApplication {
+          name = "bello-eval-policy-viewer";
+          text = ''
+            if [ "$(uname -s)" = "Darwin" ]; then
+              if ! command -v mjpython >/dev/null 2>&1; then
+                echo "mjpython not found; enter nix develop so uv sync can activate .venv" >&2
+                exit 127
+              fi
+              exec mjpython -m bello_mujoco.tools.eval_policy "$@"
+            fi
+
+            exec bello-eval-policy "$@"
+          '';
+        };
       in
       {
         devShells.default = pkgs.mkShell {
           packages = [
+            evalPolicyViewer
             pkgs.git
             pkgs.uv
           ];
@@ -29,7 +51,7 @@
             export UV_CACHE_DIR="$PWD/.uv-cache"
             export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
             export WARP_CACHE_PATH="$PWD/.warp-cache"
-            export MUJOCO_GL=egl
+            export MUJOCO_GL=${mujocoGl}
             export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
 
             uv python install 3.12

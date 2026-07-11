@@ -22,7 +22,8 @@ The shell hook:
 - syncs dependencies into `.venv`
 - activates `.venv`
 - keeps uv and Warp caches repo-local via `.uv-cache` and `.warp-cache`
-- exports `MUJOCO_GL=egl` for MuJoCo rendering in the Nix shell
+- exports `MUJOCO_GL=egl` on Linux and `MUJOCO_GL=glfw` on Apple Silicon macOS
+- provides `bello-eval-policy-viewer` for live MuJoCo viewer evaluation
 
 Editable checkouts use `configs/` and `assets/source/` from the repository.
 Built wheels include those directories as package data so installed console
@@ -81,6 +82,15 @@ Benchmark vectorized stepping:
 bello-benchmark-env batch_size=512 step_count=5
 ```
 
+Run a live policy viewer:
+
+```bash
+bello-eval-policy-viewer checkpoint_path=checkpoints/ppo_seed_0
+```
+
+On Apple Silicon macOS this wrapper launches the eval module with MuJoCo's
+`mjpython` launcher. On Linux it delegates to `bello-eval-policy`.
+
 Run the test and lint gate:
 
 ```bash
@@ -98,7 +108,7 @@ uv run pytest
 ## Current Stack
 
 - Simulator: `mujoco`, `mujoco-mjx[warp]`
-- JAX: `jax[cuda13]` from Python wheels
+- JAX: `jax[cuda13]` on Linux, CPU `jax` on Apple Silicon macOS
 - RL utilities: `rlax`
 - Policy/model: `equinox`
 - Optimizer: `optax`

@@ -11,7 +11,7 @@ quick entry point, `CONTRIBUTION.md` is the contributor workflow, and
 The current stack is:
 
 - Simulator: `mujoco`, `mujoco-mjx[warp]`
-- JAX: `jax[cuda13]` from Python wheels
+- JAX: `jax[cuda13]` on Linux, CPU `jax` on Apple Silicon macOS
 - Policy/model: Equinox actor-critic
 - PPO: local PureJaxRL-style implementation
 - RL utilities: RLax dependency available for future reward/math work
@@ -41,8 +41,9 @@ direnv allow
 ```
 
 The shell hook installs uv-managed Python 3.12 into `.uv-python`, syncs
-dependencies into `.venv`, activates `.venv`, exports `MUJOCO_GL=egl` for
-MuJoCo rendering, and keeps uv/Warp caches repo-local:
+dependencies into `.venv`, activates `.venv`, exports `MUJOCO_GL=egl` on Linux
+and `MUJOCO_GL=glfw` on Apple Silicon macOS, and keeps uv/Warp caches
+repo-local:
 
 ```text
 .uv-cache/
@@ -508,6 +509,10 @@ Live evaluation entry point:
 ```text
 bello-eval-policy
 ```
+
+The Nix shell also provides `bello-eval-policy-viewer` for live GUI evaluation.
+On Apple Silicon macOS it uses MuJoCo's `mjpython` launcher; on Linux it
+delegates to `bello-eval-policy`.
 
 Evaluation root flags:
 
