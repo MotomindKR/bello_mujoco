@@ -731,11 +731,12 @@ update at 594.
 
 Two concrete implementation/config problems were found:
 
-- PPO rollout stored and evaluated the unclipped sampled action while the env
-  executed a clipped action. At update 573, raw `action_abs_max` was `7.6e7`
-  while `env_action_abs_max` was still `10`. Rollout collection now passes
-  `env.action_clip` into `sample_action_with_mean`, so stored actions, old
-  log-probs, and env actions agree.
+- PPO rollout action handling was unstable around clipping. An earlier
+  mitigation made stored actions, old log-probs, and env actions all agree at
+  the clipped boundary, but later locomotion-hard runs showed that this lets a
+  runaway Gaussian mean produce huge clipped-boundary log-ratio/KL values.
+  Current PPO rollout stores the raw Gaussian action/log-prob for policy ratios
+  and sends a clipped copy to the env.
 - `locomotion.yaml` overrode every actuator entry without `effort_limit`, so
   W&B showed `effort_limit: null` and generated MJCF omitted `forcerange`.
   Effort limits are now explicit in the recipe; generated XML again includes
@@ -753,9 +754,9 @@ warp.njmax: 512
 
 The `njmax` increase addresses the observed `nefc overflow` messages requesting
 up to `321`. The entropy change returns to the Unitree-style coefficient; with
-the clipped-action fix, `action_abs_max` should stay bounded by the env action
-clip, while `action_mean_abs_max` remains useful as a separate warning for mean
-drift.
+the separated raw/env action path, `env_action_abs_max` should stay bounded by
+the env action clip, while raw `action_abs_max` and `action_mean_abs_max` remain
+useful warnings for action-distribution drift.
 
 ## 2026-07-10 - Easy fixed-forward locomotion diagnostic
 
@@ -1090,3 +1091,56 @@ soft range in action units, so small-scale joints such as knees and ankles are
 not under-penalized relative to hips. Because the raw magnitude is now larger
 for severe out-of-range targets, the active locomotion recipe weights were reset
 from `-100.0` to `-1.0`.
+
+## 2026-07-11 - Separate PPO raw actions from clipped env actions
+
+Run `y999e9iv` showed the policy was best around update `7308`, then collapsed
+after the actor mean drifted into hundreds of action units. The env only saw
+clipped actions, but PPO had been storing/logging clipped actions and computing
+Gaussian log-prob ratios at the clipped boundary. That made KL unstable once the
+mean escaped.
+
+Rollout collection now uses two action tensors:
+
+```text
+raw_action = mean + std * noise
+log_prob = gaussian_log_prob(raw_action)
+env_action = clip(raw_action, -env.action_clip, env.action_clip)
+```
+
+`Transition.action` is the raw Gaussian action used by PPO loss. The new
+`Transition.env_action` is the clipped action passed to `step_batch` and used
+for control saturation diagnostics. `action_abs_max` now reports the raw action
+magnitude, while `env_action_abs_max` reports the clipped environment action.
+
+## 2026-07-11 - Make orientation, yaw tracking, and torque more relevant in hard locomotion
+
+Checkpoint `locomotion_hard_seed0` at update `12207` fulfilled fixed forward
+walking well, but the reward breakdown showed several stabilizing terms were
+too small to materially shape the policy:
+
+```text
+fixed GPU eval, command (0, 0.5, 0):
+  track_lin_vel_xy:  99.6% of max
+  track_ang_vel_z:   86.2% of max
+  gait_contact:      95.3% of max
+  foot_clearance:    96.1% of max
+  flat_orientation: -0.00031 / step
+  torque:           -0.00057 / step
+```
+
+For `locomotion_hard.yaml`, increased the terms that should matter for command
+tracking and smooth upright motion without making them dominate forward
+tracking:
+
+```yaml
+reward_config:
+  track_ang_vel_z.weight: 1.0      # from 0.5
+  ang_vel_xy.weight: -0.2          # from -0.05
+  flat_orientation.weight: -10.0   # from -2.0
+  torque.weight: -0.00002          # from -0.000005
+```
+
+At the same rollout state, this would roughly make yaw tracking worth up to
+`+0.02/step`, torso roll/pitch angular-velocity penalty about 4x larger,
+flat-orientation penalty about 5x larger, and torque penalty about 4x larger.

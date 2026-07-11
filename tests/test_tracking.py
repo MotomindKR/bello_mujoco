@@ -10,6 +10,7 @@ from bello_mujoco.tracking import (
     metric_update_count,
     to_builtin,
     track_checkpoint_artifact,
+    track_video,
 )
 from bello_mujoco.tracking import track_metric_history
 from bello_mujoco.tracking import track_metric_snapshot
@@ -159,3 +160,37 @@ def test_track_checkpoint_artifact_logs_directory(monkeypatch, tmp_path) -> None
     assert artifacts[0].name == "checkpoint-name"
     assert artifacts[0].type == "model"
     assert artifacts[0].dirs == [str(checkpoint_dir)]
+
+
+def test_track_video_logs_encoded_file_without_fps(monkeypatch, tmp_path) -> None:
+    videos = []
+
+    class FakeVideo:
+        def __init__(self, path, **kwargs):
+            self.path = path
+            self.kwargs = kwargs
+            videos.append(self)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        SimpleNamespace(Video=FakeVideo),
+    )
+    video_path = tmp_path / "rollout.mp4"
+    video_path.write_bytes(b"not a real mp4")
+    run = FakeRun()
+
+    track_video(
+        run,
+        video_path,
+        name="train/rollout",
+        step=128,
+        fps=50,
+        caption="rollout",
+    )
+
+    assert run.logged == [
+        {"payload": {"train/rollout": videos[0]}, "step": 128}
+    ]
+    assert videos[0].path == str(video_path)
+    assert videos[0].kwargs == {"format": "mp4", "caption": "rollout"}

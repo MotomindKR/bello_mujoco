@@ -55,9 +55,15 @@ command_config:
     success_threshold: 0.75
 
 reward_config:
+  track_ang_vel_z:
+    weight: 1.0
+  ang_vel_xy:
+    weight: -0.2
+  flat_orientation:
+    weight: -10.0
   torque:
     enabled: true
-    weight: -0.000005
+    weight: -0.00002
   termination:
     enabled: true
     weight: -2.0

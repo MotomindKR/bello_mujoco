@@ -88,7 +88,10 @@ class Transition(NamedTuple):
     done: jax.Array
     terminal: jax.Array
     bootstrap_value: jax.Array
+    # Raw Gaussian sample used for PPO log-prob/ratio calculations.
     action: jax.Array
+    # Action actually sent to the env after optional env-level clipping.
+    env_action: jax.Array
     action_mean: jax.Array
     value: jax.Array
     reward: jax.Array
@@ -534,6 +537,7 @@ def action_diagnostics(
     policy: ActorCritic,
 ) -> dict[str, jax.Array]:
     action = transitions.action
+    env_action = transitions.env_action
     action_mean = transitions.action_mean
     log_std = policy_log_std(policy)
     metrics = {
@@ -548,12 +552,6 @@ def action_diagnostics(
     if not hasattr(env, "_action_to_ctrl"):
         return metrics
 
-    action_clip = getattr(env, "action_clip", None)
-    env_action = (
-        action
-        if action_clip is None
-        else jnp.clip(action, -float(action_clip), float(action_clip))
-    )
     metrics = {**metrics, "env_action_abs_max": jnp.max(jnp.abs(env_action))}
     flat_action = env_action.reshape((-1, env.action_size))
     ctrl = jax.vmap(env._action_to_ctrl)(flat_action)
@@ -594,12 +592,16 @@ def collect_rollout(
             policy,
             policy_obs,
             action_key,
-            action_clip=None if action_clip is None else float(action_clip),
             critic_obs=critic_policy_obs,
+        )
+        env_action = (
+            action
+            if action_clip is None
+            else jnp.clip(action, -float(action_clip), float(action_clip))
         )
         value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = step_env_batch(
-            env, state, action, env_key, command_ranges
+            env, state, env_action, env_key, command_ranges
         )
         next_critic_obs = critic_observation_batch(
             env, next_state, fallback_obs=next_obs
@@ -637,6 +639,7 @@ def collect_rollout(
             terminal,
             bootstrap_value,
             action,
+            env_action,
             action_mean,
             value,
             reward,

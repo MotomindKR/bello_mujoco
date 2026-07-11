@@ -100,6 +100,7 @@ def dummy_transitions(config: PPOConfig, obs_size: int, action_size: int) -> Tra
         terminal=jnp.zeros(shape, dtype=bool),
         bootstrap_value=jnp.zeros(shape, dtype=jnp.float32),
         action=action,
+        env_action=action,
         action_mean=action,
         value=jnp.zeros(shape, dtype=jnp.float32),
         reward=jnp.ones(shape, dtype=jnp.float32),
@@ -182,7 +183,7 @@ def test_sample_action_applies_configured_clip() -> None:
     assert jnp.all(action >= -0.01)
 
 
-def test_collect_rollout_stores_clipped_actions() -> None:
+def test_collect_rollout_stores_raw_actions_and_steps_clipped_env_actions() -> None:
     config = PPOConfig(
         total_timesteps=4,
         num_envs=2,
@@ -205,8 +206,9 @@ def test_collect_rollout_stores_clipped_actions() -> None:
         init_value_norm_state(),
     )
 
-    assert jnp.all(transitions.action <= env.action_clip)
-    assert jnp.all(transitions.action >= -env.action_clip)
+    assert bool(jnp.any(jnp.abs(transitions.action) > env.action_clip))
+    assert jnp.all(transitions.env_action <= env.action_clip)
+    assert jnp.all(transitions.env_action >= -env.action_clip)
     assert float(jnp.max(jnp.abs(transitions.action_mean))) == pytest.approx(100.0)
     assert float(jnp.max(jnp.abs(transitions.reward))) == pytest.approx(
         env.action_clip
@@ -347,6 +349,7 @@ def test_gae_and_loss_shapes() -> None:
             terminal=transitions.terminal.reshape((-1,)),
             bootstrap_value=transitions.bootstrap_value.reshape((-1,)),
             action=transitions.action.reshape((-1, action_size)),
+            env_action=transitions.env_action.reshape((-1, action_size)),
             action_mean=transitions.action_mean.reshape((-1, action_size)),
             value=transitions.value.reshape((-1,)),
             reward=transitions.reward.reshape((-1,)),
@@ -389,6 +392,7 @@ def test_gae_bootstraps_timeout_without_continuing_across_reset() -> None:
         terminal=jnp.asarray([[False], [False]]),
         bootstrap_value=jnp.asarray([[0.0], [10.0]], dtype=jnp.float32),
         action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        env_action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         action_mean=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         value=jnp.zeros((2, 1), dtype=jnp.float32),
         reward=jnp.zeros((2, 1), dtype=jnp.float32),
@@ -419,6 +423,7 @@ def test_gae_does_not_bootstrap_terminal_failure() -> None:
         terminal=jnp.asarray([[True]]),
         bootstrap_value=jnp.asarray([[10.0]], dtype=jnp.float32),
         action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        env_action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         action_mean=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         value=jnp.zeros((1, 1), dtype=jnp.float32),
         reward=jnp.zeros((1, 1), dtype=jnp.float32),
@@ -679,6 +684,7 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
         terminal=jnp.zeros((2, 2), dtype=bool),
         bootstrap_value=jnp.zeros((2, 2), dtype=jnp.float32),
         action=action,
+        env_action=jnp.clip(action, -1.0, 1.0),
         action_mean=action * 0.5,
         value=jnp.zeros((2, 2), dtype=jnp.float32),
         reward=jnp.ones((2, 2), dtype=jnp.float32),
@@ -727,6 +733,7 @@ def test_action_diagnostics_omits_control_stats_for_generic_envs() -> None:
         terminal=jnp.zeros((1, 2), dtype=bool),
         bootstrap_value=jnp.zeros((1, 2), dtype=jnp.float32),
         action=action,
+        env_action=action,
         action_mean=action,
         value=jnp.zeros((1, 2), dtype=jnp.float32),
         reward=jnp.ones((1, 2), dtype=jnp.float32),

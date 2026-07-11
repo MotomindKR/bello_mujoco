@@ -159,9 +159,10 @@ ctrl[policy_ctrl_indices] = default_ctrl + policy_action_scale * action
 ```
 
 Input actions are clipped by `ACTION_CLIP = 10.0`, but resulting control
-targets are not clipped to MuJoCo actuator ranges. Joints configured as
-`mode="hold"` are removed from the policy action vector but still use default
-actuator controls.
+targets are not clipped to MuJoCo actuator ranges. During PPO training, the raw
+Gaussian action/log-prob is stored for policy-ratio calculations and a clipped
+copy is sent to the environment. Joints configured as `mode="hold"` are removed
+from the policy action vector but still use default actuator controls.
 The locomotion lower-body residual scales are deliberately smaller for
 narrow-range joints: knee `0.06`, ankle pitch `0.12`, ankle roll `0.0125`, and
 waist yaw `0.07`.
