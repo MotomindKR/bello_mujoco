@@ -75,6 +75,17 @@ bello-train-ppo \
   config.update_epochs=1
 ```
 
+Launch a branch-pinned Vast.ai training run:
+
+```bash
+uv run bello-vast-train \
+  --branch main \
+  --train-config experiments/train/locomotion_hard.yaml \
+  --max-price 1.25
+```
+
+See [the Vast.ai workflow](docs/vast_ai.md) before renting an instance.
+
 Benchmark vectorized stepping:
 
 ```bash
@@ -101,6 +112,7 @@ uv run pytest
 ## Documentation
 
 - [Repository reference](docs/index.md)
+- [Vast.ai training workflow](docs/vast_ai.md)
 - [Contribution guide](CONTRIBUTION.md)
 - [Agent instructions](AGENTS.md)
 
@@ -129,6 +141,7 @@ Generated assets, Python environments, and runtime caches are local artifacts an
 .warp-cache/
 .wandb/
 wandb/
+.vast/
 checkpoints/
 outputs/
 /tmp/bello-mujoco-assets/<config-hash>/

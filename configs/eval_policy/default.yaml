@@ -4,6 +4,7 @@ eval_config:
   command: [0.0, 0.0, 0.0]
   steps: null
   stop_on_done: false
+  simulation_backend: mujoco
   stochastic_actions: false
   action_seed: 0
   gamepad:

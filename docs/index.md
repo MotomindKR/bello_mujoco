@@ -532,6 +532,7 @@ Primary eval flags:
 eval_config.command: [0.0, 0.0, 0.0]
 eval_config.steps: null
 eval_config.stop_on_done: false
+eval_config.simulation_backend: mujoco | mjx
 eval_config.gamepad.enabled: true
 eval_config.gamepad.controller_index: 0
 eval_config.gamepad.deadzone: 0.1
@@ -543,7 +544,8 @@ metadata. Use `override` only when the replacement runtime config keeps the
 checkpoint observation and action sizes unchanged.
 
 Detailed training behavior is documented in [training.md](training.md). Detailed
-live evaluation behavior is documented in [evaluation.md](evaluation.md).
+live evaluation behavior is documented in [evaluation.md](evaluation.md). The
+branch-pinned cloud workflow is documented in [vast_ai.md](vast_ai.md).
 
 ## Testing
 
@@ -576,6 +578,7 @@ uv run pytest tests/test_actuators.py tests/test_env.py tests/test_rewards.py -q
 uv run pytest tests/test_ppo.py tests/test_cartpole.py tests/test_cartpole_ppo_integration.py -q
 uv run pytest tests/test_checkpoint.py tests/test_tracking.py -q
 uv run pytest tests/test_eval_policy.py tests/test_train_ppo_tool.py -q
+uv run pytest tests/test_vast.py -q
 uv run bello-ppo-cartpole-smoke
 ```
 

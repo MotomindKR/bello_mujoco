@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from rerun.urdf import UrdfTree
@@ -18,6 +19,7 @@ from bello_mujoco.rerun_eval import (
 from bello_mujoco.terrain import TerrainConfig
 from bello_mujoco.train.ppo import PPOConfig
 import bello_mujoco.tools.eval_policy as eval_policy
+import bello_mujoco.rerun_eval as rerun_eval
 from bello_mujoco.tools.eval_policy import (
     EvalPolicyConfig,
     EvalRuntimeConfig,
@@ -72,6 +74,10 @@ def test_eval_runtime_configs_use_checkpoint_and_merge_overrides() -> None:
         (EvalPolicyConfig(steps=0), "steps must be positive"),
         (EvalPolicyConfig(command=(0.0, 0.0)), "command must have three"),
         (EvalPolicyConfig(action_seed=-1), "action_seed must be nonnegative"),
+        (
+            EvalPolicyConfig(simulation_backend="bad"),
+            "simulation_backend must be",
+        ),
         (
             EvalPolicyConfig(gamepad=GamepadConfig(controller_index=-1)),
             "controller_index must be nonnegative",
@@ -303,3 +309,174 @@ def test_eval_main_prepares_one_visual_env_and_starts_rerun(monkeypatch) -> None
     assert not calls["load"][1]["load_mjx"]
     assert calls["run"][2]["obs_stack_size"] == 3
     assert calls["run"][2]["gamepad_config"] == GamepadConfig()
+
+
+def test_eval_main_enables_mjx_for_single_visual_env(monkeypatch) -> None:
+    metadata = SimpleNamespace(
+        asset=AssetPrepConfig(),
+        env="env",
+        reward="reward",
+        command="command",
+        done="done",
+        warp="warp",
+        ppo=PPOConfig(policy=ActorCriticConfig(obs_stack_size=1)),
+        obs_size=4,
+        action_size=2,
+    )
+    calls = {}
+    monkeypatch.setattr(
+        eval_policy,
+        "restore_training_checkpoint",
+        lambda path: (SimpleNamespace(policy="policy"), metadata),
+    )
+    monkeypatch.setattr(
+        eval_policy,
+        "prepare_asset",
+        lambda config: SimpleNamespace(urdf_path="robot.urdf"),
+    )
+
+    class FakeEnv:
+        observation_size = 4
+        action_size = 2
+
+        @classmethod
+        def load_prepared(cls, prepared_asset, **kwargs):
+            calls["load"] = kwargs
+            return cls()
+
+    monkeypatch.setattr(eval_policy, "BelloLocomotionEnv", FakeEnv)
+    monkeypatch.setattr(
+        eval_policy,
+        "run_rerun_evaluation",
+        lambda env, policy, **kwargs: calls.setdefault("run", kwargs),
+    )
+
+    eval_policy.main("checkpoint", EvalPolicyConfig(simulation_backend="mjx"))
+
+    assert calls["load"]["batch_size"] == 1
+    assert calls["load"]["load_mjx"]
+    assert calls["run"]["simulation_backend"] == "mjx"
+
+
+def test_rerun_evaluation_steps_mjx_state_and_syncs_display(monkeypatch) -> None:
+    calls = {"steps": 0, "syncs": 0, "logs": 0, "closed": False}
+
+    class FakeState:
+        def __init__(self, *, command, episode_return=0.0, episode_length=0):
+            self.command = jnp.asarray(command, dtype=jnp.float32)
+            self.episode_return = jnp.asarray(episode_return, dtype=jnp.float32)
+            self.episode_length = jnp.asarray(episode_length, dtype=jnp.int32)
+            self.data = SimpleNamespace(ctrl=jnp.asarray([0.25], dtype=jnp.float32))
+
+        def replace(self, **updates):
+            return FakeState(
+                command=updates.get("command", self.command),
+                episode_return=self.episode_return,
+                episode_length=self.episode_length,
+            )
+
+    class FakeEnv:
+        model = SimpleNamespace(
+            mj_model=object(),
+            foot_body_ids=np.zeros(0, dtype=np.int32),
+        )
+        command_config = SimpleNamespace(
+            enabled=True,
+            lin_vel_x=(-1.0, 1.0),
+            lin_vel_y=(-1.0, 1.0),
+            ang_vel_yaw=(-1.0, 1.0),
+        )
+        observation_size = 2
+        action_size = 1
+        action_clip = 1.0
+        control_timestep = 0.0
+
+        def reset(self, command):
+            return FakeState(command=command), jnp.zeros(2, dtype=jnp.float32)
+
+        def step(self, state, action):
+            calls["steps"] += 1
+            assert state.command == pytest.approx([0.4, 0.0, 0.0])
+            assert action == pytest.approx([0.2])
+            next_state = FakeState(
+                command=state.command, episode_return=1.5, episode_length=1
+            )
+            info = {
+                "base_height": jnp.asarray(0.9),
+                "reward/test": jnp.asarray(1.5),
+                **{key: jnp.asarray(False) for key in rerun_eval.DONE_KEYS},
+            }
+            return (
+                next_state,
+                jnp.ones(2, dtype=jnp.float32),
+                jnp.asarray(1.5),
+                jnp.asarray(False),
+                info,
+            )
+
+    class FakeGamepad:
+        def __init__(self, config, command_ranges):
+            pass
+
+        def poll(self):
+            return rerun_eval.GamepadInput(np.zeros(3, dtype=np.float32), False)
+
+        def close(self):
+            calls["closed"] = True
+
+    class FakeLogger:
+        def __init__(self, env, urdf_path):
+            pass
+
+        def start(self):
+            pass
+
+        def log_step(self, **kwargs):
+            calls["logs"] += 1
+            assert kwargs["ctrl"] == pytest.approx([0.25])
+            assert float(kwargs["state"].episode_return) == pytest.approx(1.5)
+
+        def log_event(self, message):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(rerun_eval, "GamepadCommandSource", FakeGamepad)
+    monkeypatch.setattr(rerun_eval, "RerunEvaluationLogger", FakeLogger)
+    monkeypatch.setattr(rerun_eval.jax, "jit", lambda function: function)
+    monkeypatch.setattr(
+        rerun_eval.mujoco,
+        "MjData",
+        lambda model: SimpleNamespace(ctrl=np.zeros(1, dtype=np.float32)),
+    )
+    monkeypatch.setattr(
+        rerun_eval,
+        "sync_mj_data",
+        lambda model, data, state: (
+            data.ctrl.__setitem__(slice(None), np.asarray(state.data.ctrl)),
+            calls.__setitem__("syncs", calls["syncs"] + 1),
+        ),
+    )
+    monkeypatch.setattr(
+        rerun_eval,
+        "apply_actor",
+        lambda policy, obs: jnp.asarray([0.2], dtype=jnp.float32),
+    )
+    monkeypatch.setattr(rerun_eval.time, "sleep", lambda seconds: None)
+
+    rerun_eval.run_rerun_evaluation(
+        FakeEnv(),
+        policy=object(),
+        urdf_path="robot.urdf",
+        command=(0.4, 0.0, 0.0),
+        gamepad_config=GamepadConfig(enabled=False),
+        steps=1,
+        stop_on_done=False,
+        simulation_backend="mjx",
+        obs_stack_size=1,
+        stochastic_actions=False,
+        action_seed=0,
+    )
+
+    assert calls == {"steps": 1, "syncs": 2, "logs": 1, "closed": True}

@@ -104,11 +104,7 @@ def track_video(
     # W&B ignores fps for already encoded file paths and emits a warning if it
     # is provided. The MP4 writer has already encoded the intended frame rate.
     run.log(
-        {
-            name: wandb.Video(
-                str(path), format=path.suffix.lstrip("."), caption=caption
-            )
-        },
+        {name: wandb.Video(str(path), format=path.suffix.lstrip("."), caption=caption)},
         step=step,
     )
 
@@ -129,9 +125,9 @@ def track_checkpoint_artifact(
     run.log_artifact(artifact)
 
 
-def close_run(run) -> None:
+def close_run(run, *, exit_code: int = 0) -> None:
     if run is not None:
-        run.finish()
+        run.finish(exit_code=exit_code)
 
 
 def to_builtin(value: Any) -> Any:

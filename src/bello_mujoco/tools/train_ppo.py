@@ -137,6 +137,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
     validate_ppo_config(config)
     validate_video_config(video_config)
     run = create_wandb_run(wandb_config) if not dry_run else None
+    succeeded = False
     try:
         env = BelloLocomotionEnv.load(
             asset_config,
@@ -217,6 +218,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     "params_leaves": len(jax.tree.leaves(state.policy)),
                 }
             )
+            succeeded = True
             return
 
         checkpoint_dir = (
@@ -288,8 +290,9 @@ def run_training(run_config: TrainingRunConfig) -> None:
         print(metrics)
         if checkpoint_dir is not None:
             print({"checkpoint_path": str(checkpoint_dir)})
+        succeeded = True
     finally:
-        close_run(run)
+        close_run(run, exit_code=0 if succeeded else 1)
 
 
 def train_update_loop(

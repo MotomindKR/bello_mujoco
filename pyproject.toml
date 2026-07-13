@@ -12,6 +12,7 @@ dependencies = [
   "jax>=0.6.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "jax[cuda13]>=0.6.0; sys_platform == 'linux'",
   "jaxtyping>=0.3.0",
+  "keyring>=25.6.0",
   "mujoco>=3.3.0",
   "mujoco-mjx[warp]>=3.3.0",
   "optax>=0.2.4",
@@ -21,6 +22,8 @@ dependencies = [
   "rlax>=0.1.7",
   "tqdm>=4.67.0",
   "trimesh>=4.6.0",
+  "tyro>=0.9.0",
+  "vastai>=0.2.0",
   "wandb>=0.28.0",
 ]
 
@@ -31,6 +34,7 @@ bello-benchmark-env = "bello_mujoco.tools.benchmark_env:entrypoint"
 bello-train-ppo = "bello_mujoco.tools.train_ppo:entrypoint"
 bello-eval-policy = "bello_mujoco.tools.eval_policy:entrypoint"
 bello-ppo-cartpole-smoke = "bello_mujoco.tools.ppo_cartpole_smoke:entrypoint"
+bello-vast-train = "bello_mujoco.tools.vast_train:entrypoint"
 
 [dependency-groups]
 dev = [

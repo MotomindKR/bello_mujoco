@@ -14,6 +14,20 @@ Rerun opens separately. Evaluation runs until Start, `Ctrl-C`,
 `eval_config.steps`, or a done condition with `stop_on_done=true`.
 It writes no MP4, W&B, or `.rrd` artifact; training MP4s remain unchanged.
 
+The default `mujoco` backend steps one CPU MuJoCo environment. To visualize a
+checkpoint through the MJX-Warp physics backend used by training, select the
+single-environment `mjx` backend:
+
+```bash
+uv run bello-eval-policy \
+  checkpoint_path=checkpoints/ppo_seed_0 \
+  eval_config.simulation_backend=mjx
+```
+
+MJX runs on the active JAX device. Rerun still receives a synchronized CPU
+`MjData` copy for scene transforms and diagnostics; that copy is not stepped and
+does not affect the rollout.
+
 ## Gamepad Controls
 
 SDL normalizes Xbox, DualShock/DualSense, and compatible controllers:
@@ -41,6 +55,7 @@ eval_config:
   command: [0.0, 0.0, 0.0]
   steps: null
   stop_on_done: false
+  simulation_backend: mujoco  # mujoco | mjx
   stochastic_actions: false
   action_seed: 0
   gamepad:
@@ -78,10 +93,11 @@ pause, scrub, and replay received data without pausing the live simulation.
 
 ## Runtime Behavior
 
-The evaluator loads one visual CPU MuJoCo model without MJX. Each real-time
-control step polls the controller, evaluates and clips the policy, advances
-MuJoCo by the configured decimation, computes done/contact/reward state, and
-streams transforms and telemetry. Done episodes reset automatically unless
+The evaluator loads one visual environment. The `mujoco` backend advances a CPU
+`MjData`; the `mjx` backend loads MJX-Warp with `batch_size=1` and advances an
+MJX state through `BelloLocomotionEnv.step`. Each real-time control step polls
+the controller, evaluates and clips the policy, advances the selected backend,
+and streams transforms and telemetry. Done episodes reset automatically unless
 `stop_on_done=true`; automatic and gamepad resets rebuild observation and
 contact memory.
 

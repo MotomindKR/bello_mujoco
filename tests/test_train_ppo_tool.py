@@ -129,8 +129,8 @@ def test_run_training_initializes_wandb_before_env_load(monkeypatch) -> None:
         events.append("env")
         raise RuntimeError("stop after env load")
 
-    def fake_close_run(run):
-        events.append(("close", run))
+    def fake_close_run(run, *, exit_code):
+        events.append(("close", run, exit_code))
 
     monkeypatch.setattr(train_ppo, "create_wandb_run", fake_create_wandb_run)
     monkeypatch.setattr(train_ppo.BelloLocomotionEnv, "load", fake_load)
@@ -144,7 +144,7 @@ def test_run_training_initializes_wandb_before_env_load(monkeypatch) -> None:
             )
         )
 
-    assert events == ["wandb", "env", ("close", "run")]
+    assert events == ["wandb", "env", ("close", "run", 1)]
 
 
 def test_validate_video_config_is_noop_when_disabled() -> None:

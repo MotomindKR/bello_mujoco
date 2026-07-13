@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
-import os
 from pathlib import Path
 import sys
 from typing import Literal
-
-os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import hydra
 from omegaconf import DictConfig
@@ -41,6 +38,7 @@ class EvalPolicyConfig:
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     steps: int | None = None
     stop_on_done: bool = False
+    simulation_backend: Literal["mujoco", "mjx"] = "mujoco"
     stochastic_actions: bool = False
     action_seed: int = 0
     gamepad: GamepadConfig = GamepadConfig()
@@ -73,7 +71,7 @@ def main(
         command_config=command_config,
         done_config=done_config,
         use_viewer_model=True,
-        load_mjx=False,
+        load_mjx=eval_config.simulation_backend == "mjx",
     )
     validate_checkpoint_shape(env, metadata)
     run_rerun_evaluation(
@@ -84,6 +82,7 @@ def main(
         gamepad_config=eval_config.gamepad,
         steps=eval_config.steps,
         stop_on_done=eval_config.stop_on_done,
+        simulation_backend=eval_config.simulation_backend,
         obs_stack_size=metadata.ppo.policy.obs_stack_size,
         stochastic_actions=eval_config.stochastic_actions,
         action_seed=eval_config.action_seed,
@@ -173,6 +172,11 @@ def validate_eval_config(config: EvalPolicyConfig) -> None:
     if len(config.command) != 3:
         raise ValueError(
             f"eval_config.command must have three values, got {config.command}"
+        )
+    if config.simulation_backend not in {"mujoco", "mjx"}:
+        raise ValueError(
+            "eval_config.simulation_backend must be 'mujoco' or 'mjx', got "
+            f"{config.simulation_backend!r}"
         )
     if config.action_seed < 0:
         raise ValueError(

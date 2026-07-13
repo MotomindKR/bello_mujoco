@@ -7,6 +7,7 @@ import jax.numpy as jnp
 
 from bello_mujoco.tracking import (
     WandbConfig,
+    close_run,
     create_wandb_run,
     log_config,
     to_builtin,
@@ -22,6 +23,7 @@ class FakeRun:
         self.logged = []
         self.artifacts = []
         self.finished = False
+        self.exit_code = None
 
     def log(self, payload, step=None) -> None:
         self.logged.append({"payload": payload, "step": step})
@@ -29,8 +31,9 @@ class FakeRun:
     def log_artifact(self, artifact) -> None:
         self.artifacts.append(artifact)
 
-    def finish(self) -> None:
+    def finish(self, *, exit_code=0) -> None:
         self.finished = True
+        self.exit_code = exit_code
 
 
 class FakeConfig:
@@ -86,6 +89,15 @@ def test_create_wandb_run_uses_thread_start_method(monkeypatch, tmp_path) -> Non
     assert run == "run"
     assert calls["settings"] == {"start_method": "thread"}
     assert calls["init"]["settings"].start_method == "thread"
+
+
+def test_close_run_reports_exit_code() -> None:
+    run = FakeRun()
+
+    close_run(run, exit_code=7)
+
+    assert run.finished
+    assert run.exit_code == 7
 
 
 def test_track_metric_snapshot_logs_specific_update_and_step() -> None:
@@ -176,8 +188,6 @@ def test_track_video_logs_encoded_file_without_fps(monkeypatch, tmp_path) -> Non
         caption="rollout",
     )
 
-    assert run.logged == [
-        {"payload": {"train/rollout": videos[0]}, "step": 128}
-    ]
+    assert run.logged == [{"payload": {"train/rollout": videos[0]}, "step": 128}]
     assert videos[0].path == str(video_path)
     assert videos[0].kwargs == {"format": "mp4", "caption": "rollout"}

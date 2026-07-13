@@ -16,6 +16,7 @@ __pycache__/
 
 .wandb/
 wandb/
+.vast/
 checkpoints/
 outputs/
 multirun/
