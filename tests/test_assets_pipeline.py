@@ -263,6 +263,7 @@ def test_actuator_force_observation_is_clamped_by_force_range(
 
 
 def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> None:
+    root = ET.parse(full_body_asset.urdf_path).getroot()
     model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
     expected = {
         "box_1": (
@@ -281,6 +282,20 @@ def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> 
             mujoco.mjtGeom.mjGEOM_CYLINDER,
             np.asarray([0.04, 0.025, 0.0]),
         ),
+    }
+    expected_rpy = {
+        "left": {
+            "box_1": np.asarray([1.57078922439, -0.000114262698, np.pi]),
+            "box_2": np.asarray([1.78022873463, -0.000114262698, np.pi]),
+            "cylinder_1": np.asarray([1.78022873463, -0.000114262698, np.pi]),
+            "cylinder_2": np.asarray([1.78022873463, -0.000114262698, np.pi]),
+        },
+        "right": {
+            "box_1": np.asarray([1.57078924875, 0.0, 0.0]),
+            "box_2": np.asarray([1.78022875899, 0.0, 0.0]),
+            "cylinder_1": np.asarray([1.78022875899, 0.0, 0.0]),
+            "cylinder_2": np.asarray([1.78022875899, 0.0, 0.0]),
+        },
     }
 
     for side in ("left", "right"):
@@ -301,6 +316,14 @@ def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> 
             assert geom_id >= 0
             assert model.geom_type[geom_id] == geom_type
             assert np.allclose(model.geom_size[geom_id], size)
+            origin = root.find(
+                f"./link[@name='{side}_ankle_roll_link']"
+                f"/collision[@name='{side}_ankle_roll_link_collision_{suffix}']"
+                "/origin"
+            )
+            assert origin is not None
+            rpy = np.fromstring(origin.attrib["rpy"], sep=" ")
+            assert np.allclose(rpy, expected_rpy[side][suffix])
 
 
 def test_box_viewer_model_makes_collision_geoms_transparent(

@@ -1369,3 +1369,12 @@ ankle instead of inheriting the left STL frame's 180-degree yaw displacement.
 
 The visual STL feet remain unchanged. Simulation contact now uses the primitive
 foot shapes consistently across `mesh`, `foot-mesh`, and `box` collision modes.
+
+## 2026-07-13 - Correct foot primitive tilt axis
+
+The supplied foot primitive tilt was initially composed as pitch because I
+assumed the foot's forward direction was local `+x`. The foot forward direction
+is local `+y`, so the `-15deg` sole-box tilt and `-3deg` toe/cylinder tilt are
+roll rotations in the STL-foot frame. Recomputed the URDF primitive `rpy` values
+for both full-body and lower-body sources while keeping the primitive centers
+and sizes unchanged.
