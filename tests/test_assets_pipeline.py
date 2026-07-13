@@ -274,6 +274,10 @@ def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> 
             mujoco.mjtGeom.mjGEOM_BOX,
             np.asarray([0.013, 0.02, 0.025]),
         ),
+        "box_3": (
+            mujoco.mjtGeom.mjGEOM_BOX,
+            np.asarray([0.053, 0.020975, 0.025]),
+        ),
         "cylinder_1": (
             mujoco.mjtGeom.mjGEOM_CYLINDER,
             np.asarray([0.04, 0.025, 0.0]),
@@ -287,12 +291,14 @@ def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> 
         "left": {
             "box_1": np.asarray([1.57078922439, -0.000114262698, np.pi]),
             "box_2": np.asarray([1.78022873463, -0.000114262698, np.pi]),
+            "box_3": np.asarray([1.78022873463, -0.000114262698, np.pi]),
             "cylinder_1": np.asarray([1.78022873463, -0.000114262698, np.pi]),
             "cylinder_2": np.asarray([1.78022873463, -0.000114262698, np.pi]),
         },
         "right": {
             "box_1": np.asarray([1.57078924875, 0.0, 0.0]),
             "box_2": np.asarray([1.78022875899, 0.0, 0.0]),
+            "box_3": np.asarray([1.78022875899, 0.0, 0.0]),
             "cylinder_1": np.asarray([1.78022875899, 0.0, 0.0]),
             "cylinder_2": np.asarray([1.78022875899, 0.0, 0.0]),
         },

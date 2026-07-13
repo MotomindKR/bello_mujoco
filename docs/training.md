@@ -170,7 +170,7 @@ Training uses the simulation MJCF; training videos use a separate viewer env
 loaded from the viewer MJCF.
 
 The ankle-roll foot collision in the source URDFs is represented by primitive
-geometry: two boxes and two cylinders per foot. The STL feet remain visual
+geometry: three boxes and two cylinders per foot. The STL feet remain visual
 meshes, but foot contact uses the primitive collision shapes in every collision
 mode.
 

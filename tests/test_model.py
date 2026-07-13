@@ -134,12 +134,12 @@ def test_training_model_uses_simplified_mesh_collision_profile(
         1 for geom_type in model.geom_type if geom_type == mujoco.mjtGeom.mjGEOM_PLANE
     )
 
-    assert model.ngeom == 46
+    assert model.ngeom == 48
     assert len(collision_mesh_geoms) == 38
     assert 100_000 < sum(collision_mesh_faces) < 150_000
     assert min(collision_mesh_faces) >= 1_000
     assert max(collision_mesh_faces) > 20_000
-    assert box_collision_count == 4
+    assert box_collision_count == 6
     assert cylinder_collision_count == 4
     assert plane_count == 0
     assert model.nexclude == 75
@@ -157,7 +157,7 @@ def test_viewer_model_adds_non_colliding_visual_meshes(
         and model.geom_conaffinity[geom_id] == 0
     ]
 
-    assert model.ngeom == 86
+    assert model.ngeom == 88
     assert len(visual_mesh_geoms) == 40
 
 

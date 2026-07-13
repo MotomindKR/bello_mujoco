@@ -138,6 +138,12 @@
                 <box size="0.026 0.04 0.05" />
             </geometry>
         </collision>
+        <collision name="left_ankle_roll_link_collision_box_3">
+            <origin xyz="-0.00011785 -0.05194043 0.07527129" rpy="1.78022873463 -0.000114262698 3.14159265359" />
+            <geometry>
+                <box size="0.106 0.04195 0.05" />
+            </geometry>
+        </collision>
         <collision name="left_ankle_roll_link_collision_cylinder_1">
             <origin xyz="-0.01311550613 -0.04758168901 0.09577886879" rpy="1.78022873463 -0.000114262698 3.14159265359" />
             <geometry>
@@ -268,6 +274,12 @@
             <origin xyz="0.0 0.04366335934 0.11541226661" rpy="1.78022875899 0.0 0.0" />
             <geometry>
                 <box size="0.026 0.04 0.05" />
+            </geometry>
+        </collision>
+        <collision name="right_ankle_roll_link_collision_box_3">
+            <origin xyz="0.0 0.0521818413 0.0753359601" rpy="1.78022875899 0.0 0.0" />
+            <geometry>
+                <box size="0.106 0.04195 0.05" />
             </geometry>
         </collision>
         <collision name="right_ankle_roll_link_collision_cylinder_1">

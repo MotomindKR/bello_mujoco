@@ -122,8 +122,8 @@ The training MJCF keeps the selected collision geoms as the robot geometry. The
 viewer MJCF injects visual mesh geoms and makes collision geoms transparent, so
 `collision_mode: box` still renders the visual robot surface.
 
-Foot collision is defined directly in the source URDFs with four primitives per
-ankle-roll link: two boxes and two cylinders. The STL foot meshes are visual
+Foot collision is defined directly in the source URDFs with five primitives per
+ankle-roll link: three boxes and two cylinders. The STL foot meshes are visual
 geometry only.
 
 Runtime terrain is added after robot asset generation. Source URDF/MJCF files do

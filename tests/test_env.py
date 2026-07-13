@@ -78,7 +78,7 @@ def test_model_exposes_contact_reward_sets(full_body_asset: PreparedAsset) -> No
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
 
     assert env.model.foot_body_ids.shape == (2,)
-    assert env.model.foot_geom_ids.shape == (8,)
+    assert env.model.foot_geom_ids.shape == (10,)
     assert env.model.terrain_geom_ids.shape == (1,)
     assert env.model.robot_geom_ids.size >= env.model.foot_geom_ids.size
     assert env.model.nonfoot_robot_geom_ids.size > env.model.foot_geom_ids.size

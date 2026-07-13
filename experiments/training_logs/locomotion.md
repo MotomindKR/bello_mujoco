@@ -1361,7 +1361,7 @@ sets `action_scale` explicitly.
 ## 2026-07-13 - Replace foot mesh collision with URDF primitives
 
 Moved foot collision from STL-derived meshes/boxes into the source URDFs. Each
-`*_ankle_roll_link` now has four collision primitives: two boxes and two
+`*_ankle_roll_link` originally had four collision primitives: two boxes and two
 cylinders. The primitive origins were converted from the supplied coordinates
 relative to the previous STL collision origin into link-frame URDF origins. The
 left foot mirrors the STL-frame x offsets so the primitives land under the left
@@ -1378,3 +1378,11 @@ is local `+y`, so the `-15deg` sole-box tilt and `-3deg` toe/cylinder tilt are
 roll rotations in the STL-foot frame. Recomputed the URDF primitive `rpy` values
 for both full-body and lower-body sources while keeping the primitive centers
 and sizes unchanged.
+
+## 2026-07-13 - Add mid-foot primitive box
+
+Added a third foot collision box per side, bringing each ankle-roll foot to five
+collision primitives: three boxes and two cylinders. The new box uses the
+supplied STL-frame center `(133.825, 24.7345, -866.018) mm`, size
+`(106, 41.95, 50) mm`, and the same `-3deg` local roll convention as the toe
+box/cylinders.
