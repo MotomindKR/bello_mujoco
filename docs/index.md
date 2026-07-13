@@ -17,7 +17,7 @@ The current stack is:
 - RL utilities: RLax dependency available for future reward/math work
 - Optimizer: Optax
 - Checkpointing: Orbax
-- Tracking/video: W&B, MuJoCo renderer, `imageio[ffmpeg]`
+- Tracking/video: W&B, Rerun evaluation, MuJoCo training renderer, `imageio[ffmpeg]`
 - Config CLI: Hydra over dataclasses
 - Package/env management: Nix shell plus uv-managed Python
 
@@ -509,9 +509,8 @@ Live evaluation entry point:
 bello-eval-policy
 ```
 
-The Nix shell also provides `bello-eval-policy-viewer` for live GUI evaluation.
-On Apple Silicon macOS it uses MuJoCo's `mjpython` launcher; on Linux it
-delegates to `bello-eval-policy`.
+The command spawns a Rerun Viewer and reads live commands from an
+SDL-compatible game controller.
 
 Evaluation root flags:
 
@@ -525,11 +524,10 @@ Primary eval flags:
 ```yaml
 eval_config.command: [0.0, 0.0, 0.0]
 eval_config.steps: null
-eval_config.realtime: true
 eval_config.stop_on_done: false
-eval_config.camera_config.mode: follow | fixed
-eval_config.reward_overlay.enabled: true
-eval_config.reward_overlay.position: top_right
+eval_config.gamepad.enabled: true
+eval_config.gamepad.controller_index: 0
+eval_config.gamepad.deadzone: 0.1
 eval_config.runtime.source: checkpoint | override
 ```
 

@@ -23,7 +23,6 @@ The shell hook:
 - activates `.venv`
 - keeps uv and Warp caches repo-local via `.uv-cache` and `.warp-cache`
 - exports `MUJOCO_GL=egl` on Linux and `MUJOCO_GL=glfw` on Apple Silicon macOS
-- provides `bello-eval-policy-viewer` for live MuJoCo viewer evaluation
 
 Editable checkouts use `configs/` and `assets/source/` from the repository.
 Built wheels include those directories as package data so installed console
@@ -85,11 +84,11 @@ bello-benchmark-env batch_size=512 step_count=5
 Run a live policy viewer:
 
 ```bash
-bello-eval-policy-viewer checkpoint_path=checkpoints/ppo_seed_0
+bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
 ```
 
-On Apple Silicon macOS this wrapper launches the eval module with MuJoCo's
-`mjpython` launcher. On Linux it delegates to `bello-eval-policy`.
+This spawns a Rerun Viewer and reads live velocity commands from an
+SDL-compatible game controller.
 
 Run the test and lint gate:
 
@@ -115,7 +114,8 @@ uv run pytest
 - PPO implementation: local PureJaxRL-style code
 - Tracking: W&B
 - Checkpointing: Orbax
-- Visualization/video: MuJoCo renderer/viewer, `imageio[ffmpeg]`
+- Evaluation visualization: Rerun
+- Training video: MuJoCo renderer, `imageio[ffmpeg]`
 - Config CLI: `hydra-core`
 
 ## Generated Files

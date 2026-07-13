@@ -3,35 +3,13 @@ checkpoint_path: null
 eval_config:
   command: [0.0, 0.0, 0.0]
   steps: null
-  realtime: true
   stop_on_done: false
   stochastic_actions: false
   action_seed: 0
-  camera_config:
-    mode: follow
-    distance: 3.0
-    azimuth: 135.0
-    elevation: -18.0
-    lookat_offset: [0.0, 0.0, 0.35]
-  reward_overlay:
+  gamepad:
     enabled: true
-    position: top_right
-    font_scale: small
-    precision: 3
-    max_reward_terms: 12
-    show_components: true
-  action_overlay:
-    enabled: true
-    max_actions: 13
-    bar_width: 12
-  joystick:
-    enabled: true
-    lin_vel_x_step: 0.05
-    lin_vel_y_step: 0.05
-    yaw_vel_step: 0.05
-    lin_vel_x_limit: [-1.0, 1.0]
-    lin_vel_y_limit: [-1.0, 1.0]
-    yaw_vel_limit: [-1.0, 1.0]
+    controller_index: 0
+    deadzone: 0.1
   runtime:
     source: checkpoint
 

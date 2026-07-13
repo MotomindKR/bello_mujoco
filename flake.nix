@@ -22,25 +22,10 @@
           config.allowUnfree = true;
         };
         mujocoGl = if pkgs.stdenv.isDarwin then "glfw" else "egl";
-        evalPolicyViewer = pkgs.writeShellApplication {
-          name = "bello-eval-policy-viewer";
-          text = ''
-            if [ "$(uname -s)" = "Darwin" ]; then
-              if ! command -v mjpython >/dev/null 2>&1; then
-                echo "mjpython not found; enter nix develop so uv sync can activate .venv" >&2
-                exit 127
-              fi
-              exec mjpython -m bello_mujoco.tools.eval_policy "$@"
-            fi
-
-            exec bello-eval-policy "$@"
-          '';
-        };
       in
       {
         devShells.default = pkgs.mkShell {
           packages = [
-            evalPolicyViewer
             pkgs.git
             pkgs.uv
           ];

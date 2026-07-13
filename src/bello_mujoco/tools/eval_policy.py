@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
-import math
 import os
 from pathlib import Path
+import sys
 from typing import Literal
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -12,20 +12,14 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import hydra
 from omegaconf import DictConfig
 
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
 from bello_mujoco.checkpoint import CheckpointMetadata, restore_training_checkpoint
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.policy import policy_observation_size
+from bello_mujoco.rerun_eval import GamepadConfig, run_rerun_evaluation
 from bello_mujoco.train.ppo import critic_observation_size
-from bello_mujoco.render import (
-    ActionOverlayConfig,
-    CameraConfig,
-    JoystickConfig,
-    RewardOverlayConfig,
-    launch_policy_viewer,
-)
 from bello_mujoco.sim import WarpConfig
 
 MISSING = object()
@@ -46,14 +40,10 @@ class EvalRuntimeConfig:
 class EvalPolicyConfig:
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     steps: int | None = None
-    realtime: bool = True
     stop_on_done: bool = False
     stochastic_actions: bool = False
     action_seed: int = 0
-    camera_config: CameraConfig = CameraConfig()
-    reward_overlay: RewardOverlayConfig = RewardOverlayConfig()
-    action_overlay: ActionOverlayConfig = ActionOverlayConfig()
-    joystick: JoystickConfig = JoystickConfig()
+    gamepad: GamepadConfig = GamepadConfig()
     runtime: EvalRuntimeConfig = EvalRuntimeConfig()
 
 
@@ -72,40 +62,28 @@ def main(
     asset_config, env_config, reward_config, command_config, done_config, warp = (
         eval_runtime_configs(metadata, eval_config.runtime)
     )
-    env = BelloLocomotionEnv.load(
-        asset_config,
+    prepared = prepare_asset(asset_config)
+    env = BelloLocomotionEnv.load_prepared(
+        prepared,
         warp=warp,
         batch_size=1,
         env_config=env_config,
-        reward_config=reward_config,
-        command_config=command_config,
-        done_config=done_config,
-        load_mjx=False,
-    )
-    validate_checkpoint_shape(env, metadata)
-    viewer_env = BelloLocomotionEnv.load(
-        asset_config,
-        warp=warp,
-        batch_size=1,
-        env_config=env_config,
+        actuator_config=asset_config.actuator_config,
         reward_config=reward_config,
         command_config=command_config,
         done_config=done_config,
         use_viewer_model=True,
         load_mjx=False,
     )
-    validate_checkpoint_shape(viewer_env, metadata)
-    launch_policy_viewer(
-        viewer_env,
+    validate_checkpoint_shape(env, metadata)
+    run_rerun_evaluation(
+        env,
         train_state.policy,
+        urdf_path=prepared.urdf_path,
         command=eval_config.command,
+        gamepad_config=eval_config.gamepad,
         steps=eval_config.steps,
-        realtime=eval_config.realtime,
         stop_on_done=eval_config.stop_on_done,
-        camera_config=eval_config.camera_config,
-        reward_overlay=eval_config.reward_overlay,
-        action_overlay=eval_config.action_overlay,
-        joystick_config=eval_config.joystick,
         obs_stack_size=metadata.ppo.policy.obs_stack_size,
         stochastic_actions=eval_config.stochastic_actions,
         action_seed=eval_config.action_seed,
@@ -196,58 +174,20 @@ def validate_eval_config(config: EvalPolicyConfig) -> None:
         raise ValueError(
             f"eval_config.command must have three values, got {config.command}"
         )
-    if config.camera_config.distance <= 0:
-        raise ValueError(
-            "eval_config.camera_config.distance must be positive, got "
-            f"{config.camera_config.distance}"
-        )
     if config.action_seed < 0:
         raise ValueError(
             f"eval_config.action_seed must be nonnegative, got {config.action_seed}"
         )
-    if config.reward_overlay.precision < 0:
+    if config.gamepad.controller_index < 0:
         raise ValueError(
-            "eval_config.reward_overlay.precision must be nonnegative, got "
-            f"{config.reward_overlay.precision}"
+            "eval_config.gamepad.controller_index must be nonnegative, got "
+            f"{config.gamepad.controller_index}"
         )
-    if config.reward_overlay.max_reward_terms < 0:
+    if not 0.0 <= config.gamepad.deadzone < 1.0:
         raise ValueError(
-            "eval_config.reward_overlay.max_reward_terms must be nonnegative, got "
-            f"{config.reward_overlay.max_reward_terms}"
+            "eval_config.gamepad.deadzone must be in [0, 1), got "
+            f"{config.gamepad.deadzone}"
         )
-    if config.action_overlay.max_actions < 0:
-        raise ValueError(
-            "eval_config.action_overlay.max_actions must be nonnegative, got "
-            f"{config.action_overlay.max_actions}"
-        )
-    if config.action_overlay.bar_width <= 0:
-        raise ValueError(
-            "eval_config.action_overlay.bar_width must be positive, got "
-            f"{config.action_overlay.bar_width}"
-        )
-    validate_joystick_config(config.joystick)
-
-
-def validate_joystick_config(config: JoystickConfig) -> None:
-    for name in ("lin_vel_x_step", "lin_vel_y_step", "yaw_vel_step"):
-        value = getattr(config, name)
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(
-                f"eval_config.joystick.{name} must be positive and finite, got "
-                f"{value}"
-            )
-    for name in ("lin_vel_x_limit", "lin_vel_y_limit", "yaw_vel_limit"):
-        bounds = getattr(config, name)
-        if len(bounds) != 2:
-            raise ValueError(
-                f"eval_config.joystick.{name} must have two values, got {bounds}"
-            )
-        low, high = bounds
-        if not math.isfinite(low) or not math.isfinite(high) or low > high:
-            raise ValueError(
-                f"eval_config.joystick.{name} must be finite and ordered, got "
-                f"{bounds}"
-            )
 
 
 def validate_checkpoint_shape(
@@ -265,7 +205,9 @@ def validate_checkpoint_shape(
             "eval runtime config produced policy observation_size="
             f"{expected_obs_size}, but checkpoint expects {metadata.obs_size}"
         )
-    metadata_critic_obs_size = getattr(metadata, "critic_obs_size", None) or metadata.obs_size
+    metadata_critic_obs_size = (
+        getattr(metadata, "critic_obs_size", None) or metadata.obs_size
+    )
     if expected_critic_obs_size != metadata_critic_obs_size:
         raise ValueError(
             "eval runtime config produced critic observation_size="
@@ -280,7 +222,18 @@ def validate_checkpoint_shape(
 
 
 def entrypoint() -> None:
+    sys.argv[1:] = [expand_checkpoint_override(arg) for arg in sys.argv[1:]]
     hydra_entrypoint()
+
+
+def expand_checkpoint_override(argument: str) -> str:
+    prefix = "checkpoint_path="
+    if not argument.startswith(prefix):
+        return argument
+    value = argument.removeprefix(prefix)
+    if not value.startswith("~"):
+        return argument
+    return prefix + str(Path(value).expanduser())
 
 
 @hydra.main(
@@ -294,7 +247,7 @@ def hydra_entrypoint(config: DictConfig) -> None:
         raise ValueError(
             "checkpoint_path must be set, e.g. checkpoint_path=checkpoints/ppo_seed_0"
         )
-    main(cfg.checkpoint_path, cfg.eval_config)
+    main(cfg.checkpoint_path.expanduser(), cfg.eval_config)
 
 
 if __name__ == "__main__":

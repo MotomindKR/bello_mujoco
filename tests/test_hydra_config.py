@@ -115,18 +115,18 @@ def test_eval_config_accepts_checkpoint_override() -> None:
     assert config.checkpoint_path.as_posix() == "checkpoints/ppo_seed_0"
 
 
-def test_eval_config_accepts_joystick_overrides() -> None:
+def test_eval_config_accepts_gamepad_overrides() -> None:
     config = structured_config(
         EvalToolConfig,
         compose_tool_config(
             "eval_policy",
             overrides=[
                 "checkpoint_path=checkpoints/ppo_seed_0",
-                "eval_config.joystick.enabled=false",
-                "eval_config.joystick.lin_vel_y_step=0.2",
+                "eval_config.gamepad.enabled=false",
+                "eval_config.gamepad.deadzone=0.2",
             ],
         ),
     )
 
-    assert not config.eval_config.joystick.enabled
-    assert config.eval_config.joystick.lin_vel_y_step == pytest.approx(0.2)
+    assert not config.eval_config.gamepad.enabled
+    assert config.eval_config.gamepad.deadzone == pytest.approx(0.2)
