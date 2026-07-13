@@ -59,6 +59,8 @@ command_config:
 reward_config:
   track_ang_vel_z:
     weight: 2.0
+  gait_contact:
+    weight: 2.0
   ang_vel_xy:
     weight: -0.2
   flat_orientation:

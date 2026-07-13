@@ -562,11 +562,15 @@ shape unless they opt into the pose regularizer.
 `gait_contact` rewards feet whose detected contact state matches the schedule
 from `env_config.gait`. It is disabled for near-standing commands by
 `command_speed_threshold`, matching the command-gated Unitree G1 gait reward
-shape. `foot_clearance` is a positive target-height reward for non-contact
-moving feet: lateral foot speed gates the term with `tanh_mult`, contacted feet
-are ignored, and `std` controls the exponential falloff around `target`. If all
-feet are contacted, or no non-contact foot is moving, the clearance term is
-zero. It is also disabled for near-standing commands by
+shape. The `locomotion_hard` recipe raises its weight from the package default
+of `0.5` to `2.0`; this increases the per-step advantage of matching both
+scheduled contacts over planted double support from `0.01` to `0.04` without
+applying gait pressure to stand-still commands. `foot_clearance` is a positive
+target-height reward for non-contact moving feet: lateral foot speed gates the
+term with `tanh_mult`, contacted feet are ignored, and `std` controls the
+exponential falloff around `target`. If all feet are contacted, or no
+non-contact foot is moving, the clearance term is zero. It is also disabled for
+near-standing commands by
 `command_speed_threshold`, so stand-still samples do not receive swing-clearance
 pressure.
 

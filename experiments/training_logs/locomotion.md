@@ -1386,3 +1386,42 @@ collision primitives: three boxes and two cylinders. The new box uses the
 supplied STL-frame center `(133.825, 24.7345, -866.018) mm`, size
 `(106, 41.95, 50) mm`, and the same `-3deg` local roll convention as the toe
 box/cylinders.
+
+## 2026-07-14 - Strengthen hard-locomotion gait pressure
+
+Repeated seed-0 launches of the unchanged hard-locomotion recipe produced
+different first-rollout contact counts under MJX-Warp, and earlier full runs
+split between alternating gait and near-constant double support. Three
+matched 520-update baseline repetitions all reached gait, but retained more
+foot contact than desired. Tested a single-variable ablation:
+
+```yaml
+reward_config:
+  gait_contact:
+    weight: 2.0  # from 0.5
+```
+
+At update 500, the three-run means changed as follows:
+
+```text
+                                  baseline       gait_contact=2.0
+mean_foot_contact/filtered:       0.6956         0.5938
+mean_reward/feet_air_time:        0.001157       0.002031
+mean_reward/track_lin_vel_xy:     0.07236        0.07063
+```
+
+All three stronger-gait repetitions entered the gait branch by update 100,
+with contact in `[0.6425, 0.6683]` and air-time reward in
+`[0.000548, 0.000726]`. The corresponding baseline ranges were
+`[0.7087, 0.7307]` and `[0.000206, 0.000350]`.
+
+Deterministic zero-command MJX-Warp rollouts from these early checkpoints still
+terminated before 600 steps, but did not regress against the matched baseline:
+baseline first-done steps were `98`, `218`, and `113`; stronger-gait first-done
+steps were `278`, `108`, and `117`. These checkpoints are too early to establish
+final stand-still quality, so long-run zero-command evaluation remains required.
+
+The weight remains command-gated at speed `> 0.10`, preserving the explicit
+standing-foot penalties for stand-still samples. No command distribution,
+entropy, curriculum, contact threshold, or PPO setting changed in this
+ablation.
