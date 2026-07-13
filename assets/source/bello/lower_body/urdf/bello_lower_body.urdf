@@ -126,10 +126,28 @@
                 <mesh filename="../meshes/left_ankle_roll_link.stl" scale="0.001 0.001 0.001" />
             </geometry>
         </visual>
-        <collision name="left_ankle_roll_link_collision">
-            <origin xyz="-0.13397118874641967 0.7781687253169265 -0.17274116763904332" rpy="1.832588612190118 -0.00011426269817962677 3.141592653589793" />
+        <collision name="left_ankle_roll_link_collision_box_1">
+            <origin xyz="-0.00012930994 -0.05575859058 -0.025029507" rpy="1.82407969321 0.0669251008332 2.88833254902" />
             <geometry>
-                <mesh filename="../meshes/left_ankle_roll_link.stl" scale="0.001 0.001 0.001" />
+                <box size="0.106 0.17007 0.05" />
+            </geometry>
+        </collision>
+        <collision name="left_ankle_roll_link_collision_box_2">
+            <origin xyz="-0.000113270073 -0.04342194783 0.1153475943" rpy="1.83225175021 0.013431480827 3.09101378271" />
+            <geometry>
+                <box size="0.026 0.04 0.05" />
+            </geometry>
+        </collision>
+        <collision name="left_ankle_roll_link_collision_cylinder_1">
+            <origin xyz="-0.01311550613 -0.04758168901 0.09577886879" rpy="1.83225175021 0.013431480827 3.09101378271" />
+            <geometry>
+                <cylinder radius="0.04" length="0.05" />
+            </geometry>
+        </collision>
+        <collision name="left_ankle_roll_link_collision_cylinder_2">
+            <origin xyz="0.0128844937 -0.04758168901 0.09577589796" rpy="1.83225175021 0.013431480827 3.09101378271" />
+            <geometry>
+                <cylinder radius="0.04" length="0.05" />
             </geometry>
         </collision>
     </link>
@@ -240,10 +258,28 @@
                 <mesh filename="../meshes/right_ankle_roll_link.stl" scale="0.001 0.001 0.001" />
             </geometry>
         </visual>
-        <collision name="right_ankle_roll_link_collision">
-            <origin xyz="-0.13382497731765536 -0.777927306787565 -0.17269180847454368" rpy="1.8325886365525432 -0.0 0.0" />
+        <collision name="right_ankle_roll_link_collision_box_1">
+            <origin xyz="0.0 0.05600000551 -0.02496483535" rpy="1.82405102257 0.0670357247094 -0.2532620235" />
             <geometry>
-                <mesh filename="../meshes/right_ankle_roll_link.stl" scale="0.001 0.001 0.001" />
+                <box size="0.106 0.17007 0.05" />
+            </geometry>
+        </collision>
+        <collision name="right_ankle_roll_link_collision_box_2">
+            <origin xyz="0.0 0.04366335934 0.11541226661" rpy="1.8322459972 0.0135455986331 -0.0505789484714" />
+            <geometry>
+                <box size="0.026 0.04 0.05" />
+            </geometry>
+        </collision>
+        <collision name="right_ankle_roll_link_collision_cylinder_1">
+            <origin xyz="-0.01299997732 0.047823101 0.09584205562" rpy="1.8322459972 0.0135455986331 -0.0505789484714" />
+            <geometry>
+                <cylinder radius="0.04" length="0.05" />
+            </geometry>
+        </collision>
+        <collision name="right_ankle_roll_link_collision_cylinder_2">
+            <origin xyz="0.01300002268 0.047823101 0.09584205562" rpy="1.8322459972 0.0135455986331 -0.0505789484714" />
+            <geometry>
+                <cylinder radius="0.04" length="0.05" />
             </geometry>
         </collision>
     </link>

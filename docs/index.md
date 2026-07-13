@@ -122,6 +122,10 @@ The training MJCF keeps the selected collision geoms as the robot geometry. The
 viewer MJCF injects visual mesh geoms and makes collision geoms transparent, so
 `collision_mode: box` still renders the visual robot surface.
 
+Foot collision is defined directly in the source URDFs with four primitives per
+ankle-roll link: two boxes and two cylinders. The STL foot meshes are visual
+geometry only.
+
 Runtime terrain is added after robot asset generation. Source URDF/MJCF files do
 not include ground.
 
@@ -164,14 +168,16 @@ Actions are residual position targets for policy actuators:
 ctrl[policy_ctrl_indices] = default_ctrl + policy_action_scale * action
 ```
 
-Input actions are clipped by `ACTION_CLIP = 10.0`, but resulting control
-targets are not clipped to MuJoCo actuator ranges. During PPO training, the raw
-Gaussian action/log-prob is stored for policy-ratio calculations and a clipped
-copy is sent to the environment. Joints configured as `mode="hold"` are removed
-from the policy action vector but still use default actuator controls.
-The locomotion lower-body residual scales are deliberately smaller for
-narrow-range joints: knee `0.06`, ankle pitch `0.12`, ankle roll `0.0125`, and
-waist yaw `0.07`.
+During PPO training, Bello stores the raw Gaussian action for policy-ratio
+calculations and sends a clipped copy to the environment with
+`action_clip=5.0`. Generated MuJoCo position actuators use
+`ctrllimited="false"` and `forcelimited="true"`: policy target commands are not
+actuator-clamped, but actuator force remains limited. Joints configured as
+`mode="hold"` are removed from the policy action vector but still use default
+actuator controls.
+By default, each policy action scale is `0.25 * actuator_ctrlrange_width`,
+where generated actuator `ctrlrange` comes from the configured soft limit when
+present. Zero action still requests the configured default pose.
 The knee soft target range starts at the hard lower joint limit, `0.0` rad,
 with the upper soft limit at `1.98968` rad.
 Default position-actuator gains are runtime `[kp, kv]` values. The full-body
@@ -260,6 +266,8 @@ foot_clearance
 foot_distance
 gait_contact
 feet_air_time
+standing_foot_vel
+standing_foot_air_time
 undesired_contact
 self_collision
 termination
@@ -277,7 +285,9 @@ tilt angle, not independent roll and pitch thresholds.
 `self_collision` penalizes active robot-robot contact slots above
 `contact.self_collision_force_threshold`. `feet_air_time` rewards first contact
 after a swing interval and is command-gated so near-zero commands can train
-standing without swing pressure. `invalid_action` penalizes requested actuator
+standing without swing pressure. `standing_foot_vel` and
+`standing_foot_air_time` add command-gated stand-still penalties for foot motion
+and accumulated foot air time. `invalid_action` penalizes requested actuator
 targets outside configured soft ranges as squared violations in policy action
 units, so small-scale joints receive comparable pressure to large-scale joints.
 
@@ -405,7 +415,6 @@ done_config: DoneConfig
 env_config: BelloEnvConfig
 checkpoint_config: CheckpointConfig
 wandb_config: WandbConfig
-metric_config: TrainingMetricConfig
 video_config: TrainingVideoConfig
 warp: WarpConfig
 dry_run: true
@@ -479,8 +488,6 @@ wandb_config.enabled: false
 wandb_config.project: bello-mujoco
 wandb_config.mode: online | offline | disabled
 wandb_config.dir: .wandb
-
-metric_config.stream_updates: true
 
 video_config.enabled: false
 video_config.every_updates: 100

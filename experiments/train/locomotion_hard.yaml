@@ -5,13 +5,15 @@ defaults:
   - _self_
 
 config:
-  total_timesteps: 600000000
+  total_timesteps: 1600000000
   num_envs: 2048
   num_steps: 24
   target_kl: 0.02
-  ent_coef: 0.01
+  ent_coef: 0.003
 
 env_config:
+  gait:
+    standing_command_threshold: 0.08
   spawn:
     root_xy_range: [-0.10, 0.10]
     root_yaw_range: [-0.30, 0.30]
@@ -40,23 +42,23 @@ env_config:
 
 command_config:
   enabled: true
-  lin_vel_x: [-0.05, 0.05]
-  lin_vel_y: [0.25, 0.55]
-  ang_vel_yaw: [-0.05, 0.05]
-  standing_probability: 0.10
+  lin_vel_x: [-0.15, 0.15]
+  lin_vel_y: [0.15, 0.60]
+  ang_vel_yaw: [-0.20, 0.20]
+  standing_probability: 0.20
   resample_seconds: 6.0
   curriculum:
     enabled: true
-    limit_lin_vel_x: [-0.25, 0.25]
-    limit_lin_vel_y: [0.10, 0.85]
-    limit_ang_vel_yaw: [-0.25, 0.25]
+    limit_lin_vel_x: [-0.50, 0.50]
+    limit_lin_vel_y: [0.00, 1.50]
+    limit_ang_vel_yaw: [-1.00, 1.00]
     expand_ang_vel_yaw: true
-    increment: 0.05
-    success_threshold: 0.75
+    increment: 0.025
+    success_threshold: 0.85
 
 reward_config:
   track_ang_vel_z:
-    weight: 1.0
+    weight: 2.0
   ang_vel_xy:
     weight: -0.2
   flat_orientation:
@@ -64,6 +66,14 @@ reward_config:
   torque:
     enabled: true
     weight: -0.00004
+  standing_foot_vel:
+    enabled: true
+    weight: -2.0
+    command_speed_threshold: 0.08
+  standing_foot_air_time:
+    enabled: true
+    weight: -3.0
+    command_speed_threshold: 0.08
   termination:
     enabled: true
     weight: -2.0

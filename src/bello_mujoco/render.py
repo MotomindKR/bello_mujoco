@@ -458,9 +458,11 @@ def mujoco_scaled(value: np.ndarray, scale: float) -> np.ndarray:
 
 def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.ndarray:
     ctrl = np.asarray(env.model.default_ctrl, dtype=np.float32).copy()
-    ctrl[env.model.policy_ctrl_indices] = (
-        ctrl[env.model.policy_ctrl_indices] + env.model.policy_action_scale * action
-    )
+    policy_indices = np.asarray(env.model.policy_ctrl_indices, dtype=np.int32)
+    action = np.asarray(action, dtype=np.float32)
+    if env.action_clip is not None:
+        action = np.clip(action, -env.action_clip, env.action_clip)
+    ctrl[policy_indices] = ctrl[policy_indices] + env.model.policy_action_scale * action
     return ctrl.astype(np.float32)
 
 

@@ -236,6 +236,16 @@ class FeetAirTimeRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class StandingFootVelRewardConfig(WeightedRewardConfig):
+    command_speed_threshold: float = 0.05
+
+
+@dataclass(frozen=True)
+class StandingFootAirTimeRewardConfig(WeightedRewardConfig):
+    command_speed_threshold: float = 0.05
+
+
+@dataclass(frozen=True)
 class UndesiredContactRewardConfig(WeightedRewardConfig):
     pass
 
@@ -288,6 +298,12 @@ class RewardConfig:
     feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(
         enabled=False, weight=0.2
     )
+    standing_foot_vel: StandingFootVelRewardConfig = StandingFootVelRewardConfig(
+        enabled=False, weight=-1.0
+    )
+    standing_foot_air_time: StandingFootAirTimeRewardConfig = (
+        StandingFootAirTimeRewardConfig(enabled=False, weight=-1.0)
+    )
     undesired_contact: UndesiredContactRewardConfig = UndesiredContactRewardConfig(
         weight=-1.0
     )
@@ -305,6 +321,8 @@ class RewardConfig:
             or self.foot_clearance.enabled
             or self.gait_contact.enabled
             or self.feet_air_time.enabled
+            or self.standing_foot_vel.enabled
+            or self.standing_foot_air_time.enabled
         )
 
     @property
@@ -426,8 +444,7 @@ def compute_velocity_reward(
     if foot_angular_speed is None:
         foot_angular_speed = jnp.zeros_like(foot_lateral_speed)
     foot_slip_speed = (
-        foot_lateral_speed
-        + config.foot_slip.angular_speed_scale * foot_angular_speed
+        foot_lateral_speed + config.foot_slip.angular_speed_scale * foot_angular_speed
     )
     foot_slip = jnp.sum(foot_contact * foot_slip_speed)
     foot_clearance_error = (foot_height - config.foot_clearance.target) ** 2
@@ -466,6 +483,18 @@ def compute_velocity_reward(
     feet_air_time = jnp.where(
         command_speed > config.feet_air_time.command_speed_threshold,
         feet_air_time,
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    standing_foot_vel = safe_mean(foot_lateral_speed_sq)
+    standing_foot_vel = jnp.where(
+        command_speed <= config.standing_foot_vel.command_speed_threshold,
+        standing_foot_vel,
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    standing_foot_air_time = safe_mean(foot_air_time)
+    standing_foot_air_time = jnp.where(
+        command_speed <= config.standing_foot_air_time.command_speed_threshold,
+        standing_foot_air_time,
         jnp.asarray(0.0, dtype=jnp.float32),
     )
     termination = done.astype(jnp.float32)
@@ -567,6 +596,16 @@ def compute_velocity_reward(
             config.feet_air_time.enabled,
             config.feet_air_time.weight,
             feet_air_time,
+        ),
+        "reward/standing_foot_vel": weighted_term(
+            config.standing_foot_vel.enabled,
+            config.standing_foot_vel.weight,
+            standing_foot_vel,
+        ),
+        "reward/standing_foot_air_time": weighted_term(
+            config.standing_foot_air_time.enabled,
+            config.standing_foot_air_time.weight,
+            standing_foot_air_time,
         ),
         "reward/undesired_contact": (
             weighted_term(
@@ -703,6 +742,22 @@ def validate_reward_config(config: RewardConfig) -> None:
                 "feet_air_time.command_speed_threshold must be nonnegative and "
                 f"finite, got {config.feet_air_time.command_speed_threshold}"
             )
+    if config.standing_foot_vel.enabled and (
+        not math.isfinite(config.standing_foot_vel.command_speed_threshold)
+        or config.standing_foot_vel.command_speed_threshold < 0
+    ):
+        raise ValueError(
+            "standing_foot_vel.command_speed_threshold must be nonnegative and "
+            f"finite, got {config.standing_foot_vel.command_speed_threshold}"
+        )
+    if config.standing_foot_air_time.enabled and (
+        not math.isfinite(config.standing_foot_air_time.command_speed_threshold)
+        or config.standing_foot_air_time.command_speed_threshold < 0
+    ):
+        raise ValueError(
+            "standing_foot_air_time.command_speed_threshold must be nonnegative and "
+            f"finite, got {config.standing_foot_air_time.command_speed_threshold}"
+        )
 
 
 def reward_terms(config: RewardConfig):
@@ -729,6 +784,8 @@ def reward_terms(config: RewardConfig):
         "foot_distance": config.foot_distance,
         "gait_contact": config.gait_contact,
         "feet_air_time": config.feet_air_time,
+        "standing_foot_vel": config.standing_foot_vel,
+        "standing_foot_air_time": config.standing_foot_air_time,
         "undesired_contact": config.undesired_contact,
         "self_collision": config.self_collision,
         "termination": config.termination,

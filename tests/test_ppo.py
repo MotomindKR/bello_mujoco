@@ -79,6 +79,10 @@ class ClippedActionEnv:
         return DummyRolloutState(next_obs), next_obs, reward, done, info
 
 
+class UnclippedActionEnv(ClippedActionEnv):
+    action_clip = None
+
+
 def small_config() -> PPOConfig:
     return PPOConfig(
         total_timesteps=32,
@@ -210,9 +214,34 @@ def test_collect_rollout_stores_raw_actions_and_steps_clipped_env_actions() -> N
     assert jnp.all(transitions.env_action <= env.action_clip)
     assert jnp.all(transitions.env_action >= -env.action_clip)
     assert float(jnp.max(jnp.abs(transitions.action_mean))) == pytest.approx(100.0)
-    assert float(jnp.max(jnp.abs(transitions.reward))) == pytest.approx(
-        env.action_clip
+    assert float(jnp.max(jnp.abs(transitions.reward))) == pytest.approx(env.action_clip)
+
+
+def test_collect_rollout_does_not_clip_env_actions_without_env_action_clip() -> None:
+    config = PPOConfig(
+        total_timesteps=4,
+        num_envs=2,
+        num_steps=2,
+        policy=ActorCriticConfig(obs_stack_size=1),
     )
+    env = UnclippedActionEnv()
+    obs = jnp.zeros((config.num_envs, env.observation_size), dtype=jnp.float32)
+    obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
+
+    _, transitions = collect_rollout(
+        env,
+        ConstantLargeActionPolicy(),
+        DummyRolloutState(obs),
+        obs_stack,
+        obs_stack,
+        jnp.zeros((3, 2), dtype=jnp.float32),
+        jax.random.PRNGKey(0),
+        config,
+        init_value_norm_state(),
+    )
+
+    assert jnp.allclose(transitions.env_action, transitions.action)
+    assert float(jnp.max(jnp.abs(transitions.reward))) > 1.0
 
 
 def test_observation_stack_repeats_shifts_and_resets_done_envs() -> None:

@@ -78,7 +78,7 @@ def test_model_exposes_contact_reward_sets(full_body_asset: PreparedAsset) -> No
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
 
     assert env.model.foot_body_ids.shape == (2,)
-    assert env.model.foot_geom_ids.shape == (2,)
+    assert env.model.foot_geom_ids.shape == (8,)
     assert env.model.terrain_geom_ids.shape == (1,)
     assert env.model.robot_geom_ids.size >= env.model.foot_geom_ids.size
     assert env.model.nonfoot_robot_geom_ids.size > env.model.foot_geom_ids.size
@@ -342,16 +342,22 @@ def test_policy_action_controls_all_default_actuators(
     )
 
 
-def test_policy_action_can_request_unclipped_controls(
+def test_policy_action_uses_reference_style_bounded_affine_targets(
     full_body_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
     action = jnp.full((env.action_size,), 10.0, dtype=jnp.float32)
     ctrl = env._action_to_ctrl(action)
-    ctrlrange = jnp.asarray(env.model.mj_model.actuator_ctrlrange)
     policy_indices = jnp.asarray(env.model.policy_ctrl_indices)
+    policy_ctrl = ctrl[policy_indices]
+    expected = (
+        jnp.asarray(env.model.default_ctrl)[policy_indices]
+        + jnp.asarray(env.model.policy_action_scale) * 5.0
+    )
 
-    assert bool(jnp.any(ctrl[policy_indices] > ctrlrange[policy_indices, 1]))
+    assert env.action_clip == 5.0
+    assert bool(jnp.allclose(policy_ctrl, expected))
+    assert not bool(jnp.any(jnp.asarray(env.model.mj_model.actuator_ctrllimited)))
 
 
 def test_reset_batch_broadcasts_command(full_body_asset: PreparedAsset) -> None:
@@ -957,7 +963,8 @@ def test_default_base_height_threshold_is_below_nominal_reset(
     state, _ = env.reset()
     base_height = float(env._base_height(state))
 
-    assert abs(base_height - env.reward_config.base_height.target) < 0.01
+    assert env.reward_config.base_height.target < base_height
+    assert base_height - env.reward_config.base_height.target < 0.05
     assert base_height > env.done_config.base_height.min_height
 
 
@@ -971,7 +978,7 @@ def test_step_batch_contact_rewards_are_world_local(
     )
     state, _ = env.reset_batch(2)
     root_z = env.model.root_qpos_adr + 2
-    qpos = state.data.qpos.at[0, root_z].set(0.2).at[1, root_z].set(2.0)
+    qpos = state.data.qpos.at[0, root_z].set(0.5).at[1, root_z].set(2.0)
     state = state.replace(data=state.data.replace(qpos=qpos))
 
     _, _, _, _, info = env.step_batch(

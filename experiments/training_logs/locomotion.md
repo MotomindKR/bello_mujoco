@@ -1078,7 +1078,7 @@ degree flexion-side buffer.
 ## 2026-07-11 - Make invalid-action pressure normalized and quadratic
 
 Changed `invalid_action` from a linear radian-space violation to a normalized
-squared violation:
+squared violation. This originally used the symmetric action scale:
 
 ```text
 target = default_ctrl + policy_action_scale * action
@@ -1090,7 +1090,8 @@ This makes the penalty depend on how far the requested target is outside the
 soft range in action units, so small-scale joints such as knees and ankles are
 not under-penalized relative to hips. Because the raw magnitude is now larger
 for severe out-of-range targets, the active locomotion recipe weights were reset
-from `-100.0` to `-1.0`.
+from `-100.0` to `-1.0`. The later asymmetric action mapper was removed, so
+`invalid_action` again uses this same linear action-scale target formula.
 
 ## 2026-07-11 - Separate PPO raw actions from clipped env actions
 
@@ -1112,6 +1113,33 @@ env_action = clip(raw_action, -env.action_clip, env.action_clip)
 `Transition.env_action` is the clipped action passed to `step_batch` and used
 for control saturation diagnostics. `action_abs_max` now reports the raw action
 magnitude, while `env_action_abs_max` reports the clipped environment action.
+
+## 2026-07-13 - Normalize Bello policy action range
+
+Changed Bello `ACTION_CLIP` from `10.0` to `2.0` and updated standing /
+locomotion policy joint `action_scale` values so a two-unit action can cover the
+configured soft-limit range:
+
+```text
+clipped_action in [-2, 2]
+negative_scale = min(action_scale, (default_ctrl - soft_low) / 2)
+positive_scale = min(action_scale, (soft_high - default_ctrl) / 2)
+target = default_ctrl + (positive_scale if action >= 0 else negative_scale) * action
+```
+
+This preserves `action=0` as the configured default pose while keeping clipped
+policy targets inside the configured soft range even when the default pose is
+off-center.
+
+The first hard run after this change, `bozou38g`, failed during update 1 with
+`nefc overflow` and nonfinite PPO metrics. That was expected in hindsight:
+`init_log_std: 0.0` sampled unit-std normalized actions in a much larger
+physical target space. Reduced locomotion startup exploration to
+`init_log_std: -1.5`, capped `max_log_std` at `-0.5`, lowered locomotion
+learning rate to `1e-4`, and lowered hard locomotion entropy pressure to
+`ent_coef: 0.003`. A one-update GPU smoke run with these settings completed
+without nonfinite metrics, with `approx_kl ~= 0.006` and
+`target_kl_exceeded = 0`.
 
 ## 2026-07-11 - Make orientation, yaw tracking, and torque more relevant in hard locomotion
 
@@ -1151,3 +1179,193 @@ Follow-up: torque was increased another 2x in `locomotion_hard.yaml`:
 reward_config:
   torque.weight: -0.00004
 ```
+
+## 2026-07-12 - Shorten hard locomotion run budget
+
+Reduced `experiments/train/locomotion_hard.yaml` from `2,400,000,000` to
+`600,000,000` requested env steps. With `num_envs: 2048` and `num_steps: 24`,
+this composes to `12,207` PPO updates, or `599,998,464` actual env steps after
+integer update rounding.
+
+## 2026-07-12 - Add standing foot penalties and broaden hard commands
+
+Added two near-zero-command standing penalties:
+
+```yaml
+reward_config:
+  standing_foot_vel:
+    enabled: true
+    weight: -2.0
+    command_speed_threshold: 0.08
+  standing_foot_air_time:
+    enabled: true
+    weight: -3.0
+    command_speed_threshold: 0.08
+```
+
+`standing_foot_vel` penalizes horizontal foot speed while standing.
+`standing_foot_air_time` penalizes accumulated foot air time while standing.
+Both are timestep-scaled continuous penalties and are gated off for non-standing
+commands.
+
+To reduce forward-only specialization in `locomotion_hard.yaml`, widened the
+initial command distribution and made the curriculum less dependent on a long
+run:
+
+```yaml
+command_config:
+  lin_vel_x: [-0.15, 0.15]
+  lin_vel_y: [0.15, 0.60]
+  ang_vel_yaw: [-0.20, 0.20]
+  standing_probability: 0.20
+  curriculum:
+    limit_lin_vel_x: [-0.50, 0.50]
+    limit_lin_vel_y: [0.00, 1.50]
+    limit_ang_vel_yaw: [-1.00, 1.00]
+    increment: 0.025
+    success_threshold: 0.85
+```
+
+Also increased `track_ang_vel_z.weight` from `1.0` to `2.0` so yaw commands are
+not dominated by forward velocity tracking.
+
+## 2026-07-13 - Bound normalized actions to soft control ranges
+
+Run `fjkrj9hp` survived the first update with the lower exploration settings but
+failed at update 156. The last finite summary was already physically unstable:
+`train/mean_reward/ang_vel_xy ~= -4348`, `joint_vel ~= -1579`,
+`joint_acc ~= -790`, `mean_episode_length ~= 49`, and `value_norm_std ~= 2e10`.
+`env_action_abs_max` was clipped at `2.0`, but `ctrl_margin_min ~= -1.74`,
+meaning a clipped normalized action could still request targets well outside
+the configured soft control range because default poses are off-center.
+
+Changed Bello action mapping so `0` still means the configured default pose,
+`-ACTION_CLIP` maps to the soft lower target, and `+ACTION_CLIP` maps to the
+soft upper target using asymmetric per-joint side scales. This keeps policy
+targets inside soft ranges even though the generated MJCF keeps
+`ctrllimited="false"`.
+
+Verification smoke:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train-ppo \
+  --config-dir "$PWD/experiments/train" \
+  --config-name locomotion_hard \
+  config.total_timesteps=9830400 \
+  wandb_config.enabled=false \
+  checkpoint_config.enabled=false \
+  video_config.enabled=false
+```
+
+Completed 200 PPO updates without `nefc overflow` or nonfinite PPO metrics.
+Final diagnostics included `ctrl_margin_min ~= 0.033`,
+`ctrl_saturation_fraction = 0`, `nonfinite_update = 0`,
+`mean_reward ~= 0.034`, and `value_norm_std ~= 2.22`.
+
+## 2026-07-13 - Restore linear action mapping with actuator ctrl limits
+
+The asymmetric side-scale mapper above kept controls inside soft ranges, but it
+made action scale kink at zero because positive and negative action directions
+could use different slopes. A no-env-clip variant was tested:
+
+```text
+raw_action = mean + std * noise
+ctrl_target = default_ctrl + policy_action_scale * raw_action
+```
+
+It failed a 200-update disabled-W&B smoke at update 59 with `nefc overflow` and
+a nonfinite PPO update, so raw unbounded actions are still not acceptable even
+with actuator control limits. A linear mapper with `action_clip=2.0` and
+`ctrllimited="true"` still failed at update 83, suggesting repeated hard
+requests against actuator limits remain destabilizing.
+
+Kept the simpler linear mapper, set Bello `action_clip=1.0`, and changed
+generated position actuators back to `ctrllimited="true"`. PPO still stores raw
+Gaussian actions/log-probs, but the environment receives a clipped action copy;
+MuJoCo/MJX then clamps requested actuator targets to `ctrlrange`. Force limits
+remain active through `forcelimited="true"`. The generated asset cache version
+was bumped so old `ctrllimited="false"` MJCFs are not reused silently.
+
+## 2026-07-13 - Align Bello action semantics with reference residual targets
+
+Inspection of Unitree RL Lab / Isaac Lab, legged-gym, and MuJoCo Playground
+showed the common locomotion convention is a bounded normalized action mapped as
+a residual joint-position target:
+
+```text
+bounded_action = clip(raw_action, -1, 1)
+ctrl_target = default_ctrl + action_scale * bounded_action
+```
+
+Unitree/IsaacLab uses `JointPositionActionCfg(... scale=0.25,
+use_default_offset=True)`. legged-gym clips actions in the env, applies
+`default_dof_pos + action_scale * action`, then clips torques. MuJoCo
+Playground's JAX PPO uses tanh-bounded actions and humanoid envs use
+`default_pose + action * action_scale`.
+
+Removed the Bello asymmetric side-scale compatibility path:
+
+```text
+negative_scale = min(action_scale, (default_ctrl - soft_low) / action_clip)
+positive_scale = min(action_scale, (soft_high - default_ctrl) / action_clip)
+```
+
+The env, MuJoCo renderer, diagnostics, and `invalid_action` reward now use the
+single clipped affine target formula. Generated MuJoCo position actuators stay
+`ctrllimited="false"` and `forcelimited="true"`; target saturation is no longer
+used as a safety layer. Lower-body action scales were reduced from full-soft
+range spans to conservative residual deltas:
+
+```text
+hip pitch/roll/yaw: 0.35 rad
+knee:               0.45 rad
+ankle pitch:        0.20 rad
+ankle roll:         0.06 rad
+waist yaw:          0.15 rad
+```
+
+## 2026-07-13 - Use Unitree/rsl_rl-style action scale as gain
+
+The previous `action_clip=1.0` setting made the reduced `action_scale` values a
+hard target-range cap. That is closer to tanh-normal MuJoCo Playground semantics
+than Unitree/IsaacLab/rsl_rl semantics. Unitree's `JointPositionActionCfg`
+interprets `scale=0.25` as a gain on the raw Gaussian action; it does not imply
+that only `default +/- 0.25` is reachable.
+
+Changed Bello `action_clip` from `1.0` to `5.0` while keeping the single affine
+mapper:
+
+```text
+env_action = clip(raw_action, -5, 5)
+ctrl_target = default_ctrl + policy_action_scale * env_action
+```
+
+This keeps a finite safety bound for PPO/MJX stability but lets policy actions
+use the configured action scales as gains, not as the full reachable joint
+target range.
+
+## 2026-07-13 - Derive default action scales from actuator ranges
+
+Removed the explicit lower-body policy `action_scale` values from the Python
+defaults and standing/locomotion recipes. Bello now uses the existing default
+rule for those joints:
+
+```text
+policy_action_scale = 0.25 * (actuator_ctrl_high - actuator_ctrl_low)
+```
+
+The generated actuator `ctrlrange` uses the configured soft limit when present,
+so action scales now follow the actual configured target range unless a joint
+sets `action_scale` explicitly.
+
+## 2026-07-13 - Replace foot mesh collision with URDF primitives
+
+Moved foot collision from STL-derived meshes/boxes into the source URDFs. Each
+`*_ankle_roll_link` now has four collision primitives: two boxes and two
+cylinders. The primitive origins were converted from the supplied coordinates
+relative to the previous STL collision origin into link-frame URDF origins. The
+left foot mirrors the STL-frame x offsets so the primitives land under the left
+ankle instead of inheriting the left STL frame's 180-degree yaw displacement.
+
+The visual STL feet remain unchanged. Simulation contact now uses the primitive
+foot shapes consistently across `mesh`, `foot-mesh`, and `box` collision modes.

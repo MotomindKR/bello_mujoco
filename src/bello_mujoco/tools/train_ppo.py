@@ -32,7 +32,6 @@ from bello_mujoco.tracking import (
     close_run,
     create_wandb_run,
     log_config,
-    track_metric_history,
     track_metric_snapshot,
     track_checkpoint_artifact,
     track_video,
@@ -45,7 +44,6 @@ from bello_mujoco.train.ppo import (
     effective_learning_rate_schedule,
     init_runner_state,
     init_train_state,
-    make_train,
     runner_train_state,
     update_runner_state,
     validate_ppo_config,
@@ -75,11 +73,6 @@ class TrainingVideoConfig:
 
 
 @dataclass(frozen=True)
-class TrainingMetricConfig:
-    stream_updates: bool = True
-
-
-@dataclass(frozen=True)
 class TrainingRunConfig:
     config: PPOConfig = PPOConfig()
     asset_config: AssetPrepConfig = AssetPrepConfig()
@@ -89,7 +82,6 @@ class TrainingRunConfig:
     env_config: BelloEnvConfig = BelloEnvConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
-    metric_config: TrainingMetricConfig = TrainingMetricConfig()
     video_config: TrainingVideoConfig = TrainingVideoConfig()
     warp: WarpConfig = WarpConfig()
     dry_run: bool = True
@@ -105,7 +97,6 @@ def main(
     env_config: BelloEnvConfig = BelloEnvConfig(),
     checkpoint_config: CheckpointConfig = CheckpointConfig(),
     wandb_config: WandbConfig = WandbConfig(),
-    metric_config: TrainingMetricConfig = TrainingMetricConfig(),
     video_config: TrainingVideoConfig = TrainingVideoConfig(),
     warp: WarpConfig = WarpConfig(),
     dry_run: bool = True,
@@ -121,7 +112,6 @@ def main(
             env_config=env_config,
             checkpoint_config=checkpoint_config,
             wandb_config=wandb_config,
-            metric_config=metric_config,
             video_config=video_config,
             warp=warp,
             dry_run=dry_run,
@@ -139,7 +129,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
     env_config = run_config.env_config
     checkpoint_config = run_config.checkpoint_config
     wandb_config = run_config.wandb_config
-    metric_config = run_config.metric_config
     video_config = run_config.video_config
     warp = run_config.warp
     dry_run = run_config.dry_run
@@ -245,7 +234,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "done": done_config,
                 "env_config": env_config,
                 "checkpoint": checkpoint_config,
-                "metric": metric_config,
                 "video": video_config,
                 "warp": warp,
                 "env": {
@@ -261,26 +249,16 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 },
             },
         )
-        stream_metrics = metric_config.stream_updates
-        if video_config.enabled or stream_metrics:
-            out = train_update_loop(
-                env,
-                render_env,
-                config,
-                rng,
-                video_config,
-                run,
-                jit,
-                stream_metrics=stream_metrics,
-            )
-        else:
-            train = make_train(config, env)
-            train = jax.jit(train) if jit else train
-            out = train(rng)
-
-        metrics = jax.tree_util.tree_map(
-            lambda x: x[-1] if getattr(x, "ndim", 0) > 0 else x, out["metrics"]
+        out = train_update_loop(
+            env,
+            render_env,
+            config,
+            rng,
+            video_config,
+            run,
+            jit,
         )
+        metrics = out["metrics"]
         if checkpoint_config.enabled:
             final_state = final_train_state(out, env, config)
             save_training_checkpoint(
@@ -307,13 +285,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     name=checkpoint_config.wandb_artifact_name or checkpoint_dir.name,
                     artifact_type=checkpoint_config.wandb_artifact_type,
                 )
-        if not stream_metrics and run is not None:
-            track_metric_history(
-                run,
-                out["metrics"],
-                samples_per_update=config.num_envs * config.num_steps,
-                context={"phase": "train"},
-            )
         print(metrics)
         if checkpoint_dir is not None:
             print({"checkpoint_path": str(checkpoint_dir)})
@@ -329,8 +300,6 @@ def train_update_loop(
     video_config: TrainingVideoConfig,
     run,
     jit: bool,
-    *,
-    stream_metrics: bool,
 ) -> dict:
     runner_state, static_policy, optimizer = init_runner_state(rng, env, config)
 
@@ -338,7 +307,7 @@ def train_update_loop(
         return update_runner_state(state, static_policy, optimizer, env, config)
 
     update_fn = jax.jit(update_fn) if jit else update_fn
-    metrics_history = []
+    last_metrics = None
     if video_config.render_initial:
         render_training_video(
             render_env,
@@ -354,16 +323,15 @@ def train_update_loop(
         metrics = jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
         update = int(jax.device_get(runner_state.update))
         raise_on_nonfinite_training_metrics(metrics, update)
-        metrics_history.append(metrics)
+        last_metrics = metrics
         env_steps = update * config.num_envs * config.num_steps
-        if stream_metrics and run is not None:
-            track_metric_snapshot(
-                run,
-                metrics,
-                env_steps=env_steps,
-                update=update,
-                context={"phase": "train"},
-            )
+        track_metric_snapshot(
+            run,
+            metrics,
+            env_steps=env_steps,
+            update=update,
+            context={"phase": "train"},
+        )
         if should_render_training_video(update, config.num_updates, video_config):
             render_training_video(
                 render_env,
@@ -374,9 +342,11 @@ def train_update_loop(
                 env_steps=env_steps,
                 obs_stack_size=config.policy.obs_stack_size,
             )
+    if last_metrics is None:
+        raise ValueError("PPO config produced zero updates")
     return {
         "runner_state": runner_state,
-        "metrics": stack_metric_history(metrics_history),
+        "metrics": last_metrics,
     }
 
 
@@ -455,10 +425,6 @@ def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:
         f"first_done_seconds={first_done_seconds:.2f}, "
         f"completed_episodes={completed}, terminal={terminal}, timeout={timeout}"
     )
-
-
-def stack_metric_history(metrics_history: list[dict[str, jax.Array]]) -> dict:
-    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *metrics_history)
 
 
 def raise_on_nonfinite_training_metrics(metrics: dict, update: int) -> None:

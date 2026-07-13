@@ -35,6 +35,9 @@ def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     assert model.policy_ctrl_indices.tolist() == list(range(35))
     assert len(model.hold_ctrl_indices) == 0
     assert model.policy_action_scale.shape == (35,)
+    ctrlrange = model.mj_model.actuator_ctrlrange[model.policy_ctrl_indices]
+    expected_scale = 0.25 * (ctrlrange[:, 1] - ctrlrange[:, 0])
+    assert np.allclose(model.policy_action_scale, expected_scale)
 
 
 def test_model_can_load_without_mjx_for_cpu_only_viewers(
@@ -121,16 +124,23 @@ def test_training_model_uses_simplified_mesh_collision_profile(
         if geom_type == mujoco.mjtGeom.mjGEOM_BOX
         and (model.geom_contype[geom_id] != 0 or model.geom_conaffinity[geom_id] != 0)
     )
+    cylinder_collision_count = sum(
+        1
+        for geom_id, geom_type in enumerate(model.geom_type)
+        if geom_type == mujoco.mjtGeom.mjGEOM_CYLINDER
+        and (model.geom_contype[geom_id] != 0 or model.geom_conaffinity[geom_id] != 0)
+    )
     plane_count = sum(
         1 for geom_type in model.geom_type if geom_type == mujoco.mjtGeom.mjGEOM_PLANE
     )
 
-    assert model.ngeom == 40
-    assert len(collision_mesh_geoms) == 40
+    assert model.ngeom == 46
+    assert len(collision_mesh_geoms) == 38
     assert 100_000 < sum(collision_mesh_faces) < 150_000
     assert min(collision_mesh_faces) >= 1_000
     assert max(collision_mesh_faces) > 20_000
-    assert box_collision_count == 0
+    assert box_collision_count == 4
+    assert cylinder_collision_count == 4
     assert plane_count == 0
     assert model.nexclude == 75
 
@@ -147,7 +157,7 @@ def test_viewer_model_adds_non_colliding_visual_meshes(
         and model.geom_conaffinity[geom_id] == 0
     ]
 
-    assert model.ngeom == 80
+    assert model.ngeom == 86
     assert len(visual_mesh_geoms) == 40
 
 
@@ -168,8 +178,7 @@ def test_loading_viewer_model_preserves_policy_contract(
         == sim_model.policy_ctrl_indices.tolist()
     )
     assert (
-        viewer_model.hold_ctrl_indices.tolist()
-        == sim_model.hold_ctrl_indices.tolist()
+        viewer_model.hold_ctrl_indices.tolist() == sim_model.hold_ctrl_indices.tolist()
     )
     assert np.allclose(viewer_model.policy_action_scale, sim_model.policy_action_scale)
     assert np.allclose(viewer_model.default_qpos, sim_model.default_qpos)

@@ -87,7 +87,6 @@ done_config: DoneConfig
 env_config: BelloEnvConfig
 checkpoint_config: CheckpointConfig
 wandb_config: WandbConfig
-metric_config: TrainingMetricConfig
 video_config: TrainingVideoConfig
 warp: WarpConfig
 dry_run: true
@@ -170,6 +169,11 @@ mode still displays the visual robot surface rather than opaque collision boxes.
 Training uses the simulation MJCF; training videos use a separate viewer env
 loaded from the viewer MJCF.
 
+The ankle-roll foot collision in the source URDFs is represented by primitive
+geometry: two boxes and two cylinders per foot. The STL feet remain visual
+meshes, but foot contact uses the primitive collision shapes in every collision
+mode.
+
 The default actuator config contains every tracked actuated Bello joint. Setting
 a joint to `mode: hold` removes it from the policy action vector while keeping
 its default control target in the environment. If a training YAML replaces a
@@ -192,10 +196,11 @@ These are MuJoCo position-actuator `[kp, kv]` values. They affect the torque
 generated from target-position error and joint velocity; they are separate from
 reward weights and action scales.
 
-Lower-body policy action scales convert normalized residual actions to joint
-target radians before actuator-range clipping. The locomotion defaults keep
-small-range joints away from immediate target saturation: knees use `0.06`,
-ankle pitch uses `0.12`, ankle roll uses `0.0125`, and waist yaw uses `0.07`.
+Policy action scales convert normalized residual actions to joint target
+radians. When a joint does not set `action_scale` explicitly, the generated
+model uses `default_action_scale_ratio * actuator_ctrlrange_width`; the default
+ratio is `0.25`, and generated actuator `ctrlrange` comes from the configured
+soft limit when present.
 The knee soft target range starts at the hard lower joint limit, `0.0` rad,
 and keeps the upper soft limit at `1.98968` rad.
 
@@ -499,6 +504,14 @@ reward_config:
     min_air_time: 0.20
     max_air_time: 0.60
     command_speed_threshold: 0.05
+  standing_foot_vel:
+    enabled: false
+    weight: -1.0
+    command_speed_threshold: 0.05
+  standing_foot_air_time:
+    enabled: false
+    weight: -1.0
+    command_speed_threshold: 0.05
   undesired_contact:
     enabled: true
     weight: -1.0
@@ -511,12 +524,13 @@ reward_config:
 ```
 
 Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
-`foot_distance`, `gait_contact`, and `feet_air_time`. `foot_distance` rewards
-the horizontal distance between the two foot bodies. Terrain-contact metadata is
-required for the contact-dependent foot terms and for `undesired_contact` when
-terrain is enabled. Robot collision-geom metadata is required for
-`self_collision`. Contact-dependent foot terms use the debounced foot-contact
-signal from `env_config.contact`.
+`foot_distance`, `gait_contact`, `feet_air_time`, `standing_foot_vel`, and
+`standing_foot_air_time`. `foot_distance` rewards the horizontal distance
+between the two foot bodies. Terrain-contact metadata is required for the
+contact-dependent foot terms and for `undesired_contact` when terrain is
+enabled. Robot collision-geom metadata is required for `self_collision`.
+Contact-dependent foot terms use the debounced foot-contact signal from
+`env_config.contact`.
 
 `track_lin_vel_xy` uses yaw-frame linear velocity, matching the Unitree
 locomotion reward shape. `link` selects the body whose linear velocity is
@@ -532,11 +546,10 @@ penalizes absolute actuator force times joint velocity; `torque` penalizes
 actuator-force magnitude directly. `joint_limit` sums absolute violation of the
 actuator control ranges, which are the configured soft limits when a joint
 provides one. `invalid_action` sums squared requested-target violation in action
-units: target-range violation in radians is divided by that actuator's
-`policy_action_scale` before squaring. Requested controls are allowed to exceed
-MuJoCo actuator ranges, while actuator force limits still cap motor output, so
-`invalid_action` is the reward term that discourages asking for targets beyond
-the configured soft range.
+units using the same clipped affine action scale as the action-to-control mapper.
+Bello sends a clipped copy of the raw Gaussian action to MuJoCo/MJX. Generated
+position actuators leave control targets unclamped (`ctrllimited="false"`) while
+keeping actuator force limits enabled.
 `foot_slip` sums contacted-foot lateral speed plus
 `angular_speed_scale * angular_speed`, so rotating a planted foot is treated as
 slip.
@@ -562,6 +575,11 @@ first contact after that swing interval, it rewards the completed air time
 above `min_air_time`, clipped by `max_air_time`. It encourages actual swing
 phases rather than foot dragging, and is disabled for near-standing commands by
 `command_speed_threshold`.
+
+`standing_foot_vel` and `standing_foot_air_time` are near-zero-command
+penalties. They are active only when command speed is at or below their
+`command_speed_threshold`, and discourage stepping in place by penalizing
+horizontal foot speed and accumulated foot air time during stand-still samples.
 
 `self_collision` counts active robot-robot contact slots whose normal force is
 above `env_config.contact.self_collision_force_threshold`. It is timestep
@@ -650,24 +668,11 @@ wandb_config:
   tags: []
 ```
 
-### TrainingMetricConfig
-
-```yaml
-metric_config:
-  stream_updates: true
-```
-
-When `wandb_config.enabled=true` and `metric_config.stream_updates=true`,
-training runs as a Python loop over JIT-compiled PPO updates and logs scalar
-metrics after every PPO update. With the `rtx5090_4096x256` preset, that means
-one W&B metric point every `4096 * 256 = 1048576` environment steps.
-
-The per-update Python loop is wrapped with a tqdm `PPO updates` progress bar.
-This also covers training-video runs, because video rendering needs the
-host-side update loop.
-
-If `stream_updates=false`, the fully JIT-compiled training function runs first
-and metrics are uploaded to W&B only after training returns.
+Training always runs as a Python loop over JIT-compiled PPO updates. When
+`wandb_config.enabled=true`, scalar metrics are logged after every PPO update.
+The per-update loop is wrapped with a tqdm `PPO updates` progress bar. The loop
+keeps only the latest metrics in host memory, so long runs do not accumulate a
+full metric history locally.
 
 ### TrainingVideoConfig
 
@@ -811,12 +816,16 @@ log-probs only when the policy helper is called with an explicit action clip.
 The PPO training loop stores the raw sampled Gaussian action/log-prob for PPO
 ratios and passes a clipped copy to environments that expose `action_clip`.
 
-The locomotion env also clips input actions defensively with `ACTION_CLIP`.
-Actuator control targets are not clipped to MuJoCo ctrl ranges; generated
-position actuators have `ctrllimited="false"`. Motor force limits remain active
-through generated `forcerange` / `forcelimited="true"` actuator attributes.
+The Bello locomotion env exposes `action_clip=5.0`; its PPO rollout path stores
+raw Gaussian actions/log-probs and sends a clipped copy to the environment.
+Bello maps the clipped action linearly to position-actuator control targets with
+`default_ctrl + policy_action_scale * clipped_action`, matching the common
+legged-gym/IsaacLab residual-position convention. Generated position actuators
+use `ctrllimited="false"` so MuJoCo/MJX does not introduce actuator-layer target
+saturation. Motor force limits remain active through generated `forcerange` /
+`forcelimited="true"` actuator attributes.
 
-CartPole exposes `action_clip=1.0`; Bello exposes `action_clip=10.0`.
+CartPole exposes `action_clip=1.0`; Bello exposes `action_clip=5.0`.
 
 ## Metrics
 
@@ -903,14 +912,14 @@ gradients, updates, or next parameters became nonfinite. Such minibatches are
 not applied, and the training CLI raises immediately instead of continuing with
 an invalid policy state.
 
-PPO stores raw Gaussian sampled actions for log-prob ratios. The environment
-receives a clipped copy when it defines `action_clip`, and
-`env_action_abs_max` reports that clipped action magnitude.
-`ctrl_saturation_fraction` is computed from the clipped env action and reports
-the fraction of policy control targets at or beyond their MuJoCo ctrl-range
-bounds. `ctrl_margin_min` is the smallest signed distance to either bound across
-sampled policy controls in the rollout; it is negative when requested targets
-exceed the soft range.
+PPO stores raw Gaussian sampled actions for log-prob ratios. Environments that
+define `action_clip` receive a clipped copy; Bello uses this path with
+`action_clip=5.0`, so `env_action_abs_max` reports the clipped action magnitude.
+For Bello, `ctrl_saturation_fraction` reports the fraction of requested policy
+control targets at or beyond their configured MuJoCo ctrl-range bounds.
+`ctrl_margin_min` is the smallest signed distance to
+either bound across sampled policy controls in the rollout; it is negative when
+requested targets exceed the soft range.
 
 ## Checkpoints
 
@@ -989,7 +998,7 @@ When enabled:
 
 - the full run config is logged to `run.config`
 - training metrics are logged with a `train/` metric-name prefix
-- metrics stream after every PPO update when `metric_config.stream_updates=true`
+- metrics stream after every PPO update
 - the W&B logging step is environment steps
 - training videos can be logged when `video_config.enabled` and
   `video_config.log_wandb` are true

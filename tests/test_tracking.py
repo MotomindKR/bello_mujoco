@@ -9,12 +9,10 @@ from bello_mujoco.tracking import (
     WandbConfig,
     create_wandb_run,
     log_config,
-    metric_update_count,
     to_builtin,
     track_checkpoint_artifact,
     track_video,
 )
-from bello_mujoco.tracking import track_metric_history
 from bello_mujoco.tracking import track_metric_snapshot
 
 
@@ -88,44 +86,6 @@ def test_create_wandb_run_uses_thread_start_method(monkeypatch, tmp_path) -> Non
     assert run == "run"
     assert calls["settings"] == {"start_method": "thread"}
     assert calls["init"]["settings"].start_method == "thread"
-
-
-def test_track_metric_history_logs_one_payload_per_update() -> None:
-    run = FakeRun()
-    metrics = {
-        "mean_reward": jnp.asarray([1.0, 2.0], dtype=jnp.float32),
-        "loss": jnp.asarray([0.5, 0.25], dtype=jnp.float32),
-    }
-
-    track_metric_history(
-        run,
-        metrics,
-        samples_per_update=8,
-    )
-
-    assert metric_update_count(metrics) == 2
-    assert run.logged == [
-        {"payload": {"update": 1, "loss": 0.5, "mean_reward": 1.0}, "step": 8},
-        {"payload": {"update": 2, "loss": 0.25, "mean_reward": 2.0}, "step": 16},
-    ]
-
-
-def test_track_metric_history_can_prefix_context() -> None:
-    run = FakeRun()
-    metrics = {
-        "mean_reward": jnp.asarray([1.0], dtype=jnp.float32),
-    }
-
-    track_metric_history(
-        run,
-        metrics,
-        samples_per_update=8,
-        context={"phase": "train"},
-    )
-
-    assert run.logged == [
-        {"payload": {"update": 1, "train/mean_reward": 1.0}, "step": 8}
-    ]
 
 
 def test_track_metric_snapshot_logs_specific_update_and_step() -> None:

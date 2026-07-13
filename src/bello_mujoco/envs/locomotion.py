@@ -16,7 +16,7 @@ import numpy as np
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import (
-    ACTION_CLIP,
+    BELLO_ACTION_CLIP,
     CONTROL_DECIMATION,
     MAX_EPISODE_STEPS,
     SIM_TIMESTEP,
@@ -466,8 +466,8 @@ class BelloLocomotionEnv:
         return self.config.terrain
 
     @property
-    def action_clip(self) -> float:
-        return ACTION_CLIP
+    def action_clip(self) -> float | None:
+        return BELLO_ACTION_CLIP
 
     @property
     def action_size(self) -> int:
@@ -758,7 +758,9 @@ class BelloLocomotionEnv:
         self, state: BelloState, action: jax.Array
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
         action = jnp.clip(
-            jnp.asarray(action, dtype=jnp.float32), -ACTION_CLIP, ACTION_CLIP
+            jnp.asarray(action, dtype=jnp.float32),
+            -BELLO_ACTION_CLIP,
+            BELLO_ACTION_CLIP,
         )
         data = state.data.replace(ctrl=self._action_to_ctrl(action))
         data = jax.lax.fori_loop(
@@ -869,7 +871,9 @@ class BelloLocomotionEnv:
                 jax.random.split(rng, 5)
             )
         action = jnp.clip(
-            jnp.asarray(action, dtype=jnp.float32), -ACTION_CLIP, ACTION_CLIP
+            jnp.asarray(action, dtype=jnp.float32),
+            -BELLO_ACTION_CLIP,
+            BELLO_ACTION_CLIP,
         )
         ctrl = jax.vmap(self._action_to_ctrl)(action)
         data = state.data.replace(
@@ -1133,10 +1137,14 @@ class BelloLocomotionEnv:
 
     def _action_to_ctrl(self, action: jax.Array) -> jax.Array:
         default = jnp.asarray(self.model.default_ctrl)
-        scale = self._action_scale()
+        action = jnp.clip(
+            jnp.asarray(action, dtype=jnp.float32),
+            -BELLO_ACTION_CLIP,
+            BELLO_ACTION_CLIP,
+        )
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
         return default.at[policy_indices].set(
-            default[policy_indices] + scale * action
+            default[policy_indices] + self._action_scale() * action
         )
 
     def _action_scale(self) -> jax.Array:
@@ -1535,7 +1543,9 @@ class BelloLocomotionEnv:
         return sum(sanitized.values(), jnp.zeros_like(reward)), sanitized
 
     def _gait_frequency(self, command: jax.Array) -> jax.Array:
-        base_frequency = 1.0 / jnp.asarray(self.config.gait.cycle_time, dtype=jnp.float32)
+        base_frequency = 1.0 / jnp.asarray(
+            self.config.gait.cycle_time, dtype=jnp.float32
+        )
         command_speed = jnp.linalg.norm(command[:2])
         frequency = (
             base_frequency
@@ -1644,7 +1654,10 @@ class BelloLocomotionEnv:
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         foot_body_ids = jnp.asarray(self.model.foot_body_ids)
         foot_count = foot_body_ids.shape[0]
-        if self.model.terrain_geom_ids.size == 0 and self.model.robot_geom_ids.size == 0:
+        if (
+            self.model.terrain_geom_ids.size == 0
+            and self.model.robot_geom_ids.size == 0
+        ):
             return (
                 jnp.zeros(foot_count, dtype=jnp.float32),
                 self._foot_height(state),

@@ -228,7 +228,7 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     )
 
 
-def test_generated_actuators_are_force_limited_from_effort(
+def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort(
     full_body_asset: PreparedAsset,
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
@@ -260,6 +260,47 @@ def test_actuator_force_observation_is_clamped_by_force_range(
 
     assert data.actuator_force[actuator_id] == pytest.approx(5.5)
     assert data.qfrc_actuator[dof_id] == pytest.approx(5.5)
+
+
+def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> None:
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    expected = {
+        "box_1": (
+            mujoco.mjtGeom.mjGEOM_BOX,
+            np.asarray([0.053, 0.085035, 0.025]),
+        ),
+        "box_2": (
+            mujoco.mjtGeom.mjGEOM_BOX,
+            np.asarray([0.013, 0.02, 0.025]),
+        ),
+        "cylinder_1": (
+            mujoco.mjtGeom.mjGEOM_CYLINDER,
+            np.asarray([0.04, 0.025, 0.0]),
+        ),
+        "cylinder_2": (
+            mujoco.mjtGeom.mjGEOM_CYLINDER,
+            np.asarray([0.04, 0.025, 0.0]),
+        ),
+    }
+
+    for side in ("left", "right"):
+        assert (
+            mujoco.mj_name2id(
+                model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                f"{side}_ankle_roll_link_collision",
+            )
+            == -1
+        )
+        for suffix, (geom_type, size) in expected.items():
+            geom_id = mujoco.mj_name2id(
+                model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                f"{side}_ankle_roll_link_collision_{suffix}",
+            )
+            assert geom_id >= 0
+            assert model.geom_type[geom_id] == geom_type
+            assert np.allclose(model.geom_size[geom_id], size)
 
 
 def test_box_viewer_model_makes_collision_geoms_transparent(
@@ -317,9 +358,7 @@ def test_box_viewer_model_makes_collision_geoms_transparent(
     collision_geom_id = mujoco.mj_name2id(
         model, mujoco.mjtObj.mjOBJ_GEOM, "base_collision"
     )
-    visual_geom_id = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_GEOM, "base_visual"
-    )
+    visual_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "base_visual")
 
     assert collision_geom_id >= 0
     assert visual_geom_id >= 0

@@ -11,13 +11,14 @@ config:
   total_timesteps: 50000000
   num_envs: 2048
   num_steps: 24
+  learning_rate: 0.0001
   target_kl: null
   ent_coef: 0.01
   policy:
     hidden_dims: [512, 256, 128]
     activation: elu
-    init_log_std: 0.0
-    max_log_std: 1.0
+    init_log_std: -1.5
+    max_log_std: -0.5
     obs_stack_size: 5
 
 env_config:

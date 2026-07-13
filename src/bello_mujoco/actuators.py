@@ -38,7 +38,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "left_hip_pitch_joint": JointActuatorConfig(
             mode="policy",
             default_pos=-0.325,
-            action_scale=0.35,
             soft_limit=(-1.41372, 1.41372),
             gains=(200.0, 5.0),
             effort_limit=120.0,
@@ -46,7 +45,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "right_hip_pitch_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.325,
-            action_scale=0.35,
             soft_limit=(-1.41372, 1.41372),
             gains=(200.0, 5.0),
             effort_limit=120.0,
@@ -54,7 +52,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "left_hip_roll_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.0,
-            action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
             effort_limit=60.0,
@@ -62,7 +59,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "right_hip_roll_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.0,
-            action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
             effort_limit=60.0,
@@ -70,7 +66,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "left_hip_yaw_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.125,
-            action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
             effort_limit=60.0,
@@ -78,7 +73,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "right_hip_yaw_joint": JointActuatorConfig(
             mode="policy",
             default_pos=-0.125,
-            action_scale=0.25,
             soft_limit=(-1.41372, 1.41372),
             gains=(150.0, 5.0),
             effort_limit=60.0,
@@ -86,7 +80,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "left_knee_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.45,
-            action_scale=0.06,
             soft_limit=(0.0, 1.98968),
             gains=(220.0, 6.0),
             effort_limit=120.0,
@@ -94,7 +87,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "right_knee_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.45,
-            action_scale=0.06,
             soft_limit=(0.0, 1.98968),
             gains=(220.0, 6.0),
             effort_limit=120.0,
@@ -102,7 +94,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "left_ankle_pitch_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.30,
-            action_scale=0.12,
             soft_limit=(-0.44506, 0.96866),
             gains=(22.0, 1.0),
             effort_limit=36.0,
@@ -110,7 +101,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "right_ankle_pitch_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.30,
-            action_scale=0.12,
             soft_limit=(-0.44506, 0.96866),
             gains=(22.0, 1.0),
             effort_limit=36.0,
@@ -118,7 +108,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "left_ankle_roll_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.0,
-            action_scale=0.0125,
             soft_limit=(-0.07857, 0.07857),
             gains=(22.0, 1.0),
             effort_limit=36.0,
@@ -126,13 +115,14 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "right_ankle_roll_joint": JointActuatorConfig(
             mode="policy",
             default_pos=0.0,
-            action_scale=0.0125,
             soft_limit=(-0.07857, 0.07857),
             gains=(22.0, 1.0),
             effort_limit=36.0,
         ),
         "waist_yaw_joint": JointActuatorConfig(
-            action_scale=0.07, gains=(180.0, 12.0), effort_limit=120.0
+            soft_limit=(-0.45, 0.45),
+            gains=(180.0, 12.0),
+            effort_limit=120.0,
         ),
         "waist_roll_joint": JointActuatorConfig(
             gains=(240.0, 20.0), effort_limit=120.0

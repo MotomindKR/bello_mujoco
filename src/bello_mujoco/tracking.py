@@ -52,30 +52,6 @@ def log_config(run, config: Mapping[str, Any]) -> None:
     run.config.update(to_builtin(config), allow_val_change=True)
 
 
-def track_metric_history(
-    run,
-    metrics: Mapping[str, Any],
-    *,
-    samples_per_update: int,
-    context: Mapping[str, Any] | None = None,
-) -> None:
-    if run is None:
-        return
-    host_metrics = jax.device_get(metrics)
-    update_count = metric_update_count(host_metrics)
-    for update in range(update_count):
-        env_steps = (update + 1) * samples_per_update
-        payload = metric_payload(
-            {
-                name: select_metric_update(values, update)
-                for name, values in host_metrics.items()
-            },
-            update=update + 1,
-            context=context,
-        )
-        run.log(payload, step=env_steps)
-
-
 def track_metric_snapshot(
     run,
     metrics: Mapping[str, Any],
@@ -110,11 +86,6 @@ def metric_payload(
             for key, value in payload.items()
         }
     return payload
-
-
-def select_metric_update(values: Any, update: int) -> Any:
-    array = np.asarray(values)
-    return array if array.ndim == 0 else array[update]
 
 
 def track_video(
@@ -156,14 +127,6 @@ def track_checkpoint_artifact(
     artifact = wandb.Artifact(name=name, type=artifact_type)
     artifact.add_dir(str(path))
     run.log_artifact(artifact)
-
-
-def metric_update_count(metrics: Mapping[str, Any]) -> int:
-    for values in metrics.values():
-        array = np.asarray(values)
-        if array.ndim > 0:
-            return int(array.shape[0])
-    return 1
 
 
 def close_run(run) -> None:

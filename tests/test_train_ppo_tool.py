@@ -54,6 +54,70 @@ def test_training_update_range_wraps_tqdm(monkeypatch) -> None:
     assert calls["kwargs"]["dynamic_ncols"] is True
 
 
+def test_train_update_loop_streams_without_retaining_history(monkeypatch) -> None:
+    snapshots = []
+
+    def fake_init_runner_state(rng, env, config):
+        return SimpleNamespace(update=jnp.asarray(0)), "static", "optimizer"
+
+    def fake_update_runner_state(state, static_policy, optimizer, env, config):
+        update = int(state.update) + 1
+        metrics = {"loss": jnp.asarray(float(update), dtype=jnp.float32)}
+        return SimpleNamespace(update=jnp.asarray(update)), metrics
+
+    def fake_track_metric_snapshot(run, metrics, *, env_steps, update, context):
+        snapshots.append(
+            {
+                "run": run,
+                "loss": float(metrics["loss"]),
+                "env_steps": env_steps,
+                "update": update,
+                "context": context,
+            }
+        )
+
+    monkeypatch.setattr(train_ppo, "init_runner_state", fake_init_runner_state)
+    monkeypatch.setattr(train_ppo, "update_runner_state", fake_update_runner_state)
+    monkeypatch.setattr(train_ppo, "track_metric_snapshot", fake_track_metric_snapshot)
+
+    out = train_ppo.train_update_loop(
+        env="env",
+        render_env="render_env",
+        config=train_ppo.PPOConfig(total_timesteps=18, num_envs=2, num_steps=3),
+        rng=jnp.asarray(0),
+        video_config=TrainingVideoConfig(enabled=False),
+        run="run",
+        jit=False,
+    )
+
+    assert int(out["runner_state"].update) == 3
+    assert out["metrics"]["loss"].shape == ()
+    assert float(out["metrics"]["loss"]) == 3.0
+    assert snapshots == [
+        {
+            "run": "run",
+            "loss": 1.0,
+            "env_steps": 6,
+            "update": 1,
+            "context": {"phase": "train"},
+        },
+        {
+            "run": "run",
+            "loss": 2.0,
+            "env_steps": 12,
+            "update": 2,
+            "context": {"phase": "train"},
+        },
+        {
+            "run": "run",
+            "loss": 3.0,
+            "env_steps": 18,
+            "update": 3,
+            "context": {"phase": "train"},
+        },
+    ]
+
+
 def test_run_training_initializes_wandb_before_env_load(monkeypatch) -> None:
     events = []
 
