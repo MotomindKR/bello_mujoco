@@ -29,7 +29,6 @@ from bello_mujoco.render import (
     mujoco_done_flags,
     mujoco_eval_info,
     mujoco_eval_state,
-    mujoco_foot_contact,
     mujoco_link_ang_vel,
     mujoco_link_lin_vel,
     mujoco_link_quat,
@@ -331,7 +330,6 @@ class RerunEvaluationLogger:
             "simulation_time", duration=global_step * self.env.control_timestep
         )
         self._log_robot_transforms(mj_data)
-        self._log_foot_contacts(mj_data)
         actual_lin_vel = command_frame_linear_velocity(self.env, mj_data)
         actual_yaw_vel = mujoco_link_ang_vel(
             self.env,
@@ -501,15 +499,6 @@ class RerunEvaluationLogger:
                 "world/robot/transforms",
                 joint.compute_transform(mj_data.qpos[qpos_address], clamp=False),
             )
-
-    def _log_foot_contacts(self, mj_data: mujoco.MjData) -> None:
-        positions = np.asarray(mj_data.xpos[self.env.model.foot_body_ids])
-        contact = mujoco_foot_contact(self.env, mj_data).astype(bool)
-        colors = np.where(contact[:, None], [255, 40, 40], [80, 160, 255])
-        self.recording.log(
-            "world/contacts/feet",
-            rr.Points3D(positions, colors=colors, radii=0.025),
-        )
 
     def _log_terrain(self) -> None:
         config = self.env.terrain_config

@@ -63,8 +63,8 @@ nested values over that metadata and must preserve observation/action sizes.
 
 The default blueprint provides:
 
-- a Z-up 3D prepared URDF with a root-following orbit camera, terrain, animated
-  root/joints, and foot contacts
+- a Z-up 3D prepared URDF with a root-following orbit camera, terrain, and
+  animated root/joints
 - reward totals/components and episode diagnostics
 - commanded and measured linear/yaw velocities overlaid in one chart
 - one tab per policy joint overlaying measured position, MuJoCo position target,

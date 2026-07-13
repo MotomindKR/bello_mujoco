@@ -21,7 +21,6 @@ from bello_mujoco.policy import (
     update_observation_stack,
 )
 
-CONTACT_FOOT_RGBA = np.asarray([1.0, 0.0, 0.0, 1.0], dtype=np.float32)
 RolloutStats: TypeAlias = dict[str, float | int]
 DONE_FLAG_KEYS = (
     "done/any",
@@ -87,7 +86,6 @@ def render_policy_rollout(
     mj_data = mujoco.MjData(mj_model)
     renderer = mujoco.Renderer(mj_model, height=height, width=width)
     camera = make_camera(mj_model, camera_config)
-    foot_geom_ids_by_foot = foot_geom_ids_for_bodies(mj_model, env.model.foot_body_ids)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     writer = imageio.get_writer(output_path, fps=fps)
     action_key = jax.random.PRNGKey(action_seed)
@@ -100,13 +98,6 @@ def render_policy_rollout(
             sync_mj_data(mj_model, mj_data, state)
             update_camera(camera, mj_model, mj_data, camera_config)
             renderer.update_scene(mj_data, camera=camera)
-            sync_renderer_foot_contact_markers(
-                mj_model,
-                mj_data,
-                foot_geom_ids_by_foot,
-                mjx_foot_contact(env, state),
-                renderer.scene,
-            )
             writer.append_data(renderer.render())
             action_rng = None
             if stochastic_actions:
@@ -132,13 +123,6 @@ def render_policy_rollout(
                 sync_mj_data(mj_model, mj_data, state)
                 update_camera(camera, mj_model, mj_data, camera_config)
                 renderer.update_scene(mj_data, camera=camera)
-                sync_renderer_foot_contact_markers(
-                    mj_model,
-                    mj_data,
-                    foot_geom_ids_by_foot,
-                    mjx_foot_contact(env, state),
-                    renderer.scene,
-                )
                 writer.append_data(renderer.render())
                 break
             if done_bool:
@@ -172,7 +156,6 @@ def render_policy_rollout_mujoco(
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     reset_mujoco_data(env, mj_data)
-    foot_geom_ids_by_foot = foot_geom_ids_for_bodies(mj_model, env.model.foot_body_ids)
 
     command_array = np.asarray(command, dtype=np.float32)
     last_action = np.zeros(env.action_size, dtype=np.float32)
@@ -197,13 +180,6 @@ def render_policy_rollout_mujoco(
         for step_index in range(steps):
             update_camera(camera, mj_model, mj_data, camera_config)
             renderer.update_scene(mj_data, camera=camera)
-            sync_renderer_foot_contact_markers(
-                mj_model,
-                mj_data,
-                foot_geom_ids_by_foot,
-                mujoco_foot_contact(env, mj_data),
-                renderer.scene,
-            )
             writer.append_data(renderer.render())
             action_rng = None
             if stochastic_actions:
@@ -241,13 +217,6 @@ def render_policy_rollout_mujoco(
                 obs_stack = update_observation_stack(obs_stack, obs, jnp.asarray(True))
                 update_camera(camera, mj_model, mj_data, camera_config)
                 renderer.update_scene(mj_data, camera=camera)
-                sync_renderer_foot_contact_markers(
-                    mj_model,
-                    mj_data,
-                    foot_geom_ids_by_foot,
-                    mujoco_foot_contact(env, mj_data),
-                    renderer.scene,
-                )
                 writer.append_data(renderer.render())
                 break
             if done:
@@ -820,135 +789,6 @@ def mujoco_contact_normal_force(
     contact_force = np.zeros(6, dtype=np.float64)
     mujoco.mj_contactForce(mj_model, mj_data, contact_index, contact_force)
     return abs(float(contact_force[0]))
-
-
-def foot_geom_ids_for_bodies(
-    mj_model: mujoco.MjModel, foot_body_ids: np.ndarray
-) -> tuple[np.ndarray, ...]:
-    return tuple(
-        np.asarray(
-            np.nonzero(np.asarray(mj_model.geom_bodyid) == int(body_id))[0],
-            dtype=np.int32,
-        )
-        for body_id in np.asarray(foot_body_ids, dtype=np.int32)
-    )
-
-
-def sync_foot_contact_colors(
-    mj_model: mujoco.MjModel,
-    base_geom_rgba: np.ndarray,
-    foot_geom_ids_by_foot: tuple[np.ndarray, ...],
-    foot_contact: np.ndarray,
-    *,
-    contact_rgba: np.ndarray = CONTACT_FOOT_RGBA,
-) -> None:
-    for foot_index, geom_ids in enumerate(foot_geom_ids_by_foot):
-        if geom_ids.size == 0:
-            continue
-        contacted = (
-            foot_index < foot_contact.shape[0] and float(foot_contact[foot_index]) > 0.5
-        )
-        mj_model.geom_rgba[geom_ids] = (
-            np.asarray(contact_rgba, dtype=np.float32)
-            if contacted
-            else base_geom_rgba[geom_ids]
-        )
-
-
-def sync_foot_contact_markers(
-    mj_model: mujoco.MjModel,
-    mj_data: mujoco.MjData,
-    foot_geom_ids_by_foot: tuple[np.ndarray, ...],
-    foot_contact: np.ndarray,
-    user_scn: mujoco.MjvScene | None,
-    *,
-    contact_rgba: np.ndarray = CONTACT_FOOT_RGBA,
-) -> None:
-    if user_scn is None:
-        return
-    user_scn.ngeom = 0
-    append_foot_contact_markers(
-        mj_model,
-        mj_data,
-        foot_geom_ids_by_foot,
-        foot_contact,
-        user_scn,
-        contact_rgba=contact_rgba,
-    )
-
-
-def sync_renderer_foot_contact_markers(
-    mj_model: mujoco.MjModel,
-    mj_data: mujoco.MjData,
-    foot_geom_ids_by_foot: tuple[np.ndarray, ...],
-    foot_contact: np.ndarray,
-    scene: mujoco.MjvScene,
-    *,
-    contact_rgba: np.ndarray = CONTACT_FOOT_RGBA,
-) -> None:
-    append_foot_contact_markers(
-        mj_model,
-        mj_data,
-        foot_geom_ids_by_foot,
-        foot_contact,
-        scene,
-        contact_rgba=contact_rgba,
-    )
-
-
-def append_foot_contact_markers(
-    mj_model: mujoco.MjModel,
-    mj_data: mujoco.MjData,
-    foot_geom_ids_by_foot: tuple[np.ndarray, ...],
-    foot_contact: np.ndarray,
-    scene: mujoco.MjvScene,
-    *,
-    contact_rgba: np.ndarray = CONTACT_FOOT_RGBA,
-) -> None:
-    for foot_index, geom_ids in enumerate(foot_geom_ids_by_foot):
-        contacted = (
-            foot_index < foot_contact.shape[0] and float(foot_contact[foot_index]) > 0.5
-        )
-        if not contacted:
-            continue
-        for geom_id in geom_ids:
-            if scene.ngeom >= scene.maxgeom:
-                return
-            add_foot_contact_marker(
-                mj_model,
-                mj_data,
-                scene,
-                int(geom_id),
-                contact_rgba=contact_rgba,
-            )
-
-
-def add_foot_contact_marker(
-    mj_model: mujoco.MjModel,
-    mj_data: mujoco.MjData,
-    user_scn: mujoco.MjvScene,
-    geom_id: int,
-    *,
-    contact_rgba: np.ndarray = CONTACT_FOOT_RGBA,
-) -> None:
-    size = np.asarray(mj_model.geom_size[geom_id], dtype=np.float64).copy()
-    if not np.all(np.isfinite(size)) or np.all(size <= 0.0):
-        radius = max(float(mj_model.geom_rbound[geom_id]), 0.03)
-        size = np.asarray([radius, 0.6 * radius, 0.3 * radius], dtype=np.float64)
-    size = np.maximum(size, np.asarray([0.03, 0.03, 0.015], dtype=np.float64))
-    size = size * 1.25
-    pos = np.asarray(mj_data.geom_xpos[geom_id], dtype=np.float64)
-    mat = np.asarray(mj_data.geom_xmat[geom_id], dtype=np.float64).reshape(9)
-    rgba = np.asarray(contact_rgba, dtype=np.float32)
-    mujoco.mjv_initGeom(
-        user_scn.geoms[user_scn.ngeom],
-        mujoco.mjtGeom.mjGEOM_BOX,
-        size,
-        pos,
-        mat,
-        rgba,
-    )
-    user_scn.ngeom += 1
 
 
 def sync_mj_data(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, state) -> None:
