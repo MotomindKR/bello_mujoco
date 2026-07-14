@@ -9,7 +9,7 @@ from pathlib import Path
 
 import tyro
 
-from bello_mujoco.vast import VastTrainConfig, launch_pipeline
+from bello_mujoco.vast import VastTrainConfig, launch_pipeline, safe_exception_message
 
 
 def repository_root() -> Path:
@@ -43,7 +43,7 @@ def entrypoint() -> None:
         print("error: interrupted; instance teardown was attempted", file=sys.stderr)
         raise SystemExit(130) from None
     except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {safe_exception_message(exc)}", file=sys.stderr)
         raise SystemExit(1) from None
     raise SystemExit(status)
 

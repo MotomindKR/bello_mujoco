@@ -14,12 +14,14 @@ from bello_mujoco.vast import (
     VastOfferConfig,
     VastTrainConfig,
     credential,
+    create_available_instance,
     destroy_with_retries,
     find_offers,
     launch_pipeline,
     offer_query,
     parse_ssh_url,
     run_remote_training,
+    safe_exception_message,
     validate_config,
 )
 
@@ -144,6 +146,34 @@ def test_find_offers_rechecks_returned_price_cap() -> None:
 
     with pytest.raises(RuntimeError, match="no Vast offers"):
         find_offers(api, valid_config())
+
+
+def test_create_available_instance_falls_back_when_offer_is_gone() -> None:
+    class RacingApi(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            if offer_id == 1:
+                raise RuntimeError("offer disappeared")
+            return super().create_instance(offer_id, **kwargs)
+
+    api = RacingApi()
+    offers = [
+        VastOffer.from_mapping(make_offer(1)),
+        VastOffer.from_mapping(make_offer(2)),
+    ]
+
+    assert create_available_instance(api, offers, valid_config(), "test-label") == 456
+    assert [offer_id for offer_id, _ in api.created] == [2]
+
+
+def test_safe_exception_message_redacts_query_credentials() -> None:
+    error = RuntimeError(
+        "410 Gone: https://console.vast.ai/api/v0/asks/1/?api_key=secret&x=1"
+    )
+
+    message = safe_exception_message(error)
+
+    assert "secret" not in message
+    assert "api_key=<redacted>&x=1" in message
 
 
 def test_nominal_64_gb_offer_accepts_vast_usable_ram_reporting() -> None:

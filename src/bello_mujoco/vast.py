@@ -554,6 +554,37 @@ def recover_labeled_instance(api: VastApi, label: str) -> int | None:
     return int(value) if value is not None else None
 
 
+def create_available_instance(
+    api: VastApi,
+    offers: Sequence[VastOffer],
+    config: VastTrainConfig,
+    label: str,
+) -> int:
+    """Rent the first still-available offer without exposing SDK error URLs."""
+
+    for offer in offers:
+        if not config.yes:
+            confirm_rental(offer)
+        try:
+            return api.create_instance(
+                offer.id,
+                image=config.offer.image,
+                disk=float(config.offer.disk_gb),
+                label=label,
+                runtype="ssh_direc ssh_proxy",
+                cancel_unavail=True,
+            )
+        except Exception as exc:
+            instance_id = recover_labeled_instance(api, label)
+            if instance_id is not None:
+                return instance_id
+            print(
+                f"Vast offer {offer.id} could not be rented "
+                f"({type(exc).__name__}); trying the next match."
+            )
+    raise RuntimeError("all matching Vast offers became unavailable during rental")
+
+
 def wait_for_instance(
     api: VastApi,
     instance_id: int,
@@ -1096,26 +1127,10 @@ def launch_pipeline(
         reconcile_stale_state(api, state_path, config.destroy_retries)
         tier, offers = find_offers(api, config)
         print_offers(tier, offers)
-        selected_offer = offers[0]
-        if not config.yes:
-            confirm_rental(selected_offer)
-
         instance_id: int | None = None
         failure: BaseException | None = None
         try:
-            try:
-                instance_id = api.create_instance(
-                    selected_offer.id,
-                    image=config.offer.image,
-                    disk=float(config.offer.disk_gb),
-                    label=label,
-                    runtype="ssh_direc ssh_proxy",
-                    cancel_unavail=True,
-                )
-            except BaseException:
-                instance_id = recover_labeled_instance(api, label)
-                if instance_id is None:
-                    raise
+            instance_id = create_available_instance(api, offers, config, label)
             write_active_state(state_path, instance_id, label)
             print(f"Created Vast instance {instance_id}; teardown is armed.")
             wait_for_instance(api, instance_id, config.ready_timeout_seconds)
@@ -1157,3 +1172,15 @@ def shell_preview(command: Sequence[str]) -> str:
     """Format a command for diagnostics without interpolating secrets."""
 
     return shlex.join(command)
+
+
+def safe_exception_message(exc: BaseException) -> str:
+    """Redact credentials that third-party HTTP clients embed in URLs."""
+
+    message = str(exc)
+    return re.sub(
+        r"([?&](?:api_key|token)=)[^&\s'\"]+",
+        r"\1<redacted>",
+        message,
+        flags=re.IGNORECASE,
+    )
