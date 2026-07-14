@@ -288,10 +288,11 @@ Episode-length timeouts are truncations: they reset envs and emit
 Bad-orientation termination uses an IsaacLab/Unitree-style projected-gravity
 tilt angle, not independent roll and pitch thresholds.
 `self_collision` penalizes active robot-robot contact slots above
-`contact.self_collision_force_threshold`. `feet_air_time` rewards first contact
-after a swing interval and is command-gated so near-zero commands can train
-standing without swing pressure. `swing_foot_velocity` tracks a bounded,
-command-scaled scheduled-swing velocity relative to a configured body.
+`contact.self_collision_force_threshold`. `feet_air_time` continuously rewards
+single support using the shorter of the stance-contact and swing-air durations;
+double support and flight score zero, durations are capped, and near-zero
+commands are gated out. `swing_foot_velocity` tracks a bounded, command-scaled
+scheduled-swing velocity relative to a configured body.
 `standing_foot_vel` and
 `standing_foot_air_time` add command-gated stand-still penalties for foot motion
 and accumulated foot air time. `invalid_action` penalizes requested actuator

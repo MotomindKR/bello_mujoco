@@ -62,6 +62,9 @@ def test_train_hydra_configs_convert_to_valid_training_config(
         "locomotion_easy",
         "locomotion_hard",
         "locomotion_clean",
+        "locomotion_clean_slip",
+        "locomotion_clean_air_time",
+        "locomotion_clean_feet",
     ],
 )
 def test_experiment_train_configs_convert_to_valid_training_config(
@@ -138,6 +141,41 @@ def test_clean_locomotion_removes_gait_shaping_and_randomization() -> None:
     assert not config.reward_config.gait_contact.enabled
     assert not config.reward_config.feet_air_time.enabled
     assert config.reward_config.termination.weight == pytest.approx(-5.0)
+
+
+def test_clean_foot_ablation_configs_isolate_reward_changes() -> None:
+    clean = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean"),
+    )
+    slip = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_slip"),
+    )
+    air_time = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_air_time"),
+    )
+    combined = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_feet"),
+    )
+
+    assert not clean.reward_config.foot_slip.enabled
+    assert not clean.reward_config.feet_air_time.enabled
+    assert slip.reward_config.foot_slip.enabled
+    assert slip.reward_config.foot_slip.weight == pytest.approx(-0.10)
+    assert not slip.reward_config.feet_air_time.enabled
+    assert not air_time.reward_config.foot_slip.enabled
+    assert air_time.reward_config.feet_air_time.enabled
+    assert air_time.reward_config.feet_air_time.weight == pytest.approx(0.25)
+    assert air_time.reward_config.feet_air_time.max_duration == pytest.approx(0.40)
+    assert (
+        air_time.reward_config.feet_air_time.command_speed_threshold
+        == pytest.approx(0.10)
+    )
+    assert combined.reward_config.foot_slip.enabled
+    assert combined.reward_config.feet_air_time.enabled
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

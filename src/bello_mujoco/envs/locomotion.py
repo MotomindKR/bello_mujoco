@@ -43,6 +43,7 @@ class BelloState:
     data: mjx.Data
     last_action: jax.Array
     foot_air_time: jax.Array
+    foot_contact_time: jax.Array
     foot_contact_debounce_time: jax.Array
     last_foot_contact: jax.Array
     command: jax.Array
@@ -657,6 +658,9 @@ class BelloLocomotionEnv:
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
             foot_air_time=jnp.zeros(self.model.foot_body_ids.size, dtype=jnp.float32),
+            foot_contact_time=jnp.zeros(
+                self.model.foot_body_ids.size, dtype=jnp.float32
+            ),
             foot_contact_debounce_time=jnp.zeros(
                 self.model.foot_body_ids.size, dtype=jnp.float32
             ),
@@ -776,6 +780,7 @@ class BelloLocomotionEnv:
             data=data,
             last_action=action,
             foot_air_time=state.foot_air_time,
+            foot_contact_time=state.foot_contact_time,
             foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
@@ -821,13 +826,14 @@ class BelloLocomotionEnv:
             state.episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
         )
         episode_length = state.episode_length + 1
-        foot_air_time, last_foot_contact = self._next_foot_memory(
+        foot_air_time, foot_contact_time, last_foot_contact = self._next_foot_memory(
             state, foot_contact, done
         )
         next_state = BelloState(
             data=next_state.data,
             last_action=next_state.last_action,
             foot_air_time=foot_air_time,
+            foot_contact_time=foot_contact_time,
             foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=last_foot_contact,
             command=next_state.command,
@@ -896,6 +902,7 @@ class BelloLocomotionEnv:
             data=data,
             last_action=action,
             foot_air_time=state.foot_air_time,
+            foot_contact_time=state.foot_contact_time,
             foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
@@ -942,13 +949,14 @@ class BelloLocomotionEnv:
             state.episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
         )
         episode_length = state.episode_length + 1
-        foot_air_time, last_foot_contact = jax.vmap(self._next_foot_memory)(
-            state, foot_contact, done
-        )
+        foot_air_time, foot_contact_time, last_foot_contact = jax.vmap(
+            self._next_foot_memory
+        )(state, foot_contact, done)
         stepped_state = BelloState(
             data=stepped_state.data,
             last_action=stepped_state.last_action,
             foot_air_time=foot_air_time,
+            foot_contact_time=foot_contact_time,
             foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=last_foot_contact,
             command=self._maybe_resample_batch_command(
@@ -1547,6 +1555,7 @@ class BelloLocomotionEnv:
             foot_distance=self._foot_distance(next_state),
             gait_contact_mask=self._gait_contact_mask(next_state),
             foot_air_time=state.foot_air_time,
+            foot_contact_time=state.foot_contact_time,
             last_foot_contact=state.last_foot_contact,
             undesired_contact=undesired_contact,
             control_timestep=self.control_timestep,
@@ -1653,16 +1662,23 @@ class BelloLocomotionEnv:
 
     def _next_foot_memory(
         self, state: BelloState, foot_contact: jax.Array, done: jax.Array
-    ) -> tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         contact = foot_contact.astype(bool)
         next_air_time = jnp.where(
             contact,
             jnp.zeros_like(state.foot_air_time),
             state.foot_air_time + self.control_timestep,
         )
+        next_contact_time = jnp.where(
+            contact,
+            state.foot_contact_time + self.control_timestep,
+            jnp.zeros_like(state.foot_contact_time),
+        )
         reset_air_time = jnp.zeros_like(next_air_time)
+        reset_contact_time = jnp.zeros_like(next_contact_time)
         return (
             jnp.where(done, reset_air_time, next_air_time),
+            jnp.where(done, reset_contact_time, next_contact_time),
             contact,
         )
 

@@ -1,0 +1,25 @@
+# Clean locomotion with only the Isaac-style foot-slip penalty added.
+defaults:
+  - locomotion_clean
+  - _self_
+
+reward_config:
+  foot_slip:
+    enabled: true
+    weight: -0.10
+    angular_speed_scale: 0.05
+
+checkpoint_config:
+  name: locomotion_clean_slip_seed0
+
+wandb_config:
+  group: locomotion-clean-feet-ablation
+  run_name: locomotion_clean_slip_seed0
+  tags:
+    - locomotion
+    - clean-reward-ablation
+    - slip-only
+    - isaac-g1-inspired
+
+video_config:
+  filename_prefix: locomotion_clean_slip

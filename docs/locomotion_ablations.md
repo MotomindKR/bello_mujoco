@@ -64,22 +64,22 @@ the seed in the PPO, checkpoint, and W&B names together.
                   command_config.standing_probability=0.0
    ```
 
-3. Single reward ablations: compare each term directly with the unchanged
-   control. Do not stack terms during this phase:
+3. Run the two prepared single reward ablations against the unchanged control.
+   Do not stack terms during this phase:
 
    ```text
-   slip:       reward_config.foot_slip.enabled=true
-               reward_config.foot_slip.weight=-0.25
-   air time:   reward_config.feet_air_time.enabled=true
-               reward_config.feet_air_time.weight=0.2
-   contact:    reward_config.gait_contact.enabled=true
-               reward_config.gait_contact.weight=0.5
-   clearance:  reward_config.foot_clearance.enabled=true
-               reward_config.foot_clearance.weight=0.5
+   locomotion_clean_slip:      foot_slip only, weight -0.10
+   locomotion_clean_air_time:  feet_air_time only, weight 0.25
    ```
 
+   The air-time term continuously rewards exactly one foot in contact using the
+   shorter of the current stance-contact and swing-air durations, capped at
+   `0.40s`. It does not require a clock or prescribe which foot should swing.
 4. Combine only terms that improve the median result across all three seeds.
-   Run the combination from scratch against a fresh three-seed control.
+   `locomotion_clean_feet` is the prepared combined config; run it from scratch
+   against a fresh three-seed control only after both single-term gates pass.
+   Keep gait-contact and clearance shaping as later, independent ablations if
+   the minimal foot terms are insufficient.
 5. Expand commands one axis at a time: forward range, then yaw, then lateral.
    Curriculum success must be computed from moving episodes separately from
    exact-zero episodes before enabling automatic range expansion.

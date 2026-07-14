@@ -429,9 +429,9 @@ Every reward term has `enabled` and `weight`. Link-aware terms also have `link`;
 `link: null` means use `env_config.root_link`.
 Continuous reward components are multiplied by the environment control timestep
 before they are returned or logged under `reward/*`, so their weights are
-interpreted as per-second scales. Event-driven terms such as `feet_air_time` and
-`termination` keep their configured event magnitude. The `termination` reward is
-applied only for terminal failure conditions, not for episode-length timeouts.
+interpreted as per-second scales. The event-driven `termination` term keeps its
+configured event magnitude and is applied only for terminal failure conditions,
+not for episode-length timeouts.
 
 ```yaml
 reward_config:
@@ -523,10 +523,9 @@ reward_config:
     command_speed_threshold: 0.10
   feet_air_time:
     enabled: false
-    weight: 0.2
-    min_air_time: 0.20
-    max_air_time: 0.60
-    command_speed_threshold: 0.05
+    weight: 0.25
+    max_duration: 0.40
+    command_speed_threshold: 0.10
   standing_foot_vel:
     enabled: false
     weight: -1.0
@@ -610,11 +609,12 @@ stand-still commands therefore receive no swing-velocity pressure. The easy and
 hard locomotion recipes enable the term at weight `0.5` with `pelvis_link` as
 the reference body.
 
-`feet_air_time` increments while a foot is not in debounced contact. On the
-first contact after that swing interval, it rewards the completed air time
-above `min_air_time`, clipped by `max_air_time`. It encourages actual swing
-phases rather than foot dragging, and is disabled for near-standing commands by
-`command_speed_threshold`.
+`feet_air_time` is a continuous positive-biped reward. While exactly one foot
+is in debounced contact, it takes the shorter of the stance foot's current
+contact duration and the swing foot's current air duration, capped by
+`max_duration`. Double support and flight receive zero reward. The term is
+disabled for near-standing commands by `command_speed_threshold` and, like
+other continuous terms, is multiplied by the control timestep.
 
 `standing_foot_vel` and `standing_foot_air_time` are near-zero-command
 penalties. They are active only when command speed is at or below their

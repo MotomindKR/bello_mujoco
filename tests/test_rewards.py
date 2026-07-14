@@ -859,19 +859,17 @@ def test_swing_foot_velocity_config_validates_std() -> None:
         )
 
 
-def test_feet_air_time_rewards_first_contact_after_swing() -> None:
+def test_feet_air_time_rewards_capped_biped_single_stance() -> None:
     config = RewardConfig(
         feet_air_time=FeetAirTimeRewardConfig(
             weight=1.0,
-            min_air_time=0.2,
-            max_air_time=0.6,
-            command_speed_threshold=0.05,
+            max_duration=0.4,
+            command_speed_threshold=0.1,
         )
     )
 
-    _, terms = compute_velocity_reward(
+    common = dict(
         config=config,
-        command=jnp.asarray([0.2, 0.0, 0.0], dtype=jnp.float32),
         lin_vel_xy=jnp.zeros(2, dtype=jnp.float32),
         yaw_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
         lin_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
@@ -889,19 +887,56 @@ def test_feet_air_time_rewards_first_contact_after_swing() -> None:
         joint_limit_high=jnp.ones(2, dtype=jnp.float32),
         hold_joint_indices=jnp.asarray([], dtype=jnp.int32),
         policy_joint_indices=jnp.asarray([], dtype=jnp.int32),
-        foot_contact=jnp.asarray([1.0, 0.0], dtype=jnp.float32),
         foot_height=jnp.zeros(2, dtype=jnp.float32),
         foot_lateral_speed_sq=jnp.zeros(2, dtype=jnp.float32),
         foot_distance=jnp.asarray(0.3, dtype=jnp.float32),
         gait_contact_mask=jnp.asarray([True, False]),
-        foot_air_time=jnp.asarray([0.28, 0.0], dtype=jnp.float32),
-        last_foot_contact=jnp.asarray([False, False]),
+        foot_air_time=jnp.asarray([0.0, 0.28], dtype=jnp.float32),
+        foot_contact_time=jnp.asarray([0.18, 0.0], dtype=jnp.float32),
+        last_foot_contact=jnp.asarray([True, False]),
         undesired_contact=jnp.asarray(0.0, dtype=jnp.float32),
         control_timestep=0.02,
         done=jnp.asarray(False),
     )
 
-    assert terms["reward/feet_air_time"] == pytest.approx(0.05)
+    _, single_stance_terms = compute_velocity_reward(
+        command=jnp.asarray([0.2, 0.0, 0.0], dtype=jnp.float32),
+        foot_contact=jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        **common,
+    )
+    _, double_stance_terms = compute_velocity_reward(
+        command=jnp.asarray([0.2, 0.0, 0.0], dtype=jnp.float32),
+        foot_contact=jnp.asarray([1.0, 1.0], dtype=jnp.float32),
+        **common,
+    )
+    _, standing_terms = compute_velocity_reward(
+        command=jnp.zeros(3, dtype=jnp.float32),
+        foot_contact=jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        **common,
+    )
+    _, capped_terms = compute_velocity_reward(
+        command=jnp.asarray([0.2, 0.0, 0.0], dtype=jnp.float32),
+        foot_contact=jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        **(
+            common
+            | {
+                "foot_air_time": jnp.asarray([0.0, 0.58], dtype=jnp.float32),
+                "foot_contact_time": jnp.asarray([0.48, 0.0], dtype=jnp.float32),
+            }
+        ),
+    )
+
+    assert single_stance_terms["reward/feet_air_time"] == pytest.approx(0.004)
+    assert double_stance_terms["reward/feet_air_time"] == pytest.approx(0.0)
+    assert standing_terms["reward/feet_air_time"] == pytest.approx(0.0)
+    assert capped_terms["reward/feet_air_time"] == pytest.approx(0.008)
+
+
+def test_feet_air_time_validates_max_duration() -> None:
+    with pytest.raises(ValueError, match="feet_air_time.max_duration"):
+        RewardConfig(
+            feet_air_time=FeetAirTimeRewardConfig(enabled=True, max_duration=0.0)
+        )
 
 
 def test_standing_foot_penalties_apply_only_to_low_commands() -> None:

@@ -1546,3 +1546,18 @@ bound is now an explicit `BelloEnvConfig.action_clip` setting. The clean recipe
 uses `1.0`, while the default stays `5.0` to avoid silently changing existing
 recipes. With the clean recipe's residual scales, the tighter bound prevents
 the policy from requesting the extreme joint targets seen in the failed run.
+
+## 2026-07-14 - Replace touchdown air time with positive-biped support
+
+Replaced the old landing-event `feet_air_time` bonus with the continuous
+positive-biped formulation used by Isaac-style humanoid locomotion. The reward
+is active only during single support and uses the shorter of the stance foot's
+current contact duration and the swing foot's current air duration, capped at
+`0.40s`. Double support, flight, and planar commands at or below `0.10 m/s`
+receive zero. The reward is now timestep-scaled like other continuous terms.
+
+The clean control still has both foot terms disabled. Three configs isolate the
+follow-up experiments: `locomotion_clean_slip` enables only foot slip at
+`-0.10`, `locomotion_clean_air_time` enables only air time at `0.25`, and
+`locomotion_clean_feet` combines them for use only if both single-term
+ablations improve the three-seed median.

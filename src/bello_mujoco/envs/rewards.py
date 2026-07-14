@@ -237,9 +237,8 @@ class GaitContactRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class FeetAirTimeRewardConfig(WeightedRewardConfig):
-    min_air_time: float = 0.20
-    max_air_time: float = 0.60
-    command_speed_threshold: float = 0.05
+    max_duration: float = 0.40
+    command_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -306,7 +305,7 @@ class RewardConfig:
     )
     gait_contact: GaitContactRewardConfig = GaitContactRewardConfig(weight=0.5)
     feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(
-        enabled=False, weight=0.2
+        enabled=False, weight=0.25
     )
     standing_foot_vel: StandingFootVelRewardConfig = StandingFootVelRewardConfig(
         enabled=False, weight=-1.0
@@ -396,6 +395,7 @@ def compute_velocity_reward(
     control_timestep: float,
     done: jax.Array,
     foot_angular_speed: jax.Array | None = None,
+    foot_contact_time: jax.Array | None = None,
     self_collision: jax.Array | None = None,
     action_target_default: jax.Array | None = None,
     action_target_scale: jax.Array | None = None,
@@ -518,20 +518,33 @@ def compute_velocity_reward(
         gait_contact,
         jnp.asarray(0.0, dtype=jnp.float32),
     )
-    first_contact = foot_contact.astype(bool) & ~last_foot_contact.astype(bool)
-    completed_air_time = foot_air_time + control_timestep
-    max_bonus = config.feet_air_time.max_air_time - config.feet_air_time.min_air_time
-    air_time_bonus = jnp.clip(
-        completed_air_time - config.feet_air_time.min_air_time,
-        0.0,
-        max_bonus,
-    )
-    feet_air_time = safe_mean(first_contact.astype(jnp.float32) * air_time_bonus)
-    feet_air_time = jnp.where(
-        command_speed > config.feet_air_time.command_speed_threshold,
-        feet_air_time,
-        jnp.asarray(0.0, dtype=jnp.float32),
-    )
+    if config.feet_air_time.enabled:
+        if foot_contact_time is None:
+            raise ValueError("feet_air_time reward requires foot contact durations")
+        contact = foot_contact.astype(bool)
+        current_air_time = jnp.where(
+            contact,
+            jnp.zeros_like(foot_air_time),
+            foot_air_time + control_timestep,
+        )
+        current_contact_time = jnp.where(
+            contact,
+            foot_contact_time + control_timestep,
+            jnp.zeros_like(foot_contact_time),
+        )
+        in_mode_time = jnp.where(contact, current_contact_time, current_air_time)
+        single_stance = jnp.sum(contact.astype(jnp.int32)) == 1
+        feet_air_time = jnp.min(
+            jnp.where(single_stance, in_mode_time, jnp.zeros_like(in_mode_time))
+        )
+        feet_air_time = jnp.minimum(feet_air_time, config.feet_air_time.max_duration)
+        feet_air_time = jnp.where(
+            jnp.linalg.norm(command[:2]) > config.feet_air_time.command_speed_threshold,
+            feet_air_time,
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+    else:
+        feet_air_time = jnp.asarray(0.0, dtype=jnp.float32)
     standing_foot_vel = safe_mean(foot_lateral_speed_sq)
     standing_foot_vel = jnp.where(
         command_speed <= config.standing_foot_vel.command_speed_threshold,
@@ -678,7 +691,7 @@ def compute_velocity_reward(
         ),
     }
     timestep = jnp.asarray(control_timestep, dtype=jnp.float32)
-    event_terms = frozenset(("reward/feet_air_time", "reward/termination"))
+    event_terms = frozenset(("reward/termination",))
     terms = {
         name: value if name in event_terms else value * timestep
         for name, value in raw_terms.items()
@@ -796,21 +809,12 @@ def validate_reward_config(config: RewardConfig) -> None:
         )
     if config.feet_air_time.enabled:
         if (
-            not math.isfinite(config.feet_air_time.min_air_time)
-            or config.feet_air_time.min_air_time < 0
+            not math.isfinite(config.feet_air_time.max_duration)
+            or config.feet_air_time.max_duration <= 0
         ):
             raise ValueError(
-                "feet_air_time.min_air_time must be nonnegative and finite, got "
-                f"{config.feet_air_time.min_air_time}"
-            )
-        if (
-            not math.isfinite(config.feet_air_time.max_air_time)
-            or config.feet_air_time.max_air_time <= config.feet_air_time.min_air_time
-        ):
-            raise ValueError(
-                "feet_air_time.max_air_time must be finite and greater than "
-                "min_air_time, got "
-                f"{config.feet_air_time.max_air_time}"
+                "feet_air_time.max_duration must be positive and finite, got "
+                f"{config.feet_air_time.max_duration}"
             )
         if (
             not math.isfinite(config.feet_air_time.command_speed_threshold)

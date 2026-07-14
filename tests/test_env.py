@@ -74,6 +74,7 @@ def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
     assert obs.shape == (env.observation_size,)
     assert state.last_action.shape == (env.action_size,)
     assert state.foot_air_time.shape == (2,)
+    assert state.foot_contact_time.shape == (2,)
     assert state.foot_contact_debounce_time.shape == (2,)
     assert state.last_foot_contact.shape == (2,)
     assert int(state.step_count) == 0
@@ -398,16 +399,45 @@ def test_foot_memory_keeps_current_contact_on_done(
     state, _ = env.reset()
     state = state.replace(
         foot_air_time=jnp.asarray([0.1, 0.2], dtype=jnp.float32),
+        foot_contact_time=jnp.asarray([0.3, 0.0], dtype=jnp.float32),
         last_foot_contact=jnp.asarray([False, False]),
     )
 
-    air_time, last_contact = env._next_foot_memory(
+    air_time, contact_time, last_contact = env._next_foot_memory(
         state,
         jnp.asarray([1.0, 0.0], dtype=jnp.float32),
         jnp.asarray(True),
     )
 
     np.testing.assert_allclose(np.asarray(air_time), np.zeros(2))
+    np.testing.assert_allclose(np.asarray(contact_time), np.zeros(2))
+    np.testing.assert_array_equal(np.asarray(last_contact), np.asarray([True, False]))
+
+
+def test_foot_memory_tracks_current_air_and_contact_durations(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env.reset()
+    state = state.replace(
+        foot_air_time=jnp.asarray([0.1, 0.2], dtype=jnp.float32),
+        foot_contact_time=jnp.asarray([0.3, 0.0], dtype=jnp.float32),
+    )
+
+    air_time, contact_time, last_contact = env._next_foot_memory(
+        state,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        jnp.asarray(False),
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(air_time),
+        np.asarray([0.0, 0.2 + env.control_timestep]),
+    )
+    np.testing.assert_allclose(
+        np.asarray(contact_time),
+        np.asarray([0.3 + env.control_timestep, 0.0]),
+    )
     np.testing.assert_array_equal(np.asarray(last_contact), np.asarray([True, False]))
 
 
@@ -465,9 +495,8 @@ def test_policy_action_uses_configured_action_clip(
     action = jnp.full((env.action_size,), 10.0, dtype=jnp.float32)
     ctrl = env._action_to_ctrl(action)
     policy_indices = jnp.asarray(env.model.policy_ctrl_indices)
-    expected = (
-        jnp.asarray(env.model.default_ctrl)[policy_indices]
-        + jnp.asarray(env.model.policy_action_scale)
+    expected = jnp.asarray(env.model.default_ctrl)[policy_indices] + jnp.asarray(
+        env.model.policy_action_scale
     )
 
     assert env.action_clip == 1.0

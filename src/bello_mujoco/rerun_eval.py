@@ -624,6 +624,7 @@ def run_rerun_evaluation(
 
     last_action = np.zeros(env.action_size, dtype=np.float32)
     foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
+    foot_contact_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
     foot_contact_debounce_time = jnp.zeros(
         env.model.foot_body_ids.size, dtype=jnp.float32
     )
@@ -638,7 +639,8 @@ def run_rerun_evaluation(
 
     def reset_episode() -> None:
         nonlocal mjx_state
-        nonlocal last_action, foot_air_time, foot_contact_debounce_time
+        nonlocal last_action, foot_air_time, foot_contact_time
+        nonlocal foot_contact_debounce_time
         nonlocal last_foot_contact, episode_return, episode_track_lin_vel_xy
         nonlocal episode_length, episode_step_count, obs_stack
         if simulation_backend == "mjx":
@@ -649,6 +651,7 @@ def run_rerun_evaluation(
         reset_mujoco_data(env, mj_data)
         last_action = np.zeros(env.action_size, dtype=np.float32)
         foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
+        foot_contact_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
         foot_contact_debounce_time = jnp.zeros(
             env.model.foot_body_ids.size, dtype=jnp.float32
         )
@@ -728,6 +731,7 @@ def run_rerun_evaluation(
                     command=current_command,
                     last_action=last_action,
                     foot_air_time=foot_air_time,
+                    foot_contact_time=foot_contact_time,
                     foot_contact_debounce_time=foot_contact_debounce_time,
                     last_foot_contact=last_foot_contact,
                     step_count=episode_step_count,
@@ -748,6 +752,7 @@ def run_rerun_evaluation(
                     command=current_command,
                     last_action=last_action,
                     foot_air_time=foot_air_time,
+                    foot_contact_time=foot_contact_time,
                     foot_contact_debounce_time=foot_contact_debounce_time,
                     last_foot_contact=last_foot_contact,
                     step_count=episode_step_count,
@@ -790,9 +795,11 @@ def run_rerun_evaluation(
                     episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
                 )
                 episode_length = episode_length + 1
-                foot_air_time, last_foot_contact = env._next_foot_memory(
-                    next_state, foot_contact, done
-                )
+                (
+                    foot_air_time,
+                    foot_contact_time,
+                    last_foot_contact,
+                ) = env._next_foot_memory(next_state, foot_contact, done)
                 info = {
                     **mujoco_eval_info(env, mj_data, command=current_command),
                     **done_info,

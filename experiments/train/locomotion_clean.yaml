@@ -182,6 +182,9 @@ reward_config:
     enabled: false
   feet_air_time:
     enabled: false
+    weight: 0.25
+    max_duration: 0.40
+    command_speed_threshold: 0.10
   standing_foot_vel:
     enabled: false
   standing_foot_air_time:
