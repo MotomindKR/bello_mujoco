@@ -116,7 +116,8 @@ bello-train-motion-ppo dry_run=false
 ```
 
 The default config is `configs/train_motion/default.yaml`. It enables final
-Orbax checkpointing under `checkpoints/`; W&B remains disabled until explicitly
+Orbax checkpointing under `checkpoints/` and renders an evaluation video every
+100 updates plus the final update. W&B remains disabled until explicitly
 enabled:
 
 ```bash
@@ -125,6 +126,23 @@ bello-train-motion-ppo \
   wandb_config.enabled=true \
   wandb_config.run_name=bello-walk-fixed-waist
 ```
+
+When W&B is enabled, each scheduled evaluation MP4 is uploaded under
+`eval/motion_policy` at the corresponding environment-step index. Configure the
+schedule and destination with:
+
+```bash
+bello-train-motion-ppo \
+  dry_run=false \
+  wandb_config.enabled=true \
+  video_config.every_updates=50 \
+  video_config.wandb_name=eval/bello_walk
+```
+
+Videos are also retained locally under
+`outputs/motion_tracking/eval_videos/eval_<update>.mp4`. Set
+`video_config.enabled=false` to disable rendering, or
+`video_config.log_wandb=false` to keep local videos without uploading them.
 
 Render a deterministic policy from a completed checkpoint:
 

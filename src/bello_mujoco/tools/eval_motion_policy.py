@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 from pathlib import Path
+from typing import TypedDict
 
 import imageio.v2 as imageio
 import jax
@@ -26,6 +26,13 @@ from bello_mujoco.render import (
 )
 
 
+class MotionRolloutStats(TypedDict):
+    rendered_steps: int
+    episode_return: float
+    terminal: bool
+    timeout: bool
+
+
 def render_checkpoint(
     checkpoint: Path,
     output_path: Path,
@@ -38,18 +45,39 @@ def render_checkpoint(
     train_state, metadata = restore_training_checkpoint(checkpoint)
     if metadata.task != "motion_tracking" or metadata.motion_env is None:
         raise ValueError(f"checkpoint task is {metadata.task!r}, not motion_tracking")
-    env_config = replace(metadata.motion_env)
     env = BelloMotionTrackingEnv.load(
         metadata.asset,
-        env_config,
+        metadata.motion_env,
         warp=metadata.warp,
         batch_size=1,
         use_viewer_model=True,
     )
-    state, observation = env.reset(reference_time=jax.numpy.asarray(0.0))
-    observation_stack = init_observation_stack(
-        observation, metadata.ppo.policy.obs_stack_size
+    render_motion_policy(
+        env,
+        train_state.policy,
+        output_path,
+        steps=steps or env.max_episode_steps,
+        width=width,
+        height=height,
+        fps=fps,
+        obs_stack_size=metadata.ppo.policy.obs_stack_size,
     )
+    return output_path
+
+
+def render_motion_policy(
+    env: BelloMotionTrackingEnv,
+    policy,
+    output_path: Path,
+    *,
+    steps: int,
+    width: int,
+    height: int,
+    fps: int,
+    obs_stack_size: int,
+) -> MotionRolloutStats:
+    state, observation = env.reset(reference_time=jax.numpy.asarray(0.0))
+    observation_stack = init_observation_stack(observation, obs_stack_size)
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     renderer = mujoco.Renderer(mj_model, width=width, height=height)
@@ -59,26 +87,36 @@ def render_checkpoint(
     camera = make_camera(mj_model, camera_config)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     writer = imageio.get_writer(output_path, fps=fps)
-    rollout_steps = steps or env.max_episode_steps
+    episode_return = 0.0
+    rendered_steps = 0
+    terminal = False
+    timeout = False
     try:
-        for _ in range(rollout_steps):
+        for _ in range(steps):
             sync_mj_data(mj_model, mj_data, state)
             update_camera(camera, mj_model, mj_data, camera_config)
             renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
-            action = apply_actor(
-                train_state.policy, stacked_observation(observation_stack)
-            )
-            state, observation, _, done, _ = env.step(state, action)
+            action = apply_actor(policy, stacked_observation(observation_stack))
+            state, observation, reward, done, info = env.step(state, action)
+            episode_return += float(jax.device_get(reward))
+            rendered_steps += 1
             observation_stack = update_observation_stack(
                 observation_stack, observation, done
             )
             if bool(jax.device_get(done)):
+                terminal = bool(jax.device_get(info["done/terminal"]))
+                timeout = bool(jax.device_get(info["done/timeout"]))
                 break
     finally:
         writer.close()
         renderer.close()
-    return output_path
+    return MotionRolloutStats(
+        rendered_steps=rendered_steps,
+        episode_return=episode_return,
+        terminal=terminal,
+        timeout=timeout,
+    )
 
 
 def entrypoint() -> None:

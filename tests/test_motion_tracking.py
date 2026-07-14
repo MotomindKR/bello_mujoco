@@ -130,6 +130,10 @@ def test_default_motion_training_config_has_fixed_waist_contract() -> None:
     assert config.env_config.motion_path == Path(
         "motions/local/walk1_subject1_fixed_waist.npz"
     )
+    assert config.video_config.enabled
+    assert config.video_config.render_final
+    assert config.video_config.log_wandb
+    assert config.video_config.wandb_name == "eval/motion_policy"
 
 
 def test_gmr_joint_columns_are_remapped_by_name(

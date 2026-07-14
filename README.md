@@ -85,7 +85,8 @@ bello-train-motion-ppo
 ```
 
 See [whole-body motion tracking](docs/motion_tracking.md) for the robot,
-canonical motion, environment, reward, and evaluation contracts.
+canonical motion, environment, reward, evaluation, and periodic W&B video
+contracts.
 
 Launch a branch-pinned Vast.ai training run:
 

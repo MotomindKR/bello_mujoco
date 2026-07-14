@@ -100,6 +100,20 @@ wandb_config:
   dir: .wandb
   tags: [bello, fixed-waist, gmr]
 
+video_config:
+  enabled: true
+  every_updates: 100
+  render_initial: false
+  render_final: true
+  output_dir: outputs/motion_tracking/eval_videos
+  filename_prefix: eval
+  steps: 300
+  width: 640
+  height: 480
+  fps: 50
+  log_wandb: true
+  wandb_name: eval/motion_policy
+
 warp:
   contact_budget_per_env: 32
   naconmax: null
