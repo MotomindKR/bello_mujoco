@@ -40,11 +40,13 @@ def rewrite_urdf_for_mujoco(
     out_urdf: Path,
     *,
     end_effector_sphere_mode: EndEffectorSphereMode = "none",
+    fixed_joint_names: tuple[str, ...] = (),
 ) -> MeshSources:
     tree = ET.parse(source_urdf)
     root = tree.getroot()
     preserve_fixed_link_bodies(root)
     replace_end_effectors_with_spheres(root, end_effector_sphere_mode)
+    fix_urdf_joints(root, fixed_joint_names)
     collision_sources: dict[Path, str] = {}
     visual_sources: dict[Path, str] = {}
     collision_by_name: dict[str, Path] = {}
@@ -90,6 +92,21 @@ def rewrite_urdf_for_mujoco(
     ET.indent(tree, space="  ")
     tree.write(out_urdf, encoding="utf-8", xml_declaration=True)
     return MeshSources(collision=collision_sources, visual=visual_sources)
+
+
+def fix_urdf_joints(root: ET.Element, joint_names: tuple[str, ...]) -> None:
+    if len(set(joint_names)) != len(joint_names):
+        raise ValueError("fixed_joint_names must not contain duplicates")
+    for joint_name in joint_names:
+        joint = root.find(f"./joint[@name='{joint_name}']")
+        if joint is None:
+            raise ValueError(f"fixed joint not found: {joint_name}")
+        if joint.get("type") == "fixed":
+            raise ValueError(f"joint is already fixed: {joint_name}")
+        joint.set("type", "fixed")
+        for child in list(joint):
+            if child.tag not in {"origin", "parent", "child"}:
+                joint.remove(child)
 
 
 def preserve_fixed_link_bodies(root: ET.Element) -> None:

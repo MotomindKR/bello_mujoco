@@ -10,6 +10,7 @@ import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.mesh import (
+    fix_urdf_joints,
     preserve_fixed_link_bodies,
     replace_end_effectors_with_spheres,
 )
@@ -83,6 +84,44 @@ def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
     compiler = root.find("./mujoco/compiler")
     assert compiler is not None
     assert compiler.attrib["fusestatic"] == "false"
+
+
+def test_fix_urdf_joints_preserves_kinematic_transform() -> None:
+    root = ET.fromstring(
+        """
+        <robot name="test">
+          <link name="parent" />
+          <link name="child" />
+          <joint name="waist_roll_joint" type="revolute">
+            <origin xyz="0 0 0.1" rpy="0.2 0 0" />
+            <parent link="parent" />
+            <child link="child" />
+            <axis xyz="1 0 0" />
+            <limit lower="-1" upper="1" effort="1" velocity="1" />
+          </joint>
+        </robot>
+        """
+    )
+
+    fix_urdf_joints(root, ("waist_roll_joint",))
+
+    joint = root.find("./joint[@name='waist_roll_joint']")
+    assert joint is not None
+    assert joint.attrib["type"] == "fixed"
+    assert joint.find("origin").attrib == {"xyz": "0 0 0.1", "rpy": "0.2 0 0"}
+    assert joint.find("axis") is None
+    assert joint.find("limit") is None
+
+
+def test_fix_urdf_joints_rejects_missing_and_duplicate_names() -> None:
+    root = ET.fromstring(
+        '<robot name="test"><joint name="joint" type="revolute" /></robot>'
+    )
+
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        fix_urdf_joints(root, ("joint", "joint"))
+    with pytest.raises(ValueError, match="fixed joint not found"):
+        fix_urdf_joints(root, ("missing",))
 
 
 def test_prepared_full_body_preserves_pelvis_body(
@@ -246,6 +285,10 @@ def test_asset_cache_key_tracks_prep_config() -> None:
 
     assert asset_config_hash(base, "full_body") != asset_config_hash(
         changed, "full_body"
+    )
+    assert asset_config_hash(base, "full_body") != asset_config_hash(
+        AssetPrepConfig(asset="full_body", fixed_joint_names=("waist_roll_joint",)),
+        "full_body",
     )
 
 

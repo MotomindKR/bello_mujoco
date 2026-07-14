@@ -32,7 +32,7 @@ from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
 
 AssetName = Literal["full_body", "lower_body", "upper_body"]
-ASSET_CACHE_VERSION = 3
+ASSET_CACHE_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,7 @@ class AssetPrepConfig:
     collision_mode: CollisionMode = "mesh"
     end_effector_sphere_mode: EndEffectorSphereMode = "none"
     neighbor_exclusion_depth: int = 2
+    fixed_joint_names: tuple[str, ...] = ()
     actuator_config: ActuatorConfig = field(default_factory=ActuatorConfig)
 
 
@@ -102,6 +103,7 @@ def prepare_asset_unlocked(
         source_urdf,
         out_urdf,
         end_effector_sphere_mode=config.end_effector_sphere_mode,
+        fixed_joint_names=config.fixed_joint_names,
     )
     actuated_joint_order = actuated_urdf_joint_names(out_urdf)
     for src, dst_name in mesh_sources.collision.items():
@@ -201,6 +203,7 @@ def asset_config_hash(
         "collision_mode": config.collision_mode,
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
+        "fixed_joint_names": config.fixed_joint_names,
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
         "source": source_asset_fingerprint(asset),
