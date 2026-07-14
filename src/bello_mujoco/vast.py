@@ -690,6 +690,7 @@ export WARP_CACHE_PATH="$PWD/.warp-cache"
 export MUJOCO_GL=egl
 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export JAX_DEFAULT_MATMUL_PRECISION=highest
 
 uv python install 3.12
 uv sync --frozen
@@ -730,6 +731,60 @@ uv run bello-train-ppo \
 """
 
 
+PLAYGROUND_REMOTE_TRAIN_SCRIPT = r"""set -Eeuo pipefail
+
+run_name="$6"
+playground_dir="/workspace/mujoco_playground"
+
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  python3 -m pip install --break-system-packages --upgrade uv
+fi
+command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
+
+rm -rf "$playground_dir"
+git init "$playground_dir"
+git -C "$playground_dir" remote add origin "$PLAYGROUND_REPOSITORY"
+git -C "$playground_dir" fetch --depth 1 origin "$PLAYGROUND_COMMIT"
+git -C "$playground_dir" checkout --detach FETCH_HEAD
+actual_commit="$(git -C "$playground_dir" rev-parse HEAD)"
+if [ "$actual_commit" != "$PLAYGROUND_COMMIT" ]; then
+  echo "MuJoCo Playground resolved to $actual_commit, expected $PLAYGROUND_COMMIT" >&2
+  exit 1
+fi
+
+cd "$playground_dir"
+export UV_CACHE_DIR="$PWD/.uv-cache"
+export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+export WARP_CACHE_PATH="$PWD/.warp-cache"
+export MUJOCO_GL=egl
+export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export JAX_DEFAULT_MATMUL_PRECISION=highest
+
+uv python install 3.12
+uv sync --extra cuda --extra learning
+uv run python -c 'import jax; print({"backend": jax.default_backend(), "devices": [str(x) for x in jax.devices()]}); assert jax.default_backend() == "gpu"'
+
+uv run train-jax-ppo \
+  --env_name="$PLAYGROUND_ENV_NAME" \
+  --impl=warp \
+  --seed="$PLAYGROUND_SEED" \
+  --num_timesteps="$PLAYGROUND_NUM_TIMESTEPS" \
+  --use_wandb \
+  --suffix="$run_name"
+"""
+
+
 def run_remote_training(
     target: tuple[str, str, int],
     selection: GitSelection,
@@ -739,6 +794,8 @@ def run_remote_training(
     wandb_key: str,
     github_token: str,
     sleep: Callable[[float], None] = time.sleep,
+    script: str = REMOTE_TRAIN_SCRIPT,
+    remote_env_extra: Mapping[str, str] | None = None,
 ) -> None:
     project = os.environ.get("WANDB_PROJECT", "bello-mujoco")
     entity = os.environ.get("WANDB_ENTITY", "")
@@ -749,6 +806,8 @@ def run_remote_training(
         "GITHUB_TOKEN": github_token,
         "BELLO_HYDRA_OVERRIDES": json.dumps(config.hydra_overrides),
     }
+    if remote_env_extra is not None:
+        remote_env.update(remote_env_extra)
     job_dir = f"/workspace/.bello-vast-jobs/{run_name}"
     start_command = _remote_start_command(
         job_dir,
@@ -756,7 +815,7 @@ def run_remote_training(
         config,
         run_name,
     )
-    payload = json.dumps({"environment": remote_env, "script": REMOTE_TRAIN_SCRIPT})
+    payload = json.dumps({"environment": remote_env, "script": script})
     deadline = time.monotonic() + config.ssh_timeout_seconds
     disconnect_reported = False
 

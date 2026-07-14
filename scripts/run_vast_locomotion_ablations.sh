@@ -15,6 +15,8 @@ Environment:
   CONDITIONS       Space-separated condition names; defaults to the full matrix.
   TOTAL_TIMESTEPS  Defaults to 75497472 (1,536 updates).
   RUN_PREFIX       Optional W&B/checkpoint prefix; a timestamp is appended.
+  MAX_ATTEMPTS     Attempts per job after rental/SSH failures, default 3.
+  RETRY_DELAY      Seconds between attempts, default 15.
   DRY_RUN          Set to 1 to exercise worktrees, queues, and tmux without rent.
 
 The launcher creates one detached Git worktree per lane so each blocking Vast
@@ -53,6 +55,10 @@ state_root="${XDG_STATE_HOME:-$HOME/.local/state}/bello-mujoco/vast-ablations/$b
 mkdir -p "$state_root"
 status_log="$state_root/status.log"
 : > "$status_log"
+manifest="$state_root/manifest.tsv"
+results="$state_root/results.tsv"
+: > "$manifest"
+: > "$results"
 runner_mode=vast
 if [[ ${DRY_RUN:-0} == 1 ]]; then
   runner_mode=print
@@ -75,6 +81,7 @@ for condition in "${conditions[@]}"; do
   for seed in "${seeds[@]}"; do
     lane=$((job_index % lane_count + 1))
     printf '%s\t%s\n' "$condition" "$seed" >> "$state_root/lane$lane.queue"
+    printf '%s\t%s\n' "$condition" "$seed" >> "$manifest"
     ((job_index += 1))
   done
 done
@@ -103,11 +110,11 @@ for ((lane = 1; lane <= lane_count; lane++)); do
   queue="$state_root/lane$lane.queue"
   pane=${panes[$((lane - 1))]}
   command=$(printf \
-    'set +e; cd %q; tmux select-pane -T %q; while IFS=$'"'"'\\t'"'"' read -r condition seed; do name=%q-"$condition"-seed"$seed"; printf "%%s lane%d START %%s\\n" "$(date -Is)" "$name" | tee -a %q; BRANCH=%q MAX_PRICE=%q TOTAL_TIMESTEPS=%q RUN_PREFIX=%q BELLO_VAST_TRAIN_BIN=%q scripts/run_locomotion_ablation.sh %q "$condition" "$seed"; rc=$?; printf "%%s lane%d END rc=%%s %%s\\n" "$(date -Is)" "$rc" "$name" | tee -a %q; done < %q; printf "%%s lane%d QUEUE COMPLETE\\n" "$(date -Is)" | tee -a %q; exec bash' \
-    "$worktree" "lane$lane" "$batch_name" "$lane" "$status_log" \
-    "$branch" "${MAX_PRICE:-1.25}" "${TOTAL_TIMESTEPS:-75497472}" "$batch_name" \
-    "$repo_root/.venv/bin/bello-vast-train" "$runner_mode" "$lane" "$status_log" \
-    "$queue" "$lane" "$status_log")
+    'cd %q; tmux select-pane -T %q; BRANCH=%q MAX_PRICE=%q TOTAL_TIMESTEPS=%q BELLO_VAST_TRAIN_BIN=%q MAX_ATTEMPTS=%q RETRY_DELAY=%q RUNNER_MODE=%q scripts/run_vast_locomotion_lane.sh %q %q %q %q %q; exec bash' \
+    "$worktree" "lane$lane" "$branch" "${MAX_PRICE:-1.25}" \
+    "${TOTAL_TIMESTEPS:-75497472}" "$repo_root/.venv/bin/bello-vast-train" \
+    "${MAX_ATTEMPTS:-3}" "${RETRY_DELAY:-15}" "$runner_mode" "$lane" "$queue" \
+    "$status_log" "$results" "$batch_name")
   tmux send-keys -t "$pane" -l "$command"
   tmux send-keys -t "$pane" Enter
 done
@@ -118,6 +125,8 @@ Launched $job_count jobs across $lane_count parallel $runner_mode lanes.
 Commit: $commit
 Window: $session:$window_name
 Status: $status_log
+Manifest: $manifest
+Results: $results
 
 Open the grid:
   tmux select-window -t $session:$window_name

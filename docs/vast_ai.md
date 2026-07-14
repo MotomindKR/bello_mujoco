@@ -92,6 +92,25 @@ uv run bello-vast-train \
 Use `--yes` only for intentional noninteractive operation. Branch, recipe, and
 maximum price remain explicit.
 
+To reproduce the pinned, otherwise unchanged MuJoCo Playground Berkeley
+Humanoid baseline, use the dedicated launcher. It checks out Playground commit
+`87a4bf98f1806adefd240d72dd53a2c3ceeb2f0d` on the rented machine and runs its
+native Warp PPO entry point:
+
+```bash
+uv run bello-vast-playground \
+  --branch main \
+  --seed 0 \
+  --num-timesteps 150000000 \
+  --max-price 1.25
+```
+
+The Bello morphology port is `experiments/train/locomotion_berkeley.yaml` and
+uses the normal `bello-vast-train` launcher. Its 2,048-environment batch and
+joint-specific action scales are deliberate adaptations for Bello; the
+reference rewards, command distribution, gait clock, rollout horizon, and PPO
+hyperparameters are retained.
+
 ## Offer Selection
 
 The default profile requires:

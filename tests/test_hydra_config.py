@@ -192,6 +192,29 @@ def test_gait_candidate_enables_explicit_anti_chatter_stack() -> None:
     assert config.reward_config.foot_slip.weight == pytest.approx(-0.05)
 
 
+def test_berkeley_port_matches_reference_recipe() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_berkeley"),
+    )
+
+    assert config.config.total_timesteps == 150_000_000
+    assert config.config.num_steps == 20
+    assert config.config.num_minibatches == 32
+    assert config.config.update_epochs == 4
+    assert config.config.gamma == pytest.approx(0.97)
+    assert config.config.learning_rate == pytest.approx(3e-4)
+    assert config.env_config.gait.randomize_frequency
+    assert config.env_config.gait.frequency_range == pytest.approx((1.25, 1.5))
+    assert config.env_config.observation.foot_phase
+    assert config.reward_config.touchdown_air_time.enabled
+    assert config.reward_config.touchdown_air_time.weight == pytest.approx(2.0)
+    assert config.reward_config.foot_phase.enabled
+    assert config.reward_config.torque_l1.enabled
+    assert config.reward_config.clip_negative_total
+    assert config.reward_config.scale_termination_by_timestep
+
+
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:
     config = structured_config(
         BenchmarkEnvConfig,

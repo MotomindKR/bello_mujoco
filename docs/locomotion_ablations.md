@@ -104,6 +104,11 @@ SEEDS="0 1 2 3 4" MAX_PARALLEL=6 \
 scripts/run_vast_locomotion_ablations.sh agent/clean-locomotion-ablation
 ```
 
+The matrix runner writes every intended job to `manifest.tsv` and every final
+exit status to `results.tsv`. Each lane retries failed launches up to
+`MAX_ATTEMPTS` (default `3`); child launchers read from `/dev/null`, so they
+cannot consume the lane queue from standard input.
+
 The default conditions isolate:
 
 ```text

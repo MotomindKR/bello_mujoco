@@ -25,6 +25,14 @@ and exits without optimization.
 `dry_run=false` runs PPO. `jit=true` is the default and wraps the train function
 with `jax.jit`.
 
+`experiments/train/locomotion_berkeley.yaml` is the Bello morphology port of
+MuJoCo Playground's Berkeley Humanoid recipe. It adds a randomized 1.25--1.5 Hz
+per-foot phase clock, touchdown-gated air time, phase-height tracking, L1 torque,
+weighted pose, hip/knee deviation, and nonnegative clipped reward total. The
+actor receives noisy proprioception and the four-value per-foot phase encoding;
+the critic receives a clean observation with additional height and actuator
+force channels.
+
 ## Hydra Configs
 
 Training configs live under `configs/train/`. The default config is used when no
