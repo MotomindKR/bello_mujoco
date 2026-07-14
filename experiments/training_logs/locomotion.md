@@ -1597,3 +1597,28 @@ down slightly from `1.25` in the failed run at a similar update, while the new
 penalty now supplies a restoring gradient rather than a flat clipped-reward
 region. Gait quality still requires the 512-update video gate; this short run
 only validates early optimization stability.
+
+## 2026-07-14 - Replace occupancy-only gait ablations with event timing
+
+The 1,536-update, three-seed follow-up found that stance-width weight `-2.0`
+was the only treatment that preserved robust tracking and survival. The
+1.20-second clock, stronger invalid-action pressure, and tanh policy all traded
+lower measured cadence for worse survival. Across successful runs, PPO remained
+finite, applied every minibatch, and never exceeded target KL. Reward design,
+not optimizer stability, remained the limiting factor.
+
+The clocked seed-0 policy produced about `5.16` combined footfalls per second
+against a scheduled target near `1.76`. `gait_contact` scores contact occupancy,
+while contact debounce was zero, so short repeated transitions could retain
+substantial reward. The next pipeline keeps the stance recipe as
+`locomotion_gait_base` and adds an explicit `contact_timing` event penalty. A
+touchdown is penalized only when the preceding air interval is below its
+minimum; liftoff uses the preceding contact interval. Accepted contacts are
+debounced before duration memory and rewards consume them.
+
+`locomotion_gait` is the full candidate: 40 ms on/off debounce, 1.0-second
+clock, gait-contact `0.35`, timing penalty `-0.10`, swing velocity `0.25`, and
+foot slip `-0.05`. The previous `locomotion_clean_*` ablation YAML chain was
+removed. The executable matrix in `scripts/run_locomotion_ablation.sh` now
+isolates debounce, timing, slip, clock, swing velocity, and full-stack
+interactions without adding another config file per treatment.

@@ -1849,12 +1849,33 @@ class BelloLocomotionEnv:
         initialized = state.step_count > 0
         touchdown = jnp.where(initialized, contact & ~previous, False)
         liftoff = jnp.where(initialized, ~contact & previous, False)
+        moving = (
+            jnp.linalg.norm(next_state.command[:2])
+            > self.reward_config.contact_timing.command_speed_threshold
+        )
+        premature_touchdown = (
+            touchdown
+            & (state.foot_air_time < self.reward_config.contact_timing.min_air_time)
+            & moving
+        )
+        premature_liftoff = (
+            liftoff
+            & (
+                state.foot_contact_time
+                < self.reward_config.contact_timing.min_contact_time
+            )
+            & moving
+        )
         contact_count = jnp.sum(contact.astype(jnp.int32))
         frame_link = self._reward_link(self.reward_config.stance_width)
         return {
             "gait/stance_width": self._stance_width(next_state, frame_link),
             "gait/touchdown": jnp.sum(touchdown.astype(jnp.float32)),
             "gait/liftoff": jnp.sum(liftoff.astype(jnp.float32)),
+            "gait/premature_touchdown": jnp.sum(
+                premature_touchdown.astype(jnp.float32)
+            ),
+            "gait/premature_liftoff": jnp.sum(premature_liftoff.astype(jnp.float32)),
             "gait/single_support": (contact_count == 1).astype(jnp.float32),
             "gait/double_support": (contact_count == 2).astype(jnp.float32),
             "gait/flight": (contact_count == 0).astype(jnp.float32),

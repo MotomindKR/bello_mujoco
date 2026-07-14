@@ -5,8 +5,10 @@ remote Git branch to an exact commit, rents a matching instance, clones and
 verifies that commit, installs the locked environment, runs PPO with W&B, and
 destroys the instance before the local command returns.
 
-The controller is intentionally blocking. Keep its local process and network
-connection alive for the duration of training.
+The controller is intentionally blocking. Keep its local process alive for the
+duration of training. Transient SSH interruptions are recovered as described
+below, but the controller still needs network access to monitor and eventually
+tear down the instance.
 
 ## Credentials
 
@@ -131,8 +133,8 @@ uv run bello-vast-train \
 
 ## Remote Setup and Output
 
-The remote bootstrap installs the required EGL/FFmpeg system libraries and
-`uv`, then runs:
+The controller starts the remote bootstrap as a detached process before it
+installs the required EGL/FFmpeg system libraries and `uv`, then runs:
 
 ```bash
 uv python install 3.12
@@ -140,10 +142,20 @@ uv sync --frozen
 ```
 
 It verifies that JAX selects a GPU and runs a one-environment training dry-run
-before starting the requested recipe. Setup and training output stream to the
-local terminal. No local run log is retained. Once W&B initializes, its metrics,
-console output, videos, and successful final checkpoint artifact are the durable
-run output. A failure before W&B initialization is visible only in the terminal.
+before starting the requested recipe. The detached job stores its log and exit
+status under `/workspace/.bello-vast-jobs/<run-name>/` on the rented instance.
+The controller fetches bounded log chunks over short SSH connections, so a lost
+SSH session does not stop setup or training. It reconnects for up to
+`--ssh-timeout-seconds` of continuous SSH unavailability and resumes output from
+the last received byte. If SSH remains unavailable beyond that timeout, the
+pipeline fails and tears down the instance as usual.
+Detachment protects against an SSH client or proxy interruption; it cannot keep
+training alive if the rented host or container itself stops.
+
+No local run log is retained. Once W&B initializes, its metrics, console output,
+videos, and successful final checkpoint artifact are the durable run output. A
+failure before W&B initialization is visible only in the terminal. The remote
+job log is removed with the instance during teardown.
 
 ## Teardown and Recovery
 

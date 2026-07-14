@@ -431,9 +431,9 @@ Every reward term has `enabled` and `weight`. Link-aware terms also have `link`;
 `link: null` means use `env_config.root_link`.
 Continuous reward components are multiplied by the environment control timestep
 before they are returned or logged under `reward/*`, so their weights are
-interpreted as per-second scales. The event-driven `termination` term keeps its
-configured event magnitude and is applied only for terminal failure conditions,
-not for episode-length timeouts.
+interpreted as per-second scales. Event-driven `contact_timing` and `termination`
+keep their configured event magnitudes. Termination is applied only for terminal
+failure conditions, not for episode-length timeouts.
 
 ```yaml
 reward_config:
@@ -529,6 +529,12 @@ reward_config:
     enabled: true
     weight: 0.5
     command_speed_threshold: 0.10
+  contact_timing:
+    enabled: false
+    weight: -0.10
+    min_air_time: 0.20
+    min_contact_time: 0.30
+    command_speed_threshold: 0.10
   feet_air_time:
     enabled: false
     weight: 0.25
@@ -554,7 +560,8 @@ reward_config:
 ```
 
 Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
-`swing_foot_velocity`, `foot_distance`, `stance_width`, `gait_contact`, `feet_air_time`,
+`swing_foot_velocity`, `foot_distance`, `stance_width`, `gait_contact`,
+`contact_timing`, `feet_air_time`,
 `standing_foot_vel`, and `standing_foot_air_time`. `foot_distance` rewards the
 horizontal distance between the two foot bodies. Terrain-contact metadata is
 required for the contact-dependent foot terms and for `undesired_contact` when
@@ -615,6 +622,13 @@ non-contact foot is moving, the clearance term is zero. It is also disabled for
 near-standing commands by
 `command_speed_threshold`, so stand-still samples do not receive swing-clearance
 pressure.
+
+`contact_timing` penalizes accepted touchdown events whose preceding air time is
+shorter than `min_air_time`, and liftoff events whose preceding contact time is
+shorter than `min_contact_time`. Shortfall is normalized by the configured
+minimum and squared. Mature transitions score zero. Because this is an event
+term, its weight is not multiplied by the control timestep. Linear commands at
+or below `command_speed_threshold` are gated out.
 
 `swing_foot_velocity` rewards the scheduled swing foot for matching a
 directional XY velocity relative to `link`, measured in that link's yaw frame.
@@ -989,9 +1003,11 @@ transformed actor mean. The default `gaussian` preserves existing experiment
 behavior.
 
 Locomotion training also logs `gait/footfalls_per_second`,
-`gait/liftoffs_per_second`, `mean_gait/stance_width`, and mean single-support,
-double-support, and flight fractions. These diagnostics are emitted even when
-gait shaping rewards are disabled, so ablations remain directly comparable.
+`gait/liftoffs_per_second`, `gait/premature_touchdowns_per_second`,
+`gait/premature_liftoffs_per_second`, `mean_gait/stance_width`, and mean
+single-support, double-support, and flight fractions. These diagnostics are
+emitted even when gait shaping rewards are disabled, so ablations remain
+directly comparable.
 
 ## Checkpoints
 

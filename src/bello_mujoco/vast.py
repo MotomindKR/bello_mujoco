@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import json
 import os
@@ -83,6 +84,16 @@ class GitSelection:
     commit: str
     config_path: PurePosixPath
     repo_url: str
+
+
+@dataclass(frozen=True)
+class RemoteJobUpdate:
+    """One bounded log/status response from a detached remote job."""
+
+    state: str
+    offset: int
+    output: bytes
+    returncode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -575,6 +586,27 @@ def parse_ssh_url(value: str) -> tuple[str, str, int]:
     return parsed.username, parsed.hostname, parsed.port
 
 
+def ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
+    user, host, port = target
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-p",
+        str(port),
+        f"{user}@{host}",
+        remote_command,
+    ]
+
+
 def wait_for_ssh(
     api: VastApi,
     instance_id: int,
@@ -587,21 +619,8 @@ def wait_for_ssh(
     while time.monotonic() < deadline:
         try:
             target = parse_ssh_url(api.ssh_url(instance_id))
-            user, host, port = target
             subprocess.run(
-                [
-                    "ssh",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=accept-new",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-p",
-                    str(port),
-                    f"{user}@{host}",
-                    "true",
-                ],
+                ssh_command(target, "true"),
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -719,8 +738,8 @@ def run_remote_training(
     *,
     wandb_key: str,
     github_token: str,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    user, host, port = target
     project = os.environ.get("WANDB_PROJECT", "bello-mujoco")
     entity = os.environ.get("WANDB_ENTITY", "")
     remote_env = {
@@ -730,18 +749,162 @@ def run_remote_training(
         "GITHUB_TOKEN": github_token,
         "BELLO_HYDRA_OVERRIDES": json.dumps(config.hydra_overrides),
     }
-    bootstrap = (
-        "import json, os, subprocess, sys; "
-        "env=json.loads(sys.stdin.readline()); os.environ.update(env); "
-        "script=sys.stdin.read(); "
-        "raise SystemExit(subprocess.run(['bash','-s','--',*sys.argv[1:]], "
-        "input=script, text=True, env=os.environ).returncode)"
+    job_dir = f"/workspace/.bello-vast-jobs/{run_name}"
+    start_command = _remote_start_command(
+        job_dir,
+        selection,
+        config,
+        run_name,
     )
-    remote_command = shlex.join(
+    payload = json.dumps({"environment": remote_env, "script": REMOTE_TRAIN_SCRIPT})
+    deadline = time.monotonic() + config.ssh_timeout_seconds
+    disconnect_reported = False
+
+    while True:
+        result = subprocess.run(
+            ssh_command(target, start_command),
+            input=payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode == 0:
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            break
+        if result.returncode != 255:
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                result.args,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError("SSH did not recover while starting remote training")
+        if not disconnect_reported:
+            print("SSH disconnected while starting; retrying the detached remote job.")
+            disconnect_reported = True
+        sleep(5)
+
+    offset = 0
+    disconnected_at: float | None = None
+    while True:
+        result = subprocess.run(
+            ssh_command(target, _remote_status_command(job_dir, offset)),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode == 255:
+            now = time.monotonic()
+            if disconnected_at is None:
+                disconnected_at = now
+                print("SSH disconnected; remote training continues while reconnecting.")
+            if now - disconnected_at >= config.ssh_timeout_seconds:
+                raise TimeoutError(
+                    "SSH did not recover while detached remote training was running"
+                )
+            sleep(5)
+            continue
+        if result.returncode != 0:
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                result.args,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        if disconnected_at is not None:
+            print("SSH reconnected; resuming remote training output.")
+            disconnected_at = None
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        update = _parse_remote_job_update(result.stdout)
+        if update.output:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(update.output)
+            sys.stdout.buffer.flush()
+        offset = update.offset
+        if update.state == "running":
+            sleep(10)
+            continue
+        if update.state == "lost":
+            raise RuntimeError("detached remote training exited without a status")
+        if update.returncode:
+            raise subprocess.CalledProcessError(
+                update.returncode,
+                ["detached remote training", run_name],
+            )
+        return
+
+
+def _remote_start_command(
+    job_dir: str,
+    selection: GitSelection,
+    config: VastTrainConfig,
+    run_name: str,
+) -> str:
+    bootstrap = r"""import json, os, pathlib, subprocess, sys
+payload = json.load(sys.stdin)
+env = payload["environment"]
+script = payload["script"]
+job_dir = pathlib.Path(sys.argv[1])
+job_dir.mkdir(parents=True, exist_ok=True)
+script_path = job_dir / "train.sh"
+log_path = job_dir / "output.log"
+pid_path = job_dir / "pid"
+status_path = job_dir / "status"
+if status_path.exists():
+    print(f"Detached remote job already completed in {job_dir}.")
+    raise SystemExit(0)
+if pid_path.exists():
+    try:
+        os.kill(int(pid_path.read_text()), 0)
+    except (OSError, ValueError):
+        pass
+    else:
+        print(f"Detached remote job already running in {job_dir}.")
+        raise SystemExit(0)
+script_path.write_text(script)
+wrapper = r'''set +e
+script_path="$1"
+status_path="$2"
+shift 2
+bash "$script_path" "$@"
+status=$?
+status_tmp="$status_path.$$"
+printf '%s\n' "$status" > "$status_tmp"
+mv "$status_tmp" "$status_path"
+exit "$status"
+'''
+with log_path.open("ab", buffering=0) as log:
+    process = subprocess.Popen(
+        ["bash", "-c", wrapper, "bello-vast-job", str(script_path), str(status_path), *sys.argv[2:]],
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=os.environ | env,
+        start_new_session=True,
+        close_fds=True,
+    )
+pid_path.write_text(f"{process.pid}\n")
+print(f"Started detached remote job {process.pid} in {job_dir}.")
+"""
+    return shlex.join(
         [
             "python3",
             "-c",
             bootstrap,
+            job_dir,
             selection.branch,
             selection.commit,
             selection.repo_url,
@@ -750,21 +913,63 @@ def run_remote_training(
             run_name,
         ]
     )
-    command = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "ServerAliveInterval=30",
-        "-p",
-        str(port),
-        f"{user}@{host}",
-        remote_command,
-    ]
-    payload = json.dumps(remote_env) + "\n" + REMOTE_TRAIN_SCRIPT
-    subprocess.run(command, input=payload, text=True, check=True)
+
+
+def _remote_status_command(job_dir: str, offset: int) -> str:
+    status_reader = r"""import base64, json, os, pathlib, sys
+job_dir = pathlib.Path(sys.argv[1])
+offset = int(sys.argv[2])
+log_path = job_dir / "output.log"
+status_path = job_dir / "status"
+pid_path = job_dir / "pid"
+size = log_path.stat().st_size if log_path.exists() else 0
+if offset > size:
+    offset = 0
+with log_path.open("rb") if log_path.exists() else open(os.devnull, "rb") as log:
+    log.seek(offset)
+    output = log.read(262144)
+next_offset = offset + len(output)
+returncode = int(status_path.read_text()) if status_path.exists() else None
+if returncode is not None and next_offset >= size:
+    state = "complete"
+elif returncode is not None:
+    state = "running"
+else:
+    try:
+        pid = int(pid_path.read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        state = "lost"
+    else:
+        state = "running"
+print(json.dumps({
+    "state": state,
+    "offset": next_offset,
+    "output": base64.b64encode(output).decode("ascii"),
+    "returncode": returncode,
+}))
+"""
+    return shlex.join(["python3", "-c", status_reader, job_dir, str(offset)])
+
+
+def _parse_remote_job_update(value: str) -> RemoteJobUpdate:
+    try:
+        parsed = json.loads(value)
+        state = str(parsed["state"])
+        offset = int(parsed["offset"])
+        output = base64.b64decode(parsed["output"], validate=True)
+        raw_returncode = parsed["returncode"]
+        returncode = None if raw_returncode is None else int(raw_returncode)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid detached remote job response: {value!r}") from exc
+    if state not in {"running", "complete", "lost"} or offset < 0:
+        raise RuntimeError(f"invalid detached remote job response: {value!r}")
+    return RemoteJobUpdate(
+        state=state,
+        offset=offset,
+        output=output,
+        returncode=returncode,
+    )
 
 
 class PipelineInterrupted(RuntimeError):

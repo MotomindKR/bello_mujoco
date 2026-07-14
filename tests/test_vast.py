@@ -1,5 +1,8 @@
+import base64
 import json
+import shlex
 import subprocess
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -199,12 +202,23 @@ def test_destroy_treats_not_found_after_api_error_as_success() -> None:
 
 
 def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
-    call = {}
+    calls = []
 
     def fake_run(command, **kwargs):
-        call["command"] = command
-        call["input"] = kwargs["input"]
-        return subprocess.CompletedProcess(command, 0)
+        calls.append((command, kwargs))
+        if "input" in kwargs:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="started\n", stderr=""
+            )
+        response = json.dumps(
+            {
+                "state": "complete",
+                "offset": 0,
+                "output": "",
+                "returncode": 0,
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=response, stderr="")
 
     monkeypatch.setattr(vast.subprocess, "run", fake_run)
     config = valid_config(hydra_overrides=("config.seed=2",))
@@ -218,12 +232,102 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
         github_token="github-secret",
     )
 
-    assert "wandb-secret" not in " ".join(call["command"])
-    assert "github-secret" not in " ".join(call["command"])
-    environment = json.loads(call["input"].splitlines()[0])
+    assert all("wandb-secret" not in " ".join(call[0]) for call in calls)
+    assert all("github-secret" not in " ".join(call[0]) for call in calls)
+    environment = json.loads(calls[0][1]["input"])["environment"]
     assert environment["WANDB_API_KEY"] == "wandb-secret"
     assert environment["GITHUB_TOKEN"] == "github-secret"
     assert environment["BELLO_HYDRA_OVERRIDES"] == '["config.seed=2"]'
+    assert "start_new_session=True" in calls[0][0][-1]
+
+
+def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
+    job_dir = tmp_path / "job"
+    command = vast._remote_start_command(
+        str(job_dir), selection(), valid_config(), "test-run"
+    )
+    payload = json.dumps(
+        {
+            "environment": {"DETACHED_TEST_VALUE": "available"},
+            "script": 'printf "%s\\n" "$DETACHED_TEST_VALUE"; exit 7\n',
+        }
+    )
+
+    result = subprocess.run(
+        shlex.split(command),
+        input=payload,
+        text=True,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert "Started detached remote job" in result.stdout
+    for _ in range(100):
+        if (job_dir / "status").exists():
+            break
+        time.sleep(0.01)
+    assert (job_dir / "status").read_text() == "7\n"
+    assert (job_dir / "output.log").read_text() == "available\n"
+
+
+def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> None:
+    monitor_calls = 0
+    monitor_commands = []
+    sleeps = []
+
+    def response(state, offset, output=b"", returncode=None):
+        return json.dumps(
+            {
+                "state": state,
+                "offset": offset,
+                "output": base64.b64encode(output).decode("ascii"),
+                "returncode": returncode,
+            }
+        )
+
+    def fake_run(command, **kwargs):
+        nonlocal monitor_calls
+        if "input" in kwargs:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="started\n", stderr=""
+            )
+        monitor_calls += 1
+        monitor_commands.append(command[-1])
+        if monitor_calls == 1:
+            return subprocess.CompletedProcess(command, 255, stdout="", stderr="closed")
+        if monitor_calls == 2:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=response("running", 6, b"setup\n"),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=response("complete", 12, b"done\n", 0),
+            stderr="",
+        )
+
+    monkeypatch.setattr(vast.subprocess, "run", fake_run)
+
+    run_remote_training(
+        ("root", "example.com", 22001),
+        selection(),
+        valid_config(),
+        "test-run",
+        wandb_key="wandb-secret",
+        github_token="",
+        sleep=sleeps.append,
+    )
+
+    output = capfd.readouterr().out
+    assert "remote training continues while reconnecting" in output
+    assert "SSH reconnected" in output
+    assert "setup\ndone\n" in output
+    assert sleeps == [5, 10]
+    assert shlex.split(monitor_commands[-1])[-1] == "6"
 
 
 @pytest.mark.parametrize("remote_failure", [None, RuntimeError("training failed")])

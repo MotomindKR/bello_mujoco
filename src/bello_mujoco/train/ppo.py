@@ -539,6 +539,8 @@ def gait_diagnostics(
     }
     touchdown = info.get("gait/touchdown")
     liftoff = info.get("gait/liftoff")
+    premature_touchdown = info.get("gait/premature_touchdown")
+    premature_liftoff = info.get("gait/premature_liftoff")
     if touchdown is not None:
         metrics["gait/footfalls_per_second"] = (
             touchdown.astype(jnp.float32).mean() / control_timestep
@@ -546,6 +548,14 @@ def gait_diagnostics(
     if liftoff is not None:
         metrics["gait/liftoffs_per_second"] = (
             liftoff.astype(jnp.float32).mean() / control_timestep
+        )
+    if premature_touchdown is not None:
+        metrics["gait/premature_touchdowns_per_second"] = (
+            premature_touchdown.astype(jnp.float32).mean() / control_timestep
+        )
+    if premature_liftoff is not None:
+        metrics["gait/premature_liftoffs_per_second"] = (
+            premature_liftoff.astype(jnp.float32).mean() / control_timestep
         )
     return metrics
 

@@ -62,10 +62,8 @@ def test_train_hydra_configs_convert_to_valid_training_config(
         "locomotion_easy",
         "locomotion_hard",
         "locomotion_clean",
-        "locomotion_clean_slip",
-        "locomotion_clean_air_time",
-        "locomotion_clean_air_time_smooth",
-        "locomotion_clean_feet",
+        "locomotion_gait_base",
+        "locomotion_gait",
     ],
 )
 def test_experiment_train_configs_convert_to_valid_training_config(
@@ -144,94 +142,54 @@ def test_clean_locomotion_removes_gait_shaping_and_randomization() -> None:
     assert config.reward_config.termination.weight == pytest.approx(-5.0)
 
 
-def test_clean_foot_ablation_configs_isolate_reward_changes() -> None:
-    clean = structured_config(
+def test_gait_base_retains_stable_stance_control() -> None:
+    base = structured_config(
         TrainingRunConfig,
-        compose_experiment_config("locomotion_clean"),
-    )
-    slip = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_slip"),
-    )
-    air_time = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_air_time"),
-    )
-    combined = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_feet"),
+        compose_experiment_config("locomotion_gait_base"),
     )
 
-    assert not clean.reward_config.foot_slip.enabled
-    assert not clean.reward_config.feet_air_time.enabled
-    assert slip.reward_config.foot_slip.enabled
-    assert slip.reward_config.foot_slip.weight == pytest.approx(-0.10)
-    assert not slip.reward_config.feet_air_time.enabled
-    assert not air_time.reward_config.foot_slip.enabled
-    assert air_time.reward_config.feet_air_time.enabled
-    assert air_time.reward_config.feet_air_time.weight == pytest.approx(0.25)
-    assert air_time.reward_config.feet_air_time.max_duration == pytest.approx(0.40)
-    assert (
-        air_time.reward_config.feet_air_time.command_speed_threshold
-        == pytest.approx(0.10)
-    )
-    assert combined.reward_config.foot_slip.enabled
-    assert combined.reward_config.feet_air_time.enabled
+    assert base.config.learning_rate == pytest.approx(0.00005)
+    assert base.config.schedule == "linear"
+    assert base.config.target_kl == pytest.approx(0.015)
+    assert base.config.max_grad_norm == pytest.approx(0.5)
+    assert base.reward_config.action_rate.weight == pytest.approx(-0.05)
+    assert base.reward_config.joint_acc.enabled
+    assert base.reward_config.joint_acc.weight == pytest.approx(-0.000001)
+    assert base.reward_config.feet_air_time.weight == pytest.approx(0.50)
+    assert base.reward_config.stance_width.enabled
+    assert base.reward_config.stance_width.link == "pelvis_link"
+    assert base.reward_config.stance_width.min_width == pytest.approx(0.24)
+    assert base.reward_config.stance_width.max_width == pytest.approx(0.34)
+    assert not base.reward_config.gait_contact.enabled
+    assert not base.reward_config.contact_timing.enabled
+    assert not base.reward_config.swing_foot_velocity.enabled
+    assert not base.reward_config.foot_slip.enabled
+    assert base.env_config.contact.foot_contact_on_seconds == pytest.approx(0.0)
 
 
-def test_smooth_air_time_config_adds_temporal_and_ppo_stability() -> None:
+def test_gait_candidate_enables_explicit_anti_chatter_stack() -> None:
     config = structured_config(
         TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_air_time_smooth"),
+        compose_experiment_config("locomotion_gait"),
     )
 
-    assert config.config.learning_rate == pytest.approx(0.00005)
-    assert config.config.schedule == "linear"
-    assert config.config.target_kl == pytest.approx(0.015)
-    assert config.config.max_grad_norm == pytest.approx(0.5)
-    assert config.reward_config.action_rate.weight == pytest.approx(-0.05)
-    assert config.reward_config.joint_acc.enabled
-    assert config.reward_config.joint_acc.weight == pytest.approx(-0.000001)
-    assert config.reward_config.feet_air_time.weight == pytest.approx(0.50)
-
-
-def test_gait_mitigation_ablation_configs_are_isolated() -> None:
-    stance = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_air_time_stance"),
-    )
-    slow_gait = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_air_time_slow_gait"),
-    )
-    combined = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_air_time_stance_slow_gait"),
-    )
-    invalid = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_air_time_stance_slow_gait_invalid"),
-    )
-    tanh = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_clean_air_time_stance_slow_gait_tanh"),
-    )
-
-    assert stance.reward_config.stance_width.enabled
-    assert stance.reward_config.stance_width.link == "pelvis_link"
-    assert stance.reward_config.stance_width.min_width == pytest.approx(0.24)
-    assert stance.reward_config.stance_width.max_width == pytest.approx(0.34)
-    assert not stance.reward_config.gait_contact.enabled
-    assert not slow_gait.reward_config.stance_width.enabled
-    assert slow_gait.reward_config.gait_contact.enabled
-    assert slow_gait.env_config.observation.gait_phase
-    assert slow_gait.env_config.critic_observation.gait_phase
-    assert slow_gait.env_config.gait.cycle_time == pytest.approx(1.20)
-    assert combined.reward_config.stance_width.enabled
-    assert combined.reward_config.gait_contact.enabled
-    assert invalid.reward_config.invalid_action.weight == pytest.approx(-3.0)
-    assert tanh.config.policy.action_distribution == "tanh_gaussian"
-    assert tanh.config.policy.action_limit == pytest.approx(1.0)
+    assert config.reward_config.stance_width.enabled
+    assert config.env_config.contact.foot_contact_on_seconds == pytest.approx(0.04)
+    assert config.env_config.contact.foot_contact_off_seconds == pytest.approx(0.04)
+    assert config.env_config.gait.cycle_time == pytest.approx(1.0)
+    assert config.env_config.observation.gait_phase
+    assert config.env_config.critic_observation.gait_phase
+    assert config.reward_config.gait_contact.enabled
+    assert config.reward_config.gait_contact.weight == pytest.approx(0.35)
+    assert config.reward_config.contact_timing.enabled
+    assert config.reward_config.contact_timing.weight == pytest.approx(-0.10)
+    assert config.reward_config.contact_timing.min_air_time == pytest.approx(0.20)
+    assert config.reward_config.contact_timing.min_contact_time == pytest.approx(0.30)
+    assert config.reward_config.swing_foot_velocity.enabled
+    assert config.reward_config.swing_foot_velocity.weight == pytest.approx(0.25)
+    assert config.reward_config.swing_foot_velocity.link == "pelvis_link"
+    assert config.reward_config.foot_slip.enabled
+    assert config.reward_config.foot_slip.weight == pytest.approx(-0.05)
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

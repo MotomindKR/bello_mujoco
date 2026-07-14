@@ -87,9 +87,13 @@ def test_gait_diagnostics_report_stance_and_contact_transitions(
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
     state, _ = env.reset()
     previous = state.replace(
+        command=jnp.asarray([0.2, 0.0, 0.0], dtype=jnp.float32),
+        foot_air_time=jnp.asarray([0.0, 0.1], dtype=jnp.float32),
+        foot_contact_time=jnp.asarray([0.1, 0.0], dtype=jnp.float32),
         step_count=jnp.asarray(1, dtype=jnp.int32),
         last_foot_contact=jnp.asarray([True, False]),
     )
+    state = state.replace(command=previous.command)
     diagnostics = env._gait_diagnostics(
         previous,
         state,
@@ -99,6 +103,8 @@ def test_gait_diagnostics_report_stance_and_contact_transitions(
     assert 0.24 < float(diagnostics["gait/stance_width"]) < 0.34
     assert float(diagnostics["gait/touchdown"]) == pytest.approx(1.0)
     assert float(diagnostics["gait/liftoff"]) == pytest.approx(1.0)
+    assert float(diagnostics["gait/premature_touchdown"]) == pytest.approx(1.0)
+    assert float(diagnostics["gait/premature_liftoff"]) == pytest.approx(1.0)
     assert float(diagnostics["gait/single_support"]) == pytest.approx(1.0)
 
 

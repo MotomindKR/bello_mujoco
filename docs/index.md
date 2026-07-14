@@ -272,6 +272,7 @@ swing_foot_velocity
 foot_distance
 stance_width
 gait_contact
+contact_timing
 feet_air_time
 standing_foot_vel
 standing_foot_air_time
@@ -303,8 +304,10 @@ soft ranges as squared violations in policy action units, so small-scale joints
 receive comparable pressure to large-scale joints.
 `stance_width` penalizes only lateral foot separation outside a configured
 pelvis/root-frame band, avoiding the sagittal-step coupling of `foot_distance`.
-Training reports footfall/liftoff rates, stance width, and contact-mode fractions
-under `train/gait/*` and `train/mean_gait/*`.
+`contact_timing` applies an unscaled event penalty to touchdown or liftoff when
+the preceding air/contact interval is shorter than configured minima. Training
+reports footfall/liftoff rates, premature-transition rates, stance width, and
+contact-mode fractions under `train/gait/*` and `train/mean_gait/*`.
 
 ## Configuration
 

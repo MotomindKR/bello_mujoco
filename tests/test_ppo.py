@@ -867,6 +867,8 @@ def test_gait_diagnostics_converts_touchdowns_to_footfalls_per_second() -> None:
         "gait/stance_width": jnp.asarray([[0.28, 0.30]], dtype=jnp.float32),
         "gait/touchdown": jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
         "gait/liftoff": jnp.asarray([[1.0, 0.0]], dtype=jnp.float32),
+        "gait/premature_touchdown": jnp.asarray([[1.0, 0.0]], dtype=jnp.float32),
+        "gait/premature_liftoff": jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
     }
 
     metrics = gait_diagnostics(info, control_timestep=0.02)
@@ -874,6 +876,8 @@ def test_gait_diagnostics_converts_touchdowns_to_footfalls_per_second() -> None:
     assert float(metrics["mean_gait/stance_width"]) == pytest.approx(0.29)
     assert float(metrics["gait/footfalls_per_second"]) == pytest.approx(25.0)
     assert float(metrics["gait/liftoffs_per_second"]) == pytest.approx(25.0)
+    assert float(metrics["gait/premature_touchdowns_per_second"]) == pytest.approx(25.0)
+    assert float(metrics["gait/premature_liftoffs_per_second"]) == pytest.approx(25.0)
 
 
 def test_ppo_config_rejects_zero_update_runs() -> None:
