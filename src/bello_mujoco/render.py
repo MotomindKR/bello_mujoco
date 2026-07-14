@@ -374,6 +374,16 @@ def mujoco_policy_observation(
                 scale.gait_phase,
             )
         )
+    if observation.foot_phase:
+        phase = mujoco_gait_phase(env, step_count, command)
+        offsets = np.asarray(env.config.gait.phase_offsets, dtype=np.float32)
+        angles = 2.0 * np.pi * np.mod(phase + offsets, 1.0)
+        parts.append(
+            mujoco_scaled(
+                np.concatenate([np.cos(angles), np.sin(angles)]),
+                scale.foot_phase,
+            )
+        )
     if observation.command and env.command_config.enabled:
         parts.append(mujoco_scaled(command, scale.command))
     if observation.joint_pos:
@@ -657,13 +667,17 @@ def mujoco_contact_terms(
 def mujoco_gait_phase(
     env: BelloLocomotionEnv, step_count: int, command: np.ndarray
 ) -> float:
-    base_frequency = 1.0 / float(env.config.gait.cycle_time)
-    command_speed = float(np.linalg.norm(np.asarray(command, dtype=np.float32)[:2]))
-    frequency = np.clip(
-        base_frequency + env.config.gait.command_speed_frequency_gain * command_speed,
-        env.config.gait.min_frequency,
-        env.config.gait.max_frequency,
-    )
+    if env.config.gait.randomize_frequency:
+        frequency = sum(env.config.gait.frequency_range) / 2.0
+    else:
+        base_frequency = 1.0 / float(env.config.gait.cycle_time)
+        command_speed = float(np.linalg.norm(np.asarray(command, dtype=np.float32)[:2]))
+        frequency = np.clip(
+            base_frequency
+            + env.config.gait.command_speed_frequency_gain * command_speed,
+            env.config.gait.min_frequency,
+            env.config.gait.max_frequency,
+        )
     return float((step_count * env.control_timestep * frequency) % 1.0)
 
 
