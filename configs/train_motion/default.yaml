@@ -1,0 +1,113 @@
+dry_run: true
+jit: true
+
+config:
+  seed: 0
+  total_timesteps: 100000000
+  num_envs: 4096
+  num_steps: 24
+  update_epochs: 5
+  num_minibatches: 8
+  learning_rate: 0.001
+  anneal_lr: false
+  schedule: adaptive
+  desired_kl: 0.01
+  target_kl: null
+  min_learning_rate: 0.00001
+  max_learning_rate: 0.01
+  adaptive_lr_factor: 1.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  ent_coef: 0.01
+  vf_coef: 1.0
+  max_grad_norm: 1.0
+  normalize_value: true
+  value_norm_eps: 0.00000001
+  policy:
+    hidden_size: 256
+    hidden_depth: 2
+    hidden_dims: null
+    activation: tanh
+    init_log_std: -0.5
+    min_log_std: -5.0
+    max_log_std: 1.0
+    obs_stack_size: 4
+
+asset_config:
+  asset: full_body
+  collision_mode: primitive
+  mesh_face_budget: 1000
+  foot_collision_mesh_face_budget: 1000
+  visual_mesh_face_budget: 200000
+  end_effector_sphere_mode: both
+  neighbor_exclusion_depth: 2
+  fixed_joint_names: [waist_roll_joint, waist_pitch_joint]
+  actuator_config:
+    default_action_scale_ratio: 0.5
+
+env_config:
+  motion_path: motions/local/walk1_subject1_fixed_waist.npz
+  decimation: 4
+  action_clip: 1.0
+  terrain:
+    mode: plane
+    seed: 0
+  reset:
+    random_start: true
+    initial_xy_range: [-1.0, 1.0]
+    initial_yaw_range: [-3.141592653589793, 3.141592653589793]
+    joint_pos_noise: [-0.02, 0.02]
+    joint_vel_noise: [-0.1, 0.1]
+  reward:
+    root_position_weight: 0.15
+    root_orientation_weight: 0.15
+    joint_position_weight: 0.20
+    joint_velocity_weight: 0.05
+    body_position_weight: 0.20
+    body_orientation_weight: 0.10
+    body_velocity_weight: 0.05
+    action_rate_weight: -0.01
+    joint_limit_weight: -0.02
+    root_position_sigma: 0.20
+    root_orientation_sigma: 0.35
+    joint_position_sigma: 0.35
+    joint_velocity_sigma: 3.0
+    body_position_sigma: 0.15
+    body_orientation_sigma: 0.45
+    body_velocity_sigma: 2.0
+  done:
+    root_height_error: 0.35
+    root_orientation_error: 1.2
+    end_effector_position_error: 0.65
+
+checkpoint_config:
+  enabled: true
+  directory: checkpoints
+  name: bello_wholebody
+  upload_wandb_artifact: true
+  wandb_artifact_name: null
+  wandb_artifact_type: checkpoint
+
+wandb_config:
+  enabled: false
+  project: bello-mujoco
+  entity: null
+  group: wholebody-motion
+  job_type: train
+  run_name: null
+  mode: online
+  dir: .wandb
+  tags: [bello, fixed-waist, gmr]
+
+warp:
+  contact_budget_per_env: 32
+  naconmax: null
+  naccdmax: null
+  njmax: 256
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/train_motion/${now:%Y-%m-%d}/${now:%H-%M-%S}

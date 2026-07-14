@@ -19,6 +19,7 @@ wandb/
 .vast/
 checkpoints/
 outputs/
+motions/local/
 multirun/
 runs/
 MUJOCO_LOG.TXT

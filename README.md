@@ -75,6 +75,18 @@ bello-train-ppo \
   config.update_epochs=1
 ```
 
+Prepare and dry-run fixed-waist whole-body tracking:
+
+```bash
+bello-import-gmr-motion \
+  /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_from_smplx.pkl \
+  motions/local/walk1_subject1_fixed_waist.npz
+bello-train-motion-ppo
+```
+
+See [whole-body motion tracking](docs/motion_tracking.md) for the robot,
+canonical motion, environment, reward, and evaluation contracts.
+
 Launch a branch-pinned Vast.ai training run:
 
 ```bash
@@ -112,6 +124,7 @@ uv run pytest
 ## Documentation
 
 - [Repository reference](docs/index.md)
+- [Whole-body motion tracking](docs/motion_tracking.md)
 - [Vast.ai training workflow](docs/vast_ai.md)
 - [Contribution guide](CONTRIBUTION.md)
 - [Agent instructions](AGENTS.md)

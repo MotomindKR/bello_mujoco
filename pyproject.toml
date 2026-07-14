@@ -35,6 +35,10 @@ bello-train-ppo = "bello_mujoco.tools.train_ppo:entrypoint"
 bello-eval-policy = "bello_mujoco.tools.eval_policy:entrypoint"
 bello-ppo-cartpole-smoke = "bello_mujoco.tools.ppo_cartpole_smoke:entrypoint"
 bello-vast-train = "bello_mujoco.tools.vast_train:entrypoint"
+bello-import-gmr-motion = "bello_mujoco.tools.import_gmr_motion:entrypoint"
+bello-train-motion-ppo = "bello_mujoco.tools.train_motion_ppo:entrypoint"
+bello-render-motion-reference = "bello_mujoco.tools.render_motion_reference:entrypoint"
+bello-eval-motion-policy = "bello_mujoco.tools.eval_motion_policy:entrypoint"
 
 [dependency-groups]
 dev = [

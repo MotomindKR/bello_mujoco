@@ -72,6 +72,7 @@ Generated local artifacts should not be committed:
 wandb/
 checkpoints/
 outputs/
+motions/local/
 /tmp/bello-mujoco-assets/
 /tmp/bello-mujoco-test-assets-*
 ```
@@ -116,6 +117,7 @@ Asset prep supports:
 - `mesh`, `foot-mesh`, and `box` collision modes
 - neighbor collision exclusions
 - optional hand/end-effector sphere replacement for `full_body` and `upper_body`
+- configurable URDF joints rewritten as fixed while retaining their child bodies
 - MuJoCo training MJCF and viewer MJCF generation
 
 The training MJCF keeps the selected collision geoms as the robot geometry. The
@@ -128,6 +130,9 @@ rewards, and done terms. The floating wrapper remains `bello_root`.
 Foot collision is defined directly in the source URDFs with five primitives per
 ankle-roll link: three boxes and two cylinders. The STL foot meshes are visual
 geometry only.
+
+The fixed-waist whole-body task and GMR import contract are documented in
+[motion_tracking.md](motion_tracking.md).
 
 Runtime terrain is added after robot asset generation. Source URDF/MJCF files do
 not include ground.

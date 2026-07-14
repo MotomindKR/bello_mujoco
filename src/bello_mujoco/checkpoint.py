@@ -15,6 +15,7 @@ import orbax.checkpoint as ocp
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.locomotion import BelloEnvConfig, DoneConfig
+from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.tracking import to_builtin
@@ -61,6 +62,8 @@ class CheckpointMetadata:
     action_size: int
     critic_obs_size: int | None = None
     value_norm: ValueNormMetadata | None = None
+    task: str = "locomotion"
+    motion_env: MotionTrackingEnvConfig | None = None
 
 
 def checkpoint_path(config: CheckpointConfig, ppo_config: PPOConfig) -> Path:
@@ -156,6 +159,12 @@ def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
             if data.get("value_norm") is not None
             else None
         ),
+        task=str(data.get("task", "locomotion")),
+        motion_env=(
+            dataclass_from_dict(MotionTrackingEnvConfig, data["motion_env"])
+            if data.get("motion_env") is not None
+            else None
+        ),
     )
 
 
@@ -225,8 +234,7 @@ def coerce_value(annotation, value, *, strict: bool = False, path: str | None = 
         args = get_args(annotation)
         if len(args) == 2 and args[1] is Ellipsis:
             return tuple(
-                coerce_value(args[0], item, strict=strict, path=path)
-                for item in value
+                coerce_value(args[0], item, strict=strict, path=path) for item in value
             )
         if args:
             return tuple(
