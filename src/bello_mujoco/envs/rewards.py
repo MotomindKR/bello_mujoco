@@ -231,6 +231,12 @@ class FootDistanceRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class StanceWidthRewardConfig(LinkRewardConfig):
+    min_width: float = 0.24
+    max_width: float = 0.34
+
+
+@dataclass(frozen=True)
 class GaitContactRewardConfig(WeightedRewardConfig):
     command_speed_threshold: float = 0.10
 
@@ -303,6 +309,9 @@ class RewardConfig:
     foot_distance: FootDistanceRewardConfig = FootDistanceRewardConfig(
         enabled=False, weight=1.0
     )
+    stance_width: StanceWidthRewardConfig = StanceWidthRewardConfig(
+        enabled=False, weight=-2.0
+    )
     gait_contact: GaitContactRewardConfig = GaitContactRewardConfig(weight=0.5)
     feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(
         enabled=False, weight=0.25
@@ -340,6 +349,7 @@ class RewardConfig:
             self.uses_foot_contact_metadata
             or self.swing_foot_velocity.enabled
             or self.foot_distance.enabled
+            or self.stance_width.enabled
         )
 
     @property
@@ -356,6 +366,7 @@ class RewardConfig:
             self.flat_orientation,
             self.base_height,
             self.swing_foot_velocity,
+            self.stance_width,
         ]
         links = {term.link for term in terms if term.enabled and term.link}
         if self.track_lin_vel_xy.enabled and self.track_lin_vel_xy.frame_link:
@@ -395,6 +406,7 @@ def compute_velocity_reward(
     control_timestep: float,
     done: jax.Array,
     foot_angular_speed: jax.Array | None = None,
+    stance_width: jax.Array | None = None,
     foot_contact_time: jax.Array | None = None,
     requested_action: jax.Array | None = None,
     action_clip_limit: float | None = None,
@@ -513,6 +525,15 @@ def compute_velocity_reward(
     else:
         swing_foot_velocity = jnp.asarray(0.0, dtype=jnp.float32)
     foot_distance = jnp.asarray(foot_distance, dtype=jnp.float32)
+    stance_width = (
+        jnp.asarray(0.0, dtype=jnp.float32)
+        if stance_width is None
+        else jnp.asarray(stance_width, dtype=jnp.float32)
+    )
+    stance_width_error = (
+        jnp.maximum(config.stance_width.min_width - stance_width, 0.0) ** 2
+        + jnp.maximum(stance_width - config.stance_width.max_width, 0.0) ** 2
+    )
     command_speed = jnp.linalg.norm(command)
     foot_clearance = jnp.where(
         command_speed > config.foot_clearance.command_speed_threshold,
@@ -659,6 +680,11 @@ def compute_velocity_reward(
             config.foot_distance.enabled,
             config.foot_distance.weight,
             foot_distance,
+        ),
+        "reward/stance_width": weighted_term(
+            config.stance_width.enabled,
+            config.stance_width.weight,
+            stance_width_error,
         ),
         "reward/gait_contact": weighted_term(
             config.gait_contact.enabled,
@@ -832,6 +858,24 @@ def validate_reward_config(config: RewardConfig) -> None:
                 "feet_air_time.command_speed_threshold must be nonnegative and "
                 f"finite, got {config.feet_air_time.command_speed_threshold}"
             )
+    if config.stance_width.enabled:
+        if (
+            not math.isfinite(config.stance_width.min_width)
+            or config.stance_width.min_width < 0
+        ):
+            raise ValueError(
+                "stance_width.min_width must be nonnegative and finite, got "
+                f"{config.stance_width.min_width}"
+            )
+        if (
+            not math.isfinite(config.stance_width.max_width)
+            or config.stance_width.max_width <= config.stance_width.min_width
+        ):
+            raise ValueError(
+                "stance_width.max_width must be finite and greater than min_width, "
+                f"got {config.stance_width.max_width} <= "
+                f"{config.stance_width.min_width}"
+            )
     if config.standing_foot_vel.enabled and (
         not math.isfinite(config.standing_foot_vel.command_speed_threshold)
         or config.standing_foot_vel.command_speed_threshold < 0
@@ -873,6 +917,7 @@ def reward_terms(config: RewardConfig):
         "foot_clearance": config.foot_clearance,
         "swing_foot_velocity": config.swing_foot_velocity,
         "foot_distance": config.foot_distance,
+        "stance_width": config.stance_width,
         "gait_contact": config.gait_contact,
         "feet_air_time": config.feet_air_time,
         "standing_foot_vel": config.standing_foot_vel,

@@ -128,6 +128,8 @@ config:
     min_log_std: -5.0
     max_log_std: 1.0
     obs_stack_size: 10
+    action_distribution: gaussian  # gaussian | tanh_gaussian
+    action_limit: 1.0
 ```
 
 Derived values:
@@ -517,6 +519,12 @@ reward_config:
   foot_distance:
     enabled: false
     weight: 1.0
+  stance_width:
+    enabled: false
+    weight: -2.0
+    link: null
+    min_width: 0.24
+    max_width: 0.34
   gait_contact:
     enabled: true
     weight: 0.5
@@ -546,13 +554,19 @@ reward_config:
 ```
 
 Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
-`swing_foot_velocity`, `foot_distance`, `gait_contact`, `feet_air_time`,
+`swing_foot_velocity`, `foot_distance`, `stance_width`, `gait_contact`, `feet_air_time`,
 `standing_foot_vel`, and `standing_foot_air_time`. `foot_distance` rewards the
 horizontal distance between the two foot bodies. Terrain-contact metadata is
 required for the contact-dependent foot terms and for `undesired_contact` when
 terrain is enabled. Robot collision-geom metadata is required for
 `self_collision`. Contact-dependent foot terms use the debounced foot-contact
 signal from `env_config.contact`.
+
+`stance_width` is a zero-inside-band penalty on lateral foot separation in the
+yaw frame of `link` (or `env_config.root_link` when null). It deliberately
+ignores sagittal separation, unlike `foot_distance`, so it discourages a
+spread-leg support-polygon exploit without penalizing useful forward step
+length.
 
 `track_lin_vel_xy` uses yaw-frame linear velocity, matching the Unitree
 locomotion reward shape. `link` selects the body whose linear velocity is
@@ -967,6 +981,17 @@ control targets at or beyond their configured MuJoCo ctrl-range bounds.
 `ctrl_margin_min` is the smallest signed distance to
 either bound across sampled policy controls in the rollout; it is negative when
 requested targets exceed the soft range.
+
+`policy.action_distribution=tanh_gaussian` samples a latent diagonal Gaussian
+and maps it through `action_limit * tanh(x)`. PPO includes the tanh Jacobian in
+the transformed log probability, while deterministic evaluation uses the
+transformed actor mean. The default `gaussian` preserves existing experiment
+behavior.
+
+Locomotion training also logs `gait/footfalls_per_second`,
+`gait/liftoffs_per_second`, `mean_gait/stance_width`, and mean single-support,
+double-support, and flight fractions. These diagnostics are emitted even when
+gait shaping rewards are disabled, so ablations remain directly comparable.
 
 ## Checkpoints
 

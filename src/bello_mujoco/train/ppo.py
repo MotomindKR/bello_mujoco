@@ -357,9 +357,7 @@ def update_ppo(
         leaves = jax.tree_util.tree_leaves(tree)
         if not leaves:
             return jnp.asarray(True)
-        return jnp.all(
-            jnp.stack([jnp.all(jnp.isfinite(leaf)) for leaf in leaves])
-        )
+        return jnp.all(jnp.stack([jnp.all(jnp.isfinite(leaf)) for leaf in leaves]))
 
     def update_epoch(carry, _: None):
         params, opt_state, key, stopped = carry
@@ -529,6 +527,27 @@ def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
         for name, value in info.items()
         if name.startswith("foot_contact/")
     }
+
+
+def gait_diagnostics(
+    info: dict[str, jax.Array], control_timestep: float
+) -> dict[str, jax.Array]:
+    metrics = {
+        f"mean_{name}": value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("gait/")
+    }
+    touchdown = info.get("gait/touchdown")
+    liftoff = info.get("gait/liftoff")
+    if touchdown is not None:
+        metrics["gait/footfalls_per_second"] = (
+            touchdown.astype(jnp.float32).mean() / control_timestep
+        )
+    if liftoff is not None:
+        metrics["gait/liftoffs_per_second"] = (
+            liftoff.astype(jnp.float32).mean() / control_timestep
+        )
+    return metrics
 
 
 def action_diagnostics(
@@ -788,6 +807,9 @@ def update_runner_state(
         **done_reason_means(transitions.info),
         **random_push_means(transitions.info),
         **foot_contact_means(transitions.info),
+        **gait_diagnostics(
+            transitions.info, float(getattr(env, "control_timestep", 1.0))
+        ),
         **reward_means,
         **command_curriculum_metrics(command_ranges),
         **command_curriculum_state,
@@ -885,11 +907,7 @@ def update_command_curriculum(
     returned_count = jnp.sum(returned_episode.astype(jnp.float32))
     normalized_reward = episode_reward / (env.max_episode_steps * env.control_timestep)
     success = normalized_reward > reward_threshold
-    should_expand = (
-        period_boundary
-        & (returned_count > 0)
-        & success
-    )
+    should_expand = period_boundary & (returned_count > 0) & success
     should_expand_yaw = should_expand & curriculum.expand_ang_vel_yaw
 
     x_range = expand_command_range(
@@ -1014,7 +1032,9 @@ def critic_observation_size(env) -> int:
     return int(getattr(env, "critic_observation_size", env.observation_size))
 
 
-def critic_observation_batch(env, state, fallback_obs: jax.Array | None = None) -> jax.Array:
+def critic_observation_batch(
+    env, state, fallback_obs: jax.Array | None = None
+) -> jax.Array:
     method = getattr(env, "critic_observation_batch", None)
     if method is not None:
         return method(state)
@@ -1148,6 +1168,16 @@ def validate_ppo_config(config: PPOConfig) -> None:
         raise ValueError(
             "policy.activation must be 'tanh', 'relu', or 'elu', got "
             f"{config.policy.activation!r}"
+        )
+    if config.policy.action_distribution not in {"gaussian", "tanh_gaussian"}:
+        raise ValueError(
+            "policy.action_distribution must be 'gaussian' or 'tanh_gaussian', "
+            f"got {config.policy.action_distribution!r}"
+        )
+    if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
+        raise ValueError(
+            "policy.action_limit must be positive and finite, got "
+            f"{config.policy.action_limit}"
         )
     if not math.isfinite(config.policy.init_log_std):
         raise ValueError(

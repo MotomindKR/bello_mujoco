@@ -270,6 +270,7 @@ foot_slip
 foot_clearance
 swing_foot_velocity
 foot_distance
+stance_width
 gait_contact
 feet_air_time
 standing_foot_vel
@@ -300,6 +301,10 @@ and accumulated foot air time. `invalid_action` penalizes pre-clip actions
 outside the environment bound and requested actuator targets outside configured
 soft ranges as squared violations in policy action units, so small-scale joints
 receive comparable pressure to large-scale joints.
+`stance_width` penalizes only lateral foot separation outside a configured
+pelvis/root-frame band, avoiding the sagittal-step coupling of `foot_distance`.
+Training reports footfall/liftoff rates, stance width, and contact-mode fractions
+under `train/gait/*` and `train/mean_gait/*`.
 
 ## Configuration
 

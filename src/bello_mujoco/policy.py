@@ -27,6 +27,8 @@ class ActorCriticConfig:
     min_log_std: float = -5.0
     max_log_std: float = 1.0
     obs_stack_size: int = 10
+    action_distribution: Literal["gaussian", "tanh_gaussian"] = "gaussian"
+    action_limit: float = 1.0
 
 
 class LayeredMLP(eqx.Module):
@@ -67,6 +69,8 @@ class ActorCritic(eqx.Module):
     log_std: jax.Array
     min_log_std: float = eqx.field(static=True)
     max_log_std: float = eqx.field(static=True)
+    action_distribution: str = eqx.field(static=True)
+    action_limit: float = eqx.field(static=True)
 
     def __init__(
         self,
@@ -97,6 +101,8 @@ class ActorCritic(eqx.Module):
         self.log_std = jnp.full((action_size,), config.init_log_std, dtype=jnp.float32)
         self.min_log_std = config.min_log_std
         self.max_log_std = config.max_log_std
+        self.action_distribution = config.action_distribution
+        self.action_limit = config.action_limit
 
     def __call__(
         self, obs: jax.Array, critic_obs: jax.Array | None = None
@@ -107,7 +113,7 @@ class ActorCritic(eqx.Module):
         return mean, policy_log_std(self), value
 
     def action_mean(self, obs: jax.Array) -> jax.Array:
-        return self.actor(obs)
+        return transform_action(self, self.actor(obs))
 
 
 def init_actor_critic(
@@ -225,13 +231,20 @@ def sample_action_with_mean(
     action_clip: float | None = None,
     critic_obs: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    mean, log_std, value = apply_policy(policy, obs, critic_obs)
-    noise = jax.random.normal(rng, mean.shape)
-    action = mean + jnp.exp(log_std) * noise
+    latent_mean, log_std, value = apply_policy(policy, obs, critic_obs)
+    noise = jax.random.normal(rng, latent_mean.shape)
+    latent_action = latent_mean + jnp.exp(log_std) * noise
+    action = transform_action(policy, latent_action)
     if action_clip is not None:
         action = jnp.clip(action, -action_clip, action_clip)
-    log_prob = gaussian_log_prob(mean, log_std, action)
-    return action, log_prob, value, mean
+    log_prob = policy_log_prob(
+        policy,
+        latent_mean,
+        log_std,
+        action,
+        latent_action if action_clip is None else None,
+    )
+    return action, log_prob, value, transform_action(policy, latent_mean)
 
 
 def evaluate_actions(
@@ -240,10 +253,36 @@ def evaluate_actions(
     action: jax.Array,
     critic_obs: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    mean, log_std, value = apply_policy(policy, obs, critic_obs)
-    log_prob = gaussian_log_prob(mean, log_std, action)
+    latent_mean, log_std, value = apply_policy(policy, obs, critic_obs)
+    log_prob = policy_log_prob(policy, latent_mean, log_std, action)
     entropy = gaussian_entropy(log_std)
     return log_prob, entropy, value
+
+
+def transform_action(policy: ActorCritic, latent_action: jax.Array) -> jax.Array:
+    if getattr(policy, "action_distribution", "gaussian") == "tanh_gaussian":
+        return getattr(policy, "action_limit", 1.0) * jnp.tanh(latent_action)
+    return latent_action
+
+
+def policy_log_prob(
+    policy: ActorCritic,
+    latent_mean: jax.Array,
+    log_std: jax.Array,
+    action: jax.Array,
+    latent_action: jax.Array | None = None,
+) -> jax.Array:
+    if getattr(policy, "action_distribution", "gaussian") != "tanh_gaussian":
+        return gaussian_log_prob(latent_mean, log_std, action)
+    limit = jnp.asarray(getattr(policy, "action_limit", 1.0), dtype=action.dtype)
+    normalized_action = jnp.clip(action / limit, -1.0 + 1.0e-6, 1.0 - 1.0e-6)
+    if latent_action is None:
+        latent_action = jnp.arctanh(normalized_action)
+    base_log_prob = gaussian_log_prob(latent_mean, log_std, latent_action)
+    log_det = jnp.log(limit) + 2.0 * (
+        jnp.log(2.0) - latent_action - jax.nn.softplus(-2.0 * latent_action)
+    )
+    return base_log_prob - jnp.sum(log_det, axis=-1)
 
 
 def gaussian_log_prob(

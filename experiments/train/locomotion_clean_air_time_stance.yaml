@@ -1,0 +1,26 @@
+# Smooth air-time locomotion with a pelvis-frame lateral stance-width band.
+defaults:
+  - locomotion_clean_air_time_smooth
+  - _self_
+
+reward_config:
+  stance_width:
+    enabled: true
+    weight: -2.0
+    link: pelvis_link
+    min_width: 0.24
+    max_width: 0.34
+
+checkpoint_config:
+  name: locomotion_clean_air_time_stance_seed0
+
+wandb_config:
+  group: locomotion-clean-gait-ablation
+  run_name: locomotion_clean_air_time_stance_seed0
+  tags:
+    - locomotion
+    - stance-width
+    - anti-spread
+
+video_config:
+  filename_prefix: locomotion_clean_air_time_stance

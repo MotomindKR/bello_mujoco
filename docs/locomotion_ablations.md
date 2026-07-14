@@ -129,3 +129,34 @@ Promote it only if the rollout shows visibly longer swing intervals while
 retaining forward tracking and survival. Monitor `action_clip_fraction`,
 `action_mean_abs_max`, `mean_reward/action_rate`,
 `mean_reward/feet_air_time`, `approx_kl`, and `ppo_update_fraction`.
+
+## Wide-Stance and Fast-Cadence Follow-up
+
+The smooth seed-0 run reached full survival and strong fixed-forward tracking,
+but used a spread stance, roughly three footfalls per second, and about 20%
+clipped actions. Use these prepared ablations rather than changing several
+terms in the control recipe:
+
+```text
+locomotion_clean_air_time_smooth:                    unchanged control
+locomotion_clean_air_time_stance:                    lateral width band only
+locomotion_clean_air_time_slow_gait:                 slower phase/contact clock only
+locomotion_clean_air_time_stance_slow_gait:          width + clock
+locomotion_clean_air_time_stance_slow_gait_invalid:  width + clock + invalid-action -3
+locomotion_clean_air_time_stance_slow_gait_tanh:     width + clock + tanh Gaussian
+```
+
+The stance band is `[0.24, 0.34]m` in the pelvis yaw frame; the prepared neutral
+pose is about `0.286m`. The slow schedule is
+`clip(1 / 1.20 + 0.15 v, 0.75, 1.10)` cycles per second, or about `1.76`
+footfalls per second at the fixed `0.3m/s` command. It uses a `0.60` duty factor,
+exposes gait phase to actor and critic, and enables gait-contact reward at
+`0.35`. The tanh variant corrects PPO log probabilities for the action
+transformation; it is not post-hoc clipping.
+
+Run seeds `0`, `1`, and `2`. Compare `gait/footfalls_per_second`,
+`mean_gait/stance_width`, contact-mode fractions, forward tracking, survival,
+and `action_clip_fraction`. Promote only a treatment that preserves full
+survival, stays inside the stance band, reaches roughly `1.5-2.0` footfalls per
+second, keeps equivalent velocity error under `0.1m/s`, and reduces clipping
+below `10%` (preferably `5%`).

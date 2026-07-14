@@ -865,6 +865,7 @@ class BelloLocomotionEnv:
             "foot_contact/raw": raw_foot_contact,
             "foot_contact/filtered": foot_contact,
             "foot_contact/debounce_time": foot_contact_debounce_time,
+            **self._gait_diagnostics(state, next_state, foot_contact),
             "returned_episode": done,
             **done_flags,
             **reward_info,
@@ -994,6 +995,7 @@ class BelloLocomotionEnv:
             "foot_contact/raw": raw_foot_contact,
             "foot_contact/filtered": foot_contact,
             "foot_contact/debounce_time": foot_contact_debounce_time,
+            **jax.vmap(self._gait_diagnostics)(state, stepped_state, foot_contact),
             "random_push/applied": push_applied,
             "random_push/lin_vel_x": push_velocity[:, 0],
             "random_push/lin_vel_y": push_velocity[:, 1],
@@ -1560,6 +1562,10 @@ class BelloLocomotionEnv:
                 self.config.gait.duty_factor / (1.0 - self.config.gait.duty_factor)
             ),
             foot_distance=self._foot_distance(next_state),
+            stance_width=self._stance_width(
+                next_state,
+                self._reward_link(self.reward_config.stance_width),
+            ),
             gait_contact_mask=self._gait_contact_mask(next_state),
             foot_air_time=state.foot_air_time,
             foot_contact_time=state.foot_contact_time,
@@ -1822,6 +1828,37 @@ class BelloLocomotionEnv:
             return jnp.asarray(0.0, dtype=jnp.float32)
         foot_xy = state.data.xpos[jnp.asarray(self.model.foot_body_ids), :2]
         return jnp.linalg.norm(foot_xy[0] - foot_xy[1])
+
+    def _stance_width(self, state: BelloState, frame_link_name: str) -> jax.Array:
+        if self.model.foot_body_ids.size != 2:
+            return jnp.asarray(0.0, dtype=jnp.float32)
+        foot_position = state.data.xpos[jnp.asarray(self.model.foot_body_ids)]
+        foot_delta = foot_position[0] - foot_position[1]
+        frame_yaw = yaw_quat(self._link_quat(state, frame_link_name))
+        frame_delta = quat_rotate_inverse(frame_yaw, foot_delta)
+        return jnp.abs(frame_delta[0])
+
+    def _gait_diagnostics(
+        self,
+        state: BelloState,
+        next_state: BelloState,
+        foot_contact: jax.Array,
+    ) -> dict[str, jax.Array]:
+        contact = foot_contact.astype(bool)
+        previous = state.last_foot_contact.astype(bool)
+        initialized = state.step_count > 0
+        touchdown = jnp.where(initialized, contact & ~previous, False)
+        liftoff = jnp.where(initialized, ~contact & previous, False)
+        contact_count = jnp.sum(contact.astype(jnp.int32))
+        frame_link = self._reward_link(self.reward_config.stance_width)
+        return {
+            "gait/stance_width": self._stance_width(next_state, frame_link),
+            "gait/touchdown": jnp.sum(touchdown.astype(jnp.float32)),
+            "gait/liftoff": jnp.sum(liftoff.astype(jnp.float32)),
+            "gait/single_support": (contact_count == 1).astype(jnp.float32),
+            "gait/double_support": (contact_count == 2).astype(jnp.float32),
+            "gait/flight": (contact_count == 0).astype(jnp.float32),
+        }
 
     def _actuator_joint_limit_low(self) -> jax.Array:
         return jnp.asarray(self.model.mj_model.actuator_ctrlrange[:, 0])

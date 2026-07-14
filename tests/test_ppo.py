@@ -13,6 +13,8 @@ from bello_mujoco.envs.rewards import (
 )
 from bello_mujoco.policy import (
     ActorCriticConfig,
+    apply_actor,
+    evaluate_actions,
     gaussian_entropy,
     init_observation_stack,
     policy_observation_size,
@@ -30,6 +32,7 @@ from bello_mujoco.train.ppo import (
     denormalize_value,
     done_reason_means,
     effective_learning_rate_schedule,
+    gait_diagnostics,
     init_value_norm_state,
     init_train_state,
     learning_rate_for_update,
@@ -191,6 +194,34 @@ def test_sample_action_applies_configured_clip() -> None:
 
     assert jnp.all(action <= 0.01)
     assert jnp.all(action >= -0.01)
+
+
+def test_tanh_gaussian_actions_are_bounded_and_have_consistent_log_prob() -> None:
+    config = PPOConfig(
+        total_timesteps=8,
+        num_envs=2,
+        num_steps=4,
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            init_log_std=1.0,
+            action_distribution="tanh_gaussian",
+            action_limit=0.75,
+        ),
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
+    obs = jnp.zeros((config.num_envs, 4), dtype=jnp.float32)
+
+    action, sampled_log_prob, _ = sample_action(
+        state.policy, obs, jax.random.PRNGKey(1)
+    )
+    evaluated_log_prob, _, _ = evaluate_actions(state.policy, obs, action)
+    deterministic_action = apply_actor(state.policy, obs)
+
+    assert jnp.all(jnp.abs(action) < 0.75)
+    assert jnp.all(jnp.abs(deterministic_action) < 0.75)
+    assert jnp.allclose(sampled_log_prob, evaluated_log_prob, atol=1.0e-5)
 
 
 def test_collect_rollout_stores_raw_actions_and_steps_clipped_env_actions() -> None:
@@ -831,6 +862,20 @@ def test_done_reason_means_reports_done_component_rates() -> None:
     assert float(metrics["mean_done/timeout"]) == 0.25
 
 
+def test_gait_diagnostics_converts_touchdowns_to_footfalls_per_second() -> None:
+    info = {
+        "gait/stance_width": jnp.asarray([[0.28, 0.30]], dtype=jnp.float32),
+        "gait/touchdown": jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
+        "gait/liftoff": jnp.asarray([[1.0, 0.0]], dtype=jnp.float32),
+    }
+
+    metrics = gait_diagnostics(info, control_timestep=0.02)
+
+    assert float(metrics["mean_gait/stance_width"]) == pytest.approx(0.29)
+    assert float(metrics["gait/footfalls_per_second"]) == pytest.approx(25.0)
+    assert float(metrics["gait/liftoffs_per_second"]) == pytest.approx(25.0)
+
+
 def test_ppo_config_rejects_zero_update_runs() -> None:
     config = PPOConfig(total_timesteps=7, num_envs=4, num_steps=2)
 
@@ -849,6 +894,15 @@ def test_ppo_config_rejects_invalid_target_kl() -> None:
     config = PPOConfig(target_kl=0.0)
 
     with pytest.raises(ValueError, match="target_kl must be null or positive"):
+        make_train(config, env=object())
+
+
+def test_ppo_config_rejects_invalid_action_distribution() -> None:
+    config = PPOConfig(
+        policy=ActorCriticConfig(action_distribution="not-a-distribution")
+    )
+
+    with pytest.raises(ValueError, match="policy.action_distribution"):
         make_train(config, env=object())
 
 

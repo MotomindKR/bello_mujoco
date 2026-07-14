@@ -81,6 +81,27 @@ def test_reset_shapes(full_body_asset: PreparedAsset) -> None:
     assert int(state.step_count) == 0
 
 
+def test_gait_diagnostics_report_stance_and_contact_transitions(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env.reset()
+    previous = state.replace(
+        step_count=jnp.asarray(1, dtype=jnp.int32),
+        last_foot_contact=jnp.asarray([True, False]),
+    )
+    diagnostics = env._gait_diagnostics(
+        previous,
+        state,
+        jnp.asarray([False, True], dtype=jnp.float32),
+    )
+
+    assert 0.24 < float(diagnostics["gait/stance_width"]) < 0.34
+    assert float(diagnostics["gait/touchdown"]) == pytest.approx(1.0)
+    assert float(diagnostics["gait/liftoff"]) == pytest.approx(1.0)
+    assert float(diagnostics["gait/single_support"]) == pytest.approx(1.0)
+
+
 def test_model_exposes_contact_reward_sets(full_body_asset: PreparedAsset) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
 

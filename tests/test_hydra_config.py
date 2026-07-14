@@ -195,6 +195,45 @@ def test_smooth_air_time_config_adds_temporal_and_ppo_stability() -> None:
     assert config.reward_config.feet_air_time.weight == pytest.approx(0.50)
 
 
+def test_gait_mitigation_ablation_configs_are_isolated() -> None:
+    stance = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_air_time_stance"),
+    )
+    slow_gait = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_air_time_slow_gait"),
+    )
+    combined = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_air_time_stance_slow_gait"),
+    )
+    invalid = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_air_time_stance_slow_gait_invalid"),
+    )
+    tanh = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_air_time_stance_slow_gait_tanh"),
+    )
+
+    assert stance.reward_config.stance_width.enabled
+    assert stance.reward_config.stance_width.link == "pelvis_link"
+    assert stance.reward_config.stance_width.min_width == pytest.approx(0.24)
+    assert stance.reward_config.stance_width.max_width == pytest.approx(0.34)
+    assert not stance.reward_config.gait_contact.enabled
+    assert not slow_gait.reward_config.stance_width.enabled
+    assert slow_gait.reward_config.gait_contact.enabled
+    assert slow_gait.env_config.observation.gait_phase
+    assert slow_gait.env_config.critic_observation.gait_phase
+    assert slow_gait.env_config.gait.cycle_time == pytest.approx(1.20)
+    assert combined.reward_config.stance_width.enabled
+    assert combined.reward_config.gait_contact.enabled
+    assert invalid.reward_config.invalid_action.weight == pytest.approx(-3.0)
+    assert tanh.config.policy.action_distribution == "tanh_gaussian"
+    assert tanh.config.policy.action_limit == pytest.approx(1.0)
+
+
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:
     config = structured_config(
         BenchmarkEnvConfig,

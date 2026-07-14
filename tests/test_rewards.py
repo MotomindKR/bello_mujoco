@@ -15,6 +15,7 @@ from bello_mujoco.envs.rewards import (
     PolicyJointDeviationRewardConfig,
     RewardConfig,
     SelfCollisionRewardConfig,
+    StanceWidthRewardConfig,
     StandingFootAirTimeRewardConfig,
     StandingFootVelRewardConfig,
     SwingFootVelocityRewardConfig,
@@ -517,6 +518,47 @@ def test_foot_distance_reward_prefers_farther_feet() -> None:
 
     assert far_reward > near_reward
     assert terms["reward/foot_distance"] == pytest.approx(0.012)
+
+    stance_config = RewardConfig(
+        foot_distance=FootDistanceRewardConfig(enabled=False),
+        stance_width=StanceWidthRewardConfig(
+            enabled=True,
+            weight=-2.0,
+            min_width=0.12,
+            max_width=0.24,
+        ),
+    )
+    in_band_reward, in_band_terms = compute_velocity_reward(
+        config=stance_config,
+        stance_width=jnp.asarray(0.18, dtype=jnp.float32),
+        foot_distance=jnp.asarray(0.3, dtype=jnp.float32),
+        **{key: value for key, value in common.items() if key != "config"},
+    )
+    wide_reward, wide_terms = compute_velocity_reward(
+        config=stance_config,
+        stance_width=jnp.asarray(0.44, dtype=jnp.float32),
+        foot_distance=jnp.asarray(0.3, dtype=jnp.float32),
+        **{key: value for key, value in common.items() if key != "config"},
+    )
+
+    assert in_band_reward > wide_reward
+    assert in_band_terms["reward/stance_width"] == pytest.approx(0.0)
+    assert wide_terms["reward/stance_width"] == pytest.approx(-0.0016)
+
+
+def test_stance_width_reward_validates_band() -> None:
+    with pytest.raises(ValueError, match="stance_width.min_width"):
+        RewardConfig(
+            stance_width=StanceWidthRewardConfig(
+                enabled=True, min_width=-0.1, max_width=0.2
+            )
+        )
+    with pytest.raises(ValueError, match="stance_width.max_width"):
+        RewardConfig(
+            stance_width=StanceWidthRewardConfig(
+                enabled=True, min_width=0.2, max_width=0.2
+            )
+        )
 
 
 def test_policy_joint_deviation_penalizes_policy_pose_error() -> None:

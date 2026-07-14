@@ -1,0 +1,36 @@
+# Combined stance-width and slow-cadence treatment.
+defaults:
+  - locomotion_clean_air_time_stance
+  - _self_
+
+env_config:
+  gait:
+    cycle_time: 1.20
+    command_speed_frequency_gain: 0.15
+    min_frequency: 0.75
+    max_frequency: 1.10
+    duty_factor: 0.60
+  observation:
+    gait_phase: true
+  critic_observation:
+    gait_phase: true
+
+reward_config:
+  gait_contact:
+    enabled: true
+    weight: 0.35
+    command_speed_threshold: 0.10
+
+checkpoint_config:
+  name: locomotion_clean_air_time_stance_slow_gait_seed0
+
+wandb_config:
+  group: locomotion-clean-gait-ablation
+  run_name: locomotion_clean_air_time_stance_slow_gait_seed0
+  tags:
+    - locomotion
+    - stance-width
+    - slow-gait-clock
+
+video_config:
+  filename_prefix: locomotion_clean_air_time_stance_slow_gait

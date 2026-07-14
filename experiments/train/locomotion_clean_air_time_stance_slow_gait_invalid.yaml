@@ -1,0 +1,24 @@
+# Combined gait treatment with stronger pre-clip action pressure.
+defaults:
+  - locomotion_clean_air_time_stance_slow_gait
+  - _self_
+
+reward_config:
+  invalid_action:
+    enabled: true
+    weight: -3.0
+
+checkpoint_config:
+  name: locomotion_clean_air_time_stance_slow_gait_invalid_seed0
+
+wandb_config:
+  group: locomotion-clean-gait-ablation
+  run_name: locomotion_clean_air_time_stance_slow_gait_invalid_seed0
+  tags:
+    - locomotion
+    - stance-width
+    - slow-gait-clock
+    - stronger-invalid-action
+
+video_config:
+  filename_prefix: locomotion_clean_air_time_stance_slow_gait_invalid
