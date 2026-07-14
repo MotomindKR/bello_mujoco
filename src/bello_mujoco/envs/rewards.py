@@ -219,6 +219,13 @@ class FootClearanceRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class SwingFootVelocityRewardConfig(LinkRewardConfig):
+    std: float = 0.25
+    max_target_speed: float = 2.0
+    command_speed_threshold: float = 0.10
+
+
+@dataclass(frozen=True)
 class FootDistanceRewardConfig(WeightedRewardConfig):
     pass
 
@@ -291,6 +298,9 @@ class RewardConfig:
     foot_contact: FootContactRewardConfig = FootContactRewardConfig(weight=0.05)
     foot_slip: FootSlipRewardConfig = FootSlipRewardConfig(weight=-0.2)
     foot_clearance: FootClearanceRewardConfig = FootClearanceRewardConfig(weight=1.0)
+    swing_foot_velocity: SwingFootVelocityRewardConfig = SwingFootVelocityRewardConfig(
+        enabled=False, weight=0.5
+    )
     foot_distance: FootDistanceRewardConfig = FootDistanceRewardConfig(
         enabled=False, weight=1.0
     )
@@ -327,7 +337,11 @@ class RewardConfig:
 
     @property
     def uses_foot_metadata(self) -> bool:
-        return self.uses_foot_contact_metadata or self.foot_distance.enabled
+        return (
+            self.uses_foot_contact_metadata
+            or self.swing_foot_velocity.enabled
+            or self.foot_distance.enabled
+        )
 
     @property
     def uses_terrain_contact_metadata(self) -> bool:
@@ -342,6 +356,7 @@ class RewardConfig:
             self.ang_vel_xy,
             self.flat_orientation,
             self.base_height,
+            self.swing_foot_velocity,
         ]
         links = {term.link for term in terms if term.enabled and term.link}
         if self.track_lin_vel_xy.enabled and self.track_lin_vel_xy.frame_link:
@@ -386,6 +401,8 @@ def compute_velocity_reward(
     action_target_scale: jax.Array | None = None,
     action_target_low: jax.Array | None = None,
     action_target_high: jax.Array | None = None,
+    foot_relative_lin_vel_xy: jax.Array | None = None,
+    swing_velocity_target_scale: float = 1.0,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
     lin_vel_error = jnp.sum((lin_vel_xy - command[:2]) ** 2)
@@ -457,6 +474,36 @@ def compute_velocity_reward(
         jnp.sum(swing_gate * clearance_score) / jnp.maximum(active_swing, 1.0e-6),
         jnp.asarray(0.0, dtype=jnp.float32),
     )
+    if config.swing_foot_velocity.enabled:
+        if foot_relative_lin_vel_xy is None:
+            raise ValueError(
+                "swing_foot_velocity reward requires relative foot XY velocities"
+            )
+        target_velocity = command[:2] * swing_velocity_target_scale
+        target_speed = jnp.linalg.norm(target_velocity)
+        target_velocity = target_velocity * jnp.minimum(
+            1.0,
+            config.swing_foot_velocity.max_target_speed
+            / jnp.maximum(target_speed, 1.0e-6),
+        )
+        swing_velocity_error = jnp.sum(
+            (foot_relative_lin_vel_xy - target_velocity) ** 2, axis=1
+        )
+        swing_velocity_score = jnp.exp(
+            -swing_velocity_error / config.swing_foot_velocity.std
+        )
+        scheduled_swing = (~gait_contact_mask.astype(bool)).astype(jnp.float32)
+        swing_foot_velocity = jnp.sum(
+            scheduled_swing * swing_velocity_score
+        ) / jnp.maximum(jnp.sum(scheduled_swing), 1.0)
+        swing_foot_velocity = jnp.where(
+            jnp.linalg.norm(command[:2])
+            > config.swing_foot_velocity.command_speed_threshold,
+            swing_foot_velocity,
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+    else:
+        swing_foot_velocity = jnp.asarray(0.0, dtype=jnp.float32)
     foot_distance = jnp.asarray(foot_distance, dtype=jnp.float32)
     command_speed = jnp.linalg.norm(command)
     foot_clearance = jnp.where(
@@ -581,6 +628,11 @@ def compute_velocity_reward(
             config.foot_clearance.enabled,
             config.foot_clearance.weight,
             foot_clearance,
+        ),
+        "reward/swing_foot_velocity": weighted_term(
+            config.swing_foot_velocity.enabled,
+            config.swing_foot_velocity.weight,
+            swing_foot_velocity,
         ),
         "reward/foot_distance": weighted_term(
             config.foot_distance.enabled,
@@ -708,6 +760,32 @@ def validate_reward_config(config: RewardConfig) -> None:
                 "foot_clearance.command_speed_threshold must be nonnegative and "
                 f"finite, got {config.foot_clearance.command_speed_threshold}"
             )
+    if config.swing_foot_velocity.enabled:
+        if (
+            not math.isfinite(config.swing_foot_velocity.std)
+            or config.swing_foot_velocity.std <= 0
+        ):
+            raise ValueError(
+                "swing_foot_velocity.std must be positive when enabled, got "
+                f"{config.swing_foot_velocity.std}"
+            )
+        if (
+            not math.isfinite(config.swing_foot_velocity.max_target_speed)
+            or config.swing_foot_velocity.max_target_speed <= 0
+        ):
+            raise ValueError(
+                "swing_foot_velocity.max_target_speed must be positive and finite, "
+                f"got {config.swing_foot_velocity.max_target_speed}"
+            )
+        if (
+            not math.isfinite(config.swing_foot_velocity.command_speed_threshold)
+            or config.swing_foot_velocity.command_speed_threshold < 0
+        ):
+            raise ValueError(
+                "swing_foot_velocity.command_speed_threshold must be nonnegative "
+                "and finite, got "
+                f"{config.swing_foot_velocity.command_speed_threshold}"
+            )
     if config.gait_contact.enabled and (
         not math.isfinite(config.gait_contact.command_speed_threshold)
         or config.gait_contact.command_speed_threshold < 0
@@ -781,6 +859,7 @@ def reward_terms(config: RewardConfig):
         "foot_contact": config.foot_contact,
         "foot_slip": config.foot_slip,
         "foot_clearance": config.foot_clearance,
+        "swing_foot_velocity": config.swing_foot_velocity,
         "foot_distance": config.foot_distance,
         "gait_contact": config.gait_contact,
         "feet_air_time": config.feet_air_time,

@@ -1425,3 +1425,55 @@ The weight remains command-gated at speed `> 0.10`, preserving the explicit
 standing-foot penalties for stand-still samples. No command distribution,
 entropy, curriculum, contact threshold, or PPO setting changed in this
 ablation.
+
+## 2026-07-14 - Add stand-still observation countermeasures
+
+The full stronger-gait run walked reliably at a forward command but still lost
+orientation at zero command. Inspection found two observation-level causes:
+
+- the contact schedule correctly requested double support below the standing
+  threshold, while the observed gait phase continued cycling at its 1.25 Hz
+  baseline frequency;
+- the hard-recipe actor did not observe base linear velocity, even though it was
+  expected to suppress zero-command drift (the critic already observed it).
+
+The gait phase now freezes at zero whenever the command norm is at or below
+`gait.standing_command_threshold`, matching the existing double-support mask.
+The hard recipe now also enables actor `base_lin_vel`. A 520-update smoke
+checkpoint with these two observation changes walked for the full 1,000-step
+forward-command episode but still lost orientation after 109 zero-command
+steps, within the spread of the earlier short runs.
+
+A follow-up short run tried a command-gated default-pose penalty, but it did not
+improve the zero-command rollout (94 steps). A zero-action control showed why:
+the configured nominal pose itself lost orientation after 76 steps in MJX-Warp,
+so forcing that pose would encode an unstable target. The term was discarded.
+
+Instead, the hard recipe raises `standing_probability` from `0.20` to `0.35` so
+the policy receives 75% more exact-zero-command experience while learning its
+own dynamically stable pose. The final countermeasures are therefore the frozen
+standing gait phase, actor base-linear-velocity feedback, and increased standing
+sampling. The actor observation change requires training a new checkpoint.
+
+## 2026-07-14 - Track command velocity at the pelvis
+
+Changed the easy/hard locomotion velocity targets from the floating
+`bello_root` wrapper to `pelvis_link`. `track_lin_vel_xy.link` and its
+`frame_link` now both use the pelvis, and `track_ang_vel_z.link` uses the pelvis
+as well. Torso-linked height, orientation, vertical-velocity, and roll/pitch
+angular-velocity terms are unchanged.
+MuJoCo's URDF importer previously fused the root pelvis into `bello_root`, so
+asset preparation now disables static-body fusion and keeps `pelvis_link` as an
+actual model body. The asset cache version was incremented to invalidate models
+generated with the fused hierarchy.
+
+## 2026-07-14 - Add scheduled swing-foot velocity tracking
+
+Added `swing_foot_velocity`, a command-gated reward for matching the scheduled
+swing foot's XY velocity relative to the pelvis in the pelvis yaw frame. Its
+target is derived from gait duty factor as
+`duty_factor / (1 - duty_factor) * command[:2]`, then capped at `2.0 m/s`.
+The term uses a bounded exponential score with `std: 0.25`, is disabled below
+linear command speed `0.10`, and is enabled in the easy/hard locomotion recipe
+at weight `0.5`. Directional vector error prevents sideways or backward foot
+motion from receiving the same reward as commanded swing motion.

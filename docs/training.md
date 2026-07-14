@@ -351,8 +351,15 @@ min_frequency, max_frequency)`, so the default is
 `clip(1.25 + 0.55 v, 1.2, 2.2)` Hz. `duty_factor` is the stance fraction of
 each period, `phase_offsets` are per-foot phase offsets, and
 `standing_command_threshold` forces all feet scheduled in contact when command
-speed is near zero. `observation.gait_phase=true` appends `[sin(phase),
-cos(phase)]` to the policy observation.
+speed is near zero. The phase is also frozen at zero under that threshold, so a
+standing policy observes the constant `[sin(phase), cos(phase)] = [0, 1]`
+instead of a moving gait clock. `observation.gait_phase=true` appends that pair
+to the policy observation.
+
+The `locomotion_hard` recipe enables actor `base_lin_vel` in addition to the
+privileged critic copy. This gives the policy direct feedback about stand-still
+drift; checkpoints trained with older observation dimensions are not compatible
+with that recipe change.
 
 `contact` debounces raw foot-ground contacts before they feed contact-dependent
 reward terms and foot-air-time memory. `foot_contact_on_seconds` is the required
@@ -395,6 +402,9 @@ clamped to at least one step.
 `standing_probability` samples an exact zero command instead of a velocity
 command, so command-conditioned policies train on explicit stand-still episodes
 instead of relying on the uniform range to land near zero.
+The `locomotion_hard` recipe sets it to `0.35`, up from `0.20`, to give
+stand-still recovery materially more training coverage while retaining a
+majority of moving commands.
 
 `command_config.curriculum` can expand the active command ranges during PPO
 training while leaving the configured initial ranges as the reset value. When
@@ -491,6 +501,13 @@ reward_config:
     std: 0.05
     tanh_mult: 2.0
     command_speed_threshold: 0.05
+  swing_foot_velocity:
+    enabled: false
+    weight: 0.5
+    link: null
+    std: 0.25
+    max_target_speed: 2.0
+    command_speed_threshold: 0.10
   foot_distance:
     enabled: false
     weight: 1.0
@@ -524,20 +541,24 @@ reward_config:
 ```
 
 Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
-`foot_distance`, `gait_contact`, `feet_air_time`, `standing_foot_vel`, and
-`standing_foot_air_time`. `foot_distance` rewards the horizontal distance
-between the two foot bodies. Terrain-contact metadata is required for the
-contact-dependent foot terms and for `undesired_contact` when terrain is
-enabled. Robot collision-geom metadata is required for `self_collision`.
-Contact-dependent foot terms use the debounced foot-contact signal from
-`env_config.contact`.
+`swing_foot_velocity`, `foot_distance`, `gait_contact`, `feet_air_time`,
+`standing_foot_vel`, and `standing_foot_air_time`. `foot_distance` rewards the
+horizontal distance between the two foot bodies. Terrain-contact metadata is
+required for the contact-dependent foot terms and for `undesired_contact` when
+terrain is enabled. Robot collision-geom metadata is required for
+`self_collision`. Contact-dependent foot terms use the debounced foot-contact
+signal from `env_config.contact`.
 
 `track_lin_vel_xy` uses yaw-frame linear velocity, matching the Unitree
 locomotion reward shape. `link` selects the body whose linear velocity is
 tracked; `frame_link` selects the body whose yaw defines the command frame. When
 `frame_link` is null, the tracked body also defines the yaw frame. Because the
 Bello asset's anatomical forward axis is local Y, a forward Bello command is
-currently expressed through `lin_vel_y`, not `lin_vel_x`. `joint_vel`,
+currently expressed through `lin_vel_y`, not `lin_vel_x`. The locomotion easy
+and hard recipes track `pelvis_link` linear velocity in the pelvis yaw frame and
+track `pelvis_link` yaw angular velocity. Their torso-linked height,
+orientation, and vertical/lateral stabilization terms remain unchanged.
+`joint_vel`,
 `joint_acc`, `action_rate`, `energy`, and `torque` are
 smoothness and effort regularizers. `joint_vel`, `joint_acc`, `action_rate`,
 `energy`, and `torque` sum over their selected dimensions;
@@ -573,6 +594,15 @@ non-contact foot is moving, the clearance term is zero. It is also disabled for
 near-standing commands by
 `command_speed_threshold`, so stand-still samples do not receive swing-clearance
 pressure.
+
+`swing_foot_velocity` rewards the scheduled swing foot for matching a
+directional XY velocity relative to `link`, measured in that link's yaw frame.
+The target is `duty_factor / (1 - duty_factor) * command[:2]`, capped by
+`max_target_speed`, and the score is `exp(-squared_error / std)`. It is disabled
+when linear command speed is at or below `command_speed_threshold`; pure yaw and
+stand-still commands therefore receive no swing-velocity pressure. The easy and
+hard locomotion recipes enable the term at weight `0.5` with `pelvis_link` as
+the reference body.
 
 `feet_air_time` increments while a foot is not in debounced contact. On the
 first contact after that swing interval, it rewards the completed air time

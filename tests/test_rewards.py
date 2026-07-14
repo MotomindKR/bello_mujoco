@@ -17,6 +17,7 @@ from bello_mujoco.envs.rewards import (
     SelfCollisionRewardConfig,
     StandingFootAirTimeRewardConfig,
     StandingFootVelRewardConfig,
+    SwingFootVelocityRewardConfig,
     TerminationRewardConfig,
     TorqueRewardConfig,
     TrackLinVelXYRewardConfig,
@@ -781,6 +782,81 @@ def test_gait_contact_rewards_matching_commanded_contact_schedule() -> None:
     assert matched_terms["reward/gait_contact"] == pytest.approx(0.04)
     assert mismatched_terms["reward/gait_contact"] == 0.0
     assert standing_terms["reward/gait_contact"] == 0.0
+
+
+def test_swing_foot_velocity_tracks_capped_directional_target() -> None:
+    config = RewardConfig(
+        swing_foot_velocity=SwingFootVelocityRewardConfig(
+            enabled=True,
+            weight=1.0,
+            std=0.25,
+            max_target_speed=0.5,
+            command_speed_threshold=0.1,
+        )
+    )
+    common = {
+        "config": config,
+        "lin_vel_xy": jnp.zeros(2, dtype=jnp.float32),
+        "yaw_vel_z": jnp.asarray(0.0, dtype=jnp.float32),
+        "lin_vel_z": jnp.asarray(0.0, dtype=jnp.float32),
+        "ang_vel_xy": jnp.zeros(2, dtype=jnp.float32),
+        "projected_gravity": jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
+        "base_height": jnp.asarray(config.base_height.target, dtype=jnp.float32),
+        "joint_pos": jnp.zeros(2, dtype=jnp.float32),
+        "joint_pos_rel": jnp.zeros(2, dtype=jnp.float32),
+        "joint_vel": jnp.zeros(2, dtype=jnp.float32),
+        "last_joint_vel": jnp.zeros(2, dtype=jnp.float32),
+        "action": jnp.zeros(2, dtype=jnp.float32),
+        "last_action": jnp.zeros(2, dtype=jnp.float32),
+        "actuator_force": jnp.zeros(2, dtype=jnp.float32),
+        "joint_limit_low": -jnp.ones(2, dtype=jnp.float32),
+        "joint_limit_high": jnp.ones(2, dtype=jnp.float32),
+        "hold_joint_indices": jnp.asarray([], dtype=jnp.int32),
+        "policy_joint_indices": jnp.asarray([], dtype=jnp.int32),
+        "foot_contact": jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        "foot_height": jnp.zeros(2, dtype=jnp.float32),
+        "foot_lateral_speed_sq": jnp.zeros(2, dtype=jnp.float32),
+        "foot_distance": jnp.asarray(0.3, dtype=jnp.float32),
+        "gait_contact_mask": jnp.asarray([True, False]),
+        "foot_air_time": jnp.zeros(2, dtype=jnp.float32),
+        "last_foot_contact": jnp.asarray([True, False]),
+        "undesired_contact": jnp.asarray(0.0, dtype=jnp.float32),
+        "control_timestep": 0.02,
+        "done": jnp.asarray(False),
+        "swing_velocity_target_scale": 2.0,
+    }
+    command = jnp.asarray([0.0, 0.5, 0.0], dtype=jnp.float32)
+
+    _, matched_terms = compute_velocity_reward(
+        command=command,
+        foot_relative_lin_vel_xy=jnp.asarray(
+            [[10.0, 10.0], [0.0, 0.5]], dtype=jnp.float32
+        ),
+        **common,
+    )
+    _, reversed_terms = compute_velocity_reward(
+        command=command,
+        foot_relative_lin_vel_xy=jnp.asarray(
+            [[0.0, 0.5], [0.0, -0.5]], dtype=jnp.float32
+        ),
+        **common,
+    )
+    _, standing_terms = compute_velocity_reward(
+        command=jnp.zeros(3, dtype=jnp.float32),
+        foot_relative_lin_vel_xy=jnp.zeros((2, 2), dtype=jnp.float32),
+        **common,
+    )
+
+    assert matched_terms["reward/swing_foot_velocity"] == pytest.approx(0.02)
+    assert reversed_terms["reward/swing_foot_velocity"] < 0.001
+    assert standing_terms["reward/swing_foot_velocity"] == pytest.approx(0.0)
+
+
+def test_swing_foot_velocity_config_validates_std() -> None:
+    with pytest.raises(ValueError, match="swing_foot_velocity.std"):
+        RewardConfig(
+            swing_foot_velocity=SwingFootVelocityRewardConfig(enabled=True, std=0.0)
+        )
 
 
 def test_feet_air_time_rewards_first_contact_after_swing() -> None:

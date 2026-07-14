@@ -43,6 +43,7 @@ def rewrite_urdf_for_mujoco(
 ) -> MeshSources:
     tree = ET.parse(source_urdf)
     root = tree.getroot()
+    preserve_fixed_link_bodies(root)
     replace_end_effectors_with_spheres(root, end_effector_sphere_mode)
     collision_sources: dict[Path, str] = {}
     visual_sources: dict[Path, str] = {}
@@ -89,6 +90,16 @@ def rewrite_urdf_for_mujoco(
     ET.indent(tree, space="  ")
     tree.write(out_urdf, encoding="utf-8", xml_declaration=True)
     return MeshSources(collision=collision_sources, visual=visual_sources)
+
+
+def preserve_fixed_link_bodies(root: ET.Element) -> None:
+    mujoco_config = root.find("mujoco")
+    if mujoco_config is None:
+        mujoco_config = ET.SubElement(root, "mujoco")
+    compiler = mujoco_config.find("compiler")
+    if compiler is None:
+        compiler = ET.SubElement(mujoco_config, "compiler")
+    compiler.set("fusestatic", "false")
 
 
 def replace_end_effectors_with_spheres(

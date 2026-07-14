@@ -1514,6 +1514,13 @@ class BelloLocomotionEnv:
             foot_height=foot_height,
             foot_lateral_speed_sq=foot_lateral_speed_sq,
             foot_angular_speed=foot_angular_speed,
+            foot_relative_lin_vel_xy=self._foot_relative_yaw_frame_lin_vel(
+                next_state,
+                self._reward_link(self.reward_config.swing_foot_velocity),
+            ),
+            swing_velocity_target_scale=(
+                self.config.gait.duty_factor / (1.0 - self.config.gait.duty_factor)
+            ),
             foot_distance=self._foot_distance(next_state),
             gait_contact_mask=self._gait_contact_mask(next_state),
             foot_air_time=state.foot_air_time,
@@ -1565,7 +1572,14 @@ class BelloLocomotionEnv:
             * self.control_timestep
             * self._gait_frequency(command)
         )
-        return jnp.mod(phase, 1.0)
+        return jnp.where(
+            self._is_standing_command(command),
+            jnp.asarray(0.0, dtype=jnp.float32),
+            jnp.mod(phase, 1.0),
+        )
+
+    def _is_standing_command(self, command: jax.Array) -> jax.Array:
+        return jnp.linalg.norm(command) <= self.config.gait.standing_command_threshold
 
     def _gait_phase(self, state: BelloState) -> jax.Array:
         return self._gait_phase_from_step_count(state.step_count, state.command)
@@ -1581,10 +1595,7 @@ class BelloLocomotionEnv:
         ]
         phase = jnp.mod(self._gait_phase(state) + phase_offsets, 1.0)
         scheduled = phase < self.config.gait.duty_factor
-        standing = (
-            jnp.linalg.norm(state.command)
-            <= self.config.gait.standing_command_threshold
-        )
+        standing = self._is_standing_command(state.command)
         return jnp.where(standing, jnp.ones_like(scheduled), scheduled)
 
     def _debounce_foot_contact(
@@ -1746,6 +1757,20 @@ class BelloLocomotionEnv:
         foot_quat = state.data.xquat[foot_body_ids]
         foot_world_vel = jax.vmap(quat_rotate)(foot_quat, foot_cvel)
         return jnp.sum(foot_world_vel[:, :2] ** 2, axis=1)
+
+    def _foot_relative_yaw_frame_lin_vel(
+        self, state: BelloState, frame_link_name: str
+    ) -> jax.Array:
+        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
+        foot_body_vel = state.data.cvel[foot_body_ids, 3:6]
+        foot_quat = state.data.xquat[foot_body_ids]
+        foot_world_vel = jax.vmap(quat_rotate)(foot_quat, foot_body_vel)
+        frame_world_vel = self._link_world_lin_vel(state, frame_link_name)
+        frame_yaw = yaw_quat(self._link_quat(state, frame_link_name))
+        relative_world_vel = foot_world_vel - frame_world_vel
+        return jax.vmap(lambda vel: quat_rotate_inverse(frame_yaw, vel))(
+            relative_world_vel
+        )[:, :2]
 
     def _foot_angular_speed(self, state: BelloState) -> jax.Array:
         foot_body_ids = jnp.asarray(self.model.foot_body_ids)

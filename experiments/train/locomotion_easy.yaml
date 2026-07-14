@@ -91,13 +91,13 @@ reward_config:
     enabled: true
     weight: 5.0
     sigma: 0.25
-    link: bello_root
-    frame_link: bello_root
+    link: pelvis_link
+    frame_link: pelvis_link
   track_ang_vel_z:
     enabled: true
     weight: 0.5
     sigma: 0.25
-    link: bello_root
+    link: pelvis_link
   alive:
     enabled: true
     weight: 0.10
@@ -158,6 +158,13 @@ reward_config:
     std: 0.05
     tanh_mult: 2.0
     command_speed_threshold: 0.05
+  swing_foot_velocity:
+    enabled: true
+    weight: 0.5
+    link: pelvis_link
+    std: 0.25
+    max_target_speed: 2.0
+    command_speed_threshold: 0.10
   gait_contact:
     enabled: true
     weight: 0.5

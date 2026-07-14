@@ -69,6 +69,29 @@ def test_experiment_train_configs_convert_to_valid_training_config(
     assert config.config.num_updates > 0
 
 
+def test_hard_locomotion_includes_standing_countermeasures() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_hard"),
+    )
+
+    assert config.env_config.observation.base_lin_vel
+    assert config.command_config.standing_probability == pytest.approx(0.35)
+
+
+def test_locomotion_tracks_pelvis_velocity() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_hard"),
+    )
+
+    assert config.reward_config.track_lin_vel_xy.link == "pelvis_link"
+    assert config.reward_config.track_lin_vel_xy.frame_link == "pelvis_link"
+    assert config.reward_config.track_ang_vel_z.link == "pelvis_link"
+    assert config.reward_config.swing_foot_velocity.enabled
+    assert config.reward_config.swing_foot_velocity.link == "pelvis_link"
+
+
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:
     config = structured_config(
         BenchmarkEnvConfig,

@@ -9,7 +9,10 @@ import pytest
 import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
-from bello_mujoco.assets_pipeline.mesh import replace_end_effectors_with_spheres
+from bello_mujoco.assets_pipeline.mesh import (
+    preserve_fixed_link_bodies,
+    replace_end_effectors_with_spheres,
+)
 from bello_mujoco.assets_pipeline.mjcf import compile_urdf_to_mjcf
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
@@ -70,6 +73,24 @@ def test_end_effector_sphere_replacement_prunes_selected_subtree() -> None:
     assert sphere_joint.find("origin").attrib["xyz"] == "5e-06 -0.0275 -0.122"
     assert sphere_link is not None
     assert sphere_link.find("./collision/geometry/sphere").attrib["radius"] == "0.0325"
+
+
+def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
+    root = ET.Element("robot", {"name": "test"})
+
+    preserve_fixed_link_bodies(root)
+
+    compiler = root.find("./mujoco/compiler")
+    assert compiler is not None
+    assert compiler.attrib["fusestatic"] == "false"
+
+
+def test_prepared_full_body_preserves_pelvis_body(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+
+    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link") >= 0
 
 
 def test_observation_size_tracks_reduced_actuator_count() -> None:

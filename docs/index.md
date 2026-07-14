@@ -121,6 +121,9 @@ Asset prep supports:
 The training MJCF keeps the selected collision geoms as the robot geometry. The
 viewer MJCF injects visual mesh geoms and makes collision geoms transparent, so
 `collision_mode: box` still renders the visual robot surface.
+Asset conversion disables MuJoCo's URDF static-body fusion so named fixed links,
+including the root `pelvis_link`, remain available to link-aware observations,
+rewards, and done terms. The floating wrapper remains `bello_root`.
 
 Foot collision is defined directly in the source URDFs with five primitives per
 ankle-roll link: three boxes and two cylinders. The STL foot meshes are visual
@@ -263,6 +266,7 @@ policy_joint_deviation
 foot_contact
 foot_slip
 foot_clearance
+swing_foot_velocity
 foot_distance
 gait_contact
 feet_air_time
@@ -285,7 +289,9 @@ tilt angle, not independent roll and pitch thresholds.
 `self_collision` penalizes active robot-robot contact slots above
 `contact.self_collision_force_threshold`. `feet_air_time` rewards first contact
 after a swing interval and is command-gated so near-zero commands can train
-standing without swing pressure. `standing_foot_vel` and
+standing without swing pressure. `swing_foot_velocity` tracks a bounded,
+command-scaled scheduled-swing velocity relative to a configured body.
+`standing_foot_vel` and
 `standing_foot_air_time` add command-gated stand-still penalties for foot motion
 and accumulated foot air time. `invalid_action` penalizes requested actuator
 targets outside configured soft ranges as squared violations in policy action

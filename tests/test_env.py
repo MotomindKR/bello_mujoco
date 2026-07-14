@@ -695,6 +695,40 @@ def test_gait_frequency_tracks_command_speed(full_body_asset: PreparedAsset) -> 
     )
 
 
+def test_gait_phase_freezes_for_standing_commands(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            gait=GaitConfig(
+                cycle_time=0.80,
+                command_speed_frequency_gain=0.55,
+                min_frequency=1.20,
+                max_frequency=2.20,
+                standing_command_threshold=0.08,
+            )
+        ),
+    )
+    step_count = jnp.asarray(10, dtype=jnp.int32)
+
+    assert float(
+        env._gait_phase_from_step_count(
+            step_count, jnp.asarray([0.0, 0.0, 0.0], dtype=jnp.float32)
+        )
+    ) == pytest.approx(0.0)
+    assert float(
+        env._gait_phase_from_step_count(
+            step_count, jnp.asarray([0.0, 0.0, 0.08], dtype=jnp.float32)
+        )
+    ) == pytest.approx(0.0)
+    assert float(
+        env._gait_phase_from_step_count(
+            step_count, jnp.asarray([0.0, 0.5, 0.0], dtype=jnp.float32)
+        )
+    ) == pytest.approx(0.305)
+
+
 def test_observation_config_can_include_base_state(
     full_body_asset: PreparedAsset,
 ) -> None:

@@ -26,6 +26,7 @@ env_config:
     lin_vel_x: [-0.20, 0.20]
     lin_vel_y: [-0.20, 0.20]
   observation:
+    base_lin_vel: true
     command: true
     gait_phase: true
     noise:
@@ -45,7 +46,7 @@ command_config:
   lin_vel_x: [-0.15, 0.15]
   lin_vel_y: [0.15, 0.60]
   ang_vel_yaw: [-0.20, 0.20]
-  standing_probability: 0.20
+  standing_probability: 0.35
   resample_seconds: 6.0
   curriculum:
     enabled: true
