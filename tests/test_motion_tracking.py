@@ -38,7 +38,7 @@ def fixed_waist_asset(tmp_path_factory) -> PreparedAsset:
         AssetPrepConfig(
             asset="full_body",
             output_root=tmp_path_factory.mktemp("fixed-waist-asset"),
-            collision_mode="primitive",
+            collision_mode="box",
             end_effector_sphere_mode="both",
             fixed_joint_names=("waist_roll_joint", "waist_pitch_joint"),
         )
@@ -126,6 +126,7 @@ def test_default_motion_training_config_has_fixed_waist_contract() -> None:
         "waist_pitch_joint",
     )
     assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.asset_config.collision_mode == "box"
     assert config.asset_config.actuator_config.default_action_scale_ratio == 0.5
     assert config.env_config.motion_path == Path(
         "motions/local/walk1_subject1_fixed_waist.npz"
@@ -134,6 +135,11 @@ def test_default_motion_training_config_has_fixed_waist_contract() -> None:
     assert config.video_config.render_final
     assert config.video_config.log_wandb
     assert config.video_config.wandb_name == "eval/motion_policy"
+    assert config.config.num_envs == 1024
+    assert config.config.learning_rate == pytest.approx(3.0e-4)
+    assert config.config.policy.init_log_std == pytest.approx(-1.0)
+    assert config.config.policy.action_distribution == "tanh_gaussian"
+    assert config.warp.njmax == 2048
 
 
 def test_gmr_joint_columns_are_remapped_by_name(
@@ -185,6 +191,43 @@ def test_tracking_reset_matches_reference_and_is_nonterminal(
     assert env.critic_observation(state).shape == (env.critic_observation_size,)
     assert float(reward) > 0.8
     assert not bool(done["done/any"])
+
+
+def test_tracking_nonfinite_state_is_terminal_and_reward_is_sanitized(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    env = BelloMotionTrackingEnv.load_prepared(
+        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    )
+    state, _ = env.reset(reference_time=jnp.asarray(0.1))
+    state = state.replace(
+        data=state.data.replace(cvel=state.data.cvel.at[0, 0].set(jnp.nan))
+    )
+    done_flags = env._done_flags(state)
+    reward, reward_info = env._reward(state, state)
+    reward, reward_info = env._sanitize_nonfinite_reward(
+        reward, reward_info, done_flags
+    )
+
+    assert bool(done_flags["done/nonfinite"])
+    assert bool(done_flags["done/terminal"])
+    assert float(reward) == 0.0
+    assert all(float(value) == 0.0 for value in reward_info.values())
+
+
+def test_tracking_joint_limit_cost_is_bounded(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    env = BelloMotionTrackingEnv.load_prepared(
+        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    )
+    state, _ = env.reset(reference_time=jnp.asarray(0.1))
+    indices = jnp.asarray(env.model.policy_qpos_indices)
+    state = state.replace(
+        data=state.data.replace(qpos=state.data.qpos.at[indices].set(1.0e6))
+    )
+
+    assert float(env._joint_limit_cost(state)) == 1.0
 
 
 @pytest.mark.integration

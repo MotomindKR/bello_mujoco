@@ -4,11 +4,11 @@ jit: true
 config:
   seed: 0
   total_timesteps: 100000000
-  num_envs: 4096
+  num_envs: 1024
   num_steps: 24
   update_epochs: 5
   num_minibatches: 8
-  learning_rate: 0.001
+  learning_rate: 0.0003
   anneal_lr: false
   schedule: adaptive
   desired_kl: 0.01
@@ -29,14 +29,16 @@ config:
     hidden_depth: 2
     hidden_dims: null
     activation: tanh
-    init_log_std: -0.5
+    init_log_std: -1.0
     min_log_std: -5.0
     max_log_std: 1.0
     obs_stack_size: 4
+    action_distribution: tanh_gaussian
+    action_limit: 1.0
 
 asset_config:
   asset: full_body
-  collision_mode: primitive
+  collision_mode: box
   mesh_face_budget: 1000
   foot_collision_mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
@@ -118,7 +120,7 @@ warp:
   contact_budget_per_env: 32
   naconmax: null
   naccdmax: null
-  njmax: 256
+  njmax: 2048
 
 hydra:
   job:

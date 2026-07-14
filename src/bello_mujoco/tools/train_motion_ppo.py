@@ -79,7 +79,7 @@ class MotionTrainingRunConfig:
     config: PPOConfig = PPOConfig()
     asset_config: AssetPrepConfig = AssetPrepConfig(
         asset="full_body",
-        collision_mode="primitive",
+        collision_mode="box",
         end_effector_sphere_mode="both",
         fixed_joint_names=FIXED_WAIST_JOINTS,
     )

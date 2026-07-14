@@ -319,6 +319,9 @@ class BelloMotionTrackingEnv:
         )
         reward, reward_info = self._reward(state, stepped)
         done_flags = self._done_flags(stepped)
+        reward, reward_info = self._sanitize_nonfinite_reward(
+            reward, reward_info, done_flags
+        )
         done = done_flags["done/any"]
         episode_return = state.episode_return + reward
         stepped = stepped.replace(
@@ -363,6 +366,9 @@ class BelloMotionTrackingEnv:
         )
         reward, reward_info = jax.vmap(self._reward)(state, stepped)
         done_flags = jax.vmap(self._done_flags)(stepped)
+        reward, reward_info = self._sanitize_nonfinite_reward(
+            reward, reward_info, done_flags
+        )
         done = done_flags["done/any"]
         episode_return = state.episode_return + reward
         stepped = stepped.replace(
@@ -546,6 +552,11 @@ class BelloMotionTrackingEnv:
         nonfinite = ~(
             jnp.all(jnp.isfinite(state.data.qpos))
             & jnp.all(jnp.isfinite(state.data.qvel))
+            & jnp.all(jnp.isfinite(state.data.xpos))
+            & jnp.all(jnp.isfinite(state.data.xquat))
+            & jnp.all(jnp.isfinite(state.data.cvel))
+            & jnp.all(jnp.isfinite(state.data.actuator_force))
+            & jnp.all(jnp.isfinite(state.data.ctrl))
         )
         timeout = state.reference_time >= self.motion.duration
         terminal = height | orientation | end_effector | nonfinite
@@ -573,6 +584,23 @@ class BelloMotionTrackingEnv:
             **done_flags,
             **reward_info,
         }
+
+    def _sanitize_nonfinite_reward(
+        self,
+        reward: jax.Array,
+        reward_info: dict[str, jax.Array],
+        done_flags: dict[str, jax.Array],
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        nonfinite = done_flags["done/nonfinite"] | ~jnp.isfinite(reward)
+        sanitized = {
+            name: jnp.where(
+                nonfinite,
+                jnp.zeros_like(value),
+                jnp.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0),
+            )
+            for name, value in reward_info.items()
+        }
+        return sum(sanitized.values(), jnp.zeros_like(reward)), sanitized
 
     def _aligned_reference(
         self, time: jax.Array, alignment_xy: jax.Array, alignment_yaw: jax.Array
@@ -625,10 +653,11 @@ class BelloMotionTrackingEnv:
         ]
         span = jnp.maximum(limits[:, 1] - limits[:, 0], 1.0e-6)
         margin = 0.02 * span
-        return jnp.mean(
+        cost = jnp.mean(
             jax.nn.relu(limits[:, 0] + margin - positions) ** 2
             + jax.nn.relu(positions - limits[:, 1] + margin) ** 2
         )
+        return jnp.clip(cost, 0.0, 1.0)
 
     def _body_world_velocity(
         self, state: MotionTrackingState, body_ids: jax.Array

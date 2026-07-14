@@ -12,6 +12,7 @@ The task always prepares `full_body` Bello with:
 - `waist_pitch_joint` rewritten as fixed
 - `waist_yaw_joint` retained and actuated
 - both wrist subtrees replaced by end-effector spheres
+- non-foot collision meshes replaced by fitted boxes
 - the source URDF's five primitive foot collision shapes per foot retained
 
 The result has `nq=34`, `nv=33`, and `nu=27`. Fixed links remain named bodies,
@@ -96,8 +97,10 @@ ranges, and retains per-joint force limits.
 
 Positive exponential rewards track root position/orientation, joint
 position/velocity, body-relative position/orientation, and body velocity.
-Action-rate and joint-limit costs are negative terms. Root height, root
-orientation, end-effector divergence, and nonfinite state are terminal failures.
+Action-rate and bounded joint-limit costs are negative terms, keeping the total
+per-step reward finite and bounded even during a large joint excursion. Root
+height, root orientation, end-effector divergence, and nonfinite state are
+terminal failures.
 Reaching the end of the reference is a nonterminal timeout boundary so PPO may
 bootstrap the terminal reference state.
 
@@ -109,7 +112,7 @@ Validate the full setup without optimization:
 bello-train-motion-ppo
 ```
 
-Start the default 4096-environment training run:
+Start the default 1024-environment training run:
 
 ```bash
 bello-train-motion-ppo dry_run=false
@@ -143,6 +146,13 @@ Videos are also retained locally under
 `outputs/motion_tracking/eval_videos/eval_<update>.mp4`. Set
 `video_config.enabled=false` to disable rendering, or
 `video_config.log_wandb=false` to keep local videos without uploading them.
+
+The default Warp constraint capacity is `njmax=2048`. Do not reduce it to the
+locomotion default of 256: randomized whole-body reference phases can create
+more simultaneous constraints, and a smaller buffer reports `nefc overflow`
+before destabilizing the rollout. The default policy uses bounded
+`tanh_gaussian` actions, learning rate `3e-4`, and initial log standard
+deviation `-1.0` for a conservative first sustained run.
 
 Render a deterministic policy from a completed checkpoint:
 

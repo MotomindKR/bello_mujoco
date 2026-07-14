@@ -23,7 +23,7 @@ def import_gmr_motion(
     source: Path,
     output: Path,
     *,
-    collision_mode: str = "primitive",
+    collision_mode: str = "box",
 ) -> Path:
     source = source.resolve()
     if not source.exists():
@@ -216,8 +216,8 @@ def entrypoint() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument(
         "--collision-mode",
-        choices=("primitive", "foot-mesh", "mesh"),
-        default="primitive",
+        choices=("box", "foot-mesh", "mesh"),
+        default="box",
     )
     args = parser.parse_args()
     output = import_gmr_motion(

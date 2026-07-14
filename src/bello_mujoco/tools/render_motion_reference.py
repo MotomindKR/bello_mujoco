@@ -27,7 +27,7 @@ def render_reference(
     model = load_bello_model(
         AssetPrepConfig(
             asset="full_body",
-            collision_mode="primitive",
+            collision_mode="box",
             end_effector_sphere_mode="both",
             fixed_joint_names=("waist_roll_joint", "waist_pitch_joint"),
         ),
