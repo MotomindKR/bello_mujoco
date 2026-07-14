@@ -204,6 +204,10 @@ def test_berkeley_port_matches_reference_recipe() -> None:
     assert config.config.update_epochs == 4
     assert config.config.gamma == pytest.approx(0.97)
     assert config.config.learning_rate == pytest.approx(3e-4)
+    assert config.config.target_kl == pytest.approx(0.03)
+    assert config.config.policy.activation == "swish"
+    assert config.config.policy.action_distribution == "tanh_gaussian"
+    assert config.config.policy.normalize_observations
     assert config.env_config.gait.randomize_frequency
     assert config.env_config.gait.frequency_range == pytest.approx((1.25, 1.5))
     assert config.env_config.observation.foot_phase

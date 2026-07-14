@@ -32,6 +32,9 @@ weighted pose, hip/knee deviation, and nonnegative clipped reward total. The
 actor receives noisy proprioception and the four-value per-foot phase encoding;
 the critic receives a clean observation with additional height and actuator
 force channels.
+It follows Brax PPO's bounded tanh-normal policy, Swish activation, and separate
+running normalization for actor and critic observations. A target-KL guard is
+enabled as an additional safety measure for this repository's PPO optimizer.
 
 ## Hydra Configs
 
@@ -131,13 +134,15 @@ config:
     hidden_size: 256
     hidden_depth: 2
     hidden_dims: null  # optional explicit layer sizes, e.g. [512, 256, 128]
-    activation: tanh  # tanh | relu | elu
+    activation: tanh  # tanh | relu | elu | swish
     init_log_std: 0.0
     min_log_std: -5.0
     max_log_std: 1.0
     obs_stack_size: 10
     action_distribution: gaussian  # gaussian | tanh_gaussian
     action_limit: 1.0
+    normalize_observations: false
+    observation_norm_eps: 0.00000001
 ```
 
 Derived values:
@@ -1009,6 +1014,12 @@ and maps it through `action_limit * tanh(x)`. PPO includes the tanh Jacobian in
 the transformed log probability, while deterministic evaluation uses the
 transformed actor mean. The default `gaussian` preserves existing experiment
 behavior.
+
+`policy.normalize_observations=true` maintains independent running mean and
+variance statistics for stacked actor and critic observations. The statistics
+are updated from each completed rollout for use by the next rollout, included
+in checkpoints as part of the policy, and automatically applied during
+deterministic evaluation.
 
 Locomotion training also logs `gait/footfalls_per_second`,
 `gait/liftoffs_per_second`, `gait/premature_touchdowns_per_second`,

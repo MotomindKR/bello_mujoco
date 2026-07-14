@@ -17,10 +17,12 @@ from bello_mujoco.policy import (
     evaluate_actions,
     gaussian_entropy,
     init_observation_stack,
+    policy_entropy,
     policy_observation_size,
     sample_action,
     stacked_observation,
     update_observation_stack,
+    update_policy_observation_normalization,
 )
 from bello_mujoco.train.ppo import (
     PPOConfig,
@@ -222,6 +224,49 @@ def test_tanh_gaussian_actions_are_bounded_and_have_consistent_log_prob() -> Non
     assert jnp.all(jnp.abs(action) < 0.75)
     assert jnp.all(jnp.abs(deterministic_action) < 0.75)
     assert jnp.allclose(sampled_log_prob, evaluated_log_prob, atol=1.0e-5)
+
+
+def test_tanh_gaussian_entropy_accounts_for_saturation() -> None:
+    config = PPOConfig(
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            action_distribution="tanh_gaussian",
+        )
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config)
+    log_std = jnp.asarray([0.0], dtype=jnp.float32)
+
+    centered = policy_entropy(state.policy, log_std, jnp.asarray([[0.0]]))
+    saturated = policy_entropy(state.policy, log_std, jnp.asarray([[0.99]]))
+
+    assert saturated < centered
+
+
+def test_policy_observation_normalization_tracks_actor_and_critic_separately() -> None:
+    config = PPOConfig(
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            normalize_observations=True,
+        )
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config, critic_obs_size=3)
+    actor_obs = jnp.asarray([[1.0, 2.0], [3.0, 6.0]], dtype=jnp.float32)
+    critic_obs = jnp.asarray([[2.0, 4.0, 8.0], [6.0, 8.0, 10.0]], dtype=jnp.float32)
+
+    policy = update_policy_observation_normalization(
+        state.policy, actor_obs, critic_obs
+    )
+
+    assert jnp.allclose(policy.actor_obs_mean, jnp.asarray([2.0, 4.0]))
+    assert jnp.allclose(policy.actor_obs_var, jnp.asarray([1.0, 4.0]))
+    assert policy.actor_obs_count == 2.0
+    assert jnp.allclose(policy.critic_obs_mean, jnp.asarray([4.0, 6.0, 9.0]))
+    assert jnp.allclose(policy.critic_obs_var, jnp.asarray([4.0, 4.0, 1.0]))
+    assert policy.critic_obs_count == 2.0
 
 
 def test_collect_rollout_stores_raw_actions_and_steps_clipped_env_actions() -> None:

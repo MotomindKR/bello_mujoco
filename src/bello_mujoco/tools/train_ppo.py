@@ -197,6 +197,8 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     "num_updates": config.num_updates,
                     "policy_hidden_dims": config.policy.hidden_dims,
                     "policy_activation": config.policy.activation,
+                    "action_distribution": config.policy.action_distribution,
+                    "normalize_observations": config.policy.normalize_observations,
                     "command_ranges": tuple(
                         tuple(row) for row in command_config.range_array().tolist()
                     ),

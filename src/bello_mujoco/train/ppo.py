@@ -32,6 +32,7 @@ from bello_mujoco.policy import (
     sample_action_with_mean,
     stacked_observation,
     update_observation_stack,
+    update_policy_observation_normalization,
 )
 
 LearningRateSchedule = Literal["constant", "linear", "adaptive"]
@@ -88,7 +89,7 @@ class Transition(NamedTuple):
     done: jax.Array
     terminal: jax.Array
     bootstrap_value: jax.Array
-    # Raw Gaussian sample used for PPO log-prob/ratio calculations.
+    # Action sampled from the policy distribution for PPO log-prob/ratio calculations.
     action: jax.Array
     # Action actually sent to the env after optional env-level clipping.
     env_action: jax.Array
@@ -581,6 +582,11 @@ def action_diagnostics(
             (jnp.abs(action - env_action) > 1.0e-6).astype(jnp.float32)
         ),
     }
+    if getattr(policy, "action_distribution", "gaussian") == "tanh_gaussian":
+        action_limit = jnp.asarray(policy.action_limit, dtype=action_mean.dtype)
+        metrics["action_bound_saturation_fraction"] = jnp.mean(
+            (jnp.abs(action_mean) >= 0.98 * action_limit).astype(jnp.float32)
+        )
     if not hasattr(env, "_action_to_ctrl"):
         return metrics
 
@@ -785,6 +791,13 @@ def update_runner_state(
         config,
         learning_rate=learning_rate,
         value_norm_state=value_norm_state,
+    )
+    train_state = train_state.replace(
+        policy=update_policy_observation_normalization(
+            train_state.policy,
+            transitions.obs,
+            transitions.critic_obs,
+        )
     )
     next_learning_rate = adapt_learning_rate(
         learning_rate, metrics["approx_kl"], config
@@ -1174,9 +1187,9 @@ def validate_ppo_config(config: PPOConfig) -> None:
             "policy.obs_stack_size must be positive, got "
             f"{config.policy.obs_stack_size}"
         )
-    if config.policy.activation not in {"tanh", "relu", "elu"}:
+    if config.policy.activation not in {"tanh", "relu", "elu", "swish"}:
         raise ValueError(
-            "policy.activation must be 'tanh', 'relu', or 'elu', got "
+            "policy.activation must be 'tanh', 'relu', 'elu', or 'swish', got "
             f"{config.policy.activation!r}"
         )
     if config.policy.action_distribution not in {"gaussian", "tanh_gaussian"}:
@@ -1188,6 +1201,14 @@ def validate_ppo_config(config: PPOConfig) -> None:
         raise ValueError(
             "policy.action_limit must be positive and finite, got "
             f"{config.policy.action_limit}"
+        )
+    if (
+        not math.isfinite(config.policy.observation_norm_eps)
+        or config.policy.observation_norm_eps <= 0
+    ):
+        raise ValueError(
+            "policy.observation_norm_eps must be positive and finite, got "
+            f"{config.policy.observation_norm_eps}"
         )
     if not math.isfinite(config.policy.init_log_std):
         raise ValueError(

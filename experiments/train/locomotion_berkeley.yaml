@@ -24,14 +24,18 @@ config:
   ent_coef: 0.005
   vf_coef: 1.0
   max_grad_norm: 1.0
-  target_kl: null
+  target_kl: 0.03
   normalize_value: true
   policy:
     hidden_dims: [512, 256, 128]
-    activation: elu
+    activation: swish
     init_log_std: 0.0
     max_log_std: 1.0
     obs_stack_size: 1
+    action_distribution: tanh_gaussian
+    action_limit: 1.0
+    normalize_observations: true
+    observation_norm_eps: 0.00000001
 
 env_config:
   max_episode_steps: 1000
