@@ -14,10 +14,12 @@ from bello_mujoco.envs.rewards import (
 from bello_mujoco.policy import (
     ActorCriticConfig,
     apply_actor,
+    apply_policy,
     evaluate_actions,
     gaussian_entropy,
     init_observation_stack,
     policy_entropy,
+    policy_log_prob,
     policy_observation_size,
     sample_action,
     stacked_observation,
@@ -115,6 +117,7 @@ def dummy_transitions(config: PPOConfig, obs_size: int, action_size: int) -> Tra
         terminal=jnp.zeros(shape, dtype=bool),
         bootstrap_value=jnp.zeros(shape, dtype=jnp.float32),
         action=action,
+        latent_action=action,
         env_action=action,
         action_mean=action,
         value=jnp.zeros(shape, dtype=jnp.float32),
@@ -224,6 +227,61 @@ def test_tanh_gaussian_actions_are_bounded_and_have_consistent_log_prob() -> Non
     assert jnp.all(jnp.abs(action) < 0.75)
     assert jnp.all(jnp.abs(deterministic_action) < 0.75)
     assert jnp.allclose(sampled_log_prob, evaluated_log_prob, atol=1.0e-5)
+
+
+def test_saturated_tanh_action_keeps_exact_latent_log_prob_for_ppo() -> None:
+    config = PPOConfig(
+        total_timesteps=4,
+        num_envs=4,
+        num_steps=1,
+        num_minibatches=1,
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            action_distribution="tanh_gaussian",
+        ),
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config)
+    obs = jnp.zeros((config.num_envs, 2), dtype=jnp.float32)
+    latent_mean, log_std, value = apply_policy(state.policy, obs)
+    latent_action = jnp.full((config.num_envs, 1), 20.0, dtype=jnp.float32)
+    action = jnp.tanh(latent_action)
+    old_log_prob = policy_log_prob(
+        state.policy,
+        latent_mean,
+        log_std,
+        action,
+        latent_action=latent_action,
+    )
+    reconstructed_log_prob = policy_log_prob(state.policy, latent_mean, log_std, action)
+    transitions = Transition(
+        done=jnp.zeros(config.num_envs, dtype=bool),
+        terminal=jnp.zeros(config.num_envs, dtype=bool),
+        bootstrap_value=jnp.zeros(config.num_envs, dtype=jnp.float32),
+        action=action,
+        latent_action=latent_action,
+        env_action=action,
+        action_mean=jnp.zeros_like(action),
+        value=value,
+        reward=jnp.zeros(config.num_envs, dtype=jnp.float32),
+        log_prob=old_log_prob,
+        obs=obs,
+        critic_obs=obs,
+        info={},
+    )
+
+    _, metrics = ppo_loss(
+        state.policy,
+        transitions,
+        jnp.ones(config.num_envs, dtype=jnp.float32),
+        jnp.zeros(config.num_envs, dtype=jnp.float32),
+        config,
+    )
+
+    assert jnp.all(action == 1.0)
+    assert not jnp.allclose(old_log_prob, reconstructed_log_prob)
+    assert float(metrics["approx_kl"]) == pytest.approx(0.0, abs=1.0e-7)
 
 
 def test_tanh_gaussian_entropy_accounts_for_saturation() -> None:
@@ -461,6 +519,7 @@ def test_gae_and_loss_shapes() -> None:
             terminal=transitions.terminal.reshape((-1,)),
             bootstrap_value=transitions.bootstrap_value.reshape((-1,)),
             action=transitions.action.reshape((-1, action_size)),
+            latent_action=transitions.latent_action.reshape((-1, action_size)),
             env_action=transitions.env_action.reshape((-1, action_size)),
             action_mean=transitions.action_mean.reshape((-1, action_size)),
             value=transitions.value.reshape((-1,)),
@@ -504,6 +563,7 @@ def test_gae_bootstraps_timeout_without_continuing_across_reset() -> None:
         terminal=jnp.asarray([[False], [False]]),
         bootstrap_value=jnp.asarray([[0.0], [10.0]], dtype=jnp.float32),
         action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        latent_action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         env_action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         action_mean=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         value=jnp.zeros((2, 1), dtype=jnp.float32),
@@ -535,6 +595,7 @@ def test_gae_does_not_bootstrap_terminal_failure() -> None:
         terminal=jnp.asarray([[True]]),
         bootstrap_value=jnp.asarray([[10.0]], dtype=jnp.float32),
         action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        latent_action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         env_action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         action_mean=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         value=jnp.zeros((1, 1), dtype=jnp.float32),
@@ -796,6 +857,7 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
         terminal=jnp.zeros((2, 2), dtype=bool),
         bootstrap_value=jnp.zeros((2, 2), dtype=jnp.float32),
         action=action,
+        latent_action=action,
         env_action=jnp.clip(action, -1.0, 1.0),
         action_mean=action * 0.5,
         value=jnp.zeros((2, 2), dtype=jnp.float32),
@@ -846,6 +908,7 @@ def test_action_diagnostics_omits_control_stats_for_generic_envs() -> None:
         terminal=jnp.zeros((1, 2), dtype=bool),
         bootstrap_value=jnp.zeros((1, 2), dtype=jnp.float32),
         action=action,
+        latent_action=action,
         env_action=action,
         action_mean=action,
         value=jnp.zeros((1, 2), dtype=jnp.float32),

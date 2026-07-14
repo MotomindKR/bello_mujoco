@@ -999,10 +999,12 @@ gradients, updates, or next parameters became nonfinite. Such minibatches are
 not applied, and the training CLI raises immediately instead of continuing with
 an invalid policy state.
 
-PPO stores raw Gaussian sampled actions for log-prob ratios and passes those raw
-requests to the environment. `env_action_abs_max` reports the bounded action
-that was actually applied, and `action_clip_fraction` reports the fraction of
-sampled action dimensions changed by the bound.
+PPO stores both the policy action and its exact pre-transform Gaussian sample.
+Log-prob ratios for tanh policies use the stored latent sample instead of trying
+to invert a float32 action that may have saturated at exactly `-1` or `1`.
+`env_action_abs_max` reports the bounded action that was actually applied, and
+`action_clip_fraction` reports the fraction of sampled action dimensions changed
+by the environment bound.
 For Bello, `ctrl_saturation_fraction` reports the fraction of requested policy
 control targets at or beyond their configured MuJoCo ctrl-range bounds.
 `ctrl_margin_min` is the smallest signed distance to

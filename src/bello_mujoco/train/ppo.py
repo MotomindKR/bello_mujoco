@@ -29,7 +29,7 @@ from bello_mujoco.policy import (
     init_actor_critic,
     policy_observation_size,
     policy_log_std,
-    sample_action_with_mean,
+    sample_action_with_latent_and_mean,
     stacked_observation,
     update_observation_stack,
     update_policy_observation_normalization,
@@ -91,6 +91,8 @@ class Transition(NamedTuple):
     bootstrap_value: jax.Array
     # Action sampled from the policy distribution for PPO log-prob/ratio calculations.
     action: jax.Array
+    # Exact pre-transform Gaussian sample; tanh saturation is not invertible in float32.
+    latent_action: jax.Array
     # Action actually sent to the env after optional env-level clipping.
     env_action: jax.Array
     action_mean: jax.Array
@@ -290,7 +292,11 @@ def ppo_loss(
     value_norm_state: ValueNormState | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     log_prob, entropy, value = evaluate_actions(
-        model, transitions.obs, transitions.action, transitions.critic_obs
+        model,
+        transitions.obs,
+        transitions.action,
+        transitions.critic_obs,
+        latent_action=transitions.latent_action,
     )
 
     log_ratio = log_prob - transitions.log_prob
@@ -626,11 +632,13 @@ def collect_rollout(
         policy_obs = stacked_observation(last_obs_stack)
         critic_policy_obs = stacked_observation(last_critic_obs_stack)
         action_clip = getattr(env, "action_clip", None)
-        action, log_prob, value, action_mean = sample_action_with_mean(
-            policy,
-            policy_obs,
-            action_key,
-            critic_obs=critic_policy_obs,
+        action, latent_action, log_prob, value, action_mean = (
+            sample_action_with_latent_and_mean(
+                policy,
+                policy_obs,
+                action_key,
+                critic_obs=critic_policy_obs,
+            )
         )
         env_action = (
             action
@@ -677,6 +685,7 @@ def collect_rollout(
             terminal,
             bootstrap_value,
             action,
+            latent_action,
             env_action,
             action_mean,
             value,
