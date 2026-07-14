@@ -152,6 +152,9 @@ asset_config:
   collision_mode: mesh  # mesh | foot-mesh | box
   end_effector_sphere_mode: none  # none | both | right | left
   neighbor_exclusion_depth: 2
+  joint_coordinate_offsets:
+    - [left_ankle_pitch_joint, 0.261799]
+    - [right_ankle_pitch_joint, 0.261799]
   actuator_config:
     default_action_scale_ratio: 0.25
     joints:
@@ -175,6 +178,11 @@ The ankle-roll foot collision in the source URDFs is represented by primitive
 geometry: three boxes and two cylinders per foot. The STL feet remain visual
 meshes, but foot contact uses the primitive collision shapes in every collision
 mode.
+
+The default ankle-pitch coordinate offsets rebase both joints by 15 degrees, so
+zero places the sole box horizontally. Asset generation applies the same shift
+to joint and actuator limits, actuator defaults, and the home keyframe; this is
+a coordinate change and does not alter the physical motion range or home pose.
 
 The default actuator config contains every tracked actuated Bello joint. Setting
 a joint to `mode: hold` removes it from the policy action vector while keeping

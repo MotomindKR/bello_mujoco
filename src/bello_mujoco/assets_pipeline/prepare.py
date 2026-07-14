@@ -32,7 +32,9 @@ from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
 
 AssetName = Literal["full_body", "lower_body", "upper_body"]
-ASSET_CACHE_VERSION = 4
+ASSET_CACHE_VERSION = 5
+
+ANKLE_PITCH_COORDINATE_OFFSET = 0.261799
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,10 @@ class AssetPrepConfig:
     collision_mode: CollisionMode = "mesh"
     end_effector_sphere_mode: EndEffectorSphereMode = "none"
     neighbor_exclusion_depth: int = 2
+    joint_coordinate_offsets: tuple[tuple[str, float], ...] = (
+        ("left_ankle_pitch_joint", ANKLE_PITCH_COORDINATE_OFFSET),
+        ("right_ankle_pitch_joint", ANKLE_PITCH_COORDINATE_OFFSET),
+    )
     fixed_joint_names: tuple[str, ...] = ()
     actuator_config: ActuatorConfig = field(default_factory=ActuatorConfig)
 
@@ -143,6 +149,7 @@ def prepare_asset_unlocked(
         include_visuals=False,
         actuator_config=config.actuator_config,
         actuated_joint_order=actuated_joint_order,
+        joint_coordinate_offsets=config.joint_coordinate_offsets,
     )
     compile_urdf_to_mjcf(
         out_urdf,
@@ -152,6 +159,7 @@ def prepare_asset_unlocked(
         include_visuals=True,
         actuator_config=config.actuator_config,
         actuated_joint_order=actuated_joint_order,
+        joint_coordinate_offsets=config.joint_coordinate_offsets,
     )
     prepared = PreparedAsset(
         asset,
@@ -203,6 +211,7 @@ def asset_config_hash(
         "collision_mode": config.collision_mode,
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
+        "joint_coordinate_offsets": config.joint_coordinate_offsets,
         "fixed_joint_names": config.fixed_joint_names,
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),

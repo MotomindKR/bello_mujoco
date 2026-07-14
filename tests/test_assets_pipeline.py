@@ -290,6 +290,10 @@ def test_asset_cache_key_tracks_prep_config() -> None:
         AssetPrepConfig(asset="full_body", fixed_joint_names=("waist_roll_joint",)),
         "full_body",
     )
+    assert asset_config_hash(base, "full_body") != asset_config_hash(
+        AssetPrepConfig(asset="full_body", joint_coordinate_offsets=()),
+        "full_body",
+    )
 
 
 def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort(

@@ -131,6 +131,11 @@ Foot collision is defined directly in the source URDFs with five primitives per
 ankle-roll link: three boxes and two cylinders. The STL foot meshes are visual
 geometry only.
 
+Asset generation rebases both ankle-pitch coordinates by 15 degrees. Joint
+position zero therefore places the large sole box horizontally; hard limits,
+soft limits, actuator defaults, and home keyframes are shifted together so the
+physical range and home pose do not change.
+
 The fixed-waist whole-body task and GMR import contract are documented in
 [motion_tracking.md](motion_tracking.md).
 

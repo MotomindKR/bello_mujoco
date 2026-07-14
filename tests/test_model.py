@@ -5,7 +5,11 @@ import numpy as np
 import pytest
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
+from bello_mujoco.assets_pipeline.prepare import (
+    AssetPrepConfig,
+    PreparedAsset,
+    prepare_asset,
+)
 from bello_mujoco.assets_pipeline.prepare import actuated_urdf_joint_names
 from bello_mujoco.assets import source_assets_root
 from bello_mujoco.contracts import DEFAULT_SPAWN_CLEARANCE
@@ -143,6 +147,33 @@ def test_training_model_uses_simplified_mesh_collision_profile(
     assert cylinder_collision_count == 4
     assert plane_count == 0
     assert model.nexclude == 75
+
+
+def test_ankle_pitch_zero_places_sole_primitives_horizontal(
+    tmp_path,
+) -> None:
+    asset = prepare_asset(
+        AssetPrepConfig(
+            asset="full_body",
+            output_root=tmp_path,
+            collision_mode="box",
+            visual_mesh_face_budget=5_000,
+        )
+    )
+    model = mujoco.MjModel.from_xml_path(str(asset.mjcf_path))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    for side in ("left", "right"):
+        joint = model.joint(f"{side}_ankle_pitch_joint")
+        actuator = model.actuator(f"{side}_ankle_pitch_joint_pos")
+        sole = model.geom(f"{side}_ankle_roll_link_collision_box_1")
+        sole_normal = data.geom_xmat[sole.id].reshape(3, 3)[:, 2]
+
+        assert model.qpos0[joint.qposadr[0]] == pytest.approx(0.0)
+        assert sole_normal[2] == pytest.approx(1.0, abs=1.0e-8)
+        assert actuator.ctrlrange == pytest.approx((-0.706859, 0.706861))
+        assert model.actuator_user[actuator.id, 0] == pytest.approx(0.038201)
 
 
 def test_viewer_model_adds_non_colliding_visual_meshes(

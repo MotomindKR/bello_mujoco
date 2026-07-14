@@ -26,6 +26,7 @@ def compile_urdf_to_mjcf(
     include_visuals: bool = False,
     actuator_config: ActuatorConfig = ActuatorConfig(),
     actuated_joint_order: tuple[str, ...] = (),
+    joint_coordinate_offsets: tuple[tuple[str, float], ...] = (),
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tmp_path = mjcf_path.with_suffix(".compiled.xml")
@@ -35,6 +36,7 @@ def compile_urdf_to_mjcf(
     root = tree.getroot()
     ensure_option(root)
     ensure_free_root_joint(root)
+    rebase_joint_coordinates(root, joint_coordinate_offsets)
     ensure_visual_geoms(root)
     apply_collision_mode(root, mjcf_path.parent, collision_mode)
     if include_visuals:
@@ -42,8 +44,10 @@ def compile_urdf_to_mjcf(
         ensure_visual_geoms(root)
         ensure_collision_geoms_transparent(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
-    ensure_position_actuators(root, actuator_config, actuated_joint_order)
-    ensure_home_keyframe(root, actuator_config)
+    ensure_position_actuators(
+        root, actuator_config, actuated_joint_order, joint_coordinate_offsets
+    )
+    ensure_home_keyframe(root, actuator_config, joint_coordinate_offsets)
 
     ET.indent(tree, space="  ")
     tree.write(mjcf_path, encoding="utf-8", xml_declaration=True)
@@ -352,10 +356,59 @@ def ensure_free_root_joint(root: ET.Element) -> None:
     worldbody.append(root_body)
 
 
+def rebase_joint_coordinates(
+    root: ET.Element, offsets: tuple[tuple[str, float], ...]
+) -> None:
+    """Shift joint coordinates while preserving every physical configuration."""
+    offset_by_name = dict(offsets)
+    if len(offset_by_name) != len(offsets):
+        raise ValueError("joint_coordinate_offsets must not contain duplicates")
+    for joint_name, offset in offset_by_name.items():
+        if not math.isfinite(offset):
+            raise ValueError(f"nonfinite coordinate offset for {joint_name!r}")
+        joint = root.find(f".//joint[@name='{joint_name}']")
+        if joint is None:
+            continue
+        body = next(
+            candidate
+            for candidate in root.findall(".//body")
+            if candidate.find(f"./joint[@name='{joint_name}']") is joint
+        )
+        axis = parse_vec(joint.get("axis", "0 0 1"), 3, np.asarray([0, 0, 1]))
+        axis /= np.linalg.norm(axis)
+        half_angle = 0.5 * offset
+        delta = np.concatenate(
+            ([math.cos(half_angle)], axis * math.sin(half_angle))
+        )
+        body_quat = parse_vec(
+            body.get("quat", "1 0 0 0"), 4, np.asarray([1, 0, 0, 0])
+        )
+        body.set("quat", format_vec(quat_multiply(body_quat, delta)))
+
+        range_attr = joint.get("range")
+        if range_attr is not None:
+            lower, upper = (float(value) for value in range_attr.split())
+            joint.set("range", format_vec((lower - offset, upper - offset)))
+
+
+def quat_multiply(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    w1, x1, y1, z1 = first
+    w2, x2, y2, z2 = second
+    return np.asarray(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ]
+    )
+
+
 def ensure_position_actuators(
     root: ET.Element,
     config: ActuatorConfig,
     actuated_joint_order: tuple[str, ...],
+    joint_coordinate_offsets: tuple[tuple[str, float], ...] = (),
 ) -> None:
     actuator = root.find("actuator")
     if actuator is None:
@@ -363,6 +416,7 @@ def ensure_position_actuators(
     existing = {item.get("joint") for item in actuator.findall("position")}
     joints = {joint.get("name") for joint in root.findall(".//joint")}
     joint_configs = config.by_name
+    coordinate_offsets = dict(joint_coordinate_offsets)
     for joint_name in actuated_joint_order:
         if joint_name in existing or joint_name not in joints:
             continue
@@ -370,11 +424,11 @@ def ensure_position_actuators(
             raise ValueError(f"missing actuator config for joint {joint_name!r}")
         joint_config = joint_configs[joint_name]
         kp, kv = joint_config.gains
-        lo, hi = (
-            joint_config.soft_limit
-            if joint_config.soft_limit is not None
-            else joint_range(root, joint_name, config)
-        )
+        if joint_config.soft_limit is not None:
+            offset = coordinate_offsets.get(joint_name, 0.0)
+            lo, hi = (value - offset for value in joint_config.soft_limit)
+        else:
+            lo, hi = joint_range(root, joint_name, config)
         suffix = "pos" if joint_config.mode == "policy" else "hold"
         attributes = {
             "name": f"{joint_name.replace(' ', '_')}_{suffix}",
@@ -383,7 +437,7 @@ def ensure_position_actuators(
             "kv": f"{kv:g}",
             "ctrlrange": f"{lo:g} {hi:g}",
             "ctrllimited": "false",
-            "user": f"{joint_config.default_pos:g}",
+            "user": f"{joint_config.default_pos - coordinate_offsets.get(joint_name, 0.0):g}",
         }
         force_range = actuator_force_range(root, joint_name, joint_config.effort_limit)
         if force_range is not None:
@@ -397,15 +451,21 @@ def ensure_position_actuators(
         )
 
 
-def ensure_home_keyframe(root: ET.Element, config: ActuatorConfig) -> None:
+def ensure_home_keyframe(
+    root: ET.Element,
+    config: ActuatorConfig,
+    joint_coordinate_offsets: tuple[tuple[str, float], ...] = (),
+) -> None:
     keyframe = root.find("keyframe")
     if keyframe is None:
         keyframe = ET.SubElement(root, "keyframe")
     if keyframe.find("./key[@name='home']") is not None:
         return
 
+    coordinate_offsets = dict(joint_coordinate_offsets)
     joint_qpos = [
         joint_default(joint.get("name", ""), config)
+        - coordinate_offsets.get(joint.get("name", ""), 0.0)
         for joint in root.findall(".//joint")
     ]
     qpos = " ".join(
@@ -416,7 +476,10 @@ def ensure_home_keyframe(root: ET.Element, config: ActuatorConfig) -> None:
         joint_name = actuator.get("joint", "")
         default_joint_pos = config.default_joint_pos_by_name
         if joint_name in default_joint_pos:
-            ctrl_values.append(default_joint_pos[joint_name])
+            ctrl_values.append(
+                default_joint_pos[joint_name]
+                - coordinate_offsets.get(joint_name, 0.0)
+            )
     ctrl = " ".join(f"{value:g}" for value in ctrl_values)
     ET.SubElement(keyframe, "key", {"name": "home", "qpos": qpos, "ctrl": ctrl})
 
