@@ -28,7 +28,10 @@ from bello_mujoco.motion import (
 )
 from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
-from bello_mujoco.tools.import_gmr_motion import _build_qpos
+from bello_mujoco.tools.import_gmr_motion import (
+    _build_qpos,
+    _validate_self_collisions,
+)
 from bello_mujoco.tools.train_motion_ppo import MotionTrainingRunConfig
 
 
@@ -159,6 +162,19 @@ def test_gmr_joint_columns_are_remapped_by_name(
         model.actuator_joint_names, model.actuator_qpos_indices, strict=True
     ):
         assert qpos[0, address] == source_index[name]
+
+
+def test_gmr_import_rejects_training_box_intersections(
+    fixed_waist_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(fixed_waist_asset, load_mjx=False)
+    qpos = np.repeat(model.default_qpos[None, :], 2, axis=0)
+    for name in ("left_hip_roll_joint", "right_hip_roll_joint"):
+        joint_id = model.mj_model.joint(name).id
+        qpos[:, model.mj_model.jnt_qposadr[joint_id]] = 0.2
+
+    with pytest.raises(ValueError, match="training collision model"):
+        _validate_self_collisions(model, qpos)
 
 
 def test_motion_loader_and_shortest_arc_interpolation(

@@ -26,7 +26,7 @@ GMR pickle input is a trusted setup-time format. Convert it once:
 
 ```bash
 bello-import-gmr-motion \
-  /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_from_smplx.pkl \
+  /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_box_from_smplx.pkl \
   motions/local/walk1_subject1_fixed_waist.npz
 ```
 
@@ -37,7 +37,8 @@ The legacy pickle stores `dof_pos` in the source MuJoCo `qpos[7:]` order. That
 order differs from the generated model's actuator order. The importer applies
 an explicit joint-name permutation, converts root quaternions from XYZW to
 WXYZ, enforces quaternion continuity, checks hard joint limits, derives `qvel`
-with `mj_differentiatePos`, and evaluates tracked-body FK and world velocities.
+with `mj_differentiatePos`, rejects frames that intersect the configured
+training collision model, and evaluates tracked-body FK and world velocities.
 
 The canonical clip contains:
 

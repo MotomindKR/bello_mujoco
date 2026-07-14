@@ -48,6 +48,7 @@ def import_gmr_motion(
     arrays = _validate_legacy_motion(motion)
     qpos = _build_qpos(model, arrays["root_pos"], arrays["root_rot"], arrays["dof_pos"])
     _validate_joint_ranges(model.mj_model, qpos)
+    _validate_self_collisions(model, qpos)
     qvel = _differentiate_qpos(model.mj_model, qpos, float(motion["fps"]))
     body_ids = np.asarray(
         [
@@ -168,6 +169,43 @@ def _validate_joint_ranges(mj_model, qpos: np.ndarray) -> None:
                 f"motion joint {name!r} exceeds hard range [{low}, {high}]: "
                 f"observed [{values.min()}, {values.max()}]"
             )
+
+
+def _validate_self_collisions(model, qpos: np.ndarray) -> None:
+    mj_model = model.mj_model
+    robot_geom_ids = set(model.robot_geom_ids.tolist())
+    data = mujoco.MjData(mj_model)
+    collision_frames = 0
+    deepest_distance = 0.0
+    deepest_pair = ("", "")
+    for frame_qpos in qpos:
+        data.qpos[:] = frame_qpos
+        mujoco.mj_forward(mj_model, data)
+        frame_collides = False
+        for contact in data.contact[: data.ncon]:
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            if (
+                geom1 not in robot_geom_ids
+                or geom2 not in robot_geom_ids
+                or contact.dist >= -1.0e-7
+            ):
+                continue
+            frame_collides = True
+            if contact.dist < deepest_distance:
+                deepest_distance = float(contact.dist)
+                deepest_pair = (
+                    mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom1),
+                    mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom2),
+                )
+        collision_frames += int(frame_collides)
+    if collision_frames:
+        raise ValueError(
+            "motion intersects the configured training collision model in "
+            f"{collision_frames} frames; deepest penetration is "
+            f"{-deepest_distance:.6f} m between {deepest_pair[0]!r} and "
+            f"{deepest_pair[1]!r}"
+        )
 
 
 def _differentiate_qpos(mj_model, qpos: np.ndarray, fps: float) -> np.ndarray:
