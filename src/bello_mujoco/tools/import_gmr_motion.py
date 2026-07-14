@@ -12,6 +12,7 @@ import numpy as np
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.motion import (
+    BEYONDMIMIC_TRACKED_BODY_NAMES,
     DEFAULT_TRACKED_BODY_NAMES,
     GMR_BELLO_JOINT_NAMES,
     MOTION_FORMAT_VERSION,
@@ -24,6 +25,7 @@ def import_gmr_motion(
     output: Path,
     *,
     collision_mode: str = "box",
+    tracked_body_names: tuple[str, ...] = DEFAULT_TRACKED_BODY_NAMES,
 ) -> Path:
     source = source.resolve()
     if not source.exists():
@@ -53,14 +55,14 @@ def import_gmr_motion(
     body_ids = np.asarray(
         [
             mujoco.mj_name2id(model.mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
-            for name in DEFAULT_TRACKED_BODY_NAMES
+            for name in tracked_body_names
         ],
         dtype=np.int32,
     )
     if np.any(body_ids < 0):
         missing = [
             name
-            for name, body_id in zip(DEFAULT_TRACKED_BODY_NAMES, body_ids, strict=True)
+            for name, body_id in zip(tracked_body_names, body_ids, strict=True)
             if body_id < 0
         ]
         raise ValueError(f"tracked bodies missing from fixed-waist model: {missing}")
@@ -75,7 +77,7 @@ def import_gmr_motion(
         format_version=np.asarray(MOTION_FORMAT_VERSION, dtype=np.int32),
         fps=np.asarray(float(motion["fps"]), dtype=np.float32),
         joint_names=np.asarray(model.actuator_joint_names),
-        body_names=np.asarray(DEFAULT_TRACKED_BODY_NAMES),
+        body_names=np.asarray(tracked_body_names),
         source_sha256=np.asarray(hashlib.sha256(source.read_bytes()).hexdigest()),
         qpos=qpos.astype(np.float32),
         qvel=qvel.astype(np.float32),
@@ -257,9 +259,22 @@ def entrypoint() -> None:
         choices=("box", "foot-mesh", "mesh"),
         default="box",
     )
+    parser.add_argument(
+        "--tracked-body-profile",
+        choices=("baseline", "beyondmimic"),
+        default="baseline",
+    )
     args = parser.parse_args()
+    tracked_body_names = (
+        BEYONDMIMIC_TRACKED_BODY_NAMES
+        if args.tracked_body_profile == "beyondmimic"
+        else DEFAULT_TRACKED_BODY_NAMES
+    )
     output = import_gmr_motion(
-        args.source, args.output, collision_mode=args.collision_mode
+        args.source,
+        args.output,
+        collision_mode=args.collision_mode,
+        tracked_body_names=tracked_body_names,
     )
     print(output)
 

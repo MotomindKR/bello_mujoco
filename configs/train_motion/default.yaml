@@ -24,12 +24,15 @@ config:
   max_grad_norm: 1.0
   normalize_value: true
   value_norm_eps: 0.00000001
+  normalize_observations: false
+  observation_norm_eps: 0.00001
+  observation_norm_clip: 10.0
   policy:
     hidden_size: 256
     hidden_depth: 2
     hidden_dims: null
     activation: tanh
-    init_log_std: -1.0
+    init_log_std: -2.0
     min_log_std: -5.0
     max_log_std: 1.0
     obs_stack_size: 4
@@ -46,7 +49,7 @@ asset_config:
   neighbor_exclusion_depth: 2
   fixed_joint_names: [waist_roll_joint, waist_pitch_joint]
   actuator_config:
-    default_action_scale_ratio: 0.5
+    default_action_scale_ratio: 0.25
 
 env_config:
   motion_path: motions/local/walk1_subject1_fixed_waist.npz
@@ -87,6 +90,8 @@ checkpoint_config:
   enabled: true
   directory: checkpoints
   name: bello_wholebody
+  every_updates: 100
+  resume_path: null
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint

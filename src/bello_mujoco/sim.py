@@ -383,7 +383,24 @@ def actuator_action_scale(
     config: ActuatorConfig,
 ) -> np.ndarray:
     ctrlrange = np.asarray(mj_model.actuator_ctrlrange, dtype=np.float32)
-    all_scale = config.default_action_scale_ratio * (ctrlrange[:, 1] - ctrlrange[:, 0])
+    if config.action_scale_mode == "joint_range":
+        all_scale = config.default_action_scale_ratio * (
+            ctrlrange[:, 1] - ctrlrange[:, 0]
+        )
+    else:
+        all_scale = np.empty(mj_model.nu, dtype=np.float32)
+        for actuator_id, joint_name in enumerate(actuator_joint_names):
+            joint_config = config.by_name[joint_name]
+            stiffness = float(joint_config.gains[0])
+            effort_limit = joint_config.effort_limit
+            if stiffness <= 0.0 or effort_limit is None:
+                raise ValueError(
+                    "effort_stiffness action scaling requires positive stiffness "
+                    f"and an effort limit for {joint_name!r}"
+                )
+            all_scale[actuator_id] = (
+                config.default_action_scale_ratio * effort_limit / stiffness
+            )
     joint_configs = config.by_name
     for actuator_id, joint_name in enumerate(actuator_joint_names):
         joint_config = joint_configs.get(joint_name)

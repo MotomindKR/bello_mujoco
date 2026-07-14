@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import imageio.v2 as imageio
 import mujoco
 import numpy as np
 
@@ -14,14 +13,15 @@ from bello_mujoco.motion import load_motion_clip, sample_motion
 from bello_mujoco.render import CameraConfig, make_camera, update_camera
 from bello_mujoco.sim import load_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
+from bello_mujoco.video import Mp4Writer
 
 
 def render_reference(
     motion_path: Path,
     output_path: Path,
     *,
-    width: int = 960,
-    height: int = 720,
+    width: int = 640,
+    height: int = 480,
     fps: int = 30,
 ) -> Path:
     model = load_bello_model(
@@ -44,7 +44,7 @@ def render_reference(
     )
     camera = make_camera(mj_model, camera_config)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = imageio.get_writer(output_path, fps=fps)
+    writer = Mp4Writer(output_path, width=width, height=height, fps=fps)
     frame_count = int(np.floor(motion.duration * fps)) + 1
     try:
         for frame in range(frame_count):
@@ -65,8 +65,8 @@ def entrypoint() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("motion", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--width", type=int, default=960)
-    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
     args = parser.parse_args()
     print(

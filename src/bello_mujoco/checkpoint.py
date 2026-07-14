@@ -20,6 +20,7 @@ from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.tracking import to_builtin
 from bello_mujoco.train.ppo import (
+    ObservationNormState,
     PPOConfig,
     TrainState,
     ValueNormState,
@@ -32,11 +33,13 @@ STATE_DIR = "state"
 
 @dataclass(frozen=True)
 class CheckpointConfig:
-    """Final training checkpoint settings."""
+    """Training checkpoint and resume settings."""
 
     enabled: bool = False
     directory: Path = Path("checkpoints")
     name: str | None = None
+    every_updates: int | None = None
+    resume_path: Path | None = None
     upload_wandb_artifact: bool = True
     wandb_artifact_name: str | None = None
     wandb_artifact_type: str = "checkpoint"
@@ -46,6 +49,13 @@ class CheckpointConfig:
 class ValueNormMetadata:
     mean: float
     var: float
+    count: float
+
+
+@dataclass(frozen=True)
+class ObservationNormMetadata:
+    mean: tuple[float, ...]
+    var: tuple[float, ...]
     count: float
 
 
@@ -62,8 +72,13 @@ class CheckpointMetadata:
     action_size: int
     critic_obs_size: int | None = None
     value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
     task: str = "locomotion"
     motion_env: MotionTrackingEnvConfig | None = None
+    motion_source_sha256: str | None = None
+    rng: tuple[int, ...] | None = None
+    learning_rate: float | None = None
 
 
 def checkpoint_path(config: CheckpointConfig, ppo_config: PPOConfig) -> Path:
@@ -159,10 +174,29 @@ def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
             if data.get("value_norm") is not None
             else None
         ),
+        observation_norm=(
+            dataclass_from_dict(ObservationNormMetadata, data["observation_norm"])
+            if data.get("observation_norm") is not None
+            else None
+        ),
+        critic_observation_norm=(
+            dataclass_from_dict(
+                ObservationNormMetadata, data["critic_observation_norm"]
+            )
+            if data.get("critic_observation_norm") is not None
+            else None
+        ),
         task=str(data.get("task", "locomotion")),
         motion_env=(
             dataclass_from_dict(MotionTrackingEnvConfig, data["motion_env"])
             if data.get("motion_env") is not None
+            else None
+        ),
+        motion_source_sha256=data.get("motion_source_sha256"),
+        rng=(tuple(int(value) for value in data["rng"]) if data.get("rng") else None),
+        learning_rate=(
+            float(data["learning_rate"])
+            if data.get("learning_rate") is not None
             else None
         ),
     )
@@ -174,6 +208,18 @@ def value_norm_metadata(state: ValueNormState | None) -> ValueNormMetadata | Non
     return ValueNormMetadata(
         mean=float(jax.device_get(state.mean)),
         var=float(jax.device_get(state.var)),
+        count=float(jax.device_get(state.count)),
+    )
+
+
+def observation_norm_metadata(
+    state: ObservationNormState | None,
+) -> ObservationNormMetadata | None:
+    if state is None:
+        return None
+    return ObservationNormMetadata(
+        mean=tuple(float(value) for value in jax.device_get(state.mean)),
+        var=tuple(float(value) for value in jax.device_get(state.var)),
         count=float(jax.device_get(state.count)),
     )
 

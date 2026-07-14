@@ -79,9 +79,22 @@ Prepare and dry-run fixed-waist whole-body tracking:
 
 ```bash
 bello-import-gmr-motion \
-  /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_from_smplx.pkl \
+  /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_box_from_smplx.pkl \
   motions/local/walk1_subject1_fixed_waist.npz
 bello-train-motion-ppo
+```
+
+Run the paper-aligned BeyondMimic formulation after generating its expanded
+tracked-body archive:
+
+```bash
+bello-import-gmr-motion \
+  /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_box_from_smplx.pkl \
+  motions/local/walk1_subject1_fixed_waist_beyondmimic.npz \
+  --tracked-body-profile beyondmimic
+bello-train-motion-ppo \
+  --config-dir "$PWD/experiments/train_motion" \
+  --config-name beyondmimic
 ```
 
 See [whole-body motion tracking](docs/motion_tracking.md) for the robot,

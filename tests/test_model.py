@@ -44,6 +44,20 @@ def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     assert np.allclose(model.policy_action_scale, expected_scale)
 
 
+def test_effort_stiffness_action_scale_matches_beyondmimic_formula(
+    full_body_asset: PreparedAsset,
+) -> None:
+    config = ActuatorConfig(action_scale_mode="effort_stiffness")
+    model = load_prepared_bello_model(full_body_asset, actuator_config=config)
+    expected = []
+    for ctrl_index in model.policy_ctrl_indices:
+        joint_name = model.actuator_joint_names[ctrl_index]
+        joint = config.by_name[joint_name]
+        expected.append(0.25 * joint.effort_limit / joint.gains[0])
+
+    np.testing.assert_allclose(model.policy_action_scale, expected, rtol=1.0e-6)
+
+
 def test_model_can_load_without_mjx_for_cpu_only_viewers(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -146,7 +160,7 @@ def test_training_model_uses_simplified_mesh_collision_profile(
     assert box_collision_count == 6
     assert cylinder_collision_count == 4
     assert plane_count == 0
-    assert model.nexclude == 75
+    assert model.nexclude == 104
 
 
 def test_ankle_pitch_zero_places_sole_primitives_horizontal(

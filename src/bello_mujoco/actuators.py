@@ -7,7 +7,9 @@ import math
 from typing import Literal
 
 ActuatorMode = Literal["policy", "hold"]
+ActionScaleMode = Literal["joint_range", "effort_stiffness"]
 VALID_ACTUATOR_MODES = {"policy", "hold"}
+VALID_ACTION_SCALE_MODES = {"joint_range", "effort_stiffness"}
 
 
 class FrozenDict(dict):
@@ -195,6 +197,7 @@ class ActuatorConfig:
         default_factory=default_joint_configs
     )
     default_action_scale_ratio: float = 0.25
+    action_scale_mode: ActionScaleMode = "joint_range"
 
     def __post_init__(self) -> None:
         if (
@@ -204,6 +207,11 @@ class ActuatorConfig:
             raise ValueError(
                 "default_action_scale_ratio must be positive, got "
                 f"{self.default_action_scale_ratio}"
+            )
+        if self.action_scale_mode not in VALID_ACTION_SCALE_MODES:
+            raise ValueError(
+                "action_scale_mode must be one of "
+                f"{sorted(VALID_ACTION_SCALE_MODES)}, got {self.action_scale_mode!r}"
             )
         default_effort_limits = {
             name: config.effort_limit

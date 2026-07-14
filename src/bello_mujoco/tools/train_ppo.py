@@ -16,6 +16,7 @@ from bello_mujoco.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
     checkpoint_path,
+    observation_norm_metadata,
     save_training_checkpoint,
     value_norm_metadata,
 )
@@ -278,6 +279,12 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     critic_obs_size=critic_policy_obs_size,
                     action_size=env.action_size,
                     value_norm=value_norm_metadata(final_value_norm_state(out)),
+                    observation_norm=observation_norm_metadata(
+                        final_observation_norm_state(out)
+                    ),
+                    critic_observation_norm=observation_norm_metadata(
+                        final_critic_observation_norm_state(out)
+                    ),
                 ),
             )
             if checkpoint_config.upload_wandb_artifact and run is not None:
@@ -521,6 +528,24 @@ def final_value_norm_state(out: dict):
     if len(runner_state) >= 9:
         return runner_state[-1]
     return None
+
+
+def final_observation_norm_state(out: dict):
+    runner_state = out["runner_state"]
+    return (
+        runner_state.observation_norm_state
+        if isinstance(runner_state, RunnerState)
+        else None
+    )
+
+
+def final_critic_observation_norm_state(out: dict):
+    runner_state = out["runner_state"]
+    return (
+        runner_state.critic_observation_norm_state
+        if isinstance(runner_state, RunnerState)
+        else None
+    )
 
 
 def entrypoint() -> None:

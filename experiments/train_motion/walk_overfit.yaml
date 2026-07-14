@@ -1,0 +1,50 @@
+# Single-motion baseline. Run with:
+# uv run bello-train-motion-ppo --config-dir "$PWD/experiments/train_motion" --config-name walk_overfit
+defaults:
+  - default
+  - _self_
+
+dry_run: false
+
+config:
+  total_timesteps: 25165824  # 1,024 updates at 1,024 envs x 24 steps.
+  num_envs: 1024
+  num_steps: 24
+  learning_rate: 0.0001
+  schedule: constant
+  desired_kl: 0.01
+  target_kl: null
+  ent_coef: 0.001
+  max_grad_norm: 1.0
+  policy:
+    hidden_size: 256
+    hidden_depth: 2
+    activation: tanh
+    init_log_std: -2.0
+    max_log_std: 1.0
+    obs_stack_size: 4
+    action_distribution: tanh_gaussian
+
+env_config:
+  reset:
+    random_start: true
+    initial_xy_range: [0.0, 0.0]
+    initial_yaw_range: [0.0, 0.0]
+    joint_pos_noise: [-0.01, 0.01]
+    joint_vel_noise: [-0.05, 0.05]
+
+checkpoint_config:
+  enabled: true
+  name: bello_walk_overfit_seed0
+  every_updates: 100
+
+wandb_config:
+  run_name: bello-walk-overfit-seed0
+  tags: [bello, fixed-waist, gmr, walk-overfit]
+
+video_config:
+  every_updates: 100
+  filename_prefix: walk_overfit
+
+warp:
+  njmax: 2048

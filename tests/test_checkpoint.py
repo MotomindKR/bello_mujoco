@@ -54,6 +54,9 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
         obs_size=4,
         action_size=2,
         value_norm=ValueNormMetadata(mean=1.0, var=4.0, count=8.0),
+        motion_source_sha256="abc123",
+        rng=(17, 29),
+        learning_rate=0.0002,
     )
     obs = jnp.asarray([0.1, -0.2, 0.3, -0.4], dtype=jnp.float32)
     expected_mean, _, expected_value = apply_policy(train_state.policy, obs)
@@ -71,6 +74,9 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
     assert restored_metadata.command.lin_vel_x == (-0.2, 0.3)
     assert disk_metadata.asset.output_root == tmp_path / "assets"
     assert disk_metadata.value_norm == ValueNormMetadata(mean=1.0, var=4.0, count=8.0)
+    assert disk_metadata.motion_source_sha256 == "abc123"
+    assert disk_metadata.rng == (17, 29)
+    assert disk_metadata.learning_rate == 0.0002
 
 
 def test_training_checkpoint_saves_relative_path_as_absolute(

@@ -57,6 +57,23 @@ DEFAULT_TRACKED_BODY_NAMES = (
     "r_elbow_link",
 )
 
+BEYONDMIMIC_TRACKED_BODY_NAMES = (
+    "pelvis_link",
+    "left_hip_roll_link",
+    "left_knee_link",
+    "left_ankle_roll_link",
+    "right_hip_roll_link",
+    "right_knee_link",
+    "right_ankle_roll_link",
+    "torso_link",
+    "l_shoulder_roll_link",
+    "l_elbow_link",
+    "l_wrist_link",
+    "r_shoulder_roll_link",
+    "r_elbow_link",
+    "r_wrist_link",
+)
+
 
 @chex.dataclass(frozen=True)
 class MotionSample:

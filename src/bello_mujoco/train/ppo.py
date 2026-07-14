@@ -62,6 +62,9 @@ class PPOConfig:
     max_grad_norm: float = 1.0
     normalize_value: bool = True
     value_norm_eps: float = 1.0e-8
+    normalize_observations: bool = False
+    observation_norm_eps: float = 1.0e-5
+    observation_norm_clip: float = 10.0
     policy: ActorCriticConfig = ActorCriticConfig()
 
     @property
@@ -107,6 +110,12 @@ class ValueNormState(NamedTuple):
     count: jax.Array
 
 
+class ObservationNormState(NamedTuple):
+    mean: jax.Array
+    var: jax.Array
+    count: jax.Array
+
+
 class RunnerState(NamedTuple):
     params: eqx.Module
     opt_state: optax.OptState
@@ -118,6 +127,8 @@ class RunnerState(NamedTuple):
     rng: jax.Array
     learning_rate: jax.Array
     value_norm_state: ValueNormState
+    observation_norm_state: ObservationNormState
+    critic_observation_norm_state: ObservationNormState
 
 
 def init_train_state(
@@ -197,6 +208,50 @@ def init_value_norm_state() -> ValueNormState:
         var=jnp.asarray(1.0, dtype=jnp.float32),
         count=jnp.asarray(0.0, dtype=jnp.float32),
     )
+
+
+def init_observation_norm_state(size: int) -> ObservationNormState:
+    return ObservationNormState(
+        mean=jnp.zeros((size,), dtype=jnp.float32),
+        var=jnp.ones((size,), dtype=jnp.float32),
+        count=jnp.asarray(0.0, dtype=jnp.float32),
+    )
+
+
+def normalize_observation(
+    observation: jax.Array,
+    state: ObservationNormState,
+    config: PPOConfig,
+) -> jax.Array:
+    if not config.normalize_observations:
+        return observation
+    normalized = (observation - state.mean) / jnp.sqrt(
+        jnp.maximum(state.var, config.observation_norm_eps)
+    )
+    return jnp.clip(
+        normalized, -config.observation_norm_clip, config.observation_norm_clip
+    )
+
+
+def update_observation_norm_state(
+    state: ObservationNormState,
+    observation: jax.Array,
+    config: PPOConfig,
+) -> ObservationNormState:
+    if not config.normalize_observations:
+        return state
+    values = observation.reshape((-1, observation.shape[-1]))
+    batch_count = jnp.asarray(values.shape[0], dtype=jnp.float32)
+    batch_mean = jnp.mean(values, axis=0)
+    batch_var = jnp.var(values, axis=0)
+    delta = batch_mean - state.mean
+    total_count = state.count + batch_count
+    mean = state.mean + delta * batch_count / total_count
+    state_m2 = state.var * state.count
+    batch_m2 = batch_var * batch_count
+    correction = delta**2 * state.count * batch_count / total_count
+    var = (state_m2 + batch_m2 + correction) / total_count
+    return ObservationNormState(mean=mean, var=var, count=total_count)
 
 
 def value_norm_std(state: ValueNormState, config: PPOConfig) -> jax.Array:
@@ -576,7 +631,11 @@ def action_diagnostics(
 
     metrics = {**metrics, "env_action_abs_max": jnp.max(jnp.abs(env_action))}
     flat_action = env_action.reshape((-1, env.action_size))
-    ctrl = jax.vmap(env._action_to_ctrl)(flat_action)
+    if hasattr(env, "_diagnostic_action_to_ctrl"):
+        flat_observation = transitions.obs.reshape((-1, transitions.obs.shape[-1]))
+        ctrl = jax.vmap(env._diagnostic_action_to_ctrl)(flat_observation, flat_action)
+    else:
+        ctrl = jax.vmap(env._action_to_ctrl)(flat_action)
     policy_ctrl_indices = jnp.asarray(env.model.policy_ctrl_indices)
     policy_ctrl = ctrl[:, policy_ctrl_indices]
     ctrlrange = jnp.asarray(env.model.mj_model.actuator_ctrlrange)[policy_ctrl_indices]
@@ -601,14 +660,58 @@ def collect_rollout(
     rng: jax.Array,
     config: PPOConfig,
     value_norm_state: ValueNormState,
-) -> tuple[tuple[BelloState, jax.Array, jax.Array, jax.Array], Transition]:
+    observation_norm_state: ObservationNormState | None = None,
+    critic_observation_norm_state: ObservationNormState | None = None,
+) -> tuple[
+    tuple[
+        BelloState,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        ObservationNormState,
+        ObservationNormState,
+    ],
+    Transition,
+]:
+    if observation_norm_state is None:
+        observation_norm_state = init_observation_norm_state(
+            int(obs_stack.shape[-2] * obs_stack.shape[-1])
+        )
+    if critic_observation_norm_state is None:
+        critic_observation_norm_state = init_observation_norm_state(
+            int(critic_obs_stack.shape[-2] * critic_obs_stack.shape[-1])
+        )
+
     def env_step(
-        carry: tuple[BelloState, jax.Array, jax.Array, jax.Array], _: None
-    ) -> tuple[tuple[BelloState, jax.Array, jax.Array, jax.Array], Transition]:
-        state, last_obs_stack, last_critic_obs_stack, key = carry
+        carry: tuple[
+            BelloState,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            ObservationNormState,
+            ObservationNormState,
+        ],
+        _: None,
+    ):
+        (
+            state,
+            last_obs_stack,
+            last_critic_obs_stack,
+            key,
+            actor_norm,
+            critic_norm,
+        ) = carry
         key, action_key, env_key = jax.random.split(key, 3)
-        policy_obs = stacked_observation(last_obs_stack)
-        critic_policy_obs = stacked_observation(last_critic_obs_stack)
+        raw_policy_obs = stacked_observation(last_obs_stack)
+        raw_critic_policy_obs = stacked_observation(last_critic_obs_stack)
+        actor_norm = update_observation_norm_state(actor_norm, raw_policy_obs, config)
+        critic_norm = update_observation_norm_state(
+            critic_norm, raw_critic_policy_obs, config
+        )
+        policy_obs = normalize_observation(raw_policy_obs, actor_norm, config)
+        critic_policy_obs = normalize_observation(
+            raw_critic_policy_obs, critic_norm, config
+        )
         action_clip = getattr(env, "action_clip", None)
         action, log_prob, value, action_mean = sample_action_with_mean(
             policy,
@@ -647,8 +750,12 @@ def collect_rollout(
         )
         _, _, bootstrap_value = apply_policy(
             policy,
-            stacked_observation(bootstrap_obs_stack),
-            stacked_observation(bootstrap_critic_obs_stack),
+            normalize_observation(
+                stacked_observation(bootstrap_obs_stack), actor_norm, config
+            ),
+            normalize_observation(
+                stacked_observation(bootstrap_critic_obs_stack), critic_norm, config
+            ),
         )
         bootstrap_value = denormalize_value(bootstrap_value, value_norm_state, config)
         transition_info = {
@@ -670,10 +777,27 @@ def collect_rollout(
             critic_policy_obs,
             transition_info,
         )
-        return (next_state, next_obs_stack, next_critic_obs_stack, key), transition
+        return (
+            next_state,
+            next_obs_stack,
+            next_critic_obs_stack,
+            key,
+            actor_norm,
+            critic_norm,
+        ), transition
 
     return jax.lax.scan(
-        env_step, (env_state, obs_stack, critic_obs_stack, rng), None, config.num_steps
+        env_step,
+        (
+            env_state,
+            obs_stack,
+            critic_obs_stack,
+            rng,
+            observation_norm_state,
+            critic_observation_norm_state,
+        ),
+        None,
+        config.num_steps,
     )
 
 
@@ -712,6 +836,12 @@ def init_runner_state(
             rng=rng,
             learning_rate=jnp.asarray(config.learning_rate, dtype=jnp.float32),
             value_norm_state=init_value_norm_state(),
+            observation_norm_state=init_observation_norm_state(
+                policy_observation_size(env.observation_size, config.policy)
+            ),
+            critic_observation_norm_state=init_observation_norm_state(
+                policy_observation_size(critic_observation_size(env), config.policy)
+            ),
         ),
         static_policy,
         optimizer,
@@ -743,7 +873,17 @@ def update_runner_state(
         opt_state=runner_state.opt_state,
         update=runner_state.update,
     )
-    (env_state, obs_stack, critic_obs_stack, _), transitions = collect_rollout(
+    (
+        (
+            env_state,
+            obs_stack,
+            critic_obs_stack,
+            _,
+            observation_norm_state,
+            critic_observation_norm_state,
+        ),
+        transitions,
+    ) = collect_rollout(
         env,
         policy,
         runner_state.env_state,
@@ -753,9 +893,19 @@ def update_runner_state(
         rollout_key,
         config,
         runner_state.value_norm_state,
+        runner_state.observation_norm_state,
+        runner_state.critic_observation_norm_state,
     )
     _, _, last_value = apply_policy(
-        policy, stacked_observation(obs_stack), stacked_observation(critic_obs_stack)
+        policy,
+        normalize_observation(
+            stacked_observation(obs_stack), observation_norm_state, config
+        ),
+        normalize_observation(
+            stacked_observation(critic_obs_stack),
+            critic_observation_norm_state,
+            config,
+        ),
     )
     last_value = denormalize_value(last_value, runner_state.value_norm_state, config)
     advantages, targets = compute_gae(transitions, last_value, config)
@@ -795,6 +945,8 @@ def update_runner_state(
         "value_norm_mean": value_norm_state.mean,
         "value_norm_std": value_norm_std(value_norm_state, config),
         "value_norm_count": value_norm_state.count,
+        "observation_norm_count": observation_norm_state.count,
+        "critic_observation_norm_count": critic_observation_norm_state.count,
         "mean_reward": transitions.reward.mean(),
         "mean_done": transitions.done.astype(jnp.float32).mean(),
         "mean_episode_return": safe_returned_mean(transitions.info),
@@ -826,6 +978,8 @@ def update_runner_state(
             rng=key,
             learning_rate=next_learning_rate,
             value_norm_state=value_norm_state,
+            observation_norm_state=observation_norm_state,
+            critic_observation_norm_state=critic_observation_norm_state,
         ),
         metrics,
     )
@@ -1143,6 +1297,22 @@ def validate_ppo_config(config: PPOConfig) -> None:
     if not math.isfinite(config.value_norm_eps) or config.value_norm_eps <= 0:
         raise ValueError(
             f"value_norm_eps must be positive and finite, got {config.value_norm_eps}"
+        )
+    if (
+        not math.isfinite(config.observation_norm_eps)
+        or config.observation_norm_eps <= 0
+    ):
+        raise ValueError(
+            "observation_norm_eps must be positive and finite, got "
+            f"{config.observation_norm_eps}"
+        )
+    if (
+        not math.isfinite(config.observation_norm_clip)
+        or config.observation_norm_clip <= 0
+    ):
+        raise ValueError(
+            "observation_norm_clip must be positive and finite, got "
+            f"{config.observation_norm_clip}"
         )
     if config.policy.hidden_size <= 0:
         raise ValueError(
