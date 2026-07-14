@@ -64,6 +64,7 @@ def test_train_hydra_configs_convert_to_valid_training_config(
         "locomotion_clean",
         "locomotion_clean_slip",
         "locomotion_clean_air_time",
+        "locomotion_clean_air_time_smooth",
         "locomotion_clean_feet",
     ],
 )
@@ -176,6 +177,22 @@ def test_clean_foot_ablation_configs_isolate_reward_changes() -> None:
     )
     assert combined.reward_config.foot_slip.enabled
     assert combined.reward_config.feet_air_time.enabled
+
+
+def test_smooth_air_time_config_adds_temporal_and_ppo_stability() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean_air_time_smooth"),
+    )
+
+    assert config.config.learning_rate == pytest.approx(0.00005)
+    assert config.config.schedule == "linear"
+    assert config.config.target_kl == pytest.approx(0.015)
+    assert config.config.max_grad_norm == pytest.approx(0.5)
+    assert config.reward_config.action_rate.weight == pytest.approx(-0.05)
+    assert config.reward_config.joint_acc.enabled
+    assert config.reward_config.joint_acc.weight == pytest.approx(-0.000001)
+    assert config.reward_config.feet_air_time.weight == pytest.approx(0.50)
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

@@ -1561,3 +1561,39 @@ follow-up experiments: `locomotion_clean_slip` enables only foot slip at
 `-0.10`, `locomotion_clean_air_time` enables only air time at `0.25`, and
 `locomotion_clean_feet` combines them for use only if both single-term
 ablations improve the three-seed median.
+
+## 2026-07-14 - Air-time run learned a high-frequency shuffle and diverged
+
+W&B run `n3c9maha` used the air-time-only config and failed with a nonfinite PPO
+update at update 1,294. The update-1,293 policy survived for a mean `982.5` of
+1,000 steps and tracked forward velocity well (`track_lin_vel_xy = 0.03167` per
+step), but the rollout video showed very short alternating steps. Mean filtered
+foot contact was `0.6475`, and air-time reward was only `0.0001003`, about 0.3%
+of linear tracking reward. Action rate cost was only `-0.0005906`, and joint
+acceleration was disabled.
+
+Policy stability deteriorated at the same time. Target-KL truncation first
+appeared at update 959 and became recurrent after update 1,009. At update 1,293,
+approximate KL was `0.0268` against target `0.02`, only 10% of PPO minibatches
+were applied, raw action-mean magnitude reached `5.47` despite the environment
+bound of `1.0`, and 5.65% of applied controls were saturated. The existing
+`invalid_action` metric remained exactly zero because PPO passed only the
+clipped action to the environment, hiding the out-of-range request.
+
+The rollout path now passes the raw action request to the environment. Bello
+uses the raw request for `invalid_action` and the bounded action for physics,
+observations, and action-rate cost. `action_clip_fraction` reports how often the
+bound changes a sampled action. The `locomotion_clean_air_time_smooth` follow-up
+raises air-time weight to `0.50`, action-rate cost to `-0.05`, enables joint
+acceleration at `-1e-6`, and uses a `5e-5` linearly decaying learning rate,
+`0.5` gradient norm, and `0.015` target KL.
+
+A 128-update local MJX-Warp screen held the learning rate at `5e-5` to
+approximate the early portion of the full schedule. It completed with no
+nonfinite or KL-truncated update: final KL was `0.00338`, all PPO minibatches
+were applied, action clipping affected `0.85%` of sampled dimensions, and the
+pre-clip invalid-action cost was nonzero. Maximum raw action mean was `1.23`,
+down slightly from `1.25` in the failed run at a similar update, while the new
+penalty now supplies a restoring gradient rather than a flat clipped-reward
+region. Gait quality still requires the 512-update video gate; this short run
+only validates early optimization stability.

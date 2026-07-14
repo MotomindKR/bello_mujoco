@@ -114,3 +114,18 @@ The existing Rerun evaluator provides the required velocity, contact, action,
 and done traces. A headless numeric evaluator should be added before scaling the
 matrix beyond these initial terms; until then, save the five rollout summaries
 and videos with each W&B run.
+
+## Anti-Tremble Follow-up
+
+Run `locomotion_clean_air_time_smooth` after the initial air-time-only result.
+It keeps the same fixed-forward task but doubles positive-biped air-time weight
+to `0.50`, raises action-rate cost to `-0.05`, and enables joint-acceleration
+cost at `-1e-6`. PPO starts at `5e-5` with linear decay, clips gradients at
+`0.5`, and stops an update at KL `0.015`. The environment also penalizes the
+pre-clip action request, preventing a Gaussian mean outside `[-1, 1]` from
+hiding behind the applied-action clip.
+
+Promote it only if the rollout shows visibly longer swing intervals while
+retaining forward tracking and survival. Monitor `action_clip_fraction`,
+`action_mean_abs_max`, `mean_reward/action_rate`,
+`mean_reward/feet_air_time`, `approx_kl`, and `ppo_update_fraction`.

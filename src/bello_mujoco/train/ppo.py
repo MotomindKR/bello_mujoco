@@ -548,6 +548,9 @@ def action_diagnostics(
         "action_std_mean": jnp.mean(jnp.exp(log_std)),
         "action_std_min": jnp.min(jnp.exp(log_std)),
         "action_std_max": jnp.max(jnp.exp(log_std)),
+        "action_clip_fraction": jnp.mean(
+            (jnp.abs(action - env_action) > 1.0e-6).astype(jnp.float32)
+        ),
     }
     if not hasattr(env, "_action_to_ctrl"):
         return metrics
@@ -601,7 +604,7 @@ def collect_rollout(
         )
         value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = step_env_batch(
-            env, state, env_action, env_key, command_ranges
+            env, state, action, env_key, command_ranges
         )
         next_critic_obs = critic_observation_batch(
             env, next_state, fallback_obs=next_obs

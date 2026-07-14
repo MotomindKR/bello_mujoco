@@ -396,6 +396,8 @@ def compute_velocity_reward(
     done: jax.Array,
     foot_angular_speed: jax.Array | None = None,
     foot_contact_time: jax.Array | None = None,
+    requested_action: jax.Array | None = None,
+    action_clip_limit: float | None = None,
     self_collision: jax.Array | None = None,
     action_target_default: jax.Array | None = None,
     action_target_scale: jax.Array | None = None,
@@ -436,14 +438,20 @@ def compute_velocity_reward(
                 "invalid_action reward requires action target default, scale, "
                 "low, and high arrays"
             )
-        action_target = action_target_default + action_target_scale * action
+        requested_action = action if requested_action is None else requested_action
+        action_target = action_target_default + action_target_scale * requested_action
         action_low_violation = jnp.maximum(action_target_low - action_target, 0.0)
         action_high_violation = jnp.maximum(action_target - action_target_high, 0.0)
         action_target_violation = action_low_violation + action_high_violation
         action_unit_violation = action_target_violation / jnp.maximum(
             jnp.abs(action_target_scale), 1.0e-6
         )
-        invalid_action = jnp.sum(action_unit_violation**2)
+        action_clip_violation = (
+            jnp.zeros_like(requested_action)
+            if action_clip_limit is None
+            else jnp.maximum(jnp.abs(requested_action) - action_clip_limit, 0.0)
+        )
+        invalid_action = jnp.sum(action_unit_violation**2 + action_clip_violation**2)
     else:
         invalid_action = jnp.asarray(0.0, dtype=jnp.float32)
     hold_joint_deviation = (

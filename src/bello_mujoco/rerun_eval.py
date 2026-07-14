@@ -712,13 +712,19 @@ def run_rerun_evaluation(
                 action = action_mean + jnp.exp(
                     policy_log_std(policy)
                 ) * jax.random.normal(action_rng, action_mean.shape)
+            requested_action = action
             if env.action_clip is not None:
                 action = jnp.clip(action, -env.action_clip, env.action_clip)
             action_mean_np = np.asarray(jax.device_get(action_mean), dtype=np.float32)
+            requested_action_np = np.asarray(
+                jax.device_get(requested_action), dtype=np.float32
+            )
             action_np = np.asarray(jax.device_get(action), dtype=np.float32)
             if simulation_backend == "mjx":
                 mjx_state = mjx_state.replace(command=jnp.asarray(current_command))
-                mjx_state, obs, reward, done, info = mjx_step(mjx_state, action)
+                mjx_state, obs, reward, done, info = mjx_step(
+                    mjx_state, requested_action
+                )
                 sync_mj_data(mj_model, mj_data, mjx_state)
                 ctrl = np.asarray(mj_data.ctrl, dtype=np.float32).copy()
                 done_flags = {key: bool(jax.device_get(info[key])) for key in DONE_KEYS}
@@ -776,6 +782,7 @@ def run_rerun_evaluation(
                     state,
                     next_state,
                     jnp.asarray(action_np),
+                    jnp.asarray(requested_action_np),
                     jnp.asarray(done_flags["done/terminal"]),
                     foot_contact,
                     foot_height,

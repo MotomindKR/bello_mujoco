@@ -34,6 +34,7 @@ from bello_mujoco.envs.rewards import (
     FootDistanceRewardConfig,
     FootSlipRewardConfig,
     GaitContactRewardConfig,
+    InvalidActionRewardConfig,
     LinVelZRewardConfig,
     RewardConfig,
     TerminationRewardConfig,
@@ -501,6 +502,26 @@ def test_policy_action_uses_configured_action_clip(
 
     assert env.action_clip == 1.0
     assert bool(jnp.allclose(ctrl[policy_indices], expected))
+
+
+def test_step_batch_penalizes_pre_clip_action_request(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=2,
+        env_config=BelloEnvConfig(action_clip=1.0),
+        reward_config=RewardConfig(
+            invalid_action=InvalidActionRewardConfig(enabled=True, weight=-1.0)
+        ),
+    )
+    state, _ = env.reset_batch(2)
+    requested_action = jnp.full((2, env.action_size), 1.1, dtype=jnp.float32)
+
+    next_state, _, _, _, info = env.step_batch(state, requested_action)
+
+    assert bool(jnp.all(next_state.last_action == 1.0))
+    assert bool(jnp.all(info["reward/invalid_action"] < 0.0))
 
 
 def test_rejects_nonpositive_action_clip(full_body_asset: PreparedAsset) -> None:
@@ -1261,6 +1282,7 @@ def test_step_reports_enabled_foot_distance_reward(
     _, info = env._reward(
         state,
         state,
+        jnp.zeros(env.action_size, dtype=jnp.float32),
         jnp.zeros(env.action_size, dtype=jnp.float32),
         jnp.asarray(False),
         jnp.ones(2, dtype=jnp.float32),

@@ -172,7 +172,8 @@ ctrl[policy_ctrl_indices] = default_ctrl + policy_action_scale * action
 ```
 
 During PPO training, Bello stores the raw Gaussian action for policy-ratio
-calculations and sends a clipped copy to the environment with
+calculations and passes that request to the environment. The environment uses
+the pre-clip value for `invalid_action`, then bounds the applied control with
 the configured `env_config.action_clip`, which defaults to `5.0`. Generated
 MuJoCo position actuators use
 `ctrllimited="false"` and `forcelimited="true"`: policy target commands are not
@@ -295,9 +296,10 @@ commands are gated out. `swing_foot_velocity` tracks a bounded, command-scaled
 scheduled-swing velocity relative to a configured body.
 `standing_foot_vel` and
 `standing_foot_air_time` add command-gated stand-still penalties for foot motion
-and accumulated foot air time. `invalid_action` penalizes requested actuator
-targets outside configured soft ranges as squared violations in policy action
-units, so small-scale joints receive comparable pressure to large-scale joints.
+and accumulated foot air time. `invalid_action` penalizes pre-clip actions
+outside the environment bound and requested actuator targets outside configured
+soft ranges as squared violations in policy action units, so small-scale joints
+receive comparable pressure to large-scale joints.
 
 ## Configuration
 

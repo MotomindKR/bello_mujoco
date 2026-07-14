@@ -571,9 +571,11 @@ smoothness and effort regularizers. `joint_vel`, `joint_acc`, `action_rate`,
 penalizes absolute actuator force times joint velocity; `torque` penalizes
 actuator-force magnitude directly. `joint_limit` sums absolute violation of the
 actuator control ranges, which are the configured soft limits when a joint
-provides one. `invalid_action` sums squared requested-target violation in action
-units using the same clipped affine action scale as the action-to-control mapper.
-Bello sends a clipped copy of the raw Gaussian action to MuJoCo/MJX. Generated
+provides one. `invalid_action` sums squared pre-clip action-bound and
+requested-target violations in action units using the same affine action scale
+as the action-to-control mapper. Bello clips the request before sending its
+control target to MuJoCo/MJX, but retains the original request for this penalty.
+Generated
 position actuators leave control targets unclamped (`ctrllimited="false"`) while
 keeping actuator force limits enabled.
 `foot_slip` sums contacted-foot lateral speed plus
@@ -854,11 +856,13 @@ env_steps = update_index * num_envs * num_steps
 The policy samples Gaussian actions. PPO clips sampled actions before storing
 log-probs only when the policy helper is called with an explicit action clip.
 The PPO training loop stores the raw sampled Gaussian action/log-prob for PPO
-ratios and passes a clipped copy to environments that expose `action_clip`.
+ratios and passes the raw request to the environment. Environments own their
+action bounds so they can distinguish the requested action from the control
+actually applied.
 
 The Bello locomotion env exposes configurable `env_config.action_clip`, which
-defaults to `5.0`; its PPO rollout path stores raw Gaussian actions/log-probs
-and sends a clipped copy to the environment.
+defaults to `5.0`. It clips the action for control and observations while using
+the pre-clip request for `invalid_action`.
 Bello maps the clipped action linearly to position-actuator control targets with
 `default_ctrl + policy_action_scale * clipped_action`, matching the common
 legged-gym/IsaacLab residual-position convention. Generated position actuators
@@ -907,6 +911,7 @@ action_mean_abs_max
 action_std_mean
 action_std_min
 action_std_max
+action_clip_fraction
 ```
 
 Reward component metrics are emitted as:
@@ -953,10 +958,10 @@ gradients, updates, or next parameters became nonfinite. Such minibatches are
 not applied, and the training CLI raises immediately instead of continuing with
 an invalid policy state.
 
-PPO stores raw Gaussian sampled actions for log-prob ratios. Environments that
-define `action_clip` receive a clipped copy; Bello uses its configured
-`env_config.action_clip`, so `env_action_abs_max` reports the clipped action
-magnitude.
+PPO stores raw Gaussian sampled actions for log-prob ratios and passes those raw
+requests to the environment. `env_action_abs_max` reports the bounded action
+that was actually applied, and `action_clip_fraction` reports the fraction of
+sampled action dimensions changed by the bound.
 For Bello, `ctrl_saturation_fraction` reports the fraction of requested policy
 control targets at or beyond their configured MuJoCo ctrl-range bounds.
 `ctrl_margin_min` is the smallest signed distance to

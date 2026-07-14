@@ -767,8 +767,9 @@ class BelloLocomotionEnv:
     def step(
         self, state: BelloState, action: jax.Array
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
+        requested_action = jnp.asarray(action, dtype=jnp.float32)
         action = jnp.clip(
-            jnp.asarray(action, dtype=jnp.float32),
+            requested_action,
             -self.action_clip,
             self.action_clip,
         )
@@ -810,6 +811,7 @@ class BelloLocomotionEnv:
             state,
             next_state,
             action,
+            requested_action,
             terminal,
             foot_contact,
             foot_height,
@@ -882,8 +884,9 @@ class BelloLocomotionEnv:
             resample_rng, reset_command_rng, reset_obs_rng, push_rng, obs_rng = (
                 jax.random.split(rng, 5)
             )
+        requested_action = jnp.asarray(action, dtype=jnp.float32)
         action = jnp.clip(
-            jnp.asarray(action, dtype=jnp.float32),
+            requested_action,
             -self.action_clip,
             self.action_clip,
         )
@@ -933,6 +936,7 @@ class BelloLocomotionEnv:
             state,
             stepped_state,
             action,
+            requested_action,
             terminal,
             foot_contact,
             foot_height,
@@ -1485,6 +1489,7 @@ class BelloLocomotionEnv:
         state: BelloState,
         next_state: BelloState,
         action: jax.Array,
+        requested_action: jax.Array,
         done: jax.Array,
         foot_contact: jax.Array,
         foot_height: jax.Array,
@@ -1531,6 +1536,8 @@ class BelloLocomotionEnv:
             joint_vel=joint_vel,
             last_joint_vel=last_joint_vel,
             action=action,
+            requested_action=requested_action,
+            action_clip_limit=self.action_clip,
             last_action=state.last_action,
             actuator_force=next_state.data.actuator_force,
             joint_limit_low=self._actuator_joint_limit_low(),

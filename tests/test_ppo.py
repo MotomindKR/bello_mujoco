@@ -70,11 +70,17 @@ class ClippedActionEnv:
     def step_batch(self, state, action, *, rng):
         del rng
         next_obs = state.obs
-        reward = jnp.squeeze(action, axis=-1)
+        clipped_action = (
+            action
+            if self.action_clip is None
+            else jnp.clip(action, -self.action_clip, self.action_clip)
+        )
+        reward = jnp.squeeze(clipped_action, axis=-1)
         done = jnp.zeros(action.shape[0], dtype=bool)
         info = {
             "returned_episode": done,
             "bootstrap_observation": next_obs,
+            "requested_action_abs_max": jnp.max(jnp.abs(action), axis=-1),
         }
         return DummyRolloutState(next_obs), next_obs, reward, done, info
 
@@ -215,6 +221,7 @@ def test_collect_rollout_stores_raw_actions_and_steps_clipped_env_actions() -> N
     assert jnp.all(transitions.env_action >= -env.action_clip)
     assert float(jnp.max(jnp.abs(transitions.action_mean))) == pytest.approx(100.0)
     assert float(jnp.max(jnp.abs(transitions.reward))) == pytest.approx(env.action_clip)
+    assert float(jnp.max(transitions.info["requested_action_abs_max"])) > 1.0
 
 
 def test_collect_rollout_does_not_clip_env_actions_without_env_action_clip() -> None:
@@ -749,6 +756,7 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
     assert float(metrics["action_abs_max"]) == pytest.approx(2.0)
     assert float(metrics["env_action_abs_max"]) == pytest.approx(1.0)
     assert float(metrics["action_mean_abs_max"]) == pytest.approx(1.0)
+    assert float(metrics["action_clip_fraction"]) == pytest.approx(0.25)
     assert float(metrics["action_std_min"]) == pytest.approx(float(jnp.exp(-2.0)))
     assert float(metrics["action_std_max"]) == pytest.approx(float(jnp.exp(-1.0)))
     assert float(metrics["ctrl_saturation_fraction"]) == pytest.approx(0.25)
