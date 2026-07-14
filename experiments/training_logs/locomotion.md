@@ -1495,3 +1495,54 @@ rotates world-oriented motion into the body frame only when a local result is
 requested. CPU evaluation uses `mj_objectVelocity` directly. A regression test
 checks root, pelvis, torso, and both feet against MuJoCo under a nontrivial base
 orientation and generalized velocity.
+
+## 2026-07-14 - Clean baseline converged to standing still
+
+Inspected W&B run `nzjdd3h7`, trained from commit `589ad22` with the original
+clean config. By update 2,048 it survived the full 1,000-step episode, but its
+filtered foot-contact fraction reached `0.9815`. The deterministic rollout
+remained in near-constant double support and did not travel forward.
+
+The reward explains the behavior. With commands sampled uniformly from
+`0.15-0.35 m/s`, 10% exact-zero commands, and tracking `sigma: 0.25`, a policy
+with zero velocity has expected raw tracking score `0.79626`. After the `0.02s`
+control-step scale, that is `0.015925` reward per step. The run reported
+`0.015920`, effectively the exact standing-still prediction. Perfect tracking
+could improve the episode return by only about `4.1`, while one fall cost
+`100`. Avoiding all stepping was therefore the rational optimum rather than an
+exploration failure.
+
+The clean forward-discovery control now uses spherical hands, a fixed
+`0.3 m/s` command with no standing samples, linear tracking weight `2.0` and
+`sigma: 0.05`, and termination weight `-5.0`. At zero velocity the linear term
+now scores only `exp(-0.3^2 / 0.05) = 0.1653`, making forward motion worth
+roughly `33.4` additional return per full episode. Gait, contact, clearance,
+air-time, and swing-foot rewards remain disabled so the next run still tests
+whether locomotion emerges without gait shaping.
+
+## 2026-07-14 - Clean rerun overflow and policy escape
+
+Run `k7sbun7q` from the original clean commit failed at update 487. Immediately
+before failure, MJX-Warp reported `nefc overflow` requests up to `1627` while
+the config allowed only `njmax: 512`. The last finite row also showed that this
+was not an isolated capacity warning: `action_mean_abs_max` had reached `14.49`,
+the clipped environment action reached `5.0`, `ctrl_margin_min` was `-2.45`,
+`value_loss_raw` was about `4e23`, and `value_norm_std` was about `7.6e12`.
+The next update was nonfinite and correctly skipped by PPO.
+
+The clean config now uses `njmax: 2048`, enough for the largest reported
+per-world constraint count. It also adopts a constant learning rate of `1e-4`,
+`init_log_std: -1.5`, and `max_log_std: -0.5`, plus explicit conservative
+residual action scales for the 13 policy joints. The rate is constant because a
+20-update smoke run showed the adaptive schedule increasing `1e-4` to
+`3.375e-4`, undoing the intended safety limit. These changes address both the
+undersized Warp solve and the policy/control escape that created the
+pathological contacts.
+
+A subsequent 512-update, 2,048-environment local run completed without a
+constraint overflow or nonfinite update. At update 512, however, its action mean
+had reached `3.05` and `ctrl_margin_min` was `-0.69`. The environment action
+bound is now an explicit `BelloEnvConfig.action_clip` setting. The clean recipe
+uses `1.0`, while the default stays `5.0` to avoid silently changing existing
+recipes. With the clean recipe's residual scales, the tighter bound prevents
+the policy from requesting the extreme joint targets seen in the failed run.

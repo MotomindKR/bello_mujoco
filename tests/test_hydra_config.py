@@ -111,16 +111,33 @@ def test_clean_locomotion_removes_gait_shaping_and_randomization() -> None:
     assert not config.env_config.observation.noise.enabled
     assert not config.env_config.random_push.enabled
     assert not config.command_config.curriculum.enabled
+    assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.config.learning_rate == pytest.approx(0.0001)
+    assert config.config.schedule == "constant"
+    assert config.config.policy.init_log_std == pytest.approx(-1.5)
+    assert config.config.policy.max_log_std == pytest.approx(-0.5)
+    assert config.warp.njmax == 2048
+    assert config.env_config.action_clip == pytest.approx(1.0)
+    assert config.asset_config.actuator_config.joints[
+        "left_hip_pitch_joint"
+    ].action_scale == pytest.approx(0.35)
+    assert config.asset_config.actuator_config.joints[
+        "left_ankle_roll_joint"
+    ].action_scale == pytest.approx(0.06)
     assert config.command_config.lin_vel_x == (0.0, 0.0)
+    assert config.command_config.lin_vel_y == pytest.approx((0.3, 0.3))
     assert config.command_config.ang_vel_yaw == (0.0, 0.0)
+    assert config.command_config.standing_probability == pytest.approx(0.0)
     assert config.reward_config.track_lin_vel_xy.link == "pelvis_link"
     assert config.reward_config.track_lin_vel_xy.frame_link == "pelvis_link"
+    assert config.reward_config.track_lin_vel_xy.weight == pytest.approx(2.0)
+    assert config.reward_config.track_lin_vel_xy.sigma == pytest.approx(0.05)
     assert not config.reward_config.foot_slip.enabled
     assert not config.reward_config.foot_clearance.enabled
     assert not config.reward_config.swing_foot_velocity.enabled
     assert not config.reward_config.gait_contact.enabled
     assert not config.reward_config.feet_air_time.enabled
-    assert config.reward_config.termination.weight == pytest.approx(-100.0)
+    assert config.reward_config.termination.weight == pytest.approx(-5.0)
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

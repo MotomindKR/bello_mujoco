@@ -455,6 +455,33 @@ def test_policy_action_uses_reference_style_bounded_affine_targets(
     assert not bool(jnp.any(jnp.asarray(env.model.mj_model.actuator_ctrllimited)))
 
 
+def test_policy_action_uses_configured_action_clip(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(action_clip=1.0),
+    )
+    action = jnp.full((env.action_size,), 10.0, dtype=jnp.float32)
+    ctrl = env._action_to_ctrl(action)
+    policy_indices = jnp.asarray(env.model.policy_ctrl_indices)
+    expected = (
+        jnp.asarray(env.model.default_ctrl)[policy_indices]
+        + jnp.asarray(env.model.policy_action_scale)
+    )
+
+    assert env.action_clip == 1.0
+    assert bool(jnp.allclose(ctrl[policy_indices], expected))
+
+
+def test_rejects_nonpositive_action_clip(full_body_asset: PreparedAsset) -> None:
+    with pytest.raises(ValueError, match="action_clip must be a positive finite"):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(action_clip=0.0),
+        )
+
+
 def test_reset_batch_broadcasts_command(full_body_asset: PreparedAsset) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
     command = jnp.asarray([0.1, 0.2, 0.3], dtype=jnp.float32)

@@ -6,24 +6,54 @@ defaults:
 
 asset_config:
   collision_mode: box
-  end_effector_sphere_mode: none
+  end_effector_sphere_mode: both
+  actuator_config:
+    joints:
+      left_hip_pitch_joint:
+        action_scale: 0.35
+      right_hip_pitch_joint:
+        action_scale: 0.35
+      left_hip_roll_joint:
+        action_scale: 0.35
+      right_hip_roll_joint:
+        action_scale: 0.35
+      left_hip_yaw_joint:
+        action_scale: 0.35
+      right_hip_yaw_joint:
+        action_scale: 0.35
+      left_knee_joint:
+        action_scale: 0.45
+      right_knee_joint:
+        action_scale: 0.45
+      left_ankle_pitch_joint:
+        action_scale: 0.20
+      right_ankle_pitch_joint:
+        action_scale: 0.20
+      left_ankle_roll_joint:
+        action_scale: 0.06
+      right_ankle_roll_joint:
+        action_scale: 0.06
+      waist_yaw_joint:
+        action_scale: 0.15
 
 config:
   total_timesteps: 150994944  # 3,072 updates at 2,048 envs x 24 steps.
   num_envs: 2048
   num_steps: 24
-  learning_rate: 0.001
+  learning_rate: 0.0001
+  schedule: constant
   target_kl: 0.02
   ent_coef: 0.005
   policy:
     hidden_dims: [512, 256, 128]
     activation: elu
-    init_log_std: -1.0
-    max_log_std: 0.0
+    init_log_std: -1.5
+    max_log_std: -0.5
     obs_stack_size: 1
 
 env_config:
   max_episode_steps: 1000
+  action_clip: 1.0
   root_link: pelvis_link
   spawn:
     root_xy_range: [0.0, 0.0]
@@ -81,9 +111,9 @@ env_config:
 command_config:
   enabled: true
   lin_vel_x: [0.0, 0.0]
-  lin_vel_y: [0.15, 0.35]
+  lin_vel_y: [0.30, 0.30]
   ang_vel_yaw: [0.0, 0.0]
-  standing_probability: 0.10
+  standing_probability: 0.0
   resample_seconds: 10.0
   curriculum:
     enabled: false
@@ -91,8 +121,8 @@ command_config:
 reward_config:
   track_lin_vel_xy:
     enabled: true
-    weight: 1.0
-    sigma: 0.25
+    weight: 2.0
+    sigma: 0.05
     link: pelvis_link
     frame_link: pelvis_link
   track_ang_vel_z:
@@ -162,7 +192,7 @@ reward_config:
     enabled: false
   termination:
     enabled: true
-    weight: -100.0
+    weight: -5.0
 
 done_config:
   base_height:
@@ -190,6 +220,8 @@ wandb_config:
     - no-domain-randomization
     - lower-body-policy
     - box-collision
+    - sphere-hands
+    - fixed-forward-discovery
 
 video_config:
   enabled: true
@@ -205,4 +237,4 @@ video_config:
 
 warp:
   contact_budget_per_env: 40
-  njmax: 512
+  njmax: 2048

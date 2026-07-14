@@ -173,7 +173,8 @@ ctrl[policy_ctrl_indices] = default_ctrl + policy_action_scale * action
 
 During PPO training, Bello stores the raw Gaussian action for policy-ratio
 calculations and sends a clipped copy to the environment with
-`action_clip=5.0`. Generated MuJoCo position actuators use
+the configured `env_config.action_clip`, which defaults to `5.0`. Generated
+MuJoCo position actuators use
 `ctrllimited="false"` and `forcelimited="true"`: policy target commands are not
 actuator-clamped, but actuator force remains limited. Joints configured as
 `mode="hold"` are removed from the policy action vector but still use default
@@ -347,6 +348,7 @@ AssetPrepConfig:
 BelloEnvConfig:
   decimation: 4
   max_episode_steps: 1000
+  action_clip: 5.0
   root_link: bello_root
   terrain.mode: plane
   gait.cycle_time: 0.80

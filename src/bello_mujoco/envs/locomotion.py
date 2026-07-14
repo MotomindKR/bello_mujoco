@@ -194,6 +194,7 @@ class BelloEnvConfig:
 
     decimation: int = CONTROL_DECIMATION
     max_episode_steps: int = MAX_EPISODE_STEPS
+    action_clip: float = BELLO_ACTION_CLIP
     root_link: str = "bello_root"
     terrain: TerrainConfig = FLAT_TERRAIN
     spawn: SpawnConfig = SpawnConfig()
@@ -228,6 +229,11 @@ class BelloLocomotionEnv:
         if self.max_episode_steps <= 0:
             raise ValueError(
                 f"max_episode_steps must be positive, got {self.max_episode_steps}"
+            )
+        if not math.isfinite(self.config.action_clip) or self.config.action_clip <= 0:
+            raise ValueError(
+                "action_clip must be a positive finite value, got "
+                f"{self.config.action_clip}"
             )
         if not self.config.root_link:
             raise ValueError("root_link must be a non-empty body name")
@@ -467,7 +473,7 @@ class BelloLocomotionEnv:
 
     @property
     def action_clip(self) -> float | None:
-        return BELLO_ACTION_CLIP
+        return self.config.action_clip
 
     @property
     def action_size(self) -> int:
@@ -759,8 +765,8 @@ class BelloLocomotionEnv:
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
         action = jnp.clip(
             jnp.asarray(action, dtype=jnp.float32),
-            -BELLO_ACTION_CLIP,
-            BELLO_ACTION_CLIP,
+            -self.action_clip,
+            self.action_clip,
         )
         data = state.data.replace(ctrl=self._action_to_ctrl(action))
         data = jax.lax.fori_loop(
@@ -872,8 +878,8 @@ class BelloLocomotionEnv:
             )
         action = jnp.clip(
             jnp.asarray(action, dtype=jnp.float32),
-            -BELLO_ACTION_CLIP,
-            BELLO_ACTION_CLIP,
+            -self.action_clip,
+            self.action_clip,
         )
         ctrl = jax.vmap(self._action_to_ctrl)(action)
         data = state.data.replace(
@@ -1139,8 +1145,8 @@ class BelloLocomotionEnv:
         default = jnp.asarray(self.model.default_ctrl)
         action = jnp.clip(
             jnp.asarray(action, dtype=jnp.float32),
-            -BELLO_ACTION_CLIP,
-            BELLO_ACTION_CLIP,
+            -self.action_clip,
+            self.action_clip,
         )
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
         return default.at[policy_indices].set(

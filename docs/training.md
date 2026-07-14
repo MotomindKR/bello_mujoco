@@ -232,6 +232,7 @@ runtime limits differ from the URDF. A composed config should produce
 env_config:
   decimation: 4
   max_episode_steps: 1000
+  action_clip: 5.0
   root_link: bello_root
   spawn:
     clearance: 0.01
@@ -855,8 +856,9 @@ log-probs only when the policy helper is called with an explicit action clip.
 The PPO training loop stores the raw sampled Gaussian action/log-prob for PPO
 ratios and passes a clipped copy to environments that expose `action_clip`.
 
-The Bello locomotion env exposes `action_clip=5.0`; its PPO rollout path stores
-raw Gaussian actions/log-probs and sends a clipped copy to the environment.
+The Bello locomotion env exposes configurable `env_config.action_clip`, which
+defaults to `5.0`; its PPO rollout path stores raw Gaussian actions/log-probs
+and sends a clipped copy to the environment.
 Bello maps the clipped action linearly to position-actuator control targets with
 `default_ctrl + policy_action_scale * clipped_action`, matching the common
 legged-gym/IsaacLab residual-position convention. Generated position actuators
@@ -864,7 +866,7 @@ use `ctrllimited="false"` so MuJoCo/MJX does not introduce actuator-layer target
 saturation. Motor force limits remain active through generated `forcerange` /
 `forcelimited="true"` actuator attributes.
 
-CartPole exposes `action_clip=1.0`; Bello exposes `action_clip=5.0`.
+CartPole exposes `action_clip=1.0`; Bello defaults to `action_clip=5.0`.
 
 ## Metrics
 
@@ -952,8 +954,9 @@ not applied, and the training CLI raises immediately instead of continuing with
 an invalid policy state.
 
 PPO stores raw Gaussian sampled actions for log-prob ratios. Environments that
-define `action_clip` receive a clipped copy; Bello uses this path with
-`action_clip=5.0`, so `env_action_abs_max` reports the clipped action magnitude.
+define `action_clip` receive a clipped copy; Bello uses its configured
+`env_config.action_clip`, so `env_action_abs_max` reports the clipped action
+magnitude.
 For Bello, `ctrl_saturation_fraction` reports the fraction of requested policy
 control targets at or beyond their configured MuJoCo ctrl-range bounds.
 `ctrl_margin_min` is the smallest signed distance to

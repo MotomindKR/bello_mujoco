@@ -46,6 +46,7 @@ asset_config:
 env_config:
   decimation: 4
   max_episode_steps: 1000
+  action_clip: 5.0
   root_link: bello_root
   spawn:
     clearance: 0.01

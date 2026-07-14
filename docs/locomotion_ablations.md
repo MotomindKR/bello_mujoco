@@ -8,6 +8,17 @@ remaining reward answers only three questions: does the pelvis track the
 command, does the body remain upright without vertical or roll/pitch motion, and
 does it do so without violent or invalid controls?
 
+The control starts with a fixed `0.3 m/s` forward command. Its linear tracking
+term uses `sigma: 0.05` and weight `2.0`, and termination costs `-5.0`. This
+makes moving toward the command materially better than standing still without
+making one exploratory fall more expensive than all of the tracking reward in
+an episode. The asset uses spherical end effectors on both hands. PPO starts at
+a constant `1e-4` learning rate and log standard deviation `-1.5`, capped at
+`-0.5`. Policy joints use conservative explicit residual scales, and MJX-Warp
+reserves `njmax: 2048` constraints per environment. The clean experiment clips
+normalized actions to `[-1, 1]`; the repository default remains `[-5, 5]` for
+existing recipes.
+
 The policy controls the 13 leg and waist-yaw joints inherited from
 `locomotion.yaml`; the upper body remains held. Actor and critic both observe
 pelvis-local linear/angular velocity, pelvis gravity, command, joint state, and
@@ -41,15 +52,15 @@ the seed in the PPO, checkpoint, and W&B names together.
 
 ## Experiment Order
 
-1. Physics control: run the clean config unchanged. This establishes whether
-   corrected velocity measurements can learn balance and forward tracking
-   without gait shaping.
-2. Command controls: run zero-only and fixed-forward controls independently:
+1. Forward-discovery control: run the clean config unchanged. This establishes
+   whether corrected velocity measurements can learn balance and forward
+   tracking without gait shaping.
+2. Command controls: run zero-only and ranged-forward controls independently:
 
    ```text
    zero-only:     command_config.lin_vel_y=[0.0,0.0]
                   command_config.standing_probability=1.0
-   fixed-forward: command_config.lin_vel_y=[0.3,0.3]
+   ranged-forward: command_config.lin_vel_y=[0.15,0.35]
                   command_config.standing_probability=0.0
    ```
 
