@@ -1,0 +1,208 @@
+# Minimal command-conditioned locomotion baseline. Run with:
+# uv run bello-train-ppo --config-dir "$PWD/experiments/train" --config-name locomotion_clean
+defaults:
+  - locomotion
+  - _self_
+
+asset_config:
+  collision_mode: box
+  end_effector_sphere_mode: none
+
+config:
+  total_timesteps: 150994944  # 3,072 updates at 2,048 envs x 24 steps.
+  num_envs: 2048
+  num_steps: 24
+  learning_rate: 0.001
+  target_kl: 0.02
+  ent_coef: 0.005
+  policy:
+    hidden_dims: [512, 256, 128]
+    activation: elu
+    init_log_std: -1.0
+    max_log_std: 0.0
+    obs_stack_size: 1
+
+env_config:
+  max_episode_steps: 1000
+  root_link: pelvis_link
+  spawn:
+    root_xy_range: [0.0, 0.0]
+    root_yaw_range: [0.0, 0.0]
+    joint_pos_noise: [0.0, 0.0]
+    joint_vel_range: [0.0, 0.0]
+    stagger_initial_step_count: false
+  random_push:
+    enabled: false
+  observation:
+    joint_mode: policy
+    base_lin_vel: true
+    base_ang_vel: true
+    projected_gravity: true
+    base_height: false
+    gait_phase: false
+    command: true
+    joint_pos: true
+    joint_vel: true
+    actuator_force: false
+    last_action: true
+    scale:
+      base_lin_vel: 1.0
+      base_ang_vel: 0.2
+      projected_gravity: 1.0
+      command: 1.0
+      joint_pos: 1.0
+      joint_vel: 0.05
+      last_action: 1.0
+    noise:
+      enabled: false
+  critic_observation:
+    joint_mode: policy
+    base_lin_vel: true
+    base_ang_vel: true
+    projected_gravity: true
+    base_height: false
+    gait_phase: false
+    command: true
+    joint_pos: true
+    joint_vel: true
+    actuator_force: false
+    last_action: true
+    scale:
+      base_lin_vel: 1.0
+      base_ang_vel: 0.2
+      projected_gravity: 1.0
+      command: 1.0
+      joint_pos: 1.0
+      joint_vel: 0.05
+      last_action: 1.0
+    noise:
+      enabled: false
+
+command_config:
+  enabled: true
+  lin_vel_x: [0.0, 0.0]
+  lin_vel_y: [0.15, 0.35]
+  ang_vel_yaw: [0.0, 0.0]
+  standing_probability: 0.10
+  resample_seconds: 10.0
+  curriculum:
+    enabled: false
+
+reward_config:
+  track_lin_vel_xy:
+    enabled: true
+    weight: 1.0
+    sigma: 0.25
+    link: pelvis_link
+    frame_link: pelvis_link
+  track_ang_vel_z:
+    enabled: true
+    weight: 0.5
+    sigma: 0.25
+    link: pelvis_link
+  alive:
+    enabled: false
+  lin_vel_z:
+    enabled: true
+    weight: -2.0
+    link: pelvis_link
+  ang_vel_xy:
+    enabled: true
+    weight: -0.05
+    link: pelvis_link
+  flat_orientation:
+    enabled: true
+    weight: -2.0
+    link: torso_link
+  base_height:
+    enabled: false
+  joint_vel:
+    enabled: false
+  joint_acc:
+    enabled: false
+  action_rate:
+    enabled: true
+    weight: -0.01
+  energy:
+    enabled: false
+  torque:
+    enabled: true
+    weight: -0.00001
+  joint_limit:
+    enabled: true
+    weight: -1.0
+  invalid_action:
+    enabled: true
+    weight: -1.0
+  hold_joint_deviation:
+    enabled: false
+  policy_joint_deviation:
+    enabled: false
+  foot_contact:
+    enabled: false
+  foot_slip:
+    enabled: false
+  foot_clearance:
+    enabled: false
+  swing_foot_velocity:
+    enabled: false
+  foot_distance:
+    enabled: false
+  gait_contact:
+    enabled: false
+  feet_air_time:
+    enabled: false
+  standing_foot_vel:
+    enabled: false
+  standing_foot_air_time:
+    enabled: false
+  undesired_contact:
+    enabled: false
+  self_collision:
+    enabled: false
+  termination:
+    enabled: true
+    weight: -100.0
+
+done_config:
+  base_height:
+    enabled: true
+    min_height: 0.55
+    link: pelvis_link
+  bad_orientation:
+    enabled: true
+    limit_angle: 0.80
+    link: torso_link
+
+checkpoint_config:
+  enabled: true
+  name: locomotion_clean_seed0
+
+wandb_config:
+  enabled: true
+  group: locomotion-clean-ablation
+  run_name: locomotion_clean_seed0
+  tags:
+    - locomotion
+    - clean-reward-baseline
+    - pelvis-proprioception
+    - no-gait-shaping
+    - no-domain-randomization
+    - lower-body-policy
+    - box-collision
+
+video_config:
+  enabled: true
+  every_updates: 512
+  render_initial: true
+  render_final: true
+  filename_prefix: locomotion_clean
+  simulation_backend: mujoco
+  command: [0.0, 0.30, 0.0]
+  steps: 1000
+  stop_on_done: true
+  stochastic_actions: false
+
+warp:
+  contact_budget_per_env: 40
+  njmax: 512

@@ -552,6 +552,8 @@ checkpoint observation and action sizes unchanged.
 Detailed training behavior is documented in [training.md](training.md). Detailed
 live evaluation behavior is documented in [evaluation.md](evaluation.md). The
 branch-pinned cloud workflow is documented in [vast_ai.md](vast_ai.md).
+The controlled clean-reward experiment matrix is documented in
+[locomotion_ablations.md](locomotion_ablations.md).
 
 ## Testing
 

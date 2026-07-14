@@ -55,7 +55,14 @@ def test_train_hydra_configs_convert_to_valid_training_config(
 
 @pytest.mark.parametrize(
     "config_name",
-    ["standing", "foot_distance", "locomotion", "locomotion_easy", "locomotion_hard"],
+    [
+        "standing",
+        "foot_distance",
+        "locomotion",
+        "locomotion_easy",
+        "locomotion_hard",
+        "locomotion_clean",
+    ],
 )
 def test_experiment_train_configs_convert_to_valid_training_config(
     config_name: str,
@@ -90,6 +97,30 @@ def test_locomotion_tracks_pelvis_velocity() -> None:
     assert config.reward_config.track_ang_vel_z.link == "pelvis_link"
     assert config.reward_config.swing_foot_velocity.enabled
     assert config.reward_config.swing_foot_velocity.link == "pelvis_link"
+
+
+def test_clean_locomotion_removes_gait_shaping_and_randomization() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_clean"),
+    )
+
+    assert config.env_config.root_link == "pelvis_link"
+    assert config.env_config.observation.base_lin_vel
+    assert not config.env_config.observation.gait_phase
+    assert not config.env_config.observation.noise.enabled
+    assert not config.env_config.random_push.enabled
+    assert not config.command_config.curriculum.enabled
+    assert config.command_config.lin_vel_x == (0.0, 0.0)
+    assert config.command_config.ang_vel_yaw == (0.0, 0.0)
+    assert config.reward_config.track_lin_vel_xy.link == "pelvis_link"
+    assert config.reward_config.track_lin_vel_xy.frame_link == "pelvis_link"
+    assert not config.reward_config.foot_slip.enabled
+    assert not config.reward_config.foot_clearance.enabled
+    assert not config.reward_config.swing_foot_velocity.enabled
+    assert not config.reward_config.gait_contact.enabled
+    assert not config.reward_config.feet_air_time.enabled
+    assert config.reward_config.termination.weight == pytest.approx(-100.0)
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:
