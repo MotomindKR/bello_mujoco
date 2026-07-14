@@ -30,6 +30,7 @@ from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.tools.import_gmr_motion import (
     _build_qpos,
+    _validate_legacy_motion,
     _validate_self_collisions,
 )
 from bello_mujoco.tools.train_motion_ppo import MotionTrainingRunConfig
@@ -112,6 +113,22 @@ def tracking_config(path: Path, *, random_start: bool = False):
             joint_pos_noise=(0.0, 0.0),
             joint_vel_noise=(0.0, 0.0),
         ),
+    )
+
+
+def test_legacy_gmr_import_defaults_missing_foot_contacts() -> None:
+    frame_count = 2
+    arrays = _validate_legacy_motion(
+        {
+            "fps": 30.0,
+            "root_pos": np.zeros((frame_count, 3)),
+            "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
+            "dof_pos": np.zeros((frame_count, len(GMR_BELLO_JOINT_NAMES))),
+        }
+    )
+
+    np.testing.assert_array_equal(
+        arrays["foot_contacts"], np.zeros((frame_count, 2), dtype=np.float32)
     )
 
 

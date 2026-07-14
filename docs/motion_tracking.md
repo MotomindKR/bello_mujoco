@@ -51,6 +51,11 @@ body_lin_vel[T, 10, 3], body_ang_vel[T, 10, 3]
 foot_contacts[T, 2]
 ```
 
+Upstream GMR pickle exports may omit `foot_contacts`. The importer fills that
+optional legacy field with zeros; the current motion-tracking environment
+preserves the array in its canonical schema but does not use it for observations
+or rewards.
+
 Runtime loading rejects missing fields, nonfinite values, incorrect shapes,
 unnormalized quaternions, or a joint order that differs from the loaded model.
 Sampling uses linear interpolation for translations and velocities and

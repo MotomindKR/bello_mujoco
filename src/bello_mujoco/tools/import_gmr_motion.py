@@ -67,13 +67,7 @@ def import_gmr_motion(
     body_pos, body_quat, body_lin_vel, body_ang_vel = _body_trajectories(
         model.mj_model, qpos, qvel, body_ids
     )
-    contacts = np.stack(
-        [
-            np.asarray(motion["foot_contacts"]["left_foot"], dtype=np.float32),
-            np.asarray(motion["foot_contacts"]["right_foot"], dtype=np.float32),
-        ],
-        axis=-1,
-    )
+    contacts = arrays["foot_contacts"]
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -97,7 +91,7 @@ def import_gmr_motion(
 def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
     if not isinstance(motion, dict):
         raise ValueError(f"expected legacy motion dict, got {type(motion).__name__}")
-    for key in ("fps", "root_pos", "root_rot", "dof_pos", "foot_contacts"):
+    for key in ("fps", "root_pos", "root_rot", "dof_pos"):
         if key not in motion:
             raise ValueError(f"legacy motion is missing {key!r}")
     fps = float(motion["fps"])
@@ -123,16 +117,22 @@ def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
             )
         if not np.all(np.isfinite(arrays[name])):
             raise ValueError(f"legacy {name} contains nonfinite values")
-    contacts = motion["foot_contacts"]
-    if not isinstance(contacts, dict):
-        raise ValueError("legacy foot_contacts must be a dict")
-    for foot in ("left_foot", "right_foot"):
-        values = np.asarray(contacts.get(foot))
-        if values.shape != (frames,):
-            raise ValueError(
-                f"legacy foot_contacts[{foot!r}] has shape {values.shape}; "
-                f"expected {(frames,)}"
-            )
+    contacts = motion.get("foot_contacts")
+    if contacts is None:
+        arrays["foot_contacts"] = np.zeros((frames, 2), dtype=np.float32)
+    else:
+        if not isinstance(contacts, dict):
+            raise ValueError("legacy foot_contacts must be a dict")
+        contact_columns = []
+        for foot in ("left_foot", "right_foot"):
+            values = np.asarray(contacts.get(foot), dtype=np.float32)
+            if values.shape != (frames,):
+                raise ValueError(
+                    f"legacy foot_contacts[{foot!r}] has shape {values.shape}; "
+                    f"expected {(frames,)}"
+                )
+            contact_columns.append(values)
+        arrays["foot_contacts"] = np.stack(contact_columns, axis=-1)
     return arrays
 
 
