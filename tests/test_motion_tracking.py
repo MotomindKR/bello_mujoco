@@ -41,6 +41,10 @@ from bello_mujoco.tools.import_gmr_motion import (
     _validate_legacy_motion,
     _validate_self_collisions,
 )
+from bello_mujoco.tools.eval_motion_policy import (
+    native_motion_step,
+    reset_native_motion_rollout,
+)
 from bello_mujoco.tools.train_motion_ppo import MotionTrainingRunConfig
 
 
@@ -312,6 +316,28 @@ def test_motion_loader_and_shortest_arc_interpolation(
     assert sample.qpos.shape == (model.mj_model.nq,)
     assert float(jnp.linalg.norm(sample.qpos[3:7])) == pytest.approx(1.0)
     assert np.allclose(sample.qpos[3:7], np.asarray([1.0, 0.0, 0.0, 0.0]))
+
+
+def test_native_motion_rollout_does_not_load_mjx(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    config = MotionTrackingEnvConfig(motion_path=fixed_waist_motion)
+    env = BelloMotionTrackingEnv.load_prepared_native(fixed_waist_asset, config)
+    data = mujoco.MjData(env.model.mj_model)
+
+    state, observation = reset_native_motion_rollout(env, data)
+    stepped, next_observation, reward, done, info = native_motion_step(
+        env, data, state, jnp.zeros(env.action_size)
+    )
+
+    assert env.model.mjx_model is None
+    assert observation.shape == (env.observation_size,)
+    assert next_observation.shape == observation.shape
+    assert int(stepped.step_count) == 1
+    assert np.isfinite(float(reward))
+    assert bool(done) == bool(info["done/any"])
+    with pytest.raises(RuntimeError, match="native MuJoCo only"):
+        env.reset()
 
 
 def test_tracking_reset_matches_reference_and_is_nonterminal(

@@ -156,8 +156,6 @@ class BelloMotionTrackingEnv:
     config: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
 
     def __post_init__(self) -> None:
-        if self.model.mjx_model is None:
-            raise ValueError("motion tracking requires an MJX-loaded model")
         if self.model.actuator_joint_names != self.motion.joint_names:
             raise ValueError("model and motion actuator orders do not match")
         if self.model.mj_model.nq != 34 or self.model.mj_model.nv != 33:
@@ -222,6 +220,22 @@ class BelloMotionTrackingEnv:
         return cls(model, load_motion_clip(env_config.motion_path, model), env_config)
 
     @classmethod
+    def load_native(
+        cls,
+        asset_config: AssetPrepConfig,
+        env_config: MotionTrackingEnvConfig,
+        *,
+        use_viewer_model: bool = False,
+    ) -> "BelloMotionTrackingEnv":
+        model = load_bello_model(
+            asset_config,
+            terrain=env_config.terrain,
+            use_viewer_model=use_viewer_model,
+            load_mjx=False,
+        )
+        return cls(model, load_motion_clip(env_config.motion_path, model), env_config)
+
+    @classmethod
     def load_prepared(
         cls,
         prepared: PreparedAsset,
@@ -239,6 +253,24 @@ class BelloMotionTrackingEnv:
             terrain=env_config.terrain,
             actuator_config=actuator_config,
             use_viewer_model=use_viewer_model,
+        )
+        return cls(model, load_motion_clip(env_config.motion_path, model), env_config)
+
+    @classmethod
+    def load_prepared_native(
+        cls,
+        prepared: PreparedAsset,
+        env_config: MotionTrackingEnvConfig,
+        *,
+        actuator_config: ActuatorConfig = ActuatorConfig(),
+        use_viewer_model: bool = False,
+    ) -> "BelloMotionTrackingEnv":
+        model = load_prepared_bello_model(
+            prepared,
+            terrain=env_config.terrain,
+            actuator_config=actuator_config,
+            use_viewer_model=use_viewer_model,
+            load_mjx=False,
         )
         return cls(model, load_motion_clip(env_config.motion_path, model), env_config)
 
@@ -317,6 +349,7 @@ class BelloMotionTrackingEnv:
         reference_time: jax.Array | None = None,
         sampling_failure_ema: jax.Array | None = None,
     ) -> tuple[MotionTrackingState, jax.Array]:
+        self._require_mjx()
         time_key = pose_key = joint_key = root_key = offset_key = push_key = None
         if rng is not None:
             time_key, pose_key, joint_key, root_key, offset_key, push_key = (
@@ -441,6 +474,7 @@ class BelloMotionTrackingEnv:
     ) -> tuple[
         MotionTrackingState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]
     ]:
+        self._require_mjx()
         action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
         data = state.data.replace(ctrl=self._action_to_ctrl(state, action))
         data = jax.lax.fori_loop(
@@ -486,6 +520,7 @@ class BelloMotionTrackingEnv:
     ) -> tuple[
         MotionTrackingState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]
     ]:
+        self._require_mjx()
         batch_size = int(action.shape[0])
         reset_rng = push_rng = obs_rng = rng
         if rng is not None:
@@ -1270,6 +1305,12 @@ class BelloMotionTrackingEnv:
 
     def _body_id(self, name: str) -> int:
         return mujoco.mj_name2id(self.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+
+    def _require_mjx(self) -> None:
+        if self.model.mjx_model is None:
+            raise RuntimeError(
+                "this motion environment was loaded for native MuJoCo only"
+            )
 
     @staticmethod
     def _validate_range(name: str, value: tuple[float, float]) -> None:

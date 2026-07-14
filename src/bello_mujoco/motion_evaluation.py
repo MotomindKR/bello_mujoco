@@ -63,8 +63,8 @@ class MotionEvaluationWorker:
             name="bello-motion-evaluator",
         )
         child_environment = {
+            "JAX_PLATFORMS": "cpu",
             "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
-            "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.05",
         }
         previous = {name: os.environ.get(name) for name in child_environment}
         try:
