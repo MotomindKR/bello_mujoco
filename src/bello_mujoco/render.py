@@ -519,32 +519,44 @@ def mujoco_link_lin_vel(
     if link_name == "bello_root":
         root_qpos = int(env.model.root_qpos_adr)
         root_qvel = int(env.model.root_qvel_adr)
-        quat = np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32)
         return quat_rotate_inverse_np(
-            quat,
+            np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32),
             np.asarray(mj_data.qvel[root_qvel : root_qvel + 3], dtype=np.float32),
         )
     body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
     if body_id < 0:
         raise ValueError(f"configured link/body not found: {link_name!r}")
-    return np.asarray(mj_data.cvel[body_id, 3:6], dtype=np.float32)
+    velocity = np.empty(6, dtype=np.float64)
+    mujoco.mj_objectVelocity(
+        env.model.mj_model,
+        mj_data,
+        mujoco.mjtObj.mjOBJ_XBODY,
+        body_id,
+        velocity,
+        1,
+    )
+    return np.asarray(velocity[3:6], dtype=np.float32)
 
 
 def mujoco_link_ang_vel(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> np.ndarray:
     if link_name == "bello_root":
-        root_qpos = int(env.model.root_qpos_adr)
         root_qvel = int(env.model.root_qvel_adr)
-        quat = np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32)
-        return quat_rotate_inverse_np(
-            quat,
-            np.asarray(mj_data.qvel[root_qvel + 3 : root_qvel + 6], dtype=np.float32),
-        )
+        return np.asarray(mj_data.qvel[root_qvel + 3 : root_qvel + 6], dtype=np.float32)
     body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
     if body_id < 0:
         raise ValueError(f"configured link/body not found: {link_name!r}")
-    return np.asarray(mj_data.cvel[body_id, :3], dtype=np.float32)
+    velocity = np.empty(6, dtype=np.float64)
+    mujoco.mj_objectVelocity(
+        env.model.mj_model,
+        mj_data,
+        mujoco.mjtObj.mjOBJ_XBODY,
+        body_id,
+        velocity,
+        1,
+    )
+    return np.asarray(velocity[:3], dtype=np.float32)
 
 
 def quat_rotate_inverse_np(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
@@ -707,13 +719,19 @@ def mujoco_foot_lateral_speed_sq(
 ) -> np.ndarray:
     if env.model.foot_body_ids.size == 0:
         return np.zeros((0,), dtype=np.float32)
-    foot_body_ids = np.asarray(env.model.foot_body_ids, dtype=np.int32)
-    foot_cvel = np.asarray(mj_data.cvel[foot_body_ids, 3:6], dtype=np.float32)
-    foot_quat = np.asarray(mj_data.xquat[foot_body_ids], dtype=np.float32)
-    foot_world_vel = np.stack(
-        [quat_rotate_np(quat, vel) for quat, vel in zip(foot_quat, foot_cvel)],
-        axis=0,
-    )
+    foot_world_vel = []
+    for body_id in np.asarray(env.model.foot_body_ids, dtype=np.int32):
+        velocity = np.empty(6, dtype=np.float64)
+        mujoco.mj_objectVelocity(
+            env.model.mj_model,
+            mj_data,
+            mujoco.mjtObj.mjOBJ_XBODY,
+            int(body_id),
+            velocity,
+            0,
+        )
+        foot_world_vel.append(velocity[3:6])
+    foot_world_vel = np.asarray(foot_world_vel, dtype=np.float32)
     return np.sum(foot_world_vel[:, :2] ** 2, axis=1, dtype=np.float32)
 
 

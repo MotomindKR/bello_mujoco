@@ -316,6 +316,11 @@ The generated MuJoCo model timestep is `0.005s`, so the default
 link-aware reward/done terms whose `link` is null. The package default is the
 generated floating wrapper body `bello_root`; standing/balance recipes can set
 it to a physical body such as `torso_link`.
+Named-body linear and angular velocities are measured at the selected MuJoCo
+xbody origin. Base observations use that body's local axes, while reward terms
+explicitly requesting world or yaw-frame motion transform the same
+origin-centered velocity. MuJoCo's raw `cvel` is a subtree-COM-centered spatial
+quantity and is not exposed directly as a body-local observation.
 Reset runs a MuJoCo kinematics pass after qpos/qvel randomization, so named-body
 position/orientation terms such as `torso_link` height and projected gravity are
 valid in the initial observation stack before the first environment step.

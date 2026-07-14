@@ -1477,3 +1477,21 @@ The term uses a bounded exponential score with `std: 0.25`, is disabled below
 linear command speed `0.10`, and is enabled in the easy/hard locomotion recipe
 at weight `0.5`. Directional vector error prevents sideways or backward foot
 motion from receiving the same reward as commanded swing motion.
+
+## 2026-07-14 - Correct body-frame velocity measurements
+
+Audited the environment velocity helpers against MuJoCo's canonical
+`mj_objectVelocity(..., mjOBJ_XBODY, ...)` result. The previous implementation
+treated `mjData.cvel` as body-local velocity and rotated it into the world frame.
+MuJoCo instead stores `cvel` in the globally oriented, subtree-COM-centered
+c-frame. This corrupted named-body linear and angular observations, pelvis
+command tracking, foot slip and clearance measurements, and scheduled swing-foot
+velocity tracking. The free-root angular-velocity path also rotated an already
+local free-joint angular velocity a second time.
+
+The MJX path now reproduces MuJoCo's spatial motion transform: it shifts linear
+velocity from the root subtree COM to the requested body-frame origin, then
+rotates world-oriented motion into the body frame only when a local result is
+requested. CPU evaluation uses `mj_objectVelocity` directly. A regression test
+checks root, pelvis, torso, and both feet against MuJoCo under a nontrivial base
+orientation and generalized velocity.

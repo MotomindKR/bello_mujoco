@@ -1357,17 +1357,35 @@ class BelloLocomotionEnv:
         if link_name == "bello_root":
             root_qpos = int(self.model.root_qpos_adr)
             root_qvel = int(self.model.root_qvel_adr)
-            quat = state.data.qpos[root_qpos + 3 : root_qpos + 7]
-            return quat_rotate_inverse(quat, state.data.qvel[root_qvel : root_qvel + 3])
-        return state.data.cvel[self._link_body_id(link_name), 3:6]
+            return quat_rotate_inverse(
+                state.data.qpos[root_qpos + 3 : root_qpos + 7],
+                state.data.qvel[root_qvel : root_qvel + 3],
+            )
+        return quat_rotate_inverse(
+            self._link_quat(state, link_name),
+            self._link_world_lin_vel(state, link_name),
+        )
 
     def _link_world_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
         if link_name == "bello_root":
             root_qvel = int(self.model.root_qvel_adr)
             return state.data.qvel[root_qvel : root_qvel + 3]
-        return quat_rotate(
-            self._link_quat(state, link_name), self._link_body_lin_vel(state, link_name)
+        return self._body_world_lin_vel(
+            state, np.asarray([self._link_body_id(link_name)], dtype=np.int32)
+        )[0]
+
+    def _body_world_lin_vel(self, state: BelloState, body_ids: np.ndarray) -> jax.Array:
+        body_ids = np.asarray(body_ids, dtype=np.int32)
+        root_body_ids = np.asarray(
+            self.model.mj_model.body_rootid[body_ids], dtype=np.int32
         )
+        body_ids_jax = jnp.asarray(body_ids)
+        cvel = state.data.cvel[body_ids_jax]
+        offset = (
+            state.data.xpos[body_ids_jax]
+            - state.data.subtree_com[jnp.asarray(root_body_ids)]
+        )
+        return cvel[:, 3:6] - jnp.cross(offset, cvel[:, :3])
 
     def _link_yaw_frame_lin_vel(
         self, state: BelloState, link_name: str, frame_link_name: str | None = None
@@ -1383,13 +1401,12 @@ class BelloLocomotionEnv:
 
     def _link_body_ang_vel(self, state: BelloState, link_name: str) -> jax.Array:
         if link_name == "bello_root":
-            root_qpos = int(self.model.root_qpos_adr)
             root_qvel = int(self.model.root_qvel_adr)
-            quat = state.data.qpos[root_qpos + 3 : root_qpos + 7]
-            return quat_rotate_inverse(
-                quat, state.data.qvel[root_qvel + 3 : root_qvel + 6]
-            )
-        return state.data.cvel[self._link_body_id(link_name), :3]
+            return state.data.qvel[root_qvel + 3 : root_qvel + 6]
+        body_id = self._link_body_id(link_name)
+        return quat_rotate_inverse(
+            self._link_quat(state, link_name), state.data.cvel[body_id, :3]
+        )
 
     def _link_projected_gravity(self, state: BelloState, link_name: str) -> jax.Array:
         return quat_rotate_inverse(
@@ -1752,19 +1769,13 @@ class BelloLocomotionEnv:
         return state.data.xpos[jnp.asarray(self.model.foot_body_ids), 2] - terrain_z
 
     def _foot_lateral_speed_sq(self, state: BelloState) -> jax.Array:
-        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
-        foot_cvel = state.data.cvel[foot_body_ids, 3:6]
-        foot_quat = state.data.xquat[foot_body_ids]
-        foot_world_vel = jax.vmap(quat_rotate)(foot_quat, foot_cvel)
+        foot_world_vel = self._body_world_lin_vel(state, self.model.foot_body_ids)
         return jnp.sum(foot_world_vel[:, :2] ** 2, axis=1)
 
     def _foot_relative_yaw_frame_lin_vel(
         self, state: BelloState, frame_link_name: str
     ) -> jax.Array:
-        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
-        foot_body_vel = state.data.cvel[foot_body_ids, 3:6]
-        foot_quat = state.data.xquat[foot_body_ids]
-        foot_world_vel = jax.vmap(quat_rotate)(foot_quat, foot_body_vel)
+        foot_world_vel = self._body_world_lin_vel(state, self.model.foot_body_ids)
         frame_world_vel = self._link_world_lin_vel(state, frame_link_name)
         frame_yaw = yaw_quat(self._link_quat(state, frame_link_name))
         relative_world_vel = foot_world_vel - frame_world_vel

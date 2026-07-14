@@ -40,6 +40,11 @@ from bello_mujoco.envs.rewards import (
     TrackAngVelZRewardConfig,
     TrackLinVelXYRewardConfig,
 )
+from bello_mujoco.render import (
+    mujoco_foot_lateral_speed_sq,
+    mujoco_link_ang_vel,
+    mujoco_link_lin_vel,
+)
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import TerrainConfig
 
@@ -82,6 +87,96 @@ def test_model_exposes_contact_reward_sets(full_body_asset: PreparedAsset) -> No
     assert env.model.terrain_geom_ids.shape == (1,)
     assert env.model.robot_geom_ids.size >= env.model.foot_geom_ids.size
     assert env.model.nonfoot_robot_geom_ids.size > env.model.foot_geom_ids.size
+
+
+def test_link_and_foot_velocities_match_mujoco_object_velocity(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    mj_model = env.model.mj_model
+    mj_data = mujoco.MjData(mj_model)
+    mj_data.qpos[:] = env.model.default_qpos
+    root_qpos = int(env.model.root_qpos_adr)
+    root_quat = np.asarray([0.8, 0.2, -0.1, 0.5], dtype=np.float64)
+    mj_data.qpos[root_qpos + 3 : root_qpos + 7] = root_quat / np.linalg.norm(root_quat)
+    mj_data.qvel[:] = np.linspace(-0.4, 0.6, mj_model.nv)
+    mujoco.mj_forward(mj_model, mj_data)
+
+    state, _ = env.reset()
+    state = state.replace(
+        data=state.data.replace(
+            qpos=jnp.asarray(mj_data.qpos),
+            qvel=jnp.asarray(mj_data.qvel),
+            xpos=jnp.asarray(mj_data.xpos),
+            xquat=jnp.asarray(mj_data.xquat),
+            cvel=jnp.asarray(mj_data.cvel),
+            subtree_com=jnp.asarray(mj_data.subtree_com),
+        )
+    )
+
+    for link_name in ("bello_root", "pelvis_link", "torso_link"):
+        body_id = mj_model.body(link_name).id
+        expected_local = np.empty(6, dtype=np.float64)
+        expected_world = np.empty(6, dtype=np.float64)
+        mujoco.mj_objectVelocity(
+            mj_model,
+            mj_data,
+            mujoco.mjtObj.mjOBJ_XBODY,
+            body_id,
+            expected_local,
+            1,
+        )
+        mujoco.mj_objectVelocity(
+            mj_model,
+            mj_data,
+            mujoco.mjtObj.mjOBJ_XBODY,
+            body_id,
+            expected_world,
+            0,
+        )
+
+        assert np.allclose(
+            env._link_body_lin_vel(state, link_name), expected_local[3:6], atol=1e-5
+        )
+        assert np.allclose(
+            env._link_world_lin_vel(state, link_name), expected_world[3:6], atol=1e-5
+        )
+        assert np.allclose(
+            env._link_body_ang_vel(state, link_name), expected_local[:3], atol=1e-5
+        )
+        assert np.allclose(
+            mujoco_link_lin_vel(env, mj_data, link_name),
+            expected_local[3:6],
+            atol=1e-6,
+        )
+        assert np.allclose(
+            mujoco_link_ang_vel(env, mj_data, link_name),
+            expected_local[:3],
+            atol=1e-6,
+        )
+
+    expected_foot_speed_sq = []
+    for body_id in env.model.foot_body_ids:
+        velocity = np.empty(6, dtype=np.float64)
+        mujoco.mj_objectVelocity(
+            mj_model,
+            mj_data,
+            mujoco.mjtObj.mjOBJ_XBODY,
+            int(body_id),
+            velocity,
+            0,
+        )
+        expected_foot_speed_sq.append(np.sum(velocity[3:5] ** 2))
+    expected_foot_speed_sq = np.asarray(expected_foot_speed_sq, dtype=np.float32)
+
+    assert np.allclose(
+        env._foot_lateral_speed_sq(state), expected_foot_speed_sq, atol=1e-5
+    )
+    assert np.allclose(
+        mujoco_foot_lateral_speed_sq(env, mj_data),
+        expected_foot_speed_sq,
+        atol=1e-6,
+    )
 
 
 def test_locomotion_env_rejects_missing_reward_body_reference(
