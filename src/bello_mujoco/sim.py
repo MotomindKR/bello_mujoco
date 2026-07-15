@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import math
 
+import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 import numpy as np
@@ -29,6 +30,47 @@ from bello_mujoco.terrain import (
 
 DEFAULT_CONTACT_BUDGET_PER_ENV = 32
 DEFAULT_WARP_NJMAX = 256
+
+
+def _validate_randomization_range(
+    name: str, bounds: tuple[float, float], *, positive: bool = False
+) -> None:
+    if len(bounds) != 2:
+        raise ValueError(f"{name} must contain two values, got {bounds}")
+    low, high = bounds
+    if not math.isfinite(low) or not math.isfinite(high) or low > high:
+        raise ValueError(f"{name} must be finite and ordered, got {bounds}")
+    if positive and low <= 0.0:
+        raise ValueError(f"{name} must contain positive values, got {bounds}")
+
+
+@dataclass(frozen=True)
+class ModelRandomizationConfig:
+    """Fixed per-world physical model variation for vectorized MJX training."""
+
+    enabled: bool = False
+    seed: int = 0
+    joint_origin_range: tuple[float, float] = (0.0, 0.0)
+    joint_angle_offset_range: tuple[float, float] = (0.0, 0.0)
+    joint_inertia_scale_range: tuple[float, float] = (1.0, 1.0)
+
+    def __post_init__(self) -> None:
+        if self.seed < 0:
+            raise ValueError(
+                f"model_randomization.seed must be nonnegative, got {self.seed}"
+            )
+        _validate_randomization_range(
+            "model_randomization.joint_origin_range", self.joint_origin_range
+        )
+        _validate_randomization_range(
+            "model_randomization.joint_angle_offset_range",
+            self.joint_angle_offset_range,
+        )
+        _validate_randomization_range(
+            "model_randomization.joint_inertia_scale_range",
+            self.joint_inertia_scale_range,
+            positive=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -61,6 +103,7 @@ class BelloModel:
     actuator_qvel_indices: np.ndarray
     hold_ctrl_indices: np.ndarray
     policy_action_scale: np.ndarray
+    joint_angle_offset: np.ndarray
     geom_body_ids: np.ndarray
     foot_body_ids: np.ndarray
     robot_geom_ids: np.ndarray
@@ -95,6 +138,7 @@ def load_bello_model(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
+    model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     use_viewer_model: bool = False,
     load_mjx: bool = True,
@@ -105,6 +149,7 @@ def load_bello_model(
         warp=warp,
         batch_size=batch_size,
         terrain=terrain,
+        model_randomization=model_randomization,
         actuator_config=config.actuator_config,
         spawn_clearance=spawn_clearance,
         use_viewer_model=use_viewer_model,
@@ -118,6 +163,7 @@ def load_prepared_bello_model(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
+    model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     actuator_config: ActuatorConfig = ActuatorConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     use_viewer_model: bool = False,
@@ -130,6 +176,7 @@ def load_prepared_bello_model(
         warp=warp,
         batch_size=batch_size,
         terrain=terrain,
+        model_randomization=model_randomization,
         actuator_config=actuator_config,
         spawn_clearance=spawn_clearance,
         load_mjx=load_mjx,
@@ -143,6 +190,7 @@ def _load_bello_model_from_path(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
+    model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     actuator_config: ActuatorConfig = ActuatorConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     load_mjx: bool = True,
@@ -163,7 +211,6 @@ def _load_bello_model_from_path(
         viewer_path = runtime_mjcf_path(viewer_path, terrain)
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
-    mjx_model = mjx.put_model(mj_model, impl="warp") if load_mjx else None
 
     actuator_joint_ids = np.asarray(mj_model.actuator_trnid[:, 0], dtype=np.int32)
     actuator_joint_names = tuple(
@@ -212,6 +259,23 @@ def _load_bello_model_from_path(
     root_qpos_adr = int(mj_model.jnt_qposadr[root_id])
     root_qvel_adr = int(mj_model.jnt_dofadr[root_id])
 
+    terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
+    randomized_fields = _randomized_model_fields(
+        mj_model,
+        model_randomization,
+        batch_size=batch_size,
+        actuator_joint_ids=actuator_joint_ids,
+    )
+    if randomized_fields is not None:
+        _apply_native_model_sample(mj_model, randomized_fields, sample=0)
+
+    mjx_model = mjx.put_model(mj_model, impl="warp") if load_mjx else None
+    if mjx_model is not None and randomized_fields is not None:
+        mjx_model = mjx_model.replace(
+            jnt_pos=jnp.asarray(randomized_fields["jnt_pos"]),
+            body_inertia=jnp.asarray(randomized_fields["body_inertia"]),
+        )
+
     default_qpos, default_qvel, default_ctrl = model_home_state(mj_model)
     default_qpos[root_qpos_adr : root_qpos_adr + 3] = np.asarray(
         DEFAULT_ROOT_POS, dtype=np.float32
@@ -234,7 +298,6 @@ def _load_bello_model_from_path(
     foot_geom_ids = robot_collision_geom_indices(
         mj_model, body_ids=set(foot_body_ids.tolist())
     )
-    terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
     nonfoot_robot_geom_ids = robot_collision_geom_indices(
         mj_model, excluded_body_ids=set(foot_body_ids.tolist())
     )
@@ -258,6 +321,11 @@ def _load_bello_model_from_path(
         actuator_qvel_indices=actuator_qvel_indices,
         hold_ctrl_indices=hold_ctrl_indices,
         policy_action_scale=policy_action_scale,
+        joint_angle_offset=(
+            randomized_fields["joint_angle_offset"]
+            if randomized_fields is not None
+            else np.zeros((1, mj_model.nu), dtype=np.float32)
+        ),
         geom_body_ids=np.asarray(mj_model.geom_bodyid, dtype=np.int32),
         foot_body_ids=foot_body_ids,
         robot_geom_ids=robot_geom_ids,
@@ -271,6 +339,66 @@ def _load_bello_model_from_path(
         root_qpos_adr=root_qpos_adr,
         root_qvel_adr=root_qvel_adr,
     )
+
+
+def _randomized_model_fields(
+    mj_model: mujoco.MjModel,
+    config: ModelRandomizationConfig,
+    *,
+    batch_size: int,
+    actuator_joint_ids: np.ndarray,
+) -> dict[str, np.ndarray] | None:
+    if not config.enabled:
+        return None
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+    rng = np.random.default_rng(config.seed)
+    joint_ids = np.unique(np.asarray(actuator_joint_ids, dtype=np.int32))
+    joint_body_ids = np.unique(
+        np.asarray(mj_model.jnt_bodyid[joint_ids], dtype=np.int32)
+    )
+
+    jnt_pos = np.broadcast_to(
+        np.asarray(mj_model.jnt_pos, dtype=np.float32),
+        (batch_size, mj_model.njnt, 3),
+    ).copy()
+    jnt_pos[:, joint_ids] += rng.uniform(
+        *config.joint_origin_range,
+        size=(batch_size, joint_ids.size, 3),
+    ).astype(np.float32)
+
+    body_inertia = np.broadcast_to(
+        np.asarray(mj_model.body_inertia, dtype=np.float32),
+        (batch_size, mj_model.nbody, 3),
+    ).copy()
+    inertia_scale = rng.uniform(
+        *config.joint_inertia_scale_range,
+        size=(batch_size, joint_body_ids.size, 1),
+    ).astype(np.float32)
+    body_inertia[:, joint_body_ids] *= inertia_scale
+
+    joint_angle_offset = rng.uniform(
+        *config.joint_angle_offset_range,
+        size=(batch_size, mj_model.nu),
+    ).astype(np.float32)
+
+    return {
+        "jnt_pos": jnt_pos,
+        "body_inertia": body_inertia,
+        "joint_angle_offset": joint_angle_offset,
+    }
+
+
+def _apply_native_model_sample(
+    mj_model: mujoco.MjModel,
+    fields: dict[str, np.ndarray],
+    *,
+    sample: int,
+) -> None:
+    mj_model.jnt_pos[:] = fields["jnt_pos"][sample]
+    mj_model.body_inertia[:] = fields["body_inertia"][sample]
+    mujoco.mj_setConst(mj_model, mujoco.MjData(mj_model))
 
 
 def model_home_state(

@@ -45,6 +45,20 @@ env_config:
   max_episode_steps: 1000
   action_clip: 1.0
   root_link: pelvis_link
+  terrain:
+    mode: rough
+    seed: 0
+    hfield_resolution: 65
+    hfield_amplitude: 0.015
+    hfield_base_thickness: 0.01
+    hfield_frequency: 5.0
+    slope_angle_range: [-0.005, 0.005]
+  model_randomization:
+    enabled: true
+    seed: 0
+    joint_origin_range: [-0.001, 0.001]
+    joint_angle_offset_range: [-0.02, 0.02]
+    joint_inertia_scale_range: [0.95, 1.05]
   spawn:
     root_xy_range: [-0.5, 0.5]
     root_yaw_range: [-3.14159265, 3.14159265]
@@ -233,9 +247,13 @@ reward_config:
     weight: 1.0
     sigma: 0.01
   standing_foot_vel:
-    enabled: false
+    enabled: true
+    weight: -2.0
+    command_speed_threshold: 0.1
   standing_foot_air_time:
-    enabled: false
+    enabled: true
+    weight: -3.0
+    command_speed_threshold: 0.1
   undesired_contact:
     enabled: false
   self_collision:

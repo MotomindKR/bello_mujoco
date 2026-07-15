@@ -10,6 +10,7 @@ from bello_mujoco.assets_pipeline.prepare import actuated_urdf_joint_names
 from bello_mujoco.assets import source_assets_root
 from bello_mujoco.contracts import DEFAULT_SPAWN_CLEARANCE
 from bello_mujoco.sim import (
+    ModelRandomizationConfig,
     load_bello_model,
     load_prepared_bello_model,
     robot_geom_min_z,
@@ -20,6 +21,7 @@ from bello_mujoco.terrain import (
     ROBOT_ONLY_TERRAIN,
     ROUGH_TERRAIN,
     TerrainConfig,
+    random_slope_angles,
     rough_height_data,
 )
 
@@ -48,6 +50,71 @@ def test_model_can_load_without_mjx_for_cpu_only_viewers(
     assert model.mjx_model is None
     with pytest.raises(RuntimeError, match="loaded without MJX"):
         model.make_data()
+
+
+def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
+    full_body_asset: PreparedAsset,
+) -> None:
+    nominal = load_prepared_bello_model(
+        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+    )
+    randomized = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        batch_size=4,
+        model_randomization=ModelRandomizationConfig(
+            enabled=True,
+            seed=7,
+            joint_origin_range=(-0.001, 0.001),
+            joint_angle_offset_range=(-0.02, 0.02),
+            joint_inertia_scale_range=(0.95, 1.05),
+        ),
+    )
+    assert randomized.mjx_model is not None
+    mjx_model = randomized.mjx_model
+    assert mjx_model.jnt_pos.shape == (4, randomized.mj_model.njnt, 3)
+    assert mjx_model.body_inertia.shape == (4, randomized.mj_model.nbody, 3)
+    assert randomized.joint_angle_offset.shape == (4, randomized.mj_model.nu)
+
+    joint_ids = np.unique(randomized.mj_model.actuator_trnid[:, 0]).astype(np.int32)
+    body_ids = np.unique(randomized.mj_model.jnt_bodyid[joint_ids]).astype(np.int32)
+    jnt_pos = np.asarray(mjx_model.jnt_pos)
+    body_inertia = np.asarray(mjx_model.body_inertia)
+    joint_angle_offset = randomized.joint_angle_offset
+
+    assert np.max(
+        np.abs(jnt_pos[:, joint_ids] - nominal.mj_model.jnt_pos[joint_ids])
+    ) <= (0.001 + 1.0e-7)
+    assert not np.allclose(jnt_pos[0, joint_ids], jnt_pos[1, joint_ids])
+    assert np.min(joint_angle_offset) >= -0.02 - 1.0e-7
+    assert np.max(joint_angle_offset) <= 0.02 + 1.0e-7
+    assert not np.allclose(joint_angle_offset[0], joint_angle_offset[1])
+    np.testing.assert_allclose(randomized.mj_model.jnt_pos, jnt_pos[0], atol=1.0e-7)
+    np.testing.assert_allclose(
+        randomized.mj_model.body_inertia, body_inertia[0], atol=1.0e-7
+    )
+
+    nominal_inertia = nominal.mj_model.body_inertia[body_ids]
+    nonzero = nominal_inertia > 0.0
+    ratios = body_inertia[:, body_ids][..., nonzero] / nominal_inertia[nonzero]
+    assert np.min(ratios) >= 0.95 - 1.0e-6
+    assert np.max(ratios) <= 1.05 + 1.0e-6
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"seed": -1}, "seed must be nonnegative"),
+        ({"joint_origin_range": (float("nan"), 0.0)}, "joint_origin_range"),
+        ({"joint_angle_offset_range": (0.1, -0.1)}, "joint_angle_offset_range"),
+        ({"joint_inertia_scale_range": (0.0, 1.0)}, "positive values"),
+    ],
+)
+def test_model_randomization_config_rejects_invalid_ranges(
+    kwargs: dict, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        ModelRandomizationConfig(**kwargs)
 
 
 def test_joint_actuator_mode_controls_policy_action_partition(
@@ -238,6 +305,46 @@ def test_runtime_rough_terrain_seed_changes_scene(
     assert scene_a.xml_path != scene_b.xml_path
     assert rough_height_data(terrain_a) == rough_height_data(terrain_a)
     assert rough_height_data(terrain_a) != rough_height_data(terrain_b)
+
+
+def test_runtime_rough_terrain_applies_seeded_slight_slope(
+    full_body_asset: PreparedAsset,
+) -> None:
+    terrain = TerrainConfig(
+        mode="rough",
+        seed=11,
+        hfield_resolution=17,
+        slope_angle_range=(-0.005, 0.005),
+    )
+    scene = load_prepared_bello_model(full_body_asset, terrain=terrain)
+    ground_id = mujoco.mj_name2id(
+        scene.mj_model, mujoco.mjtObj.mjOBJ_GEOM, terrain.name
+    )
+    roll, pitch = random_slope_angles(terrain)
+
+    assert -0.005 <= roll <= 0.005
+    assert -0.005 <= pitch <= 0.005
+    assert random_slope_angles(terrain) == (roll, pitch)
+    assert not np.allclose(scene.mj_model.geom_quat[ground_id], [1.0, 0.0, 0.0, 0.0])
+    data = mujoco.MjData(scene.mj_model)
+    mujoco.mj_forward(scene.mj_model, data)
+    ground_normal = data.geom_xmat[ground_id].reshape(3, 3)[:, 2]
+    assert not np.allclose(ground_normal, [0.0, 0.0, 1.0])
+
+
+@pytest.mark.parametrize(
+    "slope_range",
+    [
+        (0.1, -0.1),
+        (float("nan"), 0.0),
+        (-np.pi / 2.0, 0.0),
+    ],
+)
+def test_terrain_rejects_invalid_slope_range(
+    slope_range: tuple[float, float],
+) -> None:
+    with pytest.raises(ValueError, match="slope_angle_range"):
+        TerrainConfig(slope_angle_range=slope_range)
 
 
 def test_default_spawn_pose_starts_above_flat_terrain(

@@ -46,7 +46,7 @@ from bello_mujoco.render import (
     mujoco_link_ang_vel,
     mujoco_link_lin_vel,
 )
-from bello_mujoco.sim import WarpConfig
+from bello_mujoco.sim import ModelRandomizationConfig, WarpConfig
 from bello_mujoco.terrain import TerrainConfig
 
 
@@ -637,6 +637,34 @@ def test_reset_batch_can_randomize_spawn_state(full_body_asset: PreparedAsset) -
         np.asarray(state.data.qvel[:, root_qvel : root_qvel + 2]),
         np.zeros((2, 2), dtype=np.float32),
     )
+
+
+def test_reset_batch_applies_per_world_model_kinematics(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=4,
+        env_config=BelloEnvConfig(
+            terrain=TerrainConfig(mode="plane"),
+            model_randomization=ModelRandomizationConfig(
+                enabled=True,
+                seed=3,
+                joint_origin_range=(-0.001, 0.001),
+                joint_angle_offset_range=(-0.02, 0.02),
+                joint_inertia_scale_range=(0.95, 1.05),
+            ),
+        ),
+    )
+
+    state, _ = env.reset_batch(4, command=jnp.zeros(3, dtype=jnp.float32))
+
+    assert not jnp.allclose(state.data.xanchor[0], state.data.xanchor[1])
+    expected_ctrl = jnp.asarray(env.model.default_ctrl)[None, :] + jnp.asarray(
+        env.model.joint_angle_offset
+    )
+    np.testing.assert_allclose(np.asarray(state.data.ctrl), np.asarray(expected_ctrl))
+    assert not jnp.allclose(state.data.ctrl[0], state.data.ctrl[1])
 
 
 def test_initial_step_count_staggering_is_explicit(

@@ -233,6 +233,12 @@ proprioceptive.
 `BelloEnvConfig.spawn` controls reset randomization and optional initial
 step-count staggering for vectorized PPO runs. `ContactConfig` debounces foot
 contacts and sets the normal-force threshold for undesired non-foot contacts.
+`BelloEnvConfig.model_randomization` can assign fixed per-world
+actuated-joint anchor offsets, angular actuator-target offsets, and child-body
+inertia scales to an MJX-Warp training batch. The first seeded sample is used
+by native MuJoCo for consistent CPU and video evaluation. Seeded rough
+heightfields, seeded terrain roll/pitch, and randomized root positions provide
+terrain variation separately through the terrain and spawn configs.
 
 Commands are `[lin_vel_x, lin_vel_y, yaw_vel]` in the robot yaw frame. The
 Bello source asset is Y-forward anatomically, so the current locomotion recipes

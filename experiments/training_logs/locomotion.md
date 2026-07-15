@@ -1679,3 +1679,30 @@ debounces foot contact on and off by 40 ms, and enables the existing `-0.1`
 contact-timing event penalty with minimum air/contact durations of 0.2/0.3 s.
 The working PPO, tracking, phase-height, joint-margin, and action-margin settings
 remain unchanged.
+
+## 2026-07-16 - Penalize standing steps and add mild model variation
+
+The 46,000-update follow-up removed irregular double steps and survived all
+20-second deterministic evaluations, but zero command still drifted about one
+meter and produced more than five combined footfalls per second. Freezing the
+gait phase removed the clock without directly penalizing planted-foot motion or
+air time.
+
+The Berkeley recipe now enables the existing standing-only terms at
+`standing_foot_vel: -2.0` and `standing_foot_air_time: -3.0`, both gated at a
+command norm of `0.1`. Standing probability and the five-second push schedule
+remain unchanged.
+
+The same recipe switches to a mild seeded rough heightfield with `0.015` meter
+amplitude and frequency `5.0`. Seeded terrain roll and pitch in
+`[-0.005, 0.005]` radians add a very slight incline; randomized root XY and yaw
+expose resets to different local patches and slope directions. It also adds
+reproducible per-world model
+randomization: actuated-joint anchor XYZ offsets in `[-0.001, 0.001]` meters
+and `0.95--1.05` scaling of the diagonal inertia for each actuated joint's
+child body. Each actuator also receives a fixed position-target offset in
+`[-0.02, 0.02]` radians, representing motor zero-angle calibration error.
+MJX-Warp consumes the model and control changes as batched values, so all 2,048
+training worlds receive distinct fixed physical variants without sampling
+inside the rollout hot path. Native MuJoCo uses the first seeded sample for
+consistent rendering and evaluation.

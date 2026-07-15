@@ -277,6 +277,13 @@ env_config:
     hfield_amplitude: 0.04
     hfield_base_thickness: 0.01
     hfield_frequency: 2.5
+    slope_angle_range: [0.0, 0.0]
+  model_randomization:
+    enabled: false
+    seed: 0
+    joint_origin_range: [0.0, 0.0]
+    joint_angle_offset_range: [0.0, 0.0]
+    joint_inertia_scale_range: [1.0, 1.0]
   gait:
     cycle_time: 0.80
     command_speed_frequency_gain: 0.55
@@ -356,6 +363,23 @@ adds uniform actuator-joint position noise clipped to hard joint limits, and
 `stagger_initial_step_count` is used at PPO runner initialization to start
 vectorized envs at random episode step counts, desynchronizing timeouts, gait
 phase, command resampling, and random push events.
+
+`model_randomization` creates one fixed physical model sample per vectorized
+MJX-Warp world at environment load time. `joint_origin_range` adds an XYZ
+offset in meters to each actuated joint anchor,
+`joint_angle_offset_range` adds a fixed angular offset in radians to each
+actuator's position target, and
+`joint_inertia_scale_range` scales the diagonal inertia of each actuated
+joint's child body by one positive scalar. The samples remain assigned to their
+worlds across episode resets, so a training batch contains many physical
+variants without putting Python sampling in the rollout path. `seed` makes the
+batch reproducible. Native MuJoCo evaluation uses the first sample so its
+kinematics, controls, and dynamics agree with the corresponding MJX world. Terrain
+variation is controlled separately by `terrain`: `mode: rough` generates a
+seeded heightfield, and randomized root XY positions expose resets to different
+local patches of that surface. `slope_angle_range` samples reproducible terrain
+roll and pitch angles in radians from the terrain seed. Randomized root yaw then
+exposes the policy to different incline directions relative to its body frame.
 
 `joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`.
 `base_lin_vel`, `base_ang_vel`, `projected_gravity`, and `base_height` are

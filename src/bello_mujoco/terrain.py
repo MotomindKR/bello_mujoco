@@ -32,6 +32,25 @@ class TerrainConfig:
     hfield_amplitude: float = 0.04
     hfield_base_thickness: float = 0.01
     hfield_frequency: float = 2.5
+    slope_angle_range: tuple[float, float] = (0.0, 0.0)
+
+    def __post_init__(self) -> None:
+        if len(self.slope_angle_range) != 2:
+            raise ValueError(
+                "slope_angle_range must contain two values, got "
+                f"{self.slope_angle_range}"
+            )
+        low, high = self.slope_angle_range
+        if not math.isfinite(low) or not math.isfinite(high) or low > high:
+            raise ValueError(
+                "slope_angle_range must be finite and ordered, got "
+                f"{self.slope_angle_range}"
+            )
+        if low <= -math.pi / 2.0 or high >= math.pi / 2.0:
+            raise ValueError(
+                "slope_angle_range must stay within (-pi/2, pi/2), got "
+                f"{self.slope_angle_range}"
+            )
 
 
 ROBOT_ONLY_TERRAIN = TerrainConfig(mode="none")
@@ -82,6 +101,7 @@ def add_plane(root: ET.Element, config: TerrainConfig) -> None:
                 "name": config.name,
                 "type": "plane",
                 "pos": format_vec(config.pos),
+                "quat": format_vec(random_slope_quat(config)),
                 "size": format_vec(config.size),
                 "rgba": format_vec(config.rgba),
                 "friction": format_vec(config.friction),
@@ -140,6 +160,7 @@ def add_hfield(root: ET.Element, config: TerrainConfig) -> None:
                 "type": "hfield",
                 "hfield": hfield_name,
                 "pos": format_vec(config.pos),
+                "quat": format_vec(random_slope_quat(config)),
                 "rgba": format_vec(config.rgba),
                 "friction": format_vec(config.friction),
                 "condim": str(config.condim),
@@ -176,6 +197,27 @@ def rough_height_data(config: TerrainConfig) -> str:
                 / max(config.size[2], 1e-6)
             )
     return " ".join(f"{value:.8g}" for value in values)
+
+
+def random_slope_angles(config: TerrainConfig) -> tuple[float, float]:
+    """Return reproducible terrain roll and pitch angles in radians."""
+
+    rng = random.Random(config.seed ^ 0x5F3759DF)
+    low, high = config.slope_angle_range
+    return rng.uniform(low, high), rng.uniform(low, high)
+
+
+def random_slope_quat(config: TerrainConfig) -> tuple[float, float, float, float]:
+    """Return the MuJoCo wxyz quaternion for the seeded terrain incline."""
+
+    roll, pitch = random_slope_angles(config)
+    half_roll = 0.5 * roll
+    half_pitch = 0.5 * pitch
+    cr = math.cos(half_roll)
+    sr = math.sin(half_roll)
+    cp = math.cos(half_pitch)
+    sp = math.sin(half_pitch)
+    return cr * cp, sr * cp, cr * sp, -sr * sp
 
 
 def terrain_config_hash(config: TerrainConfig) -> str:

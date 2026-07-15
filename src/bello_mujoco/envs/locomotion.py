@@ -31,6 +31,7 @@ from bello_mujoco.envs.rewards import (
 )
 from bello_mujoco.sim import (
     BelloModel,
+    ModelRandomizationConfig,
     WarpConfig,
     load_bello_model,
     load_prepared_bello_model,
@@ -207,6 +208,7 @@ class BelloEnvConfig:
     action_clip: float = BELLO_ACTION_CLIP
     root_link: str = "bello_root"
     terrain: TerrainConfig = FLAT_TERRAIN
+    model_randomization: ModelRandomizationConfig = ModelRandomizationConfig()
     spawn: SpawnConfig = SpawnConfig()
     gait: GaitConfig = GaitConfig()
     contact: ContactConfig = ContactConfig()
@@ -439,6 +441,7 @@ class BelloLocomotionEnv:
                 warp=warp,
                 batch_size=batch_size,
                 terrain=env_config.terrain,
+                model_randomization=env_config.model_randomization,
                 spawn_clearance=env_config.spawn.clearance,
                 use_viewer_model=use_viewer_model,
                 load_mjx=load_mjx,
@@ -470,6 +473,7 @@ class BelloLocomotionEnv:
                 warp=warp,
                 batch_size=batch_size,
                 terrain=env_config.terrain,
+                model_randomization=env_config.model_randomization,
                 actuator_config=actuator_config,
                 spawn_clearance=env_config.spawn.clearance,
                 use_viewer_model=use_viewer_model,
@@ -612,6 +616,15 @@ class BelloLocomotionEnv:
                 f"{model.policy_action_scale.shape} for "
                 f"{model.policy_ctrl_indices.shape} policy controls"
             )
+        if (
+            model.joint_angle_offset.ndim != 2
+            or model.joint_angle_offset.shape[1] != mj_model.nu
+            or model.joint_angle_offset.shape[0] < 1
+        ):
+            raise ValueError(
+                "joint_angle_offset must have shape (worlds, nu), got "
+                f"{model.joint_angle_offset.shape} for nu={mj_model.nu}"
+            )
         if model.actuator_qpos_indices.shape != (mj_model.nu,):
             raise ValueError(
                 "actuator_qpos_indices must have one entry per actuator, got "
@@ -672,7 +685,7 @@ class BelloLocomotionEnv:
         data = data.replace(
             qpos=jnp.asarray(self.model.default_qpos),
             qvel=jnp.asarray(self.model.default_qvel),
-            ctrl=jnp.asarray(self.model.default_ctrl),
+            ctrl=self._action_to_ctrl(jnp.zeros(self.action_size, dtype=jnp.float32)),
         )
         data = self._apply_reset_randomization(data, reset_rng)
         data = mjx.kinematics(self.model.mjx_model, data)
@@ -718,6 +731,13 @@ class BelloLocomotionEnv:
             reset_keys = jax.random.split(reset_rng, batch_size)
             state, _ = jax.vmap(self.reset)(command, reset_keys)
         data = state.data.replace(_impl=state.data._impl.replace(nworld=batch_size))
+        data = mjx.kinematics(self.model.mjx_model, data)
+        data = data.replace(
+            ctrl=jax.vmap(self._action_to_ctrl)(
+                jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
+                self._joint_angle_offset_batch(batch_size),
+            )
+        )
         state = state.replace(data=data)
         return state, self.observation_batch(state, obs_rng)
 
@@ -937,7 +957,8 @@ class BelloLocomotionEnv:
             -self.action_clip,
             self.action_clip,
         )
-        ctrl = jax.vmap(self._action_to_ctrl)(action)
+        joint_angle_offset = self._joint_angle_offset_batch(batch_size)
+        ctrl = jax.vmap(self._action_to_ctrl)(action, joint_angle_offset)
         data = state.data.replace(
             ctrl=ctrl,
             _impl=state.data._impl.replace(nworld=batch_size),
@@ -992,6 +1013,7 @@ class BelloLocomotionEnv:
             foot_angular_speed,
             undesired_contact,
             self_collision,
+            joint_angle_offset,
         )
         reward, reward_info = self._sanitize_nonfinite_reward(
             reward, reward_info, done_flags
@@ -1210,8 +1232,14 @@ class BelloLocomotionEnv:
             )
         return value * jnp.asarray(scale, dtype=value.dtype)
 
-    def _action_to_ctrl(self, action: jax.Array) -> jax.Array:
-        default = jnp.asarray(self.model.default_ctrl)
+    def _action_to_ctrl(
+        self,
+        action: jax.Array,
+        joint_angle_offset: jax.Array | None = None,
+    ) -> jax.Array:
+        if joint_angle_offset is None:
+            joint_angle_offset = jnp.asarray(self.model.joint_angle_offset[0])
+        default = jnp.asarray(self.model.default_ctrl) + joint_angle_offset
         action = jnp.clip(
             jnp.asarray(action, dtype=jnp.float32),
             -self.action_clip,
@@ -1221,6 +1249,17 @@ class BelloLocomotionEnv:
         return default.at[policy_indices].set(
             default[policy_indices] + self._action_scale() * action
         )
+
+    def _joint_angle_offset_batch(self, batch_size: int) -> jax.Array:
+        offset = jnp.asarray(self.model.joint_angle_offset, dtype=jnp.float32)
+        if offset.shape[0] == 1:
+            return jnp.broadcast_to(offset, (batch_size, offset.shape[1]))
+        if offset.shape[0] != batch_size:
+            raise ValueError(
+                "model randomization batch does not match environment batch: "
+                f"{offset.shape[0]} != {batch_size}"
+            )
+        return offset
 
     def _action_scale(self) -> jax.Array:
         return jnp.asarray(self.model.policy_action_scale, dtype=jnp.float32)
@@ -1576,6 +1615,7 @@ class BelloLocomotionEnv:
         foot_angular_speed: jax.Array,
         undesired_contact: jax.Array,
         self_collision: jax.Array,
+        joint_angle_offset: jax.Array | None = None,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         command = next_state.command
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
@@ -1621,7 +1661,9 @@ class BelloLocomotionEnv:
             actuator_force=next_state.data.actuator_force,
             joint_limit_low=self._actuator_joint_limit_low(),
             joint_limit_high=self._actuator_joint_limit_high(),
-            action_target_default=self._policy_action_target_default(),
+            action_target_default=self._policy_action_target_default(
+                joint_angle_offset
+            ),
             action_target_scale=self._action_scale(),
             action_target_low=self._policy_action_target_low(),
             action_target_high=self._policy_action_target_high(),
@@ -2020,9 +2062,16 @@ class BelloLocomotionEnv:
         joint_ids = jnp.asarray(self.model.mj_model.actuator_trnid[:, 0])
         return jnp.asarray(self.model.mj_model.jnt_range)[joint_ids, 1]
 
-    def _policy_action_target_default(self) -> jax.Array:
+    def _policy_action_target_default(
+        self, joint_angle_offset: jax.Array | None = None
+    ) -> jax.Array:
+        if joint_angle_offset is None:
+            joint_angle_offset = jnp.asarray(self.model.joint_angle_offset[0])
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        return jnp.asarray(self.model.default_ctrl)[policy_indices]
+        return (
+            jnp.asarray(self.model.default_ctrl)[policy_indices]
+            + joint_angle_offset[policy_indices]
+        )
 
     def _policy_action_target_low(self) -> jax.Array:
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)

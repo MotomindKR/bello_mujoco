@@ -221,6 +221,20 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     assert config.env_config.gait.standing_command_threshold == pytest.approx(0.1)
     assert config.env_config.gait.randomize_frequency
     assert config.env_config.gait.frequency_range == pytest.approx((1.25, 1.5))
+    assert config.env_config.model_randomization.enabled
+    assert config.env_config.terrain.mode == "rough"
+    assert config.env_config.terrain.hfield_amplitude == pytest.approx(0.015)
+    assert config.env_config.terrain.hfield_frequency == pytest.approx(5.0)
+    assert config.env_config.terrain.slope_angle_range == pytest.approx((-0.005, 0.005))
+    assert config.env_config.model_randomization.joint_origin_range == pytest.approx(
+        (-0.001, 0.001)
+    )
+    assert config.env_config.model_randomization.joint_angle_offset_range == (
+        pytest.approx((-0.02, 0.02))
+    )
+    assert config.env_config.model_randomization.joint_inertia_scale_range == (
+        pytest.approx((0.95, 1.05))
+    )
     assert config.env_config.contact.foot_contact_on_seconds == pytest.approx(0.04)
     assert config.env_config.contact.foot_contact_off_seconds == pytest.approx(0.04)
     assert config.env_config.observation.foot_phase
@@ -231,6 +245,16 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     assert config.reward_config.contact_timing.weight == pytest.approx(-0.1)
     assert config.reward_config.contact_timing.min_air_time == pytest.approx(0.2)
     assert config.reward_config.contact_timing.min_contact_time == pytest.approx(0.3)
+    assert config.reward_config.standing_foot_vel.enabled
+    assert config.reward_config.standing_foot_vel.weight == pytest.approx(-2.0)
+    assert config.reward_config.standing_foot_vel.command_speed_threshold == (
+        pytest.approx(0.1)
+    )
+    assert config.reward_config.standing_foot_air_time.enabled
+    assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-3.0)
+    assert config.reward_config.standing_foot_air_time.command_speed_threshold == (
+        pytest.approx(0.1)
+    )
     assert config.reward_config.torque_l1.enabled
     assert config.reward_config.clip_negative_total
     assert config.reward_config.scale_termination_by_timestep

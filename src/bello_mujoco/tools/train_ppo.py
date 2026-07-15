@@ -203,6 +203,9 @@ def run_training(run_config: TrainingRunConfig) -> None:
                         tuple(row) for row in command_config.range_array().tolist()
                     ),
                     "command_curriculum_enabled": command_config.curriculum.enabled,
+                    "model_randomization_enabled": (
+                        env_config.model_randomization.enabled
+                    ),
                     "random_push_enabled": env_config.random_push.enabled,
                     "observation_noise_enabled": env_config.observation.noise.enabled,
                     "learning_rate": config.learning_rate,

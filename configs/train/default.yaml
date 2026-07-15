@@ -58,6 +58,13 @@ env_config:
   terrain:
     mode: plane
     seed: 0
+    slope_angle_range: [0.0, 0.0]
+  model_randomization:
+    enabled: false
+    seed: 0
+    joint_origin_range: [0.0, 0.0]
+    joint_angle_offset_range: [0.0, 0.0]
+    joint_inertia_scale_range: [1.0, 1.0]
   gait:
     cycle_time: 0.80
     command_speed_frequency_gain: 0.55
