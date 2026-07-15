@@ -8,6 +8,7 @@ from rerun.urdf import UrdfTree
 from bello_mujoco.envs.locomotion import BelloEnvConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.policy import ActorCriticConfig
+from bello_mujoco.render import mujoco_eval_state
 from bello_mujoco.rerun_eval import (
     GamepadCommandSource,
     GamepadConfig,
@@ -133,6 +134,39 @@ def test_command_velocity_uses_reward_yaw_frame() -> None:
     velocity = command_frame_linear_velocity(env, mj_data)
 
     assert velocity == pytest.approx([1.0, 0.0, 0.0], abs=1e-6)
+
+
+def test_mujoco_eval_state_copies_native_reward_state_fields() -> None:
+    mj_data = SimpleNamespace(
+        qpos=np.zeros(7, dtype=np.float64),
+        qvel=np.zeros(6, dtype=np.float64),
+        ctrl=np.zeros(1, dtype=np.float64),
+        xpos=np.zeros((2, 3), dtype=np.float64),
+        xquat=np.zeros((2, 4), dtype=np.float64),
+        cvel=np.zeros((2, 6), dtype=np.float64),
+        subtree_com=np.asarray([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]]),
+        actuator_force=np.zeros(1, dtype=np.float64),
+    )
+    state = mujoco_eval_state(
+        SimpleNamespace(
+            _sample_gait_frequency=lambda rng: jnp.asarray(1.375, dtype=jnp.float32)
+        ),
+        mj_data,
+        command=np.zeros(3, dtype=np.float32),
+        last_action=np.zeros(1, dtype=np.float32),
+        foot_air_time=jnp.zeros(0),
+        foot_contact_time=jnp.zeros(0),
+        foot_contact_debounce_time=jnp.zeros(0),
+        last_foot_contact=jnp.zeros(0),
+        step_count=0,
+        episode_return=jnp.asarray(0.0),
+        episode_track_lin_vel_xy=jnp.asarray(0.0),
+        episode_length=jnp.asarray(0),
+    )
+
+    assert state.data.subtree_com.dtype == jnp.float32
+    assert state.data.subtree_com == pytest.approx(mj_data.subtree_com)
+    assert state.gait_frequency == pytest.approx(1.375)
 
 
 class FakeController:

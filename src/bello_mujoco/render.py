@@ -612,6 +612,9 @@ def mujoco_eval_state(
             xpos=jnp.asarray(np.asarray(mj_data.xpos, dtype=np.float32).copy()),
             xquat=jnp.asarray(np.asarray(mj_data.xquat, dtype=np.float32).copy()),
             cvel=jnp.asarray(np.asarray(mj_data.cvel, dtype=np.float32).copy()),
+            subtree_com=jnp.asarray(
+                np.asarray(mj_data.subtree_com, dtype=np.float32).copy()
+            ),
             actuator_force=jnp.asarray(
                 np.asarray(mj_data.actuator_force, dtype=np.float32).copy()
             ),
@@ -622,6 +625,7 @@ def mujoco_eval_state(
         foot_contact_debounce_time=foot_contact_debounce_time,
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
+        gait_frequency=env._sample_gait_frequency(None),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,
