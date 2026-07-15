@@ -208,6 +208,16 @@ backward failure kernels, uniform sampling coverage, reset pose/velocity
 perturbations, joint calibration offsets, observation noise, and interval root
 velocity pushes are enabled.
 
+The adaptive sampler follows the paper and official reference implementation.
+Terminal counts update a shared per-bin EMA as
+`f_bar = 0.999 * f_bar + 0.001 * f`. Before sampling, every bin receives the
+absolute floor `0.1 / S`; a replicated-boundary, non-causal convolution uses
+the normalized kernel `[1, 0.8, 0.8^2]` so failures increase the probability of
+the preceding two bins. The convolved scores are normalized, a bin is drawn
+multinomially, and the initial phase is uniform within that bin. W&B reports
+`sampling/entropy`, `sampling/top_probability`, normalized
+`sampling/top_bin`, and the mean/max failure EMA.
+
 Start the complete 30,000-update, 4096-environment run with:
 
 ```bash
@@ -319,9 +329,9 @@ checkpoints/bello_wholebody_<timestamp>/
 ```
 
 Each leaf contains policy parameters, optimizer state, update count, adaptive
-learning rate, value and observation-normalization statistics, RNG state, and
-the source motion hash. Resume from a leaf by increasing
-`config.total_timesteps` if necessary:
+learning rate, value and observation-normalization statistics, adaptive-sampler
+failure EMA, RNG state, and the source motion hash. Resume from a leaf by
+increasing `config.total_timesteps` if necessary:
 
 ```bash
 bello-train-motion-ppo \
@@ -333,7 +343,7 @@ bello-train-motion-ppo \
 Resume rejects a different robot asset, motion export, environment, policy
 shape, or PPO configuration. Only `total_timesteps` may differ. Environments
 are freshly reset after restore rather than checkpointing the full batched MJX
-simulation state.
+simulation state; their reset phases use the restored adaptive-sampler state.
 
 Render a deterministic policy from a completed checkpoint:
 

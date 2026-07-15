@@ -576,6 +576,14 @@ def random_push_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def sampling_diagnostic_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        name: value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("sampling/")
+    }
+
+
 def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     return {
         f"mean_{name}": value.astype(jnp.float32).mean()
@@ -958,6 +966,7 @@ def update_runner_state(
         **action_diagnostics(transitions, env, policy),
         **done_reason_means(transitions.info),
         **random_push_means(transitions.info),
+        **sampling_diagnostic_means(transitions.info),
         **foot_contact_means(transitions.info),
         **gait_diagnostics(
             transitions.info, float(getattr(env, "control_timestep", 1.0))

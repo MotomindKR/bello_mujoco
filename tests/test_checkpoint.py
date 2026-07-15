@@ -55,6 +55,7 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
         action_size=2,
         value_norm=ValueNormMetadata(mean=1.0, var=4.0, count=8.0),
         motion_source_sha256="abc123",
+        motion_sampling_failure_ema=(0.0, 0.25, 1.5),
         rng=(17, 29),
         learning_rate=0.0002,
     )
@@ -75,6 +76,7 @@ def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> N
     assert disk_metadata.asset.output_root == tmp_path / "assets"
     assert disk_metadata.value_norm == ValueNormMetadata(mean=1.0, var=4.0, count=8.0)
     assert disk_metadata.motion_source_sha256 == "abc123"
+    assert disk_metadata.motion_sampling_failure_ema == (0.0, 0.25, 1.5)
     assert disk_metadata.rng == (17, 29)
     assert disk_metadata.learning_rate == 0.0002
 

@@ -264,7 +264,11 @@ def test_beyondmimic_config_matches_paper_contract() -> None:
     assert config.config.policy.init_log_std == pytest.approx(0.0)
     assert config.env_config.observation_noise.enabled
     assert config.env_config.adaptive_sampling.enabled
+    assert config.env_config.adaptive_sampling.bin_seconds == pytest.approx(1.0)
+    assert config.env_config.adaptive_sampling.ema_alpha == pytest.approx(0.001)
     assert config.env_config.adaptive_sampling.kernel_size == 3
+    assert config.env_config.adaptive_sampling.kernel_decay == pytest.approx(0.8)
+    assert config.env_config.adaptive_sampling.uniform_ratio == pytest.approx(0.1)
     assert config.checkpoint_config.name == (
         "walk1_subject1_bello_beyondmimic_seed0"
     )
@@ -457,9 +461,86 @@ def test_adaptive_sampling_spreads_failure_weight_backward(
     failure_bin = env.sampling_bin_count - 1
     failure = jnp.zeros(env.sampling_bin_count).at[failure_bin].set(1.0)
     probabilities = env._sampling_probabilities(failure)
+    scores = np.asarray(failure) + 0.1 / env.sampling_bin_count
+    kernel = np.asarray([1.0, 0.5, 0.25])
+    kernel /= kernel.sum()
+    padded = np.pad(scores, (0, len(kernel) - 1), mode="edge")
+    expected = sum(
+        padded[offset : offset + env.sampling_bin_count] * weight
+        for offset, weight in enumerate(kernel)
+    )
+    expected /= expected.sum()
 
+    np.testing.assert_allclose(probabilities, expected, rtol=1.0e-6)
     assert float(probabilities[failure_bin]) > float(probabilities[failure_bin - 1])
     assert float(probabilities[failure_bin - 1]) > float(probabilities[failure_bin - 2])
+
+
+def test_adaptive_sampling_uses_full_width_final_bin_without_endpoint_clipping(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    config = beyondmimic_config(fixed_waist_motion)
+    config = config.__class__(
+        **{
+            **config.__dict__,
+            "reset": MotionResetConfig(random_start=True),
+            "adaptive_sampling": MotionAdaptiveSamplingConfig(
+                enabled=True,
+                bin_seconds=0.1,
+                ema_alpha=0.1,
+                kernel_size=1,
+                kernel_decay=0.8,
+                uniform_ratio=0.0,
+            ),
+        }
+    )
+    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    failure = jnp.zeros(env.sampling_bin_count).at[-1].set(1.0)
+    keys = jax.random.split(jax.random.PRNGKey(7), 256)
+    sampled = jax.vmap(lambda key: env._sample_reference_time(key, failure))(keys)
+    max_time = env.motion.duration - env.control_timestep
+    final_bin_start = max_time * (env.sampling_bin_count - 1) / env.sampling_bin_count
+
+    assert np.all(np.asarray(sampled) >= final_bin_start)
+    assert np.all(np.asarray(sampled) < max_time)
+    assert np.unique(np.asarray(sampled)).size > 200
+
+
+def test_adaptive_sampling_ema_uses_terminal_counts_per_phase_bin(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    from types import SimpleNamespace
+
+    config = beyondmimic_config(fixed_waist_motion)
+    config = config.__class__(
+        **{
+            **config.__dict__,
+            "adaptive_sampling": MotionAdaptiveSamplingConfig(
+                enabled=True,
+                bin_seconds=0.1,
+                ema_alpha=0.1,
+                kernel_size=1,
+                kernel_decay=0.8,
+                uniform_ratio=0.1,
+            ),
+        }
+    )
+    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    max_time = env.motion.duration - env.control_timestep
+    reference_time = jnp.asarray([0.0, 0.01, 0.99 * max_time, 0.99 * max_time])
+    state = SimpleNamespace(
+        reference_time=reference_time,
+        sampling_failure_ema=jnp.zeros((4, env.sampling_bin_count)),
+    )
+
+    updated = env._update_sampling_failure_ema(
+        state, jnp.asarray([True, False, True, True])
+    )
+
+    expected = np.zeros(env.sampling_bin_count)
+    expected[0] = 0.1
+    expected[-1] = 0.2
+    np.testing.assert_allclose(updated, expected, atol=1.0e-7)
 
 
 def test_beyondmimic_observation_noise_is_actor_only(

@@ -77,6 +77,7 @@ class CheckpointMetadata:
     task: str = "locomotion"
     motion_env: MotionTrackingEnvConfig | None = None
     motion_source_sha256: str | None = None
+    motion_sampling_failure_ema: tuple[float, ...] | None = None
     rng: tuple[int, ...] | None = None
     learning_rate: float | None = None
 
@@ -193,6 +194,11 @@ def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
             else None
         ),
         motion_source_sha256=data.get("motion_source_sha256"),
+        motion_sampling_failure_ema=(
+            tuple(float(value) for value in data["motion_sampling_failure_ema"])
+            if data.get("motion_sampling_failure_ema") is not None
+            else None
+        ),
         rng=(tuple(int(value) for value in data["rng"]) if data.get("rng") else None),
         learning_rate=(
             float(data["learning_rate"])

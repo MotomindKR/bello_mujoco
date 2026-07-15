@@ -1,9 +1,11 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import bello_mujoco.tools.train_motion_ppo as train_motion
@@ -36,6 +38,13 @@ from bello_mujoco.train.ppo import (
     init_observation_norm_state,
     init_train_state,
 )
+
+
+class FakeMotionState(NamedTuple):
+    sampling_failure_ema: jax.Array
+
+    def replace(self, **changes):
+        return self._replace(**changes)
 
 
 def test_motion_video_config_is_noop_when_disabled() -> None:
@@ -224,7 +233,7 @@ def test_resume_runner_state_restores_optimizer_and_normalization() -> None:
         params=initial_params,
         opt_state=initial.opt_state,
         update=jnp.asarray(0),
-        env_state=None,
+        env_state=FakeMotionState(jnp.zeros((2, 3), dtype=jnp.float32)),
         obs_stack=jnp.zeros(1),
         critic_obs_stack=jnp.zeros(1),
         command_ranges=jnp.zeros(1),
@@ -259,6 +268,7 @@ def test_resume_runner_state_restores_optimizer_and_normalization() -> None:
         ),
         rng=(7, 8),
         learning_rate=0.0002,
+        motion_sampling_failure_ema=(0.1, 0.2, 0.3),
     )
     restored = restored.replace(update=jnp.asarray(9))
 
@@ -277,3 +287,7 @@ def test_resume_runner_state_restores_optimizer_and_normalization() -> None:
         [5.0, 4.0, 3.0, 2.0]
     )
     assert float(resumed.value_norm_state.count) == pytest.approx(5.0)
+    np.testing.assert_allclose(
+        resumed.env_state.sampling_failure_ema,
+        np.asarray([[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]),
+    )

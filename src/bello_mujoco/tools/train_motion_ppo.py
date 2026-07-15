@@ -469,6 +469,12 @@ def motion_checkpoint_metadata(
         task="motion_tracking",
         motion_env=run_config.env_config,
         motion_source_sha256=env.motion.source_sha256,
+        motion_sampling_failure_ema=tuple(
+            float(value)
+            for value in jax.device_get(
+                runner_state.env_state.sampling_failure_ema[0]
+            )
+        ),
         rng=tuple(int(value) for value in jax.device_get(runner_state.rng)),
         learning_rate=float(jax.device_get(runner_state.learning_rate)),
     )
@@ -552,12 +558,29 @@ def resume_runner_state(
         if metadata.learning_rate is not None
         else runner_state.learning_rate
     )
+    env_state = runner_state.env_state
+    if metadata.motion_sampling_failure_ema is not None:
+        sampling_failure_ema = jnp.asarray(
+            metadata.motion_sampling_failure_ema, dtype=jnp.float32
+        )
+        expected_shape = env_state.sampling_failure_ema.shape[-1:]
+        if sampling_failure_ema.shape != expected_shape:
+            raise ValueError(
+                "checkpoint adaptive sampler shape does not match this motion: "
+                f"got {sampling_failure_ema.shape}, expected {expected_shape}"
+            )
+        env_state = env_state.replace(
+            sampling_failure_ema=jnp.broadcast_to(
+                sampling_failure_ema, env_state.sampling_failure_ema.shape
+            )
+        )
     return runner_state._replace(
         params=params,
         opt_state=train_state.opt_state,
         update=train_state.update,
         rng=rng,
         learning_rate=learning_rate,
+        env_state=env_state,
         value_norm_state=value_norm,
         observation_norm_state=observation_norm,
         critic_observation_norm_state=critic_observation_norm,

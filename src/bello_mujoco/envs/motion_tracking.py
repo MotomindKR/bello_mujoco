@@ -938,13 +938,24 @@ class BelloMotionTrackingEnv:
             sampling_probabilities * jnp.log(sampling_probabilities + 1.0e-12)
         ) / jnp.maximum(jnp.log(float(self.sampling_bin_count)), 1.0)
         sampling_top_probability = jnp.max(sampling_probabilities)
-        sampling_top_bin = jnp.argmax(sampling_probabilities).astype(jnp.float32)
+        sampling_top_bin = (
+            jnp.argmax(sampling_probabilities).astype(jnp.float32)
+            / self.sampling_bin_count
+        )
+        sampling_failure_mean = jnp.mean(failure_ema)
+        sampling_failure_max = jnp.max(failure_ema)
         if observation.ndim == 2:
             sampling_entropy = jnp.full_like(done, sampling_entropy, dtype=jnp.float32)
             sampling_top_probability = jnp.full_like(
                 done, sampling_top_probability, dtype=jnp.float32
             )
             sampling_top_bin = jnp.full_like(done, sampling_top_bin, dtype=jnp.float32)
+            sampling_failure_mean = jnp.full_like(
+                done, sampling_failure_mean, dtype=jnp.float32
+            )
+            sampling_failure_max = jnp.full_like(
+                done, sampling_failure_max, dtype=jnp.float32
+            )
         return {
             "bootstrap_observation": observation,
             "bootstrap_critic_observation": self.critic_observation_batch(state)
@@ -957,6 +968,8 @@ class BelloMotionTrackingEnv:
             "sampling/entropy": sampling_entropy,
             "sampling/top_probability": sampling_top_probability,
             "sampling/top_bin": sampling_top_bin,
+            "sampling/failure_ema_mean": sampling_failure_mean,
+            "sampling/failure_ema_max": sampling_failure_max,
             **done_flags,
             **reward_info,
         }
@@ -1127,36 +1140,52 @@ class BelloMotionTrackingEnv:
             bin_key, self.sampling_bin_count, (), p=probabilities
         )
         offset = jax.random.uniform(offset_key, ())
-        time = (
+        phase = (
             sampled_bin.astype(jnp.float32) + offset
-        ) * self.config.adaptive_sampling.bin_seconds
-        return jnp.minimum(time, jnp.asarray(max_time, dtype=jnp.float32))
+        ) / self.sampling_bin_count
+        return phase * jnp.asarray(max_time, dtype=jnp.float32)
 
     def _sampling_probabilities(self, failure_ema: jax.Array) -> jax.Array:
         config = self.config.adaptive_sampling
-        padded = jnp.pad(failure_ema, (0, config.kernel_size - 1))
-        kernel = jnp.asarray(
-            [config.kernel_decay**index for index in range(config.kernel_size)],
-            dtype=jnp.float32,
-        )
-        kernel = kernel / jnp.sum(kernel)
-        difficulty = sum(
-            padded[offset : offset + self.sampling_bin_count] * kernel[offset]
-            for offset in range(config.kernel_size)
-        )
         uniform = jnp.full(
             (self.sampling_bin_count,),
             1.0 / self.sampling_bin_count,
             dtype=jnp.float32,
         )
-        normalized = jnp.where(
-            jnp.sum(difficulty) > 0.0,
-            difficulty / jnp.maximum(jnp.sum(difficulty), 1.0e-8),
+        scores = failure_ema + config.uniform_ratio / self.sampling_bin_count
+        padded = jnp.pad(
+            scores,
+            (0, config.kernel_size - 1),
+            mode="edge",
+        )
+        kernel = jnp.asarray(
+            [config.kernel_decay**index for index in range(config.kernel_size)],
+            dtype=jnp.float32,
+        )
+        kernel = kernel / jnp.sum(kernel)
+        convolved = sum(
+            padded[offset : offset + self.sampling_bin_count] * kernel[offset]
+            for offset in range(config.kernel_size)
+        )
+        total = jnp.sum(convolved)
+        return jnp.where(
+            total > 0.0,
+            convolved / jnp.maximum(total, 1.0e-8),
             uniform,
         )
-        return (
-            1.0 - config.uniform_ratio
-        ) * normalized + config.uniform_ratio * uniform
+
+    def _reference_time_to_sampling_bin(self, reference_time: jax.Array) -> jax.Array:
+        max_time = max(self.motion.duration - self.control_timestep, 0.0)
+        phase = jnp.where(
+            max_time > 0.0,
+            reference_time / max_time,
+            jnp.zeros_like(reference_time),
+        )
+        return jnp.clip(
+            jnp.floor(phase * self.sampling_bin_count).astype(jnp.int32),
+            0,
+            self.sampling_bin_count - 1,
+        )
 
     def _update_sampling_failure_ema(
         self, state: MotionTrackingState, terminal: jax.Array
@@ -1164,13 +1193,7 @@ class BelloMotionTrackingEnv:
         current = state.sampling_failure_ema[0]
         if not self.config.adaptive_sampling.enabled:
             return current
-        bins = jnp.clip(
-            (state.reference_time / self.config.adaptive_sampling.bin_seconds).astype(
-                jnp.int32
-            ),
-            0,
-            self.sampling_bin_count - 1,
-        )
+        bins = self._reference_time_to_sampling_bin(state.reference_time)
         failures = jnp.zeros_like(current).at[bins].add(terminal.astype(jnp.float32))
         alpha = self.config.adaptive_sampling.ema_alpha
         return alpha * failures + (1.0 - alpha) * current
