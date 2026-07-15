@@ -20,7 +20,7 @@ so `waist_roll_link` and `torso_link` are still available to FK and rewards.
 The robot is anatomically forward along local `+Y`; the importer does not rotate
 the reference into an X-forward convention.
 
-## Import A GMR Clip
+## Import GMR Motions
 
 GMR pickle input is a trusted setup-time format. Convert it once:
 
@@ -33,12 +33,43 @@ bello-import-gmr-motion \
 `motions/local/` is ignored by Git. Training depends only on the resulting
 versioned `.npz`; it does not import GMR or read GMR robot assets.
 
+The complete local LAFAN1 archive can be extracted and retargeted in GMR with:
+
+```bash
+cd /home/gmmyung/GMR
+nix develop -c python scripts/prepare_lafan1_bello_dataset.py --jobs 8
+```
+
+Import every resulting Bello pickle into the canonical 14-body training format:
+
+```bash
+cd /home/gmmyung/bello_mujoco_wholebody
+nix develop -c uv run bello-import-gmr-motion-dataset \
+  /home/gmmyung/GMR/motion_data/lafan1_bello \
+  motions/local/lafan1 \
+  --jobs 8
+```
+
+Both stages are resumable: existing outputs are reused unless `--overwrite` is
+supplied. Each output directory contains a manifest with frame counts,
+durations, hashes, and any failures. Dataset files remain local because
+LAFAN1-derived artifacts must follow the source dataset's license.
+
+Single-file imports reject any primitive-box self-intersection. The dataset
+importer retains every finite, joint-limit-valid sequence and records collision
+diagnostics in both the archive and manifest. This is intentional: sparse box
+overlap in a kinematic reference is useful quality metadata, while the dynamic
+training model still enforces contacts and penalizes undesired self-contact.
+Sequences with persistent or deep overlap should be repaired before committing
+compute to a long PPO run.
+
 The legacy pickle stores `dof_pos` in the source MuJoCo `qpos[7:]` order. That
 order differs from the generated model's actuator order. The importer applies
 an explicit joint-name permutation, converts root quaternions from XYZW to
 WXYZ, enforces quaternion continuity, checks hard joint limits, derives `qvel`
-with `mj_differentiatePos`, rejects frames that intersect the configured
-training collision model, and evaluates tracked-body FK and world velocities.
+with `mj_differentiatePos`, evaluates primitive-box self-collisions, and
+computes tracked-body FK and world velocities. A single-file import rejects
+self-intersections; a dataset import records them as described above.
 
 The canonical clip contains:
 
@@ -46,10 +77,14 @@ The canonical clip contains:
 format_version, fps, source_sha256
 joint_names, body_names
 qpos[T, 34], qvel[T, 33]
-body_pos[T, 10, 3], body_quat_wxyz[T, 10, 4]
-body_lin_vel[T, 10, 3], body_ang_vel[T, 10, 3]
+body_pos[T, B, 3], body_quat_wxyz[T, B, 4]
+body_lin_vel[T, B, 3], body_ang_vel[T, B, 3]
 foot_contacts[T, 2]
+self_collision_frames, max_self_collision_penetration_m
+deepest_self_collision_pair[2]
 ```
+
+`B=10` for the baseline tracked-body profile and `B=14` for BeyondMimic.
 
 Upstream GMR pickle exports may omit `foot_contacts`. The importer fills that
 optional legacy field with zeros; the current motion-tracking environment
@@ -180,6 +215,19 @@ bello-train-motion-ppo \
   --config-dir "$PWD/experiments/train_motion" \
   --config-name beyondmimic
 ```
+
+Select any imported sequence by name, without its `.npz` suffix:
+
+```bash
+bello-train-motion-ppo \
+  --config-dir "$PWD/experiments/train_motion" \
+  --config-name beyondmimic \
+  motion.sequence=fallAndGetUp2_subject2
+```
+
+The dataset root is configured by `motion.directory`. Checkpoint directories,
+W&B run names, and evaluation video prefixes include `motion.sequence`, so
+independent sequence runs do not overwrite one another.
 
 The complete config is
 `experiments/train_motion/beyondmimic.yaml`. W&B logging, checkpointing, and

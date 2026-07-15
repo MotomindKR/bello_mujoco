@@ -5,6 +5,10 @@ defaults:
 
 dry_run: false
 
+motion:
+  directory: motions/local/lafan1
+  sequence: walk1_subject1
+
 config:
   total_timesteps: 2949120000  # 30,000 updates x 4,096 envs x 24 steps.
   num_envs: 4096
@@ -30,7 +34,6 @@ asset_config:
     default_action_scale_ratio: 0.25
 
 env_config:
-  motion_path: motions/local/walk1_subject1_fixed_waist_beyondmimic.npz
   formulation: beyondmimic
   anchor_body_name: torso_link
   action_clip: 100.0
@@ -57,7 +60,7 @@ env_config:
     enabled: true
     bin_seconds: 1.0
     ema_alpha: 0.001
-    kernel_size: 1
+    kernel_size: 3
     kernel_decay: 0.8
     uniform_ratio: 0.1
   push:
@@ -91,17 +94,17 @@ env_config:
     end_effector_position_error: 0.25
 
 checkpoint_config:
-  name: bello_beyondmimic_seed0
+  name: ${motion.sequence}_bello_beyondmimic_seed0
   every_updates: 500
 
 wandb_config:
   enabled: true
-  run_name: bello-beyondmimic-seed0
+  run_name: ${motion.sequence}-bello-beyondmimic-seed0
   tags: [bello, fixed-waist, gmr, beyondmimic]
 
 video_config:
   every_updates: 500
-  filename_prefix: beyondmimic
+  filename_prefix: ${motion.sequence}_beyondmimic
 
 warp:
   contact_budget_per_env: 64

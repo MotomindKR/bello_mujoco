@@ -69,6 +69,12 @@ FIXED_WAIST_JOINTS = ("waist_roll_joint", "waist_pitch_joint")
 
 
 @dataclass(frozen=True)
+class MotionSelectionConfig:
+    directory: Path = Path("motions/local/lafan1")
+    sequence: str = "walk1_subject1"
+
+
+@dataclass(frozen=True)
 class MotionEvalVideoConfig:
     enabled: bool = True
     every_updates: int = 100
@@ -94,6 +100,7 @@ class MotionTrainingRunConfig:
         fixed_joint_names=FIXED_WAIST_JOINTS,
     )
     env_config: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
+    motion: MotionSelectionConfig = MotionSelectionConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
     video_config: MotionEvalVideoConfig = MotionEvalVideoConfig()
@@ -103,6 +110,7 @@ class MotionTrainingRunConfig:
 
 
 def run_training(run_config: MotionTrainingRunConfig) -> None:
+    run_config = resolve_motion_selection(run_config)
     validate_ppo_config(run_config.config)
     _validate_fixed_waist_asset(run_config.asset_config)
     validate_motion_video_config(run_config.video_config)
@@ -255,6 +263,30 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
         if evaluation_worker is not None:
             evaluation_worker.close()
         close_run(run, exit_code=0 if succeeded else 1)
+
+
+def resolve_motion_selection(
+    run_config: MotionTrainingRunConfig,
+) -> MotionTrainingRunConfig:
+    sequence = run_config.motion.sequence
+    if not sequence or Path(sequence).name != sequence or Path(sequence).suffix:
+        raise ValueError(
+            "motion.sequence must be a non-empty sequence name without a path or suffix"
+        )
+    motion_path = run_config.motion.directory / f"{sequence}.npz"
+    if not motion_path.is_file():
+        available = sorted(path.stem for path in run_config.motion.directory.glob("*.npz"))
+        preview = ", ".join(available[:10])
+        if len(available) > 10:
+            preview += ", ..."
+        raise FileNotFoundError(
+            f"motion sequence {sequence!r} was not found at {motion_path}; "
+            f"available sequences: {preview or '(none)'}"
+        )
+    return replace(
+        run_config,
+        env_config=replace(run_config.env_config, motion_path=motion_path),
+    )
 
 
 def motion_train_update_loop(

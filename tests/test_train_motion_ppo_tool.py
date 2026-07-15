@@ -19,7 +19,10 @@ from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.tools.train_motion_ppo import (
     MotionEvalVideoConfig,
+    MotionSelectionConfig,
+    MotionTrainingRunConfig,
     render_motion_training_video,
+    resolve_motion_selection,
     resume_runner_state,
     should_save_motion_checkpoint,
     validate_motion_checkpoint_config,
@@ -39,6 +42,40 @@ def test_motion_video_config_is_noop_when_disabled() -> None:
     validate_motion_video_config(
         MotionEvalVideoConfig(enabled=False, every_updates=0, steps=0)
     )
+
+
+def test_motion_selection_resolves_sequence_name(tmp_path: Path) -> None:
+    motion_path = tmp_path / "dance1_subject2.npz"
+    motion_path.touch()
+    run_config = MotionTrainingRunConfig(
+        motion=MotionSelectionConfig(
+            directory=tmp_path, sequence="dance1_subject2"
+        )
+    )
+
+    resolved = resolve_motion_selection(run_config)
+
+    assert resolved.env_config.motion_path == motion_path
+
+
+@pytest.mark.parametrize("sequence", ["", "dance.npz", "../dance", "a/b"])
+def test_motion_selection_rejects_paths_and_suffixes(
+    tmp_path: Path, sequence: str
+) -> None:
+    run_config = MotionTrainingRunConfig(
+        motion=MotionSelectionConfig(directory=tmp_path, sequence=sequence)
+    )
+    with pytest.raises(ValueError, match="motion.sequence"):
+        resolve_motion_selection(run_config)
+
+
+def test_motion_selection_reports_available_sequences(tmp_path: Path) -> None:
+    (tmp_path / "walk1_subject1.npz").touch()
+    run_config = MotionTrainingRunConfig(
+        motion=MotionSelectionConfig(directory=tmp_path, sequence="missing")
+    )
+    with pytest.raises(FileNotFoundError, match="walk1_subject1"):
+        resolve_motion_selection(run_config)
 
 
 @pytest.mark.parametrize(

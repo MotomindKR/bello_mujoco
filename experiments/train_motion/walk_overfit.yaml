@@ -6,6 +6,10 @@ defaults:
 
 dry_run: false
 
+motion:
+  directory: motions/local
+  sequence: walk1_subject1_fixed_waist
+
 config:
   total_timesteps: 25165824  # 1,024 updates at 1,024 envs x 24 steps.
   num_envs: 1024

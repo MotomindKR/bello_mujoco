@@ -1,6 +1,10 @@
 dry_run: true
 jit: true
 
+motion:
+  directory: motions/local/lafan1
+  sequence: walk1_subject1
+
 config:
   seed: 0
   total_timesteps: 100000000
@@ -52,7 +56,6 @@ asset_config:
     default_action_scale_ratio: 0.25
 
 env_config:
-  motion_path: motions/local/walk1_subject1_fixed_waist.npz
   decimation: 4
   action_clip: 1.0
   terrain:
@@ -89,7 +92,7 @@ env_config:
 checkpoint_config:
   enabled: true
   directory: checkpoints
-  name: bello_wholebody
+  name: ${motion.sequence}_wholebody
   every_updates: 100
   resume_path: null
   upload_wandb_artifact: true
@@ -113,7 +116,7 @@ video_config:
   render_initial: false
   render_final: true
   output_dir: outputs/motion_tracking/eval_videos
-  filename_prefix: eval
+  filename_prefix: ${motion.sequence}_eval
   steps: 300
   width: 640
   height: 480

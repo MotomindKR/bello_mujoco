@@ -200,9 +200,9 @@ def test_default_motion_training_config_has_fixed_waist_contract() -> None:
     assert config.asset_config.end_effector_sphere_mode == "both"
     assert config.asset_config.collision_mode == "box"
     assert config.asset_config.actuator_config.default_action_scale_ratio == 0.25
-    assert config.env_config.motion_path == Path(
-        "motions/local/walk1_subject1_fixed_waist.npz"
-    )
+    assert config.motion.directory == Path("motions/local/lafan1")
+    assert config.motion.sequence == "walk1_subject1"
+    assert config.checkpoint_config.name == "walk1_subject1_wholebody"
     assert config.video_config.enabled
     assert config.video_config.render_final
     assert config.video_config.log_wandb
@@ -264,6 +264,10 @@ def test_beyondmimic_config_matches_paper_contract() -> None:
     assert config.config.policy.init_log_std == pytest.approx(0.0)
     assert config.env_config.observation_noise.enabled
     assert config.env_config.adaptive_sampling.enabled
+    assert config.env_config.adaptive_sampling.kernel_size == 3
+    assert config.checkpoint_config.name == (
+        "walk1_subject1_bello_beyondmimic_seed0"
+    )
     assert config.env_config.push.enabled
     assert config.env_config.reward.joint_position_weight == 0.0
     assert config.env_config.reward.body_linear_velocity_weight == 1.0

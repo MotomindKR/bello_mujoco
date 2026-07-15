@@ -26,6 +26,7 @@ def import_gmr_motion(
     *,
     collision_mode: str = "box",
     tracked_body_names: tuple[str, ...] = DEFAULT_TRACKED_BODY_NAMES,
+    reject_self_collisions: bool = True,
 ) -> Path:
     source = source.resolve()
     if not source.exists():
@@ -50,7 +51,9 @@ def import_gmr_motion(
     arrays = _validate_legacy_motion(motion)
     qpos = _build_qpos(model, arrays["root_pos"], arrays["root_rot"], arrays["dof_pos"])
     _validate_joint_ranges(model.mj_model, qpos)
-    _validate_self_collisions(model, qpos)
+    collision_report = _self_collision_report(model, qpos)
+    if reject_self_collisions:
+        _raise_for_self_collisions(collision_report)
     qvel = _differentiate_qpos(model.mj_model, qpos, float(motion["fps"]))
     body_ids = np.asarray(
         [
@@ -86,6 +89,13 @@ def import_gmr_motion(
         body_lin_vel=body_lin_vel.astype(np.float32),
         body_ang_vel=body_ang_vel.astype(np.float32),
         foot_contacts=contacts,
+        self_collision_frames=np.asarray(
+            collision_report["frames"], dtype=np.int32
+        ),
+        max_self_collision_penetration_m=np.asarray(
+            collision_report["max_penetration_m"], dtype=np.float32
+        ),
+        deepest_self_collision_pair=np.asarray(collision_report["deepest_pair"]),
     )
     return output
 
@@ -173,7 +183,7 @@ def _validate_joint_ranges(mj_model, qpos: np.ndarray) -> None:
             )
 
 
-def _validate_self_collisions(model, qpos: np.ndarray) -> None:
+def _self_collision_report(model, qpos: np.ndarray) -> dict:
     mj_model = model.mj_model
     robot_geom_ids = set(model.robot_geom_ids.tolist())
     data = mujoco.MjData(mj_model)
@@ -201,13 +211,26 @@ def _validate_self_collisions(model, qpos: np.ndarray) -> None:
                     mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom2),
                 )
         collision_frames += int(frame_collides)
-    if collision_frames:
-        raise ValueError(
-            "motion intersects the configured training collision model in "
-            f"{collision_frames} frames; deepest penetration is "
-            f"{-deepest_distance:.6f} m between {deepest_pair[0]!r} and "
-            f"{deepest_pair[1]!r}"
-        )
+    return {
+        "frames": collision_frames,
+        "max_penetration_m": -deepest_distance,
+        "deepest_pair": deepest_pair,
+    }
+
+
+def _raise_for_self_collisions(report: dict) -> None:
+    if not report["frames"]:
+        return
+    geom1, geom2 = report["deepest_pair"]
+    raise ValueError(
+        "motion intersects the configured training collision model in "
+        f"{report['frames']} frames; deepest penetration is "
+        f"{report['max_penetration_m']:.6f} m between {geom1!r} and {geom2!r}"
+    )
+
+
+def _validate_self_collisions(model, qpos: np.ndarray) -> None:
+    _raise_for_self_collisions(_self_collision_report(model, qpos))
 
 
 def _differentiate_qpos(mj_model, qpos: np.ndarray, fps: float) -> np.ndarray:
