@@ -35,6 +35,11 @@ force channels.
 It follows Brax PPO's bounded tanh-normal policy, Swish activation, and separate
 running normalization for actor and critic observations. A target-KL guard is
 enabled as an additional safety measure for this repository's PPO optimizer.
+The learning rate adapts around a desired KL of `0.01`, cannot rise above its
+initial `3e-4`, and can fall to `1e-5` when repeated updates approach the hard
+`0.03` KL guard. Policy standard deviation is capped at `1.0` (`max_log_std:
+0.0`) to keep the bounded distribution from drifting into persistent tanh
+saturation.
 
 ## Hydra Configs
 

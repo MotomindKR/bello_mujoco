@@ -208,8 +208,14 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     assert config.reward_config.action_limit.weight == pytest.approx(-1.0)
     assert config.reward_config.action_limit.soft_limit_ratio == pytest.approx(0.8)
     assert config.config.learning_rate == pytest.approx(3e-4)
+    assert config.config.schedule == "adaptive"
+    assert config.config.desired_kl == pytest.approx(0.01)
+    assert config.config.min_learning_rate == pytest.approx(1e-5)
+    assert config.config.max_learning_rate == pytest.approx(3e-4)
+    assert config.config.adaptive_lr_factor == pytest.approx(1.5)
     assert config.config.target_kl == pytest.approx(0.03)
     assert config.config.policy.activation == "swish"
+    assert config.config.policy.max_log_std == pytest.approx(0.0)
     assert config.config.policy.action_distribution == "tanh_gaussian"
     assert config.config.policy.normalize_observations
     assert config.env_config.gait.randomize_frequency

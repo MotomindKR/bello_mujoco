@@ -1641,3 +1641,21 @@ environment action bound and increases quadratically to one at the boundary,
 averaged over policy dimensions. The Berkeley candidate enables it at weight
 `-1.0`. Four scripted conditions isolate the hard-bound control, joint margin,
 action margin, and their combination.
+
+## 2026-07-15 - Restore adaptive KL control for the Berkeley recipe
+
+The four joint/action-limit ablations all approached the hard `0.03` KL guard
+under the fixed `3e-4` learning rate. Late in the runs, PPO applied only about
+4--14% of its 128 planned minibatch updates. The two conditions without the
+action-limit reward also pinned `max_log_std: 1.0` (standard deviation `e`) and
+saturated roughly one third of deterministic action means. The action-limit
+conditions suppressed saturation but still lost most PPO updates, isolating
+the constant learning rate as a shared optimizer problem rather than a reward
+ablation effect.
+
+The Berkeley recipe now uses the existing adaptive schedule with
+`desired_kl: 0.01`, `min_learning_rate: 1e-5`, `max_learning_rate: 3e-4`, and
+`adaptive_lr_factor: 1.5`, while retaining `target_kl: 0.03` as the hard
+same-update stop. Capping `max_log_std` at `0.0` limits policy standard
+deviation to `1.0`. A single combined 90% joint-margin plus 80% action-margin
+run replaces the stopped four-way matrix for the initial stability check.
