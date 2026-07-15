@@ -259,6 +259,7 @@ base_height
 joint_vel
 joint_acc
 action_rate
+action_limit
 energy
 torque
 joint_limit
@@ -302,6 +303,10 @@ and accumulated foot air time. `invalid_action` penalizes pre-clip actions
 outside the environment bound and requested actuator targets outside configured
 soft ranges as squared violations in policy action units, so small-scale joints
 receive comparable pressure to large-scale joints.
+`action_limit` instead penalizes applied actions continuously near the action
+bound, while `joint_limit` applies the standard linear hinge outside a
+configurable contraction of the physical MuJoCo joint ranges. These terms keep
+policy saturation, actuator target validity, and physical joint safety separate.
 `stance_width` penalizes only lateral foot separation outside a configured
 pelvis/root-frame band, avoiding the sagittal-step coupling of `foot_distance`.
 `contact_timing` applies an unscaled event penalty to touchdown or liftoff when

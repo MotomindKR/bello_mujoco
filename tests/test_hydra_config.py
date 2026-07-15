@@ -192,7 +192,7 @@ def test_gait_candidate_enables_explicit_anti_chatter_stack() -> None:
     assert config.reward_config.foot_slip.weight == pytest.approx(-0.05)
 
 
-def test_berkeley_port_matches_reference_recipe() -> None:
+def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     config = structured_config(
         TrainingRunConfig,
         compose_experiment_config("locomotion_berkeley"),
@@ -203,6 +203,10 @@ def test_berkeley_port_matches_reference_recipe() -> None:
     assert config.config.num_minibatches == 32
     assert config.config.update_epochs == 4
     assert config.config.gamma == pytest.approx(0.97)
+    assert config.reward_config.joint_limit.soft_limit_factor == pytest.approx(0.9)
+    assert config.reward_config.action_limit.enabled
+    assert config.reward_config.action_limit.weight == pytest.approx(-1.0)
+    assert config.reward_config.action_limit.soft_limit_ratio == pytest.approx(0.8)
     assert config.config.learning_rate == pytest.approx(3e-4)
     assert config.config.target_kl == pytest.approx(0.03)
     assert config.config.policy.activation == "swish"

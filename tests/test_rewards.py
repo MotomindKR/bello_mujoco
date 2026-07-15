@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import pytest
 
 from bello_mujoco.envs.rewards import (
+    ActionLimitRewardConfig,
     CommandConfig,
     ContactTimingRewardConfig,
     FeetAirTimeRewardConfig,
@@ -354,8 +355,12 @@ def test_torque_reward_penalizes_actuator_force() -> None:
     assert terms["reward/torque"] == pytest.approx(-0.2)
 
 
-def test_joint_limit_penalty_uses_absolute_violation_sum() -> None:
-    config = RewardConfig(joint_limit=JointLimitRewardConfig(enabled=True, weight=-1.0))
+def test_joint_limit_penalty_uses_softened_hard_range() -> None:
+    config = RewardConfig(
+        joint_limit=JointLimitRewardConfig(
+            enabled=True, weight=-1.0, soft_limit_factor=0.9
+        )
+    )
 
     _, terms = compute_velocity_reward(
         config=config,
@@ -389,7 +394,76 @@ def test_joint_limit_penalty_uses_absolute_violation_sum() -> None:
         done=jnp.asarray(False),
     )
 
-    assert terms["reward/joint_limit"] == pytest.approx(-0.015)
+    assert terms["reward/joint_limit"] == pytest.approx(-0.019)
+
+
+def test_action_limit_penalty_is_zero_below_margin_and_quadratic_above() -> None:
+    config = RewardConfig(
+        action_limit=ActionLimitRewardConfig(
+            enabled=True, weight=-1.0, soft_limit_ratio=0.8
+        )
+    )
+    common = {
+        "config": config,
+        "command": jnp.zeros(3, dtype=jnp.float32),
+        "lin_vel_xy": jnp.zeros(2, dtype=jnp.float32),
+        "yaw_vel_z": jnp.asarray(0.0, dtype=jnp.float32),
+        "lin_vel_z": jnp.asarray(0.0, dtype=jnp.float32),
+        "ang_vel_xy": jnp.zeros(2, dtype=jnp.float32),
+        "projected_gravity": jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
+        "base_height": jnp.asarray(config.base_height.target, dtype=jnp.float32),
+        "joint_pos": jnp.zeros(2, dtype=jnp.float32),
+        "joint_pos_rel": jnp.zeros(2, dtype=jnp.float32),
+        "joint_vel": jnp.zeros(2, dtype=jnp.float32),
+        "last_joint_vel": jnp.zeros(2, dtype=jnp.float32),
+        "last_action": jnp.zeros(2, dtype=jnp.float32),
+        "actuator_force": jnp.zeros(2, dtype=jnp.float32),
+        "joint_limit_low": -jnp.ones(2, dtype=jnp.float32),
+        "joint_limit_high": jnp.ones(2, dtype=jnp.float32),
+        "hold_joint_indices": jnp.asarray([], dtype=jnp.int32),
+        "policy_joint_indices": jnp.asarray([], dtype=jnp.int32),
+        "foot_contact": jnp.ones(2, dtype=jnp.float32),
+        "foot_height": jnp.zeros(2, dtype=jnp.float32),
+        "foot_lateral_speed_sq": jnp.zeros(2, dtype=jnp.float32),
+        "foot_distance": jnp.asarray(0.3, dtype=jnp.float32),
+        "gait_contact_mask": jnp.asarray([True, True]),
+        "foot_air_time": jnp.zeros(2, dtype=jnp.float32),
+        "last_foot_contact": jnp.asarray([True, True]),
+        "undesired_contact": jnp.asarray(0.0, dtype=jnp.float32),
+        "control_timestep": 0.02,
+        "done": jnp.asarray(False),
+        "action_clip_limit": 1.0,
+    }
+
+    _, inside_terms = compute_velocity_reward(
+        action=jnp.asarray([0.8, -0.5], dtype=jnp.float32), **common
+    )
+    _, boundary_terms = compute_velocity_reward(
+        action=jnp.asarray([1.0, -0.8], dtype=jnp.float32), **common
+    )
+
+    assert inside_terms["reward/action_limit"] == pytest.approx(0.0)
+    assert boundary_terms["reward/action_limit"] == pytest.approx(-0.01)
+
+
+@pytest.mark.parametrize("soft_limit_factor", [0.0, 1.01, float("nan")])
+def test_joint_limit_rejects_invalid_soft_factor(soft_limit_factor: float) -> None:
+    with pytest.raises(ValueError, match="joint_limit.soft_limit_factor"):
+        RewardConfig(
+            joint_limit=JointLimitRewardConfig(
+                enabled=True, soft_limit_factor=soft_limit_factor
+            )
+        )
+
+
+@pytest.mark.parametrize("soft_limit_ratio", [-0.01, 1.0, float("nan")])
+def test_action_limit_rejects_invalid_soft_ratio(soft_limit_ratio: float) -> None:
+    with pytest.raises(ValueError, match="action_limit.soft_limit_ratio"):
+        RewardConfig(
+            action_limit=ActionLimitRewardConfig(
+                enabled=True, soft_limit_ratio=soft_limit_ratio
+            )
+        )
 
 
 def test_invalid_action_penalty_uses_normalized_squared_target_violation() -> None:

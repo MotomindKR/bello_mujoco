@@ -490,6 +490,10 @@ reward_config:
   action_rate:
     enabled: true
     weight: -0.05
+  action_limit:
+    enabled: false
+    weight: -1.0
+    soft_limit_ratio: 0.8
   energy:
     enabled: true
     weight: -0.00002
@@ -499,6 +503,7 @@ reward_config:
   joint_limit:
     enabled: true
     weight: -5.0
+    soft_limit_factor: 0.9
   invalid_action:
     enabled: false
     weight: -1.0
@@ -598,14 +603,17 @@ and hard recipes track `pelvis_link` linear velocity in the pelvis yaw frame and
 track `pelvis_link` yaw angular velocity. Their torso-linked height,
 orientation, and vertical/lateral stabilization terms remain unchanged.
 `joint_vel`,
-`joint_acc`, `action_rate`, `energy`, and `torque` are
+`joint_acc`, `action_rate`, `action_limit`, `energy`, and `torque` are
 smoothness and effort regularizers. `joint_vel`, `joint_acc`, `action_rate`,
 `energy`, and `torque` sum over their selected dimensions;
 `joint_acc` penalizes finite-difference actuator joint acceleration. `energy`
 penalizes absolute actuator force times joint velocity; `torque` penalizes
-actuator-force magnitude directly. `joint_limit` sums absolute violation of the
-actuator control ranges, which are the configured soft limits when a joint
-provides one. `invalid_action` sums squared pre-clip action-bound and
+actuator-force magnitude directly. `action_limit` is zero inside
+`soft_limit_ratio` of the environment action bound and applies a mean normalized
+quadratic penalty between that margin and the bound. `joint_limit` contracts
+each physical MuJoCo joint range about its center by `soft_limit_factor`, then
+sums absolute joint-position violation of that soft interval. Its threshold is
+independent of actuator `ctrlrange`. `invalid_action` sums squared pre-clip action-bound and
 requested-target violations in action units using the same affine action scale
 as the action-to-control mapper. Bello clips the request before sending its
 control target to MuJoCo/MJX, but retains the original request for this penalty.

@@ -1622,3 +1622,22 @@ foot slip `-0.05`. The previous `locomotion_clean_*` ablation YAML chain was
 removed. The executable matrix in `scripts/run_locomotion_ablation.sh` now
 isolates debounce, timing, slip, clock, swing velocity, and full-stack
 interactions without adding another config file per treatment.
+
+## 2026-07-15 - Separate physical joint and policy action limits
+
+The Berkeley policy saturated a large fraction of its bounded action means even
+though actual joint positions usually remained inside the configured actuator
+target ranges. The old `joint_limit` path could not distinguish those states:
+it compared physical joint positions against actuator `ctrlrange`, mixing
+physical safety with action-scale metadata.
+
+`joint_limit` now derives a symmetric soft interval directly from each MuJoCo
+hard joint range. `soft_limit_factor: 0.9` matches the common Isaac-style 90%
+range and restores a knee-extension margin instead of treating the knee hard
+lower bound as soft. Its cost remains the standard summed linear violation.
+
+The independent `action_limit` term starts at `soft_limit_ratio: 0.8` of the
+environment action bound and increases quadratically to one at the boundary,
+averaged over policy dimensions. The Berkeley candidate enables it at weight
+`-1.0`. Four scripted conditions isolate the hard-bound control, joint margin,
+action margin, and their combination.

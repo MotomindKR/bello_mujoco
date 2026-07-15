@@ -171,6 +171,11 @@ class ActionRateRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class ActionLimitRewardConfig(WeightedRewardConfig):
+    soft_limit_ratio: float = 0.8
+
+
+@dataclass(frozen=True)
 class EnergyRewardConfig(WeightedRewardConfig):
     pass
 
@@ -203,7 +208,7 @@ class KneeDeviationRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class JointLimitRewardConfig(WeightedRewardConfig):
-    pass
+    soft_limit_factor: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -328,6 +333,9 @@ class RewardConfig:
     joint_vel: JointVelRewardConfig = JointVelRewardConfig(weight=-0.001)
     joint_acc: JointAccRewardConfig = JointAccRewardConfig(weight=-2.5e-7)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.05)
+    action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(
+        enabled=False, weight=-1.0
+    )
     energy: EnergyRewardConfig = EnergyRewardConfig(weight=-2.0e-5)
     torque: TorqueRewardConfig = TorqueRewardConfig(enabled=False, weight=-1.0e-5)
     torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(
@@ -501,6 +509,15 @@ def compute_velocity_reward(
     joint_vel_l2 = jnp.sum(joint_vel**2)
     joint_acc_l2 = jnp.sum(((joint_vel - last_joint_vel) / control_timestep) ** 2)
     action_rate_l2 = jnp.sum((action - last_action) ** 2)
+    action_hard_limit = jnp.asarray(
+        1.0 if action_clip_limit is None else action_clip_limit,
+        dtype=jnp.float32,
+    )
+    action_soft_limit = config.action_limit.soft_limit_ratio * action_hard_limit
+    action_limit_excess = jnp.maximum(jnp.abs(action) - action_soft_limit, 0.0)
+    action_limit = jnp.mean(
+        (action_limit_excess / (action_hard_limit - action_soft_limit)) ** 2
+    )
     energy = jnp.sum(jnp.abs(actuator_force * joint_vel))
     torque_l2 = jnp.sum(actuator_force**2)
     torque_l1 = jnp.sum(jnp.abs(actuator_force[policy_joint_indices]))
@@ -527,8 +544,16 @@ def compute_velocity_reward(
     )
     knee_deviation = jnp.sum(jnp.abs(joint_pos_rel[knee_joint_indices]))
 
-    lower_violation = jnp.maximum(joint_limit_low - joint_pos, 0.0)
-    upper_violation = jnp.maximum(joint_pos - joint_limit_high, 0.0)
+    joint_limit_center = 0.5 * (joint_limit_low + joint_limit_high)
+    joint_limit_radius = (
+        0.5
+        * (joint_limit_high - joint_limit_low)
+        * config.joint_limit.soft_limit_factor
+    )
+    joint_soft_limit_low = joint_limit_center - joint_limit_radius
+    joint_soft_limit_high = joint_limit_center + joint_limit_radius
+    lower_violation = jnp.maximum(joint_soft_limit_low - joint_pos, 0.0)
+    upper_violation = jnp.maximum(joint_pos - joint_soft_limit_high, 0.0)
     joint_limit = jnp.sum(lower_violation + upper_violation)
     if config.invalid_action.enabled:
         if (
@@ -779,6 +804,9 @@ def compute_velocity_reward(
         "reward/action_rate": weighted_term(
             config.action_rate.enabled, config.action_rate.weight, action_rate_l2
         ),
+        "reward/action_limit": weighted_term(
+            config.action_limit.enabled, config.action_limit.weight, action_limit
+        ),
         "reward/energy": weighted_term(
             config.energy.enabled, config.energy.weight, energy
         ),
@@ -944,6 +972,22 @@ def validate_reward_config(config: RewardConfig) -> None:
         raise ValueError(
             "track_ang_vel_z.sigma must be positive when enabled, got "
             f"{config.track_ang_vel_z.sigma}"
+        )
+    if (
+        not math.isfinite(config.joint_limit.soft_limit_factor)
+        or not 0.0 < config.joint_limit.soft_limit_factor <= 1.0
+    ):
+        raise ValueError(
+            "joint_limit.soft_limit_factor must be in (0, 1], got "
+            f"{config.joint_limit.soft_limit_factor}"
+        )
+    if (
+        not math.isfinite(config.action_limit.soft_limit_ratio)
+        or not 0.0 <= config.action_limit.soft_limit_ratio < 1.0
+    ):
+        raise ValueError(
+            "action_limit.soft_limit_ratio must be in [0, 1), got "
+            f"{config.action_limit.soft_limit_ratio}"
         )
     for name, term in reward_terms(config).items():
         if not math.isfinite(term.weight):
@@ -1134,6 +1178,7 @@ def reward_terms(config: RewardConfig):
         "joint_vel": config.joint_vel,
         "joint_acc": config.joint_acc,
         "action_rate": config.action_rate,
+        "action_limit": config.action_limit,
         "energy": config.energy,
         "torque": config.torque,
         "torque_l1": config.torque_l1,

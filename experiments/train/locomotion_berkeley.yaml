@@ -1,7 +1,7 @@
 # Bello morphology port of MuJoCo Playground's Berkeley Humanoid recipe.
-# The reward scales, gait clock, reset distribution, command distribution, and
-# PPO horizon follow the upstream baseline. Environment count and action scales
-# are adapted to Bello's larger model and narrow ankle limits.
+# The gait clock, reset distribution, command distribution, and PPO horizon
+# follow the upstream baseline. Environment count, action scales, and explicit
+# joint/action safety margins are adapted to Bello.
 defaults:
   - locomotion_clean
   - _self_
@@ -162,6 +162,10 @@ reward_config:
   action_rate:
     enabled: true
     weight: -0.01
+  action_limit:
+    enabled: true
+    weight: -1.0
+    soft_limit_ratio: 0.8
   energy:
     enabled: false
   torque:
@@ -183,6 +187,7 @@ reward_config:
   joint_limit:
     enabled: true
     weight: -1.0
+    soft_limit_factor: 0.9
   invalid_action:
     enabled: false
   hold_joint_deviation:

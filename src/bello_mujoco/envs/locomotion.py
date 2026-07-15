@@ -2004,10 +2004,12 @@ class BelloLocomotionEnv:
         }
 
     def _actuator_joint_limit_low(self) -> jax.Array:
-        return jnp.asarray(self.model.mj_model.actuator_ctrlrange[:, 0])
+        joint_ids = jnp.asarray(self.model.mj_model.actuator_trnid[:, 0])
+        return jnp.asarray(self.model.mj_model.jnt_range)[joint_ids, 0]
 
     def _actuator_joint_limit_high(self) -> jax.Array:
-        return jnp.asarray(self.model.mj_model.actuator_ctrlrange[:, 1])
+        joint_ids = jnp.asarray(self.model.mj_model.actuator_trnid[:, 0])
+        return jnp.asarray(self.model.mj_model.jnt_range)[joint_ids, 1]
 
     def _policy_action_target_default(self) -> jax.Array:
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)

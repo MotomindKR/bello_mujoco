@@ -36,6 +36,10 @@ clock_swing_050       clock + scheduled swing velocity 0.50
 clock_timing          clock + premature-transition weight -0.10
 full_low              full candidate: timing -0.10, swing 0.25, slip -0.05
 full_high             full candidate: timing -0.10, swing 0.50, slip -0.10
+berkeley_hard         hard joint-limit backstop only
+berkeley_joint90      90% physical joint limits, no soft action penalty
+berkeley_action08     hard joint limits + soft action penalty above 80%
+berkeley_joint90_action08  90% joint limits + soft action penalty above 80%
 EOF
 }
 
@@ -82,6 +86,14 @@ clock_only() {
   )
 }
 
+berkeley() {
+  config_name=locomotion_berkeley
+  overrides+=(
+    "reward_config.joint_limit.soft_limit_factor=1.0"
+    "reward_config.action_limit.enabled=false"
+  )
+}
+
 case "$condition" in
   base) ;;
   debounce_03) debounce 0.03 ;;
@@ -113,6 +125,22 @@ case "$condition" in
   full_high)
     config_name=locomotion_gait
     overrides+=("reward_config.swing_foot_velocity.weight=0.50" "reward_config.foot_slip.weight=-0.10")
+    ;;
+  berkeley_hard) berkeley ;;
+  berkeley_joint90)
+    berkeley
+    overrides+=("reward_config.joint_limit.soft_limit_factor=0.9")
+    ;;
+  berkeley_action08)
+    berkeley
+    overrides+=("reward_config.action_limit.enabled=true")
+    ;;
+  berkeley_joint90_action08)
+    berkeley
+    overrides+=(
+      "reward_config.joint_limit.soft_limit_factor=0.9"
+      "reward_config.action_limit.enabled=true"
+    )
     ;;
   *)
     echo "Unknown condition: $condition" >&2

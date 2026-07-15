@@ -107,9 +107,10 @@ uv run bello-vast-playground \
 
 The Bello morphology port is `experiments/train/locomotion_berkeley.yaml` and
 uses the normal `bello-vast-train` launcher. Its 2,048-environment batch and
-joint-specific action scales are deliberate adaptations for Bello; the
-reference rewards, command distribution, gait clock, rollout horizon, and PPO
-hyperparameters are retained.
+joint-specific action scales are deliberate adaptations for Bello. The command
+distribution, gait clock, rollout horizon, and PPO hyperparameters are retained;
+the Bello recipe additionally uses explicit physical-joint and policy-action
+safety margins.
 
 ## Offer Selection
 

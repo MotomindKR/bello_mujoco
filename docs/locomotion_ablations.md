@@ -122,6 +122,22 @@ clock_timing
 full_low / full_high
 ```
 
+The Berkeley joint/action-limit study is available as a focused matrix:
+
+```bash
+CONDITIONS="berkeley_hard berkeley_joint90 berkeley_action08 berkeley_joint90_action08" \
+SEEDS="0" MAX_PARALLEL=4 TOTAL_TIMESTEPS=409600000 \
+RUN_PREFIX=berkeley-limits \
+scripts/run_vast_locomotion_ablations.sh agent/clean-locomotion-ablation
+```
+
+`berkeley_hard` keeps only the physical hard-limit backstop,
+`berkeley_joint90` uses the central 90% of each physical joint range (a 5%
+margin on each side),
+`berkeley_action08` adds only the normalized quadratic action-margin term, and
+`berkeley_joint90_action08` combines both treatments. The 409,600,000-step
+budget is 10,000 PPO updates for the Berkeley batch shape.
+
 ## Promotion gates
 
 Compare the final 128 training updates and deterministic checkpoint rollouts.
