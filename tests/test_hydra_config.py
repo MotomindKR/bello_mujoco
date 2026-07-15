@@ -218,12 +218,19 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     assert config.config.policy.max_log_std == pytest.approx(0.0)
     assert config.config.policy.action_distribution == "tanh_gaussian"
     assert config.config.policy.normalize_observations
+    assert config.env_config.gait.standing_command_threshold == pytest.approx(0.1)
     assert config.env_config.gait.randomize_frequency
     assert config.env_config.gait.frequency_range == pytest.approx((1.25, 1.5))
+    assert config.env_config.contact.foot_contact_on_seconds == pytest.approx(0.04)
+    assert config.env_config.contact.foot_contact_off_seconds == pytest.approx(0.04)
     assert config.env_config.observation.foot_phase
     assert config.reward_config.touchdown_air_time.enabled
     assert config.reward_config.touchdown_air_time.weight == pytest.approx(2.0)
     assert config.reward_config.foot_phase.enabled
+    assert config.reward_config.contact_timing.enabled
+    assert config.reward_config.contact_timing.weight == pytest.approx(-0.1)
+    assert config.reward_config.contact_timing.min_air_time == pytest.approx(0.2)
+    assert config.reward_config.contact_timing.min_contact_time == pytest.approx(0.3)
     assert config.reward_config.torque_l1.enabled
     assert config.reward_config.clip_negative_total
     assert config.reward_config.scale_termination_by_timestep

@@ -927,6 +927,35 @@ def test_gait_phase_freezes_for_standing_commands(
         )
     ) == pytest.approx(0.305)
 
+    randomized_env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            gait=GaitConfig(
+                randomize_frequency=True,
+                frequency_range=(1.25, 1.5),
+                standing_command_threshold=0.08,
+                foot_height=0.1,
+            )
+        ),
+    )
+    standing_state, _ = randomized_env.reset(
+        command=jnp.asarray([0.0, 0.0, 0.0], dtype=jnp.float32)
+    )
+    standing_state = standing_state.replace(
+        step_count=step_count,
+        gait_frequency=jnp.asarray(1.5, dtype=jnp.float32),
+    )
+    moving_state = standing_state.replace(
+        command=jnp.asarray([0.0, 0.5, 0.0], dtype=jnp.float32)
+    )
+
+    assert float(randomized_env._gait_phase(standing_state)) == pytest.approx(0.0)
+    assert randomized_env._foot_phase_height_target(standing_state) == pytest.approx(
+        [0.0, 0.0]
+    )
+    assert float(randomized_env._gait_phase(moving_state)) == pytest.approx(0.3)
+    assert jnp.any(randomized_env._foot_phase_height_target(moving_state) > 0.0)
+
 
 def test_observation_config_can_include_base_state(
     full_body_asset: PreparedAsset,

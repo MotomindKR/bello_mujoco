@@ -60,13 +60,13 @@ env_config:
     max_frequency: 1.50
     duty_factor: 0.5
     phase_offsets: [0.0, 0.5]
-    standing_command_threshold: 0.0
+    standing_command_threshold: 0.1
     randomize_frequency: true
     frequency_range: [1.25, 1.50]
     foot_height: 0.10
   contact:
-    foot_contact_on_seconds: 0.0
-    foot_contact_off_seconds: 0.0
+    foot_contact_on_seconds: 0.04
+    foot_contact_off_seconds: 0.04
     foot_contact_force_threshold: 1.0
     undesired_contact_force_threshold: 1.0
     self_collision_force_threshold: 1.0
@@ -215,7 +215,11 @@ reward_config:
   gait_contact:
     enabled: false
   contact_timing:
-    enabled: false
+    enabled: true
+    weight: -0.1
+    min_air_time: 0.2
+    min_contact_time: 0.3
+    command_speed_threshold: 0.1
   feet_air_time:
     enabled: false
   touchdown_air_time:

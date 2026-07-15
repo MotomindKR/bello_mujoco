@@ -671,6 +671,10 @@ def mujoco_contact_terms(
 def mujoco_gait_phase(
     env: BelloLocomotionEnv, step_count: int, command: np.ndarray
 ) -> float:
+    if float(np.linalg.norm(np.asarray(command, dtype=np.float32))) <= float(
+        env.config.gait.standing_command_threshold
+    ):
+        return 0.0
     if env.config.gait.randomize_frequency:
         frequency = sum(env.config.gait.frequency_range) / 2.0
     else:

@@ -39,7 +39,10 @@ The learning rate adapts around a desired KL of `0.01`, cannot rise above its
 initial `3e-4`, and can fall to `1e-5` when repeated updates approach the hard
 `0.03` KL guard. Policy standard deviation is capped at `1.0` (`max_log_std:
 0.0`) to keep the bounded distribution from drifting into persistent tanh
-saturation.
+saturation. Commands at or below `0.1` are standing commands: their gait phase
+is frozen and both foot-height targets are zero. Foot contacts use 40 ms on/off
+debounce, and premature moving touchdowns or liftoffs receive the contact-timing
+penalty.
 
 ## Hydra Configs
 

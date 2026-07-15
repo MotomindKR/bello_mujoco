@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 from rerun.urdf import UrdfTree
 
-from bello_mujoco.envs.locomotion import BelloEnvConfig
+from bello_mujoco.envs.locomotion import BelloEnvConfig, GaitConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.policy import ActorCriticConfig
-from bello_mujoco.render import mujoco_eval_state
+from bello_mujoco.render import mujoco_eval_state, mujoco_gait_phase
 from bello_mujoco.rerun_eval import (
     GamepadCommandSource,
     GamepadConfig,
@@ -167,6 +167,24 @@ def test_mujoco_eval_state_copies_native_reward_state_fields() -> None:
     assert state.data.subtree_com.dtype == jnp.float32
     assert state.data.subtree_com == pytest.approx(mj_data.subtree_com)
     assert state.gait_frequency == pytest.approx(1.375)
+
+
+def test_native_mujoco_gait_phase_freezes_for_standing_command() -> None:
+    env = SimpleNamespace(
+        config=SimpleNamespace(
+            gait=GaitConfig(
+                randomize_frequency=True,
+                frequency_range=(1.25, 1.5),
+                standing_command_threshold=0.1,
+            )
+        ),
+        control_timestep=0.02,
+    )
+
+    assert mujoco_gait_phase(env, 10, np.asarray([0.0, 0.0, 0.0])) == 0.0
+    assert mujoco_gait_phase(env, 10, np.asarray([0.0, 0.5, 0.0])) == pytest.approx(
+        0.275
+    )
 
 
 class FakeController:

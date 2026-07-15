@@ -1727,7 +1727,11 @@ class BelloLocomotionEnv:
                 * self.control_timestep
                 * state.gait_frequency
             )
-            return jnp.mod(phase, 1.0)
+            return jnp.where(
+                self._is_standing_command(state.command),
+                jnp.asarray(0.0, dtype=jnp.float32),
+                jnp.mod(phase, 1.0),
+            )
         return self._gait_phase_from_step_count(state.step_count, state.command)
 
     def _gait_phase_sin_cos(self, state: BelloState) -> jax.Array:
@@ -1753,7 +1757,12 @@ class BelloLocomotionEnv:
         height = self.config.gait.foot_height
         stance = interpolate(0.0, height, 2.0 * x)
         swing = interpolate(height, 0.0, 2.0 * x - 1.0)
-        return jnp.where(x <= 0.5, stance, swing)
+        target = jnp.where(x <= 0.5, stance, swing)
+        return jnp.where(
+            self._is_standing_command(state.command),
+            jnp.zeros_like(target),
+            target,
+        )
 
     def _gait_contact_mask(self, state: BelloState) -> jax.Array:
         foot_count = self.model.foot_body_ids.size

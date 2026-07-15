@@ -1659,3 +1659,23 @@ The Berkeley recipe now uses the existing adaptive schedule with
 same-update stop. Capping `max_log_std` at `0.0` limits policy standard
 deviation to `1.0`. A single combined 90% joint-margin plus 80% action-margin
 run replaces the stopped four-way matrix for the initial stability check.
+
+## 2026-07-15 - Stop the gait clock and reject double steps
+
+The adaptive-KL Berkeley run completed all 10,000 updates and produced stable
+commanded locomotion, but zero command still caused stationary steps and the
+gait occasionally inserted double steps. Its final diagnostics reported `7.82`
+combined footfalls per second against a scheduled `2.5--3.0`, with roughly
+`6--7` premature touchdown/liftoff events per second.
+
+Randomized gait phase previously bypassed the standing-command gate. Moreover,
+freezing phase at zero alone left the half-cycle foot offset requesting one
+raised foot. Randomized and command-derived phase now both freeze for standing,
+and standing explicitly sets both foot-height targets to zero. Native MuJoCo
+evaluation uses the same frozen-phase rule.
+
+The Berkeley follow-up treats command norms at or below `0.1` as standing,
+debounces foot contact on and off by 40 ms, and enables the existing `-0.1`
+contact-timing event penalty with minimum air/contact durations of 0.2/0.3 s.
+The working PPO, tracking, phase-height, joint-margin, and action-margin settings
+remain unchanged.
