@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -711,6 +712,131 @@ uv run bello-train-ppo \
 """
 
 
+REMOTE_JOB_RUNNER = r"""import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import traceback
+
+env_path = Path(sys.argv[1])
+script_path = Path(sys.argv[2])
+status_path = Path(sys.argv[3])
+arguments = json.loads(sys.argv[4])
+environment = os.environ.copy()
+environment.update(json.loads(env_path.read_text()))
+env_path.unlink(missing_ok=True)
+try:
+    return_code = subprocess.run(
+        ["bash", str(script_path), *arguments],
+        env=environment,
+    ).returncode
+except BaseException:
+    traceback.print_exc()
+    return_code = 127
+temporary_status = status_path.with_suffix(".tmp")
+temporary_status.write_text(f"{return_code}\n")
+temporary_status.replace(status_path)
+raise SystemExit(return_code)
+"""
+
+
+REMOTE_JOB_BOOTSTRAP = r"""import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+job_dir = Path(sys.argv[1])
+arguments = sys.argv[2:]
+environment = json.loads(sys.stdin.readline())
+script = sys.stdin.read()
+job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+for child in job_dir.iterdir():
+    if child.is_file():
+        child.unlink()
+env_path = job_dir / "environment.json"
+script_path = job_dir / "train.sh"
+status_path = job_dir / "status"
+log_path = job_dir / "train.log"
+pid_path = job_dir / "pid"
+env_path.write_text(json.dumps(environment))
+env_path.chmod(0o600)
+script_path.write_text(script)
+script_path.chmod(0o700)
+with log_path.open("ab", buffering=0) as log_file:
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            os.environ["BELLO_REMOTE_JOB_RUNNER"],
+            str(env_path),
+            str(script_path),
+            str(status_path),
+            json.dumps(arguments),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+pid_path.write_text(f"{process.pid}\n")
+print(job_dir)
+"""
+
+
+def _ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
+    user, host, port = target
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-p",
+        str(port),
+        f"{user}@{host}",
+        remote_command,
+    ]
+
+
+def _remote_job_poll_command(job_dir: str, log_offset: int) -> str:
+    quoted_dir = shlex.quote(job_dir)
+    return f"""job_dir={quoted_dir}
+log_size=$(stat -c %s "$job_dir/train.log" 2>/dev/null || printf 0)
+if [ -f "$job_dir/status" ]; then
+  state="done:$(cat "$job_dir/status")"
+elif [ -f "$job_dir/pid" ] && kill -0 "$(cat "$job_dir/pid")" 2>/dev/null; then
+  state=running
+else
+  state=lost
+fi
+printf 'BELLO_JOB_STATE=%s\\n' "$state"
+printf 'BELLO_LOG_SIZE=%s\\n' "$log_size"
+if [ "$log_size" -gt {log_offset} ]; then
+  tail -c +$(({log_offset} + 1)) "$job_dir/train.log" | head -c $((log_size - {log_offset}))
+fi"""
+
+
+def _parse_remote_job_poll(output: str) -> tuple[str, int, str]:
+    lines = output.split("\n", 2)
+    if len(lines) < 3 or not lines[0].startswith("BELLO_JOB_STATE="):
+        raise RuntimeError(f"invalid remote job status response: {output!r}")
+    if not lines[1].startswith("BELLO_LOG_SIZE="):
+        raise RuntimeError(f"invalid remote job log response: {output!r}")
+    return (
+        lines[0].removeprefix("BELLO_JOB_STATE="),
+        int(lines[1].removeprefix("BELLO_LOG_SIZE=")),
+        lines[2],
+    )
+
+
 def run_remote_training(
     target: tuple[str, str, int],
     selection: GitSelection,
@@ -719,8 +845,9 @@ def run_remote_training(
     *,
     wandb_key: str,
     github_token: str,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_interval_seconds: float = 30.0,
 ) -> None:
-    user, host, port = target
     project = os.environ.get("WANDB_PROJECT", "bello-mujoco")
     entity = os.environ.get("WANDB_ENTITY", "")
     remote_env = {
@@ -730,18 +857,18 @@ def run_remote_training(
         "GITHUB_TOKEN": github_token,
         "BELLO_HYDRA_OVERRIDES": json.dumps(config.hydra_overrides),
     }
-    bootstrap = (
-        "import json, os, subprocess, sys; "
-        "env=json.loads(sys.stdin.readline()); os.environ.update(env); "
-        "script=sys.stdin.read(); "
-        "raise SystemExit(subprocess.run(['bash','-s','--',*sys.argv[1:]], "
-        "input=script, text=True, env=os.environ).returncode)"
-    )
+    job_token = hashlib.sha256(f"{run_name}:{selection.commit}".encode()).hexdigest()[
+        :16
+    ]
+    job_dir = f"/tmp/bello-vast-{job_token}"
     remote_command = shlex.join(
         [
+            "env",
+            f"BELLO_REMOTE_JOB_RUNNER={REMOTE_JOB_RUNNER}",
             "python3",
             "-c",
-            bootstrap,
+            REMOTE_JOB_BOOTSTRAP,
+            job_dir,
             selection.branch,
             selection.commit,
             selection.repo_url,
@@ -750,21 +877,75 @@ def run_remote_training(
             run_name,
         ]
     )
-    command = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "ServerAliveInterval=30",
-        "-p",
-        str(port),
-        f"{user}@{host}",
-        remote_command,
-    ]
     payload = json.dumps(remote_env) + "\n" + REMOTE_TRAIN_SCRIPT
-    subprocess.run(command, input=payload, text=True, check=True)
+    try:
+        subprocess.run(
+            _ssh_command(target, remote_command),
+            input=payload,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != 255:
+            raise
+        print(
+            "SSH disconnected while launching the remote job; checking its "
+            "detached status before deciding whether launch failed.",
+            flush=True,
+        )
+    print(f"Started detached remote training job at {job_dir}.")
+
+    log_offset = 0
+    disconnect_deadline = time.monotonic() + config.ssh_timeout_seconds
+    while True:
+        try:
+            result = subprocess.run(
+                _ssh_command(
+                    target,
+                    _remote_job_poll_command(job_dir, log_offset),
+                ),
+                text=True,
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            state, log_offset, new_log = _parse_remote_job_poll(result.stdout)
+            if new_log:
+                print(new_log, end="" if new_log.endswith("\n") else "\n", flush=True)
+            disconnect_deadline = time.monotonic() + config.ssh_timeout_seconds
+            if state.startswith("done:"):
+                return_code = int(state.removeprefix("done:").strip())
+                if return_code != 0:
+                    raise subprocess.CalledProcessError(
+                        return_code,
+                        ["remote-training-job", run_name],
+                    )
+                return
+            if state == "lost":
+                raise RuntimeError(
+                    f"remote training job {job_dir} disappeared without a status"
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if time.monotonic() >= disconnect_deadline:
+                raise TimeoutError(
+                    "could not reconnect to the detached remote training job "
+                    f"within {config.ssh_timeout_seconds} seconds"
+                ) from exc
+            print(f"Remote training poll failed ({exc}); retrying.", flush=True)
+        except subprocess.CalledProcessError as exc:
+            if exc.cmd and exc.cmd[0] == "remote-training-job":
+                raise
+            if time.monotonic() >= disconnect_deadline:
+                raise TimeoutError(
+                    "could not reconnect to the detached remote training job "
+                    f"within {config.ssh_timeout_seconds} seconds"
+                ) from exc
+            print(
+                f"Remote training SSH poll exited {exc.returncode}; retrying.",
+                flush=True,
+            )
+        sleep(poll_interval_seconds)
 
 
 class PipelineInterrupted(RuntimeError):

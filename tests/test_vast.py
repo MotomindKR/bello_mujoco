@@ -199,12 +199,17 @@ def test_destroy_treats_not_found_after_api_error_as_success() -> None:
 
 
 def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
-    call = {}
+    calls = []
 
     def fake_run(command, **kwargs):
-        call["command"] = command
-        call["input"] = kwargs["input"]
-        return subprocess.CompletedProcess(command, 0)
+        calls.append((command, kwargs))
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(command, 0, stdout="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="BELLO_JOB_STATE=done:0\nBELLO_LOG_SIZE=0\n",
+        )
 
     monkeypatch.setattr(vast.subprocess, "run", fake_run)
     config = valid_config(hydra_overrides=("config.seed=2",))
@@ -218,12 +223,51 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
         github_token="github-secret",
     )
 
-    assert "wandb-secret" not in " ".join(call["command"])
-    assert "github-secret" not in " ".join(call["command"])
-    environment = json.loads(call["input"].splitlines()[0])
+    launch_command, launch_kwargs = calls[0]
+    assert "wandb-secret" not in " ".join(launch_command)
+    assert "github-secret" not in " ".join(launch_command)
+    environment = json.loads(launch_kwargs["input"].splitlines()[0])
     assert environment["WANDB_API_KEY"] == "wandb-secret"
     assert environment["GITHUB_TOKEN"] == "github-secret"
     assert environment["BELLO_HYDRA_OVERRIDES"] == '["config.seed=2"]'
+
+
+def test_remote_runner_reconnects_after_ssh_poll_failure(monkeypatch) -> None:
+    poll_count = 0
+
+    def fake_run(command, **kwargs):
+        nonlocal poll_count
+        if "input" in kwargs:
+            return subprocess.CompletedProcess(command, 0, stdout="")
+        poll_count += 1
+        if poll_count == 1:
+            raise subprocess.CalledProcessError(255, command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=("BELLO_JOB_STATE=done:0\nBELLO_LOG_SIZE=16\ntraining passed\n"),
+        )
+
+    monkeypatch.setattr(vast.subprocess, "run", fake_run)
+
+    run_remote_training(
+        ("root", "example.com", 22001),
+        selection(),
+        valid_config(),
+        "test-run",
+        wandb_key="wandb-secret",
+        github_token="github-secret",
+        sleep=lambda _: None,
+        poll_interval_seconds=0,
+    )
+
+    assert poll_count == 2
+
+
+def test_remote_job_poll_parser_preserves_incremental_log() -> None:
+    assert vast._parse_remote_job_poll(
+        "BELLO_JOB_STATE=running\nBELLO_LOG_SIZE=23\nnew output\n"
+    ) == ("running", 23, "new output\n")
 
 
 @pytest.mark.parametrize("remote_failure", [None, RuntimeError("training failed")])

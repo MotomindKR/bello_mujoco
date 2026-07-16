@@ -243,16 +243,12 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
                 policy_obs_size,
                 critic_policy_obs_size,
             )
-            if run_config.checkpoint_config.upload_wandb_artifact and run is not None:
-                track_checkpoint_artifact(
-                    run,
-                    final_checkpoint,
-                    name=(
-                        run_config.checkpoint_config.wandb_artifact_name
-                        or checkpoint_root.name
-                    ),
-                    artifact_type=run_config.checkpoint_config.wandb_artifact_type,
-                )
+            upload_motion_checkpoint(
+                run,
+                final_checkpoint,
+                checkpoint_root,
+                run_config.checkpoint_config,
+            )
         print(out["metrics"])
         if final_checkpoint is not None:
             print({"checkpoint_path": str(final_checkpoint)})
@@ -376,6 +372,12 @@ def motion_train_update_loop(
                 policy_obs_size,
                 critic_policy_obs_size,
             )
+            upload_motion_checkpoint(
+                run,
+                scheduled_checkpoint,
+                checkpoint_root,
+                run_config.checkpoint_config,
+            )
         if should_render_training_video(update, config.num_updates, video_config):
             if checkpoint_root is None or checkpoint_context is None:
                 raise ValueError("motion evaluation requires checkpoint context")
@@ -418,6 +420,22 @@ def should_save_motion_checkpoint(update: int, config: CheckpointConfig) -> bool
         and config.every_updates is not None
         and update > 0
         and update % config.every_updates == 0
+    )
+
+
+def upload_motion_checkpoint(
+    run,
+    path: Path,
+    checkpoint_root: Path,
+    config: CheckpointConfig,
+) -> None:
+    if not config.upload_wandb_artifact or run is None:
+        return
+    track_checkpoint_artifact(
+        run,
+        path,
+        name=config.wandb_artifact_name or checkpoint_root.name,
+        artifact_type=config.wandb_artifact_type,
     )
 
 

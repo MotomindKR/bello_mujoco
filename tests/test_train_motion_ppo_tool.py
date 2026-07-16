@@ -27,6 +27,7 @@ from bello_mujoco.tools.train_motion_ppo import (
     resolve_motion_selection,
     resume_runner_state,
     should_save_motion_checkpoint,
+    upload_motion_checkpoint,
     validate_motion_checkpoint_config,
     validate_motion_video_config,
     try_render_motion_training_video,
@@ -57,9 +58,7 @@ def test_motion_selection_resolves_sequence_name(tmp_path: Path) -> None:
     motion_path = tmp_path / "dance1_subject2.npz"
     motion_path.touch()
     run_config = MotionTrainingRunConfig(
-        motion=MotionSelectionConfig(
-            directory=tmp_path, sequence="dance1_subject2"
-        )
+        motion=MotionSelectionConfig(directory=tmp_path, sequence="dance1_subject2")
     )
 
     resolved = resolve_motion_selection(run_config)
@@ -196,6 +195,33 @@ def test_motion_checkpoint_schedule_can_be_disabled() -> None:
     assert not should_save_motion_checkpoint(
         100, CheckpointConfig(enabled=True, every_updates=None)
     )
+
+
+def test_motion_checkpoint_upload_uses_versioned_wandb_artifact(
+    monkeypatch, tmp_path: Path
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        train_motion,
+        "track_checkpoint_artifact",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    run = SimpleNamespace()
+    checkpoint = tmp_path / "update_000500"
+    config = CheckpointConfig(
+        upload_wandb_artifact=True,
+        wandb_artifact_name="balance-run",
+        wandb_artifact_type="model",
+    )
+
+    upload_motion_checkpoint(run, checkpoint, tmp_path, config)
+
+    assert calls == [
+        (
+            (run, checkpoint),
+            {"name": "balance-run", "artifact_type": "model"},
+        )
+    ]
 
 
 def test_motion_checkpoint_config_rejects_invalid_interval() -> None:
