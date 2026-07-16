@@ -7,7 +7,7 @@ motion:
   directory: motions/asap_fixed_head
   sequence: video_single_foot_balance_level4_filter_amass
 
-# Leave CUDA headroom for the longer level-4 reference on 32 GiB RTX 5090 hosts.
+# Leave headroom for transient JAX/Warp allocations on 32 GiB RTX 5090 hosts.
 config:
   num_envs: 3584
 
