@@ -17,7 +17,7 @@ class MeshSources:
     visual: dict[Path, str]
 
 
-EndEffectorSphereMode = Literal["none", "both", "right", "left"]
+EndEffectorSphereMode = Literal["none", "both", "right", "left", "both_articulated"]
 END_EFFECTOR_SPHERE_RADIUS = 0.0325
 END_EFFECTOR_SPHERE_OFFSET_Z = -0.02
 END_EFFECTOR_SPHERE_MASS = 0.05
@@ -108,7 +108,8 @@ def replace_end_effectors_with_spheres(
     if mode == "none":
         return
 
-    sides = ("right", "left") if mode == "both" else (mode,)
+    articulated = mode == "both_articulated"
+    sides = ("right", "left") if mode in {"both", "both_articulated"} else (mode,)
     for side in sides:
         joint_name, sphere_link_name, fixed_joint_name = END_EFFECTOR_SPHERES[side]
         joint = root.find(f"./joint[@name='{joint_name}']")
@@ -123,8 +124,16 @@ def replace_end_effectors_with_spheres(
         origin = joint.find("origin")
         xyz = parse_xyz(origin.get("xyz", "0 0 0") if origin is not None else "0 0 0")
         rpy = origin.get("rpy", "0 0 0") if origin is not None else "0 0 0"
+        articulated_joint = deepcopy(joint)
 
         remove_link_subtree(root, child_link)
+        if articulated:
+            sphere_origin = (0.0, 0.0, END_EFFECTOR_SPHERE_OFFSET_Z)
+            root.append(make_sphere_link(sphere_link_name, origin=sphere_origin))
+            articulated_joint.find("child").set("link", sphere_link_name)
+            root.append(articulated_joint)
+            continue
+
         sphere_xyz = (xyz[0], xyz[1], xyz[2] + END_EFFECTOR_SPHERE_OFFSET_Z)
         root.append(make_sphere_link(sphere_link_name))
         fixed_joint = ET.Element("joint", {"name": fixed_joint_name, "type": "fixed"})
@@ -171,11 +180,14 @@ def remove_link_subtree(root: ET.Element, root_link: str) -> None:
             root.remove(link)
 
 
-def make_sphere_link(name: str) -> ET.Element:
+def make_sphere_link(
+    name: str, *, origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+) -> ET.Element:
     inertia = 0.4 * END_EFFECTOR_SPHERE_MASS * END_EFFECTOR_SPHERE_RADIUS**2
+    origin_text = format_xyz(origin)
     link = ET.Element("link", {"name": name})
     inertial = ET.SubElement(link, "inertial")
-    ET.SubElement(inertial, "origin", {"xyz": "0 0 0", "rpy": "0 0 0"})
+    ET.SubElement(inertial, "origin", {"xyz": origin_text, "rpy": "0 0 0"})
     ET.SubElement(inertial, "mass", {"value": f"{END_EFFECTOR_SPHERE_MASS:g}"})
     ET.SubElement(
         inertial,
@@ -191,7 +203,7 @@ def make_sphere_link(name: str) -> ET.Element:
     )
     for tag in ("visual", "collision"):
         element = ET.SubElement(link, tag, {"name": f"{name}_{tag}"})
-        ET.SubElement(element, "origin", {"xyz": "0 0 0", "rpy": "0 0 0"})
+        ET.SubElement(element, "origin", {"xyz": origin_text, "rpy": "0 0 0"})
         geometry = ET.SubElement(element, "geometry")
         ET.SubElement(geometry, "sphere", {"radius": f"{END_EFFECTOR_SPHERE_RADIUS:g}"})
     return link

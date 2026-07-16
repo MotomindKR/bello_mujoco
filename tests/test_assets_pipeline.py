@@ -75,6 +75,37 @@ def test_end_effector_sphere_replacement_prunes_selected_subtree() -> None:
     assert sphere_link.find("./collision/geometry/sphere").attrib["radius"] == "0.0325"
 
 
+def test_articulated_sphere_replacement_preserves_wrist_yaw_joint() -> None:
+    root = ET.Element("robot", {"name": "test"})
+    for side in ("r", "l"):
+        for suffix in ("wrist_link", "eef_link", "gripper_link"):
+            ET.SubElement(root, "link", {"name": f"{side}_{suffix}"})
+    for side, name in (("r", "right"), ("l", "left")):
+        revolute = ET.SubElement(
+            root, "joint", {"name": f"{name}_wrist_yaw_joint", "type": "revolute"}
+        )
+        ET.SubElement(revolute, "origin", {"xyz": "0 0 -0.102", "rpy": "0 0 0"})
+        ET.SubElement(revolute, "parent", {"link": f"{side}_wrist_link"})
+        ET.SubElement(revolute, "child", {"link": f"{side}_eef_link"})
+        ET.SubElement(revolute, "axis", {"xyz": "0 0 1"})
+        fixed = ET.SubElement(
+            root, "joint", {"name": f"{name}_gripper_joint", "type": "fixed"}
+        )
+        ET.SubElement(fixed, "parent", {"link": f"{side}_eef_link"})
+        ET.SubElement(fixed, "child", {"link": f"{side}_gripper_link"})
+
+    replace_end_effectors_with_spheres(root, "both_articulated")
+
+    for side, name in (("r", "right"), ("l", "left")):
+        joint = root.find(f"./joint[@name='{name}_wrist_yaw_joint']")
+        sphere = root.find(f"./link[@name='{side}_end_effector_sphere_link']")
+        assert joint is not None
+        assert joint.get("type") == "revolute"
+        assert joint.find("child").get("link") == f"{side}_end_effector_sphere_link"
+        assert sphere is not None
+        assert sphere.find("./collision/origin").get("xyz") == "0 0 -0.02"
+
+
 def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
     root = ET.Element("robot", {"name": "test"})
 
@@ -91,6 +122,43 @@ def test_prepared_full_body_preserves_pelvis_body(
     model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
 
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link") >= 0
+
+
+def test_ankle_differential_tendons_are_optional_mujoco_coordinates(
+    full_body_asset: PreparedAsset,
+    full_body_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    direct_joint_model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    differential_model = mujoco.MjModel.from_xml_path(
+        str(full_body_ankle_tendon_asset.mjcf_path)
+    )
+
+    assert direct_joint_model.ntendon == 0
+    assert differential_model.ntendon == 4
+    assert differential_model.nu == direct_joint_model.nu
+    assert {
+        mujoco.mj_id2name(differential_model, mujoco.mjtObj.mjOBJ_TENDON, index)
+        for index in range(differential_model.ntendon)
+    } == {
+        "left_ankle_motor_1",
+        "left_ankle_motor_2",
+        "right_ankle_motor_1",
+        "right_ankle_motor_2",
+    }
+
+    root = ET.parse(full_body_ankle_tendon_asset.mjcf_path).getroot()
+    expected_coefficients = {
+        "left_ankle_motor_1": (-1.0, 1.0),
+        "left_ankle_motor_2": (1.0, 1.0),
+        "right_ankle_motor_1": (-1.0, 1.0),
+        "right_ankle_motor_2": (1.0, 1.0),
+    }
+    for tendon_name, coefficients in expected_coefficients.items():
+        fixed = root.find(f"./tendon/fixed[@name='{tendon_name}']")
+        assert fixed is not None
+        assert tuple(float(joint.get("coef")) for joint in fixed.findall("joint")) == (
+            coefficients
+        )
 
 
 def test_observation_size_tracks_reduced_actuator_count() -> None:

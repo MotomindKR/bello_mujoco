@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +18,17 @@ FOOT_MESH_NAMES = frozenset({"left_ankle_roll_link", "right_ankle_roll_link"})
 TRANSPARENT_COLLISION_RGBA = "0.8 0.8 0.8 0"
 
 
+@dataclass(frozen=True)
+class ImuSensorConfig:
+    enabled: bool = False
+    body_name: str = "pelvis_link"
+
+
+@dataclass(frozen=True)
+class AnkleDifferentialConfig:
+    enabled: bool = False
+
+
 def compile_urdf_to_mjcf(
     urdf_path: Path,
     mjcf_path: Path,
@@ -26,6 +38,8 @@ def compile_urdf_to_mjcf(
     include_visuals: bool = False,
     actuator_config: ActuatorConfig = ActuatorConfig(),
     actuated_joint_order: tuple[str, ...] = (),
+    imu_config: ImuSensorConfig = ImuSensorConfig(),
+    ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig(),
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tmp_path = mjcf_path.with_suffix(".compiled.xml")
@@ -43,6 +57,8 @@ def compile_urdf_to_mjcf(
         ensure_collision_geoms_transparent(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
     ensure_position_actuators(root, actuator_config, actuated_joint_order)
+    ensure_ankle_differential_tendons(root, ankle_differential_config)
+    ensure_imu_sensors(root, imu_config)
     ensure_home_keyframe(root, actuator_config)
 
     ET.indent(tree, space="  ")
@@ -50,6 +66,98 @@ def compile_urdf_to_mjcf(
     tmp_path.unlink(missing_ok=True)
 
     mujoco.MjModel.from_xml_path(str(mjcf_path))
+
+
+def ensure_ankle_differential_tendons(
+    root: ET.Element, config: AnkleDifferentialConfig
+) -> None:
+    if not config.enabled:
+        return
+
+    joint_names = {
+        joint.get("name")
+        for joint in root.findall(".//joint")
+        if joint.get("name") is not None
+    }
+    tendon = root.find("tendon")
+    if tendon is None:
+        tendon = ET.SubElement(root, "tendon")
+    existing_names = {
+        item.get("name") for item in tendon if item.get("name") is not None
+    }
+
+    for side in ("left", "right"):
+        pitch_joint = f"{side}_ankle_pitch_joint"
+        roll_joint = f"{side}_ankle_roll_joint"
+        missing = {pitch_joint, roll_joint} - joint_names
+        if missing:
+            raise ValueError(
+                f"{side} ankle differential requires MuJoCo joints: "
+                + ", ".join(sorted(missing))
+            )
+        for motor_index, pitch_coefficient in ((1, -1.0), (2, 1.0)):
+            tendon_name = f"{side}_ankle_motor_{motor_index}"
+            if tendon_name in existing_names:
+                raise ValueError(
+                    f"generated MJCF already defines tendon {tendon_name!r}"
+                )
+            fixed = ET.SubElement(tendon, "fixed", {"name": tendon_name})
+            ET.SubElement(
+                fixed,
+                "joint",
+                {"joint": pitch_joint, "coef": f"{pitch_coefficient:g}"},
+            )
+            ET.SubElement(
+                fixed,
+                "joint",
+                {"joint": roll_joint, "coef": "1"},
+            )
+            existing_names.add(tendon_name)
+
+
+def ensure_imu_sensors(root: ET.Element, config: ImuSensorConfig) -> None:
+    if not config.enabled:
+        return
+    if not config.body_name:
+        raise ValueError("IMU body name must not be empty")
+    body = root.find(f".//body[@name='{config.body_name}']")
+    if body is None:
+        raise ValueError(f"IMU body not found in generated MJCF: {config.body_name!r}")
+
+    site_name = "bello_imu_site"
+    if root.find(f".//site[@name='{site_name}']") is not None:
+        raise ValueError(f"generated MJCF already defines site {site_name!r}")
+    body.append(
+        ET.Element(
+            "site",
+            {
+                "name": site_name,
+                "pos": "0 0 0",
+                "quat": "1 0 0 0",
+                "size": "0.005",
+                "rgba": "0 1 0 0",
+            },
+        )
+    )
+
+    sensor = root.find("sensor")
+    if sensor is None:
+        sensor = ET.SubElement(root, "sensor")
+    ET.SubElement(sensor, "gyro", {"name": "bello_imu_gyro", "site": site_name})
+    ET.SubElement(
+        sensor,
+        "accelerometer",
+        {"name": "bello_imu_accelerometer", "site": site_name},
+    )
+    ET.SubElement(
+        sensor,
+        "framequat",
+        {
+            "name": "bello_imu_orientation",
+            "objtype": "site",
+            "objname": site_name,
+        },
+    )
 
 
 def apply_collision_mode(
@@ -406,7 +514,7 @@ def ensure_home_keyframe(root: ET.Element, config: ActuatorConfig) -> None:
 
     joint_qpos = [
         joint_default(joint.get("name", ""), config)
-        for joint in root.findall(".//joint")
+        for joint in root.findall("./worldbody//joint")
     ]
     qpos = " ".join(
         ["0", "0", "0.91", "1", "0", "0", "0", *[f"{value:g}" for value in joint_qpos]]

@@ -1,0 +1,148 @@
+# Bello lower-body RobStride identities and simulation-coordinate assignments.
+buses:
+  can0:
+    interface: can0
+    host_id: 0
+
+motors:
+  - name: waist_yaw
+    id: 53
+    bus: can0
+    kind: ROBSTRIDE_04
+    direction: -1
+    run_mode: mit
+    target:
+      type: joint
+      name: waist_yaw_joint
+
+  - name: left_hip_pitch
+    id: 61
+    bus: can0
+    kind: ROBSTRIDE_04
+    direction: -1
+    run_mode: mit
+    target:
+      type: joint
+      name: left_hip_pitch_joint
+
+  - name: left_hip_roll
+    id: 62
+    bus: can0
+    kind: ROBSTRIDE_03
+    direction: -1
+    run_mode: mit
+    target:
+      type: joint
+      name: left_hip_roll_joint
+
+  - name: left_hip_yaw
+    id: 63
+    bus: can0
+    kind: ROBSTRIDE_03
+    direction: -1
+    run_mode: mit
+    target:
+      type: joint
+      name: left_hip_yaw_joint
+
+  - name: left_knee_mix_1
+    id: 64
+    bus: can0
+    kind: ROBSTRIDE_04
+    direction: 1
+    run_mode: mit
+    target:
+      type: joint
+      name: left_knee_joint
+
+  - name: left_ankle_1
+    id: 67
+    bus: can0
+    kind: ROBSTRIDE_06
+    direction: -1
+    run_mode: mit
+    target:
+      type: tendon
+      name: left_ankle_motor_1
+      owned_joints: [left_ankle_pitch_joint, left_ankle_roll_joint]
+      coupling_group: left_ankle
+      coupling_size: 2
+
+  - name: left_ankle_2
+    id: 66
+    bus: can0
+    kind: ROBSTRIDE_06
+    direction: -1
+    run_mode: mit
+    target:
+      type: tendon
+      name: left_ankle_motor_2
+      owned_joints: [left_ankle_pitch_joint, left_ankle_roll_joint]
+      coupling_group: left_ankle
+      coupling_size: 2
+
+  - name: right_hip_pitch
+    id: 71
+    bus: can0
+    kind: ROBSTRIDE_04
+    direction: -1
+    run_mode: mit
+    target:
+      type: joint
+      name: right_hip_pitch_joint
+
+  - name: right_hip_roll
+    id: 72
+    bus: can0
+    kind: ROBSTRIDE_03
+    direction: -1
+    run_mode: mit
+    target:
+      type: joint
+      name: right_hip_roll_joint
+
+  - name: right_hip_yaw
+    id: 73
+    bus: can0
+    kind: ROBSTRIDE_03
+    direction: -1
+    run_mode: mit
+    target:
+      type: joint
+      name: right_hip_yaw_joint
+
+  - name: right_knee_mix_1
+    id: 74
+    bus: can0
+    kind: ROBSTRIDE_04
+    direction: 1
+    run_mode: mit
+    target:
+      type: joint
+      name: right_knee_joint
+
+  - name: right_ankle_1
+    id: 77
+    bus: can0
+    kind: ROBSTRIDE_06
+    direction: -1
+    run_mode: mit
+    target:
+      type: tendon
+      name: right_ankle_motor_1
+      owned_joints: [right_ankle_pitch_joint, right_ankle_roll_joint]
+      coupling_group: right_ankle
+      coupling_size: 2
+
+  - name: right_ankle_2
+    id: 76
+    bus: can0
+    kind: ROBSTRIDE_06
+    direction: -1
+    run_mode: mit
+    target:
+      type: tendon
+      name: right_ankle_motor_2
+      owned_joints: [right_ankle_pitch_joint, right_ankle_roll_joint]
+      coupling_group: right_ankle
+      coupling_size: 2

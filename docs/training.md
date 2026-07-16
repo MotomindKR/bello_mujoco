@@ -148,8 +148,13 @@ asset_config:
   foot_collision_mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
   collision_mode: mesh  # mesh | foot-mesh | box
-  end_effector_sphere_mode: none  # none | both | right | left
+  end_effector_sphere_mode: none  # none | both | right | left | both_articulated
   neighbor_exclusion_depth: 2
+  imu_config:
+    enabled: false
+    body_name: pelvis_link
+  ankle_differential_config:
+    enabled: false
   actuator_config:
     default_action_scale_ratio: 0.25
     joints:
@@ -161,6 +166,10 @@ asset_config:
         gains: [40.0, 2.0]  # [kp, kv]
         effort_limit: null
 ```
+
+`both_articulated` replaces both hand/gripper subtrees with spheres while
+retaining the wrist-yaw joints. The other sphere modes replace the selected
+subtree starting at the wrist-yaw joint.
 
 Asset preparation writes a simulation MJCF and a viewer MJCF. The simulation
 MJCF uses the selected collision representation directly. The viewer MJCF
