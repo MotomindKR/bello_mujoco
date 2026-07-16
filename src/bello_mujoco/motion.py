@@ -14,6 +14,13 @@ from bello_mujoco.sim import BelloModel
 
 MOTION_FORMAT_VERSION = 1
 
+FIXED_TRACKING_JOINT_NAMES = (
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "neck_yaw_joint",
+    "head_pitch_joint",
+)
+
 GMR_BELLO_JOINT_NAMES = (
     "left_hip_pitch_joint",
     "left_hip_roll_joint",

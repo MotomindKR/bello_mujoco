@@ -1,4 +1,4 @@
-"""Whole-body reference-motion tracking for fixed-waist Bello."""
+"""Whole-body reference-motion tracking for fixed-waist, fixed-head Bello."""
 
 from __future__ import annotations
 
@@ -158,9 +158,16 @@ class BelloMotionTrackingEnv:
     def __post_init__(self) -> None:
         if self.model.actuator_joint_names != self.motion.joint_names:
             raise ValueError("model and motion actuator orders do not match")
-        if self.model.mj_model.nq != 34 or self.model.mj_model.nv != 33:
+        expected_nq = 7 + self.action_size
+        expected_nv = 6 + self.action_size
+        if (
+            self.model.mj_model.nq != expected_nq
+            or self.model.mj_model.nv != expected_nv
+        ):
             raise ValueError(
-                "fixed-waist Bello must have nq=34 and nv=33, got "
+                "motion-tracking Bello must contain only its floating base and "
+                "actuated one-DoF joints; expected "
+                f"nq={expected_nq}, nv={expected_nv}, got "
                 f"nq={self.model.mj_model.nq}, nv={self.model.mj_model.nv}"
             )
         if self.decimation <= 0:
@@ -1140,9 +1147,7 @@ class BelloMotionTrackingEnv:
             bin_key, self.sampling_bin_count, (), p=probabilities
         )
         offset = jax.random.uniform(offset_key, ())
-        phase = (
-            sampled_bin.astype(jnp.float32) + offset
-        ) / self.sampling_bin_count
+        phase = (sampled_bin.astype(jnp.float32) + offset) / self.sampling_bin_count
         return phase * jnp.asarray(max_time, dtype=jnp.float32)
 
     def _sampling_probabilities(self, failure_ema: jax.Array) -> jax.Array:

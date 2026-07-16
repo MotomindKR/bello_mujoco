@@ -8,7 +8,7 @@ dry_run: false
 
 motion:
   directory: motions/local
-  sequence: walk1_subject1_fixed_waist
+  sequence: walk1_subject1
 
 config:
   total_timesteps: 25165824  # 1,024 updates at 1,024 envs x 24 steps.
@@ -44,7 +44,7 @@ checkpoint_config:
 
 wandb_config:
   run_name: bello-walk-overfit-seed0
-  tags: [bello, fixed-waist, gmr, walk-overfit]
+  tags: [bello, fixed-waist, fixed-head, gmr, walk-overfit]
 
 video_config:
   every_updates: 100

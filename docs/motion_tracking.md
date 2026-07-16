@@ -11,11 +11,13 @@ The task always prepares `full_body` Bello with:
 - `waist_roll_joint` rewritten as fixed
 - `waist_pitch_joint` rewritten as fixed
 - `waist_yaw_joint` retained and actuated
+- `neck_yaw_joint` rewritten as fixed
+- `head_pitch_joint` rewritten as fixed
 - both wrist subtrees replaced by end-effector spheres
 - non-foot collision meshes replaced by fitted boxes
 - the source URDF's five primitive foot collision shapes per foot retained
 
-The result has `nq=34`, `nv=33`, and `nu=27`. Fixed links remain named bodies,
+The result has `nq=32`, `nv=31`, and `nu=25`. Fixed links remain named bodies,
 so `waist_roll_link` and `torso_link` are still available to FK and rewards.
 The robot is anatomically forward along local `+Y`; the importer does not rotate
 the reference into an X-forward convention.
@@ -27,7 +29,7 @@ GMR pickle input is a trusted setup-time format. Convert it once:
 ```bash
 bello-import-gmr-motion \
   /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_box_from_smplx.pkl \
-  motions/local/walk1_subject1_fixed_waist.npz
+  motions/local/walk1_subject1_fixed_waist_head.npz
 ```
 
 `motions/local/` is ignored by Git. Training depends only on the resulting
@@ -37,7 +39,7 @@ The complete local LAFAN1 archive can be extracted and retargeted in GMR with:
 
 ```bash
 cd /home/gmmyung/GMR
-nix develop -c python scripts/prepare_lafan1_bello_dataset.py --jobs 8
+nix develop -c python scripts/prepare_lafan1_bello_dataset.py --jobs 2
 ```
 
 Import every resulting Bello pickle into the canonical 14-body training format:
@@ -45,9 +47,27 @@ Import every resulting Bello pickle into the canonical 14-body training format:
 ```bash
 cd /home/gmmyung/bello_mujoco_wholebody
 nix develop -c uv run bello-import-gmr-motion-dataset \
-  /home/gmmyung/GMR/motion_data/lafan1_bello \
-  motions/local/lafan1 \
-  --jobs 8
+  /home/gmmyung/GMR/motion_data/lafan1_bello_fixed_head \
+  motions/local/lafan1_fixed_head \
+  --jobs 2
+```
+
+The ASAP TairanTestbed source motions can be converted and retargeted in GMR:
+
+```bash
+cd /home/gmmyung/GMR
+nix develop -c python scripts/prepare_asap_bello_dataset.py --jobs 2
+```
+
+Import the resulting 51 fixed-head Bello trajectories into their own training
+dataset:
+
+```bash
+cd /home/gmmyung/bello_mujoco_wholebody
+nix develop -c uv run bello-import-gmr-motion-dataset \
+  /home/gmmyung/GMR/motion_data/asap_bello_fixed_head \
+  motions/local/asap_fixed_head \
+  --jobs 2
 ```
 
 Both stages are resumable: existing outputs are reused unless `--overwrite` is
@@ -76,7 +96,7 @@ The canonical clip contains:
 ```text
 format_version, fps, source_sha256
 joint_names, body_names
-qpos[T, 34], qvel[T, 33]
+qpos[T, 32], qvel[T, 31]
 body_pos[T, B, 3], body_quat_wxyz[T, B, 4]
 body_lin_vel[T, B, 3], body_ang_vel[T, B, 3]
 foot_contacts[T, 2]
@@ -100,7 +120,7 @@ Render the kinematic reference before training:
 
 ```bash
 bello-render-motion-reference \
-  motions/local/walk1_subject1_fixed_waist.npz \
+  motions/local/walk1_subject1_fixed_waist_head.npz \
   outputs/motion_tracking/reference_walk.mp4
 ```
 
@@ -109,7 +129,7 @@ without policy feedback:
 
 ```bash
 bello-check-motion-feasibility \
-  motions/local/walk1_subject1_fixed_waist.npz \
+  motions/local/walk1_subject1_fixed_waist_head.npz \
   --output outputs/motion_tracking/walk_feasibility.json
 ```
 
@@ -175,7 +195,7 @@ hyperparameter preset. Generate its 14-body motion archive with:
 ```bash
 bello-import-gmr-motion \
   /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_box_from_smplx.pkl \
-  motions/local/walk1_subject1_fixed_waist_beyondmimic.npz \
+  motions/local/walk1_subject1_fixed_waist_head_beyondmimic.npz \
   --tracked-body-profile beyondmimic
 ```
 
@@ -235,6 +255,16 @@ bello-train-motion-ppo \
   motion.sequence=fallAndGetUp2_subject2
 ```
 
+Select an ASAP skill by overriding both the dataset and sequence:
+
+```bash
+bello-train-motion-ppo \
+  --config-dir "$PWD/experiments/train_motion" \
+  --config-name beyondmimic \
+  motion.directory=motions/local/asap_fixed_head \
+  motion.sequence=video_CR7_level1_filter_amass
+```
+
 The dataset root is configured by `motion.directory`. Checkpoint directories,
 W&B run names, and evaluation video prefixes include `motion.sequence`, so
 independent sequence runs do not overwrite one another.
@@ -286,7 +316,7 @@ remains disabled until explicitly enabled:
 bello-train-motion-ppo \
   dry_run=false \
   wandb_config.enabled=true \
-  wandb_config.run_name=bello-walk-fixed-waist
+  wandb_config.run_name=bello-walk-fixed-waist-head
 ```
 
 When W&B is enabled, each scheduled evaluation MP4 is uploaded under

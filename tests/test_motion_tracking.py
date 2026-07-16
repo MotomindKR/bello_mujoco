@@ -29,6 +29,7 @@ from bello_mujoco.envs.motion_tracking import (
 )
 from bello_mujoco.motion import (
     DEFAULT_TRACKED_BODY_NAMES,
+    FIXED_TRACKING_JOINT_NAMES,
     GMR_BELLO_JOINT_NAMES,
     MOTION_FORMAT_VERSION,
     load_motion_clip,
@@ -56,7 +57,7 @@ def fixed_waist_asset(tmp_path_factory) -> PreparedAsset:
             output_root=tmp_path_factory.mktemp("fixed-waist-asset"),
             collision_mode="box",
             end_effector_sphere_mode="both",
-            fixed_joint_names=("waist_roll_joint", "waist_pitch_joint"),
+            fixed_joint_names=FIXED_TRACKING_JOINT_NAMES,
         )
     )
 
@@ -184,7 +185,25 @@ def test_legacy_gmr_import_defaults_missing_foot_contacts() -> None:
     )
 
 
-def test_default_motion_training_config_has_fixed_waist_contract() -> None:
+def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
+    frame_count = 2
+    fixed_head_joint_count = sum(
+        name not in FIXED_TRACKING_JOINT_NAMES for name in GMR_BELLO_JOINT_NAMES
+    )
+
+    arrays = _validate_legacy_motion(
+        {
+            "fps": 30.0,
+            "root_pos": np.zeros((frame_count, 3)),
+            "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
+            "dof_pos": np.zeros((frame_count, fixed_head_joint_count)),
+        }
+    )
+
+    assert arrays["dof_pos"].shape == (frame_count, 25)
+
+
+def test_default_motion_training_config_has_fixed_waist_and_head_contract() -> None:
     clear_hydra()
     with initialize_config_dir(
         version_base=None, config_dir=str(CONFIG_ROOT / "train_motion")
@@ -196,11 +215,13 @@ def test_default_motion_training_config_has_fixed_waist_contract() -> None:
     assert config.asset_config.fixed_joint_names == (
         "waist_roll_joint",
         "waist_pitch_joint",
+        "neck_yaw_joint",
+        "head_pitch_joint",
     )
     assert config.asset_config.end_effector_sphere_mode == "both"
     assert config.asset_config.collision_mode == "box"
     assert config.asset_config.actuator_config.default_action_scale_ratio == 0.25
-    assert config.motion.directory == Path("motions/local/lafan1")
+    assert config.motion.directory == Path("motions/local/lafan1_fixed_head")
     assert config.motion.sequence == "walk1_subject1"
     assert config.checkpoint_config.name == "walk1_subject1_wholebody"
     assert config.video_config.enabled
@@ -269,9 +290,7 @@ def test_beyondmimic_config_matches_paper_contract() -> None:
     assert config.env_config.adaptive_sampling.kernel_size == 3
     assert config.env_config.adaptive_sampling.kernel_decay == pytest.approx(0.8)
     assert config.env_config.adaptive_sampling.uniform_ratio == pytest.approx(0.1)
-    assert config.checkpoint_config.name == (
-        "walk1_subject1_bello_beyondmimic_seed0"
-    )
+    assert config.checkpoint_config.name == ("walk1_subject1_bello_beyondmimic_seed0")
     assert config.env_config.push.enabled
     assert config.env_config.reward.joint_position_weight == 0.0
     assert config.env_config.reward.body_linear_velocity_weight == 1.0

@@ -136,7 +136,7 @@ position zero therefore places the large sole box horizontally; hard limits,
 soft limits, actuator defaults, and home keyframes are shifted together so the
 physical range and home pose do not change.
 
-The fixed-waist whole-body task and GMR import contract are documented in
+The fixed-waist, fixed-head whole-body task and GMR import contract are documented in
 [motion_tracking.md](motion_tracking.md).
 
 Runtime terrain is added after robot asset generation. Source URDF/MJCF files do

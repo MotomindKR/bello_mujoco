@@ -75,6 +75,7 @@ def render_checkpoint(
     output_path: Path,
     *,
     steps: int | None = None,
+    stop_on_terminal: bool = True,
     width: int = 640,
     height: int = 480,
     fps: int = 50,
@@ -83,6 +84,7 @@ def render_checkpoint(
         checkpoint,
         output_path,
         steps=steps,
+        stop_on_terminal=stop_on_terminal,
         width=width,
         height=height,
         fps=fps,
@@ -95,6 +97,7 @@ def render_checkpoint_with_stats(
     output_path: Path,
     *,
     steps: int | None = None,
+    stop_on_terminal: bool = True,
     width: int = 640,
     height: int = 480,
     fps: int = 50,
@@ -112,6 +115,7 @@ def render_checkpoint_with_stats(
         train_state.policy,
         output_path,
         steps=steps or env.max_episode_steps,
+        stop_on_terminal=stop_on_terminal,
         width=width,
         height=height,
         fps=fps,
@@ -129,6 +133,7 @@ def render_motion_policy(
     output_path: Path,
     *,
     steps: int,
+    stop_on_terminal: bool = True,
     width: int,
     height: int,
     fps: int,
@@ -215,9 +220,13 @@ def render_motion_policy(
                 observation_stack, observation, done
             )
             if bool(jax.device_get(done)):
-                terminal = bool(jax.device_get(info["done/terminal"]))
-                timeout = bool(jax.device_get(info["done/timeout"]))
-                break
+                step_terminal = bool(jax.device_get(info["done/terminal"]))
+                step_timeout = bool(jax.device_get(info["done/timeout"]))
+                nonfinite = bool(jax.device_get(info["done/nonfinite"]))
+                terminal = terminal or step_terminal
+                timeout = timeout or step_timeout
+                if step_timeout or nonfinite or (stop_on_terminal and step_terminal):
+                    break
     finally:
         writer.close()
         renderer.close()
@@ -410,12 +419,18 @@ def entrypoint() -> None:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=50)
+    parser.add_argument(
+        "--full-clip",
+        action="store_true",
+        help="continue the rollout after early-termination flags until the motion ends",
+    )
     args = parser.parse_args()
     print(
         render_checkpoint(
             args.checkpoint,
             args.output,
             steps=args.steps,
+            stop_on_terminal=not args.full_clip,
             width=args.width,
             height=args.height,
             fps=args.fps,

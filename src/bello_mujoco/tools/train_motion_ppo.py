@@ -1,4 +1,4 @@
-"""Train PPO on the fixed-waist Bello whole-body tracking environment."""
+"""Train PPO on the fixed-waist, fixed-head Bello tracking environment."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from bello_mujoco.motion_evaluation import (
     MotionEvaluationRequest,
     MotionEvaluationWorker,
 )
+from bello_mujoco.motion import FIXED_TRACKING_JOINT_NAMES
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.tools.train_ppo import (
@@ -65,12 +66,9 @@ from bello_mujoco.train.ppo import (
 )
 
 
-FIXED_WAIST_JOINTS = ("waist_roll_joint", "waist_pitch_joint")
-
-
 @dataclass(frozen=True)
 class MotionSelectionConfig:
-    directory: Path = Path("motions/local/lafan1")
+    directory: Path = Path("motions/local/lafan1_fixed_head")
     sequence: str = "walk1_subject1"
 
 
@@ -97,7 +95,7 @@ class MotionTrainingRunConfig:
         asset="full_body",
         collision_mode="box",
         end_effector_sphere_mode="both",
-        fixed_joint_names=FIXED_WAIST_JOINTS,
+        fixed_joint_names=FIXED_TRACKING_JOINT_NAMES,
     )
     env_config: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
     motion: MotionSelectionConfig = MotionSelectionConfig()
@@ -112,7 +110,7 @@ class MotionTrainingRunConfig:
 def run_training(run_config: MotionTrainingRunConfig) -> None:
     run_config = resolve_motion_selection(run_config)
     validate_ppo_config(run_config.config)
-    _validate_fixed_waist_asset(run_config.asset_config)
+    _validate_fixed_tracking_asset(run_config.asset_config)
     validate_motion_video_config(run_config.video_config)
     validate_motion_checkpoint_config(run_config.checkpoint_config)
     if (
@@ -275,7 +273,9 @@ def resolve_motion_selection(
         )
     motion_path = run_config.motion.directory / f"{sequence}.npz"
     if not motion_path.is_file():
-        available = sorted(path.stem for path in run_config.motion.directory.glob("*.npz"))
+        available = sorted(
+            path.stem for path in run_config.motion.directory.glob("*.npz")
+        )
         preview = ", ".join(available[:10])
         if len(available) > 10:
             preview += ", ..."
@@ -471,9 +471,7 @@ def motion_checkpoint_metadata(
         motion_source_sha256=env.motion.source_sha256,
         motion_sampling_failure_ema=tuple(
             float(value)
-            for value in jax.device_get(
-                runner_state.env_state.sampling_failure_ema[0]
-            )
+            for value in jax.device_get(runner_state.env_state.sampling_failure_ema[0])
         ),
         rng=tuple(int(value) for value in jax.device_get(runner_state.rng)),
         learning_rate=float(jax.device_get(runner_state.learning_rate)),
@@ -752,10 +750,10 @@ def validate_motion_checkpoint_config(config: CheckpointConfig) -> None:
         raise FileNotFoundError(config.resume_path)
 
 
-def _validate_fixed_waist_asset(config: AssetPrepConfig) -> None:
-    if tuple(config.fixed_joint_names) != FIXED_WAIST_JOINTS:
+def _validate_fixed_tracking_asset(config: AssetPrepConfig) -> None:
+    if tuple(config.fixed_joint_names) != FIXED_TRACKING_JOINT_NAMES:
         raise ValueError(
-            f"motion tracking requires fixed_joint_names={FIXED_WAIST_JOINTS}"
+            f"motion tracking requires fixed_joint_names={FIXED_TRACKING_JOINT_NAMES}"
         )
     if config.end_effector_sphere_mode != "both":
         raise ValueError("motion tracking requires end_effector_sphere_mode='both'")

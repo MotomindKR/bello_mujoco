@@ -13,12 +13,13 @@ import numpy as np
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import CONTROL_DECIMATION
-from bello_mujoco.motion import MotionClip, load_motion_clip
+from bello_mujoco.motion import (
+    FIXED_TRACKING_JOINT_NAMES,
+    MotionClip,
+    load_motion_clip,
+)
 from bello_mujoco.sim import BelloModel, load_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
-
-
-FIXED_WAIST_JOINTS = ("waist_roll_joint", "waist_pitch_joint")
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ def load_feasibility_model() -> BelloModel:
             asset="full_body",
             collision_mode="box",
             end_effector_sphere_mode="both",
-            fixed_joint_names=FIXED_WAIST_JOINTS,
+            fixed_joint_names=FIXED_TRACKING_JOINT_NAMES,
         ),
         terrain=FLAT_TERRAIN,
         load_mjx=False,

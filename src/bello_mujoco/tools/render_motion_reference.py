@@ -1,4 +1,4 @@
-"""Render a canonical fixed-waist Bello reference clip."""
+"""Render a canonical fixed-waist, fixed-head Bello reference clip."""
 
 from __future__ import annotations
 
@@ -9,7 +9,11 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
-from bello_mujoco.motion import load_motion_clip, sample_motion
+from bello_mujoco.motion import (
+    FIXED_TRACKING_JOINT_NAMES,
+    load_motion_clip,
+    sample_motion,
+)
 from bello_mujoco.render import CameraConfig, make_camera, update_camera
 from bello_mujoco.sim import load_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
@@ -29,7 +33,7 @@ def render_reference(
             asset="full_body",
             collision_mode="box",
             end_effector_sphere_mode="both",
-            fixed_joint_names=("waist_roll_joint", "waist_pitch_joint"),
+            fixed_joint_names=FIXED_TRACKING_JOINT_NAMES,
         ),
         terrain=FLAT_TERRAIN,
         use_viewer_model=True,

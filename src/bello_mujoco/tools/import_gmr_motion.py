@@ -14,6 +14,7 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.motion import (
     BEYONDMIMIC_TRACKED_BODY_NAMES,
     DEFAULT_TRACKED_BODY_NAMES,
+    FIXED_TRACKING_JOINT_NAMES,
     GMR_BELLO_JOINT_NAMES,
     MOTION_FORMAT_VERSION,
 )
@@ -39,13 +40,14 @@ def import_gmr_motion(
             asset="full_body",
             collision_mode=collision_mode,
             end_effector_sphere_mode="both",
-            fixed_joint_names=("waist_roll_joint", "waist_pitch_joint"),
+            fixed_joint_names=FIXED_TRACKING_JOINT_NAMES,
         ),
         load_mjx=False,
     )
-    if set(model.actuator_joint_names) != set(GMR_BELLO_JOINT_NAMES):
+    expected_joint_names = set(GMR_BELLO_JOINT_NAMES) - set(FIXED_TRACKING_JOINT_NAMES)
+    if set(model.actuator_joint_names) != expected_joint_names:
         raise ValueError(
-            "fixed-waist Bello joints have drifted from the legacy GMR schema:\n"
+            "fixed-joint Bello model has drifted from the legacy GMR schema:\n"
             f"model={model.actuator_joint_names}\nGMR={GMR_BELLO_JOINT_NAMES}"
         )
     arrays = _validate_legacy_motion(motion)
@@ -68,7 +70,7 @@ def import_gmr_motion(
             for name, body_id in zip(tracked_body_names, body_ids, strict=True)
             if body_id < 0
         ]
-        raise ValueError(f"tracked bodies missing from fixed-waist model: {missing}")
+        raise ValueError(f"tracked bodies missing from fixed-joint model: {missing}")
     body_pos, body_quat, body_lin_vel, body_ang_vel = _body_trajectories(
         model.mj_model, qpos, qvel, body_ids
     )
@@ -89,9 +91,7 @@ def import_gmr_motion(
         body_lin_vel=body_lin_vel.astype(np.float32),
         body_ang_vel=body_ang_vel.astype(np.float32),
         foot_contacts=contacts,
-        self_collision_frames=np.asarray(
-            collision_report["frames"], dtype=np.int32
-        ),
+        self_collision_frames=np.asarray(collision_report["frames"], dtype=np.int32),
         max_self_collision_penetration_m=np.asarray(
             collision_report["max_penetration_m"], dtype=np.float32
         ),
@@ -118,7 +118,6 @@ def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
     expected = {
         "root_pos": (frames, 3),
         "root_rot": (frames, 4),
-        "dof_pos": (frames, len(GMR_BELLO_JOINT_NAMES)),
     }
     if frames < 2:
         raise ValueError("legacy motion must contain at least two frames")
@@ -129,6 +128,9 @@ def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
             )
         if not np.all(np.isfinite(arrays[name])):
             raise ValueError(f"legacy {name} contains nonfinite values")
+    _source_joint_names(arrays["dof_pos"].shape, frames)
+    if not np.all(np.isfinite(arrays["dof_pos"])):
+        raise ValueError("legacy dof_pos contains nonfinite values")
     contacts = motion.get("foot_contacts")
     if contacts is None:
         arrays["foot_contacts"] = np.zeros((frames, 2), dtype=np.float32)
@@ -159,13 +161,30 @@ def _build_qpos(model, root_pos, root_quat_xyzw, joint_pos) -> np.ndarray:
         if np.dot(root_quat[frame - 1], root_quat[frame]) < 0.0:
             root_quat[frame] *= -1.0
     qpos[:, root + 3 : root + 7] = root_quat
-    source_column = {name: index for index, name in enumerate(GMR_BELLO_JOINT_NAMES)}
+    source_joint_names = _source_joint_names(joint_pos.shape, frames)
+    source_column = {name: index for index, name in enumerate(source_joint_names)}
     reordered_joint_pos = np.stack(
         [joint_pos[:, source_column[name]] for name in model.actuator_joint_names],
         axis=-1,
     )
     qpos[:, model.actuator_qpos_indices] = reordered_joint_pos
     return qpos
+
+
+def _source_joint_names(shape: tuple[int, ...], frames: int) -> tuple[str, ...]:
+    fixed_head_joint_names = tuple(
+        name for name in GMR_BELLO_JOINT_NAMES if name not in FIXED_TRACKING_JOINT_NAMES
+    )
+    schemas = {
+        len(GMR_BELLO_JOINT_NAMES): GMR_BELLO_JOINT_NAMES,
+        len(fixed_head_joint_names): fixed_head_joint_names,
+    }
+    if len(shape) != 2 or shape[0] != frames or shape[1] not in schemas:
+        expected = [(frames, columns) for columns in sorted(schemas)]
+        raise ValueError(
+            f"legacy dof_pos has shape {shape}; expected one of {expected}"
+        )
+    return schemas[shape[1]]
 
 
 def _validate_joint_ranges(mj_model, qpos: np.ndarray) -> None:

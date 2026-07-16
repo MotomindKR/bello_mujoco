@@ -75,12 +75,12 @@ bello-train-ppo \
   config.update_epochs=1
 ```
 
-Prepare and dry-run fixed-waist whole-body tracking:
+Prepare and dry-run fixed-waist, fixed-head whole-body tracking:
 
 ```bash
 bello-import-gmr-motion \
   /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_box_from_smplx.pkl \
-  motions/local/walk1_subject1_fixed_waist.npz
+  motions/local/walk1_subject1_fixed_waist_head.npz
 bello-train-motion-ppo
 ```
 
@@ -90,7 +90,7 @@ tracked-body archive:
 ```bash
 bello-import-gmr-motion \
   /home/gmmyung/GMR/motion_data/bello_validation/walk1_subject1_bello_box_from_smplx.pkl \
-  motions/local/walk1_subject1_fixed_waist_beyondmimic.npz \
+  motions/local/walk1_subject1_fixed_waist_head_beyondmimic.npz \
   --tracked-body-profile beyondmimic
 bello-train-motion-ppo \
   --config-dir "$PWD/experiments/train_motion" \

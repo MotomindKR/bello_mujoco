@@ -2,7 +2,7 @@ dry_run: true
 jit: true
 
 motion:
-  directory: motions/local/lafan1
+  directory: motions/local/lafan1_fixed_head
   sequence: walk1_subject1
 
 config:
@@ -51,7 +51,8 @@ asset_config:
   visual_mesh_face_budget: 200000
   end_effector_sphere_mode: both
   neighbor_exclusion_depth: 2
-  fixed_joint_names: [waist_roll_joint, waist_pitch_joint]
+  fixed_joint_names:
+    [waist_roll_joint, waist_pitch_joint, neck_yaw_joint, head_pitch_joint]
   actuator_config:
     default_action_scale_ratio: 0.25
 
@@ -108,7 +109,7 @@ wandb_config:
   run_name: null
   mode: online
   dir: .wandb
-  tags: [bello, fixed-waist, gmr]
+  tags: [bello, fixed-waist, fixed-head, gmr]
 
 video_config:
   enabled: true
