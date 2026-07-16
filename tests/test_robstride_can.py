@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from bello_mujoco.assets_pipeline.prepare import PreparedAsset
+from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.robstride_can import (
     CAN_FRAME,
     BusSpec,
@@ -38,6 +39,7 @@ from bello_mujoco.tools.robstride_runner import (
     default_runner_config,
     load_runner_config,
     reset_data,
+    validate_runner_motor_coverage,
     validate_config,
 )
 
@@ -391,6 +393,12 @@ def test_default_runner_yaml_selects_cpu_vcan_and_torso_guide() -> None:
     assert config.asset_config.imu_config.enabled
     assert config.asset_config.imu_config.body_name == "pelvis_link"
     assert config.asset_config.ankle_differential_config.enabled
+    availability = config.asset_config.joint_availability
+    assert availability.waist_yaw
+    assert not availability.waist_roll
+    assert not availability.waist_pitch
+    assert not availability.neck_yaw
+    assert not availability.head_pitch
     assert config.motor_kind_config.name == "motor_kinds.yaml"
     assert config.imu_serial_rate_hz == pytest.approx(200.0)
     assert config.imu_serial_enabled
@@ -405,6 +413,60 @@ def test_default_runner_yaml_selects_cpu_vcan_and_torso_guide() -> None:
     assert config.torso_drop_limit_m == pytest.approx(0.05)
     assert not config.headless
     assert config.real_time
+
+
+def test_runner_yaml_can_enable_head_joints(tmp_path: Path) -> None:
+    path = tmp_path / "runner.yaml"
+    path.write_text(
+        default_runner_config()
+        .read_text()
+        .replace("  neck_yaw: false", "  neck_yaw: true")
+        .replace("  head_pitch: false", "  head_pitch: true")
+    )
+
+    config = load_runner_config(path)
+
+    assert config.asset_config.joint_availability.neck_yaw
+    assert config.asset_config.joint_availability.head_pitch
+
+
+def test_runner_optional_joints_require_matching_motor_assignments() -> None:
+    config = load_robstride_configs(
+        default_motor_kind_config(), default_motor_configs()
+    )
+    validate_runner_motor_coverage(
+        JointAvailabilityConfig(
+            waist_yaw=True,
+            waist_roll=False,
+            waist_pitch=False,
+            neck_yaw=False,
+            head_pitch=False,
+        ),
+        config.motors,
+    )
+
+    with pytest.raises(ValueError, match="require RobStride motor mappings"):
+        validate_runner_motor_coverage(
+            JointAvailabilityConfig(
+                waist_yaw=True,
+                waist_roll=False,
+                waist_pitch=False,
+                neck_yaw=True,
+                head_pitch=True,
+            ),
+            config.motors,
+        )
+    with pytest.raises(ValueError, match="fixed by joint availability"):
+        validate_runner_motor_coverage(
+            JointAvailabilityConfig(
+                waist_yaw=False,
+                waist_roll=False,
+                waist_pitch=False,
+                neck_yaw=False,
+                head_pitch=False,
+            ),
+            config.motors,
+        )
 
 
 def test_runner_yaml_rejects_mjx_backend(tmp_path: Path) -> None:

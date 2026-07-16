@@ -155,6 +155,12 @@ asset_config:
     body_name: pelvis_link
   ankle_differential_config:
     enabled: false
+  joint_availability:
+    waist_yaw: true
+    waist_roll: true
+    waist_pitch: true
+    neck_yaw: true
+    head_pitch: true
   actuator_config:
     default_action_scale_ratio: 0.25
     joints:
@@ -189,6 +195,20 @@ its default control target in the environment. If a training YAML replaces a
 known Bello joint entry, it must include `effort_limit`; otherwise config
 validation fails before asset generation. This prevents partial joint overrides
 from silently producing uncapped MuJoCo actuators.
+
+Joint availability is separate from actuator mode. An available joint remains
+a MuJoCo degree of freedom and may use either `policy` or `hold` mode. An
+unavailable joint is rewritten to `type="fixed"` in the generated URDF before
+MuJoCo compilation, so it has no joint state, actuator, or policy action. This
+is intended for robot variants whose waist or head axes are physically absent;
+it is not a stiffer form of `hold`.
+
+Evaluation normally inherits joint availability from its checkpoint. To select
+a different robot variant for evaluation, set `eval_config.runtime.source` to
+`override` and change the booleans under
+`eval_config.runtime.asset_config.joint_availability`. Checkpoint shape
+validation still rejects variants whose observation or action dimensions do
+not match the trained policy.
 
 Notable default full-body position-actuator gains are:
 

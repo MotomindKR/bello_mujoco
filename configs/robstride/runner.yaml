@@ -9,6 +9,13 @@ simulation:
   real_time: true
   max_steps: null
 
+joints:
+  waist_yaw: true
+  waist_roll: false
+  waist_pitch: false
+  neck_yaw: false
+  head_pitch: false
+
 can:
   motor_kind_config: motor_kinds.yaml
   motor_configs:

@@ -47,9 +47,12 @@ has coordinate `roll - pitch`, and motor 2 has coordinate `roll + pitch`.
 MuJoCo computes the tendon positions, velocities, and Jacobian; the RobStride
 emulator reads those motor coordinates and applies each motor torque through
 the Jacobian transpose. The coupling equations therefore live in the generated
-MJCF instead of the CAN layer. MuJoCo's generated position actuators are disabled
-only for joints owned by a configured RobStride motor; unconfigured head,
-waist, and gripper joints remain at their generated home controls.
+MJCF instead of the CAN layer. MuJoCo's generated position actuators are
+disabled for joints owned by a configured RobStride motor. Optional waist and
+head axes are handled earlier: disabled axes are changed to fixed joints in the
+generated URDF and therefore never become MuJoCo actuators. Enabled axes must
+have RobStride motor mappings; the runner rejects an enabled-but-unmapped or
+disabled-but-mapped axis.
 
 ## HIL interface setup
 
@@ -242,6 +245,24 @@ bello-robstride-runner \
   --motor-configs configs/robstride/lower_body.yaml \
   --bus-interfaces can0=vcan0
 ```
+
+The default runner asset exposes only `waist_yaw_joint` from the optional
+waist/head set. Waist roll, waist pitch, neck yaw, and head pitch are fixed in
+the generated URDF. Configure the selection in `runner.yaml`:
+
+```yaml
+joints:
+  waist_yaw: true
+  waist_roll: false
+  waist_pitch: false
+  neck_yaw: false
+  head_pitch: false
+```
+
+Changing an axis to `true` also requires a corresponding motor assignment in a
+selected RobStride motor YAML. This is deliberately different from training
+`mode: hold`: a held joint remains movable and softly PD-controlled, while a
+disabled runner joint has no MuJoCo degree of freedom.
 
 The runner validates every configured motor kind and coordinate mapping before
 opening the CAN interfaces. Missing interfaces, unknown kinds, duplicate CAN

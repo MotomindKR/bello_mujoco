@@ -20,6 +20,7 @@ from bello_mujoco.assets import (
 )
 from bello_mujoco.assets_pipeline.mesh import (
     EndEffectorSphereMode,
+    JointAvailabilityConfig,
     export_binary_simplified_mesh,
     rewrite_urdf_for_mujoco,
 )
@@ -49,6 +50,7 @@ class AssetPrepConfig:
     neighbor_exclusion_depth: int = 2
     imu_config: ImuSensorConfig = ImuSensorConfig()
     ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig()
+    joint_availability: JointAvailabilityConfig = JointAvailabilityConfig()
     actuator_config: ActuatorConfig = field(default_factory=ActuatorConfig)
 
 
@@ -106,6 +108,7 @@ def prepare_asset_unlocked(
         source_urdf,
         out_urdf,
         end_effector_sphere_mode=config.end_effector_sphere_mode,
+        joint_availability=config.joint_availability,
     )
     actuated_joint_order = actuated_urdf_joint_names(out_urdf)
     for src, dst_name in mesh_sources.collision.items():
@@ -211,6 +214,7 @@ def asset_config_hash(
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
         "imu_config": asdict(config.imu_config),
         "ankle_differential_config": asdict(config.ankle_differential_config),
+        "joint_availability": asdict(config.joint_availability),
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
         "source": source_asset_fingerprint(asset),

@@ -20,10 +20,12 @@ from bello_mujoco.assets_pipeline.mjcf import (
     AnkleDifferentialConfig,
     ImuSensorConfig,
 )
+from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.assets import project_data_path
 from bello_mujoco.ebimu_serial import EbimuSerialEmulator
 from bello_mujoco.imu import MujocoImu
 from bello_mujoco.robstride_can import (
+    MotorSpec,
     RobstrideBusEmulator,
     SocketCanEndpoint,
     load_robstride_configs,
@@ -31,7 +33,6 @@ from bello_mujoco.robstride_can import (
 from bello_mujoco.robstride_sim import BelloRobstrideTransmission
 from bello_mujoco.sim import BelloModel, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
-
 
 def default_motor_configs() -> tuple[Path, ...]:
     root = project_data_path("configs") / "robstride"
@@ -57,6 +58,13 @@ class RobstrideRunnerConfig:
     asset_config: AssetPrepConfig = AssetPrepConfig(
         asset="full_body",
         ankle_differential_config=AnkleDifferentialConfig(enabled=True),
+        joint_availability=JointAvailabilityConfig(
+            waist_yaw=True,
+            waist_roll=False,
+            waist_pitch=False,
+            neck_yaw=False,
+            head_pitch=False,
+        ),
     )
     terrain: TerrainConfig = FLAT_TERRAIN
     feedback_rate_hz: float = 100.0
@@ -199,6 +207,9 @@ class RunnerControlWindow:
 def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
     validate_config(config)
     robstride = load_robstride_configs(config.motor_kind_config, config.motor_configs)
+    validate_runner_motor_coverage(
+        config.asset_config.joint_availability, robstride.motors
+    )
     overrides = parse_bus_interfaces(config.bus_interfaces)
     unknown_buses = set(overrides) - {bus.name for bus in robstride.buses}
     if unknown_buses:
@@ -293,6 +304,11 @@ def run_simulation(
             viewer_context = mj_viewer.launch_passive(model.mj_model, data)
 
         print_runner_summary(model, emulators)
+        fixed_joints = sorted(
+            config.asset_config.joint_availability.disabled_joint_names
+        )
+        if fixed_joints:
+            print("  fixed in URDF: " + ", ".join(fixed_joints))
         if torso_hold is not None:
             if config.release_after_seconds is not None:
                 release_note = (
@@ -542,11 +558,14 @@ def load_runner_config(path: Path) -> RobstrideRunnerConfig:
         raise FileNotFoundError(path)
     raw = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
     root = _config_mapping(raw, "runner config")
-    _validate_config_keys(root, {"simulation", "can", "imu", "torso"}, "runner config")
+    _validate_config_keys(
+        root, {"simulation", "can", "imu", "torso", "joints"}, "runner config"
+    )
     simulation = _config_section(root, "simulation")
     can = _config_section(root, "can")
     imu = _config_section(root, "imu")
     torso = _config_section(root, "torso")
+    joints = _config_section(root, "joints")
     _validate_config_keys(
         simulation,
         {
@@ -587,6 +606,11 @@ def load_runner_config(path: Path) -> RobstrideRunnerConfig:
         torso,
         {"enabled", "drop_limit_m", "release_after_seconds"},
         "torso",
+    )
+    _validate_config_keys(
+        joints,
+        {"waist_yaw", "waist_roll", "waist_pitch", "neck_yaw", "head_pitch"},
+        "joints",
     )
 
     backend = simulation.get("backend")
@@ -642,6 +666,13 @@ def load_runner_config(path: Path) -> RobstrideRunnerConfig:
             ankle_differential_config=AnkleDifferentialConfig(
                 enabled=_config_bool(simulation, "ankle_differential_tendons")
             ),
+            joint_availability=JointAvailabilityConfig(
+                waist_yaw=_config_bool(joints, "waist_yaw"),
+                waist_roll=_config_bool(joints, "waist_roll"),
+                waist_pitch=_config_bool(joints, "waist_pitch"),
+                neck_yaw=_config_bool(joints, "neck_yaw"),
+                head_pitch=_config_bool(joints, "head_pitch"),
+            ),
         ),
         terrain=FLAT_TERRAIN,
         feedback_rate_hz=_config_number(can, "feedback_rate_hz"),
@@ -658,6 +689,32 @@ def load_runner_config(path: Path) -> RobstrideRunnerConfig:
     )
     validate_config(config)
     return config
+
+
+def validate_runner_motor_coverage(
+    availability: JointAvailabilityConfig, motors: tuple[MotorSpec, ...]
+) -> None:
+    mapped: set[str] = set()
+    for motor in motors:
+        if motor.target.type == "joint":
+            mapped.add(motor.target.name)
+        else:
+            mapped.update(motor.target.owned_joints)
+    optional_names = set(availability.by_name)
+    mapped_optional = mapped & optional_names
+    enabled_optional = availability.enabled_joint_names
+    missing_motors = enabled_optional - mapped_optional
+    disabled_motors = mapped_optional - enabled_optional
+    if missing_motors:
+        raise ValueError(
+            "enabled optional joints require RobStride motor mappings: "
+            + ", ".join(sorted(missing_motors))
+        )
+    if disabled_motors:
+        raise ValueError(
+            "RobStride motors target joints fixed by joint availability: "
+            + ", ".join(sorted(disabled_motors))
+        )
 
 
 def _config_mapping(value: Any, name: str) -> dict[str, Any]:

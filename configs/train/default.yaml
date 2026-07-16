@@ -42,6 +42,12 @@ asset_config:
   visual_mesh_face_budget: 200000
   end_effector_sphere_mode: none
   neighbor_exclusion_depth: 2
+  joint_availability:
+    waist_yaw: true
+    waist_roll: true
+    waist_pitch: true
+    neck_yaw: true
+    head_pitch: true
 
 env_config:
   decimation: 4

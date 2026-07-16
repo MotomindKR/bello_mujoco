@@ -17,6 +17,33 @@ class MeshSources:
     visual: dict[Path, str]
 
 
+@dataclass(frozen=True)
+class JointAvailabilityConfig:
+    waist_yaw: bool = True
+    waist_roll: bool = True
+    waist_pitch: bool = True
+    neck_yaw: bool = True
+    head_pitch: bool = True
+
+    @property
+    def by_name(self) -> dict[str, bool]:
+        return {
+            "waist_yaw_joint": self.waist_yaw,
+            "waist_roll_joint": self.waist_roll,
+            "waist_pitch_joint": self.waist_pitch,
+            "neck_yaw_joint": self.neck_yaw,
+            "head_pitch_joint": self.head_pitch,
+        }
+
+    @property
+    def enabled_joint_names(self) -> set[str]:
+        return {name for name, enabled in self.by_name.items() if enabled}
+
+    @property
+    def disabled_joint_names(self) -> set[str]:
+        return {name for name, enabled in self.by_name.items() if not enabled}
+
+
 EndEffectorSphereMode = Literal["none", "both", "right", "left", "both_articulated"]
 END_EFFECTOR_SPHERE_RADIUS = 0.0325
 END_EFFECTOR_SPHERE_OFFSET_Z = -0.02
@@ -40,11 +67,13 @@ def rewrite_urdf_for_mujoco(
     out_urdf: Path,
     *,
     end_effector_sphere_mode: EndEffectorSphereMode = "none",
+    joint_availability: JointAvailabilityConfig = JointAvailabilityConfig(),
 ) -> MeshSources:
     tree = ET.parse(source_urdf)
     root = tree.getroot()
     preserve_fixed_link_bodies(root)
     replace_end_effectors_with_spheres(root, end_effector_sphere_mode)
+    fix_disabled_joints(root, joint_availability)
     collision_sources: dict[Path, str] = {}
     visual_sources: dict[Path, str] = {}
     collision_by_name: dict[str, Path] = {}
@@ -90,6 +119,31 @@ def rewrite_urdf_for_mujoco(
     ET.indent(tree, space="  ")
     tree.write(out_urdf, encoding="utf-8", xml_declaration=True)
     return MeshSources(collision=collision_sources, visual=visual_sources)
+
+
+def fix_disabled_joints(
+    root: ET.Element, config: JointAvailabilityConfig
+) -> None:
+    joints = {
+        joint.get("name"): joint
+        for joint in root.findall("joint")
+        if joint.get("name") is not None
+    }
+    for joint_name in config.disabled_joint_names:
+        joint = joints.get(joint_name)
+        if joint is None:
+            continue
+        joint.set("type", "fixed")
+        for tag in (
+            "axis",
+            "limit",
+            "dynamics",
+            "mimic",
+            "safety_controller",
+            "calibration",
+        ):
+            for element in joint.findall(tag):
+                joint.remove(element)
 
 
 def preserve_fixed_link_bodies(root: ET.Element) -> None:

@@ -10,6 +10,8 @@ import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.mesh import (
+    JointAvailabilityConfig,
+    fix_disabled_joints,
     preserve_fixed_link_bodies,
     replace_end_effectors_with_spheres,
 )
@@ -315,6 +317,17 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     assert asset_config_hash(base, "full_body") != asset_config_hash(
         changed, "full_body"
     )
+    fixed_head = AssetPrepConfig(
+        asset="full_body",
+        mesh_face_budget=1000,
+        joint_availability=JointAvailabilityConfig(
+            neck_yaw=False,
+            head_pitch=False,
+        ),
+    )
+    assert asset_config_hash(base, "full_body") != asset_config_hash(
+        fixed_head, "full_body"
+    )
 
 
 def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort(
@@ -327,6 +340,45 @@ def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort
     assert np.all(model.actuator_forcelimited)
     assert np.all(model.actuator_forcerange[:, 0] < 0.0)
     assert np.all(model.actuator_forcerange[:, 1] > 0.0)
+
+
+def test_disabled_joints_are_fixed_in_the_generated_urdf() -> None:
+    root = ET.Element("robot")
+    for joint_name in (
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "neck_yaw_joint",
+        "head_pitch_joint",
+    ):
+        joint = ET.SubElement(
+            root, "joint", {"name": joint_name, "type": "revolute"}
+        )
+        ET.SubElement(joint, "axis", {"xyz": "0 0 1"})
+        ET.SubElement(joint, "limit", {"lower": "-1", "upper": "1"})
+
+    fix_disabled_joints(
+        root,
+        JointAvailabilityConfig(
+            waist_yaw=True,
+            waist_roll=False,
+            waist_pitch=False,
+            neck_yaw=False,
+            head_pitch=False,
+        ),
+    )
+
+    assert root.find("./joint[@name='waist_yaw_joint']").get("type") == "revolute"
+    for joint_name in (
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "neck_yaw_joint",
+        "head_pitch_joint",
+    ):
+        joint = root.find(f"./joint[@name='{joint_name}']")
+        assert joint.get("type") == "fixed"
+        assert joint.find("axis") is None
+        assert joint.find("limit") is None
 
 
 def test_actuator_force_observation_is_clamped_by_force_range(
