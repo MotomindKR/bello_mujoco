@@ -389,6 +389,8 @@ def test_default_runner_yaml_selects_cpu_vcan_and_torso_guide() -> None:
     assert path.exists()
     assert config.config_file == path.resolve()
     assert config.asset_config.asset == "full_body"
+    assert config.asset_config.collision_mode == "mesh"
+    assert config.asset_config.visual_mesh_face_budget == 20_000
     assert config.asset_config.end_effector_sphere_mode == "both_articulated"
     assert config.asset_config.imu_config.enabled
     assert config.asset_config.imu_config.body_name == "pelvis_link"

@@ -90,8 +90,10 @@ bello-robstride-runner
 The runner loads `configs/robstride/runner.yaml` by default. That file selects
 the `mujoco_cpu` backend, motor YAML files, VCAN mappings, viewer mode, timing,
 torso guide, MuJoCo ankle differential tendons, and spherical replacements for
-both hands. Select another file with `--config-file`; any additional CLI flags
-override values loaded from YAML:
+both hands. Its visual meshes default to a 20,000-face-per-mesh budget for
+responsive interactive rendering; this does not change the general training
+asset default. Select another file with `--config-file`; any additional CLI
+flags override values loaded from YAML:
 
 ```bash
 bello-robstride-runner --config-file configs/robstride/runner.yaml

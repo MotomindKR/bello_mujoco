@@ -2,6 +2,8 @@
 simulation:
   backend: mujoco_cpu
   asset: full_body
+  collision_mode: mesh
+  visual_mesh_face_budget: 20000
   end_effector_sphere_mode: both_articulated
   ankle_differential_tendons: true
   terrain: flat

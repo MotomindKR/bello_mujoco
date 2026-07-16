@@ -57,6 +57,7 @@ class RobstrideRunnerConfig:
     bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
     asset_config: AssetPrepConfig = AssetPrepConfig(
         asset="full_body",
+        visual_mesh_face_budget=20_000,
         ankle_differential_config=AnkleDifferentialConfig(enabled=True),
         joint_availability=JointAvailabilityConfig(
             waist_yaw=True,
@@ -571,6 +572,8 @@ def load_runner_config(path: Path) -> RobstrideRunnerConfig:
         {
             "backend",
             "asset",
+            "collision_mode",
+            "visual_mesh_face_budget",
             "end_effector_sphere_mode",
             "ankle_differential_tendons",
             "terrain",
@@ -623,6 +626,11 @@ def load_runner_config(path: Path) -> RobstrideRunnerConfig:
     if terrain_name != "flat":
         raise ValueError("simulation.terrain must be 'flat'")
     asset = _config_string(simulation, "asset")
+    collision_mode = _config_string(simulation, "collision_mode")
+    if collision_mode not in {"mesh", "foot-mesh", "box"}:
+        raise ValueError(
+            "simulation.collision_mode must be one of: mesh, foot-mesh, box"
+        )
     sphere_mode = _config_string(simulation, "end_effector_sphere_mode")
     if sphere_mode not in {"none", "both", "right", "left", "both_articulated"}:
         raise ValueError(
@@ -658,6 +666,10 @@ def load_runner_config(path: Path) -> RobstrideRunnerConfig:
         bus_interfaces=bus_interfaces,
         asset_config=AssetPrepConfig(
             asset=asset,
+            collision_mode=collision_mode,
+            visual_mesh_face_budget=_config_positive_int(
+                simulation, "visual_mesh_face_budget"
+            ),
             end_effector_sphere_mode=sphere_mode,
             imu_config=ImuSensorConfig(
                 enabled=imu_enabled,
@@ -773,6 +785,13 @@ def _config_optional_int(values: dict[str, Any], name: str) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} must be an integer or null")
+    return value
+
+
+def _config_positive_int(values: dict[str, Any], name: str) -> int:
+    value = values.get(name)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
     return value
 
 
