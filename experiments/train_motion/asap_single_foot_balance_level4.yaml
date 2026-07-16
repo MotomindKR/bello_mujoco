@@ -1,0 +1,18 @@
+# Paper-aligned fixed-head Bello tracking for ASAP single-foot balance level 4.
+defaults:
+  - beyondmimic
+  - _self_
+
+motion:
+  directory: motions/asap_fixed_head
+  sequence: video_single_foot_balance_level4_filter_amass
+
+checkpoint_config:
+  name: asap_single_foot_balance_level4_bello_seed0
+
+wandb_config:
+  run_name: asap-single-foot-balance-level4-bello-seed0
+  tags: [bello, fixed-waist, fixed-head, gmr, beyondmimic, asap, balance, level4]
+
+video_config:
+  filename_prefix: asap_single_foot_balance_level4_beyondmimic
