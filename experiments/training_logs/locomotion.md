@@ -1726,3 +1726,12 @@ policy-joint motor target offsets at `+-0.005` radians. Motor offsets now expose
 an explicit `joint_angle_offset_scope`; the motor ablation uses `policy` so the
 16 held waist and upper-body targets remain nominal. Native MuJoCo control also
 applies the selected seeded offset, matching MJX training and evaluation.
+
+## 2026-07-16 - Ten-frame observation history
+
+The Berkeley recipe now stacks ten consecutive actor and critic observations.
+At the 20 ms control period, the flattened input contains the current frame and
+nine preceding frames, covering 180 ms between the oldest and newest samples.
+The raw 55-value actor observation therefore becomes a 550-value policy input;
+the privileged 69-value critic observation becomes a 690-value value input.
+Stacks repeat the reset observation at episode initialization and reset on done.
