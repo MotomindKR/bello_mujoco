@@ -42,9 +42,15 @@ config:
     observation_norm_eps: 0.00000001
 
 env_config:
+  decimation: 4
   max_episode_steps: 1000
   action_clip: 1.0
   root_link: pelvis_link
+  simulation_physics:
+    timestep: 0.005
+    foot_terrain_margin: 0.0125
+    foot_terrain_solref: [0.01, 1.0]
+    foot_terrain_solimp: [0.98, 0.999, 0.001, 0.5, 2.0]
   terrain:
     mode: rough
     seed: 0

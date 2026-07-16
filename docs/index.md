@@ -376,6 +376,10 @@ BelloEnvConfig:
   max_episode_steps: 1000
   action_clip: 5.0
   root_link: bello_root
+  simulation_physics.timestep: 0.005
+  simulation_physics.foot_terrain_margin: null
+  simulation_physics.foot_terrain_solref: null
+  simulation_physics.foot_terrain_solimp: null
   terrain.mode: plane
   gait.cycle_time: 0.80
   gait.command_speed_frequency_gain: 0.55
@@ -426,7 +430,9 @@ PPOConfig:
 ```
 
 Generated MJCF assets use a `0.005s` MuJoCo timestep. With the default
-`decimation: 4`, one policy action still covers `0.02s`.
+`decimation: 4`, one policy action still covers `0.02s`. Recipes can override
+the effective timestep under `env_config.simulation_physics`; native MuJoCo and
+MJX-Warp receive the same override and `decimation` is applied to that value.
 
 Use `--help` and `--hydra-help` on each entry point for the current exhaustive CLI tree.
 

@@ -19,7 +19,6 @@ from bello_mujoco.contracts import (
     BELLO_ACTION_CLIP,
     CONTROL_DECIMATION,
     MAX_EPISODE_STEPS,
-    SIM_TIMESTEP,
     DEFAULT_SPAWN_CLEARANCE,
 )
 from bello_mujoco.envs.rewards import (
@@ -32,6 +31,7 @@ from bello_mujoco.envs.rewards import (
 from bello_mujoco.sim import (
     BelloModel,
     ModelRandomizationConfig,
+    SimulationPhysicsConfig,
     WarpConfig,
     load_bello_model,
     load_prepared_bello_model,
@@ -212,6 +212,7 @@ class BelloEnvConfig:
     action_clip: float = BELLO_ACTION_CLIP
     root_link: str = "bello_root"
     terrain: TerrainConfig = FLAT_TERRAIN
+    simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig()
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig()
     spawn: SpawnConfig = SpawnConfig()
     gait: GaitConfig = GaitConfig()
@@ -445,6 +446,7 @@ class BelloLocomotionEnv:
                 warp=warp,
                 batch_size=batch_size,
                 terrain=env_config.terrain,
+                simulation_physics=env_config.simulation_physics,
                 model_randomization=env_config.model_randomization,
                 spawn_clearance=env_config.spawn.clearance,
                 use_viewer_model=use_viewer_model,
@@ -477,6 +479,7 @@ class BelloLocomotionEnv:
                 warp=warp,
                 batch_size=batch_size,
                 terrain=env_config.terrain,
+                simulation_physics=env_config.simulation_physics,
                 model_randomization=env_config.model_randomization,
                 actuator_config=actuator_config,
                 spawn_clearance=env_config.spawn.clearance,
@@ -1397,7 +1400,7 @@ class BelloLocomotionEnv:
 
     @property
     def control_timestep(self) -> float:
-        return self.decimation * SIM_TIMESTEP
+        return self.decimation * float(self.model.mj_model.opt.timestep)
 
     def _frame_terms(
         self, state: BelloState, observation: ObservationConfig

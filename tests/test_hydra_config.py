@@ -223,6 +223,17 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     assert config.config.policy.max_log_std == pytest.approx(0.0)
     assert config.config.policy.action_distribution == "tanh_gaussian"
     assert config.config.policy.normalize_observations
+    assert config.env_config.decimation == 4
+    assert config.env_config.simulation_physics.timestep == pytest.approx(0.005)
+    assert config.env_config.simulation_physics.foot_terrain_margin == pytest.approx(
+        0.0125
+    )
+    assert config.env_config.simulation_physics.foot_terrain_solref == pytest.approx(
+        (0.01, 1.0)
+    )
+    assert config.env_config.simulation_physics.foot_terrain_solimp == pytest.approx(
+        (0.98, 0.999, 0.001, 0.5, 2.0)
+    )
     assert config.env_config.gait.standing_command_threshold == pytest.approx(0.1)
     assert config.env_config.gait.randomize_frequency
     assert config.env_config.gait.frequency_range == pytest.approx((1.25, 1.5))

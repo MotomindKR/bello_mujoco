@@ -43,6 +43,11 @@ saturation. Commands at or below `0.1` are standing commands: their gait phase
 is frozen and both foot-height targets are zero. Foot contacts use 40 ms on/off
 debounce, and premature moving touchdowns or liftoffs receive the contact-timing
 penalty.
+The recipe uses a `0.005s` physics timestep and `decimation: 4`, preserving its
+`0.02s` (50 Hz) policy period with four simulation substeps per action. Its
+terrain contact activates at a `0.0125m` margin with a `0.01s`/`1.0` solref and
+firmer `[0.98, 0.999, 0.001, 0.5, 2.0]` solimp. The margin is assigned on the
+terrain geom so MJX-Warp can retain MultiCCD for robot box/mesh pairs.
 
 ## Hydra Configs
 
@@ -257,6 +262,11 @@ env_config:
   max_episode_steps: 1000
   action_clip: 5.0
   root_link: bello_root
+  simulation_physics:
+    timestep: 0.005
+    foot_terrain_margin: null
+    foot_terrain_solref: null
+    foot_terrain_solimp: null
   spawn:
     clearance: 0.01
     root_xy_range: [0.0, 0.0]
@@ -342,7 +352,13 @@ env_config:
 ```
 
 The generated MuJoCo model timestep is `0.005s`, so the default
-`decimation: 4` gives a `0.02s` control timestep.
+`decimation: 4` gives a `0.02s` control timestep. Runtime
+`simulation_physics.timestep` overrides the compiled asset before both native
+MuJoCo and MJX conversion; `control_timestep` is computed from that effective
+model value. `foot_terrain_margin`, `foot_terrain_solref`, and
+`foot_terrain_solimp` similarly apply to both backends. The margin is stored on
+the terrain geom; MuJoCo's pairwise maximum gives foot-terrain contacts the
+configured activation distance without adding margin to foot/self contacts.
 
 `root_link` is the default measurement body for base observations and
 link-aware reward/done terms whose `link` is null. The package default is the

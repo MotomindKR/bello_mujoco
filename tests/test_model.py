@@ -11,6 +11,7 @@ from bello_mujoco.assets import source_assets_root
 from bello_mujoco.contracts import DEFAULT_SPAWN_CLEARANCE
 from bello_mujoco.sim import (
     ModelRandomizationConfig,
+    SimulationPhysicsConfig,
     load_bello_model,
     load_prepared_bello_model,
     robot_geom_min_z,
@@ -50,6 +51,62 @@ def test_model_can_load_without_mjx_for_cpu_only_viewers(
     assert model.mjx_model is None
     with pytest.raises(RuntimeError, match="loaded without MJX"):
         model.make_data()
+
+
+def test_runtime_simulation_physics_are_applied_before_mjx_conversion(
+    full_body_asset: PreparedAsset,
+) -> None:
+    physics = SimulationPhysicsConfig(
+        timestep=0.002,
+        foot_terrain_margin=0.005,
+        foot_terrain_solref=(0.004, 1.0),
+        foot_terrain_solimp=(0.98, 0.999, 0.001, 0.5, 2.0),
+    )
+    scene = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        simulation_physics=physics,
+    )
+    model = scene.mj_model
+    contact_geom_ids = np.concatenate(
+        (scene.foot_geom_ids, scene.terrain_geom_ids)
+    )
+
+    assert model.opt.timestep == pytest.approx(0.002)
+    np.testing.assert_allclose(model.geom_margin[scene.terrain_geom_ids], 0.005)
+    np.testing.assert_allclose(model.geom_margin[scene.foot_geom_ids], 0.0)
+    np.testing.assert_allclose(
+        model.geom_solref[contact_geom_ids],
+        np.tile(np.asarray([0.004, 1.0]), (contact_geom_ids.size, 1)),
+    )
+    np.testing.assert_allclose(
+        model.geom_solimp[contact_geom_ids],
+        np.tile(
+            np.asarray([0.98, 0.999, 0.001, 0.5, 2.0]),
+            (contact_geom_ids.size, 1),
+        ),
+    )
+    assert scene.mjx_model is not None
+    assert float(np.asarray(scene.mjx_model.opt.timestep)) == pytest.approx(0.002)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"timestep": 0.0}, "timestep"),
+        ({"foot_terrain_margin": -0.001}, "foot_terrain_margin"),
+        (
+            {"timestep": 0.002, "foot_terrain_solref": (0.003, 1.0)},
+            "at least twice",
+        ),
+        ({"foot_terrain_solimp": (0.99, 0.95, 0.001, 0.5, 2.0)}, "impedance"),
+    ],
+)
+def test_simulation_physics_rejects_invalid_values(
+    kwargs: dict, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        SimulationPhysicsConfig(**kwargs)
 
 
 def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(

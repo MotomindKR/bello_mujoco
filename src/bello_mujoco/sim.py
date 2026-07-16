@@ -22,6 +22,7 @@ from bello_mujoco.contracts import (
     DEFAULT_ROOT_POS,
     DEFAULT_ROOT_QUAT,
     DEFAULT_SPAWN_CLEARANCE,
+    SIM_TIMESTEP,
 )
 from bello_mujoco.terrain import (
     ROBOT_ONLY_TERRAIN,
@@ -32,6 +33,66 @@ from bello_mujoco.terrain import (
 
 DEFAULT_CONTACT_BUDGET_PER_ENV = 32
 DEFAULT_WARP_NJMAX = 256
+
+
+@dataclass(frozen=True)
+class SimulationPhysicsConfig:
+    """Runtime physics overrides shared by native MuJoCo and MJX-Warp."""
+
+    timestep: float = SIM_TIMESTEP
+    foot_terrain_margin: float | None = None
+    foot_terrain_solref: tuple[float, float] | None = None
+    foot_terrain_solimp: tuple[float, float, float, float, float] | None = None
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.timestep) or self.timestep <= 0.0:
+            raise ValueError(
+                "simulation_physics.timestep must be positive and finite, got "
+                f"{self.timestep}"
+            )
+        if self.foot_terrain_margin is not None and (
+            not math.isfinite(self.foot_terrain_margin)
+            or self.foot_terrain_margin < 0.0
+        ):
+            raise ValueError(
+                "simulation_physics.foot_terrain_margin must be finite and "
+                f"nonnegative, got {self.foot_terrain_margin}"
+            )
+        if self.foot_terrain_solref is not None:
+            time_constant, damping_ratio = self.foot_terrain_solref
+            if (
+                not math.isfinite(time_constant)
+                or not math.isfinite(damping_ratio)
+                or time_constant <= 0.0
+                or damping_ratio <= 0.0
+            ):
+                raise ValueError(
+                    "simulation_physics.foot_terrain_solref must contain positive "
+                    f"finite values, got {self.foot_terrain_solref}"
+                )
+            if time_constant < 2.0 * self.timestep:
+                raise ValueError(
+                    "simulation_physics.foot_terrain_solref time constant must be "
+                    "at least twice the simulation timestep, got "
+                    f"{time_constant} for timestep {self.timestep}"
+                )
+        if self.foot_terrain_solimp is not None:
+            dmin, dmax, width, midpoint, power = self.foot_terrain_solimp
+            if not all(math.isfinite(value) for value in self.foot_terrain_solimp):
+                raise ValueError(
+                    "simulation_physics.foot_terrain_solimp must be finite, got "
+                    f"{self.foot_terrain_solimp}"
+                )
+            if not 0.0 <= dmin <= dmax <= 1.0:
+                raise ValueError(
+                    "simulation_physics.foot_terrain_solimp impedance values must "
+                    f"satisfy 0 <= dmin <= dmax <= 1, got {(dmin, dmax)}"
+                )
+            if width <= 0.0 or not 0.0 < midpoint < 1.0 or power < 1.0:
+                raise ValueError(
+                    "simulation_physics.foot_terrain_solimp requires width > 0, "
+                    f"0 < midpoint < 1, and power >= 1, got {self.foot_terrain_solimp}"
+                )
 
 
 def _validate_randomization_range(
@@ -146,6 +207,7 @@ def load_bello_model(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
+    simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(),
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     use_viewer_model: bool = False,
@@ -157,6 +219,7 @@ def load_bello_model(
         warp=warp,
         batch_size=batch_size,
         terrain=terrain,
+        simulation_physics=simulation_physics,
         model_randomization=model_randomization,
         actuator_config=config.actuator_config,
         spawn_clearance=spawn_clearance,
@@ -171,6 +234,7 @@ def load_prepared_bello_model(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
+    simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(),
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     actuator_config: ActuatorConfig = ActuatorConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
@@ -184,6 +248,7 @@ def load_prepared_bello_model(
         warp=warp,
         batch_size=batch_size,
         terrain=terrain,
+        simulation_physics=simulation_physics,
         model_randomization=model_randomization,
         actuator_config=actuator_config,
         spawn_clearance=spawn_clearance,
@@ -198,6 +263,7 @@ def _load_bello_model_from_path(
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
+    simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(),
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     actuator_config: ActuatorConfig = ActuatorConfig(),
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
@@ -268,6 +334,17 @@ def _load_bello_model_from_path(
     root_qvel_adr = int(mj_model.jnt_dofadr[root_id])
 
     terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
+    foot_body_ids = foot_body_indices(mj_model)
+    robot_geom_ids = robot_collision_geom_indices(mj_model)
+    foot_geom_ids = robot_collision_geom_indices(
+        mj_model, body_ids=set(foot_body_ids.tolist())
+    )
+    nonfoot_robot_geom_ids = robot_collision_geom_indices(
+        mj_model, excluded_body_ids=set(foot_body_ids.tolist())
+    )
+    nonfoot_robot_body_ids = np.unique(
+        np.asarray(mj_model.geom_bodyid[nonfoot_robot_geom_ids], dtype=np.int32)
+    ).astype(np.int32)
     randomized_fields = _randomized_model_fields(
         mj_model,
         model_randomization,
@@ -277,6 +354,13 @@ def _load_bello_model_from_path(
     )
     if randomized_fields is not None:
         _apply_native_model_sample(mj_model, randomized_fields, sample=0)
+
+    _apply_simulation_physics(
+        mj_model,
+        simulation_physics,
+        foot_geom_ids=foot_geom_ids,
+        terrain_geom_ids=terrain_geom_ids,
+    )
 
     mjx_model = mjx.put_model(mj_model, impl="warp") if load_mjx else None
     if mjx_model is not None and randomized_fields is not None:
@@ -302,18 +386,6 @@ def _load_bello_model_from_path(
     policy_action_scale = actuator_action_scale(
         mj_model, actuator_joint_names, policy_ctrl_indices, actuator_config
     )
-    foot_body_ids = foot_body_indices(mj_model)
-    robot_geom_ids = robot_collision_geom_indices(mj_model)
-    foot_geom_ids = robot_collision_geom_indices(
-        mj_model, body_ids=set(foot_body_ids.tolist())
-    )
-    nonfoot_robot_geom_ids = robot_collision_geom_indices(
-        mj_model, excluded_body_ids=set(foot_body_ids.tolist())
-    )
-    nonfoot_robot_body_ids = np.unique(
-        np.asarray(mj_model.geom_bodyid[nonfoot_robot_geom_ids], dtype=np.int32)
-    ).astype(np.int32)
-
     return BelloModel(
         mj_model=mj_model,
         mjx_model=mjx_model,
@@ -415,6 +487,29 @@ def _apply_native_model_sample(
     mj_model.jnt_pos[:] = fields["jnt_pos"][sample]
     mj_model.body_inertia[:] = fields["body_inertia"][sample]
     mujoco.mj_setConst(mj_model, mujoco.MjData(mj_model))
+
+
+def _apply_simulation_physics(
+    mj_model: mujoco.MjModel,
+    config: SimulationPhysicsConfig,
+    *,
+    foot_geom_ids: np.ndarray,
+    terrain_geom_ids: np.ndarray,
+) -> None:
+    mj_model.opt.timestep = config.timestep
+    contact_geom_ids = np.unique(
+        np.concatenate((foot_geom_ids, terrain_geom_ids))
+    ).astype(np.int32)
+    if contact_geom_ids.size == 0:
+        return
+    if config.foot_terrain_margin is not None:
+        # MuJoCo takes the maximum of the two geom margins. Put the activation
+        # margin on the terrain side so foot/self-collision pairs stay unchanged.
+        mj_model.geom_margin[terrain_geom_ids] = config.foot_terrain_margin
+    if config.foot_terrain_solref is not None:
+        mj_model.geom_solref[contact_geom_ids] = config.foot_terrain_solref
+    if config.foot_terrain_solimp is not None:
+        mj_model.geom_solimp[contact_geom_ids] = config.foot_terrain_solimp
 
 
 def model_home_state(
