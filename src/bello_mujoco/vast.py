@@ -617,6 +617,27 @@ def parse_ssh_url(value: str) -> tuple[str, str, int]:
     return parsed.username, parsed.hostname, parsed.port
 
 
+def direct_ssh_target(info: Mapping[str, Any]) -> tuple[str, str, int] | None:
+    host = str(info.get("public_ipaddr", "")).strip()
+    ports = info.get("ports")
+    if not host or not isinstance(ports, Mapping):
+        return None
+    mappings = ports.get("22/tcp")
+    if not isinstance(mappings, list):
+        return None
+    for mapping in mappings:
+        if not isinstance(mapping, Mapping):
+            continue
+        host_port = mapping.get("HostPort")
+        try:
+            port = int(host_port)
+        except (TypeError, ValueError):
+            continue
+        if 0 < port <= 65535:
+            return "root", host, port
+    return None
+
+
 def ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
     user, host, port = target
     return [
@@ -648,17 +669,28 @@ def wait_for_ssh(
     deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
     while time.monotonic() < deadline:
+        targets: list[tuple[str, str, int]] = []
         try:
-            target = parse_ssh_url(api.ssh_url(instance_id))
-            subprocess.run(
-                ssh_command(target, "true"),
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return target
-        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            direct_target = direct_ssh_target(api.show_instance(instance_id))
+            if direct_target is not None:
+                targets.append(direct_target)
+            proxy_target = parse_ssh_url(api.ssh_url(instance_id))
+            if proxy_target not in targets:
+                targets.append(proxy_target)
+        except (OSError, ValueError) as exc:
             last_error = exc
+        for target in targets:
+            try:
+                subprocess.run(
+                    ssh_command(target, "true"),
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return target
+            except (OSError, subprocess.CalledProcessError) as exc:
+                last_error = exc
+        if time.monotonic() < deadline:
             sleep(10)
     raise TimeoutError(f"SSH did not become ready: {last_error}")
 

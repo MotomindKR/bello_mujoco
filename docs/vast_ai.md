@@ -164,6 +164,9 @@ uv sync --frozen
 It verifies that JAX selects a GPU and runs a one-environment training dry-run
 before starting the requested recipe. The detached job stores its log and exit
 status under `/workspace/.bello-vast-jobs/<run-name>/` on the rented instance.
+When Vast advertises a public IP and direct port mapping, the controller tests
+that endpoint before falling back to Vast's SSH proxy URL. This avoids waiting
+for a broken proxy while the instance's direct SSH service is already ready.
 The controller fetches bounded log chunks over short SSH connections, so a lost
 SSH session does not stop setup or training. It reconnects for up to
 `--ssh-timeout-seconds` of continuous SSH unavailability and resumes output from

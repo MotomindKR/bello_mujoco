@@ -220,6 +220,33 @@ def test_parse_ssh_url_requires_complete_ssh_url() -> None:
         parse_ssh_url("example.com")
 
 
+def test_wait_for_ssh_prefers_direct_port_mapping(monkeypatch) -> None:
+    class Api:
+        def show_instance(self, instance_id):
+            assert instance_id == 123
+            return {
+                "public_ipaddr": "192.0.2.10",
+                "ports": {"22/tcp": [{"HostPort": "22022"}]},
+            }
+
+        def ssh_url(self, instance_id):
+            assert instance_id == 123
+            return "ssh://root@proxy.example.com:22001"
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(vast.subprocess, "run", fake_run)
+
+    target = vast.wait_for_ssh(Api(), 123, 30, sleep=lambda _: None)
+
+    assert target == ("root", "192.0.2.10", 22022)
+    assert commands == [vast.ssh_command(target, "true")]
+
+
 def test_destroy_treats_not_found_after_api_error_as_success() -> None:
     class AlreadyGoneApi:
         def destroy_instance(self, instance_id):
