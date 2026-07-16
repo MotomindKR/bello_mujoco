@@ -1706,3 +1706,13 @@ MJX-Warp consumes the model and control changes as batched values, so all 2,048
 training worlds receive distinct fixed physical variants without sampling
 inside the rollout hot path. Native MuJoCo uses the first seeded sample for
 consistent rendering and evaluation.
+
+## 2026-07-16 - Standing-penalties-only control
+
+The domain-randomized follow-up learned much more slowly than the preceding
+flat-ground run. To isolate the standing countermeasures, the
+`locomotion_berkeley_standing_only` recipe retains `standing_foot_vel: -2.0`
+and `standing_foot_air_time: -3.0` while restoring flat, level terrain and
+disabling joint-anchor, motor-target-offset, and inertia randomization. All
+other Berkeley PPO, reset, command, gait, reward, and actuator settings inherit
+unchanged from `locomotion_berkeley`.

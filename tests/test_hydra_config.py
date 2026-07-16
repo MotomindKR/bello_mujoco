@@ -64,6 +64,7 @@ def test_train_hydra_configs_convert_to_valid_training_config(
         "locomotion_clean",
         "locomotion_gait_base",
         "locomotion_gait",
+        "locomotion_berkeley_standing_only",
     ],
 )
 def test_experiment_train_configs_convert_to_valid_training_config(
@@ -258,6 +259,30 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     assert config.reward_config.torque_l1.enabled
     assert config.reward_config.clip_negative_total
     assert config.reward_config.scale_termination_by_timestep
+
+
+def test_berkeley_standing_only_ablation_disables_domain_randomization() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_berkeley_standing_only"),
+    )
+
+    assert config.env_config.terrain.mode == "plane"
+    assert config.env_config.terrain.slope_angle_range == pytest.approx((0.0, 0.0))
+    assert not config.env_config.model_randomization.enabled
+    assert config.env_config.model_randomization.joint_origin_range == pytest.approx(
+        (0.0, 0.0)
+    )
+    assert config.env_config.model_randomization.joint_angle_offset_range == (
+        pytest.approx((0.0, 0.0))
+    )
+    assert config.env_config.model_randomization.joint_inertia_scale_range == (
+        pytest.approx((1.0, 1.0))
+    )
+    assert config.reward_config.standing_foot_vel.enabled
+    assert config.reward_config.standing_foot_vel.weight == pytest.approx(-2.0)
+    assert config.reward_config.standing_foot_air_time.enabled
+    assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-3.0)
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:
