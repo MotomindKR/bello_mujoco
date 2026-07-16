@@ -235,7 +235,8 @@ step-count staggering for vectorized PPO runs. `ContactConfig` debounces foot
 contacts and sets the normal-force threshold for undesired non-foot contacts.
 `BelloEnvConfig.model_randomization` can assign fixed per-world
 actuated-joint anchor offsets, angular actuator-target offsets, and child-body
-inertia scales to an MJX-Warp training batch. The first seeded sample is used
+inertia scales to an MJX-Warp training batch. Angular offsets can target all
+actuators or policy-controlled actuators only. The first seeded sample is used
 by native MuJoCo for consistent CPU and video evaluation. Seeded rough
 heightfields, seeded terrain roll/pitch, and randomized root positions provide
 terrain variation separately through the terrain and spawn configs.

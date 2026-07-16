@@ -427,7 +427,9 @@ def mujoco_policy_observation(
 def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
     mj_data.qpos[:] = env.model.default_qpos
     mj_data.qvel[:] = env.model.default_qvel
-    mj_data.ctrl[:] = env.model.default_ctrl
+    mj_data.ctrl[:] = np.asarray(env.model.default_ctrl) + np.asarray(
+        env.model.joint_angle_offset[0]
+    )
     mujoco.mj_forward(env.model.mj_model, mj_data)
 
 
@@ -436,7 +438,9 @@ def mujoco_scaled(value: np.ndarray, scale: float) -> np.ndarray:
 
 
 def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.ndarray:
-    ctrl = np.asarray(env.model.default_ctrl, dtype=np.float32).copy()
+    ctrl = np.asarray(env.model.default_ctrl, dtype=np.float32) + np.asarray(
+        env.model.joint_angle_offset[0], dtype=np.float32
+    )
     policy_indices = np.asarray(env.model.policy_ctrl_indices, dtype=np.int32)
     action = np.asarray(action, dtype=np.float32)
     if env.action_clip is not None:

@@ -283,6 +283,7 @@ env_config:
     seed: 0
     joint_origin_range: [0.0, 0.0]
     joint_angle_offset_range: [0.0, 0.0]
+    joint_angle_offset_scope: all  # all | policy
     joint_inertia_scale_range: [1.0, 1.0]
   gait:
     cycle_time: 0.80
@@ -368,7 +369,8 @@ phase, command resampling, and random push events.
 MJX-Warp world at environment load time. `joint_origin_range` adds an XYZ
 offset in meters to each actuated joint anchor,
 `joint_angle_offset_range` adds a fixed angular offset in radians to each
-actuator's position target, and
+selected actuator's position target. `joint_angle_offset_scope: all` includes
+held and policy actuators, while `policy` leaves held targets unchanged, and
 `joint_inertia_scale_range` scales the diagonal inertia of each actuated
 joint's child body by one positive scalar. The samples remain assigned to their
 worlds across episode resets, so a training batch contains many physical

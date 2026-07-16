@@ -64,6 +64,7 @@ env_config:
     seed: 0
     joint_origin_range: [0.0, 0.0]
     joint_angle_offset_range: [0.0, 0.0]
+    joint_angle_offset_scope: all
     joint_inertia_scale_range: [1.0, 1.0]
   gait:
     cycle_time: 0.80

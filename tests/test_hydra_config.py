@@ -65,6 +65,10 @@ def test_train_hydra_configs_convert_to_valid_training_config(
         "locomotion_gait_base",
         "locomotion_gait",
         "locomotion_berkeley_standing_only",
+        "locomotion_berkeley_inertia_only",
+        "locomotion_berkeley_anchor_only",
+        "locomotion_berkeley_terrain_only",
+        "locomotion_berkeley_motor_offset_only",
     ],
 )
 def test_experiment_train_configs_convert_to_valid_training_config(
@@ -283,6 +287,49 @@ def test_berkeley_standing_only_ablation_disables_domain_randomization() -> None
     assert config.reward_config.standing_foot_vel.weight == pytest.approx(-2.0)
     assert config.reward_config.standing_foot_air_time.enabled
     assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-3.0)
+
+
+@pytest.mark.parametrize(
+    ("config_name", "terrain", "origin", "angle", "inertia", "scope"),
+    [
+        ("locomotion_berkeley_inertia_only", "plane", 0.0, 0.0, 0.05, "policy"),
+        ("locomotion_berkeley_anchor_only", "plane", 0.001, 0.0, 0.0, "policy"),
+        ("locomotion_berkeley_terrain_only", "rough", 0.0, 0.0, 0.0, "all"),
+        (
+            "locomotion_berkeley_motor_offset_only",
+            "plane",
+            0.0,
+            0.005,
+            0.0,
+            "policy",
+        ),
+    ],
+)
+def test_berkeley_randomization_ablations_change_one_condition(
+    config_name: str,
+    terrain: str,
+    origin: float,
+    angle: float,
+    inertia: float,
+    scope: str,
+) -> None:
+    config = structured_config(
+        TrainingRunConfig, compose_experiment_config(config_name)
+    )
+    randomization = config.env_config.model_randomization
+
+    assert config.config.total_timesteps == 200_000_000
+    assert config.env_config.terrain.mode == terrain
+    assert max(
+        abs(value) for value in randomization.joint_origin_range
+    ) == pytest.approx(origin)
+    assert max(
+        abs(value) for value in randomization.joint_angle_offset_range
+    ) == pytest.approx(angle)
+    assert max(
+        abs(value - 1.0) for value in randomization.joint_inertia_scale_range
+    ) == pytest.approx(inertia)
+    assert randomization.joint_angle_offset_scope == scope
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

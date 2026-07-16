@@ -8,7 +8,11 @@ from rerun.urdf import UrdfTree
 from bello_mujoco.envs.locomotion import BelloEnvConfig, GaitConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.policy import ActorCriticConfig
-from bello_mujoco.render import mujoco_eval_state, mujoco_gait_phase
+from bello_mujoco.render import (
+    mujoco_action_to_ctrl,
+    mujoco_eval_state,
+    mujoco_gait_phase,
+)
 from bello_mujoco.rerun_eval import (
     GamepadCommandSource,
     GamepadConfig,
@@ -185,6 +189,22 @@ def test_native_mujoco_gait_phase_freezes_for_standing_command() -> None:
     assert mujoco_gait_phase(env, 10, np.asarray([0.0, 0.5, 0.0])) == pytest.approx(
         0.275
     )
+
+
+def test_native_mujoco_control_applies_model_angle_offset() -> None:
+    env = SimpleNamespace(
+        action_clip=1.0,
+        model=SimpleNamespace(
+            default_ctrl=np.asarray([1.0, 2.0, 3.0], dtype=np.float32),
+            joint_angle_offset=np.asarray([[0.1, 0.2, 0.3]], dtype=np.float32),
+            policy_ctrl_indices=np.asarray([0, 2], dtype=np.int32),
+            policy_action_scale=np.asarray([0.5, 0.25], dtype=np.float32),
+        ),
+    )
+
+    ctrl = mujoco_action_to_ctrl(env, np.asarray([1.0, -1.0], dtype=np.float32))
+
+    np.testing.assert_allclose(ctrl, np.asarray([1.6, 2.2, 3.05], dtype=np.float32))
 
 
 class FakeController:

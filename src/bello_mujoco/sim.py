@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import math
+from typing import Literal
 
 import jax.numpy as jnp
 import mujoco
@@ -52,6 +53,7 @@ class ModelRandomizationConfig:
     seed: int = 0
     joint_origin_range: tuple[float, float] = (0.0, 0.0)
     joint_angle_offset_range: tuple[float, float] = (0.0, 0.0)
+    joint_angle_offset_scope: Literal["all", "policy"] = "all"
     joint_inertia_scale_range: tuple[float, float] = (1.0, 1.0)
 
     def __post_init__(self) -> None:
@@ -66,6 +68,11 @@ class ModelRandomizationConfig:
             "model_randomization.joint_angle_offset_range",
             self.joint_angle_offset_range,
         )
+        if self.joint_angle_offset_scope not in {"all", "policy"}:
+            raise ValueError(
+                "model_randomization.joint_angle_offset_scope must be 'all' or "
+                f"'policy', got {self.joint_angle_offset_scope!r}"
+            )
         _validate_randomization_range(
             "model_randomization.joint_inertia_scale_range",
             self.joint_inertia_scale_range,
@@ -265,6 +272,7 @@ def _load_bello_model_from_path(
         model_randomization,
         batch_size=batch_size,
         actuator_joint_ids=actuator_joint_ids,
+        policy_ctrl_indices=policy_ctrl_indices,
     )
     if randomized_fields is not None:
         _apply_native_model_sample(mj_model, randomized_fields, sample=0)
@@ -347,6 +355,7 @@ def _randomized_model_fields(
     *,
     batch_size: int,
     actuator_joint_ids: np.ndarray,
+    policy_ctrl_indices: np.ndarray,
 ) -> dict[str, np.ndarray] | None:
     if not config.enabled:
         return None
@@ -378,9 +387,15 @@ def _randomized_model_fields(
     ).astype(np.float32)
     body_inertia[:, joint_body_ids] *= inertia_scale
 
-    joint_angle_offset = rng.uniform(
+    offset_indices = (
+        np.arange(mj_model.nu, dtype=np.int32)
+        if config.joint_angle_offset_scope == "all"
+        else np.asarray(policy_ctrl_indices, dtype=np.int32)
+    )
+    joint_angle_offset = np.zeros((batch_size, mj_model.nu), dtype=np.float32)
+    joint_angle_offset[:, offset_indices] = rng.uniform(
         *config.joint_angle_offset_range,
-        size=(batch_size, mj_model.nu),
+        size=(batch_size, offset_indices.size),
     ).astype(np.float32)
 
     return {

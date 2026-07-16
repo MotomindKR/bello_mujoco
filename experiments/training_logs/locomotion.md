@@ -1716,3 +1716,13 @@ and `standing_foot_air_time: -3.0` while restoring flat, level terrain and
 disabling joint-anchor, motor-target-offset, and inertia randomization. All
 other Berkeley PPO, reset, command, gait, reward, and actuator settings inherit
 unchanged from `locomotion_berkeley`.
+
+## 2026-07-16 - Single-variable randomization ablations
+
+Four 200-million-sample recipes isolate the randomization bundle on top of the
+standing-only control: diagonal inertia scaling at `0.95--1.05`, joint-anchor
+XYZ offsets at `+-0.001` meters, a level 0.015-meter rough heightfield, and
+policy-joint motor target offsets at `+-0.005` radians. Motor offsets now expose
+an explicit `joint_angle_offset_scope`; the motor ablation uses `policy` so the
+16 held waist and upper-body targets remain nominal. Native MuJoCo control also
+applies the selected seeded offset, matching MJX training and evaluation.

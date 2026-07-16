@@ -107,6 +107,7 @@ def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
         ({"seed": -1}, "seed must be nonnegative"),
         ({"joint_origin_range": (float("nan"), 0.0)}, "joint_origin_range"),
         ({"joint_angle_offset_range": (0.1, -0.1)}, "joint_angle_offset_range"),
+        ({"joint_angle_offset_scope": "bad"}, "joint_angle_offset_scope"),
         ({"joint_inertia_scale_range": (0.0, 1.0)}, "positive values"),
     ],
 )
@@ -141,6 +142,30 @@ def test_joint_actuator_mode_controls_policy_action_partition(
     assert model.mj_model.nu == 35
     assert len(model.policy_ctrl_indices) == 34
     assert len(model.hold_ctrl_indices) == 1
+
+
+def test_policy_joint_angle_offsets_leave_hold_targets_unchanged(
+    full_body_asset: PreparedAsset,
+) -> None:
+    default_config = ActuatorConfig()
+    joints = {
+        name: replace(config, mode="hold") if name == "waist_yaw_joint" else config
+        for name, config in default_config.joints.items()
+    }
+    model = load_prepared_bello_model(
+        full_body_asset,
+        batch_size=4,
+        actuator_config=ActuatorConfig(joints=joints),
+        model_randomization=ModelRandomizationConfig(
+            enabled=True,
+            seed=7,
+            joint_angle_offset_range=(-0.005, 0.005),
+            joint_angle_offset_scope="policy",
+        ),
+    )
+
+    assert np.all(model.joint_angle_offset[:, model.hold_ctrl_indices] == 0.0)
+    assert np.any(model.joint_angle_offset[:, model.policy_ctrl_indices] != 0.0)
 
 
 def test_model_partitions_actuators_by_joint_not_actuator_name(
