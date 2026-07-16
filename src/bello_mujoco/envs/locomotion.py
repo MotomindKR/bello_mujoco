@@ -36,7 +36,11 @@ from bello_mujoco.sim import (
     load_bello_model,
     load_prepared_bello_model,
 )
-from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
+from bello_mujoco.terrain import (
+    FLAT_TERRAIN,
+    TerrainConfig,
+    terrain_surface_height_jax,
+)
 
 
 @chex.dataclass(frozen=True)
@@ -649,14 +653,10 @@ class BelloLocomotionEnv:
                 "enabled foot reward terms require foot collision geoms. Disable "
                 "contact-dependent foot rewards for assets without feet."
             )
-        if (
-            self.terrain_config.mode != "none"
-            and self.reward_config.uses_terrain_contact_metadata
-            and model.terrain_geom_ids.size == 0
-        ):
+        if self.terrain_config.mode != "none" and model.terrain_geom_ids.size == 0:
             raise ValueError(
                 f"terrain mode {self.terrain_config.mode!r} requires a terrain geom "
-                f"named {self.terrain_config.name!r} for enabled contact rewards"
+                f"named {self.terrain_config.name!r}"
             )
         if model.default_qpos.shape != (mj_model.nq,):
             raise ValueError(
@@ -771,6 +771,11 @@ class BelloLocomotionEnv:
             maxval=self.config.spawn.root_xy_range[1],
             dtype=jnp.float32,
         )
+        default_root_xy = qpos[root_qpos : root_qpos + 2]
+        randomized_root_xy = default_root_xy + root_xy
+        terrain_height_delta = self._terrain_height(
+            randomized_root_xy
+        ) - self._terrain_height(default_root_xy)
         yaw = jax.random.uniform(
             yaw_key,
             (),
@@ -781,6 +786,8 @@ class BelloLocomotionEnv:
         qpos = (
             qpos.at[root_qpos : root_qpos + 2]
             .add(root_xy)
+            .at[root_qpos + 2]
+            .add(terrain_height_delta)
             .at[root_qpos + 3 : root_qpos + 7]
             .set(yaw_quat_from_angle(yaw))
         )
@@ -1973,8 +1980,21 @@ class BelloLocomotionEnv:
         )
 
     def _foot_height(self, state: BelloState) -> jax.Array:
-        terrain_z = jnp.asarray(self.terrain_config.pos[2], dtype=jnp.float32)
-        return state.data.xpos[jnp.asarray(self.model.foot_body_ids), 2] - terrain_z
+        foot_position = state.data.xpos[jnp.asarray(self.model.foot_body_ids)]
+        return foot_position[:, 2] - self._terrain_height(foot_position[:, :2])
+
+    def _terrain_height(self, world_xy: jax.Array) -> jax.Array:
+        if self.terrain_config.mode == "none":
+            return jnp.full(
+                jnp.asarray(world_xy).shape[:-1],
+                self.terrain_config.pos[2],
+                dtype=jnp.float32,
+            )
+        return terrain_surface_height_jax(
+            self.model.mj_model,
+            int(self.model.terrain_geom_ids[0]),
+            world_xy,
+        )
 
     def _foot_lateral_speed_sq(self, state: BelloState) -> jax.Array:
         foot_world_vel = self._body_world_lin_vel(state, self.model.foot_body_ids)

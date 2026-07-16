@@ -42,12 +42,13 @@ from bello_mujoco.envs.rewards import (
     TrackLinVelXYRewardConfig,
 )
 from bello_mujoco.render import (
+    mujoco_foot_height,
     mujoco_foot_lateral_speed_sq,
     mujoco_link_ang_vel,
     mujoco_link_lin_vel,
 )
 from bello_mujoco.sim import ModelRandomizationConfig, WarpConfig
-from bello_mujoco.terrain import TerrainConfig
+from bello_mujoco.terrain import TerrainConfig, terrain_surface_height
 
 
 def root_quat_from_roll_pitch(roll: float, pitch: float) -> jnp.ndarray:
@@ -637,6 +638,60 @@ def test_reset_batch_can_randomize_spawn_state(full_body_asset: PreparedAsset) -
         np.asarray(state.data.qvel[:, root_qvel : root_qvel + 2]),
         np.zeros((2, 2), dtype=np.float32),
     )
+
+
+def test_rough_terrain_reset_and_foot_height_use_local_elevation(
+    full_body_asset: PreparedAsset,
+) -> None:
+    terrain = TerrainConfig(
+        mode="rough",
+        seed=4,
+        hfield_resolution=17,
+        hfield_amplitude=0.03,
+        slope_angle_range=(-0.005, 0.005),
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            terrain=terrain,
+            spawn=SpawnConfig(root_xy_range=(0.5, 0.5)),
+        ),
+    )
+    state, _ = env.reset(rng=jax.random.PRNGKey(7))
+    root_qpos = int(env.model.root_qpos_adr)
+    terrain_geom_id = int(env.model.terrain_geom_ids[0])
+    default_xy = env.model.default_qpos[root_qpos : root_qpos + 2]
+    spawned_xy = np.asarray(state.data.qpos[root_qpos : root_qpos + 2])
+    expected_height_delta = terrain_surface_height(
+        env.model.mj_model, terrain_geom_id, spawned_xy
+    ) - terrain_surface_height(env.model.mj_model, terrain_geom_id, default_xy)
+
+    assert float(state.data.qpos[root_qpos + 2]) == pytest.approx(
+        float(env.model.default_qpos[root_qpos + 2] + expected_height_delta),
+        abs=1.0e-6,
+    )
+
+    foot_position = np.asarray(state.data.xpos[env.model.foot_body_ids])
+    expected_foot_height = foot_position[:, 2] - terrain_surface_height(
+        env.model.mj_model, terrain_geom_id, foot_position[:, :2]
+    )
+    np.testing.assert_allclose(
+        np.asarray(env._foot_height(state)), expected_foot_height, atol=1.0e-6
+    )
+
+    mj_data = mujoco.MjData(env.model.mj_model)
+    mj_data.qpos[:] = np.asarray(state.data.qpos)
+    mujoco.mj_forward(env.model.mj_model, mj_data)
+    np.testing.assert_allclose(
+        mujoco_foot_height(env, mj_data), expected_foot_height, atol=1.0e-6
+    )
+
+    next_state, _, reward, done, _ = env.step(
+        state, jnp.zeros(env.action_size, dtype=jnp.float32)
+    )
+    assert jnp.all(jnp.isfinite(env._foot_height(next_state)))
+    assert jnp.isfinite(reward)
+    assert not done
 
 
 def test_reset_batch_applies_per_world_model_kinematics(

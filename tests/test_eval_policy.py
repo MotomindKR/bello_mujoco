@@ -319,6 +319,7 @@ def test_rough_terrain_mesh_matches_config_extent() -> None:
     assert triangles.shape == (8, 3)
     assert vertices[:, 0].min() == pytest.approx(-1.0)
     assert vertices[:, 0].max() == pytest.approx(3.0)
+    assert np.ptp(vertices[:, 2]) == pytest.approx(config.hfield_amplitude)
 
 
 def test_rerun_urdf_prefix_is_a_visible_world_subtree(tmp_path) -> None:

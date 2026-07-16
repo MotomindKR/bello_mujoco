@@ -356,6 +356,10 @@ quantity and is not exposed directly as a body-local observation.
 Reset runs a MuJoCo kinematics pass after qpos/qvel randomization, so named-body
 position/orientation terms such as `torso_link` height and projected gravity are
 valid in the initial observation stack before the first environment step.
+On planes and rough heightfields, reset root height follows the terrain elevation
+at the sampled root XY location. Foot-height reward inputs likewise subtract the
+surface elevation underneath each foot. `terrain.hfield_amplitude` is the rough
+heightfield's peak-to-valley vertical scale in meters.
 
 `spawn` controls reset randomization. `root_xy_range` adds uniform world-frame
 XY root offsets, `root_yaw_range` samples the initial root yaw, `joint_pos_noise`
@@ -382,6 +386,8 @@ seeded heightfield, and randomized root XY positions expose resets to different
 local patches of that surface. `slope_angle_range` samples reproducible terrain
 roll and pitch angles in radians from the terrain seed. Randomized root yaw then
 exposes the policy to different incline directions relative to its body frame.
+Reset clearance and foot-height rewards query those local terrain patches,
+including the configured slope.
 
 `joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`.
 `base_lin_vel`, `base_ang_vel`, `projected_gravity`, and `base_height` are

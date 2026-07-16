@@ -240,6 +240,9 @@ actuators or policy-controlled actuators only. The first seeded sample is used
 by native MuJoCo for consistent CPU and video evaluation. Seeded rough
 heightfields, seeded terrain roll/pitch, and randomized root positions provide
 terrain variation separately through the terrain and spawn configs.
+Rough-terrain resets preserve the requested clearance at the sampled local
+elevation, and foot-height rewards measure height above the local surface rather
+than the terrain origin.
 
 Commands are `[lin_vel_x, lin_vel_y, yaw_vel]` in the robot yaw frame. The
 Bello source asset is Y-forward anatomically, so the current locomotion recipes

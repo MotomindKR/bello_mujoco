@@ -20,6 +20,7 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
+from bello_mujoco.terrain import terrain_surface_height
 
 RolloutStats: TypeAlias = dict[str, float | int]
 DONE_FLAG_KEYS = (
@@ -735,11 +736,18 @@ def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.n
 def mujoco_foot_height(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:
     if env.model.foot_body_ids.size == 0:
         return np.zeros((0,), dtype=np.float32)
-    terrain_z = np.float32(env.terrain_config.pos[2])
-    return (
-        np.asarray(mj_data.xpos[env.model.foot_body_ids, 2], dtype=np.float32)
-        - terrain_z
-    )
+    foot_position = np.asarray(mj_data.xpos[env.model.foot_body_ids], dtype=np.float32)
+    if env.terrain_config.mode == "none":
+        terrain_height = np.full(
+            foot_position.shape[0], env.terrain_config.pos[2], dtype=np.float32
+        )
+    else:
+        terrain_height = terrain_surface_height(
+            env.model.mj_model,
+            int(env.model.terrain_geom_ids[0]),
+            foot_position[:, :2],
+        )
+    return foot_position[:, 2] - terrain_height
 
 
 def mujoco_foot_lateral_speed_sq(

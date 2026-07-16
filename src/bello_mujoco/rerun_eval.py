@@ -536,22 +536,30 @@ class RerunEvaluationLogger:
 
 
 def rough_terrain_mesh(config) -> tuple[np.ndarray, np.ndarray]:
-    from bello_mujoco.terrain import rough_height_data
+    from bello_mujoco.terrain import random_slope_quat, rough_height_data
 
     resolution = config.hfield_resolution
     normalized = np.fromstring(rough_height_data(config), sep=" ").reshape(
         resolution, resolution
     )
+    normalized -= normalized.min()
+    height_range = normalized.max()
+    if height_range > 0.0:
+        normalized /= height_range
+    normalized = np.flipud(normalized)
     xs = np.linspace(-config.size[0], config.size[0], resolution)
     ys = np.linspace(-config.size[1], config.size[1], resolution)
     grid_x, grid_y = np.meshgrid(xs, ys)
-    vertices = np.column_stack(
+    local_vertices = np.column_stack(
         [
-            grid_x.ravel() + config.pos[0],
-            grid_y.ravel() + config.pos[1],
-            normalized.ravel() * config.size[2] + config.pos[2],
+            grid_x.ravel(),
+            grid_y.ravel(),
+            normalized.ravel() * config.hfield_amplitude,
         ]
     ).astype(np.float32)
+    vertices = quat_rotate_np(
+        np.asarray(random_slope_quat(config), dtype=np.float32), local_vertices
+    ) + np.asarray(config.pos, dtype=np.float32)
     triangles = []
     for row in range(resolution - 1):
         for col in range(resolution - 1):

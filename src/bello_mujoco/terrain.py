@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 TerrainMode = Literal["none", "plane", "rough"]
-SCENE_CACHE_VERSION = 1
+SCENE_CACHE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -145,12 +145,13 @@ def add_hfield(root: ET.Element, config: TerrainConfig) -> None:
                 (
                     config.size[0],
                     config.size[1],
-                    config.size[2],
+                    config.hfield_amplitude,
                     config.hfield_base_thickness,
                 )
             ),
+            "elevation": data,
         },
-    ).text = data
+    )
     worldbody.insert(
         0,
         ET.Element(
@@ -191,12 +192,149 @@ def rough_height_data(config: TerrainConfig) -> str:
                 + 0.20 * math.sin(frequency_y * math.pi * y + phase_y)
                 + 0.05 * math.sin(frequency_diag * math.pi * (x + y) + phase_diag)
             )
-            values.append(
-                config.hfield_amplitude
-                * min(max(height, 0.0), 1.0)
-                / max(config.size[2], 1e-6)
-            )
+            values.append(min(max(height, 0.0), 1.0))
     return " ".join(f"{value:.8g}" for value in values)
+
+
+def terrain_surface_height(
+    mj_model,
+    terrain_geom_id: int,
+    world_xy,
+):
+    """Return native-MuJoCo terrain elevation at world-frame XY positions."""
+
+    import numpy as np
+
+    return np.asarray(
+        _terrain_surface_height(mj_model, terrain_geom_id, world_xy, np),
+        dtype=np.float32,
+    )
+
+
+def terrain_surface_height_jax(
+    mj_model,
+    terrain_geom_id: int,
+    world_xy,
+):
+    """Return JAX-compatible terrain elevation at world-frame XY positions."""
+
+    import jax.numpy as jnp
+
+    return _terrain_surface_height(mj_model, terrain_geom_id, world_xy, jnp)
+
+
+def _terrain_surface_height(mj_model, terrain_geom_id: int, world_xy, xp):
+    import mujoco
+    import numpy as np
+
+    geom_id = int(terrain_geom_id)
+    geom_type = int(mj_model.geom_type[geom_id])
+    if geom_type not in {
+        int(mujoco.mjtGeom.mjGEOM_PLANE),
+        int(mujoco.mjtGeom.mjGEOM_HFIELD),
+    }:
+        raise ValueError(
+            f"terrain geom {geom_id} must be a plane or heightfield, got {geom_type}"
+        )
+
+    position = xp.asarray(np.asarray(mj_model.geom_pos[geom_id]), dtype=xp.float32)
+    rotation = _quat_rotation_matrix(
+        xp.asarray(np.asarray(mj_model.geom_quat[geom_id]), dtype=xp.float32), xp
+    )
+    world_xy = xp.asarray(world_xy, dtype=xp.float32)
+    delta_xy = world_xy - position[:2]
+    xy_inverse = xp.linalg.inv(rotation[:2, :2])
+    local_xy = delta_xy @ xy_inverse.T
+
+    if geom_type == int(mujoco.mjtGeom.mjGEOM_PLANE):
+        local_height = xp.zeros(world_xy.shape[:-1], dtype=xp.float32)
+    else:
+        hfield_id = int(mj_model.geom_dataid[geom_id])
+        row_count = int(mj_model.hfield_nrow[hfield_id])
+        column_count = int(mj_model.hfield_ncol[hfield_id])
+        data_address = int(mj_model.hfield_adr[hfield_id])
+        sample_count = row_count * column_count
+        height_data = xp.asarray(
+            np.asarray(
+                mj_model.hfield_data[data_address : data_address + sample_count]
+            ).reshape(row_count, column_count),
+            dtype=xp.float32,
+        )
+        hfield_size = xp.asarray(
+            np.asarray(mj_model.hfield_size[hfield_id]), dtype=xp.float32
+        )
+
+        # A sloped heightfield couples local height back into local XY. Fixed
+        # iterations converge rapidly for the intentionally slight slopes used here.
+        for _ in range(4):
+            local_height = _hfield_local_height(height_data, hfield_size, local_xy, xp)
+            local_xy = (
+                delta_xy - local_height[..., None] * rotation[:2, 2]
+            ) @ xy_inverse.T
+        local_height = _hfield_local_height(height_data, hfield_size, local_xy, xp)
+
+    return position[2] + local_xy @ rotation[2, :2] + local_height * rotation[2, 2]
+
+
+def _hfield_local_height(height_data, hfield_size, local_xy, xp):
+    row_count, column_count = height_data.shape
+    column = xp.clip(
+        (local_xy[..., 0] / hfield_size[0] + 1.0) * 0.5 * (column_count - 1),
+        0.0,
+        float(column_count - 1),
+    )
+    row = xp.clip(
+        (local_xy[..., 1] / hfield_size[1] + 1.0) * 0.5 * (row_count - 1),
+        0.0,
+        float(row_count - 1),
+    )
+    column0 = xp.clip(xp.floor(column).astype(int), 0, column_count - 2)
+    row0 = xp.clip(xp.floor(row).astype(int), 0, row_count - 2)
+    column_fraction = column - column0
+    row_fraction = row - row0
+
+    lower_left = height_data[row0, column0]
+    lower_right = height_data[row0, column0 + 1]
+    upper_left = height_data[row0 + 1, column0]
+    upper_right = height_data[row0 + 1, column0 + 1]
+    lower_triangle = (
+        lower_left
+        + (lower_right - lower_left) * column_fraction
+        + (upper_right - lower_right) * row_fraction
+    )
+    upper_triangle = (
+        lower_left
+        + (upper_right - upper_left) * column_fraction
+        + (upper_left - lower_left) * row_fraction
+    )
+    normalized_height = xp.where(
+        column_fraction >= row_fraction, lower_triangle, upper_triangle
+    )
+    return normalized_height * hfield_size[2]
+
+
+def _quat_rotation_matrix(quat_wxyz, xp):
+    w, x, y, z = quat_wxyz
+    return xp.asarray(
+        [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - w * z),
+                2.0 * (x * z + w * y),
+            ],
+            [
+                2.0 * (x * y + w * z),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - w * x),
+            ],
+            [
+                2.0 * (x * z - w * y),
+                2.0 * (y * z + w * x),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ],
+        dtype=xp.float32,
+    )
 
 
 def random_slope_angles(config: TerrainConfig) -> tuple[float, float]:

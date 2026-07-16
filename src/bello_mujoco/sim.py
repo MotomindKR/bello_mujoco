@@ -27,6 +27,7 @@ from bello_mujoco.terrain import (
     ROBOT_ONLY_TERRAIN,
     TerrainConfig,
     runtime_mjcf_path,
+    terrain_surface_height,
 )
 
 DEFAULT_CONTACT_BUDGET_PER_ENV = 32
@@ -446,22 +447,22 @@ def place_root_above_terrain(
     min_robot_z = robot_geom_min_z(mj_model, qpos)
     if min_robot_z is None:
         return qpos
-    target_min_z = terrain_surface_upper_bound(terrain) + clearance
+    if terrain.mode == "none":
+        return qpos
+    terrain_geom_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_GEOM, terrain.name
+    )
+    if terrain_geom_id < 0:
+        raise ValueError(f"terrain geom {terrain.name!r} is missing from the model")
+    root_xy = qpos[root_qpos_adr : root_qpos_adr + 2]
+    target_min_z = float(
+        terrain_surface_height(mj_model, terrain_geom_id, root_xy)
+    ) + float(clearance)
     if not math.isfinite(target_min_z):
         return qpos
     adjusted = qpos.copy()
     adjusted[root_qpos_adr + 2] += target_min_z - min_robot_z
     return adjusted
-
-
-def terrain_surface_upper_bound(terrain: TerrainConfig) -> float:
-    if terrain.mode == "none":
-        return float("-inf")
-    if terrain.mode == "plane":
-        return float(terrain.pos[2])
-    if terrain.mode == "rough":
-        return float(terrain.pos[2] + terrain.hfield_amplitude)
-    raise ValueError(f"unsupported terrain mode: {terrain.mode!r}")
 
 
 def robot_geom_min_z(

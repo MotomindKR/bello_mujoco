@@ -14,7 +14,6 @@ from bello_mujoco.sim import (
     load_bello_model,
     load_prepared_bello_model,
     robot_geom_min_z,
-    terrain_surface_upper_bound,
 )
 from bello_mujoco.terrain import (
     FLAT_TERRAIN,
@@ -23,6 +22,7 @@ from bello_mujoco.terrain import (
     TerrainConfig,
     random_slope_angles,
     rough_height_data,
+    terrain_surface_height,
 )
 
 
@@ -317,6 +317,11 @@ def test_runtime_rough_terrain_uses_heightfield(
     assert (
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, hfield_geoms[0]) == "ground"
     )
+    assert np.ptp(model.hfield_data) == pytest.approx(1.0)
+    hfield_id = int(model.geom_dataid[hfield_geoms[0]])
+    assert model.hfield_size[hfield_id, 2] == pytest.approx(
+        ROUGH_TERRAIN.hfield_amplitude
+    )
 
 
 def test_runtime_rough_terrain_seed_changes_scene(
@@ -356,6 +361,22 @@ def test_runtime_rough_terrain_applies_seeded_slight_slope(
     ground_normal = data.geom_xmat[ground_id].reshape(3, 3)[:, 2]
     assert not np.allclose(ground_normal, [0.0, 0.0, 1.0])
 
+    data.qpos[:] = scene.default_qpos
+    mujoco.mj_forward(scene.mj_model, data)
+    for xy in (np.asarray([1.0, 1.0]), np.asarray([-1.0, 0.5])):
+        distance = mujoco.mj_ray(
+            scene.mj_model,
+            data,
+            np.asarray([xy[0], xy[1], 1.0]),
+            np.asarray([0.0, 0.0, -1.0]),
+            None,
+            True,
+            -1,
+            None,
+        )
+        expected_height = float(terrain_surface_height(scene.mj_model, ground_id, xy))
+        assert 1.0 - distance == pytest.approx(expected_height, abs=1.0e-6)
+
 
 @pytest.mark.parametrize(
     "slope_range",
@@ -377,7 +398,12 @@ def test_default_spawn_pose_starts_above_flat_terrain(
 ) -> None:
     model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
     min_robot_z = robot_geom_min_z(model.mj_model, model.default_qpos)
-    target_min_z = terrain_surface_upper_bound(FLAT_TERRAIN) + DEFAULT_SPAWN_CLEARANCE
+    ground_id = int(model.terrain_geom_ids[0])
+    root_xy = model.default_qpos[model.root_qpos_adr : model.root_qpos_adr + 2]
+    target_min_z = (
+        float(terrain_surface_height(model.mj_model, ground_id, root_xy))
+        + DEFAULT_SPAWN_CLEARANCE
+    )
 
     assert min_robot_z is not None
     assert abs(min_robot_z - target_min_z) < 1.0e-5
@@ -394,7 +420,14 @@ def test_spawn_pose_lifts_for_high_rough_terrain(
     )
     rough_model = load_prepared_bello_model(full_body_asset, terrain=rough_terrain)
     min_robot_z = robot_geom_min_z(rough_model.mj_model, rough_model.default_qpos)
-    target_min_z = terrain_surface_upper_bound(rough_terrain) + DEFAULT_SPAWN_CLEARANCE
+    ground_id = int(rough_model.terrain_geom_ids[0])
+    root_xy = rough_model.default_qpos[
+        rough_model.root_qpos_adr : rough_model.root_qpos_adr + 2
+    ]
+    target_min_z = (
+        float(terrain_surface_height(rough_model.mj_model, ground_id, root_xy))
+        + DEFAULT_SPAWN_CLEARANCE
+    )
 
     assert (
         rough_model.default_qpos[rough_model.root_qpos_adr + 2]
