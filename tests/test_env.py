@@ -1295,6 +1295,12 @@ def test_bad_orientation_done_uses_projected_gravity_tilt(
     assert not bool(env._done_flags(below_limit)["done/bad_orientation"])
 
     qpos = state.data.qpos.at[root_qpos + 3 : root_qpos + 7].set(
+        root_quat_from_roll_pitch(0.8, 0.0)
+    )
+    at_limit = state.replace(data=state.data.replace(qpos=qpos))
+    assert bool(env._done_flags(at_limit)["done/bad_orientation"])
+
+    qpos = state.data.qpos.at[root_qpos + 3 : root_qpos + 7].set(
         root_quat_from_roll_pitch(0.7, 0.7)
     )
     above_limit = state.replace(data=state.data.replace(qpos=qpos))

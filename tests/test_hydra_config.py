@@ -274,6 +274,12 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     assert config.reward_config.torque_l1.enabled
     assert config.reward_config.clip_negative_total
     assert config.reward_config.scale_termination_by_timestep
+    assert config.done_config.base_height.enabled
+    assert config.done_config.base_height.min_height == pytest.approx(0.55)
+    assert config.done_config.base_height.link == "pelvis_link"
+    assert config.done_config.bad_orientation.enabled
+    assert config.done_config.bad_orientation.limit_angle == pytest.approx(0.8)
+    assert config.done_config.bad_orientation.link == "torso_link"
 
 
 def test_berkeley_standing_only_ablation_disables_domain_randomization() -> None:

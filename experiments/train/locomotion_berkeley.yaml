@@ -272,10 +272,12 @@ reward_config:
 
 done_config:
   base_height:
-    enabled: false
+    enabled: true
+    min_height: 0.55
+    link: pelvis_link
   bad_orientation:
     enabled: true
-    limit_angle: 1.57079633
+    limit_angle: 0.80
     link: torso_link
 
 checkpoint_config:

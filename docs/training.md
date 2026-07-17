@@ -43,6 +43,9 @@ saturation. Commands at or below `0.1` are standing commands: their gait phase
 is frozen and both foot-height targets are zero. Foot contacts use 40 ms on/off
 debounce, and premature moving touchdowns or liftoffs receive the contact-timing
 penalty.
+Episodes terminate when pelvis height falls below `0.55m` or torso tilt reaches
+`0.8rad`, preventing crouched or horizontal poses from surviving on clipped
+nonnegative reward.
 The recipe uses a `0.005s` physics timestep and `decimation: 4`, preserving its
 `0.02s` (50 Hz) policy period with four simulation substeps per action. Its
 terrain contact activates at a `0.0125m` margin with a `0.01s`/`1.0` solref and
@@ -758,10 +761,10 @@ not receive the `reward/termination` penalty.
 
 `bad_orientation` matches IsaacLab/Unitree-style tilt termination: it computes
 the angle between the configured link's projected gravity vector and the local
-z-axis as `acos(-projected_gravity.z)`, then terminates when that angle exceeds
-`limit_angle`. `base_height` and `bad_orientation` validate their configured
-links during env initialization. When their `link` is null, `env_config.root_link`
-is validated and used.
+z-axis as `acos(-projected_gravity.z)`, then terminates when that angle reaches
+or exceeds `limit_angle`. `base_height` and `bad_orientation` validate their
+configured links during env initialization. When their `link` is null,
+`env_config.root_link` is validated and used.
 
 ### WarpConfig
 

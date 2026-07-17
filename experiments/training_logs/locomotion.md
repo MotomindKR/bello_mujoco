@@ -1735,3 +1735,16 @@ nine preceding frames, covering 180 ms between the oldest and newest samples.
 The raw 55-value actor observation therefore becomes a 550-value policy input;
 the privileged 69-value critic observation becomes a 690-value value input.
 Stacks repeat the reset observation at episode initialization and reset on done.
+
+## 2026-07-17 - Close the horizontal-pose survival loophole
+
+The 400-million-step plane control reached long training episodes, but restored
+zero-command evaluation could settle nearly horizontal without terminating.
+The Berkeley recipe had disabled height termination and allowed torso tilt up
+to 90 degrees, so a fallen robot could remain exactly on the orientation
+boundary and continue collecting clipped reward.
+
+The recipe now terminates when pelvis height falls below 0.55 meters or torso
+tilt reaches 0.8 radians. These match the existing clean-locomotion safety
+thresholds and leave nominal reset height and gait motion well inside the valid
+region while rejecting crouched, seated, and horizontal survival policies.

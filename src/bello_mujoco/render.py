@@ -473,7 +473,7 @@ def mujoco_done_flags(
         )
         bad_orientation = (
             projected_gravity_tilt_angle_np(projected_gravity)
-            > config.bad_orientation.limit_angle
+            >= config.bad_orientation.limit_angle
         )
     timeout = config.timeout.enabled and step_count >= env.max_episode_steps
     nonfinite = config.nonfinite.enabled and not (

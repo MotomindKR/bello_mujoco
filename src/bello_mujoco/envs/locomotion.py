@@ -1577,7 +1577,7 @@ class BelloLocomotionEnv:
             )
             bad_orientation = (
                 projected_gravity_tilt_angle(projected_gravity)
-                > config.bad_orientation.limit_angle
+                >= config.bad_orientation.limit_angle
             )
         else:
             bad_orientation = jnp.asarray(False)
