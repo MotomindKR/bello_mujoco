@@ -97,7 +97,8 @@ env_config:
     lin_vel_y: [-2.0, 2.0]
   observation:
     joint_mode: policy
-    base_lin_vel: true
+    base_lin_vel: false
+    base_lin_acc: true
     base_ang_vel: true
     projected_gravity: true
     base_height: false
@@ -109,7 +110,7 @@ env_config:
     actuator_force: false
     last_action: true
     scale:
-      base_lin_vel: 1.0
+      base_lin_acc: 1.0
       base_ang_vel: 1.0
       projected_gravity: 1.0
       foot_phase: 1.0
@@ -119,7 +120,7 @@ env_config:
       last_action: 1.0
     noise:
       enabled: true
-      base_lin_vel: [-0.1, 0.1]
+      base_lin_acc: [-0.2, 0.2]
       base_ang_vel: [-0.2, 0.2]
       projected_gravity: [-0.05, 0.05]
       foot_phase: [0.0, 0.0]
@@ -130,6 +131,7 @@ env_config:
   critic_observation:
     joint_mode: policy
     base_lin_vel: true
+    base_lin_acc: true
     base_ang_vel: true
     projected_gravity: true
     base_height: true
@@ -140,6 +142,8 @@ env_config:
     joint_vel: true
     actuator_force: true
     last_action: true
+    scale:
+      base_lin_acc: 1.0
     noise:
       enabled: false
 

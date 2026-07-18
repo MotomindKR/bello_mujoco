@@ -91,6 +91,13 @@ def test_prepared_full_body_preserves_pelvis_body(
     model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
 
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link") >= 0
+    sensor_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_SENSOR,
+        "bello_acceleration_stage_sensor",
+    )
+    assert sensor_id >= 0
+    assert model.sensor_type[sensor_id] == mujoco.mjtSensor.mjSENS_ACCELEROMETER
 
 
 def test_observation_size_tracks_reduced_actuator_count() -> None:

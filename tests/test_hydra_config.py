@@ -253,6 +253,14 @@ def test_berkeley_port_adds_safety_margins_to_reference_recipe() -> None:
     )
     assert config.env_config.contact.foot_contact_on_seconds == pytest.approx(0.04)
     assert config.env_config.contact.foot_contact_off_seconds == pytest.approx(0.04)
+    assert not config.env_config.observation.base_lin_vel
+    assert config.env_config.observation.base_lin_acc
+    assert config.env_config.observation.noise.base_lin_acc == pytest.approx(
+        (-0.2, 0.2)
+    )
+    assert config.env_config.critic_observation is not None
+    assert config.env_config.critic_observation.base_lin_vel
+    assert config.env_config.critic_observation.base_lin_acc
     assert config.env_config.observation.foot_phase
     assert config.reward_config.touchdown_air_time.enabled
     assert config.reward_config.touchdown_air_time.weight == pytest.approx(2.0)

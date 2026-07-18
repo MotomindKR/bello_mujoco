@@ -114,6 +114,7 @@ class DoneConfig:
 @dataclass(frozen=True)
 class ObservationScaleConfig:
     base_lin_vel: float = 1.0
+    base_lin_acc: float = 1.0
     base_ang_vel: float = 1.0
     projected_gravity: float = 1.0
     base_height: float = 1.0
@@ -130,6 +131,7 @@ class ObservationScaleConfig:
 class ObservationNoiseConfig:
     enabled: bool = False
     base_lin_vel: tuple[float, float] = (0.0, 0.0)
+    base_lin_acc: tuple[float, float] = (0.0, 0.0)
     base_ang_vel: tuple[float, float] = (-0.2, 0.2)
     projected_gravity: tuple[float, float] = (-0.05, 0.05)
     base_height: tuple[float, float] = (0.0, 0.0)
@@ -146,6 +148,7 @@ class ObservationNoiseConfig:
 class ObservationConfig:
     joint_mode: Literal["all_actuated", "policy"] = "all_actuated"
     base_lin_vel: bool = False
+    base_lin_acc: bool = False
     base_ang_vel: bool = True
     projected_gravity: bool = True
     base_height: bool = False
@@ -527,6 +530,7 @@ class BelloLocomotionEnv:
     def _observation_size(self, observation: ObservationConfig) -> int:
         return (
             (3 if observation.base_lin_vel else 0)
+            + (3 if observation.base_lin_acc else 0)
             + (3 if observation.base_ang_vel else 0)
             + (3 if observation.projected_gravity else 0)
             + (1 if observation.base_height else 0)
@@ -1130,6 +1134,7 @@ class BelloLocomotionEnv:
     ) -> jax.Array:
         (
             base_lin_vel,
+            base_lin_acc,
             base_ang_vel,
             projected_gravity,
             base_height,
@@ -1144,9 +1149,9 @@ class BelloLocomotionEnv:
         scale = observation.scale
         noise = observation.noise
         keys = (
-            jax.random.split(rng, 11)
+            jax.random.split(rng, 12)
             if rng is not None and noise.enabled
-            else (None,) * 11
+            else (None,) * 12
         )
         parts = []
         if observation.base_lin_vel:
@@ -1155,10 +1160,16 @@ class BelloLocomotionEnv:
                     base_lin_vel, noise.base_lin_vel, scale.base_lin_vel, keys[0]
                 )
             )
+        if observation.base_lin_acc:
+            parts.append(
+                self._observation_component(
+                    base_lin_acc, noise.base_lin_acc, scale.base_lin_acc, keys[1]
+                )
+            )
         if observation.base_ang_vel:
             parts.append(
                 self._observation_component(
-                    base_ang_vel, noise.base_ang_vel, scale.base_ang_vel, keys[1]
+                    base_ang_vel, noise.base_ang_vel, scale.base_ang_vel, keys[2]
                 )
             )
         if observation.projected_gravity:
@@ -1167,43 +1178,43 @@ class BelloLocomotionEnv:
                     projected_gravity,
                     noise.projected_gravity,
                     scale.projected_gravity,
-                    keys[2],
+                    keys[3],
                 )
             )
         if observation.base_height:
             parts.append(
                 self._observation_component(
-                    base_height, noise.base_height, scale.base_height, keys[3]
+                    base_height, noise.base_height, scale.base_height, keys[4]
                 )
             )
         if observation.gait_phase:
             parts.append(
                 self._observation_component(
-                    gait_phase, noise.gait_phase, scale.gait_phase, keys[4]
+                    gait_phase, noise.gait_phase, scale.gait_phase, keys[5]
                 )
             )
         if observation.foot_phase:
             parts.append(
                 self._observation_component(
-                    foot_phase, noise.foot_phase, scale.foot_phase, keys[5]
+                    foot_phase, noise.foot_phase, scale.foot_phase, keys[6]
                 )
             )
         if observation.command and self.command_config.enabled:
             parts.append(
                 self._observation_component(
-                    command, noise.command, scale.command, keys[6]
+                    command, noise.command, scale.command, keys[7]
                 )
             )
         if observation.joint_pos:
             parts.append(
                 self._observation_component(
-                    joint_pos, noise.joint_pos, scale.joint_pos, keys[7]
+                    joint_pos, noise.joint_pos, scale.joint_pos, keys[8]
                 )
             )
         if observation.joint_vel:
             parts.append(
                 self._observation_component(
-                    joint_vel, noise.joint_vel, scale.joint_vel, keys[8]
+                    joint_vel, noise.joint_vel, scale.joint_vel, keys[9]
                 )
             )
         if observation.actuator_force:
@@ -1212,13 +1223,13 @@ class BelloLocomotionEnv:
                     actuator_force,
                     noise.actuator_force,
                     scale.actuator_force,
-                    keys[9],
+                    keys[10],
                 )
             )
         if observation.last_action:
             parts.append(
                 self._observation_component(
-                    last_action, noise.last_action, scale.last_action, keys[10]
+                    last_action, noise.last_action, scale.last_action, keys[11]
                 )
             )
         if not parts:
@@ -1413,6 +1424,7 @@ class BelloLocomotionEnv:
         joint_vel = data.qvel[qvel_idx]
         actuator_force = data.actuator_force[actuator_idx]
         base_lin_vel = self._link_lin_vel(state, self.config.root_link)
+        base_lin_acc = self._link_body_lin_acc(state, self.config.root_link)
         base_ang_vel = self._link_ang_vel(state, self.config.root_link)
         base_height = jnp.asarray(
             [self._link_height(state, self.config.root_link)], dtype=jnp.float32
@@ -1422,6 +1434,7 @@ class BelloLocomotionEnv:
         foot_phase = self._foot_phase_sin_cos(state)
         return (
             base_lin_vel,
+            base_lin_acc,
             base_ang_vel,
             projected_gravity,
             base_height,
@@ -1511,6 +1524,17 @@ class BelloLocomotionEnv:
             self._link_quat(state, link_name),
             self._link_world_lin_vel(state, link_name),
         )
+
+    def _link_body_lin_acc(self, state: BelloState, link_name: str) -> jax.Array:
+        body_id = self._link_body_id(link_name)
+        root_body_id = int(self.model.mj_model.body_rootid[body_id])
+        offset = state.data.xpos[body_id] - state.data.subtree_com[root_body_id]
+        cacc = state.data._impl.cacc[body_id]
+        cvel = state.data.cvel[body_id]
+        world_lin_acc = cacc[3:6] - jnp.cross(offset, cacc[:3])
+        world_lin_vel = cvel[3:6] - jnp.cross(offset, cvel[:3])
+        world_lin_acc = world_lin_acc + jnp.cross(cvel[:3], world_lin_vel)
+        return quat_rotate_inverse(self._link_quat(state, link_name), world_lin_acc)
 
     def _link_world_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
         if link_name == "bello_root":

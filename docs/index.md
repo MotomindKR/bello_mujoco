@@ -209,8 +209,10 @@ actuator_force[35]
 last_action[35]
 ```
 
-`ObservationConfig` controls component inclusion. `base_lin_vel[3]` and
-`base_height[1]` are available as opt-in proprioceptive state for balance tasks.
+`ObservationConfig` controls component inclusion. `base_lin_vel[3]`,
+`base_lin_acc[3]`, and `base_height[1]` are available as opt-in proprioceptive
+state for balance tasks. Linear acceleration matches an accelerometer at the
+configured root link's xbody origin and is expressed in that link's frame.
 Base velocity, projected gravity, and base height are measured on
 `BelloEnvConfig.root_link`, which defaults to the generated floating body
 `bello_root`. Link-aware reward/done terms also use `root_link` when their

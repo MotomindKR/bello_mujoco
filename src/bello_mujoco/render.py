@@ -341,6 +341,12 @@ def mujoco_policy_observation(
                 mujoco_link_lin_vel(env, mj_data, root_link), scale.base_lin_vel
             )
         )
+    if observation.base_lin_acc:
+        parts.append(
+            mujoco_scaled(
+                mujoco_link_lin_acc(env, mj_data, root_link), scale.base_lin_acc
+            )
+        )
     if observation.base_ang_vel:
         parts.append(
             mujoco_scaled(
@@ -551,6 +557,24 @@ def mujoco_link_lin_vel(
         1,
     )
     return np.asarray(velocity[3:6], dtype=np.float32)
+
+
+def mujoco_link_lin_acc(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
+) -> np.ndarray:
+    body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
+    if body_id < 0:
+        raise ValueError(f"configured link/body not found: {link_name!r}")
+    acceleration = np.empty(6, dtype=np.float64)
+    mujoco.mj_objectAcceleration(
+        env.model.mj_model,
+        mj_data,
+        mujoco.mjtObj.mjOBJ_XBODY,
+        body_id,
+        acceleration,
+        1,
+    )
+    return np.asarray(acceleration[3:6], dtype=np.float32)
 
 
 def mujoco_link_ang_vel(

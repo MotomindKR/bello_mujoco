@@ -45,6 +45,7 @@ from bello_mujoco.render import (
     mujoco_foot_height,
     mujoco_foot_lateral_speed_sq,
     mujoco_link_ang_vel,
+    mujoco_link_lin_acc,
     mujoco_link_lin_vel,
 )
 from bello_mujoco.sim import ModelRandomizationConfig, WarpConfig
@@ -141,6 +142,7 @@ def test_link_and_foot_velocities_match_mujoco_object_velocity(
             xquat=jnp.asarray(mj_data.xquat),
             cvel=jnp.asarray(mj_data.cvel),
             subtree_com=jnp.asarray(mj_data.subtree_com),
+            _impl=state.data._impl.replace(cacc=jnp.asarray(mj_data.cacc)),
         )
     )
 
@@ -164,6 +166,15 @@ def test_link_and_foot_velocities_match_mujoco_object_velocity(
             expected_world,
             0,
         )
+        expected_acceleration = np.empty(6, dtype=np.float64)
+        mujoco.mj_objectAcceleration(
+            mj_model,
+            mj_data,
+            mujoco.mjtObj.mjOBJ_XBODY,
+            body_id,
+            expected_acceleration,
+            1,
+        )
 
         assert np.allclose(
             env._link_body_lin_vel(state, link_name), expected_local[3:6], atol=1e-5
@@ -175,6 +186,11 @@ def test_link_and_foot_velocities_match_mujoco_object_velocity(
             env._link_body_ang_vel(state, link_name), expected_local[:3], atol=1e-5
         )
         assert np.allclose(
+            env._link_body_lin_acc(state, link_name),
+            expected_acceleration[3:6],
+            atol=3e-5,
+        )
+        assert np.allclose(
             mujoco_link_lin_vel(env, mj_data, link_name),
             expected_local[3:6],
             atol=1e-6,
@@ -182,6 +198,11 @@ def test_link_and_foot_velocities_match_mujoco_object_velocity(
         assert np.allclose(
             mujoco_link_ang_vel(env, mj_data, link_name),
             expected_local[:3],
+            atol=1e-6,
+        )
+        assert np.allclose(
+            mujoco_link_lin_acc(env, mj_data, link_name),
+            expected_acceleration[3:6],
             atol=1e-6,
         )
 
@@ -1048,6 +1069,7 @@ def test_observation_config_can_include_base_state(
         env_config=BelloEnvConfig(
             observation=ObservationConfig(
                 base_lin_vel=True,
+                base_lin_acc=True,
                 base_ang_vel=False,
                 projected_gravity=False,
                 base_height=True,
@@ -1061,10 +1083,11 @@ def test_observation_config_can_include_base_state(
     )
     state, obs = env.reset()
 
-    assert env.observation_size == 4
-    assert obs.shape == (4,)
+    assert env.observation_size == 7
+    assert obs.shape == (7,)
     assert jnp.allclose(obs[:3], jnp.zeros(3, dtype=jnp.float32))
-    assert obs[3] == pytest.approx(
+    assert jnp.allclose(obs[3:6], env._link_body_lin_acc(state, env.config.root_link))
+    assert obs[6] == pytest.approx(
         float(state.data.qpos[int(env.model.root_qpos_adr) + 2])
     )
 

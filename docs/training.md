@@ -29,9 +29,11 @@ with `jax.jit`.
 MuJoCo Playground's Berkeley Humanoid recipe. It adds a randomized 1.25--1.5 Hz
 per-foot phase clock, touchdown-gated air time, phase-height tracking, L1 torque,
 weighted pose, hip/knee deviation, and nonnegative clipped reward total. The
-actor receives noisy proprioception and the four-value per-foot phase encoding;
-the critic receives a clean observation with additional height and actuator
-force channels.
+actor receives noisy deployable proprioception, pelvis-frame linear acceleration,
+and the four-value per-foot phase encoding. Pelvis linear velocity is excluded
+because it is not directly available from the robot's IMU. The critic receives a
+clean observation with additional pelvis linear velocity, height, and
+actuator-force channels.
 It follows Brax PPO's bounded tanh-normal policy, Swish activation, and separate
 running normalization for actor and critic observations. A target-KL guard is
 enabled as an additional safety measure for this repository's PPO optimizer.
@@ -409,8 +411,10 @@ Reset clearance and foot-height rewards query those local terrain patches,
 including the configured slope.
 
 `joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`.
-`base_lin_vel`, `base_ang_vel`, `projected_gravity`, and `base_height` are
-measured on `root_link`. The command observation is emitted only when both
+`base_lin_vel`, `base_lin_acc`, `base_ang_vel`, `projected_gravity`, and
+`base_height` are measured on `root_link`. `base_lin_acc` matches a MuJoCo
+accelerometer located at that link's xbody origin and expressed in its local
+frame. The command observation is emitted only when both
 `env_config.observation.command` and `command_config.enabled` are true.
 
 `observation.noise` applies additive uniform noise to enabled observation terms

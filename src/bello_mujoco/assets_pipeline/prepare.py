@@ -32,7 +32,7 @@ from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
 
 AssetName = Literal["full_body", "lower_body", "upper_body"]
-ASSET_CACHE_VERSION = 3
+ASSET_CACHE_VERSION = 4
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,8 @@ from bello_mujoco.contracts import SIM_TIMESTEP
 CollisionMode = Literal["mesh", "foot-mesh", "box"]
 FOOT_MESH_NAMES = frozenset({"left_ankle_roll_link", "right_ankle_roll_link"})
 TRANSPARENT_COLLISION_RGBA = "0.8 0.8 0.8 0"
+ACCELERATION_STAGE_SITE = "bello_acceleration_stage_site"
+ACCELERATION_STAGE_SENSOR = "bello_acceleration_stage_sensor"
 
 
 def compile_urdf_to_mjcf(
@@ -35,6 +37,7 @@ def compile_urdf_to_mjcf(
     root = tree.getroot()
     ensure_option(root)
     ensure_free_root_joint(root)
+    ensure_acceleration_stage_sensor(root)
     ensure_visual_geoms(root)
     apply_collision_mode(root, mjcf_path.parent, collision_mode)
     if include_visuals:
@@ -350,6 +353,35 @@ def ensure_free_root_joint(root: ET.Element) -> None:
         worldbody.remove(child)
         root_body.append(child)
     worldbody.append(root_body)
+
+
+def ensure_acceleration_stage_sensor(root: ET.Element) -> None:
+    root_body = root.find(".//body[@name='bello_root']")
+    if root_body is None:
+        raise ValueError("MJCF has no generated bello_root body")
+    if root.find(f".//site[@name='{ACCELERATION_STAGE_SITE}']") is None:
+        ET.SubElement(
+            root_body,
+            "site",
+            {
+                "name": ACCELERATION_STAGE_SITE,
+                "size": "0.001",
+                "rgba": "0 0 0 0",
+            },
+        )
+
+    sensors = root.find("sensor")
+    if sensors is None:
+        sensors = ET.SubElement(root, "sensor")
+    if sensors.find(f"./accelerometer[@name='{ACCELERATION_STAGE_SENSOR}']") is None:
+        ET.SubElement(
+            sensors,
+            "accelerometer",
+            {
+                "name": ACCELERATION_STAGE_SENSOR,
+                "site": ACCELERATION_STAGE_SITE,
+            },
+        )
 
 
 def ensure_position_actuators(
