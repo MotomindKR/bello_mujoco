@@ -31,7 +31,10 @@ The runner implements the platform-visible motor contract:
 - mode, fault, position, velocity, torque, and temperature feedback fields
 - configured raw CAN direction for every motor
 
-Motor torque is applied with the RobStride operation-control equation:
+Each configured physical motor is represented by three native MuJoCo actuators
+on the same joint or tendon: a position actuator, velocity actuator, and direct
+motor actuator. Their controls and gains implement the RobStride
+operation-control equation:
 
 ```text
 torque = kd * (velocity_target - velocity)
@@ -39,20 +42,26 @@ torque = kd * (velocity_target - velocity)
        + torque_feedforward
 ```
 
+The three contributions are summed by MuJoCo every physics step. The target
+joint or tendon has one shared `actuatorfrcrange`, updated from the motor's
+`limit_torque` parameter and bounded by the motor-kind protocol range, so the
+combined MIT torque is clamped once. The individual actuators are not force
+clamped. RobStride applied-torque feedback is read from MuJoCo's aggregate
+joint/tendon actuator-force sensor after this common clamp.
+
 The runner models Bello's physical transmissions rather than treating every
 motor as a direct MuJoCo joint. Every motor assignment explicitly names a
 MuJoCo joint or tendon; Python does not infer the target from the motor name.
 Each ankle differential is defined as two fixed MuJoCo tendons: motor 1
 has coordinate `roll - pitch`, and motor 2 has coordinate `roll + pitch`.
-MuJoCo computes the tendon positions, velocities, and Jacobian; the RobStride
-emulator reads those motor coordinates and applies each motor torque through
-the Jacobian transpose. The coupling equations therefore live in the generated
-MJCF instead of the CAN layer. MuJoCo's generated position actuators are
-disabled for joints owned by a configured RobStride motor. Optional waist and
-head axes are handled earlier: disabled axes are changed to fixed joints in the
-generated URDF and therefore never become MuJoCo actuators. Enabled axes must
-have RobStride motor mappings; the runner rejects an enabled-but-unmapped or
-disabled-but-mapped axis.
+MuJoCo computes the tendon positions, velocities, Jacobian, native actuator
+forces, and their mapping into joint-space torque. The coupling equations
+therefore live in the generated MJCF instead of the CAN layer. Generated policy
+position actuators on RobStride-owned joints are replaced by the native
+three-actuator motor banks. Optional waist and head axes are handled earlier:
+disabled axes are changed to fixed joints in the generated URDF and therefore
+never become MuJoCo actuators. Enabled axes must have RobStride motor mappings;
+the runner rejects an enabled-but-unmapped or disabled-but-mapped axis.
 
 ## HIL interface setup
 
@@ -286,8 +295,9 @@ ros2 topic echo /lower/motor_states
 ```
 
 Commands published through the gateway are encoded by the production native
-driver, decoded by this runner, applied as MuJoCo joint torques, and returned as
-RobStride feedback frames for the gateway to publish as motor states.
+driver, decoded by this runner, written to native MuJoCo position, velocity,
+and feedforward actuators, and returned as RobStride feedback frames for the
+gateway to publish as motor states.
 
 ## Scope
 

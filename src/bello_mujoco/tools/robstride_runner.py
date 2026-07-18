@@ -30,9 +30,13 @@ from bello_mujoco.robstride_can import (
     SocketCanEndpoint,
     load_robstride_configs,
 )
-from bello_mujoco.robstride_sim import BelloRobstrideTransmission
+from bello_mujoco.robstride_sim import (
+    BelloRobstrideTransmission,
+    configure_robstride_actuators,
+)
 from bello_mujoco.sim import BelloModel, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
+
 
 def default_motor_configs() -> tuple[Path, ...]:
     root = project_data_path("configs") / "robstride"
@@ -231,6 +235,7 @@ def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
         use_viewer_model=not config.headless,
         load_mjx=False,
     )
+    model = configure_robstride_actuators(model, robstride.motors)
     torso_hold = None
     if config.torso_hold:
         model, torso_hold = add_torso_hold(model, config.torso_drop_limit_m)
@@ -263,7 +268,6 @@ def run_simulation(
     config: RobstrideRunnerConfig,
     torso_hold: TorsoHold | None = None,
 ) -> None:
-    transmission.disable_mapped_position_actuators()
     data = mujoco.MjData(model.mj_model)
     reset_data(model, data)
     if torso_hold is not None:
@@ -401,7 +405,7 @@ def _simulation_loop(
                 for response in emulator.handle_frame(frame):
                     endpoint.send(response)
 
-        transmission.apply_motor_torques(data)
+        transmission.apply_motor_controls(data)
         mujoco.mj_step(model.mj_model, data)
         transmission.update_motor_states(data)
         steps += 1

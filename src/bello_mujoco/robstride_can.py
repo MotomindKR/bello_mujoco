@@ -567,6 +567,13 @@ class RobstrideMotor:
     def enabled(self) -> bool:
         return self.mode_status == 2
 
+    @property
+    def torque_limit(self) -> float:
+        return min(
+            abs(float(self.params[PARAM_LIMIT_TORQUE])),
+            max(abs(item) for item in self.limits.torque),
+        )
+
     def decode_control(self, frame: CanFrame) -> None:
         if len(frame.data) < 8:
             raise ValueError("RobStride motor-control frame must have 8 data bytes")
@@ -589,11 +596,7 @@ class RobstrideMotor:
             + self.command.kp * (self.command.position - self.reported_position)
             + self.command.torque
         )
-        limit = min(
-            abs(float(self.params[PARAM_LIMIT_TORQUE])),
-            max(abs(item) for item in self.limits.torque),
-        )
-        self.applied_torque = min(max(value, -limit), limit)
+        self.applied_torque = min(max(value, -self.torque_limit), self.torque_limit)
         return self.applied_torque
 
     def feedback_frame(self, response_type: CommType, host_id: int) -> CanFrame:

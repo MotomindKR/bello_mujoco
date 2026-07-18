@@ -15,6 +15,7 @@ from bello_mujoco.robstride_can import (
     MotorCommand,
     MotorSpec,
     MotorTargetSpec,
+    PARAM_LIMIT_TORQUE,
     PARAM_MECHANICAL_POSITION,
     PARAM_RUN_MODE,
     RobstrideBusEmulator,
@@ -28,7 +29,10 @@ from bello_mujoco.robstride_can import (
     target_id,
     uint_to_float,
 )
-from bello_mujoco.robstride_sim import BelloRobstrideTransmission
+from bello_mujoco.robstride_sim import (
+    BelloRobstrideTransmission,
+    configure_robstride_actuators,
+)
 from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.tools.robstride_runner import (
@@ -551,6 +555,7 @@ def test_bello_transmission_maps_knee_and_differential_ankle(
         motor_spec("left_ankle_2", motor_id=66, model="ROBSTRIDE_06"),
     )
     motors = tuple(RobstrideMotor(spec) for spec in specs)
+    model = configure_robstride_actuators(model, specs)
     transmission = BelloRobstrideTransmission(model, motors)
     data = mujoco.MjData(model.mj_model)
     data.qpos[:] = model.default_qpos
@@ -592,15 +597,18 @@ def test_bello_transmission_maps_knee_and_differential_ankle(
     by_name["left_knee_mix_1"].command = MotorCommand(torque=3.0)
     by_name["left_ankle_1"].command = MotorCommand(torque=1.0)
     by_name["left_ankle_2"].command = MotorCommand(torque=2.0)
-    transmission.apply_motor_torques(data)
+    transmission.apply_motor_controls(data)
+    mujoco.mj_forward(model.mj_model, data)
+    transmission.update_motor_states(data)
 
-    assert data.qfrc_applied[
+    assert np.all(data.qfrc_applied == 0.0)
+    assert data.qfrc_actuator[
         transmission.bindings["left_knee_joint"].qvel_index
     ] == pytest.approx(3.0)
-    assert data.qfrc_applied[
+    assert data.qfrc_actuator[
         transmission.bindings["left_ankle_pitch_joint"].qvel_index
     ] == pytest.approx(1.0)
-    assert data.qfrc_applied[
+    assert data.qfrc_actuator[
         transmission.bindings["left_ankle_roll_joint"].qvel_index
     ] == pytest.approx(3.0)
 
@@ -621,19 +629,73 @@ def test_ankle_motors_require_mujoco_differential_tendons(
         BelloRobstrideTransmission(model, motors)
 
 
-def test_disabling_mapped_actuators_leaves_unmapped_actuators_intact(
+def test_native_actuator_triple_uses_one_common_dynamic_torque_limit(
     full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(full_body_asset, load_mjx=False)
     motor = RobstrideMotor(motor_spec())
-    transmission = BelloRobstrideTransmission(model, (motor,))
-    before = np.asarray(model.mj_model.actuator_gainprm[:, 0]).copy()
-
-    transmission.disable_mapped_position_actuators()
-
-    waist_id = transmission.bindings["waist_yaw_joint"].actuator_id
-    assert model.mj_model.actuator_gainprm[waist_id, 0] == 0.0
-    other_ids = [index for index in range(model.mj_model.nu) if index != waist_id]
-    assert np.array_equal(
-        model.mj_model.actuator_gainprm[other_ids, 0], before[other_ids]
+    original_nu = model.mj_model.nu
+    other_actuator_name = "left_hip_pitch_joint_pos"
+    other_id = mujoco.mj_name2id(
+        model.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, other_actuator_name
     )
+    other_gain = float(model.mj_model.actuator_gainprm[other_id, 0])
+    model = configure_robstride_actuators(model, (motor.spec,))
+    transmission = BelloRobstrideTransmission(model, (motor,))
+
+    assert model.mj_model.nu == original_nu + 2
+    assert (
+        mujoco.mj_name2id(
+            model.mj_model,
+            mujoco.mjtObj.mjOBJ_ACTUATOR,
+            "waist_yaw_joint_pos",
+        )
+        < 0
+    )
+    other_id = mujoco.mj_name2id(
+        model.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, other_actuator_name
+    )
+    assert model.mj_model.actuator_gainprm[other_id, 0] == pytest.approx(other_gain)
+
+    actuator = transmission.actuators[motor.spec.name]
+    assert not any(
+        model.mj_model.actuator_forcelimited[actuator_id]
+        for actuator_id in (
+            actuator.position_id,
+            actuator.velocity_id,
+            actuator.feedforward_id,
+        )
+    )
+
+    data = mujoco.MjData(model.mj_model)
+    data.qpos[:] = model.default_qpos
+    data.qvel[:] = model.default_qvel
+    mujoco.mj_forward(model.mj_model, data)
+    motor.mode_status = 2
+    motor.params[PARAM_LIMIT_TORQUE] = 7.0
+    motor.command = MotorCommand(
+        position=1.0, velocity=2.0, torque=3.0, kp=80.0, kd=2.0
+    )
+
+    transmission.apply_motor_controls(data)
+    mujoco.mj_forward(model.mj_model, data)
+    transmission.update_motor_states(data)
+
+    assert data.ctrl[actuator.position_id] == pytest.approx(1.0)
+    assert data.ctrl[actuator.velocity_id] == pytest.approx(2.0)
+    assert data.ctrl[actuator.feedforward_id] == pytest.approx(3.0)
+    assert model.mj_model.actuator_gainprm[actuator.position_id, 0] == 80.0
+    assert model.mj_model.actuator_gainprm[actuator.velocity_id, 0] == 2.0
+    joint_id = mujoco.mj_name2id(
+        model.mj_model, mujoco.mjtObj.mjOBJ_JOINT, "waist_yaw_joint"
+    )
+    assert model.mj_model.jnt_actfrcrange[joint_id] == pytest.approx((-7.0, 7.0))
+    qvel_index = transmission.bindings["waist_yaw_joint"].qvel_index
+    assert data.qfrc_actuator[qvel_index] == pytest.approx(7.0)
+    assert motor.applied_torque == pytest.approx(7.0)
+
+    motor.mode_status = 0
+    transmission.apply_motor_controls(data)
+    assert model.mj_model.actuator_gainprm[actuator.position_id, 0] == 0.0
+    assert model.mj_model.actuator_gainprm[actuator.velocity_id, 0] == 0.0
+    assert data.ctrl[actuator.feedforward_id] == 0.0
