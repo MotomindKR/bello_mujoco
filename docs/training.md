@@ -34,10 +34,12 @@ uv run bello-train-ppo \
   --config-name locomotion
 ```
 
-Use `locomotion_plane_slope` for the longer per-world slope treatment.
-Every prepared Bello model uses the physical differential ankle transmission.
-The policy interface remains logical joint space; the control stack maps ankle
-pitch and roll targets into the tendon motor coordinates.
+The standard recipe uses independently randomized plane slopes. Use
+`locomotion_plane_slope` for the same terrain treatment with the longer-run
+optimizer settings. Every prepared Bello model uses the physical differential
+ankle transmission. The policy interface remains logical joint space; the
+control stack maps ankle pitch and roll targets into the tendon motor
+coordinates.
 
 Hydra overrides follow the recipe name:
 

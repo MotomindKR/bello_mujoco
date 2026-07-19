@@ -103,6 +103,12 @@ def test_training_recipes_share_the_physical_ankle_transmission() -> None:
     assert baseline.asset_config.ankle_differential_config == (
         plane_slope.asset_config.ankle_differential_config
     )
+    assert baseline.env_config.terrain.mode == "plane"
+    assert baseline.env_config.terrain.randomize_slope_per_world
+    assert baseline.env_config.terrain.slope_angle_range == pytest.approx(
+        (-0.034906585, 0.034906585)
+    )
+    assert not baseline.config.normalize_value
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

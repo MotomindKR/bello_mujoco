@@ -25,7 +25,7 @@ config:
   ent_coef: 0.005
   vf_coef: 1.0
   max_grad_norm: 1.0
-  normalize_value: true
+  normalize_value: false
   policy:
     hidden_dims: [512, 256, 128]
     activation: swish
@@ -34,17 +34,14 @@ config:
 env_config:
   simulation_physics:
     timestep: 0.005
-    foot_terrain_margin: 0.0125
-    foot_terrain_solref: [0.01, 1.0]
-    foot_terrain_solimp: [0.98, 0.999, 0.001, 0.5, 2.0]
+    foot_terrain_margin: null
+    foot_terrain_solref: null
+    foot_terrain_solimp: null
   terrain:
-    mode: rough
+    mode: plane
     seed: 0
-    hfield_resolution: 65
-    hfield_amplitude: 0.015
-    hfield_base_thickness: 0.01
-    hfield_frequency: 5.0
-    slope_angle_range: [-0.005, 0.005]
+    slope_angle_range: [-0.034906585, 0.034906585]
+    randomize_slope_per_world: true
   model_randomization:
     enabled: true
     seed: 0
@@ -126,7 +123,7 @@ wandb_config:
   enabled: true
   group: locomotion
   run_name: locomotion_seed0
-  tags: [locomotion, physical-ankle, rough-terrain]
+  tags: [locomotion, physical-ankle, per-world-plane-slope]
 
 video_config:
   enabled: true

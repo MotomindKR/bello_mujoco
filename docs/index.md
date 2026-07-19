@@ -125,10 +125,10 @@ experiments/train/locomotion_plane_slope.yaml
 ```
 
 The smoke recipe exercises the real Bello/MJX-Warp PPO path with a small
-budget. The standard recipe is the maintained locomotion baseline. The
-plane-slope recipe is a longer treatment with independently tilted planes and
-different optimizer/reward settings. Both preserve the same physical ankle
-transmission and joint-space policy contract.
+budget. The standard recipe is the maintained locomotion baseline and uses
+independently tilted planes. The plane-slope recipe keeps that terrain treatment
+with a longer budget and different optimizer/reward settings. Both preserve the
+same physical ankle transmission and joint-space policy contract.
 
 Run a recipe with:
 

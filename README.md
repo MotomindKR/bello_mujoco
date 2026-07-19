@@ -51,10 +51,11 @@ uv run bello-train-ppo \
   --config-name locomotion
 ```
 
-For a longer treatment with independently randomized plane slopes, use
-`locomotion_plane_slope` instead. Both recipes use the physical ankle
-transmission. Training is dry-run by default only in the package configuration;
-maintained experiment recipes explicitly select their intended execution mode.
+The standard recipe uses independently randomized plane slopes. For the same
+terrain treatment with the longer-run optimizer settings, use
+`locomotion_plane_slope`. Both recipes use the physical ankle transmission.
+Training is dry-run by default only in the package configuration; maintained
+experiment recipes explicitly select their intended execution mode.
 
 See [training.md](docs/training.md) for the runtime contract, checkpoints,
 tracking, and validation workflow.
