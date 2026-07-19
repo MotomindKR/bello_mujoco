@@ -330,7 +330,7 @@ reward_config:
     max_air_time: 0.5
     command_speed_threshold: 0.1
   foot_phase:
-    weight: 1.0
+    weight: 0.5
     sigma: 0.01
   standing_foot_vel:
     weight: -2.0
