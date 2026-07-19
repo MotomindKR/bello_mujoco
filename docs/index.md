@@ -61,6 +61,18 @@ The wheel bundles `configs/` and `assets/source/` as package data so Hydra
 configs and robot source assets are available without walking back to a repo
 root.
 
+## RobStride VCAN Hardware Emulation
+
+`bello-robstride-runner` exposes configured Bello actuators as RobStride
+devices on Linux SocketCAN and applies their impedance commands to the MuJoCo
+model. It loads repo-local lower- and upper-body actuator YAML, preserves raw
+CAN directions, and models the knee and ankle transmissions used by the
+hardware. The configuration is bundled with installed wheels and does not
+depend on a separate Motomind checkout.
+
+See [the RobStride VCAN runner guide](robstride_vcan.md) for VCAN setup,
+protocol coverage, headless usage, and the production motor-gateway test flow.
+
 Generated local artifacts should not be committed:
 
 ```text
@@ -372,6 +384,12 @@ AssetPrepConfig:
   collision_mode: mesh
   end_effector_sphere_mode: none
   neighbor_exclusion_depth: 2
+  imu_config:
+    enabled: false
+    body_name: pelvis_link
+  ankle_differential_config:
+    enabled: false
+    actuate_tendons: false
 
 BelloEnvConfig:
   decimation: 4

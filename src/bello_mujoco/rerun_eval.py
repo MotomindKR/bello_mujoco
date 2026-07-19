@@ -260,10 +260,10 @@ class RerunEvaluationLogger:
             raise ValueError("Rerun camera tracking requires root-link visual geometry")
         self.root_tracking_path = root_visual_paths[0]
         self.action_names = tuple(
-            env.model.actuator_joint_names[index]
-            for index in env.model.policy_ctrl_indices
+            env.model.actuator_names[index] for index in env.model.policy_ctrl_indices
         )
-        self.actuator_names = env.model.actuator_joint_names
+        self.joint_names = env.model.actuator_joint_names
+        self.actuator_names = env.model.actuator_names
         self.reward_names: tuple[str, ...] | None = None
 
     def start(self) -> None:
@@ -286,12 +286,12 @@ class RerunEvaluationLogger:
         )
         self._style_series("metrics/action/mean", self.action_names)
         self._style_series("metrics/action/applied", self.action_names)
-        self._style_series("metrics/joint/position", self.actuator_names)
-        self._style_series("metrics/joint/velocity", self.actuator_names)
+        self._style_series("metrics/joint/position", self.joint_names)
+        self._style_series("metrics/joint/velocity", self.joint_names)
         self._style_series("metrics/actuator/force", self.actuator_names)
-        for joint_name in self.action_names:
+        for actuator_name in self.action_names:
             self._style_series(
-                f"metrics/policy_joints/{joint_name}",
+                f"metrics/policy_actuators/{actuator_name}",
                 ("position", "target", "action", "torque"),
             )
         self._style_series(
@@ -364,17 +364,16 @@ class RerunEvaluationLogger:
         self.recording.log(
             "metrics/actuator/force", rr.Scalars(np.asarray(mj_data.actuator_force))
         )
-        for action_index, joint_name in enumerate(self.action_names):
+        for action_index, actuator_name in enumerate(self.action_names):
+            actuator_index = self.env.model.policy_ctrl_indices[action_index]
             self.recording.log(
-                f"metrics/policy_joints/{joint_name}",
+                f"metrics/policy_actuators/{actuator_name}",
                 rr.Scalars(
                     [
-                        mj_data.qpos[self.env.model.policy_qpos_indices[action_index]],
-                        ctrl[self.env.model.policy_ctrl_indices[action_index]],
+                        mj_data.actuator_length[actuator_index],
+                        ctrl[actuator_index],
                         action[action_index],
-                        mj_data.actuator_force[
-                            self.env.model.policy_ctrl_indices[action_index]
-                        ],
+                        mj_data.actuator_force[actuator_index],
                     ]
                 ),
             )
@@ -457,11 +456,11 @@ class RerunEvaluationLogger:
                         *[
                             rrb.TimeSeriesView(
                                 name=joint_name,
-                                origin=f"metrics/policy_joints/{joint_name}",
+                                origin=f"metrics/policy_actuators/{joint_name}",
                             )
                             for joint_name in self.action_names
                         ],
-                        name="Policy Joints",
+                        name="Policy Actuators",
                     ),
                     rrb.TimeSeriesView(name="Status", origin="metrics"),
                 ),

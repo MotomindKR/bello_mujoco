@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +20,24 @@ ACCELERATION_STAGE_SITE = "bello_acceleration_stage_site"
 ACCELERATION_STAGE_SENSOR = "bello_acceleration_stage_sensor"
 
 
+@dataclass(frozen=True)
+class ImuSensorConfig:
+    enabled: bool = False
+    body_name: str = "pelvis_link"
+
+
+@dataclass(frozen=True)
+class AnkleDifferentialConfig:
+    enabled: bool = False
+    actuate_tendons: bool = False
+
+    def __post_init__(self) -> None:
+        if self.actuate_tendons and not self.enabled:
+            raise ValueError(
+                "ankle_differential_config.actuate_tendons requires enabled=true"
+            )
+
+
 def compile_urdf_to_mjcf(
     urdf_path: Path,
     mjcf_path: Path,
@@ -28,6 +47,8 @@ def compile_urdf_to_mjcf(
     include_visuals: bool = False,
     actuator_config: ActuatorConfig = ActuatorConfig(),
     actuated_joint_order: tuple[str, ...] = (),
+    imu_config: ImuSensorConfig = ImuSensorConfig(),
+    ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig(),
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tmp_path = mjcf_path.with_suffix(".compiled.xml")
@@ -46,6 +67,10 @@ def compile_urdf_to_mjcf(
         ensure_collision_geoms_transparent(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
     ensure_position_actuators(root, actuator_config, actuated_joint_order)
+    ensure_ankle_differential_tendons(root, ankle_differential_config)
+    if ankle_differential_config.actuate_tendons:
+        replace_ankle_joint_actuators(root, actuator_config)
+    ensure_imu_sensors(root, imu_config)
     ensure_home_keyframe(root, actuator_config)
 
     ET.indent(tree, space="  ")
@@ -53,6 +78,188 @@ def compile_urdf_to_mjcf(
     tmp_path.unlink(missing_ok=True)
 
     mujoco.MjModel.from_xml_path(str(mjcf_path))
+
+
+def ensure_ankle_differential_tendons(
+    root: ET.Element, config: AnkleDifferentialConfig
+) -> None:
+    if not config.enabled:
+        return
+
+    joint_names = {
+        joint.get("name")
+        for joint in root.findall(".//joint")
+        if joint.get("name") is not None
+    }
+    tendon = root.find("tendon")
+    if tendon is None:
+        tendon = ET.SubElement(root, "tendon")
+    existing_names = {
+        item.get("name") for item in tendon if item.get("name") is not None
+    }
+
+    for side in ("left", "right"):
+        pitch_joint = f"{side}_ankle_pitch_joint"
+        roll_joint = f"{side}_ankle_roll_joint"
+        missing = {pitch_joint, roll_joint} - joint_names
+        if missing:
+            raise ValueError(
+                f"{side} ankle differential requires MuJoCo joints: "
+                + ", ".join(sorted(missing))
+            )
+        for motor_index, pitch_coefficient in ((1, -1.0), (2, 1.0)):
+            tendon_name = f"{side}_ankle_motor_{motor_index}"
+            if tendon_name in existing_names:
+                raise ValueError(
+                    f"generated MJCF already defines tendon {tendon_name!r}"
+                )
+            fixed = ET.SubElement(tendon, "fixed", {"name": tendon_name})
+            ET.SubElement(
+                fixed,
+                "joint",
+                {"joint": pitch_joint, "coef": f"{pitch_coefficient:g}"},
+            )
+            ET.SubElement(
+                fixed,
+                "joint",
+                {"joint": roll_joint, "coef": "1"},
+            )
+            existing_names.add(tendon_name)
+
+
+def replace_ankle_joint_actuators(root: ET.Element, config: ActuatorConfig) -> None:
+    actuator = root.find("actuator")
+    if actuator is None:
+        raise ValueError("generated MJCF has no actuator section")
+
+    joint_configs = config.by_name
+    for side in ("left", "right"):
+        pitch_joint = f"{side}_ankle_pitch_joint"
+        roll_joint = f"{side}_ankle_roll_joint"
+        pitch_config = joint_configs[pitch_joint]
+        roll_config = joint_configs[roll_joint]
+        if pitch_config.mode != roll_config.mode:
+            raise ValueError(
+                f"{side} ankle differential joints must use the same actuator mode"
+            )
+        if pitch_config.gains != roll_config.gains:
+            raise ValueError(
+                f"{side} ankle differential joints must use identical gains"
+            )
+        if pitch_config.effort_limit != roll_config.effort_limit:
+            raise ValueError(
+                f"{side} ankle differential joints must use identical effort limits"
+            )
+
+        pitch_range = configured_joint_range(root, pitch_joint, config)
+        roll_range = configured_joint_range(root, roll_joint, config)
+        replacements = (
+            (pitch_joint, 1, -1.0),
+            (roll_joint, 2, 1.0),
+        )
+        for logical_joint, motor_index, pitch_coefficient in replacements:
+            direct = actuator.find(f"./position[@joint='{logical_joint}']")
+            if direct is None:
+                raise ValueError(
+                    f"missing generated position actuator for {logical_joint!r}"
+                )
+            index = list(actuator).index(direct)
+            actuator.remove(direct)
+
+            tendon_name = f"{side}_ankle_motor_{motor_index}"
+            low, high = differential_coordinate_range(
+                pitch_range, roll_range, pitch_coefficient
+            )
+            default = (
+                pitch_coefficient * pitch_config.default_pos + roll_config.default_pos
+            )
+            kp, kv = pitch_config.gains
+            suffix = "pos" if pitch_config.mode == "policy" else "hold"
+            attributes = {
+                "name": f"{tendon_name}_{suffix}",
+                "tendon": tendon_name,
+                "kp": f"{kp:g}",
+                "kv": f"{kv:g}",
+                "ctrlrange": f"{low:g} {high:g}",
+                "ctrllimited": "false",
+                "user": f"{default:g}",
+            }
+            force_range = actuator_force_range(
+                root, logical_joint, pitch_config.effort_limit
+            )
+            if force_range is not None:
+                force_low, force_high = force_range
+                attributes["forcerange"] = f"{force_low:g} {force_high:g}"
+                attributes["forcelimited"] = "true"
+            actuator.insert(index, ET.Element("position", attributes))
+
+
+def configured_joint_range(
+    root: ET.Element, joint_name: str, config: ActuatorConfig
+) -> tuple[float, float]:
+    joint_config = config.by_name[joint_name]
+    return (
+        joint_config.soft_limit
+        if joint_config.soft_limit is not None
+        else joint_range(root, joint_name, config)
+    )
+
+
+def differential_coordinate_range(
+    pitch_range: tuple[float, float],
+    roll_range: tuple[float, float],
+    pitch_coefficient: float,
+) -> tuple[float, float]:
+    pitch_values = tuple(pitch_coefficient * value for value in pitch_range)
+    return (
+        roll_range[0] + min(pitch_values),
+        roll_range[1] + max(pitch_values),
+    )
+
+
+def ensure_imu_sensors(root: ET.Element, config: ImuSensorConfig) -> None:
+    if not config.enabled:
+        return
+    if not config.body_name:
+        raise ValueError("IMU body name must not be empty")
+    body = root.find(f".//body[@name='{config.body_name}']")
+    if body is None:
+        raise ValueError(f"IMU body not found in generated MJCF: {config.body_name!r}")
+
+    site_name = "bello_imu_site"
+    if root.find(f".//site[@name='{site_name}']") is not None:
+        raise ValueError(f"generated MJCF already defines site {site_name!r}")
+    body.append(
+        ET.Element(
+            "site",
+            {
+                "name": site_name,
+                "pos": "0 0 0",
+                "quat": "1 0 0 0",
+                "size": "0.005",
+                "rgba": "0 1 0 0",
+            },
+        )
+    )
+
+    sensor = root.find("sensor")
+    if sensor is None:
+        sensor = ET.SubElement(root, "sensor")
+    ET.SubElement(sensor, "gyro", {"name": "bello_imu_gyro", "site": site_name})
+    ET.SubElement(
+        sensor,
+        "accelerometer",
+        {"name": "bello_imu_accelerometer", "site": site_name},
+    )
+    ET.SubElement(
+        sensor,
+        "framequat",
+        {
+            "name": "bello_imu_orientation",
+            "objtype": "site",
+            "objname": site_name,
+        },
+    )
 
 
 def apply_collision_mode(
@@ -438,17 +645,12 @@ def ensure_home_keyframe(root: ET.Element, config: ActuatorConfig) -> None:
 
     joint_qpos = [
         joint_default(joint.get("name", ""), config)
-        for joint in root.findall(".//joint")
+        for joint in root.findall("./worldbody//joint")
     ]
     qpos = " ".join(
         ["0", "0", "0.91", "1", "0", "0", "0", *[f"{value:g}" for value in joint_qpos]]
     )
-    ctrl_values = []
-    for actuator in keyframe_actuators(root):
-        joint_name = actuator.get("joint", "")
-        default_joint_pos = config.default_joint_pos_by_name
-        if joint_name in default_joint_pos:
-            ctrl_values.append(default_joint_pos[joint_name])
+    ctrl_values = [float(item.get("user", "0")) for item in keyframe_actuators(root)]
     ctrl = " ".join(f"{value:g}" for value in ctrl_values)
     ET.SubElement(keyframe, "key", {"name": "home", "qpos": qpos, "ctrl": ctrl})
 

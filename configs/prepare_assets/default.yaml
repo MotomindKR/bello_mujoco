@@ -4,8 +4,20 @@ mesh_face_budget: 1000
 foot_collision_mesh_face_budget: 1000
 visual_mesh_face_budget: 200000
 collision_mode: mesh
-end_effector_sphere_mode: none
+end_effector_sphere_mode: none  # none | both | right | left | both_articulated
 neighbor_exclusion_depth: 2
+imu_config:
+  enabled: false
+  body_name: pelvis_link
+ankle_differential_config:
+  enabled: false
+  actuate_tendons: false
+joint_availability:
+  waist_yaw: true
+  waist_roll: true
+  waist_pitch: true
+  neck_yaw: true
+  head_pitch: true
 
 hydra:
   job:

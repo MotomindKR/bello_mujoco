@@ -493,6 +493,7 @@ def compute_velocity_reward(
     joint_pose_weights: jax.Array | None = None,
     hip_joint_indices: jax.Array | None = None,
     knee_joint_indices: jax.Array | None = None,
+    actuator_velocity: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
     lin_vel_error = jnp.sum((lin_vel_xy - command[:2]) ** 2)
@@ -518,7 +519,8 @@ def compute_velocity_reward(
     action_limit = jnp.mean(
         (action_limit_excess / (action_hard_limit - action_soft_limit)) ** 2
     )
-    energy = jnp.sum(jnp.abs(actuator_force * joint_vel))
+    energy_velocity = joint_vel if actuator_velocity is None else actuator_velocity
+    energy = jnp.sum(jnp.abs(actuator_force * energy_velocity))
     torque_l2 = jnp.sum(actuator_force**2)
     torque_l1 = jnp.sum(jnp.abs(actuator_force[policy_joint_indices]))
     pose_weights = (

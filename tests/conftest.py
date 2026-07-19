@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from bello_mujoco.assets_pipeline.mjcf import AnkleDifferentialConfig
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
@@ -29,3 +30,26 @@ def generated_test_assets() -> Iterator[dict[str, PreparedAsset]]:
 @pytest.fixture(scope="session")
 def full_body_asset(generated_test_assets: dict[str, PreparedAsset]) -> PreparedAsset:
     return generated_test_assets["full_body"]
+
+
+@pytest.fixture(scope="session")
+def full_body_ankle_tendon_asset() -> PreparedAsset:
+    return prepare_asset(
+        AssetPrepConfig(
+            asset="full_body",
+            ankle_differential_config=AnkleDifferentialConfig(enabled=True),
+        )
+    )
+
+
+@pytest.fixture(scope="session")
+def full_body_actuated_ankle_tendon_asset() -> PreparedAsset:
+    return prepare_asset(
+        AssetPrepConfig(
+            asset="full_body",
+            ankle_differential_config=AnkleDifferentialConfig(
+                enabled=True,
+                actuate_tendons=True,
+            ),
+        )
+    )

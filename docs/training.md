@@ -181,8 +181,20 @@ asset_config:
   foot_collision_mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
   collision_mode: mesh  # mesh | foot-mesh | box
-  end_effector_sphere_mode: none  # none | both | right | left
+  end_effector_sphere_mode: none  # none | both | right | left | both_articulated
   neighbor_exclusion_depth: 2
+  imu_config:
+    enabled: false
+    body_name: pelvis_link
+  ankle_differential_config:
+    enabled: false
+    actuate_tendons: false
+  joint_availability:
+    waist_yaw: true
+    waist_roll: true
+    waist_pitch: true
+    neck_yaw: true
+    head_pitch: true
   actuator_config:
     default_action_scale_ratio: 0.25
     joints:
@@ -194,6 +206,10 @@ asset_config:
         gains: [40.0, 2.0]  # [kp, kv]
         effort_limit: null
 ```
+
+`both_articulated` replaces both hand/gripper subtrees with spheres while
+retaining the wrist-yaw joints. The other sphere modes replace the selected
+subtree starting at the wrist-yaw joint.
 
 Asset preparation writes a simulation MJCF and a viewer MJCF. The simulation
 MJCF uses the selected collision representation directly. The viewer MJCF
@@ -213,6 +229,20 @@ its default control target in the environment. If a training YAML replaces a
 known Bello joint entry, it must include `effort_limit`; otherwise config
 validation fails before asset generation. This prevents partial joint overrides
 from silently producing uncapped MuJoCo actuators.
+
+Joint availability is separate from actuator mode. An available joint remains
+a MuJoCo degree of freedom and may use either `policy` or `hold` mode. An
+unavailable joint is rewritten to `type="fixed"` in the generated URDF before
+MuJoCo compilation, so it has no joint state, actuator, or policy action. This
+is intended for robot variants whose waist or head axes are physically absent;
+it is not a stiffer form of `hold`.
+
+Evaluation normally inherits joint availability from its checkpoint. To select
+a different robot variant for evaluation, set `eval_config.runtime.source` to
+`override` and change the booleans under
+`eval_config.runtime.asset_config.joint_availability`. Checkpoint shape
+validation still rejects variants whose observation or action dimensions do
+not match the trained policy.
 
 Notable default full-body position-actuator gains are:
 
@@ -236,6 +266,17 @@ ratio is `0.25`, and generated actuator `ctrlrange` comes from the configured
 soft limit when present.
 The knee soft target range starts at the hard lower joint limit, `0.0` rad,
 and keeps the upper soft limit at `1.98968` rad.
+
+Setting `ankle_differential_config.enabled: true` adds the two fixed-tendon
+coordinates `motor_1 = roll - pitch` and `motor_2 = roll + pitch` for each
+ankle. Setting `actuate_tendons: true` additionally replaces the direct ankle
+pitch/roll actuators with position actuators on those tendons. In that mode the
+four ankle policy actions are direct residual targets for the four motor/tendon
+coordinates; the environment does not transform policy outputs from virtual
+pitch/roll targets. Joint position and velocity observations remain physical
+ankle pitch/roll coordinates, which can be reconstructed from the paired motor
+encoders. Explicit ankle joint action scales are combined conservatively for
+each differential motor; otherwise the normal control-range rule applies.
 
 Default full-body actuator effort limits follow the Robstride peak-torque
 groups:

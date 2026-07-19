@@ -101,6 +101,17 @@ bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
 This spawns a Rerun Viewer and reads live velocity commands from an
 SDL-compatible game controller.
 
+Run Bello with CPU MuJoCo as RobStride actuators on `vcan0` and `vcan1` for
+end-to-end motor gateway tests:
+
+```bash
+./scripts/setup_hil.sh
+bello-robstride-runner
+```
+
+See [the RobStride VCAN runner guide](docs/robstride_vcan.md) for interface
+setup, protocol coverage, and the Motomind gateway workflow.
+
 Run the test and lint gate:
 
 ```bash
@@ -113,6 +124,7 @@ uv run pytest
 
 - [Repository reference](docs/index.md)
 - [Vast.ai training workflow](docs/vast_ai.md)
+- [RobStride VCAN MuJoCo runner](docs/robstride_vcan.md)
 - [Contribution guide](CONTRIBUTION.md)
 - [Agent instructions](AGENTS.md)
 

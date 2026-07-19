@@ -10,6 +10,8 @@ import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.mesh import (
+    JointAvailabilityConfig,
+    fix_disabled_joints,
     preserve_fixed_link_bodies,
     replace_end_effectors_with_spheres,
 )
@@ -75,6 +77,37 @@ def test_end_effector_sphere_replacement_prunes_selected_subtree() -> None:
     assert sphere_link.find("./collision/geometry/sphere").attrib["radius"] == "0.0325"
 
 
+def test_articulated_sphere_replacement_preserves_wrist_yaw_joint() -> None:
+    root = ET.Element("robot", {"name": "test"})
+    for side in ("r", "l"):
+        for suffix in ("wrist_link", "eef_link", "gripper_link"):
+            ET.SubElement(root, "link", {"name": f"{side}_{suffix}"})
+    for side, name in (("r", "right"), ("l", "left")):
+        revolute = ET.SubElement(
+            root, "joint", {"name": f"{name}_wrist_yaw_joint", "type": "revolute"}
+        )
+        ET.SubElement(revolute, "origin", {"xyz": "0 0 -0.102", "rpy": "0 0 0"})
+        ET.SubElement(revolute, "parent", {"link": f"{side}_wrist_link"})
+        ET.SubElement(revolute, "child", {"link": f"{side}_eef_link"})
+        ET.SubElement(revolute, "axis", {"xyz": "0 0 1"})
+        fixed = ET.SubElement(
+            root, "joint", {"name": f"{name}_gripper_joint", "type": "fixed"}
+        )
+        ET.SubElement(fixed, "parent", {"link": f"{side}_eef_link"})
+        ET.SubElement(fixed, "child", {"link": f"{side}_gripper_link"})
+
+    replace_end_effectors_with_spheres(root, "both_articulated")
+
+    for side, name in (("r", "right"), ("l", "left")):
+        joint = root.find(f"./joint[@name='{name}_wrist_yaw_joint']")
+        sphere = root.find(f"./link[@name='{side}_end_effector_sphere_link']")
+        assert joint is not None
+        assert joint.get("type") == "revolute"
+        assert joint.find("child").get("link") == f"{side}_end_effector_sphere_link"
+        assert sphere is not None
+        assert sphere.find("./collision/origin").get("xyz") == "0 0 -0.02"
+
+
 def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
     root = ET.Element("robot", {"name": "test"})
 
@@ -100,9 +133,74 @@ def test_prepared_full_body_preserves_pelvis_body(
     assert model.sensor_type[sensor_id] == mujoco.mjtSensor.mjSENS_ACCELEROMETER
 
 
+def test_ankle_differential_tendons_are_optional_mujoco_coordinates(
+    full_body_asset: PreparedAsset,
+    full_body_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    direct_joint_model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    differential_model = mujoco.MjModel.from_xml_path(
+        str(full_body_ankle_tendon_asset.mjcf_path)
+    )
+
+    assert direct_joint_model.ntendon == 0
+    assert differential_model.ntendon == 4
+    assert differential_model.nu == direct_joint_model.nu
+    assert {
+        mujoco.mj_id2name(differential_model, mujoco.mjtObj.mjOBJ_TENDON, index)
+        for index in range(differential_model.ntendon)
+    } == {
+        "left_ankle_motor_1",
+        "left_ankle_motor_2",
+        "right_ankle_motor_1",
+        "right_ankle_motor_2",
+    }
+
+    root = ET.parse(full_body_ankle_tendon_asset.mjcf_path).getroot()
+    expected_coefficients = {
+        "left_ankle_motor_1": (-1.0, 1.0),
+        "left_ankle_motor_2": (1.0, 1.0),
+        "right_ankle_motor_1": (-1.0, 1.0),
+        "right_ankle_motor_2": (1.0, 1.0),
+    }
+    for tendon_name, coefficients in expected_coefficients.items():
+        fixed = root.find(f"./tendon/fixed[@name='{tendon_name}']")
+        assert fixed is not None
+        assert tuple(float(joint.get("coef")) for joint in fixed.findall("joint")) == (
+            coefficients
+        )
+
+
+def test_ankle_differential_can_replace_joint_actuators_with_tendon_actuators(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(
+        str(full_body_actuated_ankle_tendon_asset.mjcf_path)
+    )
+    actuator_names = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
+        for index in range(model.nu)
+    }
+
+    for side in ("left", "right"):
+        assert f"{side}_ankle_pitch_joint_pos" not in actuator_names
+        assert f"{side}_ankle_roll_joint_pos" not in actuator_names
+        for motor_index in (1, 2):
+            name = f"{side}_ankle_motor_{motor_index}_pos"
+            actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            assert actuator_id >= 0
+            assert model.actuator_trntype[actuator_id] == mujoco.mjtTrn.mjTRN_TENDON
+            assert model.actuator_forcelimited[actuator_id]
+            np.testing.assert_allclose(
+                model.actuator_forcerange[actuator_id], [-36.0, 36.0]
+            )
+
+
 def test_observation_size_tracks_reduced_actuator_count() -> None:
     model = SimpleNamespace(
-        mj_model=SimpleNamespace(nu=29, nq=40, nv=39, nbody=4, ngeom=5),
+        mj_model=SimpleNamespace(nu=29, nq=40, nv=39, njnt=29, nbody=4, ngeom=5),
+        actuator_names=tuple(f"actuator_{index}" for index in range(29)),
+        actuator_joint_names=tuple(f"joint_{index}" for index in range(29)),
+        actuator_joint_ids=np.arange(29, dtype=np.int32),
         policy_ctrl_indices=np.arange(6, dtype=np.int32),
         hold_ctrl_indices=np.arange(6, 29, dtype=np.int32),
         actuator_qpos_indices=np.arange(29, dtype=np.int32),
@@ -110,10 +208,13 @@ def test_observation_size_tracks_reduced_actuator_count() -> None:
         policy_qpos_indices=np.arange(6, dtype=np.int32),
         policy_qvel_indices=np.arange(6, dtype=np.int32),
         policy_action_scale=np.ones(6, dtype=np.float32),
+        actuator_coordinate_transform=np.eye(29, dtype=np.float32),
+        joint_angle_offset=np.zeros((1, 29), dtype=np.float32),
         foot_body_ids=np.asarray([2, 3], dtype=np.int32),
         robot_geom_ids=np.asarray([1, 2, 3, 4], dtype=np.int32),
         foot_geom_ids=np.asarray([2, 3], dtype=np.int32),
         terrain_geom_ids=np.asarray([0], dtype=np.int32),
+        terrain_geom_quat=np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         nonfoot_robot_geom_ids=np.asarray([1, 4], dtype=np.int32),
         nonfoot_robot_body_ids=np.asarray([1], dtype=np.int32),
         default_qpos=np.zeros(40, dtype=np.float32),
@@ -254,6 +355,17 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     assert asset_config_hash(base, "full_body") != asset_config_hash(
         changed, "full_body"
     )
+    fixed_head = AssetPrepConfig(
+        asset="full_body",
+        mesh_face_budget=1000,
+        joint_availability=JointAvailabilityConfig(
+            neck_yaw=False,
+            head_pitch=False,
+        ),
+    )
+    assert asset_config_hash(base, "full_body") != asset_config_hash(
+        fixed_head, "full_body"
+    )
 
 
 def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort(
@@ -266,6 +378,43 @@ def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort
     assert np.all(model.actuator_forcelimited)
     assert np.all(model.actuator_forcerange[:, 0] < 0.0)
     assert np.all(model.actuator_forcerange[:, 1] > 0.0)
+
+
+def test_disabled_joints_are_fixed_in_the_generated_urdf() -> None:
+    root = ET.Element("robot")
+    for joint_name in (
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "neck_yaw_joint",
+        "head_pitch_joint",
+    ):
+        joint = ET.SubElement(root, "joint", {"name": joint_name, "type": "revolute"})
+        ET.SubElement(joint, "axis", {"xyz": "0 0 1"})
+        ET.SubElement(joint, "limit", {"lower": "-1", "upper": "1"})
+
+    fix_disabled_joints(
+        root,
+        JointAvailabilityConfig(
+            waist_yaw=True,
+            waist_roll=False,
+            waist_pitch=False,
+            neck_yaw=False,
+            head_pitch=False,
+        ),
+    )
+
+    assert root.find("./joint[@name='waist_yaw_joint']").get("type") == "revolute"
+    for joint_name in (
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "neck_yaw_joint",
+        "head_pitch_joint",
+    ):
+        joint = root.find(f"./joint[@name='{joint_name}']")
+        assert joint.get("type") == "fixed"
+        assert joint.find("axis") is None
+        assert joint.find("limit") is None
 
 
 def test_actuator_force_observation_is_clamped_by_force_range(

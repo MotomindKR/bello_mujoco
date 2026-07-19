@@ -434,8 +434,8 @@ def mujoco_policy_observation(
 def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
     mj_data.qpos[:] = env.model.default_qpos
     mj_data.qvel[:] = env.model.default_qvel
-    mj_data.ctrl[:] = np.asarray(env.model.default_ctrl) + np.asarray(
-        env.model.joint_angle_offset[0]
+    mj_data.ctrl[:] = mujoco_action_to_ctrl(
+        env, np.zeros(env.action_size, dtype=np.float32)
     )
     mujoco.mj_forward(env.model.mj_model, mj_data)
 

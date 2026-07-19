@@ -314,6 +314,23 @@ def test_berkeley_standing_only_ablation_disables_domain_randomization() -> None
     assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-3.0)
 
 
+def test_berkeley_differential_config_uses_direct_tendon_actuation_and_slopes() -> None:
+    config = structured_config(
+        TrainingRunConfig,
+        compose_experiment_config("locomotion_berkeley_differential"),
+    )
+
+    differential = config.asset_config.ankle_differential_config
+    assert differential.enabled
+    assert differential.actuate_tendons
+    assert config.config.total_timesteps == 1_800_000_000
+    assert config.env_config.terrain.mode == "plane"
+    assert config.env_config.terrain.randomize_slope_per_world
+    assert config.env_config.terrain.slope_angle_range == pytest.approx(
+        (-0.034906585, 0.034906585)
+    )
+
+
 @pytest.mark.parametrize(
     ("config_name", "terrain", "origin", "angle", "inertia", "scope"),
     [

@@ -51,9 +51,7 @@ def sole_clearance(model: BelloModel, qpos: np.ndarray) -> float:
     terrain_geom_id = int(model.terrain_geom_ids[0])
     clearances: list[float] = []
     for geom_id in model.foot_geom_ids:
-        name = mujoco.mj_id2name(
-            mj_model, mujoco.mjtObj.mjOBJ_GEOM, int(geom_id)
-        )
+        name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, int(geom_id))
         if not name or not name.endswith("collision_box_1"):
             continue
         half_size = mj_model.geom_size[geom_id]

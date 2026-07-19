@@ -1,0 +1,39 @@
+# Full Berkeley-style Bello run with physical ankle differential actuation and
+# independently randomized plane roll/pitch in every MJX world.
+defaults:
+  - locomotion_berkeley
+  - _self_
+
+asset_config:
+  ankle_differential_config:
+    enabled: true
+    actuate_tendons: true
+
+config:
+  total_timesteps: 1800000000
+  learning_rate: 0.0001
+  max_learning_rate: 0.0001
+  normalize_value: false
+
+env_config:
+  simulation_physics:
+    foot_terrain_margin: null
+    foot_terrain_solref: null
+    foot_terrain_solimp: null
+  terrain:
+    mode: plane
+    slope_angle_range: [-0.034906585, 0.034906585]
+    randomize_slope_per_world: true
+
+checkpoint_config:
+  name: berkeley-differential-ankle-slope2deg-seed0
+  wandb_artifact_name: berkeley-differential-ankle-slope2deg-seed0
+
+wandb_config:
+  group: locomotion-berkeley-differential
+  run_name: berkeley-differential-ankle-slope2deg-seed0
+  tags:
+    - locomotion
+    - berkeley-humanoid-recipe
+    - differential-ankle
+    - per-world-plane-slope

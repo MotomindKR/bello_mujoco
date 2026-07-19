@@ -27,6 +27,7 @@
         devShells.default = pkgs.mkShell {
           packages = [
             pkgs.git
+            pkgs.socat
             pkgs.uv
           ];
 
