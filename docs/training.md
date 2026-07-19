@@ -120,7 +120,7 @@ weights therefore have one consistent per-second convention. The scalar reward
 remains signed; penalties are never hidden by clamping the total to zero.
 Foot-phase tracking measures physical sole clearance over local terrain, holds
 zero throughout the configured duty-factor stance interval, and applies its
-swing-height curve only during the remaining cycle. Its default weight is 0.5,
+swing-height curve only during the remaining cycle. Its default weight is 0.25,
 calibrated so the easier stance-aware score does not dominate velocity tracking.
 Reset placement evaluates the local terrain and collision geometry after pose
 randomization, then aligns the lowest sole to `spawn.clearance`.

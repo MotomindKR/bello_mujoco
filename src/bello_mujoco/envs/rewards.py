@@ -215,7 +215,7 @@ class RewardConfig:
     touchdown_air_time: TouchdownAirTimeRewardConfig = TouchdownAirTimeRewardConfig(
         weight=2.0
     )
-    foot_phase: FootPhaseRewardConfig = FootPhaseRewardConfig(weight=0.5)
+    foot_phase: FootPhaseRewardConfig = FootPhaseRewardConfig(weight=0.25)
     standing_foot_vel: StandingFootVelRewardConfig = StandingFootVelRewardConfig(
         weight=-2.0
     )
