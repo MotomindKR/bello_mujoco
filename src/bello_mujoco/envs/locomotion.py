@@ -197,6 +197,18 @@ class RandomPushConfig:
 
 
 @dataclass(frozen=True)
+class NumericalSafetyConfig:
+    """Broad physical bounds used to reject finite solver explosions."""
+
+    max_abs_position: float = 100.0
+    max_abs_velocity: float = 1_000.0
+    max_abs_acceleration: float = 1_000_000.0
+    max_abs_actuator_force: float = 100_000.0
+    max_abs_constraint_force: float = 1_000_000.0
+    max_abs_reward_term: float = 1_000.0
+
+
+@dataclass(frozen=True)
 class BelloEnvConfig:
     """Runtime environment settings that affect stepping and model loading."""
 
@@ -211,6 +223,7 @@ class BelloEnvConfig:
     gait: GaitConfig = GaitConfig()
     contact: ContactConfig = ContactConfig()
     random_push: RandomPushConfig = RandomPushConfig()
+    numerical_safety: NumericalSafetyConfig = NumericalSafetyConfig()
     observation: ObservationConfig = ObservationConfig()
     critic_observation: ObservationConfig = ObservationConfig(privileged=True)
 
@@ -272,6 +285,11 @@ class BelloLocomotionEnv:
         self._validate_observation_config(
             "critic_observation", self.config.critic_observation
         )
+        if self.config.critic_observation.noise.enabled:
+            raise ValueError(
+                "critic_observation.noise.enabled must be false; the privileged "
+                "critic observation is intentionally clean"
+            )
         if (
             not math.isfinite(self.config.gait.cycle_time)
             or self.config.gait.cycle_time <= 0
@@ -387,6 +405,11 @@ class BelloLocomotionEnv:
             )
         validate_range("random_push.lin_vel_x", self.config.random_push.lin_vel_x)
         validate_range("random_push.lin_vel_y", self.config.random_push.lin_vel_y)
+        for name, value in self.config.numerical_safety.__dict__.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    f"numerical_safety.{name} must be positive and finite, got {value}"
+                )
         validate_reward_config(self.reward_config)
         if self.done_config.base_height.enabled and not math.isfinite(
             self.done_config.base_height.min_height
@@ -606,6 +629,7 @@ class BelloLocomotionEnv:
         if isinstance(mj_model, mujoco.MjModel):
             for link_name in {
                 self.config.root_link,
+                model.imu_body_name,
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
             }:
@@ -658,6 +682,23 @@ class BelloLocomotionEnv:
                 "enabled foot reward terms require foot collision geoms. Disable "
                 "contact-dependent foot rewards for assets without feet."
             )
+        if self.reward_config.foot_phase.enabled:
+            supported_foot_geom_types = {
+                int(mujoco.mjtGeom.mjGEOM_SPHERE),
+                int(mujoco.mjtGeom.mjGEOM_CAPSULE),
+                int(mujoco.mjtGeom.mjGEOM_ELLIPSOID),
+                int(mujoco.mjtGeom.mjGEOM_CYLINDER),
+                int(mujoco.mjtGeom.mjGEOM_BOX),
+            }
+            foot_geom_types = np.asarray(mj_model.geom_type)[model.foot_geom_ids]
+            unsupported = sorted(
+                {int(value) for value in foot_geom_types} - supported_foot_geom_types
+            )
+            if unsupported:
+                raise ValueError(
+                    "foot_phase requires primitive foot collision geoms so physical "
+                    f"sole clearance can be measured; unsupported geom types: {unsupported}"
+                )
         if self.terrain_config.mode != "none" and model.terrain_geom_ids.size == 0:
             raise ValueError(
                 f"terrain mode {self.terrain_config.mode!r} requires a terrain geom "
@@ -688,6 +729,9 @@ class BelloLocomotionEnv:
         command: jax.Array | None,
         rng: jax.Array | None,
         world_id: jax.Array | int,
+        *,
+        forward: bool = True,
+        align_clearance: bool = True,
     ) -> tuple[BelloState, jax.Array]:
         command_rng = reset_rng = gait_rng = obs_rng = rng
         if rng is not None:
@@ -722,6 +766,14 @@ class BelloLocomotionEnv:
             last_episode_track_lin_vel_xy=jnp.asarray(0.0, dtype=jnp.float32),
             last_episode_length=jnp.asarray(0, dtype=jnp.int32),
         )
+        if align_clearance:
+            state = self._align_reset_foot_clearance(state, world_id)
+            data = (
+                mjx.forward(self.model.mjx_model, state.data)
+                if forward
+                else mjx.kinematics(self.model.mjx_model, state.data)
+            )
+            state = state.replace(data=data)
         return state, self.observation(state, obs_rng)
 
     def reset_batch(
@@ -737,23 +789,64 @@ class BelloLocomotionEnv:
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         if reset_rng is None:
             state, _ = jax.vmap(
-                lambda item, world_id: self._reset(item, None, world_id)
+                lambda item, world_id: self._reset(
+                    item,
+                    None,
+                    world_id,
+                    forward=False,
+                    align_clearance=False,
+                )
             )(command, world_ids)
         else:
             reset_keys = jax.random.split(reset_rng, batch_size)
             state, _ = jax.vmap(
-                lambda item, key, world_id: self._reset(item, key, world_id)
+                lambda item, key, world_id: self._reset(
+                    item,
+                    key,
+                    world_id,
+                    forward=False,
+                    align_clearance=False,
+                )
             )(command, reset_keys, world_ids)
         data = state.data.replace(_impl=state.data._impl.replace(nworld=batch_size))
-        data = mjx.kinematics(self.model.mjx_model, data)
         data = data.replace(
             ctrl=jax.vmap(self.action_to_ctrl)(
                 jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
                 self._joint_angle_offset_batch(batch_size),
             )
         )
+        data = mjx.kinematics(self.model.mjx_model, data)
+        state = state.replace(data=data)
+        clearance_adjustment = jax.vmap(self._reset_foot_clearance_adjustment)(
+            state, world_ids
+        )
+        root_qpos = int(self.model.root_qpos_adr)
+        data = data.replace(
+            qpos=data.qpos.at[:, root_qpos + 2].add(clearance_adjustment)
+        )
+        data = mjx.forward(self.model.mjx_model, data)
         state = state.replace(data=data)
         return state, self.observation_batch(state, obs_rng)
+
+    def _reset_foot_clearance_adjustment(
+        self, state: BelloState, world_id: jax.Array | int
+    ) -> jax.Array:
+        minimum_clearance = jnp.min(self._foot_height(state, world_id))
+        return (
+            jnp.asarray(self.config.spawn.clearance, dtype=jnp.float32)
+            - minimum_clearance
+        )
+
+    def _align_reset_foot_clearance(
+        self, state: BelloState, world_id: jax.Array | int
+    ) -> BelloState:
+        root_qpos = int(self.model.root_qpos_adr)
+        adjustment = self._reset_foot_clearance_adjustment(state, world_id)
+        return state.replace(
+            data=state.data.replace(
+                qpos=state.data.qpos.at[root_qpos + 2].add(adjustment)
+            )
+        )
 
     def initial_step_counts(
         self, batch_size: int, rng: jax.Array | None = None
@@ -1014,10 +1107,10 @@ class BelloLocomotionEnv:
             last_episode_track_lin_vel_xy=state.last_episode_track_lin_vel_xy,
             last_episode_length=state.last_episode_length,
         )
-        done_flags = jax.vmap(self.done_flags)(stepped_state)
+        world_ids = jnp.arange(batch_size, dtype=jnp.int32)
+        done_flags = jax.vmap(self.done_flags)(stepped_state, world_ids)
         done = done_flags["done/any"]
         terminal = done_flags["done/terminal"]
-        world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         (
             raw_foot_contact,
             foot_height,
@@ -1082,7 +1175,7 @@ class BelloLocomotionEnv:
         stepped_obs = self.observation_batch(stepped_state, obs_rng)
         stepped_critic_obs = self.critic_observation_batch(stepped_state)
         info = {
-            "base_height": jax.vmap(self._base_height)(stepped_state),
+            "base_height": jax.vmap(self._base_height)(stepped_state, world_ids),
             "bootstrap_observation": stepped_obs,
             "bootstrap_critic_observation": stepped_critic_obs,
             "episode_return": jnp.where(done, episode_return, 0.0),
@@ -1103,50 +1196,78 @@ class BelloLocomotionEnv:
             **done_flags,
             **reward_info,
         }
-        reset_command = self._reset_batch_command(
-            stepped_state.command, batch_size, reset_command_rng
+
+        def reset_terminated_worlds(_):
+            reset_command = self._reset_batch_command(
+                stepped_state.command, batch_size, reset_command_rng
+            )
+            reset_state, reset_obs = self.reset_batch(
+                batch_size, command=reset_command, rng=reset_obs_rng
+            )
+            reset_state = reset_state.replace(
+                last_episode_return=stepped_state.last_episode_return,
+                last_episode_track_lin_vel_xy=(
+                    stepped_state.last_episode_track_lin_vel_xy
+                ),
+                last_episode_length=stepped_state.last_episode_length,
+            )
+            return (
+                tree_where(done, reset_state, stepped_state),
+                jnp.where(done[:, None], reset_obs, stepped_obs),
+            )
+
+        next_state, next_obs = jax.lax.cond(
+            jnp.any(done),
+            reset_terminated_worlds,
+            lambda _: (stepped_state, stepped_obs),
+            operand=None,
         )
-        reset_state, reset_obs = self.reset_batch(
-            batch_size, command=reset_command, rng=reset_obs_rng
-        )
-        reset_state = reset_state.replace(
-            last_episode_return=stepped_state.last_episode_return,
-            last_episode_track_lin_vel_xy=stepped_state.last_episode_track_lin_vel_xy,
-            last_episode_length=stepped_state.last_episode_length,
-        )
-        next_state = tree_where(done, reset_state, stepped_state)
-        next_obs = jnp.where(done[:, None], reset_obs, stepped_obs)
         return next_state, next_obs, reward, done, info
 
     def observation_batch(
         self, state: BelloState, rng: jax.Array | None = None
     ) -> jax.Array:
+        world_ids = jnp.arange(int(state.command.shape[0]), dtype=jnp.int32)
         if rng is None:
-            return jax.vmap(self.observation)(state)
+            return jax.vmap(
+                lambda item, world_id: self.observation(item, None, world_id)
+            )(state, world_ids)
         keys = jax.random.split(rng, int(state.command.shape[0]))
-        return jax.vmap(self.observation)(state, keys)
+        return jax.vmap(self.observation)(state, keys, world_ids)
 
     def critic_observation_batch(
         self, state: BelloState, rng: jax.Array | None = None
     ) -> jax.Array:
+        world_ids = jnp.arange(int(state.command.shape[0]), dtype=jnp.int32)
         if rng is None:
-            return jax.vmap(self.critic_observation)(state)
+            return jax.vmap(
+                lambda item, world_id: self.critic_observation(item, None, world_id)
+            )(state, world_ids)
         keys = jax.random.split(rng, int(state.command.shape[0]))
-        return jax.vmap(self.critic_observation)(state, keys)
+        return jax.vmap(self.critic_observation)(state, keys, world_ids)
 
-    def observation(self, state: BelloState, rng: jax.Array | None = None) -> jax.Array:
-        return self._observation(state, self.config.observation, rng)
+    def observation(
+        self,
+        state: BelloState,
+        rng: jax.Array | None = None,
+        world_id: jax.Array | int = 0,
+    ) -> jax.Array:
+        return self._observation(state, self.config.observation, rng, world_id)
 
     def critic_observation(
-        self, state: BelloState, rng: jax.Array | None = None
+        self,
+        state: BelloState,
+        rng: jax.Array | None = None,
+        world_id: jax.Array | int = 0,
     ) -> jax.Array:
-        return self._observation(state, self.critic_observation_config, rng)
+        return self._observation(state, self.critic_observation_config, rng, world_id)
 
     def _observation(
         self,
         state: BelloState,
         observation: ObservationConfig,
         rng: jax.Array | None = None,
+        world_id: jax.Array | int = 0,
     ) -> jax.Array:
         (
             base_lin_vel,
@@ -1160,7 +1281,7 @@ class BelloLocomotionEnv:
             joint_vel,
             actuator_force,
             last_action,
-        ) = self._frame_terms(state)
+        ) = self._frame_terms(state, world_id)
         scale = observation.scale
         noise = observation.noise
         keys = (
@@ -1451,7 +1572,9 @@ class BelloLocomotionEnv:
     def control_timestep(self) -> float:
         return self.decimation * float(self.model.mj_model.opt.timestep)
 
-    def _frame_terms(self, state: BelloState) -> tuple[jax.Array, ...]:
+    def _frame_terms(
+        self, state: BelloState, world_id: jax.Array | int = 0
+    ) -> tuple[jax.Array, ...]:
         data = state.data
         policy_idx = jnp.asarray(self.model.policy_ctrl_indices)
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)[policy_idx]
@@ -1463,17 +1586,20 @@ class BelloLocomotionEnv:
         joint_vel = data.qvel[qvel_idx]
         actuator_force = data.actuator_force[policy_idx]
         base_lin_vel = self._link_lin_vel(state, self.config.root_link)
-        base_lin_acc = self._link_body_lin_acc(state, self.config.root_link)
-        base_ang_vel = self._link_ang_vel(state, self.config.root_link)
+        imu_lin_acc = self._imu_linear_acceleration(state)
+        imu_ang_vel = self._imu_angular_velocity(state)
         base_height = jnp.asarray(
-            [self._link_height(state, self.config.root_link)], dtype=jnp.float32
+            [self._link_clearance(state, self.config.root_link, world_id)],
+            dtype=jnp.float32,
         )
-        projected_gravity = self._link_projected_gravity(state, self.config.root_link)
+        projected_gravity = self._link_projected_gravity(
+            state, self.model.imu_body_name
+        )
         foot_phase = self._foot_phase_sin_cos(state)
         return (
             base_lin_vel,
-            base_lin_acc,
-            base_ang_vel,
+            imu_lin_acc,
+            imu_ang_vel,
             projected_gravity,
             base_height,
             foot_phase,
@@ -1524,9 +1650,22 @@ class BelloLocomotionEnv:
         return state.data.xquat[self._link_body_id(link_name)]
 
     def _link_height(self, state: BelloState, link_name: str) -> jax.Array:
+        return self._link_position(state, link_name)[2]
+
+    def _link_position(self, state: BelloState, link_name: str) -> jax.Array:
         if link_name == "bello_root":
-            return state.data.qpos[int(self.model.root_qpos_adr) + 2]
-        return state.data.xpos[self._link_body_id(link_name), 2]
+            root_qpos = int(self.model.root_qpos_adr)
+            return state.data.qpos[root_qpos : root_qpos + 3]
+        return state.data.xpos[self._link_body_id(link_name)]
+
+    def _link_clearance(
+        self,
+        state: BelloState,
+        link_name: str,
+        world_id: jax.Array | int = 0,
+    ) -> jax.Array:
+        position = self._link_position(state, link_name)
+        return position[2] - self._terrain_height(position[:2], world_id)
 
     def _link_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
         return self._link_body_lin_vel(state, link_name)
@@ -1554,6 +1693,16 @@ class BelloLocomotionEnv:
         world_lin_vel = cvel[3:6] - jnp.cross(offset, cvel[:3])
         world_lin_acc = world_lin_acc + jnp.cross(cvel[:3], world_lin_vel)
         return quat_rotate_inverse(self._link_quat(state, link_name), world_lin_acc)
+
+    def _imu_linear_acceleration(self, state: BelloState) -> jax.Array:
+        """MuJoCo accelerometer-equivalent output at the configured body origin."""
+
+        return self._link_body_lin_acc(state, self.model.imu_body_name)
+
+    def _imu_angular_velocity(self, state: BelloState) -> jax.Array:
+        """MuJoCo gyro-equivalent output in the configured IMU body frame."""
+
+        return self._link_body_ang_vel(state, self.model.imu_body_name)
 
     def _link_world_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
         if link_name == "bello_root":
@@ -1603,10 +1752,12 @@ class BelloLocomotionEnv:
             jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
         )
 
-    def done_flags(self, state: BelloState) -> dict[str, jax.Array]:
+    def done_flags(
+        self, state: BelloState, world_id: jax.Array | int = 0
+    ) -> dict[str, jax.Array]:
         config = self.done_config
         bad_height = (
-            self._link_height(state, self._done_link(config.base_height))
+            self._link_clearance(state, self._done_link(config.base_height), world_id)
             < config.base_height.min_height
             if config.base_height.enabled
             else jnp.asarray(False)
@@ -1627,16 +1778,69 @@ class BelloLocomotionEnv:
             if config.timeout.enabled
             else jnp.asarray(False)
         )
-        finite = (
-            jnp.all(jnp.isfinite(state.data.qpos))
-            & jnp.all(jnp.isfinite(state.data.qvel))
-            & jnp.all(jnp.isfinite(state.data.xpos))
-            & jnp.all(jnp.isfinite(state.data.xquat))
-            & jnp.all(jnp.isfinite(state.data.cvel))
-            & jnp.all(jnp.isfinite(state.data.actuator_force))
+        position_fields = (state.data.qpos, state.data.xpos, state.data.xquat)
+        velocity_fields = (state.data.qvel, state.data.cvel)
+        acceleration_fields = (state.data.qacc, state.data._impl.cacc)
+        actuator_force_fields = (state.data.actuator_force,)
+        constraint_force_fields = (
+            state.data.qfrc_constraint,
+            state.data._impl.efc__force,
+        )
+        all_fields = (
+            *position_fields,
+            *velocity_fields,
+            *acceleration_fields,
+            *actuator_force_fields,
+            *constraint_force_fields,
+        )
+        finite = jnp.all(
+            jnp.stack([jnp.all(jnp.isfinite(value)) for value in all_fields])
         )
         nonfinite = ~finite if config.nonfinite.enabled else jnp.asarray(False)
-        terminal = bad_pose | nonfinite
+        safety = self.config.numerical_safety
+        unstable = finite & (
+            jnp.any(
+                jnp.stack(
+                    [
+                        jnp.any(jnp.abs(value) > safety.max_abs_position)
+                        for value in position_fields
+                    ]
+                )
+            )
+            | jnp.any(
+                jnp.stack(
+                    [
+                        jnp.any(jnp.abs(value) > safety.max_abs_velocity)
+                        for value in velocity_fields
+                    ]
+                )
+            )
+            | jnp.any(
+                jnp.stack(
+                    [
+                        jnp.any(jnp.abs(value) > safety.max_abs_acceleration)
+                        for value in acceleration_fields
+                    ]
+                )
+            )
+            | jnp.any(
+                jnp.stack(
+                    [
+                        jnp.any(jnp.abs(value) > safety.max_abs_actuator_force)
+                        for value in actuator_force_fields
+                    ]
+                )
+            )
+            | jnp.any(
+                jnp.stack(
+                    [
+                        jnp.any(jnp.abs(value) > safety.max_abs_constraint_force)
+                        for value in constraint_force_fields
+                    ]
+                )
+            )
+        )
+        terminal = bad_pose | nonfinite | unstable
         done = terminal | timeout
         return {
             "done/any": done,
@@ -1645,10 +1849,13 @@ class BelloLocomotionEnv:
             "done/bad_orientation": bad_orientation,
             "done/timeout": timeout,
             "done/nonfinite": nonfinite,
+            "done/unstable": unstable,
         }
 
-    def _base_height(self, state: BelloState) -> jax.Array:
-        return self._link_height(state, self.config.root_link)
+    def _base_height(
+        self, state: BelloState, world_id: jax.Array | int = 0
+    ) -> jax.Array:
+        return self._link_clearance(state, self.config.root_link, world_id)
 
     def reward(
         self,
@@ -1735,18 +1942,22 @@ class BelloLocomotionEnv:
         reward_info: dict[str, jax.Array],
         done_flags: dict[str, jax.Array],
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
-        nonfinite = done_flags["done/nonfinite"]
+        invalid_physics = done_flags["done/nonfinite"] | done_flags["done/unstable"]
+        limit = jnp.asarray(
+            self.config.numerical_safety.max_abs_reward_term, dtype=jnp.float32
+        )
         sanitized = {}
         for name, value in reward_info.items():
+            value = jnp.nan_to_num(value, nan=0.0, posinf=limit, neginf=-limit)
+            value = jnp.clip(value, -limit, limit)
             if name == "reward/termination":
-                value = jnp.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
-                sanitized[name] = jnp.where(nonfinite, value, reward_info[name])
+                sanitized[name] = value
             else:
                 sanitized[name] = jnp.where(
-                    nonfinite, jnp.zeros_like(value), reward_info[name]
+                    invalid_physics, jnp.zeros_like(value), value
                 )
         reward = sum(sanitized.values(), jnp.zeros_like(reward))
-        return jnp.maximum(reward, 0.0), sanitized
+        return reward, sanitized
 
     def _gait_frequency(self, command: jax.Array) -> jax.Array:
         base_frequency = 1.0 / jnp.asarray(
@@ -1815,17 +2026,16 @@ class BelloLocomotionEnv:
         return jnp.concatenate([jnp.cos(angles), jnp.sin(angles)]).astype(jnp.float32)
 
     def _foot_phase_height_target(self, state: BelloState) -> jax.Array:
-        angles = (self._foot_phase_angles(state) + jnp.pi) % (2.0 * jnp.pi) - jnp.pi
-        x = (angles + jnp.pi) / (2.0 * jnp.pi)
-
-        def interpolate(start: float, end: float, value: jax.Array) -> jax.Array:
-            curve = value**3 + 3.0 * value**2 * (1.0 - value)
-            return start + (end - start) * curve
-
-        height = self.config.gait.foot_height
-        stance = interpolate(0.0, height, 2.0 * x)
-        swing = interpolate(height, 0.0, 2.0 * x - 1.0)
-        target = jnp.where(x <= 0.5, stance, swing)
+        phase = jnp.mod(
+            self._gait_phase(state)
+            + jnp.asarray(self.config.gait.phase_offsets, dtype=jnp.float32),
+            1.0,
+        )
+        duty_factor = jnp.asarray(self.config.gait.duty_factor, dtype=jnp.float32)
+        swing_duration = jnp.maximum(1.0 - duty_factor, 1.0e-6)
+        swing_phase = jnp.clip((phase - duty_factor) / swing_duration, 0.0, 1.0)
+        swing_height = self.config.gait.foot_height * jnp.sin(jnp.pi * swing_phase) ** 2
+        target = jnp.where(phase < duty_factor, 0.0, swing_height)
         return jnp.where(
             self._is_standing_command(state.command),
             jnp.zeros_like(target),
@@ -1991,10 +2201,91 @@ class BelloLocomotionEnv:
     def _foot_height(
         self, state: BelloState, world_id: jax.Array | int = 0
     ) -> jax.Array:
-        foot_position = state.data.xpos[jnp.asarray(self.model.foot_body_ids)]
-        return foot_position[:, 2] - self._terrain_height(
-            foot_position[:, :2], world_id
+        sole_position = self._foot_sole_positions(state, world_id)
+        return sole_position[:, 2] - self._terrain_height(
+            sole_position[:, :2], world_id
         )
+
+    def _foot_sole_positions(
+        self, state: BelloState, world_id: jax.Array | int = 0
+    ) -> jax.Array:
+        """Collision support point with minimum local terrain clearance per foot."""
+
+        geom_ids = jnp.asarray(self.model.foot_geom_ids, dtype=jnp.int32)
+        geom_rotation = state.data.geom_xmat[geom_ids]
+        geom_position = state.data.geom_xpos[geom_ids]
+        terrain_up = self._terrain_surface_normal(geom_position[:, :2], world_id)
+        local_down = jnp.einsum("gji,gj->gi", geom_rotation, -terrain_up)
+        geom_size = jnp.asarray(self.model.mj_model.geom_size)[geom_ids]
+        geom_type = jnp.asarray(self.model.mj_model.geom_type)[geom_ids]
+
+        radial_direction = local_down[:, :2]
+        radial_norm = jnp.linalg.norm(radial_direction, axis=1, keepdims=True)
+        unit_radial = jnp.where(
+            radial_norm > 1.0e-8,
+            radial_direction / jnp.maximum(radial_norm, 1.0e-8),
+            jnp.zeros_like(radial_direction),
+        )
+        sphere_support = geom_size[:, :1] * local_down
+        capsule_support = sphere_support.at[:, 2].add(
+            jnp.sign(local_down[:, 2]) * geom_size[:, 1]
+        )
+        ellipsoid_denominator = jnp.sqrt(
+            jnp.sum((geom_size * local_down) ** 2, axis=1, keepdims=True)
+        )
+        ellipsoid_support = (
+            geom_size**2 * local_down / jnp.maximum(ellipsoid_denominator, 1.0e-8)
+        )
+        cylinder_support = jnp.concatenate(
+            [
+                geom_size[:, :1] * unit_radial,
+                (jnp.sign(local_down[:, 2]) * geom_size[:, 1])[:, None],
+            ],
+            axis=1,
+        )
+        support = sphere_support
+        for shape, candidate in (
+            (mujoco.mjtGeom.mjGEOM_CAPSULE, capsule_support),
+            (mujoco.mjtGeom.mjGEOM_ELLIPSOID, ellipsoid_support),
+            (mujoco.mjtGeom.mjGEOM_CYLINDER, cylinder_support),
+        ):
+            support = jnp.where((geom_type == int(shape))[:, None], candidate, support)
+        support_world = geom_position + jnp.einsum("gij,gj->gi", geom_rotation, support)
+
+        box_corner_signs = jnp.asarray(
+            [[x, y, z] for x in (-1.0, 1.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)],
+            dtype=jnp.float32,
+        )
+        box_corners = box_corner_signs[None, :, :] * geom_size[:, None, :]
+        box_corners_world = geom_position[:, None, :] + jnp.einsum(
+            "gij,gkj->gki", geom_rotation, box_corners
+        )
+        box_corner_clearance = box_corners_world[:, :, 2] - self._terrain_height(
+            box_corners_world[:, :, :2], world_id
+        )
+        lowest_box_corner = jnp.argmin(box_corner_clearance, axis=1)
+        box_support_world = box_corners_world[
+            jnp.arange(box_corners_world.shape[0]), lowest_box_corner
+        ]
+        support_world = jnp.where(
+            (geom_type == int(mujoco.mjtGeom.mjGEOM_BOX))[:, None],
+            box_support_world,
+            support_world,
+        )
+        support_clearance = support_world[:, 2] - self._terrain_height(
+            support_world[:, :2], world_id
+        )
+
+        geom_body_ids = jnp.asarray(self.model.geom_body_ids)[geom_ids]
+        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
+        belongs_to_foot = foot_body_ids[:, None] == geom_body_ids[None, :]
+        clearance_by_foot = jnp.where(
+            belongs_to_foot,
+            support_clearance[None, :],
+            jnp.asarray(jnp.inf, dtype=jnp.float32),
+        )
+        lowest_geom = jnp.argmin(clearance_by_foot, axis=1)
+        return support_world[lowest_geom]
 
     def _terrain_height(
         self, world_xy: jax.Array, world_id: jax.Array | int = 0
@@ -2017,6 +2308,46 @@ class BelloLocomotionEnv:
             ],
         )
 
+    def _terrain_surface_normal(
+        self, world_xy: jax.Array, world_id: jax.Array | int = 0
+    ) -> jax.Array:
+        world_xy = jnp.asarray(world_xy, dtype=jnp.float32)
+        output_shape = world_xy.shape[:-1] + (3,)
+        if self.terrain_config.mode == "none":
+            return jnp.broadcast_to(
+                jnp.asarray([0.0, 0.0, 1.0], dtype=jnp.float32), output_shape
+            )
+        if self.terrain_config.mode == "plane":
+            terrain_quat = jnp.asarray(self.model.terrain_geom_quat)[
+                jnp.minimum(
+                    jnp.asarray(world_id, dtype=jnp.int32),
+                    self.model.terrain_geom_quat.shape[0] - 1,
+                )
+            ]
+            terrain_up = quat_rotate(
+                terrain_quat,
+                jnp.asarray([0.0, 0.0, 1.0], dtype=jnp.float32),
+            )
+            return jnp.broadcast_to(terrain_up, output_shape)
+
+        epsilon = jnp.asarray(1.0e-3, dtype=jnp.float32)
+        x_offset = jnp.asarray([1.0e-3, 0.0], dtype=jnp.float32)
+        y_offset = jnp.asarray([0.0, 1.0e-3], dtype=jnp.float32)
+        gradient_x = (
+            self._terrain_height(world_xy + x_offset, world_id)
+            - self._terrain_height(world_xy - x_offset, world_id)
+        ) / (2.0 * epsilon)
+        gradient_y = (
+            self._terrain_height(world_xy + y_offset, world_id)
+            - self._terrain_height(world_xy - y_offset, world_id)
+        ) / (2.0 * epsilon)
+        normal = jnp.stack(
+            [-gradient_x, -gradient_y, jnp.ones_like(gradient_x)], axis=-1
+        )
+        return normal / jnp.maximum(
+            jnp.linalg.norm(normal, axis=-1, keepdims=True), 1.0e-8
+        )
+
     def _foot_lateral_speed_sq(self, state: BelloState) -> jax.Array:
         foot_world_vel = self._body_world_lin_vel(state, self.model.foot_body_ids)
         return jnp.sum(foot_world_vel[:, :2] ** 2, axis=1)
@@ -2033,7 +2364,7 @@ class BelloLocomotionEnv:
         foot_delta = foot_position[0] - foot_position[1]
         frame_yaw = yaw_quat(self._link_quat(state, frame_link_name))
         frame_delta = quat_rotate_inverse(frame_yaw, foot_delta)
-        return jnp.abs(frame_delta[0])
+        return jnp.abs(frame_delta[1])
 
     def _gait_diagnostics(
         self,
@@ -2047,7 +2378,7 @@ class BelloLocomotionEnv:
         touchdown = jnp.where(initialized, contact & ~previous, False)
         liftoff = jnp.where(initialized, ~contact & previous, False)
         moving = (
-            jnp.linalg.norm(next_state.command[:2])
+            jnp.linalg.norm(next_state.command)
             > self.reward_config.contact_timing.command_speed_threshold
         )
         premature_touchdown = (

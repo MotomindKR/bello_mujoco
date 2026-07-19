@@ -57,8 +57,11 @@ merging:
 ```bash
 uv run ruff format --check src tests
 uv run ruff check src tests
-uv run pytest
+./scripts/test.sh
 ```
+
+The full runner isolates test modules in fresh CPU JAX processes. During
+iteration, run focused files directly with `uv run pytest`.
 
 For simulation or training changes, also run:
 

@@ -28,8 +28,6 @@ class ActorCriticConfig:
     max_log_std: float = 1.0
     obs_stack_size: int = 10
     action_limit: float = 1.0
-    normalize_observations: bool = False
-    observation_norm_eps: float = 1.0e-8
 
 
 class LayeredMLP(eqx.Module):
@@ -71,14 +69,6 @@ class ActorCritic(eqx.Module):
     min_log_std: float = eqx.field(static=True)
     max_log_std: float = eqx.field(static=True)
     action_limit: float = eqx.field(static=True)
-    normalize_observations: bool = eqx.field(static=True)
-    observation_norm_eps: float = eqx.field(static=True)
-    actor_obs_mean: jax.Array | None
-    actor_obs_var: jax.Array | None
-    actor_obs_count: jax.Array | None
-    critic_obs_mean: jax.Array | None
-    critic_obs_var: jax.Array | None
-    critic_obs_count: jax.Array | None
 
     def __init__(
         self,
@@ -110,50 +100,16 @@ class ActorCritic(eqx.Module):
         self.min_log_std = config.min_log_std
         self.max_log_std = config.max_log_std
         self.action_limit = config.action_limit
-        self.normalize_observations = config.normalize_observations
-        self.observation_norm_eps = config.observation_norm_eps
-        if config.normalize_observations:
-            self.actor_obs_mean = jnp.zeros(obs_size, dtype=jnp.float32)
-            self.actor_obs_var = jnp.ones(obs_size, dtype=jnp.float32)
-            self.actor_obs_count = jnp.asarray(0.0, dtype=jnp.float32)
-            self.critic_obs_mean = jnp.zeros(critic_obs_size, dtype=jnp.float32)
-            self.critic_obs_var = jnp.ones(critic_obs_size, dtype=jnp.float32)
-            self.critic_obs_count = jnp.asarray(0.0, dtype=jnp.float32)
-        else:
-            self.actor_obs_mean = None
-            self.actor_obs_var = None
-            self.actor_obs_count = None
-            self.critic_obs_mean = None
-            self.critic_obs_var = None
-            self.critic_obs_count = None
 
     def __call__(
         self, obs: jax.Array, critic_obs: jax.Array | None = None
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
         critic_obs = obs if critic_obs is None else critic_obs
-        obs = normalize_policy_observation(
-            obs,
-            self.actor_obs_mean,
-            self.actor_obs_var,
-            self.observation_norm_eps,
-        )
-        critic_obs = normalize_policy_observation(
-            critic_obs,
-            self.critic_obs_mean,
-            self.critic_obs_var,
-            self.observation_norm_eps,
-        )
         mean = self.actor(obs)
         value = jnp.squeeze(self.critic(critic_obs), axis=-1)
         return mean, policy_log_std(self), value
 
     def action_mean(self, obs: jax.Array) -> jax.Array:
-        obs = normalize_policy_observation(
-            obs,
-            self.actor_obs_mean,
-            self.actor_obs_var,
-            self.observation_norm_eps,
-        )
         return transform_action(self, self.actor(obs))
 
 
@@ -168,80 +124,6 @@ def init_actor_critic(
     return ActorCritic(
         obs_size, action_size, config, critic_obs_size=critic_obs_size, key=rng
     )
-
-
-def normalize_policy_observation(
-    observation: jax.Array,
-    mean: jax.Array | None,
-    var: jax.Array | None,
-    eps: float,
-) -> jax.Array:
-    if mean is None or var is None:
-        return observation
-    mean = jax.lax.stop_gradient(mean)
-    var = jax.lax.stop_gradient(var)
-    return (observation - mean) * jax.lax.rsqrt(var + eps)
-
-
-def update_policy_observation_normalization(
-    policy: ActorCritic,
-    actor_observation: jax.Array,
-    critic_observation: jax.Array,
-) -> ActorCritic:
-    if not policy.normalize_observations:
-        return policy
-    actor_stats = update_observation_statistics(
-        policy.actor_obs_mean,
-        policy.actor_obs_var,
-        policy.actor_obs_count,
-        actor_observation,
-    )
-    critic_stats = update_observation_statistics(
-        policy.critic_obs_mean,
-        policy.critic_obs_var,
-        policy.critic_obs_count,
-        critic_observation,
-    )
-    policy = eqx.tree_at(
-        lambda model: (
-            model.actor_obs_mean,
-            model.actor_obs_var,
-            model.actor_obs_count,
-        ),
-        policy,
-        actor_stats,
-    )
-    return eqx.tree_at(
-        lambda model: (
-            model.critic_obs_mean,
-            model.critic_obs_var,
-            model.critic_obs_count,
-        ),
-        policy,
-        critic_stats,
-    )
-
-
-def update_observation_statistics(
-    mean: jax.Array | None,
-    var: jax.Array | None,
-    count: jax.Array | None,
-    observation: jax.Array,
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    if mean is None or var is None or count is None:
-        raise ValueError("observation statistics are not initialized")
-    samples = observation.reshape((-1, observation.shape[-1]))
-    batch_count = jnp.asarray(samples.shape[0], dtype=jnp.float32)
-    batch_mean = jnp.mean(samples, axis=0)
-    batch_var = jnp.var(samples, axis=0)
-    total_count = count + batch_count
-    delta = batch_mean - mean
-    next_mean = mean + delta * batch_count / total_count
-    old_m2 = var * count
-    batch_m2 = batch_var * batch_count
-    correction = delta**2 * count * batch_count / total_count
-    next_var = (old_m2 + batch_m2 + correction) / total_count
-    return next_mean, jnp.maximum(next_var, 0.0), total_count
 
 
 def make_mlp(
@@ -332,13 +214,7 @@ def sample_actor_action(
     """Sample the bounded actor action without evaluating the critic."""
 
     def sample_one(observation: jax.Array, key: jax.Array) -> jax.Array:
-        normalized = normalize_policy_observation(
-            observation,
-            policy.actor_obs_mean,
-            policy.actor_obs_var,
-            policy.observation_norm_eps,
-        )
-        latent_mean = policy.actor(normalized)
+        latent_mean = policy.actor(observation)
         latent_action = latent_mean + jnp.exp(
             policy_log_std(policy)
         ) * jax.random.normal(key, latent_mean.shape)
@@ -403,12 +279,17 @@ def evaluate_actions(
     critic_obs: jax.Array | None = None,
     *,
     latent_action: jax.Array | None = None,
+    entropy_rng: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     latent_mean, log_std, value = apply_policy(policy, obs, critic_obs)
     log_prob = policy_log_prob(
         policy, latent_mean, log_std, action, latent_action=latent_action
     )
-    entropy = policy_entropy(policy, log_std, action, latent_action=latent_action)
+    entropy = (
+        gaussian_entropy(log_std)
+        if entropy_rng is None
+        else reparameterized_policy_entropy(policy, latent_mean, log_std, entropy_rng)
+    )
     return log_prob, entropy, value
 
 
@@ -448,22 +329,25 @@ def gaussian_entropy(log_std: jax.Array) -> jax.Array:
     return jnp.sum(entropy, axis=-1)
 
 
-def policy_entropy(
+def reparameterized_policy_entropy(
     policy: ActorCritic,
+    latent_mean: jax.Array,
     log_std: jax.Array,
-    action: jax.Array,
-    *,
-    latent_action: jax.Array | None = None,
+    rng: jax.Array,
 ) -> jax.Array:
-    entropy = gaussian_entropy(log_std)
-    limit = jnp.asarray(policy.action_limit, dtype=action.dtype)
-    normalized_action = jnp.clip(action / limit, -1.0 + 1.0e-6, 1.0 - 1.0e-6)
-    if latent_action is None:
-        latent_action = jnp.arctanh(normalized_action)
-    log_det = jnp.log(limit) + 2.0 * (
-        jnp.log(2.0) - latent_action - jax.nn.softplus(-2.0 * latent_action)
+    """One-sample pathwise entropy estimate for the current squashed policy."""
+
+    latent_action = latent_mean + jnp.exp(log_std) * jax.random.normal(
+        rng, latent_mean.shape
     )
-    return entropy + jnp.sum(log_det, axis=-1)
+    action = transform_action(policy, latent_action)
+    return -policy_log_prob(
+        policy,
+        latent_mean,
+        log_std,
+        action,
+        latent_action=latent_action,
+    )
 
 
 def activation_function(name: str):

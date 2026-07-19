@@ -33,7 +33,6 @@ class TerrainConfig:
     hfield_base_thickness: float = 0.01
     hfield_frequency: float = 2.5
     slope_angle_range: tuple[float, float] = (0.0, 0.0)
-    randomize_slope_per_world: bool = False
 
     def __post_init__(self) -> None:
         if len(self.slope_angle_range) != 2:
@@ -351,21 +350,9 @@ def _quat_rotation_matrix(quat_wxyz, xp):
 def random_slope_angles(config: TerrainConfig) -> tuple[float, float]:
     """Return reproducible terrain roll and pitch angles in radians."""
 
-    return random_slope_angles_batch(config, 1)[0]
-
-
-def random_slope_angles_batch(
-    config: TerrainConfig, batch_size: int
-) -> tuple[tuple[float, float], ...]:
-    """Return reproducible per-world terrain roll and pitch samples."""
-
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
     rng = random.Random(config.seed ^ 0x5F3759DF)
     low, high = config.slope_angle_range
-    return tuple(
-        (rng.uniform(low, high), rng.uniform(low, high)) for _ in range(batch_size)
-    )
+    return rng.uniform(low, high), rng.uniform(low, high)
 
 
 def slope_quat(roll: float, pitch: float) -> tuple[float, float, float, float]:

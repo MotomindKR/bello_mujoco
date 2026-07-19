@@ -92,14 +92,15 @@ uv run bello-vast-train \
 ```
 
 Use `--yes` only for intentional noninteractive operation. Branch, recipe, and
-maximum price remain explicit. The long plane-slope recipe uses the same
-launcher:
+maximum price remain explicit. Override the standard recipe's budget for a
+longer run:
 
 ```bash
 uv run bello-vast-train \
   --branch main \
-  --train-config experiments/train/locomotion_plane_slope.yaml \
-  --max-price 1.25
+  --train-config experiments/train/locomotion.yaml \
+  --max-price 1.25 \
+  -- config.total_timesteps=1800000000
 ```
 
 ## Offer Selection
@@ -165,6 +166,19 @@ pipeline fails and tears down the instance as usual.
 Detachment protects against an SSH client or proxy interruption; it cannot keep
 training alive if the rented host or container itself stops.
 
+The controller enforces two billing-safety deadlines. The complete remote job
+may run for at most `--job-timeout-seconds` (12 hours by default), and its log
+must advance at least once every `--progress-timeout-seconds` (30 minutes by
+default). Every SSH probe, start, and status subprocess is bounded by the
+remaining deadline. In addition, the instance `onstart` command launches an
+absolute-deadline self-delete watchdog using Vast's restricted per-container
+credentials. It remains armed until normal instance destruction, protecting
+against controller power loss or `SIGKILL`. Increase the deadlines explicitly
+for an intentionally longer job; the progress timeout must not exceed the hard
+job timeout. The watchdog can only start after the container starts; durable
+pending-label reconciliation remains the protection during pre-start
+provisioning.
+
 No local run log is retained. Once W&B initializes, its metrics, console output,
 videos, periodic checkpoint artifacts (when configured), and successful final
 checkpoint artifact are the durable run output. A failure before W&B
@@ -173,11 +187,21 @@ with the instance during teardown.
 
 ## Teardown and Recovery
 
-As soon as Vast returns an instance ID, the controller writes ignored lifecycle
-state to `.vast/active_instance.json`. A `finally` block destroys the instance
-after success, setup failure, training failure, Ctrl-C, or handled `SIGTERM`,
-then removes the state only after destruction is confirmed. There is no
-keep-instance option.
+Immediately before every create API call, the controller writes a pending label
+atomically to `.vast/active_instance.json` and fsyncs it. A returned or
+reconciled instance ID atomically transitions that state to active. A `finally`
+block destroys the instance after success, setup failure, training failure,
+Ctrl-C, or handled `SIGTERM`, `SIGHUP`, or `SIGQUIT`, then removes the state only
+after destruction is confirmed. There is no keep-instance option.
+
+An ambiguous create response retains the pending label and is reconciled by
+that unique label before another offer can be rented. If the instance is not yet
+visible, later invocations keep refusing another rental rather than discarding
+the recovery record. Legacy active-ID state remains readable specifically for
+billing recovery. Transient or malformed API responses never count as
+successful teardown: destruction is confirmed only by an explicit
+destroyed/not-found response or by the instance being absent from a successful,
+well-formed instance listing.
 
 Only one controller may run from a checkout at a time. If a previous process
 left active state, the next launch first destroys that recorded instance and

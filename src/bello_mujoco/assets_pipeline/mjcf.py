@@ -59,6 +59,7 @@ def compile_urdf_to_mjcf(
 
     tree = ET.parse(tmp_path)
     root = tree.getroot()
+    canonicalize_compiled_mesh_metadata(root)
     ensure_option(root)
     ensure_free_root_joint(root)
     ensure_acceleration_stage_sensor(root)
@@ -80,6 +81,13 @@ def compile_urdf_to_mjcf(
     tmp_path.unlink(missing_ok=True)
 
     mujoco.MjModel.from_xml_path(str(mjcf_path))
+
+
+def canonicalize_compiled_mesh_metadata(root: ET.Element) -> None:
+    """Remove loader-inferred metadata that MuJoCo serializes inconsistently."""
+
+    for mesh in root.findall(".//mesh"):
+        mesh.attrib.pop("content_type", None)
 
 
 def ensure_ankle_differential_tendons(root: ET.Element) -> None:

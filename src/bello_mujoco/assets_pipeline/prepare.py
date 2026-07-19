@@ -34,7 +34,7 @@ from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
 
 AssetName = Literal["full_body"]
-ASSET_CACHE_VERSION = 7
+ASSET_CACHE_VERSION = 8
 SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
     {
         "right_wrist_yaw_joint",

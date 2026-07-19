@@ -113,6 +113,15 @@ def test_validate_config_restricts_destructive_remote_path() -> None:
         validate_config(valid_config(remote_dir="/"))
 
 
+def test_validate_config_requires_bounded_job_timeouts() -> None:
+    with pytest.raises(ValueError, match="job and progress"):
+        validate_config(valid_config(job_timeout_seconds=0))
+    with pytest.raises(ValueError, match="must not exceed"):
+        validate_config(
+            valid_config(job_timeout_seconds=10, progress_timeout_seconds=11)
+        )
+
+
 def test_offer_query_contains_hardware_price_and_region_constraints() -> None:
     query = offer_query(valid_config(), countries=("KR",))
 
@@ -163,7 +172,12 @@ def test_create_available_instance_falls_back_when_offer_is_gone() -> None:
         VastOffer.from_mapping(make_offer(2)),
     ]
 
-    assert create_available_instance(api, offers, valid_config(), "test-label") == 456
+    assert (
+        create_available_instance(
+            api, offers, valid_config(), "test-label", sleep=lambda _: None
+        )
+        == 456
+    )
     assert [offer_id for offer_id, _ in api.created] == [2]
 
 
@@ -229,6 +243,42 @@ def test_sdk_client_normalizes_raw_vast_response_shapes() -> None:
     assert raw_client.destroyed == [456]
 
 
+def test_sdk_client_rejects_error_mapping_as_instance_listing() -> None:
+    class RawClient:
+        def __init__(self, response):
+            self.response = response
+
+        def show_instances(self):
+            return json.dumps(self.response)
+
+    for response in (
+        {"error": "rate limited"},
+        {"instances": [{"error": "rate limited"}]},
+    ):
+        client = object.__new__(VastSdkClient)
+        client._client = RawClient(response)
+        with pytest.raises(RuntimeError, match="unexpected Vast instances response"):
+            client.show_instances()
+
+
+def test_sdk_client_rejects_error_mapping_as_offer_listing() -> None:
+    class RawClient:
+        def __init__(self, response):
+            self.response = response
+
+        def search_offers(self, **kwargs):
+            return json.dumps(self.response)
+
+    for response in (
+        {"error": "rate limited"},
+        {"offers": [{"error": "rate limited"}]},
+    ):
+        client = object.__new__(VastSdkClient)
+        client._client = RawClient(response)
+        with pytest.raises(RuntimeError, match="unexpected Vast offer response"):
+            client.search_offers("query", order="score-", limit=1, storage=80.0)
+
+
 def test_credential_prefers_environment_over_keyring(monkeypatch) -> None:
     monkeypatch.setenv("VAST_API_KEY", "environment-secret")
     monkeypatch.setattr(
@@ -282,6 +332,7 @@ def test_wait_for_ssh_prefers_direct_port_mapping(monkeypatch) -> None:
 
     def fake_run(command, **kwargs):
         commands.append(command)
+        assert 0 < kwargs["timeout"] <= vast.SSH_SUBPROCESS_TIMEOUT_SECONDS
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(vast.subprocess, "run", fake_run)
@@ -301,6 +352,201 @@ def test_destroy_treats_not_found_after_api_error_as_success() -> None:
             raise RuntimeError("404")
 
     assert destroy_with_retries(AlreadyGoneApi(), 123, retries=1)
+
+
+def test_vast_error_classification_prefers_structured_http_status() -> None:
+    class Response:
+        status_code = 404
+
+    error = RuntimeError("unrelated message")
+    error.response = Response()
+
+    assert vast._is_explicit_not_found(error)
+    assert vast._is_explicit_offer_unavailable(error)
+
+
+def test_destroy_does_not_treat_transient_api_errors_as_success() -> None:
+    class UnreachableApi:
+        def destroy_instance(self, instance_id):
+            raise TimeoutError("gateway timed out")
+
+        def show_instance(self, instance_id):
+            raise TimeoutError("gateway timed out")
+
+        def show_instances(self):
+            raise TimeoutError("gateway timed out")
+
+    assert not destroy_with_retries(UnreachableApi(), 123, retries=1)
+
+
+def test_destroy_requires_status_or_successful_absence_confirmation() -> None:
+    class MissingStatusApi:
+        def __init__(self, listed):
+            self.listed = listed
+
+        def destroy_instance(self, instance_id):
+            pass
+
+        def show_instance(self, instance_id):
+            return {"id": instance_id}
+
+        def show_instances(self):
+            return [{"id": 123}] if self.listed else []
+
+    assert not destroy_with_retries(MissingStatusApi(True), 123, retries=1)
+    assert destroy_with_retries(MissingStatusApi(False), 123, retries=1)
+
+
+def test_ambiguous_create_never_rents_a_second_offer() -> None:
+    class AmbiguousApi(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            raise TimeoutError("response lost")
+
+        def show_instances(self):
+            raise TimeoutError("listing unavailable")
+
+    api = AmbiguousApi()
+    offers = [
+        VastOffer.from_mapping(make_offer(1)),
+        VastOffer.from_mapping(make_offer(2)),
+    ]
+
+    with pytest.raises(RuntimeError, match="ambiguous Vast rental"):
+        create_available_instance(
+            api, offers, valid_config(), "test-label", sleep=lambda _: None
+        )
+
+    assert [offer_id for offer_id, _ in api.created] == [1]
+
+
+def test_ambiguous_create_with_empty_listing_never_rents_again() -> None:
+    class LostResponseApi(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            raise TimeoutError("response lost")
+
+        def show_instances(self):
+            return []
+
+    api = LostResponseApi()
+    offers = [
+        VastOffer.from_mapping(make_offer(1)),
+        VastOffer.from_mapping(make_offer(2)),
+    ]
+
+    with pytest.raises(RuntimeError, match="result for offer 1 is ambiguous"):
+        create_available_instance(
+            api, offers, valid_config(), "test-label", sleep=lambda _: None
+        )
+
+    assert [offer_id for offer_id, _ in api.created] == [1]
+
+
+def test_ambiguous_create_recovers_exact_labeled_instance() -> None:
+    class RecoveredApi(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            raise TimeoutError("response lost")
+
+        def show_instances(self):
+            return [{"id": 789, "label": "test-label"}]
+
+    api = RecoveredApi()
+
+    assert (
+        create_available_instance(
+            api,
+            [VastOffer.from_mapping(make_offer(1))],
+            valid_config(),
+            "test-label",
+            sleep=lambda _: None,
+        )
+        == 789
+    )
+    assert len(api.created) == 1
+
+
+def test_active_state_write_is_atomic_and_round_trips(tmp_path) -> None:
+    state_path = tmp_path / ".vast" / "active_instance.json"
+
+    vast.write_active_state(state_path, 123, "test-label")
+
+    state = vast.read_lifecycle_state(state_path)
+    assert state is not None
+    assert state.phase == "active"
+    assert state.instance_id == 123
+    assert state.label == "test-label"
+    assert list(state_path.parent.glob("*.tmp")) == []
+
+
+def test_creating_state_is_durable_and_legacy_active_state_remains_readable(
+    tmp_path,
+) -> None:
+    state_path = tmp_path / "active_instance.json"
+    vast.write_creating_state(state_path, "pending-label")
+
+    pending = vast.read_lifecycle_state(state_path)
+    assert pending is not None
+    assert pending.phase == "creating"
+    assert pending.instance_id is None
+
+    state_path.write_text(
+        json.dumps({"instance_id": 321, "label": "legacy-label"}),
+        encoding="utf-8",
+    )
+    legacy = vast.read_lifecycle_state(state_path)
+    assert legacy is not None
+    assert legacy.phase == "active"
+    assert legacy.instance_id == 321
+    assert legacy.label == "legacy-label"
+
+
+def test_watchdog_uses_restricted_container_credentials_and_absolute_deadline(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(vast.time, "time", lambda: 1_000.75)
+    config = valid_config(
+        ready_timeout_seconds=10,
+        ssh_timeout_seconds=20,
+        job_timeout_seconds=30,
+        progress_timeout_seconds=15,
+    )
+
+    script = vast.watchdog_onstart_script(config)
+    expected_deadline = 1_000 + 10 + 20 + 30 + vast.WATCHDOG_TEARDOWN_GRACE_SECONDS
+
+    assert f"deadline = {expected_deadline}" in script
+    assert "CONTAINER_ID" in script
+    assert "CONTAINER_API_KEY" in script
+    assert "Authorization" in script
+    assert "VAST_API_KEY" not in script
+    assert "nohup" in script
+    assert script.rstrip().endswith("&")
+
+
+def test_termination_handler_covers_hangup_and_quit(monkeypatch) -> None:
+    installed = {}
+    restored = {}
+
+    monkeypatch.setattr(vast.signal, "getsignal", lambda candidate: candidate.value)
+
+    def capture(candidate, handler):
+        if callable(handler):
+            installed[candidate] = handler
+        else:
+            restored[candidate] = handler
+
+    monkeypatch.setattr(vast.signal, "signal", capture)
+
+    with vast.termination_handler():
+        assert set(installed) == {
+            vast.signal.SIGTERM,
+            vast.signal.SIGHUP,
+            vast.signal.SIGQUIT,
+        }
+
+    assert restored == {candidate: candidate.value for candidate in installed}
 
 
 def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
@@ -432,6 +678,51 @@ def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> 
     assert shlex.split(monitor_commands[-1])[-1] == "6"
 
 
+def test_remote_runner_aborts_when_progress_deadline_expires(monkeypatch) -> None:
+    class Executor:
+        def run(self, target, remote_command, *, input_text=None, timeout_seconds):
+            assert timeout_seconds > 0
+            assert input_text is not None
+            return subprocess.CompletedProcess(remote_command, 0, stdout="", stderr="")
+
+    moments = iter((0.0, 0.0, 0.0, 2.0))
+    monkeypatch.setattr(vast.time, "monotonic", lambda: next(moments))
+
+    with pytest.raises(TimeoutError, match="no new output"):
+        run_remote_training(
+            ("root", "example.com", 22001),
+            selection(),
+            valid_config(job_timeout_seconds=100, progress_timeout_seconds=1),
+            "test-run",
+            wandb_key="wandb-secret",
+            github_token="",
+            executor=Executor(),
+        )
+
+
+def test_remote_runner_enforces_hard_deadline_while_starting(monkeypatch) -> None:
+    class Executor:
+        def run(self, target, remote_command, *, input_text=None, timeout_seconds):
+            assert input_text is not None
+            assert timeout_seconds == 1
+            raise subprocess.TimeoutExpired(remote_command, timeout_seconds)
+
+    moments = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr(vast.time, "monotonic", lambda: next(moments))
+
+    with pytest.raises(TimeoutError, match="exceeded 1 seconds while starting"):
+        run_remote_training(
+            ("root", "example.com", 22001),
+            selection(),
+            valid_config(job_timeout_seconds=1, progress_timeout_seconds=1),
+            "test-run",
+            wandb_key="wandb-secret",
+            github_token="",
+            sleep=lambda _: None,
+            executor=Executor(),
+        )
+
+
 @pytest.mark.parametrize(
     "remote_failure",
     [
@@ -495,9 +786,97 @@ def test_pipeline_always_destroys_created_instance(
     assert api.destroyed == [456]
     assert api.created[0][1]["label"].startswith("bello-")
     assert api.created[0][1]["runtype"] == "ssh_direc ssh_proxy"
+    assert "CONTAINER_ID" in api.created[0][1]["onstart"]
+    assert "CONTAINER_API_KEY" in api.created[0][1]["onstart"]
     assert "ssh" not in api.created[0][1]
     assert "direct" not in api.created[0][1]
     assert not (tmp_path / ".vast" / "active_instance.json").exists()
+
+
+def test_lifecycle_retains_ambiguous_create_and_refuses_another_rental(
+    monkeypatch, tmp_path
+) -> None:
+    class AmbiguousApi(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            raise TimeoutError("response lost")
+
+        def show_instances(self):
+            return []
+
+    api = AmbiguousApi()
+    state_path = tmp_path / ".vast" / "active_instance.json"
+    config = valid_config(reconcile_retries=1)
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: ("Korea", [VastOffer.from_mapping(make_offer())]),
+    )
+    lifecycle = VastLifecycle(api, config, state_path, "bello-pending")
+
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        lifecycle.run(
+            selection(),
+            "pending",
+            lambda *args, **kwargs: None,
+            wandb_key="wandb-secret",
+            github_token="",
+        )
+
+    pending = vast.read_lifecycle_state(state_path)
+    assert pending is not None
+    assert pending.phase == "creating"
+    assert pending.label == "bello-pending"
+    assert len(api.created) == 1
+
+    with pytest.raises(RuntimeError, match="still unresolved"):
+        lifecycle.run(
+            selection(),
+            "pending",
+            lambda *args, **kwargs: None,
+            wandb_key="wandb-secret",
+            github_token="",
+        )
+
+    assert len(api.created) == 1
+
+
+def test_lifecycle_recovers_and_destroys_pending_labeled_instance(
+    monkeypatch, tmp_path
+) -> None:
+    pending_id = 789
+
+    class PendingApi(LifecycleApi):
+        def show_instances(self):
+            if pending_id in self.destroyed:
+                return []
+            return [{"id": pending_id, "label": "bello-pending"}]
+
+    api = PendingApi()
+    state_path = tmp_path / ".vast" / "active_instance.json"
+    vast.write_creating_state(state_path, "bello-pending")
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("stop after reconciliation")),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after reconciliation"):
+        VastLifecycle(
+            api,
+            valid_config(reconcile_retries=1),
+            state_path,
+            "bello-new",
+        ).run(
+            selection(),
+            "new",
+            lambda *args, **kwargs: None,
+            wandb_key="wandb-secret",
+            github_token="",
+        )
+
+    assert api.destroyed == [pending_id]
+    assert not state_path.exists()
 
 
 def test_lifecycle_reconciles_stale_labeled_instance_before_rental(

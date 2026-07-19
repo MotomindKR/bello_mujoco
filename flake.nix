@@ -34,7 +34,7 @@
           UV_PROJECT_ENVIRONMENT = ".venv";
 
           shellHook = ''
-            export UV_CACHE_DIR="$PWD/.uv-cache"
+            export UV_CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/uv"
             export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
             export WARP_CACHE_PATH="$PWD/.warp-cache"
             export MUJOCO_GL=${mujocoGl}

@@ -1,12 +1,17 @@
 from pathlib import Path
 
+import jax.numpy as jnp
 import mujoco
+import numpy as np
 import pytest
 
 from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
 from bello_mujoco.imu import MujocoImu
+from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
+from bello_mujoco.render import mujoco_eval_state
 from bello_mujoco.sim import load_prepared_bello_model
+from bello_mujoco.terrain import ROBOT_ONLY_TERRAIN
 
 
 def test_generated_mujoco_imu_is_bound_to_pelvis(tmp_path: Path) -> None:
@@ -32,3 +37,66 @@ def test_generated_mujoco_imu_is_bound_to_pelvis(tmp_path: Path) -> None:
     assert sample.orientation_xyzw == pytest.approx((0.0, 0.0, 0.0, 1.0))
     assert sample.angular_velocity_xyz == pytest.approx((0.0, 0.0, 0.0))
     assert sample.linear_acceleration_xyz == pytest.approx((0.0, 0.0, 0.0), abs=1.0e-8)
+
+    root_qvel = model.root_qvel_adr
+    data.qvel[root_qvel + 3 : root_qvel + 6] = (0.2, -0.3, 0.4)
+    mujoco.mj_forward(model.mj_model, data)
+    sample = imu.sample(data)
+
+    env = BelloLocomotionEnv(model, config=BelloEnvConfig(terrain=ROBOT_ONLY_TERRAIN))
+    zeros = jnp.zeros(2, dtype=jnp.float32)
+    state = mujoco_eval_state(
+        env,
+        data,
+        command=np.zeros(3, dtype=np.float32),
+        last_action=np.zeros(env.action_size, dtype=np.float32),
+        foot_air_time=zeros,
+        foot_contact_time=zeros,
+        foot_contact_debounce_time=zeros,
+        last_foot_contact=zeros,
+        step_count=0,
+        episode_return=jnp.asarray(0.0),
+        episode_track_lin_vel_xy=jnp.asarray(0.0),
+        episode_length=jnp.asarray(0),
+    )
+
+    assert env._imu_angular_velocity(state) == pytest.approx(
+        sample.angular_velocity_xyz, abs=1.0e-6
+    )
+    assert env._imu_linear_acceleration(state) == pytest.approx(
+        sample.linear_acceleration_xyz, abs=1.0e-6
+    )
+    assert sample.angular_velocity_xyz != pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_model_imu_frame_is_derived_from_generated_sensor_site(tmp_path: Path) -> None:
+    prepared = prepare_asset(
+        AssetPrepConfig(
+            asset="full_body",
+            output_root=tmp_path / "generated-sensor",
+            imu_config=ImuSensorConfig(enabled=True, body_name="torso_link"),
+        )
+    )
+    model = load_prepared_bello_model(prepared, load_mjx=False)
+
+    assert model.imu_body_name == "torso_link"
+    with pytest.raises(ValueError, match="does not match the generated sensor site"):
+        load_prepared_bello_model(
+            prepared,
+            imu_body_name="pelvis_link",
+            load_mjx=False,
+        )
+
+
+def test_disabled_sensor_carries_asset_configured_imu_frame(tmp_path: Path) -> None:
+    env = BelloLocomotionEnv.load(
+        AssetPrepConfig(
+            asset="full_body",
+            output_root=tmp_path / "disabled-sensor",
+            imu_config=ImuSensorConfig(enabled=False, body_name="torso_link"),
+        ),
+        env_config=BelloEnvConfig(terrain=ROBOT_ONLY_TERRAIN),
+        load_mjx=False,
+    )
+
+    assert env.model.imu_body_name == "torso_link"

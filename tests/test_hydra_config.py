@@ -59,12 +59,21 @@ def test_default_training_config_uses_deployment_policy_contract() -> None:
     assert not config.env_config.observation.privileged
     assert config.env_config.critic_observation.privileged
     assert config.config.policy.action_limit == pytest.approx(1.0)
-    assert config.config.policy.normalize_observations
+    assert config.env_config.observation.scale.base_lin_acc == pytest.approx(0.1)
+    assert config.env_config.observation.scale.base_ang_vel == pytest.approx(0.2)
+    assert config.env_config.observation.scale.joint_vel == pytest.approx(0.05)
+    assert config.env_config.critic_observation.scale.base_lin_vel == pytest.approx(2.0)
+    assert config.env_config.critic_observation.scale.actuator_force == pytest.approx(
+        0.01
+    )
+    assert config.env_config.numerical_safety.max_abs_constraint_force == pytest.approx(
+        1.0e6
+    )
 
 
 @pytest.mark.parametrize(
     "config_name",
-    ["smoke", "locomotion", "locomotion_plane_slope"],
+    ["smoke", "locomotion"],
 )
 def test_maintained_experiment_configs_are_valid(config_name: str) -> None:
     config = structured_config(
@@ -90,25 +99,22 @@ def test_smoke_recipe_runs_one_real_update_without_outputs() -> None:
     assert not config.video_config.enabled
 
 
-def test_training_recipes_share_the_physical_ankle_transmission() -> None:
+def test_locomotion_recipe_uses_validated_policy_and_terrain_contract() -> None:
     baseline = structured_config(
         TrainingRunConfig,
         compose_experiment_config("locomotion"),
     )
-    plane_slope = structured_config(
-        TrainingRunConfig,
-        compose_experiment_config("locomotion_plane_slope"),
-    )
 
-    assert baseline.asset_config.ankle_differential_config == (
-        plane_slope.asset_config.ankle_differential_config
-    )
     assert baseline.env_config.terrain.mode == "plane"
-    assert baseline.env_config.terrain.randomize_slope_per_world
     assert baseline.env_config.terrain.slope_angle_range == pytest.approx(
         (-0.034906585, 0.034906585)
     )
-    assert not baseline.config.normalize_value
+    assert baseline.env_config.terrain.seed == 0
+    assert baseline.config.learning_rate == pytest.approx(1.0e-4)
+    assert baseline.config.max_learning_rate == pytest.approx(1.0e-4)
+    assert baseline.config.policy.init_log_std == pytest.approx(-1.5)
+    assert baseline.config.policy.max_log_std == pytest.approx(-1.0)
+    assert not baseline.video_config.render_initial
 
 
 def test_hydra_overrides_apply_before_dataclass_conversion() -> None:

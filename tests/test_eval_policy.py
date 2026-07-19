@@ -1,5 +1,7 @@
 from dataclasses import dataclass, replace
 from pathlib import Path
+import sys
+from types import ModuleType
 
 import jax.numpy as jnp
 import mujoco
@@ -26,14 +28,17 @@ from bello_mujoco.render import (
 from bello_mujoco.rerun_eval import (
     GamepadCommandSource,
     GamepadConfig,
+    RerunEvaluationLogger,
     apply_deadzone,
     axis_to_range,
     rough_terrain_mesh,
+    run_rerun_evaluation,
 )
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import TerrainConfig
 from bello_mujoco.train.ppo import PPOConfig
 import bello_mujoco.tools.eval_policy as eval_policy
+import bello_mujoco.rerun_eval as rerun_eval
 from bello_mujoco.tools.eval_policy import (
     EvalPolicyConfig,
     expand_checkpoint_override,
@@ -274,6 +279,12 @@ def test_native_eval_adapter_is_typed_and_uses_shared_observation(
     assert isinstance(state.data._impl, NativeDataImplementation)
     assert state.data.subtree_com.dtype == jnp.float32
     np.testing.assert_allclose(state.data.subtree_com, mj_data.subtree_com)
+    np.testing.assert_allclose(state.data.qacc, mj_data.qacc)
+    np.testing.assert_allclose(state.data.geom_xpos, mj_data.geom_xpos)
+    np.testing.assert_allclose(
+        state.data.geom_xmat,
+        np.asarray(mj_data.geom_xmat).reshape((-1, 3, 3)),
+    )
     np.testing.assert_allclose(
         state.data._impl.actuator_velocity,
         mj_data.actuator_velocity,
@@ -390,6 +401,20 @@ def test_gamepad_maps_buttons_disconnects_and_reconnects() -> None:
     assert len(module.created) == 2
 
 
+def test_gamepad_maps_vertical_stick_to_forward_and_horizontal_to_lateral() -> None:
+    module = FakeControllerModule()
+    gamepad = make_gamepad(module)
+    gamepad.poll()
+    controller = module.created[0]
+
+    controller.axes.update({0: -32768, 1: -32768, 2: 0})
+    command = gamepad.poll().command
+
+    assert command[0] == pytest.approx(0.8)
+    assert command[1] == pytest.approx(-0.4)
+    assert command[2] == 0.0
+
+
 def test_gamepad_treats_hid_open_race_as_disconnected() -> None:
     module = FakeControllerModule()
     module.fail_open = True
@@ -402,6 +427,211 @@ def test_gamepad_treats_hid_open_race_as_disconnected() -> None:
     assert not disconnected.connected
     assert np.allclose(disconnected.command, 0.0)
     assert reconnected.connected
+
+
+@pytest.mark.parametrize("failure", ["pump", "get_count", "is_controller"])
+def test_gamepad_treats_transient_sdl_discovery_errors_as_disconnected(
+    failure: str,
+) -> None:
+    class Events(FakeEventModule):
+        fail_once = failure == "pump"
+
+        def pump(self) -> None:
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("transient event error")
+
+    class Controllers(FakeControllerModule):
+        fail_count_once = failure == "get_count"
+        fail_check_once = failure == "is_controller"
+
+        def get_count(self) -> int:
+            if self.fail_count_once:
+                self.fail_count_once = False
+                raise RuntimeError("transient count error")
+            return super().get_count()
+
+        def is_controller(self, index: int) -> bool:
+            if self.fail_check_once:
+                self.fail_check_once = False
+                raise RuntimeError("transient controller error")
+            return super().is_controller(index)
+
+    gamepad = GamepadCommandSource(
+        GamepadConfig(enabled=True),
+        ((-1.0, 1.0), (-1.0, 1.0), (-1.0, 1.0)),
+        controller_module=Controllers(),
+        event_module=Events(),
+    )
+
+    assert not gamepad.poll().connected
+    assert gamepad.poll().connected
+
+
+def test_gamepad_constructor_rolls_back_partial_pygame_initialization(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class Display:
+        def init(self) -> None:
+            calls.append("display.init")
+
+        def quit(self) -> None:
+            calls.append("display.quit")
+
+    class Controllers:
+        def init(self) -> None:
+            calls.append("controller.init")
+            raise RuntimeError("controller initialization failed")
+
+        def quit(self) -> None:
+            calls.append("controller.quit")
+
+    pygame = ModuleType("pygame")
+    pygame.__path__ = []
+    pygame.display = Display()
+    pygame.event = FakeEventModule()
+    pygame_sdl2 = ModuleType("pygame._sdl2")
+    pygame_sdl2.controller = Controllers()
+    monkeypatch.setitem(sys.modules, "pygame", pygame)
+    monkeypatch.setitem(sys.modules, "pygame._sdl2", pygame_sdl2)
+
+    with pytest.raises(RuntimeError, match="controller initialization failed"):
+        GamepadCommandSource(
+            GamepadConfig(enabled=True),
+            ((-1.0, 1.0), (-1.0, 1.0), (-1.0, 1.0)),
+        )
+
+    assert calls == [
+        "display.init",
+        "controller.init",
+        "controller.quit",
+        "display.quit",
+    ]
+
+
+def test_gamepad_close_cleans_display_when_controller_shutdown_fails() -> None:
+    calls: list[str] = []
+
+    class Controllers(FakeControllerModule):
+        def quit(self) -> None:
+            calls.append("controller.quit")
+            raise RuntimeError("controller shutdown failed")
+
+    class Display:
+        def quit(self) -> None:
+            calls.append("display.quit")
+
+    pygame = ModuleType("pygame")
+    pygame.display = Display()
+    gamepad = GamepadCommandSource(
+        GamepadConfig(enabled=True),
+        ((-1.0, 1.0), (-1.0, 1.0), (-1.0, 1.0)),
+        controller_module=Controllers(),
+        event_module=FakeEventModule(),
+        pygame_module=pygame,
+    )
+
+    with pytest.raises(RuntimeError, match="controller shutdown failed"):
+        gamepad.close()
+    gamepad.close()
+
+    assert calls == ["controller.quit", "display.quit"]
+
+
+def test_rerun_logger_close_disconnects_when_flush_fails() -> None:
+    calls: list[str] = []
+
+    class Recording:
+        def flush(self) -> None:
+            calls.append("flush")
+            raise RuntimeError("flush failed")
+
+        def disconnect(self) -> None:
+            calls.append("disconnect")
+
+    logger = object.__new__(RerunEvaluationLogger)
+    logger.recording = Recording()
+    logger._closed = False
+
+    with pytest.raises(RuntimeError, match="flush failed"):
+        logger.close()
+    logger.close()
+
+    assert calls == ["flush", "disconnect"]
+
+
+def test_rerun_logger_validates_urdf_before_creating_recording(
+    monkeypatch,
+) -> None:
+    recording_created = False
+
+    def create_recording(*args, **kwargs):
+        nonlocal recording_created
+        recording_created = True
+        return object()
+
+    def fail_urdf(*args, **kwargs):
+        raise ValueError("invalid URDF")
+
+    monkeypatch.setattr("bello_mujoco.rerun_eval.rr.RecordingStream", create_recording)
+    monkeypatch.setattr("bello_mujoco.rerun_eval.UrdfTree.from_file_path", fail_urdf)
+
+    with pytest.raises(ValueError, match="invalid URDF"):
+        RerunEvaluationLogger(object(), Path("invalid.urdf"))
+
+    assert not recording_created
+
+
+@pytest.mark.parametrize("failure", ["logger_constructor", "logger_start"])
+def test_rerun_evaluation_closes_acquired_resources_on_startup_failure(
+    full_body_asset: PreparedAsset,
+    monkeypatch,
+    failure: str,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset, load_mjx=False)
+    closed: list[str] = []
+
+    class Gamepad:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("gamepad")
+
+    class Logger:
+        def __init__(self, *args, **kwargs) -> None:
+            if failure == "logger_constructor":
+                raise RuntimeError("logger construction failed")
+
+        def start(self) -> None:
+            raise RuntimeError("logger start failed")
+
+        def close(self) -> None:
+            closed.append("logger")
+
+    monkeypatch.setattr(rerun_eval, "GamepadCommandSource", Gamepad)
+    monkeypatch.setattr(rerun_eval, "RerunEvaluationLogger", Logger)
+
+    with pytest.raises(RuntimeError, match="logger (construction|start) failed"):
+        run_rerun_evaluation(
+            env,
+            object(),
+            urdf_path=Path("unused.urdf"),
+            command=(0.0, 0.0, 0.0),
+            gamepad_config=GamepadConfig(enabled=False),
+            steps=1,
+            stop_on_done=True,
+            simulation_backend="mujoco",
+            obs_stack_size=1,
+            stochastic_actions=False,
+            action_seed=0,
+        )
+
+    assert closed == (
+        ["gamepad"] if failure == "logger_constructor" else ["logger", "gamepad"]
+    )
 
 
 def test_rough_terrain_mesh_matches_config_extent() -> None:
@@ -417,6 +647,49 @@ def test_rough_terrain_mesh_matches_config_extent() -> None:
     assert vertices[:, 0].min() == pytest.approx(-1.0)
     assert vertices[:, 0].max() == pytest.approx(3.0)
     assert np.ptp(vertices[:, 2]) == pytest.approx(config.hfield_amplitude)
+
+
+def test_rerun_plane_visual_matches_tilted_mujoco_plane(
+    full_body_asset: PreparedAsset,
+    monkeypatch,
+) -> None:
+    terrain = TerrainConfig(
+        mode="plane",
+        pos=(0.2, -0.3, 0.1),
+        size=(2.0, 3.0, 0.07),
+        slope_angle_range=(0.04, 0.04),
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(terrain=terrain),
+        load_mjx=False,
+    )
+    logged: list[tuple[str, object, bool]] = []
+
+    class Recording:
+        def log(self, path: str, value: object, *, static: bool) -> None:
+            logged.append((path, value, static))
+
+    monkeypatch.setattr(rerun_eval.rr, "Quaternion", lambda **values: values)
+    monkeypatch.setattr(rerun_eval.rr, "Boxes3D", lambda **values: values)
+    logger = object.__new__(RerunEvaluationLogger)
+    logger.env = env
+    logger.recording = Recording()
+
+    logger._log_terrain()
+
+    terrain_geom_id = int(env.model.terrain_geom_ids[0])
+    quaternion = np.asarray(env.model.mj_model.geom_quat[terrain_geom_id])
+    local_offset = np.asarray([0.0, 0.0, -terrain.size[2]])
+    rotated_offset = np.empty(3)
+    mujoco.mju_rotVecQuat(rotated_offset, local_offset, quaternion)
+    path, box, static = logged[-1]
+    assert path == "world/terrain"
+    assert static
+    np.testing.assert_allclose(
+        box["centers"][0], np.asarray(terrain.pos) + rotated_offset
+    )
+    np.testing.assert_allclose(box["quaternions"][0]["xyzw"], quaternion[[1, 2, 3, 0]])
 
 
 def test_rerun_urdf_prefix_is_a_visible_world_subtree(tmp_path) -> None:

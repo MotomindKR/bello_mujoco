@@ -17,8 +17,12 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
+    RuntimeFingerprints,
+    capture_asset_runtime_fingerprints,
+    capture_runtime_fingerprints,
     checkpoint_path,
     load_checkpoint_metadata,
+    normalized_asset_config,
     restore_runner_checkpoint,
     save_training_checkpoint,
 )
@@ -49,6 +53,7 @@ from bello_mujoco.train.ppo import (
     runner_train_state,
     update_runner_state,
     validate_ppo_config,
+    validate_action_limit_contract,
 )
 
 RunnerInitialization = tuple[
@@ -145,6 +150,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
     validate_ppo_config(config)
     validate_video_config(video_config)
     validate_checkpoint_config(checkpoint_config)
+    validate_action_limit_contract(config, env_config.action_clip)
     run = create_wandb_run(wandb_config) if not dry_run else None
     succeeded = False
     try:
@@ -167,6 +173,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 command_config=command_config,
                 done_config=done_config,
                 use_viewer_model=True,
+                load_mjx=video_config.simulation_backend == "mjx",
             )
             if video_config.enabled
             else env
@@ -181,6 +188,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
             policy_obs_size=policy_obs_size,
             critic_policy_obs_size=critic_policy_obs_size,
         )
+        runtime_fingerprints = capture_runtime_fingerprints(metadata)
         if dry_run:
             state, _ = init_train_state(
                 rng,
@@ -217,7 +225,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     "num_updates": config.num_updates,
                     "policy_hidden_dims": config.policy.hidden_dims,
                     "policy_activation": config.policy.activation,
-                    "normalize_observations": config.policy.normalize_observations,
                     "command_ranges": tuple(
                         tuple(row) for row in command_config.range_array().tolist()
                     ),
@@ -231,8 +238,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
                     "desired_kl": config.desired_kl,
                     "target_kl": config.target_kl,
                     "ent_coef": config.ent_coef,
-                    "normalize_value": config.normalize_value,
-                    "value_norm_eps": config.value_norm_eps,
                     "batch_obs_shape": tuple(batch_obs.shape),
                     "batch_action_shape": tuple(batch_state.last_action.shape),
                     "checkpoint_enabled": checkpoint_config.enabled,
@@ -310,6 +315,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
             checkpoint_callback=periodic_checkpoint_callback(
                 checkpoint_dir,
                 metadata,
+                runtime_fingerprints,
                 checkpoint_config,
                 run,
             ),
@@ -320,6 +326,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 checkpoint_dir,
                 out["runner_state"],
                 metadata,
+                runtime_fingerprints,
             )
             if checkpoint_config.upload_wandb_artifact and run is not None:
                 track_checkpoint_artifact(
@@ -343,9 +350,23 @@ def checkpoint_metadata(
     policy_obs_size: int,
     critic_policy_obs_size: int,
 ) -> CheckpointMetadata:
+    normalized_asset = normalized_asset_config(run_config.asset_config)
+    if run_config.asset_config.output_root is not None:
+        actual_runtime = capture_asset_runtime_fingerprints(
+            run_config.asset_config, run_config.env_config.terrain
+        )
+        reproducible_runtime = capture_asset_runtime_fingerprints(
+            normalized_asset, run_config.env_config.terrain
+        )
+        if actual_runtime != reproducible_runtime:
+            raise ValueError(
+                "asset_config.output_root resolved to prepared assets that differ "
+                "from the repository-derived cache; refusing to create a "
+                "checkpoint that cannot be reproduced"
+            )
     return CheckpointMetadata(
         ppo=run_config.config,
-        asset=run_config.asset_config,
+        asset=normalized_asset,
         reward=run_config.reward_config,
         command=run_config.command_config,
         done=run_config.done_config,
@@ -363,6 +384,7 @@ def checkpoint_metadata(
 def periodic_checkpoint_callback(
     final_path: Path | None,
     metadata: CheckpointMetadata,
+    runtime_fingerprints: RuntimeFingerprints,
     config: CheckpointConfig,
     run,
 ) -> Callable[[RunnerState], None] | None:
@@ -372,7 +394,7 @@ def periodic_checkpoint_callback(
     def save(runner_state: RunnerState) -> None:
         update = int(jax.device_get(runner_state.update))
         path = periodic_checkpoint_path(final_path, update)
-        save_training_checkpoint(path, runner_state, metadata)
+        save_training_checkpoint(path, runner_state, metadata, runtime_fingerprints)
         if config.upload_wandb_artifact and run is not None:
             base_name = config.wandb_artifact_name or final_path.name
             track_checkpoint_artifact(
@@ -432,7 +454,7 @@ def train_update_loop(
         runner_state, metrics = update_fn(runner_state)
         metrics = jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
         update = int(jax.device_get(runner_state.update))
-        raise_on_nonfinite_training_metrics(metrics, update)
+        raise_on_invalid_training_metrics(metrics, update)
         last_metrics = metrics
         env_steps = update * config.num_envs * config.num_steps
         track_metric_snapshot(
@@ -555,16 +577,31 @@ def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:
     )
 
 
-def raise_on_nonfinite_training_metrics(metrics: dict, update: int) -> None:
-    contaminated = []
+def raise_on_invalid_training_metrics(metrics: dict, update: int) -> None:
+    contaminated: list[tuple[str, str]] = []
     for name, value in metrics.items():
-        if not name.startswith("nonfinite/") or value is None:
+        prefix = next(
+            (
+                prefix
+                for prefix in ("nonfinite/", "invalid/")
+                if name.startswith(prefix)
+            ),
+            None,
+        )
+        if prefix is None or value is None:
             continue
         if float(jax.device_get(value)) > 0.0:
-            contaminated.append(name.removeprefix("nonfinite/"))
+            contaminated.append((prefix.removesuffix("/"), name.removeprefix(prefix)))
     if contaminated:
+        kind, source = contaminated[0]
         raise RuntimeError(
-            f"PPO encountered nonfinite {contaminated[0]} at update {update}; "
+            f"PPO encountered {kind} {source} at update {update}; "
+            "the poisoned optimizer step was skipped."
+        )
+    invalid_update = metrics.get("invalid_update")
+    if invalid_update is not None and float(jax.device_get(invalid_update)) > 0.0:
+        raise RuntimeError(
+            f"PPO rejected an implausible update at update {update}; "
             "the poisoned optimizer step was skipped."
         )
     nonfinite_update = metrics.get("nonfinite_update")

@@ -123,7 +123,7 @@ class JointPoseRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class HipDeviationRewardConfig(WeightedRewardConfig):
-    lateral_command_index: int = 0
+    lateral_command_index: int = 1
     lateral_command_threshold: float = 0.1
 
 
@@ -380,10 +380,7 @@ def compute_locomotion_reward(
         )
     )
     command_speed = jnp.linalg.norm(inputs.command)
-    moving = (
-        jnp.linalg.norm(inputs.command[:2])
-        > config.contact_timing.command_speed_threshold
-    )
+    moving = command_speed > config.contact_timing.command_speed_threshold
     contact = inputs.foot_contact.astype(bool)
     previous_contact = inputs.last_foot_contact.astype(bool)
     touchdown = contact & ~previous_contact
@@ -418,8 +415,7 @@ def compute_locomotion_reward(
         )
     )
     touchdown_air_time = jnp.where(
-        jnp.linalg.norm(inputs.command[:2])
-        > config.touchdown_air_time.command_speed_threshold,
+        command_speed > config.touchdown_air_time.command_speed_threshold,
         touchdown_air_time,
         0.0,
     )
@@ -466,11 +462,15 @@ def compute_locomotion_reward(
     terms = {
         f"reward/{name}": value
         * reward_terms(config)[name].weight
-        * (1.0 if name == "contact_timing" else timestep)
+        * (
+            1.0
+            if name in {"contact_timing", "touchdown_air_time", "termination"}
+            else timestep
+        )
         for name, value in values.items()
     }
     reward = sum(terms.values(), jnp.asarray(0.0, dtype=jnp.float32))
-    return jnp.maximum(reward, 0.0), terms
+    return reward, terms
 
 
 def reward_terms(config: RewardConfig) -> dict[str, WeightedRewardConfig]:
@@ -519,17 +519,26 @@ def validate_reward_config(config: RewardConfig) -> None:
     for name, value in nonnegative.items():
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"{name} must be nonnegative and finite, got {value}")
-    if config.contact_timing.min_air_time <= 0:
-        raise ValueError("contact_timing.min_air_time must be positive")
-    if config.contact_timing.min_contact_time <= 0:
-        raise ValueError("contact_timing.min_contact_time must be positive")
     if (
-        config.touchdown_air_time.min_air_time < 0
+        not math.isfinite(config.contact_timing.min_air_time)
+        or config.contact_timing.min_air_time <= 0
+    ):
+        raise ValueError("contact_timing.min_air_time must be positive and finite")
+    if (
+        not math.isfinite(config.contact_timing.min_contact_time)
+        or config.contact_timing.min_contact_time <= 0
+    ):
+        raise ValueError("contact_timing.min_contact_time must be positive and finite")
+    if (
+        not math.isfinite(config.touchdown_air_time.min_air_time)
+        or not math.isfinite(config.touchdown_air_time.max_air_time)
+        or config.touchdown_air_time.min_air_time < 0
         or config.touchdown_air_time.max_air_time
         <= config.touchdown_air_time.min_air_time
     ):
         raise ValueError(
-            "touchdown_air_time bounds require 0 <= min_air_time < max_air_time"
+            "touchdown_air_time bounds must be finite and require "
+            "0 <= min_air_time < max_air_time"
         )
 
 

@@ -11,6 +11,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -30,6 +31,9 @@ WANDB_KEYRING_SERVICE = "wandb"
 WANDB_KEYRING_USERNAME = "api_key"
 GITHUB_KEYRING_SERVICE = "github"
 GITHUB_KEYRING_USERNAME = "bello_mujoco_read_token"
+LIFECYCLE_STATE_VERSION = 1
+SSH_SUBPROCESS_TIMEOUT_SECONDS = 60.0
+WATCHDOG_TEARDOWN_GRACE_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,9 @@ class VastTrainConfig:
     remote_dir: str = "/workspace/bello_mujoco"
     ready_timeout_seconds: int = 900
     ssh_timeout_seconds: int = 900
+    job_timeout_seconds: int = 43_200
+    progress_timeout_seconds: int = 1_800
+    reconcile_retries: int = 3
     destroy_retries: int = 3
     offer: VastOfferConfig = field(default_factory=VastOfferConfig)
     hydra_overrides: tuple[str, ...] = ()
@@ -94,6 +101,16 @@ class RemoteJobUpdate:
     offset: int
     output: bytes
     returncode: int | None = None
+
+
+@dataclass(frozen=True)
+class VastLifecycleState:
+    """Durable state for reconciling a possibly billed Vast instance."""
+
+    phase: str
+    label: str
+    instance_id: int | None
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -170,12 +187,25 @@ class VastSdkClient:
             )
         )
         if isinstance(value, Mapping):
-            value = value.get("offers", value.get("instances", []))
+            if "offers" in value:
+                value = value["offers"]
+            elif "instances" in value:
+                value = value["instances"]
+            elif ("id" in value or "ask_contract_id" in value) and "gpu_name" in value:
+                value = [value]
+            else:
+                raise RuntimeError(f"unexpected Vast offer response: {value!r}")
         if isinstance(value, Mapping):
             value = [value]
         if not isinstance(value, list):
             raise RuntimeError(f"unexpected Vast offer response: {value!r}")
-        return [item for item in value if isinstance(item, Mapping)]
+        if any(
+            not isinstance(item, Mapping)
+            or ("id" not in item and "ask_contract_id" not in item)
+            for item in value
+        ):
+            raise RuntimeError(f"unexpected Vast offer response: {value!r}")
+        return value
 
     def create_instance(self, offer_id: int, **kwargs: Any) -> int:
         value = _json_value(self._client.create_instance(id=offer_id, **kwargs))
@@ -190,20 +220,31 @@ class VastSdkClient:
         if isinstance(value, Mapping) and "instances" in value:
             value = value["instances"]
         if isinstance(value, list):
-            value = value[0] if value else {}
-        if not isinstance(value, Mapping):
+            if len(value) != 1:
+                raise RuntimeError(f"unexpected Vast instance response: {value!r}")
+            value = value[0]
+        if not isinstance(value, Mapping) or "id" not in value:
             raise RuntimeError(f"unexpected Vast instance response: {value!r}")
         return value
 
     def show_instances(self) -> list[Mapping[str, Any]]:
         value = _json_value(self._client.show_instances())
         if isinstance(value, Mapping):
-            value = value.get("instances", [])
+            if "instances" in value:
+                value = value["instances"]
+            elif "id" in value and (
+                "actual_status" in value or "cur_state" in value or "label" in value
+            ):
+                value = [value]
+            else:
+                raise RuntimeError(f"unexpected Vast instances response: {value!r}")
         if isinstance(value, Mapping):
             value = [value]
         if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, Mapping)]
+            raise RuntimeError(f"unexpected Vast instances response: {value!r}")
+        if any(not isinstance(item, Mapping) or "id" not in item for item in value):
+            raise RuntimeError(f"unexpected Vast instances response: {value!r}")
+        return value
 
     def ssh_url(self, instance_id: int) -> str:
         value = _json_value(self._client.ssh_url(id=instance_id))
@@ -254,8 +295,12 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError("--max-price must be positive")
     if config.ready_timeout_seconds <= 0 or config.ssh_timeout_seconds <= 0:
         raise ValueError("readiness timeouts must be positive")
-    if config.destroy_retries <= 0:
-        raise ValueError("destroy-retries must be positive")
+    if config.job_timeout_seconds <= 0 or config.progress_timeout_seconds <= 0:
+        raise ValueError("job and progress timeouts must be positive")
+    if config.progress_timeout_seconds > config.job_timeout_seconds:
+        raise ValueError("progress-timeout-seconds must not exceed job-timeout-seconds")
+    if config.reconcile_retries <= 0 or config.destroy_retries <= 0:
+        raise ValueError("reconcile-retries and destroy-retries must be positive")
     remote_dir = PurePosixPath(config.remote_dir)
     if (
         not remote_dir.is_absolute()
@@ -468,26 +513,105 @@ def pipeline_lock(state_dir: Path):
         yield
 
 
+def write_creating_state(state_path: Path, label: str) -> None:
+    _write_lifecycle_state(
+        state_path,
+        VastLifecycleState(
+            phase="creating",
+            label=label,
+            instance_id=None,
+            created_at=datetime.now(UTC).isoformat(),
+        ),
+    )
+
+
 def write_active_state(state_path: Path, instance_id: int, label: str) -> None:
-    state_path.write_text(
+    _write_lifecycle_state(
+        state_path,
+        VastLifecycleState(
+            phase="active",
+            label=label,
+            instance_id=instance_id,
+            created_at=datetime.now(UTC).isoformat(),
+        ),
+    )
+
+
+def _write_lifecycle_state(state_path: Path, state: VastLifecycleState) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (
         json.dumps(
             {
-                "instance_id": instance_id,
-                "label": label,
-                "created_at": datetime.now(UTC).isoformat(),
+                "version": LIFECYCLE_STATE_VERSION,
+                "phase": state.phase,
+                "instance_id": state.instance_id,
+                "label": state.label,
+                "created_at": state.created_at,
             },
             indent=2,
             sort_keys=True,
         )
         + "\n"
     )
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=state_path.parent,
+        prefix=f".{state_path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, state_path)
+        directory_fd = os.open(state_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
-def read_active_state(state_path: Path) -> tuple[int, str] | None:
+def read_lifecycle_state(state_path: Path) -> VastLifecycleState | None:
     if not state_path.exists():
         return None
     value = json.loads(state_path.read_text())
-    return int(value["instance_id"]), str(value["label"])
+    if not isinstance(value, Mapping):
+        raise ValueError(f"invalid Vast lifecycle state at {state_path}")
+
+    version = value.get("version")
+    if version is None:
+        # Legacy state contained only a confirmed active ID. Reading this narrow
+        # format is intentional because abandoning it could leak a billed instance.
+        phase = "active"
+    elif type(version) is not int or version != LIFECYCLE_STATE_VERSION:
+        raise ValueError(f"unsupported Vast lifecycle state version {version!r}")
+    else:
+        phase = value.get("phase")
+    if phase not in {"creating", "active"}:
+        raise ValueError(f"invalid Vast lifecycle phase {phase!r}")
+
+    label = value.get("label")
+    if not isinstance(label, str) or not label:
+        raise ValueError("Vast lifecycle state requires a nonempty label")
+    instance_id = value.get("instance_id")
+    if phase == "creating":
+        if instance_id is not None:
+            raise ValueError("creating Vast lifecycle state must not contain an ID")
+    elif type(instance_id) is not int or instance_id <= 0:
+        raise ValueError("active Vast lifecycle state requires a positive instance ID")
+    created_at = value.get("created_at", "")
+    if not isinstance(created_at, str):
+        raise ValueError("Vast lifecycle state created_at must be a string")
+    return VastLifecycleState(
+        phase=phase,
+        label=label,
+        instance_id=instance_id,
+        created_at=created_at,
+    )
 
 
 def destroy_with_retries(
@@ -497,35 +621,109 @@ def destroy_with_retries(
     retries: int,
     sleep: Callable[[float], None] = time.sleep,
 ) -> bool:
-    def is_destroyed() -> bool:
-        try:
-            info = api.show_instance(instance_id)
-        except Exception:
-            return True
-        return info.get("cur_state") == "unloaded" or info.get("actual_status") in {
-            None,
-            "destroyed",
-        }
-
     for attempt in range(1, retries + 1):
         try:
             api.destroy_instance(instance_id)
-            if is_destroyed():
+        except Exception as exc:
+            if _is_explicit_not_found(exc):
                 return True
-        except Exception:
-            if is_destroyed():
-                return True
-            if attempt == retries:
-                return False
-        sleep(min(2**attempt, 10))
+        if _instance_absent_or_destroyed(api, instance_id):
+            return True
+        if attempt < retries:
+            sleep(min(2**attempt, 10))
     return False
 
 
-def reconcile_stale_state(api: VastApi, state_path: Path, retries: int) -> None:
-    active = read_active_state(state_path)
-    if active is None:
+def _instance_absent_or_destroyed(api: VastApi, instance_id: int) -> bool:
+    try:
+        info = api.show_instance(instance_id)
+    except Exception as exc:
+        if _is_explicit_not_found(exc):
+            return True
+    else:
+        if info.get("cur_state") == "unloaded" or info.get("actual_status") == (
+            "destroyed"
+        ):
+            return True
+        if info.get("actual_status") is not None:
+            return False
+
+    try:
+        instances = api.show_instances()
+    except Exception:
+        return False
+    return all(int(item.get("id", -1)) != instance_id for item in instances)
+
+
+def _is_explicit_not_found(exc: BaseException) -> bool:
+    if _exception_http_status(exc) == 404:
+        return True
+    message = str(exc).lower()
+    return bool(
+        re.fullmatch(r"\s*404(?:\s+not found)?\s*", message)
+        or re.search(r"\binstance\b.{0,80}\bnot found\b", message)
+        or re.search(r"\binstance\b.{0,80}\bdoes not exist\b", message)
+        or re.search(r"\bno such instance\b", message)
+    )
+
+
+def _exception_http_status(exc: BaseException) -> int | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        for owner, attribute in (
+            (current, "status_code"),
+            (current, "http_status"),
+            (response, "status_code"),
+        ):
+            raw_status = getattr(owner, attribute, None)
+            if type(raw_status) is int:
+                return raw_status
+            if isinstance(raw_status, str) and raw_status.isdigit():
+                return int(raw_status)
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def reconcile_stale_state(
+    api: VastApi,
+    state_path: Path,
+    *,
+    reconcile_retries: int,
+    destroy_retries: int,
+) -> None:
+    state = read_lifecycle_state(state_path)
+    if state is None:
         return
-    instance_id, label = active
+    if state.phase == "creating":
+        instance_id = recover_labeled_instance(
+            api,
+            state.label,
+            retries=reconcile_retries,
+        )
+        if instance_id is None:
+            raise RuntimeError(
+                f"pending Vast rental {state.label!r} is still unresolved; state "
+                f"retained at {state_path} and another rental is refused"
+            )
+        write_active_state(state_path, instance_id, state.label)
+        print(
+            f"Cleaning reconciled pipeline instance {instance_id} "
+            f"({state.label}) before launch."
+        )
+        if not destroy_with_retries(api, instance_id, retries=destroy_retries):
+            raise RuntimeError(
+                f"could not destroy reconciled instance {instance_id}; "
+                "refusing another rental"
+            )
+        state_path.unlink(missing_ok=True)
+        return
+
+    assert state.instance_id is not None
+    instance_id = state.instance_id
+
     matching_instances = [
         item for item in api.show_instances() if int(item.get("id", -1)) == instance_id
     ]
@@ -533,25 +731,59 @@ def reconcile_stale_state(api: VastApi, state_path: Path, retries: int) -> None:
         state_path.unlink(missing_ok=True)
         return
     actual_label = matching_instances[0].get("label")
-    if actual_label != label:
+    if actual_label != state.label:
         raise RuntimeError(
-            f"stale state label {label!r} does not match instance {instance_id} "
+            f"stale state label {state.label!r} does not match instance {instance_id} "
             f"label {actual_label!r}; refusing destructive cleanup"
         )
-    print(f"Cleaning stale pipeline instance {instance_id} ({label}) before launch.")
-    if not destroy_with_retries(api, instance_id, retries=retries):
+    print(
+        f"Cleaning stale pipeline instance {instance_id} ({state.label}) before launch."
+    )
+    if not destroy_with_retries(api, instance_id, retries=destroy_retries):
         raise RuntimeError(
             f"could not destroy stale instance {instance_id}; refusing another rental"
         )
     state_path.unlink(missing_ok=True)
 
 
-def recover_labeled_instance(api: VastApi, label: str) -> int | None:
-    matches = [item for item in api.show_instances() if item.get("label") == label]
-    if len(matches) != 1:
-        return None
-    value = matches[0].get("id")
-    return int(value) if value is not None else None
+def recover_labeled_instance(
+    api: VastApi,
+    label: str,
+    *,
+    retries: int,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int | None:
+    successful_listing = False
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            matches = [
+                item for item in api.show_instances() if item.get("label") == label
+            ]
+            successful_listing = True
+        except Exception as exc:
+            last_error = exc
+        else:
+            if len(matches) > 1:
+                ids = [item.get("id") for item in matches]
+                raise RuntimeError(
+                    f"multiple Vast instances use reconciliation label {label!r}: {ids}; "
+                    "refusing another rental"
+                )
+            if matches:
+                value = matches[0].get("id")
+                if value is None:
+                    raise RuntimeError(
+                        f"Vast instance with label {label!r} has no instance id"
+                    )
+                return int(value)
+        if attempt < retries:
+            sleep(min(2**attempt, 10))
+    if not successful_listing:
+        raise RuntimeError(
+            f"could not reconcile ambiguous Vast rental for label {label!r}"
+        ) from last_error
+    return None
 
 
 def create_available_instance(
@@ -559,12 +791,18 @@ def create_available_instance(
     offers: Sequence[VastOffer],
     config: VastTrainConfig,
     label: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    on_before_create: Callable[[], None] | None = None,
+    on_offer_unavailable: Callable[[], None] | None = None,
 ) -> int:
     """Rent the first still-available offer without exposing SDK error URLs."""
 
     for offer in offers:
         if not config.yes:
             confirm_rental(offer)
+        if on_before_create is not None:
+            on_before_create()
         try:
             return api.create_instance(
                 offer.id,
@@ -573,16 +811,92 @@ def create_available_instance(
                 label=label,
                 runtype="ssh_direc ssh_proxy",
                 cancel_unavail=True,
+                onstart=watchdog_onstart_script(config),
             )
         except Exception as exc:
-            instance_id = recover_labeled_instance(api, label)
+            instance_id = recover_labeled_instance(
+                api,
+                label,
+                retries=config.reconcile_retries,
+                sleep=sleep,
+            )
             if instance_id is not None:
                 return instance_id
+            if not _is_explicit_offer_unavailable(exc):
+                raise RuntimeError(
+                    f"Vast rental result for offer {offer.id} is ambiguous; "
+                    f"no instance with label {label!r} was visible after "
+                    "reconciliation, so another offer will not be rented"
+                ) from exc
+            if on_offer_unavailable is not None:
+                on_offer_unavailable()
             print(
                 f"Vast offer {offer.id} could not be rented "
                 f"({type(exc).__name__}); trying the next match."
             )
     raise RuntimeError("all matching Vast offers became unavailable during rental")
+
+
+def _is_explicit_offer_unavailable(exc: BaseException) -> bool:
+    if _exception_http_status(exc) in {404, 410}:
+        return True
+    message = str(exc).lower()
+    return bool(
+        re.fullmatch(r"\s*(?:404|410)(?:\s+(?:gone|not found))?\s*", message)
+        or re.search(
+            r"\boffer\b.{0,80}\b(?:disappeared|unavailable|not rentable)\b",
+            message,
+        )
+    )
+
+
+def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> int:
+    created_at = time.time() if now is None else now
+    return int(created_at) + (
+        config.ready_timeout_seconds
+        + config.ssh_timeout_seconds
+        + config.job_timeout_seconds
+        + WATCHDOG_TEARDOWN_GRACE_SECONDS
+    )
+
+
+def watchdog_onstart_script(config: VastTrainConfig) -> str:
+    program = _watchdog_program(watchdog_deadline(config))
+    return (
+        f"set +x\nnohup python3 -c {shlex.quote(program)} </dev/null >/dev/null 2>&1 &"
+    )
+
+
+def _watchdog_program(deadline: int) -> str:
+    return f"""import os
+import time
+import urllib.error
+import urllib.request
+
+deadline = {deadline}
+time.sleep(max(0.0, deadline - time.time()))
+instance_id = os.environ.get("CONTAINER_ID", "")
+api_key = os.environ.get("CONTAINER_API_KEY", "")
+if not instance_id.isdigit() or not api_key:
+    raise SystemExit(0)
+url = f"https://console.vast.ai/api/v0/instances/{{instance_id}}/"
+for attempt in range(6):
+    request = urllib.request.Request(
+        url,
+        method="DELETE",
+        headers={{"Authorization": f"Bearer {{api_key}}"}},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if 200 <= response.status < 300:
+                raise SystemExit(0)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise SystemExit(0)
+    except (OSError, urllib.error.URLError):
+        pass
+    time.sleep(min(30 * (2 ** attempt), 300))
+"""
 
 
 def wait_for_instance(
@@ -662,12 +976,13 @@ def ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
 class SshExecutor:
     """Subprocess boundary for non-interactive SSH probes and commands."""
 
-    def probe(self, target: tuple[str, str, int]) -> None:
+    def probe(self, target: tuple[str, str, int], *, timeout_seconds: float) -> None:
         subprocess.run(
             ssh_command(target, "true"),
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
         )
 
     def run(
@@ -676,6 +991,7 @@ class SshExecutor:
         remote_command: str,
         *,
         input_text: str | None = None,
+        timeout_seconds: float,
     ) -> subprocess.CompletedProcess[str]:
         kwargs: dict[str, Any] = {
             "text": True,
@@ -684,7 +1000,11 @@ class SshExecutor:
         }
         if input_text is not None:
             kwargs["input"] = input_text
-        return subprocess.run(ssh_command(target, remote_command), **kwargs)
+        return subprocess.run(
+            ssh_command(target, remote_command),
+            timeout=timeout_seconds,
+            **kwargs,
+        )
 
 
 def wait_for_ssh(
@@ -711,9 +1031,19 @@ def wait_for_ssh(
             last_error = exc
         for target in targets:
             try:
-                executor.probe(target)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                executor.probe(
+                    target,
+                    timeout_seconds=min(SSH_SUBPROCESS_TIMEOUT_SECONDS, remaining),
+                )
                 return target
-            except (OSError, subprocess.CalledProcessError) as exc:
+            except (
+                OSError,
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+            ) as exc:
                 last_error = exc
         if time.monotonic() < deadline:
             sleep(10)
@@ -848,11 +1178,37 @@ def run_remote_training(
         run_name,
     )
     payload = json.dumps({"environment": remote_env, "script": REMOTE_TRAIN_SCRIPT})
-    deadline = time.monotonic() + config.ssh_timeout_seconds
+    started_at = time.monotonic()
+    ssh_start_deadline = started_at + config.ssh_timeout_seconds
+    job_deadline = started_at + config.job_timeout_seconds
     disconnect_reported = False
 
     while True:
-        result = executor.run(target, start_command, input_text=payload)
+        now = time.monotonic()
+        if now >= job_deadline:
+            raise TimeoutError(
+                f"remote training exceeded {config.job_timeout_seconds} seconds "
+                "while starting"
+            )
+        if now >= ssh_start_deadline:
+            raise TimeoutError("SSH did not recover while starting remote training")
+        try:
+            result = executor.run(
+                target,
+                start_command,
+                input_text=payload,
+                timeout_seconds=min(
+                    SSH_SUBPROCESS_TIMEOUT_SECONDS,
+                    job_deadline - now,
+                    ssh_start_deadline - now,
+                ),
+            )
+        except subprocess.TimeoutExpired:
+            if not disconnect_reported:
+                print("SSH timed out while starting; retrying the detached remote job.")
+                disconnect_reported = True
+            sleep(5)
+            continue
         if result.returncode == 0:
             if result.stdout:
                 print(result.stdout, end="")
@@ -870,7 +1226,7 @@ def run_remote_training(
                 output=result.stdout,
                 stderr=result.stderr,
             )
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= ssh_start_deadline:
             raise TimeoutError("SSH did not recover while starting remote training")
         if not disconnect_reported:
             print("SSH disconnected while starting; retrying the detached remote job.")
@@ -879,11 +1235,46 @@ def run_remote_training(
 
     offset = 0
     disconnected_at: float | None = None
+    last_progress_at = time.monotonic()
     while True:
-        result = executor.run(
-            target,
-            _remote_status_command(job_dir, offset),
-        )
+        now = time.monotonic()
+        if now >= job_deadline:
+            raise TimeoutError(
+                f"remote training exceeded {config.job_timeout_seconds} seconds"
+            )
+        if now - last_progress_at >= config.progress_timeout_seconds:
+            raise TimeoutError(
+                "remote training produced no new output for "
+                f"{config.progress_timeout_seconds} seconds"
+            )
+        if (
+            disconnected_at is not None
+            and now - disconnected_at >= config.ssh_timeout_seconds
+        ):
+            raise TimeoutError(
+                "SSH did not recover while detached remote training was running"
+            )
+        call_deadlines = [
+            job_deadline,
+            last_progress_at + config.progress_timeout_seconds,
+        ]
+        if disconnected_at is not None:
+            call_deadlines.append(disconnected_at + config.ssh_timeout_seconds)
+        try:
+            result = executor.run(
+                target,
+                _remote_status_command(job_dir, offset),
+                timeout_seconds=min(
+                    SSH_SUBPROCESS_TIMEOUT_SECONDS,
+                    min(call_deadlines) - now,
+                ),
+            )
+        except subprocess.TimeoutExpired:
+            if disconnected_at is None:
+                disconnected_at = time.monotonic()
+                print("SSH timed out; remote training continues while reconnecting.")
+            sleep(5)
+            continue
         if result.returncode == 255:
             now = time.monotonic()
             if disconnected_at is None:
@@ -916,6 +1307,8 @@ def run_remote_training(
             sys.stdout.flush()
             sys.stdout.buffer.write(update.output)
             sys.stdout.buffer.flush()
+        if update.offset != offset:
+            last_progress_at = time.monotonic()
         offset = update.offset
         if update.state == "running":
             sleep(10)
@@ -1061,17 +1454,24 @@ class PipelineInterrupted(RuntimeError):
 
 @contextmanager
 def termination_handler():
-    previous = signal.getsignal(signal.SIGTERM)
+    handled_signals = tuple(
+        candidate
+        for candidate in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+        if candidate is not None
+    )
+    previous = {candidate: signal.getsignal(candidate) for candidate in handled_signals}
 
-    def handle_sigterm(signum: int, frame: FrameType | None) -> None:
-        del signum, frame
-        raise PipelineInterrupted("received SIGTERM")
+    def handle_termination(signum: int, frame: FrameType | None) -> None:
+        del frame
+        raise PipelineInterrupted(f"received {signal.Signals(signum).name}")
 
-    signal.signal(signal.SIGTERM, handle_sigterm)
+    for candidate in handled_signals:
+        signal.signal(candidate, handle_termination)
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        for candidate, handler in previous.items():
+            signal.signal(candidate, handler)
 
 
 @dataclass(frozen=True)
@@ -1095,7 +1495,8 @@ class VastLifecycle:
         reconcile_stale_state(
             self.api,
             self.state_path,
-            self.config.destroy_retries,
+            reconcile_retries=self.config.reconcile_retries,
+            destroy_retries=self.config.destroy_retries,
         )
         tier, offers = find_offers(self.api, self.config)
         print_offers(tier, offers)
@@ -1107,6 +1508,10 @@ class VastLifecycle:
                 offers,
                 self.config,
                 self.label,
+                on_before_create=lambda: write_creating_state(
+                    self.state_path, self.label
+                ),
+                on_offer_unavailable=lambda: self.state_path.unlink(missing_ok=True),
             )
             write_active_state(self.state_path, instance_id, self.label)
             print(f"Created Vast instance {instance_id}; teardown is armed.")

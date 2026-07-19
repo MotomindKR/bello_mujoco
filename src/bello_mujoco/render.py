@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Literal
 from typing import TypeAlias
 
-import imageio.v2 as imageio
+import imageio_ffmpeg
 import jax
 import jax.numpy as jnp
 import mujoco
@@ -29,6 +31,7 @@ DONE_FLAG_KEYS = (
     "done/bad_orientation",
     "done/timeout",
     "done/nonfinite",
+    "done/unstable",
 )
 
 
@@ -45,6 +48,7 @@ class CameraConfig:
 class NativeDataImplementation:
     cacc: jax.Array
     actuator_velocity: jax.Array
+    efc__force: jax.Array
 
 
 @dataclass(frozen=True)
@@ -53,13 +57,135 @@ class NativeDataView:
 
     qpos: jax.Array
     qvel: jax.Array
+    qacc: jax.Array
     ctrl: jax.Array
     xpos: jax.Array
     xquat: jax.Array
     cvel: jax.Array
     subtree_com: jax.Array
+    geom_xpos: jax.Array
+    geom_xmat: jax.Array
     actuator_force: jax.Array
+    qfrc_constraint: jax.Array
     _impl: NativeDataImplementation
+
+
+class VideoWriter:
+    """Raw-RGB FFmpeg writer started with ``posix_spawn``.
+
+    Python's usual subprocess path may call ``fork``. Forking after JAX has
+    created worker threads can deadlock, so rollout video uses the OS's atomic
+    spawn-and-exec primitive directly.
+    """
+
+    def __init__(self, path: Path, *, width: int, height: int, fps: int) -> None:
+        if not hasattr(os, "posix_spawn"):
+            raise RuntimeError("rollout video requires os.posix_spawn support")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        executable = imageio_ffmpeg.get_ffmpeg_exe()
+        read_fd, write_fd = os.pipe()
+        argv = [
+            executable,
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-vcodec",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            str(fps),
+            "-i",
+            "-",
+            "-an",
+            "-vcodec",
+            "libx264",
+            "-vf",
+            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ]
+        file_actions = [
+            (os.POSIX_SPAWN_DUP2, read_fd, 0),
+            (os.POSIX_SPAWN_CLOSE, read_fd),
+            (os.POSIX_SPAWN_CLOSE, write_fd),
+        ]
+        try:
+            self._pid = os.posix_spawn(
+                executable,
+                argv,
+                os.environ.copy(),
+                file_actions=file_actions,
+            )
+        except BaseException:
+            os.close(read_fd)
+            os.close(write_fd)
+            raise
+        os.close(read_fd)
+        try:
+            self._stream = os.fdopen(write_fd, "wb")
+        except BaseException:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+            os.waitpid(self._pid, 0)
+            raise
+        self._shape = (height, width, 3)
+        self._closed = False
+
+    def append_data(self, frame: np.ndarray) -> None:
+        image = np.asarray(frame, dtype=np.uint8)
+        if image.shape != self._shape:
+            raise ValueError(
+                f"video frame has shape {image.shape}, expected {self._shape}"
+            )
+        self._stream.write(image.tobytes(order="C"))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        stream_error: BaseException | None = None
+        try:
+            self._stream.close()
+        except BaseException as error:
+            stream_error = error
+        _, status = os.waitpid(self._pid, 0)
+        if stream_error is not None:
+            raise stream_error
+        if status != 0:
+            exit_code = os.waitstatus_to_exitcode(status)
+            raise RuntimeError(f"FFmpeg video encoder exited with status {exit_code}")
+
+
+def open_rollout_video_resources(
+    mj_model: mujoco.MjModel,
+    output_path: Path,
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    camera_config: CameraConfig,
+):
+    """Acquire rollout rendering resources with failure-safe cleanup."""
+
+    resources = ExitStack()
+    try:
+        renderer = mujoco.Renderer(mj_model, height=height, width=width)
+        resources.callback(renderer.close)
+        camera = make_camera(mj_model, camera_config)
+        writer = VideoWriter(output_path, width=width, height=height, fps=fps)
+        resources.callback(writer.close)
+    except BaseException:
+        resources.close()
+        raise
+    return resources, renderer, camera, writer
 
 
 def render_policy_rollout(
@@ -95,7 +221,6 @@ def render_policy_rollout(
             stochastic_actions=stochastic_actions,
             action_seed=action_seed,
         )
-        return
     if simulation_backend != "mjx":
         raise ValueError(
             f"simulation_backend must be 'mjx' or 'mujoco', got {simulation_backend!r}"
@@ -105,15 +230,19 @@ def render_policy_rollout(
     obs_stack = init_observation_stack(obs, obs_stack_size)
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
-    renderer = mujoco.Renderer(mj_model, height=height, width=width)
-    camera = make_camera(mj_model, camera_config)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = imageio.get_writer(output_path, fps=fps)
     action_key = jax.random.PRNGKey(action_seed)
     stats = init_rollout_stats(
         steps, stochastic_actions=stochastic_actions, action_seed=action_seed
     )
     episode_length = 0
+    resources, renderer, camera, writer = open_rollout_video_resources(
+        mj_model,
+        output_path,
+        width=width,
+        height=height,
+        fps=fps,
+        camera_config=camera_config,
+    )
     try:
         for step_index in range(steps):
             sync_mj_data(mj_model, mj_data, state)
@@ -153,8 +282,7 @@ def render_policy_rollout(
             else:
                 obs_stack = update_observation_stack(obs_stack, obs, done)
     finally:
-        writer.close()
-        renderer.close()
+        resources.close()
     return finalize_rollout_stats(stats, current_episode_length=episode_length)
 
 
@@ -189,13 +317,17 @@ def render_policy_rollout_mujoco(
         step_count=step_count,
     )
     obs_stack = init_observation_stack(obs, obs_stack_size)
-    renderer = mujoco.Renderer(mj_model, height=height, width=width)
-    camera = make_camera(mj_model, camera_config)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = imageio.get_writer(output_path, fps=fps)
     action_key = jax.random.PRNGKey(action_seed)
     stats = init_rollout_stats(
         steps, stochastic_actions=stochastic_actions, action_seed=action_seed
+    )
+    resources, renderer, camera, writer = open_rollout_video_resources(
+        mj_model,
+        output_path,
+        width=width,
+        height=height,
+        fps=fps,
+        camera_config=camera_config,
     )
     try:
         for step_index in range(steps):
@@ -262,8 +394,7 @@ def render_policy_rollout_mujoco(
             )
             obs_stack = update_observation_stack(obs_stack, obs, jnp.asarray(False))
     finally:
-        writer.close()
-        renderer.close()
+        resources.close()
     return finalize_rollout_stats(stats, current_episode_length=step_count)
 
 
@@ -367,12 +498,19 @@ def mujoco_policy_observation(
 
 
 def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
+    mujoco.mj_resetData(env.model.mj_model, mj_data)
     mj_data.qpos[:] = env.model.default_qpos
     mj_data.qvel[:] = env.model.default_qvel
     mj_data.ctrl[:] = mujoco_action_to_ctrl(
         env, np.zeros(env.action_size, dtype=np.float32)
     )
     mujoco.mj_forward(env.model.mj_model, mj_data)
+    if env.model.foot_body_ids.size:
+        clearance_adjustment = env.config.spawn.clearance - float(
+            np.min(mujoco_foot_height(env, mj_data))
+        )
+        mj_data.qpos[env.model.root_qpos_adr + 2] += clearance_adjustment
+        mujoco.mj_forward(env.model.mj_model, mj_data)
 
 
 def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.ndarray:
@@ -433,15 +571,29 @@ def mujoco_link_projected_gravity(
     )
 
 
-def mujoco_link_height(
+def mujoco_link_clearance(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> float:
     if link_name == "bello_root":
-        return float(mj_data.qpos[int(env.model.root_qpos_adr) + 2])
-    body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
-    if body_id < 0:
-        raise ValueError(f"configured link/body not found: {link_name!r}")
-    return float(mj_data.xpos[body_id, 2])
+        root_qpos = int(env.model.root_qpos_adr)
+        position = np.asarray(mj_data.qpos[root_qpos : root_qpos + 3])
+    else:
+        body_id = mujoco.mj_name2id(
+            env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name
+        )
+        if body_id < 0:
+            raise ValueError(f"configured link/body not found: {link_name!r}")
+        position = np.asarray(mj_data.xpos[body_id])
+
+    if env.terrain_config.mode == "none":
+        terrain_height = env.terrain_config.pos[2]
+    else:
+        terrain_height = terrain_surface_height(
+            env.model.mj_model,
+            int(env.model.terrain_geom_ids[0]),
+            position[None, :2],
+        )[0]
+    return float(position[2] - terrain_height)
 
 
 def mujoco_link_lin_vel(
@@ -546,6 +698,7 @@ def mujoco_eval_state(
     data = NativeDataView(
         qpos=jnp.asarray(np.asarray(mj_data.qpos, dtype=np.float32).copy()),
         qvel=jnp.asarray(np.asarray(mj_data.qvel, dtype=np.float32).copy()),
+        qacc=jnp.asarray(np.asarray(mj_data.qacc, dtype=np.float32).copy()),
         ctrl=jnp.asarray(np.asarray(mj_data.ctrl, dtype=np.float32).copy()),
         xpos=jnp.asarray(np.asarray(mj_data.xpos, dtype=np.float32).copy()),
         xquat=jnp.asarray(np.asarray(mj_data.xquat, dtype=np.float32).copy()),
@@ -553,13 +706,23 @@ def mujoco_eval_state(
         subtree_com=jnp.asarray(
             np.asarray(mj_data.subtree_com, dtype=np.float32).copy()
         ),
+        geom_xpos=jnp.asarray(np.asarray(mj_data.geom_xpos, dtype=np.float32).copy()),
+        geom_xmat=jnp.asarray(
+            np.asarray(mj_data.geom_xmat, dtype=np.float32).reshape((-1, 3, 3)).copy()
+        ),
         actuator_force=jnp.asarray(
             np.asarray(mj_data.actuator_force, dtype=np.float32).copy()
+        ),
+        qfrc_constraint=jnp.asarray(
+            np.asarray(mj_data.qfrc_constraint, dtype=np.float32).copy()
         ),
         _impl=NativeDataImplementation(
             cacc=jnp.asarray(np.asarray(mj_data.cacc, dtype=np.float32).copy()),
             actuator_velocity=jnp.asarray(
                 np.asarray(mj_data.actuator_velocity, dtype=np.float32).copy()
+            ),
+            efc__force=jnp.asarray(
+                np.asarray(mj_data.efc_force, dtype=np.float32).copy()
             ),
         ),
     )
@@ -590,7 +753,7 @@ def mujoco_eval_info(
 ) -> dict[str, jax.Array]:
     info = {
         "base_height": jnp.asarray(
-            mujoco_link_height(env, mj_data, env.config.root_link),
+            mujoco_link_clearance(env, mj_data, env.config.root_link),
             dtype=jnp.float32,
         )
     }
@@ -654,7 +817,7 @@ def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.n
 def mujoco_foot_height(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:
     if env.model.foot_body_ids.size == 0:
         return np.zeros((0,), dtype=np.float32)
-    foot_position = np.asarray(mj_data.xpos[env.model.foot_body_ids], dtype=np.float32)
+    foot_position = mujoco_foot_sole_positions(env, mj_data)
     if env.terrain_config.mode == "none":
         terrain_height = np.full(
             foot_position.shape[0], env.terrain_config.pos[2], dtype=np.float32
@@ -666,6 +829,145 @@ def mujoco_foot_height(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.nd
             foot_position[:, :2],
         )
     return foot_position[:, 2] - terrain_height
+
+
+def mujoco_foot_sole_positions(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData
+) -> np.ndarray:
+    """Mirror the MJX terrain-relative collision support calculation."""
+
+    geom_ids = np.asarray(env.model.foot_geom_ids, dtype=np.int32)
+    geom_rotation = np.asarray(mj_data.geom_xmat[geom_ids], dtype=np.float32).reshape(
+        (-1, 3, 3)
+    )
+    geom_position = np.asarray(mj_data.geom_xpos[geom_ids], dtype=np.float32)
+    terrain_up = mujoco_terrain_surface_normal(env, geom_position[:, :2])
+    local_down = np.einsum("gji,gj->gi", geom_rotation, -terrain_up)
+    geom_size = np.asarray(env.model.mj_model.geom_size[geom_ids], dtype=np.float32)
+    geom_type = np.asarray(env.model.mj_model.geom_type[geom_ids], dtype=np.int32)
+
+    radial_direction = local_down[:, :2]
+    radial_norm = np.linalg.norm(radial_direction, axis=1, keepdims=True)
+    unit_radial = np.divide(
+        radial_direction,
+        np.maximum(radial_norm, 1.0e-8),
+        out=np.zeros_like(radial_direction),
+        where=radial_norm > 1.0e-8,
+    )
+    sphere_support = geom_size[:, :1] * local_down
+    capsule_support = sphere_support.copy()
+    capsule_support[:, 2] += np.sign(local_down[:, 2]) * geom_size[:, 1]
+    ellipsoid_denominator = np.sqrt(
+        np.sum((geom_size * local_down) ** 2, axis=1, keepdims=True)
+    )
+    ellipsoid_support = (
+        geom_size**2
+        * local_down
+        / np.maximum(ellipsoid_denominator, np.float32(1.0e-8))
+    )
+    cylinder_support = np.concatenate(
+        [
+            geom_size[:, :1] * unit_radial,
+            (np.sign(local_down[:, 2]) * geom_size[:, 1])[:, None],
+        ],
+        axis=1,
+    )
+    support = sphere_support
+    for shape, candidate in (
+        (mujoco.mjtGeom.mjGEOM_CAPSULE, capsule_support),
+        (mujoco.mjtGeom.mjGEOM_ELLIPSOID, ellipsoid_support),
+        (mujoco.mjtGeom.mjGEOM_CYLINDER, cylinder_support),
+    ):
+        support = np.where((geom_type == int(shape))[:, None], candidate, support)
+    support_world = geom_position + np.einsum("gij,gj->gi", geom_rotation, support)
+
+    box_corner_signs = np.asarray(
+        [[x, y, z] for x in (-1.0, 1.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)],
+        dtype=np.float32,
+    )
+    box_corners = box_corner_signs[None, :, :] * geom_size[:, None, :]
+    box_corners_world = geom_position[:, None, :] + np.einsum(
+        "gij,gkj->gki", geom_rotation, box_corners
+    )
+    if env.terrain_config.mode == "none":
+        box_corner_terrain_height = np.full(
+            box_corners_world.shape[:2],
+            env.terrain_config.pos[2],
+            dtype=np.float32,
+        )
+    else:
+        box_corner_terrain_height = terrain_surface_height(
+            env.model.mj_model,
+            int(env.model.terrain_geom_ids[0]),
+            box_corners_world[:, :, :2],
+        )
+    box_corner_clearance = box_corners_world[:, :, 2] - box_corner_terrain_height
+    lowest_box_corner = np.argmin(box_corner_clearance, axis=1)
+    box_support_world = box_corners_world[
+        np.arange(box_corners_world.shape[0]), lowest_box_corner
+    ]
+    support_world = np.where(
+        (geom_type == int(mujoco.mjtGeom.mjGEOM_BOX))[:, None],
+        box_support_world,
+        support_world,
+    )
+    if env.terrain_config.mode == "none":
+        terrain_height = np.full(
+            support_world.shape[0], env.terrain_config.pos[2], dtype=np.float32
+        )
+    else:
+        terrain_height = terrain_surface_height(
+            env.model.mj_model,
+            int(env.model.terrain_geom_ids[0]),
+            support_world[:, :2],
+        )
+    support_clearance = support_world[:, 2] - terrain_height
+
+    geom_body_ids = np.asarray(env.model.geom_body_ids[geom_ids], dtype=np.int32)
+    foot_body_ids = np.asarray(env.model.foot_body_ids, dtype=np.int32)
+    belongs_to_foot = foot_body_ids[:, None] == geom_body_ids[None, :]
+    clearance_by_foot = np.where(belongs_to_foot, support_clearance[None, :], np.inf)
+    lowest_geom = np.argmin(clearance_by_foot, axis=1)
+    return support_world[lowest_geom]
+
+
+def mujoco_terrain_surface_normal(
+    env: BelloLocomotionEnv, world_xy: np.ndarray
+) -> np.ndarray:
+    world_xy = np.asarray(world_xy, dtype=np.float32)
+    output_shape = world_xy.shape[:-1] + (3,)
+    if env.terrain_config.mode == "none":
+        return np.broadcast_to(
+            np.asarray([0.0, 0.0, 1.0], dtype=np.float32), output_shape
+        )
+    if env.terrain_config.mode == "plane":
+        terrain_geom_id = int(env.model.terrain_geom_ids[0])
+        terrain_up = quat_rotate_np(
+            np.asarray(env.model.mj_model.geom_quat[terrain_geom_id], dtype=np.float32),
+            np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+        )
+        return np.broadcast_to(terrain_up, output_shape)
+
+    terrain_geom_id = int(env.model.terrain_geom_ids[0])
+    epsilon = np.float32(1.0e-3)
+    x_offset = np.asarray([epsilon, 0.0], dtype=np.float32)
+    y_offset = np.asarray([0.0, epsilon], dtype=np.float32)
+    gradient_x = (
+        terrain_surface_height(env.model.mj_model, terrain_geom_id, world_xy + x_offset)
+        - terrain_surface_height(
+            env.model.mj_model, terrain_geom_id, world_xy - x_offset
+        )
+    ) / (2.0 * epsilon)
+    gradient_y = (
+        terrain_surface_height(env.model.mj_model, terrain_geom_id, world_xy + y_offset)
+        - terrain_surface_height(
+            env.model.mj_model, terrain_geom_id, world_xy - y_offset
+        )
+    ) / (2.0 * epsilon)
+    normal = np.stack([-gradient_x, -gradient_y, np.ones_like(gradient_x)], axis=-1)
+    return normal / np.maximum(
+        np.linalg.norm(normal, axis=-1, keepdims=True), np.float32(1.0e-8)
+    )
 
 
 def mujoco_foot_lateral_speed_sq(

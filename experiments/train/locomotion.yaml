@@ -12,12 +12,12 @@ config:
   num_steps: 20
   update_epochs: 4
   num_minibatches: 32
-  learning_rate: 0.0003
+  learning_rate: 0.0001
   schedule: adaptive
   desired_kl: 0.01
   target_kl: 0.03
   min_learning_rate: 0.00001
-  max_learning_rate: 0.0003
+  max_learning_rate: 0.0001
   adaptive_lr_factor: 1.5
   gamma: 0.97
   gae_lambda: 0.95
@@ -25,11 +25,11 @@ config:
   ent_coef: 0.005
   vf_coef: 1.0
   max_grad_norm: 1.0
-  normalize_value: false
   policy:
     hidden_dims: [512, 256, 128]
     activation: swish
-    max_log_std: 0.0
+    init_log_std: -1.5
+    max_log_std: -1.0
 
 env_config:
   simulation_physics:
@@ -41,7 +41,6 @@ env_config:
     mode: plane
     seed: 0
     slope_angle_range: [-0.034906585, 0.034906585]
-    randomize_slope_per_world: true
   model_randomization:
     enabled: true
     seed: 0
@@ -80,11 +79,6 @@ env_config:
       projected_gravity: [-0.05, 0.05]
       joint_pos: [-0.05, 0.05]
       joint_vel: [-1.5, 1.5]
-  critic_observation:
-    scale:
-      base_ang_vel: 0.2
-      joint_vel: 0.05
-
 command_config:
   lin_vel_x: [-1.0, 1.0]
   lin_vel_y: [-1.0, 1.0]
@@ -123,12 +117,12 @@ wandb_config:
   enabled: true
   group: locomotion
   run_name: locomotion_seed0
-  tags: [locomotion, physical-ankle, per-world-plane-slope]
+  tags: [locomotion, physical-ankle, seeded-plane-slope]
 
 video_config:
   enabled: true
   every_updates: 512
-  render_initial: true
+  render_initial: false
   render_final: true
   filename_prefix: locomotion
   simulation_backend: mujoco

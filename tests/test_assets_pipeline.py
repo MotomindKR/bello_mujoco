@@ -6,6 +6,7 @@ import mujoco
 import numpy as np
 import pytest
 
+import bello_mujoco.assets_pipeline.prepare as prepare_module
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.mesh import (
     JointAvailabilityConfig,
@@ -484,6 +485,32 @@ def test_box_viewer_model_makes_collision_geoms_transparent(
     assert np.allclose(model.geom_rgba[collision, 3], 0.0)
     assert np.any(model.geom_type[visual] == mujoco.mjtGeom.mjGEOM_MESH)
     assert np.allclose(model.geom_rgba[visual, 3], 1.0)
+
+
+def test_clean_asset_builds_are_byte_reproducible_within_one_process(
+    tmp_path: Path,
+) -> None:
+    first = prepare_asset(AssetPrepConfig(output_root=tmp_path / "first"))
+    second = prepare_asset(AssetPrepConfig(output_root=tmp_path / "second"))
+
+    for first_path, second_path in (
+        (first.urdf_path, second.urdf_path),
+        (first.mjcf_path, second.mjcf_path),
+        (first.viewer_mjcf_path, second.viewer_mjcf_path),
+    ):
+        assert first_path.read_bytes() == second_path.read_bytes()
+
+
+def test_asset_cache_version_invalidates_precanonical_generator_outputs(
+    monkeypatch,
+) -> None:
+    config = AssetPrepConfig()
+    current_key = asset_config_hash(config)
+    assert prepare_module.ASSET_CACHE_VERSION >= 8
+
+    monkeypatch.setattr(prepare_module, "ASSET_CACHE_VERSION", 7)
+
+    assert asset_config_hash(config) != current_key
 
 
 def test_actuator_config_does_not_expose_mutable_joint_mapping() -> None:

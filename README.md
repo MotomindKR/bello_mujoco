@@ -51,9 +51,10 @@ uv run bello-train-ppo \
   --config-name locomotion
 ```
 
-The standard recipe uses independently randomized plane slopes. For the same
-terrain treatment with the longer-run optimizer settings, use
-`locomotion_plane_slope`. Both recipes use the physical ankle transmission.
+The standard recipe uses one seeded sloped plane per run and the physical ankle
+transmission. Root-yaw randomization exposes the policy to that incline from
+different headings. Change its budget with an explicit Hydra override instead
+of selecting a duplicate recipe.
 Training is dry-run by default only in the package configuration; maintained
 experiment recipes explicitly select their intended execution mode.
 
@@ -102,8 +103,12 @@ devices on Linux SocketCAN. See [robstride_vcan.md](docs/robstride_vcan.md).
 ```bash
 uv run ruff format --check src tests
 uv run ruff check src tests
-uv run pytest
+./scripts/test.sh
 ```
+
+The full test runner starts each test module in a fresh CPU JAX process so
+compiled executables cannot accumulate until the host runs out of memory. Use
+`uv run pytest tests/test_<area>.py` for a focused iteration.
 
 The supported installed commands are:
 
@@ -126,7 +131,7 @@ docs/                      user-facing reference
 
 Do not commit generated environments, caches, W&B runs, checkpoints, videos, or
 prepared assets. Common generated paths include `.venv/`, `.uv-cache/`,
-`.warp-cache/`, `.wandb/`, `checkpoints/`, `outputs/`, and
+`.warp-cache/`, `.wandb/`, `checkpoints/`, `artifacts/`, `outputs/`, and
 `/tmp/bello-mujoco-assets/`.
 
 For contribution workflow and repository rules, see [CONTRIBUTION.md](CONTRIBUTION.md)

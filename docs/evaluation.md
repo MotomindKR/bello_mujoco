@@ -32,8 +32,8 @@ does not affect the rollout.
 
 SDL normalizes Xbox, DualShock/DualSense, and compatible controllers:
 
-- left stick X: `lin_vel_x`
-- inverted left stick Y: `lin_vel_y` (forward is positive)
+- inverted left stick Y: `lin_vel_x` (forward is positive)
+- left stick X: `lin_vel_y` (right is positive)
 - inverted right stick X: yaw (pushing right turns right)
 - A / Cross: reset the episode
 - Start / Options: exit
@@ -72,7 +72,17 @@ control timestep. Deterministic evaluation uses the transformed actor mean;
 Asset, environment, reward, command, termination, and Warp configuration are
 always restored from checkpoint metadata. Evaluation rejects mismatched actor
 or critic observation layouts and action layouts instead of guessing a
-compatible runtime.
+compatible runtime. It also verifies source assets, the complete generated
+URDF/MJCF dependency closure (including referenced meshes), the exact runtime
+simulation and viewer scenes, the implementation, and `uv.lock`; use the exact
+checkout and locked transitive runtime distribution versions that created a
+checkpoint rather than silently evaluating it under changed dynamics. These
+runtime inputs are bundled in installed wheels, so the same verification works
+outside a source checkout.
+
+Checkpoint schemas are intentionally not migrated. Evaluate an older artifact
+from the exact commit and lockfile that produced it; a current checkout rejects
+an older or unversioned envelope instead of guessing its policy contract.
 
 ## Rerun Data
 
@@ -99,13 +109,15 @@ MJX state through `BelloLocomotionEnv.step`. Each real-time control step polls
 the controller, evaluates and clips the policy, advances the selected backend,
 and streams transforms and telemetry. Done episodes reset automatically unless
 `stop_on_done=true`; automatic and gamepad resets rebuild observation and
-contact memory.
+contact memory. Both backends place the root after forward kinematics so the
+lowest physical foot sole starts at the configured terrain-local spawn
+clearance, including on sloped terrain.
 
 ## Validation
 
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-eval-policy --help
-uv run pytest tests/test_eval_policy.py tests/test_hydra_config.py -q
+./scripts/test.sh tests/test_eval_policy.py tests/test_hydra_config.py
 ```
 
 For manual verification, connect a supported controller and run a checkpoint.

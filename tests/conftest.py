@@ -16,7 +16,7 @@ from bello_mujoco.assets_pipeline.prepare import (
 
 @pytest.fixture(scope="session")
 def full_body_asset() -> Iterator[PreparedAsset]:
-    output_root = Path(tempfile.mkdtemp(prefix="bello-mujoco-test-assets-", dir="/tmp"))
+    output_root = Path(tempfile.mkdtemp(prefix="bello-mujoco-test-assets-"))
     try:
         yield prepare_asset(AssetPrepConfig(output_root=output_root))
     finally:

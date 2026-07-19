@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import math
 import os
 import time
@@ -46,6 +47,7 @@ DONE_KEYS = (
     "done/bad_orientation",
     "done/timeout",
     "done/nonfinite",
+    "done/unstable",
 )
 
 
@@ -107,6 +109,7 @@ class GamepadCommandSource:
         constants_module=None,
         pygame_module=None,
     ) -> None:
+        display_initialized = False
         if controller_module is None or event_module is None:
             os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
             os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -114,7 +117,12 @@ class GamepadCommandSource:
             from pygame._sdl2 import controller
 
             if config.enabled:
-                pygame.display.init()
+                try:
+                    pygame.display.init()
+                    display_initialized = True
+                except BaseException:
+                    pygame.display.quit()
+                    raise
             controller_module = controller
             event_module = pygame.event
             constants_module = pygame
@@ -131,15 +139,28 @@ class GamepadCommandSource:
         self._was_connected = False
         self._reset_pressed = False
         self._exit_pressed = False
+        self._closed = False
         if config.enabled:
-            self.controller_module.init()
+            try:
+                self.controller_module.init()
+            except BaseException:
+                try:
+                    self.controller_module.quit()
+                except BaseException:
+                    pass
+                if display_initialized:
+                    try:
+                        self.pygame.display.quit()
+                    except BaseException:
+                        pass
+                raise
 
     def poll(self) -> GamepadInput:
         if not self.config.enabled:
             return GamepadInput(np.zeros(3, dtype=np.float32), connected=False)
-        self.event_module.pump()
-        self._refresh_controller()
         try:
+            self.event_module.pump()
+            self._refresh_controller()
             connected = self.controller is not None and self.controller.attached()
         except Exception:
             self._close_controller()
@@ -161,8 +182,8 @@ class GamepadCommandSource:
             left_y = self._axis(module.CONTROLLER_AXIS_LEFTY)
             right_x = self._axis(module.CONTROLLER_AXIS_RIGHTX)
             normalized = (
-                apply_deadzone(left_x, self.config.deadzone),
                 apply_deadzone(-left_y, self.config.deadzone),
+                apply_deadzone(left_x, self.config.deadzone),
                 apply_deadzone(-right_x, self.config.deadzone),
             )
             command = np.asarray(
@@ -202,11 +223,16 @@ class GamepadCommandSource:
         return result
 
     def close(self) -> None:
-        self._close_controller()
-        if self.config.enabled:
-            self.controller_module.quit()
-        if self.pygame is not None and self.config.enabled:
-            self.pygame.display.quit()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._close_controller()
+            if self.config.enabled:
+                self.controller_module.quit()
+        finally:
+            if self.pygame is not None and self.config.enabled:
+                self.pygame.display.quit()
 
     def _axis(self, axis: int) -> float:
         raw = int(self.controller.get_axis(axis))
@@ -250,7 +276,6 @@ class RerunEvaluationLogger:
         recording: rr.RecordingStream | None = None,
     ) -> None:
         self.env = env
-        self.recording = recording or rr.RecordingStream("bello_policy_evaluation")
         self.urdf = UrdfTree.from_file_path(
             urdf_path,
             entity_path_prefix="world",
@@ -271,6 +296,8 @@ class RerunEvaluationLogger:
         self.joint_names = env.model.actuator_joint_names
         self.actuator_names = env.model.actuator_names
         self.reward_names: tuple[str, ...] | None = None
+        self.recording = recording or rr.RecordingStream("bello_policy_evaluation")
+        self._closed = False
 
     def start(self) -> None:
         blueprint = self._blueprint()
@@ -312,6 +339,7 @@ class RerunEvaluationLogger:
                 "bad_orientation",
                 "timeout",
                 "nonfinite",
+                "unstable",
             ),
         )
         self._style_series("metrics/control/saturation", ("fraction",))
@@ -425,8 +453,13 @@ class RerunEvaluationLogger:
         self.recording.log("events", rr.TextLog(message, level=level))
 
     def close(self) -> None:
-        self.recording.flush()
-        self.recording.disconnect()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.recording.flush()
+        finally:
+            self.recording.disconnect()
 
     def _blueprint(self) -> rrb.Blueprint:
         link_names = {self.urdf.root_link().name}
@@ -515,13 +548,20 @@ class RerunEvaluationLogger:
         if config.mode == "none":
             return
         if config.mode == "plane":
-            center = np.asarray(config.pos, dtype=np.float32)
-            center[2] -= config.size[2]
+            terrain_geom_id = int(self.env.model.terrain_geom_ids[0])
+            quaternion = np.asarray(
+                self.env.model.mj_model.geom_quat[terrain_geom_id], dtype=np.float32
+            )
+            center = np.asarray(config.pos, dtype=np.float32) + quat_rotate_np(
+                quaternion,
+                np.asarray([0.0, 0.0, -config.size[2]], dtype=np.float32),
+            )
             self.recording.log(
                 "world/terrain",
                 rr.Boxes3D(
                     centers=[center],
                     half_sizes=[config.size],
+                    quaternions=[rr.Quaternion(xyzw=quaternion[[1, 2, 3, 0]])],
                     colors=[color.astype(np.uint8)],
                 ),
                 static=True,
@@ -627,8 +667,6 @@ def run_rerun_evaluation(
         env.command_config.lin_vel_y,
         env.command_config.ang_vel_yaw,
     )
-    gamepad = GamepadCommandSource(gamepad_config, command_ranges)
-    logger = RerunEvaluationLogger(env, urdf_path)
     mjx_step = jax.jit(env.step) if simulation_backend == "mjx" else None
     action_key = jax.random.PRNGKey(action_seed)
     global_step = 0
@@ -683,6 +721,16 @@ def run_rerun_evaluation(
             step_count=episode_step_count,
         )
         obs_stack = init_observation_stack(obs, obs_stack_size)
+
+    resources = ExitStack()
+    try:
+        gamepad = GamepadCommandSource(gamepad_config, command_ranges)
+        resources.callback(gamepad.close)
+        logger = RerunEvaluationLogger(env, urdf_path)
+        resources.callback(logger.close)
+    except BaseException:
+        resources.close()
+        raise
 
     try:
         logger.start()
@@ -869,5 +917,4 @@ def run_rerun_evaluation(
     except KeyboardInterrupt:
         logger.log_event("evaluation interrupted")
     finally:
-        gamepad.close()
-        logger.close()
+        resources.close()

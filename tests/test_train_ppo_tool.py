@@ -1,12 +1,16 @@
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
+import bello_mujoco.render as render
 import bello_mujoco.tools.train_ppo as train_ppo
 from bello_mujoco.checkpoint import CheckpointConfig
-from bello_mujoco.train.ppo import RunnerState, TrainState, init_value_norm_state
+from bello_mujoco.policy import ActorCriticConfig
+from bello_mujoco.render import VideoWriter
+from bello_mujoco.train.ppo import RunnerState, TrainState
 from bello_mujoco.tools.train_ppo import (
     TrainingVideoConfig,
-    raise_on_nonfinite_training_metrics,
+    raise_on_invalid_training_metrics,
     render_training_video,
     should_save_periodic_checkpoint,
     should_render_training_video,
@@ -26,7 +30,6 @@ def runner_state(update: int = 0) -> RunnerState:
         critic_obs_stack=jnp.zeros((1,), dtype=jnp.float32),
         rng=jnp.asarray([0, 0], dtype=jnp.uint32),
         learning_rate=jnp.asarray(1.0e-3, dtype=jnp.float32),
-        value_norm_state=init_value_norm_state(),
     )
 
 
@@ -34,6 +37,85 @@ def test_training_video_schedule_skips_zero_update() -> None:
     config = TrainingVideoConfig(enabled=True, every_updates=2, render_final=True)
 
     assert not should_render_training_video(0, 10, config)
+
+
+def test_video_writer_encodes_without_python_subprocess_fork(tmp_path) -> None:
+    jnp.ones((4, 4)).block_until_ready()
+    output_path = tmp_path / "rollout.mp4"
+    writer = VideoWriter(output_path, width=4, height=4, fps=10)
+    writer.append_data(np.zeros((4, 4, 3), dtype=np.uint8))
+    writer.append_data(np.full((4, 4, 3), 255, dtype=np.uint8))
+    writer.close()
+
+    assert output_path.stat().st_size > 0
+
+
+def test_rollout_video_acquisition_closes_renderer_when_camera_setup_fails(
+    tmp_path, monkeypatch
+) -> None:
+    closed = []
+
+    class Renderer:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("renderer")
+
+    def fail_camera(*args, **kwargs):
+        raise RuntimeError("camera failed")
+
+    monkeypatch.setattr(render.mujoco, "Renderer", Renderer)
+    monkeypatch.setattr(render, "make_camera", fail_camera)
+
+    with pytest.raises(RuntimeError, match="camera failed"):
+        render.open_rollout_video_resources(
+            object(),
+            tmp_path / "unused.mp4",
+            width=4,
+            height=4,
+            fps=10,
+            camera_config=render.CameraConfig(),
+        )
+
+    assert closed == ["renderer"]
+
+
+def test_rollout_video_cleanup_closes_renderer_when_writer_close_fails(
+    tmp_path, monkeypatch
+) -> None:
+    closed = []
+
+    class Renderer:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("renderer")
+
+    class Writer:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            raise RuntimeError("writer failed")
+
+    monkeypatch.setattr(render.mujoco, "Renderer", Renderer)
+    monkeypatch.setattr(render, "make_camera", lambda *args, **kwargs: object())
+    monkeypatch.setattr(render, "VideoWriter", Writer)
+    resources, _, _, _ = render.open_rollout_video_resources(
+        object(),
+        tmp_path / "unused.mp4",
+        width=4,
+        height=4,
+        fps=10,
+        camera_config=render.CameraConfig(),
+    )
+
+    with pytest.raises(RuntimeError, match="writer failed"):
+        resources.close()
+
+    assert closed == ["renderer"]
 
 
 def test_training_video_schedule_skips_disabled_config() -> None:
@@ -250,6 +332,57 @@ def test_run_training_closes_tracking_run_on_failure(monkeypatch) -> None:
     assert closed == [(run, 1)]
 
 
+def test_run_training_rejects_policy_environment_action_limit_mismatch(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        train_ppo.BelloLocomotionEnv,
+        "load",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid action contract must fail before model loading")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="action_limit must equal.*action_clip"):
+        train_ppo.run_training(
+            train_ppo.TrainingRunConfig(
+                config=train_ppo.PPOConfig(policy=ActorCriticConfig(action_limit=1.0)),
+                env_config=train_ppo.BelloEnvConfig(action_clip=0.5),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("backend", "expected_load_mjx"),
+    [("mujoco", False), ("mjx", True)],
+)
+def test_run_training_loads_only_the_video_backend_it_needs(
+    monkeypatch, backend: str, expected_load_mjx: bool
+) -> None:
+    load_calls: list[dict] = []
+
+    def fake_load(*args, **kwargs):
+        load_calls.append(kwargs)
+        if len(load_calls) == 2:
+            raise RuntimeError("stop after render environment load")
+        return object()
+
+    monkeypatch.setattr(train_ppo.BelloLocomotionEnv, "load", fake_load)
+
+    with pytest.raises(RuntimeError, match="stop after render environment load"):
+        train_ppo.run_training(
+            train_ppo.TrainingRunConfig(
+                video_config=TrainingVideoConfig(
+                    enabled=True,
+                    simulation_backend=backend,
+                )
+            )
+        )
+
+    assert "load_mjx" not in load_calls[0]
+    assert load_calls[1]["load_mjx"] is expected_load_mjx
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -267,14 +400,14 @@ def test_run_training_closes_tracking_run_on_failure(monkeypatch) -> None:
 )
 def test_named_nonfinite_contamination_identifies_source(name: str) -> None:
     with pytest.raises(RuntimeError, match=rf"nonfinite {name} at update 17"):
-        raise_on_nonfinite_training_metrics(
+        raise_on_invalid_training_metrics(
             {f"nonfinite/{name}": jnp.asarray(1.0)},
             update=17,
         )
 
 
 def test_zero_nonfinite_counters_do_not_stop_training() -> None:
-    raise_on_nonfinite_training_metrics(
+    raise_on_invalid_training_metrics(
         {
             "nonfinite/gradients": jnp.asarray(0.0),
             "nonfinite/rollout_reward": jnp.asarray(0.0),
@@ -282,6 +415,33 @@ def test_zero_nonfinite_counters_do_not_stop_training() -> None:
         },
         update=17,
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "rollout_observation",
+        "rollout_reward",
+        "rollout_value",
+        "target",
+        "policy_sample",
+        "gradient_norm",
+    ],
+)
+def test_implausible_training_input_identifies_source(name: str) -> None:
+    with pytest.raises(RuntimeError, match=rf"invalid {name} at update 19"):
+        raise_on_invalid_training_metrics(
+            {f"invalid/{name}": jnp.asarray(1.0)},
+            update=19,
+        )
+
+
+def test_invalid_update_stops_training() -> None:
+    with pytest.raises(RuntimeError, match="implausible update at update 23"):
+        raise_on_invalid_training_metrics(
+            {"invalid_update": jnp.asarray(1.0)},
+            update=23,
+        )
 
 
 def test_validate_video_config_is_noop_when_disabled() -> None:

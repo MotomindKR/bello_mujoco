@@ -11,7 +11,6 @@ Training recipes live under `experiments/train/`. The maintained set is:
 ```text
 smoke.yaml
 locomotion.yaml
-locomotion_plane_slope.yaml
 ```
 
 Each recipe inherits `configs/train/default.yaml` directly. This keeps package
@@ -34,12 +33,12 @@ uv run bello-train-ppo \
   --config-name locomotion
 ```
 
-The standard recipe uses independently randomized plane slopes. Use
-`locomotion_plane_slope` for the same terrain treatment with the longer-run
-optimizer settings. Every prepared Bello model uses the physical differential
-ankle transmission. The policy interface remains logical joint space; the
-control stack maps ankle pitch and roll targets into the tendon motor
-coordinates.
+The standard recipe uses one seeded sloped plane per run and the validated
+conservative PPO learning-rate and exploration settings. Randomized root yaw
+varies the incline direction in the robot frame. Every
+prepared Bello model uses the physical differential ankle transmission. The
+policy interface remains logical joint space; the control stack maps ankle
+pitch and roll targets into the tendon motor coordinates.
 
 Hydra overrides follow the recipe name:
 
@@ -82,6 +81,16 @@ soft limit. For each control step, the environment:
 
 Policy and held actuators are disjoint. Held joints remain impedance-controlled
 at their configured defaults but do not appear in the actor action vector.
+Per-world target-offset randomization applies to all policy and held joints by
+default. Set
+`env_config.model_randomization.joint_angle_offset_scope=policy` to perturb only
+policy-controlled targets; joint-origin and inertia randomization remain
+physical model variations independent of that target scope.
+
+The policy distribution bound and environment action bound are one contract.
+Training rejects configurations where `config.policy.action_limit` differs from
+`env_config.action_clip`; otherwise PPO would assign probabilities to requests
+different from the actions actually applied by the environment.
 
 This limit mapping happens before transmission transforms. In particular,
 ankle pitch and roll actions span their logical joint soft limits, then the
@@ -91,8 +100,10 @@ Generated tendon actuator ranges cover the full logical pitch/roll rectangle.
 The environment can expose separate actor and critic observations. The actor
 stream should contain only deployable observations for the intended robot
 runtime; the critic can receive additional clean or privileged state during
-training. PPO stacks each stream according to the policy configuration and
-resets an environment's complete stack when that environment resets.
+training. Actor observation noise is optional, while privileged critic noise is
+rejected so the critic stream stays explicitly clean. PPO stacks each stream
+according to the policy configuration and resets an environment's complete
+stack when that environment resets.
 
 Episode-length timeouts are truncations. They reset the environment but PPO
 bootstraps from the pre-reset observation. Physical failure terminations cut
@@ -102,6 +113,16 @@ The reward surface is the canonical locomotion set exposed by `RewardConfig`.
 Every term has a numeric `weight`; a zero weight is the only disabled state.
 Recipes must not add parallel `enabled` flags. This keeps the resolved reward
 definition auditable from one value per term.
+
+Continuous reward rates are multiplied by the control timestep. Contact-timing,
+touchdown air-time, and terminal events are one-shot terms and are not
+timestep-scaled. The scalar reward remains signed; penalties are never hidden
+by clamping the total to zero.
+Foot-phase tracking measures physical sole clearance over local terrain, holds
+zero throughout the configured duty-factor stance interval, and applies its
+swing-height curve only during the remaining cycle.
+Reset placement evaluates the local terrain and collision geometry after pose
+randomization, then aligns the lowest sole to `spawn.clearance`.
 
 ## PPO loop
 
@@ -114,19 +135,26 @@ Optax. The JAX hot path includes:
 - clipped policy and value losses;
 - entropy regularization;
 - shuffled minibatch updates; and
-- optimizer and normalization state updates.
+- guarded optimizer state updates.
 
-The loop uses a bounded tanh-Gaussian policy and supports actor and critic
-observation normalization, optional value-target normalization, fixed or
-scheduled learning rates, adaptive learning rate from measured KL, and a hard
-target-KL guard for the remaining minibatches in an update.
+The loop uses a bounded tanh-Gaussian policy, explicit environment observation
+scales, fixed or scheduled learning rates, adaptive learning rate from the
+maximum measured minibatch KL, and a hard target-KL guard for the remaining
+minibatches in an update. It does not update observation or value-normalization
+statistics online, because doing so would change the represented policy or
+critic outside PPO's trust-region update.
 
 PPO retains the exact sample needed for policy-ratio calculations while the
 environment separately reports the bounded action and applied control. This
 keeps optimization probability calculations distinct from actuator safety.
 
-Nonfinite losses, gradients, updates, or parameters are not applied. The
+Nonfinite training data, gradients, optimizer updates, or parameters are not
+applied. Configured magnitude guards additionally reject implausibly large
+observations, rewards, values, targets, policy samples, and gradients. The
 training command raises instead of continuing with a poisoned optimizer state.
+Environment-side bounds also terminate finite physics excursions in position,
+velocity, acceleration, actuator force, or generalized constraint force before
+their state can continue into another rollout step.
 
 ## Metrics
 
@@ -157,9 +185,18 @@ continuation/
 
 `state/` contains policy, optimizer, and completed-update state for evaluation.
 `continuation/` contains the environment batch, actor and critic observation
-stacks, rollout RNG, adaptive learning rate, and value-normalization state
-needed for an exact update-boundary resume. Metadata records the complete
-training, asset, environment, task, observation, and action contracts.
+stacks, rollout RNG, and adaptive learning rate needed for an exact
+update-boundary resume. Metadata records the complete training, asset,
+environment, task, observation, and action contracts. The checkpoint also
+fingerprints the repository source assets, prepared URDF/MJCF dependency
+closure and referenced meshes, exact simulation/viewer terrain scenes, Python
+implementation, `uv.lock`, and the active transitive runtime distribution
+versions; evaluation and resume reject any mismatch. Training captures this
+contract before its first update, and every checkpoint save rejects source,
+asset, lock, or environment drift that occurred while the process was running.
+The project and lock files required for verification are included in built
+wheels, so checkpoint operations do not require a source checkout.
+The host-specific asset `output_root` is normalized out of metadata.
 Checkpoints are versioned and strict; stale schemas and partially matching
 training configs are rejected.
 
@@ -193,7 +230,8 @@ losing the successful result.
 Optional training video runs outside the JAX optimization path. It evaluates
 the current in-memory policy in a single environment and renders with MuJoCo.
 Video can run periodically and at the end of training, write an MP4, and log it
-to W&B.
+to W&B. The native renderer does not load MJX, and FFmpeg is launched with
+`posix_spawn` so video encoding cannot fork the multithreaded JAX process.
 
 ## Validation
 
@@ -210,7 +248,7 @@ gate:
 ```bash
 uv run ruff format --check src tests
 uv run ruff check src tests
-uv run pytest
+./scripts/test.sh
 ```
 
 For remote training, follow [vast_ai.md](vast_ai.md). For checkpoint playback,

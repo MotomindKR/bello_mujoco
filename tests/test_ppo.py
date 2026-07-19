@@ -1,7 +1,13 @@
+from dataclasses import replace
+from types import SimpleNamespace
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
 
+from bello_mujoco.assets_pipeline.prepare import PreparedAsset
+from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, SpawnConfig
 from bello_mujoco.policy import (
     ActorCriticConfig,
     apply_actor,
@@ -9,25 +15,25 @@ from bello_mujoco.policy import (
     evaluate_actions,
     init_observation_stack,
     policy_log_prob,
+    reparameterized_policy_entropy,
     sample_actor_action,
     sample_action,
     stacked_observation,
     update_observation_stack,
-    update_policy_observation_normalization,
 )
 from bello_mujoco.train.ppo import (
     PPOConfig,
     Transition,
+    action_diagnostics,
     adapt_learning_rate,
+    aggregate_ppo_metrics,
     compute_gae,
-    denormalize_value,
+    init_runner_state,
     init_train_state,
-    init_value_norm_state,
     learning_rate_for_update,
+    make_train,
     normalize_advantages,
-    normalize_value,
     update_ppo,
-    update_value_norm_state,
     validate_ppo_config,
 )
 
@@ -52,6 +58,13 @@ def small_config(**updates) -> PPOConfig:
     )
     values.update(updates)
     return PPOConfig(**values)
+
+
+def test_library_training_rejects_policy_environment_action_limit_mismatch() -> None:
+    env = SimpleNamespace(action_clip=0.5)
+
+    with pytest.raises(ValueError, match="action_limit must equal.*action_clip"):
+        make_train(small_config(), env)
 
 
 def transitions(
@@ -173,25 +186,37 @@ def test_observation_stack_shifts_and_resets_per_environment() -> None:
     assert updated[1] == pytest.approx(jnp.tile(jnp.asarray([7.0, 8.0]), (3, 1)))
 
 
-def test_actor_and_critic_normalization_are_independent() -> None:
+def test_staggered_initial_step_counts_match_actor_and_critic_observations(
+    full_body_asset: PreparedAsset,
+) -> None:
+    num_envs = 4
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=num_envs,
+        env_config=replace(
+            BelloEnvConfig(),
+            spawn=SpawnConfig(stagger_initial_step_count=True),
+        ),
+    )
     config = small_config(
+        num_envs=num_envs,
         policy=ActorCriticConfig(
             hidden_size=8,
             hidden_depth=1,
-            obs_stack_size=1,
-            normalize_observations=True,
-        )
+            obs_stack_size=2,
+            init_log_std=-1.0,
+        ),
     )
-    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config, critic_obs_size=3)
-    policy = update_policy_observation_normalization(
-        state.policy,
-        jnp.asarray([[1.0, 2.0], [3.0, 6.0]]),
-        jnp.asarray([[2.0, 4.0, 8.0], [6.0, 8.0, 10.0]]),
-    )
-    assert policy.actor_obs_mean == pytest.approx(jnp.asarray([2.0, 4.0]))
-    assert policy.critic_obs_mean == pytest.approx(jnp.asarray([4.0, 6.0, 9.0]))
-    assert policy.actor_obs_count == 2
-    assert policy.critic_obs_count == 2
+
+    runner, _, _ = init_runner_state(jax.random.PRNGKey(19), env, config)
+    expected_actor = env.observation_batch(runner.env_state)
+    expected_critic = env.critic_observation_batch(runner.env_state)
+
+    assert jnp.any(runner.env_state.step_count > 0)
+    assert runner.obs_stack[:, 0] == pytest.approx(expected_actor)
+    assert runner.obs_stack[:, 1] == pytest.approx(expected_actor)
+    assert runner.critic_obs_stack[:, 0] == pytest.approx(expected_critic)
+    assert runner.critic_obs_stack[:, 1] == pytest.approx(expected_critic)
 
 
 def test_gae_bootstraps_timeout_but_not_terminal_transition() -> None:
@@ -212,17 +237,20 @@ def test_gae_bootstraps_timeout_but_not_terminal_transition() -> None:
     assert terminal_advantage == pytest.approx(jnp.ones((1, 4)))
 
 
-def test_value_normalization_round_trip_and_statistics() -> None:
-    config = small_config(normalize_value=True)
-    state = update_value_norm_state(
-        init_value_norm_state(), jnp.asarray([1.0, 3.0, 5.0]), config
-    )
-    values = jnp.asarray([-2.0, 0.0, 7.0])
-    assert denormalize_value(normalize_value(values, state, config), state, config) == (
-        pytest.approx(values)
-    )
-    assert state.mean == pytest.approx(3.0)
-    assert state.count == pytest.approx(3.0)
+def test_squashed_entropy_gradient_moves_saturated_mean_toward_center() -> None:
+    config = small_config()
+    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config)
+    log_std = jnp.full((4096, 1), -1.0)
+    key = jax.random.PRNGKey(11)
+
+    def entropy(mean):
+        latent_mean = jnp.full((4096, 1), mean)
+        return reparameterized_policy_entropy(
+            state.policy, latent_mean, log_std, key
+        ).mean()
+
+    assert jax.grad(entropy)(jnp.asarray(2.0)) < 0.0
+    assert jax.grad(entropy)(jnp.asarray(-2.0)) > 0.0
 
 
 def test_advantage_normalization_is_zero_mean_and_unit_scale() -> None:
@@ -249,6 +277,36 @@ def test_adaptive_learning_rate_responds_to_kl_and_clamps() -> None:
     assert adapt_learning_rate(current, jnp.asarray(0.001), config) > current
     assert adapt_learning_rate(current, jnp.asarray(0.1), config) < current
     assert adapt_learning_rate(current, jnp.asarray(0.01), config) == current
+    assert (
+        adapt_learning_rate(
+            current,
+            jnp.asarray(0.01),
+            config,
+            target_kl_exceeded=True,
+        )
+        < current
+    )
+    assert adapt_learning_rate(jnp.asarray(1.0), jnp.asarray(0.01), config) == (
+        pytest.approx(config.max_learning_rate)
+    )
+    assert adapt_learning_rate(jnp.asarray(1.0e-9), jnp.asarray(0.01), config) == (
+        pytest.approx(config.min_learning_rate)
+    )
+
+
+def test_ppo_metric_aggregation_preserves_maximum_kl_and_any_guard() -> None:
+    metrics = aggregate_ppo_metrics(
+        {
+            "approx_kl": jnp.asarray([[0.001, 0.002], [0.003, 0.08]]),
+            "target_kl_exceeded": jnp.asarray([[0.0, 0.0], [0.0, 1.0]]),
+            "loss": jnp.asarray([[1.0, 2.0], [3.0, 4.0]]),
+        }
+    )
+
+    assert metrics["approx_kl"] == pytest.approx(0.0215)
+    assert metrics["max_approx_kl"] == pytest.approx(0.08)
+    assert metrics["target_kl_exceeded"] == 1.0
+    assert metrics["loss"] == pytest.approx(2.5)
 
 
 def test_finite_ppo_update_changes_parameters() -> None:
@@ -272,7 +330,7 @@ def test_finite_ppo_update_changes_parameters() -> None:
     assert jnp.isfinite(metrics["loss"])
 
 
-def test_nonfinite_gradient_is_identified_and_skipped() -> None:
+def test_nonfinite_training_input_is_identified_and_skipped() -> None:
     config = small_config()
     train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
     batch = transitions(config, train_state.policy)
@@ -286,9 +344,146 @@ def test_nonfinite_gradient_is_identified_and_skipped() -> None:
         jax.random.PRNGKey(1),
         config,
     )
-    assert metrics["nonfinite_update"] > 0
-    assert metrics["nonfinite/loss"] > 0
+    assert metrics["invalid/target"] > 0
+    assert metrics["invalid_update"] > 0
     assert metrics["ppo_update_fraction"] == 0
+
+
+def test_nonfinite_current_policy_log_probability_is_identified_and_skipped() -> None:
+    config = small_config(target_kl=None)
+    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, train_state.policy)
+    poisoned_policy = eqx.tree_at(
+        lambda policy: policy.actor.layers[-1].bias,
+        train_state.policy,
+        jnp.full_like(train_state.policy.actor.layers[-1].bias, 1.0e20),
+    )
+    poisoned_state = train_state.replace(policy=poisoned_policy)
+
+    next_state, metrics = update_ppo(
+        poisoned_state,
+        optimizer,
+        batch,
+        jnp.ones((config.num_steps, config.num_envs)),
+        jnp.ones((config.num_steps, config.num_envs)),
+        jax.random.PRNGKey(1),
+        config,
+    )
+
+    assert metrics["nonfinite/current_log_probability"] == 1
+    assert metrics["nonfinite/log_ratio"] == 1
+    assert metrics["ppo_update_fraction"] == 0
+    assert all(
+        jnp.array_equal(before, after)
+        for before, after in zip(
+            jax.tree.leaves(eqx.filter(poisoned_state.policy, eqx.is_array)),
+            jax.tree.leaves(eqx.filter(next_state.policy, eqx.is_array)),
+            strict=True,
+        )
+    )
+    assert all(
+        jnp.array_equal(before, after)
+        for before, after in zip(
+            jax.tree.leaves(poisoned_state.opt_state),
+            jax.tree.leaves(next_state.opt_state),
+            strict=True,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "field, value, metric",
+    [
+        ("obs", 2.0e4, "invalid/rollout_observation"),
+        ("reward", 2.0e3, "invalid/rollout_reward"),
+        ("value", 2.0e4, "invalid/rollout_value"),
+    ],
+)
+def test_implausible_finite_rollout_is_skipped(field, value, metric) -> None:
+    config = small_config()
+    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, train_state.policy)
+    contaminated = getattr(batch, field).at[0, 0].set(value)
+    batch = batch._replace(**{field: contaminated})
+    next_state, metrics = update_ppo(
+        train_state,
+        optimizer,
+        batch,
+        jnp.ones((config.num_steps, config.num_envs)),
+        jnp.ones((config.num_steps, config.num_envs)),
+        jax.random.PRNGKey(1),
+        config,
+    )
+
+    assert metrics[metric] == 1
+    assert metrics["invalid_update"] == 1
+    assert metrics["ppo_update_fraction"] == 0
+    assert all(
+        jnp.array_equal(before, after)
+        for before, after in zip(
+            jax.tree.leaves(eqx.filter(train_state.policy, eqx.is_array)),
+            jax.tree.leaves(eqx.filter(next_state.policy, eqx.is_array)),
+            strict=True,
+        )
+    )
+
+
+def test_implausible_target_and_gradient_norm_are_skipped() -> None:
+    config = small_config(gradient_norm_max=1.0e-12)
+    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, train_state.policy)
+    targets = jnp.ones((config.num_steps, config.num_envs))
+    _, gradient_metrics = update_ppo(
+        train_state,
+        optimizer,
+        batch,
+        jnp.arange(config.batch_size, dtype=jnp.float32).reshape(targets.shape),
+        targets,
+        jax.random.PRNGKey(1),
+        config,
+    )
+    _, target_metrics = update_ppo(
+        train_state,
+        optimizer,
+        batch,
+        jnp.ones_like(targets),
+        targets.at[0, 0].set(config.target_max_abs * 2.0),
+        jax.random.PRNGKey(1),
+        small_config(),
+    )
+
+    assert gradient_metrics["invalid/gradient_norm"] == 1
+    assert gradient_metrics["ppo_update_fraction"] == 0
+    assert target_metrics["invalid/target"] == 1
+    assert target_metrics["ppo_update_fraction"] == 0
+
+
+def test_action_diagnostics_use_each_worlds_joint_angle_offset() -> None:
+    config = small_config(num_steps=1, total_timesteps=4)
+    train_state, _ = init_train_state(jax.random.PRNGKey(0), 3, 1, config)
+    batch = transitions(config, train_state.policy)
+    joint_angle_offset = jnp.asarray([[0.0], [0.25], [0.5], [1.0]])
+
+    class OffsetEnv:
+        action_size = 1
+        control_timestep = 0.02
+        model = SimpleNamespace(
+            joint_angle_offset=joint_angle_offset,
+            policy_ctrl_indices=jnp.asarray([0]),
+            mj_model=SimpleNamespace(actuator_ctrlrange=jnp.asarray([[-1.0, 1.0]])),
+        )
+
+        def _joint_angle_offset_batch(self, batch_size):
+            assert batch_size == 4
+            return self.model.joint_angle_offset
+
+        def action_to_ctrl(self, action, offset):
+            return action + offset
+
+    metrics = action_diagnostics(batch, OffsetEnv(), train_state.policy)
+
+    assert metrics["ctrl_saturation_fraction"] == pytest.approx(0.25)
+    assert metrics["ctrl_margin_min"] == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize(
@@ -297,8 +492,24 @@ def test_nonfinite_gradient_is_identified_and_skipped() -> None:
         (small_config(num_minibatches=3), "divisible"),
         (small_config(schedule="unknown"), "schedule"),
         (
+            small_config(learning_rate=1.0e-6),
+            "adaptive learning_rate",
+        ),
+        (
+            small_config(learning_rate=1.0e-2),
+            "adaptive learning_rate",
+        ),
+        (
             small_config(policy=ActorCriticConfig(min_log_std=1.0, max_log_std=-1.0)),
             "min_log_std",
+        ),
+        (
+            small_config(policy=ActorCriticConfig(init_log_std=-6.0, min_log_std=-5.0)),
+            "init_log_std",
+        ),
+        (
+            small_config(policy=ActorCriticConfig(init_log_std=2.0, max_log_std=1.0)),
+            "init_log_std",
         ),
     ],
 )

@@ -13,7 +13,11 @@ from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
     BelloLocomotionEnv,
 )
-from bello_mujoco.render import mujoco_action_to_ctrl, mujoco_policy_observation
+from bello_mujoco.render import (
+    mujoco_action_to_ctrl,
+    mujoco_policy_observation,
+    reset_mujoco_data,
+)
 from bello_mujoco.sim import (
     ModelRandomizationConfig,
     SimulationPhysicsConfig,
@@ -27,7 +31,6 @@ from bello_mujoco.terrain import (
     ROUGH_TERRAIN,
     TerrainConfig,
     random_slope_angles,
-    random_slope_angles_batch,
     rough_height_data,
     slope_quat,
     terrain_surface_height,
@@ -43,7 +46,7 @@ def observation_component_slice(env: BelloLocomotionEnv, component_name: str) ->
     raise AssertionError(f"observation component not found: {component_name}")
 
 
-def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
+def test_full_body_model_uses_canonical_policy_partition_by_default(
     full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(full_body_asset)
@@ -51,8 +54,8 @@ def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     assert model.mj_model.nq == 42
     assert model.mj_model.nv == 41
     assert model.mj_model.nu == 35
-    assert model.policy_ctrl_indices.tolist() == list(range(35))
-    assert len(model.hold_ctrl_indices) == 0
+    assert model.policy_ctrl_indices.tolist() == list(range(13))
+    assert model.hold_ctrl_indices.tolist() == list(range(13, 35))
     expected_range = []
     for joint_name in model.actuator_joint_names:
         low, high = configured_actuator_joint_range(
@@ -375,33 +378,83 @@ def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
     assert np.max(ratios) <= 1.05 + 1.0e-6
 
 
-def test_plane_slope_can_be_randomized_per_world(
+def test_model_randomization_is_prefix_invariant_across_batch_sizes(
+    full_body_asset: PreparedAsset,
+) -> None:
+    config = ModelRandomizationConfig(
+        enabled=True,
+        seed=17,
+        joint_origin_range=(-0.001, 0.001),
+        joint_angle_offset_range=(-0.02, 0.02),
+        joint_inertia_scale_range=(0.95, 1.05),
+    )
+    one = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        batch_size=1,
+        model_randomization=config,
+    )
+    four = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        batch_size=4,
+        model_randomization=config,
+    )
+
+    np.testing.assert_array_equal(one.mjx_model.jnt_pos[0], four.mjx_model.jnt_pos[0])
+    np.testing.assert_array_equal(
+        one.mjx_model.body_inertia[0], four.mjx_model.body_inertia[0]
+    )
+    np.testing.assert_array_equal(one.joint_angle_offset[0], four.joint_angle_offset[0])
+
+
+def test_native_episode_reset_clears_all_mujoco_solver_state(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset, load_mjx=False)
+    data = mujoco.MjData(env.model.mj_model)
+    reset_mujoco_data(env, data)
+    data.time = 12.5
+    data.qacc_warmstart[:] = 3.0
+    if data.qfrc_applied.size:
+        data.qfrc_applied[:] = 4.0
+    if data.xfrc_applied.size:
+        data.xfrc_applied[:] = 5.0
+
+    reset_mujoco_data(env, data)
+
+    assert data.time == 0.0
+    assert not np.any(data.qacc_warmstart)
+    assert not np.any(data.qfrc_applied)
+    assert not np.any(data.xfrc_applied)
+    np.testing.assert_allclose(data.qpos, env.model.default_qpos)
+    np.testing.assert_allclose(data.qvel, env.model.default_qvel)
+
+
+def test_plane_slope_stays_static_in_batched_warp_model(
     full_body_asset: PreparedAsset,
 ) -> None:
     terrain = TerrainConfig(
         mode="plane",
         seed=11,
         slope_angle_range=(-np.deg2rad(2.0), np.deg2rad(2.0)),
-        randomize_slope_per_world=True,
     )
     model = load_prepared_bello_model(
         full_body_asset,
         terrain=terrain,
         batch_size=4,
     )
-    expected = np.asarray(
-        [slope_quat(*angles) for angles in random_slope_angles_batch(terrain, 4)]
-    )
+    expected = np.asarray(slope_quat(*random_slope_angles(terrain)))
 
-    np.testing.assert_allclose(model.terrain_geom_quat, expected, atol=1.0e-7)
-    assert not np.allclose(model.terrain_geom_quat[0], model.terrain_geom_quat[1])
+    np.testing.assert_allclose(model.terrain_geom_quat[0], expected, atol=1.0e-7)
     terrain_geom_id = int(model.terrain_geom_ids[0])
     np.testing.assert_allclose(
-        model.mj_model.geom_quat[terrain_geom_id], expected[0], atol=1.0e-7
+        model.mj_model.geom_quat[terrain_geom_id], expected, atol=1.0e-7
     )
     assert model.mjx_model is not None
+    assert np.asarray(model.mjx_model.geom_quat).ndim == 2
     np.testing.assert_allclose(
-        np.asarray(model.mjx_model.geom_quat)[:, terrain_geom_id],
+        np.asarray(model.mjx_model.geom_quat)[terrain_geom_id],
         expected,
         atol=1.0e-7,
     )
@@ -438,8 +491,8 @@ def test_joint_actuator_mode_controls_policy_action_partition(
     )
 
     assert model.mj_model.nu == 35
-    assert len(model.policy_ctrl_indices) == 34
-    assert len(model.hold_ctrl_indices) == 1
+    assert len(model.policy_ctrl_indices) == 12
+    assert len(model.hold_ctrl_indices) == 23
 
 
 def test_policy_joint_angle_offsets_leave_hold_targets_unchanged(
@@ -532,8 +585,8 @@ def test_model_partitions_actuators_by_joint_not_actuator_name(
         )
     )
 
-    assert len(model.policy_ctrl_indices) == 35
-    assert len(model.hold_ctrl_indices) == 0
+    assert len(model.policy_ctrl_indices) == 13
+    assert len(model.hold_ctrl_indices) == 22
 
 
 def test_training_model_uses_simplified_mesh_collision_profile(

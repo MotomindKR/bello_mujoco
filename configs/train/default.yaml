@@ -22,8 +22,11 @@ config:
   ent_coef: 0.01
   vf_coef: 1.0
   max_grad_norm: 1.0
-  normalize_value: true
-  value_norm_eps: 1.0e-08
+  rollout_observation_max_abs: 10000.0
+  rollout_reward_max_abs: 1000.0
+  rollout_value_max_abs: 10000.0
+  target_max_abs: 10000.0
+  gradient_norm_max: 10000.0
   policy:
     hidden_size: 256
     hidden_depth: 2
@@ -34,8 +37,6 @@ config:
     max_log_std: 1.0
     obs_stack_size: 10
     action_limit: 1.0
-    normalize_observations: true
-    observation_norm_eps: 1.0e-08
 asset_config:
   asset: full_body
   collision_mode: box
@@ -237,12 +238,43 @@ env_config:
     interval_seconds: 5.0
     lin_vel_x: [-0.5, 0.5]
     lin_vel_y: [-0.5, 0.5]
+  numerical_safety:
+    max_abs_position: 100.0
+    max_abs_velocity: 1000.0
+    max_abs_acceleration: 1000000.0
+    max_abs_actuator_force: 100000.0
+    max_abs_constraint_force: 1000000.0
+    max_abs_reward_term: 1000.0
   observation:
     privileged: false
+    scale:
+      base_lin_vel: 1.0
+      base_lin_acc: 0.1
+      base_ang_vel: 0.2
+      projected_gravity: 1.0
+      base_height: 1.0
+      foot_phase: 1.0
+      command: 1.0
+      joint_pos: 1.0
+      joint_vel: 0.05
+      actuator_force: 1.0
+      last_action: 1.0
     noise:
       enabled: false
   critic_observation:
     privileged: true
+    scale:
+      base_lin_vel: 2.0
+      base_lin_acc: 0.1
+      base_ang_vel: 0.2
+      projected_gravity: 1.0
+      base_height: 1.0
+      foot_phase: 1.0
+      command: 1.0
+      joint_pos: 1.0
+      joint_vel: 0.05
+      actuator_force: 0.01
+      last_action: 1.0
     noise:
       enabled: false
 reward_config:
@@ -275,7 +307,7 @@ reward_config:
     weight: -1.0
   hip_deviation:
     weight: -0.25
-    lateral_command_index: 0
+    lateral_command_index: 1
     lateral_command_threshold: 0.1
   knee_deviation:
     weight: -0.1

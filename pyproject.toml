@@ -16,6 +16,7 @@ dependencies = [
   "mujoco-mjx[warp]>=3.3.0",
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
+  "packaging>=24.0",
   "pygame-ce>=2.5.7",
   "rerun-sdk==0.34.1",
   "tqdm>=4.67.0",
@@ -48,6 +49,8 @@ packages = ["src/bello_mujoco"]
 [tool.hatch.build.targets.wheel.force-include]
 "configs" = "bello_mujoco/configs"
 "assets/source" = "bello_mujoco/assets/source"
+"pyproject.toml" = "bello_mujoco/_runtime/pyproject.toml"
+"uv.lock" = "bello_mujoco/_runtime/uv.lock"
 
 [tool.uv]
 environments = [

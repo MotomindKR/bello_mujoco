@@ -13,6 +13,7 @@ from mujoco import mjx
 import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
@@ -27,14 +28,14 @@ from bello_mujoco.contracts import (
 from bello_mujoco.terrain import (
     ROBOT_ONLY_TERRAIN,
     TerrainConfig,
-    random_slope_angles_batch,
     runtime_mjcf_path,
-    slope_quat,
     terrain_surface_height,
 )
 
 DEFAULT_CONTACT_BUDGET_PER_ENV = 32
 DEFAULT_WARP_NJMAX = 256
+DEFAULT_IMU_BODY_NAME = ImuSensorConfig().body_name
+IMU_SITE_NAME = "bello_imu_site"
 ANKLE_TENDON_LOGICAL_JOINT = {
     "left_ankle_motor_1": "left_ankle_pitch_joint",
     "left_ankle_motor_2": "left_ankle_roll_joint",
@@ -181,6 +182,7 @@ class BelloModel:
     actuator_qpos_indices: np.ndarray
     actuator_qvel_indices: np.ndarray
     hold_ctrl_indices: np.ndarray
+    imu_body_name: str
     actuator_coordinate_transform: np.ndarray
     joint_angle_offset: np.ndarray
     default_joint_target: np.ndarray
@@ -215,6 +217,33 @@ class BelloModel:
         )
 
 
+def resolve_imu_body_name(
+    mj_model: mujoco.MjModel, configured_body_name: str | None
+) -> str:
+    """Resolve the actor IMU frame from the generated site or source config."""
+
+    if configured_body_name is not None and not configured_body_name:
+        raise ValueError("configured IMU body name must not be empty")
+    site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, IMU_SITE_NAME)
+    if site_id >= 0:
+        body_id = int(mj_model.site_bodyid[site_id])
+        site_body_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+        if site_body_name is None:
+            raise ValueError(f"generated IMU site {IMU_SITE_NAME!r} has no named body")
+        if configured_body_name is not None and configured_body_name != site_body_name:
+            raise ValueError(
+                "configured IMU body does not match the generated sensor site: "
+                f"{configured_body_name!r} != {site_body_name!r}"
+            )
+        return site_body_name
+
+    body_name = configured_body_name or DEFAULT_IMU_BODY_NAME
+    body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    if body_id < 0:
+        raise ValueError(f"configured IMU body not found in model: {body_name!r}")
+    return body_name
+
+
 def load_bello_model(
     config: AssetPrepConfig = AssetPrepConfig(),
     *,
@@ -236,6 +265,7 @@ def load_bello_model(
         simulation_physics=simulation_physics,
         model_randomization=model_randomization,
         actuator_config=config.actuator_config,
+        imu_body_name=config.imu_config.body_name,
         spawn_clearance=spawn_clearance,
         use_viewer_model=use_viewer_model,
         load_mjx=load_mjx,
@@ -251,6 +281,7 @@ def load_prepared_bello_model(
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(),
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     actuator_config: ActuatorConfig = ActuatorConfig(),
+    imu_body_name: str | None = None,
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     use_viewer_model: bool = False,
     load_mjx: bool = True,
@@ -265,6 +296,7 @@ def load_prepared_bello_model(
         simulation_physics=simulation_physics,
         model_randomization=model_randomization,
         actuator_config=actuator_config,
+        imu_body_name=imu_body_name,
         spawn_clearance=spawn_clearance,
         load_mjx=load_mjx,
     )
@@ -280,6 +312,7 @@ def _load_bello_model_from_path(
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(),
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
     actuator_config: ActuatorConfig = ActuatorConfig(),
+    imu_body_name: str | None = None,
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     load_mjx: bool = True,
 ) -> BelloModel:
@@ -299,6 +332,7 @@ def _load_bello_model_from_path(
         viewer_path = runtime_mjcf_path(viewer_path, terrain)
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
+    imu_body_name = resolve_imu_body_name(mj_model, imu_body_name)
 
     actuator_names = tuple(
         mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id)
@@ -382,15 +416,11 @@ def _load_bello_model_from_path(
     )
     if randomized_fields is not None:
         _apply_native_model_sample(mj_model, randomized_fields, sample=0)
-    terrain_geom_quat, randomized_geom_quat = _terrain_geom_quat_samples(
-        mj_model,
-        terrain,
-        terrain_geom_ids,
-        batch_size=batch_size,
+    terrain_geom_quat = (
+        np.asarray(mj_model.geom_quat[int(terrain_geom_ids[0])], dtype=np.float32)[None]
+        if terrain_geom_ids.size
+        else np.zeros((1, 4), dtype=np.float32)
     )
-    if randomized_geom_quat is not None:
-        mj_model.geom_quat[:] = randomized_geom_quat[0]
-        mujoco.mj_setConst(mj_model, mujoco.MjData(mj_model))
 
     _apply_simulation_physics(
         mj_model,
@@ -407,8 +437,6 @@ def _load_bello_model_from_path(
                 jnt_pos=jnp.asarray(randomized_fields["jnt_pos"]),
                 body_inertia=jnp.asarray(randomized_fields["body_inertia"]),
             )
-        if randomized_geom_quat is not None:
-            model_updates["geom_quat"] = jnp.asarray(randomized_geom_quat)
         if model_updates:
             mjx_model = mjx_model.replace(**model_updates)
 
@@ -458,6 +486,7 @@ def _load_bello_model_from_path(
         actuator_qpos_indices=actuator_qpos_indices,
         actuator_qvel_indices=actuator_qvel_indices,
         hold_ctrl_indices=hold_ctrl_indices,
+        imu_body_name=imu_body_name,
         actuator_coordinate_transform=actuator_coordinate_transform_matrix,
         joint_angle_offset=(
             randomized_fields["joint_angle_offset"]
@@ -496,7 +525,6 @@ def _randomized_model_fields(
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}")
 
-    rng = np.random.default_rng(config.seed)
     joint_ids = np.unique(np.asarray(actuator_joint_ids, dtype=np.int32))
     joint_body_ids = np.unique(
         np.asarray(mj_model.jnt_bodyid[joint_ids], dtype=np.int32)
@@ -506,19 +534,29 @@ def _randomized_model_fields(
         np.asarray(mj_model.jnt_pos, dtype=np.float32),
         (batch_size, mj_model.njnt, 3),
     ).copy()
-    jnt_pos[:, joint_ids] += rng.uniform(
-        *config.joint_origin_range,
-        size=(batch_size, joint_ids.size, 3),
-    ).astype(np.float32)
+    random_generators = tuple(
+        np.random.default_rng(np.random.SeedSequence((config.seed, world_index)))
+        for world_index in range(batch_size)
+    )
+    for world_index, rng in enumerate(random_generators):
+        jnt_pos[world_index, joint_ids] += rng.uniform(
+            *config.joint_origin_range,
+            size=(joint_ids.size, 3),
+        ).astype(np.float32)
 
     body_inertia = np.broadcast_to(
         np.asarray(mj_model.body_inertia, dtype=np.float32),
         (batch_size, mj_model.nbody, 3),
     ).copy()
-    inertia_scale = rng.uniform(
-        *config.joint_inertia_scale_range,
-        size=(batch_size, joint_body_ids.size, 1),
-    ).astype(np.float32)
+    inertia_scale = np.stack(
+        [
+            rng.uniform(
+                *config.joint_inertia_scale_range,
+                size=(joint_body_ids.size, 1),
+            ).astype(np.float32)
+            for rng in random_generators
+        ]
+    )
     body_inertia[:, joint_body_ids] *= inertia_scale
 
     offset_indices = (
@@ -527,10 +565,11 @@ def _randomized_model_fields(
         else np.asarray(policy_ctrl_indices, dtype=np.int32)
     )
     joint_angle_offset = np.zeros((batch_size, mj_model.nu), dtype=np.float32)
-    joint_angle_offset[:, offset_indices] = rng.uniform(
-        *config.joint_angle_offset_range,
-        size=(batch_size, offset_indices.size),
-    ).astype(np.float32)
+    for world_index, rng in enumerate(random_generators):
+        joint_angle_offset[world_index, offset_indices] = rng.uniform(
+            *config.joint_angle_offset_range,
+            size=offset_indices.size,
+        ).astype(np.float32)
 
     return {
         "jnt_pos": jnt_pos,
@@ -548,36 +587,6 @@ def _apply_native_model_sample(
     mj_model.jnt_pos[:] = fields["jnt_pos"][sample]
     mj_model.body_inertia[:] = fields["body_inertia"][sample]
     mujoco.mj_setConst(mj_model, mujoco.MjData(mj_model))
-
-
-def _terrain_geom_quat_samples(
-    mj_model: mujoco.MjModel,
-    config: TerrainConfig,
-    terrain_geom_ids: np.ndarray,
-    *,
-    batch_size: int,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    if terrain_geom_ids.size == 0:
-        return np.zeros((1, 4), dtype=np.float32), None
-    terrain_geom_id = int(terrain_geom_ids[0])
-    if not config.randomize_slope_per_world:
-        return (
-            np.asarray(mj_model.geom_quat[terrain_geom_id], dtype=np.float32)[None],
-            None,
-        )
-    if config.mode == "none":
-        raise ValueError("per-world terrain slope randomization requires terrain")
-
-    angles = random_slope_angles_batch(config, batch_size)
-    terrain_quat = np.asarray(
-        [slope_quat(roll, pitch) for roll, pitch in angles], dtype=np.float32
-    )
-    geom_quat = np.broadcast_to(
-        np.asarray(mj_model.geom_quat, dtype=np.float32),
-        (batch_size, mj_model.ngeom, 4),
-    ).copy()
-    geom_quat[:, terrain_geom_id] = terrain_quat
-    return terrain_quat, geom_quat
 
 
 def _apply_simulation_physics(
@@ -693,6 +702,34 @@ def geom_lower_z(
         return transformed_vertices_min_z(data, geom_id, corners)
     if geom_type == mujoco.mjtGeom.mjGEOM_SPHERE:
         return float(data.geom_xpos[geom_id, 2] - mj_model.geom_size[geom_id, 0])
+    if geom_type in {
+        mujoco.mjtGeom.mjGEOM_CAPSULE,
+        mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+        mujoco.mjtGeom.mjGEOM_CYLINDER,
+    }:
+        rotation = np.asarray(data.geom_xmat[geom_id]).reshape(3, 3)
+        local_down = rotation.T @ np.asarray([0.0, 0.0, -1.0])
+        size = np.asarray(mj_model.geom_size[geom_id])
+        if geom_type == mujoco.mjtGeom.mjGEOM_CAPSULE:
+            support = size[0] * local_down
+            support[2] += np.sign(local_down[2]) * size[1]
+        elif geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID:
+            denominator = max(float(np.linalg.norm(size * local_down)), 1.0e-12)
+            support = size**2 * local_down / denominator
+        else:
+            radial = local_down[:2]
+            radial_norm = float(np.linalg.norm(radial))
+            radial_support = (
+                size[0] * radial / radial_norm if radial_norm > 1.0e-12 else np.zeros(2)
+            )
+            support = np.asarray(
+                [
+                    radial_support[0],
+                    radial_support[1],
+                    np.sign(local_down[2]) * size[1],
+                ]
+            )
+        return float(data.geom_xpos[geom_id, 2] + (rotation @ support)[2])
     return float(data.geom_xpos[geom_id, 2] - mj_model.geom_rbound[geom_id])
 
 

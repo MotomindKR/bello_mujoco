@@ -85,8 +85,8 @@ the remaining 16 actuated joints. Wrist-yaw and finger coordinates are absent
 from that prepared morphology. Its deployable actor frame is:
 
 ```text
-root-frame linear acceleration[3]
-root-frame angular velocity[3]
+pelvis-mounted IMU-frame linear acceleration[3]
+pelvis-mounted IMU-frame angular velocity[3]
 projected gravity[3]
 left/right foot phase sin/cos[4]
 command[3]
@@ -95,11 +95,22 @@ policy joint velocity[13]
 last action[13]
 ```
 
-With commands enabled this is 55 values per frame. The privileged critic adds
-root-frame linear velocity, root height, and policy-actuator force for 72 values
-per frame. The package training default stacks ten frames, producing actor and
+With commands enabled this is 55 values per frame. The IMU terms have the same
+specific-force and gyro semantics as the configured pelvis-mounted MuJoCo
+accelerometer and gyro. The privileged critic adds root-frame linear velocity,
+terrain-relative root clearance, and policy-actuator force for 72 values per
+frame. The package training default stacks ten frames, producing actor and
 critic inputs of 550 and 720 values. Observation noise and scaling do not change
 the layout.
+
+The generated IMU site is the source of truth for its body frame. When sensor
+generation is disabled, model loading carries the same body name from the asset
+configuration; the environment does not expose an independent frame override.
+
+The default actor scales linear acceleration by `0.1`, angular velocity by
+`0.2`, and joint velocity by `0.05`. The critic uses the same shared-component
+scales, plus `2.0` for root linear velocity and `0.01` for actuator force. These
+fixed physical scales replace mutable online normalization statistics.
 
 Environment configuration covers:
 
@@ -107,7 +118,8 @@ Environment configuration covers:
 - observation scaling, noise, and temporal stacking;
 - velocity commands, standing samples, and periodic command resampling;
 - reset distributions, pushes, contact filtering, and episode limits;
-- plane, randomized-slope, and rough terrain;
+- numerical bounds for finite physics excursions and constraint forces;
+- flat or seeded-slope planes and rough terrain;
 - joint-origin, target-offset, and inertia randomization;
 - reward, termination, gait, and safety terms.
 
@@ -121,14 +133,14 @@ The maintained experiment recipes are:
 ```text
 experiments/train/smoke.yaml
 experiments/train/locomotion.yaml
-experiments/train/locomotion_plane_slope.yaml
 ```
 
 The smoke recipe exercises the real Bello/MJX-Warp PPO path with a small
-budget. The standard recipe is the maintained locomotion baseline and uses
-independently tilted planes. The plane-slope recipe keeps that terrain treatment
-with a longer budget and different optimizer/reward settings. Both preserve the
-same physical ankle transmission and joint-space policy contract.
+budget. The standard recipe is the maintained locomotion baseline and uses one
+seeded sloped plane per run, viewed from randomized robot headings. It preserves
+the physical ankle transmission and joint-space policy contract; longer
+experiments override its training budget explicitly rather than duplicating the
+recipe.
 
 Run a recipe with:
 
@@ -140,8 +152,8 @@ uv run bello-train-ppo \
 
 Training uses a local JAX PPO implementation with Equinox policies and Optax.
 It supports separate actor and critic observations, observation stacking and
-normalization, GAE, configurable learning-rate schedules, KL guardrails,
-nonfinite-update rejection, Orbax checkpoints, W&B metrics, and rollout video.
+explicit scaling, GAE, configurable learning-rate schedules, KL guardrails,
+invalid-update rejection, Orbax checkpoints, W&B metrics, and rollout video.
 
 See [training.md](training.md) for the maintained training contract and smoke
 commands.
@@ -149,8 +161,10 @@ commands.
 ## Checkpoints and evaluation
 
 Atomic checkpoints contain policy/optimizer state, exact update-boundary
-continuation state, and strict metadata needed to rebuild the policy and
-environment. Evaluate one with:
+continuation state, strict metadata, and fingerprints for source/generated
+assets and their referenced files, exact runtime scenes, implementation code,
+`uv.lock`, and active transitive runtime distribution versions. Evaluate one
+with:
 
 ```bash
 uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
@@ -215,8 +229,11 @@ Run the repository gate:
 ```bash
 uv run ruff format --check src tests
 uv run ruff check src tests
-uv run pytest
+./scripts/test.sh
 ```
+
+The full runner uses a fresh CPU JAX process for each test module to bound
+compiler-cache memory. Run a focused module directly with `uv run pytest`.
 
 For a real simulation and optimizer smoke, use the maintained smoke recipe.
 Focused tests are organized by subsystem under `tests/`, including assets,
@@ -236,6 +253,7 @@ W&B runs, or videos. Common paths are:
 .wandb/
 wandb/
 checkpoints/
+artifacts/
 outputs/
 /tmp/bello-mujoco-assets/
 ```
