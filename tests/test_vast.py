@@ -786,8 +786,8 @@ def test_pipeline_always_destroys_created_instance(
     assert api.destroyed == [456]
     assert api.created[0][1]["label"].startswith("bello-")
     assert api.created[0][1]["runtype"] == "ssh_direc ssh_proxy"
-    assert "CONTAINER_ID" in api.created[0][1]["onstart"]
-    assert "CONTAINER_API_KEY" in api.created[0][1]["onstart"]
+    assert "CONTAINER_ID" in api.created[0][1]["onstart_cmd"]
+    assert "CONTAINER_API_KEY" in api.created[0][1]["onstart_cmd"]
     assert "ssh" not in api.created[0][1]
     assert "direct" not in api.created[0][1]
     assert not (tmp_path / ".vast" / "active_instance.json").exists()

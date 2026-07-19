@@ -811,7 +811,7 @@ def create_available_instance(
                 label=label,
                 runtype="ssh_direc ssh_proxy",
                 cancel_unavail=True,
-                onstart=watchdog_onstart_script(config),
+                onstart_cmd=watchdog_onstart_script(config),
             )
         except Exception as exc:
             instance_id = recover_labeled_instance(
