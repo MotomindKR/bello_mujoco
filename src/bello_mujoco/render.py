@@ -394,21 +394,23 @@ def mujoco_policy_observation(
     if observation.command and env.command_config.enabled:
         parts.append(mujoco_scaled(command, scale.command))
     if observation.joint_pos:
-        qpos_idx = env._observed_qpos_indices(observation)
+        actuator_idx = env._observed_actuator_indices(observation)
         parts.append(
             mujoco_scaled(
                 np.asarray(
-                    mj_data.qpos[qpos_idx] - env.model.default_qpos[qpos_idx],
+                    mj_data.actuator_length[actuator_idx]
+                    - env.model.default_ctrl[actuator_idx],
                     dtype=np.float32,
                 ),
                 scale.joint_pos,
             )
         )
     if observation.joint_vel:
+        actuator_idx = env._observed_actuator_indices(observation)
         parts.append(
             mujoco_scaled(
                 np.asarray(
-                    mj_data.qvel[env._observed_qvel_indices(observation)],
+                    mj_data.actuator_velocity[actuator_idx],
                     dtype=np.float32,
                 ),
                 scale.joint_vel,

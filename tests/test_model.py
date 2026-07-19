@@ -76,6 +76,51 @@ def test_differential_ankle_policy_actions_are_direct_motor_targets(
     assert ctrl[motor_2_id] == pytest.approx(model.default_ctrl[motor_2_id])
 
 
+def test_differential_ankle_observations_use_motor_coordinates(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(
+        full_body_actuated_ankle_tendon_asset,
+        terrain=FLAT_TERRAIN,
+    )
+    env = BelloLocomotionEnv(model)
+    state, _ = env.reset()
+    motor_1_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_1_pos",
+    )
+    motor_2_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_2_pos",
+    )
+    pitch_qpos = int(model.actuator_qpos_indices[motor_1_id])
+    roll_qpos = int(model.actuator_qpos_indices[motor_2_id])
+    pitch_qvel = int(model.actuator_qvel_indices[motor_1_id])
+    roll_qvel = int(model.actuator_qvel_indices[motor_2_id])
+    qpos = state.data.qpos.at[pitch_qpos].add(0.10).at[roll_qpos].add(0.02)
+    qvel = state.data.qvel.at[pitch_qvel].set(0.30).at[roll_qvel].set(-0.10)
+    data = env._populate_actuator_kinematics(state.data.replace(qpos=qpos, qvel=qvel))
+    state = state.replace(data=data)
+
+    terms = env._frame_terms(state, env.config.observation)
+    position = terms[8]
+    velocity = terms[9]
+    motor_1_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
+    motor_2_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_2_id)[0])
+
+    assert position[motor_1_action] == pytest.approx(-0.08)
+    assert position[motor_2_action] == pytest.approx(0.12)
+    assert velocity[motor_1_action] == pytest.approx(-0.40)
+    assert velocity[motor_2_action] == pytest.approx(0.20)
+    np.testing.assert_allclose(
+        np.asarray(data.actuator_length)[[motor_1_id, motor_2_id]],
+        np.asarray(model.default_ctrl)[[motor_1_id, motor_2_id]] + [-0.08, 0.12],
+        atol=1.0e-6,
+    )
+
+
 def test_model_can_load_without_mjx_for_cpu_only_viewers(
     full_body_asset: PreparedAsset,
 ) -> None:

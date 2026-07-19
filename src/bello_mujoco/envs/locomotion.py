@@ -714,6 +714,7 @@ class BelloLocomotionEnv:
         )
         data = self._apply_reset_randomization(data, reset_rng, world_id)
         data = mjx.kinematics(self.model.mjx_model, data)
+        data = self._populate_actuator_kinematics(data)
         state = BelloState(
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
@@ -764,6 +765,7 @@ class BelloLocomotionEnv:
             )(command, reset_keys, world_ids)
         data = state.data.replace(_impl=state.data._impl.replace(nworld=batch_size))
         data = mjx.kinematics(self.model.mjx_model, data)
+        data = jax.vmap(self._populate_actuator_kinematics)(data)
         data = data.replace(
             ctrl=jax.vmap(self._action_to_ctrl)(
                 jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
@@ -1445,11 +1447,12 @@ class BelloLocomotionEnv:
         self, state: BelloState, observation: ObservationConfig
     ) -> tuple[jax.Array, ...]:
         data = state.data
-        qpos_idx = jnp.asarray(self._observed_qpos_indices(observation))
-        qvel_idx = jnp.asarray(self._observed_qvel_indices(observation))
         actuator_idx = jnp.asarray(self._observed_actuator_indices(observation))
-        joint_pos = data.qpos[qpos_idx] - jnp.asarray(self.model.default_qpos)[qpos_idx]
-        joint_vel = data.qvel[qvel_idx]
+        joint_pos = (
+            data.actuator_length[actuator_idx]
+            - jnp.asarray(self.model.default_ctrl)[actuator_idx]
+        )
+        joint_vel = data._impl.actuator_velocity[actuator_idx]
         actuator_force = data.actuator_force[actuator_idx]
         base_lin_vel = self._link_lin_vel(state, self.config.root_link)
         base_lin_acc = self._link_body_lin_acc(state, self.config.root_link)
@@ -1475,10 +1478,20 @@ class BelloLocomotionEnv:
             state.last_action,
         )
 
-    def _observed_qpos_indices(self, observation: ObservationConfig):
-        if observation.joint_mode == "policy":
-            return self.model.policy_qpos_indices
-        return self.model.actuator_qpos_indices
+    def _populate_actuator_kinematics(self, data: mjx.Data) -> mjx.Data:
+        qpos = data.qpos[jnp.asarray(self.model.actuator_qpos_indices)]
+        qvel = data.qvel[jnp.asarray(self.model.actuator_qvel_indices)]
+        transform = jnp.asarray(self.model.actuator_coordinate_transform)
+        actuator_length = jnp.matmul(
+            transform, qpos, precision=jax.lax.Precision.HIGHEST
+        )
+        actuator_velocity = jnp.matmul(
+            transform, qvel, precision=jax.lax.Precision.HIGHEST
+        )
+        return data.replace(
+            actuator_length=actuator_length,
+            _impl=data._impl.replace(actuator_velocity=actuator_velocity),
+        )
 
     def _actuator_indices_named(self, *suffixes: str) -> np.ndarray:
         indices = [
@@ -1496,11 +1509,6 @@ class BelloLocomotionEnv:
         )
         weights[low_weight_indices] = 0.01
         return jnp.asarray(weights)
-
-    def _observed_qvel_indices(self, observation: ObservationConfig):
-        if observation.joint_mode == "policy":
-            return self.model.policy_qvel_indices
-        return self.model.actuator_qvel_indices
 
     def _observed_actuator_indices(self, observation: ObservationConfig):
         if observation.joint_mode == "policy":
@@ -1719,7 +1727,11 @@ class BelloLocomotionEnv:
             last_action=state.last_action,
             actuator_force=next_state.data.actuator_force,
             actuator_velocity=(
-                jnp.asarray(self.model.actuator_coordinate_transform) @ joint_vel
+                jnp.matmul(
+                    jnp.asarray(self.model.actuator_coordinate_transform),
+                    joint_vel,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
             ),
             joint_limit_low=self._actuator_joint_limit_low(),
             joint_limit_high=self._actuator_joint_limit_high(),

@@ -273,10 +273,14 @@ ankle. Setting `actuate_tendons: true` additionally replaces the direct ankle
 pitch/roll actuators with position actuators on those tendons. In that mode the
 four ankle policy actions are direct residual targets for the four motor/tendon
 coordinates; the environment does not transform policy outputs from virtual
-pitch/roll targets. Joint position and velocity observations remain physical
-ankle pitch/roll coordinates, which can be reconstructed from the paired motor
-encoders. Explicit ankle joint action scales are combined conservatively for
-each differential motor; otherwise the normal control-range rule applies.
+pitch/roll targets. Position and velocity observations also use MuJoCo
+transmission-space actuator coordinates (`actuator_length` and
+`actuator_velocity`). Thus the differential ankle observations are the paired
+motor coordinates rather than reconstructed ankle pitch/roll. Physical joint
+qpos/qvel remain available internally for rewards, limits, and privileged
+simulation calculations. Explicit ankle joint action scales are combined
+conservatively for each differential motor; otherwise the normal control-range
+rule applies.
 
 Default full-body actuator effort limits follow the Robstride peak-torque
 groups:
