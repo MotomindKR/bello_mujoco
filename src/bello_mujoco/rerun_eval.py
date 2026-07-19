@@ -5,7 +5,6 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Literal
 
 import jax
@@ -20,7 +19,7 @@ from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.policy import (
     apply_actor,
     init_observation_stack,
-    policy_log_std,
+    sample_actor_action,
     stacked_observation,
     update_observation_stack,
 )
@@ -65,6 +64,12 @@ class GamepadInput:
     exit_requested: bool = False
     connection_changed: bool = False
     controller_name: str | None = None
+
+
+@dataclass(frozen=True)
+class EpisodeDisplayState:
+    episode_return: jax.Array
+    episode_length: jax.Array
 
 
 def apply_deadzone(value: float, deadzone: float) -> float:
@@ -365,15 +370,7 @@ class RerunEvaluationLogger:
         self.recording.log(
             "metrics/actuator/force", rr.Scalars(np.asarray(mj_data.actuator_force))
         )
-        joint_target = np.asarray(self.env.model.default_joint_target).copy()
-        joint_target += np.asarray(self.env.model.joint_angle_offset[0])
-        policy_indices = np.asarray(self.env.model.policy_ctrl_indices)
-        joint_target[policy_indices] += self.env.model.policy_action_scale * action
-        joint_target = np.clip(
-            joint_target,
-            self.env.model.joint_target_low,
-            self.env.model.joint_target_high,
-        )
+        joint_target = np.asarray(self.env.action_to_joint_target(action))
         for action_index, actuator_name in enumerate(self.action_names):
             actuator_index = self.env.model.policy_ctrl_indices[action_index]
             qpos_index = self.env.model.actuator_qpos_indices[actuator_index]
@@ -727,12 +724,11 @@ def run_rerun_evaluation(
             action = action_mean
             if stochastic_actions:
                 action_key, action_rng = jax.random.split(action_key)
-                action = action_mean + jnp.exp(
-                    policy_log_std(policy)
-                ) * jax.random.normal(action_rng, action_mean.shape)
+                action = sample_actor_action(
+                    policy, stacked_observation(obs_stack), action_rng
+                )
             requested_action = action
-            if env.action_clip is not None:
-                action = jnp.clip(action, -env.action_clip, env.action_clip)
+            action = jnp.clip(action, -env.action_clip, env.action_clip)
             action_mean_np = np.asarray(jax.device_get(action_mean), dtype=np.float32)
             requested_action_np = np.asarray(
                 jax.device_get(requested_action), dtype=np.float32
@@ -793,10 +789,10 @@ def run_rerun_evaluation(
                     undesired,
                     self_collision,
                 ) = contact_terms
-                foot_contact, foot_contact_debounce_time = env._debounce_foot_contact(
+                foot_contact, foot_contact_debounce_time = env.debounce_foot_contact(
                     next_state, raw_foot_contact, done
                 )
-                reward, reward_info = env._reward(
+                reward, reward_info = env.reward(
                     state,
                     next_state,
                     jnp.asarray(action_np),
@@ -812,7 +808,7 @@ def run_rerun_evaluation(
                 done_info = {
                     key: jnp.asarray(value) for key, value in done_flags.items()
                 }
-                reward, reward_info = env._sanitize_nonfinite_reward(
+                reward, reward_info = env.sanitize_nonfinite_reward(
                     reward, reward_info, done_info
                 )
                 episode_return = episode_return + reward
@@ -824,13 +820,13 @@ def run_rerun_evaluation(
                     foot_air_time,
                     foot_contact_time,
                     last_foot_contact,
-                ) = env._next_foot_memory(next_state, foot_contact, done)
+                ) = env.next_foot_memory(next_state, foot_contact, done)
                 info = {
                     **mujoco_eval_info(env, mj_data, command=current_command),
                     **done_info,
                     **reward_info,
                 }
-                display_state = SimpleNamespace(
+                display_state = EpisodeDisplayState(
                     episode_return=episode_return,
                     episode_length=episode_length,
                 )

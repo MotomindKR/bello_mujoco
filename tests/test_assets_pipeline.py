@@ -1,12 +1,10 @@
 import xml.etree.ElementTree as ET
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import mujoco
 import numpy as np
 import pytest
-import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
 from bello_mujoco.assets_pipeline.mesh import (
@@ -15,7 +13,6 @@ from bello_mujoco.assets_pipeline.mesh import (
     preserve_fixed_link_bodies,
     replace_end_effectors_with_spheres,
 )
-from bello_mujoco.assets_pipeline.mjcf import compile_urdf_to_mjcf
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
@@ -23,61 +20,12 @@ from bello_mujoco.assets_pipeline.prepare import (
     prepare_asset,
     read_prepared_asset_manifest,
     resolved_output_root,
+    validate_actuator_joint_contract,
     write_prepared_asset_manifest,
 )
-from bello_mujoco.envs.locomotion import (
-    BadOrientationDoneConfig,
-    BaseHeightDoneConfig,
-    BelloLocomotionEnv,
-    DoneConfig,
-)
-from bello_mujoco.envs.rewards import (
-    AngVelXYRewardConfig,
-    BaseHeightRewardConfig,
-    FlatOrientationRewardConfig,
-    LinVelZRewardConfig,
-    RewardConfig,
-    TrackAngVelZRewardConfig,
-    TrackLinVelXYRewardConfig,
-)
 
 
-def test_end_effector_sphere_replacement_prunes_selected_subtree() -> None:
-    root = ET.Element("robot", {"name": "test"})
-    for link_name in ("r_wrist_link", "r_eef_link", "r_gripper_link"):
-        ET.SubElement(root, "link", {"name": link_name})
-    revolute = ET.SubElement(
-        root, "joint", {"name": "right_wrist_yaw_joint", "type": "revolute"}
-    )
-    ET.SubElement(revolute, "origin", {"xyz": "5e-06 -0.0275 -0.102", "rpy": "0 0 0"})
-    ET.SubElement(revolute, "parent", {"link": "r_wrist_link"})
-    ET.SubElement(revolute, "child", {"link": "r_eef_link"})
-    fixed = ET.SubElement(
-        root, "joint", {"name": "right_gripper_joint", "type": "fixed"}
-    )
-    ET.SubElement(fixed, "parent", {"link": "r_eef_link"})
-    ET.SubElement(fixed, "child", {"link": "r_gripper_link"})
-
-    replace_end_effectors_with_spheres(root, "right")
-
-    links = {link.get("name") for link in root.findall("link")}
-    joints = {joint.get("name") for joint in root.findall("joint")}
-    sphere_joint = root.find("./joint[@name='r_end_effector_sphere_fixed']")
-    sphere_link = root.find("./link[@name='r_end_effector_sphere_link']")
-
-    assert "r_wrist_link" in links
-    assert "r_eef_link" not in links
-    assert "r_gripper_link" not in links
-    assert "right_wrist_yaw_joint" not in joints
-    assert "right_gripper_joint" not in joints
-    assert sphere_joint is not None
-    assert sphere_joint.find("parent").attrib["link"] == "r_wrist_link"
-    assert sphere_joint.find("origin").attrib["xyz"] == "5e-06 -0.0275 -0.122"
-    assert sphere_link is not None
-    assert sphere_link.find("./collision/geometry/sphere").attrib["radius"] == "0.0325"
-
-
-def test_articulated_sphere_replacement_preserves_wrist_yaw_joint() -> None:
+def test_end_effector_sphere_replacement_prunes_both_subtrees() -> None:
     root = ET.Element("robot", {"name": "test"})
     for side in ("r", "l"):
         for suffix in ("wrist_link", "eef_link", "gripper_link"):
@@ -96,16 +44,29 @@ def test_articulated_sphere_replacement_preserves_wrist_yaw_joint() -> None:
         ET.SubElement(fixed, "parent", {"link": f"{side}_eef_link"})
         ET.SubElement(fixed, "child", {"link": f"{side}_gripper_link"})
 
-    replace_end_effectors_with_spheres(root, "both_articulated")
+    replace_end_effectors_with_spheres(root, "both")
 
     for side, name in (("r", "right"), ("l", "left")):
-        joint = root.find(f"./joint[@name='{name}_wrist_yaw_joint']")
+        links = {link.get("name") for link in root.findall("link")}
+        joints = {joint.get("name") for joint in root.findall("joint")}
+        sphere_joint = root.find(f"./joint[@name='{side}_end_effector_sphere_fixed']")
         sphere = root.find(f"./link[@name='{side}_end_effector_sphere_link']")
-        assert joint is not None
-        assert joint.get("type") == "revolute"
-        assert joint.find("child").get("link") == f"{side}_end_effector_sphere_link"
+
+        assert f"{side}_wrist_link" in links
+        assert f"{side}_eef_link" not in links
+        assert f"{side}_gripper_link" not in links
+        assert f"{name}_wrist_yaw_joint" not in joints
+        assert f"{name}_gripper_joint" not in joints
+        assert sphere_joint is not None
+        assert sphere_joint.find("parent").get("link") == f"{side}_wrist_link"
+        assert sphere_joint.find("origin").get("xyz") == "0 0 -0.122"
         assert sphere is not None
-        assert sphere.find("./collision/origin").get("xyz") == "0 0 -0.02"
+        assert sphere.find("./collision/geometry/sphere").get("radius") == "0.0325"
+
+
+def test_end_effector_sphere_replacement_rejects_removed_modes() -> None:
+    with pytest.raises(ValueError, match="must be 'none' or 'both'"):
+        replace_end_effectors_with_spheres(ET.Element("robot"), "right")
 
 
 def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
@@ -133,21 +94,68 @@ def test_prepared_full_body_preserves_pelvis_body(
     assert model.sensor_type[sensor_id] == mujoco.mjtSensor.mjSENS_ACCELEROMETER
 
 
-def test_ankle_differential_tendons_are_optional_mujoco_coordinates(
-    full_body_asset: PreparedAsset,
-    full_body_ankle_tendon_asset: PreparedAsset,
-) -> None:
-    direct_joint_model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
-    differential_model = mujoco.MjModel.from_xml_path(
-        str(full_body_ankle_tendon_asset.mjcf_path)
+def test_prepared_both_sphere_mode_removes_wrist_subtrees(tmp_path: Path) -> None:
+    prepared = prepare_asset(
+        AssetPrepConfig(
+            output_root=tmp_path,
+            end_effector_sphere_mode="both",
+        )
+    )
+    model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
+
+    assert model.nu == 29
+    for side, prefix in (("left", "l"), ("right", "r")):
+        assert (
+            mujoco.mj_name2id(
+                model,
+                mujoco.mjtObj.mjOBJ_JOINT,
+                f"{side}_wrist_yaw_joint",
+            )
+            == -1
+        )
+        assert (
+            mujoco.mj_name2id(
+                model,
+                mujoco.mjtObj.mjOBJ_BODY,
+                f"{prefix}_end_effector_sphere_link",
+            )
+            >= 0
+        )
+
+
+def test_morphology_pruning_removes_only_absent_actuator_configs() -> None:
+    config = AssetPrepConfig(
+        end_effector_sphere_mode="both",
+        joint_availability=JointAvailabilityConfig(waist_roll=False),
     )
 
-    assert direct_joint_model.ntendon == 0
-    assert differential_model.ntendon == 4
-    assert differential_model.nu == direct_joint_model.nu
+    assert len(config.actuator_config.joints) == 28
+    assert "right_wrist_yaw_joint" not in config.actuator_config.joints
+    assert "right_finger_right_slide_joint" not in config.actuator_config.joints
+    assert "waist_roll_joint" not in config.actuator_config.joints
+    assert "waist_yaw_joint" in config.actuator_config.joints
+
+
+def test_actuator_contract_rejects_missing_and_unknown_joint_configs() -> None:
+    joint = JointActuatorConfig(effort_limit=1.0)
+    with pytest.raises(ValueError, match="missing actuator config"):
+        validate_actuator_joint_contract(ActuatorConfig(joints={}), ("left",))
+    with pytest.raises(ValueError, match="absent from the prepared morphology"):
+        validate_actuator_joint_contract(
+            ActuatorConfig(joints={"left": joint, "typo": joint}),
+            ("left",),
+        )
+
+
+def test_prepared_asset_always_has_ankle_differential_tendons(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+
+    assert model.ntendon == 4
     assert {
-        mujoco.mj_id2name(differential_model, mujoco.mjtObj.mjOBJ_TENDON, index)
-        for index in range(differential_model.ntendon)
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_TENDON, index)
+        for index in range(model.ntendon)
     } == {
         "left_ankle_motor_1",
         "left_ankle_motor_2",
@@ -155,7 +163,7 @@ def test_ankle_differential_tendons_are_optional_mujoco_coordinates(
         "right_ankle_motor_2",
     }
 
-    root = ET.parse(full_body_ankle_tendon_asset.mjcf_path).getroot()
+    root = ET.parse(full_body_asset.mjcf_path).getroot()
     expected_coefficients = {
         "left_ankle_motor_1": (-1.0, 1.0),
         "left_ankle_motor_2": (1.0, 1.0),
@@ -170,12 +178,10 @@ def test_ankle_differential_tendons_are_optional_mujoco_coordinates(
         )
 
 
-def test_ankle_differential_can_replace_joint_actuators_with_tendon_actuators(
-    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+def test_prepared_asset_always_actuates_ankle_tendons(
+    full_body_asset: PreparedAsset,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(
-        str(full_body_actuated_ankle_tendon_asset.mjcf_path)
-    )
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
     actuator_names = {
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
         for index in range(model.nu)
@@ -197,69 +203,31 @@ def test_ankle_differential_can_replace_joint_actuators_with_tendon_actuators(
             assert model.actuator_biasprm[actuator_id, 2] == pytest.approx(-0.5)
 
 
-def test_observation_size_tracks_reduced_actuator_count() -> None:
-    model = SimpleNamespace(
-        mj_model=SimpleNamespace(nu=29, nq=40, nv=39, njnt=29, nbody=4, ngeom=5),
-        actuator_names=tuple(f"actuator_{index}" for index in range(29)),
-        actuator_joint_names=tuple(f"joint_{index}" for index in range(29)),
-        actuator_joint_ids=np.arange(29, dtype=np.int32),
-        policy_ctrl_indices=np.arange(6, dtype=np.int32),
-        hold_ctrl_indices=np.arange(6, 29, dtype=np.int32),
-        actuator_qpos_indices=np.arange(29, dtype=np.int32),
-        actuator_qvel_indices=np.arange(29, dtype=np.int32),
-        policy_qpos_indices=np.arange(6, dtype=np.int32),
-        policy_qvel_indices=np.arange(6, dtype=np.int32),
-        policy_action_scale=np.ones(6, dtype=np.float32),
-        actuator_coordinate_transform=np.eye(29, dtype=np.float32),
-        joint_angle_offset=np.zeros((1, 29), dtype=np.float32),
-        default_joint_target=np.zeros(29, dtype=np.float32),
-        joint_target_low=np.full(29, -1.0, dtype=np.float32),
-        joint_target_high=np.full(29, 1.0, dtype=np.float32),
-        foot_body_ids=np.asarray([2, 3], dtype=np.int32),
-        robot_geom_ids=np.asarray([1, 2, 3, 4], dtype=np.int32),
-        foot_geom_ids=np.asarray([2, 3], dtype=np.int32),
-        terrain_geom_ids=np.asarray([0], dtype=np.int32),
-        terrain_geom_quat=np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-        nonfoot_robot_geom_ids=np.asarray([1, 4], dtype=np.int32),
-        nonfoot_robot_body_ids=np.asarray([1], dtype=np.int32),
-        default_qpos=np.zeros(40, dtype=np.float32),
-        default_qvel=np.zeros(39, dtype=np.float32),
-        default_ctrl=np.zeros(29, dtype=np.float32),
-    )
-    env = BelloLocomotionEnv(
-        model,
-        reward_config=RewardConfig(
-            track_lin_vel_xy=TrackLinVelXYRewardConfig(enabled=False),
-            track_ang_vel_z=TrackAngVelZRewardConfig(enabled=False),
-            lin_vel_z=LinVelZRewardConfig(enabled=False),
-            ang_vel_xy=AngVelXYRewardConfig(enabled=False),
-            flat_orientation=FlatOrientationRewardConfig(enabled=False),
-            base_height=BaseHeightRewardConfig(enabled=False),
-        ),
-        done_config=DoneConfig(
-            base_height=BaseHeightDoneConfig(enabled=False),
-            bad_orientation=BadOrientationDoneConfig(enabled=False),
-        ),
-    )
-
-    assert env.action_size == 6
-    assert env.observation_size == 102
+@pytest.mark.parametrize("asset", ["lower_body", "upper_body"])
+def test_asset_config_rejects_removed_prepared_variants(asset: str) -> None:
+    with pytest.raises(ValueError, match="asset must be 'full_body'"):
+        AssetPrepConfig(asset=asset)
 
 
-def test_lower_body_rejects_end_effector_sphere_mode() -> None:
-    config = AssetPrepConfig(asset="lower_body", end_effector_sphere_mode="both")
+def test_asset_config_rejects_removed_foot_mesh_collision_mode() -> None:
+    with pytest.raises(ValueError, match="collision_mode must be 'mesh' or 'box'"):
+        AssetPrepConfig(collision_mode="foot-mesh")
 
-    with pytest.raises(ValueError, match="requires arm joints"):
-        prepare_asset(config)
+
+@pytest.mark.parametrize("mode", ["right", "left", "both_articulated"])
+def test_asset_config_rejects_removed_end_effector_modes(mode: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match="end_effector_sphere_mode must be 'none' or 'both'",
+    ):
+        AssetPrepConfig(end_effector_sphere_mode=mode)
 
 
 def test_default_output_root_is_deterministic_tmp_cache() -> None:
     config = AssetPrepConfig(asset="full_body")
 
-    assert resolved_output_root(config, "full_body") == resolved_output_root(
-        config, "full_body"
-    )
-    assert resolved_output_root(config, "full_body").parent == (
+    assert resolved_output_root(config) == resolved_output_root(config)
+    assert resolved_output_root(config).parent == (
         Path(tempfile.gettempdir()) / "bello-mujoco-assets"
     )
 
@@ -267,12 +235,7 @@ def test_default_output_root_is_deterministic_tmp_cache() -> None:
 def test_explicit_output_root_overrides_tmp_cache() -> None:
     root = Path("/tmp/custom-bello-assets")
 
-    assert (
-        resolved_output_root(
-            AssetPrepConfig(asset="full_body", output_root=root), "full_body"
-        )
-        == root
-    )
+    assert resolved_output_root(AssetPrepConfig(output_root=root)) == root
 
 
 def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
@@ -299,7 +262,6 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
     )
     assert (
         read_prepared_asset_manifest(
-            "full_body",
             urdf_path,
             mjcf_path,
             viewer_mjcf_path,
@@ -331,7 +293,6 @@ def test_cached_manifest_requires_matching_cache_key(tmp_path: Path) -> None:
 
     assert (
         read_prepared_asset_manifest(
-            "full_body",
             urdf_path,
             mjcf_path,
             viewer_mjcf_path,
@@ -342,7 +303,6 @@ def test_cached_manifest_requires_matching_cache_key(tmp_path: Path) -> None:
     )
     assert (
         read_prepared_asset_manifest(
-            "full_body",
             urdf_path,
             mjcf_path,
             viewer_mjcf_path,
@@ -357,9 +317,7 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     base = AssetPrepConfig(asset="full_body", mesh_face_budget=1000)
     changed = AssetPrepConfig(asset="full_body", mesh_face_budget=500)
 
-    assert asset_config_hash(base, "full_body") != asset_config_hash(
-        changed, "full_body"
-    )
+    assert asset_config_hash(base) != asset_config_hash(changed)
     fixed_head = AssetPrepConfig(
         asset="full_body",
         mesh_face_budget=1000,
@@ -368,9 +326,7 @@ def test_asset_cache_key_tracks_prep_config() -> None:
             head_pitch=False,
         ),
     )
-    assert asset_config_hash(base, "full_body") != asset_config_hash(
-        fixed_head, "full_body"
-    )
+    assert asset_config_hash(base) != asset_config_hash(fixed_head)
 
 
 def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort(
@@ -517,68 +473,17 @@ def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> 
 def test_box_viewer_model_makes_collision_geoms_transparent(
     tmp_path: Path,
 ) -> None:
-    mesh_dir = tmp_path / "meshes"
-    visual_mesh_dir = tmp_path / "visual_meshes"
-    urdf_dir = tmp_path / "urdf"
-    mjcf_dir = tmp_path / "mjcf"
-    mesh_dir.mkdir()
-    visual_mesh_dir.mkdir()
-    urdf_dir.mkdir()
-    mjcf_dir.mkdir()
-    trimesh.creation.box(extents=(0.2, 0.1, 0.05)).export(
-        mesh_dir / "base_collision.stl"
+    prepared = prepare_asset(
+        AssetPrepConfig(output_root=tmp_path, collision_mode="box")
     )
-    trimesh.creation.box(extents=(0.3, 0.2, 0.08)).export(
-        visual_mesh_dir / "base_visual.stl"
-    )
-    urdf_path = urdf_dir / "robot.urdf"
-    urdf_path.write_text(
-        """
-<robot name="box_visual_test">
-  <link name="base">
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="1"/>
-      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
-    </inertial>
-    <visual name="base_visual">
-      <geometry>
-        <mesh filename="../visual_meshes/base_visual.stl"/>
-      </geometry>
-    </visual>
-    <collision name="base_collision">
-      <geometry>
-        <mesh filename="../meshes/base_collision.stl"/>
-      </geometry>
-    </collision>
-  </link>
-</robot>
-""".strip()
-    )
-    mjcf_path = mjcf_dir / "robot_viewer.xml"
+    model = mujoco.MjModel.from_xml_path(str(prepared.viewer_mjcf_path))
+    visual = (model.geom_contype == 0) & (model.geom_conaffinity == 0)
+    collision = ~visual
 
-    compile_urdf_to_mjcf(
-        urdf_path,
-        mjcf_path,
-        collision_mode="box",
-        include_visuals=True,
-        actuated_joint_order=(),
-    )
-
-    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
-    collision_geom_id = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_GEOM, "base_collision"
-    )
-    visual_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "base_visual")
-
-    assert collision_geom_id >= 0
-    assert visual_geom_id >= 0
-    assert model.geom_type[collision_geom_id] == mujoco.mjtGeom.mjGEOM_BOX
-    assert model.geom_rgba[collision_geom_id, 3] == pytest.approx(0.0)
-    assert model.geom_type[visual_geom_id] == mujoco.mjtGeom.mjGEOM_MESH
-    assert model.geom_contype[visual_geom_id] == 0
-    assert model.geom_conaffinity[visual_geom_id] == 0
-    assert model.geom_rgba[visual_geom_id, 3] == pytest.approx(1.0)
+    assert np.any(model.geom_type[collision] == mujoco.mjtGeom.mjGEOM_BOX)
+    assert np.allclose(model.geom_rgba[collision, 3], 0.0)
+    assert np.any(model.geom_type[visual] == mujoco.mjtGeom.mjGEOM_MESH)
+    assert np.allclose(model.geom_rgba[visual, 3], 1.0)
 
 
 def test_actuator_config_does_not_expose_mutable_joint_mapping() -> None:

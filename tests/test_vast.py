@@ -10,8 +10,10 @@ import pytest
 import bello_mujoco.vast as vast
 from bello_mujoco.vast import (
     GitSelection,
+    VastLifecycle,
     VastOffer,
     VastOfferConfig,
+    VastSdkClient,
     VastTrainConfig,
     credential,
     create_available_instance,
@@ -182,6 +184,49 @@ def test_nominal_64_gb_offer_accepts_vast_usable_ram_reporting() -> None:
     _, offers = find_offers(api, valid_config())
 
     assert [offer.id for offer in offers] == [123]
+
+
+def test_sdk_client_normalizes_raw_vast_response_shapes() -> None:
+    class RawClient:
+        def __init__(self):
+            self.destroyed = []
+
+        def search_offers(self, **kwargs):
+            assert kwargs["storage"] == 80.0
+            return json.dumps({"offers": [make_offer()]})
+
+        def create_instance(self, **kwargs):
+            assert kwargs["id"] == 123
+            return json.dumps({"new_contract": 456})
+
+        def show_instance(self, **kwargs):
+            return json.dumps(
+                {"instances": [{"id": kwargs["id"], "actual_status": "running"}]}
+            )
+
+        def show_instances(self):
+            return json.dumps({"instances": [{"id": 456}]})
+
+        def ssh_url(self, **kwargs):
+            assert kwargs["id"] == 456
+            return json.dumps({"ssh_url": "ssh://root@example.com:22001"})
+
+        def destroy_instance(self, **kwargs):
+            self.destroyed.append(kwargs["id"])
+
+    raw_client = RawClient()
+    client = object.__new__(VastSdkClient)
+    client._client = raw_client
+
+    assert client.search_offers("query", order="score-", limit=1, storage=80.0) == [
+        make_offer()
+    ]
+    assert client.create_instance(123, image="test") == 456
+    assert client.show_instance(456)["actual_status"] == "running"
+    assert client.show_instances() == [{"id": 456}]
+    assert client.ssh_url(456) == "ssh://root@example.com:22001"
+    client.destroy_instance(456)
+    assert raw_client.destroyed == [456]
 
 
 def test_credential_prefers_environment_over_keyring(monkeypatch) -> None:
@@ -387,7 +432,14 @@ def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> 
     assert shlex.split(monitor_commands[-1])[-1] == "6"
 
 
-@pytest.mark.parametrize("remote_failure", [None, RuntimeError("training failed")])
+@pytest.mark.parametrize(
+    "remote_failure",
+    [
+        None,
+        RuntimeError("training failed"),
+        vast.PipelineInterrupted("received SIGTERM"),
+    ],
+)
 def test_pipeline_always_destroys_created_instance(
     monkeypatch, tmp_path, remote_failure
 ) -> None:
@@ -432,7 +484,7 @@ def test_pipeline_always_destroys_created_instance(
             == 0
         )
     else:
-        with pytest.raises(RuntimeError, match="training failed"):
+        with pytest.raises(type(remote_failure), match=str(remote_failure)):
             launch_pipeline(
                 tmp_path,
                 valid_config(),
@@ -441,10 +493,54 @@ def test_pipeline_always_destroys_created_instance(
             )
 
     assert api.destroyed == [456]
+    assert api.created[0][1]["label"].startswith("bello-")
     assert api.created[0][1]["runtype"] == "ssh_direc ssh_proxy"
     assert "ssh" not in api.created[0][1]
     assert "direct" not in api.created[0][1]
     assert not (tmp_path / ".vast" / "active_instance.json").exists()
+
+
+def test_lifecycle_reconciles_stale_labeled_instance_before_rental(
+    monkeypatch, tmp_path
+) -> None:
+    stale_id = 111
+    stale_label = "bello-stale"
+
+    class RecoveringApi(LifecycleApi):
+        def show_instances(self):
+            if stale_id in self.destroyed:
+                return []
+            return [{"id": stale_id, "label": stale_label}]
+
+    api = RecoveringApi()
+    state_path = tmp_path / ".vast" / "active_instance.json"
+    state_path.parent.mkdir(parents=True)
+    vast.write_active_state(state_path, stale_id, stale_label)
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: ("Korea", [VastOffer.from_mapping(make_offer())]),
+    )
+    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        vast,
+        "wait_for_ssh",
+        lambda *args, **kwargs: ("root", "example.com", 22),
+    )
+    remote_calls = []
+
+    VastLifecycle(api, valid_config(), state_path, "bello-new").run(
+        selection(),
+        "new",
+        lambda *args, **kwargs: remote_calls.append((args, kwargs)),
+        wandb_key="wandb-secret",
+        github_token="",
+    )
+
+    assert api.destroyed == [stale_id, 456]
+    assert api.created[0][1]["label"] == "bello-new"
+    assert len(remote_calls) == 1
+    assert not state_path.exists()
 
 
 def test_pipeline_retains_recovery_state_when_destroy_fails(

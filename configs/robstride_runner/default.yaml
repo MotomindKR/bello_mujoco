@@ -1,0 +1,46 @@
+motor_kind_config: robstride/motor_kinds.yaml
+motor_configs:
+  - robstride/lower_body.yaml
+  - robstride/upper_body.yaml
+bus_interfaces:
+  - can0=vcan0
+  - can1=vcan1
+
+asset_config:
+  asset: full_body
+  output_root: null
+  mesh_face_budget: 1000
+  visual_mesh_face_budget: 20000
+  collision_mode: mesh
+  end_effector_sphere_mode: none
+  neighbor_exclusion_depth: 2
+  imu_config:
+    enabled: true
+    body_name: pelvis_link
+  ankle_differential_config:
+    motor_gain_scale: 0.5
+    motor_effort_limit_scale: 1.0
+  joint_availability:
+    waist_yaw: true
+    waist_roll: false
+    waist_pitch: false
+    neck_yaw: false
+    head_pitch: false
+
+feedback_rate_hz: 100.0
+temperature_c: 25.0
+headless: false
+real_time: true
+max_steps: null
+imu_serial_rate_hz: 200.0
+imu_serial_enabled: true
+imu_serial_device: /dev/ttyIMU-mujoco
+torso_hold: true
+torso_drop_limit_m: 0.05
+release_after_seconds: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/robstride_runner/${now:%Y-%m-%d}/${now:%H-%M-%S}

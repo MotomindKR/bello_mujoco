@@ -1,17 +1,16 @@
 asset: full_body
 output_root: null
 mesh_face_budget: 1000
-foot_collision_mesh_face_budget: 1000
 visual_mesh_face_budget: 200000
 collision_mode: mesh
-end_effector_sphere_mode: none  # none | both | right | left | both_articulated
+end_effector_sphere_mode: none  # none | both
 neighbor_exclusion_depth: 2
 imu_config:
   enabled: false
   body_name: pelvis_link
 ankle_differential_config:
-  enabled: false
-  actuate_tendons: false
+  motor_gain_scale: 0.5
+  motor_effort_limit_scale: 1.0
 joint_availability:
   waist_yaw: true
   waist_roll: true

@@ -43,7 +43,7 @@ an explicit maximum total hourly price:
 ```bash
 uv run bello-vast-train \
   --branch main \
-  --train-config experiments/train/locomotion_hard.yaml \
+  --train-config experiments/train/locomotion.yaml \
   --max-price 1.25
 ```
 
@@ -57,7 +57,7 @@ Pass Hydra overrides after `--`:
 ```bash
 uv run bello-vast-train \
   --branch main \
-  --train-config experiments/train/locomotion_hard.yaml \
+  --train-config experiments/train/locomotion.yaml \
   --max-price 1.25 \
   -- \
   config.seed=2 \
@@ -74,20 +74,11 @@ checkpoint_config.enabled=true
 checkpoint_config.upload_wandb_artifact=true
 ```
 
-To launch the matched direct-joint, differential ±18, and differential ±36
-short experiments concurrently in a tiled tmux window, run:
-
-```bash
-scripts/run_vast_differential_ablations.sh main
-```
-
-The launcher creates one detached worktree per controller so each parallel Vast
-instance has independent lifecycle state. Set `MAX_PRICE` to change the
-per-instance hourly ceiling.
-
-Consequently a user override cannot silently disable W&B or final checkpoint
-artifact upload. Training configs from older branches must support the current
-W&B and checkpoint fields or their setup validation will fail.
+Consequently a user override cannot silently disable W&B or checkpoint artifact
+upload. Add `checkpoint_config.every_updates=<N>` after `--` when a long run
+should publish exact update-boundary recovery snapshots as well as its final
+checkpoint. Training configs from older branches must support the current W&B
+and checkpoint fields or their setup validation will fail.
 
 Use `--dry-run` to validate the branch and config and print the three offer
 queries without reading credentials or renting anything:
@@ -95,33 +86,21 @@ queries without reading credentials or renting anything:
 ```bash
 uv run bello-vast-train \
   --branch main \
-  --train-config experiments/train/locomotion_hard.yaml \
+  --train-config experiments/train/locomotion.yaml \
   --max-price 1.25 \
   --dry-run
 ```
 
 Use `--yes` only for intentional noninteractive operation. Branch, recipe, and
-maximum price remain explicit.
-
-To reproduce the pinned, otherwise unchanged MuJoCo Playground Berkeley
-Humanoid baseline, use the dedicated launcher. It checks out Playground commit
-`87a4bf98f1806adefd240d72dd53a2c3ceeb2f0d` on the rented machine and runs its
-native Warp PPO entry point:
+maximum price remain explicit. The long plane-slope recipe uses the same
+launcher:
 
 ```bash
-uv run bello-vast-playground \
+uv run bello-vast-train \
   --branch main \
-  --seed 0 \
-  --num-timesteps 150000000 \
+  --train-config experiments/train/locomotion_plane_slope.yaml \
   --max-price 1.25
 ```
-
-The Bello morphology port is `experiments/train/locomotion_berkeley.yaml` and
-uses the normal `bello-vast-train` launcher. Its 2,048-environment batch and
-joint-specific action scales are deliberate adaptations for Bello. The command
-distribution, gait clock, rollout horizon, and PPO hyperparameters are retained;
-the Bello recipe additionally uses explicit physical-joint and policy-action
-safety margins.
 
 ## Offer Selection
 
@@ -155,7 +134,7 @@ Nested tyro flags customize the preset. For example:
 ```bash
 uv run bello-vast-train \
   --branch main \
-  --train-config configs/train/rtx5090_4096x256.yaml \
+  --train-config experiments/train/locomotion.yaml \
   --max-price 1.50 \
   --offer.min-cpu-ram-gb 96 \
   --offer.disk-gb 120 \
@@ -187,9 +166,10 @@ Detachment protects against an SSH client or proxy interruption; it cannot keep
 training alive if the rented host or container itself stops.
 
 No local run log is retained. Once W&B initializes, its metrics, console output,
-videos, and successful final checkpoint artifact are the durable run output. A
-failure before W&B initialization is visible only in the terminal. The remote
-job log is removed with the instance during teardown.
+videos, periodic checkpoint artifacts (when configured), and successful final
+checkpoint artifact are the durable run output. A failure before W&B
+initialization is visible only in the terminal. The remote job log is removed
+with the instance during teardown.
 
 ## Teardown and Recovery
 

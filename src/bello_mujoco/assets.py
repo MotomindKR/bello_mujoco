@@ -39,13 +39,13 @@ def source_assets_root() -> Path:
     return assets_root() / "source" / "bello"
 
 
-def generated_model_path(asset: str, output_root: Path) -> Path:
-    return output_root / asset / "mjcf" / f"bello_{asset}.xml"
+def generated_model_path(output_root: Path) -> Path:
+    return output_root / "full_body" / "mjcf" / "bello_full_body.xml"
 
 
-def generated_viewer_model_path(asset: str, output_root: Path) -> Path:
-    return output_root / asset / "mjcf" / f"bello_{asset}_viewer.xml"
+def generated_viewer_model_path(output_root: Path) -> Path:
+    return output_root / "full_body" / "mjcf" / "bello_full_body_viewer.xml"
 
 
-def generated_urdf_path(asset: str, output_root: Path) -> Path:
-    return output_root / asset / "urdf" / f"bello_{asset}.urdf"
+def generated_urdf_path(output_root: Path) -> Path:
+    return output_root / "full_body" / "urdf" / "bello_full_body.urdf"

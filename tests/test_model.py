@@ -1,24 +1,23 @@
 from dataclasses import replace
 
+import jax
+import jax.numpy as jnp
 import mujoco
 import numpy as np
 import pytest
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
-from bello_mujoco.assets_pipeline.prepare import actuated_urdf_joint_names
-from bello_mujoco.assets import source_assets_root
+from bello_mujoco.assets_pipeline.prepare import PreparedAsset
 from bello_mujoco.contracts import DEFAULT_SPAWN_CLEARANCE
 from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
     BelloLocomotionEnv,
-    ObservationConfig,
 )
 from bello_mujoco.render import mujoco_action_to_ctrl, mujoco_policy_observation
 from bello_mujoco.sim import (
     ModelRandomizationConfig,
     SimulationPhysicsConfig,
-    load_bello_model,
+    configured_actuator_joint_range,
     load_prepared_bello_model,
     robot_geom_min_z,
 )
@@ -35,6 +34,15 @@ from bello_mujoco.terrain import (
 )
 
 
+def observation_component_slice(env: BelloLocomotionEnv, component_name: str) -> slice:
+    offset = 0
+    for name, size in env.observation_layout.components:
+        if name == component_name:
+            return slice(offset, offset + size)
+        offset += size
+    raise AssertionError(f"observation component not found: {component_name}")
+
+
 def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -45,17 +53,48 @@ def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     assert model.mj_model.nu == 35
     assert model.policy_ctrl_indices.tolist() == list(range(35))
     assert len(model.hold_ctrl_indices) == 0
-    assert model.policy_action_scale.shape == (35,)
-    ctrlrange = model.mj_model.actuator_ctrlrange[model.policy_ctrl_indices]
-    expected_scale = 0.25 * (ctrlrange[:, 1] - ctrlrange[:, 0])
-    assert np.allclose(model.policy_action_scale, expected_scale)
+    expected_range = []
+    for joint_name in model.actuator_joint_names:
+        low, high = configured_actuator_joint_range(
+            model.mj_model,
+            joint_name,
+            ActuatorConfig(),
+        )
+        expected_range.append((low, high))
+    np.testing.assert_allclose(model.joint_target_low, np.asarray(expected_range)[:, 0])
+    np.testing.assert_allclose(
+        model.joint_target_high, np.asarray(expected_range)[:, 1]
+    )
+
+
+def test_policy_action_endpoints_reach_logical_soft_limits(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    policy_indices = env.model.policy_ctrl_indices
+
+    low_target = np.asarray(env.action_to_joint_target(-np.ones(env.action_size)))
+    neutral_target = np.asarray(env.action_to_joint_target(np.zeros(env.action_size)))
+    high_target = np.asarray(env.action_to_joint_target(np.ones(env.action_size)))
+
+    np.testing.assert_allclose(
+        low_target[policy_indices], env.model.joint_target_low[policy_indices]
+    )
+    np.testing.assert_allclose(
+        neutral_target[policy_indices],
+        env.model.default_joint_target[policy_indices]
+        + env.model.joint_angle_offset[0, policy_indices],
+    )
+    np.testing.assert_allclose(
+        high_target[policy_indices], env.model.joint_target_high[policy_indices]
+    )
 
 
 def test_differential_ankle_joint_targets_map_to_both_motors(
-    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+    full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_actuated_ankle_tendon_asset,
+        full_body_asset,
         terrain=FLAT_TERRAIN,
     )
     env = BelloLocomotionEnv(model)
@@ -70,35 +109,66 @@ def test_differential_ankle_joint_targets_map_to_both_motors(
         mujoco.mjtObj.mjOBJ_ACTUATOR,
         "left_ankle_motor_2_pos",
     )
-    pitch_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
-    roll_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_2_id)[0])
+    pitch_action = env.action_layout.names.index("left_ankle_pitch_joint")
+    roll_action = env.action_layout.names.index("left_ankle_roll_joint")
     action[pitch_action] = 1.0
 
-    ctrl = np.asarray(env._action_to_ctrl(action))
+    ctrl = np.asarray(env.action_to_ctrl(action))
 
-    assert ctrl[motor_1_id] == pytest.approx(
-        model.default_ctrl[motor_1_id] - model.policy_action_scale[pitch_action]
-    )
-    assert ctrl[motor_2_id] == pytest.approx(
-        model.default_ctrl[motor_2_id] + model.policy_action_scale[pitch_action]
-    )
+    pitch_high = model.joint_target_high[model.policy_ctrl_indices[pitch_action]]
+    roll_default = model.default_joint_target[model.policy_ctrl_indices[roll_action]]
+    assert ctrl[motor_1_id] == pytest.approx(roll_default - pitch_high)
+    assert ctrl[motor_2_id] == pytest.approx(roll_default + pitch_high)
 
     action[:] = 0.0
     action[roll_action] = 1.0
-    ctrl = np.asarray(env._action_to_ctrl(action))
-    assert ctrl[motor_1_id] == pytest.approx(
-        model.default_ctrl[motor_1_id] + model.policy_action_scale[roll_action]
+    ctrl = np.asarray(env.action_to_ctrl(action))
+    roll_high = model.joint_target_high[model.policy_ctrl_indices[roll_action]]
+    pitch_default = model.default_joint_target[model.policy_ctrl_indices[pitch_action]]
+    assert ctrl[motor_1_id] == pytest.approx(roll_high - pitch_default)
+    assert ctrl[motor_2_id] == pytest.approx(roll_high + pitch_default)
+
+
+@pytest.mark.parametrize(
+    ("pitch_action_value", "roll_action_value"),
+    [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)],
+)
+def test_differential_ankle_soft_limit_corners_fit_motor_ranges(
+    full_body_asset: PreparedAsset,
+    pitch_action_value: float,
+    roll_action_value: float,
+) -> None:
+    model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    env = BelloLocomotionEnv(model)
+    action = np.zeros(env.action_size, dtype=np.float32)
+    action[env.action_layout.names.index("left_ankle_pitch_joint")] = pitch_action_value
+    action[env.action_layout.names.index("left_ankle_roll_joint")] = roll_action_value
+
+    ctrl, joint_saturation, motor_saturation = env._action_target_details(action)
+    ctrl = np.asarray(ctrl)
+    motor_ids = np.asarray(
+        [
+            mujoco.mj_name2id(
+                model.mj_model,
+                mujoco.mjtObj.mjOBJ_ACTUATOR,
+                f"left_ankle_motor_{index}_pos",
+            )
+            for index in (1, 2)
+        ]
     )
-    assert ctrl[motor_2_id] == pytest.approx(
-        model.default_ctrl[motor_2_id] + model.policy_action_scale[roll_action]
-    )
+    motor_ranges = model.mj_model.actuator_ctrlrange[motor_ids]
+
+    assert float(joint_saturation) == pytest.approx(0.0)
+    assert float(motor_saturation) == pytest.approx(0.0)
+    assert np.all(ctrl[motor_ids] >= motor_ranges[:, 0] - 1.0e-6)
+    assert np.all(ctrl[motor_ids] <= motor_ranges[:, 1] + 1.0e-6)
 
 
 def test_differential_ankle_observations_use_joint_coordinates(
-    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+    full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_actuated_ankle_tendon_asset,
+        full_body_asset,
         terrain=FLAT_TERRAIN,
     )
     env = BelloLocomotionEnv(model)
@@ -121,11 +191,11 @@ def test_differential_ankle_observations_use_joint_coordinates(
     qvel = state.data.qvel.at[pitch_qvel].set(0.30).at[roll_qvel].set(-0.10)
     state = state.replace(data=state.data.replace(qpos=qpos, qvel=qvel))
 
-    terms = env._frame_terms(state, env.config.observation)
-    position = terms[8]
-    velocity = terms[9]
-    motor_1_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
-    motor_2_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_2_id)[0])
+    observation = np.asarray(env.observation(state))
+    position = observation[observation_component_slice(env, "joint_position")]
+    velocity = observation[observation_component_slice(env, "joint_velocity")]
+    motor_1_action = env.action_layout.names.index("left_ankle_pitch_joint")
+    motor_2_action = env.action_layout.names.index("left_ankle_roll_joint")
 
     assert position[motor_1_action] == pytest.approx(0.10)
     assert position[motor_2_action] == pytest.approx(0.02)
@@ -134,37 +204,30 @@ def test_differential_ankle_observations_use_joint_coordinates(
 
 
 def test_differential_control_matches_native_mujoco(
-    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+    full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_actuated_ankle_tendon_asset,
+        full_body_asset,
         terrain=FLAT_TERRAIN,
     )
     env = BelloLocomotionEnv(model)
     action = np.linspace(-1.0, 1.0, env.action_size, dtype=np.float32)
 
     np.testing.assert_allclose(
-        np.asarray(env._action_to_ctrl(action)),
+        np.asarray(env.action_to_ctrl(action)),
         mujoco_action_to_ctrl(env, action),
         atol=1.0e-6,
     )
 
 
 def test_differential_joint_observation_matches_native_mujoco(
-    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+    full_body_asset: PreparedAsset,
 ) -> None:
-    observation = ObservationConfig(
-        base_ang_vel=False,
-        projected_gravity=False,
-        command=False,
-        actuator_force=False,
-        last_action=False,
-    )
     model = load_prepared_bello_model(
-        full_body_actuated_ankle_tendon_asset,
+        full_body_asset,
         terrain=FLAT_TERRAIN,
     )
-    env = BelloLocomotionEnv(model, config=BelloEnvConfig(observation=observation))
+    env = BelloLocomotionEnv(model)
     state, _ = env.reset()
     qpos = np.asarray(state.data.qpos).copy()
     qvel = np.asarray(state.data.qvel).copy()
@@ -182,19 +245,23 @@ def test_differential_joint_observation_matches_native_mujoco(
     mj_data.qvel[:] = qvel
     mujoco.mj_forward(model.mj_model, mj_data)
 
-    np.testing.assert_allclose(
-        np.asarray(env.observation(state)),
-        np.asarray(
-            mujoco_policy_observation(
-                env,
-                mj_data,
-                command=np.zeros(3, dtype=np.float32),
-                last_action=np.zeros(env.action_size, dtype=np.float32),
-                step_count=0,
-            )
-        ),
-        atol=1.0e-6,
+    mjx_observation = np.asarray(env.observation(state))
+    native_observation = np.asarray(
+        mujoco_policy_observation(
+            env,
+            mj_data,
+            command=np.zeros(3, dtype=np.float32),
+            last_action=np.zeros(env.action_size, dtype=np.float32),
+            step_count=0,
+        )
     )
+    for component_name in ("joint_position", "joint_velocity"):
+        component = observation_component_slice(env, component_name)
+        np.testing.assert_allclose(
+            mjx_observation[component],
+            native_observation[component],
+            atol=1.0e-6,
+        )
 
 
 def test_model_can_load_without_mjx_for_cpu_only_viewers(
@@ -362,15 +429,7 @@ def test_joint_actuator_mode_controls_policy_action_partition(
 ) -> None:
     default_config = ActuatorConfig()
     joints = {
-        name: (
-            replace(
-                config,
-                mode="hold",
-                action_scale=0.1,
-            )
-            if name == "waist_yaw_joint"
-            else config
-        )
+        name: (replace(config, mode="hold") if name == "waist_yaw_joint" else config)
         for name, config in default_config.joints.items()
     }
     model = load_prepared_bello_model(
@@ -405,6 +464,52 @@ def test_policy_joint_angle_offsets_leave_hold_targets_unchanged(
 
     assert np.all(model.joint_angle_offset[:, model.hold_ctrl_indices] == 0.0)
     assert np.any(model.joint_angle_offset[:, model.policy_ctrl_indices] != 0.0)
+
+
+def test_randomized_neutral_targets_preserve_action_soft_limit_endpoints(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=4,
+        env_config=BelloEnvConfig(
+            model_randomization=ModelRandomizationConfig(
+                enabled=True,
+                seed=11,
+                joint_angle_offset_range=(-0.02, 0.02),
+            )
+        ),
+    )
+    offsets = env._joint_angle_offset_batch(4)
+    low_actions = -jnp.ones((4, env.action_size), dtype=jnp.float32)
+    zero_actions = jnp.zeros((4, env.action_size), dtype=jnp.float32)
+    high_actions = jnp.ones((4, env.action_size), dtype=jnp.float32)
+    low_targets = jax.vmap(env.action_to_joint_target)(low_actions, offsets)
+    neutral_targets = jax.vmap(env.action_to_joint_target)(zero_actions, offsets)
+    high_targets = jax.vmap(env.action_to_joint_target)(high_actions, offsets)
+    policy_indices = env.model.policy_ctrl_indices
+
+    np.testing.assert_allclose(
+        np.asarray(low_targets)[:, policy_indices],
+        np.broadcast_to(
+            env.model.joint_target_low[policy_indices], (4, env.action_size)
+        ),
+    )
+    np.testing.assert_allclose(
+        np.asarray(neutral_targets)[:, policy_indices],
+        np.clip(
+            env.model.default_joint_target[None, policy_indices]
+            + env.model.joint_angle_offset[:, policy_indices],
+            env.model.joint_target_low[None, policy_indices],
+            env.model.joint_target_high[None, policy_indices],
+        ),
+    )
+    np.testing.assert_allclose(
+        np.asarray(high_targets)[:, policy_indices],
+        np.broadcast_to(
+            env.model.joint_target_high[policy_indices], (4, env.action_size)
+        ),
+    )
 
 
 def test_model_partitions_actuators_by_joint_not_actuator_name(
@@ -511,7 +616,12 @@ def test_loading_viewer_model_preserves_policy_contract(
     assert (
         viewer_model.hold_ctrl_indices.tolist() == sim_model.hold_ctrl_indices.tolist()
     )
-    assert np.allclose(viewer_model.policy_action_scale, sim_model.policy_action_scale)
+    np.testing.assert_allclose(
+        viewer_model.joint_target_low, sim_model.joint_target_low
+    )
+    np.testing.assert_allclose(
+        viewer_model.joint_target_high, sim_model.joint_target_high
+    )
     assert np.allclose(viewer_model.default_qpos, sim_model.default_qpos)
 
 
@@ -674,46 +784,3 @@ def test_spawn_pose_lifts_for_high_rough_terrain(
     )
     assert min_robot_z is not None
     assert abs(min_robot_z - target_min_z) < 1.0e-5
-
-
-def test_split_body_models_load_with_asset_specific_actuators(
-    generated_test_assets: dict[str, PreparedAsset],
-) -> None:
-    lower = mujoco.MjModel.from_xml_path(
-        str(generated_test_assets["lower_body"].mjcf_path)
-    )
-    upper = mujoco.MjModel.from_xml_path(
-        str(generated_test_assets["upper_body"].mjcf_path)
-    )
-
-    lower_actuated_joints = actuated_joint_names(lower)
-    upper_actuated_joints = actuated_joint_names(upper)
-
-    assert lower.nu == 12
-    runtime_locomotion_joints = actuated_urdf_joint_names(
-        source_assets_root() / "lower_body" / "urdf" / "bello_lower_body.urdf"
-    )
-    assert lower_actuated_joints == list(runtime_locomotion_joints)
-    assert upper.nu == 22
-    assert set(upper_actuated_joints).isdisjoint(runtime_locomotion_joints)
-    assert "right_wrist_yaw_joint" in upper_actuated_joints
-    assert "left_wrist_yaw_joint" in upper_actuated_joints
-
-
-def test_config_loader_loads_upper_body_model_metadata() -> None:
-    model = load_bello_model(AssetPrepConfig(asset="upper_body"))
-
-    assert model.mj_model.nu == 22
-    assert model.foot_body_ids.size == 0
-    assert len(model.policy_ctrl_indices) == 22
-
-
-def actuated_joint_names(model: mujoco.MjModel) -> list[str]:
-    return [
-        mujoco.mj_id2name(
-            model,
-            mujoco.mjtObj.mjOBJ_JOINT,
-            int(model.actuator_trnid[actuator_id, 0]),
-        )
-        for actuator_id in range(model.nu)
-    ]

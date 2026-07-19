@@ -52,11 +52,19 @@ def configure_robstride_actuators(
             else motor.target.owned_joints
         )
     }
+    mapped_tendon_names = {
+        motor.target.name for motor in specs if motor.target.type == "tendon"
+    }
     for actuator in list(spec.actuators):
-        if (
+        maps_joint = (
             actuator.trntype == mujoco.mjtTrn.mjTRN_JOINT
             and actuator.target in mapped_joint_names
-        ):
+        )
+        maps_tendon = (
+            actuator.trntype == mujoco.mjtTrn.mjTRN_TENDON
+            and actuator.target in mapped_tendon_names
+        )
+        if maps_joint or maps_tendon:
             spec.delete(actuator)
 
     for motor in specs:
@@ -260,8 +268,8 @@ class BelloRobstrideTransmission:
         if tendon_id < 0:
             raise ValueError(
                 f"motor {motor_name!r} maps to missing MuJoCo tendon "
-                f"{tendon_name!r}; "
-                "enable ankle_differential_config when preparing the asset"
+                f"{tendon_name!r}; the prepared asset is missing the required "
+                "ankle transmission"
             )
         return tendon_id
 

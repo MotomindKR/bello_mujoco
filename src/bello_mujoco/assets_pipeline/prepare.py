@@ -26,7 +26,6 @@ from bello_mujoco.assets_pipeline.mesh import (
 )
 from bello_mujoco.assets_pipeline.mjcf import (
     AnkleDifferentialConfig,
-    FOOT_MESH_NAMES,
     CollisionMode,
     ImuSensorConfig,
     compile_urdf_to_mjcf,
@@ -34,8 +33,18 @@ from bello_mujoco.assets_pipeline.mjcf import (
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
 
-AssetName = Literal["full_body", "lower_body", "upper_body"]
-ASSET_CACHE_VERSION = 6
+AssetName = Literal["full_body"]
+ASSET_CACHE_VERSION = 7
+SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
+    {
+        "right_wrist_yaw_joint",
+        "left_wrist_yaw_joint",
+        "right_finger_right_slide_joint",
+        "right_finger_left_slide_joint",
+        "left_finger_right_slide_joint",
+        "left_finger_left_slide_joint",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -43,7 +52,6 @@ class AssetPrepConfig:
     asset: AssetName = "full_body"
     output_root: Path | None = None
     mesh_face_budget: int = 1_000
-    foot_collision_mesh_face_budget: int = 1_000
     visual_mesh_face_budget: int = 200_000
     collision_mode: CollisionMode = "mesh"
     end_effector_sphere_mode: EndEffectorSphereMode = "none"
@@ -53,10 +61,37 @@ class AssetPrepConfig:
     joint_availability: JointAvailabilityConfig = JointAvailabilityConfig()
     actuator_config: ActuatorConfig = field(default_factory=ActuatorConfig)
 
+    def __post_init__(self) -> None:
+        if self.asset != "full_body":
+            raise ValueError(f"asset must be 'full_body', got {self.asset!r}")
+        if self.collision_mode not in {"mesh", "box"}:
+            raise ValueError(
+                f"collision_mode must be 'mesh' or 'box', got {self.collision_mode!r}"
+            )
+        if self.end_effector_sphere_mode not in {"none", "both"}:
+            raise ValueError(
+                "end_effector_sphere_mode must be 'none' or 'both', got "
+                f"{self.end_effector_sphere_mode!r}"
+            )
+        removed_joints = set(self.joint_availability.disabled_joint_names)
+        if self.end_effector_sphere_mode == "both":
+            removed_joints.update(SPHERE_REMOVED_ACTUATED_JOINTS)
+        active_joints = {
+            name: config
+            for name, config in self.actuator_config.joints.items()
+            if name not in removed_joints
+        }
+        if len(active_joints) != len(self.actuator_config.joints):
+            object.__setattr__(
+                self,
+                "actuator_config",
+                ActuatorConfig(joints=active_joints),
+            )
+
 
 @dataclass(frozen=True)
 class PreparedAsset:
-    name: str
+    name: AssetName
     urdf_path: Path
     mjcf_path: Path
     viewer_mjcf_path: Path
@@ -65,33 +100,31 @@ class PreparedAsset:
 
 
 def prepare_asset(config: AssetPrepConfig) -> PreparedAsset:
-    asset = config.asset
-    validate_asset_config(asset, config)
-    output_root = resolved_output_root(config, asset)
+    output_root = resolved_output_root(config)
     lock_path = output_root.parent / f"{output_root.name}.lock"
     with asset_generation_lock(lock_path):
-        return prepare_asset_unlocked(config, asset, output_root)
+        return prepare_asset_unlocked(config, output_root)
 
 
 def prepare_asset_unlocked(
     config: AssetPrepConfig,
-    asset: Literal["full_body", "lower_body", "upper_body"],
     output_root: Path,
 ) -> PreparedAsset:
+    asset = "full_body"
     source_root = source_assets_root()
     source_urdf = source_root / asset / "urdf" / f"bello_{asset}.urdf"
     if not source_urdf.exists():
         raise FileNotFoundError(source_urdf)
 
-    out_urdf = generated_urdf_path(asset, output_root)
+    out_urdf = generated_urdf_path(output_root)
     out_mesh_dir = output_root / asset / "meshes"
     out_visual_mesh_dir = output_root / asset / "visual_meshes"
-    out_mjcf = generated_model_path(asset, output_root)
-    out_viewer_mjcf = generated_viewer_model_path(asset, output_root)
+    out_mjcf = generated_model_path(output_root)
+    out_viewer_mjcf = generated_viewer_model_path(output_root)
     manifest_path = output_root / asset / "asset_manifest.json"
-    cache_key = asset_config_hash(config, asset)
+    cache_key = asset_config_hash(config)
     cached = read_prepared_asset_manifest(
-        asset, out_urdf, out_mjcf, out_viewer_mjcf, manifest_path, cache_key
+        out_urdf, out_mjcf, out_viewer_mjcf, manifest_path, cache_key
     )
     if cached is not None:
         return cached
@@ -111,26 +144,15 @@ def prepare_asset_unlocked(
         joint_availability=config.joint_availability,
     )
     actuated_joint_order = actuated_urdf_joint_names(out_urdf)
+    validate_actuator_joint_contract(config.actuator_config, actuated_joint_order)
     for src, dst_name in mesh_sources.collision.items():
-        if (
-            config.collision_mode in {"foot-mesh", "mesh"}
-            and src.stem in FOOT_MESH_NAMES
-        ):
-            export_binary_simplified_mesh(
-                src,
-                out_mesh_dir / dst_name,
-                face_budget=config.foot_collision_mesh_face_budget,
-                aggression=5.0,
-                weld_vertices=True,
-            )
-        else:
-            export_binary_simplified_mesh(
-                src,
-                out_mesh_dir / dst_name,
-                face_budget=config.mesh_face_budget,
-                aggression=5.0 if config.collision_mode == "mesh" else 10.0,
-                weld_vertices=config.collision_mode == "mesh",
-            )
+        export_binary_simplified_mesh(
+            src,
+            out_mesh_dir / dst_name,
+            face_budget=config.mesh_face_budget,
+            aggression=5.0 if config.collision_mode == "mesh" else 10.0,
+            weld_vertices=config.collision_mode == "mesh",
+        )
     for src, dst_name in mesh_sources.visual.items():
         export_binary_simplified_mesh(
             src,
@@ -186,28 +208,36 @@ def actuated_urdf_joint_names(urdf_path: Path) -> tuple[str, ...]:
     return tuple(names)
 
 
-def resolved_output_root(
-    config: AssetPrepConfig,
-    asset: Literal["full_body", "lower_body", "upper_body"],
-) -> Path:
+def validate_actuator_joint_contract(
+    config: ActuatorConfig,
+    actuated_joint_order: tuple[str, ...],
+) -> None:
+    configured = set(config.joints)
+    actuated = set(actuated_joint_order)
+    missing = sorted(actuated - configured)
+    unknown = sorted(configured - actuated)
+    if missing:
+        raise ValueError(f"missing actuator config for joints: {', '.join(missing)}")
+    if unknown:
+        raise ValueError(
+            "actuator config contains joints absent from the prepared morphology: "
+            + ", ".join(unknown)
+        )
+
+
+def resolved_output_root(config: AssetPrepConfig) -> Path:
     if config.output_root is not None:
         return config.output_root
     return (
-        Path(tempfile.gettempdir())
-        / "bello-mujoco-assets"
-        / asset_config_hash(config, asset)
+        Path(tempfile.gettempdir()) / "bello-mujoco-assets" / asset_config_hash(config)
     )
 
 
-def asset_config_hash(
-    config: AssetPrepConfig,
-    asset: Literal["full_body", "lower_body", "upper_body"],
-) -> str:
+def asset_config_hash(config: AssetPrepConfig) -> str:
     payload = {
         "cache_version": ASSET_CACHE_VERSION,
-        "asset": asset,
+        "asset": config.asset,
         "mesh_face_budget": config.mesh_face_budget,
-        "foot_collision_mesh_face_budget": config.foot_collision_mesh_face_budget,
         "visual_mesh_face_budget": config.visual_mesh_face_budget,
         "collision_mode": config.collision_mode,
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
@@ -217,15 +247,14 @@ def asset_config_hash(
         "joint_availability": asdict(config.joint_availability),
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
-        "source": source_asset_fingerprint(asset),
+        "source": source_asset_fingerprint(),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def source_asset_fingerprint(
-    asset: Literal["full_body", "lower_body", "upper_body"],
-) -> str:
+def source_asset_fingerprint() -> str:
+    asset = "full_body"
     source_root = source_assets_root() / asset
     hasher = hashlib.sha256()
     for path in sorted(p for p in source_root.rglob("*") if p.is_file()):
@@ -248,7 +277,6 @@ def asset_generation_lock(lock_path: Path) -> Iterator[None]:
 
 
 def read_prepared_asset_manifest(
-    asset: str,
     urdf_path: Path,
     mjcf_path: Path,
     viewer_mjcf_path: Path,
@@ -268,13 +296,13 @@ def read_prepared_asset_manifest(
         data = json.loads(manifest_path.read_text())
     except json.JSONDecodeError:
         return None
-    if data.get("name") != asset:
+    if data.get("name") != "full_body":
         return None
     if data.get("cache_key") != cache_key:
         return None
     try:
         return PreparedAsset(
-            asset,
+            "full_body",
             urdf_path,
             mjcf_path,
             viewer_mjcf_path,
@@ -311,14 +339,3 @@ def mjcf_mesh_files_exist(mjcf_path: Path) -> bool:
         if not (mjcf_path.parent / file_attr).resolve().exists():
             return False
     return True
-
-
-def validate_asset_config(
-    asset: Literal["full_body", "lower_body", "upper_body"],
-    config: AssetPrepConfig,
-) -> None:
-    if asset == "lower_body" and config.end_effector_sphere_mode != "none":
-        raise ValueError(
-            "end-effector sphere replacement requires arm joints and is only "
-            "valid for full_body or upper_body assets"
-        )

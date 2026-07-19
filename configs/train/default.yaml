@@ -1,6 +1,7 @@
+# Canonical 13-joint Bello locomotion contract. Experiment recipes override only
+# task-specific training, randomization, reward-link, and output settings.
 dry_run: true
 jit: true
-
 config:
   seed: 0
   total_timesteps: 1000000
@@ -9,11 +10,10 @@ config:
   update_epochs: 5
   num_minibatches: 4
   learning_rate: 0.001
-  anneal_lr: false
   schedule: adaptive
   desired_kl: 0.01
   target_kl: null
-  min_learning_rate: 0.00001
+  min_learning_rate: 1.0e-05
   max_learning_rate: 0.01
   adaptive_lr_factor: 1.5
   gamma: 0.99
@@ -23,7 +23,7 @@ config:
   vf_coef: 1.0
   max_grad_norm: 1.0
   normalize_value: true
-  value_norm_eps: 0.00000001
+  value_norm_eps: 1.0e-08
   policy:
     hidden_size: 256
     hidden_depth: 2
@@ -33,30 +33,173 @@ config:
     min_log_std: -5.0
     max_log_std: 1.0
     obs_stack_size: 10
-
+    action_limit: 1.0
+    normalize_observations: true
+    observation_norm_eps: 1.0e-08
 asset_config:
   asset: full_body
-  collision_mode: mesh
+  collision_mode: box
   mesh_face_budget: 1000
-  foot_collision_mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
-  end_effector_sphere_mode: none
+  end_effector_sphere_mode: both
   neighbor_exclusion_depth: 2
   ankle_differential_config:
-    enabled: false
-    actuate_tendons: false
+    motor_gain_scale: 0.5
+    motor_effort_limit_scale: 1.0
   joint_availability:
     waist_yaw: true
     waist_roll: true
     waist_pitch: true
     neck_yaw: true
     head_pitch: true
-
+  actuator_config:
+    joints:
+      left_hip_pitch_joint:
+        mode: policy
+        default_pos: -0.325
+        soft_limit: [-1.41372, 1.41372]
+        gains: [200.0, 5.0]
+        effort_limit: 120.0
+      right_hip_pitch_joint:
+        mode: policy
+        default_pos: 0.325
+        soft_limit: [-1.41372, 1.41372]
+        gains: [200.0, 5.0]
+        effort_limit: 120.0
+      left_hip_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      right_hip_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      left_hip_yaw_joint:
+        mode: policy
+        default_pos: 0.125
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      right_hip_yaw_joint:
+        mode: policy
+        default_pos: -0.125
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      left_knee_joint:
+        mode: policy
+        default_pos: 0.45
+        soft_limit: [0.0, 1.98968]
+        gains: [220.0, 6.0]
+        effort_limit: 120.0
+      right_knee_joint:
+        mode: policy
+        default_pos: 0.45
+        soft_limit: [0.0, 1.98968]
+        gains: [220.0, 6.0]
+        effort_limit: 120.0
+      left_ankle_pitch_joint:
+        mode: policy
+        default_pos: 0.3
+        soft_limit: [-0.44506, 0.96866]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      right_ankle_pitch_joint:
+        mode: policy
+        default_pos: 0.3
+        soft_limit: [-0.44506, 0.96866]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      left_ankle_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-0.07857, 0.07857]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      right_ankle_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-0.07857, 0.07857]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      waist_yaw_joint:
+        mode: policy
+        soft_limit: [-0.45, 0.45]
+        gains: [180.0, 12.0]
+        effort_limit: 120.0
+      waist_roll_joint:
+        mode: hold
+        gains: [240.0, 20.0]
+        effort_limit: 120.0
+      waist_pitch_joint:
+        mode: hold
+        gains: [240.0, 20.0]
+        effort_limit: 120.0
+      neck_yaw_joint:
+        mode: hold
+        gains: [5.5, 0.5]
+        effort_limit: 5.5
+      head_pitch_joint:
+        mode: hold
+        gains: [5.5, 0.5]
+        effort_limit: 5.5
+      right_shoulder_pitch_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+        effort_limit: 120.0
+      right_shoulder_roll_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+        effort_limit: 60.0
+      right_shoulder_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+        effort_limit: 36.0
+      right_elbow_pitch_joint:
+        mode: hold
+        gains: [40.0, 2.0]
+        effort_limit: 36.0
+      right_elbow_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+        effort_limit: 14.0
+      right_wrist_pitch_joint:
+        mode: hold
+        gains: [10.0, 1.0]
+        effort_limit: 14.0
+      left_shoulder_pitch_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+        effort_limit: 120.0
+      left_shoulder_roll_joint:
+        mode: hold
+        gains: [70.0, 2.0]
+        effort_limit: 60.0
+      left_shoulder_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+        effort_limit: 36.0
+      left_elbow_pitch_joint:
+        mode: hold
+        gains: [40.0, 2.0]
+        effort_limit: 36.0
+      left_elbow_yaw_joint:
+        mode: hold
+        gains: [20.0, 1.0]
+        effort_limit: 14.0
+      left_wrist_pitch_joint:
+        mode: hold
+        gains: [10.0, 1.0]
+        effort_limit: 14.0
 env_config:
   decimation: 4
   max_episode_steps: 1000
-  action_clip: 5.0
-  root_link: bello_root
+  action_clip: 1.0
+  root_link: pelvis_link
   spawn:
     clearance: 0.01
     root_xy_range: [0.0, 0.0]
@@ -76,10 +219,10 @@ env_config:
     joint_angle_offset_scope: all
     joint_inertia_scale_range: [1.0, 1.0]
   gait:
-    cycle_time: 0.80
+    cycle_time: 0.8
     command_speed_frequency_gain: 0.55
-    min_frequency: 1.20
-    max_frequency: 2.20
+    min_frequency: 1.2
+    max_frequency: 2.2
     duty_factor: 0.55
     phase_offsets: [0.0, 0.5]
     standing_command_threshold: 0.05
@@ -95,63 +238,96 @@ env_config:
     lin_vel_x: [-0.5, 0.5]
     lin_vel_y: [-0.5, 0.5]
   observation:
-    joint_mode: all_actuated
-    base_ang_vel: true
-    projected_gravity: true
-    gait_phase: true
-    command: true
-    joint_pos: true
-    joint_vel: true
-    actuator_force: true
-    last_action: true
-    scale:
-      base_lin_vel: 1.0
-      base_ang_vel: 1.0
-      projected_gravity: 1.0
-      base_height: 1.0
-      gait_phase: 1.0
-      command: 1.0
-      joint_pos: 1.0
-      joint_vel: 1.0
-      actuator_force: 1.0
-      last_action: 1.0
+    privileged: false
     noise:
       enabled: false
-      base_lin_vel: [0.0, 0.0]
-      base_ang_vel: [-0.2, 0.2]
-      projected_gravity: [-0.05, 0.05]
-      base_height: [0.0, 0.0]
-      gait_phase: [0.0, 0.0]
-      command: [0.0, 0.0]
-      joint_pos: [-0.01, 0.01]
-      joint_vel: [-1.5, 1.5]
-      actuator_force: [0.0, 0.0]
-      last_action: [0.0, 0.0]
-
+  critic_observation:
+    privileged: true
+    noise:
+      enabled: false
+reward_config:
+  track_lin_vel_xy:
+    weight: 1.0
+    link: null
+    sigma: 0.5
+    frame_link: null
+  track_ang_vel_z:
+    weight: 0.5
+    link: null
+    sigma: 0.5
+  lin_vel_z:
+    weight: 0.0
+    link: null
+  ang_vel_xy:
+    weight: -0.15
+    link: null
+  flat_orientation:
+    weight: -1.0
+    link: null
+  action_rate:
+    weight: -0.01
+  action_limit:
+    weight: -1.0
+    soft_limit_ratio: 0.8
+  torque_l1:
+    weight: -2.5e-05
+  joint_pose:
+    weight: -1.0
+  hip_deviation:
+    weight: -0.25
+    lateral_command_index: 0
+    lateral_command_threshold: 0.1
+  knee_deviation:
+    weight: -0.1
+  joint_limit:
+    weight: -1.0
+    soft_limit_factor: 0.9
+  invalid_action:
+    weight: 0.0
+  foot_slip:
+    weight: -0.25
+    angular_speed_scale: 0.0
+  contact_timing:
+    weight: -0.1
+    min_air_time: 0.2
+    min_contact_time: 0.3
+    command_speed_threshold: 0.1
+  touchdown_air_time:
+    weight: 2.0
+    min_air_time: 0.2
+    max_air_time: 0.5
+    command_speed_threshold: 0.1
+  foot_phase:
+    weight: 1.0
+    sigma: 0.01
+  standing_foot_vel:
+    weight: -2.0
+    command_speed_threshold: 0.1
+  standing_foot_air_time:
+    weight: -3.0
+    command_speed_threshold: 0.1
+  undesired_contact:
+    weight: 0.0
+  self_collision:
+    weight: 0.0
+  termination:
+    weight: -1.0
 command_config:
   enabled: true
   lin_vel_x: [-0.1, 0.1]
   lin_vel_y: [-0.1, 0.1]
   ang_vel_yaw: [-0.1, 0.1]
-  standing_probability: 0.10
+  standing_probability: 0.1
   resample_seconds: 10.0
-  curriculum:
-    enabled: false
-    limit_lin_vel_x: [-0.5, 1.0]
-    limit_lin_vel_y: [-0.3, 0.3]
-    limit_ang_vel_yaw: [-0.2, 0.2]
-    expand_ang_vel_yaw: false
-    increment: 0.1
-    success_threshold: 0.8
-
 checkpoint_config:
   enabled: false
   directory: checkpoints
   name: null
+  every_updates: null
+  resume_path: null
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint
-
 wandb_config:
   enabled: false
   project: bello-mujoco
@@ -162,7 +338,6 @@ wandb_config:
   mode: online
   dir: .wandb
   tags: []
-
 video_config:
   enabled: false
   every_updates: 100
@@ -187,13 +362,11 @@ video_config:
     azimuth: 135.0
     elevation: -18.0
     lookat_offset: [0.0, 0.0, 0.35]
-
 warp:
   contact_budget_per_env: 32
   naconmax: null
   naccdmax: null
   njmax: 256
-
 hydra:
   job:
     chdir: false

@@ -1,14 +1,11 @@
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import jax.numpy as jnp
 
 from bello_mujoco.tracking import (
-    WandbConfig,
     close_run,
-    create_wandb_run,
     log_config,
     to_builtin,
     track_checkpoint_artifact,
@@ -66,31 +63,6 @@ def test_log_config_updates_wandb_config() -> None:
     ]
 
 
-def test_create_wandb_run_uses_thread_start_method(monkeypatch, tmp_path) -> None:
-    calls = {}
-
-    class FakeWandb:
-        @staticmethod
-        def Settings(**kwargs):
-            calls["settings"] = kwargs
-            return SimpleNamespace(**kwargs)
-
-        @staticmethod
-        def init(**kwargs):
-            calls["init"] = kwargs
-            return "run"
-
-    monkeypatch.setitem(sys.modules, "wandb", FakeWandb)
-
-    run = create_wandb_run(
-        WandbConfig(enabled=True, project="project", dir=str(tmp_path / "wandb"))
-    )
-
-    assert run == "run"
-    assert calls["settings"] == {"start_method": "thread"}
-    assert calls["init"]["settings"].start_method == "thread"
-
-
 def test_close_run_reports_exit_code() -> None:
     run = FakeRun()
 
@@ -139,11 +111,10 @@ def test_track_checkpoint_artifact_logs_directory(monkeypatch, tmp_path) -> None
         def add_dir(self, path) -> None:
             self.dirs.append(path)
 
-    monkeypatch.setitem(
-        sys.modules,
-        "wandb",
-        SimpleNamespace(Artifact=FakeArtifact),
-    )
+    class FakeWandb:
+        Artifact = FakeArtifact
+
+    monkeypatch.setitem(sys.modules, "wandb", FakeWandb)
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
     run = FakeRun()
@@ -170,11 +141,10 @@ def test_track_video_logs_encoded_file_without_fps(monkeypatch, tmp_path) -> Non
             self.kwargs = kwargs
             videos.append(self)
 
-    monkeypatch.setitem(
-        sys.modules,
-        "wandb",
-        SimpleNamespace(Video=FakeVideo),
-    )
+    class FakeWandb:
+        Video = FakeVideo
+
+    monkeypatch.setitem(sys.modules, "wandb", FakeWandb)
     video_path = tmp_path / "rollout.mp4"
     video_path.write_bytes(b"not a real mp4")
     run = FakeRun()

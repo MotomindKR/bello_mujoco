@@ -181,7 +181,6 @@ class BelloModel:
     actuator_qpos_indices: np.ndarray
     actuator_qvel_indices: np.ndarray
     hold_ctrl_indices: np.ndarray
-    policy_action_scale: np.ndarray
     actuator_coordinate_transform: np.ndarray
     joint_angle_offset: np.ndarray
     default_joint_target: np.ndarray
@@ -434,12 +433,6 @@ def _load_bello_model_from_path(
         raise ValueError(
             "generated home controls do not match the actuator coordinate transform"
         )
-    policy_action_scale = actuator_action_scale(
-        mj_model,
-        actuator_joint_names,
-        policy_ctrl_indices,
-        actuator_config,
-    )
     default_joint_target = default_qpos[actuator_qpos_indices].astype(np.float32)
     joint_target_range = np.asarray(
         [
@@ -465,7 +458,6 @@ def _load_bello_model_from_path(
         actuator_qpos_indices=actuator_qpos_indices,
         actuator_qvel_indices=actuator_qvel_indices,
         hold_ctrl_indices=hold_ctrl_indices,
-        policy_action_scale=policy_action_scale,
         actuator_coordinate_transform=actuator_coordinate_transform_matrix,
         joint_angle_offset=(
             randomized_fields["joint_angle_offset"]
@@ -712,26 +704,6 @@ def transformed_vertices_min_z(
     geom_xmat = data.geom_xmat[geom_id].reshape(3, 3)
     world_vertices = data.geom_xpos[geom_id] + vertices @ geom_xmat.T
     return float(np.min(world_vertices[:, 2]))
-
-
-def actuator_action_scale(
-    mj_model: mujoco.MjModel,
-    actuator_joint_names: tuple[str, ...],
-    policy_ctrl_indices: np.ndarray,
-    config: ActuatorConfig,
-) -> np.ndarray:
-    all_scale = np.empty(len(actuator_joint_names), dtype=np.float32)
-    joint_configs = config.by_name
-    for actuator_id, joint_name in enumerate(actuator_joint_names):
-        joint_config = joint_configs[joint_name]
-        low, high = configured_actuator_joint_range(mj_model, joint_name, config)
-        all_scale[actuator_id] = (
-            joint_config.action_scale
-            if joint_config.action_scale is not None
-            else config.default_action_scale_ratio * (high - low)
-        )
-    scale = all_scale[policy_ctrl_indices]
-    return scale.astype(np.float32)
 
 
 def configured_actuator_joint_range(

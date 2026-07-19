@@ -13,8 +13,7 @@ import trimesh
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
 
-CollisionMode = Literal["mesh", "foot-mesh", "box"]
-FOOT_MESH_NAMES = frozenset({"left_ankle_roll_link", "right_ankle_roll_link"})
+CollisionMode = Literal["mesh", "box"]
 TRANSPARENT_COLLISION_RGBA = "0.8 0.8 0.8 0"
 ACCELERATION_STAGE_SITE = "bello_acceleration_stage_site"
 ACCELERATION_STAGE_SENSOR = "bello_acceleration_stage_sensor"
@@ -28,16 +27,10 @@ class ImuSensorConfig:
 
 @dataclass(frozen=True)
 class AnkleDifferentialConfig:
-    enabled: bool = False
-    actuate_tendons: bool = False
     motor_gain_scale: float = 0.5
     motor_effort_limit_scale: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.actuate_tendons and not self.enabled:
-            raise ValueError(
-                "ankle_differential_config.actuate_tendons requires enabled=true"
-            )
         for name, value in (
             ("motor_gain_scale", self.motor_gain_scale),
             ("motor_effort_limit_scale", self.motor_effort_limit_scale),
@@ -52,7 +45,7 @@ def compile_urdf_to_mjcf(
     urdf_path: Path,
     mjcf_path: Path,
     *,
-    collision_mode: CollisionMode = "foot-mesh",
+    collision_mode: CollisionMode = "mesh",
     neighbor_exclusion_depth: int = 2,
     include_visuals: bool = False,
     actuator_config: ActuatorConfig = ActuatorConfig(),
@@ -77,9 +70,8 @@ def compile_urdf_to_mjcf(
         ensure_collision_geoms_transparent(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
     ensure_position_actuators(root, actuator_config, actuated_joint_order)
-    ensure_ankle_differential_tendons(root, ankle_differential_config)
-    if ankle_differential_config.actuate_tendons:
-        replace_ankle_joint_actuators(root, actuator_config, ankle_differential_config)
+    ensure_ankle_differential_tendons(root)
+    replace_ankle_joint_actuators(root, actuator_config, ankle_differential_config)
     ensure_imu_sensors(root, imu_config)
     ensure_home_keyframe(root, actuator_config)
 
@@ -90,17 +82,24 @@ def compile_urdf_to_mjcf(
     mujoco.MjModel.from_xml_path(str(mjcf_path))
 
 
-def ensure_ankle_differential_tendons(
-    root: ET.Element, config: AnkleDifferentialConfig
-) -> None:
-    if not config.enabled:
-        return
-
+def ensure_ankle_differential_tendons(root: ET.Element) -> None:
     joint_names = {
         joint.get("name")
         for joint in root.findall(".//joint")
         if joint.get("name") is not None
     }
+    required_joint_names = {
+        f"{side}_ankle_{axis}_joint"
+        for side in ("left", "right")
+        for axis in ("pitch", "roll")
+    }
+    present_joint_names = required_joint_names & joint_names
+    if present_joint_names != required_joint_names:
+        missing = required_joint_names - present_joint_names
+        raise ValueError(
+            "ankle differential requires MuJoCo joints: " + ", ".join(sorted(missing))
+        )
+
     tendon = root.find("tendon")
     if tendon is None:
         tendon = ET.SubElement(root, "tendon")
@@ -111,12 +110,6 @@ def ensure_ankle_differential_tendons(
     for side in ("left", "right"):
         pitch_joint = f"{side}_ankle_pitch_joint"
         roll_joint = f"{side}_ankle_roll_joint"
-        missing = {pitch_joint, roll_joint} - joint_names
-        if missing:
-            raise ValueError(
-                f"{side} ankle differential requires MuJoCo joints: "
-                + ", ".join(sorted(missing))
-            )
         for motor_index, pitch_coefficient in ((1, -1.0), (2, 1.0)):
             tendon_name = f"{side}_ankle_motor_{motor_index}"
             if tendon_name in existing_names:
@@ -286,14 +279,17 @@ def apply_collision_mode(
 ) -> None:
     if collision_mode == "mesh":
         return
+    if collision_mode != "box":
+        raise ValueError(
+            f"collision_mode must be 'mesh' or 'box', got {collision_mode!r}"
+        )
 
     mesh_bounds = load_scaled_mesh_bounds(root, mjcf_dir)
-    keep_meshes = FOOT_MESH_NAMES if collision_mode == "foot-mesh" else frozenset()
     for geom in root.findall(".//geom[@type='mesh']"):
         if is_visual_geom(geom):
             continue
         mesh_name = geom.get("mesh")
-        if mesh_name is None or mesh_name in keep_meshes:
+        if mesh_name is None:
             continue
         if mesh_name not in mesh_bounds:
             continue

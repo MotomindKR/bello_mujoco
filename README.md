@@ -1,10 +1,12 @@
 # bello_mujoco
 
-MuJoCo/MJX-Warp robot-learning environment and PureJaxRL-style PPO training scaffold for Bello.
+MuJoCo/MJX-Warp simulation, reinforcement-learning training, policy evaluation,
+and hardware-in-the-loop tooling for the Bello humanoid.
 
-This repo is intentionally Nix-light and Python-managed by uv. Nix provides `uv` and `git`; uv owns Python, the virtualenv, and all Python dependencies.
+The repository uses repo-owned Bello descriptions under `assets/source/bello/`.
+Nix supplies `uv` and Git; `uv` manages Python 3.12 and the project dependencies.
 
-## Quick Start
+## Setup
 
 ```bash
 nix develop
@@ -16,103 +18,85 @@ With direnv:
 direnv allow
 ```
 
-The shell hook:
+Outside the activated shell, prefix commands with `uv run`.
 
-- installs uv-managed Python 3.12 into `.uv-python`
-- syncs dependencies into `.venv`
-- activates `.venv`
-- keeps uv and Warp caches repo-local via `.uv-cache` and `.warp-cache`
-- exports `MUJOCO_GL=egl` on Linux and `MUJOCO_GL=glfw` on Apple Silicon macOS
-
-Editable checkouts use `configs/` and `assets/source/` from the repository.
-Built wheels include those directories as package data so installed console
-scripts can resolve Hydra configs and Bello source assets without a repo root.
-
-Run a basic environment check:
+## Prepare the robot assets
 
 ```bash
-bello-smoke-env step=true
+uv run bello-prepare-assets asset=full_body
 ```
 
-Expected default full-body contract:
+Asset preparation converts the tracked Bello descriptions into deterministic
+training and viewer MJCF, with configurable collision geometry, mesh
+simplification, end-effector spheres, joint availability, IMU metadata, and
+motor gain/effort scaling. The physical differential ankle tendons and their
+actuators are always generated. Generated assets are cached outside the source
+tree.
 
-```text
-action_size: 35
-observation_size: 149
-mjx_impl: warp
-terrain: plane
-```
+## Train
 
-## Common Commands
-
-Prepare assets:
+Validate the complete training path with the lightweight recipe:
 
 ```bash
-bello-prepare-assets asset=full_body
+uv run bello-train-ppo \
+  --config-dir "$PWD/experiments/train" \
+  --config-name smoke
 ```
 
-Dry-run training setup:
+Run the maintained locomotion recipe:
 
 ```bash
-bello-train-ppo
+uv run bello-train-ppo \
+  --config-dir "$PWD/experiments/train" \
+  --config-name locomotion
 ```
 
-Use the local RTX 5090 baseline config:
+For a longer treatment with independently randomized plane slopes, use
+`locomotion_plane_slope` instead. Both recipes use the physical ankle
+transmission. Training is dry-run by default only in the package configuration;
+maintained experiment recipes explicitly select their intended execution mode.
+
+See [training.md](docs/training.md) for the runtime contract, checkpoints,
+tracking, and validation workflow.
+
+## Evaluate
 
 ```bash
-bello-train-ppo --config-name rtx5090_4096x256
+uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
 ```
 
-Run a tiny PPO smoke:
+Evaluation restores the environment and policy contract from checkpoint
+metadata, runs either CPU MuJoCo or single-environment MJX-Warp, and streams the
+robot and diagnostics to Rerun. An SDL-compatible gamepad can provide live
+velocity commands.
 
-```bash
-bello-train-ppo \
-  dry_run=false \
-  config.total_timesteps=4 \
-  config.num_envs=2 \
-  config.num_steps=2 \
-  config.num_minibatches=1 \
-  config.update_epochs=1
-```
+See [evaluation.md](docs/evaluation.md).
 
-Launch a branch-pinned Vast.ai training run:
+## Train on Vast.ai
 
 ```bash
 uv run bello-vast-train \
   --branch main \
-  --train-config experiments/train/locomotion_hard.yaml \
+  --train-config experiments/train/locomotion.yaml \
   --max-price 1.25
 ```
 
-See [the Vast.ai workflow](docs/vast_ai.md) before renting an instance.
+The launcher pins a remote commit, provisions one compatible instance, performs
+the remote setup and training, uploads configured checkpoint snapshots through
+W&B, and destroys the instance. See [vast_ai.md](docs/vast_ai.md) before
+renting.
 
-Benchmark vectorized stepping:
-
-```bash
-bello-benchmark-env batch_size=512 step_count=5
-```
-
-Run a live policy viewer:
-
-```bash
-bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
-```
-
-This spawns a Rerun Viewer and reads live velocity commands from an
-SDL-compatible game controller.
-
-Run Bello with CPU MuJoCo as RobStride actuators on `vcan0` and `vcan1` for
-end-to-end motor gateway tests:
+## Run the RobStride HIL emulator
 
 ```bash
 ./scripts/setup_hil.sh
-bello-robstride-runner
+uv run bello-robstride-runner
 ```
 
-See [the RobStride VCAN runner guide](docs/robstride_vcan.md) for interface
-setup, protocol coverage, and the Motomind gateway workflow.
+The runner simulates Bello in CPU MuJoCo and exposes its actuators as RobStride
+devices on Linux SocketCAN. See [robstride_vcan.md](docs/robstride_vcan.md).
 
-Run the test and lint gate:
+## Validate changes
 
 ```bash
 uv run ruff format --check src tests
@@ -120,43 +104,29 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-## Documentation
+The supported installed commands are:
 
-- [Repository reference](docs/index.md)
-- [Vast.ai training workflow](docs/vast_ai.md)
-- [RobStride VCAN MuJoCo runner](docs/robstride_vcan.md)
-- [Contribution guide](CONTRIBUTION.md)
-- [Agent instructions](AGENTS.md)
+- `bello-prepare-assets`
+- `bello-train-ppo`
+- `bello-eval-policy`
+- `bello-vast-train`
+- `bello-robstride-runner`
 
-## Current Stack
-
-- Simulator: `mujoco`, `mujoco-mjx[warp]`
-- JAX: `jax[cuda13]` on Linux, CPU `jax` on Apple Silicon macOS
-- RL utilities: `rlax`
-- Policy/model: `equinox`
-- Optimizer: `optax`
-- PPO implementation: local PureJaxRL-style code
-- Tracking: W&B
-- Checkpointing: Orbax
-- Evaluation visualization: Rerun
-- Training video: MuJoCo renderer, `imageio[ffmpeg]`
-- Config CLI: `hydra-core`
-
-## Generated Files
-
-Generated assets, Python environments, and runtime caches are local artifacts and should not be committed:
+## Repository layout
 
 ```text
-.venv/
-.uv-cache/
-.uv-python/
-.warp-cache/
-.wandb/
-wandb/
-.vast/
-checkpoints/
-outputs/
-/tmp/bello-mujoco-assets/<config-hash>/
+assets/source/bello/       tracked robot descriptions
+configs/                   installed Hydra and HIL configuration
+experiments/train/         maintained training recipes
+src/bello_mujoco/          simulation, training, evaluation, and HIL code
+tests/                     automated validation
+docs/                      user-facing reference
 ```
 
-Source robot assets under `assets/source/bello/` are tracked and are the only robot descriptions used by this repo.
+Do not commit generated environments, caches, W&B runs, checkpoints, videos, or
+prepared assets. Common generated paths include `.venv/`, `.uv-cache/`,
+`.warp-cache/`, `.wandb/`, `checkpoints/`, `outputs/`, and
+`/tmp/bello-mujoco-assets/`.
+
+For contribution workflow and repository rules, see [CONTRIBUTION.md](CONTRIBUTION.md)
+and [docs/index.md](docs/index.md).

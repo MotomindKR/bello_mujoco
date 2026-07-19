@@ -1,0 +1,132 @@
+# Long-horizon Bello locomotion with per-world plane slopes.
+# The physical differential ankle transmission is part of the canonical asset.
+defaults: [default, _self_]
+dry_run: false
+config:
+  total_timesteps: 1800000000
+  num_envs: 2048
+  num_steps: 20
+  update_epochs: 4
+  num_minibatches: 32
+  learning_rate: 0.0001
+  schedule: adaptive
+  desired_kl: 0.01
+  target_kl: 0.03
+  min_learning_rate: 1.0e-05
+  max_learning_rate: 0.0001
+  adaptive_lr_factor: 1.5
+  gamma: 0.97
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  ent_coef: 0.005
+  vf_coef: 1.0
+  max_grad_norm: 1.0
+  normalize_value: false
+  policy:
+    hidden_dims: [512, 256, 128]
+    activation: swish
+    max_log_std: 0.0
+env_config:
+  simulation_physics:
+    timestep: 0.005
+    foot_terrain_margin: null
+    foot_terrain_solref: null
+    foot_terrain_solimp: null
+  terrain:
+    mode: plane
+    seed: 0
+    slope_angle_range: [-0.034906585, 0.034906585]
+    randomize_slope_per_world: true
+  model_randomization:
+    enabled: true
+    seed: 0
+    joint_origin_range: [-0.001, 0.001]
+    joint_angle_offset_range: [-0.02, 0.02]
+    joint_inertia_scale_range: [0.95, 1.05]
+  spawn:
+    root_xy_range: [-0.5, 0.5]
+    root_yaw_range: [-3.14159265, 3.14159265]
+    joint_pos_scale_range: [0.5, 1.5]
+    root_vel_range: [-0.5, 0.5]
+  gait:
+    cycle_time: 0.7272727
+    command_speed_frequency_gain: 0.0
+    min_frequency: 1.25
+    max_frequency: 1.5
+    duty_factor: 0.5
+    phase_offsets: [0.0, 0.5]
+    standing_command_threshold: 0.1
+    randomize_frequency: true
+    frequency_range: [1.25, 1.5]
+    foot_height: 0.1
+  contact:
+    foot_contact_on_seconds: 0.04
+    foot_contact_off_seconds: 0.04
+  random_push:
+    enabled: true
+    interval_seconds: 5.0
+    lin_vel_x: [-2.0, 2.0]
+    lin_vel_y: [-2.0, 2.0]
+  observation:
+    noise:
+      enabled: true
+      base_lin_acc: [-0.2, 0.2]
+      base_ang_vel: [-0.2, 0.2]
+      projected_gravity: [-0.05, 0.05]
+      joint_pos: [-0.05, 0.05]
+      joint_vel: [-1.5, 1.5]
+  critic_observation:
+    scale:
+      base_ang_vel: 0.2
+      joint_vel: 0.05
+command_config:
+  lin_vel_x: [-1.0, 1.0]
+  lin_vel_y: [-1.0, 1.0]
+  ang_vel_yaw: [-1.0, 1.0]
+  standing_probability: 0.1
+  resample_seconds: 10.0
+reward_config:
+  track_lin_vel_xy:
+    link: pelvis_link
+    frame_link: pelvis_link
+  track_ang_vel_z:
+    link: pelvis_link
+  ang_vel_xy:
+    link: torso_link
+  flat_orientation:
+    link: torso_link
+  invalid_action:
+    weight: -1.0
+done_config:
+  base_height:
+    enabled: true
+    min_height: 0.55
+    link: pelvis_link
+  bad_orientation:
+    enabled: true
+    limit_angle: 0.8
+    link: torso_link
+checkpoint_config:
+  enabled: true
+  name: locomotion_plane_slope_seed0
+  upload_wandb_artifact: true
+  wandb_artifact_name: locomotion_plane_slope_seed0
+wandb_config:
+  enabled: true
+  group: locomotion-plane-slope
+  run_name: locomotion_plane_slope_seed0
+  tags: [locomotion, physical-ankle, per-world-plane-slope]
+video_config:
+  enabled: true
+  every_updates: 512
+  render_initial: true
+  render_final: true
+  filename_prefix: locomotion_plane_slope
+  simulation_backend: mujoco
+  command: [0.0, 0.5, 0.0]
+  steps: 1000
+  stop_on_done: true
+  stochastic_actions: false
+warp:
+  contact_budget_per_env: 40
+  njmax: 2048

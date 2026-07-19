@@ -9,7 +9,7 @@ hardware.
 Simulation uses classic CPU MuJoCo (`mujoco.MjData` and `mujoco.mj_step`). The
 runner explicitly loads no MJX model and does not use JAX, Warp, or CUDA. The
 optional interactive viewer may use the system graphics stack only for display;
-`--headless` avoids rendering entirely.
+`headless=true` avoids rendering entirely.
 
 The implementation follows the RobStride private CAN protocol documented in
 the [official product information repository](https://github.com/RobStride/Product_Information)
@@ -96,30 +96,36 @@ nix develop
 bello-robstride-runner
 ```
 
-The runner loads `configs/robstride/runner.yaml` by default. That file selects
-the `mujoco_cpu` backend, motor YAML files, VCAN mappings, viewer mode, timing,
-torso guide, MuJoCo ankle differential tendons, and spherical replacements for
-both hands. Its visual meshes default to a 20,000-face-per-mesh budget for
-responsive interactive rendering; this does not change the general training
-asset default. Select another file with `--config-file`; any additional CLI
-flags override values loaded from YAML:
+The runner is a strict Hydra/dataclass CLI. Its default recipe is
+`configs/robstride_runner/default.yaml`; its keys map directly onto
+`RobstrideRunnerConfig`, and unknown keys fail before hardware interfaces are
+opened. The recipe selects motor YAML files, VCAN mappings, viewer mode,
+timing, torso guide, MuJoCo ankle differential tendons, and IMU emulation. The
+backend and terrain are intentionally not configuration
+switches: this runner always uses CPU MuJoCo and a flat plane.
+
+Apply normal Hydra overrides as `field=value`. To use a separate complete
+recipe, use Hydra's standard `--config-dir` and `--config-name` options:
 
 ```bash
-bello-robstride-runner --config-file configs/robstride/runner.yaml
+bello-robstride-runner headless=true real_time=false max_steps=1000
+bello-robstride-runner --config-dir /absolute/config/dir --config-name my_runner
 ```
 
-The runner uses `both_articulated`, which removes the gripper subtrees while
-preserving both wrist-yaw joints and their RobStride actuators.
+The visual meshes default to a 20,000-face-per-mesh budget for responsive
+interactive rendering; this does not change the general training asset
+default.
 
-The runner YAML enables the MuJoCo ankle transmission with:
+The runner keeps `end_effector_sphere_mode: none`. Fixed sphere replacement
+removes the wrist-yaw joints, so it is incompatible with the configured
+RobStride wrist motors. Training recipes may still use `both` when those wrist
+coordinates are intentionally absent from the policy model.
 
-```yaml
-simulation:
-  ankle_differential_tendons: true
-```
-
-Generic training assets leave `ankle_differential_config.enabled` false, so
-their action and actuator dimensions are unchanged.
+Every prepared Bello asset contains the MuJoCo ankle transmission and uses
+tendon position actuators. The runner replaces those generated ankle actuators,
+along with the mapped direct-joint actuators, with the native three-actuator MIT
+motor banks. This leaves one authoritative controller per physical motor while
+retaining MuJoCo's tendon coordinates and Jacobian.
 
 A pelvis-mounted MuJoCo IMU is enabled by default. The runner exposes it as an
 E2BOX EBIMU-9DOFV6 on an imaginary serial port. `setup_hil.sh` starts a
@@ -159,16 +165,16 @@ a PTY does not physically clock bits. Stop or inspect the bridge with:
 Disable only the serial device connection while keeping the MuJoCo sensor in
 the generated model:
 
-```yaml
-imu:
-  serial_enabled: false
+```bash
+bello-robstride-runner imu_serial_enabled=false
 ```
 
 Disable IMU sensor generation and serial output:
 
-```yaml
-imu:
-  enabled: false
+```bash
+bello-robstride-runner \
+  asset_config.imu_config.enabled=false \
+  imu_serial_enabled=false
 ```
 
 The torso starts in a world-vertical guide. It cannot move sideways or rotate,
@@ -177,7 +183,7 @@ enforces that lower bound. In interactive mode, the runner opens a separate
 **Bello controls** window next to the MuJoCo viewer. Click **Release torso** to
 disable the guide permanently; the robot is then a free body governed by
 gravity, contacts, and actuator commands. Closing either window stops the
-runner. Override the travel with `--torso-drop-limit-m` when needed.
+runner. Override the travel with `torso_drop_limit_m=0.1` when needed.
 
 ## Motor kinds and assignments
 
@@ -235,39 +241,40 @@ are validated against the loaded model before CAN interfaces are opened.
 Coupling groups must contain exactly `coupling_size` motors.
 
 These files are bundled into installed wheels and do not depend on
-`~/motomind_platform`. Use `--motor-kind-config` to select another catalog and
-`--motor-configs` to select another assignment layout.
+`~/motomind_platform`. Relative motor-config paths are resolved from the
+bundled `configs/` root; use absolute paths for files outside it.
 
 It maps logical `can0` to `vcan0` and logical `can1` to `vcan1`. Useful modes:
 
 ```bash
 # CI or a machine without a display
-bello-robstride-runner --headless --release-after-seconds 2
+bello-robstride-runner headless=true release_after_seconds=2
 
 # Run faster than wall clock for a bounded protocol/simulation test
-bello-robstride-runner --headless --no-real-time --max-steps 1000
+bello-robstride-runner headless=true real_time=false max_steps=1000
 
 # Start free, without creating the initial torso guide
-bello-robstride-runner --no-torso-hold
+bello-robstride-runner torso_hold=false
 
 # Use one actuator file and one interface
 bello-robstride-runner \
-  --motor-kind-config configs/robstride/motor_kinds.yaml \
-  --motor-configs configs/robstride/lower_body.yaml \
-  --bus-interfaces can0=vcan0
+  motor_kind_config=robstride/motor_kinds.yaml \
+  'motor_configs=[robstride/lower_body.yaml]' \
+  'bus_interfaces=[can0=vcan0]'
 ```
 
 The default runner asset exposes only `waist_yaw_joint` from the optional
 waist/head set. Waist roll, waist pitch, neck yaw, and head pitch are fixed in
-the generated URDF. Configure the selection in `runner.yaml`:
+the generated URDF. Configure the selection under the asset config:
 
 ```yaml
-joints:
-  waist_yaw: true
-  waist_roll: false
-  waist_pitch: false
-  neck_yaw: false
-  head_pitch: false
+asset_config:
+  joint_availability:
+    waist_yaw: true
+    waist_roll: false
+    waist_pitch: false
+    neck_yaw: false
+    head_pitch: false
 ```
 
 Changing an axis to `true` also requires a corresponding motor assignment in a

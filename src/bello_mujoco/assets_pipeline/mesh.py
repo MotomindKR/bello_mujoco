@@ -44,7 +44,7 @@ class JointAvailabilityConfig:
         return {name for name, enabled in self.by_name.items() if not enabled}
 
 
-EndEffectorSphereMode = Literal["none", "both", "right", "left", "both_articulated"]
+EndEffectorSphereMode = Literal["none", "both"]
 END_EFFECTOR_SPHERE_RADIUS = 0.0325
 END_EFFECTOR_SPHERE_OFFSET_Z = -0.02
 END_EFFECTOR_SPHERE_MASS = 0.05
@@ -159,10 +159,12 @@ def replace_end_effectors_with_spheres(
 ) -> None:
     if mode == "none":
         return
+    if mode != "both":
+        raise ValueError(
+            f"end-effector sphere mode must be 'none' or 'both', got {mode!r}"
+        )
 
-    articulated = mode == "both_articulated"
-    sides = ("right", "left") if mode in {"both", "both_articulated"} else (mode,)
-    for side in sides:
+    for side in ("right", "left"):
         joint_name, sphere_link_name, fixed_joint_name = END_EFFECTOR_SPHERES[side]
         joint = root.find(f"./joint[@name='{joint_name}']")
         if joint is None:
@@ -176,16 +178,8 @@ def replace_end_effectors_with_spheres(
         origin = joint.find("origin")
         xyz = parse_xyz(origin.get("xyz", "0 0 0") if origin is not None else "0 0 0")
         rpy = origin.get("rpy", "0 0 0") if origin is not None else "0 0 0"
-        articulated_joint = deepcopy(joint)
 
         remove_link_subtree(root, child_link)
-        if articulated:
-            sphere_origin = (0.0, 0.0, END_EFFECTOR_SPHERE_OFFSET_Z)
-            root.append(make_sphere_link(sphere_link_name, origin=sphere_origin))
-            articulated_joint.find("child").set("link", sphere_link_name)
-            root.append(articulated_joint)
-            continue
-
         sphere_xyz = (xyz[0], xyz[1], xyz[2] + END_EFFECTOR_SPHERE_OFFSET_Z)
         root.append(make_sphere_link(sphere_link_name))
         fixed_joint = ET.Element("joint", {"name": fixed_joint_name, "type": "fixed"})

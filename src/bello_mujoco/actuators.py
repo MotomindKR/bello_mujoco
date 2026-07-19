@@ -27,7 +27,6 @@ class FrozenDict(dict):
 class JointActuatorConfig:
     mode: ActuatorMode = "policy"
     default_pos: float = 0.0
-    action_scale: float | None = None
     soft_limit: tuple[float, float] | None = None
     gains: tuple[float, float] = (40.0, 2.0)
     effort_limit: float | None = None
@@ -194,17 +193,8 @@ class ActuatorConfig:
     joints: dict[str, JointActuatorConfig] = field(
         default_factory=default_joint_configs
     )
-    default_action_scale_ratio: float = 0.25
 
     def __post_init__(self) -> None:
-        if (
-            not math.isfinite(self.default_action_scale_ratio)
-            or self.default_action_scale_ratio <= 0
-        ):
-            raise ValueError(
-                "default_action_scale_ratio must be positive, got "
-                f"{self.default_action_scale_ratio}"
-            )
         default_effort_limits = {
             name: config.effort_limit
             for name, config in default_joint_configs().items()
@@ -224,13 +214,6 @@ class ActuatorConfig:
                 raise ValueError(
                     f"actuator config for joint {name!r} has nonfinite gains "
                     f"{config.gains}"
-                )
-            if config.action_scale is not None and (
-                not math.isfinite(config.action_scale) or config.action_scale <= 0
-            ):
-                raise ValueError(
-                    f"actuator config for joint {name!r} has invalid action_scale "
-                    f"{config.action_scale}; expected a positive finite value"
                 )
             if (
                 config.soft_limit is not None

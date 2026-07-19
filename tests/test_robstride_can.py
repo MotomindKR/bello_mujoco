@@ -1,11 +1,12 @@
 from pathlib import Path
 import struct
 
+from hydra import compose, initialize_config_dir
 import mujoco
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset
+from bello_mujoco.assets_pipeline.prepare import PreparedAsset, prepare_asset
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.robstride_can import (
     CAN_FRAME,
@@ -33,6 +34,7 @@ from bello_mujoco.robstride_sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )
+from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.tools.robstride_runner import (
@@ -40,9 +42,8 @@ from bello_mujoco.tools.robstride_runner import (
     add_torso_hold,
     default_motor_kind_config,
     default_motor_configs,
-    default_runner_config,
-    load_runner_config,
     reset_data,
+    resolve_motor_config_path,
     validate_runner_motor_coverage,
     validate_config,
 )
@@ -385,20 +386,28 @@ motors:
         load_robstride_configs(default_motor_kind_config(), (path,))
 
 
-def test_default_runner_yaml_selects_cpu_vcan_and_torso_guide() -> None:
-    path = default_runner_config()
+def compose_runner_config(overrides: list[str] | None = None) -> RobstrideRunnerConfig:
+    clear_hydra()
+    try:
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(CONFIG_ROOT / "robstride_runner"),
+        ):
+            config = compose(config_name="default", overrides=overrides or [])
+        return structured_config(RobstrideRunnerConfig, config)
+    finally:
+        clear_hydra()
 
-    config = load_runner_config(path)
 
-    assert path.exists()
-    assert config.config_file == path.resolve()
+def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
+    config = compose_runner_config()
+
     assert config.asset_config.asset == "full_body"
     assert config.asset_config.collision_mode == "mesh"
     assert config.asset_config.visual_mesh_face_budget == 20_000
-    assert config.asset_config.end_effector_sphere_mode == "both_articulated"
+    assert config.asset_config.end_effector_sphere_mode == "none"
     assert config.asset_config.imu_config.enabled
     assert config.asset_config.imu_config.body_name == "pelvis_link"
-    assert config.asset_config.ankle_differential_config.enabled
     availability = config.asset_config.joint_availability
     assert availability.waist_yaw
     assert not availability.waist_roll
@@ -409,7 +418,6 @@ def test_default_runner_yaml_selects_cpu_vcan_and_torso_guide() -> None:
     assert config.imu_serial_rate_hz == pytest.approx(200.0)
     assert config.imu_serial_enabled
     assert config.imu_serial_device == Path("/dev/ttyIMU-mujoco")
-    assert config.terrain == FLAT_TERRAIN
     assert config.bus_interfaces == ("can0=vcan0", "can1=vcan1")
     assert [path.name for path in config.motor_configs] == [
         "lower_body.yaml",
@@ -421,16 +429,13 @@ def test_default_runner_yaml_selects_cpu_vcan_and_torso_guide() -> None:
     assert config.real_time
 
 
-def test_runner_yaml_can_enable_head_joints(tmp_path: Path) -> None:
-    path = tmp_path / "runner.yaml"
-    path.write_text(
-        default_runner_config()
-        .read_text()
-        .replace("  neck_yaw: false", "  neck_yaw: true")
-        .replace("  head_pitch: false", "  head_pitch: true")
+def test_runner_hydra_can_enable_head_joints() -> None:
+    config = compose_runner_config(
+        [
+            "asset_config.joint_availability.neck_yaw=true",
+            "asset_config.joint_availability.head_pitch=true",
+        ]
     )
-
-    config = load_runner_config(path)
 
     assert config.asset_config.joint_availability.neck_yaw
     assert config.asset_config.joint_availability.head_pitch
@@ -475,42 +480,83 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
         )
 
 
-def test_runner_yaml_rejects_mjx_backend(tmp_path: Path) -> None:
-    path = tmp_path / "runner.yaml"
-    path.write_text(default_runner_config().read_text().replace("mujoco_cpu", "mjx"))
+def test_runner_hydra_rejects_unknown_config_keys() -> None:
+    clear_hydra()
+    try:
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(CONFIG_ROOT / "robstride_runner"),
+        ):
+            raw = compose(config_name="default", overrides=["+backend=mjx"])
+        with pytest.raises(ValueError, match="unknown config key.*backend"):
+            structured_config(RobstrideRunnerConfig, raw)
+    finally:
+        clear_hydra()
 
-    with pytest.raises(ValueError, match="MJX is not supported"):
-        load_runner_config(path)
 
-
-def test_runner_yaml_can_disable_imu(tmp_path: Path) -> None:
-    path = tmp_path / "runner.yaml"
-    path.write_text(
-        default_runner_config()
-        .read_text()
-        .replace(
-            "  enabled: true\n  body_name: pelvis_link",
-            "  enabled: false\n  body_name: pelvis_link",
-            1,
-        )
+def test_runner_hydra_can_disable_imu() -> None:
+    config = compose_runner_config(
+        [
+            "asset_config.imu_config.enabled=false",
+            "imu_serial_enabled=false",
+        ]
     )
-
-    config = load_runner_config(path)
 
     assert not config.asset_config.imu_config.enabled
+    validate_config(config)
 
 
-def test_runner_yaml_can_disable_ebimu_serial_device(tmp_path: Path) -> None:
-    path = tmp_path / "runner.yaml"
-    path.write_text(
-        default_runner_config()
-        .read_text()
-        .replace("  serial_enabled: true", "  serial_enabled: false")
-    )
+def test_runner_rejects_serial_output_without_an_imu_sensor() -> None:
+    config = compose_runner_config(["asset_config.imu_config.enabled=false"])
 
-    config = load_runner_config(path)
+    with pytest.raises(ValueError, match="imu_serial_enabled requires"):
+        validate_config(config)
+
+
+def test_runner_hydra_can_disable_ebimu_serial_device() -> None:
+    config = compose_runner_config(["imu_serial_enabled=false"])
 
     assert not config.imu_serial_enabled
+
+
+def test_runner_resolves_relative_motor_configs_from_bundled_config_root() -> None:
+    assert resolve_motor_config_path(Path("robstride/motor_kinds.yaml")) == (
+        default_motor_kind_config().resolve()
+    )
+
+
+def test_default_runner_full_body_asset_preserves_all_motor_coordinates() -> None:
+    config = compose_runner_config()
+    robstride = load_robstride_configs(
+        resolve_motor_config_path(config.motor_kind_config),
+        tuple(resolve_motor_config_path(path) for path in config.motor_configs),
+    )
+    prepared = prepare_asset(config.asset_config)
+    model = load_prepared_bello_model(
+        prepared,
+        terrain=FLAT_TERRAIN,
+        load_mjx=False,
+    )
+    configured = configure_robstride_actuators(model, robstride.motors)
+    transmission = BelloRobstrideTransmission(
+        configured,
+        tuple(RobstrideMotor(spec) for spec in robstride.motors),
+    )
+
+    assert len(transmission.actuators) == len(robstride.motors)
+    assert configured.mj_model.nu == model.mj_model.nu + 2 * len(robstride.motors)
+    for side in ("left", "right"):
+        for motor_index in (1, 2):
+            assert (
+                mujoco.mj_name2id(
+                    configured.mj_model,
+                    mujoco.mjtObj.mjOBJ_ACTUATOR,
+                    f"{side}_ankle_motor_{motor_index}_pos",
+                )
+                == -1
+            )
+    assert "left_wrist_yaw_joint" in transmission.mapped_joint_names
+    assert "right_wrist_yaw_joint" in transmission.mapped_joint_names
 
 
 def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(
@@ -546,9 +592,9 @@ def test_release_timer_requires_an_initial_torso_hold() -> None:
 
 
 def test_bello_transmission_maps_knee_and_differential_ankle(
-    full_body_ankle_tendon_asset: PreparedAsset,
+    full_body_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_ankle_tendon_asset, load_mjx=False)
+    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
     specs = (
         motor_spec("left_knee_mix_1", motor_id=64, direction=1),
         motor_spec("left_ankle_1", motor_id=67, model="ROBSTRIDE_06"),
@@ -613,7 +659,7 @@ def test_bello_transmission_maps_knee_and_differential_ankle(
     ] == pytest.approx(3.0)
 
 
-def test_ankle_motors_require_mujoco_differential_tendons(
+def test_ankle_motors_require_configured_native_actuator_banks(
     full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(full_body_asset, load_mjx=False)
@@ -625,7 +671,7 @@ def test_ankle_motors_require_mujoco_differential_tendons(
         )
     )
 
-    with pytest.raises(ValueError, match="missing MuJoCo tendon"):
+    with pytest.raises(ValueError, match="missing its native position actuator"):
         BelloRobstrideTransmission(model, motors)
 
 

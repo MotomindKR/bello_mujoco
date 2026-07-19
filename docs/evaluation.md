@@ -62,17 +62,17 @@ eval_config:
     enabled: true
     controller_index: 0
     deadzone: 0.1
-  runtime:
-    source: checkpoint  # checkpoint | override
 ```
 
 `steps=null` runs until stopped. Evaluation is always paced by the environment
-control timestep. Deterministic evaluation uses the actor mean;
-`stochastic_actions=true` samples the Gaussian policy with `action_seed`.
+control timestep. Deterministic evaluation uses the transformed actor mean;
+`stochastic_actions=true` samples the bounded tanh-Gaussian policy with
+`action_seed`.
 
-`runtime.source=checkpoint` restores asset, environment, reward, command, done,
-and Warp configuration from checkpoint metadata. `override` merges changed
-nested values over that metadata and must preserve observation/action sizes.
+Asset, environment, reward, command, termination, and Warp configuration are
+always restored from checkpoint metadata. Evaluation rejects mismatched actor
+or critic observation layouts and action layouts instead of guessing a
+compatible runtime.
 
 ## Rerun Data
 

@@ -48,8 +48,7 @@ class PPOConfig:
     update_epochs: int = 5
     num_minibatches: int = 4
     learning_rate: float = 1.0e-3
-    anneal_lr: bool = False
-    schedule: LearningRateSchedule | None = "adaptive"
+    schedule: LearningRateSchedule = "adaptive"
     desired_kl: float = 0.01
     target_kl: float | None = None
     min_learning_rate: float = 1.0e-5
@@ -117,7 +116,6 @@ class RunnerState(NamedTuple):
     env_state: BelloState
     obs_stack: jax.Array
     critic_obs_stack: jax.Array
-    command_ranges: jax.Array
     rng: jax.Array
     learning_rate: jax.Array
     value_norm_state: ValueNormState
@@ -152,9 +150,7 @@ def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
 
 
 def effective_learning_rate_schedule(config: PPOConfig) -> LearningRateSchedule:
-    if config.schedule is not None:
-        return config.schedule
-    return "linear" if config.anneal_lr else "constant"
+    return config.schedule
 
 
 def learning_rate_for_update(
@@ -405,12 +401,19 @@ def update_ppo(
             policy = clamp_policy_log_std(eqx.combine(next_params, static_policy))
             next_params, _ = eqx.partition(policy, eqx.is_array)
 
+            finite_loss = jnp.isfinite(loss_value)
+            finite_metrics = tree_all_finite(metrics)
+            finite_gradients = tree_all_finite(grads)
+            finite_updates = tree_all_finite(updates)
+            finite_params = tree_all_finite(next_params)
+            finite_optimizer = tree_all_finite(opt_state)
             finite_update = (
-                jnp.isfinite(loss_value)
-                & tree_all_finite(metrics)
-                & tree_all_finite(grads)
-                & tree_all_finite(updates)
-                & tree_all_finite(next_params)
+                finite_loss
+                & finite_metrics
+                & finite_gradients
+                & finite_updates
+                & finite_params
+                & finite_optimizer
             )
             approx_kl = jnp.where(
                 jnp.isfinite(metrics["approx_kl"]),
@@ -443,6 +446,12 @@ def update_ppo(
                 ),
                 "approx_kl": approx_kl,
                 "nonfinite_update": (~finite_update).astype(jnp.float32),
+                "nonfinite/loss": (~finite_loss).astype(jnp.float32),
+                "nonfinite/metrics": (~finite_metrics).astype(jnp.float32),
+                "nonfinite/gradients": (~finite_gradients).astype(jnp.float32),
+                "nonfinite/optimizer_update": (~finite_updates).astype(jnp.float32),
+                "nonfinite/parameters": (~finite_params).astype(jnp.float32),
+                "nonfinite/optimizer_state": (~finite_optimizer).astype(jnp.float32),
                 "target_kl_exceeded": exceeds_target_kl.astype(jnp.float32),
                 "ppo_update_fraction": should_update.astype(jnp.float32),
             }
@@ -596,17 +605,14 @@ def action_diagnostics(
             (jnp.abs(action - env_action) > 1.0e-6).astype(jnp.float32)
         ),
     }
-    if getattr(policy, "action_distribution", "gaussian") == "tanh_gaussian":
-        action_limit = jnp.asarray(policy.action_limit, dtype=action_mean.dtype)
-        metrics["action_bound_saturation_fraction"] = jnp.mean(
-            (jnp.abs(action_mean) >= 0.98 * action_limit).astype(jnp.float32)
-        )
-    if not hasattr(env, "_action_to_ctrl"):
-        return metrics
+    action_limit = jnp.asarray(policy.action_limit, dtype=action_mean.dtype)
+    metrics["action_bound_saturation_fraction"] = jnp.mean(
+        (jnp.abs(action_mean) >= 0.98 * action_limit).astype(jnp.float32)
+    )
 
     metrics = {**metrics, "env_action_abs_max": jnp.max(jnp.abs(env_action))}
     flat_action = env_action.reshape((-1, env.action_size))
-    ctrl = jax.vmap(env._action_to_ctrl)(flat_action)
+    ctrl = jax.vmap(env.action_to_ctrl)(flat_action)
     policy_ctrl_indices = jnp.asarray(env.model.policy_ctrl_indices)
     policy_ctrl = ctrl[:, policy_ctrl_indices]
     ctrlrange = jnp.asarray(env.model.mj_model.actuator_ctrlrange)[policy_ctrl_indices]
@@ -627,7 +633,6 @@ def collect_rollout(
     env_state: BelloState,
     obs_stack: jax.Array,
     critic_obs_stack: jax.Array,
-    command_ranges: jax.Array,
     rng: jax.Array,
     config: PPOConfig,
     value_norm_state: ValueNormState,
@@ -639,7 +644,6 @@ def collect_rollout(
         key, action_key, env_key = jax.random.split(key, 3)
         policy_obs = stacked_observation(last_obs_stack)
         critic_policy_obs = stacked_observation(last_critic_obs_stack)
-        action_clip = getattr(env, "action_clip", None)
         action, latent_action, log_prob, value, action_mean = (
             sample_action_with_latent_and_mean(
                 policy,
@@ -648,18 +652,12 @@ def collect_rollout(
                 critic_obs=critic_policy_obs,
             )
         )
-        env_action = (
-            action
-            if action_clip is None
-            else jnp.clip(action, -float(action_clip), float(action_clip))
-        )
+        env_action = jnp.clip(action, -env.action_clip, env.action_clip)
         value = denormalize_value(value, value_norm_state, config)
-        next_state, next_obs, reward, done, info = step_env_batch(
-            env, state, action, env_key, command_ranges
+        next_state, next_obs, reward, done, info = env.step_batch(
+            state, action, rng=env_key
         )
-        next_critic_obs = critic_observation_batch(
-            env, next_state, fallback_obs=next_obs
-        )
+        next_critic_obs = env.critic_observation_batch(next_state)
         next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
         next_critic_obs_stack = update_observation_stack(
             last_critic_obs_stack, next_critic_obs, done
@@ -726,10 +724,9 @@ def init_runner_state(
         ),
     )
     params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
-    command_ranges = initial_command_ranges(env)
-    env_state, obs = reset_env_batch(env, config.num_envs, env_key, command_ranges)
-    critic_obs = critic_observation_batch(env, env_state, fallback_obs=obs)
-    step_count = initial_step_counts(env, config.num_envs, step_count_key)
+    env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
+    critic_obs = env.critic_observation_batch(env_state)
+    step_count = env.initial_step_counts(config.num_envs, step_count_key)
     env_state = env_state.replace(step_count=step_count, episode_length=step_count)
     obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
     critic_obs_stack = init_observation_stack(critic_obs, config.policy.obs_stack_size)
@@ -741,7 +738,6 @@ def init_runner_state(
             env_state=env_state,
             obs_stack=obs_stack,
             critic_obs_stack=critic_obs_stack,
-            command_ranges=command_ranges,
             rng=rng,
             learning_rate=jnp.asarray(config.learning_rate, dtype=jnp.float32),
             value_norm_state=init_value_norm_state(),
@@ -782,7 +778,6 @@ def update_runner_state(
         runner_state.env_state,
         runner_state.obs_stack,
         runner_state.critic_obs_stack,
-        runner_state.command_ranges,
         rollout_key,
         config,
         runner_state.value_norm_state,
@@ -821,13 +816,6 @@ def update_runner_state(
     )
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
     reward_means = reward_component_means(transitions.info)
-    command_ranges, command_curriculum_state = update_command_curriculum(
-        runner_state.command_ranges,
-        transitions.info,
-        runner_state.update,
-        env,
-        config,
-    )
     metrics = {
         **metrics,
         "learning_rate": learning_rate,
@@ -837,6 +825,18 @@ def update_runner_state(
         "value_norm_count": value_norm_state.count,
         "mean_reward": transitions.reward.mean(),
         "mean_done": transitions.done.astype(jnp.float32).mean(),
+        "nonfinite/rollout_observation": (
+            ~jnp.all(jnp.isfinite(transitions.obs))
+        ).astype(jnp.float32),
+        "nonfinite/rollout_critic_observation": (
+            ~jnp.all(jnp.isfinite(transitions.critic_obs))
+        ).astype(jnp.float32),
+        "nonfinite/rollout_reward": (~jnp.all(jnp.isfinite(transitions.reward))).astype(
+            jnp.float32
+        ),
+        "nonfinite/rollout_action": (
+            ~jnp.all(jnp.isfinite(transitions.env_action))
+        ).astype(jnp.float32),
         "mean_episode_return": safe_returned_mean(transitions.info),
         "max_episode_return": safe_returned_max(transitions.info),
         "mean_episode_length": safe_returned_mean(
@@ -848,12 +848,8 @@ def update_runner_state(
         **random_push_means(transitions.info),
         **foot_contact_means(transitions.info),
         **target_saturation_means(transitions.info),
-        **gait_diagnostics(
-            transitions.info, float(getattr(env, "control_timestep", 1.0))
-        ),
+        **gait_diagnostics(transitions.info, env.control_timestep),
         **reward_means,
-        **command_curriculum_metrics(command_ranges),
-        **command_curriculum_state,
     }
     return (
         RunnerState(
@@ -863,7 +859,6 @@ def update_runner_state(
             env_state=env_state,
             obs_stack=obs_stack,
             critic_obs_stack=critic_obs_stack,
-            command_ranges=command_ranges,
             rng=key,
             learning_rate=next_learning_rate,
             value_norm_state=value_norm_state,
@@ -896,211 +891,8 @@ def make_train(config: PPOConfig, env: BelloLocomotionEnv | None = None):
     return train
 
 
-def update_command_curriculum_ranges(
-    ranges: jax.Array,
-    info: dict[str, jax.Array],
-    update: jax.Array,
-    env: BelloLocomotionEnv,
-    config: PPOConfig,
-) -> jax.Array:
-    ranges, _ = update_command_curriculum(ranges, info, update, env, config)
-    return ranges
-
-
-def update_command_curriculum(
-    ranges: jax.Array,
-    info: dict[str, jax.Array],
-    update: jax.Array,
-    env: BelloLocomotionEnv,
-    config: PPOConfig,
-) -> tuple[jax.Array, dict[str, jax.Array]]:
-    command_config = getattr(env, "command_config", None)
-    if command_config is None:
-        return ranges, command_curriculum_state_metrics(enabled=False)
-
-    curriculum = command_config.curriculum
-    reward_threshold = (
-        env.reward_config.track_lin_vel_xy.weight * curriculum.success_threshold
-    )
-    old_period = (update * config.num_steps) // env.max_episode_steps
-    new_period = ((update + 1) * config.num_steps) // env.max_episode_steps
-    period_boundary = new_period > old_period
-
-    if not command_config.enabled or not curriculum.enabled:
-        return ranges, command_curriculum_state_metrics(
-            enabled=False,
-            reward_threshold=reward_threshold,
-            new_period=new_period,
-            period_boundary=period_boundary,
-        )
-
-    reward_key = "episode_reward/track_lin_vel_xy"
-    returned_episode = info.get("returned_episode")
-    if reward_key not in info or returned_episode is None:
-        return ranges, command_curriculum_state_metrics(
-            enabled=True,
-            reward_threshold=reward_threshold,
-            new_period=new_period,
-            period_boundary=period_boundary,
-        )
-
-    episode_reward = safe_returned_mean(info, key=reward_key)
-    returned_count = jnp.sum(returned_episode.astype(jnp.float32))
-    normalized_reward = episode_reward / (env.max_episode_steps * env.control_timestep)
-    success = normalized_reward > reward_threshold
-    should_expand = period_boundary & (returned_count > 0) & success
-    should_expand_yaw = should_expand & curriculum.expand_ang_vel_yaw
-
-    x_range = expand_command_range(
-        ranges[0],
-        curriculum.limit_lin_vel_x,
-        curriculum.increment,
-        should_expand,
-    )
-    y_range = expand_command_range(
-        ranges[1],
-        curriculum.limit_lin_vel_y,
-        curriculum.increment,
-        should_expand,
-    )
-    yaw_range = expand_command_range(
-        ranges[2],
-        curriculum.limit_ang_vel_yaw,
-        curriculum.increment,
-        should_expand_yaw,
-    )
-    metrics = command_curriculum_state_metrics(
-        enabled=True,
-        returned_count=returned_count,
-        episode_reward=episode_reward,
-        normalized_reward=normalized_reward,
-        reward_threshold=reward_threshold,
-        new_period=new_period,
-        period_boundary=period_boundary,
-        success=success,
-        should_expand=should_expand,
-        should_expand_yaw=should_expand_yaw,
-    )
-    return jnp.stack([x_range, y_range, yaw_range]), metrics
-
-
-def command_curriculum_state_metrics(
-    *,
-    enabled: bool | jax.Array,
-    returned_count: jax.Array | float = 0.0,
-    episode_reward: jax.Array | float = 0.0,
-    normalized_reward: jax.Array | float = 0.0,
-    reward_threshold: jax.Array | float = 0.0,
-    new_period: jax.Array | float = 0.0,
-    period_boundary: bool | jax.Array = False,
-    success: bool | jax.Array = False,
-    should_expand: bool | jax.Array = False,
-    should_expand_yaw: bool | jax.Array = False,
-) -> dict[str, jax.Array]:
-    return {
-        "command_curriculum/enabled": jnp.asarray(enabled, dtype=jnp.float32),
-        "command_curriculum/returned_count": jnp.asarray(
-            returned_count, dtype=jnp.float32
-        ),
-        "command_curriculum/episode_track_lin_vel_xy": jnp.asarray(
-            episode_reward, dtype=jnp.float32
-        ),
-        "command_curriculum/normalized_track_lin_vel_xy": jnp.asarray(
-            normalized_reward, dtype=jnp.float32
-        ),
-        "command_curriculum/reward_threshold": jnp.asarray(
-            reward_threshold, dtype=jnp.float32
-        ),
-        "command_curriculum/period": jnp.asarray(new_period, dtype=jnp.float32),
-        "command_curriculum/period_boundary": jnp.asarray(
-            period_boundary, dtype=jnp.float32
-        ),
-        "command_curriculum/success": jnp.asarray(success, dtype=jnp.float32),
-        "command_curriculum/should_expand": jnp.asarray(
-            should_expand, dtype=jnp.float32
-        ),
-        "command_curriculum/should_expand_yaw": jnp.asarray(
-            should_expand_yaw, dtype=jnp.float32
-        ),
-    }
-
-
-def expand_command_range(
-    command_range: jax.Array,
-    limits: tuple[float, float],
-    increment: float,
-    should_expand: jax.Array,
-) -> jax.Array:
-    limit = jnp.asarray(limits, dtype=jnp.float32)
-    expanded = jnp.clip(
-        command_range + jnp.asarray([-increment, increment], dtype=jnp.float32),
-        limit[0],
-        limit[1],
-    )
-    return jnp.where(should_expand, expanded, command_range)
-
-
-def command_curriculum_metrics(ranges: jax.Array) -> dict[str, jax.Array]:
-    return {
-        "command_range/lin_vel_x_min": ranges[0, 0],
-        "command_range/lin_vel_x_max": ranges[0, 1],
-        "command_range/lin_vel_y_min": ranges[1, 0],
-        "command_range/lin_vel_y_max": ranges[1, 1],
-        "command_range/ang_vel_yaw_min": ranges[2, 0],
-        "command_range/ang_vel_yaw_max": ranges[2, 1],
-    }
-
-
-def initial_command_ranges(env) -> jax.Array:
-    command_config = getattr(env, "command_config", None)
-    if command_config is None:
-        return jnp.zeros((3, 2), dtype=jnp.float32)
-    return command_config.range_array()
-
-
-def reset_env_batch(
-    env,
-    batch_size: int,
-    rng: jax.Array,
-    command_ranges: jax.Array,
-):
-    if hasattr(env, "command_config"):
-        return env.reset_batch(batch_size, rng=rng, command_ranges=command_ranges)
-    return env.reset_batch(batch_size, rng=rng)
-
-
-def critic_observation_size(env) -> int:
-    return int(getattr(env, "critic_observation_size", env.observation_size))
-
-
-def critic_observation_batch(
-    env, state, fallback_obs: jax.Array | None = None
-) -> jax.Array:
-    method = getattr(env, "critic_observation_batch", None)
-    if method is not None:
-        return method(state)
-    if fallback_obs is not None:
-        return fallback_obs
-    return getattr(state, "obs")
-
-
-def step_env_batch(
-    env,
-    state,
-    action: jax.Array,
-    rng: jax.Array,
-    command_ranges: jax.Array,
-):
-    if hasattr(env, "command_config"):
-        return env.step_batch(state, action, rng=rng, command_ranges=command_ranges)
-    return env.step_batch(state, action, rng=rng)
-
-
-def initial_step_counts(env, batch_size: int, rng: jax.Array) -> jax.Array:
-    method = getattr(env, "initial_step_counts", None)
-    if method is None:
-        return jnp.zeros((batch_size,), dtype=jnp.int32)
-    return method(batch_size, rng)
+def critic_observation_size(env: BelloLocomotionEnv) -> int:
+    return env.critic_observation_size
 
 
 def validate_ppo_config(config: PPOConfig) -> None:
@@ -1209,11 +1001,6 @@ def validate_ppo_config(config: PPOConfig) -> None:
         raise ValueError(
             "policy.activation must be 'tanh', 'relu', 'elu', or 'swish', got "
             f"{config.policy.activation!r}"
-        )
-    if config.policy.action_distribution not in {"gaussian", "tanh_gaussian"}:
-        raise ValueError(
-            "policy.action_distribution must be 'gaussian' or 'tanh_gaussian', "
-            f"got {config.policy.action_distribution!r}"
         )
     if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
         raise ValueError(

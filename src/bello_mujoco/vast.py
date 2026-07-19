@@ -659,13 +659,43 @@ def ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
     ]
 
 
+class SshExecutor:
+    """Subprocess boundary for non-interactive SSH probes and commands."""
+
+    def probe(self, target: tuple[str, str, int]) -> None:
+        subprocess.run(
+            ssh_command(target, "true"),
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def run(
+        self,
+        target: tuple[str, str, int],
+        remote_command: str,
+        *,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        kwargs: dict[str, Any] = {
+            "text": True,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        if input_text is not None:
+            kwargs["input"] = input_text
+        return subprocess.run(ssh_command(target, remote_command), **kwargs)
+
+
 def wait_for_ssh(
     api: VastApi,
     instance_id: int,
     timeout_seconds: int,
     *,
     sleep: Callable[[float], None] = time.sleep,
+    executor: SshExecutor | None = None,
 ) -> tuple[str, str, int]:
+    executor = executor or SshExecutor()
     deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
     while time.monotonic() < deadline:
@@ -681,12 +711,7 @@ def wait_for_ssh(
             last_error = exc
         for target in targets:
             try:
-                subprocess.run(
-                    ssh_command(target, "true"),
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                executor.probe(target)
                 return target
             except (OSError, subprocess.CalledProcessError) as exc:
                 last_error = exc
@@ -794,60 +819,6 @@ uv run bello-train-ppo \
 """
 
 
-PLAYGROUND_REMOTE_TRAIN_SCRIPT = r"""set -Eeuo pipefail
-
-run_name="$6"
-playground_dir="/workspace/mujoco_playground"
-
-export DEBIAN_FRONTEND=noninteractive
-if command -v apt-get >/dev/null 2>&1; then
-  apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip
-fi
-
-if ! command -v uv >/dev/null 2>&1; then
-  timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
-  export PATH="$HOME/.local/bin:$PATH"
-fi
-if ! command -v uv >/dev/null 2>&1; then
-  python3 -m pip install --break-system-packages --upgrade uv
-fi
-command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
-
-rm -rf "$playground_dir"
-git init "$playground_dir"
-git -C "$playground_dir" remote add origin "$PLAYGROUND_REPOSITORY"
-git -C "$playground_dir" fetch --depth 1 origin "$PLAYGROUND_COMMIT"
-git -C "$playground_dir" checkout --detach FETCH_HEAD
-actual_commit="$(git -C "$playground_dir" rev-parse HEAD)"
-if [ "$actual_commit" != "$PLAYGROUND_COMMIT" ]; then
-  echo "MuJoCo Playground resolved to $actual_commit, expected $PLAYGROUND_COMMIT" >&2
-  exit 1
-fi
-
-cd "$playground_dir"
-export UV_CACHE_DIR="$PWD/.uv-cache"
-export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
-export WARP_CACHE_PATH="$PWD/.warp-cache"
-export MUJOCO_GL=egl
-export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export JAX_DEFAULT_MATMUL_PRECISION=highest
-
-uv python install 3.12
-uv sync --extra cuda --extra learning
-uv run python -c 'import jax; print({"backend": jax.default_backend(), "devices": [str(x) for x in jax.devices()]}); assert jax.default_backend() == "gpu"'
-
-uv run train-jax-ppo \
-  --env_name="$PLAYGROUND_ENV_NAME" \
-  --impl=warp \
-  --seed="$PLAYGROUND_SEED" \
-  --num_timesteps="$PLAYGROUND_NUM_TIMESTEPS" \
-  --use_wandb \
-  --suffix="$run_name"
-"""
-
-
 def run_remote_training(
     target: tuple[str, str, int],
     selection: GitSelection,
@@ -857,9 +828,9 @@ def run_remote_training(
     wandb_key: str,
     github_token: str,
     sleep: Callable[[float], None] = time.sleep,
-    script: str = REMOTE_TRAIN_SCRIPT,
-    remote_env_extra: Mapping[str, str] | None = None,
+    executor: SshExecutor | None = None,
 ) -> None:
+    executor = executor or SshExecutor()
     project = os.environ.get("WANDB_PROJECT", "bello-mujoco")
     entity = os.environ.get("WANDB_ENTITY", "")
     remote_env = {
@@ -869,8 +840,6 @@ def run_remote_training(
         "GITHUB_TOKEN": github_token,
         "BELLO_HYDRA_OVERRIDES": json.dumps(config.hydra_overrides),
     }
-    if remote_env_extra is not None:
-        remote_env.update(remote_env_extra)
     job_dir = f"/workspace/.bello-vast-jobs/{run_name}"
     start_command = _remote_start_command(
         job_dir,
@@ -878,18 +847,12 @@ def run_remote_training(
         config,
         run_name,
     )
-    payload = json.dumps({"environment": remote_env, "script": script})
+    payload = json.dumps({"environment": remote_env, "script": REMOTE_TRAIN_SCRIPT})
     deadline = time.monotonic() + config.ssh_timeout_seconds
     disconnect_reported = False
 
     while True:
-        result = subprocess.run(
-            ssh_command(target, start_command),
-            input=payload,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        result = executor.run(target, start_command, input_text=payload)
         if result.returncode == 0:
             if result.stdout:
                 print(result.stdout, end="")
@@ -917,11 +880,9 @@ def run_remote_training(
     offset = 0
     disconnected_at: float | None = None
     while True:
-        result = subprocess.run(
-            ssh_command(target, _remote_status_command(job_dir, offset)),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        result = executor.run(
+            target,
+            _remote_status_command(job_dir, offset),
         )
         if result.returncode == 255:
             now = time.monotonic()
@@ -1113,6 +1074,88 @@ def termination_handler():
         signal.signal(signal.SIGTERM, previous)
 
 
+@dataclass(frozen=True)
+class VastLifecycle:
+    """Own one recover-rent-run-destroy lifecycle under the pipeline lock."""
+
+    api: VastApi
+    config: VastTrainConfig
+    state_path: Path
+    label: str
+
+    def run(
+        self,
+        selection: GitSelection,
+        run_name: str,
+        remote_runner: Callable[..., None],
+        *,
+        wandb_key: str,
+        github_token: str,
+    ) -> None:
+        reconcile_stale_state(
+            self.api,
+            self.state_path,
+            self.config.destroy_retries,
+        )
+        tier, offers = find_offers(self.api, self.config)
+        print_offers(tier, offers)
+        instance_id: int | None = None
+        failure: BaseException | None = None
+        try:
+            instance_id = create_available_instance(
+                self.api,
+                offers,
+                self.config,
+                self.label,
+            )
+            write_active_state(self.state_path, instance_id, self.label)
+            print(f"Created Vast instance {instance_id}; teardown is armed.")
+            wait_for_instance(
+                self.api,
+                instance_id,
+                self.config.ready_timeout_seconds,
+            )
+            ssh_target = wait_for_ssh(
+                self.api,
+                instance_id,
+                self.config.ssh_timeout_seconds,
+            )
+            remote_runner(
+                ssh_target,
+                selection,
+                self.config,
+                run_name,
+                wandb_key=wandb_key,
+                github_token=github_token,
+            )
+        except BaseException as exc:
+            failure = exc
+        finally:
+            if instance_id is not None:
+                teardown_failure = self._destroy(instance_id)
+                if teardown_failure is not None:
+                    failure = teardown_failure
+        if failure is not None:
+            raise failure
+
+    def _destroy(self, instance_id: int) -> RuntimeError | None:
+        print(f"Destroying Vast instance {instance_id}.")
+        destroyed = destroy_with_retries(
+            self.api,
+            instance_id,
+            retries=self.config.destroy_retries,
+        )
+        if destroyed:
+            self.state_path.unlink(missing_ok=True)
+            print(f"Destroyed Vast instance {instance_id}.")
+            return None
+        return RuntimeError(
+            f"could not confirm destruction of Vast instance {instance_id}; "
+            f"state retained at {self.state_path}. Run: vastai destroy instance "
+            f"{instance_id}"
+        )
+
+
 def launch_pipeline(
     repo_root: Path,
     config: VastTrainConfig,
@@ -1156,47 +1199,13 @@ def launch_pipeline(
     label = f"bello-{run_name}"
 
     with pipeline_lock(state_dir), termination_handler():
-        reconcile_stale_state(api, state_path, config.destroy_retries)
-        tier, offers = find_offers(api, config)
-        print_offers(tier, offers)
-        instance_id: int | None = None
-        failure: BaseException | None = None
-        try:
-            instance_id = create_available_instance(api, offers, config, label)
-            write_active_state(state_path, instance_id, label)
-            print(f"Created Vast instance {instance_id}; teardown is armed.")
-            wait_for_instance(api, instance_id, config.ready_timeout_seconds)
-            ssh_target = wait_for_ssh(api, instance_id, config.ssh_timeout_seconds)
-            remote_runner(
-                ssh_target,
-                selection,
-                config,
-                run_name,
-                wandb_key=wandb_key,
-                github_token=github_token,
-            )
-        except BaseException as exc:
-            failure = exc
-        finally:
-            if instance_id is not None:
-                print(f"Destroying Vast instance {instance_id}.")
-                destroyed = destroy_with_retries(
-                    api,
-                    instance_id,
-                    retries=config.destroy_retries,
-                )
-                if destroyed:
-                    state_path.unlink(missing_ok=True)
-                    print(f"Destroyed Vast instance {instance_id}.")
-                else:
-                    message = (
-                        f"could not confirm destruction of Vast instance {instance_id}; "
-                        f"state retained at {state_path}. Run: vastai destroy instance "
-                        f"{instance_id}"
-                    )
-                    failure = RuntimeError(message)
-        if failure is not None:
-            raise failure
+        VastLifecycle(api, config, state_path, label).run(
+            selection,
+            run_name,
+            remote_runner,
+            wandb_key=wandb_key,
+            github_token=github_token,
+        )
     return 0
 
 
