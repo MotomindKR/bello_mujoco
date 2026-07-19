@@ -46,6 +46,7 @@ from bello_mujoco.train.ppo import (
     ppo_loss,
     safe_returned_mean,
     safe_returned_max,
+    target_saturation_means,
     update_command_curriculum,
     update_command_curriculum_ranges,
     update_value_norm_state,
@@ -968,6 +969,19 @@ def test_done_reason_means_reports_done_component_rates() -> None:
     assert metrics.keys() == {"mean_done/any", "mean_done/timeout"}
     assert float(metrics["mean_done/any"]) == 0.5
     assert float(metrics["mean_done/timeout"]) == 0.25
+
+
+def test_target_saturation_means_reports_joint_and_motor_rates() -> None:
+    metrics = target_saturation_means(
+        {
+            "target/joint_saturation_fraction": jnp.asarray([0.0, 0.5]),
+            "target/motor_saturation_fraction": jnp.asarray([0.0, 0.0]),
+            "reward/ignored": jnp.asarray([1.0]),
+        }
+    )
+
+    assert float(metrics["mean_target/joint_saturation_fraction"]) == 0.25
+    assert float(metrics["mean_target/motor_saturation_fraction"]) == 0.0
 
 
 def test_gait_diagnostics_converts_touchdowns_to_footfalls_per_second() -> None:

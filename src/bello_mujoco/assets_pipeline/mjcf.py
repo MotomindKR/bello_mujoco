@@ -30,12 +30,22 @@ class ImuSensorConfig:
 class AnkleDifferentialConfig:
     enabled: bool = False
     actuate_tendons: bool = False
+    motor_gain_scale: float = 0.5
+    motor_effort_limit_scale: float = 1.0
 
     def __post_init__(self) -> None:
         if self.actuate_tendons and not self.enabled:
             raise ValueError(
                 "ankle_differential_config.actuate_tendons requires enabled=true"
             )
+        for name, value in (
+            ("motor_gain_scale", self.motor_gain_scale),
+            ("motor_effort_limit_scale", self.motor_effort_limit_scale),
+        ):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    f"ankle_differential_config.{name} must be positive, got {value}"
+                )
 
 
 def compile_urdf_to_mjcf(
@@ -69,7 +79,7 @@ def compile_urdf_to_mjcf(
     ensure_position_actuators(root, actuator_config, actuated_joint_order)
     ensure_ankle_differential_tendons(root, ankle_differential_config)
     if ankle_differential_config.actuate_tendons:
-        replace_ankle_joint_actuators(root, actuator_config)
+        replace_ankle_joint_actuators(root, actuator_config, ankle_differential_config)
     ensure_imu_sensors(root, imu_config)
     ensure_home_keyframe(root, actuator_config)
 
@@ -127,7 +137,11 @@ def ensure_ankle_differential_tendons(
             existing_names.add(tendon_name)
 
 
-def replace_ankle_joint_actuators(root: ET.Element, config: ActuatorConfig) -> None:
+def replace_ankle_joint_actuators(
+    root: ET.Element,
+    config: ActuatorConfig,
+    differential_config: AnkleDifferentialConfig,
+) -> None:
     actuator = root.find("actuator")
     if actuator is None:
         raise ValueError("generated MJCF has no actuator section")
@@ -173,7 +187,10 @@ def replace_ankle_joint_actuators(root: ET.Element, config: ActuatorConfig) -> N
             default = (
                 pitch_coefficient * pitch_config.default_pos + roll_config.default_pos
             )
-            kp, kv = pitch_config.gains
+            kp, kv = (
+                gain * differential_config.motor_gain_scale
+                for gain in pitch_config.gains
+            )
             suffix = "pos" if pitch_config.mode == "policy" else "hold"
             attributes = {
                 "name": f"{tendon_name}_{suffix}",
@@ -189,6 +206,8 @@ def replace_ankle_joint_actuators(root: ET.Element, config: ActuatorConfig) -> N
             )
             if force_range is not None:
                 force_low, force_high = force_range
+                force_low *= differential_config.motor_effort_limit_scale
+                force_high *= differential_config.motor_effort_limit_scale
                 attributes["forcerange"] = f"{force_low:g} {force_high:g}"
                 attributes["forcelimited"] = "true"
             actuator.insert(index, ET.Element("position", attributes))

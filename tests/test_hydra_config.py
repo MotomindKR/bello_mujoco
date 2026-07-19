@@ -69,6 +69,10 @@ def test_train_hydra_configs_convert_to_valid_training_config(
         "locomotion_berkeley_anchor_only",
         "locomotion_berkeley_terrain_only",
         "locomotion_berkeley_motor_offset_only",
+        "locomotion_berkeley_differential",
+        "locomotion_berkeley_differential_hardware_short",
+        "locomotion_berkeley_differential_equivalent_short",
+        "locomotion_berkeley_direct_short",
     ],
 )
 def test_experiment_train_configs_convert_to_valid_training_config(

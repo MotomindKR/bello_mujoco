@@ -8,6 +8,8 @@ asset_config:
   ankle_differential_config:
     enabled: true
     actuate_tendons: true
+    motor_gain_scale: 0.5
+    motor_effort_limit_scale: 1.0
 
 config:
   total_timesteps: 1800000000
@@ -24,6 +26,11 @@ env_config:
     mode: plane
     slope_angle_range: [-0.034906585, 0.034906585]
     randomize_slope_per_world: true
+
+reward_config:
+  invalid_action:
+    enabled: true
+    weight: -1.0
 
 checkpoint_config:
   name: berkeley-differential-ankle-slope2deg-seed0

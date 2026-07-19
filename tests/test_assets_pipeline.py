@@ -193,6 +193,8 @@ def test_ankle_differential_can_replace_joint_actuators_with_tendon_actuators(
             np.testing.assert_allclose(
                 model.actuator_forcerange[actuator_id], [-36.0, 36.0]
             )
+            assert model.actuator_gainprm[actuator_id, 0] == pytest.approx(11.0)
+            assert model.actuator_biasprm[actuator_id, 2] == pytest.approx(-0.5)
 
 
 def test_observation_size_tracks_reduced_actuator_count() -> None:
@@ -210,6 +212,9 @@ def test_observation_size_tracks_reduced_actuator_count() -> None:
         policy_action_scale=np.ones(6, dtype=np.float32),
         actuator_coordinate_transform=np.eye(29, dtype=np.float32),
         joint_angle_offset=np.zeros((1, 29), dtype=np.float32),
+        default_joint_target=np.zeros(29, dtype=np.float32),
+        joint_target_low=np.full(29, -1.0, dtype=np.float32),
+        joint_target_high=np.full(29, 1.0, dtype=np.float32),
         foot_body_ids=np.asarray([2, 3], dtype=np.int32),
         robot_geom_ids=np.asarray([1, 2, 3, 4], dtype=np.int32),
         foot_geom_ids=np.asarray([2, 3], dtype=np.int32),

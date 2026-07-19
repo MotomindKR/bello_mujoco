@@ -645,6 +645,14 @@ class BelloLocomotionEnv:
                 "joint_angle_offset must have shape (worlds, nu), got "
                 f"{model.joint_angle_offset.shape} for nu={mj_model.nu}"
             )
+        for name in ("default_joint_target", "joint_target_low", "joint_target_high"):
+            value = getattr(model, name)
+            if value.shape != (mj_model.nu,):
+                raise ValueError(
+                    f"{name} must have shape ({mj_model.nu},), got {value.shape}"
+                )
+        if np.any(model.joint_target_low >= model.joint_target_high):
+            raise ValueError("joint target lower limits must be below upper limits")
         if model.actuator_qpos_indices.shape != (mj_model.nu,):
             raise ValueError(
                 "actuator_qpos_indices must have one entry per actuator, got "
@@ -714,7 +722,6 @@ class BelloLocomotionEnv:
         )
         data = self._apply_reset_randomization(data, reset_rng, world_id)
         data = mjx.kinematics(self.model.mjx_model, data)
-        data = self._populate_actuator_kinematics(data)
         state = BelloState(
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
@@ -765,7 +772,6 @@ class BelloLocomotionEnv:
             )(command, reset_keys, world_ids)
         data = state.data.replace(_impl=state.data._impl.replace(nworld=batch_size))
         data = mjx.kinematics(self.model.mjx_model, data)
-        data = jax.vmap(self._populate_actuator_kinematics)(data)
         data = data.replace(
             ctrl=jax.vmap(self._action_to_ctrl)(
                 jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
@@ -881,7 +887,8 @@ class BelloLocomotionEnv:
             -self.action_clip,
             self.action_clip,
         )
-        data = state.data.replace(ctrl=self._action_to_ctrl(action))
+        ctrl, joint_saturation, motor_saturation = self._action_target_details(action)
+        data = state.data.replace(ctrl=ctrl)
         data = jax.lax.fori_loop(
             0, self.decimation, lambda _, d: mjx.step(self.model.mjx_model, d), data
         )
@@ -975,6 +982,8 @@ class BelloLocomotionEnv:
             "foot_contact/raw": raw_foot_contact,
             "foot_contact/filtered": foot_contact,
             "foot_contact/debounce_time": foot_contact_debounce_time,
+            "target/joint_saturation_fraction": joint_saturation,
+            "target/motor_saturation_fraction": motor_saturation,
             **self._gait_diagnostics(state, next_state, foot_contact),
             "returned_episode": done,
             **done_flags,
@@ -1002,7 +1011,9 @@ class BelloLocomotionEnv:
             self.action_clip,
         )
         joint_angle_offset = self._joint_angle_offset_batch(batch_size)
-        ctrl = jax.vmap(self._action_to_ctrl)(action, joint_angle_offset)
+        ctrl, joint_saturation, motor_saturation = jax.vmap(
+            self._action_target_details
+        )(action, joint_angle_offset)
         data = state.data.replace(
             ctrl=ctrl,
             _impl=state.data._impl.replace(nworld=batch_size),
@@ -1109,6 +1120,8 @@ class BelloLocomotionEnv:
             "foot_contact/raw": raw_foot_contact,
             "foot_contact/filtered": foot_contact,
             "foot_contact/debounce_time": foot_contact_debounce_time,
+            "target/joint_saturation_fraction": joint_saturation,
+            "target/motor_saturation_fraction": motor_saturation,
             **jax.vmap(self._gait_diagnostics)(state, stepped_state, foot_contact),
             "random_push/applied": push_applied,
             "random_push/lin_vel_x": push_velocity[:, 0],
@@ -1288,18 +1301,55 @@ class BelloLocomotionEnv:
         action: jax.Array,
         joint_angle_offset: jax.Array | None = None,
     ) -> jax.Array:
+        ctrl, _, _ = self._action_target_details(action, joint_angle_offset)
+        return ctrl
+
+    def _action_target_details(
+        self,
+        action: jax.Array,
+        joint_angle_offset: jax.Array | None = None,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         if joint_angle_offset is None:
             joint_angle_offset = jnp.asarray(self.model.joint_angle_offset[0])
-        ctrl = jnp.asarray(self.model.default_ctrl) + joint_angle_offset
+        requested_joint_target = (
+            jnp.asarray(self.model.default_joint_target) + joint_angle_offset
+        )
         action = jnp.clip(
             jnp.asarray(action, dtype=jnp.float32),
             -self.action_clip,
             self.action_clip,
         )
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        return ctrl.at[policy_indices].set(
-            ctrl[policy_indices] + self._action_scale() * action
+        requested_joint_target = requested_joint_target.at[policy_indices].add(
+            self._action_scale() * action
         )
+        joint_target = jnp.clip(
+            requested_joint_target,
+            jnp.asarray(self.model.joint_target_low),
+            jnp.asarray(self.model.joint_target_high),
+        )
+        requested_ctrl = jnp.matmul(
+            jnp.asarray(self.model.actuator_coordinate_transform),
+            joint_target,
+            precision=jax.lax.Precision.HIGHEST,
+        )
+        ctrlrange = jnp.asarray(self.model.mj_model.actuator_ctrlrange)
+        ctrl = jnp.clip(requested_ctrl, ctrlrange[:, 0], ctrlrange[:, 1])
+        joint_saturation = jnp.mean(
+            (
+                jnp.abs(
+                    joint_target[policy_indices]
+                    - requested_joint_target[policy_indices]
+                )
+                > 1.0e-6
+            ).astype(jnp.float32)
+        )
+        motor_saturation = jnp.mean(
+            (
+                jnp.abs(ctrl[policy_indices] - requested_ctrl[policy_indices]) > 1.0e-6
+            ).astype(jnp.float32)
+        )
+        return ctrl, joint_saturation, motor_saturation
 
     def _joint_angle_offset_batch(self, batch_size: int) -> jax.Array:
         offset = jnp.asarray(self.model.joint_angle_offset, dtype=jnp.float32)
@@ -1448,11 +1498,13 @@ class BelloLocomotionEnv:
     ) -> tuple[jax.Array, ...]:
         data = state.data
         actuator_idx = jnp.asarray(self._observed_actuator_indices(observation))
+        qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)[actuator_idx]
+        qvel_idx = jnp.asarray(self.model.actuator_qvel_indices)[actuator_idx]
         joint_pos = (
-            data.actuator_length[actuator_idx]
-            - jnp.asarray(self.model.default_ctrl)[actuator_idx]
+            data.qpos[qpos_idx]
+            - jnp.asarray(self.model.default_joint_target)[actuator_idx]
         )
-        joint_vel = data._impl.actuator_velocity[actuator_idx]
+        joint_vel = data.qvel[qvel_idx]
         actuator_force = data.actuator_force[actuator_idx]
         base_lin_vel = self._link_lin_vel(state, self.config.root_link)
         base_lin_acc = self._link_body_lin_acc(state, self.config.root_link)
@@ -1476,21 +1528,6 @@ class BelloLocomotionEnv:
             joint_vel,
             actuator_force,
             state.last_action,
-        )
-
-    def _populate_actuator_kinematics(self, data: mjx.Data) -> mjx.Data:
-        qpos = data.qpos[jnp.asarray(self.model.actuator_qpos_indices)]
-        qvel = data.qvel[jnp.asarray(self.model.actuator_qvel_indices)]
-        transform = jnp.asarray(self.model.actuator_coordinate_transform)
-        actuator_length = jnp.matmul(
-            transform, qpos, precision=jax.lax.Precision.HIGHEST
-        )
-        actuator_velocity = jnp.matmul(
-            transform, qvel, precision=jax.lax.Precision.HIGHEST
-        )
-        return data.replace(
-            actuator_length=actuator_length,
-            _impl=data._impl.replace(actuator_velocity=actuator_velocity),
         )
 
     def _actuator_indices_named(self, *suffixes: str) -> np.ndarray:
@@ -1726,13 +1763,7 @@ class BelloLocomotionEnv:
             action_clip_limit=self.action_clip,
             last_action=state.last_action,
             actuator_force=next_state.data.actuator_force,
-            actuator_velocity=(
-                jnp.matmul(
-                    jnp.asarray(self.model.actuator_coordinate_transform),
-                    joint_vel,
-                    precision=jax.lax.Precision.HIGHEST,
-                )
-            ),
+            actuator_velocity=next_state.data._impl.actuator_velocity,
             joint_limit_low=self._actuator_joint_limit_low(),
             joint_limit_high=self._actuator_joint_limit_high(),
             action_target_default=self._policy_action_target_default(
@@ -2168,17 +2199,17 @@ class BelloLocomotionEnv:
             joint_angle_offset = jnp.asarray(self.model.joint_angle_offset[0])
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
         return (
-            jnp.asarray(self.model.default_ctrl)[policy_indices]
+            jnp.asarray(self.model.default_joint_target)[policy_indices]
             + joint_angle_offset[policy_indices]
         )
 
     def _policy_action_target_low(self) -> jax.Array:
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        return jnp.asarray(self.model.mj_model.actuator_ctrlrange)[policy_indices, 0]
+        return jnp.asarray(self.model.joint_target_low)[policy_indices]
 
     def _policy_action_target_high(self) -> jax.Array:
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        return jnp.asarray(self.model.mj_model.actuator_ctrlrange)[policy_indices, 1]
+        return jnp.asarray(self.model.joint_target_high)[policy_indices]
 
 
 def quat_rotate_inverse(quat_wxyz: jax.Array, vec: jax.Array) -> jax.Array:

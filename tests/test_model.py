@@ -9,7 +9,12 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.assets_pipeline.prepare import actuated_urdf_joint_names
 from bello_mujoco.assets import source_assets_root
 from bello_mujoco.contracts import DEFAULT_SPAWN_CLEARANCE
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import (
+    BelloEnvConfig,
+    BelloLocomotionEnv,
+    ObservationConfig,
+)
+from bello_mujoco.render import mujoco_action_to_ctrl, mujoco_policy_observation
 from bello_mujoco.sim import (
     ModelRandomizationConfig,
     SimulationPhysicsConfig,
@@ -46,7 +51,7 @@ def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     assert np.allclose(model.policy_action_scale, expected_scale)
 
 
-def test_differential_ankle_policy_actions_are_direct_motor_targets(
+def test_differential_ankle_joint_targets_map_to_both_motors(
     full_body_actuated_ankle_tendon_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
@@ -65,18 +70,31 @@ def test_differential_ankle_policy_actions_are_direct_motor_targets(
         mujoco.mjtObj.mjOBJ_ACTUATOR,
         "left_ankle_motor_2_pos",
     )
-    action_index = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
-    action[action_index] = 1.0
+    pitch_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
+    roll_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_2_id)[0])
+    action[pitch_action] = 1.0
 
     ctrl = np.asarray(env._action_to_ctrl(action))
 
     assert ctrl[motor_1_id] == pytest.approx(
-        model.default_ctrl[motor_1_id] + model.policy_action_scale[action_index]
+        model.default_ctrl[motor_1_id] - model.policy_action_scale[pitch_action]
     )
-    assert ctrl[motor_2_id] == pytest.approx(model.default_ctrl[motor_2_id])
+    assert ctrl[motor_2_id] == pytest.approx(
+        model.default_ctrl[motor_2_id] + model.policy_action_scale[pitch_action]
+    )
+
+    action[:] = 0.0
+    action[roll_action] = 1.0
+    ctrl = np.asarray(env._action_to_ctrl(action))
+    assert ctrl[motor_1_id] == pytest.approx(
+        model.default_ctrl[motor_1_id] + model.policy_action_scale[roll_action]
+    )
+    assert ctrl[motor_2_id] == pytest.approx(
+        model.default_ctrl[motor_2_id] + model.policy_action_scale[roll_action]
+    )
 
 
-def test_differential_ankle_observations_use_motor_coordinates(
+def test_differential_ankle_observations_use_joint_coordinates(
     full_body_actuated_ankle_tendon_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
@@ -101,8 +119,7 @@ def test_differential_ankle_observations_use_motor_coordinates(
     roll_qvel = int(model.actuator_qvel_indices[motor_2_id])
     qpos = state.data.qpos.at[pitch_qpos].add(0.10).at[roll_qpos].add(0.02)
     qvel = state.data.qvel.at[pitch_qvel].set(0.30).at[roll_qvel].set(-0.10)
-    data = env._populate_actuator_kinematics(state.data.replace(qpos=qpos, qvel=qvel))
-    state = state.replace(data=data)
+    state = state.replace(data=state.data.replace(qpos=qpos, qvel=qvel))
 
     terms = env._frame_terms(state, env.config.observation)
     position = terms[8]
@@ -110,13 +127,72 @@ def test_differential_ankle_observations_use_motor_coordinates(
     motor_1_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
     motor_2_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_2_id)[0])
 
-    assert position[motor_1_action] == pytest.approx(-0.08)
-    assert position[motor_2_action] == pytest.approx(0.12)
-    assert velocity[motor_1_action] == pytest.approx(-0.40)
-    assert velocity[motor_2_action] == pytest.approx(0.20)
+    assert position[motor_1_action] == pytest.approx(0.10)
+    assert position[motor_2_action] == pytest.approx(0.02)
+    assert velocity[motor_1_action] == pytest.approx(0.30)
+    assert velocity[motor_2_action] == pytest.approx(-0.10)
+
+
+def test_differential_control_matches_native_mujoco(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(
+        full_body_actuated_ankle_tendon_asset,
+        terrain=FLAT_TERRAIN,
+    )
+    env = BelloLocomotionEnv(model)
+    action = np.linspace(-1.0, 1.0, env.action_size, dtype=np.float32)
+
     np.testing.assert_allclose(
-        np.asarray(data.actuator_length)[[motor_1_id, motor_2_id]],
-        np.asarray(model.default_ctrl)[[motor_1_id, motor_2_id]] + [-0.08, 0.12],
+        np.asarray(env._action_to_ctrl(action)),
+        mujoco_action_to_ctrl(env, action),
+        atol=1.0e-6,
+    )
+
+
+def test_differential_joint_observation_matches_native_mujoco(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    observation = ObservationConfig(
+        base_ang_vel=False,
+        projected_gravity=False,
+        command=False,
+        actuator_force=False,
+        last_action=False,
+    )
+    model = load_prepared_bello_model(
+        full_body_actuated_ankle_tendon_asset,
+        terrain=FLAT_TERRAIN,
+    )
+    env = BelloLocomotionEnv(model, config=BelloEnvConfig(observation=observation))
+    state, _ = env.reset()
+    qpos = np.asarray(state.data.qpos).copy()
+    qvel = np.asarray(state.data.qvel).copy()
+    qpos[model.actuator_qpos_indices] += np.linspace(
+        -0.05, 0.05, model.mj_model.nu, dtype=np.float32
+    )
+    qvel[model.actuator_qvel_indices] = np.linspace(
+        -0.5, 0.5, model.mj_model.nu, dtype=np.float32
+    )
+    state = state.replace(
+        data=state.data.replace(qpos=np.asarray(qpos), qvel=np.asarray(qvel))
+    )
+    mj_data = mujoco.MjData(model.mj_model)
+    mj_data.qpos[:] = qpos
+    mj_data.qvel[:] = qvel
+    mujoco.mj_forward(model.mj_model, mj_data)
+
+    np.testing.assert_allclose(
+        np.asarray(env.observation(state)),
+        np.asarray(
+            mujoco_policy_observation(
+                env,
+                mj_data,
+                command=np.zeros(3, dtype=np.float32),
+                last_action=np.zeros(env.action_size, dtype=np.float32),
+                step_count=0,
+            )
+        ),
         atol=1.0e-6,
     )
 

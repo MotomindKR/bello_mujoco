@@ -189,6 +189,8 @@ asset_config:
   ankle_differential_config:
     enabled: false
     actuate_tendons: false
+    motor_gain_scale: 0.5
+    motor_effort_limit_scale: 1.0
   joint_availability:
     waist_yaw: true
     waist_roll: true
@@ -261,26 +263,27 @@ reward weights and action scales.
 
 Policy action scales convert normalized residual actions to joint target
 radians. When a joint does not set `action_scale` explicitly, the generated
-model uses `default_action_scale_ratio * actuator_ctrlrange_width`; the default
-ratio is `0.25`, and generated actuator `ctrlrange` comes from the configured
-soft limit when present.
+model uses `default_action_scale_ratio * logical_joint_range_width`; the default
+ratio is `0.25`, using the configured logical joint soft range (or the
+generated direct-actuator range for an unlimited joint).
 The knee soft target range starts at the hard lower joint limit, `0.0` rad,
 and keeps the upper soft limit at `1.98968` rad.
 
 Setting `ankle_differential_config.enabled: true` adds the two fixed-tendon
 coordinates `motor_1 = roll - pitch` and `motor_2 = roll + pitch` for each
 ankle. Setting `actuate_tendons: true` additionally replaces the direct ankle
-pitch/roll actuators with position actuators on those tendons. In that mode the
-four ankle policy actions are direct residual targets for the four motor/tendon
-coordinates; the environment does not transform policy outputs from virtual
-pitch/roll targets. Position and velocity observations also use MuJoCo
-transmission-space actuator coordinates (`actuator_length` and
-`actuator_velocity`). Thus the differential ankle observations are the paired
-motor coordinates rather than reconstructed ankle pitch/roll. Physical joint
-qpos/qvel remain available internally for rewards, limits, and privileged
-simulation calculations. Explicit ankle joint action scales are combined
-conservatively for each differential motor; otherwise the normal control-range
-rule applies.
+pitch/roll actuators with position actuators on those tendons. The actor still
+uses logical ankle pitch/roll actions and encoder observations. The control
+stack clamps logical targets to configured joint soft ranges, transforms them
+to the two motor coordinates, and defensively clips those coordinates to their
+generated transmission ranges. Training logs joint-target and motor-target
+saturation separately.
+
+Each logical ankle axis receives stiffness from both motors. The default
+`motor_gain_scale: 0.5` therefore changes the configured joint gains
+`[22, 1]` into per-motor gains `[11, 0.5]`, preserving the effective uncoupled
+joint impedance. `motor_effort_limit_scale` scales each motor's generated force
+limit; `1.0` preserves the configured ±36 limit.
 
 Default full-body actuator effort limits follow the Robstride peak-torque
 groups:
@@ -1020,18 +1023,24 @@ actually applied.
 The Bello locomotion env exposes configurable `env_config.action_clip`, which
 defaults to `5.0`. It clips the action for control and observations while using
 the pre-clip request for `invalid_action`.
-Bello maps the clipped action linearly to position-actuator control targets with
-`default_ctrl + policy_action_scale * clipped_action`, matching the common
-legged-gym/IsaacLab residual-position convention. Generated position actuators
-use `ctrllimited="false"` so MuJoCo/MJX does not introduce actuator-layer target
-saturation. Motor force limits remain active through generated `forcerange` /
-`forcelimited="true"` actuator attributes.
+Bello maps the clipped action linearly to logical joint targets with
+`default_joint_target + policy_action_scale * clipped_action`, matching the
+common residual-position convention. Targets are explicitly clamped to the
+configured soft joint range before any transmission mapping. Differential
+ankles then map logical targets to tendon motor coordinates and clip those
+coordinates defensively. Motor force limits remain active through generated
+`forcerange` / `forcelimited="true"` actuator attributes.
 
 CartPole exposes `action_clip=1.0`; Bello defaults to `action_clip=5.0`.
 
 ## Metrics
 
 Training returns `out["metrics"]`, with one row per PPO update.
+
+Joint-space control also reports `mean_target/joint_saturation_fraction` and
+`mean_target/motor_saturation_fraction`. The first means the requested logical
+target reached a configured joint soft range; the second means the transformed
+target reached a motor-coordinate range.
 
 Core metrics:
 

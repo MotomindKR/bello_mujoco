@@ -517,7 +517,7 @@ def test_policy_action_controls_all_default_actuators(
     )
 
 
-def test_policy_action_uses_reference_style_bounded_affine_targets(
+def test_policy_action_clamps_affine_targets_to_joint_soft_ranges(
     full_body_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset)
@@ -525,14 +525,22 @@ def test_policy_action_uses_reference_style_bounded_affine_targets(
     ctrl = env._action_to_ctrl(action)
     policy_indices = jnp.asarray(env.model.policy_ctrl_indices)
     policy_ctrl = ctrl[policy_indices]
-    expected = (
-        jnp.asarray(env.model.default_ctrl)[policy_indices]
-        + jnp.asarray(env.model.policy_action_scale) * 5.0
+    expected = jnp.clip(
+        jnp.asarray(env.model.default_joint_target)[policy_indices]
+        + jnp.asarray(env.model.policy_action_scale) * 5.0,
+        jnp.asarray(env.model.joint_target_low)[policy_indices],
+        jnp.asarray(env.model.joint_target_high)[policy_indices],
     )
 
     assert env.action_clip == 5.0
     assert bool(jnp.allclose(policy_ctrl, expected))
-    assert not bool(jnp.any(jnp.asarray(env.model.mj_model.actuator_ctrllimited)))
+    assert bool(
+        jnp.any(
+            policy_ctrl
+            != jnp.asarray(env.model.default_joint_target)[policy_indices]
+            + jnp.asarray(env.model.policy_action_scale) * 5.0
+        )
+    )
 
 
 def test_policy_action_uses_configured_action_clip(
@@ -545,8 +553,11 @@ def test_policy_action_uses_configured_action_clip(
     action = jnp.full((env.action_size,), 10.0, dtype=jnp.float32)
     ctrl = env._action_to_ctrl(action)
     policy_indices = jnp.asarray(env.model.policy_ctrl_indices)
-    expected = jnp.asarray(env.model.default_ctrl)[policy_indices] + jnp.asarray(
-        env.model.policy_action_scale
+    expected = jnp.clip(
+        jnp.asarray(env.model.default_joint_target)[policy_indices]
+        + jnp.asarray(env.model.policy_action_scale),
+        jnp.asarray(env.model.joint_target_low)[policy_indices],
+        jnp.asarray(env.model.joint_target_high)[policy_indices],
     )
 
     assert env.action_clip == 1.0
@@ -736,8 +747,19 @@ def test_reset_batch_applies_per_world_model_kinematics(
     state, _ = env.reset_batch(4, command=jnp.zeros(3, dtype=jnp.float32))
 
     assert not jnp.allclose(state.data.xanchor[0], state.data.xanchor[1])
-    expected_ctrl = jnp.asarray(env.model.default_ctrl)[None, :] + jnp.asarray(
-        env.model.joint_angle_offset
+    expected_joint_target = jnp.clip(
+        jnp.asarray(env.model.default_joint_target)[None, :]
+        + jnp.asarray(env.model.joint_angle_offset),
+        jnp.asarray(env.model.joint_target_low)[None, :],
+        jnp.asarray(env.model.joint_target_high)[None, :],
+    )
+    transform = jnp.asarray(env.model.actuator_coordinate_transform)
+    expected_ctrl = jax.vmap(
+        lambda target: jnp.matmul(
+            transform, target, precision=jax.lax.Precision.HIGHEST
+        )
+    )(
+        expected_joint_target
     )
     np.testing.assert_allclose(np.asarray(state.data.ctrl), np.asarray(expected_ctrl))
     assert not jnp.allclose(state.data.ctrl[0], state.data.ctrl[1])

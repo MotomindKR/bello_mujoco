@@ -195,8 +195,18 @@ def test_native_mujoco_control_applies_model_angle_offset() -> None:
     env = SimpleNamespace(
         action_clip=1.0,
         model=SimpleNamespace(
+            mj_model=SimpleNamespace(
+                actuator_ctrlrange=np.asarray(
+                    [[-10.0, 10.0], [-10.0, 10.0], [-10.0, 10.0]],
+                    dtype=np.float32,
+                )
+            ),
             default_ctrl=np.asarray([1.0, 2.0, 3.0], dtype=np.float32),
+            default_joint_target=np.asarray([1.0, 2.0, 3.0], dtype=np.float32),
             joint_angle_offset=np.asarray([[0.1, 0.2, 0.3]], dtype=np.float32),
+            joint_target_low=np.asarray([-10.0, -10.0, -10.0], dtype=np.float32),
+            joint_target_high=np.asarray([10.0, 10.0, 10.0], dtype=np.float32),
+            actuator_coordinate_transform=np.eye(3, dtype=np.float32),
             policy_ctrl_indices=np.asarray([0, 2], dtype=np.int32),
             policy_action_scale=np.asarray([0.5, 0.25], dtype=np.float32),
         ),

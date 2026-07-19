@@ -74,6 +74,17 @@ checkpoint_config.enabled=true
 checkpoint_config.upload_wandb_artifact=true
 ```
 
+To launch the matched direct-joint, differential ±18, and differential ±36
+short experiments concurrently in a tiled tmux window, run:
+
+```bash
+scripts/run_vast_differential_ablations.sh main
+```
+
+The launcher creates one detached worktree per controller so each parallel Vast
+instance has independent lifecycle state. Set `MAX_PRICE` to change the
+per-instance hourly ceiling.
+
 Consequently a user override cannot silently disable W&B or final checkpoint
 artifact upload. Training configs from older branches must support the current
 W&B and checkpoint fields or their setup validation will fail.

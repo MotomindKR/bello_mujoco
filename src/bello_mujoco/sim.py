@@ -184,6 +184,9 @@ class BelloModel:
     policy_action_scale: np.ndarray
     actuator_coordinate_transform: np.ndarray
     joint_angle_offset: np.ndarray
+    default_joint_target: np.ndarray
+    joint_target_low: np.ndarray
+    joint_target_high: np.ndarray
     geom_body_ids: np.ndarray
     foot_body_ids: np.ndarray
     robot_geom_ids: np.ndarray
@@ -379,10 +382,6 @@ def _load_bello_model_from_path(
         policy_ctrl_indices=policy_ctrl_indices,
     )
     if randomized_fields is not None:
-        randomized_fields["joint_angle_offset"] = (
-            actuator_coordinate_transform_matrix
-            @ randomized_fields["joint_angle_offset"].T
-        ).T
         _apply_native_model_sample(mj_model, randomized_fields, sample=0)
     terrain_geom_quat, randomized_geom_quat = _terrain_geom_quat_samples(
         mj_model,
@@ -441,6 +440,14 @@ def _load_bello_model_from_path(
         policy_ctrl_indices,
         actuator_config,
     )
+    default_joint_target = default_qpos[actuator_qpos_indices].astype(np.float32)
+    joint_target_range = np.asarray(
+        [
+            configured_actuator_joint_range(mj_model, name, actuator_config)
+            for name in actuator_joint_names
+        ],
+        dtype=np.float32,
+    )
     return BelloModel(
         mj_model=mj_model,
         mjx_model=mjx_model,
@@ -465,6 +472,9 @@ def _load_bello_model_from_path(
             if randomized_fields is not None
             else np.zeros((1, mj_model.nu), dtype=np.float32)
         ),
+        default_joint_target=default_joint_target,
+        joint_target_low=joint_target_range[:, 0],
+        joint_target_high=joint_target_range[:, 1],
         geom_body_ids=np.asarray(mj_model.geom_bodyid, dtype=np.int32),
         foot_body_ids=foot_body_ids,
         robot_geom_ids=robot_geom_ids,
@@ -710,25 +720,36 @@ def actuator_action_scale(
     policy_ctrl_indices: np.ndarray,
     config: ActuatorConfig,
 ) -> np.ndarray:
-    ctrlrange = np.asarray(mj_model.actuator_ctrlrange, dtype=np.float32)
-    all_scale = config.default_action_scale_ratio * (ctrlrange[:, 1] - ctrlrange[:, 0])
+    all_scale = np.empty(len(actuator_joint_names), dtype=np.float32)
     joint_configs = config.by_name
     for actuator_id, joint_name in enumerate(actuator_joint_names):
-        if mj_model.actuator_trntype[actuator_id] == mujoco.mjtTrn.mjTRN_TENDON:
-            side = joint_name.split("_", maxsplit=1)[0]
-            ankle_scales = (
-                joint_configs[f"{side}_ankle_pitch_joint"].action_scale,
-                joint_configs[f"{side}_ankle_roll_joint"].action_scale,
-            )
-            configured_scales = [value for value in ankle_scales if value is not None]
-            if configured_scales:
-                all_scale[actuator_id] = max(configured_scales)
-            continue
-        joint_config = joint_configs.get(joint_name)
-        if joint_config is not None and joint_config.action_scale is not None:
-            all_scale[actuator_id] = joint_config.action_scale
+        joint_config = joint_configs[joint_name]
+        low, high = configured_actuator_joint_range(mj_model, joint_name, config)
+        all_scale[actuator_id] = (
+            joint_config.action_scale
+            if joint_config.action_scale is not None
+            else config.default_action_scale_ratio * (high - low)
+        )
     scale = all_scale[policy_ctrl_indices]
     return scale.astype(np.float32)
+
+
+def configured_actuator_joint_range(
+    mj_model: mujoco.MjModel,
+    joint_name: str,
+    config: ActuatorConfig,
+) -> tuple[float, float]:
+    configured = config.by_name[joint_name].soft_limit
+    if configured is not None:
+        return configured
+    joint_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+    if joint_id < 0:
+        raise ValueError(f"actuator maps to missing joint {joint_name!r}")
+    if not bool(mj_model.jnt_limited[joint_id]):
+        actuator_id = logical_actuator_joint_names(mj_model).index(joint_name)
+        low, high = mj_model.actuator_ctrlrange[actuator_id]
+        return float(low), float(high)
+    return tuple(float(value) for value in mj_model.jnt_range[joint_id])
 
 
 def logical_actuator_joint_names(mj_model: mujoco.MjModel) -> tuple[str, ...]:

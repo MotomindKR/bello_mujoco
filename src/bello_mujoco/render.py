@@ -395,11 +395,12 @@ def mujoco_policy_observation(
         parts.append(mujoco_scaled(command, scale.command))
     if observation.joint_pos:
         actuator_idx = env._observed_actuator_indices(observation)
+        qpos_idx = env.model.actuator_qpos_indices[actuator_idx]
         parts.append(
             mujoco_scaled(
                 np.asarray(
-                    mj_data.actuator_length[actuator_idx]
-                    - env.model.default_ctrl[actuator_idx],
+                    mj_data.qpos[qpos_idx]
+                    - env.model.default_joint_target[actuator_idx],
                     dtype=np.float32,
                 ),
                 scale.joint_pos,
@@ -407,10 +408,11 @@ def mujoco_policy_observation(
         )
     if observation.joint_vel:
         actuator_idx = env._observed_actuator_indices(observation)
+        qvel_idx = env.model.actuator_qvel_indices[actuator_idx]
         parts.append(
             mujoco_scaled(
                 np.asarray(
-                    mj_data.actuator_velocity[actuator_idx],
+                    mj_data.qvel[qvel_idx],
                     dtype=np.float32,
                 ),
                 scale.joint_vel,
@@ -447,14 +449,20 @@ def mujoco_scaled(value: np.ndarray, scale: float) -> np.ndarray:
 
 
 def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.ndarray:
-    ctrl = np.asarray(env.model.default_ctrl, dtype=np.float32) + np.asarray(
-        env.model.joint_angle_offset[0], dtype=np.float32
-    )
+    joint_target = np.asarray(
+        env.model.default_joint_target, dtype=np.float32
+    ) + np.asarray(env.model.joint_angle_offset[0], dtype=np.float32)
     policy_indices = np.asarray(env.model.policy_ctrl_indices, dtype=np.int32)
     action = np.asarray(action, dtype=np.float32)
     if env.action_clip is not None:
         action = np.clip(action, -env.action_clip, env.action_clip)
-    ctrl[policy_indices] = ctrl[policy_indices] + env.model.policy_action_scale * action
+    joint_target[policy_indices] += env.model.policy_action_scale * action
+    joint_target = np.clip(
+        joint_target, env.model.joint_target_low, env.model.joint_target_high
+    )
+    ctrl = env.model.actuator_coordinate_transform @ joint_target
+    ctrlrange = env.model.mj_model.actuator_ctrlrange
+    ctrl = np.clip(ctrl, ctrlrange[:, 0], ctrlrange[:, 1])
     return ctrl.astype(np.float32)
 
 

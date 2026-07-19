@@ -82,8 +82,8 @@ The default blueprint provides:
   animated root/joints
 - reward totals/components and episode diagnostics
 - commanded and measured linear/yaw velocities overlaid in one chart
-- one tab per policy joint overlaying measured position, MuJoCo position target,
-  applied normalized policy action, and actuator torque
+- one tab per policy joint overlaying measured joint position, logical joint
+  target, applied normalized policy action, and associated actuator force
 - aggregate actor means, applied actions, and control saturation telemetry
 - joint positions/velocities and actuator forces
 - done flags, controller connection state, and an event log

@@ -536,6 +536,14 @@ def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def target_saturation_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        f"mean_{name}": value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("target/")
+    }
+
+
 def gait_diagnostics(
     info: dict[str, jax.Array], control_timestep: float
 ) -> dict[str, jax.Array]:
@@ -839,6 +847,7 @@ def update_runner_state(
         **done_reason_means(transitions.info),
         **random_push_means(transitions.info),
         **foot_contact_means(transitions.info),
+        **target_saturation_means(transitions.info),
         **gait_diagnostics(
             transitions.info, float(getattr(env, "control_timestep", 1.0))
         ),

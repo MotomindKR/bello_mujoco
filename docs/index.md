@@ -180,21 +180,21 @@ observation_size: 149
 Actions are residual position targets for policy actuators:
 
 ```text
-ctrl[policy_ctrl_indices] = default_ctrl + policy_action_scale * action
+joint_target = clamp(default_joint_target + policy_action_scale * action)
+ctrl = clamp(actuator_coordinate_transform @ joint_target)
 ```
 
 During PPO training, Bello stores the raw Gaussian action for policy-ratio
 calculations and passes that request to the environment. The environment uses
 the pre-clip value for `invalid_action`, then bounds the applied control with
 the configured `env_config.action_clip`, which defaults to `5.0`. Generated
-MuJoCo position actuators use
-`ctrllimited="false"` and `forcelimited="true"`: policy target commands are not
-actuator-clamped, but actuator force remains limited. Joints configured as
+MuJoCo position actuators use `forcelimited="true"`; Bello explicitly clamps
+logical joint and transformed motor targets before stepping. Joints configured as
 `mode="hold"` are removed from the policy action vector but still use default
 actuator controls.
-By default, each policy action scale is `0.25 * actuator_ctrlrange_width`,
-where generated actuator `ctrlrange` comes from the configured soft limit when
-present. Zero action still requests the configured default pose.
+By default, each policy action scale is `0.25 * logical_joint_range_width`,
+using the configured soft range when present. Zero action still requests the
+configured default pose.
 The knee soft target range starts at the hard lower joint limit, `0.0` rad,
 with the upper soft limit at `1.98968` rad.
 Default position-actuator gains are runtime `[kp, kv]` values. The full-body
@@ -390,6 +390,8 @@ AssetPrepConfig:
   ankle_differential_config:
     enabled: false
     actuate_tendons: false
+    motor_gain_scale: 0.5
+    motor_effort_limit_scale: 1.0
 
 BelloEnvConfig:
   decimation: 4

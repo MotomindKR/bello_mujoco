@@ -260,7 +260,8 @@ class RerunEvaluationLogger:
             raise ValueError("Rerun camera tracking requires root-link visual geometry")
         self.root_tracking_path = root_visual_paths[0]
         self.action_names = tuple(
-            env.model.actuator_names[index] for index in env.model.policy_ctrl_indices
+            env.model.actuator_joint_names[index]
+            for index in env.model.policy_ctrl_indices
         )
         self.joint_names = env.model.actuator_joint_names
         self.actuator_names = env.model.actuator_names
@@ -292,7 +293,7 @@ class RerunEvaluationLogger:
         for actuator_name in self.action_names:
             self._style_series(
                 f"metrics/policy_actuators/{actuator_name}",
-                ("position", "target", "action", "torque"),
+                ("joint_position", "joint_target", "action", "actuator_force"),
             )
         self._style_series(
             "metrics/episode", ("index", "return", "length", "base_height")
@@ -364,14 +365,24 @@ class RerunEvaluationLogger:
         self.recording.log(
             "metrics/actuator/force", rr.Scalars(np.asarray(mj_data.actuator_force))
         )
+        joint_target = np.asarray(self.env.model.default_joint_target).copy()
+        joint_target += np.asarray(self.env.model.joint_angle_offset[0])
+        policy_indices = np.asarray(self.env.model.policy_ctrl_indices)
+        joint_target[policy_indices] += self.env.model.policy_action_scale * action
+        joint_target = np.clip(
+            joint_target,
+            self.env.model.joint_target_low,
+            self.env.model.joint_target_high,
+        )
         for action_index, actuator_name in enumerate(self.action_names):
             actuator_index = self.env.model.policy_ctrl_indices[action_index]
+            qpos_index = self.env.model.actuator_qpos_indices[actuator_index]
             self.recording.log(
                 f"metrics/policy_actuators/{actuator_name}",
                 rr.Scalars(
                     [
-                        mj_data.actuator_length[actuator_index],
-                        ctrl[actuator_index],
+                        mj_data.qpos[qpos_index],
+                        joint_target[actuator_index],
                         action[action_index],
                         mj_data.actuator_force[actuator_index],
                     ]

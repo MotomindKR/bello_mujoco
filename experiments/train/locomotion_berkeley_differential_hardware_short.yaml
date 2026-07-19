@@ -1,0 +1,20 @@
+# Short differential-ankle validation with hardware-oriented motor effort.
+defaults:
+  - locomotion_berkeley_differential
+  - _self_
+
+config:
+  total_timesteps: 200000000
+
+checkpoint_config:
+  name: berkeley-differential-hardware-short-seed0
+  wandb_artifact_name: berkeley-differential-hardware-short-seed0
+
+wandb_config:
+  group: locomotion-berkeley-differential-ablation
+  run_name: berkeley-differential-hardware-short-seed0
+  tags:
+    - differential-ankle
+    - joint-space-policy
+    - motor-effort-36
+    - short-ablation
