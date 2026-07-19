@@ -19,10 +19,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import FrameType
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
 
 import keyring
+import yaml
 
 
 VAST_KEYRING_SERVICE = "vast"
@@ -69,6 +70,7 @@ class VastTrainConfig:
     """User-facing configuration for a complete Vast training lifecycle."""
 
     train_config: Path | None = None
+    task: Literal["locomotion", "motion-tracking"] = "locomotion"
     max_price: float | None = None
     branch: str | None = None
     run_name: str | None = None
@@ -91,6 +93,7 @@ class GitSelection:
     commit: str
     config_path: PurePosixPath
     repo_url: str
+    motion_path: PurePosixPath | None = None
 
 
 @dataclass(frozen=True)
@@ -291,6 +294,8 @@ def credential(env_name: str, service: str, username: str, *, required: bool) ->
 def validate_config(config: VastTrainConfig) -> None:
     if config.train_config is None:
         raise ValueError("--train-config is required")
+    if config.task not in {"locomotion", "motion-tracking"}:
+        raise ValueError("--task must be 'locomotion' or 'motion-tracking'")
     if config.max_price is None or config.max_price <= 0:
         raise ValueError("--max-price must be positive")
     if config.ready_timeout_seconds <= 0 or config.ssh_timeout_seconds <= 0:
@@ -382,13 +387,77 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             run_git(repo_root, "cat-file", "-e", f"{commit}:{path}")
         except subprocess.CalledProcessError as exc:
             raise ValueError(f"{path!r} does not exist on origin/{branch}") from exc
+    motion_path = None
+    if config.task == "motion-tracking":
+        config_text = run_git(repo_root, "show", f"{commit}:{config_path}")
+        motion_path = resolve_vast_motion_path(config_text, config.hydra_overrides)
+        try:
+            run_git(repo_root, "cat-file", "-e", f"{commit}:{motion_path}")
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(
+                "motion-tracking Vast runs require a repository-tracked clip; "
+                f"{motion_path!s} is absent from origin/{branch}. Ignored local "
+                "datasets are never uploaded implicitly."
+            ) from exc
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
         commit=commit,
         config_path=config_path,
         repo_url=repo_url,
+        motion_path=motion_path,
     )
+
+
+def resolve_vast_motion_path(
+    config_text: str, hydra_overrides: Sequence[str] = ()
+) -> PurePosixPath:
+    """Resolve the tracked clip selected by a motion recipe and its overrides."""
+
+    try:
+        document = yaml.safe_load(config_text) or {}
+    except yaml.YAMLError as error:
+        raise ValueError("motion training config is not valid YAML") from error
+    if not isinstance(document, Mapping):
+        raise ValueError("motion training config must contain a YAML mapping")
+    motion = document.get("motion", {})
+    if not isinstance(motion, Mapping):
+        raise ValueError("motion training config motion field must be a mapping")
+    directory = motion.get("directory")
+    sequence = motion.get("sequence")
+    for override in hydra_overrides:
+        key, separator, value = override.partition("=")
+        key = key.lstrip("+")
+        if not separator or key not in {"motion.directory", "motion.sequence"}:
+            continue
+        try:
+            parsed_value = yaml.safe_load(value)
+        except yaml.YAMLError as error:
+            raise ValueError(f"invalid Hydra override {override!r}") from error
+        if key == "motion.directory":
+            directory = parsed_value
+        else:
+            sequence = parsed_value
+    if not isinstance(directory, str) or not directory:
+        raise ValueError(
+            "motion-tracking Vast config must select motion.directory explicitly"
+        )
+    if not isinstance(sequence, str) or not sequence:
+        raise ValueError(
+            "motion-tracking Vast config must select motion.sequence explicitly"
+        )
+    sequence_path = PurePosixPath(sequence)
+    if sequence_path.name != sequence or sequence_path.suffix:
+        raise ValueError("motion.sequence must be a name without a path or suffix")
+    path = PurePosixPath(directory) / f"{sequence}.npz"
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("motion clip must be a repository-relative path")
+    if path.parts[:2] == ("motions", "local"):
+        raise ValueError(
+            "motions/local is ignored and is not uploaded to Vast; choose a "
+            "repository-tracked motion clip"
+        )
+    return path
 
 
 def normalized_repo_url(repo_url: str) -> str:
@@ -1058,6 +1127,13 @@ repo_url="$3"
 remote_dir="$4"
 config_path="$5"
 run_name="$6"
+task="$7"
+
+case "$task" in
+  locomotion) train_command="bello-train-ppo" ;;
+  motion-tracking) train_command="bello-train-motion-ppo" ;;
+  *) echo "unsupported Vast training task: $task" >&2; exit 2 ;;
+esac
 
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
@@ -1118,21 +1194,23 @@ config_dir="$remote_dir/$(dirname "$config_path")"
 config_name="$(basename "$config_path")"
 config_name="${config_name%.*}"
 
-uv run bello-train-ppo \
+mapfile -t user_overrides < <(python3 -c 'import json, os, sys; sys.stdout.write("\n".join(json.loads(os.environ["BELLO_HYDRA_OVERRIDES"])))')
+
+uv run "$train_command" \
   --config-dir "$config_dir" \
   --config-name "$config_name" \
+  "${user_overrides[@]}" \
   dry_run=true \
   config.num_envs=1 \
   config.num_steps=1 \
   config.num_minibatches=1 \
   wandb_config.enabled=false
 
-mapfile -t user_overrides < <(python3 -c 'import json, os, sys; sys.stdout.write("\n".join(json.loads(os.environ["BELLO_HYDRA_OVERRIDES"])))')
 entity_override=()
 if [ -n "${WANDB_ENTITY:-}" ]; then
   entity_override+=("wandb_config.entity=$WANDB_ENTITY")
 fi
-uv run bello-train-ppo \
+uv run "$train_command" \
   --config-dir "$config_dir" \
   --config-name "$config_name" \
   "${user_overrides[@]}" \
@@ -1387,6 +1465,7 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             str(config.remote_dir),
             str(selection.config_path),
             run_name,
+            config.task,
         ]
     )
 
@@ -1573,8 +1652,10 @@ def launch_pipeline(
     run_name = generated_run_name(selection, config)
     print(
         f"Selected origin/{selection.branch} at {selection.commit[:12]} with "
-        f"{selection.config_path} (run {run_name})."
+        f"{selection.config_path} for {config.task} (run {run_name})."
     )
+    if selection.motion_path is not None:
+        print(f"Selected repository-tracked motion {selection.motion_path}.")
 
     if config.dry_run:
         for tier, countries in (

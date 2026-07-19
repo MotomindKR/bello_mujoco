@@ -13,6 +13,7 @@ from bello_mujoco.policy import (
     apply_actor,
     apply_policy,
     evaluate_actions,
+    gaussian_entropy,
     init_observation_stack,
     policy_log_prob,
     reparameterized_policy_entropy,
@@ -26,14 +27,23 @@ from bello_mujoco.train.ppo import (
     Transition,
     action_diagnostics,
     adapt_learning_rate,
+    adaptive_learning_rate_kl,
     aggregate_ppo_metrics,
     compute_gae,
+    denormalize_value,
+    init_observation_norm_state,
     init_runner_state,
     init_train_state,
+    init_value_norm_state,
     learning_rate_for_update,
     make_train,
     normalize_advantages,
+    normalize_observation,
+    normalize_value,
+    update_observation_norm_state,
     update_ppo,
+    update_value_norm_state,
+    validate_action_limit_contract,
     validate_ppo_config,
 )
 
@@ -159,6 +169,80 @@ def test_actor_only_sampling_is_bounded_with_asymmetric_critic() -> None:
     assert jnp.all(jnp.abs(action) <= 0.6)
 
 
+def test_gaussian_actions_are_unsquashed_with_exact_log_prob_and_entropy() -> None:
+    config = small_config(
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            init_log_std=0.0,
+            action_distribution="gaussian",
+            action_limit=0.1,
+        )
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    obs = jnp.zeros((2048, 3), dtype=jnp.float32)
+    action, sampled_log_prob, _ = sample_action(
+        state.policy, obs, jax.random.PRNGKey(1)
+    )
+    evaluated_log_prob, entropy, _ = evaluate_actions(
+        state.policy,
+        obs,
+        action,
+        entropy_rng=jax.random.PRNGKey(2),
+    )
+    _, log_std, _ = apply_policy(state.policy, obs)
+
+    assert jnp.any(jnp.abs(action) > config.policy.action_limit)
+    assert sampled_log_prob == pytest.approx(evaluated_log_prob, abs=1.0e-5)
+    assert entropy == pytest.approx(gaussian_entropy(log_std))
+    validate_action_limit_contract(config, env_action_clip=100.0)
+
+
+def test_gaussian_samples_above_tanh_limit_are_not_rejected() -> None:
+    config = small_config(
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            init_log_std=-1.0,
+            action_distribution="gaussian",
+            action_limit=1.0,
+        )
+    )
+    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, train_state.policy)
+    action = jnp.full_like(batch.action, 2.0)
+    flat_obs = batch.obs.reshape((-1, batch.obs.shape[-1]))
+    mean, log_std, _ = apply_policy(train_state.policy, flat_obs)
+    log_prob = policy_log_prob(
+        train_state.policy,
+        mean.reshape(action.shape),
+        log_std.reshape(action.shape),
+        action,
+        latent_action=action,
+    )
+    batch = batch._replace(
+        action=action,
+        latent_action=action,
+        env_action=action,
+        log_prob=log_prob,
+    )
+
+    _, metrics = update_ppo(
+        train_state,
+        optimizer,
+        batch,
+        jnp.ones((config.num_steps, config.num_envs)),
+        jnp.ones((config.num_steps, config.num_envs)),
+        jax.random.PRNGKey(1),
+        config,
+    )
+
+    assert metrics["invalid/policy_sample"] == 0
+    assert metrics["ppo_update_fraction"] > 0
+
+
 def test_exact_latent_keeps_saturated_tanh_ratio_finite() -> None:
     config = small_config(num_steps=1, total_timesteps=4, num_minibatches=1)
     state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config)
@@ -184,6 +268,63 @@ def test_observation_stack_shifts_and_resets_per_environment() -> None:
         jnp.asarray([1.0, 2.0, 1.0, 2.0, 5.0, 6.0])
     )
     assert updated[1] == pytest.approx(jnp.tile(jnp.asarray([7.0, 8.0]), (3, 1)))
+
+
+def test_observation_normalization_updates_round_trips_and_rejects_poison() -> None:
+    config = small_config(normalize_observations=True)
+    state = init_observation_norm_state(2)
+    observation = jnp.asarray([[1.0, 3.0], [3.0, 7.0]], dtype=jnp.float32)
+    updated = update_observation_norm_state(state, observation, config)
+
+    assert updated.mean == pytest.approx(jnp.asarray([2.0, 5.0]))
+    assert updated.var == pytest.approx(jnp.asarray([1.0, 4.0]))
+    assert updated.count == 2
+    assert normalize_observation(observation, updated, config) == pytest.approx(
+        jnp.asarray([[-1.0, -1.0], [1.0, 1.0]])
+    )
+
+    poisoned = update_observation_norm_state(
+        updated, observation.at[0, 0].set(jnp.nan), config
+    )
+    assert all(
+        jnp.array_equal(before, after)
+        for before, after in zip(updated, poisoned, strict=True)
+    )
+
+
+def test_value_normalization_round_trips_and_rejects_poison() -> None:
+    config = small_config(normalize_value=True)
+    initial = init_value_norm_state()
+    targets = jnp.asarray([1.0, 3.0], dtype=jnp.float32)
+    updated = update_value_norm_state(initial, targets, config)
+    normalized = normalize_value(targets, updated, config)
+
+    assert updated.mean == pytest.approx(2.0)
+    assert updated.var == pytest.approx(1.0)
+    assert updated.count == 2
+    assert denormalize_value(normalized, updated, config) == pytest.approx(targets)
+
+    poisoned = update_value_norm_state(
+        updated, targets.at[0].set(config.target_max_abs * 2.0), config
+    )
+    assert poisoned == updated
+
+
+def test_disabled_normalization_preserves_locomotion_values() -> None:
+    config = small_config()
+    observation_state = init_observation_norm_state(2)
+    value_state = init_value_norm_state()
+    observation = jnp.asarray([[2.0, -3.0]], dtype=jnp.float32)
+    values = jnp.asarray([2.0, -3.0], dtype=jnp.float32)
+
+    assert normalize_observation(observation, observation_state, config) is observation
+    assert (
+        update_observation_norm_state(observation_state, observation, config)
+        is observation_state
+    )
+    assert normalize_value(values, value_state, config) is values
+    assert denormalize_value(values, value_state, config) is values
+    assert update_value_norm_state(value_state, values, config) is value_state
 
 
 def test_staggered_initial_step_counts_match_actor_and_critic_observations(
@@ -307,6 +448,10 @@ def test_ppo_metric_aggregation_preserves_maximum_kl_and_any_guard() -> None:
     assert metrics["max_approx_kl"] == pytest.approx(0.08)
     assert metrics["target_kl_exceeded"] == 1.0
     assert metrics["loss"] == pytest.approx(2.5)
+
+    assert adaptive_learning_rate_kl(metrics, small_config()) == pytest.approx(0.08)
+    mean_config = small_config(adaptive_kl_statistic="mean")
+    assert adaptive_learning_rate_kl(metrics, mean_config) == pytest.approx(0.0215)
 
 
 def test_finite_ppo_update_changes_parameters() -> None:
@@ -480,6 +625,22 @@ def test_action_diagnostics_use_each_worlds_joint_angle_offset() -> None:
         def action_to_ctrl(self, action, offset):
             return action + offset
 
+        def ppo_action_diagnostics(self, env_action):
+            flat_action = env_action.reshape((-1, self.action_size))
+            num_steps, num_envs = env_action.shape[:2]
+            offset = self._joint_angle_offset_batch(num_envs)
+            flat_offset = jnp.broadcast_to(
+                offset[None, ...], (num_steps, *offset.shape)
+            ).reshape((-1, offset.shape[-1]))
+            ctrl = jax.vmap(self.action_to_ctrl)(flat_action, flat_offset)
+            ctrl_low, ctrl_high = self.model.mj_model.actuator_ctrlrange[0]
+            margin = jnp.minimum(ctrl - ctrl_low, ctrl_high - ctrl)
+            saturated = (ctrl <= ctrl_low + 1.0e-6) | (ctrl >= ctrl_high - 1.0e-6)
+            return {
+                "ctrl_saturation_fraction": saturated.astype(jnp.float32).mean(),
+                "ctrl_margin_min": jnp.min(margin),
+            }
+
     metrics = action_diagnostics(batch, OffsetEnv(), train_state.policy)
 
     assert metrics["ctrl_saturation_fraction"] == pytest.approx(0.25)
@@ -491,6 +652,7 @@ def test_action_diagnostics_use_each_worlds_joint_angle_offset() -> None:
     [
         (small_config(num_minibatches=3), "divisible"),
         (small_config(schedule="unknown"), "schedule"),
+        (small_config(adaptive_kl_statistic="median"), "adaptive_kl_statistic"),
         (
             small_config(learning_rate=1.0e-6),
             "adaptive learning_rate",
@@ -511,6 +673,12 @@ def test_action_diagnostics_use_each_worlds_joint_angle_offset() -> None:
             small_config(policy=ActorCriticConfig(init_log_std=2.0, max_log_std=1.0)),
             "init_log_std",
         ),
+        (
+            small_config(policy=ActorCriticConfig(action_distribution="categorical")),
+            "action_distribution",
+        ),
+        (small_config(value_norm_eps=0.0), "value_norm_eps"),
+        (small_config(observation_norm_clip=jnp.inf), "observation_norm_clip"),
     ],
 )
 def test_ppo_validation_rejects_invalid_contracts(

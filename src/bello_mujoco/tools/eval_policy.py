@@ -40,6 +40,16 @@ def main(
 ) -> None:
     validate_eval_config(eval_config)
     train_state, metadata = restore_training_checkpoint(checkpoint_path)
+    if metadata.task != "locomotion":
+        raise ValueError(
+            f"checkpoint task is {metadata.task!r}, not 'locomotion'; use "
+            "bello-eval-motion-policy for motion checkpoints"
+        )
+    if any(
+        value is None
+        for value in (metadata.env, metadata.reward, metadata.command, metadata.done)
+    ):
+        raise ValueError("locomotion checkpoint is missing its environment contract")
     prepared = prepare_asset(metadata.asset)
     env = BelloLocomotionEnv.load_prepared(
         prepared,

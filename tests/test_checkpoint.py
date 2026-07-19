@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import chex
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -21,6 +22,7 @@ from bello_mujoco.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
     load_checkpoint_metadata,
+    restore_evaluation_checkpoint,
     restore_runner_checkpoint,
     restore_training_checkpoint,
     save_training_checkpoint,
@@ -33,7 +35,9 @@ from bello_mujoco.envs.locomotion import (
     BelloState,
     DoneConfig,
 )
+from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
+from bello_mujoco.motion import MotionClip
 from bello_mujoco.policy import (
     ActorCriticConfig,
     apply_policy,
@@ -41,8 +45,10 @@ from bello_mujoco.policy import (
 )
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.train.ppo import (
+    ObservationNormState,
     PPOConfig,
     RunnerState,
+    ValueNormState,
     init_runner_state,
 )
 
@@ -54,6 +60,7 @@ ACTION_LAYOUT = ActionLayout(("action_0", "action_1"))
 class FakeEnv:
     config = BelloEnvConfig()
     action_clip = 1.0
+    ppo_stagger_initial_step_count = False
     observation_layout = ACTOR_LAYOUT
     critic_observation_layout = CRITIC_LAYOUT
     action_layout = ACTION_LAYOUT
@@ -105,6 +112,44 @@ class FakeEnv:
         return jnp.zeros((batch_size,), dtype=jnp.int32)
 
 
+class FakeMotionEnv(FakeEnv):
+    task = "motion_tracking"
+
+    def reset_batch(
+        self,
+        batch_size: int,
+        command: jax.Array | None = None,
+        rng: jax.Array | None = None,
+    ) -> tuple[FakeMotionState, jax.Array]:
+        state, observation = super().reset_batch(batch_size, command, rng)
+        failure_ema = jnp.asarray((0.125, 0.25, 0.5), dtype=jnp.float32)
+        return (
+            FakeMotionState(
+                data=state.data,
+                last_action=state.last_action,
+                command=state.command,
+                sampling_failure_ema=jnp.broadcast_to(
+                    failure_ema, (batch_size, failure_ema.size)
+                ),
+                step_count=state.step_count,
+                episode_return=state.episode_return,
+                episode_length=state.episode_length,
+            ),
+            observation,
+        )
+
+
+@chex.dataclass(frozen=True)
+class FakeMotionState:
+    data: dict[str, jax.Array]
+    last_action: jax.Array
+    command: jax.Array
+    sampling_failure_ema: jax.Array
+    step_count: jax.Array
+    episode_return: jax.Array
+    episode_length: jax.Array
+
+
 def ppo_config() -> PPOConfig:
     return PPOConfig(
         seed=11,
@@ -138,6 +183,57 @@ def metadata(config: PPOConfig, tmp_path: Path) -> CheckpointMetadata:
     )
 
 
+def synthetic_motion_clip() -> MotionClip:
+    num_frames = 3
+    num_bodies = 2
+    qpos = jnp.zeros((num_frames, 7 + ACTION_LAYOUT.size), dtype=jnp.float32)
+    qpos = qpos.at[:, 3].set(1.0)
+    body_quat = jnp.zeros((num_frames, num_bodies, 4), dtype=jnp.float32)
+    body_quat = body_quat.at[:, :, 0].set(1.0)
+    return MotionClip(
+        fps=50.0,
+        joint_names=ACTION_LAYOUT.names,
+        body_names=("pelvis_link", "torso_link"),
+        source_sha256="1" * 64,
+        qpos=qpos,
+        qvel=jnp.zeros((num_frames, 6 + ACTION_LAYOUT.size), dtype=jnp.float32),
+        body_pos=jnp.zeros((num_frames, num_bodies, 3), dtype=jnp.float32),
+        body_quat=body_quat,
+        body_lin_vel=jnp.zeros((num_frames, num_bodies, 3), dtype=jnp.float32),
+        body_ang_vel=jnp.zeros((num_frames, num_bodies, 3), dtype=jnp.float32),
+        foot_contacts=jnp.zeros((num_frames, 2), dtype=bool),
+    )
+
+
+def motion_metadata(
+    config: PPOConfig,
+    motion_path: Path,
+    clip: MotionClip,
+    state: RunnerState,
+) -> CheckpointMetadata:
+    return checkpoint.motion_metadata_with_runner_state(
+        CheckpointMetadata(
+            ppo=config,
+            asset=AssetPrepConfig(),
+            reward=None,
+            command=None,
+            done=None,
+            env=None,
+            warp=WarpConfig(contact_budget_per_env=12),
+            obs_size=ACTOR_LAYOUT.size * config.policy.obs_stack_size,
+            critic_obs_size=CRITIC_LAYOUT.size * config.policy.obs_stack_size,
+            action_size=ACTION_LAYOUT.size,
+            actor_observation_layout=ACTOR_LAYOUT,
+            critic_observation_layout=CRITIC_LAYOUT,
+            action_layout=ACTION_LAYOUT,
+            task="motion_tracking",
+            motion_env=MotionTrackingEnvConfig(motion_path=motion_path),
+            motion=checkpoint.motion_clip_contract(motion_path, clip),
+        ),
+        state,
+    )
+
+
 def runner_state(config: PPOConfig, env: FakeEnv) -> RunnerState:
     state, _, _ = init_runner_state(jax.random.PRNGKey(7), env, config)
     batch_size = config.num_envs
@@ -164,6 +260,25 @@ def runner_state(config: PPOConfig, env: FakeEnv) -> RunnerState:
         ).reshape(state.critic_obs_stack.shape),
         rng=jax.random.PRNGKey(99),
         learning_rate=jnp.asarray(7.5e-5, dtype=jnp.float32),
+        value_norm_state=ValueNormState(
+            mean=jnp.asarray(-1.25, dtype=jnp.float32),
+            var=jnp.asarray(2.5, dtype=jnp.float32),
+            count=jnp.asarray(17.0, dtype=jnp.float32),
+        ),
+        observation_norm_state=ObservationNormState(
+            mean=jnp.linspace(-1.0, 1.0, state.observation_norm_state.mean.shape[-1]),
+            var=jnp.linspace(1.0, 2.0, state.observation_norm_state.var.shape[-1]),
+            count=jnp.asarray(19.0, dtype=jnp.float32),
+        ),
+        critic_observation_norm_state=ObservationNormState(
+            mean=jnp.linspace(
+                -2.0, 2.0, state.critic_observation_norm_state.mean.shape[-1]
+            ),
+            var=jnp.linspace(
+                2.0, 3.0, state.critic_observation_norm_state.var.shape[-1]
+            ),
+            count=jnp.asarray(23.0, dtype=jnp.float32),
+        ),
     )
 
 
@@ -213,14 +328,21 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     path = tmp_path / "checkpoint"
 
     save_checkpoint(path, state, checkpoint_metadata)
-    train_state, eval_metadata = restore_training_checkpoint(path)
+    train_state, training_metadata = restore_training_checkpoint(path)
+    evaluation_state, eval_metadata, normalization = restore_evaluation_checkpoint(path)
     restored, static_policy, optimizer, resume_metadata = restore_runner_checkpoint(
         path, env
     )
     document = json.loads((path / checkpoint.METADATA_FILE).read_text(encoding="utf-8"))
 
     assert_tree_equal(restored, state)
-    assert eval_metadata == resume_metadata == checkpoint_metadata
+    assert training_metadata == eval_metadata == resume_metadata == checkpoint_metadata
+    assert_tree_equal(normalization.value, state.value_norm_state)
+    assert_tree_equal(normalization.observation, state.observation_norm_state)
+    assert_tree_equal(
+        normalization.critic_observation,
+        state.critic_observation_norm_state,
+    )
     assert load_checkpoint_metadata(path) == checkpoint_metadata
     assert callable(optimizer.init)
     observation = jnp.arange(checkpoint_metadata.obs_size, dtype=jnp.float32)
@@ -234,13 +356,18 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
         apply_policy(expected_policy, observation, critic_observation),
     )
     assert_tree_equal(
+        apply_policy(evaluation_state.policy, observation, critic_observation),
+        apply_policy(expected_policy, observation, critic_observation),
+    )
+    assert_tree_equal(
         apply_policy(restored_policy, observation, critic_observation),
         apply_policy(expected_policy, observation, critic_observation),
     )
     assert int(train_state.update) == 3
+    assert int(evaluation_state.update) == 3
     assert (path / checkpoint.STATE_DIR).is_dir()
     assert (path / checkpoint.CONTINUATION_DIR).is_dir()
-    assert document["schema_version"] == 5
+    assert document["schema_version"] == checkpoint.CHECKPOINT_SCHEMA_VERSION == 6
     assert document["kind"] == checkpoint.CHECKPOINT_KIND
     assert document["update"] == 3
     assert document["config_fingerprint"].startswith("sha256:")
@@ -255,6 +382,128 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
         "dependency_lock",
         "active_distributions",
     }
+
+
+def test_motion_checkpoint_rejects_locomotion_environment_task(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    clip = synthetic_motion_clip()
+    motion_path = tmp_path / "motion.npz"
+    motion_path.write_bytes(b"motion checkpoint fixture")
+    motion_env = FakeMotionEnv()
+    state = runner_state(config, motion_env)
+    checkpoint_metadata = motion_metadata(config, motion_path, clip, state)
+    path = tmp_path / "motion_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+
+    restored, _, _, restored_metadata = restore_runner_checkpoint(path, motion_env)
+
+    assert_tree_equal(restored, state)
+    assert restored_metadata == checkpoint_metadata
+    assert restored_metadata.value_norm == checkpoint.value_norm_metadata(
+        restored.value_norm_state
+    )
+    assert restored_metadata.observation_norm == checkpoint.observation_norm_metadata(
+        restored.observation_norm_state
+    )
+    assert (
+        restored_metadata.critic_observation_norm
+        == checkpoint.observation_norm_metadata(restored.critic_observation_norm_state)
+    )
+    np.testing.assert_array_equal(
+        restored.env_state.sampling_failure_ema,
+        np.broadcast_to(
+            np.asarray(
+                restored_metadata.motion_sampling_failure_ema,
+                dtype=np.float32,
+            ),
+            restored.env_state.sampling_failure_ema.shape,
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="checkpoint task 'motion_tracking'.*environment task 'locomotion'",
+    ):
+        restore_runner_checkpoint(path, FakeEnv())
+
+
+def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    motion_env = FakeMotionEnv()
+    state = runner_state(config, motion_env)
+    motion_path = tmp_path / "motion.npz"
+    motion_path.write_bytes(b"motion checkpoint fixture")
+    checkpoint_metadata = motion_metadata(
+        config,
+        motion_path,
+        synthetic_motion_clip(),
+        state,
+    )
+    path = tmp_path / "tampered_motion_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    original_document = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    normalization_tamper = json.loads(json.dumps(original_document))
+    normalization_tamper["metadata"]["observation_norm"]["mean"][0] += 0.5
+    normalization_tamper["config_fingerprint"] = checkpoint._fingerprint(
+        normalization_tamper["metadata"]
+    )
+    metadata_path.write_text(json.dumps(normalization_tamper), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="normalization state does not match.*observation_norm_state",
+    ):
+        restore_evaluation_checkpoint(path)
+
+    sampler_tamper = json.loads(json.dumps(original_document))
+    sampler_tamper["metadata"]["motion_sampling_failure_ema"][0] += 0.125
+    sampler_tamper["config_fingerprint"] = checkpoint._fingerprint(
+        sampler_tamper["metadata"]
+    )
+    metadata_path.write_text(json.dumps(sampler_tamper), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="adaptive-sampler state does not match its metadata snapshot",
+    ):
+        restore_runner_checkpoint(path, motion_env)
+
+
+def test_motion_contract_allows_relocation_and_rejects_content_or_schema_tampering(
+    tmp_path: Path,
+) -> None:
+    clip = synthetic_motion_clip()
+    original_path = tmp_path / "original" / "motion.npz"
+    original_path.parent.mkdir()
+    original_path.write_bytes(b"stable motion bytes")
+    contract = checkpoint.motion_clip_contract(original_path, clip)
+    relocated_path = tmp_path / "relocated" / "motion.npz"
+    relocated_path.parent.mkdir()
+    relocated_path.write_bytes(original_path.read_bytes())
+
+    relocated_contract = checkpoint.validate_motion_clip_contract(
+        relocated_path, clip, contract
+    )
+
+    assert relocated_contract == replace(contract, path=relocated_path)
+
+    relocated_path.write_bytes(b"tampered motion bytes")
+    with pytest.raises(ValueError, match="content_sha256"):
+        checkpoint.validate_motion_clip_contract(relocated_path, clip, contract)
+
+    relocated_path.write_bytes(original_path.read_bytes())
+    with pytest.raises(ValueError, match="fps"):
+        checkpoint.validate_motion_clip_contract(
+            relocated_path,
+            replace(clip, fps=60.0),
+            contract,
+        )
 
 
 def test_checkpoint_round_trips_real_mjx_continuation_state(

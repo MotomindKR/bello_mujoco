@@ -25,6 +25,7 @@ runs/
 MUJOCO_LOG.TXT
 
 assets/generated/
+motions/local/
 
 *.egg-info/
 dist/

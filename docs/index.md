@@ -1,8 +1,9 @@
 # Bello MuJoCo reference
 
 This repository provides Bello asset preparation, MuJoCo and MJX-Warp
-simulation, PPO locomotion training, checkpoint evaluation, Vast.ai training
-orchestration, and a RobStride hardware-in-the-loop emulator.
+simulation, PPO locomotion and whole-body motion training, checkpoint
+evaluation, Vast.ai training orchestration, and a RobStride hardware-in-the-loop
+emulator.
 
 [README.md](../README.md) is the quick start. This page defines the supported
 surface and routes to the workflow-specific documentation.
@@ -15,6 +16,12 @@ The installed command-line interface is intentionally small:
 bello-prepare-assets
 bello-train-ppo
 bello-eval-policy
+bello-import-gmr-motion
+bello-import-gmr-motion-dataset
+bello-render-motion-reference
+bello-check-motion-feasibility
+bello-train-motion-ppo
+bello-eval-motion-policy
 bello-vast-train
 bello-robstride-runner
 ```
@@ -126,6 +133,39 @@ Environment configuration covers:
 The rollout and reward hot path remains JAX-compatible. Asset generation,
 checkpoint I/O, W&B, rendering, and CLI setup remain host-side operations.
 
+## Whole-body motion tracking
+
+The motion task fixes waist roll/pitch and neck yaw/head pitch, replaces both
+hands with spheres, uses box body collisions and primitive feet, and exposes 25
+logical policy joints at 50 Hz over 200 Hz simulation. Differential ankle
+targets are transformed into the always-active physical tendon motor
+coordinates.
+
+Two formulations share the hardened PPO trainer: next-reference residual
+tracking and the paper-aligned BeyondMimic tracker. The latter retains its
+nominal-centered Gaussian actions, asymmetric normalized observations,
+hybrid-body targets, perturbations, pushes, and adaptive failure-bin sampling.
+
+Tracked ASAP balance examples can be rendered or replayed directly:
+
+```bash
+uv run bello-render-motion-reference \
+  motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz \
+  outputs/motion_tracking/reference_balance.mp4
+
+uv run bello-check-motion-feasibility \
+  motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz \
+  --output outputs/motion_tracking/balance_feasibility.json
+```
+
+The complete ASAP and fixed-head LAFAN1 datasets are regenerated locally under
+the ignored `motions/local/` tree. Only the 25-joint fixed-head schema is
+supported; the old 27-joint LAFAN1 export is explicitly unsupported. LAFAN1
+retargets are not distributed or silently uploaded because the source is
+CC BY-NC-ND 4.0. See [motion_tracking.md](motion_tracking.md) for the named
+observation/action layouts, provenance, import commands, maintained presets,
+checkpoint contract, and evaluation workflow.
+
 ## Training
 
 The maintained experiment recipes are:
@@ -175,6 +215,11 @@ live 3D scene and diagnostics to Rerun. It supports deterministic or stochastic
 actions, a fixed command, and live SDL gamepad commands. See
 [evaluation.md](evaluation.md).
 
+Motion checkpoints additionally bind the formulation and motion content hash,
+normalization and adaptive-sampler state, and named observation/action layouts.
+`bello-eval-motion-policy` rejects locomotion checkpoints and incompatible or
+tampered motion archives.
+
 ## Vast.ai
 
 `bello-vast-train` runs one complete, branch-pinned remote training lifecycle:
@@ -190,6 +235,10 @@ It validates the selected commit and recipe, rents a compatible GPU instance,
 sets up the locked environment, runs training with W&B and checkpoint upload,
 and destroys the instance. See [vast_ai.md](vast_ai.md) for credentials,
 recovery, and billing-safe teardown behavior.
+
+Locomotion is the default task. Motion runs require `--task motion-tracking`
+and a compatible motion recipe. Repository-tracked clips may be used remotely;
+ignored local datasets are never implicitly added to an upload.
 
 ## RobStride HIL
 
@@ -255,5 +304,6 @@ wandb/
 checkpoints/
 artifacts/
 outputs/
+motions/local/
 /tmp/bello-mujoco-assets/
 ```

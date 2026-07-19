@@ -5,6 +5,10 @@ remote Git branch to an exact commit, rents a matching instance, clones and
 verifies that commit, installs the locked environment, runs PPO with W&B, and
 destroys the instance before the local command returns.
 
+The default task is locomotion. Whole-body runs must opt in with
+`--task motion-tracking`; the task selects the matching trainer for both remote
+setup validation and full training.
+
 The controller is intentionally blocking. Keep its local process alive for the
 duration of training. Transient SSH interruptions are recovered as described
 below, but the controller still needs network access to monitor and eventually
@@ -52,6 +56,42 @@ The pipeline never trains uncommitted local changes. It records the selected
 commit before rental and aborts if the branch moves before the remote clone is
 verified.
 
+### Motion tracking
+
+Motion runs must select a clip that exists in the chosen remote commit. The
+launcher resolves `motion.directory` and `motion.sequence` from the recipe plus
+Hydra overrides, constructs `<directory>/<sequence>.npz`, and verifies that Git
+tracks that exact path before it reads credentials or rents an instance.
+
+Run a tracked ASAP balance recipe with:
+
+```bash
+uv run bello-vast-train \
+  --task motion-tracking \
+  --branch main \
+  --train-config experiments/train_motion/asap_single_foot_balance.yaml \
+  --max-price 1.25
+```
+
+An override may select another repository-tracked clip:
+
+```bash
+uv run bello-vast-train \
+  --task motion-tracking \
+  --branch main \
+  --train-config experiments/train_motion/beyondmimic.yaml \
+  --max-price 1.25 \
+  -- \
+  motion.directory=motions/asap_fixed_head \
+  motion.sequence=video_single_foot_balance_level4_filter_amass
+```
+
+`motions/local/` is ignored and is never uploaded implicitly. Selecting it for
+a Vast motion run is rejected locally even when the file exists in the current
+checkout. Use a repository-tracked clip or train license-controlled local
+datasets on infrastructure where they were regenerated. See
+[motion_tracking.md](motion_tracking.md) for dataset provenance and licensing.
+
 Pass Hydra overrides after `--`:
 
 ```bash
@@ -80,8 +120,8 @@ should publish exact update-boundary recovery snapshots as well as its final
 checkpoint. Training configs from older branches must support the current W&B
 and checkpoint fields or their setup validation will fail.
 
-Use `--dry-run` to validate the branch and config and print the three offer
-queries without reading credentials or renting anything:
+Use `--dry-run` to validate the branch, config, and any selected motion path and
+print the three offer queries without reading credentials or renting anything:
 
 ```bash
 uv run bello-vast-train \
@@ -152,9 +192,12 @@ uv python install 3.12
 uv sync --frozen
 ```
 
-It verifies that JAX selects a GPU and runs a one-environment training dry-run
-before starting the requested recipe. The detached job stores its log and exit
-status under `/workspace/.bello-vast-jobs/<run-name>/` on the rented instance.
+It verifies that JAX selects a GPU and runs a one-environment dry-run with
+`bello-train-ppo` for locomotion or `bello-train-motion-ppo` for motion tracking
+before starting the requested recipe with the same trainer. Motion-selecting
+Hydra overrides are applied to both commands. The detached job stores its log
+and exit status under `/workspace/.bello-vast-jobs/<run-name>/` on the rented
+instance.
 When Vast advertises a public IP and direct port mapping, the controller tests
 that endpoint before falling back to Vast's SSH proxy URL. This avoids waiting
 for a broken proxy while the instance's direct SSH service is already ready.

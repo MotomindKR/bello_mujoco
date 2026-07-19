@@ -101,11 +101,111 @@ def selection() -> GitSelection:
     )
 
 
+def motion_config(**kwargs) -> VastTrainConfig:
+    return VastTrainConfig(
+        train_config=Path("experiments/train_motion/asap_single_foot_balance.yaml"),
+        task="motion-tracking",
+        max_price=1.25,
+        branch="main",
+        yes=True,
+        **kwargs,
+    )
+
+
+def motion_selection() -> GitSelection:
+    return GitSelection(
+        branch="main",
+        commit="b" * 40,
+        config_path=PurePosixPath(
+            "experiments/train_motion/asap_single_foot_balance.yaml"
+        ),
+        repo_url="https://github.com/MotomindKR/bello_mujoco.git",
+        motion_path=PurePosixPath(
+            "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
+        ),
+    )
+
+
 def test_validate_config_requires_recipe_and_price() -> None:
     with pytest.raises(ValueError, match="train-config"):
         validate_config(VastTrainConfig(max_price=1.0))
     with pytest.raises(ValueError, match="max-price"):
         validate_config(VastTrainConfig(train_config=Path("config.yaml")))
+
+
+def test_vast_task_defaults_to_locomotion_and_rejects_unknown_values() -> None:
+    assert VastTrainConfig().task == "locomotion"
+    with pytest.raises(ValueError, match="--task"):
+        validate_config(valid_config(task="unsupported"))  # type: ignore[arg-type]
+
+
+def test_resolve_vast_motion_path_uses_recipe_and_hydra_overrides() -> None:
+    recipe = """
+motion:
+  directory: motions/local/lafan1_fixed_head
+  sequence: walk1_subject1
+"""
+
+    assert vast.resolve_vast_motion_path(
+        recipe,
+        (
+            'motion.directory="motions/asap_fixed_head"',
+            "motion.sequence=video_single_foot_balance_level4_filter_amass",
+        ),
+    ) == PurePosixPath(
+        "motions/asap_fixed_head/video_single_foot_balance_level4_filter_amass.npz"
+    )
+
+
+def test_resolve_vast_motion_path_rejects_ignored_and_unsafe_inputs() -> None:
+    local_recipe = """
+motion:
+  directory: motions/local/lafan1_fixed_head
+  sequence: walk1_subject1
+"""
+    with pytest.raises(ValueError, match="motions/local is ignored"):
+        vast.resolve_vast_motion_path(local_recipe)
+    with pytest.raises(ValueError, match="without a path or suffix"):
+        vast.resolve_vast_motion_path(
+            "motion: {directory: motions/asap_fixed_head, sequence: ../clip}"
+        )
+
+
+def test_motion_git_selection_verifies_clip_at_selected_commit(
+    monkeypatch, tmp_path
+) -> None:
+    commit = "c" * 40
+    checked_objects = []
+    recipe = """
+motion:
+  directory: motions/asap_fixed_head
+  sequence: video_single_foot_balance_level1_filter_amass
+"""
+
+    monkeypatch.setattr(vast, "remote_branches", lambda repo_root: ["main"])
+
+    def fake_run_git(repo_root, *args):
+        assert repo_root == tmp_path
+        if args == ("rev-parse", "refs/remotes/origin/main^{commit}"):
+            return commit
+        if args[:2] == ("cat-file", "-e"):
+            checked_objects.append(args[2])
+            return ""
+        if args == (
+            "show",
+            f"{commit}:experiments/train_motion/asap_single_foot_balance.yaml",
+        ):
+            return recipe
+        if args == ("remote", "get-url", "origin"):
+            return "git@github.com:MotomindKR/bello_mujoco.git"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(vast, "run_git", fake_run_git)
+
+    resolved = vast.resolve_git_selection(tmp_path, motion_config())
+
+    assert resolved.motion_path == motion_selection().motion_path
+    assert f"{commit}:{resolved.motion_path}" in checked_objects
 
 
 def test_validate_config_restricts_destructive_remote_path() -> None:
@@ -594,6 +694,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     command = vast._remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
+    assert shlex.split(command)[-1] == "locomotion"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
@@ -617,6 +718,27 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
         time.sleep(0.01)
     assert (job_dir / "status").read_text() == "7\n"
     assert (job_dir / "output.log").read_text() == "available\n"
+
+
+def test_motion_remote_command_uses_motion_trainer_for_validation_and_training(
+    tmp_path,
+) -> None:
+    command = vast._remote_start_command(
+        str(tmp_path / "job"),
+        motion_selection(),
+        motion_config(),
+        "motion-test",
+    )
+
+    assert shlex.split(command)[-1] == "motion-tracking"
+    assert (
+        'motion-tracking) train_command="bello-train-motion-ppo"'
+        in vast.REMOTE_TRAIN_SCRIPT
+    )
+    assert vast.REMOTE_TRAIN_SCRIPT.count('uv run "$train_command"') == 2
+    overrides_index = vast.REMOTE_TRAIN_SCRIPT.index("mapfile -t user_overrides")
+    validation_index = vast.REMOTE_TRAIN_SCRIPT.index("dry_run=true")
+    assert overrides_index < validation_index
 
 
 def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> None:
@@ -791,6 +913,37 @@ def test_pipeline_always_destroys_created_instance(
     assert "ssh" not in api.created[0][1]
     assert "direct" not in api.created[0][1]
     assert not (tmp_path / ".vast" / "active_instance.json").exists()
+
+
+def test_motion_dry_run_never_reads_credentials_or_rents(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setattr(vast, "resolve_git_selection", lambda *args: motion_selection())
+    monkeypatch.setattr(
+        vast,
+        "credential",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("dry-run must not read credentials")
+        ),
+    )
+
+    def api_factory(api_key):
+        raise AssertionError("dry-run must not create a Vast client")
+
+    assert (
+        launch_pipeline(
+            tmp_path,
+            motion_config(dry_run=True),
+            api_factory=api_factory,
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "for motion-tracking" in output
+    assert str(motion_selection().motion_path) in output
+    assert "no instance was rented" in output
+    assert not (tmp_path / ".vast").exists()
 
 
 def test_lifecycle_retains_ambiguous_create_and_refuses_another_rental(

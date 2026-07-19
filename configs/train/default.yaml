@@ -16,12 +16,18 @@ config:
   min_learning_rate: 1.0e-05
   max_learning_rate: 0.01
   adaptive_lr_factor: 1.5
+  adaptive_kl_statistic: max
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
   ent_coef: 0.01
   vf_coef: 1.0
   max_grad_norm: 1.0
+  normalize_value: false
+  value_norm_eps: 1.0e-08
+  normalize_observations: false
+  observation_norm_eps: 1.0e-05
+  observation_norm_clip: 10.0
   rollout_observation_max_abs: 10000.0
   rollout_reward_max_abs: 1000.0
   rollout_value_max_abs: 10000.0
@@ -36,6 +42,7 @@ config:
     min_log_std: -5.0
     max_log_std: 1.0
     obs_stack_size: 10
+    action_distribution: tanh_gaussian
     action_limit: 1.0
 asset_config:
   asset: full_body

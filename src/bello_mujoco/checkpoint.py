@@ -6,6 +6,7 @@ import hashlib
 from importlib.metadata import PackageNotFoundError, distribution
 from importlib.resources import files
 import json
+import math
 import os
 import re
 import shutil
@@ -16,11 +17,12 @@ from collections import deque
 from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import Any, Literal, NamedTuple, get_args, get_origin, get_type_hints
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import orbax.checkpoint as ocp
 from packaging.markers import default_environment
@@ -36,25 +38,31 @@ from bello_mujoco.assets_pipeline.prepare import (
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
-    BelloLocomotionEnv,
     DoneConfig,
 )
+from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
+from bello_mujoco.motion import MOTION_FORMAT_VERSION, MotionClip
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import ROBOT_ONLY_TERRAIN, TerrainConfig, runtime_mjcf_path
 from bello_mujoco.tracking import to_builtin
 from bello_mujoco.train.ppo import (
+    ObservationNormState,
     PPOConfig,
+    PPOEnvironment,
     RunnerState,
     TrainState,
+    ValueNormState,
+    init_observation_norm_state,
     init_runner_state,
     init_train_state,
+    init_value_norm_state,
 )
 
 METADATA_FILE = "metadata.json"
 STATE_DIR = "state"
 CONTINUATION_DIR = "continuation"
-CHECKPOINT_SCHEMA_VERSION = 5
+CHECKPOINT_SCHEMA_VERSION = 6
 CHECKPOINT_KIND = "training_resume"
 
 _CHECKPOINT_DOCUMENT_FIELDS = frozenset(
@@ -70,6 +78,7 @@ _CHECKPOINT_DOCUMENT_FIELDS = frozenset(
     }
 )
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_HEX_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True)
@@ -90,10 +99,10 @@ class CheckpointConfig:
 class CheckpointMetadata:
     ppo: PPOConfig
     asset: AssetPrepConfig
-    reward: RewardConfig
-    command: CommandConfig
-    done: DoneConfig
-    env: BelloEnvConfig
+    reward: RewardConfig | None
+    command: CommandConfig | None
+    done: DoneConfig | None
+    env: BelloEnvConfig | None
     warp: WarpConfig
     obs_size: int
     critic_obs_size: int
@@ -101,6 +110,51 @@ class CheckpointMetadata:
     actor_observation_layout: ObservationLayout
     critic_observation_layout: ObservationLayout
     action_layout: ActionLayout
+    task: Literal["locomotion", "motion_tracking"] = "locomotion"
+    motion_env: MotionTrackingEnvConfig | None = None
+    motion: MotionClipContract | None = None
+    value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
+    motion_sampling_failure_ema: tuple[float, ...] | None = None
+
+
+@dataclass(frozen=True)
+class MotionClipContract:
+    """Content identity and named schema for a motion checkpoint."""
+
+    path: Path
+    content_sha256: str
+    source_sha256: str
+    format_version: int
+    fps: float
+    num_frames: int
+    joint_names: tuple[str, ...]
+    body_names: tuple[str, ...]
+    qpos_size: int
+    qvel_size: int
+
+
+@dataclass(frozen=True)
+class ValueNormMetadata:
+    mean: float
+    var: float
+    count: float
+
+
+@dataclass(frozen=True)
+class ObservationNormMetadata:
+    mean: tuple[float, ...]
+    var: tuple[float, ...]
+    count: float
+
+
+class CheckpointNormalizationState(NamedTuple):
+    """Running statistics needed to reproduce policy and value inputs."""
+
+    value: ValueNormState
+    observation: ObservationNormState
+    critic_observation: ObservationNormState
 
 
 @dataclass(frozen=True)
@@ -197,13 +251,14 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
         critic_obs_size=metadata.critic_obs_size,
     )
     _, static_policy = eqx.partition(template_state.policy, eqx.is_array)
-    item_template = _train_state_checkpoint_item(template_state)
+    item_template = _train_state_checkpoint_item(template_state, metadata)
     restored = _restore_checkpoint_item(
         path / STATE_DIR,
         item_template,
         train_fingerprint,
         label="training state",
     )
+    _validate_restored_normalization_state(restored, metadata)
     _validate_restored_update(restored["update"], saved_update, metadata.ppo)
     train_state = TrainState(
         policy=eqx.combine(restored["policy"], static_policy),
@@ -213,9 +268,45 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
     return train_state, metadata
 
 
+def restore_evaluation_checkpoint(
+    path: Path,
+) -> tuple[TrainState, CheckpointMetadata, CheckpointNormalizationState]:
+    """Restore a policy plus the exact running statistics used by its actor."""
+
+    path = Path(path).resolve()
+    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(path)
+    template_state, _ = init_train_state(
+        jax.random.PRNGKey(metadata.ppo.seed),
+        metadata.obs_size,
+        metadata.action_size,
+        metadata.ppo,
+        critic_obs_size=metadata.critic_obs_size,
+    )
+    _, static_policy = eqx.partition(template_state.policy, eqx.is_array)
+    restored = _restore_checkpoint_item(
+        path / STATE_DIR,
+        _train_state_checkpoint_item(template_state, metadata),
+        train_fingerprint,
+        label="evaluation state",
+    )
+    _validate_restored_normalization_state(restored, metadata)
+    _validate_restored_update(restored["update"], saved_update, metadata.ppo)
+    train_state = TrainState(
+        policy=eqx.combine(restored["policy"], static_policy),
+        opt_state=restored["opt_state"],
+        update=restored["update"],
+    )
+    normalization = CheckpointNormalizationState(
+        value=restored["value_norm_state"],
+        observation=restored["observation_norm_state"],
+        critic_observation=restored["critic_observation_norm_state"],
+    )
+    return train_state, metadata, normalization
+
+
 def restore_runner_checkpoint(
     path: Path,
-    env: BelloLocomotionEnv,
+    env: PPOEnvironment,
 ) -> tuple[
     RunnerState,
     eqx.Module,
@@ -242,6 +333,7 @@ def restore_runner_checkpoint(
         continuation_fingerprint,
         label="continuation state",
     )
+    _validate_restored_normalization_state(train_item, metadata)
     _validate_restored_update(train_item["update"], saved_update, metadata.ppo)
     runner_state = RunnerState(
         params=train_item["policy"],
@@ -252,7 +344,11 @@ def restore_runner_checkpoint(
         critic_obs_stack=continuation_item["critic_obs_stack"],
         rng=continuation_item["rng"],
         learning_rate=continuation_item["learning_rate"],
+        value_norm_state=train_item["value_norm_state"],
+        observation_norm_state=train_item["observation_norm_state"],
+        critic_observation_norm_state=train_item["critic_observation_norm_state"],
     )
+    _validate_restored_motion_runner_state(runner_state, metadata)
     return runner_state, static_policy, optimizer, metadata
 
 
@@ -261,12 +357,19 @@ def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
     return metadata
 
 
-def _train_state_checkpoint_item(train_state: TrainState) -> dict[str, Any]:
+def _train_state_checkpoint_item(
+    train_state: TrainState, metadata: CheckpointMetadata
+) -> dict[str, Any]:
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
     return {
         "policy": params,
         "opt_state": train_state.opt_state,
         "update": train_state.update,
+        "value_norm_state": init_value_norm_state(),
+        "observation_norm_state": init_observation_norm_state(metadata.obs_size),
+        "critic_observation_norm_state": init_observation_norm_state(
+            metadata.critic_obs_size
+        ),
     }
 
 
@@ -275,6 +378,9 @@ def _train_checkpoint_item(runner_state: RunnerState) -> dict[str, Any]:
         "policy": runner_state.params,
         "opt_state": runner_state.opt_state,
         "update": runner_state.update,
+        "value_norm_state": runner_state.value_norm_state,
+        "observation_norm_state": runner_state.observation_norm_state,
+        "critic_observation_norm_state": (runner_state.critic_observation_norm_state),
     }
 
 
@@ -430,6 +536,121 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
             "checkpoint metadata asset.output_root must be null; generated asset "
             "cache locations are not part of the training contract"
         )
+    if metadata.task == "locomotion":
+        if any(
+            value is None
+            for value in (
+                metadata.reward,
+                metadata.command,
+                metadata.done,
+                metadata.env,
+            )
+        ):
+            raise ValueError(
+                "locomotion checkpoint metadata requires reward, command, done, "
+                "and env contracts"
+            )
+        if metadata.motion_env is not None or metadata.motion is not None:
+            raise ValueError(
+                "locomotion checkpoint metadata must not contain a motion contract"
+            )
+        if any(
+            value is not None
+            for value in (
+                metadata.value_norm,
+                metadata.observation_norm,
+                metadata.critic_observation_norm,
+                metadata.motion_sampling_failure_ema,
+            )
+        ):
+            raise ValueError(
+                "locomotion checkpoint metadata must not contain motion state snapshots"
+            )
+    elif metadata.task == "motion_tracking":
+        if metadata.motion_env is None or metadata.motion is None:
+            raise ValueError(
+                "motion-tracking checkpoint metadata requires motion_env and motion"
+            )
+        if any(
+            value is None
+            for value in (
+                metadata.value_norm,
+                metadata.observation_norm,
+                metadata.critic_observation_norm,
+                metadata.motion_sampling_failure_ema,
+            )
+        ):
+            raise ValueError(
+                "motion-tracking checkpoint metadata requires normalization and "
+                "adaptive-sampler state snapshots"
+            )
+        if any(
+            value is not None
+            for value in (
+                metadata.reward,
+                metadata.command,
+                metadata.done,
+                metadata.env,
+            )
+        ):
+            raise ValueError(
+                "motion-tracking checkpoint metadata must not contain locomotion "
+                "reward, command, done, or env contracts"
+            )
+        if metadata.motion_env.motion_path != metadata.motion.path:
+            raise ValueError(
+                "motion environment path must match the checkpoint motion contract"
+            )
+        _validated_fingerprint(
+            metadata.motion.content_sha256, "metadata.motion.content_sha256"
+        )
+        if _HEX_SHA256_PATTERN.fullmatch(metadata.motion.source_sha256) is None:
+            raise ValueError(
+                "metadata.motion.source_sha256 must contain 64 lowercase hex digits"
+            )
+        if (
+            type(metadata.motion.format_version) is not int
+            or metadata.motion.format_version != MOTION_FORMAT_VERSION
+        ):
+            raise ValueError(
+                "unsupported checkpoint motion format version "
+                f"{metadata.motion.format_version}; expected {MOTION_FORMAT_VERSION}"
+            )
+        if (
+            type(metadata.motion.num_frames) is not int
+            or metadata.motion.num_frames < 2
+        ):
+            raise ValueError("checkpoint motion must contain at least two frames")
+        if not math.isfinite(metadata.motion.fps) or metadata.motion.fps <= 0.0:
+            raise ValueError("checkpoint motion fps must be positive and finite")
+        if (
+            type(metadata.motion.qpos_size) is not int
+            or type(metadata.motion.qvel_size) is not int
+            or metadata.motion.qpos_size <= 0
+            or metadata.motion.qvel_size <= 0
+        ):
+            raise ValueError("checkpoint motion state dimensions must be positive")
+        if not metadata.motion.joint_names or not metadata.motion.body_names:
+            raise ValueError("checkpoint motion requires named joint and body layouts")
+        if len(set(metadata.motion.joint_names)) != len(metadata.motion.joint_names):
+            raise ValueError("checkpoint motion joint names must be unique")
+        if len(set(metadata.motion.body_names)) != len(metadata.motion.body_names):
+            raise ValueError("checkpoint motion body names must be unique")
+        if metadata.motion.qpos_size != 7 + len(metadata.motion.joint_names):
+            raise ValueError(
+                "checkpoint motion qpos size does not match its named joint schema"
+            )
+        if metadata.motion.qvel_size != 6 + len(metadata.motion.joint_names):
+            raise ValueError(
+                "checkpoint motion qvel size does not match its named joint schema"
+            )
+        if metadata.action_layout.names != metadata.motion.joint_names:
+            raise ValueError(
+                "checkpoint action layout does not match the motion joint order"
+            )
+        _validate_motion_state_metadata(metadata)
+    else:
+        raise ValueError(f"unsupported checkpoint task {metadata.task!r}")
     stack_size = metadata.ppo.policy.obs_stack_size
     expected_actor_size = metadata.actor_observation_layout.size * stack_size
     if metadata.obs_size != expected_actor_size:
@@ -453,9 +674,131 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
         )
 
 
-def _validate_environment_layouts(
-    env: BelloLocomotionEnv, metadata: CheckpointMetadata
+def _validate_motion_state_metadata(metadata: CheckpointMetadata) -> None:
+    value = metadata.value_norm
+    actor = metadata.observation_norm
+    critic = metadata.critic_observation_norm
+    failure_ema = metadata.motion_sampling_failure_ema
+    if value is None or actor is None or critic is None or failure_ema is None:
+        raise ValueError("motion checkpoint state metadata is incomplete")
+    _validate_running_moments(
+        (value.mean,), (value.var,), value.count, name="value normalization"
+    )
+    _validate_running_moments(
+        actor.mean,
+        actor.var,
+        actor.count,
+        name="actor observation normalization",
+        expected_size=metadata.obs_size,
+    )
+    _validate_running_moments(
+        critic.mean,
+        critic.var,
+        critic.count,
+        name="critic observation normalization",
+        expected_size=metadata.critic_obs_size,
+    )
+    if not failure_ema or not all(
+        math.isfinite(value) and value >= 0.0 for value in failure_ema
+    ):
+        raise ValueError(
+            "motion adaptive-sampler failure EMA must be a nonempty finite "
+            "nonnegative vector"
+        )
+
+
+def _validate_running_moments(
+    mean: tuple[float, ...],
+    var: tuple[float, ...],
+    count: float,
+    *,
+    name: str,
+    expected_size: int = 1,
 ) -> None:
+    if len(mean) != expected_size or len(var) != expected_size:
+        raise ValueError(
+            f"checkpoint {name} shape mismatch: expected {expected_size} values"
+        )
+    if not math.isfinite(count) or count < 0.0:
+        raise ValueError(f"checkpoint {name} count must be finite and nonnegative")
+    if not all(math.isfinite(value) for value in mean):
+        raise ValueError(f"checkpoint {name} mean must be finite")
+    if not all(math.isfinite(value) and value >= 0.0 for value in var):
+        raise ValueError(f"checkpoint {name} variance must be finite and nonnegative")
+
+
+def _validate_restored_normalization_state(
+    restored: dict[str, Any], metadata: CheckpointMetadata
+) -> None:
+    if metadata.task != "motion_tracking":
+        return
+    value = metadata.value_norm
+    actor = metadata.observation_norm
+    critic = metadata.critic_observation_norm
+    if value is None or actor is None or critic is None:
+        raise ValueError("motion checkpoint normalization metadata is incomplete")
+    expected = {
+        "value_norm_state": ValueNormState(
+            mean=jnp.asarray(value.mean, dtype=jnp.float32),
+            var=jnp.asarray(value.var, dtype=jnp.float32),
+            count=jnp.asarray(value.count, dtype=jnp.float32),
+        ),
+        "observation_norm_state": ObservationNormState(
+            mean=jnp.asarray(actor.mean, dtype=jnp.float32),
+            var=jnp.asarray(actor.var, dtype=jnp.float32),
+            count=jnp.asarray(actor.count, dtype=jnp.float32),
+        ),
+        "critic_observation_norm_state": ObservationNormState(
+            mean=jnp.asarray(critic.mean, dtype=jnp.float32),
+            var=jnp.asarray(critic.var, dtype=jnp.float32),
+            count=jnp.asarray(critic.count, dtype=jnp.float32),
+        ),
+    }
+    for name, expected_state in expected.items():
+        actual_leaves = jax.tree_util.tree_leaves(restored[name])
+        expected_leaves = jax.tree_util.tree_leaves(expected_state)
+        if any(
+            not np.array_equal(
+                np.asarray(jax.device_get(actual)),
+                np.asarray(jax.device_get(expected_value)),
+            )
+            for actual, expected_value in zip(
+                actual_leaves, expected_leaves, strict=True
+            )
+        ):
+            raise ValueError(
+                "restored checkpoint normalization state does not match its "
+                f"metadata snapshot: {name}"
+            )
+
+
+def _validate_restored_motion_runner_state(
+    runner_state: RunnerState, metadata: CheckpointMetadata
+) -> None:
+    if metadata.task != "motion_tracking":
+        return
+    expected = metadata.motion_sampling_failure_ema
+    if expected is None:
+        raise ValueError("motion checkpoint adaptive-sampler metadata is missing")
+    actual = np.asarray(
+        jax.device_get(runner_state.env_state.sampling_failure_ema), dtype=np.float32
+    )
+    expected_array = np.asarray(expected, dtype=np.float32)
+    if actual.ndim == 2:
+        expected_array = np.broadcast_to(expected_array, actual.shape)
+    if not np.array_equal(actual, expected_array):
+        raise ValueError(
+            "restored adaptive-sampler state does not match its metadata snapshot"
+        )
+
+
+def _validate_environment_layouts(env, metadata: CheckpointMetadata) -> None:
+    env_task = getattr(env, "task", "locomotion")
+    if env_task != metadata.task:
+        raise ValueError(
+            f"checkpoint task {metadata.task!r} does not match environment task "
+            f"{env_task!r}"
+        )
     stack_size = metadata.ppo.policy.obs_stack_size
     if env.observation_layout != metadata.actor_observation_layout:
         raise ValueError(
@@ -600,10 +943,104 @@ def normalized_asset_config(config: AssetPrepConfig) -> AssetPrepConfig:
     return replace(config, output_root=None)
 
 
+def value_norm_metadata(state: ValueNormState) -> ValueNormMetadata:
+    return ValueNormMetadata(
+        mean=float(jax.device_get(state.mean)),
+        var=float(jax.device_get(state.var)),
+        count=float(jax.device_get(state.count)),
+    )
+
+
+def observation_norm_metadata(state: ObservationNormState) -> ObservationNormMetadata:
+    return ObservationNormMetadata(
+        mean=tuple(float(value) for value in np.asarray(jax.device_get(state.mean))),
+        var=tuple(float(value) for value in np.asarray(jax.device_get(state.var))),
+        count=float(jax.device_get(state.count)),
+    )
+
+
+def motion_metadata_with_runner_state(
+    metadata: CheckpointMetadata, runner_state: RunnerState
+) -> CheckpointMetadata:
+    """Attach auditable state snapshots while Orbax retains exact continuation."""
+
+    if metadata.task != "motion_tracking":
+        raise ValueError("motion state metadata requires a motion-tracking checkpoint")
+    failure_ema = np.asarray(
+        jax.device_get(runner_state.env_state.sampling_failure_ema), dtype=np.float32
+    )
+    if failure_ema.ndim == 2:
+        if not np.array_equal(
+            failure_ema, np.broadcast_to(failure_ema[0], failure_ema.shape)
+        ):
+            raise ValueError("adaptive sampler state must be shared across all worlds")
+        failure_ema = failure_ema[0]
+    if failure_ema.ndim != 1:
+        raise ValueError("adaptive sampler state must be a vector")
+    return replace(
+        metadata,
+        value_norm=value_norm_metadata(runner_state.value_norm_state),
+        observation_norm=observation_norm_metadata(runner_state.observation_norm_state),
+        critic_observation_norm=observation_norm_metadata(
+            runner_state.critic_observation_norm_state
+        ),
+        motion_sampling_failure_ema=tuple(float(value) for value in failure_ema),
+    )
+
+
+def motion_clip_contract(path: Path, clip: MotionClip) -> MotionClipContract:
+    """Capture the exact motion bytes and schema used by a training run."""
+
+    path = Path(path)
+    return MotionClipContract(
+        path=path,
+        content_sha256=_file_fingerprint(path),
+        source_sha256=clip.source_sha256,
+        format_version=MOTION_FORMAT_VERSION,
+        fps=float(clip.fps),
+        num_frames=clip.num_frames,
+        joint_names=clip.joint_names,
+        body_names=clip.body_names,
+        qpos_size=int(clip.qpos.shape[1]),
+        qvel_size=int(clip.qvel.shape[1]),
+    )
+
+
+def validate_motion_clip_contract(
+    path: Path,
+    clip: MotionClip,
+    expected: MotionClipContract,
+) -> MotionClipContract:
+    """Accept relocation only when every content and schema field still matches."""
+
+    actual = motion_clip_contract(path, clip)
+    comparable_expected = replace(expected, path=Path(path))
+    if actual != comparable_expected:
+        mismatches = [
+            field.name
+            for field in fields(MotionClipContract)
+            if field.name != "path"
+            and getattr(actual, field.name) != getattr(expected, field.name)
+        ]
+        raise ValueError(
+            "motion clip does not match checkpoint content/schema: "
+            + ", ".join(mismatches)
+        )
+    return actual
+
+
 def capture_runtime_fingerprints(
     metadata: CheckpointMetadata,
 ) -> RuntimeFingerprints:
-    return capture_asset_runtime_fingerprints(metadata.asset, metadata.env.terrain)
+    if metadata.task == "locomotion":
+        if metadata.env is None:
+            raise ValueError("locomotion checkpoint is missing its environment")
+        terrain = metadata.env.terrain
+    else:
+        if metadata.motion_env is None:
+            raise ValueError("motion checkpoint is missing its environment")
+        terrain = metadata.motion_env.terrain
+    return capture_asset_runtime_fingerprints(metadata.asset, terrain)
 
 
 def capture_asset_runtime_fingerprints(

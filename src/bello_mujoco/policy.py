@@ -1,4 +1,4 @@
-"""Feed-forward tanh-Gaussian actor-critic policy utilities."""
+"""Feed-forward Gaussian actor-critic policy utilities."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ class ActorCriticConfig:
     min_log_std: float = -5.0
     max_log_std: float = 1.0
     obs_stack_size: int = 10
+    action_distribution: Literal["gaussian", "tanh_gaussian"] = "tanh_gaussian"
     action_limit: float = 1.0
 
 
@@ -68,6 +69,7 @@ class ActorCritic(eqx.Module):
     log_std: jax.Array
     min_log_std: float = eqx.field(static=True)
     max_log_std: float = eqx.field(static=True)
+    action_distribution: str = eqx.field(static=True)
     action_limit: float = eqx.field(static=True)
 
     def __init__(
@@ -79,6 +81,11 @@ class ActorCritic(eqx.Module):
         critic_obs_size: int | None = None,
         key: jax.Array,
     ):
+        if config.action_distribution not in {"gaussian", "tanh_gaussian"}:
+            raise ValueError(
+                "action_distribution must be 'gaussian' or 'tanh_gaussian', got "
+                f"{config.action_distribution!r}"
+            )
         actor_key, critic_key = jax.random.split(key)
         critic_obs_size = obs_size if critic_obs_size is None else critic_obs_size
         activation_fn = activation_function(config.activation)
@@ -99,6 +106,7 @@ class ActorCritic(eqx.Module):
         self.log_std = jnp.full((action_size,), config.init_log_std, dtype=jnp.float32)
         self.min_log_std = config.min_log_std
         self.max_log_std = config.max_log_std
+        self.action_distribution = config.action_distribution
         self.action_limit = config.action_limit
 
     def __call__(
@@ -211,7 +219,7 @@ def sample_actor_action(
     obs: jax.Array,
     rng: jax.Array,
 ) -> jax.Array:
-    """Sample the bounded actor action without evaluating the critic."""
+    """Sample an actor action without evaluating the critic."""
 
     def sample_one(observation: jax.Array, key: jax.Array) -> jax.Array:
         latent_mean = policy.actor(observation)
@@ -285,15 +293,17 @@ def evaluate_actions(
     log_prob = policy_log_prob(
         policy, latent_mean, log_std, action, latent_action=latent_action
     )
-    entropy = (
-        gaussian_entropy(log_std)
-        if entropy_rng is None
-        else reparameterized_policy_entropy(policy, latent_mean, log_std, entropy_rng)
-    )
+    entropy = gaussian_entropy(log_std)
+    if policy.action_distribution == "tanh_gaussian" and entropy_rng is not None:
+        entropy = reparameterized_policy_entropy(
+            policy, latent_mean, log_std, entropy_rng
+        )
     return log_prob, entropy, value
 
 
 def transform_action(policy: ActorCritic, latent_action: jax.Array) -> jax.Array:
+    if policy.action_distribution == "gaussian":
+        return latent_action
     return policy.action_limit * jnp.tanh(latent_action)
 
 
@@ -304,6 +314,8 @@ def policy_log_prob(
     action: jax.Array,
     latent_action: jax.Array | None = None,
 ) -> jax.Array:
+    if policy.action_distribution == "gaussian":
+        return gaussian_log_prob(latent_mean, log_std, action)
     limit = jnp.asarray(policy.action_limit, dtype=action.dtype)
     normalized_action = jnp.clip(action / limit, -1.0 + 1.0e-6, 1.0 - 1.0e-6)
     if latent_action is None:

@@ -524,6 +524,10 @@ class BelloLocomotionEnv:
         return self.config.action_clip
 
     @property
+    def ppo_stagger_initial_step_count(self) -> bool:
+        return self.config.spawn.stagger_initial_step_count
+
+    @property
     def action_size(self) -> int:
         return int(self.model.policy_ctrl_indices.size)
 
@@ -1371,6 +1375,31 @@ class BelloLocomotionEnv:
     ) -> jax.Array:
         ctrl, _, _ = self._action_target_details(action, joint_angle_offset)
         return ctrl
+
+    def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]:
+        flat_action = env_action.reshape((-1, self.action_size))
+        num_steps, num_envs = env_action.shape[:2]
+        joint_angle_offset = self._joint_angle_offset_batch(num_envs)
+        flat_joint_angle_offset = jnp.broadcast_to(
+            joint_angle_offset[None, ...],
+            (num_steps, *joint_angle_offset.shape),
+        ).reshape((-1, joint_angle_offset.shape[-1]))
+        ctrl = jax.vmap(self.action_to_ctrl)(flat_action, flat_joint_angle_offset)
+        policy_ctrl_indices = jnp.asarray(self.model.policy_ctrl_indices)
+        policy_ctrl = ctrl[:, policy_ctrl_indices]
+        ctrlrange = jnp.asarray(self.model.mj_model.actuator_ctrlrange)[
+            policy_ctrl_indices
+        ]
+        ctrl_low = ctrlrange[:, 0]
+        ctrl_high = ctrlrange[:, 1]
+        ctrl_margin = jnp.minimum(policy_ctrl - ctrl_low, ctrl_high - policy_ctrl)
+        saturated = (policy_ctrl <= ctrl_low + 1.0e-6) | (
+            policy_ctrl >= ctrl_high - 1.0e-6
+        )
+        return {
+            "ctrl_saturation_fraction": saturated.astype(jnp.float32).mean(),
+            "ctrl_margin_min": jnp.min(ctrl_margin),
+        }
 
     def action_to_joint_target(
         self,

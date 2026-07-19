@@ -7,7 +7,12 @@ import bello_mujoco.tools.train_ppo as train_ppo
 from bello_mujoco.checkpoint import CheckpointConfig
 from bello_mujoco.policy import ActorCriticConfig
 from bello_mujoco.render import VideoWriter
-from bello_mujoco.train.ppo import RunnerState, TrainState
+from bello_mujoco.train.ppo import (
+    RunnerState,
+    TrainState,
+    init_observation_norm_state,
+    init_value_norm_state,
+)
 from bello_mujoco.tools.train_ppo import (
     TrainingVideoConfig,
     raise_on_invalid_training_metrics,
@@ -30,6 +35,9 @@ def runner_state(update: int = 0) -> RunnerState:
         critic_obs_stack=jnp.zeros((1,), dtype=jnp.float32),
         rng=jnp.asarray([0, 0], dtype=jnp.uint32),
         learning_rate=jnp.asarray(1.0e-3, dtype=jnp.float32),
+        value_norm_state=init_value_norm_state(),
+        observation_norm_state=init_observation_norm_state(1),
+        critic_observation_norm_state=init_observation_norm_state(1),
     )
 
 

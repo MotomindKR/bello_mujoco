@@ -17,6 +17,7 @@ dependencies = [
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
   "packaging>=24.0",
+  "pyyaml>=6.0",
   "pygame-ce>=2.5.7",
   "rerun-sdk==0.34.1",
   "tqdm>=4.67.0",
@@ -32,6 +33,12 @@ bello-train-ppo = "bello_mujoco.tools.train_ppo:entrypoint"
 bello-eval-policy = "bello_mujoco.tools.eval_policy:entrypoint"
 bello-vast-train = "bello_mujoco.tools.vast_train:entrypoint"
 bello-robstride-runner = "bello_mujoco.tools.robstride_runner:entrypoint"
+bello-import-gmr-motion = "bello_mujoco.tools.import_gmr_motion:entrypoint"
+bello-import-gmr-motion-dataset = "bello_mujoco.tools.import_gmr_motion_dataset:entrypoint"
+bello-render-motion-reference = "bello_mujoco.tools.render_motion_reference:entrypoint"
+bello-check-motion-feasibility = "bello_mujoco.tools.check_motion_feasibility:entrypoint"
+bello-train-motion-ppo = "bello_mujoco.tools.train_motion_ppo:entrypoint"
+bello-eval-motion-policy = "bello_mujoco.tools.eval_motion_policy:entrypoint"
 
 [dependency-groups]
 dev = [
