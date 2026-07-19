@@ -320,7 +320,7 @@ reward_config:
     weight: -0.25
     angular_speed_scale: 0.0
   contact_timing:
-    weight: -0.1
+    weight: -5.0
     min_air_time: 0.2
     min_contact_time: 0.3
     command_speed_threshold: 0.1

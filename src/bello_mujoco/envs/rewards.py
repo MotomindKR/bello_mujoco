@@ -211,7 +211,7 @@ class RewardConfig:
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-1.0)
     invalid_action: InvalidActionRewardConfig = InvalidActionRewardConfig()
     foot_slip: FootSlipRewardConfig = FootSlipRewardConfig(weight=-0.25)
-    contact_timing: ContactTimingRewardConfig = ContactTimingRewardConfig(weight=-0.1)
+    contact_timing: ContactTimingRewardConfig = ContactTimingRewardConfig(weight=-5.0)
     touchdown_air_time: TouchdownAirTimeRewardConfig = TouchdownAirTimeRewardConfig(
         weight=2.0
     )
@@ -460,13 +460,7 @@ def compute_locomotion_reward(
     }
     timestep = jnp.asarray(inputs.control_timestep, dtype=jnp.float32)
     terms = {
-        f"reward/{name}": value
-        * reward_terms(config)[name].weight
-        * (
-            1.0
-            if name in {"contact_timing", "touchdown_air_time", "termination"}
-            else timestep
-        )
+        f"reward/{name}": value * reward_terms(config)[name].weight * timestep
         for name, value in values.items()
     }
     reward = sum(terms.values(), jnp.asarray(0.0, dtype=jnp.float32))

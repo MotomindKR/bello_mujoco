@@ -129,7 +129,7 @@ def test_negative_total_reward_is_not_discarded() -> None:
     assert reward < 0.0
 
 
-def test_termination_is_a_one_shot_unscaled_penalty() -> None:
+def test_termination_penalty_scales_with_timestep() -> None:
     base = RewardConfig()
     config = reward_config(termination=replace(base.termination, weight=-2.0))
 
@@ -142,9 +142,9 @@ def test_termination_is_a_one_shot_unscaled_penalty() -> None:
         reward_inputs(done=jnp.asarray(True), control_timestep=jnp.asarray(0.005)),
     )
 
-    assert first_terms["reward/termination"] == pytest.approx(-2.0)
-    assert second_terms["reward/termination"] == pytest.approx(-2.0)
-    assert first == pytest.approx(second)
+    assert first_terms["reward/termination"] == pytest.approx(-0.04)
+    assert second_terms["reward/termination"] == pytest.approx(-0.01)
+    assert first == pytest.approx(4.0 * second)
 
 
 def test_hip_deviation_uses_lateral_command_axis() -> None:
@@ -192,10 +192,10 @@ def test_invalid_action_checks_requested_target_and_policy_clip() -> None:
     assert terms["reward/invalid_action"] == pytest.approx(-0.01)
 
 
-def test_contact_timing_is_an_unscaled_event_penalty() -> None:
+def test_contact_timing_event_penalty_scales_with_timestep() -> None:
     config = reward_config(
         contact_timing=ContactTimingRewardConfig(
-            weight=-0.1,
+            weight=-5.0,
             min_air_time=0.2,
             min_contact_time=0.3,
             command_speed_threshold=0.1,
@@ -211,6 +211,18 @@ def test_contact_timing_is_an_unscaled_event_penalty() -> None:
         ),
     )
     assert terms["reward/contact_timing"] == pytest.approx(-0.025)
+
+    _, finer_timestep = compute_locomotion_reward(
+        config,
+        reward_inputs(
+            command=jnp.asarray([0.5, 0.0, 0.0]),
+            foot_contact=jnp.asarray([1.0, 1.0]),
+            last_foot_contact=jnp.asarray([False, True]),
+            foot_air_time=jnp.asarray([0.1, 0.0]),
+            control_timestep=jnp.asarray(0.005),
+        ),
+    )
+    assert finer_timestep["reward/contact_timing"] == pytest.approx(-0.00625)
 
 
 def test_pure_yaw_command_enables_stepping_event_rewards() -> None:
@@ -269,10 +281,8 @@ def test_touchdown_air_time_is_gated_for_standing_commands() -> None:
         ),
     )
     assert standing["reward/touchdown_air_time"] == pytest.approx(0.0)
-    assert moving["reward/touchdown_air_time"] == pytest.approx(0.2)
-    assert finer_timestep["reward/touchdown_air_time"] == pytest.approx(
-        moving["reward/touchdown_air_time"]
-    )
+    assert moving["reward/touchdown_air_time"] == pytest.approx(0.004)
+    assert finer_timestep["reward/touchdown_air_time"] == pytest.approx(0.001)
 
 
 def test_phase_and_standing_penalties_use_mutually_relevant_features() -> None:
@@ -297,13 +307,60 @@ def test_phase_and_standing_penalties_use_mutually_relevant_features() -> None:
     assert terms["reward/standing_foot_air_time"] == pytest.approx(-0.006)
 
 
-def test_full_reward_is_jittable_and_finite() -> None:
-    reward, terms = jax.jit(compute_locomotion_reward, static_argnums=0)(
-        RewardConfig(), reward_inputs()
+def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
+    base = RewardConfig()
+    config = RewardConfig(
+        **{
+            field.name: replace(getattr(base, field.name), weight=1.0)
+            for field in fields(base)
+        }
     )
+    moving_inputs = reward_inputs(
+        command=jnp.asarray([0.5, 0.5, 0.5]),
+        lin_vel_z=jnp.asarray(1.0),
+        ang_vel_xy=jnp.asarray([1.0, 1.0]),
+        projected_gravity=jnp.asarray([0.2, 0.1, -0.9]),
+        joint_pos=jnp.asarray([1.2, -1.2]),
+        joint_pos_rel=jnp.asarray([0.5, 0.5]),
+        action=jnp.asarray([0.9, 0.5]),
+        requested_action=jnp.asarray([1.5, 0.0]),
+        actuator_force=jnp.asarray([1.0, 2.0]),
+        foot_contact=jnp.asarray([1.0, 0.0]),
+        last_foot_contact=jnp.asarray([False, True]),
+        foot_air_time=jnp.asarray([0.3, 0.1]),
+        foot_contact_time=jnp.asarray([0.0, 0.1]),
+        foot_height=jnp.asarray([0.02, 0.03]),
+        foot_phase_height_target=jnp.asarray([0.1, 0.1]),
+        foot_lateral_speed_sq=jnp.asarray([0.1, 0.2]),
+        foot_angular_speed=jnp.asarray([1.0, 1.0]),
+        undesired_contact=jnp.asarray(1.0),
+        self_collision=jnp.asarray(1.0),
+        done=jnp.asarray(True),
+    )
+    standing_inputs = moving_inputs.replace(command=jnp.zeros(3))
+    compute = jax.jit(compute_locomotion_reward, static_argnums=0)
+    reward, moving_terms = compute(config, moving_inputs)
+    _, moving_fine = compute(
+        config, moving_inputs.replace(control_timestep=jnp.asarray(0.005))
+    )
+    _, standing_terms = compute(config, standing_inputs)
+    _, standing_fine = compute(
+        config, standing_inputs.replace(control_timestep=jnp.asarray(0.005))
+    )
+
     assert jnp.isfinite(reward)
-    assert all(bool(jnp.isfinite(term)) for term in terms.values())
-    assert set(terms) == {f"reward/{field.name}" for field in fields(RewardConfig())}
+    assert all(bool(jnp.isfinite(term)) for term in moving_terms.values())
+    assert set(moving_terms) == {
+        f"reward/{field.name}" for field in fields(RewardConfig())
+    }
+    for name in moving_terms:
+        coarse = moving_terms[name]
+        fine = moving_fine[name]
+        if coarse == 0.0:
+            coarse = standing_terms[name]
+            fine = standing_fine[name]
+        assert coarse != 0.0, name
+        assert coarse == pytest.approx(4.0 * fine), name
 
 
 def test_reward_validation_rejects_invalid_safety_ranges() -> None:

@@ -114,10 +114,10 @@ Every term has a numeric `weight`; a zero weight is the only disabled state.
 Recipes must not add parallel `enabled` flags. This keeps the resolved reward
 definition auditable from one value per term.
 
-Continuous reward rates are multiplied by the control timestep. Contact-timing,
-touchdown air-time, and terminal events are one-shot terms and are not
-timestep-scaled. The scalar reward remains signed; penalties are never hidden
-by clamping the total to zero.
+Every weighted reward component is multiplied by the control timestep,
+including contact-timing, touchdown air-time, and terminal events. Reward
+weights therefore have one consistent per-second convention. The scalar reward
+remains signed; penalties are never hidden by clamping the total to zero.
 Foot-phase tracking measures physical sole clearance over local terrain, holds
 zero throughout the configured duty-factor stance interval, and applies its
 swing-height curve only during the remaining cycle.
