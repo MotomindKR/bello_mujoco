@@ -171,6 +171,11 @@ class ActionRateRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class ActionLimitRewardConfig(WeightedRewardConfig):
+    soft_limit_ratio: float = 0.8
+
+
+@dataclass(frozen=True)
 class EnergyRewardConfig(WeightedRewardConfig):
     pass
 
@@ -181,8 +186,29 @@ class TorqueRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
-class JointLimitRewardConfig(WeightedRewardConfig):
+class TorqueL1RewardConfig(WeightedRewardConfig):
     pass
+
+
+@dataclass(frozen=True)
+class JointPoseRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
+class HipDeviationRewardConfig(WeightedRewardConfig):
+    lateral_command_index: int = 0
+    lateral_command_threshold: float = 0.1
+
+
+@dataclass(frozen=True)
+class KneeDeviationRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
+class JointLimitRewardConfig(WeightedRewardConfig):
+    soft_limit_factor: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -231,15 +257,39 @@ class FootDistanceRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class StanceWidthRewardConfig(LinkRewardConfig):
+    min_width: float = 0.24
+    max_width: float = 0.34
+
+
+@dataclass(frozen=True)
 class GaitContactRewardConfig(WeightedRewardConfig):
     command_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
-class FeetAirTimeRewardConfig(WeightedRewardConfig):
+class ContactTimingRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
-    max_air_time: float = 0.60
-    command_speed_threshold: float = 0.05
+    min_contact_time: float = 0.30
+    command_speed_threshold: float = 0.10
+
+
+@dataclass(frozen=True)
+class FeetAirTimeRewardConfig(WeightedRewardConfig):
+    max_duration: float = 0.40
+    command_speed_threshold: float = 0.10
+
+
+@dataclass(frozen=True)
+class TouchdownAirTimeRewardConfig(WeightedRewardConfig):
+    min_air_time: float = 0.20
+    max_air_time: float = 0.50
+    command_speed_threshold: float = 0.10
+
+
+@dataclass(frozen=True)
+class FootPhaseRewardConfig(WeightedRewardConfig):
+    sigma: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -283,8 +333,23 @@ class RewardConfig:
     joint_vel: JointVelRewardConfig = JointVelRewardConfig(weight=-0.001)
     joint_acc: JointAccRewardConfig = JointAccRewardConfig(weight=-2.5e-7)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.05)
+    action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(
+        enabled=False, weight=-1.0
+    )
     energy: EnergyRewardConfig = EnergyRewardConfig(weight=-2.0e-5)
     torque: TorqueRewardConfig = TorqueRewardConfig(enabled=False, weight=-1.0e-5)
+    torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(
+        enabled=False, weight=-2.5e-5
+    )
+    joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(
+        enabled=False, weight=-1.0
+    )
+    hip_deviation: HipDeviationRewardConfig = HipDeviationRewardConfig(
+        enabled=False, weight=-0.25
+    )
+    knee_deviation: KneeDeviationRewardConfig = KneeDeviationRewardConfig(
+        enabled=False, weight=-0.1
+    )
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-5.0)
     invalid_action: InvalidActionRewardConfig = InvalidActionRewardConfig(
         enabled=False, weight=-1.0
@@ -304,10 +369,20 @@ class RewardConfig:
     foot_distance: FootDistanceRewardConfig = FootDistanceRewardConfig(
         enabled=False, weight=1.0
     )
-    gait_contact: GaitContactRewardConfig = GaitContactRewardConfig(weight=0.5)
-    feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(
-        enabled=False, weight=0.2
+    stance_width: StanceWidthRewardConfig = StanceWidthRewardConfig(
+        enabled=False, weight=-2.0
     )
+    gait_contact: GaitContactRewardConfig = GaitContactRewardConfig(weight=0.5)
+    contact_timing: ContactTimingRewardConfig = ContactTimingRewardConfig(
+        enabled=False, weight=-0.10
+    )
+    feet_air_time: FeetAirTimeRewardConfig = FeetAirTimeRewardConfig(
+        enabled=False, weight=0.25
+    )
+    touchdown_air_time: TouchdownAirTimeRewardConfig = TouchdownAirTimeRewardConfig(
+        enabled=False, weight=2.0
+    )
+    foot_phase: FootPhaseRewardConfig = FootPhaseRewardConfig(enabled=False, weight=1.0)
     standing_foot_vel: StandingFootVelRewardConfig = StandingFootVelRewardConfig(
         enabled=False, weight=-1.0
     )
@@ -319,6 +394,8 @@ class RewardConfig:
     )
     self_collision: SelfCollisionRewardConfig = SelfCollisionRewardConfig(weight=-1.0)
     termination: TerminationRewardConfig = TerminationRewardConfig(weight=-1.0)
+    clip_negative_total: bool = False
+    scale_termination_by_timestep: bool = False
 
     def __post_init__(self) -> None:
         validate_reward_config(self)
@@ -330,7 +407,9 @@ class RewardConfig:
             or self.foot_slip.enabled
             or self.foot_clearance.enabled
             or self.gait_contact.enabled
+            or self.contact_timing.enabled
             or self.feet_air_time.enabled
+            or self.touchdown_air_time.enabled
             or self.standing_foot_vel.enabled
             or self.standing_foot_air_time.enabled
         )
@@ -341,6 +420,8 @@ class RewardConfig:
             self.uses_foot_contact_metadata
             or self.swing_foot_velocity.enabled
             or self.foot_distance.enabled
+            or self.stance_width.enabled
+            or self.foot_phase.enabled
         )
 
     @property
@@ -357,6 +438,7 @@ class RewardConfig:
             self.flat_orientation,
             self.base_height,
             self.swing_foot_velocity,
+            self.stance_width,
         ]
         links = {term.link for term in terms if term.enabled and term.link}
         if self.track_lin_vel_xy.enabled and self.track_lin_vel_xy.frame_link:
@@ -396,6 +478,10 @@ def compute_velocity_reward(
     control_timestep: float,
     done: jax.Array,
     foot_angular_speed: jax.Array | None = None,
+    stance_width: jax.Array | None = None,
+    foot_contact_time: jax.Array | None = None,
+    requested_action: jax.Array | None = None,
+    action_clip_limit: float | None = None,
     self_collision: jax.Array | None = None,
     action_target_default: jax.Array | None = None,
     action_target_scale: jax.Array | None = None,
@@ -403,6 +489,11 @@ def compute_velocity_reward(
     action_target_high: jax.Array | None = None,
     foot_relative_lin_vel_xy: jax.Array | None = None,
     swing_velocity_target_scale: float = 1.0,
+    foot_phase_height_target: jax.Array | None = None,
+    joint_pose_weights: jax.Array | None = None,
+    hip_joint_indices: jax.Array | None = None,
+    knee_joint_indices: jax.Array | None = None,
+    actuator_velocity: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return weighted scalar reward and weighted component terms."""
     lin_vel_error = jnp.sum((lin_vel_xy - command[:2]) ** 2)
@@ -419,11 +510,52 @@ def compute_velocity_reward(
     joint_vel_l2 = jnp.sum(joint_vel**2)
     joint_acc_l2 = jnp.sum(((joint_vel - last_joint_vel) / control_timestep) ** 2)
     action_rate_l2 = jnp.sum((action - last_action) ** 2)
-    energy = jnp.sum(jnp.abs(actuator_force * joint_vel))
+    action_hard_limit = jnp.asarray(
+        1.0 if action_clip_limit is None else action_clip_limit,
+        dtype=jnp.float32,
+    )
+    action_soft_limit = config.action_limit.soft_limit_ratio * action_hard_limit
+    action_limit_excess = jnp.maximum(jnp.abs(action) - action_soft_limit, 0.0)
+    action_limit = jnp.mean(
+        (action_limit_excess / (action_hard_limit - action_soft_limit)) ** 2
+    )
+    energy_velocity = joint_vel if actuator_velocity is None else actuator_velocity
+    energy = jnp.sum(jnp.abs(actuator_force * energy_velocity))
     torque_l2 = jnp.sum(actuator_force**2)
+    torque_l1 = jnp.sum(jnp.abs(actuator_force[policy_joint_indices]))
+    pose_weights = (
+        jnp.ones_like(joint_pos_rel)
+        if joint_pose_weights is None
+        else joint_pose_weights
+    )
+    joint_pose = jnp.sum(joint_pos_rel**2 * pose_weights)
+    hip_joint_indices = (
+        jnp.asarray([], dtype=jnp.int32)
+        if hip_joint_indices is None
+        else hip_joint_indices
+    )
+    hip_deviation = jnp.sum(jnp.abs(joint_pos_rel[hip_joint_indices]))
+    lateral_command = command[config.hip_deviation.lateral_command_index]
+    hip_deviation *= (
+        jnp.abs(lateral_command) > config.hip_deviation.lateral_command_threshold
+    )
+    knee_joint_indices = (
+        jnp.asarray([], dtype=jnp.int32)
+        if knee_joint_indices is None
+        else knee_joint_indices
+    )
+    knee_deviation = jnp.sum(jnp.abs(joint_pos_rel[knee_joint_indices]))
 
-    lower_violation = jnp.maximum(joint_limit_low - joint_pos, 0.0)
-    upper_violation = jnp.maximum(joint_pos - joint_limit_high, 0.0)
+    joint_limit_center = 0.5 * (joint_limit_low + joint_limit_high)
+    joint_limit_radius = (
+        0.5
+        * (joint_limit_high - joint_limit_low)
+        * config.joint_limit.soft_limit_factor
+    )
+    joint_soft_limit_low = joint_limit_center - joint_limit_radius
+    joint_soft_limit_high = joint_limit_center + joint_limit_radius
+    lower_violation = jnp.maximum(joint_soft_limit_low - joint_pos, 0.0)
+    upper_violation = jnp.maximum(joint_pos - joint_soft_limit_high, 0.0)
     joint_limit = jnp.sum(lower_violation + upper_violation)
     if config.invalid_action.enabled:
         if (
@@ -436,14 +568,20 @@ def compute_velocity_reward(
                 "invalid_action reward requires action target default, scale, "
                 "low, and high arrays"
             )
-        action_target = action_target_default + action_target_scale * action
+        requested_action = action if requested_action is None else requested_action
+        action_target = action_target_default + action_target_scale * requested_action
         action_low_violation = jnp.maximum(action_target_low - action_target, 0.0)
         action_high_violation = jnp.maximum(action_target - action_target_high, 0.0)
         action_target_violation = action_low_violation + action_high_violation
         action_unit_violation = action_target_violation / jnp.maximum(
             jnp.abs(action_target_scale), 1.0e-6
         )
-        invalid_action = jnp.sum(action_unit_violation**2)
+        action_clip_violation = (
+            jnp.zeros_like(requested_action)
+            if action_clip_limit is None
+            else jnp.maximum(jnp.abs(requested_action) - action_clip_limit, 0.0)
+        )
+        invalid_action = jnp.sum(action_unit_violation**2 + action_clip_violation**2)
     else:
         invalid_action = jnp.asarray(0.0, dtype=jnp.float32)
     hold_joint_deviation = (
@@ -505,6 +643,15 @@ def compute_velocity_reward(
     else:
         swing_foot_velocity = jnp.asarray(0.0, dtype=jnp.float32)
     foot_distance = jnp.asarray(foot_distance, dtype=jnp.float32)
+    stance_width = (
+        jnp.asarray(0.0, dtype=jnp.float32)
+        if stance_width is None
+        else jnp.asarray(stance_width, dtype=jnp.float32)
+    )
+    stance_width_error = (
+        jnp.maximum(config.stance_width.min_width - stance_width, 0.0) ** 2
+        + jnp.maximum(stance_width - config.stance_width.max_width, 0.0) ** 2
+    )
     command_speed = jnp.linalg.norm(command)
     foot_clearance = jnp.where(
         command_speed > config.foot_clearance.command_speed_threshold,
@@ -518,20 +665,91 @@ def compute_velocity_reward(
         gait_contact,
         jnp.asarray(0.0, dtype=jnp.float32),
     )
-    first_contact = foot_contact.astype(bool) & ~last_foot_contact.astype(bool)
-    completed_air_time = foot_air_time + control_timestep
-    max_bonus = config.feet_air_time.max_air_time - config.feet_air_time.min_air_time
-    air_time_bonus = jnp.clip(
-        completed_air_time - config.feet_air_time.min_air_time,
-        0.0,
-        max_bonus,
-    )
-    feet_air_time = safe_mean(first_contact.astype(jnp.float32) * air_time_bonus)
-    feet_air_time = jnp.where(
-        command_speed > config.feet_air_time.command_speed_threshold,
-        feet_air_time,
-        jnp.asarray(0.0, dtype=jnp.float32),
-    )
+    if config.contact_timing.enabled:
+        if foot_contact_time is None:
+            raise ValueError("contact_timing reward requires foot contact durations")
+        contact = foot_contact.astype(bool)
+        previous_contact = last_foot_contact.astype(bool)
+        touchdown = contact & ~previous_contact
+        liftoff = ~contact & previous_contact
+        short_air = (
+            jnp.maximum(config.contact_timing.min_air_time - foot_air_time, 0.0)
+            / config.contact_timing.min_air_time
+        )
+        short_contact = (
+            jnp.maximum(config.contact_timing.min_contact_time - foot_contact_time, 0.0)
+            / config.contact_timing.min_contact_time
+        )
+        contact_timing = jnp.sum(
+            touchdown.astype(jnp.float32) * short_air**2
+            + liftoff.astype(jnp.float32) * short_contact**2
+        )
+        contact_timing = jnp.where(
+            jnp.linalg.norm(command[:2])
+            > config.contact_timing.command_speed_threshold,
+            contact_timing,
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+    else:
+        contact_timing = jnp.asarray(0.0, dtype=jnp.float32)
+    if config.feet_air_time.enabled:
+        if foot_contact_time is None:
+            raise ValueError("feet_air_time reward requires foot contact durations")
+        contact = foot_contact.astype(bool)
+        current_air_time = jnp.where(
+            contact,
+            jnp.zeros_like(foot_air_time),
+            foot_air_time + control_timestep,
+        )
+        current_contact_time = jnp.where(
+            contact,
+            foot_contact_time + control_timestep,
+            jnp.zeros_like(foot_contact_time),
+        )
+        in_mode_time = jnp.where(contact, current_contact_time, current_air_time)
+        single_stance = jnp.sum(contact.astype(jnp.int32)) == 1
+        feet_air_time = jnp.min(
+            jnp.where(single_stance, in_mode_time, jnp.zeros_like(in_mode_time))
+        )
+        feet_air_time = jnp.minimum(feet_air_time, config.feet_air_time.max_duration)
+        feet_air_time = jnp.where(
+            jnp.linalg.norm(command[:2]) > config.feet_air_time.command_speed_threshold,
+            feet_air_time,
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+    else:
+        feet_air_time = jnp.asarray(0.0, dtype=jnp.float32)
+    if config.touchdown_air_time.enabled:
+        contact = foot_contact.astype(bool)
+        contact_filtered = contact | last_foot_contact.astype(bool)
+        first_contact = (foot_air_time > 0.0) & contact_filtered
+        touchdown_air_time = (
+            foot_air_time - config.touchdown_air_time.min_air_time
+        ) * first_contact.astype(jnp.float32)
+        touchdown_air_time = jnp.sum(
+            jnp.minimum(
+                touchdown_air_time,
+                config.touchdown_air_time.max_air_time
+                - config.touchdown_air_time.min_air_time,
+            )
+        )
+        touchdown_air_time = jnp.where(
+            jnp.linalg.norm(command[:2])
+            > config.touchdown_air_time.command_speed_threshold,
+            touchdown_air_time,
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+    else:
+        touchdown_air_time = jnp.asarray(0.0, dtype=jnp.float32)
+    if config.foot_phase.enabled:
+        if foot_phase_height_target is None:
+            raise ValueError("foot_phase reward requires foot height targets")
+        foot_phase = jnp.exp(
+            -jnp.sum((foot_height - foot_phase_height_target) ** 2)
+            / config.foot_phase.sigma
+        )
+    else:
+        foot_phase = jnp.asarray(0.0, dtype=jnp.float32)
     standing_foot_vel = safe_mean(foot_lateral_speed_sq)
     standing_foot_vel = jnp.where(
         command_speed <= config.standing_foot_vel.command_speed_threshold,
@@ -588,11 +806,30 @@ def compute_velocity_reward(
         "reward/action_rate": weighted_term(
             config.action_rate.enabled, config.action_rate.weight, action_rate_l2
         ),
+        "reward/action_limit": weighted_term(
+            config.action_limit.enabled, config.action_limit.weight, action_limit
+        ),
         "reward/energy": weighted_term(
             config.energy.enabled, config.energy.weight, energy
         ),
         "reward/torque": weighted_term(
             config.torque.enabled, config.torque.weight, torque_l2
+        ),
+        "reward/torque_l1": weighted_term(
+            config.torque_l1.enabled, config.torque_l1.weight, torque_l1
+        ),
+        "reward/joint_pose": weighted_term(
+            config.joint_pose.enabled, config.joint_pose.weight, joint_pose
+        ),
+        "reward/hip_deviation": weighted_term(
+            config.hip_deviation.enabled,
+            config.hip_deviation.weight,
+            hip_deviation,
+        ),
+        "reward/knee_deviation": weighted_term(
+            config.knee_deviation.enabled,
+            config.knee_deviation.weight,
+            knee_deviation,
         ),
         "reward/joint_limit": weighted_term(
             config.joint_limit.enabled, config.joint_limit.weight, joint_limit
@@ -639,15 +876,33 @@ def compute_velocity_reward(
             config.foot_distance.weight,
             foot_distance,
         ),
+        "reward/stance_width": weighted_term(
+            config.stance_width.enabled,
+            config.stance_width.weight,
+            stance_width_error,
+        ),
         "reward/gait_contact": weighted_term(
             config.gait_contact.enabled,
             config.gait_contact.weight,
             gait_contact,
         ),
+        "reward/contact_timing": weighted_term(
+            config.contact_timing.enabled,
+            config.contact_timing.weight,
+            contact_timing,
+        ),
         "reward/feet_air_time": weighted_term(
             config.feet_air_time.enabled,
             config.feet_air_time.weight,
             feet_air_time,
+        ),
+        "reward/touchdown_air_time": weighted_term(
+            config.touchdown_air_time.enabled,
+            config.touchdown_air_time.weight,
+            touchdown_air_time,
+        ),
+        "reward/foot_phase": weighted_term(
+            config.foot_phase.enabled, config.foot_phase.weight, foot_phase
         ),
         "reward/standing_foot_vel": weighted_term(
             config.standing_foot_vel.enabled,
@@ -678,12 +933,16 @@ def compute_velocity_reward(
         ),
     }
     timestep = jnp.asarray(control_timestep, dtype=jnp.float32)
-    event_terms = frozenset(("reward/feet_air_time", "reward/termination"))
+    event_terms = {"reward/contact_timing"}
+    if not config.scale_termination_by_timestep:
+        event_terms.add("reward/termination")
     terms = {
         name: value if name in event_terms else value * timestep
         for name, value in raw_terms.items()
     }
     reward = sum(terms.values(), jnp.asarray(0.0, dtype=jnp.float32))
+    if config.clip_negative_total:
+        reward = jnp.maximum(reward, 0.0)
     return reward, terms
 
 
@@ -715,6 +974,22 @@ def validate_reward_config(config: RewardConfig) -> None:
         raise ValueError(
             "track_ang_vel_z.sigma must be positive when enabled, got "
             f"{config.track_ang_vel_z.sigma}"
+        )
+    if (
+        not math.isfinite(config.joint_limit.soft_limit_factor)
+        or not 0.0 < config.joint_limit.soft_limit_factor <= 1.0
+    ):
+        raise ValueError(
+            "joint_limit.soft_limit_factor must be in (0, 1], got "
+            f"{config.joint_limit.soft_limit_factor}"
+        )
+    if (
+        not math.isfinite(config.action_limit.soft_limit_ratio)
+        or not 0.0 <= config.action_limit.soft_limit_ratio < 1.0
+    ):
+        raise ValueError(
+            "action_limit.soft_limit_ratio must be in [0, 1), got "
+            f"{config.action_limit.soft_limit_ratio}"
         )
     for name, term in reward_terms(config).items():
         if not math.isfinite(term.weight):
@@ -794,23 +1069,39 @@ def validate_reward_config(config: RewardConfig) -> None:
             "gait_contact.command_speed_threshold must be nonnegative and "
             f"finite, got {config.gait_contact.command_speed_threshold}"
         )
-    if config.feet_air_time.enabled:
+    if config.contact_timing.enabled:
         if (
-            not math.isfinite(config.feet_air_time.min_air_time)
-            or config.feet_air_time.min_air_time < 0
+            not math.isfinite(config.contact_timing.min_air_time)
+            or config.contact_timing.min_air_time <= 0
         ):
             raise ValueError(
-                "feet_air_time.min_air_time must be nonnegative and finite, got "
-                f"{config.feet_air_time.min_air_time}"
+                "contact_timing.min_air_time must be positive and finite, got "
+                f"{config.contact_timing.min_air_time}"
             )
         if (
-            not math.isfinite(config.feet_air_time.max_air_time)
-            or config.feet_air_time.max_air_time <= config.feet_air_time.min_air_time
+            not math.isfinite(config.contact_timing.min_contact_time)
+            or config.contact_timing.min_contact_time <= 0
         ):
             raise ValueError(
-                "feet_air_time.max_air_time must be finite and greater than "
-                "min_air_time, got "
-                f"{config.feet_air_time.max_air_time}"
+                "contact_timing.min_contact_time must be positive and finite, got "
+                f"{config.contact_timing.min_contact_time}"
+            )
+        if (
+            not math.isfinite(config.contact_timing.command_speed_threshold)
+            or config.contact_timing.command_speed_threshold < 0
+        ):
+            raise ValueError(
+                "contact_timing.command_speed_threshold must be nonnegative and "
+                f"finite, got {config.contact_timing.command_speed_threshold}"
+            )
+    if config.feet_air_time.enabled:
+        if (
+            not math.isfinite(config.feet_air_time.max_duration)
+            or config.feet_air_time.max_duration <= 0
+        ):
+            raise ValueError(
+                "feet_air_time.max_duration must be positive and finite, got "
+                f"{config.feet_air_time.max_duration}"
             )
         if (
             not math.isfinite(config.feet_air_time.command_speed_threshold)
@@ -819,6 +1110,45 @@ def validate_reward_config(config: RewardConfig) -> None:
             raise ValueError(
                 "feet_air_time.command_speed_threshold must be nonnegative and "
                 f"finite, got {config.feet_air_time.command_speed_threshold}"
+            )
+    if config.touchdown_air_time.enabled:
+        if (
+            not math.isfinite(config.touchdown_air_time.min_air_time)
+            or config.touchdown_air_time.min_air_time < 0
+            or not math.isfinite(config.touchdown_air_time.max_air_time)
+            or config.touchdown_air_time.max_air_time
+            <= config.touchdown_air_time.min_air_time
+        ):
+            raise ValueError(
+                "touchdown_air_time bounds must be finite with max greater than "
+                "min, got "
+                f"{config.touchdown_air_time.min_air_time}, "
+                f"{config.touchdown_air_time.max_air_time}"
+            )
+    if config.foot_phase.enabled and (
+        not math.isfinite(config.foot_phase.sigma) or config.foot_phase.sigma <= 0
+    ):
+        raise ValueError(
+            "foot_phase.sigma must be positive and finite, got "
+            f"{config.foot_phase.sigma}"
+        )
+    if config.stance_width.enabled:
+        if (
+            not math.isfinite(config.stance_width.min_width)
+            or config.stance_width.min_width < 0
+        ):
+            raise ValueError(
+                "stance_width.min_width must be nonnegative and finite, got "
+                f"{config.stance_width.min_width}"
+            )
+        if (
+            not math.isfinite(config.stance_width.max_width)
+            or config.stance_width.max_width <= config.stance_width.min_width
+        ):
+            raise ValueError(
+                "stance_width.max_width must be finite and greater than min_width, "
+                f"got {config.stance_width.max_width} <= "
+                f"{config.stance_width.min_width}"
             )
     if config.standing_foot_vel.enabled and (
         not math.isfinite(config.standing_foot_vel.command_speed_threshold)
@@ -850,8 +1180,13 @@ def reward_terms(config: RewardConfig):
         "joint_vel": config.joint_vel,
         "joint_acc": config.joint_acc,
         "action_rate": config.action_rate,
+        "action_limit": config.action_limit,
         "energy": config.energy,
         "torque": config.torque,
+        "torque_l1": config.torque_l1,
+        "joint_pose": config.joint_pose,
+        "hip_deviation": config.hip_deviation,
+        "knee_deviation": config.knee_deviation,
         "joint_limit": config.joint_limit,
         "invalid_action": config.invalid_action,
         "hold_joint_deviation": config.hold_joint_deviation,
@@ -861,8 +1196,12 @@ def reward_terms(config: RewardConfig):
         "foot_clearance": config.foot_clearance,
         "swing_foot_velocity": config.swing_foot_velocity,
         "foot_distance": config.foot_distance,
+        "stance_width": config.stance_width,
         "gait_contact": config.gait_contact,
+        "contact_timing": config.contact_timing,
         "feet_air_time": config.feet_air_time,
+        "touchdown_air_time": config.touchdown_air_time,
+        "foot_phase": config.foot_phase,
         "standing_foot_vel": config.standing_foot_vel,
         "standing_foot_air_time": config.standing_foot_air_time,
         "undesired_contact": config.undesired_contact,

@@ -29,9 +29,10 @@ from bello_mujoco.policy import (
     init_actor_critic,
     policy_observation_size,
     policy_log_std,
-    sample_action_with_mean,
+    sample_action_with_latent_and_mean,
     stacked_observation,
     update_observation_stack,
+    update_policy_observation_normalization,
 )
 
 LearningRateSchedule = Literal["constant", "linear", "adaptive"]
@@ -88,8 +89,10 @@ class Transition(NamedTuple):
     done: jax.Array
     terminal: jax.Array
     bootstrap_value: jax.Array
-    # Raw Gaussian sample used for PPO log-prob/ratio calculations.
+    # Action sampled from the policy distribution for PPO log-prob/ratio calculations.
     action: jax.Array
+    # Exact pre-transform Gaussian sample; tanh saturation is not invertible in float32.
+    latent_action: jax.Array
     # Action actually sent to the env after optional env-level clipping.
     env_action: jax.Array
     action_mean: jax.Array
@@ -289,7 +292,11 @@ def ppo_loss(
     value_norm_state: ValueNormState | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     log_prob, entropy, value = evaluate_actions(
-        model, transitions.obs, transitions.action, transitions.critic_obs
+        model,
+        transitions.obs,
+        transitions.action,
+        transitions.critic_obs,
+        latent_action=transitions.latent_action,
     )
 
     log_ratio = log_prob - transitions.log_prob
@@ -357,9 +364,7 @@ def update_ppo(
         leaves = jax.tree_util.tree_leaves(tree)
         if not leaves:
             return jnp.asarray(True)
-        return jnp.all(
-            jnp.stack([jnp.all(jnp.isfinite(leaf)) for leaf in leaves])
-        )
+        return jnp.all(jnp.stack([jnp.all(jnp.isfinite(leaf)) for leaf in leaves]))
 
     def update_epoch(carry, _: None):
         params, opt_state, key, stopped = carry
@@ -531,6 +536,45 @@ def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def target_saturation_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        f"mean_{name}": value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("target/")
+    }
+
+
+def gait_diagnostics(
+    info: dict[str, jax.Array], control_timestep: float
+) -> dict[str, jax.Array]:
+    metrics = {
+        f"mean_{name}": value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("gait/")
+    }
+    touchdown = info.get("gait/touchdown")
+    liftoff = info.get("gait/liftoff")
+    premature_touchdown = info.get("gait/premature_touchdown")
+    premature_liftoff = info.get("gait/premature_liftoff")
+    if touchdown is not None:
+        metrics["gait/footfalls_per_second"] = (
+            touchdown.astype(jnp.float32).mean() / control_timestep
+        )
+    if liftoff is not None:
+        metrics["gait/liftoffs_per_second"] = (
+            liftoff.astype(jnp.float32).mean() / control_timestep
+        )
+    if premature_touchdown is not None:
+        metrics["gait/premature_touchdowns_per_second"] = (
+            premature_touchdown.astype(jnp.float32).mean() / control_timestep
+        )
+    if premature_liftoff is not None:
+        metrics["gait/premature_liftoffs_per_second"] = (
+            premature_liftoff.astype(jnp.float32).mean() / control_timestep
+        )
+    return metrics
+
+
 def action_diagnostics(
     transitions: Transition,
     env: BelloLocomotionEnv,
@@ -548,7 +592,15 @@ def action_diagnostics(
         "action_std_mean": jnp.mean(jnp.exp(log_std)),
         "action_std_min": jnp.min(jnp.exp(log_std)),
         "action_std_max": jnp.max(jnp.exp(log_std)),
+        "action_clip_fraction": jnp.mean(
+            (jnp.abs(action - env_action) > 1.0e-6).astype(jnp.float32)
+        ),
     }
+    if getattr(policy, "action_distribution", "gaussian") == "tanh_gaussian":
+        action_limit = jnp.asarray(policy.action_limit, dtype=action_mean.dtype)
+        metrics["action_bound_saturation_fraction"] = jnp.mean(
+            (jnp.abs(action_mean) >= 0.98 * action_limit).astype(jnp.float32)
+        )
     if not hasattr(env, "_action_to_ctrl"):
         return metrics
 
@@ -588,11 +640,13 @@ def collect_rollout(
         policy_obs = stacked_observation(last_obs_stack)
         critic_policy_obs = stacked_observation(last_critic_obs_stack)
         action_clip = getattr(env, "action_clip", None)
-        action, log_prob, value, action_mean = sample_action_with_mean(
-            policy,
-            policy_obs,
-            action_key,
-            critic_obs=critic_policy_obs,
+        action, latent_action, log_prob, value, action_mean = (
+            sample_action_with_latent_and_mean(
+                policy,
+                policy_obs,
+                action_key,
+                critic_obs=critic_policy_obs,
+            )
         )
         env_action = (
             action
@@ -601,7 +655,7 @@ def collect_rollout(
         )
         value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = step_env_batch(
-            env, state, env_action, env_key, command_ranges
+            env, state, action, env_key, command_ranges
         )
         next_critic_obs = critic_observation_batch(
             env, next_state, fallback_obs=next_obs
@@ -639,6 +693,7 @@ def collect_rollout(
             terminal,
             bootstrap_value,
             action,
+            latent_action,
             env_action,
             action_mean,
             value,
@@ -754,6 +809,13 @@ def update_runner_state(
         learning_rate=learning_rate,
         value_norm_state=value_norm_state,
     )
+    train_state = train_state.replace(
+        policy=update_policy_observation_normalization(
+            train_state.policy,
+            transitions.obs,
+            transitions.critic_obs,
+        )
+    )
     next_learning_rate = adapt_learning_rate(
         learning_rate, metrics["approx_kl"], config
     )
@@ -785,6 +847,10 @@ def update_runner_state(
         **done_reason_means(transitions.info),
         **random_push_means(transitions.info),
         **foot_contact_means(transitions.info),
+        **target_saturation_means(transitions.info),
+        **gait_diagnostics(
+            transitions.info, float(getattr(env, "control_timestep", 1.0))
+        ),
         **reward_means,
         **command_curriculum_metrics(command_ranges),
         **command_curriculum_state,
@@ -882,11 +948,7 @@ def update_command_curriculum(
     returned_count = jnp.sum(returned_episode.astype(jnp.float32))
     normalized_reward = episode_reward / (env.max_episode_steps * env.control_timestep)
     success = normalized_reward > reward_threshold
-    should_expand = (
-        period_boundary
-        & (returned_count > 0)
-        & success
-    )
+    should_expand = period_boundary & (returned_count > 0) & success
     should_expand_yaw = should_expand & curriculum.expand_ang_vel_yaw
 
     x_range = expand_command_range(
@@ -1011,7 +1073,9 @@ def critic_observation_size(env) -> int:
     return int(getattr(env, "critic_observation_size", env.observation_size))
 
 
-def critic_observation_batch(env, state, fallback_obs: jax.Array | None = None) -> jax.Array:
+def critic_observation_batch(
+    env, state, fallback_obs: jax.Array | None = None
+) -> jax.Array:
     method = getattr(env, "critic_observation_batch", None)
     if method is not None:
         return method(state)
@@ -1141,10 +1205,28 @@ def validate_ppo_config(config: PPOConfig) -> None:
             "policy.obs_stack_size must be positive, got "
             f"{config.policy.obs_stack_size}"
         )
-    if config.policy.activation not in {"tanh", "relu", "elu"}:
+    if config.policy.activation not in {"tanh", "relu", "elu", "swish"}:
         raise ValueError(
-            "policy.activation must be 'tanh', 'relu', or 'elu', got "
+            "policy.activation must be 'tanh', 'relu', 'elu', or 'swish', got "
             f"{config.policy.activation!r}"
+        )
+    if config.policy.action_distribution not in {"gaussian", "tanh_gaussian"}:
+        raise ValueError(
+            "policy.action_distribution must be 'gaussian' or 'tanh_gaussian', "
+            f"got {config.policy.action_distribution!r}"
+        )
+    if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
+        raise ValueError(
+            "policy.action_limit must be positive and finite, got "
+            f"{config.policy.action_limit}"
+        )
+    if (
+        not math.isfinite(config.policy.observation_norm_eps)
+        or config.policy.observation_norm_eps <= 0
+    ):
+        raise ValueError(
+            "policy.observation_norm_eps must be positive and finite, got "
+            f"{config.policy.observation_norm_eps}"
         )
     if not math.isfinite(config.policy.init_log_std):
         raise ValueError(

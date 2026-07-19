@@ -40,3 +40,16 @@ def full_body_ankle_tendon_asset() -> PreparedAsset:
             ankle_differential_config=AnkleDifferentialConfig(enabled=True),
         )
     )
+
+
+@pytest.fixture(scope="session")
+def full_body_actuated_ankle_tendon_asset() -> PreparedAsset:
+    return prepare_asset(
+        AssetPrepConfig(
+            asset="full_body",
+            ankle_differential_config=AnkleDifferentialConfig(
+                enabled=True,
+                actuate_tendons=True,
+            ),
+        )
+    )

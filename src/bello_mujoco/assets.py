@@ -18,7 +18,9 @@ def repo_root() -> Path:
 def package_data_path(name: str) -> Path:
     resource = files("bello_mujoco").joinpath(name)
     if not resource.is_dir():
-        raise FileNotFoundError(f"packaged bello_mujoco data directory not found: {name}")
+        raise FileNotFoundError(
+            f"packaged bello_mujoco data directory not found: {name}"
+        )
     return _RESOURCE_STACK.enter_context(as_file(resource))
 
 

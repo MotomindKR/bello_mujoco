@@ -9,18 +9,29 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.assets_pipeline.prepare import actuated_urdf_joint_names
 from bello_mujoco.assets import source_assets_root
 from bello_mujoco.contracts import DEFAULT_SPAWN_CLEARANCE
+from bello_mujoco.envs.locomotion import (
+    BelloEnvConfig,
+    BelloLocomotionEnv,
+    ObservationConfig,
+)
+from bello_mujoco.render import mujoco_action_to_ctrl, mujoco_policy_observation
 from bello_mujoco.sim import (
+    ModelRandomizationConfig,
+    SimulationPhysicsConfig,
     load_bello_model,
     load_prepared_bello_model,
     robot_geom_min_z,
-    terrain_surface_upper_bound,
 )
 from bello_mujoco.terrain import (
     FLAT_TERRAIN,
     ROBOT_ONLY_TERRAIN,
     ROUGH_TERRAIN,
     TerrainConfig,
+    random_slope_angles,
+    random_slope_angles_batch,
     rough_height_data,
+    slope_quat,
+    terrain_surface_height,
 )
 
 
@@ -40,6 +51,152 @@ def test_full_body_model_loads_with_all_actuators_in_policy_by_default(
     assert np.allclose(model.policy_action_scale, expected_scale)
 
 
+def test_differential_ankle_joint_targets_map_to_both_motors(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(
+        full_body_actuated_ankle_tendon_asset,
+        terrain=FLAT_TERRAIN,
+    )
+    env = BelloLocomotionEnv(model)
+    action = np.zeros(env.action_size, dtype=np.float32)
+    motor_1_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_1_pos",
+    )
+    motor_2_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_2_pos",
+    )
+    pitch_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
+    roll_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_2_id)[0])
+    action[pitch_action] = 1.0
+
+    ctrl = np.asarray(env._action_to_ctrl(action))
+
+    assert ctrl[motor_1_id] == pytest.approx(
+        model.default_ctrl[motor_1_id] - model.policy_action_scale[pitch_action]
+    )
+    assert ctrl[motor_2_id] == pytest.approx(
+        model.default_ctrl[motor_2_id] + model.policy_action_scale[pitch_action]
+    )
+
+    action[:] = 0.0
+    action[roll_action] = 1.0
+    ctrl = np.asarray(env._action_to_ctrl(action))
+    assert ctrl[motor_1_id] == pytest.approx(
+        model.default_ctrl[motor_1_id] + model.policy_action_scale[roll_action]
+    )
+    assert ctrl[motor_2_id] == pytest.approx(
+        model.default_ctrl[motor_2_id] + model.policy_action_scale[roll_action]
+    )
+
+
+def test_differential_ankle_observations_use_joint_coordinates(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(
+        full_body_actuated_ankle_tendon_asset,
+        terrain=FLAT_TERRAIN,
+    )
+    env = BelloLocomotionEnv(model)
+    state, _ = env.reset()
+    motor_1_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_1_pos",
+    )
+    motor_2_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_2_pos",
+    )
+    pitch_qpos = int(model.actuator_qpos_indices[motor_1_id])
+    roll_qpos = int(model.actuator_qpos_indices[motor_2_id])
+    pitch_qvel = int(model.actuator_qvel_indices[motor_1_id])
+    roll_qvel = int(model.actuator_qvel_indices[motor_2_id])
+    qpos = state.data.qpos.at[pitch_qpos].add(0.10).at[roll_qpos].add(0.02)
+    qvel = state.data.qvel.at[pitch_qvel].set(0.30).at[roll_qvel].set(-0.10)
+    state = state.replace(data=state.data.replace(qpos=qpos, qvel=qvel))
+
+    terms = env._frame_terms(state, env.config.observation)
+    position = terms[8]
+    velocity = terms[9]
+    motor_1_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_1_id)[0])
+    motor_2_action = int(np.flatnonzero(model.policy_ctrl_indices == motor_2_id)[0])
+
+    assert position[motor_1_action] == pytest.approx(0.10)
+    assert position[motor_2_action] == pytest.approx(0.02)
+    assert velocity[motor_1_action] == pytest.approx(0.30)
+    assert velocity[motor_2_action] == pytest.approx(-0.10)
+
+
+def test_differential_control_matches_native_mujoco(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(
+        full_body_actuated_ankle_tendon_asset,
+        terrain=FLAT_TERRAIN,
+    )
+    env = BelloLocomotionEnv(model)
+    action = np.linspace(-1.0, 1.0, env.action_size, dtype=np.float32)
+
+    np.testing.assert_allclose(
+        np.asarray(env._action_to_ctrl(action)),
+        mujoco_action_to_ctrl(env, action),
+        atol=1.0e-6,
+    )
+
+
+def test_differential_joint_observation_matches_native_mujoco(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    observation = ObservationConfig(
+        base_ang_vel=False,
+        projected_gravity=False,
+        command=False,
+        actuator_force=False,
+        last_action=False,
+    )
+    model = load_prepared_bello_model(
+        full_body_actuated_ankle_tendon_asset,
+        terrain=FLAT_TERRAIN,
+    )
+    env = BelloLocomotionEnv(model, config=BelloEnvConfig(observation=observation))
+    state, _ = env.reset()
+    qpos = np.asarray(state.data.qpos).copy()
+    qvel = np.asarray(state.data.qvel).copy()
+    qpos[model.actuator_qpos_indices] += np.linspace(
+        -0.05, 0.05, model.mj_model.nu, dtype=np.float32
+    )
+    qvel[model.actuator_qvel_indices] = np.linspace(
+        -0.5, 0.5, model.mj_model.nu, dtype=np.float32
+    )
+    state = state.replace(
+        data=state.data.replace(qpos=np.asarray(qpos), qvel=np.asarray(qvel))
+    )
+    mj_data = mujoco.MjData(model.mj_model)
+    mj_data.qpos[:] = qpos
+    mj_data.qvel[:] = qvel
+    mujoco.mj_forward(model.mj_model, mj_data)
+
+    np.testing.assert_allclose(
+        np.asarray(env.observation(state)),
+        np.asarray(
+            mujoco_policy_observation(
+                env,
+                mj_data,
+                command=np.zeros(3, dtype=np.float32),
+                last_action=np.zeros(env.action_size, dtype=np.float32),
+                step_count=0,
+            )
+        ),
+        atol=1.0e-6,
+    )
+
+
 def test_model_can_load_without_mjx_for_cpu_only_viewers(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -48,6 +205,156 @@ def test_model_can_load_without_mjx_for_cpu_only_viewers(
     assert model.mjx_model is None
     with pytest.raises(RuntimeError, match="loaded without MJX"):
         model.make_data()
+
+
+def test_runtime_simulation_physics_are_applied_before_mjx_conversion(
+    full_body_asset: PreparedAsset,
+) -> None:
+    physics = SimulationPhysicsConfig(
+        timestep=0.002,
+        foot_terrain_margin=0.005,
+        foot_terrain_solref=(0.004, 1.0),
+        foot_terrain_solimp=(0.98, 0.999, 0.001, 0.5, 2.0),
+    )
+    scene = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        simulation_physics=physics,
+    )
+    model = scene.mj_model
+    contact_geom_ids = np.concatenate((scene.foot_geom_ids, scene.terrain_geom_ids))
+
+    assert model.opt.timestep == pytest.approx(0.002)
+    np.testing.assert_allclose(model.geom_margin[scene.terrain_geom_ids], 0.005)
+    np.testing.assert_allclose(model.geom_margin[scene.foot_geom_ids], 0.0)
+    np.testing.assert_allclose(
+        model.geom_solref[contact_geom_ids],
+        np.tile(np.asarray([0.004, 1.0]), (contact_geom_ids.size, 1)),
+    )
+    np.testing.assert_allclose(
+        model.geom_solimp[contact_geom_ids],
+        np.tile(
+            np.asarray([0.98, 0.999, 0.001, 0.5, 2.0]),
+            (contact_geom_ids.size, 1),
+        ),
+    )
+    assert scene.mjx_model is not None
+    assert float(np.asarray(scene.mjx_model.opt.timestep)) == pytest.approx(0.002)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"timestep": 0.0}, "timestep"),
+        ({"foot_terrain_margin": -0.001}, "foot_terrain_margin"),
+        (
+            {"timestep": 0.002, "foot_terrain_solref": (0.003, 1.0)},
+            "at least twice",
+        ),
+        ({"foot_terrain_solimp": (0.99, 0.95, 0.001, 0.5, 2.0)}, "impedance"),
+    ],
+)
+def test_simulation_physics_rejects_invalid_values(kwargs: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        SimulationPhysicsConfig(**kwargs)
+
+
+def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
+    full_body_asset: PreparedAsset,
+) -> None:
+    nominal = load_prepared_bello_model(
+        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+    )
+    randomized = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        batch_size=4,
+        model_randomization=ModelRandomizationConfig(
+            enabled=True,
+            seed=7,
+            joint_origin_range=(-0.001, 0.001),
+            joint_angle_offset_range=(-0.02, 0.02),
+            joint_inertia_scale_range=(0.95, 1.05),
+        ),
+    )
+    assert randomized.mjx_model is not None
+    mjx_model = randomized.mjx_model
+    assert mjx_model.jnt_pos.shape == (4, randomized.mj_model.njnt, 3)
+    assert mjx_model.body_inertia.shape == (4, randomized.mj_model.nbody, 3)
+    assert randomized.joint_angle_offset.shape == (4, randomized.mj_model.nu)
+
+    joint_ids = np.unique(randomized.mj_model.actuator_trnid[:, 0]).astype(np.int32)
+    body_ids = np.unique(randomized.mj_model.jnt_bodyid[joint_ids]).astype(np.int32)
+    jnt_pos = np.asarray(mjx_model.jnt_pos)
+    body_inertia = np.asarray(mjx_model.body_inertia)
+    joint_angle_offset = randomized.joint_angle_offset
+
+    assert np.max(
+        np.abs(jnt_pos[:, joint_ids] - nominal.mj_model.jnt_pos[joint_ids])
+    ) <= (0.001 + 1.0e-7)
+    assert not np.allclose(jnt_pos[0, joint_ids], jnt_pos[1, joint_ids])
+    assert np.min(joint_angle_offset) >= -0.02 - 1.0e-7
+    assert np.max(joint_angle_offset) <= 0.02 + 1.0e-7
+    assert not np.allclose(joint_angle_offset[0], joint_angle_offset[1])
+    np.testing.assert_allclose(randomized.mj_model.jnt_pos, jnt_pos[0], atol=1.0e-7)
+    np.testing.assert_allclose(
+        randomized.mj_model.body_inertia, body_inertia[0], atol=1.0e-7
+    )
+
+    nominal_inertia = nominal.mj_model.body_inertia[body_ids]
+    nonzero = nominal_inertia > 0.0
+    ratios = body_inertia[:, body_ids][..., nonzero] / nominal_inertia[nonzero]
+    assert np.min(ratios) >= 0.95 - 1.0e-6
+    assert np.max(ratios) <= 1.05 + 1.0e-6
+
+
+def test_plane_slope_can_be_randomized_per_world(
+    full_body_asset: PreparedAsset,
+) -> None:
+    terrain = TerrainConfig(
+        mode="plane",
+        seed=11,
+        slope_angle_range=(-np.deg2rad(2.0), np.deg2rad(2.0)),
+        randomize_slope_per_world=True,
+    )
+    model = load_prepared_bello_model(
+        full_body_asset,
+        terrain=terrain,
+        batch_size=4,
+    )
+    expected = np.asarray(
+        [slope_quat(*angles) for angles in random_slope_angles_batch(terrain, 4)]
+    )
+
+    np.testing.assert_allclose(model.terrain_geom_quat, expected, atol=1.0e-7)
+    assert not np.allclose(model.terrain_geom_quat[0], model.terrain_geom_quat[1])
+    terrain_geom_id = int(model.terrain_geom_ids[0])
+    np.testing.assert_allclose(
+        model.mj_model.geom_quat[terrain_geom_id], expected[0], atol=1.0e-7
+    )
+    assert model.mjx_model is not None
+    np.testing.assert_allclose(
+        np.asarray(model.mjx_model.geom_quat)[:, terrain_geom_id],
+        expected,
+        atol=1.0e-7,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"seed": -1}, "seed must be nonnegative"),
+        ({"joint_origin_range": (float("nan"), 0.0)}, "joint_origin_range"),
+        ({"joint_angle_offset_range": (0.1, -0.1)}, "joint_angle_offset_range"),
+        ({"joint_angle_offset_scope": "bad"}, "joint_angle_offset_scope"),
+        ({"joint_inertia_scale_range": (0.0, 1.0)}, "positive values"),
+    ],
+)
+def test_model_randomization_config_rejects_invalid_ranges(
+    kwargs: dict, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        ModelRandomizationConfig(**kwargs)
 
 
 def test_joint_actuator_mode_controls_policy_action_partition(
@@ -74,6 +381,30 @@ def test_joint_actuator_mode_controls_policy_action_partition(
     assert model.mj_model.nu == 35
     assert len(model.policy_ctrl_indices) == 34
     assert len(model.hold_ctrl_indices) == 1
+
+
+def test_policy_joint_angle_offsets_leave_hold_targets_unchanged(
+    full_body_asset: PreparedAsset,
+) -> None:
+    default_config = ActuatorConfig()
+    joints = {
+        name: replace(config, mode="hold") if name == "waist_yaw_joint" else config
+        for name, config in default_config.joints.items()
+    }
+    model = load_prepared_bello_model(
+        full_body_asset,
+        batch_size=4,
+        actuator_config=ActuatorConfig(joints=joints),
+        model_randomization=ModelRandomizationConfig(
+            enabled=True,
+            seed=7,
+            joint_angle_offset_range=(-0.005, 0.005),
+            joint_angle_offset_scope="policy",
+        ),
+    )
+
+    assert np.all(model.joint_angle_offset[:, model.hold_ctrl_indices] == 0.0)
+    assert np.any(model.joint_angle_offset[:, model.policy_ctrl_indices] != 0.0)
 
 
 def test_model_partitions_actuators_by_joint_not_actuator_name(
@@ -142,7 +473,7 @@ def test_training_model_uses_simplified_mesh_collision_profile(
     assert box_collision_count == 6
     assert cylinder_collision_count == 4
     assert plane_count == 0
-    assert model.nexclude == 75
+    assert model.nexclude == 104
 
 
 def test_viewer_model_adds_non_colliding_visual_meshes(
@@ -225,6 +556,11 @@ def test_runtime_rough_terrain_uses_heightfield(
     assert (
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, hfield_geoms[0]) == "ground"
     )
+    assert np.ptp(model.hfield_data) == pytest.approx(1.0)
+    hfield_id = int(model.geom_dataid[hfield_geoms[0]])
+    assert model.hfield_size[hfield_id, 2] == pytest.approx(
+        ROUGH_TERRAIN.hfield_amplitude
+    )
 
 
 def test_runtime_rough_terrain_seed_changes_scene(
@@ -240,12 +576,73 @@ def test_runtime_rough_terrain_seed_changes_scene(
     assert rough_height_data(terrain_a) != rough_height_data(terrain_b)
 
 
+def test_runtime_rough_terrain_applies_seeded_slight_slope(
+    full_body_asset: PreparedAsset,
+) -> None:
+    terrain = TerrainConfig(
+        mode="rough",
+        seed=11,
+        hfield_resolution=17,
+        slope_angle_range=(-0.005, 0.005),
+    )
+    scene = load_prepared_bello_model(full_body_asset, terrain=terrain)
+    ground_id = mujoco.mj_name2id(
+        scene.mj_model, mujoco.mjtObj.mjOBJ_GEOM, terrain.name
+    )
+    roll, pitch = random_slope_angles(terrain)
+
+    assert -0.005 <= roll <= 0.005
+    assert -0.005 <= pitch <= 0.005
+    assert random_slope_angles(terrain) == (roll, pitch)
+    assert not np.allclose(scene.mj_model.geom_quat[ground_id], [1.0, 0.0, 0.0, 0.0])
+    data = mujoco.MjData(scene.mj_model)
+    mujoco.mj_forward(scene.mj_model, data)
+    ground_normal = data.geom_xmat[ground_id].reshape(3, 3)[:, 2]
+    assert not np.allclose(ground_normal, [0.0, 0.0, 1.0])
+
+    data.qpos[:] = scene.default_qpos
+    mujoco.mj_forward(scene.mj_model, data)
+    for xy in (np.asarray([1.0, 1.0]), np.asarray([-1.0, 0.5])):
+        distance = mujoco.mj_ray(
+            scene.mj_model,
+            data,
+            np.asarray([xy[0], xy[1], 1.0]),
+            np.asarray([0.0, 0.0, -1.0]),
+            None,
+            True,
+            -1,
+            None,
+        )
+        expected_height = float(terrain_surface_height(scene.mj_model, ground_id, xy))
+        assert 1.0 - distance == pytest.approx(expected_height, abs=1.0e-6)
+
+
+@pytest.mark.parametrize(
+    "slope_range",
+    [
+        (0.1, -0.1),
+        (float("nan"), 0.0),
+        (-np.pi / 2.0, 0.0),
+    ],
+)
+def test_terrain_rejects_invalid_slope_range(
+    slope_range: tuple[float, float],
+) -> None:
+    with pytest.raises(ValueError, match="slope_angle_range"):
+        TerrainConfig(slope_angle_range=slope_range)
+
+
 def test_default_spawn_pose_starts_above_flat_terrain(
     full_body_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
     min_robot_z = robot_geom_min_z(model.mj_model, model.default_qpos)
-    target_min_z = terrain_surface_upper_bound(FLAT_TERRAIN) + DEFAULT_SPAWN_CLEARANCE
+    ground_id = int(model.terrain_geom_ids[0])
+    root_xy = model.default_qpos[model.root_qpos_adr : model.root_qpos_adr + 2]
+    target_min_z = (
+        float(terrain_surface_height(model.mj_model, ground_id, root_xy))
+        + DEFAULT_SPAWN_CLEARANCE
+    )
 
     assert min_robot_z is not None
     assert abs(min_robot_z - target_min_z) < 1.0e-5
@@ -262,7 +659,14 @@ def test_spawn_pose_lifts_for_high_rough_terrain(
     )
     rough_model = load_prepared_bello_model(full_body_asset, terrain=rough_terrain)
     min_robot_z = robot_geom_min_z(rough_model.mj_model, rough_model.default_qpos)
-    target_min_z = terrain_surface_upper_bound(rough_terrain) + DEFAULT_SPAWN_CLEARANCE
+    ground_id = int(rough_model.terrain_geom_ids[0])
+    root_xy = rough_model.default_qpos[
+        rough_model.root_qpos_adr : rough_model.root_qpos_adr + 2
+    ]
+    target_min_z = (
+        float(terrain_surface_height(rough_model.mj_model, ground_id, root_xy))
+        + DEFAULT_SPAWN_CLEARANCE
+    )
 
     assert (
         rough_model.default_qpos[rough_model.root_qpos_adr + 2]

@@ -263,7 +263,8 @@ class RerunEvaluationLogger:
             env.model.actuator_joint_names[index]
             for index in env.model.policy_ctrl_indices
         )
-        self.actuator_names = env.model.actuator_joint_names
+        self.joint_names = env.model.actuator_joint_names
+        self.actuator_names = env.model.actuator_names
         self.reward_names: tuple[str, ...] | None = None
 
     def start(self) -> None:
@@ -286,13 +287,13 @@ class RerunEvaluationLogger:
         )
         self._style_series("metrics/action/mean", self.action_names)
         self._style_series("metrics/action/applied", self.action_names)
-        self._style_series("metrics/joint/position", self.actuator_names)
-        self._style_series("metrics/joint/velocity", self.actuator_names)
+        self._style_series("metrics/joint/position", self.joint_names)
+        self._style_series("metrics/joint/velocity", self.joint_names)
         self._style_series("metrics/actuator/force", self.actuator_names)
-        for joint_name in self.action_names:
+        for actuator_name in self.action_names:
             self._style_series(
-                f"metrics/policy_joints/{joint_name}",
-                ("position", "target", "action", "torque"),
+                f"metrics/policy_actuators/{actuator_name}",
+                ("joint_position", "joint_target", "action", "actuator_force"),
             )
         self._style_series(
             "metrics/episode", ("index", "return", "length", "base_height")
@@ -364,17 +365,26 @@ class RerunEvaluationLogger:
         self.recording.log(
             "metrics/actuator/force", rr.Scalars(np.asarray(mj_data.actuator_force))
         )
-        for action_index, joint_name in enumerate(self.action_names):
+        joint_target = np.asarray(self.env.model.default_joint_target).copy()
+        joint_target += np.asarray(self.env.model.joint_angle_offset[0])
+        policy_indices = np.asarray(self.env.model.policy_ctrl_indices)
+        joint_target[policy_indices] += self.env.model.policy_action_scale * action
+        joint_target = np.clip(
+            joint_target,
+            self.env.model.joint_target_low,
+            self.env.model.joint_target_high,
+        )
+        for action_index, actuator_name in enumerate(self.action_names):
+            actuator_index = self.env.model.policy_ctrl_indices[action_index]
+            qpos_index = self.env.model.actuator_qpos_indices[actuator_index]
             self.recording.log(
-                f"metrics/policy_joints/{joint_name}",
+                f"metrics/policy_actuators/{actuator_name}",
                 rr.Scalars(
                     [
-                        mj_data.qpos[self.env.model.policy_qpos_indices[action_index]],
-                        ctrl[self.env.model.policy_ctrl_indices[action_index]],
+                        mj_data.qpos[qpos_index],
+                        joint_target[actuator_index],
                         action[action_index],
-                        mj_data.actuator_force[
-                            self.env.model.policy_ctrl_indices[action_index]
-                        ],
+                        mj_data.actuator_force[actuator_index],
                     ]
                 ),
             )
@@ -457,11 +467,11 @@ class RerunEvaluationLogger:
                         *[
                             rrb.TimeSeriesView(
                                 name=joint_name,
-                                origin=f"metrics/policy_joints/{joint_name}",
+                                origin=f"metrics/policy_actuators/{joint_name}",
                             )
                             for joint_name in self.action_names
                         ],
-                        name="Policy Joints",
+                        name="Policy Actuators",
                     ),
                     rrb.TimeSeriesView(name="Status", origin="metrics"),
                 ),
@@ -536,22 +546,30 @@ class RerunEvaluationLogger:
 
 
 def rough_terrain_mesh(config) -> tuple[np.ndarray, np.ndarray]:
-    from bello_mujoco.terrain import rough_height_data
+    from bello_mujoco.terrain import random_slope_quat, rough_height_data
 
     resolution = config.hfield_resolution
     normalized = np.fromstring(rough_height_data(config), sep=" ").reshape(
         resolution, resolution
     )
+    normalized -= normalized.min()
+    height_range = normalized.max()
+    if height_range > 0.0:
+        normalized /= height_range
+    normalized = np.flipud(normalized)
     xs = np.linspace(-config.size[0], config.size[0], resolution)
     ys = np.linspace(-config.size[1], config.size[1], resolution)
     grid_x, grid_y = np.meshgrid(xs, ys)
-    vertices = np.column_stack(
+    local_vertices = np.column_stack(
         [
-            grid_x.ravel() + config.pos[0],
-            grid_y.ravel() + config.pos[1],
-            normalized.ravel() * config.size[2] + config.pos[2],
+            grid_x.ravel(),
+            grid_y.ravel(),
+            normalized.ravel() * config.hfield_amplitude,
         ]
     ).astype(np.float32)
+    vertices = quat_rotate_np(
+        np.asarray(random_slope_quat(config), dtype=np.float32), local_vertices
+    ) + np.asarray(config.pos, dtype=np.float32)
     triangles = []
     for row in range(resolution - 1):
         for col in range(resolution - 1):
@@ -624,6 +642,7 @@ def run_rerun_evaluation(
 
     last_action = np.zeros(env.action_size, dtype=np.float32)
     foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
+    foot_contact_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
     foot_contact_debounce_time = jnp.zeros(
         env.model.foot_body_ids.size, dtype=jnp.float32
     )
@@ -638,7 +657,8 @@ def run_rerun_evaluation(
 
     def reset_episode() -> None:
         nonlocal mjx_state
-        nonlocal last_action, foot_air_time, foot_contact_debounce_time
+        nonlocal last_action, foot_air_time, foot_contact_time
+        nonlocal foot_contact_debounce_time
         nonlocal last_foot_contact, episode_return, episode_track_lin_vel_xy
         nonlocal episode_length, episode_step_count, obs_stack
         if simulation_backend == "mjx":
@@ -649,6 +669,7 @@ def run_rerun_evaluation(
         reset_mujoco_data(env, mj_data)
         last_action = np.zeros(env.action_size, dtype=np.float32)
         foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
+        foot_contact_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
         foot_contact_debounce_time = jnp.zeros(
             env.model.foot_body_ids.size, dtype=jnp.float32
         )
@@ -709,13 +730,19 @@ def run_rerun_evaluation(
                 action = action_mean + jnp.exp(
                     policy_log_std(policy)
                 ) * jax.random.normal(action_rng, action_mean.shape)
+            requested_action = action
             if env.action_clip is not None:
                 action = jnp.clip(action, -env.action_clip, env.action_clip)
             action_mean_np = np.asarray(jax.device_get(action_mean), dtype=np.float32)
+            requested_action_np = np.asarray(
+                jax.device_get(requested_action), dtype=np.float32
+            )
             action_np = np.asarray(jax.device_get(action), dtype=np.float32)
             if simulation_backend == "mjx":
                 mjx_state = mjx_state.replace(command=jnp.asarray(current_command))
-                mjx_state, obs, reward, done, info = mjx_step(mjx_state, action)
+                mjx_state, obs, reward, done, info = mjx_step(
+                    mjx_state, requested_action
+                )
                 sync_mj_data(mj_model, mj_data, mjx_state)
                 ctrl = np.asarray(mj_data.ctrl, dtype=np.float32).copy()
                 done_flags = {key: bool(jax.device_get(info[key])) for key in DONE_KEYS}
@@ -728,6 +755,7 @@ def run_rerun_evaluation(
                     command=current_command,
                     last_action=last_action,
                     foot_air_time=foot_air_time,
+                    foot_contact_time=foot_contact_time,
                     foot_contact_debounce_time=foot_contact_debounce_time,
                     last_foot_contact=last_foot_contact,
                     step_count=episode_step_count,
@@ -748,6 +776,7 @@ def run_rerun_evaluation(
                     command=current_command,
                     last_action=last_action,
                     foot_air_time=foot_air_time,
+                    foot_contact_time=foot_contact_time,
                     foot_contact_debounce_time=foot_contact_debounce_time,
                     last_foot_contact=last_foot_contact,
                     step_count=episode_step_count,
@@ -771,6 +800,7 @@ def run_rerun_evaluation(
                     state,
                     next_state,
                     jnp.asarray(action_np),
+                    jnp.asarray(requested_action_np),
                     jnp.asarray(done_flags["done/terminal"]),
                     foot_contact,
                     foot_height,
@@ -790,9 +820,11 @@ def run_rerun_evaluation(
                     episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
                 )
                 episode_length = episode_length + 1
-                foot_air_time, last_foot_contact = env._next_foot_memory(
-                    next_state, foot_contact, done
-                )
+                (
+                    foot_air_time,
+                    foot_contact_time,
+                    last_foot_contact,
+                ) = env._next_foot_memory(next_state, foot_contact, done)
                 info = {
                     **mujoco_eval_info(env, mj_data, command=current_command),
                     **done_info,

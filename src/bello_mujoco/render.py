@@ -20,6 +20,7 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
+from bello_mujoco.terrain import terrain_surface_height
 
 RolloutStats: TypeAlias = dict[str, float | int]
 DONE_FLAG_KEYS = (
@@ -340,6 +341,12 @@ def mujoco_policy_observation(
                 mujoco_link_lin_vel(env, mj_data, root_link), scale.base_lin_vel
             )
         )
+    if observation.base_lin_acc:
+        parts.append(
+            mujoco_scaled(
+                mujoco_link_lin_acc(env, mj_data, root_link), scale.base_lin_acc
+            )
+        )
     if observation.base_ang_vel:
         parts.append(
             mujoco_scaled(
@@ -374,24 +381,38 @@ def mujoco_policy_observation(
                 scale.gait_phase,
             )
         )
+    if observation.foot_phase:
+        phase = mujoco_gait_phase(env, step_count, command)
+        offsets = np.asarray(env.config.gait.phase_offsets, dtype=np.float32)
+        angles = 2.0 * np.pi * np.mod(phase + offsets, 1.0)
+        parts.append(
+            mujoco_scaled(
+                np.concatenate([np.cos(angles), np.sin(angles)]),
+                scale.foot_phase,
+            )
+        )
     if observation.command and env.command_config.enabled:
         parts.append(mujoco_scaled(command, scale.command))
     if observation.joint_pos:
-        qpos_idx = env._observed_qpos_indices(observation)
+        actuator_idx = env._observed_actuator_indices(observation)
+        qpos_idx = env.model.actuator_qpos_indices[actuator_idx]
         parts.append(
             mujoco_scaled(
                 np.asarray(
-                    mj_data.qpos[qpos_idx] - env.model.default_qpos[qpos_idx],
+                    mj_data.qpos[qpos_idx]
+                    - env.model.default_joint_target[actuator_idx],
                     dtype=np.float32,
                 ),
                 scale.joint_pos,
             )
         )
     if observation.joint_vel:
+        actuator_idx = env._observed_actuator_indices(observation)
+        qvel_idx = env.model.actuator_qvel_indices[actuator_idx]
         parts.append(
             mujoco_scaled(
                 np.asarray(
-                    mj_data.qvel[env._observed_qvel_indices(observation)],
+                    mj_data.qvel[qvel_idx],
                     dtype=np.float32,
                 ),
                 scale.joint_vel,
@@ -417,7 +438,9 @@ def mujoco_policy_observation(
 def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
     mj_data.qpos[:] = env.model.default_qpos
     mj_data.qvel[:] = env.model.default_qvel
-    mj_data.ctrl[:] = env.model.default_ctrl
+    mj_data.ctrl[:] = mujoco_action_to_ctrl(
+        env, np.zeros(env.action_size, dtype=np.float32)
+    )
     mujoco.mj_forward(env.model.mj_model, mj_data)
 
 
@@ -426,12 +449,20 @@ def mujoco_scaled(value: np.ndarray, scale: float) -> np.ndarray:
 
 
 def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.ndarray:
-    ctrl = np.asarray(env.model.default_ctrl, dtype=np.float32).copy()
+    joint_target = np.asarray(
+        env.model.default_joint_target, dtype=np.float32
+    ) + np.asarray(env.model.joint_angle_offset[0], dtype=np.float32)
     policy_indices = np.asarray(env.model.policy_ctrl_indices, dtype=np.int32)
     action = np.asarray(action, dtype=np.float32)
     if env.action_clip is not None:
         action = np.clip(action, -env.action_clip, env.action_clip)
-    ctrl[policy_indices] = ctrl[policy_indices] + env.model.policy_action_scale * action
+    joint_target[policy_indices] += env.model.policy_action_scale * action
+    joint_target = np.clip(
+        joint_target, env.model.joint_target_low, env.model.joint_target_high
+    )
+    ctrl = env.model.actuator_coordinate_transform @ joint_target
+    ctrlrange = env.model.mj_model.actuator_ctrlrange
+    ctrl = np.clip(ctrl, ctrlrange[:, 0], ctrlrange[:, 1])
     return ctrl.astype(np.float32)
 
 
@@ -458,7 +489,7 @@ def mujoco_done_flags(
         )
         bad_orientation = (
             projected_gravity_tilt_angle_np(projected_gravity)
-            > config.bad_orientation.limit_angle
+            >= config.bad_orientation.limit_angle
         )
     timeout = config.timeout.enabled and step_count >= env.max_episode_steps
     nonfinite = config.nonfinite.enabled and not (
@@ -538,6 +569,24 @@ def mujoco_link_lin_vel(
     return np.asarray(velocity[3:6], dtype=np.float32)
 
 
+def mujoco_link_lin_acc(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
+) -> np.ndarray:
+    body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
+    if body_id < 0:
+        raise ValueError(f"configured link/body not found: {link_name!r}")
+    acceleration = np.empty(6, dtype=np.float64)
+    mujoco.mj_objectAcceleration(
+        env.model.mj_model,
+        mj_data,
+        mujoco.mjtObj.mjOBJ_XBODY,
+        body_id,
+        acceleration,
+        1,
+    )
+    return np.asarray(acceleration[3:6], dtype=np.float32)
+
+
 def mujoco_link_ang_vel(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> np.ndarray:
@@ -586,6 +635,7 @@ def mujoco_eval_state(
     command: np.ndarray,
     last_action: np.ndarray,
     foot_air_time: jax.Array,
+    foot_contact_time: jax.Array,
     foot_contact_debounce_time: jax.Array,
     last_foot_contact: jax.Array,
     step_count: int,
@@ -601,15 +651,20 @@ def mujoco_eval_state(
             xpos=jnp.asarray(np.asarray(mj_data.xpos, dtype=np.float32).copy()),
             xquat=jnp.asarray(np.asarray(mj_data.xquat, dtype=np.float32).copy()),
             cvel=jnp.asarray(np.asarray(mj_data.cvel, dtype=np.float32).copy()),
+            subtree_com=jnp.asarray(
+                np.asarray(mj_data.subtree_com, dtype=np.float32).copy()
+            ),
             actuator_force=jnp.asarray(
                 np.asarray(mj_data.actuator_force, dtype=np.float32).copy()
             ),
         ),
         last_action=jnp.asarray(last_action, dtype=jnp.float32),
         foot_air_time=foot_air_time,
+        foot_contact_time=foot_contact_time,
         foot_contact_debounce_time=foot_contact_debounce_time,
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
+        gait_frequency=env._sample_gait_frequency(None),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,
@@ -655,13 +710,21 @@ def mujoco_contact_terms(
 def mujoco_gait_phase(
     env: BelloLocomotionEnv, step_count: int, command: np.ndarray
 ) -> float:
-    base_frequency = 1.0 / float(env.config.gait.cycle_time)
-    command_speed = float(np.linalg.norm(np.asarray(command, dtype=np.float32)[:2]))
-    frequency = np.clip(
-        base_frequency + env.config.gait.command_speed_frequency_gain * command_speed,
-        env.config.gait.min_frequency,
-        env.config.gait.max_frequency,
-    )
+    if float(np.linalg.norm(np.asarray(command, dtype=np.float32))) <= float(
+        env.config.gait.standing_command_threshold
+    ):
+        return 0.0
+    if env.config.gait.randomize_frequency:
+        frequency = sum(env.config.gait.frequency_range) / 2.0
+    else:
+        base_frequency = 1.0 / float(env.config.gait.cycle_time)
+        command_speed = float(np.linalg.norm(np.asarray(command, dtype=np.float32)[:2]))
+        frequency = np.clip(
+            base_frequency
+            + env.config.gait.command_speed_frequency_gain * command_speed,
+            env.config.gait.min_frequency,
+            env.config.gait.max_frequency,
+        )
     return float((step_count * env.control_timestep * frequency) % 1.0)
 
 
@@ -707,11 +770,18 @@ def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.n
 def mujoco_foot_height(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:
     if env.model.foot_body_ids.size == 0:
         return np.zeros((0,), dtype=np.float32)
-    terrain_z = np.float32(env.terrain_config.pos[2])
-    return (
-        np.asarray(mj_data.xpos[env.model.foot_body_ids, 2], dtype=np.float32)
-        - terrain_z
-    )
+    foot_position = np.asarray(mj_data.xpos[env.model.foot_body_ids], dtype=np.float32)
+    if env.terrain_config.mode == "none":
+        terrain_height = np.full(
+            foot_position.shape[0], env.terrain_config.pos[2], dtype=np.float32
+        )
+    else:
+        terrain_height = terrain_surface_height(
+            env.model.mj_model,
+            int(env.model.terrain_geom_ids[0]),
+            foot_position[:, :2],
+        )
+    return foot_position[:, 2] - terrain_height
 
 
 def mujoco_foot_lateral_speed_sq(

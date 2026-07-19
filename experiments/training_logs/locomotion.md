@@ -1495,3 +1495,256 @@ rotates world-oriented motion into the body frame only when a local result is
 requested. CPU evaluation uses `mj_objectVelocity` directly. A regression test
 checks root, pelvis, torso, and both feet against MuJoCo under a nontrivial base
 orientation and generalized velocity.
+
+## 2026-07-14 - Clean baseline converged to standing still
+
+Inspected W&B run `nzjdd3h7`, trained from commit `589ad22` with the original
+clean config. By update 2,048 it survived the full 1,000-step episode, but its
+filtered foot-contact fraction reached `0.9815`. The deterministic rollout
+remained in near-constant double support and did not travel forward.
+
+The reward explains the behavior. With commands sampled uniformly from
+`0.15-0.35 m/s`, 10% exact-zero commands, and tracking `sigma: 0.25`, a policy
+with zero velocity has expected raw tracking score `0.79626`. After the `0.02s`
+control-step scale, that is `0.015925` reward per step. The run reported
+`0.015920`, effectively the exact standing-still prediction. Perfect tracking
+could improve the episode return by only about `4.1`, while one fall cost
+`100`. Avoiding all stepping was therefore the rational optimum rather than an
+exploration failure.
+
+The clean forward-discovery control now uses spherical hands, a fixed
+`0.3 m/s` command with no standing samples, linear tracking weight `2.0` and
+`sigma: 0.05`, and termination weight `-5.0`. At zero velocity the linear term
+now scores only `exp(-0.3^2 / 0.05) = 0.1653`, making forward motion worth
+roughly `33.4` additional return per full episode. Gait, contact, clearance,
+air-time, and swing-foot rewards remain disabled so the next run still tests
+whether locomotion emerges without gait shaping.
+
+## 2026-07-14 - Clean rerun overflow and policy escape
+
+Run `k7sbun7q` from the original clean commit failed at update 487. Immediately
+before failure, MJX-Warp reported `nefc overflow` requests up to `1627` while
+the config allowed only `njmax: 512`. The last finite row also showed that this
+was not an isolated capacity warning: `action_mean_abs_max` had reached `14.49`,
+the clipped environment action reached `5.0`, `ctrl_margin_min` was `-2.45`,
+`value_loss_raw` was about `4e23`, and `value_norm_std` was about `7.6e12`.
+The next update was nonfinite and correctly skipped by PPO.
+
+The clean config now uses `njmax: 2048`, enough for the largest reported
+per-world constraint count. It also adopts a constant learning rate of `1e-4`,
+`init_log_std: -1.5`, and `max_log_std: -0.5`, plus explicit conservative
+residual action scales for the 13 policy joints. The rate is constant because a
+20-update smoke run showed the adaptive schedule increasing `1e-4` to
+`3.375e-4`, undoing the intended safety limit. These changes address both the
+undersized Warp solve and the policy/control escape that created the
+pathological contacts.
+
+A subsequent 512-update, 2,048-environment local run completed without a
+constraint overflow or nonfinite update. At update 512, however, its action mean
+had reached `3.05` and `ctrl_margin_min` was `-0.69`. The environment action
+bound is now an explicit `BelloEnvConfig.action_clip` setting. The clean recipe
+uses `1.0`, while the default stays `5.0` to avoid silently changing existing
+recipes. With the clean recipe's residual scales, the tighter bound prevents
+the policy from requesting the extreme joint targets seen in the failed run.
+
+## 2026-07-14 - Replace touchdown air time with positive-biped support
+
+Replaced the old landing-event `feet_air_time` bonus with the continuous
+positive-biped formulation used by Isaac-style humanoid locomotion. The reward
+is active only during single support and uses the shorter of the stance foot's
+current contact duration and the swing foot's current air duration, capped at
+`0.40s`. Double support, flight, and planar commands at or below `0.10 m/s`
+receive zero. The reward is now timestep-scaled like other continuous terms.
+
+The clean control still has both foot terms disabled. Three configs isolate the
+follow-up experiments: `locomotion_clean_slip` enables only foot slip at
+`-0.10`, `locomotion_clean_air_time` enables only air time at `0.25`, and
+`locomotion_clean_feet` combines them for use only if both single-term
+ablations improve the three-seed median.
+
+## 2026-07-14 - Air-time run learned a high-frequency shuffle and diverged
+
+W&B run `n3c9maha` used the air-time-only config and failed with a nonfinite PPO
+update at update 1,294. The update-1,293 policy survived for a mean `982.5` of
+1,000 steps and tracked forward velocity well (`track_lin_vel_xy = 0.03167` per
+step), but the rollout video showed very short alternating steps. Mean filtered
+foot contact was `0.6475`, and air-time reward was only `0.0001003`, about 0.3%
+of linear tracking reward. Action rate cost was only `-0.0005906`, and joint
+acceleration was disabled.
+
+Policy stability deteriorated at the same time. Target-KL truncation first
+appeared at update 959 and became recurrent after update 1,009. At update 1,293,
+approximate KL was `0.0268` against target `0.02`, only 10% of PPO minibatches
+were applied, raw action-mean magnitude reached `5.47` despite the environment
+bound of `1.0`, and 5.65% of applied controls were saturated. The existing
+`invalid_action` metric remained exactly zero because PPO passed only the
+clipped action to the environment, hiding the out-of-range request.
+
+The rollout path now passes the raw action request to the environment. Bello
+uses the raw request for `invalid_action` and the bounded action for physics,
+observations, and action-rate cost. `action_clip_fraction` reports how often the
+bound changes a sampled action. The `locomotion_clean_air_time_smooth` follow-up
+raises air-time weight to `0.50`, action-rate cost to `-0.05`, enables joint
+acceleration at `-1e-6`, and uses a `5e-5` linearly decaying learning rate,
+`0.5` gradient norm, and `0.015` target KL.
+
+A 128-update local MJX-Warp screen held the learning rate at `5e-5` to
+approximate the early portion of the full schedule. It completed with no
+nonfinite or KL-truncated update: final KL was `0.00338`, all PPO minibatches
+were applied, action clipping affected `0.85%` of sampled dimensions, and the
+pre-clip invalid-action cost was nonzero. Maximum raw action mean was `1.23`,
+down slightly from `1.25` in the failed run at a similar update, while the new
+penalty now supplies a restoring gradient rather than a flat clipped-reward
+region. Gait quality still requires the 512-update video gate; this short run
+only validates early optimization stability.
+
+## 2026-07-14 - Replace occupancy-only gait ablations with event timing
+
+The 1,536-update, three-seed follow-up found that stance-width weight `-2.0`
+was the only treatment that preserved robust tracking and survival. The
+1.20-second clock, stronger invalid-action pressure, and tanh policy all traded
+lower measured cadence for worse survival. Across successful runs, PPO remained
+finite, applied every minibatch, and never exceeded target KL. Reward design,
+not optimizer stability, remained the limiting factor.
+
+The clocked seed-0 policy produced about `5.16` combined footfalls per second
+against a scheduled target near `1.76`. `gait_contact` scores contact occupancy,
+while contact debounce was zero, so short repeated transitions could retain
+substantial reward. The next pipeline keeps the stance recipe as
+`locomotion_gait_base` and adds an explicit `contact_timing` event penalty. A
+touchdown is penalized only when the preceding air interval is below its
+minimum; liftoff uses the preceding contact interval. Accepted contacts are
+debounced before duration memory and rewards consume them.
+
+`locomotion_gait` is the full candidate: 40 ms on/off debounce, 1.0-second
+clock, gait-contact `0.35`, timing penalty `-0.10`, swing velocity `0.25`, and
+foot slip `-0.05`. The previous `locomotion_clean_*` ablation YAML chain was
+removed. The executable matrix in `scripts/run_locomotion_ablation.sh` now
+isolates debounce, timing, slip, clock, swing velocity, and full-stack
+interactions without adding another config file per treatment.
+
+## 2026-07-15 - Separate physical joint and policy action limits
+
+The Berkeley policy saturated a large fraction of its bounded action means even
+though actual joint positions usually remained inside the configured actuator
+target ranges. The old `joint_limit` path could not distinguish those states:
+it compared physical joint positions against actuator `ctrlrange`, mixing
+physical safety with action-scale metadata.
+
+`joint_limit` now derives a symmetric soft interval directly from each MuJoCo
+hard joint range. `soft_limit_factor: 0.9` matches the common Isaac-style 90%
+range and restores a knee-extension margin instead of treating the knee hard
+lower bound as soft. Its cost remains the standard summed linear violation.
+
+The independent `action_limit` term starts at `soft_limit_ratio: 0.8` of the
+environment action bound and increases quadratically to one at the boundary,
+averaged over policy dimensions. The Berkeley candidate enables it at weight
+`-1.0`. Four scripted conditions isolate the hard-bound control, joint margin,
+action margin, and their combination.
+
+## 2026-07-15 - Restore adaptive KL control for the Berkeley recipe
+
+The four joint/action-limit ablations all approached the hard `0.03` KL guard
+under the fixed `3e-4` learning rate. Late in the runs, PPO applied only about
+4--14% of its 128 planned minibatch updates. The two conditions without the
+action-limit reward also pinned `max_log_std: 1.0` (standard deviation `e`) and
+saturated roughly one third of deterministic action means. The action-limit
+conditions suppressed saturation but still lost most PPO updates, isolating
+the constant learning rate as a shared optimizer problem rather than a reward
+ablation effect.
+
+The Berkeley recipe now uses the existing adaptive schedule with
+`desired_kl: 0.01`, `min_learning_rate: 1e-5`, `max_learning_rate: 3e-4`, and
+`adaptive_lr_factor: 1.5`, while retaining `target_kl: 0.03` as the hard
+same-update stop. Capping `max_log_std` at `0.0` limits policy standard
+deviation to `1.0`. A single combined 90% joint-margin plus 80% action-margin
+run replaces the stopped four-way matrix for the initial stability check.
+
+## 2026-07-15 - Stop the gait clock and reject double steps
+
+The adaptive-KL Berkeley run completed all 10,000 updates and produced stable
+commanded locomotion, but zero command still caused stationary steps and the
+gait occasionally inserted double steps. Its final diagnostics reported `7.82`
+combined footfalls per second against a scheduled `2.5--3.0`, with roughly
+`6--7` premature touchdown/liftoff events per second.
+
+Randomized gait phase previously bypassed the standing-command gate. Moreover,
+freezing phase at zero alone left the half-cycle foot offset requesting one
+raised foot. Randomized and command-derived phase now both freeze for standing,
+and standing explicitly sets both foot-height targets to zero. Native MuJoCo
+evaluation uses the same frozen-phase rule.
+
+The Berkeley follow-up treats command norms at or below `0.1` as standing,
+debounces foot contact on and off by 40 ms, and enables the existing `-0.1`
+contact-timing event penalty with minimum air/contact durations of 0.2/0.3 s.
+The working PPO, tracking, phase-height, joint-margin, and action-margin settings
+remain unchanged.
+
+## 2026-07-16 - Penalize standing steps and add mild model variation
+
+The 46,000-update follow-up removed irregular double steps and survived all
+20-second deterministic evaluations, but zero command still drifted about one
+meter and produced more than five combined footfalls per second. Freezing the
+gait phase removed the clock without directly penalizing planted-foot motion or
+air time.
+
+The Berkeley recipe now enables the existing standing-only terms at
+`standing_foot_vel: -2.0` and `standing_foot_air_time: -3.0`, both gated at a
+command norm of `0.1`. Standing probability and the five-second push schedule
+remain unchanged.
+
+The same recipe switches to a mild seeded rough heightfield with `0.015` meter
+amplitude and frequency `5.0`. Seeded terrain roll and pitch in
+`[-0.005, 0.005]` radians add a very slight incline; randomized root XY and yaw
+expose resets to different local patches and slope directions. It also adds
+reproducible per-world model
+randomization: actuated-joint anchor XYZ offsets in `[-0.001, 0.001]` meters
+and `0.95--1.05` scaling of the diagonal inertia for each actuated joint's
+child body. Each actuator also receives a fixed position-target offset in
+`[-0.02, 0.02]` radians, representing motor zero-angle calibration error.
+MJX-Warp consumes the model and control changes as batched values, so all 2,048
+training worlds receive distinct fixed physical variants without sampling
+inside the rollout hot path. Native MuJoCo uses the first seeded sample for
+consistent rendering and evaluation.
+
+## 2026-07-16 - Standing-penalties-only control
+
+The domain-randomized follow-up learned much more slowly than the preceding
+flat-ground run. To isolate the standing countermeasures, the
+`locomotion_berkeley_standing_only` recipe retains `standing_foot_vel: -2.0`
+and `standing_foot_air_time: -3.0` while restoring flat, level terrain and
+disabling joint-anchor, motor-target-offset, and inertia randomization. All
+other Berkeley PPO, reset, command, gait, reward, and actuator settings inherit
+unchanged from `locomotion_berkeley`.
+
+## 2026-07-16 - Single-variable randomization ablations
+
+Four 200-million-sample recipes isolate the randomization bundle on top of the
+standing-only control: diagonal inertia scaling at `0.95--1.05`, joint-anchor
+XYZ offsets at `+-0.001` meters, a level 0.015-meter rough heightfield, and
+policy-joint motor target offsets at `+-0.005` radians. Motor offsets now expose
+an explicit `joint_angle_offset_scope`; the motor ablation uses `policy` so the
+16 held waist and upper-body targets remain nominal. Native MuJoCo control also
+applies the selected seeded offset, matching MJX training and evaluation.
+
+## 2026-07-16 - Ten-frame observation history
+
+The Berkeley recipe now stacks ten consecutive actor and critic observations.
+At the 20 ms control period, the flattened input contains the current frame and
+nine preceding frames, covering 180 ms between the oldest and newest samples.
+The raw 55-value actor observation therefore becomes a 550-value policy input;
+the privileged 69-value critic observation becomes a 690-value value input.
+Stacks repeat the reset observation at episode initialization and reset on done.
+
+## 2026-07-17 - Close the horizontal-pose survival loophole
+
+The 400-million-step plane control reached long training episodes, but restored
+zero-command evaluation could settle nearly horizontal without terminating.
+The Berkeley recipe had disabled height termination and allowed torso tilt up
+to 90 degrees, so a fallen robot could remain exactly on the orientation
+boundary and continue collecting clipped reward.
+
+The recipe now terminates when pelvis height falls below 0.55 meters or torso
+tilt reaches 0.8 radians. These match the existing clean-locomotion safety
+thresholds and leave nominal reset height and gait motion well inside the valid
+region while rejecting crouched, seated, and horizontal survival policies.

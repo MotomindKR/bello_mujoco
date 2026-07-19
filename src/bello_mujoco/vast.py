@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import json
 import os
@@ -83,6 +84,16 @@ class GitSelection:
     commit: str
     config_path: PurePosixPath
     repo_url: str
+
+
+@dataclass(frozen=True)
+class RemoteJobUpdate:
+    """One bounded log/status response from a detached remote job."""
+
+    state: str
+    offset: int
+    output: bytes
+    returncode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -543,6 +554,37 @@ def recover_labeled_instance(api: VastApi, label: str) -> int | None:
     return int(value) if value is not None else None
 
 
+def create_available_instance(
+    api: VastApi,
+    offers: Sequence[VastOffer],
+    config: VastTrainConfig,
+    label: str,
+) -> int:
+    """Rent the first still-available offer without exposing SDK error URLs."""
+
+    for offer in offers:
+        if not config.yes:
+            confirm_rental(offer)
+        try:
+            return api.create_instance(
+                offer.id,
+                image=config.offer.image,
+                disk=float(config.offer.disk_gb),
+                label=label,
+                runtype="ssh_direc ssh_proxy",
+                cancel_unavail=True,
+            )
+        except Exception as exc:
+            instance_id = recover_labeled_instance(api, label)
+            if instance_id is not None:
+                return instance_id
+            print(
+                f"Vast offer {offer.id} could not be rented "
+                f"({type(exc).__name__}); trying the next match."
+            )
+    raise RuntimeError("all matching Vast offers became unavailable during rental")
+
+
 def wait_for_instance(
     api: VastApi,
     instance_id: int,
@@ -575,6 +617,48 @@ def parse_ssh_url(value: str) -> tuple[str, str, int]:
     return parsed.username, parsed.hostname, parsed.port
 
 
+def direct_ssh_target(info: Mapping[str, Any]) -> tuple[str, str, int] | None:
+    host = str(info.get("public_ipaddr", "")).strip()
+    ports = info.get("ports")
+    if not host or not isinstance(ports, Mapping):
+        return None
+    mappings = ports.get("22/tcp")
+    if not isinstance(mappings, list):
+        return None
+    for mapping in mappings:
+        if not isinstance(mapping, Mapping):
+            continue
+        host_port = mapping.get("HostPort")
+        try:
+            port = int(host_port)
+        except (TypeError, ValueError):
+            continue
+        if 0 < port <= 65535:
+            return "root", host, port
+    return None
+
+
+def ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
+    user, host, port = target
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-p",
+        str(port),
+        f"{user}@{host}",
+        remote_command,
+    ]
+
+
 def wait_for_ssh(
     api: VastApi,
     instance_id: int,
@@ -585,30 +669,28 @@ def wait_for_ssh(
     deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
     while time.monotonic() < deadline:
+        targets: list[tuple[str, str, int]] = []
         try:
-            target = parse_ssh_url(api.ssh_url(instance_id))
-            user, host, port = target
-            subprocess.run(
-                [
-                    "ssh",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=accept-new",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-p",
-                    str(port),
-                    f"{user}@{host}",
-                    "true",
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return target
-        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            direct_target = direct_ssh_target(api.show_instance(instance_id))
+            if direct_target is not None:
+                targets.append(direct_target)
+            proxy_target = parse_ssh_url(api.ssh_url(instance_id))
+            if proxy_target not in targets:
+                targets.append(proxy_target)
+        except (OSError, ValueError) as exc:
             last_error = exc
+        for target in targets:
+            try:
+                subprocess.run(
+                    ssh_command(target, "true"),
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return target
+            except (OSError, subprocess.CalledProcessError) as exc:
+                last_error = exc
+        if time.monotonic() < deadline:
             sleep(10)
     raise TimeoutError(f"SSH did not become ready: {last_error}")
 
@@ -671,6 +753,7 @@ export WARP_CACHE_PATH="$PWD/.warp-cache"
 export MUJOCO_GL=egl
 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export JAX_DEFAULT_MATMUL_PRECISION=highest
 
 uv python install 3.12
 uv sync --frozen
@@ -711,6 +794,60 @@ uv run bello-train-ppo \
 """
 
 
+PLAYGROUND_REMOTE_TRAIN_SCRIPT = r"""set -Eeuo pipefail
+
+run_name="$6"
+playground_dir="/workspace/mujoco_playground"
+
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  python3 -m pip install --break-system-packages --upgrade uv
+fi
+command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
+
+rm -rf "$playground_dir"
+git init "$playground_dir"
+git -C "$playground_dir" remote add origin "$PLAYGROUND_REPOSITORY"
+git -C "$playground_dir" fetch --depth 1 origin "$PLAYGROUND_COMMIT"
+git -C "$playground_dir" checkout --detach FETCH_HEAD
+actual_commit="$(git -C "$playground_dir" rev-parse HEAD)"
+if [ "$actual_commit" != "$PLAYGROUND_COMMIT" ]; then
+  echo "MuJoCo Playground resolved to $actual_commit, expected $PLAYGROUND_COMMIT" >&2
+  exit 1
+fi
+
+cd "$playground_dir"
+export UV_CACHE_DIR="$PWD/.uv-cache"
+export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+export WARP_CACHE_PATH="$PWD/.warp-cache"
+export MUJOCO_GL=egl
+export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export JAX_DEFAULT_MATMUL_PRECISION=highest
+
+uv python install 3.12
+uv sync --extra cuda --extra learning
+uv run python -c 'import jax; print({"backend": jax.default_backend(), "devices": [str(x) for x in jax.devices()]}); assert jax.default_backend() == "gpu"'
+
+uv run train-jax-ppo \
+  --env_name="$PLAYGROUND_ENV_NAME" \
+  --impl=warp \
+  --seed="$PLAYGROUND_SEED" \
+  --num_timesteps="$PLAYGROUND_NUM_TIMESTEPS" \
+  --use_wandb \
+  --suffix="$run_name"
+"""
+
+
 def run_remote_training(
     target: tuple[str, str, int],
     selection: GitSelection,
@@ -719,8 +856,10 @@ def run_remote_training(
     *,
     wandb_key: str,
     github_token: str,
+    sleep: Callable[[float], None] = time.sleep,
+    script: str = REMOTE_TRAIN_SCRIPT,
+    remote_env_extra: Mapping[str, str] | None = None,
 ) -> None:
-    user, host, port = target
     project = os.environ.get("WANDB_PROJECT", "bello-mujoco")
     entity = os.environ.get("WANDB_ENTITY", "")
     remote_env = {
@@ -730,18 +869,164 @@ def run_remote_training(
         "GITHUB_TOKEN": github_token,
         "BELLO_HYDRA_OVERRIDES": json.dumps(config.hydra_overrides),
     }
-    bootstrap = (
-        "import json, os, subprocess, sys; "
-        "env=json.loads(sys.stdin.readline()); os.environ.update(env); "
-        "script=sys.stdin.read(); "
-        "raise SystemExit(subprocess.run(['bash','-s','--',*sys.argv[1:]], "
-        "input=script, text=True, env=os.environ).returncode)"
+    if remote_env_extra is not None:
+        remote_env.update(remote_env_extra)
+    job_dir = f"/workspace/.bello-vast-jobs/{run_name}"
+    start_command = _remote_start_command(
+        job_dir,
+        selection,
+        config,
+        run_name,
     )
-    remote_command = shlex.join(
+    payload = json.dumps({"environment": remote_env, "script": script})
+    deadline = time.monotonic() + config.ssh_timeout_seconds
+    disconnect_reported = False
+
+    while True:
+        result = subprocess.run(
+            ssh_command(target, start_command),
+            input=payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode == 0:
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            break
+        if result.returncode != 255:
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                result.args,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError("SSH did not recover while starting remote training")
+        if not disconnect_reported:
+            print("SSH disconnected while starting; retrying the detached remote job.")
+            disconnect_reported = True
+        sleep(5)
+
+    offset = 0
+    disconnected_at: float | None = None
+    while True:
+        result = subprocess.run(
+            ssh_command(target, _remote_status_command(job_dir, offset)),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode == 255:
+            now = time.monotonic()
+            if disconnected_at is None:
+                disconnected_at = now
+                print("SSH disconnected; remote training continues while reconnecting.")
+            if now - disconnected_at >= config.ssh_timeout_seconds:
+                raise TimeoutError(
+                    "SSH did not recover while detached remote training was running"
+                )
+            sleep(5)
+            continue
+        if result.returncode != 0:
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                result.args,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        if disconnected_at is not None:
+            print("SSH reconnected; resuming remote training output.")
+            disconnected_at = None
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        update = _parse_remote_job_update(result.stdout)
+        if update.output:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(update.output)
+            sys.stdout.buffer.flush()
+        offset = update.offset
+        if update.state == "running":
+            sleep(10)
+            continue
+        if update.state == "lost":
+            raise RuntimeError("detached remote training exited without a status")
+        if update.returncode:
+            raise subprocess.CalledProcessError(
+                update.returncode,
+                ["detached remote training", run_name],
+            )
+        return
+
+
+def _remote_start_command(
+    job_dir: str,
+    selection: GitSelection,
+    config: VastTrainConfig,
+    run_name: str,
+) -> str:
+    bootstrap = r"""import json, os, pathlib, subprocess, sys
+payload = json.load(sys.stdin)
+env = payload["environment"]
+script = payload["script"]
+job_dir = pathlib.Path(sys.argv[1])
+job_dir.mkdir(parents=True, exist_ok=True)
+script_path = job_dir / "train.sh"
+log_path = job_dir / "output.log"
+pid_path = job_dir / "pid"
+status_path = job_dir / "status"
+if status_path.exists():
+    print(f"Detached remote job already completed in {job_dir}.")
+    raise SystemExit(0)
+if pid_path.exists():
+    try:
+        os.kill(int(pid_path.read_text()), 0)
+    except (OSError, ValueError):
+        pass
+    else:
+        print(f"Detached remote job already running in {job_dir}.")
+        raise SystemExit(0)
+script_path.write_text(script)
+wrapper = r'''set +e
+script_path="$1"
+status_path="$2"
+shift 2
+bash "$script_path" "$@"
+status=$?
+status_tmp="$status_path.$$"
+printf '%s\n' "$status" > "$status_tmp"
+mv "$status_tmp" "$status_path"
+exit "$status"
+'''
+with log_path.open("ab", buffering=0) as log:
+    process = subprocess.Popen(
+        ["bash", "-c", wrapper, "bello-vast-job", str(script_path), str(status_path), *sys.argv[2:]],
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=os.environ | env,
+        start_new_session=True,
+        close_fds=True,
+    )
+pid_path.write_text(f"{process.pid}\n")
+print(f"Started detached remote job {process.pid} in {job_dir}.")
+"""
+    return shlex.join(
         [
             "python3",
             "-c",
             bootstrap,
+            job_dir,
             selection.branch,
             selection.commit,
             selection.repo_url,
@@ -750,21 +1035,63 @@ def run_remote_training(
             run_name,
         ]
     )
-    command = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "ServerAliveInterval=30",
-        "-p",
-        str(port),
-        f"{user}@{host}",
-        remote_command,
-    ]
-    payload = json.dumps(remote_env) + "\n" + REMOTE_TRAIN_SCRIPT
-    subprocess.run(command, input=payload, text=True, check=True)
+
+
+def _remote_status_command(job_dir: str, offset: int) -> str:
+    status_reader = r"""import base64, json, os, pathlib, sys
+job_dir = pathlib.Path(sys.argv[1])
+offset = int(sys.argv[2])
+log_path = job_dir / "output.log"
+status_path = job_dir / "status"
+pid_path = job_dir / "pid"
+size = log_path.stat().st_size if log_path.exists() else 0
+if offset > size:
+    offset = 0
+with log_path.open("rb") if log_path.exists() else open(os.devnull, "rb") as log:
+    log.seek(offset)
+    output = log.read(262144)
+next_offset = offset + len(output)
+returncode = int(status_path.read_text()) if status_path.exists() else None
+if returncode is not None and next_offset >= size:
+    state = "complete"
+elif returncode is not None:
+    state = "running"
+else:
+    try:
+        pid = int(pid_path.read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        state = "lost"
+    else:
+        state = "running"
+print(json.dumps({
+    "state": state,
+    "offset": next_offset,
+    "output": base64.b64encode(output).decode("ascii"),
+    "returncode": returncode,
+}))
+"""
+    return shlex.join(["python3", "-c", status_reader, job_dir, str(offset)])
+
+
+def _parse_remote_job_update(value: str) -> RemoteJobUpdate:
+    try:
+        parsed = json.loads(value)
+        state = str(parsed["state"])
+        offset = int(parsed["offset"])
+        output = base64.b64decode(parsed["output"], validate=True)
+        raw_returncode = parsed["returncode"]
+        returncode = None if raw_returncode is None else int(raw_returncode)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid detached remote job response: {value!r}") from exc
+    if state not in {"running", "complete", "lost"} or offset < 0:
+        raise RuntimeError(f"invalid detached remote job response: {value!r}")
+    return RemoteJobUpdate(
+        state=state,
+        offset=offset,
+        output=output,
+        returncode=returncode,
+    )
 
 
 class PipelineInterrupted(RuntimeError):
@@ -832,26 +1159,10 @@ def launch_pipeline(
         reconcile_stale_state(api, state_path, config.destroy_retries)
         tier, offers = find_offers(api, config)
         print_offers(tier, offers)
-        selected_offer = offers[0]
-        if not config.yes:
-            confirm_rental(selected_offer)
-
         instance_id: int | None = None
         failure: BaseException | None = None
         try:
-            try:
-                instance_id = api.create_instance(
-                    selected_offer.id,
-                    image=config.offer.image,
-                    disk=float(config.offer.disk_gb),
-                    label=label,
-                    runtype="ssh_direc ssh_proxy",
-                    cancel_unavail=True,
-                )
-            except BaseException:
-                instance_id = recover_labeled_instance(api, label)
-                if instance_id is None:
-                    raise
+            instance_id = create_available_instance(api, offers, config, label)
             write_active_state(state_path, instance_id, label)
             print(f"Created Vast instance {instance_id}; teardown is armed.")
             wait_for_instance(api, instance_id, config.ready_timeout_seconds)
@@ -893,3 +1204,15 @@ def shell_preview(command: Sequence[str]) -> str:
     """Format a command for diagnostics without interpolating secrets."""
 
     return shlex.join(command)
+
+
+def safe_exception_message(exc: BaseException) -> str:
+    """Redact credentials that third-party HTTP clients embed in URLs."""
+
+    message = str(exc)
+    return re.sub(
+        r"([?&](?:api_key|token)=)[^&\s'\"]+",
+        r"\1<redacted>",
+        message,
+        flags=re.IGNORECASE,
+    )

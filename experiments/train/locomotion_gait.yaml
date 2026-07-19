@@ -1,0 +1,58 @@
+# Candidate gait stack; isolate each term with scripts/run_locomotion_ablations.sh.
+defaults:
+  - locomotion_gait_base
+  - _self_
+
+env_config:
+  contact:
+    foot_contact_on_seconds: 0.04
+    foot_contact_off_seconds: 0.04
+  gait:
+    cycle_time: 1.0
+    command_speed_frequency_gain: 0.15
+    min_frequency: 0.75
+    max_frequency: 1.10
+    duty_factor: 0.60
+  observation:
+    gait_phase: true
+  critic_observation:
+    gait_phase: true
+
+reward_config:
+  foot_slip:
+    enabled: true
+    weight: -0.05
+  swing_foot_velocity:
+    enabled: true
+    weight: 0.25
+    link: pelvis_link
+    std: 0.25
+    max_target_speed: 2.0
+    command_speed_threshold: 0.10
+  gait_contact:
+    enabled: true
+    weight: 0.35
+    command_speed_threshold: 0.10
+  contact_timing:
+    enabled: true
+    weight: -0.10
+    min_air_time: 0.20
+    min_contact_time: 0.30
+    command_speed_threshold: 0.10
+
+checkpoint_config:
+  name: locomotion_gait_seed0
+
+wandb_config:
+  group: locomotion-gait-ablation
+  run_name: locomotion_gait_seed0
+  tags:
+    - locomotion
+    - gait-ablation
+    - debounced-contact
+    - contact-timing
+    - swing-velocity
+    - foot-slip
+
+video_config:
+  filename_prefix: locomotion_gait

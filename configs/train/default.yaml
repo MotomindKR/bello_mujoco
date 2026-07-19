@@ -42,6 +42,9 @@ asset_config:
   visual_mesh_face_budget: 200000
   end_effector_sphere_mode: none
   neighbor_exclusion_depth: 2
+  ankle_differential_config:
+    enabled: false
+    actuate_tendons: false
   joint_availability:
     waist_yaw: true
     waist_roll: true
@@ -52,6 +55,7 @@ asset_config:
 env_config:
   decimation: 4
   max_episode_steps: 1000
+  action_clip: 5.0
   root_link: bello_root
   spawn:
     clearance: 0.01
@@ -63,6 +67,14 @@ env_config:
   terrain:
     mode: plane
     seed: 0
+    slope_angle_range: [0.0, 0.0]
+  model_randomization:
+    enabled: false
+    seed: 0
+    joint_origin_range: [0.0, 0.0]
+    joint_angle_offset_range: [0.0, 0.0]
+    joint_angle_offset_scope: all
+    joint_inertia_scale_range: [1.0, 1.0]
   gait:
     cycle_time: 0.80
     command_speed_frequency_gain: 0.55

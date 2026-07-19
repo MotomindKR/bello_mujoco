@@ -13,12 +13,18 @@ from bello_mujoco.envs.rewards import (
 )
 from bello_mujoco.policy import (
     ActorCriticConfig,
+    apply_actor,
+    apply_policy,
+    evaluate_actions,
     gaussian_entropy,
     init_observation_stack,
+    policy_entropy,
+    policy_log_prob,
     policy_observation_size,
     sample_action,
     stacked_observation,
     update_observation_stack,
+    update_policy_observation_normalization,
 )
 from bello_mujoco.train.ppo import (
     PPOConfig,
@@ -30,6 +36,7 @@ from bello_mujoco.train.ppo import (
     denormalize_value,
     done_reason_means,
     effective_learning_rate_schedule,
+    gait_diagnostics,
     init_value_norm_state,
     init_train_state,
     learning_rate_for_update,
@@ -39,6 +46,7 @@ from bello_mujoco.train.ppo import (
     ppo_loss,
     safe_returned_mean,
     safe_returned_max,
+    target_saturation_means,
     update_command_curriculum,
     update_command_curriculum_ranges,
     update_value_norm_state,
@@ -70,11 +78,17 @@ class ClippedActionEnv:
     def step_batch(self, state, action, *, rng):
         del rng
         next_obs = state.obs
-        reward = jnp.squeeze(action, axis=-1)
+        clipped_action = (
+            action
+            if self.action_clip is None
+            else jnp.clip(action, -self.action_clip, self.action_clip)
+        )
+        reward = jnp.squeeze(clipped_action, axis=-1)
         done = jnp.zeros(action.shape[0], dtype=bool)
         info = {
             "returned_episode": done,
             "bootstrap_observation": next_obs,
+            "requested_action_abs_max": jnp.max(jnp.abs(action), axis=-1),
         }
         return DummyRolloutState(next_obs), next_obs, reward, done, info
 
@@ -104,6 +118,7 @@ def dummy_transitions(config: PPOConfig, obs_size: int, action_size: int) -> Tra
         terminal=jnp.zeros(shape, dtype=bool),
         bootstrap_value=jnp.zeros(shape, dtype=jnp.float32),
         action=action,
+        latent_action=action,
         env_action=action,
         action_mean=action,
         value=jnp.zeros(shape, dtype=jnp.float32),
@@ -187,6 +202,132 @@ def test_sample_action_applies_configured_clip() -> None:
     assert jnp.all(action >= -0.01)
 
 
+def test_tanh_gaussian_actions_are_bounded_and_have_consistent_log_prob() -> None:
+    config = PPOConfig(
+        total_timesteps=8,
+        num_envs=2,
+        num_steps=4,
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            init_log_std=1.0,
+            action_distribution="tanh_gaussian",
+            action_limit=0.75,
+        ),
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
+    obs = jnp.zeros((config.num_envs, 4), dtype=jnp.float32)
+
+    action, sampled_log_prob, _ = sample_action(
+        state.policy, obs, jax.random.PRNGKey(1)
+    )
+    evaluated_log_prob, _, _ = evaluate_actions(state.policy, obs, action)
+    deterministic_action = apply_actor(state.policy, obs)
+
+    assert jnp.all(jnp.abs(action) < 0.75)
+    assert jnp.all(jnp.abs(deterministic_action) < 0.75)
+    assert jnp.allclose(sampled_log_prob, evaluated_log_prob, atol=1.0e-5)
+
+
+def test_saturated_tanh_action_keeps_exact_latent_log_prob_for_ppo() -> None:
+    config = PPOConfig(
+        total_timesteps=4,
+        num_envs=4,
+        num_steps=1,
+        num_minibatches=1,
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            action_distribution="tanh_gaussian",
+        ),
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config)
+    obs = jnp.zeros((config.num_envs, 2), dtype=jnp.float32)
+    latent_mean, log_std, value = apply_policy(state.policy, obs)
+    latent_action = jnp.full((config.num_envs, 1), 20.0, dtype=jnp.float32)
+    action = jnp.tanh(latent_action)
+    old_log_prob = policy_log_prob(
+        state.policy,
+        latent_mean,
+        log_std,
+        action,
+        latent_action=latent_action,
+    )
+    reconstructed_log_prob = policy_log_prob(state.policy, latent_mean, log_std, action)
+    transitions = Transition(
+        done=jnp.zeros(config.num_envs, dtype=bool),
+        terminal=jnp.zeros(config.num_envs, dtype=bool),
+        bootstrap_value=jnp.zeros(config.num_envs, dtype=jnp.float32),
+        action=action,
+        latent_action=latent_action,
+        env_action=action,
+        action_mean=jnp.zeros_like(action),
+        value=value,
+        reward=jnp.zeros(config.num_envs, dtype=jnp.float32),
+        log_prob=old_log_prob,
+        obs=obs,
+        critic_obs=obs,
+        info={},
+    )
+
+    _, metrics = ppo_loss(
+        state.policy,
+        transitions,
+        jnp.ones(config.num_envs, dtype=jnp.float32),
+        jnp.zeros(config.num_envs, dtype=jnp.float32),
+        config,
+    )
+
+    assert jnp.all(action == 1.0)
+    assert not jnp.allclose(old_log_prob, reconstructed_log_prob)
+    assert float(metrics["approx_kl"]) == pytest.approx(0.0, abs=1.0e-7)
+
+
+def test_tanh_gaussian_entropy_accounts_for_saturation() -> None:
+    config = PPOConfig(
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            action_distribution="tanh_gaussian",
+        )
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config)
+    log_std = jnp.asarray([0.0], dtype=jnp.float32)
+
+    centered = policy_entropy(state.policy, log_std, jnp.asarray([[0.0]]))
+    saturated = policy_entropy(state.policy, log_std, jnp.asarray([[0.99]]))
+
+    assert saturated < centered
+
+
+def test_policy_observation_normalization_tracks_actor_and_critic_separately() -> None:
+    config = PPOConfig(
+        policy=ActorCriticConfig(
+            hidden_size=8,
+            hidden_depth=1,
+            obs_stack_size=1,
+            normalize_observations=True,
+        )
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config, critic_obs_size=3)
+    actor_obs = jnp.asarray([[1.0, 2.0], [3.0, 6.0]], dtype=jnp.float32)
+    critic_obs = jnp.asarray([[2.0, 4.0, 8.0], [6.0, 8.0, 10.0]], dtype=jnp.float32)
+
+    policy = update_policy_observation_normalization(
+        state.policy, actor_obs, critic_obs
+    )
+
+    assert jnp.allclose(policy.actor_obs_mean, jnp.asarray([2.0, 4.0]))
+    assert jnp.allclose(policy.actor_obs_var, jnp.asarray([1.0, 4.0]))
+    assert policy.actor_obs_count == 2.0
+    assert jnp.allclose(policy.critic_obs_mean, jnp.asarray([4.0, 6.0, 9.0]))
+    assert jnp.allclose(policy.critic_obs_var, jnp.asarray([4.0, 4.0, 1.0]))
+    assert policy.critic_obs_count == 2.0
+
+
 def test_collect_rollout_stores_raw_actions_and_steps_clipped_env_actions() -> None:
     config = PPOConfig(
         total_timesteps=4,
@@ -215,6 +356,7 @@ def test_collect_rollout_stores_raw_actions_and_steps_clipped_env_actions() -> N
     assert jnp.all(transitions.env_action >= -env.action_clip)
     assert float(jnp.max(jnp.abs(transitions.action_mean))) == pytest.approx(100.0)
     assert float(jnp.max(jnp.abs(transitions.reward))) == pytest.approx(env.action_clip)
+    assert float(jnp.max(transitions.info["requested_action_abs_max"])) > 1.0
 
 
 def test_collect_rollout_does_not_clip_env_actions_without_env_action_clip() -> None:
@@ -378,6 +520,7 @@ def test_gae_and_loss_shapes() -> None:
             terminal=transitions.terminal.reshape((-1,)),
             bootstrap_value=transitions.bootstrap_value.reshape((-1,)),
             action=transitions.action.reshape((-1, action_size)),
+            latent_action=transitions.latent_action.reshape((-1, action_size)),
             env_action=transitions.env_action.reshape((-1, action_size)),
             action_mean=transitions.action_mean.reshape((-1, action_size)),
             value=transitions.value.reshape((-1,)),
@@ -421,6 +564,7 @@ def test_gae_bootstraps_timeout_without_continuing_across_reset() -> None:
         terminal=jnp.asarray([[False], [False]]),
         bootstrap_value=jnp.asarray([[0.0], [10.0]], dtype=jnp.float32),
         action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
+        latent_action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         env_action=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         action_mean=jnp.zeros((2, 1, 1), dtype=jnp.float32),
         value=jnp.zeros((2, 1), dtype=jnp.float32),
@@ -452,6 +596,7 @@ def test_gae_does_not_bootstrap_terminal_failure() -> None:
         terminal=jnp.asarray([[True]]),
         bootstrap_value=jnp.asarray([[10.0]], dtype=jnp.float32),
         action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        latent_action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         env_action=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         action_mean=jnp.zeros((1, 1, 1), dtype=jnp.float32),
         value=jnp.zeros((1, 1), dtype=jnp.float32),
@@ -713,6 +858,7 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
         terminal=jnp.zeros((2, 2), dtype=bool),
         bootstrap_value=jnp.zeros((2, 2), dtype=jnp.float32),
         action=action,
+        latent_action=action,
         env_action=jnp.clip(action, -1.0, 1.0),
         action_mean=action * 0.5,
         value=jnp.zeros((2, 2), dtype=jnp.float32),
@@ -749,6 +895,7 @@ def test_action_diagnostics_reports_action_and_control_stats() -> None:
     assert float(metrics["action_abs_max"]) == pytest.approx(2.0)
     assert float(metrics["env_action_abs_max"]) == pytest.approx(1.0)
     assert float(metrics["action_mean_abs_max"]) == pytest.approx(1.0)
+    assert float(metrics["action_clip_fraction"]) == pytest.approx(0.25)
     assert float(metrics["action_std_min"]) == pytest.approx(float(jnp.exp(-2.0)))
     assert float(metrics["action_std_max"]) == pytest.approx(float(jnp.exp(-1.0)))
     assert float(metrics["ctrl_saturation_fraction"]) == pytest.approx(0.25)
@@ -762,6 +909,7 @@ def test_action_diagnostics_omits_control_stats_for_generic_envs() -> None:
         terminal=jnp.zeros((1, 2), dtype=bool),
         bootstrap_value=jnp.zeros((1, 2), dtype=jnp.float32),
         action=action,
+        latent_action=action,
         env_action=action,
         action_mean=action,
         value=jnp.zeros((1, 2), dtype=jnp.float32),
@@ -823,6 +971,37 @@ def test_done_reason_means_reports_done_component_rates() -> None:
     assert float(metrics["mean_done/timeout"]) == 0.25
 
 
+def test_target_saturation_means_reports_joint_and_motor_rates() -> None:
+    metrics = target_saturation_means(
+        {
+            "target/joint_saturation_fraction": jnp.asarray([0.0, 0.5]),
+            "target/motor_saturation_fraction": jnp.asarray([0.0, 0.0]),
+            "reward/ignored": jnp.asarray([1.0]),
+        }
+    )
+
+    assert float(metrics["mean_target/joint_saturation_fraction"]) == 0.25
+    assert float(metrics["mean_target/motor_saturation_fraction"]) == 0.0
+
+
+def test_gait_diagnostics_converts_touchdowns_to_footfalls_per_second() -> None:
+    info = {
+        "gait/stance_width": jnp.asarray([[0.28, 0.30]], dtype=jnp.float32),
+        "gait/touchdown": jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
+        "gait/liftoff": jnp.asarray([[1.0, 0.0]], dtype=jnp.float32),
+        "gait/premature_touchdown": jnp.asarray([[1.0, 0.0]], dtype=jnp.float32),
+        "gait/premature_liftoff": jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
+    }
+
+    metrics = gait_diagnostics(info, control_timestep=0.02)
+
+    assert float(metrics["mean_gait/stance_width"]) == pytest.approx(0.29)
+    assert float(metrics["gait/footfalls_per_second"]) == pytest.approx(25.0)
+    assert float(metrics["gait/liftoffs_per_second"]) == pytest.approx(25.0)
+    assert float(metrics["gait/premature_touchdowns_per_second"]) == pytest.approx(25.0)
+    assert float(metrics["gait/premature_liftoffs_per_second"]) == pytest.approx(25.0)
+
+
 def test_ppo_config_rejects_zero_update_runs() -> None:
     config = PPOConfig(total_timesteps=7, num_envs=4, num_steps=2)
 
@@ -841,6 +1020,15 @@ def test_ppo_config_rejects_invalid_target_kl() -> None:
     config = PPOConfig(target_kl=0.0)
 
     with pytest.raises(ValueError, match="target_kl must be null or positive"):
+        make_train(config, env=object())
+
+
+def test_ppo_config_rejects_invalid_action_distribution() -> None:
+    config = PPOConfig(
+        policy=ActorCriticConfig(action_distribution="not-a-distribution")
+    )
+
+    with pytest.raises(ValueError, match="policy.action_distribution"):
         make_train(config, env=object())
 
 

@@ -121,9 +121,7 @@ def rewrite_urdf_for_mujoco(
     return MeshSources(collision=collision_sources, visual=visual_sources)
 
 
-def fix_disabled_joints(
-    root: ET.Element, config: JointAvailabilityConfig
-) -> None:
+def fix_disabled_joints(root: ET.Element, config: JointAvailabilityConfig) -> None:
     joints = {
         joint.get("name"): joint
         for joint in root.findall("joint")

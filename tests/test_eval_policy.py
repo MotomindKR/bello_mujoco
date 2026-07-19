@@ -5,9 +5,14 @@ import numpy as np
 import pytest
 from rerun.urdf import UrdfTree
 
-from bello_mujoco.envs.locomotion import BelloEnvConfig
+from bello_mujoco.envs.locomotion import BelloEnvConfig, GaitConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.policy import ActorCriticConfig
+from bello_mujoco.render import (
+    mujoco_action_to_ctrl,
+    mujoco_eval_state,
+    mujoco_gait_phase,
+)
 from bello_mujoco.rerun_eval import (
     GamepadCommandSource,
     GamepadConfig,
@@ -135,6 +140,83 @@ def test_command_velocity_uses_reward_yaw_frame() -> None:
     assert velocity == pytest.approx([1.0, 0.0, 0.0], abs=1e-6)
 
 
+def test_mujoco_eval_state_copies_native_reward_state_fields() -> None:
+    mj_data = SimpleNamespace(
+        qpos=np.zeros(7, dtype=np.float64),
+        qvel=np.zeros(6, dtype=np.float64),
+        ctrl=np.zeros(1, dtype=np.float64),
+        xpos=np.zeros((2, 3), dtype=np.float64),
+        xquat=np.zeros((2, 4), dtype=np.float64),
+        cvel=np.zeros((2, 6), dtype=np.float64),
+        subtree_com=np.asarray([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]]),
+        actuator_force=np.zeros(1, dtype=np.float64),
+    )
+    state = mujoco_eval_state(
+        SimpleNamespace(
+            _sample_gait_frequency=lambda rng: jnp.asarray(1.375, dtype=jnp.float32)
+        ),
+        mj_data,
+        command=np.zeros(3, dtype=np.float32),
+        last_action=np.zeros(1, dtype=np.float32),
+        foot_air_time=jnp.zeros(0),
+        foot_contact_time=jnp.zeros(0),
+        foot_contact_debounce_time=jnp.zeros(0),
+        last_foot_contact=jnp.zeros(0),
+        step_count=0,
+        episode_return=jnp.asarray(0.0),
+        episode_track_lin_vel_xy=jnp.asarray(0.0),
+        episode_length=jnp.asarray(0),
+    )
+
+    assert state.data.subtree_com.dtype == jnp.float32
+    assert state.data.subtree_com == pytest.approx(mj_data.subtree_com)
+    assert state.gait_frequency == pytest.approx(1.375)
+
+
+def test_native_mujoco_gait_phase_freezes_for_standing_command() -> None:
+    env = SimpleNamespace(
+        config=SimpleNamespace(
+            gait=GaitConfig(
+                randomize_frequency=True,
+                frequency_range=(1.25, 1.5),
+                standing_command_threshold=0.1,
+            )
+        ),
+        control_timestep=0.02,
+    )
+
+    assert mujoco_gait_phase(env, 10, np.asarray([0.0, 0.0, 0.0])) == 0.0
+    assert mujoco_gait_phase(env, 10, np.asarray([0.0, 0.5, 0.0])) == pytest.approx(
+        0.275
+    )
+
+
+def test_native_mujoco_control_applies_model_angle_offset() -> None:
+    env = SimpleNamespace(
+        action_clip=1.0,
+        model=SimpleNamespace(
+            mj_model=SimpleNamespace(
+                actuator_ctrlrange=np.asarray(
+                    [[-10.0, 10.0], [-10.0, 10.0], [-10.0, 10.0]],
+                    dtype=np.float32,
+                )
+            ),
+            default_ctrl=np.asarray([1.0, 2.0, 3.0], dtype=np.float32),
+            default_joint_target=np.asarray([1.0, 2.0, 3.0], dtype=np.float32),
+            joint_angle_offset=np.asarray([[0.1, 0.2, 0.3]], dtype=np.float32),
+            joint_target_low=np.asarray([-10.0, -10.0, -10.0], dtype=np.float32),
+            joint_target_high=np.asarray([10.0, 10.0, 10.0], dtype=np.float32),
+            actuator_coordinate_transform=np.eye(3, dtype=np.float32),
+            policy_ctrl_indices=np.asarray([0, 2], dtype=np.int32),
+            policy_action_scale=np.asarray([0.5, 0.25], dtype=np.float32),
+        ),
+    )
+
+    ctrl = mujoco_action_to_ctrl(env, np.asarray([1.0, -1.0], dtype=np.float32))
+
+    np.testing.assert_allclose(ctrl, np.asarray([1.6, 2.2, 3.05], dtype=np.float32))
+
+
 class FakeController:
     def __init__(self, module) -> None:
         self.module = module
@@ -247,6 +329,7 @@ def test_rough_terrain_mesh_matches_config_extent() -> None:
     assert triangles.shape == (8, 3)
     assert vertices[:, 0].min() == pytest.approx(-1.0)
     assert vertices[:, 0].max() == pytest.approx(3.0)
+    assert np.ptp(vertices[:, 2]) == pytest.approx(config.hfield_amplitude)
 
 
 def test_rerun_urdf_prefix_is_a_visible_world_subtree(tmp_path) -> None:

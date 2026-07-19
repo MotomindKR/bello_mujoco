@@ -25,6 +25,35 @@ and exits without optimization.
 `dry_run=false` runs PPO. `jit=true` is the default and wraps the train function
 with `jax.jit`.
 
+`experiments/train/locomotion_berkeley.yaml` is the Bello morphology port of
+MuJoCo Playground's Berkeley Humanoid recipe. It adds a randomized 1.25--1.5 Hz
+per-foot phase clock, touchdown-gated air time, phase-height tracking, L1 torque,
+weighted pose, hip/knee deviation, and nonnegative clipped reward total. The
+actor receives noisy deployable proprioception, pelvis-frame linear acceleration,
+and the four-value per-foot phase encoding. Pelvis linear velocity is excluded
+because it is not directly available from the robot's IMU. The critic receives a
+clean observation with additional pelvis linear velocity, height, and
+actuator-force channels.
+It follows Brax PPO's bounded tanh-normal policy, Swish activation, and separate
+running normalization for actor and critic observations. A target-KL guard is
+enabled as an additional safety measure for this repository's PPO optimizer.
+The learning rate adapts around a desired KL of `0.01`, cannot rise above its
+initial `3e-4`, and can fall to `1e-5` when repeated updates approach the hard
+`0.03` KL guard. Policy standard deviation is capped at `1.0` (`max_log_std:
+0.0`) to keep the bounded distribution from drifting into persistent tanh
+saturation. Commands at or below `0.1` are standing commands: their gait phase
+is frozen and both foot-height targets are zero. Foot contacts use 40 ms on/off
+debounce, and premature moving touchdowns or liftoffs receive the contact-timing
+penalty.
+Episodes terminate when pelvis height falls below `0.55m` or torso tilt reaches
+`0.8rad`, preventing crouched or horizontal poses from surviving on clipped
+nonnegative reward.
+The recipe uses a `0.005s` physics timestep and `decimation: 4`, preserving its
+`0.02s` (50 Hz) policy period with four simulation substeps per action. Its
+terrain contact activates at a `0.0125m` margin with a `0.01s`/`1.0` solref and
+firmer `[0.98, 0.999, 0.001, 0.5, 2.0]` solimp. The margin is assigned on the
+terrain geom so MJX-Warp can retain MultiCCD for robot box/mesh pairs.
+
 ## Hydra Configs
 
 Training configs live under `configs/train/`. The default config is used when no
@@ -123,11 +152,15 @@ config:
     hidden_size: 256
     hidden_depth: 2
     hidden_dims: null  # optional explicit layer sizes, e.g. [512, 256, 128]
-    activation: tanh  # tanh | relu | elu
+    activation: tanh  # tanh | relu | elu | swish
     init_log_std: 0.0
     min_log_std: -5.0
     max_log_std: 1.0
     obs_stack_size: 10
+    action_distribution: gaussian  # gaussian | tanh_gaussian
+    action_limit: 1.0
+    normalize_observations: false
+    observation_norm_eps: 0.00000001
 ```
 
 Derived values:
@@ -155,6 +188,9 @@ asset_config:
     body_name: pelvis_link
   ankle_differential_config:
     enabled: false
+    actuate_tendons: false
+    motor_gain_scale: 0.5
+    motor_effort_limit_scale: 1.0
   joint_availability:
     waist_yaw: true
     waist_roll: true
@@ -227,11 +263,27 @@ reward weights and action scales.
 
 Policy action scales convert normalized residual actions to joint target
 radians. When a joint does not set `action_scale` explicitly, the generated
-model uses `default_action_scale_ratio * actuator_ctrlrange_width`; the default
-ratio is `0.25`, and generated actuator `ctrlrange` comes from the configured
-soft limit when present.
+model uses `default_action_scale_ratio * logical_joint_range_width`; the default
+ratio is `0.25`, using the configured logical joint soft range (or the
+generated direct-actuator range for an unlimited joint).
 The knee soft target range starts at the hard lower joint limit, `0.0` rad,
 and keeps the upper soft limit at `1.98968` rad.
+
+Setting `ankle_differential_config.enabled: true` adds the two fixed-tendon
+coordinates `motor_1 = roll - pitch` and `motor_2 = roll + pitch` for each
+ankle. Setting `actuate_tendons: true` additionally replaces the direct ankle
+pitch/roll actuators with position actuators on those tendons. The actor still
+uses logical ankle pitch/roll actions and encoder observations. The control
+stack clamps logical targets to configured joint soft ranges, transforms them
+to the two motor coordinates, and defensively clips those coordinates to their
+generated transmission ranges. Training logs joint-target and motor-target
+saturation separately.
+
+Each logical ankle axis receives stiffness from both motors. The default
+`motor_gain_scale: 0.5` therefore changes the configured joint gains
+`[22, 1]` into per-motor gains `[11, 0.5]`, preserving the effective uncoupled
+joint impedance. `motor_effort_limit_scale` scales each motor's generated force
+limit; `1.0` preserves the configured ±36 limit.
 
 Default full-body actuator effort limits follow the Robstride peak-torque
 groups:
@@ -261,7 +313,13 @@ runtime limits differ from the URDF. A composed config should produce
 env_config:
   decimation: 4
   max_episode_steps: 1000
+  action_clip: 5.0
   root_link: bello_root
+  simulation_physics:
+    timestep: 0.005
+    foot_terrain_margin: null
+    foot_terrain_solref: null
+    foot_terrain_solimp: null
   spawn:
     clearance: 0.01
     root_xy_range: [0.0, 0.0]
@@ -282,6 +340,14 @@ env_config:
     hfield_amplitude: 0.04
     hfield_base_thickness: 0.01
     hfield_frequency: 2.5
+    slope_angle_range: [0.0, 0.0]
+  model_randomization:
+    enabled: false
+    seed: 0
+    joint_origin_range: [0.0, 0.0]
+    joint_angle_offset_range: [0.0, 0.0]
+    joint_angle_offset_scope: all  # all | policy
+    joint_inertia_scale_range: [1.0, 1.0]
   gait:
     cycle_time: 0.80
     command_speed_frequency_gain: 0.55
@@ -339,7 +405,13 @@ env_config:
 ```
 
 The generated MuJoCo model timestep is `0.005s`, so the default
-`decimation: 4` gives a `0.02s` control timestep.
+`decimation: 4` gives a `0.02s` control timestep. Runtime
+`simulation_physics.timestep` overrides the compiled asset before both native
+MuJoCo and MJX conversion; `control_timestep` is computed from that effective
+model value. `foot_terrain_margin`, `foot_terrain_solref`, and
+`foot_terrain_solimp` similarly apply to both backends. The margin is stored on
+the terrain geom; MuJoCo's pairwise maximum gives foot-terrain contacts the
+configured activation distance without adding margin to foot/self contacts.
 
 `root_link` is the default measurement body for base observations and
 link-aware reward/done terms whose `link` is null. The package default is the
@@ -353,6 +425,10 @@ quantity and is not exposed directly as a body-local observation.
 Reset runs a MuJoCo kinematics pass after qpos/qvel randomization, so named-body
 position/orientation terms such as `torso_link` height and projected gravity are
 valid in the initial observation stack before the first environment step.
+On planes and rough heightfields, reset root height follows the terrain elevation
+at the sampled root XY location. Foot-height reward inputs likewise subtract the
+surface elevation underneath each foot. `terrain.hfield_amplitude` is the rough
+heightfield's peak-to-valley vertical scale in meters.
 
 `spawn` controls reset randomization. `root_xy_range` adds uniform world-frame
 XY root offsets, `root_yaw_range` samples the initial root yaw, `joint_pos_noise`
@@ -362,9 +438,31 @@ adds uniform actuator-joint position noise clipped to hard joint limits, and
 vectorized envs at random episode step counts, desynchronizing timeouts, gait
 phase, command resampling, and random push events.
 
+`model_randomization` creates one fixed physical model sample per vectorized
+MJX-Warp world at environment load time. `joint_origin_range` adds an XYZ
+offset in meters to each actuated joint anchor,
+`joint_angle_offset_range` adds a fixed angular offset in radians to each
+selected actuator's position target. `joint_angle_offset_scope: all` includes
+held and policy actuators, while `policy` leaves held targets unchanged, and
+`joint_inertia_scale_range` scales the diagonal inertia of each actuated
+joint's child body by one positive scalar. The samples remain assigned to their
+worlds across episode resets, so a training batch contains many physical
+variants without putting Python sampling in the rollout path. `seed` makes the
+batch reproducible. Native MuJoCo evaluation uses the first sample so its
+kinematics, controls, and dynamics agree with the corresponding MJX world. Terrain
+variation is controlled separately by `terrain`: `mode: rough` generates a
+seeded heightfield, and randomized root XY positions expose resets to different
+local patches of that surface. `slope_angle_range` samples reproducible terrain
+roll and pitch angles in radians from the terrain seed. Randomized root yaw then
+exposes the policy to different incline directions relative to its body frame.
+Reset clearance and foot-height rewards query those local terrain patches,
+including the configured slope.
+
 `joint_mode` controls `joint_pos`, `joint_vel`, and `actuator_force`.
-`base_lin_vel`, `base_ang_vel`, `projected_gravity`, and `base_height` are
-measured on `root_link`. The command observation is emitted only when both
+`base_lin_vel`, `base_lin_acc`, `base_ang_vel`, `projected_gravity`, and
+`base_height` are measured on `root_link`. `base_lin_acc` matches a MuJoCo
+accelerometer located at that link's xbody origin and expressed in its local
+frame. The command observation is emitted only when both
 `env_config.observation.command` and `command_config.enabled` are true.
 
 `observation.noise` applies additive uniform noise to enabled observation terms
@@ -457,9 +555,9 @@ Every reward term has `enabled` and `weight`. Link-aware terms also have `link`;
 `link: null` means use `env_config.root_link`.
 Continuous reward components are multiplied by the environment control timestep
 before they are returned or logged under `reward/*`, so their weights are
-interpreted as per-second scales. Event-driven terms such as `feet_air_time` and
-`termination` keep their configured event magnitude. The `termination` reward is
-applied only for terminal failure conditions, not for episode-length timeouts.
+interpreted as per-second scales. Event-driven `contact_timing` and `termination`
+keep their configured event magnitudes. Termination is applied only for terminal
+failure conditions, not for episode-length timeouts.
 
 ```yaml
 reward_config:
@@ -503,6 +601,10 @@ reward_config:
   action_rate:
     enabled: true
     weight: -0.05
+  action_limit:
+    enabled: false
+    weight: -1.0
+    soft_limit_ratio: 0.8
   energy:
     enabled: true
     weight: -0.00002
@@ -512,6 +614,7 @@ reward_config:
   joint_limit:
     enabled: true
     weight: -5.0
+    soft_limit_factor: 0.9
   invalid_action:
     enabled: false
     weight: -1.0
@@ -545,16 +648,27 @@ reward_config:
   foot_distance:
     enabled: false
     weight: 1.0
+  stance_width:
+    enabled: false
+    weight: -2.0
+    link: null
+    min_width: 0.24
+    max_width: 0.34
   gait_contact:
     enabled: true
     weight: 0.5
     command_speed_threshold: 0.10
+  contact_timing:
+    enabled: false
+    weight: -0.10
+    min_air_time: 0.20
+    min_contact_time: 0.30
+    command_speed_threshold: 0.10
   feet_air_time:
     enabled: false
-    weight: 0.2
-    min_air_time: 0.20
-    max_air_time: 0.60
-    command_speed_threshold: 0.05
+    weight: 0.25
+    max_duration: 0.40
+    command_speed_threshold: 0.10
   standing_foot_vel:
     enabled: false
     weight: -1.0
@@ -575,13 +689,20 @@ reward_config:
 ```
 
 Foot-dependent terms are `foot_contact`, `foot_slip`, `foot_clearance`,
-`swing_foot_velocity`, `foot_distance`, `gait_contact`, `feet_air_time`,
+`swing_foot_velocity`, `foot_distance`, `stance_width`, `gait_contact`,
+`contact_timing`, `feet_air_time`,
 `standing_foot_vel`, and `standing_foot_air_time`. `foot_distance` rewards the
 horizontal distance between the two foot bodies. Terrain-contact metadata is
 required for the contact-dependent foot terms and for `undesired_contact` when
 terrain is enabled. Robot collision-geom metadata is required for
 `self_collision`. Contact-dependent foot terms use the debounced foot-contact
 signal from `env_config.contact`.
+
+`stance_width` is a zero-inside-band penalty on lateral foot separation in the
+yaw frame of `link` (or `env_config.root_link` when null). It deliberately
+ignores sagittal separation, unlike `foot_distance`, so it discourages a
+spread-leg support-polygon exploit without penalizing useful forward step
+length.
 
 `track_lin_vel_xy` uses yaw-frame linear velocity, matching the Unitree
 locomotion reward shape. `link` selects the body whose linear velocity is
@@ -593,16 +714,21 @@ and hard recipes track `pelvis_link` linear velocity in the pelvis yaw frame and
 track `pelvis_link` yaw angular velocity. Their torso-linked height,
 orientation, and vertical/lateral stabilization terms remain unchanged.
 `joint_vel`,
-`joint_acc`, `action_rate`, `energy`, and `torque` are
+`joint_acc`, `action_rate`, `action_limit`, `energy`, and `torque` are
 smoothness and effort regularizers. `joint_vel`, `joint_acc`, `action_rate`,
 `energy`, and `torque` sum over their selected dimensions;
 `joint_acc` penalizes finite-difference actuator joint acceleration. `energy`
 penalizes absolute actuator force times joint velocity; `torque` penalizes
-actuator-force magnitude directly. `joint_limit` sums absolute violation of the
-actuator control ranges, which are the configured soft limits when a joint
-provides one. `invalid_action` sums squared requested-target violation in action
-units using the same clipped affine action scale as the action-to-control mapper.
-Bello sends a clipped copy of the raw Gaussian action to MuJoCo/MJX. Generated
+actuator-force magnitude directly. `action_limit` is zero inside
+`soft_limit_ratio` of the environment action bound and applies a mean normalized
+quadratic penalty between that margin and the bound. `joint_limit` contracts
+each physical MuJoCo joint range about its center by `soft_limit_factor`, then
+sums absolute joint-position violation of that soft interval. Its threshold is
+independent of actuator `ctrlrange`. `invalid_action` sums squared pre-clip action-bound and
+requested-target violations in action units using the same affine action scale
+as the action-to-control mapper. Bello clips the request before sending its
+control target to MuJoCo/MJX, but retains the original request for this penalty.
+Generated
 position actuators leave control targets unclamped (`ctrllimited="false"`) while
 keeping actuator force limits enabled.
 `foot_slip` sums contacted-foot lateral speed plus
@@ -629,6 +755,13 @@ near-standing commands by
 `command_speed_threshold`, so stand-still samples do not receive swing-clearance
 pressure.
 
+`contact_timing` penalizes accepted touchdown events whose preceding air time is
+shorter than `min_air_time`, and liftoff events whose preceding contact time is
+shorter than `min_contact_time`. Shortfall is normalized by the configured
+minimum and squared. Mature transitions score zero. Because this is an event
+term, its weight is not multiplied by the control timestep. Linear commands at
+or below `command_speed_threshold` are gated out.
+
 `swing_foot_velocity` rewards the scheduled swing foot for matching a
 directional XY velocity relative to `link`, measured in that link's yaw frame.
 The target is `duty_factor / (1 - duty_factor) * command[:2]`, capped by
@@ -638,11 +771,12 @@ stand-still commands therefore receive no swing-velocity pressure. The easy and
 hard locomotion recipes enable the term at weight `0.5` with `pelvis_link` as
 the reference body.
 
-`feet_air_time` increments while a foot is not in debounced contact. On the
-first contact after that swing interval, it rewards the completed air time
-above `min_air_time`, clipped by `max_air_time`. It encourages actual swing
-phases rather than foot dragging, and is disabled for near-standing commands by
-`command_speed_threshold`.
+`feet_air_time` is a continuous positive-biped reward. While exactly one foot
+is in debounced contact, it takes the shorter of the stance foot's current
+contact duration and the swing foot's current air duration, capped by
+`max_duration`. Double support and flight receive zero reward. The term is
+disabled for near-standing commands by `command_speed_threshold` and, like
+other continuous terms, is multiplied by the control timestep.
 
 `standing_foot_vel` and `standing_foot_air_time` are near-zero-command
 penalties. They are active only when command speed is at or below their
@@ -679,10 +813,10 @@ not receive the `reward/termination` penalty.
 
 `bad_orientation` matches IsaacLab/Unitree-style tilt termination: it computes
 the angle between the configured link's projected gravity vector and the local
-z-axis as `acos(-projected_gravity.z)`, then terminates when that angle exceeds
-`limit_angle`. `base_height` and `bad_orientation` validate their configured
-links during env initialization. When their `link` is null, `env_config.root_link`
-is validated and used.
+z-axis as `acos(-projected_gravity.z)`, then terminates when that angle reaches
+or exceeds `limit_angle`. `base_height` and `bad_orientation` validate their
+configured links during env initialization. When their `link` is null,
+`env_config.root_link` is validated and used.
 
 ### WarpConfig
 
@@ -882,22 +1016,31 @@ env_steps = update_index * num_envs * num_steps
 The policy samples Gaussian actions. PPO clips sampled actions before storing
 log-probs only when the policy helper is called with an explicit action clip.
 The PPO training loop stores the raw sampled Gaussian action/log-prob for PPO
-ratios and passes a clipped copy to environments that expose `action_clip`.
+ratios and passes the raw request to the environment. Environments own their
+action bounds so they can distinguish the requested action from the control
+actually applied.
 
-The Bello locomotion env exposes `action_clip=5.0`; its PPO rollout path stores
-raw Gaussian actions/log-probs and sends a clipped copy to the environment.
-Bello maps the clipped action linearly to position-actuator control targets with
-`default_ctrl + policy_action_scale * clipped_action`, matching the common
-legged-gym/IsaacLab residual-position convention. Generated position actuators
-use `ctrllimited="false"` so MuJoCo/MJX does not introduce actuator-layer target
-saturation. Motor force limits remain active through generated `forcerange` /
-`forcelimited="true"` actuator attributes.
+The Bello locomotion env exposes configurable `env_config.action_clip`, which
+defaults to `5.0`. It clips the action for control and observations while using
+the pre-clip request for `invalid_action`.
+Bello maps the clipped action linearly to logical joint targets with
+`default_joint_target + policy_action_scale * clipped_action`, matching the
+common residual-position convention. Targets are explicitly clamped to the
+configured soft joint range before any transmission mapping. Differential
+ankles then map logical targets to tendon motor coordinates and clip those
+coordinates defensively. Motor force limits remain active through generated
+`forcerange` / `forcelimited="true"` actuator attributes.
 
-CartPole exposes `action_clip=1.0`; Bello exposes `action_clip=5.0`.
+CartPole exposes `action_clip=1.0`; Bello defaults to `action_clip=5.0`.
 
 ## Metrics
 
 Training returns `out["metrics"]`, with one row per PPO update.
+
+Joint-space control also reports `mean_target/joint_saturation_fraction` and
+`mean_target/motor_saturation_fraction`. The first means the requested logical
+target reached a configured joint soft range; the second means the transformed
+target reached a motor-coordinate range.
 
 Core metrics:
 
@@ -934,6 +1077,7 @@ action_mean_abs_max
 action_std_mean
 action_std_min
 action_std_max
+action_clip_fraction
 ```
 
 Reward component metrics are emitted as:
@@ -980,14 +1124,36 @@ gradients, updates, or next parameters became nonfinite. Such minibatches are
 not applied, and the training CLI raises immediately instead of continuing with
 an invalid policy state.
 
-PPO stores raw Gaussian sampled actions for log-prob ratios. Environments that
-define `action_clip` receive a clipped copy; Bello uses this path with
-`action_clip=5.0`, so `env_action_abs_max` reports the clipped action magnitude.
+PPO stores both the policy action and its exact pre-transform Gaussian sample.
+Log-prob ratios for tanh policies use the stored latent sample instead of trying
+to invert a float32 action that may have saturated at exactly `-1` or `1`.
+`env_action_abs_max` reports the bounded action that was actually applied, and
+`action_clip_fraction` reports the fraction of sampled action dimensions changed
+by the environment bound.
 For Bello, `ctrl_saturation_fraction` reports the fraction of requested policy
 control targets at or beyond their configured MuJoCo ctrl-range bounds.
 `ctrl_margin_min` is the smallest signed distance to
 either bound across sampled policy controls in the rollout; it is negative when
 requested targets exceed the soft range.
+
+`policy.action_distribution=tanh_gaussian` samples a latent diagonal Gaussian
+and maps it through `action_limit * tanh(x)`. PPO includes the tanh Jacobian in
+the transformed log probability, while deterministic evaluation uses the
+transformed actor mean. The default `gaussian` preserves existing experiment
+behavior.
+
+`policy.normalize_observations=true` maintains independent running mean and
+variance statistics for stacked actor and critic observations. The statistics
+are updated from each completed rollout for use by the next rollout, included
+in checkpoints as part of the policy, and automatically applied during
+deterministic evaluation.
+
+Locomotion training also logs `gait/footfalls_per_second`,
+`gait/liftoffs_per_second`, `gait/premature_touchdowns_per_second`,
+`gait/premature_liftoffs_per_second`, `mean_gait/stance_width`, and mean
+single-support, double-support, and flight fractions. These diagnostics are
+emitted even when gait shaping rewards are disabled, so ablations remain
+directly comparable.
 
 ## Checkpoints
 

@@ -124,6 +124,13 @@ def test_prepared_full_body_preserves_pelvis_body(
     model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
 
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link") >= 0
+    sensor_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_SENSOR,
+        "bello_acceleration_stage_sensor",
+    )
+    assert sensor_id >= 0
+    assert model.sensor_type[sensor_id] == mujoco.mjtSensor.mjSENS_ACCELEROMETER
 
 
 def test_ankle_differential_tendons_are_optional_mujoco_coordinates(
@@ -163,9 +170,39 @@ def test_ankle_differential_tendons_are_optional_mujoco_coordinates(
         )
 
 
+def test_ankle_differential_can_replace_joint_actuators_with_tendon_actuators(
+    full_body_actuated_ankle_tendon_asset: PreparedAsset,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(
+        str(full_body_actuated_ankle_tendon_asset.mjcf_path)
+    )
+    actuator_names = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
+        for index in range(model.nu)
+    }
+
+    for side in ("left", "right"):
+        assert f"{side}_ankle_pitch_joint_pos" not in actuator_names
+        assert f"{side}_ankle_roll_joint_pos" not in actuator_names
+        for motor_index in (1, 2):
+            name = f"{side}_ankle_motor_{motor_index}_pos"
+            actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            assert actuator_id >= 0
+            assert model.actuator_trntype[actuator_id] == mujoco.mjtTrn.mjTRN_TENDON
+            assert model.actuator_forcelimited[actuator_id]
+            np.testing.assert_allclose(
+                model.actuator_forcerange[actuator_id], [-36.0, 36.0]
+            )
+            assert model.actuator_gainprm[actuator_id, 0] == pytest.approx(11.0)
+            assert model.actuator_biasprm[actuator_id, 2] == pytest.approx(-0.5)
+
+
 def test_observation_size_tracks_reduced_actuator_count() -> None:
     model = SimpleNamespace(
-        mj_model=SimpleNamespace(nu=29, nq=40, nv=39, nbody=4, ngeom=5),
+        mj_model=SimpleNamespace(nu=29, nq=40, nv=39, njnt=29, nbody=4, ngeom=5),
+        actuator_names=tuple(f"actuator_{index}" for index in range(29)),
+        actuator_joint_names=tuple(f"joint_{index}" for index in range(29)),
+        actuator_joint_ids=np.arange(29, dtype=np.int32),
         policy_ctrl_indices=np.arange(6, dtype=np.int32),
         hold_ctrl_indices=np.arange(6, 29, dtype=np.int32),
         actuator_qpos_indices=np.arange(29, dtype=np.int32),
@@ -173,10 +210,16 @@ def test_observation_size_tracks_reduced_actuator_count() -> None:
         policy_qpos_indices=np.arange(6, dtype=np.int32),
         policy_qvel_indices=np.arange(6, dtype=np.int32),
         policy_action_scale=np.ones(6, dtype=np.float32),
+        actuator_coordinate_transform=np.eye(29, dtype=np.float32),
+        joint_angle_offset=np.zeros((1, 29), dtype=np.float32),
+        default_joint_target=np.zeros(29, dtype=np.float32),
+        joint_target_low=np.full(29, -1.0, dtype=np.float32),
+        joint_target_high=np.full(29, 1.0, dtype=np.float32),
         foot_body_ids=np.asarray([2, 3], dtype=np.int32),
         robot_geom_ids=np.asarray([1, 2, 3, 4], dtype=np.int32),
         foot_geom_ids=np.asarray([2, 3], dtype=np.int32),
         terrain_geom_ids=np.asarray([0], dtype=np.int32),
+        terrain_geom_quat=np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
         nonfoot_robot_geom_ids=np.asarray([1, 4], dtype=np.int32),
         nonfoot_robot_body_ids=np.asarray([1], dtype=np.int32),
         default_qpos=np.zeros(40, dtype=np.float32),
@@ -351,9 +394,7 @@ def test_disabled_joints_are_fixed_in_the_generated_urdf() -> None:
         "neck_yaw_joint",
         "head_pitch_joint",
     ):
-        joint = ET.SubElement(
-            root, "joint", {"name": joint_name, "type": "revolute"}
-        )
+        joint = ET.SubElement(root, "joint", {"name": joint_name, "type": "revolute"})
         ET.SubElement(joint, "axis", {"xyz": "0 0 1"})
         ET.SubElement(joint, "limit", {"lower": "-1", "upper": "1"})
 

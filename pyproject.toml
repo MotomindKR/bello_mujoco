@@ -35,6 +35,7 @@ bello-train-ppo = "bello_mujoco.tools.train_ppo:entrypoint"
 bello-eval-policy = "bello_mujoco.tools.eval_policy:entrypoint"
 bello-ppo-cartpole-smoke = "bello_mujoco.tools.ppo_cartpole_smoke:entrypoint"
 bello-vast-train = "bello_mujoco.tools.vast_train:entrypoint"
+bello-vast-playground = "bello_mujoco.tools.vast_playground:entrypoint"
 bello-robstride-runner = "bello_mujoco.tools.robstride_runner:entrypoint"
 
 [dependency-groups]

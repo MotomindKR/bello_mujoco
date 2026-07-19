@@ -1,0 +1,23 @@
+# Standing-only Berkeley control plus policy-joint motor target offsets.
+defaults:
+  - locomotion_berkeley_standing_only
+  - _self_
+
+config:
+  total_timesteps: 200000000
+
+env_config:
+  model_randomization:
+    enabled: true
+    seed: 0
+    joint_origin_range: [0.0, 0.0]
+    joint_angle_offset_range: [-0.005, 0.005]
+    joint_angle_offset_scope: policy
+    joint_inertia_scale_range: [1.0, 1.0]
+
+wandb_config:
+  tags:
+    - locomotion
+    - berkeley-randomization-ablation
+    - motor-offset-only
+    - standing-penalties

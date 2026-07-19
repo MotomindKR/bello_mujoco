@@ -348,10 +348,9 @@ reward_config:
     command_speed_threshold: 0.10
   feet_air_time:
     enabled: false
-    weight: 0.2
-    min_air_time: 0.15
-    max_air_time: 0.60
-    command_speed_threshold: 0.05
+    weight: 0.25
+    max_duration: 0.40
+    command_speed_threshold: 0.10
   undesired_contact:
     enabled: true
     weight: -1.0

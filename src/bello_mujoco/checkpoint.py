@@ -225,8 +225,7 @@ def coerce_value(annotation, value, *, strict: bool = False, path: str | None = 
         args = get_args(annotation)
         if len(args) == 2 and args[1] is Ellipsis:
             return tuple(
-                coerce_value(args[0], item, strict=strict, path=path)
-                for item in value
+                coerce_value(args[0], item, strict=strict, path=path) for item in value
             )
         if args:
             return tuple(

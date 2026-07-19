@@ -5,8 +5,10 @@ remote Git branch to an exact commit, rents a matching instance, clones and
 verifies that commit, installs the locked environment, runs PPO with W&B, and
 destroys the instance before the local command returns.
 
-The controller is intentionally blocking. Keep its local process and network
-connection alive for the duration of training.
+The controller is intentionally blocking. Keep its local process alive for the
+duration of training. Transient SSH interruptions are recovered as described
+below, but the controller still needs network access to monitor and eventually
+tear down the instance.
 
 ## Credentials
 
@@ -72,6 +74,17 @@ checkpoint_config.enabled=true
 checkpoint_config.upload_wandb_artifact=true
 ```
 
+To launch the matched direct-joint, differential ±18, and differential ±36
+short experiments concurrently in a tiled tmux window, run:
+
+```bash
+scripts/run_vast_differential_ablations.sh main
+```
+
+The launcher creates one detached worktree per controller so each parallel Vast
+instance has independent lifecycle state. Set `MAX_PRICE` to change the
+per-instance hourly ceiling.
+
 Consequently a user override cannot silently disable W&B or final checkpoint
 artifact upload. Training configs from older branches must support the current
 W&B and checkpoint fields or their setup validation will fail.
@@ -89,6 +102,26 @@ uv run bello-vast-train \
 
 Use `--yes` only for intentional noninteractive operation. Branch, recipe, and
 maximum price remain explicit.
+
+To reproduce the pinned, otherwise unchanged MuJoCo Playground Berkeley
+Humanoid baseline, use the dedicated launcher. It checks out Playground commit
+`87a4bf98f1806adefd240d72dd53a2c3ceeb2f0d` on the rented machine and runs its
+native Warp PPO entry point:
+
+```bash
+uv run bello-vast-playground \
+  --branch main \
+  --seed 0 \
+  --num-timesteps 150000000 \
+  --max-price 1.25
+```
+
+The Bello morphology port is `experiments/train/locomotion_berkeley.yaml` and
+uses the normal `bello-vast-train` launcher. Its 2,048-environment batch and
+joint-specific action scales are deliberate adaptations for Bello. The command
+distribution, gait clock, rollout horizon, and PPO hyperparameters are retained;
+the Bello recipe additionally uses explicit physical-joint and policy-action
+safety margins.
 
 ## Offer Selection
 
@@ -131,8 +164,8 @@ uv run bello-vast-train \
 
 ## Remote Setup and Output
 
-The remote bootstrap installs the required EGL/FFmpeg system libraries and
-`uv`, then runs:
+The controller starts the remote bootstrap as a detached process before it
+installs the required EGL/FFmpeg system libraries and `uv`, then runs:
 
 ```bash
 uv python install 3.12
@@ -140,10 +173,23 @@ uv sync --frozen
 ```
 
 It verifies that JAX selects a GPU and runs a one-environment training dry-run
-before starting the requested recipe. Setup and training output stream to the
-local terminal. No local run log is retained. Once W&B initializes, its metrics,
-console output, videos, and successful final checkpoint artifact are the durable
-run output. A failure before W&B initialization is visible only in the terminal.
+before starting the requested recipe. The detached job stores its log and exit
+status under `/workspace/.bello-vast-jobs/<run-name>/` on the rented instance.
+When Vast advertises a public IP and direct port mapping, the controller tests
+that endpoint before falling back to Vast's SSH proxy URL. This avoids waiting
+for a broken proxy while the instance's direct SSH service is already ready.
+The controller fetches bounded log chunks over short SSH connections, so a lost
+SSH session does not stop setup or training. It reconnects for up to
+`--ssh-timeout-seconds` of continuous SSH unavailability and resumes output from
+the last received byte. If SSH remains unavailable beyond that timeout, the
+pipeline fails and tears down the instance as usual.
+Detachment protects against an SSH client or proxy interruption; it cannot keep
+training alive if the rented host or container itself stops.
+
+No local run log is retained. Once W&B initializes, its metrics, console output,
+videos, and successful final checkpoint artifact are the durable run output. A
+failure before W&B initialization is visible only in the terminal. The remote
+job log is removed with the instance during teardown.
 
 ## Teardown and Recovery
 

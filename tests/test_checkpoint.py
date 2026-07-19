@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +18,11 @@ from bello_mujoco.checkpoint import (
     save_training_checkpoint,
     value_norm_metadata,
 )
-from bello_mujoco.policy import ActorCriticConfig, apply_policy
+from bello_mujoco.policy import (
+    ActorCriticConfig,
+    apply_policy,
+    update_policy_observation_normalization,
+)
 from bello_mujoco.envs.locomotion import (
     BaseHeightDoneConfig,
     BelloEnvConfig,
@@ -32,13 +37,23 @@ from bello_mujoco.train.ppo import PPOConfig, ValueNormState, init_train_state
 def test_training_checkpoint_round_trips_model_and_metadata(tmp_path: Path) -> None:
     config = PPOConfig(
         seed=11,
-        policy=ActorCriticConfig(hidden_size=8, hidden_depth=1),
+        policy=ActorCriticConfig(
+            hidden_size=8, hidden_depth=1, normalize_observations=True
+        ),
         total_timesteps=8,
         num_envs=2,
         num_steps=2,
         num_minibatches=1,
     )
     train_state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
+    train_state = replace(
+        train_state,
+        policy=update_policy_observation_normalization(
+            train_state.policy,
+            jnp.asarray([[0.0, 1.0, 2.0, 3.0], [2.0, 3.0, 4.0, 5.0]]),
+            jnp.asarray([[0.0, 1.0, 2.0, 3.0], [2.0, 3.0, 4.0, 5.0]]),
+        ),
+    )
     metadata = CheckpointMetadata(
         ppo=config,
         asset=AssetPrepConfig(output_root=tmp_path / "assets"),
@@ -136,9 +151,7 @@ def test_timestamped_checkpoint_name_uses_seed_default() -> None:
     assert name == "ppo_seed_7_20260712_013045_123456"
 
 
-def test_training_checkpoint_refuses_existing_path(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_training_checkpoint_refuses_existing_path(tmp_path: Path, monkeypatch) -> None:
     calls = []
 
     class FakeCheckpointer:
