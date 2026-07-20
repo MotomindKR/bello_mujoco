@@ -25,6 +25,7 @@ bello-eval-motion-policy
 bello-vast-train
 bello-robstride-runner
 bello-run-locomotion-hardware
+bello-run-motion-hardware
 ```
 
 All Python commands work as `uv run <command>` outside an activated development
@@ -271,6 +272,17 @@ The armed path starts from measured motor positions, ramps to the policy nominal
 pose, runs deterministic inference at 50 Hz, and relies on both local limits and
 the daemon's command/lease fault handling. See
 [hardware_locomotion.md](hardware_locomotion.md) before using physical hardware.
+
+## Physical motion tracking
+
+`bello-run-motion-hardware` deploys a compatible schema-6 motion checkpoint on
+the same 25-coordinate sphere-hand inventory. The default is a read-only
+preflight. Armed playback ramps to the selected reference frame, runs
+deterministic tracking at 50 Hz, and stops at the clip boundary or any local or
+daemon safety fault. Root translation currently uses bounded, short-horizon IMU
+dead reckoning because the hardware API has no absolute pose source; see
+[hardware_motion.md](hardware_motion.md) for that limitation and the guarded
+commissioning procedure.
 
 ## Configuration
 

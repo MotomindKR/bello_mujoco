@@ -13,9 +13,15 @@ bello-render-motion-reference
 bello-check-motion-feasibility
 bello-train-motion-ppo
 bello-eval-motion-policy
+bello-run-motion-hardware
 ```
 
 Use `uv run <command>` outside an activated development shell.
+
+Physical deployment is intentionally separate from native MuJoCo evaluation.
+See [hardware_motion.md](hardware_motion.md) for strict checkpoint validation,
+read-only preflight, guarded arming, and the current short-horizon IMU odometry
+constraint.
 
 ## Robot Contract
 

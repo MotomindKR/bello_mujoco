@@ -321,6 +321,17 @@ def validate_hardware_checkpoint(
 def validate_hardware_config(
     config: HardwareLocomotionConfig, metadata: CheckpointMetadata | None = None
 ) -> None:
+    validate_hardware_control_config(config)
+    command = np.asarray(config.command, dtype=np.float64)
+    if command.shape != (3,) or not np.all(np.isfinite(command)):
+        raise ValueError("command must contain three finite values")
+    if metadata is not None:
+        validate_command(command, metadata)
+
+
+def validate_hardware_control_config(config: Any) -> None:
+    """Validate controls shared by physical locomotion and motion playback."""
+
     if not config.endpoint.strip():
         raise ValueError("endpoint must not be empty")
     if not config.groups or any(not group.strip() for group in config.groups):
@@ -329,9 +340,6 @@ def validate_hardware_config(
         raise ValueError("groups must not contain duplicates")
     if not config.imu_name.strip() or not config.client_name.strip():
         raise ValueError("imu_name and client_name must not be empty")
-    command = np.asarray(config.command, dtype=np.float64)
-    if command.shape != (3,) or not np.all(np.isfinite(command)):
-        raise ValueError("command must contain three finite values")
     positive = {
         "connection_timeout_seconds": config.connection_timeout_seconds,
         "telemetry_timeout_seconds": config.telemetry_timeout_seconds,
@@ -364,8 +372,6 @@ def validate_hardware_config(
             "arming physical hardware requires operator_confirmation="
             f"{ARM_CONFIRMATION}"
         )
-    if metadata is not None:
-        validate_command(command, metadata)
 
 
 def validate_command(command: np.ndarray, metadata: CheckpointMetadata) -> None:

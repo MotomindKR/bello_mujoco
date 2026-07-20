@@ -147,6 +147,19 @@ The preflight acquires no lease and sends no motor command. See
 recipe, inventory and IMU contract, guarded arming command, and shutdown
 behavior.
 
+Motion-tracking checkpoints use a separate read-only-by-default runner. It
+validates the checkpoint's clip hash and fixed-head sphere-hand contract before
+touching a lease:
+
+```bash
+uv run --with ~/bello_stack/components/bello-hardware-python \
+  bello-run-motion-hardware \
+  checkpoint_path=checkpoints/asap_balance_level4/final
+```
+
+See [hardware_motion.md](docs/hardware_motion.md), especially its short-horizon
+IMU odometry limitation, before enabling physical playback.
+
 ## Validate changes
 
 ```bash
@@ -173,6 +186,7 @@ The supported installed commands are:
 - `bello-vast-train`
 - `bello-robstride-runner`
 - `bello-run-locomotion-hardware`
+- `bello-run-motion-hardware`
 
 ## Repository layout
 
