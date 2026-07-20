@@ -319,7 +319,10 @@ motors:
 def test_default_motor_configs_are_repository_local_and_complete() -> None:
     paths = default_motor_configs()
 
-    assert [path.name for path in paths] == ["lower_body.yaml", "upper_body.yaml"]
+    assert [path.name for path in paths] == [
+        "lower_body.yaml",
+        "upper_body_sphere_hands.yaml",
+    ]
     assert all(path.exists() for path in paths)
     assert all(
         path.parent.name == "robstride" and path.parent.parent.name == "configs"
@@ -334,13 +337,15 @@ def test_default_motor_configs_are_repository_local_and_complete() -> None:
         "ROBSTRIDE_05",
         "ROBSTRIDE_06",
     }
-    assert len(config.motors) == 27
+    assert len(config.motors) == 25
     assert {bus.name for bus in config.buses} == {"can0", "can1"}
     assert all(motor.target.type in {"joint", "tendon"} for motor in config.motors)
     by_name = {motor.name: motor for motor in config.motors}
     assert by_name["left_arm_1"].target.name == "left_shoulder_pitch_joint"
     assert by_name["right_knee_mix_1"].target.name == "right_knee_joint"
     assert by_name["left_ankle_1"].target.name == "left_ankle_motor_1"
+    assert "left_arm_7" not in by_name
+    assert "right_arm_7" not in by_name
 
 
 def test_motor_assignment_rejects_unknown_kind(tmp_path: Path) -> None:
@@ -405,7 +410,7 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert config.asset_config.asset == "full_body"
     assert config.asset_config.collision_mode == "mesh"
     assert config.asset_config.visual_mesh_face_budget == 20_000
-    assert config.asset_config.end_effector_sphere_mode == "none"
+    assert config.asset_config.end_effector_sphere_mode == "both"
     assert config.asset_config.imu_config.enabled
     assert config.asset_config.imu_config.body_name == "pelvis_link"
     availability = config.asset_config.joint_availability
@@ -421,7 +426,7 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert config.bus_interfaces == ("can0=vcan0", "can1=vcan1")
     assert [path.name for path in config.motor_configs] == [
         "lower_body.yaml",
-        "upper_body.yaml",
+        "upper_body_sphere_hands.yaml",
     ]
     assert config.torso_hold
     assert config.torso_drop_limit_m == pytest.approx(0.05)
@@ -525,7 +530,7 @@ def test_runner_resolves_relative_motor_configs_from_bundled_config_root() -> No
     )
 
 
-def test_default_runner_full_body_asset_preserves_all_motor_coordinates() -> None:
+def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
     config = compose_runner_config()
     robstride = load_robstride_configs(
         resolve_motor_config_path(config.motor_kind_config),
@@ -555,8 +560,55 @@ def test_default_runner_full_body_asset_preserves_all_motor_coordinates() -> Non
                 )
                 == -1
             )
+    assert "left_wrist_pitch_joint" in transmission.mapped_joint_names
+    assert "right_wrist_pitch_joint" in transmission.mapped_joint_names
+    assert "left_wrist_yaw_joint" not in transmission.mapped_joint_names
+    assert "right_wrist_yaw_joint" not in transmission.mapped_joint_names
+    for body_name in ("l_end_effector_sphere_link", "r_end_effector_sphere_link"):
+        assert (
+            mujoco.mj_name2id(
+                configured.mj_model,
+                mujoco.mjtObj.mjOBJ_BODY,
+                body_name,
+            )
+            >= 0
+        )
+
+
+def test_runner_can_select_detailed_hands_with_wrist_yaw_motors() -> None:
+    config = compose_runner_config(
+        [
+            "asset_config.end_effector_sphere_mode=none",
+            "motor_configs=[robstride/lower_body.yaml,robstride/upper_body.yaml]",
+        ]
+    )
+    robstride = load_robstride_configs(
+        resolve_motor_config_path(config.motor_kind_config),
+        tuple(resolve_motor_config_path(path) for path in config.motor_configs),
+    )
+    prepared = prepare_asset(config.asset_config)
+    model = load_prepared_bello_model(
+        prepared,
+        terrain=FLAT_TERRAIN,
+        load_mjx=False,
+    )
+    configured = configure_robstride_actuators(model, robstride.motors)
+    transmission = BelloRobstrideTransmission(
+        configured,
+        tuple(RobstrideMotor(spec) for spec in robstride.motors),
+    )
+
     assert "left_wrist_yaw_joint" in transmission.mapped_joint_names
     assert "right_wrist_yaw_joint" in transmission.mapped_joint_names
+    for body_name in ("l_end_effector_sphere_link", "r_end_effector_sphere_link"):
+        assert (
+            mujoco.mj_name2id(
+                configured.mj_model,
+                mujoco.mjtObj.mjOBJ_BODY,
+                body_name,
+            )
+            == -1
+        )
 
 
 def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(

@@ -116,10 +116,17 @@ The visual meshes default to a 20,000-face-per-mesh budget for responsive
 interactive rendering; this does not change the general training asset
 default.
 
-The runner keeps `end_effector_sphere_mode: none`. Fixed sphere replacement
-removes the wrist-yaw joints, so it is incompatible with the configured
-RobStride wrist motors. Training recipes may still use `both` when those wrist
-coordinates are intentionally absent from the policy model.
+The runner defaults to `end_effector_sphere_mode: both`, matching the training
+morphology. Its default `upper_body_sphere_hands.yaml` mapping omits the two
+wrist-yaw motors because sphere replacement removes those joint subtrees; wrist
+pitch remains actuated. To run the detailed hand morphology instead, select
+both the non-sphere asset and its complete upper-body motor mapping explicitly:
+
+```bash
+bello-robstride-runner \
+  asset_config.end_effector_sphere_mode=none \
+  'motor_configs=[robstride/lower_body.yaml,robstride/upper_body.yaml]'
+```
 
 Every prepared Bello asset contains the MuJoCo ankle transmission and uses
 tendon position actuators. The runner replaces those generated ankle actuators,
@@ -193,8 +200,13 @@ assignments:
 ```text
 configs/robstride/motor_kinds.yaml
 configs/robstride/lower_body.yaml
+configs/robstride/upper_body_sphere_hands.yaml
 configs/robstride/upper_body.yaml
 ```
+
+`upper_body_sphere_hands.yaml` is the default 12-motor arm mapping.
+`upper_body.yaml` additionally maps the two wrist-yaw motors for the explicit
+non-sphere morphology.
 
 `motor_kinds.yaml` is the single source for each kind's CAN field ranges,
 instantaneous torque clamp, rated/peak torque, speed, voltage, phase current,

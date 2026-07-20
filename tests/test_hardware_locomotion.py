@@ -1,0 +1,404 @@
+from __future__ import annotations
+
+from contextlib import nullcontext
+from enum import Enum
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import jax
+from hydra import compose, initialize_config_dir
+
+from bello_mujoco.assets_pipeline.prepare import prepare_asset
+from bello_mujoco.checkpoint import CheckpointNormalizationState
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
+from bello_mujoco.envs.rewards import CommandConfig
+from bello_mujoco.hardware_locomotion import (
+    ARM_CONFIRMATION,
+    HardwareFrame,
+    HardwareLocomotionConfig,
+    HardwarePolicyAdapter,
+    actuator_coordinate_names,
+    actuator_impedance_gains,
+    foot_phase_sin_cos,
+    limit_target_step,
+    projected_gravity_from_xyzw,
+    run_hardware_locomotion,
+    tilt_from_xyzw,
+    validate_command,
+    validate_hardware_checkpoint,
+    validate_hardware_config,
+    validate_hardware_inventory,
+)
+from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
+from bello_mujoco.policy import init_actor_critic, policy_observation_size
+from bello_mujoco.tools.run_locomotion_hardware import HardwareLocomotionToolConfig
+from bello_mujoco.tools.train_ppo import TrainingRunConfig, checkpoint_metadata
+from bello_mujoco.train.ppo import (
+    init_observation_norm_state,
+    init_value_norm_state,
+)
+
+
+def compose_hardware_training_config() -> TrainingRunConfig:
+    clear_hydra()
+    try:
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(CONFIG_ROOT.parent / "experiments" / "train"),
+        ):
+            config = compose(
+                config_name="hardware_locomotion",
+                overrides=[f"hydra.searchpath=[file://{CONFIG_ROOT / 'train'}]"],
+            )
+        return structured_config(TrainingRunConfig, config)
+    finally:
+        clear_hydra()
+
+
+def compose_hardware_runner_config() -> HardwareLocomotionToolConfig:
+    clear_hydra()
+    try:
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(CONFIG_ROOT / "run_locomotion_hardware"),
+        ):
+            config = compose(
+                config_name="default",
+                overrides=["checkpoint_path=checkpoints/hardware"],
+            )
+        return structured_config(HardwareLocomotionToolConfig, config)
+    finally:
+        clear_hydra()
+
+
+@pytest.fixture(scope="module")
+def hardware_env() -> BelloLocomotionEnv:
+    config = compose_hardware_training_config()
+    prepared = prepare_asset(config.asset_config)
+    return BelloLocomotionEnv.load_prepared(
+        prepared,
+        warp=config.warp,
+        batch_size=1,
+        env_config=config.env_config,
+        actuator_config=config.asset_config.actuator_config,
+        reward_config=config.reward_config,
+        command_config=config.command_config,
+        done_config=config.done_config,
+        load_mjx=False,
+    )
+
+
+def test_hardware_training_recipe_matches_sphere_hand_inventory(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    config = compose_hardware_training_config()
+
+    assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.asset_config.joint_availability.enabled_joint_names == {
+        "waist_yaw_joint"
+    }
+    assert hardware_env.action_size == 13
+    assert hardware_env.model.mj_model.nu == 25
+
+    metadata = SimpleNamespace(
+        task="locomotion",
+        asset=config.asset_config,
+        ppo=config.config,
+    )
+    validate_hardware_checkpoint(hardware_env, metadata)
+
+
+def test_hardware_actuator_mapping_round_trips_differential_ankles(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    physical_names = actuator_coordinate_names(hardware_env)
+    logical_names = hardware_env.model.actuator_joint_names
+    transform = np.asarray(hardware_env.model.actuator_coordinate_transform)
+    logical = np.zeros(25)
+    pitch_column = logical_names.index("left_ankle_pitch_joint")
+    roll_column = logical_names.index("left_ankle_roll_joint")
+    motor_1_row = physical_names.index("left_ankle_motor_1")
+    motor_2_row = physical_names.index("left_ankle_motor_2")
+    logical[pitch_column] = 0.3
+    logical[roll_column] = -0.1
+
+    physical = transform @ logical
+    recovered = np.linalg.solve(transform, physical)
+
+    assert len(physical_names) == 25
+    assert physical[motor_1_row] == pytest.approx(-0.4)
+    assert physical[motor_2_row] == pytest.approx(0.2)
+    assert recovered == pytest.approx(logical)
+
+
+def test_hardware_uses_generated_motor_impedance_gains(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    names = actuator_coordinate_names(hardware_env)
+    kp, kd = actuator_impedance_gains(hardware_env)
+
+    for name in (
+        "left_ankle_motor_1",
+        "left_ankle_motor_2",
+        "right_ankle_motor_1",
+        "right_ankle_motor_2",
+    ):
+        index = names.index(name)
+        assert kp[index] == pytest.approx(11.0)
+        assert kd[index] == pytest.approx(0.5)
+
+
+def test_hardware_adapter_reconstructs_actor_frame_and_targets(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    config = compose_hardware_training_config()
+    actor_size = policy_observation_size(
+        hardware_env.observation_size, config.config.policy
+    )
+    critic_size = policy_observation_size(
+        hardware_env.critic_observation_size, config.config.policy
+    )
+    metadata = checkpoint_metadata(
+        config,
+        hardware_env,
+        policy_obs_size=actor_size,
+        critic_policy_obs_size=critic_size,
+    )
+    policy = init_actor_critic(
+        jax.random.PRNGKey(0),
+        actor_size,
+        hardware_env.action_size,
+        config.config.policy,
+        critic_obs_size=critic_size,
+    )
+    normalization = CheckpointNormalizationState(
+        value=init_value_norm_state(),
+        observation=init_observation_norm_state(actor_size),
+        critic_observation=init_observation_norm_state(critic_size),
+    )
+    adapter = HardwarePolicyAdapter(hardware_env, policy, metadata, normalization)
+    nominal = adapter.nominal_physical_target
+    frame = HardwareFrame(
+        positions=nominal,
+        velocities=np.zeros_like(nominal),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        group_states=("IDLE", "IDLE"),
+    )
+    command = np.asarray((0.2, 0.0, 0.0), dtype=np.float32)
+
+    result = adapter.step(frame, command)
+
+    assert result.observation.shape == (55,)
+    assert result.observation[:6] == pytest.approx(np.zeros(6))
+    assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
+    assert result.observation[13:16] == pytest.approx(command)
+    assert result.action.shape == (13,)
+    assert result.physical_target.shape == (25,)
+    assert np.all(np.isfinite(result.physical_target))
+    assert result.physical_target == pytest.approx(
+        np.asarray(hardware_env.action_to_ctrl(result.action, np.zeros(25))),
+        abs=1.0e-6,
+    )
+
+
+def test_hardware_imu_and_gait_terms_match_deployment_conventions() -> None:
+    assert projected_gravity_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0))) == (
+        pytest.approx((0.0, 0.0, -1.0))
+    )
+    assert tilt_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0))) == pytest.approx(0.0)
+
+    gait = GaitConfig(randomize_frequency=False)
+    standing = foot_phase_sin_cos(
+        gait,
+        step_count=20,
+        control_timestep=0.02,
+        command=np.zeros(3),
+        randomized_frequency=0.0,
+    )
+    walking = foot_phase_sin_cos(
+        gait,
+        step_count=20,
+        control_timestep=0.02,
+        command=np.asarray((0.2, 0.0, 0.0)),
+        randomized_frequency=0.0,
+    )
+
+    assert standing == pytest.approx((1.0, -1.0, 0.0, 0.0), abs=1.0e-6)
+    assert walking != pytest.approx(standing)
+
+
+def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> None:
+    config = compose_hardware_runner_config()
+
+    assert not config.hardware.arm
+    assert config.hardware.command == (0.0, 0.0, 0.0)
+    validate_hardware_config(config.hardware)
+
+    with pytest.raises(ValueError, match="operator_confirmation"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(arm=True, operator_confirmation="yes")
+        )
+    validate_hardware_config(
+        HardwareLocomotionConfig(
+            arm=True,
+            operator_confirmation=ARM_CONFIRMATION,
+        )
+    )
+    with pytest.raises(ValueError, match="must not exceed"):
+        validate_hardware_config(HardwareLocomotionConfig(kp_scale=1.01))
+
+
+def test_hardware_command_and_target_step_limits() -> None:
+    metadata = SimpleNamespace(
+        command=CommandConfig(
+            lin_vel_x=(-0.5, 0.5),
+            lin_vel_y=(-0.2, 0.2),
+            ang_vel_yaw=(-0.3, 0.3),
+        )
+    )
+
+    validate_command(np.asarray((0.5, -0.2, 0.3)), metadata)
+    with pytest.raises(ValueError, match="exceeds checkpoint bounds"):
+        validate_command(np.asarray((0.6, 0.0, 0.0)), metadata)
+
+    limited = limit_target_step(np.asarray((0.0, 0.0)), np.asarray((0.2, -0.1)), 0.05)
+    assert limited == pytest.approx((0.05, -0.05))
+
+
+class FakeGroupState(Enum):
+    IDLE = 1
+
+
+class FakeDeviceState(Enum):
+    ONLINE = 1
+
+
+class FakeUnavailableError(Exception):
+    pass
+
+
+def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None:
+    coordinates = ("left_hip_pitch_joint", "right_hip_pitch_joint")
+    groups = {
+        "lower_body": SimpleNamespace(
+            name="lower_body",
+            coordinates=(coordinates[0],),
+            control_rate_hz=100.0,
+            initial_state=FakeGroupState.IDLE,
+            motors=(
+                SimpleNamespace(
+                    name="left",
+                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
+                ),
+            ),
+        ),
+        "upper_body": SimpleNamespace(
+            name="upper_body",
+            coordinates=(coordinates[1],),
+            control_rate_hz=100.0,
+            initial_state=FakeGroupState.IDLE,
+            motors=(
+                SimpleNamespace(
+                    name="right",
+                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
+                ),
+            ),
+        ),
+    }
+
+    def vector(*values):
+        return SimpleNamespace(x=values[0], y=values[1], z=values[2])
+
+    states = SimpleNamespace(
+        coordinate=lambda name: SimpleNamespace(
+            position=0.0, velocity=0.0, feedback_age_ms=0
+        ),
+        imu=lambda name: SimpleNamespace(
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            angular_velocity=vector(0.0, 0.0, 0.0),
+            linear_acceleration=vector(0.0, 0.0, 0.0),
+            sample_age_ms=0,
+        ),
+        group=lambda name: SimpleNamespace(state=SimpleNamespace(name="IDLE")),
+    )
+    robot = SimpleNamespace(
+        group_names=tuple(groups),
+        group=lambda name: groups[name],
+        inventory=SimpleNamespace(
+            imus=(
+                SimpleNamespace(
+                    name="imu",
+                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
+                ),
+            )
+        ),
+        states=lambda **kwargs: nullcontext(states),
+    )
+    binding = SimpleNamespace(
+        Robot=SimpleNamespace(connect=lambda *args, **kwargs: nullcontext(robot)),
+        GroupState=FakeGroupState,
+        DeviceState=FakeDeviceState,
+        StateUnavailableError=FakeUnavailableError,
+    )
+    adapter = SimpleNamespace(
+        physical_coordinate_names=coordinates,
+        nominal_physical_target=np.zeros(2),
+        env=SimpleNamespace(action_size=13),
+        control_timestep=0.02,
+        precompile=lambda: None,
+    )
+    metadata = SimpleNamespace(command=CommandConfig())
+    monkeypatch.setattr(
+        "bello_mujoco.hardware_locomotion.load_hardware_policy",
+        lambda path: (adapter, metadata),
+    )
+
+    run_hardware_locomotion(
+        Path("unused"), HardwareLocomotionConfig(), hardware_binding=binding
+    )
+
+    assert "no lease was acquired" in capsys.readouterr().out
+
+
+def test_inventory_rejects_coordinate_mismatch() -> None:
+    binding = SimpleNamespace(
+        GroupState=FakeGroupState,
+        DeviceState=FakeDeviceState,
+    )
+    group = SimpleNamespace(
+        name="lower_body",
+        coordinates=("wrong",),
+        control_rate_hz=100.0,
+        initial_state=FakeGroupState.IDLE,
+        motors=(),
+    )
+    robot = SimpleNamespace(
+        group_names=("lower_body",),
+        group=lambda name: group,
+        inventory=SimpleNamespace(
+            imus=(
+                SimpleNamespace(
+                    name="imu",
+                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
+                ),
+            )
+        ),
+    )
+    adapter = SimpleNamespace(
+        physical_coordinate_names=("expected",),
+        control_timestep=0.02,
+    )
+
+    with pytest.raises(ValueError, match="coordinate mismatch"):
+        validate_hardware_inventory(
+            robot,
+            adapter,
+            HardwareLocomotionConfig(groups=("lower_body",)),
+            binding,
+        )

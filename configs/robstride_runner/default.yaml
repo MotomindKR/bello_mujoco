@@ -1,7 +1,7 @@
 motor_kind_config: robstride/motor_kinds.yaml
 motor_configs:
   - robstride/lower_body.yaml
-  - robstride/upper_body.yaml
+  - robstride/upper_body_sphere_hands.yaml
 bus_interfaces:
   - can0=vcan0
   - can1=vcan1
@@ -12,7 +12,7 @@ asset_config:
   mesh_face_budget: 1000
   visual_mesh_face_budget: 20000
   collision_mode: mesh
-  end_effector_sphere_mode: none
+  end_effector_sphere_mode: both
   neighbor_exclusion_depth: 2
   imu_config:
     enabled: true

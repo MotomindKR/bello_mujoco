@@ -1,0 +1,24 @@
+# Locomotion recipe matching bello_stack's 25-motor sphere-hand hardware inventory.
+defaults:
+  - locomotion
+  - _self_
+
+asset_config:
+  joint_availability:
+    waist_yaw: true
+    waist_roll: false
+    waist_pitch: false
+    neck_yaw: false
+    head_pitch: false
+
+checkpoint_config:
+  name: hardware_locomotion_seed0
+  wandb_artifact_name: hardware_locomotion_seed0
+
+wandb_config:
+  group: hardware-locomotion
+  run_name: hardware_locomotion_seed0
+  tags: [locomotion, hardware, sphere-hands, fixed-waist, fixed-head]
+
+video_config:
+  filename_prefix: hardware_locomotion

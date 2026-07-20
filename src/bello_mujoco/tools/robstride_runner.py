@@ -36,7 +36,7 @@ from bello_mujoco.terrain import FLAT_TERRAIN
 
 def default_motor_configs() -> tuple[Path, ...]:
     root = project_data_path("configs") / "robstride"
-    return root / "lower_body.yaml", root / "upper_body.yaml"
+    return root / "lower_body.yaml", root / "upper_body_sphere_hands.yaml"
 
 
 def default_motor_kind_config() -> Path:
@@ -60,7 +60,7 @@ class RobstrideRunnerConfig:
     asset_config: AssetPrepConfig = AssetPrepConfig(
         asset="full_body",
         visual_mesh_face_budget=20_000,
-        end_effector_sphere_mode="none",
+        end_effector_sphere_mode="both",
         imu_config=ImuSensorConfig(enabled=True, body_name="pelvis_link"),
         joint_availability=JointAvailabilityConfig(
             waist_yaw=True,

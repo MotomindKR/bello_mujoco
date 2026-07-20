@@ -24,6 +24,7 @@ bello-train-motion-ppo
 bello-eval-motion-policy
 bello-vast-train
 bello-robstride-runner
+bello-run-locomotion-hardware
 ```
 
 All Python commands work as `uv run <command>` outside an activated development
@@ -173,6 +174,7 @@ The maintained experiment recipes are:
 ```text
 experiments/train/smoke.yaml
 experiments/train/locomotion.yaml
+experiments/train/hardware_locomotion.yaml
 ```
 
 The smoke recipe exercises the real Bello/MJX-Warp PPO path with a small
@@ -180,7 +182,9 @@ budget. The standard recipe is the maintained locomotion baseline and uses one
 seeded sloped plane per run, viewed from randomized robot headings. It preserves
 the physical ankle transmission and joint-space policy contract; longer
 experiments override its training budget explicitly rather than duplicating the
-recipe.
+recipe. The hardware recipe inherits that algorithm while fixing waist
+roll/pitch and neck/head joints to match the physical sphere-hand 25-motor
+inventory.
 
 Run a recipe with:
 
@@ -253,6 +257,20 @@ uv run bello-robstride-runner
 ```
 
 See [robstride_vcan.md](robstride_vcan.md).
+
+## Physical locomotion
+
+`bello-run-locomotion-hardware` deploys a compatible locomotion checkpoint
+through the blocking Python client supplied by `~/bello_stack`. It validates the
+complete 25-coordinate inventory, group rates and state, online motors and IMU,
+checkpoint morphology, command bounds, telemetry freshness, initial pose, and
+tilt before control. The default invocation is a read-only preflight and cannot
+acquire a control lease.
+
+The armed path starts from measured motor positions, ramps to the policy nominal
+pose, runs deterministic inference at 50 Hz, and relies on both local limits and
+the daemon's command/lease fault handling. See
+[hardware_locomotion.md](hardware_locomotion.md) before using physical hardware.
 
 ## Configuration
 

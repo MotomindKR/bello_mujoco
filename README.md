@@ -51,6 +51,10 @@ uv run bello-train-ppo \
   --config-name locomotion
 ```
 
+Train the sphere-hand 25-motor morphology used by the physical robot with
+`--config-name hardware_locomotion`. Its checkpoint is the only locomotion
+checkpoint accepted by the physical-hardware runner.
+
 The standard recipe uses one seeded sloped plane per run and the physical ankle
 transmission. Root-yaw randomization exposes the policy to that incline from
 different headings. Change its budget with an explicit Hydra override instead
@@ -122,7 +126,26 @@ uv run bello-robstride-runner
 ```
 
 The runner simulates Bello in CPU MuJoCo and exposes its actuators as RobStride
-devices on Linux SocketCAN. See [robstride_vcan.md](docs/robstride_vcan.md).
+devices on Linux SocketCAN. It uses sphere hands by default, matching the
+training morphology. See [robstride_vcan.md](docs/robstride_vcan.md).
+
+## Run a locomotion policy on Bello hardware
+
+The physical runner uses the blocking `bello_hardware` binding from
+`~/bello_stack`, reconstructs the checkpoint observation at 50 Hz, and maps
+logical ankle targets through the differential transmission. It is read-only by
+default:
+
+```bash
+uv run --with ~/bello_stack/components/bello-hardware-python \
+  bello-run-locomotion-hardware \
+  checkpoint_path=checkpoints/hardware_locomotion_seed0
+```
+
+The preflight acquires no lease and sends no motor command. See
+[hardware_locomotion.md](docs/hardware_locomotion.md) for the required training
+recipe, inventory and IMU contract, guarded arming command, and shutdown
+behavior.
 
 ## Validate changes
 
@@ -149,6 +172,7 @@ The supported installed commands are:
 - `bello-eval-motion-policy`
 - `bello-vast-train`
 - `bello-robstride-runner`
+- `bello-run-locomotion-hardware`
 
 ## Repository layout
 
