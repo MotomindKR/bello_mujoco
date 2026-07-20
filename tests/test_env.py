@@ -374,6 +374,7 @@ def test_standing_command_freezes_randomized_gait_phase(
 
     assert env._gait_phase(standing) == pytest.approx(0.0)
     assert env._gait_phase(moving) > 0.0
+    assert env._foot_phase_sin_cos(standing) == pytest.approx(jnp.zeros(4))
     assert env._foot_phase_height_target(standing) == pytest.approx(jnp.zeros(2))
 
 

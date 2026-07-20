@@ -2052,7 +2052,12 @@ class BelloLocomotionEnv:
 
     def _foot_phase_sin_cos(self, state: BelloState) -> jax.Array:
         angles = self._foot_phase_angles(state)
-        return jnp.concatenate([jnp.cos(angles), jnp.sin(angles)]).astype(jnp.float32)
+        phase = jnp.concatenate([jnp.cos(angles), jnp.sin(angles)]).astype(jnp.float32)
+        return jnp.where(
+            self._is_standing_command(state.command),
+            jnp.zeros_like(phase),
+            phase,
+        )
 
     def _foot_phase_height_target(self, state: BelloState) -> jax.Array:
         phase = jnp.mod(

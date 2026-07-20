@@ -122,6 +122,9 @@ Foot-phase tracking measures physical sole clearance over local terrain, holds
 zero throughout the configured duty-factor stance interval, and applies its
 swing-height curve only during the remaining cycle. Its default weight is 0.25,
 calibrated so the easier stance-aware score does not dominate velocity tracking.
+Standing commands mask the four foot-phase observation channels to zero. This
+gives the actor a representation that cannot be confused with the start of an
+alternating walking cycle; moving commands retain the cosine/sine phase encoding.
 Reset placement evaluates the local terrain and collision geometry after pose
 randomization, then aligns the lowest sole to `spawn.clearance`.
 

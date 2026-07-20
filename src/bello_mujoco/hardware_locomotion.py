@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
 import importlib
@@ -26,6 +27,7 @@ from bello_mujoco.checkpoint import (
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
 from bello_mujoco.policy import apply_actor
 from bello_mujoco.render import quat_rotate_inverse_np
+from bello_mujoco.rerun_eval import GamepadCommandSource, GamepadConfig, GamepadInput
 from bello_mujoco.tools.eval_policy import validate_checkpoint_shape
 from bello_mujoco.train.ppo import normalize_observation
 
@@ -42,6 +44,7 @@ class HardwareLocomotionConfig:
     imu_name: str = "imu"
     client_name: str = "bello-locomotion-policy"
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    gamepad: GamepadConfig = GamepadConfig()
     arm: bool = False
     operator_confirmation: str = ""
     connection_timeout_seconds: float = 3.0
@@ -49,7 +52,7 @@ class HardwareLocomotionConfig:
     command_validity_seconds: float = 0.08
     acknowledgement_timeout_seconds: float = 0.08
     rpc_timeout_seconds: float = 2.0
-    ramp_seconds: float = 3.0
+    ramp_seconds: float = 10.0
     max_duration_seconds: float = 10.0
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
@@ -327,6 +330,10 @@ def validate_hardware_config(
         raise ValueError("command must contain three finite values")
     if metadata is not None:
         validate_command(command, metadata)
+    if config.gamepad.controller_index < 0:
+        raise ValueError("gamepad.controller_index must be nonnegative")
+    if not 0.0 <= config.gamepad.deadzone < 1.0:
+        raise ValueError("gamepad.deadzone must be in [0, 1)")
 
 
 def validate_hardware_control_config(config: Any) -> None:
@@ -390,6 +397,55 @@ def validate_command(command: np.ndarray, metadata: CheckpointMetadata) -> None:
             f"hardware command {command.tolist()} exceeds checkpoint bounds "
             f"{bounds.tolist()}"
         )
+
+
+def command_ranges(
+    metadata: CheckpointMetadata,
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    if metadata.command is None:
+        raise ValueError("locomotion checkpoint is missing command metadata")
+    configured_bounds = (
+        metadata.command.lin_vel_x,
+        metadata.command.lin_vel_y,
+        metadata.command.ang_vel_yaw,
+    )
+    bounds = np.asarray(configured_bounds, dtype=np.float64)
+    if bounds.shape != (3, 2) or not np.all(np.isfinite(bounds)):
+        raise ValueError("locomotion checkpoint command bounds are invalid")
+    return (
+        (float(bounds[0, 0]), float(bounds[0, 1])),
+        (float(bounds[1, 0]), float(bounds[1, 1])),
+        (float(bounds[2, 0]), float(bounds[2, 1])),
+    )
+
+
+def hardware_command(
+    config: HardwareLocomotionConfig,
+    metadata: CheckpointMetadata,
+    gamepad_input: GamepadInput,
+) -> np.ndarray:
+    command = (
+        gamepad_input.command
+        if config.gamepad.enabled
+        else np.asarray(config.command, dtype=np.float32)
+    )
+    command = np.asarray(command, dtype=np.float32)
+    if command.shape != (3,) or not np.all(np.isfinite(command)):
+        raise RuntimeError("gamepad produced an invalid hardware command")
+    validate_command(command, metadata)
+    return command
+
+
+def report_gamepad_connection(gamepad_input: GamepadInput) -> None:
+    if not gamepad_input.connection_changed:
+        return
+    state = "connected" if gamepad_input.connected else "disconnected"
+    suffix = (
+        f": {gamepad_input.controller_name}"
+        if gamepad_input.controller_name is not None
+        else ""
+    )
+    print(f"Hardware gamepad {state}{suffix}; command is zero while disconnected.")
 
 
 def actuator_coordinate_names(env: BelloLocomotionEnv) -> tuple[str, ...]:
@@ -468,19 +524,17 @@ def foot_phase_sin_cos(
     randomized_frequency: float,
 ) -> np.ndarray:
     if float(np.linalg.norm(command)) <= config.standing_command_threshold:
-        phase = 0.0
+        return np.zeros(4, dtype=np.float32)
+    if config.randomize_frequency:
+        frequency = randomized_frequency
     else:
-        if config.randomize_frequency:
-            frequency = randomized_frequency
-        else:
-            frequency = np.clip(
-                1.0 / config.cycle_time
-                + config.command_speed_frequency_gain
-                * float(np.linalg.norm(command[:2])),
-                config.min_frequency,
-                config.max_frequency,
-            )
-        phase = (step_count * control_timestep * frequency) % 1.0
+        frequency = np.clip(
+            1.0 / config.cycle_time
+            + config.command_speed_frequency_gain * float(np.linalg.norm(command[:2])),
+            config.min_frequency,
+            config.max_frequency,
+        )
+    phase = (step_count * control_timestep * frequency) % 1.0
     angles = 2.0 * np.pi * (phase + np.asarray(config.phase_offsets, dtype=np.float64))
     return np.concatenate((np.cos(angles), np.sin(angles))).astype(np.float32)
 
@@ -506,74 +560,98 @@ def import_hardware_binding() -> Any:
         ) from error
 
 
+def require_async_hardware_binding(binding: Any) -> None:
+    control_session = getattr(binding, "ControlSession", None)
+    if control_session is None or not hasattr(control_session, "send_async"):
+        raise RuntimeError(
+            "armed hardware execution requires bello_hardware.ControlSession.send_async; "
+            "rebuild the local binding (use `uv run --no-cache --with "
+            "~/bello_stack/components/bello-hardware-python ...`)"
+        )
+
+
 def run_hardware_locomotion(
     checkpoint_path: Path,
     config: HardwareLocomotionConfig = HardwareLocomotionConfig(),
     *,
     hardware_binding: Any | None = None,
+    gamepad_factory: Any = GamepadCommandSource,
 ) -> None:
     validate_hardware_config(config)
     adapter, metadata = load_hardware_policy(checkpoint_path)
     validate_hardware_config(config, metadata)
     adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
-    command = np.asarray(config.command, dtype=np.float32)
+    if config.arm:
+        require_async_hardware_binding(binding)
+    with ExitStack() as resources:
+        gamepad = gamepad_factory(config.gamepad, command_ranges(metadata))
+        resources.callback(gamepad.close)
+        gamepad_input = gamepad.poll()
+        report_gamepad_connection(gamepad_input)
+        command = hardware_command(config, metadata, gamepad_input)
 
-    with binding.Robot.connect(
-        config.endpoint, timeout=config.connection_timeout_seconds
-    ) as robot:
+        robot = resources.enter_context(
+            binding.Robot.connect(
+                config.endpoint, timeout=config.connection_timeout_seconds
+            )
+        )
         groups = validate_hardware_inventory(robot, adapter, config, binding)
-        with robot.states(
-            groups=config.groups,
-            imus=(config.imu_name,),
-            reconnect=False,
-        ) as states:
-            frame = wait_for_hardware_frame(
-                states,
-                adapter.physical_coordinate_names,
-                config.groups,
-                config.imu_name,
-                binding.StateUnavailableError,
-                config.telemetry_timeout_seconds,
+        states = resources.enter_context(
+            robot.states(
+                groups=config.groups,
+                imus=(config.imu_name,),
+                reconnect=False,
             )
-            validate_hardware_frame(frame, config, expected_group_state="IDLE")
-            initial_error = float(
-                np.max(np.abs(frame.positions - adapter.nominal_physical_target))
+        )
+        frame = wait_for_hardware_frame(
+            states,
+            adapter.physical_coordinate_names,
+            config.groups,
+            config.imu_name,
+            binding.StateUnavailableError,
+            config.telemetry_timeout_seconds,
+        )
+        validate_hardware_frame(frame, config, expected_group_state="IDLE")
+        initial_error = float(
+            np.max(np.abs(frame.positions - adapter.nominal_physical_target))
+        )
+        if initial_error > config.max_initial_position_error_radians:
+            raise RuntimeError(
+                "robot is too far from the checkpoint nominal pose: "
+                f"max error {initial_error:.3f} rad exceeds "
+                f"{config.max_initial_position_error_radians:.3f} rad"
             )
-            if initial_error > config.max_initial_position_error_radians:
-                raise RuntimeError(
-                    "robot is too far from the checkpoint nominal pose: "
-                    f"max error {initial_error:.3f} rad exceeds "
-                    f"{config.max_initial_position_error_radians:.3f} rad"
-                )
+        print(
+            {
+                "hardware_preflight": "passed",
+                "endpoint": config.endpoint,
+                "groups": config.groups,
+                "imu": config.imu_name,
+                "coordinates": len(adapter.physical_coordinate_names),
+                "policy_joints": adapter.env.action_size,
+                "control_rate_hz": 1.0 / adapter.control_timestep,
+                "command_source": "gamepad" if config.gamepad.enabled else "fixed",
+                "gamepad_connected": gamepad_input.connected,
+                "command": tuple(float(value) for value in command),
+                "initial_pose_error_max": initial_error,
+                "armed": config.arm,
+            }
+        )
+        if not config.arm:
             print(
-                {
-                    "hardware_preflight": "passed",
-                    "endpoint": config.endpoint,
-                    "groups": config.groups,
-                    "imu": config.imu_name,
-                    "coordinates": len(adapter.physical_coordinate_names),
-                    "policy_joints": adapter.env.action_size,
-                    "control_rate_hz": 1.0 / adapter.control_timestep,
-                    "command": tuple(float(value) for value in command),
-                    "initial_pose_error_max": initial_error,
-                    "armed": config.arm,
-                }
+                "Read-only preflight complete; no lease was acquired and no motor command was sent."
             )
-            if not config.arm:
-                print(
-                    "Read-only preflight complete; no lease was acquired and no motor command was sent."
-                )
-                return
-            control_physical_robot(
-                binding,
-                groups,
-                states,
-                frame,
-                adapter,
-                command,
-                config,
-            )
+            return
+        control_physical_robot(
+            binding,
+            groups,
+            states,
+            frame,
+            adapter,
+            config,
+            gamepad,
+        )
 
 
 def validate_hardware_inventory(
@@ -723,8 +801,8 @@ def control_physical_robot(
     states: Any,
     initial_frame: HardwareFrame,
     adapter: HardwarePolicyAdapter,
-    command: np.ndarray,
     config: HardwareLocomotionConfig,
+    gamepad: GamepadCommandSource,
 ) -> None:
     with ExitStack() as resources:
         controls = {
@@ -738,16 +816,22 @@ def control_physical_robot(
             )
             for name, group in groups.items()
         }
-        for name, control in controls.items():
-            control.start(
-                coordinate_targets(
-                    binding,
-                    groups[name].coordinates,
-                    initial_frame.positions,
-                    adapter,
-                    config,
-                )
+        executor = resources.enter_context(
+            ThreadPoolExecutor(
+                max_workers=len(config.groups),
+                thread_name_prefix="bello-group-control",
             )
+        )
+        start_hardware_controls(
+            binding,
+            controls,
+            groups,
+            initial_frame.positions,
+            adapter,
+            config,
+            executor,
+        )
+        pending_receipts: list[Any] = []
 
         wait_for_group_state(
             states,
@@ -760,6 +844,13 @@ def control_physical_robot(
         deadline = time.monotonic()
         ramp_steps = max(1, math.ceil(config.ramp_seconds / adapter.control_timestep))
         for step in range(1, ramp_steps + 1):
+            gamepad_input = gamepad.poll()
+            report_gamepad_connection(gamepad_input)
+            if gamepad_input.exit_requested:
+                print("Hardware gamepad requested exit during the nominal-pose ramp.")
+                drain_command_receipts(pending_receipts)
+                stop_hardware_controls(controls, config, executor)
+                return
             fraction = step / ramp_steps
             requested = initial_frame.positions + fraction * (
                 adapter.nominal_physical_target - initial_frame.positions
@@ -767,7 +858,16 @@ def control_physical_robot(
             previous_target = limit_target_step(
                 previous_target, requested, config.max_target_step_radians
             )
-            send_targets(binding, controls, groups, previous_target, adapter, config)
+            send_targets(
+                binding,
+                controls,
+                groups,
+                previous_target,
+                adapter,
+                config,
+                executor,
+                pending_receipts,
+            )
             deadline = pace_hardware_loop(deadline, adapter.control_timestep, config)
             frame = wait_for_hardware_frame(
                 states,
@@ -786,6 +886,14 @@ def control_physical_robot(
         step = 0
         try:
             while time.monotonic() - start_time < config.max_duration_seconds:
+                gamepad_input = gamepad.poll()
+                report_gamepad_connection(gamepad_input)
+                if gamepad_input.exit_requested:
+                    print(
+                        "Hardware gamepad requested exit; stopping and disabling groups."
+                    )
+                    break
+                command = hardware_command(config, adapter.metadata, gamepad_input)
                 frame = wait_for_hardware_frame(
                     states,
                     adapter.physical_coordinate_names,
@@ -802,7 +910,14 @@ def control_physical_robot(
                     config.max_target_step_radians,
                 )
                 send_targets(
-                    binding, controls, groups, previous_target, adapter, config
+                    binding,
+                    controls,
+                    groups,
+                    previous_target,
+                    adapter,
+                    config,
+                    executor,
+                    pending_receipts,
                 )
                 step += 1
                 now = time.monotonic()
@@ -813,6 +928,8 @@ def control_physical_robot(
                             "elapsed_seconds": now - start_time,
                             "tilt_radians": policy_step.tilt_radians,
                             "action_abs_max": float(np.max(np.abs(policy_step.action))),
+                            "command": tuple(float(value) for value in command),
+                            "gamepad_connected": gamepad_input.connected,
                             "motor_age_ms": frame.max_motor_age_ms,
                             "imu_age_ms": frame.imu_age_ms,
                         }
@@ -821,8 +938,47 @@ def control_physical_robot(
                 deadline = pace_hardware_loop(
                     deadline, adapter.control_timestep, config
                 )
+            drain_command_receipts(pending_receipts)
         except KeyboardInterrupt:
             print("Hardware locomotion interrupted; stopping and disabling groups.")
+        stop_hardware_controls(controls, config, executor)
+
+
+def start_hardware_controls(
+    binding: Any,
+    controls: Mapping[str, Any],
+    groups: Mapping[str, Any],
+    physical_target: np.ndarray,
+    adapter: HardwarePolicyAdapter,
+    config: HardwareLocomotionConfig,
+    executor: Executor,
+) -> None:
+    targets = {
+        name: coordinate_targets(
+            binding,
+            groups[name].coordinates,
+            physical_target,
+            adapter,
+            config,
+        )
+        for name in config.groups
+    }
+    starts = {
+        name: executor.submit(controls[name].start, targets[name])
+        for name in config.groups
+    }
+    for name in config.groups:
+        starts[name].result()
+
+
+def stop_hardware_controls(
+    controls: Mapping[str, Any],
+    config: HardwareLocomotionConfig,
+    executor: Executor,
+) -> None:
+    stops = {name: executor.submit(controls[name].stop) for name in config.groups}
+    for name in config.groups:
+        stops[name].result()
 
 
 def coordinate_targets(
@@ -850,17 +1006,46 @@ def send_targets(
     physical_target: np.ndarray,
     adapter: HardwarePolicyAdapter,
     config: HardwareLocomotionConfig,
+    executor: Executor,
+    pending_receipts: list[Any],
 ) -> None:
-    for name in config.groups:
-        controls[name].send(
-            coordinate_targets(
-                binding,
-                groups[name].coordinates,
-                physical_target,
-                adapter,
-                config,
-            )
+    reap_command_receipts(pending_receipts)
+    targets = {
+        name: coordinate_targets(
+            binding,
+            groups[name].coordinates,
+            physical_target,
+            adapter,
+            config,
         )
+        for name in config.groups
+    }
+    submissions = {
+        name: executor.submit(controls[name].send_async, targets[name])
+        for name in config.groups
+    }
+    for name in config.groups:
+        pending_receipts.append(submissions[name].result())
+    maximum_pending = len(config.groups) * (
+        math.ceil(config.acknowledgement_timeout_seconds / adapter.control_timestep) + 1
+    )
+    while len(pending_receipts) > maximum_pending:
+        pending_receipts.pop(0).result()
+
+
+def reap_command_receipts(pending_receipts: list[Any]) -> None:
+    unresolved = []
+    for receipt in pending_receipts:
+        if receipt.done():
+            receipt.result()
+        else:
+            unresolved.append(receipt)
+    pending_receipts[:] = unresolved
+
+
+def drain_command_receipts(pending_receipts: list[Any]) -> None:
+    while pending_receipts:
+        pending_receipts.pop(0).result()
 
 
 def wait_for_group_state(

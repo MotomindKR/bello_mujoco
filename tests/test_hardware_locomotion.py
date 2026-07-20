@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,10 +24,15 @@ from bello_mujoco.hardware_locomotion import (
     HardwarePolicyAdapter,
     actuator_coordinate_names,
     actuator_impedance_gains,
+    command_ranges,
     foot_phase_sin_cos,
+    hardware_command,
     limit_target_step,
     projected_gravity_from_xyzw,
     run_hardware_locomotion,
+    send_targets,
+    start_hardware_controls,
+    stop_hardware_controls,
     tilt_from_xyzw,
     validate_command,
     validate_hardware_checkpoint,
@@ -39,6 +47,7 @@ from bello_mujoco.train.ppo import (
     init_observation_norm_state,
     init_value_norm_state,
 )
+from bello_mujoco.rerun_eval import GamepadConfig, GamepadInput
 
 
 def compose_hardware_training_config() -> TrainingRunConfig:
@@ -99,6 +108,13 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
+    assert config.command_config.standing_probability == pytest.approx(0.5)
+    assert config.config.gamma == pytest.approx(0.995)
+    assert config.config.gae_lambda == pytest.approx(0.98)
+    assert config.reward_config.standing_foot_vel.weight == pytest.approx(-4.0)
+    assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-5.0)
+    assert config.reward_config.termination.weight == pytest.approx(-5.0)
+    assert config.video_config.command == (0.0, 0.0, 0.0)
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
 
@@ -229,7 +245,7 @@ def test_hardware_imu_and_gait_terms_match_deployment_conventions() -> None:
         randomized_frequency=0.0,
     )
 
-    assert standing == pytest.approx((1.0, -1.0, 0.0, 0.0), abs=1.0e-6)
+    assert standing == pytest.approx(np.zeros(4), abs=1.0e-6)
     assert walking != pytest.approx(standing)
 
 
@@ -238,6 +254,7 @@ def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> No
 
     assert not config.hardware.arm
     assert config.hardware.command == (0.0, 0.0, 0.0)
+    assert config.hardware.gamepad.enabled
     validate_hardware_config(config.hardware)
 
     with pytest.raises(ValueError, match="operator_confirmation"):
@@ -252,6 +269,12 @@ def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> No
     )
     with pytest.raises(ValueError, match="must not exceed"):
         validate_hardware_config(HardwareLocomotionConfig(kp_scale=1.01))
+    with pytest.raises(ValueError, match="controller_index"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(
+                gamepad=replace(GamepadConfig(), controller_index=-1)
+            )
+        )
 
 
 def test_hardware_command_and_target_step_limits() -> None:
@@ -269,6 +292,102 @@ def test_hardware_command_and_target_step_limits() -> None:
 
     limited = limit_target_step(np.asarray((0.0, 0.0)), np.asarray((0.2, -0.1)), 0.05)
     assert limited == pytest.approx((0.05, -0.05))
+
+
+def test_hardware_gamepad_commands_fail_closed_and_use_checkpoint_bounds() -> None:
+    metadata = SimpleNamespace(
+        command=CommandConfig(
+            lin_vel_x=(-0.5, 1.0),
+            lin_vel_y=(-0.2, 0.3),
+            ang_vel_yaw=(-0.4, 0.6),
+        )
+    )
+    config = HardwareLocomotionConfig(command=(0.1, 0.1, 0.1))
+
+    assert command_ranges(metadata) == ((-0.5, 1.0), (-0.2, 0.3), (-0.4, 0.6))
+    assert hardware_command(
+        config,
+        metadata,
+        GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
+    ) == pytest.approx(np.zeros(3))
+    assert hardware_command(
+        config,
+        metadata,
+        GamepadInput(np.asarray((0.8, -0.1, 0.4)), connected=True),
+    ) == pytest.approx((0.8, -0.1, 0.4))
+
+
+def test_hardware_groups_start_concurrently() -> None:
+    barrier = threading.Barrier(2, timeout=1.0)
+    started = []
+    sent = []
+
+    class Control:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def start(self, targets) -> None:
+            assert targets == {self.name: self.name}
+            barrier.wait()
+            started.append(self.name)
+
+        def send_async(self, targets):
+            assert targets == {self.name: self.name}
+            barrier.wait()
+            sent.append(self.name)
+            return SimpleNamespace(done=lambda: True, result=lambda: None)
+
+        def stop(self) -> None:
+            barrier.wait()
+            stopped.append(self.name)
+
+    names = ("lower_body", "upper_body")
+    controls = {name: Control(name) for name in names}
+    stopped = []
+    groups = {name: SimpleNamespace(coordinates=(name,)) for name in names}
+    adapter = SimpleNamespace(
+        coordinate_index={name: index for index, name in enumerate(names)},
+        kp=np.ones(2),
+        kd=np.ones(2),
+        control_timestep=0.02,
+    )
+    binding = SimpleNamespace(
+        CoordinateTarget=SimpleNamespace(
+            position=lambda value, kp, kd: names[int(value)]
+        )
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        start_hardware_controls(
+            binding,
+            controls,
+            groups,
+            np.asarray((0.0, 1.0)),
+            adapter,
+            HardwareLocomotionConfig(groups=names),
+            executor,
+        )
+        pending_receipts = []
+        send_targets(
+            binding,
+            controls,
+            groups,
+            np.asarray((0.0, 1.0)),
+            adapter,
+            HardwareLocomotionConfig(groups=names),
+            executor,
+            pending_receipts,
+        )
+        assert len(pending_receipts) == 2
+        stop_hardware_controls(
+            controls,
+            HardwareLocomotionConfig(groups=names),
+            executor,
+        )
+
+    assert set(started) == set(names)
+    assert set(sent) == set(names)
+    assert set(stopped) == set(names)
 
 
 class FakeGroupState(Enum):
@@ -360,7 +479,13 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     )
 
     run_hardware_locomotion(
-        Path("unused"), HardwareLocomotionConfig(), hardware_binding=binding
+        Path("unused"),
+        HardwareLocomotionConfig(),
+        hardware_binding=binding,
+        gamepad_factory=lambda config, ranges: SimpleNamespace(
+            poll=lambda: GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
+            close=lambda: None,
+        ),
     )
 
     assert "no lease was acquired" in capsys.readouterr().out

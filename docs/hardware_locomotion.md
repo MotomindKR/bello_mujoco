@@ -22,7 +22,11 @@ checkout to this repository's lock file.
 The hardware recipe inherits the maintained locomotion algorithm and fixes the
 four coordinates absent from the physical inventory: waist roll, waist pitch,
 neck yaw, and head pitch. Waist yaw remains actuated, hands are spheres, and the
-policy retains its 13 logical leg/waist actions.
+policy retains its 13 logical leg/waist actions. It samples standing for half of
+new commands, uses a longer PPO credit horizon and stronger standing/fall
+penalties, and masks standing foot phase to a distinct all-zero observation.
+Its scheduled deterministic video is a ten-second zero-command rollout, making
+a failed neutral stance visible before deployment.
 
 ```bash
 uv run bello-train-ppo \
@@ -80,8 +84,40 @@ uv run --with ~/bello_stack/components/bello-hardware-python \
 ```
 
 The runner acquires both group leases, starts each group at its measured
-position, ramps to the nominal pose over three seconds, and then executes the
-deterministic actor at 50 Hz. Logical ankle position and velocity feedback is
+position, ramps to the nominal pose over ten seconds, and then executes the
+deterministic actor at 50 Hz. Independent motor groups are started and sent
+targets concurrently so neither group's command watchdog waits behind the
+other group's acknowledgement. By default, the inverted left-stick Y commands
+forward velocity, left-stick X commands lateral velocity, and inverted
+right-stick X commands yaw. The deadzone is rescaled and each axis uses the
+asymmetric bounds stored in the checkpoint. A missing or disconnected gamepad
+immediately commands zero; Start / Options exits and disables both groups.
+Set `hardware.gamepad.enabled=false` to use the fixed `hardware.command` value.
+
+For a checkpoint that must run from its original fingerprint-pinned worktree,
+invoke the repository-level compatibility launcher by absolute path from that
+worktree:
+
+```bash
+uv run --with ~/bello_stack/components/bello-hardware-python \
+  /path/to/current/repo/scripts/run_locomotion_hardware_gamepad.py \
+  --checkpoint-path checkpoints/hardware_locomotion_seed0 \
+  --arm \
+  --operator-confirmation I_HAVE_A_SPOTTER_AND_ESTOP_READY
+```
+
+This keeps checkpoint restoration in the pinned package while adding only the
+deployment-side gamepad command source.
+When developing the local Python binding itself, add `--no-cache` before
+`--with` so uv rebuilds the current source. Armed execution requires the
+binding's asynchronous command-receipt API; the runner rejects an older cached
+binding before acquiring a lease.
+
+The compatibility launcher also exposes command-validity, acknowledgement,
+and loop-lag limits for an explicitly isolated emulator. Keep the checked-in
+physical defaults for real hardware.
+
+Logical ankle position and velocity feedback is
 reconstructed by inverting the model's actuator-coordinate transform. Policy
 targets use the forward transform, so the two physical tendon motor targets
 remain consistent with training. Motor gains also come from the generated
@@ -107,6 +143,8 @@ hardware.max_motor_age_ms
 hardware.max_imu_age_ms
 hardware.kp_scale
 hardware.kd_scale
+hardware.gamepad.controller_index
+hardware.gamepad.deadzone
 ```
 
 All safety limits must remain positive. The runner's checks complement rather

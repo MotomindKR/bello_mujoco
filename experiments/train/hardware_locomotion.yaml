@@ -11,6 +11,25 @@ asset_config:
     neck_yaw: false
     head_pitch: false
 
+config:
+  # At 50 Hz, the base locomotion discount gives too little credit to actions
+  # that cause a slow standing fall one or two seconds later.
+  gamma: 0.995
+  gae_lambda: 0.98
+
+command_config:
+  # Failed standing episodes are shorter than walking episodes, so a balanced
+  # episode sampler is needed to keep standing well represented in rollouts.
+  standing_probability: 0.50
+
+reward_config:
+  standing_foot_vel:
+    weight: -4.0
+  standing_foot_air_time:
+    weight: -5.0
+  termination:
+    weight: -5.0
+
 checkpoint_config:
   name: hardware_locomotion_seed0
   wandb_artifact_name: hardware_locomotion_seed0
@@ -22,3 +41,5 @@ wandb_config:
 
 video_config:
   filename_prefix: hardware_locomotion
+  command: [0.0, 0.0, 0.0]
+  steps: 500

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 import math
@@ -32,12 +33,15 @@ from bello_mujoco.hardware_locomotion import (
     HardwareFrame,
     actuator_coordinate_names,
     actuator_impedance_gains,
-    coordinate_targets,
+    drain_command_receipts,
     import_hardware_binding,
     limit_target_step,
     normalized_quaternion_xyzw,
     pace_hardware_loop,
+    require_async_hardware_binding,
     send_targets,
+    start_hardware_controls,
+    stop_hardware_controls,
     tilt_from_xyzw,
     validate_hardware_control_config,
     validate_hardware_frame,
@@ -444,6 +448,8 @@ def run_hardware_motion(
     )
     validate_hardware_motion_config(config, adapter.env)
     binding = hardware_binding or import_hardware_binding()
+    if config.arm:
+        require_async_hardware_binding(binding)
     with binding.Robot.connect(
         config.endpoint, timeout=config.connection_timeout_seconds
     ) as robot:
@@ -515,16 +521,22 @@ def control_physical_motion(
             )
             for name, group in groups.items()
         }
-        for name, control in controls.items():
-            control.start(
-                coordinate_targets(
-                    binding,
-                    groups[name].coordinates,
-                    initial_frame.positions,
-                    adapter,
-                    config,
-                )
+        executor = resources.enter_context(
+            ThreadPoolExecutor(
+                max_workers=len(config.groups),
+                thread_name_prefix="bello-group-control",
             )
+        )
+        start_hardware_controls(
+            binding,
+            controls,
+            groups,
+            initial_frame.positions,
+            adapter,
+            config,
+            executor,
+        )
+        pending_receipts: list[Any] = []
         wait_for_group_state(
             states,
             adapter.physical_coordinate_names,
@@ -543,7 +555,16 @@ def control_physical_motion(
             previous_target = limit_target_step(
                 previous_target, requested, config.max_target_step_radians
             )
-            send_targets(binding, controls, groups, previous_target, adapter, config)
+            send_targets(
+                binding,
+                controls,
+                groups,
+                previous_target,
+                adapter,
+                config,
+                executor,
+                pending_receipts,
+            )
             deadline = pace_hardware_loop(deadline, adapter.control_timestep, config)
             frame = wait_for_hardware_frame(
                 states,
@@ -595,7 +616,14 @@ def control_physical_motion(
                     config.max_target_step_radians,
                 )
                 send_targets(
-                    binding, controls, groups, previous_target, adapter, config
+                    binding,
+                    controls,
+                    groups,
+                    previous_target,
+                    adapter,
+                    config,
+                    executor,
+                    pending_receipts,
                 )
                 step += 1
                 now = time.monotonic()
@@ -621,8 +649,10 @@ def control_physical_motion(
                 deadline = pace_hardware_loop(
                     deadline, adapter.control_timestep, config
                 )
+            drain_command_receipts(pending_receipts)
         except KeyboardInterrupt:
             print("Hardware motion interrupted; stopping and disabling groups.")
+        stop_hardware_controls(controls, config, executor)
 
 
 def yaw_from_xyzw(quaternion: np.ndarray) -> float:
