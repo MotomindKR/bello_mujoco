@@ -305,6 +305,8 @@ reward_config:
     link: null
   action_rate:
     weight: -0.01
+  joint_target_rate:
+    weight: 0.0
   action_limit:
     weight: -1.0
     soft_limit_ratio: 0.8
@@ -335,6 +337,10 @@ reward_config:
     weight: 2.0
     min_air_time: 0.2
     max_air_time: 0.5
+    command_speed_threshold: 0.1
+  touchdown_velocity:
+    weight: 0.0
+    height_threshold: 0.05
     command_speed_threshold: 0.1
   foot_phase:
     weight: 0.25

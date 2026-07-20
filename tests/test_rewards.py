@@ -12,11 +12,13 @@ from bello_mujoco.envs.rewards import (
     HipDeviationRewardConfig,
     InvalidActionRewardConfig,
     JointLimitRewardConfig,
+    JointTargetRateRewardConfig,
     RewardConfig,
     RewardInputs,
     StandingFootAirTimeRewardConfig,
     StandingFootVelRewardConfig,
     TouchdownAirTimeRewardConfig,
+    TouchdownVelocityRewardConfig,
     TrackLinVelXYRewardConfig,
     compute_locomotion_reward,
 )
@@ -52,8 +54,10 @@ def reward_inputs(**updates) -> RewardInputs:
         action_target_default=jnp.zeros(2, dtype=jnp.float32),
         action_target_low=jnp.asarray([-1.0, -1.0], dtype=jnp.float32),
         action_target_high=jnp.asarray([1.0, 1.0], dtype=jnp.float32),
+        action_target_transform=jnp.eye(2, dtype=jnp.float32),
         foot_contact=jnp.ones(2, dtype=jnp.float32),
         foot_height=jnp.zeros(2, dtype=jnp.float32),
+        foot_normal_velocity=jnp.zeros(2, dtype=jnp.float32),
         foot_lateral_speed_sq=jnp.zeros(2, dtype=jnp.float32),
         foot_angular_speed=jnp.zeros(2, dtype=jnp.float32),
         foot_air_time=jnp.zeros(2, dtype=jnp.float32),
@@ -180,6 +184,28 @@ def test_action_limit_penalty_is_quadratic_outside_soft_band() -> None:
     assert outside["reward/action_limit"] == pytest.approx(-0.0025)
 
 
+def test_joint_target_rate_uses_asymmetric_physical_target_mapping() -> None:
+    config = reward_config(
+        joint_target_rate=JointTargetRateRewardConfig(weight=-1.0e-5)
+    )
+    inputs = reward_inputs(
+        action=jnp.asarray([0.5, -0.5]),
+        last_action=jnp.zeros(2),
+        action_target_default=jnp.asarray([0.0, 0.0]),
+        action_target_low=jnp.asarray([-1.0, -2.0]),
+        action_target_high=jnp.asarray([2.0, 1.0]),
+        action_target_transform=jnp.asarray([[1.0, 1.0], [1.0, -1.0]]),
+    )
+
+    _, terms = compute_locomotion_reward(config, inputs)
+    _, finer = compute_locomotion_reward(
+        config, inputs.replace(control_timestep=jnp.asarray(0.01))
+    )
+
+    assert terms["reward/joint_target_rate"] == pytest.approx(-0.002)
+    assert finer["reward/joint_target_rate"] == pytest.approx(-0.004)
+
+
 def test_invalid_action_checks_requested_target_and_policy_clip() -> None:
     config = reward_config(invalid_action=InvalidActionRewardConfig(weight=-1.0))
     _, terms = compute_locomotion_reward(
@@ -285,6 +311,34 @@ def test_touchdown_air_time_is_gated_for_standing_commands() -> None:
     assert finer_timestep["reward/touchdown_air_time"] == pytest.approx(0.001)
 
 
+def test_touchdown_velocity_penalizes_low_descending_swing_foot() -> None:
+    config = reward_config(
+        touchdown_velocity=TouchdownVelocityRewardConfig(
+            weight=-0.25,
+            height_threshold=0.05,
+            command_speed_threshold=0.1,
+        )
+    )
+    inputs = reward_inputs(
+        command=jnp.asarray([0.5, 0.0, 0.0]),
+        foot_contact=jnp.asarray([0.0, 0.0]),
+        foot_height=jnp.asarray([0.02, 0.10]),
+        foot_normal_velocity=jnp.asarray([-1.0, -2.0]),
+    )
+
+    _, moving = compute_locomotion_reward(config, inputs)
+    _, standing = compute_locomotion_reward(
+        config, inputs.replace(command=jnp.zeros(3))
+    )
+    _, contacting = compute_locomotion_reward(
+        config, inputs.replace(foot_contact=jnp.ones(2))
+    )
+
+    assert moving["reward/touchdown_velocity"] == pytest.approx(-0.005)
+    assert standing["reward/touchdown_velocity"] == pytest.approx(0.0)
+    assert contacting["reward/touchdown_velocity"] == pytest.approx(0.0)
+
+
 def test_phase_and_standing_penalties_use_mutually_relevant_features() -> None:
     config = reward_config(
         foot_phase=FootPhaseRewardConfig(weight=1.0, sigma=0.01),
@@ -330,6 +384,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         foot_air_time=jnp.asarray([0.3, 0.1]),
         foot_contact_time=jnp.asarray([0.0, 0.1]),
         foot_height=jnp.asarray([0.02, 0.03]),
+        foot_normal_velocity=jnp.asarray([-1.0, -0.5]),
         foot_phase_height_target=jnp.asarray([0.1, 0.1]),
         foot_lateral_speed_sq=jnp.asarray([0.1, 0.2]),
         foot_angular_speed=jnp.asarray([1.0, 1.0]),
@@ -360,7 +415,10 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
             coarse = standing_terms[name]
             fine = standing_fine[name]
         assert coarse != 0.0, name
-        assert coarse == pytest.approx(4.0 * fine), name
+        if name == "reward/joint_target_rate":
+            assert fine == pytest.approx(4.0 * coarse), name
+        else:
+            assert coarse == pytest.approx(4.0 * fine), name
 
 
 def test_reward_validation_rejects_invalid_safety_ranges() -> None:
@@ -400,3 +458,16 @@ def test_contact_timing_validation_rejects_nonfinite_bounds(term) -> None:
 def test_touchdown_air_time_validation_rejects_nonfinite_bounds(term) -> None:
     with pytest.raises(ValueError, match="finite"):
         reward_config(touchdown_air_time=term)
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        TouchdownVelocityRewardConfig(height_threshold=-0.01),
+        TouchdownVelocityRewardConfig(height_threshold=float("nan")),
+        TouchdownVelocityRewardConfig(command_speed_threshold=float("inf")),
+    ],
+)
+def test_touchdown_velocity_validation_rejects_invalid_thresholds(term) -> None:
+    with pytest.raises(ValueError, match="nonnegative and finite"):
+        reward_config(touchdown_velocity=term)

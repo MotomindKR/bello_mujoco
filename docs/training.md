@@ -118,6 +118,12 @@ Every weighted reward component is multiplied by the control timestep,
 including contact-timing, touchdown air-time, and terminal events. Reward
 weights therefore have one consistent per-second convention. The scalar reward
 remains signed; penalties are never hidden by clamping the total to zero.
+The optional joint-target-rate term maps both consecutive normalized actions
+through the configured asymmetric logical target bounds and then through the
+actuator-coordinate transform before measuring physical motor-target rate. The
+optional touchdown-velocity term penalizes downward foot motion near the terrain
+while walking, before contact, and is disabled for standing commands. Both terms
+default to zero so the baseline locomotion recipe is unchanged.
 Foot-phase tracking measures physical sole clearance over local terrain, holds
 zero throughout the configured duty-factor stance interval, and applies its
 swing-height curve only during the remaining cycle. Its default weight is 0.25,

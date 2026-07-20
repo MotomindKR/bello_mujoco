@@ -1139,6 +1139,7 @@ class BelloLocomotionEnv:
             undesired_contact,
             self_collision,
             joint_angle_offset,
+            world_ids,
         )
         reward, reward_info = self.sanitize_nonfinite_reward(
             reward, reward_info, done_flags
@@ -1900,6 +1901,7 @@ class BelloLocomotionEnv:
         undesired_contact: jax.Array,
         self_collision: jax.Array,
         joint_angle_offset: jax.Array | None = None,
+        world_id: jax.Array | int = 0,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         command = next_state.command
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
@@ -1944,8 +1946,12 @@ class BelloLocomotionEnv:
                 ),
                 action_target_low=self._policy_action_target_low(),
                 action_target_high=self._policy_action_target_high(),
+                action_target_transform=jnp.asarray(
+                    self.model.actuator_coordinate_transform
+                ),
                 foot_contact=foot_contact,
                 foot_height=foot_height,
+                foot_normal_velocity=self._foot_normal_velocity(next_state, world_id),
                 foot_lateral_speed_sq=foot_lateral_speed_sq,
                 foot_angular_speed=foot_angular_speed,
                 foot_air_time=state.foot_air_time,
@@ -2385,6 +2391,19 @@ class BelloLocomotionEnv:
     def _foot_lateral_speed_sq(self, state: BelloState) -> jax.Array:
         foot_world_vel = self._body_world_lin_vel(state, self.model.foot_body_ids)
         return jnp.sum(foot_world_vel[:, :2] ** 2, axis=1)
+
+    def _foot_normal_velocity(
+        self, state: BelloState, world_id: jax.Array | int = 0
+    ) -> jax.Array:
+        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
+        foot_world_vel = self._body_world_lin_vel(state, self.model.foot_body_ids)
+        sole_position = self._foot_sole_positions(state, world_id)
+        foot_world_vel += jnp.cross(
+            state.data.cvel[foot_body_ids, :3],
+            sole_position - state.data.xpos[foot_body_ids],
+        )
+        terrain_normal = self._terrain_surface_normal(sole_position[:, :2], world_id)
+        return jnp.sum(foot_world_vel * terrain_normal, axis=1)
 
     def _foot_angular_speed(self, state: BelloState) -> jax.Array:
         foot_body_ids = jnp.asarray(self.model.foot_body_ids)

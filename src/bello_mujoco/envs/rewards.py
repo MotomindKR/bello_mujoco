@@ -107,6 +107,11 @@ class ActionRateRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class JointTargetRateRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
 class ActionLimitRewardConfig(WeightedRewardConfig):
     soft_limit_ratio: float = 0.8
 
@@ -162,6 +167,12 @@ class TouchdownAirTimeRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class TouchdownVelocityRewardConfig(WeightedRewardConfig):
+    height_threshold: float = 0.05
+    command_speed_threshold: float = 0.10
+
+
+@dataclass(frozen=True)
 class FootPhaseRewardConfig(WeightedRewardConfig):
     sigma: float = 0.01
 
@@ -203,6 +214,7 @@ class RewardConfig:
         weight=-1.0
     )
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.01)
+    joint_target_rate: JointTargetRateRewardConfig = JointTargetRateRewardConfig()
     action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(weight=-1.0)
     torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-2.5e-5)
     joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-1.0)
@@ -215,6 +227,7 @@ class RewardConfig:
     touchdown_air_time: TouchdownAirTimeRewardConfig = TouchdownAirTimeRewardConfig(
         weight=2.0
     )
+    touchdown_velocity: TouchdownVelocityRewardConfig = TouchdownVelocityRewardConfig()
     foot_phase: FootPhaseRewardConfig = FootPhaseRewardConfig(weight=0.25)
     standing_foot_vel: StandingFootVelRewardConfig = StandingFootVelRewardConfig(
         weight=-2.0
@@ -237,6 +250,7 @@ class RewardConfig:
                 self.foot_slip,
                 self.contact_timing,
                 self.touchdown_air_time,
+                self.touchdown_velocity,
                 self.standing_foot_vel,
                 self.standing_foot_air_time,
             )
@@ -287,8 +301,10 @@ class RewardInputs:
     action_target_default: jax.Array
     action_target_low: jax.Array
     action_target_high: jax.Array
+    action_target_transform: jax.Array
     foot_contact: jax.Array
     foot_height: jax.Array
+    foot_normal_velocity: jax.Array
     foot_lateral_speed_sq: jax.Array
     foot_angular_speed: jax.Array
     foot_air_time: jax.Array
@@ -318,6 +334,30 @@ def compute_locomotion_reward(
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
     action_rate = jnp.sum((inputs.action - inputs.last_action) ** 2)
+
+    def action_target(action: jax.Array) -> jax.Array:
+        normalized = action / inputs.action_clip_limit
+        span = jnp.where(
+            normalized >= 0.0,
+            inputs.action_target_high - inputs.action_target_default,
+            inputs.action_target_default - inputs.action_target_low,
+        )
+        return inputs.action_target_default + span * normalized
+
+    logical_target_delta = (
+        jnp.zeros_like(inputs.actuator_force)
+        .at[inputs.policy_joint_indices]
+        .set(action_target(inputs.action) - action_target(inputs.last_action))
+    )
+    physical_target_rate = (
+        jnp.matmul(
+            inputs.action_target_transform,
+            logical_target_delta,
+            precision=jax.lax.Precision.HIGHEST,
+        )
+        / inputs.control_timestep
+    )
+    joint_target_rate = jnp.sum(physical_target_rate**2)
 
     action_soft_limit = config.action_limit.soft_limit_ratio * inputs.action_clip_limit
     action_limit_excess = jnp.maximum(jnp.abs(inputs.action) - action_soft_limit, 0.0)
@@ -419,6 +459,15 @@ def compute_locomotion_reward(
         touchdown_air_time,
         0.0,
     )
+    touchdown_velocity = jnp.where(
+        command_speed > config.touchdown_velocity.command_speed_threshold,
+        jnp.sum(
+            (~contact).astype(jnp.float32)
+            * (inputs.foot_height <= config.touchdown_velocity.height_threshold)
+            * jnp.maximum(-inputs.foot_normal_velocity, 0.0) ** 2
+        ),
+        0.0,
+    )
     foot_phase = jnp.exp(
         -jnp.sum((inputs.foot_height - inputs.foot_phase_height_target) ** 2)
         / config.foot_phase.sigma
@@ -441,6 +490,7 @@ def compute_locomotion_reward(
         "ang_vel_xy": ang_vel_xy,
         "flat_orientation": flat_orientation,
         "action_rate": action_rate,
+        "joint_target_rate": joint_target_rate,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
         "joint_pose": joint_pose,
@@ -451,6 +501,7 @@ def compute_locomotion_reward(
         "foot_slip": foot_slip,
         "contact_timing": contact_timing,
         "touchdown_air_time": touchdown_air_time,
+        "touchdown_velocity": touchdown_velocity,
         "foot_phase": foot_phase,
         "standing_foot_vel": standing_foot_vel,
         "standing_foot_air_time": standing_foot_air_time,
@@ -502,6 +553,12 @@ def validate_reward_config(config: RewardConfig) -> None:
         ),
         "touchdown_air_time.command_speed_threshold": (
             config.touchdown_air_time.command_speed_threshold
+        ),
+        "touchdown_velocity.height_threshold": (
+            config.touchdown_velocity.height_threshold
+        ),
+        "touchdown_velocity.command_speed_threshold": (
+            config.touchdown_velocity.command_speed_threshold
         ),
         "standing_foot_vel.command_speed_threshold": (
             config.standing_foot_vel.command_speed_threshold
