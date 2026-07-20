@@ -147,6 +147,23 @@ The preflight acquires no lease and sends no motor command. See
 recipe, inventory and IMU contract, guarded arming command, and shutdown
 behavior.
 
+## Run a motion policy through hardwared
+
+Schema-6 motion checkpoints can use the fingerprint-neutral repository entry
+script. It consumes motor and IMU telemetry from `bello-hardwared` plus local
+pelvis odometry from `bello-state-estimatord`. It is read-only by default:
+
+```bash
+uv run --with ~/bello_stack/components/bello-hardware-python \
+  ./scripts/bello-run-motion-hardware \
+  checkpoints/balance-level4-schema6-main-4741853-20260720-v3
+```
+
+The script lives outside the installed `bello_mujoco` package so adding it does
+not invalidate the checkpoint's implementation fingerprint. Use it against the
+RobStride/vCAN HIL stack before considering physical arming. See
+[hardware_motion_tracking.md](docs/hardware_motion_tracking.md).
+
 ## Validate changes
 
 ```bash
@@ -173,6 +190,9 @@ The supported installed commands are:
 - `bello-vast-train`
 - `bello-robstride-runner`
 - `bello-run-locomotion-hardware`
+
+The repository also provides the fingerprint-neutral executable script
+`./scripts/bello-run-motion-hardware` for schema-6 motion checkpoints.
 
 ## Repository layout
 

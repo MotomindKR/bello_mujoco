@@ -27,6 +27,10 @@ bello-robstride-runner
 bello-run-locomotion-hardware
 ```
 
+Schema-6 motion checkpoints use the fingerprint-neutral repository script
+`./scripts/bello-run-motion-hardware`; see
+[hardware_motion_tracking.md](hardware_motion_tracking.md).
+
 All Python commands work as `uv run <command>` outside an activated development
 shell. Use `<command> --help` and `<command> --hydra-help` for the current config
 tree rather than relying on copied option lists.
