@@ -94,6 +94,15 @@ asymmetric bounds stored in the checkpoint. A missing or disconnected gamepad
 immediately commands zero; Start / Options exits and disables both groups.
 Set `hardware.gamepad.enabled=false` to use the fixed `hardware.command` value.
 
+With the default `hardware.wait_for_start_button=true`, completing the ramp does
+not start policy inference. The runner continues sending the nominal hold
+target while the operator releases the external torso support. Once the robot
+is free and settled, A / Cross resets the policy history and starts inference;
+Start / Options aborts without entering the policy. A button press made during
+the ramp is not latched, so it must be released and pressed again at the prompt.
+Fixed-command operation requires `hardware.wait_for_start_button=false` together
+with `hardware.gamepad.enabled=false`.
+
 For a checkpoint that must run from its original fingerprint-pinned worktree,
 invoke the repository-level compatibility launcher by absolute path from that
 worktree:
@@ -145,6 +154,7 @@ hardware.kp_scale
 hardware.kd_scale
 hardware.gamepad.controller_index
 hardware.gamepad.deadzone
+hardware.wait_for_start_button
 ```
 
 All safety limits must remain positive. The runner's checks complement rather

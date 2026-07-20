@@ -45,6 +45,7 @@ class HardwareLocomotionConfig:
     client_name: str = "bello-locomotion-policy"
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     gamepad: GamepadConfig = GamepadConfig()
+    wait_for_start_button: bool = True
     arm: bool = False
     operator_confirmation: str = ""
     connection_timeout_seconds: float = 3.0
@@ -334,6 +335,8 @@ def validate_hardware_config(
         raise ValueError("gamepad.controller_index must be nonnegative")
     if not 0.0 <= config.gamepad.deadzone < 1.0:
         raise ValueError("gamepad.deadzone must be in [0, 1)")
+    if config.wait_for_start_button and not config.gamepad.enabled:
+        raise ValueError("wait_for_start_button requires gamepad.enabled")
 
 
 def validate_hardware_control_config(config: Any) -> None:
@@ -879,6 +882,24 @@ def control_physical_robot(
             )
             validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
+        if config.wait_for_start_button:
+            started = wait_for_policy_start(
+                binding,
+                controls,
+                groups,
+                states,
+                previous_target,
+                adapter,
+                config,
+                gamepad,
+                executor,
+                pending_receipts,
+            )
+            if not started:
+                drain_command_receipts(pending_receipts)
+                stop_hardware_controls(controls, config, executor)
+                return
+
         adapter.reset()
         start_time = time.monotonic()
         next_status = start_time
@@ -942,6 +963,55 @@ def control_physical_robot(
         except KeyboardInterrupt:
             print("Hardware locomotion interrupted; stopping and disabling groups.")
         stop_hardware_controls(controls, config, executor)
+
+
+def wait_for_policy_start(
+    binding: Any,
+    controls: Mapping[str, Any],
+    groups: Mapping[str, Any],
+    states: Any,
+    hold_target: np.ndarray,
+    adapter: HardwarePolicyAdapter,
+    config: HardwareLocomotionConfig,
+    gamepad: GamepadCommandSource,
+    executor: Executor,
+    pending_receipts: list[Any],
+) -> bool:
+    print(
+        "Nominal-pose ramp complete; policy is held. Release the torso support, "
+        "let the robot settle, then press A/Cross to start. Press Start/Options "
+        "to abort."
+    )
+    deadline = time.monotonic()
+    while True:
+        gamepad_input = gamepad.poll()
+        report_gamepad_connection(gamepad_input)
+        if gamepad_input.exit_requested:
+            print("Hardware gamepad requested exit before policy start.")
+            return False
+        if gamepad_input.connected and gamepad_input.reset_requested:
+            print("Hardware policy start confirmed with A/Cross.")
+            return True
+        send_targets(
+            binding,
+            controls,
+            groups,
+            hold_target,
+            adapter,
+            config,
+            executor,
+            pending_receipts,
+        )
+        deadline = pace_hardware_loop(deadline, adapter.control_timestep, config)
+        frame = wait_for_hardware_frame(
+            states,
+            adapter.physical_coordinate_names,
+            config.groups,
+            config.imu_name,
+            binding.StateUnavailableError,
+            config.telemetry_timeout_seconds,
+        )
+        validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
 
 def start_hardware_controls(

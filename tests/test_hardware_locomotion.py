@@ -38,6 +38,7 @@ from bello_mujoco.hardware_locomotion import (
     validate_hardware_checkpoint,
     validate_hardware_config,
     validate_hardware_inventory,
+    wait_for_policy_start,
 )
 from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.policy import init_actor_critic, policy_observation_size
@@ -255,6 +256,7 @@ def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> No
     assert not config.hardware.arm
     assert config.hardware.command == (0.0, 0.0, 0.0)
     assert config.hardware.gamepad.enabled
+    assert config.hardware.wait_for_start_button
     validate_hardware_config(config.hardware)
 
     with pytest.raises(ValueError, match="operator_confirmation"):
@@ -275,6 +277,68 @@ def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> No
                 gamepad=replace(GamepadConfig(), controller_index=-1)
             )
         )
+    with pytest.raises(ValueError, match="wait_for_start_button"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(gamepad=replace(GamepadConfig(), enabled=False))
+        )
+
+
+def test_hardware_waits_for_fresh_start_button_after_ramp(monkeypatch) -> None:
+    inputs = iter(
+        (
+            GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
+            GamepadInput(np.zeros(3, dtype=np.float32), connected=True),
+            GamepadInput(
+                np.zeros(3, dtype=np.float32),
+                connected=True,
+                reset_requested=True,
+            ),
+        )
+    )
+    sent = []
+    validated = []
+    monkeypatch.setattr(
+        "bello_mujoco.hardware_locomotion.send_targets",
+        lambda *args: sent.append(np.asarray(args[3]).copy()),
+    )
+    monkeypatch.setattr(
+        "bello_mujoco.hardware_locomotion.pace_hardware_loop",
+        lambda deadline, timestep, config: deadline,
+    )
+    frame = SimpleNamespace()
+    monkeypatch.setattr(
+        "bello_mujoco.hardware_locomotion.wait_for_hardware_frame",
+        lambda *args: frame,
+    )
+    monkeypatch.setattr(
+        "bello_mujoco.hardware_locomotion.validate_hardware_frame",
+        lambda value, config, expected_group_state: validated.append(
+            (value, expected_group_state)
+        ),
+    )
+    adapter = SimpleNamespace(
+        control_timestep=0.02,
+        physical_coordinate_names=("motor",),
+    )
+    binding = SimpleNamespace(StateUnavailableError=RuntimeError)
+    gamepad = SimpleNamespace(poll=lambda: next(inputs))
+    target = np.asarray((0.25,), dtype=np.float64)
+
+    assert wait_for_policy_start(
+        binding,
+        {},
+        {},
+        object(),
+        target,
+        adapter,
+        HardwareLocomotionConfig(groups=("group",)),
+        gamepad,
+        SimpleNamespace(),
+        [],
+    )
+    assert len(sent) == 2
+    assert sent == pytest.approx((target, target))
+    assert validated == [(frame, "RUNNING"), (frame, "RUNNING")]
 
 
 def test_hardware_command_and_target_step_limits() -> None:

@@ -22,6 +22,7 @@ class GamepadHardwareConfig:
     operator_confirmation: str = ""
     controller_index: int = 0
     deadzone: float = 0.1
+    wait_for_start_button: bool = True
     ramp_seconds: float = 10.0
     max_duration_seconds: float = 10.0
     max_initial_position_error_radians: float = 0.75
@@ -61,6 +62,7 @@ def main(config: GamepadHardwareConfig) -> None:
     common = {
         "endpoint": config.endpoint,
         "command": (0.0, 0.0, 0.0),
+        "wait_for_start_button": config.wait_for_start_button,
         "arm": config.arm,
         "operator_confirmation": config.operator_confirmation,
         "ramp_seconds": config.ramp_seconds,
