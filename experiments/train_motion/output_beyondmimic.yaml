@@ -1,0 +1,18 @@
+# Full paper-aligned BeyondMimic run for the private output.bvh reference.
+defaults:
+  - beyondmimic
+  - _self_
+
+motion:
+  directory: motions/custom
+  sequence: output_bello_beyondmimic
+
+checkpoint_config:
+  name: output_bello_beyondmimic_seed0
+
+wandb_config:
+  run_name: output-bello-beyondmimic-seed0
+  tags: [bello, fixed-waist, fixed-head, sphere-hands, gmr, beyondmimic, custom]
+
+video_config:
+  filename_prefix: output_bello_beyondmimic
