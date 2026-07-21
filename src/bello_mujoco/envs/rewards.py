@@ -102,6 +102,11 @@ class FlatOrientationRewardConfig(LinkRewardConfig):
 
 
 @dataclass(frozen=True)
+class BaseHeightRewardConfig(LinkRewardConfig):
+    target_height: float = 0.86
+
+
+@dataclass(frozen=True)
 class ActionRateRewardConfig(WeightedRewardConfig):
     pass
 
@@ -119,6 +124,13 @@ class TorqueL1RewardConfig(WeightedRewardConfig):
 @dataclass(frozen=True)
 class JointPoseRewardConfig(WeightedRewardConfig):
     pass
+
+
+@dataclass(frozen=True)
+class StandStillRewardConfig(WeightedRewardConfig):
+    command_speed_threshold: float = 0.10
+    body_speed_threshold: float = 0.10
+    yaw_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -152,6 +164,8 @@ class ContactTimingRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
     min_contact_time: float = 0.30
     command_speed_threshold: float = 0.10
+    body_speed_threshold: float = 0.10
+    yaw_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -159,21 +173,8 @@ class TouchdownAirTimeRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
     max_air_time: float = 0.50
     command_speed_threshold: float = 0.10
-
-
-@dataclass(frozen=True)
-class FootPhaseRewardConfig(WeightedRewardConfig):
-    sigma: float = 0.01
-
-
-@dataclass(frozen=True)
-class StandingFootVelRewardConfig(WeightedRewardConfig):
-    command_speed_threshold: float = 0.10
-
-
-@dataclass(frozen=True)
-class StandingFootAirTimeRewardConfig(WeightedRewardConfig):
-    command_speed_threshold: float = 0.10
+    body_speed_threshold: float = 0.10
+    yaw_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -200,12 +201,14 @@ class RewardConfig:
     lin_vel_z: LinVelZRewardConfig = LinVelZRewardConfig()
     ang_vel_xy: AngVelXYRewardConfig = AngVelXYRewardConfig(weight=-0.15)
     flat_orientation: FlatOrientationRewardConfig = FlatOrientationRewardConfig(
-        weight=-1.0
+        weight=-2.0
     )
+    base_height: BaseHeightRewardConfig = BaseHeightRewardConfig(weight=-10.0)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.01)
     action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(weight=-1.0)
     torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-2.5e-5)
-    joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-1.0)
+    joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-0.1)
+    stand_still: StandStillRewardConfig = StandStillRewardConfig(weight=-1.0)
     hip_deviation: HipDeviationRewardConfig = HipDeviationRewardConfig(weight=-0.25)
     knee_deviation: KneeDeviationRewardConfig = KneeDeviationRewardConfig(weight=-0.1)
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-1.0)
@@ -215,16 +218,9 @@ class RewardConfig:
     touchdown_air_time: TouchdownAirTimeRewardConfig = TouchdownAirTimeRewardConfig(
         weight=2.0
     )
-    foot_phase: FootPhaseRewardConfig = FootPhaseRewardConfig(weight=0.25)
-    standing_foot_vel: StandingFootVelRewardConfig = StandingFootVelRewardConfig(
-        weight=-2.0
-    )
-    standing_foot_air_time: StandingFootAirTimeRewardConfig = (
-        StandingFootAirTimeRewardConfig(weight=-3.0)
-    )
     undesired_contact: UndesiredContactRewardConfig = UndesiredContactRewardConfig()
     self_collision: SelfCollisionRewardConfig = SelfCollisionRewardConfig()
-    termination: TerminationRewardConfig = TerminationRewardConfig(weight=-1.0)
+    termination: TerminationRewardConfig = TerminationRewardConfig(weight=-100.0)
 
     def __post_init__(self) -> None:
         validate_reward_config(self)
@@ -237,14 +233,12 @@ class RewardConfig:
                 self.foot_slip,
                 self.contact_timing,
                 self.touchdown_air_time,
-                self.standing_foot_vel,
-                self.standing_foot_air_time,
             )
         )
 
     @property
     def uses_foot_metadata(self) -> bool:
-        return self.uses_foot_contact_metadata or self.foot_phase.enabled
+        return self.uses_foot_contact_metadata
 
     @property
     def uses_terrain_contact_metadata(self) -> bool:
@@ -258,6 +252,7 @@ class RewardConfig:
             self.lin_vel_z,
             self.ang_vel_xy,
             self.flat_orientation,
+            self.base_height,
         )
         links = {term.link for term in terms if term.enabled and term.link}
         if self.track_lin_vel_xy.enabled and self.track_lin_vel_xy.frame_link:
@@ -275,6 +270,7 @@ class RewardInputs:
     lin_vel_z: jax.Array
     ang_vel_xy: jax.Array
     projected_gravity: jax.Array
+    base_height: jax.Array
     joint_pos: jax.Array
     joint_pos_rel: jax.Array
     action: jax.Array
@@ -288,13 +284,11 @@ class RewardInputs:
     action_target_low: jax.Array
     action_target_high: jax.Array
     foot_contact: jax.Array
-    foot_height: jax.Array
     foot_lateral_speed_sq: jax.Array
     foot_angular_speed: jax.Array
     foot_air_time: jax.Array
     foot_contact_time: jax.Array
     last_foot_contact: jax.Array
-    foot_phase_height_target: jax.Array
     joint_pose_weights: jax.Array
     hip_joint_indices: jax.Array
     knee_joint_indices: jax.Array
@@ -317,6 +311,7 @@ def compute_locomotion_reward(
     lin_vel_z = inputs.lin_vel_z**2
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
+    base_height = (inputs.base_height - config.base_height.target_height) ** 2
     action_rate = jnp.sum((inputs.action - inputs.last_action) ** 2)
 
     action_soft_limit = config.action_limit.soft_limit_ratio * inputs.action_clip_limit
@@ -330,6 +325,15 @@ def compute_locomotion_reward(
     )
     torque_l1 = jnp.sum(jnp.abs(inputs.actuator_force[inputs.policy_joint_indices]))
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
+    command_speed = jnp.linalg.norm(inputs.command)
+    body_speed = jnp.linalg.norm(inputs.lin_vel_xy)
+    settled = (
+        (command_speed <= config.stand_still.command_speed_threshold)
+        & (body_speed <= config.stand_still.body_speed_threshold)
+        & (jnp.abs(inputs.yaw_vel_z) <= config.stand_still.yaw_speed_threshold)
+    )
+    stand_still_pose = jnp.sum(inputs.joint_pos_rel[inputs.policy_joint_indices] ** 2)
+    stand_still = jnp.where(settled, stand_still_pose, 0.0)
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
     lateral_command = inputs.command[config.hip_deviation.lateral_command_index]
     hip_deviation *= (
@@ -379,8 +383,14 @@ def compute_locomotion_reward(
             + config.foot_slip.angular_speed_scale * inputs.foot_angular_speed
         )
     )
-    command_speed = jnp.linalg.norm(inputs.command)
-    moving = command_speed > config.contact_timing.command_speed_threshold
+    contact_motion_active = motion_active(
+        command_speed,
+        body_speed,
+        jnp.abs(inputs.yaw_vel_z),
+        command_speed_threshold=config.contact_timing.command_speed_threshold,
+        body_speed_threshold=config.contact_timing.body_speed_threshold,
+        yaw_speed_threshold=config.contact_timing.yaw_speed_threshold,
+    )
     contact = inputs.foot_contact.astype(bool)
     previous_contact = inputs.last_foot_contact.astype(bool)
     touchdown = contact & ~previous_contact
@@ -396,7 +406,7 @@ def compute_locomotion_reward(
         / config.contact_timing.min_contact_time
     )
     contact_timing = jnp.where(
-        moving,
+        contact_motion_active,
         jnp.sum(
             touchdown.astype(jnp.float32) * short_air**2
             + liftoff.astype(jnp.float32) * short_contact**2
@@ -414,23 +424,17 @@ def compute_locomotion_reward(
             - config.touchdown_air_time.min_air_time,
         )
     )
+    touchdown_motion_active = motion_active(
+        command_speed,
+        body_speed,
+        jnp.abs(inputs.yaw_vel_z),
+        command_speed_threshold=config.touchdown_air_time.command_speed_threshold,
+        body_speed_threshold=config.touchdown_air_time.body_speed_threshold,
+        yaw_speed_threshold=config.touchdown_air_time.yaw_speed_threshold,
+    )
     touchdown_air_time = jnp.where(
-        command_speed > config.touchdown_air_time.command_speed_threshold,
+        touchdown_motion_active,
         touchdown_air_time,
-        0.0,
-    )
-    foot_phase = jnp.exp(
-        -jnp.sum((inputs.foot_height - inputs.foot_phase_height_target) ** 2)
-        / config.foot_phase.sigma
-    )
-    standing_foot_vel = jnp.where(
-        command_speed <= config.standing_foot_vel.command_speed_threshold,
-        safe_mean(inputs.foot_lateral_speed_sq),
-        0.0,
-    )
-    standing_foot_air_time = jnp.where(
-        command_speed <= config.standing_foot_air_time.command_speed_threshold,
-        safe_mean(inputs.foot_air_time),
         0.0,
     )
 
@@ -440,10 +444,12 @@ def compute_locomotion_reward(
         "lin_vel_z": lin_vel_z,
         "ang_vel_xy": ang_vel_xy,
         "flat_orientation": flat_orientation,
+        "base_height": base_height,
         "action_rate": action_rate,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
         "joint_pose": joint_pose,
+        "stand_still": stand_still,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
@@ -451,9 +457,6 @@ def compute_locomotion_reward(
         "foot_slip": foot_slip,
         "contact_timing": contact_timing,
         "touchdown_air_time": touchdown_air_time,
-        "foot_phase": foot_phase,
-        "standing_foot_vel": standing_foot_vel,
-        "standing_foot_air_time": standing_foot_air_time,
         "undesired_contact": inputs.undesired_contact,
         "self_collision": inputs.self_collision,
         "termination": inputs.done.astype(jnp.float32),
@@ -471,8 +474,20 @@ def reward_terms(config: RewardConfig) -> dict[str, WeightedRewardConfig]:
     return {field.name: getattr(config, field.name) for field in fields(config)}
 
 
-def safe_mean(values: jax.Array) -> jax.Array:
-    return jnp.mean(values) if values.size else jnp.asarray(0.0, dtype=jnp.float32)
+def motion_active(
+    command_speed: jax.Array,
+    body_speed: jax.Array,
+    yaw_speed: jax.Array,
+    *,
+    command_speed_threshold: float,
+    body_speed_threshold: float,
+    yaw_speed_threshold: float,
+) -> jax.Array:
+    return (
+        (command_speed > command_speed_threshold)
+        | (body_speed > body_speed_threshold)
+        | (yaw_speed > yaw_speed_threshold)
+    )
 
 
 def validate_reward_config(config: RewardConfig) -> None:
@@ -482,7 +497,6 @@ def validate_reward_config(config: RewardConfig) -> None:
     for name, sigma in (
         ("track_lin_vel_xy", config.track_lin_vel_xy.sigma),
         ("track_ang_vel_z", config.track_ang_vel_z.sigma),
-        ("foot_phase", config.foot_phase.sigma),
     ):
         if not math.isfinite(sigma) or sigma <= 0:
             raise ValueError(f"{name}.sigma must be positive and finite, got {sigma}")
@@ -503,16 +517,32 @@ def validate_reward_config(config: RewardConfig) -> None:
         "touchdown_air_time.command_speed_threshold": (
             config.touchdown_air_time.command_speed_threshold
         ),
-        "standing_foot_vel.command_speed_threshold": (
-            config.standing_foot_vel.command_speed_threshold
+        "contact_timing.body_speed_threshold": (
+            config.contact_timing.body_speed_threshold
         ),
-        "standing_foot_air_time.command_speed_threshold": (
-            config.standing_foot_air_time.command_speed_threshold
+        "contact_timing.yaw_speed_threshold": (
+            config.contact_timing.yaw_speed_threshold
         ),
+        "touchdown_air_time.body_speed_threshold": (
+            config.touchdown_air_time.body_speed_threshold
+        ),
+        "touchdown_air_time.yaw_speed_threshold": (
+            config.touchdown_air_time.yaw_speed_threshold
+        ),
+        "stand_still.command_speed_threshold": (
+            config.stand_still.command_speed_threshold
+        ),
+        "stand_still.body_speed_threshold": (config.stand_still.body_speed_threshold),
+        "stand_still.yaw_speed_threshold": (config.stand_still.yaw_speed_threshold),
     }
     for name, value in nonnegative.items():
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+    if (
+        not math.isfinite(config.base_height.target_height)
+        or config.base_height.target_height <= 0
+    ):
+        raise ValueError("base_height.target_height must be positive and finite")
     if (
         not math.isfinite(config.contact_timing.min_air_time)
         or config.contact_timing.min_air_time <= 0

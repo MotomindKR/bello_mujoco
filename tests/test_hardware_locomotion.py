@@ -15,7 +15,7 @@ from hydra import compose, initialize_config_dir
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.checkpoint import CheckpointNormalizationState
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware_locomotion import (
     ARM_CONFIRMATION,
@@ -25,7 +25,6 @@ from bello_mujoco.hardware_locomotion import (
     actuator_coordinate_names,
     actuator_impedance_gains,
     command_ranges,
-    foot_phase_sin_cos,
     hardware_command,
     limit_target_step,
     projected_gravity_from_xyzw,
@@ -113,9 +112,11 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.command_config.standing_probability == pytest.approx(0.5)
     assert config.config.gamma == pytest.approx(0.995)
     assert config.config.gae_lambda == pytest.approx(0.98)
-    assert config.reward_config.standing_foot_vel.weight == pytest.approx(-4.0)
-    assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-5.0)
-    assert config.reward_config.termination.weight == pytest.approx(-5.0)
+    assert config.reward_config.joint_pose.weight == pytest.approx(-0.1)
+    assert config.reward_config.stand_still.weight == pytest.approx(-1.0)
+    assert config.reward_config.base_height.weight == pytest.approx(-10.0)
+    assert config.reward_config.flat_orientation.weight == pytest.approx(-2.0)
+    assert config.reward_config.termination.weight == pytest.approx(-100.0)
     assert config.video_config.command == (0.0, 0.0, 0.0)
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
@@ -212,11 +213,11 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
 
     result = adapter.step(frame, command)
 
-    assert result.observation.shape == (55,)
+    assert result.observation.shape == (51,)
     assert result.observation[:3] == pytest.approx((0.0, 0.0, 0.980665))
     assert result.observation[3:6] == pytest.approx(np.zeros(3))
     assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
-    assert result.observation[13:16] == pytest.approx(command)
+    assert result.observation[9:12] == pytest.approx(command)
     assert result.action.shape == (13,)
     assert result.physical_target.shape == (25,)
     assert np.all(np.isfinite(result.physical_target))
@@ -226,7 +227,7 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
     )
 
 
-def test_hardware_imu_and_gait_terms_match_deployment_conventions() -> None:
+def test_hardware_imu_terms_match_deployment_conventions() -> None:
     projected_gravity = projected_gravity_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0)))
     assert projected_gravity == pytest.approx((0.0, 0.0, -1.0))
     assert specific_force_from_gravity_removed_acceleration(
@@ -242,25 +243,6 @@ def test_hardware_imu_and_gait_terms_match_deployment_conventions() -> None:
         gravity_removed, tilted_gravity
     ) == pytest.approx(expected_specific_force, abs=1.0e-6)
     assert tilt_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0))) == pytest.approx(0.0)
-
-    gait = GaitConfig(randomize_frequency=False)
-    standing = foot_phase_sin_cos(
-        gait,
-        step_count=20,
-        control_timestep=0.02,
-        command=np.zeros(3),
-        randomized_frequency=0.0,
-    )
-    walking = foot_phase_sin_cos(
-        gait,
-        step_count=20,
-        control_timestep=0.02,
-        command=np.asarray((0.2, 0.0, 0.0)),
-        randomized_frequency=0.0,
-    )
-
-    assert standing == pytest.approx(np.zeros(4), abs=1.0e-6)
-    assert walking != pytest.approx(standing)
 
 
 def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> None:

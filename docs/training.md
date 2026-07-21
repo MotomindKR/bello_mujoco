@@ -118,13 +118,22 @@ Every weighted reward component is multiplied by the control timestep,
 including contact-timing, touchdown air-time, and terminal events. Reward
 weights therefore have one consistent per-second convention. The scalar reward
 remains signed; penalties are never hidden by clamping the total to zero.
-Foot-phase tracking measures physical sole clearance over local terrain, holds
-zero throughout the configured duty-factor stance interval, and applies its
-swing-height curve only during the remaining cycle. Its default weight is 0.25,
-calibrated so the easier stance-aware score does not dominate velocity tracking.
-Standing commands mask the four foot-phase observation channels to zero. This
-gives the actor a representation that cannot be confused with the start of an
-alternating walking cycle; moving commands retain the cosine/sine phase encoding.
+Locomotion is phase-free: neither actor/critic observations nor rewards contain
+an externally prescribed gait phase. Alternation must emerge from velocity,
+contact, air-time, and regularization terms.
+
+The general nominal-pose penalty has weight `-0.1`. A separate `stand_still`
+pose penalty with weight `-1.0` activates only when command speed, measured
+horizontal speed, and measured yaw speed are all at or below `0.1`. This avoids
+pulling immediately toward the standing pose while the robot is still braking.
+Conversely, contact-timing and touchdown air-time remain active whenever any of
+those commanded or measured speeds exceeds `0.1`; a zero command therefore does
+not remove landing credit while the robot still has walking momentum.
+
+Dense stability feedback includes pelvis-height error with weight `-10.0` and
+target height `0.86`, plus torso orientation with weight `-2.0`. Physical failure
+termination has weight `-100.0`, which contributes `-2.0` at the default 50 Hz
+control rate. These values use the same timestep scaling as every other term.
 Reset placement evaluates the local terrain and collision geometry after pose
 randomization, then aligns the lowest sole to `spawn.clearance`.
 

@@ -734,7 +734,6 @@ def mujoco_eval_state(
         foot_contact_debounce_time=foot_contact_debounce_time,
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
-        gait_frequency=env.sample_gait_frequency(None),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,
@@ -764,10 +763,9 @@ def mujoco_eval_info(
 
 def mujoco_contact_terms(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     return (
         jnp.asarray(mujoco_foot_contact(env, mj_data), dtype=jnp.float32),
-        jnp.asarray(mujoco_foot_height(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_foot_lateral_speed_sq(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_foot_angular_speed(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_undesired_contact(env, mj_data), dtype=jnp.float32),

@@ -831,7 +831,6 @@ def run_rerun_evaluation(
                 contact_terms = mujoco_contact_terms(env, mj_data)
                 (
                     raw_foot_contact,
-                    foot_height,
                     lateral_speed,
                     angular_speed,
                     undesired,
@@ -847,7 +846,6 @@ def run_rerun_evaluation(
                     jnp.asarray(requested_action_np),
                     jnp.asarray(done_flags["done/terminal"]),
                     foot_contact,
-                    foot_height,
                     lateral_speed,
                     angular_speed,
                     undesired,

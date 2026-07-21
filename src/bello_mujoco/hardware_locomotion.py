@@ -24,7 +24,7 @@ from bello_mujoco.checkpoint import (
     CheckpointNormalizationState,
     restore_evaluation_checkpoint,
 )
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.policy import apply_actor
 from bello_mujoco.render import quat_rotate_inverse_np
 from bello_mujoco.rerun_eval import GamepadCommandSource, GamepadConfig, GamepadInput
@@ -130,7 +130,6 @@ class HardwarePolicyAdapter:
             env.model.default_joint_target, dtype=np.float64
         )
         self.kp, self.kd = actuator_impedance_gains(env)
-        self.gait_frequency = deployment_gait_frequency(env.config.gait)
         self._normalization = normalization.observation
         self._actor = eqx.filter_jit(
             lambda observation: apply_actor(policy, observation)
@@ -183,19 +182,11 @@ class HardwarePolicyAdapter:
         specific_force = specific_force_from_gravity_removed_acceleration(
             frame.linear_acceleration, projected_gravity
         )
-        foot_phase = foot_phase_sin_cos(
-            self.env.config.gait,
-            step_count=self._step_count,
-            control_timestep=self.control_timestep,
-            command=command,
-            randomized_frequency=self.gait_frequency,
-        )
         scale = self.env.config.observation.scale
         components = {
             "imu_linear_acceleration": specific_force * scale.base_lin_acc,
             "imu_angular_velocity": frame.angular_velocity * scale.base_ang_vel,
             "projected_gravity": projected_gravity * scale.projected_gravity,
-            "foot_phase": foot_phase * scale.foot_phase,
             "command": command * scale.command,
             "joint_position": (
                 logical_position[self.policy_indices]
@@ -526,36 +517,6 @@ def normalized_quaternion_xyzw(value: np.ndarray) -> np.ndarray:
     if not math.isfinite(norm) or norm < 0.9 or norm > 1.1:
         raise RuntimeError(f"hardware IMU quaternion norm is invalid: {norm}")
     return quaternion / norm
-
-
-def deployment_gait_frequency(config: GaitConfig) -> float:
-    if config.randomize_frequency:
-        return 0.5 * (config.frequency_range[0] + config.frequency_range[1])
-    return 0.0
-
-
-def foot_phase_sin_cos(
-    config: GaitConfig,
-    *,
-    step_count: int,
-    control_timestep: float,
-    command: np.ndarray,
-    randomized_frequency: float,
-) -> np.ndarray:
-    if float(np.linalg.norm(command)) <= config.standing_command_threshold:
-        return np.zeros(4, dtype=np.float32)
-    if config.randomize_frequency:
-        frequency = randomized_frequency
-    else:
-        frequency = np.clip(
-            1.0 / config.cycle_time
-            + config.command_speed_frequency_gain * float(np.linalg.norm(command[:2])),
-            config.min_frequency,
-            config.max_frequency,
-        )
-    phase = (step_count * control_timestep * frequency) % 1.0
-    angles = 2.0 * np.pi * (phase + np.asarray(config.phase_offsets, dtype=np.float64))
-    return np.concatenate((np.cos(angles), np.sin(angles))).astype(np.float32)
 
 
 def limit_target_step(

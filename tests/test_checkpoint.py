@@ -88,7 +88,6 @@ class FakeEnv:
             foot_contact_debounce_time=foot_zeros,
             last_foot_contact=jnp.zeros((batch_size, 2), dtype=bool),
             command=jnp.zeros((batch_size, 3), dtype=jnp.float32),
-            gait_frequency=jnp.ones((batch_size,), dtype=jnp.float32),
             step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
             episode_return=zeros,
             episode_track_lin_vel_xy=zeros,

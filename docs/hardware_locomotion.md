@@ -8,7 +8,7 @@ current sphere-hand Bello inventory only. It does not support the standard
 The data path is:
 
 ```text
-hardwared telemetry -> physical-to-logical transmission -> 55-value actor frame
+hardwared telemetry -> physical-to-logical transmission -> 51-value actor frame
                     -> ten-frame stack -> deterministic policy mean
                     -> logical target -> physical differential-ankle target
                     -> hardwared position/impedance command
@@ -23,8 +23,10 @@ The hardware recipe inherits the maintained locomotion algorithm and fixes the
 four coordinates absent from the physical inventory: waist roll, waist pitch,
 neck yaw, and head pitch. Waist yaw remains actuated, hands are spheres, and the
 policy retains its 13 logical leg/waist actions. It samples standing for half of
-new commands, uses a longer PPO credit horizon and stronger standing/fall
-penalties, and masks standing foot phase to a distinct all-zero observation.
+new commands and uses a longer PPO credit horizon. The policy is phase-free;
+landing rewards remain active during measured residual motion, the stronger
+standing pose cost starts only after motion settles, and dense height/orientation
+penalties lead into the terminal fall penalty.
 Its scheduled deterministic video is a ten-second zero-command rollout, making
 a failed neutral stance visible before deployment.
 

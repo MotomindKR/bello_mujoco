@@ -101,19 +101,18 @@ from that prepared morphology. Its deployable actor frame is:
 pelvis-mounted IMU-frame linear acceleration[3]
 pelvis-mounted IMU-frame angular velocity[3]
 projected gravity[3]
-left/right foot phase sin/cos[4]
 command[3]
 policy joint position[13]
 policy joint velocity[13]
 last action[13]
 ```
 
-With commands enabled this is 55 values per frame. The IMU terms have the same
+With commands enabled this is 51 values per frame. The IMU terms have the same
 specific-force and gyro semantics as the configured pelvis-mounted MuJoCo
 accelerometer and gyro. The privileged critic adds root-frame linear velocity,
-terrain-relative root clearance, and policy-actuator force for 72 values per
+terrain-relative root clearance, and policy-actuator force for 68 values per
 frame. The package training default stacks ten frames, producing actor and
-critic inputs of 550 and 720 values. Observation noise and scaling do not change
+critic inputs of 510 and 680 values. Observation noise and scaling do not change
 the layout.
 
 The generated IMU site is the source of truth for its body frame. When sensor
@@ -134,7 +133,7 @@ Environment configuration covers:
 - numerical bounds for finite physics excursions and constraint forces;
 - flat or seeded-slope planes and rough terrain;
 - joint-origin, target-offset, and inertia randomization;
-- reward, termination, gait, and safety terms.
+- reward, termination, contact, and safety terms.
 
 The rollout and reward hot path remains JAX-compatible. Asset generation,
 checkpoint I/O, W&B, rendering, and CLI setup remain host-side operations.
