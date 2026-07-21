@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Executable wrapper for the fingerprint-neutral motion hardware runner."""
+
+from run_motion_hardware import entrypoint
+
+
+if __name__ == "__main__":
+    entrypoint()
