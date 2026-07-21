@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 import importlib.util
 from pathlib import Path
@@ -134,6 +135,65 @@ def test_nominal_pose_is_checked_after_ramp() -> None:
         motion_hardware.require_nominal_pose(frame, adapter, 0.75)
 
     motion_hardware.require_nominal_pose(frame, adapter, 0.8)
+
+
+def test_armed_runner_requires_async_hardware_binding() -> None:
+    with pytest.raises(RuntimeError, match="send_async"):
+        motion_hardware.require_async_hardware_binding(SimpleNamespace())
+
+    motion_hardware.require_async_hardware_binding(
+        SimpleNamespace(ControlSession=SimpleNamespace(send_async=lambda: None))
+    )
+
+
+def test_motion_targets_are_submitted_to_both_groups_asynchronously(
+    monkeypatch,
+) -> None:
+    submitted = []
+
+    class Receipt:
+        def done(self):
+            return True
+
+        def result(self):
+            return None
+
+    class Control:
+        def __init__(self, name):
+            self.name = name
+
+        def send_async(self, targets):
+            submitted.append((self.name, targets))
+            return Receipt()
+
+    config = HardwareLocomotionConfig(groups=("lower", "upper"))
+    groups = {name: SimpleNamespace(coordinates=(name,)) for name in config.groups}
+    controls = {name: Control(name) for name in config.groups}
+    adapter = SimpleNamespace(control_timestep=0.02)
+    monkeypatch.setattr(
+        motion_hardware,
+        "coordinate_targets",
+        lambda _binding, coordinates, *_args: {coordinates[0]: coordinates[0]},
+    )
+    pending = []
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        motion_hardware.send_motion_targets(
+            SimpleNamespace(),
+            controls,
+            groups,
+            np.zeros(2),
+            adapter,
+            config,
+            executor,
+            pending,
+        )
+        motion_hardware.drain_command_receipts(pending)
+
+    assert sorted(submitted) == [
+        ("lower", {"lower": "lower"}),
+        ("upper", {"upper": "upper"}),
+    ]
 
 
 class FakeGroupState(Enum):

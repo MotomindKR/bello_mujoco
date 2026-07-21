@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator, Mapping
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -683,6 +684,8 @@ def run_motion_hardware(
     )
     adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
+    if hardware.arm:
+        require_async_hardware_binding(binding)
     with (
         pose_stream_factory(motion) as poses,
         binding.Robot.connect(
@@ -760,16 +763,22 @@ def control_motion_robot(
             )
             for name, group in groups.items()
         }
-        for name, control in controls.items():
-            control.start(
-                coordinate_targets(
-                    binding,
-                    groups[name].coordinates,
-                    initial_frame.positions,
-                    adapter,
-                    config,
-                )
+        executor = resources.enter_context(
+            ThreadPoolExecutor(
+                max_workers=len(config.groups),
+                thread_name_prefix="bello-motion-control",
             )
+        )
+        start_motion_controls(
+            binding,
+            controls,
+            groups,
+            initial_frame.positions,
+            adapter,
+            config,
+            executor,
+        )
+        pending_receipts: list[Any] = []
         wait_for_group_state(
             states,
             adapter.physical_coordinate_names,
@@ -789,7 +798,14 @@ def control_motion_robot(
                 previous_target, requested, config.max_target_step_radians
             )
             send_motion_targets(
-                binding, controls, groups, previous_target, adapter, config
+                binding,
+                controls,
+                groups,
+                previous_target,
+                adapter,
+                config,
+                executor,
+                pending_receipts,
             )
             deadline = pace_hardware_loop(deadline, adapter.control_timestep, config)
             frame = wait_for_hardware_frame(
@@ -835,7 +851,14 @@ def control_motion_robot(
                     config.max_target_step_radians,
                 )
                 send_motion_targets(
-                    binding, controls, groups, previous_target, adapter, config
+                    binding,
+                    controls,
+                    groups,
+                    previous_target,
+                    adapter,
+                    config,
+                    executor,
+                    pending_receipts,
                 )
                 step += 1
                 now = time.monotonic()
@@ -862,8 +885,57 @@ def control_motion_robot(
                 deadline = pace_hardware_loop(
                     deadline, adapter.control_timestep, config
                 )
+            drain_command_receipts(pending_receipts)
         except KeyboardInterrupt:
             print("Motion hardware run interrupted; stopping and disabling groups.")
+        stop_motion_controls(controls, config, executor)
+
+
+def require_async_hardware_binding(binding: Any) -> None:
+    control_session = getattr(binding, "ControlSession", None)
+    if control_session is None or not hasattr(control_session, "send_async"):
+        raise RuntimeError(
+            "armed motion execution requires bello_hardware.ControlSession.send_async; "
+            "rebuild the local binding with `uv run --no-cache --with "
+            "~/bello_stack/components/bello-hardware-python ...`"
+        )
+
+
+def start_motion_controls(
+    binding: Any,
+    controls: Mapping[str, Any],
+    groups: Mapping[str, Any],
+    physical_target: np.ndarray,
+    adapter: MotionHardwarePolicyAdapter,
+    config: HardwareLocomotionConfig,
+    executor: Executor,
+) -> None:
+    targets = {
+        name: coordinate_targets(
+            binding,
+            groups[name].coordinates,
+            physical_target,
+            adapter,
+            config,
+        )
+        for name in config.groups
+    }
+    starts = {
+        name: executor.submit(controls[name].start, targets[name])
+        for name in config.groups
+    }
+    for name in config.groups:
+        starts[name].result()
+
+
+def stop_motion_controls(
+    controls: Mapping[str, Any],
+    config: HardwareLocomotionConfig,
+    executor: Executor,
+) -> None:
+    stops = {name: executor.submit(controls[name].stop) for name in config.groups}
+    for name in config.groups:
+        stops[name].result()
 
 
 def send_motion_targets(
@@ -873,17 +945,46 @@ def send_motion_targets(
     physical_target: np.ndarray,
     adapter: MotionHardwarePolicyAdapter,
     config: HardwareLocomotionConfig,
+    executor: Executor,
+    pending_receipts: list[Any],
 ) -> None:
-    for name in config.groups:
-        controls[name].send(
-            coordinate_targets(
-                binding,
-                groups[name].coordinates,
-                physical_target,
-                adapter,
-                config,
-            )
+    reap_command_receipts(pending_receipts)
+    targets = {
+        name: coordinate_targets(
+            binding,
+            groups[name].coordinates,
+            physical_target,
+            adapter,
+            config,
         )
+        for name in config.groups
+    }
+    submissions = {
+        name: executor.submit(controls[name].send_async, targets[name])
+        for name in config.groups
+    }
+    for name in config.groups:
+        pending_receipts.append(submissions[name].result())
+    maximum_pending = len(config.groups) * (
+        math.ceil(config.acknowledgement_timeout_seconds / adapter.control_timestep) + 1
+    )
+    while len(pending_receipts) > maximum_pending:
+        pending_receipts.pop(0).result()
+
+
+def reap_command_receipts(pending_receipts: list[Any]) -> None:
+    unresolved = []
+    for receipt in pending_receipts:
+        if receipt.done():
+            receipt.result()
+        else:
+            unresolved.append(receipt)
+    pending_receipts[:] = unresolved
+
+
+def drain_command_receipts(pending_receipts: list[Any]) -> None:
+    while pending_receipts:
+        pending_receipts.pop(0).result()
 
 
 def require_nominal_pose(
