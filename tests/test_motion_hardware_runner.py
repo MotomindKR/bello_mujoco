@@ -106,6 +106,23 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
         )
 
 
+def test_nominal_physical_target_uses_model_default_pose() -> None:
+    adapter = motion_hardware.MotionHardwarePolicyAdapter.__new__(
+        motion_hardware.MotionHardwarePolicyAdapter
+    )
+    adapter.transform = np.asarray(((1.0, 0.5), (0.0, 2.0)))
+    adapter.env = SimpleNamespace(
+        model=SimpleNamespace(
+            default_joint_target=np.asarray((0.2, -0.4)),
+            mj_model=SimpleNamespace(
+                actuator_ctrlrange=np.asarray(((-1.0, 1.0), (-0.5, 0.5)))
+            ),
+        )
+    )
+
+    assert adapter.nominal_physical_target == pytest.approx((0.0, -0.5))
+
+
 class FakeGroupState(Enum):
     IDLE = 1
 
@@ -202,7 +219,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     )
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
-        reference_physical_target=np.zeros(2),
+        nominal_physical_target=np.zeros(2),
         env=SimpleNamespace(action_size=25),
         control_timestep=0.02,
         start_time=0.0,
