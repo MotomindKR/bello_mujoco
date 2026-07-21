@@ -5,12 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import math
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import jax.numpy as jnp
 import mujoco
-from mujoco import mjx
 import numpy as np
+
+if TYPE_CHECKING:
+    from mujoco import mjx
 
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
@@ -208,6 +209,8 @@ class BelloModel:
                 "this BelloModel was loaded without MJX; load with load_mjx=True "
                 "before using MJX reset/step APIs"
             )
+        from mujoco import mjx
+
         return mjx.make_data(
             self.mj_model,
             impl="warp",
@@ -215,6 +218,17 @@ class BelloModel:
             naccdmax=self.warp_naccdmax,
             njmax=self.warp_njmax,
         )
+
+
+def preserve_runtime_physics(source: mujoco.MjModel, target: mujoco.MjModel) -> None:
+    """Copy runtime physics overrides across a topology-preserving rebuild."""
+
+    if source.ngeom != target.ngeom:
+        raise ValueError("model rebuild unexpectedly changed the geom count")
+    target.opt.timestep = source.opt.timestep
+    target.geom_margin[:] = source.geom_margin
+    target.geom_solref[:] = source.geom_solref
+    target.geom_solimp[:] = source.geom_solimp
 
 
 def resolve_imu_body_name(
@@ -429,16 +443,17 @@ def _load_bello_model_from_path(
         terrain_geom_ids=terrain_geom_ids,
     )
 
-    mjx_model = mjx.put_model(mj_model, impl="warp") if load_mjx else None
-    if mjx_model is not None:
-        model_updates = {}
+    mjx_model = None
+    if load_mjx:
+        import jax.numpy as jnp
+        from mujoco import mjx
+
+        mjx_model = mjx.put_model(mj_model, impl="warp")
         if randomized_fields is not None:
-            model_updates.update(
+            mjx_model = mjx_model.replace(
                 jnt_pos=jnp.asarray(randomized_fields["jnt_pos"]),
                 body_inertia=jnp.asarray(randomized_fields["body_inertia"]),
             )
-        if model_updates:
-            mjx_model = mjx_model.replace(**model_updates)
 
     default_qpos, default_qvel, default_ctrl = model_home_state(mj_model)
     default_qpos[root_qpos_adr : root_qpos_adr + 3] = np.asarray(

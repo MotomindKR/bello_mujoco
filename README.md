@@ -33,6 +33,22 @@ motor gain/effort scaling. The physical differential ankle tendons and their
 actuators are always generated. Generated assets are cached outside the source
 tree.
 
+For the native visualizer, use the maintained 20,000-face visual-mesh recipe:
+
+```bash
+uv run bello-prepare-assets --config-name visualizer
+```
+
+The recipe uses sphere end effectors and writes the flattened viewer MJCF and
+referenced meshes under the ignored `assets/generated/visualizer/` directory.
+The RobStride runner exposes its MuJoCo `odom_from_pelvis_link` ground-truth
+pose through `bello.pose.v1.PoseService` bound to `0.0.0.0:50052`, so the
+visualizer does not need the hardware contact-aided estimator during a
+simulation run. Local clients connect through `127.0.0.1:50052`.
+Press Enter in the runner terminal to cycle between releasing the torso guide
+and resetting the robot to its home pose with the guide re-engaged. This also
+works with `headless=true`.
+
 ## Train
 
 Validate the complete training path with the lightweight recipe:

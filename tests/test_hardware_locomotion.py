@@ -31,6 +31,7 @@ from bello_mujoco.hardware_locomotion import (
     projected_gravity_from_xyzw,
     run_hardware_locomotion,
     send_targets,
+    specific_force_from_gravity_removed_acceleration,
     start_hardware_controls,
     stop_hardware_controls,
     tilt_from_xyzw,
@@ -212,7 +213,8 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
     result = adapter.step(frame, command)
 
     assert result.observation.shape == (55,)
-    assert result.observation[:6] == pytest.approx(np.zeros(6))
+    assert result.observation[:3] == pytest.approx((0.0, 0.0, 0.980665))
+    assert result.observation[3:6] == pytest.approx(np.zeros(3))
     assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
     assert result.observation[13:16] == pytest.approx(command)
     assert result.action.shape == (13,)
@@ -225,9 +227,20 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
 
 
 def test_hardware_imu_and_gait_terms_match_deployment_conventions() -> None:
-    assert projected_gravity_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0))) == (
-        pytest.approx((0.0, 0.0, -1.0))
+    projected_gravity = projected_gravity_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0)))
+    assert projected_gravity == pytest.approx((0.0, 0.0, -1.0))
+    assert specific_force_from_gravity_removed_acceleration(
+        np.zeros(3), projected_gravity
+    ) == pytest.approx((0.0, 0.0, 9.80665))
+
+    tilted_gravity = projected_gravity_from_xyzw(
+        np.asarray((0.2, -0.3, 0.1, 0.92736185))
     )
+    expected_specific_force = np.asarray((1.5, -2.0, 8.0))
+    gravity_removed = expected_specific_force + 9.80665 * tilted_gravity
+    assert specific_force_from_gravity_removed_acceleration(
+        gravity_removed, tilted_gravity
+    ) == pytest.approx(expected_specific_force, abs=1.0e-6)
     assert tilt_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0))) == pytest.approx(0.0)
 
     gait = GaitConfig(randomize_frequency=False)

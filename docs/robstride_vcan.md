@@ -104,6 +104,13 @@ timing, torso guide, MuJoCo ankle differential tendons, and IMU emulation. The
 backend and terrain are intentionally not configuration
 switches: this runner always uses CPU MuJoCo and a flat plane.
 
+The default HIL timing is 400 Hz MuJoCo physics, 100 Hz RobStride feedback,
+and 250 Hz EBIMU output. The EBIMU protocol accepts only integer-millisecond
+output intervals, so 400 Hz cannot be represented; 250 Hz is the fastest valid
+rate below the physics rate. The locomotion policy remains at its trained 50 Hz
+control rate, giving eight physics steps and two hardwared control ticks per
+policy action when hardwared uses the companion 100 Hz vCAN configuration.
+
 Apply normal Hydra overrides as `field=value`. To use a separate complete
 recipe, use Hydra's standard `--config-dir` and `--config-name` options:
 
@@ -112,9 +119,10 @@ bello-robstride-runner headless=true real_time=false max_steps=1000
 bello-robstride-runner --config-dir /absolute/config/dir --config-name my_runner
 ```
 
-The visual meshes default to a 20,000-face-per-mesh budget for responsive
+The visual meshes default to a 10,000-face-per-mesh budget for responsive
 interactive rendering; this does not change the general training asset
-default.
+default. HIL collision geometry defaults to the same box-body and primitive-foot
+representation used by the maintained locomotion policies.
 
 The runner defaults to `end_effector_sphere_mode: both`, matching the training
 morphology. Its default `upper_body_sphere_hands.yaml` mapping omits the two
@@ -126,6 +134,33 @@ both the non-sphere asset and its complete upper-body motor mapping explicitly:
 bello-robstride-runner \
   asset_config.end_effector_sphere_mode=none \
   'motor_configs=[robstride/lower_body.yaml,robstride/upper_body.yaml]'
+```
+
+The runner also serves the simulator's exact MuJoCo body transform through the
+neutral `bello.pose.v1.PoseService`. By default it publishes
+`odom_from_pelvis_link` at 200 Hz on `0.0.0.0:50052`. This is simulation ground
+truth taken from `MjData.xpos` and `MjData.xquat`, not an IMU/contact estimate.
+Publications use a latest-wins mailbox, so a slow visualizer never blocks the
+physics, CAN, or serial loops. Local clients still connect to
+`127.0.0.1:50052`. Override or disable it with:
+
+```bash
+bello-robstride-runner pose_service.listen=127.0.0.1:50060
+bello-robstride-runner pose_service.enabled=false
+```
+
+Use either this service or `bello-state-estimatord` on port 50052, not both.
+The existing `bello-visualizer` vCAN configuration can consume either provider
+without changing its pose client.
+
+Inspect the stream directly from this checkout with:
+
+```bash
+grpcurl -plaintext \
+  -import-path src \
+  -proto bello_mujoco/_pose.proto \
+  -d '{"referenceFrame":"odom","trackedFrame":"pelvis_link"}' \
+  127.0.0.1:50052 bello.pose.v1.PoseService/WatchPose
 ```
 
 Every prepared Bello asset contains the MuJoCo ankle transmission and uses
@@ -148,7 +183,7 @@ control, `*...\r\n` ASCII records, quaternion fields in `z,y,x,w` order, gyro
 in degrees per second, acceleration in g, a wrapping millisecond timestamp,
 `<...>` commands, and `<ok>`/`<er>` responses. Its stored startup layout
 matches the Motomind policy default: quaternion, gyro, gravity-removed local
-acceleration, timestamp, and 200 Hz output. Output configuration commands,
+acceleration, timestamp, and 250 Hz output. Output configuration commands,
 polling mode, Euler and binary output, temperature, velocity, and distance are
 also emulated. MuJoCo remains the source of the orientation and kinematics.
 
@@ -191,6 +226,15 @@ enforces that lower bound. In interactive mode, the runner opens a separate
 disable the guide permanently; the robot is then a free body governed by
 gravity, contacts, and actuator commands. Closing either window stops the
 runner. Override the travel with `torso_drop_limit_m=0.1` when needed.
+
+Press **Enter** to cycle the torso state. The first press releases the guide;
+the next press restores the MuJoCo home state and re-engages it. Further presses
+repeat the release/reset cycle. In interactive mode, Enter works while the
+Bello controls window is focused or from the launching terminal. With
+`headless=true`, press Enter in the launching terminal. Reset preserves the
+Robstride protocol sessions and current motor commands, but immediately
+refreshes feedback and PoseService with the reset state; release and real-time
+timers restart from zero.
 
 ## Motor kinds and assignments
 

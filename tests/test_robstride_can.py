@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import struct
 
 from hydra import compose, initialize_config_dir
@@ -35,11 +36,13 @@ from bello_mujoco.robstride_sim import (
     configure_robstride_actuators,
 )
 from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
-from bello_mujoco.sim import load_prepared_bello_model
+from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.tools.robstride_runner import (
     RobstrideRunnerConfig,
+    TerminalEnterInput,
     add_torso_hold,
+    cycle_torso_release_reset,
     default_motor_kind_config,
     default_motor_configs,
     reset_data,
@@ -408,8 +411,8 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     config = compose_runner_config()
 
     assert config.asset_config.asset == "full_body"
-    assert config.asset_config.collision_mode == "mesh"
-    assert config.asset_config.visual_mesh_face_budget == 20_000
+    assert config.asset_config.collision_mode == "box"
+    assert config.asset_config.visual_mesh_face_budget == 10_000
     assert config.asset_config.end_effector_sphere_mode == "both"
     assert config.asset_config.imu_config.enabled
     assert config.asset_config.imu_config.body_name == "pelvis_link"
@@ -420,7 +423,9 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert not availability.neck_yaw
     assert not availability.head_pitch
     assert config.motor_kind_config.name == "motor_kinds.yaml"
-    assert config.imu_serial_rate_hz == pytest.approx(200.0)
+    assert config.simulation_physics.timestep == pytest.approx(0.0025)
+    assert config.feedback_rate_hz == pytest.approx(100.0)
+    assert config.imu_serial_rate_hz == pytest.approx(250.0)
     assert config.imu_serial_enabled
     assert config.imu_serial_device == Path("/dev/ttyIMU-mujoco")
     assert config.bus_interfaces == ("can0=vcan0", "can1=vcan1")
@@ -432,6 +437,22 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert config.torso_drop_limit_m == pytest.approx(0.05)
     assert not config.headless
     assert config.real_time
+    assert config.pose_service.enabled
+    assert config.pose_service.listen == "0.0.0.0:50052"
+    assert config.pose_service.reference_frame == "odom"
+    assert config.pose_service.tracked_frame == "pelvis_link"
+    assert config.pose_service.publish_rate_hz == pytest.approx(200.0)
+
+
+def test_direct_runner_default_matches_hil_morphology() -> None:
+    config = RobstrideRunnerConfig()
+
+    assert config.asset_config.collision_mode == "box"
+    assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.simulation_physics.timestep == pytest.approx(0.0025)
+    assert config.feedback_rate_hz == pytest.approx(100.0)
+    assert config.imu_serial_rate_hz == pytest.approx(250.0)
+    assert config.pose_service.listen == "0.0.0.0:50052"
 
 
 def test_runner_hydra_can_enable_head_joints() -> None:
@@ -540,6 +561,7 @@ def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
     model = load_prepared_bello_model(
         prepared,
         terrain=FLAT_TERRAIN,
+        simulation_physics=config.simulation_physics,
         load_mjx=False,
     )
     configured = configure_robstride_actuators(model, robstride.motors)
@@ -549,6 +571,7 @@ def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
     )
 
     assert len(transmission.actuators) == len(robstride.motors)
+    assert configured.mj_model.opt.timestep == pytest.approx(0.0025)
     assert configured.mj_model.nu == model.mj_model.nu + 2 * len(robstride.motors)
     for side in ("left", "right"):
         for motor_index in (1, 2):
@@ -614,8 +637,13 @@ def test_runner_can_select_detailed_hands_with_wrist_yaw_motors() -> None:
 def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(
     full_body_asset: PreparedAsset,
 ) -> None:
-    original = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    original = load_prepared_bello_model(
+        full_body_asset,
+        simulation_physics=SimulationPhysicsConfig(timestep=0.0025),
+        load_mjx=False,
+    )
     model, torso_hold = add_torso_hold(original)
+    assert model.mj_model.opt.timestep == pytest.approx(0.0025)
     data = mujoco.MjData(model.mj_model)
     reset_data(model, data)
     torso_hold.initialize(model.mj_model, data)
@@ -631,9 +659,37 @@ def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(
     displacement = data.xpos[torso_hold.body_id] - initial_position
     assert np.linalg.norm(displacement[:2]) < 0.001
     assert -0.052 < displacement[2] < -0.045
-    assert torso_hold.release(data)
+    released, reset_performed = cycle_torso_release_reset(
+        model, data, torso_hold, torso_released=False
+    )
+    assert released
+    assert not reset_performed
     assert not data.eq_active[torso_hold.equality_id]
     assert not torso_hold.release(data)
+
+    data.qpos[:] += 0.1
+    data.time = 12.0
+    released, reset_performed = cycle_torso_release_reset(
+        model, data, torso_hold, torso_released=released
+    )
+
+    assert not released
+    assert reset_performed
+    assert data.time == 0.0
+    assert data.qpos == pytest.approx(model.default_qpos)
+    assert data.eq_active[torso_hold.equality_id]
+
+
+def test_terminal_enter_is_detected_without_blocking() -> None:
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd) as reader, os.fdopen(write_fd, "w") as writer:
+        control = TerminalEnterInput(reader, enabled=True)
+
+        assert not control.poll()
+        writer.write("\n")
+        writer.flush()
+        assert control.poll()
+        assert not control.poll()
 
 
 def test_release_timer_requires_an_initial_torso_hold() -> None:

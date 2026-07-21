@@ -67,6 +67,10 @@ target. Correct IMU mounting and axis convention cannot be inferred from the
 inventory: the configured EBIMU must report the pelvis frame expected by the
 training asset. At rest and upright it should report identity orientation,
 near-zero angular velocity, and near-zero gravity-removed local acceleration.
+The policy runner reconstructs accelerometer specific force from that
+gravity-removed acceleration and the reported orientation, matching the
+MuJoCo observation used for training. At rest and upright, the reconstructed
+policy input is approximately `+9.80665 m/s^2` along local Z.
 
 ## Arm and run
 
