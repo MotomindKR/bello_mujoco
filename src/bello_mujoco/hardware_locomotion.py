@@ -33,6 +33,7 @@ from bello_mujoco.train.ppo import normalize_observation
 
 ARM_CONFIRMATION = "I_HAVE_A_SPOTTER_AND_ESTOP_READY"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
+STANDARD_GRAVITY = 9.80665
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,9 @@ class HardwarePolicyAdapter:
         logical_position = self.inverse_transform @ frame.positions
         logical_velocity = self.inverse_transform @ frame.velocities
         projected_gravity = projected_gravity_from_xyzw(frame.orientation_xyzw)
+        specific_force = specific_force_from_gravity_removed_acceleration(
+            frame.linear_acceleration, projected_gravity
+        )
         foot_phase = foot_phase_sin_cos(
             self.env.config.gait,
             step_count=self._step_count,
@@ -188,7 +192,7 @@ class HardwarePolicyAdapter:
         )
         scale = self.env.config.observation.scale
         components = {
-            "imu_linear_acceleration": frame.linear_acceleration * scale.base_lin_acc,
+            "imu_linear_acceleration": specific_force * scale.base_lin_acc,
             "imu_angular_velocity": frame.angular_velocity * scale.base_ang_vel,
             "projected_gravity": projected_gravity * scale.projected_gravity,
             "foot_phase": foot_phase * scale.foot_phase,
@@ -495,6 +499,18 @@ def projected_gravity_from_xyzw(orientation_xyzw: np.ndarray) -> np.ndarray:
     return quat_rotate_inverse_np(
         wxyz.astype(np.float32), np.asarray((0.0, 0.0, -1.0), dtype=np.float32)
     )
+
+
+def specific_force_from_gravity_removed_acceleration(
+    linear_acceleration: np.ndarray, projected_gravity: np.ndarray
+) -> np.ndarray:
+    """Recover the MuJoCo accelerometer quantity expected by the policy."""
+
+    acceleration = np.asarray(linear_acceleration, dtype=np.float32)
+    gravity = np.asarray(projected_gravity, dtype=np.float32)
+    if acceleration.shape != (3,) or gravity.shape != (3,):
+        raise ValueError("IMU acceleration and projected gravity must be 3-vectors")
+    return acceleration - STANDARD_GRAVITY * gravity
 
 
 def tilt_from_xyzw(orientation_xyzw: np.ndarray) -> float:

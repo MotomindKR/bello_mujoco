@@ -959,4 +959,37 @@
     <parent link="head_link" />
     <child link="head_right_camera_frame_link" />
   </joint>
+  <!-- Physical ankle coordinates are a two-motor differential.  The roles and
+       reductions follow transmission_interface/DifferentialTransmission:
+       joint1=(actuator1+actuator2)/2, joint2=(actuator1-actuator2)/-2. -->
+  <transmission name="left_ankle_differential">
+    <type>transmission_interface/DifferentialTransmission</type>
+    <actuator name="left_ankle_motor_1" role="actuator1">
+      <mechanical_reduction>1</mechanical_reduction>
+    </actuator>
+    <actuator name="left_ankle_motor_2" role="actuator2">
+      <mechanical_reduction>1</mechanical_reduction>
+    </actuator>
+    <joint name="left_ankle_roll_joint" role="joint1">
+      <mechanical_reduction>1</mechanical_reduction>
+    </joint>
+    <joint name="left_ankle_pitch_joint" role="joint2">
+      <mechanical_reduction>-1</mechanical_reduction>
+    </joint>
+  </transmission>
+  <transmission name="right_ankle_differential">
+    <type>transmission_interface/DifferentialTransmission</type>
+    <actuator name="right_ankle_motor_1" role="actuator1">
+      <mechanical_reduction>1</mechanical_reduction>
+    </actuator>
+    <actuator name="right_ankle_motor_2" role="actuator2">
+      <mechanical_reduction>1</mechanical_reduction>
+    </actuator>
+    <joint name="right_ankle_roll_joint" role="joint1">
+      <mechanical_reduction>1</mechanical_reduction>
+    </joint>
+    <joint name="right_ankle_pitch_joint" role="joint2">
+      <mechanical_reduction>-1</mechanical_reduction>
+    </joint>
+  </transmission>
 </robot>

@@ -6,7 +6,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from bello_mujoco.assets import project_data_path
-from bello_mujoco.checkpoint import dataclass_from_dict
+from bello_mujoco.config_decode import dataclass_from_dict
 
 T = TypeVar("T")
 

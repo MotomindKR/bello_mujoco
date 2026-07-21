@@ -5,6 +5,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 import pytest
+from hydra import compose, initialize_config_dir
 
 import bello_mujoco.assets_pipeline.prepare as prepare_module
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
@@ -24,6 +25,7 @@ from bello_mujoco.assets_pipeline.prepare import (
     validate_actuator_joint_contract,
     write_prepared_asset_manifest,
 )
+from bello_mujoco.hydra_config import config_path, structured_config
 
 
 def test_end_effector_sphere_replacement_prunes_both_subtrees() -> None:
@@ -177,6 +179,36 @@ def test_prepared_asset_always_has_ankle_differential_tendons(
         assert tuple(float(joint.get("coef")) for joint in fixed.findall("joint")) == (
             coefficients
         )
+
+
+@pytest.mark.integration
+def test_visualizer_recipe_produces_loadable_flattened_viewer_mjcf(
+    tmp_path: Path,
+) -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=config_path("prepare_assets"),
+    ):
+        recipe = structured_config(
+            AssetPrepConfig,
+            compose(config_name="visualizer", overrides=[f"output_root={tmp_path}"]),
+        )
+
+    assert recipe.visual_mesh_face_budget == 20_000
+    assert recipe.end_effector_sphere_mode == "both"
+    prepared = prepare_asset(recipe)
+    model = mujoco.MjModel.from_xml_path(str(prepared.viewer_mjcf_path))
+    root = ET.parse(prepared.viewer_mjcf_path).getroot()
+
+    assert model.nbody > 1
+    assert root.find("include") is None
+    assert root.findall("./asset/mesh")
+    assert root.findall(".//geom[@type='mesh']")
+    assert len(root.findall("./tendon/fixed")) == 4
+    for joint in ("left_wrist_yaw_joint", "right_wrist_yaw_joint"):
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint) == -1
+    for body in ("l_end_effector_sphere_link", "r_end_effector_sphere_link"):
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body) >= 0
 
 
 def test_prepared_asset_always_actuates_ankle_tendons(

@@ -10,8 +10,8 @@ asset_config:
   asset: full_body
   output_root: null
   mesh_face_budget: 1000
-  visual_mesh_face_budget: 20000
-  collision_mode: mesh
+  visual_mesh_face_budget: 10000
+  collision_mode: box
   end_effector_sphere_mode: both
   neighbor_exclusion_depth: 2
   imu_config:
@@ -27,17 +27,32 @@ asset_config:
     neck_yaw: false
     head_pitch: false
 
+simulation_physics:
+  timestep: 0.0025
+  foot_terrain_margin: null
+  foot_terrain_solref: null
+  foot_terrain_solimp: null
+
 feedback_rate_hz: 100.0
 temperature_c: 25.0
 headless: false
 real_time: true
 max_steps: null
-imu_serial_rate_hz: 200.0
+imu_serial_rate_hz: 250.0
 imu_serial_enabled: true
 imu_serial_device: /dev/ttyIMU-mujoco
 torso_hold: true
 torso_drop_limit_m: 0.05
 release_after_seconds: null
+
+# Simulation ground truth using the same RPC consumed by bello-visualizer.
+# Do not run bello-state-estimatord on the same listen port simultaneously.
+pose_service:
+  enabled: true
+  listen: 0.0.0.0:50052
+  reference_frame: odom
+  tracked_frame: pelvis_link
+  publish_rate_hz: 200.0
 
 hydra:
   job:

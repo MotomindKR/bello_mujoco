@@ -1,0 +1,9 @@
+defaults:
+  - default
+  - _self_
+
+# Maintained native-visualizer recipe. Outputs remain cache/generated data.
+output_root: assets/generated/visualizer
+visual_mesh_face_budget: 20000
+collision_mode: box
+end_effector_sphere_mode: both
