@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
