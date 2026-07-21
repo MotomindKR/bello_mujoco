@@ -106,6 +106,7 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     config = compose_hardware_training_config()
 
     assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
@@ -113,6 +114,9 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.config.gamma == pytest.approx(0.995)
     assert config.config.gae_lambda == pytest.approx(0.98)
     assert config.reward_config.joint_pose.weight == pytest.approx(-0.1)
+    assert config.reward_config.lin_vel_z.weight == pytest.approx(-2.0)
+    assert config.reward_config.flight.weight == pytest.approx(-2.0)
+    assert config.reward_config.touchdown_air_time.weight == pytest.approx(0.5)
     assert config.reward_config.stand_still.weight == pytest.approx(-1.0)
     assert config.reward_config.base_height.weight == pytest.approx(-10.0)
     assert config.reward_config.flat_orientation.weight == pytest.approx(-2.0)
@@ -120,6 +124,7 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.video_config.command == (0.0, 0.0, 0.0)
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
+    assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(60.0)
 
     metadata = SimpleNamespace(
         task="locomotion",

@@ -50,6 +50,7 @@ asset_config:
   mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
   end_effector_sphere_mode: both
+  target_total_mass_kg: null
   neighbor_exclusion_depth: 2
   ankle_differential_config:
     motor_gain_scale: 0.5
@@ -285,7 +286,7 @@ reward_config:
     link: null
     sigma: 0.5
   lin_vel_z:
-    weight: 0.0
+    weight: -2.0
     link: null
   ang_vel_xy:
     weight: -0.15
@@ -325,6 +326,11 @@ reward_config:
   foot_slip:
     weight: -0.25
     angular_speed_scale: 0.0
+  flight:
+    weight: -2.0
+    command_speed_threshold: 0.1
+    body_speed_threshold: 0.1
+    yaw_speed_threshold: 0.1
   contact_timing:
     weight: -5.0
     min_air_time: 0.2
@@ -333,7 +339,7 @@ reward_config:
     body_speed_threshold: 0.1
     yaw_speed_threshold: 0.1
   touchdown_air_time:
-    weight: 2.0
+    weight: 0.5
     min_air_time: 0.2
     max_air_time: 0.5
     command_speed_threshold: 0.1

@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import shutil
 import tempfile
 import xml.etree.ElementTree as ET
@@ -55,6 +56,7 @@ class AssetPrepConfig:
     visual_mesh_face_budget: int = 200_000
     collision_mode: CollisionMode = "mesh"
     end_effector_sphere_mode: EndEffectorSphereMode = "none"
+    target_total_mass_kg: float | None = None
     neighbor_exclusion_depth: int = 2
     imu_config: ImuSensorConfig = ImuSensorConfig()
     ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig()
@@ -72,6 +74,14 @@ class AssetPrepConfig:
             raise ValueError(
                 "end_effector_sphere_mode must be 'none' or 'both', got "
                 f"{self.end_effector_sphere_mode!r}"
+            )
+        if self.target_total_mass_kg is not None and (
+            not math.isfinite(self.target_total_mass_kg)
+            or self.target_total_mass_kg <= 0.0
+        ):
+            raise ValueError(
+                "target_total_mass_kg must be positive and finite when set, got "
+                f"{self.target_total_mass_kg}"
             )
         removed_joints = set(self.joint_availability.disabled_joint_names)
         if self.end_effector_sphere_mode == "both":
@@ -143,6 +153,8 @@ def prepare_asset_unlocked(
         end_effector_sphere_mode=config.end_effector_sphere_mode,
         joint_availability=config.joint_availability,
     )
+    if config.target_total_mass_kg is not None:
+        scale_urdf_total_mass(out_urdf, config.target_total_mass_kg)
     actuated_joint_order = actuated_urdf_joint_names(out_urdf)
     validate_actuator_joint_contract(config.actuator_config, actuated_joint_order)
     for src, dst_name in mesh_sources.collision.items():
@@ -208,6 +220,46 @@ def actuated_urdf_joint_names(urdf_path: Path) -> tuple[str, ...]:
     return tuple(names)
 
 
+def scale_urdf_total_mass(urdf_path: Path, target_total_mass_kg: float) -> None:
+    """Uniformly scale link masses and inertia tensors to a target robot mass."""
+
+    tree = ET.parse(urdf_path)
+    root = tree.getroot()
+    inertials: list[tuple[ET.Element, ET.Element]] = []
+    total_mass = 0.0
+    for link in root.findall("link"):
+        mass = link.find("./inertial/mass")
+        inertia = link.find("./inertial/inertia")
+        if mass is None or inertia is None or "value" not in mass.attrib:
+            raise ValueError(
+                f"link {link.get('name', '<unnamed>')!r} is missing complete inertial data"
+            )
+        link_mass = float(mass.attrib["value"])
+        if not math.isfinite(link_mass) or link_mass <= 0.0:
+            raise ValueError(
+                f"link {link.get('name', '<unnamed>')!r} has invalid mass {link_mass}"
+            )
+        total_mass += link_mass
+        inertials.append((mass, inertia))
+
+    if not inertials or not math.isfinite(total_mass) or total_mass <= 0.0:
+        raise ValueError(f"URDF has invalid total mass {total_mass}")
+
+    scale = target_total_mass_kg / total_mass
+    for mass, inertia in inertials:
+        mass.set("value", f"{float(mass.attrib['value']) * scale:.17g}")
+        for attribute in ("ixx", "iyy", "izz", "ixy", "ixz", "iyz"):
+            if attribute not in inertia.attrib:
+                raise ValueError(f"inertia tensor is missing {attribute!r}")
+            value = float(inertia.attrib[attribute])
+            if not math.isfinite(value):
+                raise ValueError(f"inertia tensor has nonfinite {attribute}={value}")
+            inertia.set(attribute, f"{value * scale:.17g}")
+
+    ET.indent(tree, space="  ")
+    tree.write(urdf_path, encoding="utf-8", xml_declaration=True)
+
+
 def validate_actuator_joint_contract(
     config: ActuatorConfig,
     actuated_joint_order: tuple[str, ...],
@@ -241,6 +293,7 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "visual_mesh_face_budget": config.visual_mesh_face_budget,
         "collision_mode": config.collision_mode,
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
+        "target_total_mass_kg": config.target_total_mass_kg,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
         "imu_config": asdict(config.imu_config),
         "ankle_differential_config": asdict(config.ankle_differential_config),

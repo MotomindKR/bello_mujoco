@@ -23,10 +23,14 @@ The hardware recipe inherits the maintained locomotion algorithm and fixes the
 four coordinates absent from the physical inventory: waist roll, waist pitch,
 neck yaw, and head pitch. Waist yaw remains actuated, hands are spheres, and the
 policy retains its 13 logical leg/waist actions. It samples standing for half of
-new commands and uses a longer PPO credit horizon. The policy is phase-free;
+new commands, uses a longer PPO credit horizon, and prepares the robot at an
+explicit total mass of 60 kg by uniformly scaling all link masses and inertia
+tensors. The policy is phase-free;
 landing rewards remain active during measured residual motion, the stronger
 standing pose cost starts only after motion settles, and dense height/orientation
-penalties lead into the terminal fall penalty.
+penalties lead into the terminal fall penalty. Vertical-velocity and
+locomotion-gated flight penalties discourage the short synchronized hopping gait,
+while touchdown air-time credit remains deliberately small.
 Its scheduled deterministic video is a ten-second zero-command rollout, making
 a failed neutral stance visible before deployment.
 

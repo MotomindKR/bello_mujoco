@@ -4,6 +4,7 @@ mesh_face_budget: 1000
 visual_mesh_face_budget: 200000
 collision_mode: mesh
 end_effector_sphere_mode: none  # none | both
+target_total_mass_kg: null
 neighbor_exclusion_depth: 2
 imu_config:
   enabled: false

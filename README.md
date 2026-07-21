@@ -29,9 +29,10 @@ uv run bello-prepare-assets asset=full_body
 Asset preparation converts the tracked Bello descriptions into deterministic
 training and viewer MJCF, with configurable collision geometry, mesh
 simplification, end-effector spheres, joint availability, IMU metadata, and
-motor gain/effort scaling. The physical differential ankle tendons and their
-actuators are always generated. Generated assets are cached outside the source
-tree.
+motor gain/effort scaling. Set `target_total_mass_kg=60` to uniformly scale the
+prepared morphology's link masses and inertia tensors to a 60 kg total. The
+physical differential ankle tendons and their actuators are always generated.
+Generated assets are cached outside the source tree.
 
 For the native visualizer, use the maintained 20,000-face visual-mesh recipe:
 

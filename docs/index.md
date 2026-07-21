@@ -55,7 +55,8 @@ The tracked `assets/source/bello/lower_body/` and
 full-body description, not standalone prepared asset choices.
 
 The preparation pipeline validates and converts the tracked descriptions,
-simplifies visual and collision meshes, creates training and viewer MJCF,
+simplifies visual and collision meshes, optionally scales every link mass and
+inertia tensor to an explicit target total mass, creates training and viewer MJCF,
 configures actuators, optionally replaces hands with spheres, and always
 generates and actuates the physical differential ankle tendons. Runtime terrain
 is added after asset generation; it is not embedded in the source descriptions.

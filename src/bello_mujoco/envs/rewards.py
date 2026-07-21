@@ -160,6 +160,13 @@ class FootSlipRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class FlightRewardConfig(WeightedRewardConfig):
+    command_speed_threshold: float = 0.10
+    body_speed_threshold: float = 0.10
+    yaw_speed_threshold: float = 0.10
+
+
+@dataclass(frozen=True)
 class ContactTimingRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
     min_contact_time: float = 0.30
@@ -198,7 +205,7 @@ class RewardConfig:
 
     track_lin_vel_xy: TrackLinVelXYRewardConfig = TrackLinVelXYRewardConfig(weight=1.0)
     track_ang_vel_z: TrackAngVelZRewardConfig = TrackAngVelZRewardConfig(weight=0.5)
-    lin_vel_z: LinVelZRewardConfig = LinVelZRewardConfig()
+    lin_vel_z: LinVelZRewardConfig = LinVelZRewardConfig(weight=-2.0)
     ang_vel_xy: AngVelXYRewardConfig = AngVelXYRewardConfig(weight=-0.15)
     flat_orientation: FlatOrientationRewardConfig = FlatOrientationRewardConfig(
         weight=-2.0
@@ -214,9 +221,10 @@ class RewardConfig:
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-1.0)
     invalid_action: InvalidActionRewardConfig = InvalidActionRewardConfig()
     foot_slip: FootSlipRewardConfig = FootSlipRewardConfig(weight=-0.25)
+    flight: FlightRewardConfig = FlightRewardConfig(weight=-2.0)
     contact_timing: ContactTimingRewardConfig = ContactTimingRewardConfig(weight=-5.0)
     touchdown_air_time: TouchdownAirTimeRewardConfig = TouchdownAirTimeRewardConfig(
-        weight=2.0
+        weight=0.5
     )
     undesired_contact: UndesiredContactRewardConfig = UndesiredContactRewardConfig()
     self_collision: SelfCollisionRewardConfig = SelfCollisionRewardConfig()
@@ -231,6 +239,7 @@ class RewardConfig:
             term.enabled
             for term in (
                 self.foot_slip,
+                self.flight,
                 self.contact_timing,
                 self.touchdown_air_time,
             )
@@ -393,6 +402,20 @@ def compute_locomotion_reward(
     )
     contact = inputs.foot_contact.astype(bool)
     previous_contact = inputs.last_foot_contact.astype(bool)
+    filtered_contact = contact | previous_contact
+    flight_motion_active = motion_active(
+        command_speed,
+        body_speed,
+        jnp.abs(inputs.yaw_vel_z),
+        command_speed_threshold=config.flight.command_speed_threshold,
+        body_speed_threshold=config.flight.body_speed_threshold,
+        yaw_speed_threshold=config.flight.yaw_speed_threshold,
+    )
+    flight = jnp.where(
+        flight_motion_active,
+        ~jnp.any(filtered_contact),
+        False,
+    ).astype(jnp.float32)
     touchdown = contact & ~previous_contact
     liftoff = ~contact & previous_contact
     short_air = (
@@ -414,7 +437,6 @@ def compute_locomotion_reward(
         0.0,
     )
 
-    filtered_contact = contact | previous_contact
     first_contact = (inputs.foot_air_time > 0.0) & filtered_contact
     touchdown_air_time = jnp.sum(
         jnp.minimum(
@@ -455,6 +477,7 @@ def compute_locomotion_reward(
         "joint_limit": joint_limit,
         "invalid_action": invalid_action,
         "foot_slip": foot_slip,
+        "flight": flight,
         "contact_timing": contact_timing,
         "touchdown_air_time": touchdown_air_time,
         "undesired_contact": inputs.undesired_contact,
@@ -514,15 +537,18 @@ def validate_reward_config(config: RewardConfig) -> None:
         "contact_timing.command_speed_threshold": (
             config.contact_timing.command_speed_threshold
         ),
+        "flight.command_speed_threshold": config.flight.command_speed_threshold,
         "touchdown_air_time.command_speed_threshold": (
             config.touchdown_air_time.command_speed_threshold
         ),
         "contact_timing.body_speed_threshold": (
             config.contact_timing.body_speed_threshold
         ),
+        "flight.body_speed_threshold": config.flight.body_speed_threshold,
         "contact_timing.yaw_speed_threshold": (
             config.contact_timing.yaw_speed_threshold
         ),
+        "flight.yaw_speed_threshold": config.flight.yaw_speed_threshold,
         "touchdown_air_time.body_speed_threshold": (
             config.touchdown_air_time.body_speed_threshold
         ),

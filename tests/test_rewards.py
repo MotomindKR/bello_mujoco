@@ -9,6 +9,7 @@ from bello_mujoco.envs.rewards import (
     BaseHeightRewardConfig,
     CommandConfig,
     ContactTimingRewardConfig,
+    FlightRewardConfig,
     HipDeviationRewardConfig,
     InvalidActionRewardConfig,
     JointLimitRewardConfig,
@@ -234,6 +235,41 @@ def test_contact_timing_event_penalty_scales_with_timestep() -> None:
     assert stopping["reward/contact_timing"] == pytest.approx(-0.025)
 
 
+def test_flight_penalty_requires_motion_and_both_feet_airborne() -> None:
+    config = reward_config(
+        flight=FlightRewardConfig(
+            weight=-2.0,
+            command_speed_threshold=0.1,
+            body_speed_threshold=0.1,
+            yaw_speed_threshold=0.1,
+        )
+    )
+    airborne = reward_inputs(
+        foot_contact=jnp.zeros(2),
+        last_foot_contact=jnp.zeros(2, dtype=bool),
+    )
+
+    _, standing = compute_locomotion_reward(config, airborne)
+    _, commanded = compute_locomotion_reward(
+        config, airborne.replace(command=jnp.asarray([0.5, 0.0, 0.0]))
+    )
+    _, stopping = compute_locomotion_reward(
+        config, airborne.replace(lin_vel_xy=jnp.asarray([0.5, 0.0]))
+    )
+    _, one_foot_contact = compute_locomotion_reward(
+        config,
+        airborne.replace(
+            command=jnp.asarray([0.5, 0.0, 0.0]),
+            foot_contact=jnp.asarray([1.0, 0.0]),
+        ),
+    )
+
+    assert standing["reward/flight"] == pytest.approx(0.0)
+    assert commanded["reward/flight"] == pytest.approx(-0.04)
+    assert stopping["reward/flight"] == pytest.approx(-0.04)
+    assert one_foot_contact["reward/flight"] == pytest.approx(0.0)
+
+
 def test_pure_yaw_command_enables_stepping_event_rewards() -> None:
     config = reward_config(
         contact_timing=ContactTimingRewardConfig(
@@ -362,6 +398,21 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
     _, standing_fine = compute(
         config, standing_inputs.replace(control_timestep=jnp.asarray(0.005))
     )
+    _, airborne_terms = compute(
+        config,
+        moving_inputs.replace(
+            foot_contact=jnp.zeros(2),
+            last_foot_contact=jnp.zeros(2, dtype=bool),
+        ),
+    )
+    _, airborne_fine = compute(
+        config,
+        moving_inputs.replace(
+            foot_contact=jnp.zeros(2),
+            last_foot_contact=jnp.zeros(2, dtype=bool),
+            control_timestep=jnp.asarray(0.005),
+        ),
+    )
 
     assert jnp.isfinite(reward)
     assert all(bool(jnp.isfinite(term)) for term in moving_terms.values())
@@ -374,6 +425,9 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         if coarse == 0.0:
             coarse = standing_terms[name]
             fine = standing_fine[name]
+        if coarse == 0.0:
+            coarse = airborne_terms[name]
+            fine = airborne_fine[name]
         assert coarse != 0.0, name
         assert coarse == pytest.approx(4.0 * fine), name
 

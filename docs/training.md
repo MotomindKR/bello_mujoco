@@ -122,6 +122,13 @@ Locomotion is phase-free: neither actor/critic observations nor rewards contain
 an externally prescribed gait phase. Alternation must emerge from velocity,
 contact, air-time, and regularization terms.
 
+The default locomotion reward penalizes squared vertical base velocity with
+weight `-2.0`. A phase-free `flight` penalty with weight `-2.0` applies while a
+command or measured horizontal/yaw motion is active and both filtered foot
+contacts are absent. Touchdown air-time credit is retained at weight `0.5`, low
+enough that synchronized hopping cannot dominate the flight and vertical-motion
+costs.
+
 The general nominal-pose penalty has weight `-0.1`. A separate `stand_still`
 pose penalty with weight `-1.0` activates only when command speed, measured
 horizontal speed, and measured yaw speed are all at or below `0.1`. This avoids

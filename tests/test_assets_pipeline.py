@@ -22,6 +22,7 @@ from bello_mujoco.assets_pipeline.prepare import (
     prepare_asset,
     read_prepared_asset_manifest,
     resolved_output_root,
+    scale_urdf_total_mass,
     validate_actuator_joint_contract,
     write_prepared_asset_manifest,
 )
@@ -256,6 +257,35 @@ def test_asset_config_rejects_removed_end_effector_modes(mode: str) -> None:
         AssetPrepConfig(end_effector_sphere_mode=mode)
 
 
+@pytest.mark.parametrize("target", [0.0, -1.0, float("nan"), float("inf")])
+def test_asset_config_rejects_invalid_target_total_mass(target: float) -> None:
+    with pytest.raises(ValueError, match="target_total_mass_kg"):
+        AssetPrepConfig(target_total_mass_kg=target)
+
+
+def test_urdf_mass_scaling_preserves_mass_distribution_and_inertia_ratio(
+    tmp_path: Path,
+) -> None:
+    urdf_path = tmp_path / "robot.urdf"
+    urdf_path.write_text(
+        """<robot name="test">
+  <link name="first"><inertial><mass value="2"/><inertia ixx="2" iyy="3" izz="4" ixy="0.1" ixz="0.2" iyz="0.3"/></inertial></link>
+  <link name="second"><inertial><mass value="3"/><inertia ixx="5" iyy="6" izz="7" ixy="0.4" ixz="0.5" iyz="0.6"/></inertial></link>
+</robot>"""
+    )
+
+    scale_urdf_total_mass(urdf_path, 60.0)
+
+    root = ET.parse(urdf_path).getroot()
+    masses = [float(element.attrib["value"]) for element in root.findall(".//mass")]
+    first_inertia = root.find("./link[@name='first']/inertial/inertia")
+    assert first_inertia is not None
+    assert sum(masses) == pytest.approx(60.0)
+    assert masses == pytest.approx([24.0, 36.0])
+    assert float(first_inertia.attrib["ixx"]) == pytest.approx(24.0)
+    assert float(first_inertia.attrib["ixy"]) == pytest.approx(1.2)
+
+
 def test_default_output_root_is_deterministic_tmp_cache() -> None:
     config = AssetPrepConfig(asset="full_body")
 
@@ -351,6 +381,9 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     changed = AssetPrepConfig(asset="full_body", mesh_face_budget=500)
 
     assert asset_config_hash(base) != asset_config_hash(changed)
+    assert asset_config_hash(base) != asset_config_hash(
+        AssetPrepConfig(asset="full_body", target_total_mass_kg=60.0)
+    )
     fixed_head = AssetPrepConfig(
         asset="full_body",
         mesh_face_budget=1000,
