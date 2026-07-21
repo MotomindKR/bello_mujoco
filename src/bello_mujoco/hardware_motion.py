@@ -185,17 +185,11 @@ class HardwareMotionPolicyAdapter:
         )
 
     @property
-    def initial_physical_target(self) -> np.ndarray:
-        if not self._initialized:
-            raise RuntimeError("motion adapter must be initialized from hardware")
-        reference = self.env._aligned_reference(
-            jnp.asarray(self.start_time_seconds, dtype=jnp.float32),
-            jnp.asarray(self._alignment_xy),
-            jnp.asarray(self._alignment_yaw, dtype=jnp.float32),
-        )
-        return np.asarray(
-            jax.device_get(self.env._reference_ctrl(reference)), dtype=np.float64
-        )
+    def nominal_physical_target(self) -> np.ndarray:
+        logical = np.asarray(self.env.model.default_joint_target, dtype=np.float64)
+        target = self.transform @ logical
+        limits = np.asarray(self.env.model.mj_model.actuator_ctrlrange)
+        return np.clip(target, limits[:, 0], limits[:, 1])
 
     def initialize(self, frame: HardwareFrame) -> None:
         orientation = normalized_quaternion_xyzw(frame.orientation_xyzw)
@@ -469,11 +463,11 @@ def run_hardware_motion(
             )
             validate_hardware_frame(frame, config, expected_group_state="IDLE")
             adapter.precompile(frame)
-            initial_target = adapter.initial_physical_target
+            initial_target = adapter.nominal_physical_target
             initial_error = float(np.max(np.abs(frame.positions - initial_target)))
             if initial_error > config.max_initial_position_error_radians:
                 raise RuntimeError(
-                    "robot is too far from the motion's starting pose: "
+                    "robot is too far from the nominal pose: "
                     f"max error {initial_error:.3f} rad exceeds "
                     f"{config.max_initial_position_error_radians:.3f} rad"
                 )
@@ -550,7 +544,7 @@ def control_physical_motion(
         for step in range(1, ramp_steps + 1):
             fraction = step / ramp_steps
             requested = initial_frame.positions + fraction * (
-                adapter.initial_physical_target - initial_frame.positions
+                adapter.nominal_physical_target - initial_frame.positions
             )
             previous_target = limit_target_step(
                 previous_target, requested, config.max_target_step_radians

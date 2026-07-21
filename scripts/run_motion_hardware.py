@@ -380,9 +380,8 @@ class MotionHardwarePolicyAdapter:
         return self.config.start_time_seconds
 
     @property
-    def reference_physical_target(self) -> np.ndarray:
-        reference = self._reference(self.start_time)
-        logical = np.asarray(reference.qpos)[self.env.model.actuator_qpos_indices]
+    def nominal_physical_target(self) -> np.ndarray:
+        logical = np.asarray(self.env.model.default_joint_target, dtype=np.float64)
         target = self.transform @ logical
         limits = np.asarray(self.env.model.mj_model.actuator_ctrlrange)
         return np.clip(target, limits[:, 0], limits[:, 1])
@@ -719,7 +718,7 @@ def run_motion_hardware(
             validate_hardware_frame(frame, hardware, expected_group_state="IDLE")
             validate_pose_imu_agreement(frame, pose, motion)
             adapter.initialize_alignment(pose)
-            initial_delta = np.abs(frame.positions - adapter.reference_physical_target)
+            initial_delta = np.abs(frame.positions - adapter.nominal_physical_target)
             initial_error_index = int(np.argmax(initial_delta))
             initial_error = float(initial_delta[initial_error_index])
             if initial_error > hardware.max_initial_position_error_radians:
@@ -727,15 +726,15 @@ def run_motion_hardware(
                     frame.positions
                 )
                 raise RuntimeError(
-                    "robot is too far from the motion start pose: max error "
+                    "robot is too far from the nominal pose: max error "
                     f"{initial_error:.3f} rad at "
                     f"{adapter.physical_coordinate_names[initial_error_index]} "
                     f"(measured={frame.positions[initial_error_index]:.3f}, "
-                    "reference="
-                    f"{adapter.reference_physical_target[initial_error_index]:.3f}) "
+                    "nominal="
+                    f"{adapter.nominal_physical_target[initial_error_index]:.3f}) "
                     "exceeds "
                     f"{hardware.max_initial_position_error_radians:.3f} rad; "
-                    f"closest clip phase is {closest_time:.3f} s with "
+                    f"closest clip phase for diagnosis is {closest_time:.3f} s with "
                     f"{closest_error:.3f} rad max error"
                 )
             preview = adapter.step(frame, pose, reference_time=adapter.start_time)
@@ -812,7 +811,7 @@ def control_motion_robot(
         for step in range(1, ramp_steps + 1):
             fraction = step / ramp_steps
             requested = initial_frame.positions + fraction * (
-                adapter.reference_physical_target - initial_frame.positions
+                adapter.nominal_physical_target - initial_frame.positions
             )
             previous_target = limit_target_step(
                 previous_target, requested, config.max_target_step_radians

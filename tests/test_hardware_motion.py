@@ -140,6 +140,18 @@ def test_level4_adapter_uses_new_motion_schema_and_physical_targets(
     assert result.estimated_position_error == pytest.approx(0.0, abs=1.0e-6)
 
 
+def test_motion_runner_nominal_target_uses_model_default_pose(
+    level4_adapter: HardwareMotionPolicyAdapter,
+) -> None:
+    adapter = level4_adapter
+    expected = adapter.transform @ np.asarray(adapter.env.model.default_joint_target)
+    limits = np.asarray(adapter.env.model.mj_model.actuator_ctrlrange)
+
+    assert adapter.nominal_physical_target == pytest.approx(
+        np.clip(expected, limits[:, 0], limits[:, 1])
+    )
+
+
 def test_motion_runner_defaults_to_read_only_and_requires_confirmation() -> None:
     config = load_runner_config()
 
