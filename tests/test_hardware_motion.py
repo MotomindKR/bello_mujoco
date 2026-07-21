@@ -16,6 +16,7 @@ from bello_mujoco.hardware_locomotion import HardwareFrame
 from bello_mujoco.hardware_motion import (
     HardwareMotionConfig,
     HardwareMotionPolicyAdapter,
+    require_nominal_pose,
     rotate_vector_xyzw,
     validate_hardware_motion_checkpoint,
     validate_hardware_motion_config,
@@ -150,6 +151,21 @@ def test_motion_runner_nominal_target_uses_model_default_pose(
     assert adapter.nominal_physical_target == pytest.approx(
         np.clip(expected, limits[:, 0], limits[:, 1])
     )
+
+
+def test_motion_runner_checks_nominal_pose_after_ramp(
+    level4_adapter: HardwareMotionPolicyAdapter,
+) -> None:
+    adapter = level4_adapter
+    frame = reference_frame(adapter)
+    frame = replace(frame, positions=adapter.nominal_physical_target.copy())
+    require_nominal_pose(frame, adapter, 0.1)
+
+    index = adapter.physical_coordinate_names.index("left_shoulder_yaw_joint")
+    positions = frame.positions.copy()
+    positions[index] += 0.8
+    with pytest.raises(RuntimeError, match="left_shoulder_yaw_joint"):
+        require_nominal_pose(replace(frame, positions=positions), adapter, 0.75)
 
 
 def test_motion_runner_defaults_to_read_only_and_requires_confirmation() -> None:

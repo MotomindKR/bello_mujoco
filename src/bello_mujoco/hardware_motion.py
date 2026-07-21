@@ -465,12 +465,6 @@ def run_hardware_motion(
             adapter.precompile(frame)
             initial_target = adapter.nominal_physical_target
             initial_error = float(np.max(np.abs(frame.positions - initial_target)))
-            if initial_error > config.max_initial_position_error_radians:
-                raise RuntimeError(
-                    "robot is too far from the nominal pose: "
-                    f"max error {initial_error:.3f} rad exceeds "
-                    f"{config.max_initial_position_error_radians:.3f} rad"
-                )
             print(
                 {
                     "hardware_motion_preflight": "passed",
@@ -482,7 +476,7 @@ def run_hardware_motion(
                     "motion_sha256": metadata.motion.content_sha256,
                     "start_time_seconds": config.start_time_seconds,
                     "remaining_duration_seconds": adapter.remaining_duration,
-                    "initial_pose_error_max": initial_error,
+                    "nominal_ramp_distance_max": initial_error,
                     "odometry": "gravity-removed IMU dead reckoning",
                     "armed": config.arm,
                 }
@@ -570,6 +564,7 @@ def control_physical_motion(
             )
             validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
+        require_nominal_pose(frame, adapter, config.max_initial_position_error_radians)
         adapter.initialize(frame)
         duration = min(config.max_duration_seconds, adapter.remaining_duration)
         start_time = time.monotonic()
@@ -647,6 +642,24 @@ def control_physical_motion(
         except KeyboardInterrupt:
             print("Hardware motion interrupted; stopping and disabling groups.")
         stop_hardware_controls(controls, config, executor)
+
+
+def require_nominal_pose(
+    frame: HardwareFrame,
+    adapter: HardwareMotionPolicyAdapter,
+    tolerance_radians: float,
+) -> None:
+    error = np.abs(frame.positions - adapter.nominal_physical_target)
+    index = int(np.argmax(error))
+    if error[index] > tolerance_radians:
+        name = adapter.physical_coordinate_names[index]
+        raise RuntimeError(
+            "robot did not reach the nominal pose during the ramp: "
+            f"{name} remains {error[index]:.3f} rad away "
+            f"(measured={frame.positions[index]:.3f}, "
+            f"nominal={adapter.nominal_physical_target[index]:.3f}); "
+            f"arrival tolerance is {tolerance_radians:.3f} rad"
+        )
 
 
 def yaw_from_xyzw(quaternion: np.ndarray) -> float:

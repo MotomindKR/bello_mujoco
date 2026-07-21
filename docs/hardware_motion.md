@@ -49,7 +49,8 @@ Physical execution requires a spotter, a tested physical emergency stop, a
 supported starting pose, and clear space. The selected clip frame is aligned to
 the measured initial pelvis yaw and a local XY origin. The runner starts both
 groups at measured positions, ramps to the robot's nominal joint pose over
-three seconds, and only then evaluates the deterministic actor at 50 Hz:
+three seconds, verifies the measured joints reached that pose, and only then
+evaluates the deterministic actor at 50 Hz:
 
 ```bash
 uv run --with ~/bello_stack/components/bello-hardware-python \

@@ -386,17 +386,6 @@ class MotionHardwarePolicyAdapter:
         limits = np.asarray(self.env.model.mj_model.actuator_ctrlrange)
         return np.clip(target, limits[:, 0], limits[:, 1])
 
-    def closest_reference_pose(self, measured: np.ndarray) -> tuple[float, float]:
-        logical = np.asarray(jax.device_get(self.env.motion.qpos))[
-            :, self.env.model.actuator_qpos_indices
-        ]
-        physical = logical @ self.transform.T
-        limits = np.asarray(self.env.model.mj_model.actuator_ctrlrange)
-        physical = np.clip(physical, limits[:, 0], limits[:, 1])
-        errors = np.max(np.abs(physical - measured[None, :]), axis=1)
-        frame = int(np.argmin(errors))
-        return frame / self.env.motion.fps, float(errors[frame])
-
     def initialize_alignment(self, pose: PoseFrame) -> None:
         pose_quat = xyzw_to_wxyz(pose.orientation_xyzw)
         source = self.env._aligned_reference(
@@ -719,24 +708,7 @@ def run_motion_hardware(
             validate_pose_imu_agreement(frame, pose, motion)
             adapter.initialize_alignment(pose)
             initial_delta = np.abs(frame.positions - adapter.nominal_physical_target)
-            initial_error_index = int(np.argmax(initial_delta))
-            initial_error = float(initial_delta[initial_error_index])
-            if initial_error > hardware.max_initial_position_error_radians:
-                closest_time, closest_error = adapter.closest_reference_pose(
-                    frame.positions
-                )
-                raise RuntimeError(
-                    "robot is too far from the nominal pose: max error "
-                    f"{initial_error:.3f} rad at "
-                    f"{adapter.physical_coordinate_names[initial_error_index]} "
-                    f"(measured={frame.positions[initial_error_index]:.3f}, "
-                    "nominal="
-                    f"{adapter.nominal_physical_target[initial_error_index]:.3f}) "
-                    "exceeds "
-                    f"{hardware.max_initial_position_error_radians:.3f} rad; "
-                    f"closest clip phase for diagnosis is {closest_time:.3f} s with "
-                    f"{closest_error:.3f} rad max error"
-                )
+            initial_error = float(np.max(initial_delta))
             preview = adapter.step(frame, pose, reference_time=adapter.start_time)
             adapter.reset()
             print(
@@ -750,7 +722,7 @@ def run_motion_hardware(
                     "policy_joints": adapter.env.action_size,
                     "control_rate_hz": 1.0 / adapter.control_timestep,
                     "motion_start_seconds": adapter.start_time,
-                    "initial_pose_error_max": initial_error,
+                    "nominal_ramp_distance_max": initial_error,
                     "preview_action_abs_max": float(np.max(np.abs(preview.raw_action))),
                     "preview_action_clipped": preview.action_clipped,
                     "armed": hardware.arm,
@@ -830,6 +802,7 @@ def control_motion_robot(
             )
             validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
+        require_nominal_pose(frame, adapter, config.max_initial_position_error_radians)
         adapter.initialize_alignment(poses.latest())
         start = time.monotonic()
         deadline = start
@@ -913,6 +886,24 @@ def send_motion_targets(
         )
 
 
+def require_nominal_pose(
+    frame: HardwareFrame,
+    adapter: MotionHardwarePolicyAdapter,
+    tolerance_radians: float,
+) -> None:
+    error = np.abs(frame.positions - adapter.nominal_physical_target)
+    index = int(np.argmax(error))
+    if error[index] > tolerance_radians:
+        name = adapter.physical_coordinate_names[index]
+        raise RuntimeError(
+            "robot did not reach the nominal pose during the ramp: "
+            f"{name} remains {error[index]:.3f} rad away "
+            f"(measured={frame.positions[index]:.3f}, "
+            f"nominal={adapter.nominal_physical_target[index]:.3f}); "
+            f"arrival tolerance is {tolerance_radians:.3f} rad"
+        )
+
+
 def validate_pose_imu_agreement(
     frame: HardwareFrame, pose: PoseFrame, config: MotionHardwareConfig
 ) -> None:
@@ -976,6 +967,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--start-time", type=float, default=0.0)
     result.add_argument("--max-duration", type=float, default=10.0)
     result.add_argument("--max-action-abs", type=float, default=1.0)
+    result.add_argument("--max-nominal-arrival-error", type=float, default=0.75)
     result.add_argument("--kp-scale", type=float, default=1.0)
     result.add_argument("--kd-scale", type=float, default=1.0)
     result.add_argument("--arm", action="store_true")
@@ -991,6 +983,7 @@ def entrypoint() -> None:
         arm=args.arm,
         operator_confirmation=args.operator_confirmation,
         max_duration_seconds=args.max_duration,
+        max_initial_position_error_radians=args.max_nominal_arrival_error,
         kp_scale=args.kp_scale,
         kd_scale=args.kd_scale,
     )
