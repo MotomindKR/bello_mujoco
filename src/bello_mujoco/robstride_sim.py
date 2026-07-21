@@ -8,7 +8,7 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.robstride_can import PARAM_RUN_MODE, MotorSpec, RobstrideMotor
-from bello_mujoco.sim import BelloModel
+from bello_mujoco.sim import BelloModel, preserve_runtime_physics
 
 
 @dataclass(frozen=True)
@@ -122,6 +122,7 @@ def configure_robstride_actuators(
     )
     runner_path.write_text(spec.to_xml(), encoding="utf-8")
     mj_model = mujoco.MjModel.from_xml_path(str(runner_path))
+    preserve_runtime_physics(model.mj_model, mj_model)
     key_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_KEY, "home")
     default_ctrl = (
         np.asarray(mj_model.key_ctrl[key_id], dtype=np.float32).copy()

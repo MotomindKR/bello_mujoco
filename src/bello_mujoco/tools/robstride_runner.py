@@ -6,7 +6,10 @@ from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import math
+import select
+import sys
 import time
+from typing import TextIO
 
 import hydra
 import mujoco
@@ -20,6 +23,7 @@ from bello_mujoco.assets import project_data_path
 from bello_mujoco.ebimu_serial import EbimuSerialEmulator
 from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.imu import MujocoImu
+from bello_mujoco.pose_service import PoseServiceConfig, PoseServiceServer
 from bello_mujoco.robstride_can import (
     MotorSpec,
     RobstrideBusEmulator,
@@ -30,7 +34,12 @@ from bello_mujoco.robstride_sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )
-from bello_mujoco.sim import BelloModel, load_prepared_bello_model
+from bello_mujoco.sim import (
+    BelloModel,
+    SimulationPhysicsConfig,
+    load_prepared_bello_model,
+    preserve_runtime_physics,
+)
 from bello_mujoco.terrain import FLAT_TERRAIN
 
 
@@ -59,7 +68,8 @@ class RobstrideRunnerConfig:
     bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
     asset_config: AssetPrepConfig = AssetPrepConfig(
         asset="full_body",
-        visual_mesh_face_budget=20_000,
+        visual_mesh_face_budget=10_000,
+        collision_mode="box",
         end_effector_sphere_mode="both",
         imu_config=ImuSensorConfig(enabled=True, body_name="pelvis_link"),
         joint_availability=JointAvailabilityConfig(
@@ -70,17 +80,21 @@ class RobstrideRunnerConfig:
             head_pitch=False,
         ),
     )
+    simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(
+        timestep=0.0025
+    )
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
     headless: bool = False
     real_time: bool = True
     max_steps: int | None = None
-    imu_serial_rate_hz: float = 200.0
+    imu_serial_rate_hz: float = 250.0
     imu_serial_enabled: bool = True
     imu_serial_device: Path = Path("/dev/ttyIMU-mujoco")
     torso_hold: bool = True
     torso_drop_limit_m: float = 0.05
     release_after_seconds: float | None = None
+    pose_service: PoseServiceConfig = PoseServiceConfig()
 
 
 @dataclass(frozen=True)
@@ -130,7 +144,7 @@ class TorsoHold:
 class RunnerControlWindow:
     """Small Pygame command window for one-way simulation controls."""
 
-    _SIZE = (440, 190)
+    _SIZE = (440, 215)
 
     def __init__(self, drop_limit_m: float) -> None:
         import pygame
@@ -150,7 +164,7 @@ class RunnerControlWindow:
         self._title_font = pygame.font.Font(None, 32)
         self._body_font = pygame.font.Font(None, 23)
         self._button_font = pygame.font.Font(None, 27)
-        self._button = pygame.Rect(45, 105, 350, 55)
+        self._button = pygame.Rect(45, 130, 350, 55)
         self._drop_limit_cm = drop_limit_m * 100.0
         self._released = False
         self._draw()
@@ -161,14 +175,20 @@ class RunnerControlWindow:
     def __exit__(self, *_args) -> None:
         self._pygame.quit()
 
-    def poll(self) -> tuple[bool, bool]:
-        """Return (release_requested, close_requested)."""
+    def poll(self) -> tuple[bool, bool, bool]:
+        """Return (release_requested, enter_requested, close_requested)."""
 
         release_requested = False
+        enter_requested = False
         close_requested = False
         for event in self._pygame.event.get():
             if event.type == self._pygame.QUIT:
                 close_requested = True
+            elif event.type == self._pygame.KEYUP and event.key in (
+                self._pygame.K_RETURN,
+                self._pygame.K_KP_ENTER,
+            ):
+                enter_requested = True
             elif (
                 event.type == self._pygame.MOUSEBUTTONUP
                 and event.button == 1
@@ -178,11 +198,16 @@ class RunnerControlWindow:
                 self._released = True
                 release_requested = True
                 self._draw()
-        return release_requested, close_requested
+        return release_requested, enter_requested, close_requested
 
     def mark_released(self) -> None:
         if not self._released:
             self._released = True
+            self._draw()
+
+    def mark_guided(self) -> None:
+        if self._released:
+            self._released = False
             self._draw()
 
     def _draw(self) -> None:
@@ -198,6 +223,10 @@ class RunnerControlWindow:
         status_color = (110, 210, 140) if self._released else (255, 205, 90)
         status = self._body_font.render(status_text, True, status_color)
         surface.blit(status, (25, 61))
+        instruction = self._body_font.render(
+            "Enter: release / reset and re-engage", True, (190, 195, 205)
+        )
+        surface.blit(instruction, (25, 91))
 
         button_color = (73, 78, 88) if self._released else (185, 63, 63)
         self._pygame.draw.rect(surface, button_color, self._button, border_radius=7)
@@ -205,6 +234,38 @@ class RunnerControlWindow:
         label = self._button_font.render(button_text, True, (255, 255, 255))
         surface.blit(label, label.get_rect(center=self._button.center))
         self._pygame.display.flip()
+
+
+class TerminalEnterInput:
+    """Nonblocking Enter detection for interactive and headless terminals."""
+
+    def __init__(
+        self,
+        stream: TextIO | None = None,
+        *,
+        enabled: bool | None = None,
+    ) -> None:
+        self._stream = sys.stdin if stream is None else stream
+        self._enabled = self._stream.isatty() if enabled is None else enabled
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def poll(self) -> bool:
+        if not self._enabled:
+            return False
+        try:
+            readable, _, _ = select.select((self._stream,), (), (), 0.0)
+        except (OSError, ValueError):
+            self._enabled = False
+            return False
+        if not readable:
+            return False
+        if self._stream.readline() == "":
+            self._enabled = False
+            return False
+        return True
 
 
 def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
@@ -233,6 +294,7 @@ def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
     model = load_prepared_bello_model(
         prepared,
         terrain=FLAT_TERRAIN,
+        simulation_physics=config.simulation_physics,
         actuator_config=config.asset_config.actuator_config,
         use_viewer_model=not config.headless,
         load_mjx=False,
@@ -282,6 +344,22 @@ def run_simulation(
     )
 
     with ExitStack() as stack:
+        pose_server = None
+        pose_body_id = -1
+        if config.pose_service.enabled:
+            pose_body_id = mujoco.mj_name2id(
+                model.mj_model,
+                mujoco.mjtObj.mjOBJ_BODY,
+                config.pose_service.tracked_frame,
+            )
+            if pose_body_id < 0:
+                raise ValueError(
+                    "pose_service.tracked_frame must name a MuJoCo body; missing "
+                    f"{config.pose_service.tracked_frame!r}"
+                )
+            pose_server = stack.enter_context(PoseServiceServer(config.pose_service))
+            publish_body_pose(pose_server, data, pose_body_id)
+
         endpoints = {}
         for bus_name, emulator in emulators.items():
             try:
@@ -339,7 +417,22 @@ def run_simulation(
                 )
             else:
                 print("  ebimu: disabled")
+        if pose_server is not None:
+            print(
+                f"  pose: {config.pose_service.reference_frame}_from_"
+                f"{config.pose_service.tracked_frame} at "
+                f"{config.pose_service.publish_rate_hz:g} Hz -> "
+                f"{config.pose_service.listen}"
+            )
         with viewer_context as viewer:
+            terminal_enter = TerminalEnterInput()
+            if terminal_enter.enabled:
+                action = (
+                    "cycle torso release and reset/guide"
+                    if torso_hold is not None
+                    else "reset the robot"
+                )
+                print(f"  keyboard: press Enter to {action}")
             control_window = None
             if torso_hold is not None and not config.headless:
                 control_window = stack.enter_context(
@@ -357,6 +450,9 @@ def run_simulation(
                 control_window,
                 imu_sensor,
                 imu_serial,
+                pose_server,
+                pose_body_id,
+                terminal_enter,
             )
 
 
@@ -372,24 +468,66 @@ def _simulation_loop(
     control_window: RunnerControlWindow | None,
     imu_sensor: MujocoImu | None,
     imu_serial: EbimuSerialEmulator | None,
+    pose_server: PoseServiceServer | None,
+    pose_body_id: int,
+    terminal_enter: TerminalEnterInput,
 ) -> None:
     start_wall = time.monotonic()
     start_sim = float(data.time)
     feedback_period = 1.0 / config.feedback_rate_hz
     next_feedback = start_wall
+    pose_period = (
+        1.0 / config.pose_service.publish_rate_hz
+        if pose_server is not None
+        else math.inf
+    )
+    next_pose_sim = start_sim + pose_period
     steps = 0
     torso_released = torso_hold is None
     while config.max_steps is None or steps < config.max_steps:
         if viewer is not None and not viewer.is_running():
             break
+        enter_requested = terminal_enter.poll()
         if control_window is not None:
-            release_requested, close_requested = control_window.poll()
+            release_requested, window_enter_requested, close_requested = (
+                control_window.poll()
+            )
+            enter_requested = enter_requested or window_enter_requested
             if close_requested:
                 break
             if release_requested and torso_hold is not None:
                 torso_released = torso_hold.release(data)
                 if torso_released:
                     print("Torso released; robot is now free")
+        if enter_requested:
+            torso_released, reset_performed = cycle_torso_release_reset(
+                model,
+                data,
+                torso_hold,
+                torso_released=torso_released,
+            )
+            if not reset_performed:
+                if control_window is not None:
+                    control_window.mark_released()
+                print("Torso released; robot is now free")
+                continue
+            transmission.update_motor_states(data)
+            start_wall = time.monotonic()
+            start_sim = float(data.time)
+            next_feedback = start_wall
+            next_pose_sim = start_sim + pose_period
+            if pose_server is not None:
+                publish_body_pose(
+                    pose_server,
+                    data,
+                    pose_body_id,
+                    produced_at=start_wall,
+                )
+            if control_window is not None:
+                control_window.mark_guided()
+            state = "free" if torso_hold is None else "torso guide engaged"
+            print(f"Robot reset to home state; {state}")
+            continue
         if (
             not torso_released
             and torso_hold is not None
@@ -416,6 +554,11 @@ def _simulation_loop(
             imu_serial.update(imu_sensor.sample(data))
 
         now = time.monotonic()
+        if pose_server is not None and float(data.time) >= next_pose_sim:
+            publish_body_pose(pose_server, data, pose_body_id, produced_at=now)
+            next_pose_sim += pose_period
+            if next_pose_sim < float(data.time) - pose_period:
+                next_pose_sim = float(data.time) + pose_period
         if now >= next_feedback:
             for bus_name, endpoint in endpoints.items():
                 for frame in emulators[bus_name].active_feedback():
@@ -433,12 +576,61 @@ def _simulation_loop(
                 time.sleep(delay)
 
 
+def publish_body_pose(
+    server: PoseServiceServer,
+    data: mujoco.MjData,
+    body_id: int,
+    *,
+    produced_at: float | None = None,
+) -> None:
+    """Copy one MuJoCo world-from-body transform into the pose mailbox."""
+
+    position = np.asarray(data.xpos[body_id])
+    quaternion = np.asarray(data.xquat[body_id])
+    server.publish(
+        tuple(float(value) for value in position),
+        tuple(float(value) for value in quaternion),
+        produced_at=produced_at,
+    )
+
+
 def reset_data(model: BelloModel, data: mujoco.MjData) -> None:
+    mujoco.mj_resetData(model.mj_model, data)
     data.qpos[:] = model.default_qpos
     data.qvel[:] = model.default_qvel
     data.ctrl[:] = model.default_ctrl
     data.qfrc_applied[:] = 0.0
     mujoco.mj_forward(model.mj_model, data)
+
+
+def reset_simulation(
+    model: BelloModel,
+    data: mujoco.MjData,
+    torso_hold: TorsoHold | None,
+) -> None:
+    """Restore the home state and re-engage the configured torso guide."""
+
+    reset_data(model, data)
+    if torso_hold is not None:
+        torso_hold.initialize(model.mj_model, data)
+
+
+def cycle_torso_release_reset(
+    model: BelloModel,
+    data: mujoco.MjData,
+    torso_hold: TorsoHold | None,
+    *,
+    torso_released: bool,
+) -> tuple[bool, bool]:
+    """Cycle guided -> released -> reset/guided.
+
+    Returns ``(torso_released, reset_performed)``.
+    """
+
+    if torso_hold is not None and not torso_released and torso_hold.release(data):
+        return True, False
+    reset_simulation(model, data, torso_hold)
+    return torso_hold is None, True
 
 
 def add_torso_hold(
@@ -485,6 +677,7 @@ def add_torso_hold(
         solimp=(0.99, 0.9999, 0.001, 0.5, 2.0),
     )
     mj_model = spec.compile()
+    preserve_runtime_physics(model.mj_model, mj_model)
     if (mj_model.nq, mj_model.nv, mj_model.nu) != (
         model.mj_model.nq + 1,
         model.mj_model.nv + 1,
@@ -562,6 +755,21 @@ def validate_config(config: RobstrideRunnerConfig) -> None:
             raise ValueError("release_after_seconds must be finite and nonnegative")
         if not config.torso_hold:
             raise ValueError("release_after_seconds requires torso_hold")
+    if config.pose_service.enabled:
+        for name, value in (
+            ("pose_service.listen", config.pose_service.listen),
+            ("pose_service.reference_frame", config.pose_service.reference_frame),
+            ("pose_service.tracked_frame", config.pose_service.tracked_frame),
+        ):
+            if not value or value != value.strip():
+                raise ValueError(
+                    f"{name} must be nonempty without surrounding whitespace"
+                )
+        if (
+            not math.isfinite(config.pose_service.publish_rate_hz)
+            or config.pose_service.publish_rate_hz <= 0.0
+        ):
+            raise ValueError("pose_service.publish_rate_hz must be finite and positive")
 
 
 def validate_runner_motor_coverage(
