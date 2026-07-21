@@ -117,21 +117,21 @@ def test_locomotion_recipe_uses_validated_policy_and_terrain_contract() -> None:
     assert not baseline.video_config.render_initial
 
 
-def test_hardware_locomotion_recipe_restores_gait_and_adds_smoothing() -> None:
+def test_hardware_locomotion_recipe_uses_stop_credit_ablation() -> None:
     config = structured_config(
         TrainingRunConfig,
         compose_experiment_config("hardware_locomotion"),
     )
 
-    assert config.config.gamma == pytest.approx(0.97)
-    assert config.config.gae_lambda == pytest.approx(0.95)
+    assert config.config.gamma == pytest.approx(0.995)
+    assert config.config.gae_lambda == pytest.approx(0.98)
     assert config.command_config.standing_probability == pytest.approx(0.10)
-    assert config.reward_config.foot_phase.weight == pytest.approx(1.0)
+    assert config.reward_config.foot_phase.weight == pytest.approx(0.25)
     assert config.reward_config.joint_target_rate.weight == pytest.approx(-1.0e-5)
     assert config.reward_config.touchdown_velocity.weight == pytest.approx(-0.25)
     assert config.reward_config.standing_foot_vel.weight == pytest.approx(-2.0)
     assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-3.0)
-    assert config.reward_config.termination.weight == pytest.approx(-1.0)
+    assert config.reward_config.termination.weight == pytest.approx(-10.0)
     assert config.video_config.command == pytest.approx((0.0, 0.5, 0.0))
 
 

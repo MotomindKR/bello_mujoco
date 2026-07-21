@@ -12,15 +12,16 @@ asset_config:
     head_pitch: false
 
 config:
-  gamma: 0.97
-  gae_lambda: 0.95
+  # Preserve credit across the roughly 1.4-second moving-to-standing failure.
+  gamma: 0.995
+  gae_lambda: 0.98
 
 command_config:
   standing_probability: 0.10
 
 reward_config:
   foot_phase:
-    weight: 1.0
+    weight: 0.25
   joint_target_rate:
     weight: -1.0e-5
   touchdown_velocity:
@@ -28,7 +29,7 @@ reward_config:
     height_threshold: 0.05
     command_speed_threshold: 0.10
   termination:
-    weight: -1.0
+    weight: -10.0
 
 checkpoint_config:
   name: hardware_locomotion_seed0
@@ -37,7 +38,7 @@ checkpoint_config:
 wandb_config:
   group: hardware-locomotion
   run_name: hardware_locomotion_seed0
-  tags: [locomotion, hardware, sphere-hands, fixed-waist, fixed-head]
+  tags: [locomotion, hardware, sphere-hands, fixed-waist, fixed-head, stop-credit-ablation]
 
 video_config:
   filename_prefix: hardware_locomotion
