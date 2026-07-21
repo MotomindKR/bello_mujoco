@@ -123,6 +123,19 @@ def test_nominal_physical_target_uses_model_default_pose() -> None:
     assert adapter.nominal_physical_target == pytest.approx((0.0, -0.5))
 
 
+def test_nominal_pose_is_checked_after_ramp() -> None:
+    adapter = SimpleNamespace(
+        nominal_physical_target=np.zeros(2),
+        physical_coordinate_names=("left", "right"),
+    )
+    frame = SimpleNamespace(positions=np.asarray((0.1, 0.8)))
+
+    with pytest.raises(RuntimeError, match="did not reach.*right"):
+        motion_hardware.require_nominal_pose(frame, adapter, 0.75)
+
+    motion_hardware.require_nominal_pose(frame, adapter, 0.8)
+
+
 class FakeGroupState(Enum):
     IDLE = 1
 
@@ -178,7 +191,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
 
     states = SimpleNamespace(
         coordinate=lambda _name: SimpleNamespace(
-            position=0.0, velocity=0.0, feedback_age_ms=0
+            position=2.0, velocity=0.0, feedback_age_ms=0
         ),
         imu=lambda _name: SimpleNamespace(
             orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -256,4 +269,6 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     )
 
     assert not control_requested
-    assert "no lease was acquired" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "'nominal_ramp_distance_max': 2.0" in output
+    assert "no lease was acquired" in output

@@ -78,9 +78,9 @@ uv run --with ~/bello_stack/components/bello-hardware-python \
 Preflight restores and compiles the exact checkpoint, validates its motion and
 robot contracts, connects to both read-only telemetry streams, checks all 25
 coordinates, checks fresh motor/IMU/pose data, verifies pose and IMU orientation
-agreement, aligns the reference, verifies the measured pose is close enough to
-the robot's nominal joint pose, and computes one preview action. It does not
-acquire a lease, enable a group, or send a target.
+agreement, aligns the reference, reports the required nominal-pose ramp
+distance, and computes one preview action. It does not acquire a lease, enable a
+group, or send a target.
 
 Useful non-arming arguments are:
 
@@ -91,6 +91,7 @@ Useful non-arming arguments are:
 --start-time SECONDS
 --max-duration SECONDS
 --max-action-abs VALUE
+--max-nominal-arrival-error RADIANS
 --kp-scale VALUE
 --kd-scale VALUE
 ```
@@ -111,9 +112,10 @@ stop, clear space, and explicit operator confirmation. The arming flags are:
 
 On arming, the runner acquires both group leases, starts from measured targets,
 ramps to the robot's nominal joint pose, realigns the clip, and only then
-executes the deterministic actor at 50 Hz. Motion completion, tracking
-termination, stale or invalid telemetry, pose/IMU disagreement, excessive
-motion, unsafe group state, missed deadlines, rejected commands, lost
+executes the deterministic actor at 50 Hz. The runner verifies measured joints
+are within the configured arrival tolerance after the ramp. Motion completion,
+tracking termination, stale or invalid telemetry, pose/IMU disagreement,
+excessive motion, unsafe group state, missed deadlines, rejected commands, lost
 acknowledgements, lease loss, `Ctrl-C`, or the duration limit exits the control
 contexts. Their teardown stops, disables, and releases both groups.
 
