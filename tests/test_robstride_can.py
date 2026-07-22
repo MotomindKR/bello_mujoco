@@ -414,6 +414,7 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert config.asset_config.collision_mode == "box"
     assert config.asset_config.visual_mesh_face_budget == 10_000
     assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
     assert config.asset_config.imu_config.enabled
     assert config.asset_config.imu_config.body_name == "pelvis_link"
     availability = config.asset_config.joint_availability
@@ -449,6 +450,7 @@ def test_direct_runner_default_matches_hil_morphology() -> None:
 
     assert config.asset_config.collision_mode == "box"
     assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
     assert config.simulation_physics.timestep == pytest.approx(0.0025)
     assert config.feedback_rate_hz == pytest.approx(100.0)
     assert config.imu_serial_rate_hz == pytest.approx(250.0)

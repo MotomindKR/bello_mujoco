@@ -268,9 +268,9 @@ See [robstride_vcan.md](robstride_vcan.md).
 `bello-run-locomotion-hardware` deploys a compatible locomotion checkpoint
 through the blocking Python client supplied by `~/bello_stack`. It validates the
 complete 25-coordinate inventory, group rates and state, online motors and IMU,
-checkpoint morphology, command bounds, telemetry freshness, initial pose, and
-tilt before control. The default invocation is a read-only preflight and cannot
-acquire a control lease.
+checkpoint morphology, command bounds, telemetry freshness, and tilt before
+control. It reports the initial pose deviation without rejecting it. The
+default invocation is a read-only preflight and cannot acquire a control lease.
 
 The armed path starts from measured motor positions, ramps to the policy nominal
 pose, runs deterministic inference at 50 Hz, and relies on both local limits and

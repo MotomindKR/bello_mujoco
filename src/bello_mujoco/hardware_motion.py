@@ -418,6 +418,13 @@ def validate_hardware_motion_config(
     config: HardwareMotionConfig, env: BelloMotionTrackingEnv | None = None
 ) -> None:
     validate_hardware_control_config(config)
+    if (
+        not math.isfinite(config.max_initial_position_error_radians)
+        or config.max_initial_position_error_radians <= 0.0
+    ):
+        raise ValueError(
+            "max_initial_position_error_radians must be positive and finite"
+        )
     if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
         raise ValueError("start_time_seconds must be finite and nonnegative")
     for name in ("max_estimated_linear_velocity", "max_estimated_position_error"):

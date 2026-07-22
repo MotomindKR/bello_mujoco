@@ -67,6 +67,7 @@ class MotionHardwareConfig:
     max_raw_action_abs: float = 5.0
     max_pose_imu_orientation_error: float = 0.25
     max_base_linear_velocity: float = 5.0
+    max_nominal_arrival_error: float = 0.75
 
 
 @dataclass(frozen=True)
@@ -625,6 +626,7 @@ def validate_motion_config(config: MotionHardwareConfig, duration: float) -> Non
         "max_raw_action_abs": config.max_raw_action_abs,
         "max_pose_imu_orientation_error": config.max_pose_imu_orientation_error,
         "max_base_linear_velocity": config.max_base_linear_velocity,
+        "max_nominal_arrival_error": config.max_nominal_arrival_error,
     }
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
@@ -738,7 +740,7 @@ def run_motion_hardware(
                 )
                 return
             control_motion_robot(
-                binding, groups, states, poses, frame, adapter, hardware
+                binding, groups, states, poses, frame, adapter, hardware, motion
             )
 
 
@@ -750,6 +752,7 @@ def control_motion_robot(
     initial_frame: HardwareFrame,
     adapter: MotionHardwarePolicyAdapter,
     config: HardwareLocomotionConfig,
+    motion: MotionHardwareConfig,
 ) -> None:
     with ExitStack() as resources:
         controls = {
@@ -818,7 +821,7 @@ def control_motion_robot(
             )
             validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
-        require_nominal_pose(frame, adapter, config.max_initial_position_error_radians)
+        require_nominal_pose(frame, adapter, motion.max_nominal_arrival_error)
         adapter.initialize_alignment(poses.latest())
         start = time.monotonic()
         deadline = start
@@ -1084,7 +1087,6 @@ def entrypoint() -> None:
         arm=args.arm,
         operator_confirmation=args.operator_confirmation,
         max_duration_seconds=args.max_duration,
-        max_initial_position_error_radians=args.max_nominal_arrival_error,
         kp_scale=args.kp_scale,
         kd_scale=args.kd_scale,
     )
@@ -1092,6 +1094,7 @@ def entrypoint() -> None:
         pose_endpoint=args.pose_endpoint,
         start_time_seconds=args.start_time,
         max_action_abs=args.max_action_abs,
+        max_nominal_arrival_error=args.max_nominal_arrival_error,
     )
     run_motion_hardware(
         args.checkpoint.expanduser(),

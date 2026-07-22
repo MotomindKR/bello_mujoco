@@ -127,10 +127,8 @@ class JointPoseRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
-class StandStillRewardConfig(WeightedRewardConfig):
+class StandDualContactRewardConfig(WeightedRewardConfig):
     command_speed_threshold: float = 0.10
-    body_speed_threshold: float = 0.10
-    yaw_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -215,7 +213,9 @@ class RewardConfig:
     action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(weight=-1.0)
     torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-2.5e-5)
     joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-0.1)
-    stand_still: StandStillRewardConfig = StandStillRewardConfig(weight=-1.0)
+    stand_dual_contact: StandDualContactRewardConfig = StandDualContactRewardConfig(
+        weight=2.0
+    )
     hip_deviation: HipDeviationRewardConfig = HipDeviationRewardConfig(weight=-0.25)
     knee_deviation: KneeDeviationRewardConfig = KneeDeviationRewardConfig(weight=-0.1)
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-1.0)
@@ -239,6 +239,7 @@ class RewardConfig:
             term.enabled
             for term in (
                 self.foot_slip,
+                self.stand_dual_contact,
                 self.flight,
                 self.contact_timing,
                 self.touchdown_air_time,
@@ -336,13 +337,14 @@ def compute_locomotion_reward(
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
     command_speed = jnp.linalg.norm(inputs.command)
     body_speed = jnp.linalg.norm(inputs.lin_vel_xy)
-    settled = (
-        (command_speed <= config.stand_still.command_speed_threshold)
-        & (body_speed <= config.stand_still.body_speed_threshold)
-        & (jnp.abs(inputs.yaw_vel_z) <= config.stand_still.yaw_speed_threshold)
+    standing_command = (
+        command_speed <= config.stand_dual_contact.command_speed_threshold
     )
-    stand_still_pose = jnp.sum(inputs.joint_pos_rel[inputs.policy_joint_indices] ** 2)
-    stand_still = jnp.where(settled, stand_still_pose, 0.0)
+    stand_dual_contact = jnp.where(
+        standing_command,
+        jnp.mean(inputs.foot_contact.astype(jnp.float32)),
+        0.0,
+    )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
     lateral_command = inputs.command[config.hip_deviation.lateral_command_index]
     hip_deviation *= (
@@ -471,7 +473,7 @@ def compute_locomotion_reward(
         "action_limit": action_limit,
         "torque_l1": torque_l1,
         "joint_pose": joint_pose,
-        "stand_still": stand_still,
+        "stand_dual_contact": stand_dual_contact,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
@@ -555,11 +557,9 @@ def validate_reward_config(config: RewardConfig) -> None:
         "touchdown_air_time.yaw_speed_threshold": (
             config.touchdown_air_time.yaw_speed_threshold
         ),
-        "stand_still.command_speed_threshold": (
-            config.stand_still.command_speed_threshold
+        "stand_dual_contact.command_speed_threshold": (
+            config.stand_dual_contact.command_speed_threshold
         ),
-        "stand_still.body_speed_threshold": (config.stand_still.body_speed_threshold),
-        "stand_still.yaw_speed_threshold": (config.stand_still.yaw_speed_threshold),
     }
     for name, value in nonnegative.items():
         if not math.isfinite(value) or value < 0:

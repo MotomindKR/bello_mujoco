@@ -679,6 +679,32 @@ def test_checkpoint_rejects_runtime_fingerprint_mismatch(tmp_path: Path) -> None
         load_checkpoint_metadata(path)
 
 
+def test_evaluation_restore_accepts_implementation_only_mismatch(
+    tmp_path: Path,
+) -> None:
+    env = FakeEnv()
+    config = ppo_config()
+    state = runner_state(config, env)
+    path = tmp_path / "evaluation_implementation_mismatch"
+    save_checkpoint(path, state, metadata(config, tmp_path))
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["runtime_fingerprints"]["implementation"] = "sha256:" + "0" * 64
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    restored, restored_metadata, normalization = restore_evaluation_checkpoint(
+        path, validate_implementation=False
+    )
+
+    assert int(restored.update) == int(state.update)
+    assert restored_metadata == metadata(config, tmp_path)
+    assert_tree_equal(normalization.observation, state.observation_norm_state)
+    with pytest.raises(
+        ValueError, match="runtime fingerprint mismatch.*implementation"
+    ):
+        restore_training_checkpoint(path)
+
+
 def test_checkpoint_rejects_runtime_inputs_changed_after_training_start(
     tmp_path: Path,
 ) -> None:

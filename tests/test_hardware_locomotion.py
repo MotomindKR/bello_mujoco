@@ -118,7 +118,7 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.reward_config.lin_vel_z.weight == pytest.approx(-2.0)
     assert config.reward_config.flight.weight == pytest.approx(-2.0)
     assert config.reward_config.touchdown_air_time.weight == pytest.approx(0.5)
-    assert config.reward_config.stand_still.weight == pytest.approx(-1.0)
+    assert config.reward_config.stand_dual_contact.weight == pytest.approx(2.0)
     assert config.reward_config.base_height.weight == pytest.approx(-10.0)
     assert config.reward_config.flat_orientation.weight == pytest.approx(-2.0)
     assert config.reward_config.termination.weight == pytest.approx(-100.0)
@@ -501,7 +501,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
 
     states = SimpleNamespace(
         coordinate=lambda name: SimpleNamespace(
-            position=0.0, velocity=0.0, feedback_age_ms=0
+            position=2.014, velocity=0.0, feedback_age_ms=0
         ),
         imu=lambda name: SimpleNamespace(
             orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -553,7 +553,9 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
         ),
     )
 
-    assert "no lease was acquired" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "'initial_pose_error_max': 2.014" in output
+    assert "no lease was acquired" in output
 
 
 def test_inventory_rejects_coordinate_mismatch() -> None:

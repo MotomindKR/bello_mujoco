@@ -307,11 +307,9 @@ reward_config:
     weight: -2.5e-05
   joint_pose:
     weight: -0.1
-  stand_still:
-    weight: -1.0
+  stand_dual_contact:
+    weight: 2.0
     command_speed_threshold: 0.1
-    body_speed_threshold: 0.1
-    yaw_speed_threshold: 0.1
   hip_deviation:
     weight: -0.25
     lateral_command_index: 1

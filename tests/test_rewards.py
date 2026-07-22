@@ -15,7 +15,7 @@ from bello_mujoco.envs.rewards import (
     JointLimitRewardConfig,
     RewardConfig,
     RewardInputs,
-    StandStillRewardConfig,
+    StandDualContactRewardConfig,
     TouchdownAirTimeRewardConfig,
     TrackLinVelXYRewardConfig,
     compute_locomotion_reward,
@@ -334,29 +334,37 @@ def test_touchdown_air_time_stays_active_until_body_motion_settles() -> None:
     assert finer_timestep["reward/touchdown_air_time"] == pytest.approx(0.001)
 
 
-def test_stand_still_pose_cost_activates_only_after_motion_settles() -> None:
+def test_stand_dual_contact_rewards_each_foot_for_a_standing_command() -> None:
     config = reward_config(
-        stand_still=StandStillRewardConfig(
-            weight=-1.0,
+        stand_dual_contact=StandDualContactRewardConfig(
+            weight=2.0,
             command_speed_threshold=0.1,
-            body_speed_threshold=0.1,
-            yaw_speed_threshold=0.1,
         ),
     )
-    inputs = reward_inputs(joint_pos_rel=jnp.asarray([0.2, 0.0]))
-    _, settled = compute_locomotion_reward(config, inputs)
-    _, stopping = compute_locomotion_reward(
+    inputs = reward_inputs()
+    _, dual_contact = compute_locomotion_reward(config, inputs)
+    _, single_contact = compute_locomotion_reward(
         config,
-        inputs.replace(lin_vel_xy=jnp.asarray([0.2, 0.0])),
+        inputs.replace(foot_contact=jnp.asarray([1.0, 0.0])),
+    )
+    _, no_contact = compute_locomotion_reward(
+        config,
+        inputs.replace(foot_contact=jnp.zeros(2)),
     )
     _, commanded = compute_locomotion_reward(
         config,
         inputs.replace(command=jnp.asarray([0.2, 0.0, 0.0])),
     )
+    _, stopping = compute_locomotion_reward(
+        config,
+        inputs.replace(lin_vel_xy=jnp.asarray([0.2, 0.0])),
+    )
 
-    assert settled["reward/stand_still"] == pytest.approx(-0.0008)
-    assert stopping["reward/stand_still"] == pytest.approx(0.0)
-    assert commanded["reward/stand_still"] == pytest.approx(0.0)
+    assert dual_contact["reward/stand_dual_contact"] == pytest.approx(0.04)
+    assert single_contact["reward/stand_dual_contact"] == pytest.approx(0.02)
+    assert no_contact["reward/stand_dual_contact"] == pytest.approx(0.0)
+    assert commanded["reward/stand_dual_contact"] == pytest.approx(0.0)
+    assert stopping["reward/stand_dual_contact"] == pytest.approx(0.04)
 
 
 def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:

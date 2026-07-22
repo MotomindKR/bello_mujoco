@@ -272,11 +272,15 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
 
 def restore_evaluation_checkpoint(
     path: Path,
+    *,
+    validate_implementation: bool = True,
 ) -> tuple[TrainState, CheckpointMetadata, CheckpointNormalizationState]:
     """Restore a policy plus the exact running statistics used by its actor."""
 
     path = Path(path).resolve()
-    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(path)
+    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
+        path, validate_implementation=validate_implementation
+    )
     template_state, _ = init_train_state(
         jax.random.PRNGKey(metadata.ppo.seed),
         metadata.obs_size,
@@ -444,6 +448,8 @@ def _checkpoint_document(
 
 def _load_checkpoint_document(
     path: Path,
+    *,
+    validate_implementation: bool = True,
 ) -> tuple[CheckpointMetadata, int, str, str]:
     metadata_path = Path(path).resolve() / METADATA_FILE
     try:
@@ -518,13 +524,20 @@ def _load_checkpoint_document(
             for field in fields(RuntimeFingerprints)
             if getattr(current_runtime, field.name)
             != getattr(recorded_runtime, field.name)
+            and (validate_implementation or field.name != "implementation")
         ]
-        raise ValueError(
-            "checkpoint runtime fingerprint mismatch for "
-            f"{', '.join(mismatches)}; evaluate or resume with the exact source, "
-            "generated assets, implementation, uv.lock, and installed runtime "
-            "versions that created it"
-        )
+        if mismatches:
+            requirement = (
+                "source, generated assets, implementation, uv.lock, and installed "
+                "runtime versions"
+                if validate_implementation
+                else "source assets, generated assets, uv.lock, and installed runtime "
+                "versions"
+            )
+            raise ValueError(
+                "checkpoint runtime fingerprint mismatch for "
+                f"{', '.join(mismatches)}; use the exact {requirement} that created it"
+            )
     update = document["update"]
     if type(update) is not int:
         raise ValueError("checkpoint update must be an integer")

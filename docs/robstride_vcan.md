@@ -103,6 +103,8 @@ opened. The recipe selects motor YAML files, VCAN mappings, viewer mode,
 timing, torso guide, MuJoCo ankle differential tendons, and IMU emulation. The
 backend and terrain are intentionally not configuration
 switches: this runner always uses CPU MuJoCo and a flat plane.
+The default asset uniformly scales all link masses and inertia tensors to a
+60 kg total, matching the hardware-locomotion training recipe.
 
 The default HIL timing is 400 Hz MuJoCo physics, 100 Hz RobStride feedback,
 and 250 Hz EBIMU output. The EBIMU protocol accepts only integer-millisecond

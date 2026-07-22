@@ -133,13 +133,14 @@ Linear and yaw velocity tracking both use weight `1.0`. Giving yaw the same
 maximum per-step credit as planar translation prevents the optimizer from
 cheaply sacrificing commanded rotation for translational tracking.
 
-The general nominal-pose penalty has weight `-0.1`. A separate `stand_still`
-pose penalty with weight `-1.0` activates only when command speed, measured
-horizontal speed, and measured yaw speed are all at or below `0.1`. This avoids
-pulling immediately toward the standing pose while the robot is still braking.
-Conversely, contact-timing and touchdown air-time remain active whenever any of
-those commanded or measured speeds exceeds `0.1`; a zero command therefore does
-not remove landing credit while the robot still has walking momentum.
+The general nominal-pose penalty has weight `-0.1`. A separate
+`stand_dual_contact` reward with weight `2.0` activates whenever command speed is
+at or below `0.1`. It gives half credit for either contacting foot and full
+credit only when both feet contact, so a zero command immediately encourages
+dual support even while the robot is still braking. Contact-timing and touchdown
+air-time remain active whenever commanded or measured motion exceeds `0.1`, so
+a zero command does not remove landing credit while the robot still has walking
+momentum.
 
 Dense stability feedback includes pelvis-height error with weight `-10.0` and
 target height `0.86`, plus torso orientation with weight `-2.0`. Physical failure
@@ -215,8 +216,10 @@ environment, task, observation, and action contracts. The checkpoint also
 fingerprints the repository source assets, prepared URDF/MJCF dependency
 closure and referenced meshes, exact simulation/viewer terrain scenes, Python
 implementation, `uv.lock`, and the active transitive runtime distribution
-versions; evaluation and resume reject any mismatch. Training captures this
-contract before its first update, and every checkpoint save rejects source,
+versions. Training resume rejects every mismatch. Locomotion evaluation and
+hardware deployment may use a newer runner implementation while retaining all
+other runtime checks. Training captures this contract before its first update,
+and every checkpoint save rejects source,
 asset, lock, or environment drift that occurred while the process was running.
 The project and lock files required for verification are included in built
 wheels, so checkpoint operations do not require a source checkout.

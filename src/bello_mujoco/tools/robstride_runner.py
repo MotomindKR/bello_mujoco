@@ -71,6 +71,7 @@ class RobstrideRunnerConfig:
         visual_mesh_face_budget=10_000,
         collision_mode="box",
         end_effector_sphere_mode="both",
+        target_total_mass_kg=60.0,
         imu_config=ImuSensorConfig(enabled=True, body_name="pelvis_link"),
         joint_availability=JointAvailabilityConfig(
             waist_yaw=True,

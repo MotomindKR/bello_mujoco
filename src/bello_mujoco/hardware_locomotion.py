@@ -25,11 +25,10 @@ from bello_mujoco.checkpoint import (
     restore_evaluation_checkpoint,
 )
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.policy import apply_actor
+from bello_mujoco.policy_inference import infer_policy_action
 from bello_mujoco.render import quat_rotate_inverse_np
 from bello_mujoco.rerun_eval import GamepadCommandSource, GamepadConfig, GamepadInput
 from bello_mujoco.tools.eval_policy import validate_checkpoint_shape
-from bello_mujoco.train.ppo import normalize_observation
 
 ARM_CONFIRMATION = "I_HAVE_A_SPOTTER_AND_ESTOP_READY"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
@@ -58,7 +57,6 @@ class HardwareLocomotionConfig:
     max_duration_seconds: float = 10.0
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
-    max_initial_position_error_radians: float = 0.75
     max_target_step_radians: float = 0.05
     max_tilt_radians: float = 0.70
     max_angular_velocity: float = 20.0
@@ -131,8 +129,14 @@ class HardwarePolicyAdapter:
         )
         self.kp, self.kd = actuator_impedance_gains(env)
         self._normalization = normalization.observation
-        self._actor = eqx.filter_jit(
-            lambda observation: apply_actor(policy, observation)
+        self._infer_action = eqx.filter_jit(
+            lambda observation: infer_policy_action(
+                policy,
+                observation,
+                self._normalization,
+                metadata.ppo,
+                env.action_clip,
+            )
         )
         zero_offset = jnp.zeros(len(self.physical_coordinate_names), dtype=jnp.float32)
         self._action_ctrl = jax.jit(
@@ -225,13 +229,8 @@ class HardwarePolicyAdapter:
                 (self._obs_stack[1:], observation[None, :]), axis=0
             )
         stacked = jnp.asarray(self._obs_stack.reshape(-1), dtype=jnp.float32)
-        normalized = normalize_observation(
-            stacked,
-            self._normalization,
-            self.metadata.ppo,
-        )
-        action = np.asarray(jax.device_get(self._actor(normalized)), dtype=np.float32)
-        action = np.clip(action, -self.env.action_clip, self.env.action_clip)
+        inference = self._infer_action(stacked)
+        action = np.asarray(jax.device_get(inference.applied_action), dtype=np.float32)
         if action.shape != (self.env.action_size,) or not np.all(np.isfinite(action)):
             raise RuntimeError(
                 f"policy produced an invalid hardware action with shape {action.shape}"
@@ -255,7 +254,7 @@ def load_hardware_policy(
     checkpoint_path: Path,
 ) -> tuple[HardwarePolicyAdapter, CheckpointMetadata]:
     train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path
+        checkpoint_path, validate_implementation=False
     )
     if metadata.task != "locomotion":
         raise ValueError(f"checkpoint task is {metadata.task!r}, not 'locomotion'")
@@ -353,9 +352,6 @@ def validate_hardware_control_config(config: Any) -> None:
         "rpc_timeout_seconds": config.rpc_timeout_seconds,
         "ramp_seconds": config.ramp_seconds,
         "max_duration_seconds": config.max_duration_seconds,
-        "max_initial_position_error_radians": (
-            config.max_initial_position_error_radians
-        ),
         "max_target_step_radians": config.max_target_step_radians,
         "max_tilt_radians": config.max_tilt_radians,
         "max_angular_velocity": config.max_angular_velocity,
@@ -596,12 +592,6 @@ def run_hardware_locomotion(
         initial_error = float(
             np.max(np.abs(frame.positions - adapter.nominal_physical_target))
         )
-        if initial_error > config.max_initial_position_error_radians:
-            raise RuntimeError(
-                "robot is too far from the checkpoint nominal pose: "
-                f"max error {initial_error:.3f} rad exceeds "
-                f"{config.max_initial_position_error_radians:.3f} rad"
-            )
         print(
             {
                 "hardware_preflight": "passed",
