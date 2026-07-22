@@ -77,6 +77,7 @@ class VastTrainConfig:
     yes: bool = False
     dry_run: bool = False
     remote_dir: str = "/workspace/bello_mujoco"
+    lifecycle_state_dir: Path = Path(".vast")
     ready_timeout_seconds: int = 900
     ssh_timeout_seconds: int = 900
     job_timeout_seconds: int = 43_200
@@ -313,6 +314,17 @@ def validate_config(config: VastTrainConfig) -> None:
         or remote_dir.parts[1] != "workspace"
     ):
         raise ValueError("--remote-dir must be a child of /workspace")
+    state_dir = config.lifecycle_state_dir
+    if (
+        state_dir.is_absolute()
+        or not state_dir.parts
+        or state_dir.parts[0] != ".vast"
+        or ".." in state_dir.parts
+    ):
+        raise ValueError(
+            "--lifecycle-state-dir must be a relative path inside .vast, got "
+            f"{state_dir}"
+        )
     offer = config.offer
     if offer.num_gpus <= 0 or offer.min_cpu_ram_gb <= 0 or offer.disk_gb <= 0:
         raise ValueError("GPU count, CPU RAM, and disk size must be positive")
@@ -1680,7 +1692,7 @@ def launch_pipeline(
         required=False,
     )
     api = api_factory(vast_key)
-    state_dir = repo_root / ".vast"
+    state_dir = repo_root / config.lifecycle_state_dir
     state_path = state_dir / "active_instance.json"
     label = f"bello-{run_name}"
 

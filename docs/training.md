@@ -129,6 +129,10 @@ contacts are absent. Touchdown air-time credit is retained at weight `0.5`, low
 enough that synchronized hopping cannot dominate the flight and vertical-motion
 costs.
 
+Linear and yaw velocity tracking both use weight `1.0`. Giving yaw the same
+maximum per-step credit as planar translation prevents the optimizer from
+cheaply sacrificing commanded rotation for translational tracking.
+
 The general nominal-pose penalty has weight `-0.1`. A separate `stand_still`
 pose penalty with weight `-1.0` activates only when command speed, measured
 horizontal speed, and measured yaw speed are all at or below `0.1`. This avoids

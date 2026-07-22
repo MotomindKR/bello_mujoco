@@ -204,7 +204,7 @@ class RewardConfig:
     """Canonical Bello locomotion reward configuration."""
 
     track_lin_vel_xy: TrackLinVelXYRewardConfig = TrackLinVelXYRewardConfig(weight=1.0)
-    track_ang_vel_z: TrackAngVelZRewardConfig = TrackAngVelZRewardConfig(weight=0.5)
+    track_ang_vel_z: TrackAngVelZRewardConfig = TrackAngVelZRewardConfig(weight=1.0)
     lin_vel_z: LinVelZRewardConfig = LinVelZRewardConfig(weight=-2.0)
     ang_vel_xy: AngVelXYRewardConfig = AngVelXYRewardConfig(weight=-0.15)
     flat_orientation: FlatOrientationRewardConfig = FlatOrientationRewardConfig(

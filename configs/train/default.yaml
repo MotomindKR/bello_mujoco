@@ -282,7 +282,7 @@ reward_config:
     sigma: 0.5
     frame_link: null
   track_ang_vel_z:
-    weight: 0.5
+    weight: 1.0
     link: null
     sigma: 0.5
   lin_vel_z:

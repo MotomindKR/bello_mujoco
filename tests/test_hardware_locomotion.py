@@ -113,6 +113,7 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.command_config.standing_probability == pytest.approx(0.5)
     assert config.config.gamma == pytest.approx(0.995)
     assert config.config.gae_lambda == pytest.approx(0.98)
+    assert config.reward_config.track_ang_vel_z.weight == pytest.approx(1.0)
     assert config.reward_config.joint_pose.weight == pytest.approx(-0.1)
     assert config.reward_config.lin_vel_z.weight == pytest.approx(-2.0)
     assert config.reward_config.flight.weight == pytest.approx(-2.0)

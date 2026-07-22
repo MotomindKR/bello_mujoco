@@ -213,6 +213,67 @@ def test_validate_config_restricts_destructive_remote_path() -> None:
         validate_config(valid_config(remote_dir="/"))
 
 
+@pytest.mark.parametrize(
+    "state_dir",
+    [Path("/tmp/vast-state"), Path("."), Path("state"), Path(".vast/../state")],
+)
+def test_validate_config_restricts_lifecycle_state_to_vast_directory(
+    state_dir: Path,
+) -> None:
+    with pytest.raises(ValueError, match="lifecycle-state-dir"):
+        validate_config(valid_config(lifecycle_state_dir=state_dir))
+
+
+def test_validate_config_accepts_isolated_lifecycle_state_directory() -> None:
+    validate_config(valid_config(lifecycle_state_dir=Path(".vast/yaw-run")))
+
+
+def test_launch_pipeline_isolates_lifecycle_state_directory(
+    monkeypatch, tmp_path: Path
+) -> None:
+    original_state = tmp_path / ".vast" / "active_instance.json"
+    original_state.parent.mkdir(parents=True)
+    original_state.write_text("original-controller")
+    observed = {}
+
+    class Lock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *args):
+            return False
+
+    class Lifecycle:
+        def __init__(self, api, config, state_path, label):
+            observed["state_path"] = state_path
+
+        def run(self, *args, **kwargs):
+            return None
+
+    def fake_pipeline_lock(state_dir):
+        observed["state_dir"] = state_dir
+        return Lock()
+
+    monkeypatch.setattr(vast, "resolve_git_selection", lambda *args: selection())
+    monkeypatch.setattr(vast, "credential", lambda *args, **kwargs: "secret")
+    monkeypatch.setattr(vast, "pipeline_lock", fake_pipeline_lock)
+    monkeypatch.setattr(vast, "VastLifecycle", Lifecycle)
+
+    assert (
+        launch_pipeline(
+            tmp_path,
+            valid_config(lifecycle_state_dir=Path(".vast/yaw-run")),
+            api_factory=lambda key: object(),
+        )
+        == 0
+    )
+    assert observed == {
+        "state_dir": tmp_path / ".vast" / "yaw-run",
+        "state_path": tmp_path / ".vast" / "yaw-run" / "active_instance.json",
+    }
+    assert original_state.read_text() == "original-controller"
+
+
 def test_validate_config_requires_bounded_job_timeouts() -> None:
     with pytest.raises(ValueError, match="job and progress"):
         validate_config(valid_config(job_timeout_seconds=0))
