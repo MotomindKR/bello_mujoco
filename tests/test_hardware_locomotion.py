@@ -110,7 +110,7 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
-    assert config.command_config.standing_probability == pytest.approx(0.5)
+    assert config.command_config.standing_probability == pytest.approx(0.2)
     assert config.config.gamma == pytest.approx(0.995)
     assert config.config.gae_lambda == pytest.approx(0.98)
     assert config.reward_config.track_ang_vel_z.weight == pytest.approx(1.0)
