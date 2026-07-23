@@ -188,6 +188,28 @@ def test_all_motion_recipes_resolve(
     assert config.asset_config == motion_tracking_asset_config()
 
 
+def test_hardware_motion_recipe_uses_bounded_60kg_contract() -> None:
+    config = load_recipe("output_beyondmimic_hardware")
+
+    assert config.motion.directory == Path("motions/custom")
+    assert config.motion.sequence == "output_bello_beyondmimic"
+    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
+    assert config.asset_config.enforce_policy_effort_limits
+    assert (
+        replace(config.asset_config, target_total_mass_kg=None)
+        == motion_tracking_asset_config()
+    )
+    assert config.env_config.formulation == "beyondmimic_joint_limits"
+    assert config.env_config.action_clip == pytest.approx(1.0)
+    assert config.config.policy.action_distribution == "tanh_gaussian"
+    assert config.config.policy.action_limit == pytest.approx(1.0)
+    assert config.config.policy.init_log_std == pytest.approx(-1.5)
+    assert config.config.policy.max_log_std == pytest.approx(-1.0)
+    assert (
+        config.checkpoint_config.name == "output_bello_beyondmimic_hardware_60kg_seed0"
+    )
+
+
 def test_motion_selection_resolves_sequence_name(tmp_path: Path) -> None:
     motion_path = tmp_path / "dance1_subject2.npz"
     motion_path.touch()

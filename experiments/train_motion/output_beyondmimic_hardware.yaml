@@ -1,0 +1,35 @@
+# Hardware-oriented BeyondMimic run for the private output.bvh reference.
+defaults:
+  - beyondmimic
+  - _self_
+
+asset_config:
+  target_total_mass_kg: 60.0
+  enforce_policy_effort_limits: true
+
+motion:
+  directory: motions/custom
+  sequence: output_bello_beyondmimic
+
+config:
+  policy:
+    init_log_std: -1.5
+    max_log_std: -1.0
+    action_distribution: tanh_gaussian
+    action_limit: 1.0
+
+env_config:
+  formulation: beyondmimic_joint_limits
+  action_clip: 1.0
+
+checkpoint_config:
+  name: output_bello_beyondmimic_hardware_60kg_seed0
+
+wandb_config:
+  group: hardware-motion
+  run_name: output-bello-beyondmimic-hardware-60kg-seed0
+  tags:
+    [bello, hardware, 60kg, tanh, sphere-hands, fixed-waist, fixed-head, beyondmimic]
+
+video_config:
+  filename_prefix: output_bello_beyondmimic_hardware_60kg

@@ -144,7 +144,11 @@ class MotionTrackingEnvConfig:
     motion_path: Path = Path("motions/local/walk1_subject1_fixed_waist.npz")
     decimation: int = CONTROL_DECIMATION
     action_clip: float = 1.0
-    formulation: Literal["reference_residual", "beyondmimic"] = "reference_residual"
+    formulation: Literal[
+        "reference_residual",
+        "beyondmimic",
+        "beyondmimic_joint_limits",
+    ] = "reference_residual"
     anchor_body_name: str = "pelvis_link"
     terrain: TerrainConfig = FLAT_TERRAIN
     reset: MotionResetConfig = MotionResetConfig()
@@ -196,9 +200,14 @@ class BelloMotionTrackingEnv:
             raise ValueError("decimation must be positive")
         if not math.isfinite(self.config.action_clip) or self.config.action_clip <= 0:
             raise ValueError("action_clip must be positive and finite")
-        if self.config.formulation not in {"reference_residual", "beyondmimic"}:
+        if self.config.formulation not in {
+            "reference_residual",
+            "beyondmimic",
+            "beyondmimic_joint_limits",
+        }:
             raise ValueError(
-                "formulation must be 'reference_residual' or 'beyondmimic'"
+                "formulation must be 'reference_residual', 'beyondmimic', or "
+                "'beyondmimic_joint_limits'"
             )
         self._validate_range("initial_xy_range", self.config.reset.initial_xy_range)
         self._validate_range("initial_yaw_range", self.config.reset.initial_yaw_range)
@@ -340,6 +349,13 @@ class BelloMotionTrackingEnv:
         return self.config.action_clip
 
     @property
+    def uses_beyondmimic_formulation(self) -> bool:
+        return self.config.formulation in {
+            "beyondmimic",
+            "beyondmimic_joint_limits",
+        }
+
+    @property
     def task(self) -> Literal["motion_tracking"]:
         return "motion_tracking"
 
@@ -363,7 +379,7 @@ class BelloMotionTrackingEnv:
     @property
     def observation_layout(self) -> ObservationLayout:
         action_size = self.action_size
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             return ObservationLayout(
                 (
                     ("reference_joint_position", action_size),
@@ -395,7 +411,7 @@ class BelloMotionTrackingEnv:
     @property
     def critic_observation_layout(self) -> ObservationLayout:
         body_count = len(self.motion.body_names)
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             extra = (
                 ("tracked_body_position_relative_to_anchor", 3 * body_count),
                 ("tracked_body_orientation_relative_to_anchor_6d", 6 * body_count),
@@ -426,7 +442,7 @@ class BelloMotionTrackingEnv:
 
     @property
     def end_effector_names(self) -> tuple[str, ...]:
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             return (
                 "left_ankle_roll_link",
                 "right_ankle_roll_link",
@@ -713,7 +729,7 @@ class BelloMotionTrackingEnv:
         qvel_indices = jnp.asarray(self.model.policy_qvel_indices)
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
         joint_default = jnp.asarray(self.model.default_joint_target)[policy_indices]
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             anchor_id = self.anchor_body_id
             anchor_index = self.anchor_body_index
             anchor_quat = state.data.xquat[anchor_id]
@@ -786,7 +802,7 @@ class BelloMotionTrackingEnv:
         return jax.vmap(self.observation)(state, keys)
 
     def critic_observation(self, state: MotionTrackingState) -> jax.Array:
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             ids = jnp.asarray(self.tracked_body_ids)
             anchor_id = self.anchor_body_id
             anchor_position = state.data.xpos[anchor_id]
@@ -859,7 +875,7 @@ class BelloMotionTrackingEnv:
             state.alignment_xy,
             state.alignment_yaw,
         )
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             return self._beyondmimic_reward(previous, state, reference, world_id)
         qpos_indices = jnp.asarray(self.model.policy_qpos_indices)
         qvel_indices = jnp.asarray(self.model.policy_qvel_indices)
@@ -970,7 +986,7 @@ class BelloMotionTrackingEnv:
             state.alignment_yaw,
         )
         ids = jnp.asarray(self.tracked_body_ids)
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             anchor_id = self.anchor_body_id
             anchor_index = self.anchor_body_index
             target_pos, _ = self._relative_body_targets(state, reference)
@@ -1181,10 +1197,43 @@ class BelloMotionTrackingEnv:
             scales.append(0.25 * joint.effort_limit / stiffness)
         return jnp.asarray(scales, dtype=jnp.float32)
 
+    def beyondmimic_action_to_joint_target(
+        self,
+        action: jax.Array,
+        joint_default_offset: jax.Array | None = None,
+    ) -> jax.Array:
+        """Map a BeyondMimic action to logical joint targets."""
+        policy = jnp.asarray(self.model.policy_ctrl_indices)
+        logical_target = jnp.asarray(self.model.default_joint_target)
+        if joint_default_offset is None:
+            joint_default_offset = jnp.zeros(self.action_size, dtype=jnp.float32)
+        policy_default = logical_target[policy] + joint_default_offset
+        if not self.uses_beyondmimic_formulation:
+            raise ValueError("BeyondMimic actions require a BeyondMimic formulation")
+        if self.config.formulation == "beyondmimic":
+            policy_target = policy_default + self.beyondmimic_action_scale * action
+            return logical_target.at[policy].set(policy_target)
+
+        target_low = jnp.asarray(self.model.joint_target_low)[policy]
+        target_high = jnp.asarray(self.model.joint_target_high)[policy]
+        policy_default = jnp.clip(policy_default, target_low, target_high)
+        normalized_action = jnp.clip(
+            jnp.asarray(action, dtype=jnp.float32) / self.action_clip,
+            -1.0,
+            1.0,
+        )
+        target_span = jnp.where(
+            normalized_action >= 0.0,
+            target_high - policy_default,
+            policy_default - target_low,
+        )
+        policy_target = policy_default + target_span * normalized_action
+        return logical_target.at[policy].set(policy_target)
+
     def _initial_ctrl(
         self, reference: MotionSample, joint_default_offset: jax.Array
     ) -> jax.Array:
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             logical_target = jnp.asarray(self.model.default_joint_target)
             policy = jnp.asarray(self.model.policy_ctrl_indices)
             logical_target = logical_target.at[policy].add(joint_default_offset)
@@ -1195,15 +1244,12 @@ class BelloMotionTrackingEnv:
         self, state: MotionTrackingState, action: jax.Array
     ) -> jax.Array:
         policy = jnp.asarray(self.model.policy_ctrl_indices)
-        if self.config.formulation == "beyondmimic":
-            logical_target = jnp.asarray(self.model.default_joint_target)
-            policy_target = (
-                logical_target[policy]
-                + state.joint_default_offset
-                + self.beyondmimic_action_scale * action
+        if self.uses_beyondmimic_formulation:
+            return self._logical_target_to_ctrl(
+                self.beyondmimic_action_to_joint_target(
+                    action, state.joint_default_offset
+                )
             )
-            logical_target = logical_target.at[policy].set(policy_target)
-            return self._logical_target_to_ctrl(logical_target)
         reference = sample_motion(
             self.motion,
             jnp.minimum(
@@ -1227,11 +1273,10 @@ class BelloMotionTrackingEnv:
     ) -> jax.Array:
         logical_target = jnp.asarray(self.model.default_joint_target)
         policy = jnp.asarray(self.model.policy_ctrl_indices)
-        if self.config.formulation == "beyondmimic":
-            logical_target = logical_target.at[policy].set(
-                logical_target[policy] + self.beyondmimic_action_scale * action
+        if self.uses_beyondmimic_formulation:
+            return self._logical_target_to_ctrl(
+                self.beyondmimic_action_to_joint_target(action)
             )
-            return self._logical_target_to_ctrl(logical_target)
         observation = stacked_observation[-self.observation_size :]
         reference_target = logical_target[policy] + observation[: self.action_size]
         policy_target = reference_target + self.reference_residual_action_scale * action

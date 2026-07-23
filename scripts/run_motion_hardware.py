@@ -594,7 +594,10 @@ def validate_motion_hardware_checkpoint(
         raise ValueError("motion hardware runner requires a motion-tracking checkpoint")
     if metadata.motion is None or metadata.motion_env is None:
         raise ValueError("motion checkpoint is missing its motion contract")
-    if metadata.motion_env.formulation != "beyondmimic":
+    if metadata.motion_env.formulation not in {
+        "beyondmimic",
+        "beyondmimic_joint_limits",
+    }:
         raise ValueError(
             "hardware deployment currently requires BeyondMimic formulation"
         )

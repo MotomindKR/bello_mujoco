@@ -364,6 +364,32 @@ The complete config is
 `experiments/train_motion/beyondmimic.yaml`. W&B logging, checkpointing, and
 evaluation videos are enabled and run every 500 updates.
 
+### Hardware-bounded 60 kg profile
+
+`output_beyondmimic_hardware` is a fresh-training profile for the tracked
+`output_bello_beyondmimic` clip. It keeps the BeyondMimic observations,
+rewards, reset randomization, and adaptive sampler, but changes the deployment
+contract through the explicit `beyondmimic_joint_limits` formulation:
+
+- the actor uses `tanh_gaussian` with actions bounded to `[-1, 1]`;
+- each bounded action maps asymmetrically from the nominal joint target to the
+  corresponding lower or upper soft joint limit, matching the locomotion
+  action mapping.
+
+The prepared robot is uniformly mass-scaled to 60 kg and retains the policy
+motor effort limits. The action-distribution, action-mapping, and mass changes
+are part of the MDP and asset contract saved in every checkpoint, so this
+profile must start a new run rather than resume a Gaussian BeyondMimic
+checkpoint.
+
+Start it with:
+
+```bash
+uv run bello-train-motion-ppo \
+  --config-dir "$PWD/experiments/train_motion" \
+  --config-name output_beyondmimic_hardware
+```
+
 MJX-Warp uses one shared model for all worlds in the current vectorized
 backend. Consequently, per-environment ground-friction and torso-COM model
 randomization from the Isaac Lab implementation are not active; reset-state,

@@ -48,6 +48,152 @@ config:
     action_distribution: tanh_gaussian
     action_limit: 1.0
 
+asset_config:
+  asset: full_body
+  collision_mode: box
+  mesh_face_budget: 1000
+  visual_mesh_face_budget: 200000
+  end_effector_sphere_mode: both
+  target_total_mass_kg: null
+  neighbor_exclusion_depth: 2
+  enforce_policy_effort_limits: true
+  ankle_differential_config:
+    motor_gain_scale: 0.5
+    motor_effort_limit_scale: 1.0
+  joint_availability:
+    waist_yaw: true
+    waist_roll: false
+    waist_pitch: false
+    neck_yaw: false
+    head_pitch: false
+  actuator_config:
+    joints:
+      left_hip_pitch_joint:
+        mode: policy
+        default_pos: -0.325
+        soft_limit: [-1.41372, 1.41372]
+        gains: [200.0, 5.0]
+        effort_limit: 120.0
+      right_hip_pitch_joint:
+        mode: policy
+        default_pos: 0.325
+        soft_limit: [-1.41372, 1.41372]
+        gains: [200.0, 5.0]
+        effort_limit: 120.0
+      left_hip_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      right_hip_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      left_hip_yaw_joint:
+        mode: policy
+        default_pos: 0.125
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      right_hip_yaw_joint:
+        mode: policy
+        default_pos: -0.125
+        soft_limit: [-1.41372, 1.41372]
+        gains: [150.0, 5.0]
+        effort_limit: 60.0
+      left_knee_joint:
+        mode: policy
+        default_pos: 0.45
+        soft_limit: [0.0, 1.98968]
+        gains: [220.0, 6.0]
+        effort_limit: 120.0
+      right_knee_joint:
+        mode: policy
+        default_pos: 0.45
+        soft_limit: [0.0, 1.98968]
+        gains: [220.0, 6.0]
+        effort_limit: 120.0
+      left_ankle_pitch_joint:
+        mode: policy
+        default_pos: 0.3
+        soft_limit: [-0.44506, 0.96866]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      right_ankle_pitch_joint:
+        mode: policy
+        default_pos: 0.3
+        soft_limit: [-0.44506, 0.96866]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      left_ankle_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-0.07857, 0.07857]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      right_ankle_roll_joint:
+        mode: policy
+        default_pos: 0.0
+        soft_limit: [-0.07857, 0.07857]
+        gains: [22.0, 1.0]
+        effort_limit: 36.0
+      waist_yaw_joint:
+        mode: policy
+        soft_limit: [-0.45, 0.45]
+        gains: [180.0, 12.0]
+        effort_limit: 120.0
+      right_shoulder_pitch_joint:
+        mode: policy
+        gains: [70.0, 2.0]
+        effort_limit: 120.0
+      right_shoulder_roll_joint:
+        mode: policy
+        gains: [70.0, 2.0]
+        effort_limit: 60.0
+      right_shoulder_yaw_joint:
+        mode: policy
+        gains: [20.0, 1.0]
+        effort_limit: 36.0
+      right_elbow_pitch_joint:
+        mode: policy
+        gains: [40.0, 2.0]
+        effort_limit: 36.0
+      right_elbow_yaw_joint:
+        mode: policy
+        gains: [20.0, 1.0]
+        effort_limit: 14.0
+      right_wrist_pitch_joint:
+        mode: policy
+        gains: [10.0, 1.0]
+        effort_limit: 14.0
+      left_shoulder_pitch_joint:
+        mode: policy
+        gains: [70.0, 2.0]
+        effort_limit: 120.0
+      left_shoulder_roll_joint:
+        mode: policy
+        gains: [70.0, 2.0]
+        effort_limit: 60.0
+      left_shoulder_yaw_joint:
+        mode: policy
+        gains: [20.0, 1.0]
+        effort_limit: 36.0
+      left_elbow_pitch_joint:
+        mode: policy
+        gains: [40.0, 2.0]
+        effort_limit: 36.0
+      left_elbow_yaw_joint:
+        mode: policy
+        gains: [20.0, 1.0]
+        effort_limit: 14.0
+      left_wrist_pitch_joint:
+        mode: policy
+        gains: [10.0, 1.0]
+        effort_limit: 14.0
+
 env_config:
   decimation: 4
   action_clip: 1.0
