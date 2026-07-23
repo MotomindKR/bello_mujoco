@@ -52,6 +52,9 @@ asset_config:
   end_effector_sphere_mode: both
   target_total_mass_kg: null
   neighbor_exclusion_depth: 2
+  # Preserve effort limits as reward normalization metadata without clipping
+  # policy-actuator force before the over-peak penalty can observe it.
+  enforce_policy_effort_limits: false
   ankle_differential_config:
     motor_gain_scale: 0.5
     motor_effort_limit_scale: 1.0
@@ -308,7 +311,9 @@ reward_config:
     weight: -1.0
     soft_limit_ratio: 0.8
   torque_l1:
-    weight: -2.5e-05
+    weight: -1.0
+  torque_peak:
+    weight: -10.0
   joint_pose:
     weight: -0.1
   stand_dual_contact:

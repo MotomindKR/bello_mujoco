@@ -6,6 +6,7 @@ collision_mode: mesh
 end_effector_sphere_mode: none  # none | both
 target_total_mass_kg: null
 neighbor_exclusion_depth: 2
+enforce_policy_effort_limits: true
 imu_config:
   enabled: false
   body_name: pelvis_link

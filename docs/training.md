@@ -150,6 +150,17 @@ has walking momentum. There is no separate contact-loss, takeoff, or touchdown
 event penalty; the standing contact objective is represented only by the
 stationary dual-contact reward.
 
+Policy torque regularization is normalized per actuator by the configured peak
+effort, rather than summing raw newton-metres across unequal motors. The
+`torque_l1` value is `mean(abs(torque) / peak_torque)` with weight `-1.0`. A
+separate `torque_peak` value is
+`mean(max(abs(torque) / peak_torque - 1, 0)^2)` with weight `-10.0`, making an
+over-peak excursion much more expensive than ordinary sub-peak effort. The
+training asset keeps each configured `forcerange` as peak-torque metadata but
+sets `forcelimited=false` on policy actuators, so the optimizer observes and is
+penalized for requested over-peak force instead of having it hidden by physics
+clipping. Non-policy hold actuators remain force-limited.
+
 Dense stability feedback includes pelvis-height error with weight `-10.0` and
 target height `0.86`, plus torso orientation with weight `-2.0`. Physical failure
 termination has weight `-100.0`, which contributes `-2.0` at the default 50 Hz

@@ -126,6 +126,11 @@ class TorqueL1RewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class TorquePeakRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
 class JointPoseRewardConfig(WeightedRewardConfig):
     pass
 
@@ -217,7 +222,8 @@ class RewardConfig:
     base_height: BaseHeightRewardConfig = BaseHeightRewardConfig(weight=-10.0)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.01)
     action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(weight=-1.0)
-    torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-2.5e-5)
+    torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-1.0)
+    torque_peak: TorquePeakRewardConfig = TorquePeakRewardConfig(weight=-10.0)
     joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-0.1)
     stand_dual_contact: StandDualContactRewardConfig = StandDualContactRewardConfig(
         weight=2.0
@@ -293,6 +299,7 @@ class RewardInputs:
     requested_action: jax.Array
     last_action: jax.Array
     actuator_force: jax.Array
+    actuator_peak_force: jax.Array
     joint_limit_low: jax.Array
     joint_limit_high: jax.Array
     policy_joint_indices: jax.Array
@@ -355,7 +362,11 @@ def compute_locomotion_reward(
         )
         ** 2
     )
-    torque_l1 = jnp.sum(jnp.abs(inputs.actuator_force[inputs.policy_joint_indices]))
+    policy_force = jnp.abs(inputs.actuator_force[inputs.policy_joint_indices])
+    policy_peak_force = inputs.actuator_peak_force[inputs.policy_joint_indices]
+    normalized_torque = policy_force / policy_peak_force
+    torque_l1 = jnp.mean(normalized_torque)
+    torque_peak = jnp.mean(jnp.maximum(normalized_torque - 1.0, 0.0) ** 2)
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
     command_speed = jnp.linalg.norm(inputs.command)
     body_speed = jnp.linalg.norm(inputs.lin_vel_xy)
@@ -499,6 +510,7 @@ def compute_locomotion_reward(
         "action_rate": action_rate,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
+        "torque_peak": torque_peak,
         "joint_pose": joint_pose,
         "stand_dual_contact": stand_dual_contact,
         "hip_deviation": hip_deviation,

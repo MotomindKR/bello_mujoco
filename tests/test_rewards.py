@@ -17,6 +17,8 @@ from bello_mujoco.envs.rewards import (
     RewardInputs,
     StandDualContactRewardConfig,
     TouchdownAirTimeRewardConfig,
+    TorqueL1RewardConfig,
+    TorquePeakRewardConfig,
     TrackAngVelZRewardConfig,
     TrackLinVelXYRewardConfig,
     compute_locomotion_reward,
@@ -48,6 +50,7 @@ def reward_inputs(**updates) -> RewardInputs:
         requested_action=jnp.zeros(2, dtype=jnp.float32),
         last_action=jnp.zeros(2, dtype=jnp.float32),
         actuator_force=jnp.zeros(2, dtype=jnp.float32),
+        actuator_peak_force=jnp.ones(2, dtype=jnp.float32),
         joint_limit_low=jnp.asarray([-1.0, -1.0], dtype=jnp.float32),
         joint_limit_high=jnp.asarray([1.0, 1.0], dtype=jnp.float32),
         policy_joint_indices=jnp.asarray([0, 1], dtype=jnp.int32),
@@ -231,6 +234,27 @@ def test_action_limit_penalty_is_quadratic_outside_soft_band() -> None:
     )
     assert boundary["reward/action_limit"] == pytest.approx(0.0)
     assert outside["reward/action_limit"] == pytest.approx(-0.0025)
+
+
+def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> None:
+    config = reward_config(
+        torque_l1=TorqueL1RewardConfig(weight=-1.0),
+        torque_peak=TorquePeakRewardConfig(weight=-10.0),
+    )
+    inputs = reward_inputs(
+        actuator_force=jnp.asarray([1.0, 4.0]),
+        actuator_peak_force=jnp.asarray([2.0, 4.0]),
+    )
+    _, at_or_below_peak = compute_locomotion_reward(config, inputs)
+    _, over_peak = compute_locomotion_reward(
+        config,
+        inputs.replace(actuator_force=jnp.asarray([4.0, 4.0])),
+    )
+
+    assert at_or_below_peak["reward/torque_l1"] == pytest.approx(-0.015)
+    assert at_or_below_peak["reward/torque_peak"] == pytest.approx(0.0)
+    assert over_peak["reward/torque_l1"] == pytest.approx(-0.03)
+    assert over_peak["reward/torque_peak"] == pytest.approx(-0.1)
 
 
 def test_invalid_action_checks_requested_target_and_policy_clip() -> None:

@@ -54,6 +54,7 @@ def test_default_training_config_uses_deployment_policy_contract() -> None:
 
     assert len(config.asset_config.actuator_config.policy_joint_names) == 13
     assert len(config.asset_config.actuator_config.hold_joint_names) == 16
+    assert not config.asset_config.enforce_policy_effort_limits
     assert config.env_config.root_link == "pelvis_link"
     assert config.env_config.action_clip == pytest.approx(1.0)
     assert not config.env_config.observation.privileged

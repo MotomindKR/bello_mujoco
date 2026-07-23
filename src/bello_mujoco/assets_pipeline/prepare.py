@@ -58,6 +58,7 @@ class AssetPrepConfig:
     end_effector_sphere_mode: EndEffectorSphereMode = "none"
     target_total_mass_kg: float | None = None
     neighbor_exclusion_depth: int = 2
+    enforce_policy_effort_limits: bool = True
     imu_config: ImuSensorConfig = ImuSensorConfig()
     ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig()
     joint_availability: JointAvailabilityConfig = JointAvailabilityConfig()
@@ -182,6 +183,7 @@ def prepare_asset_unlocked(
         include_visuals=False,
         actuator_config=config.actuator_config,
         actuated_joint_order=actuated_joint_order,
+        enforce_policy_effort_limits=config.enforce_policy_effort_limits,
         imu_config=config.imu_config,
         ankle_differential_config=config.ankle_differential_config,
     )
@@ -193,6 +195,7 @@ def prepare_asset_unlocked(
         include_visuals=True,
         actuator_config=config.actuator_config,
         actuated_joint_order=actuated_joint_order,
+        enforce_policy_effort_limits=config.enforce_policy_effort_limits,
         imu_config=config.imu_config,
         ankle_differential_config=config.ankle_differential_config,
     )
@@ -295,6 +298,7 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "target_total_mass_kg": config.target_total_mass_kg,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
+        "enforce_policy_effort_limits": config.enforce_policy_effort_limits,
         "imu_config": asdict(config.imu_config),
         "ankle_differential_config": asdict(config.ankle_differential_config),
         "joint_availability": asdict(config.joint_availability),

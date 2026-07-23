@@ -525,6 +525,13 @@ class BelloLocomotionEnv:
                 f"exactly once, got {model.policy_ctrl_indices.size} policy and "
                 f"{model.hold_ctrl_indices.size} hold controls for nu={mj_model.nu}"
             )
+        policy_peak_force = model.actuator_peak_force[model.policy_ctrl_indices]
+        if not np.all(np.isfinite(policy_peak_force)) or np.any(
+            policy_peak_force <= 0.0
+        ):
+            raise ValueError(
+                "policy actuators require positive finite peak-force metadata"
+            )
         require_index_range(
             "actuator_qpos_indices", model.actuator_qpos_indices, mj_model.nq
         )
@@ -1831,6 +1838,7 @@ class BelloLocomotionEnv:
                 requested_action=requested_action,
                 last_action=state.last_action,
                 actuator_force=next_state.data.actuator_force,
+                actuator_peak_force=jnp.asarray(self.model.actuator_peak_force),
                 joint_limit_low=self._actuator_joint_limit_low(),
                 joint_limit_high=self._actuator_joint_limit_high(),
                 policy_joint_indices=jnp.asarray(self.model.policy_ctrl_indices),

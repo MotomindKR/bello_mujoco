@@ -384,6 +384,9 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     assert asset_config_hash(base) != asset_config_hash(
         AssetPrepConfig(asset="full_body", target_total_mass_kg=60.0)
     )
+    assert asset_config_hash(base) != asset_config_hash(
+        AssetPrepConfig(asset="full_body", enforce_policy_effort_limits=False)
+    )
     fixed_head = AssetPrepConfig(
         asset="full_body",
         mesh_face_budget=1000,
@@ -403,6 +406,35 @@ def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort
     assert not np.any(model.actuator_ctrllimited)
     assert np.all(model.actuator_ctrlrange[:, 0] < model.actuator_ctrlrange[:, 1])
     assert np.all(model.actuator_forcelimited)
+    assert np.all(model.actuator_forcerange[:, 0] < 0.0)
+    assert np.all(model.actuator_forcerange[:, 1] > 0.0)
+
+
+def test_policy_effort_limits_can_be_disabled_without_losing_peak_metadata(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_asset(
+        AssetPrepConfig(
+            output_root=tmp_path,
+            enforce_policy_effort_limits=False,
+        )
+    )
+    model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
+    actuator_names = [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
+        for index in range(model.nu)
+    ]
+    policy_indices = np.asarray(
+        [index for index, name in enumerate(actuator_names) if name.endswith("_pos")]
+    )
+    hold_indices = np.asarray(
+        [index for index, name in enumerate(actuator_names) if name.endswith("_hold")]
+    )
+
+    assert policy_indices.size > 0
+    assert hold_indices.size > 0
+    assert not np.any(model.actuator_forcelimited[policy_indices])
+    assert np.all(model.actuator_forcelimited[hold_indices])
     assert np.all(model.actuator_forcerange[:, 0] < 0.0)
     assert np.all(model.actuator_forcerange[:, 1] > 0.0)
 
