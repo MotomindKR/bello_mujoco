@@ -77,13 +77,17 @@ class LinkRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class TrackLinVelXYRewardConfig(LinkRewardConfig):
-    sigma: float = 0.5
+    moving_std: float = 0.75
+    still_std: float = 0.25
+    command_deadband: float = 0.10
     frame_link: str | None = None
 
 
 @dataclass(frozen=True)
 class TrackAngVelZRewardConfig(LinkRewardConfig):
-    sigma: float = 0.5
+    moving_std: float = 0.50
+    still_std: float = 0.20
+    command_deadband: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,8 @@ class JointPoseRewardConfig(WeightedRewardConfig):
 @dataclass(frozen=True)
 class StandDualContactRewardConfig(WeightedRewardConfig):
     command_speed_threshold: float = 0.10
+    linear_velocity_sigma: float = 0.04
+    yaw_velocity_sigma: float = 0.04
 
 
 @dataclass(frozen=True)
@@ -314,10 +320,26 @@ def compute_locomotion_reward(
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return the canonical weighted reward and its weighted components."""
 
-    lin_vel_error = jnp.sum((inputs.lin_vel_xy - inputs.command[:2]) ** 2)
-    yaw_vel_error = (inputs.yaw_vel_z - inputs.command[2]) ** 2
-    track_lin_vel_xy = jnp.exp(-lin_vel_error / config.track_lin_vel_xy.sigma)
-    track_ang_vel_z = jnp.exp(-yaw_vel_error / config.track_ang_vel_z.sigma)
+    linear_still = (
+        jnp.abs(inputs.command[:2]) < config.track_lin_vel_xy.command_deadband
+    )
+    linear_target = jnp.where(linear_still, 0.0, inputs.command[:2])
+    linear_std = jnp.where(
+        linear_still,
+        config.track_lin_vel_xy.still_std,
+        config.track_lin_vel_xy.moving_std,
+    )
+    lin_vel_error = jnp.sum(((inputs.lin_vel_xy - linear_target) / linear_std) ** 2)
+    yaw_still = jnp.abs(inputs.command[2]) < config.track_ang_vel_z.command_deadband
+    yaw_target = jnp.where(yaw_still, 0.0, inputs.command[2])
+    yaw_std = jnp.where(
+        yaw_still,
+        config.track_ang_vel_z.still_std,
+        config.track_ang_vel_z.moving_std,
+    )
+    yaw_vel_error = ((inputs.yaw_vel_z - yaw_target) / yaw_std) ** 2
+    track_lin_vel_xy = jnp.exp(-lin_vel_error)
+    track_ang_vel_z = jnp.exp(-yaw_vel_error)
     lin_vel_z = inputs.lin_vel_z**2
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
@@ -340,9 +362,14 @@ def compute_locomotion_reward(
     standing_command = (
         command_speed <= config.stand_dual_contact.command_speed_threshold
     )
+    both_feet_contact = jnp.all(inputs.foot_contact.astype(jnp.bool_))
+    stand_stationarity = jnp.exp(
+        -(body_speed**2) / config.stand_dual_contact.linear_velocity_sigma
+        - inputs.yaw_vel_z**2 / config.stand_dual_contact.yaw_velocity_sigma
+    )
     stand_dual_contact = jnp.where(
         standing_command,
-        jnp.mean(inputs.foot_contact.astype(jnp.float32)),
+        both_feet_contact.astype(jnp.float32) * stand_stationarity,
         0.0,
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
@@ -520,11 +547,21 @@ def validate_reward_config(config: RewardConfig) -> None:
         if not math.isfinite(term.weight):
             raise ValueError(f"{name}.weight must be finite, got {term.weight}")
     for name, sigma in (
-        ("track_lin_vel_xy", config.track_lin_vel_xy.sigma),
-        ("track_ang_vel_z", config.track_ang_vel_z.sigma),
+        ("track_lin_vel_xy.moving_std", config.track_lin_vel_xy.moving_std),
+        ("track_lin_vel_xy.still_std", config.track_lin_vel_xy.still_std),
+        ("track_ang_vel_z.moving_std", config.track_ang_vel_z.moving_std),
+        ("track_ang_vel_z.still_std", config.track_ang_vel_z.still_std),
+        (
+            "stand_dual_contact.linear_velocity_sigma",
+            config.stand_dual_contact.linear_velocity_sigma,
+        ),
+        (
+            "stand_dual_contact.yaw_velocity_sigma",
+            config.stand_dual_contact.yaw_velocity_sigma,
+        ),
     ):
         if not math.isfinite(sigma) or sigma <= 0:
-            raise ValueError(f"{name}.sigma must be positive and finite, got {sigma}")
+            raise ValueError(f"{name} must be positive and finite, got {sigma}")
     if not 0.0 <= config.action_limit.soft_limit_ratio < 1.0:
         raise ValueError("action_limit.soft_limit_ratio must be in [0, 1)")
     if not 0.0 < config.joint_limit.soft_limit_factor <= 1.0:
@@ -536,6 +573,8 @@ def validate_reward_config(config: RewardConfig) -> None:
         "hip_deviation.lateral_command_threshold": (
             config.hip_deviation.lateral_command_threshold
         ),
+        "track_lin_vel_xy.command_deadband": (config.track_lin_vel_xy.command_deadband),
+        "track_ang_vel_z.command_deadband": config.track_ang_vel_z.command_deadband,
         "contact_timing.command_speed_threshold": (
             config.contact_timing.command_speed_threshold
         ),

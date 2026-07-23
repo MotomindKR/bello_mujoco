@@ -279,12 +279,16 @@ reward_config:
   track_lin_vel_xy:
     weight: 1.0
     link: null
-    sigma: 0.5
+    moving_std: 0.75
+    still_std: 0.25
+    command_deadband: 0.1
     frame_link: null
   track_ang_vel_z:
     weight: 1.0
     link: null
-    sigma: 0.5
+    moving_std: 0.5
+    still_std: 0.2
+    command_deadband: 0.1
   lin_vel_z:
     weight: -2.0
     link: null
@@ -310,6 +314,8 @@ reward_config:
   stand_dual_contact:
     weight: 2.0
     command_speed_threshold: 0.1
+    linear_velocity_sigma: 0.04
+    yaw_velocity_sigma: 0.04
   hip_deviation:
     weight: -0.25
     lateral_command_index: 1

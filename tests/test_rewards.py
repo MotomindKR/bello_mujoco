@@ -17,6 +17,7 @@ from bello_mujoco.envs.rewards import (
     RewardInputs,
     StandDualContactRewardConfig,
     TouchdownAirTimeRewardConfig,
+    TrackAngVelZRewardConfig,
     TrackLinVelXYRewardConfig,
     compute_locomotion_reward,
 )
@@ -87,7 +88,12 @@ def test_command_sampler_respects_ranges_and_exact_standing_probability() -> Non
 
 def test_tracking_reward_is_maximal_at_command_and_scales_with_timestep() -> None:
     config = reward_config(
-        track_lin_vel_xy=TrackLinVelXYRewardConfig(weight=2.0, sigma=0.5)
+        track_lin_vel_xy=TrackLinVelXYRewardConfig(
+            weight=2.0,
+            moving_std=0.75,
+            still_std=0.25,
+            command_deadband=0.1,
+        )
     )
     inputs = reward_inputs(
         command=jnp.asarray([0.5, -0.25, 0.0]),
@@ -100,6 +106,54 @@ def test_tracking_reward_is_maximal_at_command_and_scales_with_timestep() -> Non
         config, inputs.replace(lin_vel_xy=jnp.asarray([-0.5, 0.25]))
     )
     assert worse < reward
+
+
+def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> None:
+    config = reward_config(
+        track_lin_vel_xy=TrackLinVelXYRewardConfig(
+            weight=1.0,
+            moving_std=0.75,
+            still_std=0.25,
+            command_deadband=0.1,
+        ),
+        track_ang_vel_z=TrackAngVelZRewardConfig(
+            weight=1.0,
+            moving_std=0.5,
+            still_std=0.2,
+            command_deadband=0.1,
+        ),
+    )
+    inputs = reward_inputs(command=jnp.asarray([0.5, 0.0, 0.0]))
+    _, perfect = compute_locomotion_reward(
+        config,
+        inputs.replace(lin_vel_xy=jnp.asarray([0.5, 0.0])),
+    )
+    _, moving_axis_error = compute_locomotion_reward(
+        config,
+        inputs.replace(lin_vel_xy=jnp.asarray([0.7, 0.0])),
+    )
+    _, still_axis_error = compute_locomotion_reward(
+        config,
+        inputs.replace(lin_vel_xy=jnp.asarray([0.5, 0.2])),
+    )
+    _, tiny_command = compute_locomotion_reward(
+        config,
+        inputs.replace(command=jnp.asarray([0.05, 0.0, 0.05])),
+    )
+
+    assert perfect["reward/track_lin_vel_xy"] == pytest.approx(0.02)
+    assert moving_axis_error["reward/track_lin_vel_xy"] == pytest.approx(
+        0.02 * jnp.exp(-((0.2 / 0.75) ** 2))
+    )
+    assert still_axis_error["reward/track_lin_vel_xy"] == pytest.approx(
+        0.02 * jnp.exp(-((0.2 / 0.25) ** 2))
+    )
+    assert (
+        still_axis_error["reward/track_lin_vel_xy"]
+        < moving_axis_error["reward/track_lin_vel_xy"]
+    )
+    assert tiny_command["reward/track_lin_vel_xy"] == pytest.approx(0.02)
+    assert tiny_command["reward/track_ang_vel_z"] == pytest.approx(0.02)
 
 
 def test_joint_limit_penalty_increases_with_distance_past_soft_limit() -> None:
@@ -334,11 +388,13 @@ def test_touchdown_air_time_stays_active_until_body_motion_settles() -> None:
     assert finer_timestep["reward/touchdown_air_time"] == pytest.approx(0.001)
 
 
-def test_stand_dual_contact_rewards_each_foot_for_a_standing_command() -> None:
+def test_stand_dual_contact_requires_both_feet_and_measured_stationarity() -> None:
     config = reward_config(
         stand_dual_contact=StandDualContactRewardConfig(
             weight=2.0,
             command_speed_threshold=0.1,
+            linear_velocity_sigma=0.04,
+            yaw_velocity_sigma=0.04,
         ),
     )
     inputs = reward_inputs()
@@ -359,12 +415,17 @@ def test_stand_dual_contact_rewards_each_foot_for_a_standing_command() -> None:
         config,
         inputs.replace(lin_vel_xy=jnp.asarray([0.2, 0.0])),
     )
+    _, rotating = compute_locomotion_reward(
+        config,
+        inputs.replace(yaw_vel_z=jnp.asarray(0.2)),
+    )
 
     assert dual_contact["reward/stand_dual_contact"] == pytest.approx(0.04)
-    assert single_contact["reward/stand_dual_contact"] == pytest.approx(0.02)
+    assert single_contact["reward/stand_dual_contact"] == pytest.approx(0.0)
     assert no_contact["reward/stand_dual_contact"] == pytest.approx(0.0)
     assert commanded["reward/stand_dual_contact"] == pytest.approx(0.0)
-    assert stopping["reward/stand_dual_contact"] == pytest.approx(0.04)
+    assert stopping["reward/stand_dual_contact"] == pytest.approx(0.04 * jnp.exp(-1.0))
+    assert rotating["reward/stand_dual_contact"] == pytest.approx(0.04 * jnp.exp(-1.0))
 
 
 def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
@@ -396,7 +457,10 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         self_collision=jnp.asarray(1.0),
         done=jnp.asarray(True),
     )
-    standing_inputs = moving_inputs.replace(command=jnp.zeros(3))
+    standing_inputs = moving_inputs.replace(
+        command=jnp.zeros(3),
+        foot_contact=jnp.ones(2),
+    )
     compute = jax.jit(compute_locomotion_reward, static_argnums=0)
     reward, moving_terms = compute(config, moving_inputs)
     _, moving_fine = compute(
@@ -452,6 +516,20 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
     with pytest.raises(ValueError, match="target_height"):
         reward_config(
             base_height=BaseHeightRewardConfig(weight=-1.0, target_height=0.0)
+        )
+    with pytest.raises(ValueError, match="linear_velocity_sigma"):
+        reward_config(
+            stand_dual_contact=StandDualContactRewardConfig(
+                weight=2.0,
+                linear_velocity_sigma=0.0,
+            )
+        )
+    with pytest.raises(ValueError, match="yaw_velocity_sigma"):
+        reward_config(
+            stand_dual_contact=StandDualContactRewardConfig(
+                weight=2.0,
+                yaw_velocity_sigma=float("nan"),
+            )
         )
 
 

@@ -129,18 +129,26 @@ contacts are absent. Touchdown air-time credit is retained at weight `0.5`, low
 enough that synchronized hopping cannot dominate the flight and vertical-motion
 costs.
 
-Linear and yaw velocity tracking both use weight `1.0`. Giving yaw the same
-maximum per-step credit as planar translation prevents the optimizer from
-cheaply sacrificing commanded rotation for translational tracking.
+Linear and yaw velocity tracking both use weight `1.0`. Each command axis below
+the `0.1` deadband tracks zero with a tighter standard deviation: `0.25` for
+planar velocity and `0.2` for yaw rate. Commanded axes use standard deviations
+`0.75` and `0.5`, respectively. This per-axis formulation strongly penalizes
+lateral drift during forward walking and residual motion while standing without
+narrowing the commanded-speed objective. Giving yaw the same maximum per-step
+credit as planar translation prevents the optimizer from cheaply sacrificing
+commanded rotation for translational tracking.
 
 The general nominal-pose penalty has weight `-0.1`. A separate
 `stand_dual_contact` reward with weight `2.0` activates whenever command speed is
-at or below `0.1`. It gives half credit for either contacting foot and full
-credit only when both feet contact, so a zero command immediately encourages
-dual support even while the robot is still braking. Contact-timing and touchdown
-air-time remain active whenever commanded or measured motion exceeds `0.1`, so
-a zero command does not remove landing credit while the robot still has walking
-momentum.
+at or below `0.1`. It gives credit only while both feet contact and multiplies
+that credit by `exp(-||v_xy||^2 / 0.04 - yaw_rate^2 / 0.04)`. Single-foot
+shuffling therefore receives no standing credit, while residual planar or yaw
+motion smoothly reduces the reward as the robot brakes. Contact-timing and
+touchdown air-time remain active whenever commanded or measured motion exceeds
+`0.1`, so a zero command does not remove landing credit while the robot still
+has walking momentum. There is no separate contact-loss, takeoff, or touchdown
+event penalty; the standing contact objective is represented only by the
+stationary dual-contact reward.
 
 Dense stability feedback includes pelvis-height error with weight `-10.0` and
 target height `0.86`, plus torso orientation with weight `-2.0`. Physical failure
