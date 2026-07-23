@@ -7,7 +7,7 @@ import pytest
 
 from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
-from bello_mujoco.imu import MujocoImu
+from bello_mujoco.imu import ImuNoiseConfig, ImuNoiseInjector, ImuSample, MujocoImu
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
 from bello_mujoco.render import mujoco_eval_state
 from bello_mujoco.sim import load_prepared_bello_model
@@ -67,6 +67,60 @@ def test_generated_mujoco_imu_is_bound_to_pelvis(tmp_path: Path) -> None:
         sample.linear_acceleration_xyz, abs=1.0e-6
     )
     assert sample.angular_velocity_xyz != pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_imu_noise_is_reproducible_normalized_and_sensor_only() -> None:
+    config = ImuNoiseConfig(
+        enabled=True,
+        orientation_std_radians=0.01,
+        linear_acceleration_std_mps2=0.1,
+        seed=7,
+    )
+    sample = ImuSample(
+        simulation_time=1.25,
+        orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+        angular_velocity_xyz=(1.0, 2.0, 3.0),
+        linear_acceleration_xyz=(4.0, 5.0, 6.0),
+        local_velocity_xyz=(7.0, 8.0, 9.0),
+        world_position_xyz=(10.0, 11.0, 12.0),
+    )
+
+    first = ImuNoiseInjector(config).apply(sample)
+    second = ImuNoiseInjector(config).apply(sample)
+
+    assert first == second
+    assert first.orientation_xyzw != sample.orientation_xyzw
+    assert np.linalg.norm(first.orientation_xyzw) == pytest.approx(1.0)
+    assert first.linear_acceleration_xyz != sample.linear_acceleration_xyz
+    assert first.angular_velocity_xyz == sample.angular_velocity_xyz
+    assert first.local_velocity_xyz == sample.local_velocity_xyz
+    assert first.world_position_xyz == sample.world_position_xyz
+    assert first.simulation_time == sample.simulation_time
+
+
+def test_disabled_imu_noise_returns_original_sample() -> None:
+    sample = ImuSample(
+        simulation_time=0.0,
+        orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+        angular_velocity_xyz=(0.0, 0.0, 0.0),
+        linear_acceleration_xyz=(0.0, 0.0, 0.0),
+    )
+
+    assert ImuNoiseInjector(ImuNoiseConfig()).apply(sample) is sample
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        ImuNoiseConfig(enabled=True),
+        ImuNoiseConfig(orientation_std_radians=-0.1),
+        ImuNoiseConfig(linear_acceleration_std_mps2=float("inf")),
+        ImuNoiseConfig(seed=-1),
+    ],
+)
+def test_invalid_imu_noise_config_is_rejected(config: ImuNoiseConfig) -> None:
+    with pytest.raises(ValueError, match="imu_noise"):
+        ImuNoiseInjector(config)
 
 
 def test_model_imu_frame_is_derived_from_generated_sensor_site(tmp_path: Path) -> None:

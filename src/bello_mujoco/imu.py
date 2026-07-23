@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import math
 
 import mujoco
 import numpy as np
@@ -16,6 +17,94 @@ class ImuSample:
     linear_acceleration_xyz: tuple[float, float, float]
     local_velocity_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
     world_position_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+@dataclass(frozen=True)
+class ImuNoiseConfig:
+    """Independent Gaussian noise applied to an emulated IMU sample."""
+
+    enabled: bool = False
+    orientation_std_radians: float = 0.0
+    linear_acceleration_std_mps2: float = 0.0
+    seed: int = 0
+
+
+class ImuNoiseInjector:
+    """Add reproducible sensor noise without changing simulated dynamics."""
+
+    def __init__(self, config: ImuNoiseConfig) -> None:
+        validate_imu_noise_config(config)
+        self.config = config
+        self._rng = np.random.default_rng(config.seed)
+
+    def apply(self, sample: ImuSample) -> ImuSample:
+        if not self.config.enabled:
+            return sample
+
+        orientation = np.asarray(sample.orientation_xyzw, dtype=np.float64)
+        orientation_norm = float(np.linalg.norm(orientation))
+        if (
+            orientation.shape != (4,)
+            or not np.all(np.isfinite(orientation))
+            or orientation_norm <= 0.0
+        ):
+            raise ValueError("IMU orientation must be a finite nonzero quaternion")
+        orientation /= orientation_norm
+
+        rotation_vector = self._rng.normal(
+            0.0, self.config.orientation_std_radians, size=3
+        )
+        angle = float(np.linalg.norm(rotation_vector))
+        if angle > 0.0:
+            delta_xyz = rotation_vector * (math.sin(0.5 * angle) / angle)
+            delta_xyzw = np.asarray(
+                (*delta_xyz, math.cos(0.5 * angle)), dtype=np.float64
+            )
+            orientation = _multiply_quaternions_xyzw(orientation, delta_xyzw)
+            orientation /= np.linalg.norm(orientation)
+
+        acceleration = np.asarray(sample.linear_acceleration_xyz, dtype=np.float64)
+        if acceleration.shape != (3,) or not np.all(np.isfinite(acceleration)):
+            raise ValueError("IMU linear acceleration must contain three finite values")
+        acceleration += self._rng.normal(
+            0.0, self.config.linear_acceleration_std_mps2, size=3
+        )
+        return replace(
+            sample,
+            orientation_xyzw=tuple(float(value) for value in orientation),
+            linear_acceleration_xyz=tuple(float(value) for value in acceleration),
+        )
+
+
+def validate_imu_noise_config(config: ImuNoiseConfig) -> None:
+    for name, value in (
+        ("orientation_std_radians", config.orientation_std_radians),
+        ("linear_acceleration_std_mps2", config.linear_acceleration_std_mps2),
+    ):
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"imu_noise.{name} must be finite and nonnegative")
+    if config.seed < 0:
+        raise ValueError("imu_noise.seed must be nonnegative")
+    if (
+        config.enabled
+        and config.orientation_std_radians == 0.0
+        and config.linear_acceleration_std_mps2 == 0.0
+    ):
+        raise ValueError("enabled imu_noise must configure at least one positive std")
+
+
+def _multiply_quaternions_xyzw(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    lx, ly, lz, lw = left
+    rx, ry, rz, rw = right
+    return np.asarray(
+        (
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+            lw * rw - lx * rx - ly * ry - lz * rz,
+        ),
+        dtype=np.float64,
+    )
 
 
 @dataclass(frozen=True)

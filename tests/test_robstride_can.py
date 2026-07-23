@@ -426,9 +426,14 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert config.motor_kind_config.name == "motor_kinds.yaml"
     assert config.simulation_physics.timestep == pytest.approx(0.0025)
     assert config.feedback_rate_hz == pytest.approx(100.0)
+    assert not config.enforce_torque_limits
     assert config.imu_serial_rate_hz == pytest.approx(250.0)
     assert config.imu_serial_enabled
     assert config.imu_serial_device == Path("/dev/ttyIMU-mujoco")
+    assert config.imu_noise.enabled
+    assert config.imu_noise.orientation_std_radians == pytest.approx(0.005)
+    assert config.imu_noise.linear_acceleration_std_mps2 == pytest.approx(0.1)
+    assert config.imu_noise.seed == 0
     assert config.bus_interfaces == ("can0=vcan0", "can1=vcan1")
     assert [path.name for path in config.motor_configs] == [
         "lower_body.yaml",
@@ -453,7 +458,11 @@ def test_direct_runner_default_matches_hil_morphology() -> None:
     assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
     assert config.simulation_physics.timestep == pytest.approx(0.0025)
     assert config.feedback_rate_hz == pytest.approx(100.0)
+    assert not config.enforce_torque_limits
     assert config.imu_serial_rate_hz == pytest.approx(250.0)
+    assert config.imu_noise.enabled
+    assert config.imu_noise.orientation_std_radians == pytest.approx(0.005)
+    assert config.imu_noise.linear_acceleration_std_mps2 == pytest.approx(0.1)
     assert config.pose_service.listen == "0.0.0.0:50052"
 
 
@@ -855,3 +864,39 @@ def test_native_actuator_triple_uses_one_common_dynamic_torque_limit(
     assert model.mj_model.actuator_gainprm[actuator.position_id, 0] == 0.0
     assert model.mj_model.actuator_gainprm[actuator.velocity_id, 0] == 0.0
     assert data.ctrl[actuator.feedforward_id] == 0.0
+
+
+def test_native_actuator_triple_can_disable_dynamic_torque_limit(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    motor = RobstrideMotor(motor_spec())
+    model = configure_robstride_actuators(
+        model,
+        (motor.spec,),
+        enforce_torque_limits=False,
+    )
+    transmission = BelloRobstrideTransmission(
+        model,
+        (motor,),
+        enforce_torque_limits=False,
+    )
+    data = mujoco.MjData(model.mj_model)
+    data.qpos[:] = model.default_qpos
+    data.qvel[:] = model.default_qvel
+    mujoco.mj_forward(model.mj_model, data)
+    motor.mode_status = 2
+    motor.params[PARAM_LIMIT_TORQUE] = 7.0
+    motor.command = MotorCommand(torque=20.0)
+
+    transmission.apply_motor_controls(data)
+    mujoco.mj_forward(model.mj_model, data)
+    transmission.update_motor_states(data)
+
+    joint_id = mujoco.mj_name2id(
+        model.mj_model, mujoco.mjtObj.mjOBJ_JOINT, "waist_yaw_joint"
+    )
+    assert not model.mj_model.jnt_actfrclimited[joint_id]
+    qvel_index = transmission.bindings["waist_yaw_joint"].qvel_index
+    assert data.qfrc_actuator[qvel_index] == pytest.approx(20.0)
+    assert motor.applied_torque == pytest.approx(20.0)

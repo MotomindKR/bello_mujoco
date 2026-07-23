@@ -36,12 +36,20 @@ simulation_physics:
 
 feedback_rate_hz: 100.0
 temperature_c: 25.0
+# Temporary HIL experiment: allow MuJoCo's aggregate MIT torque to exceed the
+# RobStride model limit. CAN feedback remains bounded by its protocol range.
+enforce_torque_limits: false
 headless: false
 real_time: true
 max_steps: null
 imu_serial_rate_hz: 250.0
 imu_serial_enabled: true
 imu_serial_device: /dev/ttyIMU-mujoco
+imu_noise:
+  enabled: true
+  orientation_std_radians: 0.005
+  linear_acceleration_std_mps2: 0.1
+  seed: 0
 torso_hold: true
 torso_drop_limit_m: 0.05
 release_after_seconds: null

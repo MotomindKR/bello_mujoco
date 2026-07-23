@@ -42,12 +42,17 @@ torque = kd * (velocity_target - velocity)
        + torque_feedforward
 ```
 
-The three contributions are summed by MuJoCo every physics step. The target
-joint or tendon has one shared `actuatorfrcrange`, updated from the motor's
-`limit_torque` parameter and bounded by the motor-kind protocol range, so the
-combined MIT torque is clamped once. The individual actuators are not force
-clamped. RobStride applied-torque feedback is read from MuJoCo's aggregate
-joint/tendon actuator-force sensor after this common clamp.
+The three contributions are summed by MuJoCo every physics step. Normally, the
+target joint or tendon has one shared `actuatorfrcrange`, updated from the
+motor's `limit_torque` parameter and bounded by the motor-kind protocol range,
+so the combined MIT torque is clamped once. The individual actuators are not
+force clamped. The current temporary HIL recipe sets
+`enforce_torque_limits: false`, allowing the aggregate MuJoCo force to exceed
+that range. Set it to `true` to restore the representative motor limit.
+
+RobStride CAN feedback cannot represent torque outside the motor-kind protocol
+range. Consequently, feedback remains saturated at that boundary even while
+this temporary unlimited mode applies a larger force inside MuJoCo.
 
 The runner models Bello's physical transmissions rather than treating every
 motor as a direct MuJoCo joint. Every motor assignment explicitly names a
@@ -188,6 +193,20 @@ matches the Motomind policy default: quaternion, gyro, gravity-removed local
 acceleration, timestamp, and 250 Hz output. Output configuration commands,
 polling mode, Euler and binary output, temperature, velocity, and distance are
 also emulated. MuJoCo remains the source of the orientation and kinematics.
+
+The emitted EBIMU samples add reproducible Gaussian sensor noise by default:
+`0.005 rad` orientation standard deviation per rotation-vector axis and
+`0.1 m/s^2` linear-acceleration standard deviation per axis. Noise is applied
+after each MuJoCo step and before serial encoding; it does not perturb physics
+or the ground-truth PoseService stream. Change or disable it with:
+
+```bash
+bello-robstride-runner \
+  imu_noise.orientation_std_radians=0.01 \
+  imu_noise.linear_acceleration_std_mps2=0.2 \
+  imu_noise.seed=7
+bello-robstride-runner imu_noise.enabled=false
+```
 
 Use the unmodified physical driver against the imaginary device:
 

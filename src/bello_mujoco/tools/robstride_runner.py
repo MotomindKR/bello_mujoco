@@ -22,7 +22,12 @@ from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.assets import project_data_path
 from bello_mujoco.ebimu_serial import EbimuSerialEmulator
 from bello_mujoco.hydra_config import config_path, structured_config
-from bello_mujoco.imu import MujocoImu
+from bello_mujoco.imu import (
+    ImuNoiseConfig,
+    ImuNoiseInjector,
+    MujocoImu,
+    validate_imu_noise_config,
+)
 from bello_mujoco.pose_service import PoseServiceConfig, PoseServiceServer
 from bello_mujoco.robstride_can import (
     MotorSpec,
@@ -86,12 +91,19 @@ class RobstrideRunnerConfig:
     )
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
+    enforce_torque_limits: bool = False
     headless: bool = False
     real_time: bool = True
     max_steps: int | None = None
     imu_serial_rate_hz: float = 250.0
     imu_serial_enabled: bool = True
     imu_serial_device: Path = Path("/dev/ttyIMU-mujoco")
+    imu_noise: ImuNoiseConfig = ImuNoiseConfig(
+        enabled=True,
+        orientation_std_radians=0.005,
+        linear_acceleration_std_mps2=0.1,
+        seed=0,
+    )
     torso_hold: bool = True
     torso_drop_limit_m: float = 0.05
     release_after_seconds: float | None = None
@@ -300,7 +312,11 @@ def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
         use_viewer_model=not config.headless,
         load_mjx=False,
     )
-    model = configure_robstride_actuators(model, robstride.motors)
+    model = configure_robstride_actuators(
+        model,
+        robstride.motors,
+        enforce_torque_limits=config.enforce_torque_limits,
+    )
     torso_hold = None
     if config.torso_hold:
         model, torso_hold = add_torso_hold(model, config.torso_drop_limit_m)
@@ -322,7 +338,13 @@ def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
             for emulator in emulators.values()
             for motor in emulator.motors.values()
         ),
+        enforce_torque_limits=config.enforce_torque_limits,
     )
+    if not config.enforce_torque_limits:
+        print(
+            "WARNING: simulated actuator torque limits are disabled; RobStride "
+            "feedback still saturates at each model's protocol torque range"
+        )
     run_simulation(model, emulators, transmission, config, torso_hold)
 
 
@@ -343,6 +365,7 @@ def run_simulation(
         if config.asset_config.imu_config.enabled
         else None
     )
+    imu_noise = ImuNoiseInjector(config.imu_noise)
 
     with ExitStack() as stack:
         pose_server = None
@@ -416,6 +439,16 @@ def run_simulation(
                     f"{config.imu_serial_rate_hz:g} Hz -> "
                     f"{config.imu_serial_device} (host endpoint /dev/ttyIMU)"
                 )
+                if config.imu_noise.enabled:
+                    print(
+                        "  ebimu noise: orientation std "
+                        f"{config.imu_noise.orientation_std_radians:g} rad/axis, "
+                        "linear acceleration std "
+                        f"{config.imu_noise.linear_acceleration_std_mps2:g} "
+                        f"m/s^2/axis, seed {config.imu_noise.seed}"
+                    )
+                else:
+                    print("  ebimu noise: disabled")
             else:
                 print("  ebimu: disabled")
         if pose_server is not None:
@@ -451,6 +484,7 @@ def run_simulation(
                 control_window,
                 imu_sensor,
                 imu_serial,
+                imu_noise,
                 pose_server,
                 pose_body_id,
                 terminal_enter,
@@ -469,6 +503,7 @@ def _simulation_loop(
     control_window: RunnerControlWindow | None,
     imu_sensor: MujocoImu | None,
     imu_serial: EbimuSerialEmulator | None,
+    imu_noise: ImuNoiseInjector,
     pose_server: PoseServiceServer | None,
     pose_body_id: int,
     terminal_enter: TerminalEnterInput,
@@ -552,7 +587,7 @@ def _simulation_loop(
         steps += 1
 
         if imu_sensor is not None and imu_serial is not None:
-            imu_serial.update(imu_sensor.sample(data))
+            imu_serial.update(imu_noise.apply(imu_sensor.sample(data)))
 
         now = time.monotonic()
         if pose_server is not None and float(data.time) >= next_pose_sim:
@@ -746,6 +781,7 @@ def validate_config(config: RobstrideRunnerConfig) -> None:
         raise ValueError("imu_serial_device must not be empty")
     if config.imu_serial_enabled and not config.asset_config.imu_config.enabled:
         raise ValueError("imu_serial_enabled requires asset_config.imu_config.enabled")
+    validate_imu_noise_config(config.imu_noise)
     if not math.isfinite(config.torso_drop_limit_m) or config.torso_drop_limit_m <= 0.0:
         raise ValueError("torso_drop_limit_m must be finite and positive")
     if config.release_after_seconds is not None:
