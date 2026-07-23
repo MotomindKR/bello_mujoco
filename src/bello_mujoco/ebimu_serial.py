@@ -54,6 +54,7 @@ class EbimuSerialEmulator:
         self._command = bytearray()
         self._in_command = False
         self._next_output_time: float | None = None
+        self._last_simulation_time: float | None = None
         self._distance_origin: tuple[float, float, float] | None = None
 
     @property
@@ -92,6 +93,12 @@ class EbimuSerialEmulator:
     def update(self, sample: ImuSample) -> None:
         """Process host commands and emit the newest due sensor record."""
 
+        if (
+            self._last_simulation_time is not None
+            and sample.simulation_time + 1.0e-12 < self._last_simulation_time
+        ):
+            self._next_output_time = sample.simulation_time
+        self._last_simulation_time = sample.simulation_time
         if self._read_host_input(sample):
             return
         if not self._state.running or self._state.interval_ms == 0:
