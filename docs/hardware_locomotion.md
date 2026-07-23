@@ -23,16 +23,16 @@ checkout to this repository's lock file.
 The hardware recipe inherits the maintained locomotion algorithm and fixes the
 four coordinates absent from the physical inventory: waist roll, waist pitch,
 neck yaw, and head pitch. Waist yaw remains actuated, hands are spheres, and the
-policy retains its 13 logical leg/waist actions. It samples standing for 20% of
-new commands, uses a longer PPO credit horizon, and prepares the robot at an
+policy retains its 13 logical leg/waist actions. It samples exactly zero for 10%
+of new commands and conditions the other 90% to contain genuine commanded
+motion. It uses a longer PPO credit horizon and prepares the robot at an
 explicit total mass of 60 kg by uniformly scaling all link masses and inertia
-tensors. The policy is phase-free;
-landing rewards remain active during measured residual motion, the stronger
-zero-command dual-foot-contact reward acts immediately, and dense
-height/orientation penalties lead into the terminal fall penalty.
-Vertical-velocity and locomotion-gated flight penalties discourage the short
-synchronized hopping gait, while touchdown air-time credit remains deliberately
-small.
+tensors. The policy is phase-free. Touchdown and contact-timing shaping are
+command-gated, while a bounded zero-command foot-motion penalty discourages
+stepping without requiring binary dual-foot contact. Dense height/orientation
+penalties lead into the terminal fall penalty. Vertical-velocity and
+locomotion-gated flight penalties discourage the short synchronized hopping
+gait, while touchdown air-time credit remains deliberately small.
 Its scheduled deterministic video is a ten-second zero-command rollout, making
 a failed neutral stance visible before deployment.
 

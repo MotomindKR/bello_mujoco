@@ -203,6 +203,10 @@ Training uses a local JAX PPO implementation with Equinox policies and Optax.
 It supports separate actor and critic observations, observation stacking and
 explicit scaling, GAE, configurable learning-rate schedules, KL guardrails,
 invalid-update rejection, Orbax checkpoints, W&B metrics, and rollout video.
+Locomotion commands use an explicit 10% standing mixture; every other sampled
+command is conditioned to lie outside the shared standing deadband. Positive
+touchdown and contact-timing shaping is command-gated, while zero-command foot
+motion is penalized continuously without a dual-contact objective.
 
 See [training.md](training.md) for the maintained training contract and smoke
 commands.

@@ -26,8 +26,9 @@ from bello_mujoco.envs.rewards import (
     CommandConfig,
     RewardConfig,
     RewardInputs,
+    command_is_moving,
+    command_is_standing,
     compute_locomotion_reward,
-    motion_active,
     validate_range,
     validate_reward_config,
 )
@@ -893,7 +894,7 @@ class BelloLocomotionEnv:
         terminal = done_flags["done/terminal"]
         (
             raw_foot_contact,
-            foot_lateral_speed_sq,
+            foot_linear_velocity,
             foot_angular_speed,
             undesired_contact,
             self_collision,
@@ -908,7 +909,7 @@ class BelloLocomotionEnv:
             requested_action,
             terminal,
             foot_contact,
-            foot_lateral_speed_sq,
+            foot_linear_velocity,
             foot_angular_speed,
             undesired_contact,
             self_collision,
@@ -960,6 +961,7 @@ class BelloLocomotionEnv:
             "foot_contact/debounce_time": foot_contact_debounce_time,
             "target/joint_saturation_fraction": joint_saturation,
             "target/motor_saturation_fraction": motor_saturation,
+            **self._command_diagnostics(state.command),
             **self._gait_diagnostics(state, next_state, foot_contact),
             "returned_episode": done,
             **done_flags,
@@ -1021,7 +1023,7 @@ class BelloLocomotionEnv:
         terminal = done_flags["done/terminal"]
         (
             raw_foot_contact,
-            foot_lateral_speed_sq,
+            foot_linear_velocity,
             foot_angular_speed,
             undesired_contact,
             self_collision,
@@ -1036,7 +1038,7 @@ class BelloLocomotionEnv:
             requested_action,
             terminal,
             foot_contact,
-            foot_lateral_speed_sq,
+            foot_linear_velocity,
             foot_angular_speed,
             undesired_contact,
             self_collision,
@@ -1098,6 +1100,7 @@ class BelloLocomotionEnv:
             "random_push/applied": push_applied,
             "random_push/lin_vel_x": push_velocity[:, 0],
             "random_push/lin_vel_y": push_velocity[:, 1],
+            **self._command_diagnostics(state.command),
             "returned_episode": done,
             **done_flags,
             **reward_info,
@@ -1790,7 +1793,7 @@ class BelloLocomotionEnv:
         requested_action: jax.Array,
         done: jax.Array,
         foot_contact: jax.Array,
-        foot_lateral_speed_sq: jax.Array,
+        foot_linear_velocity: jax.Array,
         foot_angular_speed: jax.Array,
         undesired_contact: jax.Array,
         self_collision: jax.Array,
@@ -1848,7 +1851,7 @@ class BelloLocomotionEnv:
                 action_target_low=self._policy_action_target_low(),
                 action_target_high=self._policy_action_target_high(),
                 foot_contact=foot_contact,
-                foot_lateral_speed_sq=foot_lateral_speed_sq,
+                foot_linear_velocity=foot_linear_velocity,
                 foot_angular_speed=foot_angular_speed,
                 foot_air_time=state.foot_air_time,
                 foot_contact_time=state.foot_contact_time,
@@ -1864,6 +1867,7 @@ class BelloLocomotionEnv:
                 control_timestep=jnp.asarray(self.control_timestep, dtype=jnp.float32),
                 action_clip_limit=jnp.asarray(self.action_clip, dtype=jnp.float32),
             ),
+            self.command_config,
         )
 
     def sanitize_nonfinite_reward(
@@ -1969,8 +1973,8 @@ class BelloLocomotionEnv:
         ):
             return (
                 jnp.zeros(foot_count, dtype=jnp.float32),
-                jnp.zeros(foot_count, dtype=jnp.float32),
-                jnp.zeros(foot_count, dtype=jnp.float32),
+                self._foot_world_linear_velocity(state),
+                self._foot_angular_speed(state),
                 jnp.asarray(0.0, dtype=jnp.float32),
                 jnp.asarray(0.0, dtype=jnp.float32),
             )
@@ -2037,7 +2041,7 @@ class BelloLocomotionEnv:
         self_collision = jnp.sum(self_collision_slot.astype(jnp.float32))
         return (
             foot_contact,
-            self._foot_lateral_speed_sq(state),
+            self._foot_world_linear_velocity(state),
             self._foot_angular_speed(state),
             undesired_contact,
             self_collision,
@@ -2193,9 +2197,8 @@ class BelloLocomotionEnv:
             jnp.linalg.norm(normal, axis=-1, keepdims=True), 1.0e-8
         )
 
-    def _foot_lateral_speed_sq(self, state: BelloState) -> jax.Array:
-        foot_world_vel = self._body_world_lin_vel(state, self.model.foot_body_ids)
-        return jnp.sum(foot_world_vel[:, :2] ** 2, axis=1)
+    def _foot_world_linear_velocity(self, state: BelloState) -> jax.Array:
+        return self._body_world_lin_vel(state, self.model.foot_body_ids)
 
     def _foot_angular_speed(self, state: BelloState) -> jax.Array:
         foot_body_ids = jnp.asarray(self.model.foot_body_ids)
@@ -2222,27 +2225,7 @@ class BelloLocomotionEnv:
         initialized = state.step_count > 0
         touchdown = jnp.where(initialized, contact & ~previous, False)
         liftoff = jnp.where(initialized, ~contact & previous, False)
-        moving = motion_active(
-            jnp.linalg.norm(next_state.command),
-            jnp.linalg.norm(
-                self._link_yaw_frame_lin_vel(
-                    next_state,
-                    self._reward_link(self.reward_config.track_lin_vel_xy),
-                    self._reward_frame_link(self.reward_config.track_lin_vel_xy),
-                )[:2]
-            ),
-            jnp.abs(
-                self._link_body_ang_vel(
-                    next_state,
-                    self._reward_link(self.reward_config.track_ang_vel_z),
-                )[2]
-            ),
-            command_speed_threshold=(
-                self.reward_config.contact_timing.command_speed_threshold
-            ),
-            body_speed_threshold=self.reward_config.contact_timing.body_speed_threshold,
-            yaw_speed_threshold=self.reward_config.contact_timing.yaw_speed_threshold,
-        )
+        moving = command_is_moving(state.command, self.command_config)
         premature_touchdown = (
             touchdown
             & (state.foot_air_time < self.reward_config.contact_timing.min_air_time)
@@ -2268,6 +2251,13 @@ class BelloLocomotionEnv:
             "gait/single_support": (contact_count == 1).astype(jnp.float32),
             "gait/double_support": (contact_count == 2).astype(jnp.float32),
             "gait/flight": (contact_count == 0).astype(jnp.float32),
+        }
+
+    def _command_diagnostics(self, command: jax.Array) -> dict[str, jax.Array]:
+        standing = command_is_standing(command, self.command_config)
+        return {
+            "command/standing": standing.astype(jnp.float32),
+            "command/moving": (~standing).astype(jnp.float32),
         }
 
     def _actuator_joint_limit_low(self) -> jax.Array:

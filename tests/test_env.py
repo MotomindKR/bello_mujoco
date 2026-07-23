@@ -387,13 +387,15 @@ def test_command_sampling_and_periodic_resampling_are_bounded(
         full_body_asset, batch_size=4, command_config=command_config
     )
     state, _ = env.reset_batch(4, rng=jax.random.PRNGKey(0))
-    next_state, *_ = env.step_batch(
+    next_state, _, _, _, info = env.step_batch(
         state,
         jnp.zeros((4, env.action_size)),
         rng=jax.random.PRNGKey(1),
     )
 
     assert jnp.all((state.command[:, 0] >= 0.2) & (state.command[:, 0] <= 0.4))
+    assert info["command/standing"] == pytest.approx(jnp.zeros(4))
+    assert info["command/moving"] == pytest.approx(jnp.ones(4))
     assert not jnp.allclose(next_state.command, state.command)
 
 

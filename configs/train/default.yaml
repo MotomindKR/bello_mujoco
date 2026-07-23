@@ -284,14 +284,12 @@ reward_config:
     link: null
     moving_std: 0.75
     still_std: 0.25
-    command_deadband: 0.1
     frame_link: null
   track_ang_vel_z:
     weight: 1.0
     link: null
     moving_std: 0.5
     still_std: 0.2
-    command_deadband: 0.1
   lin_vel_z:
     weight: -2.0
     link: null
@@ -316,11 +314,11 @@ reward_config:
     weight: -10.0
   joint_pose:
     weight: -0.1
-  stand_dual_contact:
-    weight: 2.0
-    command_speed_threshold: 0.1
-    linear_velocity_sigma: 0.04
-    yaw_velocity_sigma: 0.04
+  stand_foot_motion:
+    weight: -0.25
+    linear_speed_scale: 0.15
+    angular_speed_scale: 1.0
+    angular_weight: 0.25
   hip_deviation:
     weight: -0.25
     lateral_command_index: 1
@@ -337,23 +335,16 @@ reward_config:
     angular_speed_scale: 0.0
   flight:
     weight: -2.0
-    command_speed_threshold: 0.1
     body_speed_threshold: 0.1
     yaw_speed_threshold: 0.1
   contact_timing:
     weight: -5.0
     min_air_time: 0.2
     min_contact_time: 0.3
-    command_speed_threshold: 0.1
-    body_speed_threshold: 0.1
-    yaw_speed_threshold: 0.1
   touchdown_air_time:
     weight: 0.5
     min_air_time: 0.2
     max_air_time: 0.5
-    command_speed_threshold: 0.1
-    body_speed_threshold: 0.1
-    yaw_speed_threshold: 0.1
   undesired_contact:
     weight: 0.0
   self_collision:
@@ -362,10 +353,14 @@ reward_config:
     weight: -100.0
 command_config:
   enabled: true
-  lin_vel_x: [-0.1, 0.1]
-  lin_vel_y: [-0.1, 0.1]
-  ang_vel_yaw: [-0.1, 0.1]
+  lin_vel_x: [-0.5, 0.5]
+  lin_vel_y: [-0.5, 0.5]
+  ang_vel_yaw: [-0.5, 0.5]
   standing_probability: 0.1
+  linear_deadband: 0.1
+  yaw_deadband: 0.1
+  minimum_moving_linear_speed: 0.2
+  minimum_moving_yaw_speed: 0.2
   resample_seconds: 10.0
 checkpoint_config:
   enabled: false

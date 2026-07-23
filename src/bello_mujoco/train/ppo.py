@@ -816,6 +816,14 @@ def sampling_diagnostic_means(info: dict[str, jax.Array]) -> dict[str, jax.Array
     }
 
 
+def command_diagnostic_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    return {
+        f"{name}_fraction": value.astype(jnp.float32).mean()
+        for name, value in info.items()
+        if name.startswith("command/")
+    }
+
+
 def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     return {
         f"mean_{name}": value.astype(jnp.float32).mean()
@@ -840,6 +848,16 @@ def gait_diagnostics(
         for name, value in info.items()
         if name.startswith("gait/")
     }
+    standing = info.get("command/standing")
+    moving = info.get("command/moving")
+    if standing is not None and moving is not None:
+        for name, value in info.items():
+            if not name.startswith("gait/"):
+                continue
+            suffix = name.removeprefix("gait/")
+            metrics[f"gait/standing_{suffix}"] = masked_mean(value, standing)
+            metrics[f"gait/moving_{suffix}"] = masked_mean(value, moving)
+
     touchdown = info.get("gait/touchdown")
     liftoff = info.get("gait/liftoff")
     premature_touchdown = info.get("gait/premature_touchdown")
@@ -848,6 +866,13 @@ def gait_diagnostics(
         metrics["gait/footfalls_per_second"] = (
             touchdown.astype(jnp.float32).mean() / control_timestep
         )
+        if standing is not None and moving is not None:
+            metrics["gait/standing_footfalls_per_second"] = (
+                masked_mean(touchdown, standing) / control_timestep
+            )
+            metrics["gait/moving_footfalls_per_second"] = (
+                masked_mean(touchdown, moving) / control_timestep
+            )
     if liftoff is not None:
         metrics["gait/liftoffs_per_second"] = (
             liftoff.astype(jnp.float32).mean() / control_timestep
@@ -861,6 +886,13 @@ def gait_diagnostics(
             premature_liftoff.astype(jnp.float32).mean() / control_timestep
         )
     return metrics
+
+
+def masked_mean(value: jax.Array, mask: jax.Array) -> jax.Array:
+    value = value.astype(jnp.float32)
+    mask = mask.astype(jnp.float32)
+    count = jnp.sum(mask)
+    return jnp.where(count > 0, jnp.sum(value * mask) / count, jnp.nan)
 
 
 def action_diagnostics(
@@ -1212,6 +1244,7 @@ def update_runner_state(
         **done_reason_means(transitions.info),
         **random_push_means(transitions.info),
         **sampling_diagnostic_means(transitions.info),
+        **command_diagnostic_means(transitions.info),
         **foot_contact_means(transitions.info),
         **target_saturation_means(transitions.info),
         **gait_diagnostics(transitions.info, env.control_timestep),

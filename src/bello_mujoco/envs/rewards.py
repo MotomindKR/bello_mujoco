@@ -12,13 +12,17 @@ import jax.numpy as jnp
 
 @dataclass(frozen=True)
 class CommandConfig:
-    """Uniform ``[forward, lateral, yaw]`` velocity command sampler."""
+    """Explicit standing plus conditioned moving velocity command sampler."""
 
     enabled: bool = True
-    lin_vel_x: tuple[float, float] = (-0.1, 0.1)
-    lin_vel_y: tuple[float, float] = (-0.1, 0.1)
-    ang_vel_yaw: tuple[float, float] = (-0.1, 0.1)
+    lin_vel_x: tuple[float, float] = (-0.5, 0.5)
+    lin_vel_y: tuple[float, float] = (-0.5, 0.5)
+    ang_vel_yaw: tuple[float, float] = (-0.5, 0.5)
     standing_probability: float = 0.10
+    linear_deadband: float = 0.10
+    yaw_deadband: float = 0.10
+    minimum_moving_linear_speed: float = 0.20
+    minimum_moving_yaw_speed: float = 0.20
     resample_seconds: float = 10.0
 
     def __post_init__(self) -> None:
@@ -30,6 +34,31 @@ class CommandConfig:
                 "standing_probability must be in [0, 1], got "
                 f"{self.standing_probability}"
             )
+        for name, value in (
+            ("linear_deadband", self.linear_deadband),
+            ("yaw_deadband", self.yaw_deadband),
+            ("minimum_moving_linear_speed", self.minimum_moving_linear_speed),
+            ("minimum_moving_yaw_speed", self.minimum_moving_yaw_speed),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+        if self.minimum_moving_linear_speed <= self.linear_deadband:
+            raise ValueError(
+                "minimum_moving_linear_speed must exceed linear_deadband, got "
+                f"{self.minimum_moving_linear_speed} <= {self.linear_deadband}"
+            )
+        if self.minimum_moving_yaw_speed <= self.yaw_deadband:
+            raise ValueError(
+                "minimum_moving_yaw_speed must exceed yaw_deadband, got "
+                f"{self.minimum_moving_yaw_speed} <= {self.yaw_deadband}"
+            )
+        if self.enabled and self.standing_probability < 1.0:
+            moving_axes = self._moving_axis_mask()
+            if not any(moving_axes):
+                raise ValueError(
+                    "at least one command range must reach its minimum moving "
+                    "speed when standing_probability is below 1"
+                )
         if not math.isfinite(self.resample_seconds) or self.resample_seconds <= 0:
             raise ValueError(
                 f"resample_seconds must be positive, got {self.resample_seconds}"
@@ -40,6 +69,23 @@ class CommandConfig:
             (self.lin_vel_x, self.lin_vel_y, self.ang_vel_yaw), dtype=jnp.float32
         )
 
+    def _minimum_moving_speeds(self) -> tuple[float, float, float]:
+        return (
+            self.minimum_moving_linear_speed,
+            self.minimum_moving_linear_speed,
+            self.minimum_moving_yaw_speed,
+        )
+
+    def _moving_axis_mask(self) -> tuple[bool, bool, bool]:
+        return tuple(
+            low <= -minimum or high >= minimum
+            for (low, high), minimum in zip(
+                (self.lin_vel_x, self.lin_vel_y, self.ang_vel_yaw),
+                self._minimum_moving_speeds(),
+                strict=True,
+            )
+        )
+
     def sample(
         self,
         rng: jax.Array,
@@ -47,16 +93,74 @@ class CommandConfig:
     ) -> jax.Array:
         if not self.enabled:
             return jnp.zeros(shape + (3,), dtype=jnp.float32)
+        if self.standing_probability == 1.0:
+            return jnp.zeros(shape + (3,), dtype=jnp.float32)
+
         bounds = self.range_array()
-        command_key, stand_key = jax.random.split(rng)
-        command = jax.random.uniform(
-            command_key,
-            shape + (3,),
-            minval=bounds[:, 0].astype(jnp.float32),
-            maxval=bounds[:, 1].astype(jnp.float32),
+        minimums = jnp.asarray(self._minimum_moving_speeds(), dtype=jnp.float32)
+        negative_available = bounds[:, 0] <= -minimums
+        positive_available = bounds[:, 1] >= minimums
+        axis_available = negative_available | positive_available
+        axis_probability = axis_available.astype(jnp.float32)
+        axis_probability /= jnp.sum(axis_probability)
+
+        command_key, stand_key, axis_key, sign_key, magnitude_key = jax.random.split(
+            rng, 5
         )
+        command_uniform = jax.random.uniform(
+            command_key, shape + (3,), dtype=jnp.float32
+        )
+        command = bounds[:, 0] + command_uniform * (bounds[:, 1] - bounds[:, 0])
+        active_axis = jax.random.choice(
+            axis_key,
+            3,
+            shape=shape,
+            p=axis_probability,
+        )
+        selected_negative_available = negative_available[active_axis]
+        selected_positive_available = positive_available[active_axis]
+        positive = jnp.where(
+            selected_negative_available & selected_positive_available,
+            jax.random.bernoulli(sign_key, shape=shape),
+            selected_positive_available,
+        )
+        active_low = jnp.where(
+            positive,
+            jnp.maximum(minimums[active_axis], bounds[active_axis, 0]),
+            bounds[active_axis, 0],
+        )
+        active_high = jnp.where(
+            positive,
+            bounds[active_axis, 1],
+            jnp.minimum(-minimums[active_axis], bounds[active_axis, 1]),
+        )
+        magnitude_uniform = jax.random.uniform(
+            magnitude_key, shape=shape, dtype=jnp.float32
+        )
+        active_value = active_low + magnitude_uniform * (active_high - active_low)
+        active_mask = jax.nn.one_hot(active_axis, 3, dtype=jnp.float32)
+        moving_command = (
+            command * (1.0 - active_mask) + active_value[..., None] * active_mask
+        )
+
         standing = jax.random.bernoulli(stand_key, self.standing_probability, shape)
-        return jnp.where(standing[..., None], jnp.zeros_like(command), command)
+        return jnp.where(
+            standing[..., None], jnp.zeros_like(moving_command), moving_command
+        )
+
+
+def command_is_standing(command: jax.Array, config: CommandConfig) -> jax.Array:
+    """Return whether every command axis is inside its standing deadband."""
+
+    linear_still = jnp.all(jnp.abs(command[..., :2]) < config.linear_deadband, axis=-1)
+    yaw_still = jnp.abs(command[..., 2]) < config.yaw_deadband
+    return linear_still & yaw_still
+
+
+def command_is_moving(command: jax.Array, config: CommandConfig) -> jax.Array:
+    """Return whether any command axis requests motion."""
+
+    return ~command_is_standing(command, config)
 
 
 @dataclass(frozen=True)
@@ -79,7 +183,6 @@ class LinkRewardConfig(WeightedRewardConfig):
 class TrackLinVelXYRewardConfig(LinkRewardConfig):
     moving_std: float = 0.75
     still_std: float = 0.25
-    command_deadband: float = 0.10
     frame_link: str | None = None
 
 
@@ -87,7 +190,6 @@ class TrackLinVelXYRewardConfig(LinkRewardConfig):
 class TrackAngVelZRewardConfig(LinkRewardConfig):
     moving_std: float = 0.50
     still_std: float = 0.20
-    command_deadband: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -136,10 +238,10 @@ class JointPoseRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
-class StandDualContactRewardConfig(WeightedRewardConfig):
-    command_speed_threshold: float = 0.10
-    linear_velocity_sigma: float = 0.04
-    yaw_velocity_sigma: float = 0.04
+class StandFootMotionRewardConfig(WeightedRewardConfig):
+    linear_speed_scale: float = 0.15
+    angular_speed_scale: float = 1.0
+    angular_weight: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -170,7 +272,6 @@ class FootSlipRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class FlightRewardConfig(WeightedRewardConfig):
-    command_speed_threshold: float = 0.10
     body_speed_threshold: float = 0.10
     yaw_speed_threshold: float = 0.10
 
@@ -179,18 +280,12 @@ class FlightRewardConfig(WeightedRewardConfig):
 class ContactTimingRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
     min_contact_time: float = 0.30
-    command_speed_threshold: float = 0.10
-    body_speed_threshold: float = 0.10
-    yaw_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
 class TouchdownAirTimeRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
     max_air_time: float = 0.50
-    command_speed_threshold: float = 0.10
-    body_speed_threshold: float = 0.10
-    yaw_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -225,8 +320,8 @@ class RewardConfig:
     torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-1.0)
     torque_peak: TorquePeakRewardConfig = TorquePeakRewardConfig(weight=-10.0)
     joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-0.1)
-    stand_dual_contact: StandDualContactRewardConfig = StandDualContactRewardConfig(
-        weight=2.0
+    stand_foot_motion: StandFootMotionRewardConfig = StandFootMotionRewardConfig(
+        weight=-0.25
     )
     hip_deviation: HipDeviationRewardConfig = HipDeviationRewardConfig(weight=-0.25)
     knee_deviation: KneeDeviationRewardConfig = KneeDeviationRewardConfig(weight=-0.1)
@@ -251,7 +346,6 @@ class RewardConfig:
             term.enabled
             for term in (
                 self.foot_slip,
-                self.stand_dual_contact,
                 self.flight,
                 self.contact_timing,
                 self.touchdown_air_time,
@@ -260,7 +354,7 @@ class RewardConfig:
 
     @property
     def uses_foot_metadata(self) -> bool:
-        return self.uses_foot_contact_metadata
+        return self.uses_foot_contact_metadata or self.stand_foot_motion.enabled
 
     @property
     def uses_terrain_contact_metadata(self) -> bool:
@@ -307,7 +401,7 @@ class RewardInputs:
     action_target_low: jax.Array
     action_target_high: jax.Array
     foot_contact: jax.Array
-    foot_lateral_speed_sq: jax.Array
+    foot_linear_velocity: jax.Array
     foot_angular_speed: jax.Array
     foot_air_time: jax.Array
     foot_contact_time: jax.Array
@@ -323,13 +417,16 @@ class RewardInputs:
 
 
 def compute_locomotion_reward(
-    config: RewardConfig, inputs: RewardInputs
+    config: RewardConfig,
+    inputs: RewardInputs,
+    command_config: CommandConfig | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return the canonical weighted reward and its weighted components."""
 
-    linear_still = (
-        jnp.abs(inputs.command[:2]) < config.track_lin_vel_xy.command_deadband
-    )
+    if command_config is None:
+        command_config = CommandConfig()
+
+    linear_still = jnp.abs(inputs.command[:2]) < command_config.linear_deadband
     linear_target = jnp.where(linear_still, 0.0, inputs.command[:2])
     linear_std = jnp.where(
         linear_still,
@@ -337,7 +434,7 @@ def compute_locomotion_reward(
         config.track_lin_vel_xy.moving_std,
     )
     lin_vel_error = jnp.sum(((inputs.lin_vel_xy - linear_target) / linear_std) ** 2)
-    yaw_still = jnp.abs(inputs.command[2]) < config.track_ang_vel_z.command_deadband
+    yaw_still = jnp.abs(inputs.command[2]) < command_config.yaw_deadband
     yaw_target = jnp.where(yaw_still, 0.0, inputs.command[2])
     yaw_std = jnp.where(
         yaw_still,
@@ -368,19 +465,22 @@ def compute_locomotion_reward(
     torque_l1 = jnp.mean(normalized_torque)
     torque_peak = jnp.mean(jnp.maximum(normalized_torque - 1.0, 0.0) ** 2)
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
-    command_speed = jnp.linalg.norm(inputs.command)
+    standing_command = command_is_standing(inputs.command, command_config)
+    moving_command = ~standing_command
     body_speed = jnp.linalg.norm(inputs.lin_vel_xy)
-    standing_command = (
-        command_speed <= config.stand_dual_contact.command_speed_threshold
+    foot_linear_speed_sq = jnp.sum(inputs.foot_linear_velocity**2, axis=1)
+    stand_foot_linear_motion = jnp.tanh(
+        foot_linear_speed_sq / config.stand_foot_motion.linear_speed_scale**2
     )
-    both_feet_contact = jnp.all(inputs.foot_contact.astype(jnp.bool_))
-    stand_stationarity = jnp.exp(
-        -(body_speed**2) / config.stand_dual_contact.linear_velocity_sigma
-        - inputs.yaw_vel_z**2 / config.stand_dual_contact.yaw_velocity_sigma
+    stand_foot_angular_motion = jnp.tanh(
+        (inputs.foot_angular_speed / config.stand_foot_motion.angular_speed_scale) ** 2
     )
-    stand_dual_contact = jnp.where(
+    stand_foot_motion = jnp.where(
         standing_command,
-        both_feet_contact.astype(jnp.float32) * stand_stationarity,
+        jnp.mean(
+            stand_foot_linear_motion
+            + config.stand_foot_motion.angular_weight * stand_foot_angular_motion
+        ),
         0.0,
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
@@ -424,7 +524,7 @@ def compute_locomotion_reward(
     )
     invalid_action = jnp.sum(unit_violation**2 + clip_violation**2)
 
-    foot_speed = jnp.sqrt(jnp.maximum(inputs.foot_lateral_speed_sq, 0.0))
+    foot_speed = jnp.linalg.norm(inputs.foot_linear_velocity[:, :2], axis=1)
     foot_slip = jnp.sum(
         inputs.foot_contact
         * (
@@ -432,22 +532,13 @@ def compute_locomotion_reward(
             + config.foot_slip.angular_speed_scale * inputs.foot_angular_speed
         )
     )
-    contact_motion_active = motion_active(
-        command_speed,
-        body_speed,
-        jnp.abs(inputs.yaw_vel_z),
-        command_speed_threshold=config.contact_timing.command_speed_threshold,
-        body_speed_threshold=config.contact_timing.body_speed_threshold,
-        yaw_speed_threshold=config.contact_timing.yaw_speed_threshold,
-    )
     contact = inputs.foot_contact.astype(bool)
     previous_contact = inputs.last_foot_contact.astype(bool)
     filtered_contact = contact | previous_contact
     flight_motion_active = motion_active(
-        command_speed,
+        moving_command,
         body_speed,
         jnp.abs(inputs.yaw_vel_z),
-        command_speed_threshold=config.flight.command_speed_threshold,
         body_speed_threshold=config.flight.body_speed_threshold,
         yaw_speed_threshold=config.flight.yaw_speed_threshold,
     )
@@ -469,7 +560,7 @@ def compute_locomotion_reward(
         / config.contact_timing.min_contact_time
     )
     contact_timing = jnp.where(
-        contact_motion_active,
+        moving_command,
         jnp.sum(
             touchdown.astype(jnp.float32) * short_air**2
             + liftoff.astype(jnp.float32) * short_contact**2
@@ -486,16 +577,8 @@ def compute_locomotion_reward(
             - config.touchdown_air_time.min_air_time,
         )
     )
-    touchdown_motion_active = motion_active(
-        command_speed,
-        body_speed,
-        jnp.abs(inputs.yaw_vel_z),
-        command_speed_threshold=config.touchdown_air_time.command_speed_threshold,
-        body_speed_threshold=config.touchdown_air_time.body_speed_threshold,
-        yaw_speed_threshold=config.touchdown_air_time.yaw_speed_threshold,
-    )
     touchdown_air_time = jnp.where(
-        touchdown_motion_active,
+        moving_command,
         touchdown_air_time,
         0.0,
     )
@@ -512,7 +595,7 @@ def compute_locomotion_reward(
         "torque_l1": torque_l1,
         "torque_peak": torque_peak,
         "joint_pose": joint_pose,
-        "stand_dual_contact": stand_dual_contact,
+        "stand_foot_motion": stand_foot_motion,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
@@ -539,16 +622,15 @@ def reward_terms(config: RewardConfig) -> dict[str, WeightedRewardConfig]:
 
 
 def motion_active(
-    command_speed: jax.Array,
+    moving_command: jax.Array,
     body_speed: jax.Array,
     yaw_speed: jax.Array,
     *,
-    command_speed_threshold: float,
     body_speed_threshold: float,
     yaw_speed_threshold: float,
 ) -> jax.Array:
     return (
-        (command_speed > command_speed_threshold)
+        moving_command
         | (body_speed > body_speed_threshold)
         | (yaw_speed > yaw_speed_threshold)
     )
@@ -564,12 +646,12 @@ def validate_reward_config(config: RewardConfig) -> None:
         ("track_ang_vel_z.moving_std", config.track_ang_vel_z.moving_std),
         ("track_ang_vel_z.still_std", config.track_ang_vel_z.still_std),
         (
-            "stand_dual_contact.linear_velocity_sigma",
-            config.stand_dual_contact.linear_velocity_sigma,
+            "stand_foot_motion.linear_speed_scale",
+            config.stand_foot_motion.linear_speed_scale,
         ),
         (
-            "stand_dual_contact.yaw_velocity_sigma",
-            config.stand_dual_contact.yaw_velocity_sigma,
+            "stand_foot_motion.angular_speed_scale",
+            config.stand_foot_motion.angular_speed_scale,
         ),
     ):
         if not math.isfinite(sigma) or sigma <= 0:
@@ -582,35 +664,12 @@ def validate_reward_config(config: RewardConfig) -> None:
         raise ValueError("hip_deviation.lateral_command_index must be 0 or 1")
     nonnegative = {
         "foot_slip.angular_speed_scale": config.foot_slip.angular_speed_scale,
+        "stand_foot_motion.angular_weight": config.stand_foot_motion.angular_weight,
         "hip_deviation.lateral_command_threshold": (
             config.hip_deviation.lateral_command_threshold
         ),
-        "track_lin_vel_xy.command_deadband": (config.track_lin_vel_xy.command_deadband),
-        "track_ang_vel_z.command_deadband": config.track_ang_vel_z.command_deadband,
-        "contact_timing.command_speed_threshold": (
-            config.contact_timing.command_speed_threshold
-        ),
-        "flight.command_speed_threshold": config.flight.command_speed_threshold,
-        "touchdown_air_time.command_speed_threshold": (
-            config.touchdown_air_time.command_speed_threshold
-        ),
-        "contact_timing.body_speed_threshold": (
-            config.contact_timing.body_speed_threshold
-        ),
         "flight.body_speed_threshold": config.flight.body_speed_threshold,
-        "contact_timing.yaw_speed_threshold": (
-            config.contact_timing.yaw_speed_threshold
-        ),
         "flight.yaw_speed_threshold": config.flight.yaw_speed_threshold,
-        "touchdown_air_time.body_speed_threshold": (
-            config.touchdown_air_time.body_speed_threshold
-        ),
-        "touchdown_air_time.yaw_speed_threshold": (
-            config.touchdown_air_time.yaw_speed_threshold
-        ),
-        "stand_dual_contact.command_speed_threshold": (
-            config.stand_dual_contact.command_speed_threshold
-        ),
     }
     for name, value in nonnegative.items():
         if not math.isfinite(value) or value < 0:

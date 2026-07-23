@@ -18,11 +18,6 @@ config:
   gamma: 0.995
   gae_lambda: 0.98
 
-command_config:
-  # Keep explicit standing commands represented without letting the stationary
-  # objective dominate command-following exploration.
-  standing_probability: 0.20
-
 checkpoint_config:
   name: hardware_locomotion_seed0
   wandb_artifact_name: hardware_locomotion_seed0

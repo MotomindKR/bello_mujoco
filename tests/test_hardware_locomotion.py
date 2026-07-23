@@ -110,7 +110,9 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
-    assert config.command_config.standing_probability == pytest.approx(0.2)
+    assert config.command_config.standing_probability == pytest.approx(0.1)
+    assert config.command_config.minimum_moving_linear_speed == pytest.approx(0.2)
+    assert config.command_config.minimum_moving_yaw_speed == pytest.approx(0.2)
     assert config.config.gamma == pytest.approx(0.995)
     assert config.config.gae_lambda == pytest.approx(0.98)
     assert config.reward_config.track_ang_vel_z.weight == pytest.approx(1.0)
@@ -118,7 +120,7 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.reward_config.lin_vel_z.weight == pytest.approx(-2.0)
     assert config.reward_config.flight.weight == pytest.approx(-2.0)
     assert config.reward_config.touchdown_air_time.weight == pytest.approx(0.5)
-    assert config.reward_config.stand_dual_contact.weight == pytest.approx(2.0)
+    assert config.reward_config.stand_foot_motion.weight == pytest.approx(-0.25)
     assert config.reward_config.base_height.weight == pytest.approx(-10.0)
     assert config.reward_config.flat_orientation.weight == pytest.approx(-2.0)
     assert config.reward_config.termination.weight == pytest.approx(-100.0)

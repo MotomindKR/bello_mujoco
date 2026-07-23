@@ -766,7 +766,7 @@ def mujoco_contact_terms(
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     return (
         jnp.asarray(mujoco_foot_contact(env, mj_data), dtype=jnp.float32),
-        jnp.asarray(mujoco_foot_lateral_speed_sq(env, mj_data), dtype=jnp.float32),
+        jnp.asarray(mujoco_foot_linear_velocity(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_foot_angular_speed(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_undesired_contact(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_self_collision(env, mj_data), dtype=jnp.float32),
@@ -968,11 +968,11 @@ def mujoco_terrain_surface_normal(
     )
 
 
-def mujoco_foot_lateral_speed_sq(
+def mujoco_foot_linear_velocity(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData
 ) -> np.ndarray:
     if env.model.foot_body_ids.size == 0:
-        return np.zeros((0,), dtype=np.float32)
+        return np.zeros((0, 3), dtype=np.float32)
     foot_world_vel = []
     for body_id in np.asarray(env.model.foot_body_ids, dtype=np.int32):
         velocity = np.empty(6, dtype=np.float64)
@@ -985,8 +985,7 @@ def mujoco_foot_lateral_speed_sq(
             0,
         )
         foot_world_vel.append(velocity[3:6])
-    foot_world_vel = np.asarray(foot_world_vel, dtype=np.float32)
-    return np.sum(foot_world_vel[:, :2] ** 2, axis=1, dtype=np.float32)
+    return np.asarray(foot_world_vel, dtype=np.float32)
 
 
 def mujoco_foot_angular_speed(
