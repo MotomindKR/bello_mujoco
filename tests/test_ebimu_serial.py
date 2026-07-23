@@ -72,6 +72,18 @@ def test_default_ascii_stream_matches_motomind_policy_layout() -> None:
     assert fields[10] == "0"
 
 
+def test_stream_rebases_after_simulation_time_resets() -> None:
+    with open_emulator() as (emulator, host_fd):
+        emulator.update(sample(10.0))
+        assert read_available(host_fd)
+
+        emulator.update(sample(0.0))
+        reset_record = read_available(host_fd).decode("ascii")
+
+    assert reset_record
+    assert reset_record.strip().split(",")[-1] == "0"
+
+
 def test_commands_reconfigure_stream_and_support_polling() -> None:
     value = sample(1.25)
     with open_emulator() as (emulator, host_fd):
