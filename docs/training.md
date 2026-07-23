@@ -148,7 +148,7 @@ maximum per-step credit as planar translation prevents the optimizer from
 cheaply sacrificing commanded rotation for translational tracking.
 
 The general nominal-pose penalty has weight `-0.1`. A separate
-`stand_foot_motion` penalty with weight `-0.25` activates only for a standing
+`stand_foot_motion` penalty with weight `-1.0` activates only for a standing
 command. For each foot it applies
 `tanh(||linear_velocity||^2 / 0.15^2)` plus `0.25 *
 tanh(||angular_velocity||^2 / 1.0^2)`, then averages over the feet. It uses full
@@ -167,9 +167,9 @@ zero-command recovery without paying the policy to continue stepping.
 
 Policy torque regularization is normalized per actuator by the configured peak
 effort, rather than summing raw newton-metres across unequal motors. The
-`torque_l1` value is `mean(abs(torque) / peak_torque)` with weight `-1.0`. A
+`torque_l1` value is `mean(abs(torque) / peak_torque)` with weight `-1.2`. A
 separate `torque_peak` value is
-`mean(max(abs(torque) / peak_torque - 1, 0)^2)` with weight `-10.0`, making an
+`mean(max(abs(torque) / peak_torque - 1, 0)^2)` with weight `-12.0`, making an
 over-peak excursion much more expensive than ordinary sub-peak effort. The
 training asset keeps each configured `forcerange` as peak-torque metadata but
 sets `forcelimited=false` on policy actuators, so the optimizer observes and is

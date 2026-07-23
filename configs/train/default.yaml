@@ -309,13 +309,13 @@ reward_config:
     weight: -1.0
     soft_limit_ratio: 0.8
   torque_l1:
-    weight: -1.0
+    weight: -1.2
   torque_peak:
-    weight: -10.0
+    weight: -12.0
   joint_pose:
     weight: -0.1
   stand_foot_motion:
-    weight: -0.25
+    weight: -1.0
     linear_speed_scale: 0.15
     angular_speed_scale: 1.0
     angular_weight: 0.25

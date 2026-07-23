@@ -317,11 +317,11 @@ class RewardConfig:
     base_height: BaseHeightRewardConfig = BaseHeightRewardConfig(weight=-10.0)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.01)
     action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(weight=-1.0)
-    torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-1.0)
-    torque_peak: TorquePeakRewardConfig = TorquePeakRewardConfig(weight=-10.0)
+    torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-1.2)
+    torque_peak: TorquePeakRewardConfig = TorquePeakRewardConfig(weight=-12.0)
     joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-0.1)
     stand_foot_motion: StandFootMotionRewardConfig = StandFootMotionRewardConfig(
-        weight=-0.25
+        weight=-1.0
     )
     hip_deviation: HipDeviationRewardConfig = HipDeviationRewardConfig(weight=-0.25)
     knee_deviation: KneeDeviationRewardConfig = KneeDeviationRewardConfig(weight=-0.1)
