@@ -1,5 +1,5 @@
 """Training scaffolds for Bello MuJoCo/MJX experiments."""
 
-from bello_mujoco.train.ppo import PPOConfig, make_train
+from bello_mujoco.training.ppo import PPOConfig, make_train
 
 __all__ = ["PPOConfig", "make_train"]

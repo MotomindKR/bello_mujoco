@@ -22,7 +22,7 @@ from bello_mujoco.envs.locomotion import (
     SpawnConfig,
 )
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig, RewardLinks
-from bello_mujoco.render import (
+from bello_mujoco.evaluation.render import (
     mujoco_done_flags,
     mujoco_eval_info,
     mujoco_eval_state,

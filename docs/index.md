@@ -17,7 +17,16 @@ configs/commands/          seven public Hydra command documents
 configs/profiles/train/    maintained training profiles
 configs/robstride/         canonical motor inventory and limits
 motions/asap_fixed_head/   tracked reference clips
-src/bello_mujoco/          implementation
+src/bello_mujoco/
+  assets_pipeline/         asset preparation and project data paths
+  envs/                    locomotion, motion tracking, and rewards
+  evaluation/              native rendering and policy evaluation
+  hardware/                physical runners, IMU, and pose service
+  motion/                  motion clips, import, and feasibility tools
+  robstride/               CAN protocol, simulation, and HIL runner
+  training/                PPO, checkpoints, tracking, and Vast orchestration
+  cli.py                   seven public Hydra command adapters
+  configuration.py         config decoding and maintained profiles
 tests/                     contract and integration tests
 ```
 

@@ -11,7 +11,7 @@ import optax
 from tqdm.auto import tqdm
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
-from bello_mujoco.checkpoint import (
+from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
     DeploymentContract,
@@ -25,11 +25,11 @@ from bello_mujoco.checkpoint import (
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.policy import policy_observation_size
-from bello_mujoco.render import CameraConfig, render_policy_rollout
+from bello_mujoco.evaluation.render import CameraConfig, render_policy_rollout
 from bello_mujoco.sim import (
     WarpConfig,
 )
-from bello_mujoco.tracking import (
+from bello_mujoco.training.tracking import (
     WandbConfig,
     close_run,
     create_wandb_run,
@@ -38,7 +38,7 @@ from bello_mujoco.tracking import (
     track_checkpoint_artifact,
     track_video,
 )
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.ppo import (
     PPOConfig,
     RunnerState,
     critic_observation_size,

@@ -13,10 +13,10 @@ import pytest
 import jax
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
-from bello_mujoco.checkpoint import CheckpointNormalizationState
+from bello_mujoco.training.checkpoint import CheckpointNormalizationState
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig
-from bello_mujoco.hardware_locomotion import (
+from bello_mujoco.hardware.locomotion import (
     ARM_CONFIRMATION,
     HardwareFrame,
     HardwareLocomotionConfig,
@@ -39,14 +39,14 @@ from bello_mujoco.hardware_locomotion import (
     validate_hardware_inventory,
     wait_for_policy_start,
 )
-from bello_mujoco.experiment_profiles import locomotion_training_profile
+from bello_mujoco.configuration import locomotion_training_profile
 from bello_mujoco.policy import init_actor_critic, policy_observation_size
-from bello_mujoco.tools.train_ppo import TrainingRunConfig, checkpoint_metadata
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.locomotion import TrainingRunConfig, checkpoint_metadata
+from bello_mujoco.training.ppo import (
     init_observation_norm_state,
     init_value_norm_state,
 )
-from bello_mujoco.rerun_eval import GamepadConfig, GamepadInput
+from bello_mujoco.evaluation.locomotion import GamepadConfig, GamepadInput
 
 
 def compose_hardware_training_config() -> TrainingRunConfig:
@@ -278,20 +278,20 @@ def test_hardware_waits_for_fresh_start_button_after_ramp(monkeypatch) -> None:
     sent = []
     validated = []
     monkeypatch.setattr(
-        "bello_mujoco.hardware_locomotion.send_targets",
+        "bello_mujoco.hardware.locomotion.send_targets",
         lambda *args: sent.append(np.asarray(args[3]).copy()),
     )
     monkeypatch.setattr(
-        "bello_mujoco.hardware_locomotion.pace_hardware_loop",
+        "bello_mujoco.hardware.locomotion.pace_hardware_loop",
         lambda deadline, timestep, config: deadline,
     )
     frame = SimpleNamespace()
     monkeypatch.setattr(
-        "bello_mujoco.hardware_locomotion.wait_for_hardware_frame",
+        "bello_mujoco.hardware.locomotion.wait_for_hardware_frame",
         lambda *args: frame,
     )
     monkeypatch.setattr(
-        "bello_mujoco.hardware_locomotion.validate_hardware_frame",
+        "bello_mujoco.hardware.locomotion.validate_hardware_frame",
         lambda value, config, expected_group_state: validated.append(
             (value, expected_group_state)
         ),
@@ -518,7 +518,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     )
     metadata = SimpleNamespace(command=CommandConfig())
     monkeypatch.setattr(
-        "bello_mujoco.hardware_locomotion.load_hardware_policy",
+        "bello_mujoco.hardware.locomotion.load_hardware_policy",
         lambda path: (adapter, metadata),
     )
 

@@ -19,6 +19,7 @@ from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
     asset_config_hash,
+    canonical_physical_asset_config,
     prepare_asset,
     read_prepared_asset_manifest,
     resolved_output_root,
@@ -26,7 +27,6 @@ from bello_mujoco.assets_pipeline.prepare import (
     validate_actuator_joint_contract,
     write_prepared_asset_manifest,
 )
-from bello_mujoco.tools.commands import canonical_physical_asset_config
 
 
 def test_end_effector_sphere_replacement_prunes_both_subtrees() -> None:

@@ -1,3 +1,5 @@
+"""Shared native MuJoCo rendering and evaluation math."""
+
 from __future__ import annotations
 
 from contextlib import ExitStack

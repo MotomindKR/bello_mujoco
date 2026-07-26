@@ -13,9 +13,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from bello_mujoco import hardware_motion as motion_hardware
-from bello_mujoco import hardware_locomotion as hardware_runtime
-from bello_mujoco.hardware_locomotion import HardwareFrame
+from bello_mujoco.hardware import locomotion as hardware_runtime
+from bello_mujoco.hardware import motion as motion_hardware
+from bello_mujoco.hardware.locomotion import HardwareFrame
 
 
 def pose_frame(*, age_ms: int = 0) -> motion_hardware.PoseFrame:

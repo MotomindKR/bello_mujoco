@@ -5,15 +5,16 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from bello_mujoco.experiment_profiles import (
-    locomotion_training_profile,
-    motion_training_profile,
-)
-from bello_mujoco.hydra_config import config_path, structured_config
-from bello_mujoco.tools.commands import (
+from bello_mujoco.assets_pipeline.prepare import canonical_physical_asset_config
+from bello_mujoco.cli import (
     HardwareCommandConfig,
     TrainCommandConfig,
-    canonical_physical_asset_config,
+)
+from bello_mujoco.configuration import (
+    config_path,
+    locomotion_training_profile,
+    motion_training_profile,
+    structured_config,
 )
 
 

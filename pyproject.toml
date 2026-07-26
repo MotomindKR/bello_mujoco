@@ -29,13 +29,13 @@ dependencies = [
 ]
 
 [project.scripts]
-bello-prepare-assets = "bello_mujoco.tools.commands:prepare_assets_entrypoint"
-bello-train = "bello_mujoco.tools.commands:train_entrypoint"
-bello-eval = "bello_mujoco.tools.commands:eval_entrypoint"
-bello-motion = "bello_mujoco.tools.commands:motion_entrypoint"
-bello-vast-train = "bello_mujoco.tools.commands:vast_train_entrypoint"
-bello-run-robstride = "bello_mujoco.tools.commands:robstride_entrypoint"
-bello-run-hardware = "bello_mujoco.tools.commands:hardware_entrypoint"
+bello-prepare-assets = "bello_mujoco.cli:prepare_assets_entrypoint"
+bello-train = "bello_mujoco.cli:train_entrypoint"
+bello-eval = "bello_mujoco.cli:eval_entrypoint"
+bello-motion = "bello_mujoco.cli:motion_entrypoint"
+bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
+bello-run-robstride = "bello_mujoco.cli:robstride_entrypoint"
+bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
 
 [dependency-groups]
 dev = [
@@ -70,7 +70,7 @@ markers = [
 ]
 
 [tool.ruff]
-extend-exclude = ["src/bello_mujoco/_pose_pb2.py"]
+extend-exclude = ["src/bello_mujoco/hardware/_pose_pb2.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]

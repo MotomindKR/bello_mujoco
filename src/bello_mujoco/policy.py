@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+
+if TYPE_CHECKING:
+    from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
 
 LOG_2PI = jnp.log(2.0 * jnp.pi)
 
@@ -360,3 +363,32 @@ def activation_function(name: str):
     if name == "swish":
         return jax.nn.swish
     raise ValueError(f"unsupported activation: {name!r}")
+
+
+class PolicyInferenceStep(NamedTuple):
+    action_mean: jax.Array
+    requested_action: jax.Array
+    applied_action: jax.Array
+
+
+def infer_policy_action(
+    policy: Any,
+    observation: jax.Array,
+    normalization: ObservationNormState,
+    config: PPOConfig,
+    action_clip: float,
+    *,
+    rng: jax.Array | None = None,
+) -> PolicyInferenceStep:
+    """Evaluate the actor with the same input and action contract used by PPO."""
+    from bello_mujoco.training.ppo import normalize_observation
+
+    policy_observation = normalize_observation(observation, normalization, config)
+    action_mean = apply_actor(policy, policy_observation)
+    requested_action = (
+        action_mean
+        if rng is None
+        else sample_actor_action(policy, policy_observation, rng)
+    )
+    applied_action = jnp.clip(requested_action, -action_clip, action_clip)
+    return PolicyInferenceStep(action_mean, requested_action, applied_action)

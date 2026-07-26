@@ -8,7 +8,7 @@ import struct
 
 import pytest
 
-from bello_mujoco.ebimu_serial import EbimuSerialEmulator, STANDARD_GRAVITY
+from bello_mujoco.hardware.ebimu import EbimuSerialEmulator, STANDARD_GRAVITY
 from bello_mujoco.imu import ImuSample
 
 

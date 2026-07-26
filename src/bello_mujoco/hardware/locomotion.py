@@ -19,16 +19,20 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
-from bello_mujoco.checkpoint import (
+from bello_mujoco.training.checkpoint import (
     CheckpointMetadata,
     CheckpointNormalizationState,
     restore_evaluation_checkpoint,
 )
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.policy_inference import infer_policy_action
-from bello_mujoco.render import quat_rotate_inverse_np
-from bello_mujoco.rerun_eval import GamepadCommandSource, GamepadConfig, GamepadInput
-from bello_mujoco.tools.eval_policy import validate_checkpoint_shape
+from bello_mujoco.evaluation.locomotion import (
+    GamepadCommandSource,
+    GamepadConfig,
+    GamepadInput,
+    validate_checkpoint_shape,
+)
+from bello_mujoco.evaluation.render import quat_rotate_inverse_np
+from bello_mujoco.policy import infer_policy_action
 
 ARM_CONFIRMATION = "I_HAVE_A_SPOTTER_AND_ESTOP_READY"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})

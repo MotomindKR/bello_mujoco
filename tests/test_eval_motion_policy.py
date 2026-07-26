@@ -5,10 +5,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import bello_mujoco.tools.eval_motion_policy as eval_motion
+import bello_mujoco.evaluation.motion as eval_motion
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.policy import ActorCriticConfig
-from bello_mujoco.train.ppo import ObservationNormState, PPOConfig
+from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
 
 
 def rollout_stats() -> eval_motion.MotionRolloutStats:

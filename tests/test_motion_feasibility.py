@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bello_mujoco.tools.check_motion_feasibility import (
+from bello_mujoco.motion.feasibility import (
     interpolate_qpos,
     physical_ctrl_from_logical_target,
     quaternion_distance,

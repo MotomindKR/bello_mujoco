@@ -12,34 +12,43 @@ from typing import Literal
 import hydra
 from omegaconf import DictConfig
 
-from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
-from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
-from bello_mujoco.experiment_profiles import (
+from bello_mujoco.assets_pipeline import repo_root
+from bello_mujoco.assets_pipeline.prepare import (
+    canonical_physical_asset_config,
+    prepare_asset,
+)
+from bello_mujoco.configuration import (
     ExperimentName,
+    config_path,
     locomotion_training_profile,
     motion_training_profile,
     profile_config_path,
+    structured_config,
 )
-from bello_mujoco.hardware_locomotion import (
+from bello_mujoco.evaluation.locomotion import (
+    EvalPolicyConfig,
+    evaluate_locomotion_checkpoint,
+)
+from bello_mujoco.evaluation.motion import (
+    render_checkpoint_with_stats,
+    render_reference,
+)
+from bello_mujoco.hardware.locomotion import (
     HardwareLocomotionConfig,
     run_hardware_locomotion,
 )
-from bello_mujoco.hardware_motion import HardwareMotionConfig, run_hardware_motion
-from bello_mujoco.hydra_config import config_path, structured_config
-from bello_mujoco.tools import (
-    check_motion_feasibility,
-    eval_motion_policy,
-    eval_policy,
-    import_gmr_motion,
-    import_gmr_motion_dataset,
-    render_motion_reference,
-    robstride_runner,
-    train_motion_ppo,
-    train_ppo,
+from bello_mujoco.hardware.motion import HardwareMotionConfig, run_hardware_motion
+from bello_mujoco.motion.feasibility import replay_motion_reference
+from bello_mujoco.motion.import_gmr import import_dataset, import_gmr_motion
+from bello_mujoco.robstride import runner as robstride_runner
+from bello_mujoco.training.locomotion import run_training as run_locomotion_training
+from bello_mujoco.training.motion import run_training as run_motion_training
+from bello_mujoco.training.tracking import WandbConfig
+from bello_mujoco.training.vast import (
+    VastTrainConfig,
+    launch_pipeline,
+    safe_exception_message,
 )
-from bello_mujoco.tracking import WandbConfig
-from bello_mujoco.vast import VastTrainConfig, launch_pipeline, safe_exception_message
 
 
 @dataclass(frozen=True)
@@ -186,7 +195,7 @@ def _train_hydra(config: DictConfig) -> None:
                 ),
             ),
         )
-        train_motion_ppo.run_training(run_config)
+        run_motion_training(run_config)
         return
     run_config = locomotion_training_profile(command.experiment)
     run_config = replace(
@@ -199,7 +208,7 @@ def _train_hydra(config: DictConfig) -> None:
             enabled=_coalesce(command.video_enabled, run_config.video_config.enabled),
         ),
     )
-    train_ppo.run_training(run_config)
+    run_locomotion_training(run_config)
 
 
 def eval_entrypoint() -> None:
@@ -216,7 +225,7 @@ def _eval_hydra(config: DictConfig) -> None:
     command = structured_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     if command.task == "motion":
-        stats = eval_motion_policy.render_checkpoint_with_stats(
+        stats = render_checkpoint_with_stats(
             checkpoint,
             command.output_path.expanduser(),
             steps=command.steps,
@@ -224,16 +233,16 @@ def _eval_hydra(config: DictConfig) -> None:
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
-    eval_policy.main(
+    evaluate_locomotion_checkpoint(
         checkpoint,
-        eval_policy.EvalPolicyConfig(
+        EvalPolicyConfig(
             command=command.command,
             steps=command.steps,
             stop_on_done=command.stop_on_done,
             stochastic_actions=command.stochastic_actions,
             action_seed=command.action_seed,
             gamepad=replace(
-                eval_policy.EvalPolicyConfig().gamepad,
+                EvalPolicyConfig().gamepad,
                 enabled=command.gamepad_enabled,
             ),
         ),
@@ -256,7 +265,7 @@ def _motion_hydra(config: DictConfig) -> None:
     if command.operation == "import":
         output = _required_path(command.output, "output")
         print(
-            import_gmr_motion.import_gmr_motion(
+            import_gmr_motion(
                 source,
                 output,
                 reject_self_collisions=command.reject_self_collisions,
@@ -265,7 +274,7 @@ def _motion_hydra(config: DictConfig) -> None:
         return
     if command.operation == "import_dataset":
         output = _required_path(command.output, "output")
-        motions, failures = import_gmr_motion_dataset.import_dataset(
+        motions, failures = import_dataset(
             source,
             output,
             jobs=command.jobs,
@@ -288,7 +297,7 @@ def _motion_hydra(config: DictConfig) -> None:
     if command.operation == "render":
         output = _required_path(command.output, "output")
         print(
-            render_motion_reference.render_reference(
+            render_reference(
                 source,
                 output,
                 width=command.width,
@@ -297,7 +306,7 @@ def _motion_hydra(config: DictConfig) -> None:
             )
         )
         return
-    report = check_motion_feasibility.replay_motion_reference(source)
+    report = replay_motion_reference(source)
     payload = json.dumps(asdict(report), indent=2, sort_keys=True)
     if command.output is not None:
         command.output.parent.mkdir(parents=True, exist_ok=True)
@@ -337,7 +346,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
     if reserved_overrides:
         names = ", ".join(sorted(reserved_overrides))
         raise ValueError(f"use the dedicated Vast command field(s) instead: {names}")
-    root = Path(__file__).resolve().parents[3]
+    root = repo_root()
     profile_path = profile_config_path(command.experiment).resolve()
     try:
         relative_profile = profile_path.relative_to(root)
@@ -444,28 +453,6 @@ def _hardware_hydra(config: DictConfig) -> None:
             wait_for_start_button=command.wait_for_start_button,
             arm=command.arm,
             operator_confirmation=command.operator_confirmation,
-        ),
-    )
-
-
-def canonical_physical_asset_config(
-    *,
-    imu_enabled: bool = False,
-) -> AssetPrepConfig:
-    return AssetPrepConfig(
-        collision_mode="box",
-        end_effector_sphere_mode="both",
-        target_total_mass_kg=60.0,
-        imu_config=ImuSensorConfig(
-            enabled=imu_enabled,
-            body_name="pelvis_link",
-        ),
-        joint_availability=JointAvailabilityConfig(
-            waist_yaw=True,
-            waist_roll=False,
-            waist_pitch=False,
-            neck_yaw=False,
-            head_pitch=False,
         ),
     )
 

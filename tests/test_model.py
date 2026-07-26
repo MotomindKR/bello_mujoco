@@ -13,7 +13,7 @@ from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
     BelloLocomotionEnv,
 )
-from bello_mujoco.render import (
+from bello_mujoco.evaluation.render import (
     mujoco_action_to_ctrl,
     mujoco_policy_observation,
     reset_mujoco_data,

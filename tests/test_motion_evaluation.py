@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from bello_mujoco import motion_evaluation
-from bello_mujoco.motion_evaluation import (
+from bello_mujoco.evaluation import motion as motion_evaluation
+from bello_mujoco.evaluation.motion import (
     MotionEvaluationRequest,
     MotionEvaluationWorker,
 )

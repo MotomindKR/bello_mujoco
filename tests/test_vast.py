@@ -7,8 +7,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-import bello_mujoco.vast as vast
-from bello_mujoco.vast import (
+import bello_mujoco.training.vast as vast
+from bello_mujoco.training.vast import (
     GitSelection,
     VastLifecycle,
     VastOffer,

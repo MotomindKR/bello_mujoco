@@ -26,7 +26,7 @@ from bello_mujoco.envs.motion_tracking import (
     quat_multiply,
     yaw_quat_from_angle,
 )
-from bello_mujoco.experiment_profiles import motion_training_profile
+from bello_mujoco.configuration import motion_training_profile
 from bello_mujoco.motion import (
     DEFAULT_TRACKED_BODY_NAMES,
     FIXED_TRACKING_JOINT_AVAILABILITY,
@@ -38,7 +38,7 @@ from bello_mujoco.motion import (
     sample_motion,
 )
 from bello_mujoco.sim import load_prepared_bello_model
-from bello_mujoco.tools.import_gmr_motion import (
+from bello_mujoco.motion.import_gmr import (
     _build_qpos,
     _validate_legacy_motion,
     _validate_self_collisions,
@@ -292,7 +292,7 @@ def test_motion_loader_and_shortest_arc_interpolation(
 def test_native_motion_rollout_does_not_load_mjx(
     fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
 ) -> None:
-    from bello_mujoco.tools.eval_motion_policy import (
+    from bello_mujoco.evaluation.motion import (
         native_motion_step,
         reset_native_motion_rollout,
     )

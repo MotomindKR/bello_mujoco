@@ -17,22 +17,22 @@ import numpy as np
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
 from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
-from bello_mujoco.assets import project_data_path
-from bello_mujoco.ebimu_serial import EbimuSerialEmulator
+from bello_mujoco.assets_pipeline import project_data_path
+from bello_mujoco.hardware.ebimu import EbimuSerialEmulator
 from bello_mujoco.imu import (
     ImuNoiseConfig,
     ImuNoiseInjector,
     MujocoImu,
     validate_imu_noise_config,
 )
-from bello_mujoco.pose_service import PoseServiceConfig, PoseServiceServer
-from bello_mujoco.robstride_can import (
+from bello_mujoco.hardware.pose import PoseServiceConfig, PoseServiceServer
+from bello_mujoco.robstride.can import (
     MotorSpec,
     RobstrideBusEmulator,
     SocketCanEndpoint,
     load_robstride_configs,
 )
-from bello_mujoco.robstride_sim import (
+from bello_mujoco.robstride.sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )

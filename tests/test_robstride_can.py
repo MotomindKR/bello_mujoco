@@ -9,7 +9,7 @@ import pytest
 
 from bello_mujoco.assets_pipeline.prepare import PreparedAsset, prepare_asset
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
-from bello_mujoco.robstride_can import (
+from bello_mujoco.robstride.can import (
     CAN_FRAME,
     BusSpec,
     CanFrame,
@@ -31,13 +31,13 @@ from bello_mujoco.robstride_can import (
     target_id,
     uint_to_float,
 )
-from bello_mujoco.robstride_sim import (
+from bello_mujoco.robstride.sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )
 from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
-from bello_mujoco.tools.robstride_runner import (
+from bello_mujoco.robstride.runner import (
     RobstrideRunnerConfig,
     TerminalEnterInput,
     add_torso_hold,

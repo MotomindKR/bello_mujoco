@@ -8,13 +8,18 @@ import numpy as np
 import pytest
 from hydra import compose, initialize_config_dir
 
-from bello_mujoco.checkpoint import (
+from bello_mujoco.training.checkpoint import (
     CheckpointNormalizationState,
 )
 from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
-from bello_mujoco.experiment_profiles import motion_training_profile
-from bello_mujoco.hardware_locomotion import HardwareFrame
-from bello_mujoco.hardware_motion import (
+from bello_mujoco.configuration import (
+    CONFIG_ROOT,
+    clear_hydra,
+    motion_training_profile,
+    structured_config,
+)
+from bello_mujoco.hardware.locomotion import HardwareFrame
+from bello_mujoco.hardware.motion import (
     HardwareMotionConfig,
     HardwareMotionPolicyAdapter,
     PoseFrame,
@@ -24,15 +29,14 @@ from bello_mujoco.hardware_motion import (
     wrap_angle,
     xyzw_to_wxyz,
 )
-from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.policy import init_actor_critic, policy_observation_size
-from bello_mujoco.tools.commands import HardwareCommandConfig
-from bello_mujoco.tools.train_motion_ppo import (
+from bello_mujoco.cli import HardwareCommandConfig
+from bello_mujoco.training.motion import (
     MotionTrainingRunConfig,
     motion_checkpoint_metadata,
     resolve_motion_selection,
 )
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.ppo import (
     critic_observation_size,
     init_observation_norm_state,
     init_value_norm_state,

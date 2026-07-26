@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 
-from bello_mujoco.checkpoint import (
+from bello_mujoco.training.checkpoint import (
     CheckpointMetadata,
     CheckpointNormalizationState,
     restore_evaluation_checkpoint,
@@ -30,7 +30,7 @@ from bello_mujoco.envs.motion_tracking import (
     quat_distance,
 )
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
-from bello_mujoco.hardware_locomotion import (
+from bello_mujoco.hardware.locomotion import (
     HardwareFrame,
     actuator_coordinate_names,
     actuator_impedance_gains,
@@ -49,8 +49,8 @@ from bello_mujoco.hardware_locomotion import (
     wait_for_hardware_frame,
 )
 from bello_mujoco.policy import apply_actor
-from bello_mujoco.render import quat_rotate_np
-from bello_mujoco.train.ppo import normalize_observation
+from bello_mujoco.evaluation.render import quat_rotate_np
+from bello_mujoco.training.ppo import normalize_observation
 
 
 @dataclass(frozen=True)

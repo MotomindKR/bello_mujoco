@@ -10,7 +10,7 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.contracts import CONTROL_DECIMATION
-from bello_mujoco.motion import (
+from bello_mujoco.motion.clip import (
     MotionClip,
     load_motion_clip,
     motion_tracking_asset_config,

@@ -10,7 +10,7 @@ import jax
 import optax
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
-from bello_mujoco.checkpoint import (
+from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
     DeploymentContract,
@@ -29,20 +29,20 @@ from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingEnvConfig,
 )
-from bello_mujoco.motion_evaluation import (
+from bello_mujoco.evaluation.motion import (
     MotionEvaluationRequest,
     MotionEvaluationWorker,
+    render_motion_policy,
 )
 from bello_mujoco.motion import motion_tracking_asset_config
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.sim import WarpConfig
-from bello_mujoco.tools.train_ppo import (
+from bello_mujoco.training.locomotion import (
     raise_on_invalid_training_metrics,
     should_render_training_video,
     training_update_range,
 )
-from bello_mujoco.tools.eval_motion_policy import render_motion_policy
-from bello_mujoco.tracking import (
+from bello_mujoco.training.tracking import (
     WandbConfig,
     close_run,
     create_wandb_run,
@@ -51,7 +51,7 @@ from bello_mujoco.tracking import (
     track_metric_snapshot,
     track_video,
 )
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.ppo import (
     PPOConfig,
     RunnerState,
     critic_observation_size,

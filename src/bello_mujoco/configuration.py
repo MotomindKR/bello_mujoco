@@ -1,10 +1,31 @@
-"""Lightweight dataclass configuration decoding."""
+"""Hydra configuration decoding and canonical training profiles."""
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
+
+from hydra.core.global_hydra import GlobalHydra
+from omegaconf import DictConfig, OmegaConf
+
+from bello_mujoco.assets_pipeline import project_data_path
+
+if TYPE_CHECKING:
+    from bello_mujoco.training.locomotion import TrainingRunConfig
+    from bello_mujoco.training.motion import MotionTrainingRunConfig
+
+T = TypeVar("T")
+ExperimentName = Literal["smoke", "locomotion", "hardware_locomotion", "motion"]
+CONFIG_ROOT = project_data_path("configs")
 
 
 def dataclass_from_dict(
@@ -131,3 +152,92 @@ def coerce_value(
     if str(annotation).startswith("tuple["):
         return tuple(value)
     return value
+
+
+def config_path(group: str) -> str:
+    return str(CONFIG_ROOT / group)
+
+
+def structured_config(cls: type[T], config: DictConfig) -> T:
+    data = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
+    if not isinstance(data, dict):
+        raise TypeError(f"Hydra config for {cls.__name__} must be a mapping")
+    return dataclass_from_dict(cls, data, strict=True)
+
+
+def clear_hydra() -> None:
+    if GlobalHydra.instance().is_initialized():
+        GlobalHydra.instance().clear()
+
+
+def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
+    from bello_mujoco.training.locomotion import TrainingRunConfig
+
+    if name not in {"smoke", "locomotion", "hardware_locomotion"}:
+        raise ValueError(f"{name!r} is not a locomotion experiment")
+    paths = [_config("train/default.yaml")]
+    if name in {"locomotion", "hardware_locomotion"}:
+        paths.append(_config("profiles/train/locomotion.yaml"))
+    if name == "hardware_locomotion":
+        paths.append(_config("profiles/train/hardware_locomotion.yaml"))
+    if name == "smoke":
+        paths.append(_config("profiles/train/smoke.yaml"))
+    return structured_config(TrainingRunConfig, _merged_profile(paths))
+
+
+def motion_training_profile(
+    motion_path: Path | None = None,
+) -> MotionTrainingRunConfig:
+    from bello_mujoco.training.motion import (
+        MotionSelectionConfig,
+        MotionTrainingRunConfig,
+    )
+
+    config = structured_config(
+        MotionTrainingRunConfig,
+        _merged_profile(
+            (
+                _config("train_motion/default.yaml"),
+                _config("profiles/train/motion.yaml"),
+            )
+        ),
+    )
+    if motion_path is None:
+        return config
+    resolved = motion_path.expanduser().resolve()
+    return replace(
+        config,
+        motion=MotionSelectionConfig(
+            directory=resolved.parent,
+            sequence=resolved.stem,
+        ),
+    )
+
+
+def profile_config_path(name: ExperimentName) -> Path:
+    mapping = {
+        "smoke": _config("profiles/train/smoke.yaml"),
+        "locomotion": _config("profiles/train/locomotion.yaml"),
+        "hardware_locomotion": _config("profiles/train/hardware_locomotion.yaml"),
+        "motion": _config("profiles/train/motion.yaml"),
+    }
+    return mapping[name]
+
+
+def _config(relative_path: str) -> Path:
+    return project_data_path("configs") / relative_path
+
+
+def _merged_profile(paths: tuple[Path, ...] | list[Path]) -> DictConfig:
+    configs = []
+    for path in paths:
+        config = OmegaConf.load(path)
+        if not isinstance(config, DictConfig):
+            raise TypeError(f"training profile {path} must be a mapping")
+        for internal_key in ("defaults", "hydra"):
+            if internal_key in config:
+                del config[internal_key]
+        configs.append(config)
+    merged = OmegaConf.merge(*configs)
+    OmegaConf.resolve(merged)
+    return merged

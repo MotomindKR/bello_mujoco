@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from bello_mujoco.assets import (
+from bello_mujoco.assets_pipeline import (
     generated_model_path,
     generated_urdf_path,
     generated_viewer_model_path,
@@ -98,6 +98,28 @@ class AssetPrepConfig:
                 "actuator_config",
                 ActuatorConfig(joints=active_joints),
             )
+
+
+def canonical_physical_asset_config(
+    *,
+    imu_enabled: bool = False,
+) -> AssetPrepConfig:
+    return AssetPrepConfig(
+        collision_mode="box",
+        end_effector_sphere_mode="both",
+        target_total_mass_kg=60.0,
+        imu_config=ImuSensorConfig(
+            enabled=imu_enabled,
+            body_name="pelvis_link",
+        ),
+        joint_availability=JointAvailabilityConfig(
+            waist_yaw=True,
+            waist_roll=False,
+            waist_pitch=False,
+            neck_yaw=False,
+            head_pitch=False,
+        ),
+    )
 
 
 @dataclass(frozen=True)

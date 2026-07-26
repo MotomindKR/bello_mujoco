@@ -1,17 +1,22 @@
-"""Render a deterministic rollout from a motion-tracking PPO checkpoint."""
+"""Native motion checkpoint, reference, and worker evaluation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+import multiprocessing as mp
+import os
 from pathlib import Path
+from queue import Empty
+import time
+import traceback
 from typing import TypedDict
 
 import jax
 import mujoco
 import numpy as np
 
-from bello_mujoco.checkpoint import (
+from bello_mujoco.training.checkpoint import (
     restore_evaluation_checkpoint,
     validate_motion_clip_contract,
 )
@@ -26,17 +31,26 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.ppo import (
     ObservationNormState,
     PPOConfig,
     init_observation_norm_state,
     normalize_observation,
 )
-from bello_mujoco.render import (
+from bello_mujoco.evaluation.render import (
     CameraConfig,
+    VideoWriter,
+    make_camera,
     open_rollout_video_resources,
     update_camera,
 )
+from bello_mujoco.motion.clip import (
+    load_motion_clip,
+    motion_tracking_asset_config,
+    sample_motion,
+)
+from bello_mujoco.sim import load_bello_model
+from bello_mujoco.terrain import FLAT_TERRAIN
 
 
 class MotionRolloutStats(TypedDict):
@@ -417,3 +431,164 @@ def native_motion_state(
         last_episode_return=jax.numpy.asarray(0.0, dtype=jax.numpy.float32),
         last_episode_length=jax.numpy.asarray(0, dtype=jax.numpy.int32),
     )
+
+
+def render_reference(
+    motion_path: Path,
+    output_path: Path,
+    *,
+    width: int = 640,
+    height: int = 480,
+    fps: int = 30,
+) -> Path:
+    model = load_bello_model(
+        motion_tracking_asset_config(),
+        terrain=FLAT_TERRAIN,
+        use_viewer_model=True,
+        load_mjx=False,
+    )
+    motion = load_motion_clip(motion_path, model)
+    mj_model = model.mj_model
+    mj_data = mujoco.MjData(mj_model)
+    renderer = mujoco.Renderer(mj_model, width=width, height=height)
+    camera_config = CameraConfig(
+        mode="follow", distance=3.0, azimuth=135.0, elevation=-16.0
+    )
+    camera = make_camera(mj_model, camera_config)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = VideoWriter(output_path, width=width, height=height, fps=fps)
+    frame_count = int(np.floor(motion.duration * fps)) + 1
+    try:
+        for frame in range(frame_count):
+            reference = sample_motion(motion, min(frame / fps, motion.duration))
+            mj_data.qpos[:] = np.asarray(reference.qpos)
+            mj_data.qvel[:] = np.asarray(reference.qvel)
+            mujoco.mj_forward(mj_model, mj_data)
+            update_camera(camera, mj_model, mj_data, camera_config)
+            renderer.update_scene(mj_data, camera=camera)
+            writer.append_data(renderer.render())
+    finally:
+        writer.close()
+        renderer.close()
+    return output_path
+
+
+@dataclass(frozen=True)
+class MotionEvaluationRequest:
+    checkpoint: Path
+    output_path: Path
+    steps: int
+    width: int
+    height: int
+    fps: int
+
+
+@dataclass(frozen=True)
+class MotionEvaluationResponse:
+    stats: MotionRolloutStats | None = None
+    error: str | None = None
+
+
+def _worker_main(request: MotionEvaluationRequest, responses) -> None:
+    try:
+        stats = render_checkpoint_with_stats(
+            request.checkpoint,
+            request.output_path,
+            steps=request.steps,
+            width=request.width,
+            height=request.height,
+            fps=request.fps,
+        )
+        responses.put(MotionEvaluationResponse(stats=stats))
+    except BaseException:  # noqa: BLE001 - report worker failure to PPO
+        responses.put(MotionEvaluationResponse(error=traceback.format_exc()))
+
+
+class MotionEvaluationWorker:
+    def __init__(self) -> None:
+        self._context = mp.get_context("spawn")
+        self._process = None
+        self._responses = None
+
+    def _start(self, request: MotionEvaluationRequest) -> None:
+        if self._process is not None:
+            raise RuntimeError("motion evaluator is already rendering")
+        responses = self._context.Queue(maxsize=1)
+        process = self._context.Process(
+            target=_worker_main,
+            args=(request, responses),
+            name="bello-motion-evaluator",
+        )
+        child_environment = {
+            "JAX_PLATFORMS": "cpu",
+            "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+        }
+        previous = {name: os.environ.get(name) for name in child_environment}
+        try:
+            os.environ.update(child_environment)
+            process.start()
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        self._process = process
+        self._responses = responses
+
+    def _stop(self) -> None:
+        process = self._process
+        responses = self._responses
+        if process is not None:
+            process.join(timeout=10.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5.0)
+            process.close()
+        if responses is not None:
+            responses.close()
+            responses.join_thread()
+        self._process = None
+        self._responses = None
+
+    def evaluate(
+        self,
+        request: MotionEvaluationRequest,
+        *,
+        timeout_seconds: float = 300.0,
+    ) -> MotionRolloutStats:
+        self._start(request)
+        try:
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise TimeoutError(
+                        f"motion evaluation exceeded {timeout_seconds:.0f} seconds"
+                    )
+                try:
+                    response = self._responses.get(timeout=min(1.0, remaining))
+                    break
+                except Empty as error:
+                    if not self._process.is_alive():
+                        raise RuntimeError(
+                            "motion evaluator exited while rendering with code "
+                            f"{self._process.exitcode}"
+                        ) from error
+            if response.error is not None:
+                raise RuntimeError(f"motion evaluator failed:\n{response.error}")
+            if response.stats is None:
+                raise RuntimeError("motion evaluator returned neither stats nor error")
+            return response.stats
+        finally:
+            # A fresh process per video guarantees compiled resources are reclaimed.
+            self._stop()
+
+    def close(self) -> None:
+        self._stop()
+
+    def __enter__(self) -> "MotionEvaluationWorker":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback_value) -> None:
+        self.close()

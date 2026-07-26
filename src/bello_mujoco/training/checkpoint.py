@@ -29,8 +29,8 @@ from bello_mujoco.assets_pipeline.prepare import (
     source_asset_fingerprint,
 )
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
-from bello_mujoco.config_decode import coerce_value as coerce_value
-from bello_mujoco.config_decode import dataclass_from_dict
+from bello_mujoco.configuration import coerce_value as coerce_value
+from bello_mujoco.configuration import dataclass_from_dict
 from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
     DoneConfig,
@@ -41,8 +41,7 @@ from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.policy import ActorCriticConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import ROBOT_ONLY_TERRAIN, TerrainConfig, runtime_mjcf_path
-from bello_mujoco.tracking import to_builtin
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.ppo import (
     ObservationNormState,
     PPOConfig,
     PPOEnvironment,
@@ -54,6 +53,7 @@ from bello_mujoco.train.ppo import (
     init_train_state,
     init_value_norm_state,
 )
+from bello_mujoco.training.tracking import to_builtin
 
 METADATA_FILE = "metadata.json"
 STATE_DIR = "state"

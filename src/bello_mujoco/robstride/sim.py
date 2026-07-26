@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 import mujoco
 import numpy as np
 
-from bello_mujoco.robstride_can import PARAM_RUN_MODE, MotorSpec, RobstrideMotor
+from bello_mujoco.robstride.can import PARAM_RUN_MODE, MotorSpec, RobstrideMotor
 from bello_mujoco.sim import BelloModel, preserve_runtime_physics
 
 

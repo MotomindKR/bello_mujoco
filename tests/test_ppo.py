@@ -22,7 +22,7 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.ppo import (
     PPOConfig,
     Transition,
     action_diagnostics,

@@ -12,7 +12,7 @@ from typing import Iterator
 
 import grpc
 
-from bello_mujoco import _pose_pb2
+from bello_mujoco.hardware import _pose_pb2
 
 
 @dataclass(frozen=True)

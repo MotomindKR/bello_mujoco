@@ -13,9 +13,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import bello_mujoco.checkpoint as checkpoint
+import bello_mujoco.training.checkpoint as checkpoint
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
-from bello_mujoco.checkpoint import (
+from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
     load_checkpoint_metadata,
@@ -41,7 +41,7 @@ from bello_mujoco.policy import (
     policy_observation_size,
 )
 from bello_mujoco.sim import WarpConfig
-from bello_mujoco.train.ppo import (
+from bello_mujoco.training.ppo import (
     ObservationNormState,
     PPOConfig,
     RunnerState,
