@@ -185,17 +185,11 @@ class HardwareMotionPolicyAdapter:
         )
 
     @property
-    def initial_physical_target(self) -> np.ndarray:
-        if not self._initialized:
-            raise RuntimeError("motion adapter must be initialized from hardware")
-        reference = self.env._aligned_reference(
-            jnp.asarray(self.start_time_seconds, dtype=jnp.float32),
-            jnp.asarray(self._alignment_xy),
-            jnp.asarray(self._alignment_yaw, dtype=jnp.float32),
-        )
-        return np.asarray(
-            jax.device_get(self.env._reference_ctrl(reference)), dtype=np.float64
-        )
+    def nominal_physical_target(self) -> np.ndarray:
+        logical = np.asarray(self.env.model.default_joint_target, dtype=np.float64)
+        target = self.transform @ logical
+        limits = np.asarray(self.env.model.mj_model.actuator_ctrlrange)
+        return np.clip(target, limits[:, 0], limits[:, 1])
 
     def initialize(self, frame: HardwareFrame) -> None:
         orientation = normalized_quaternion_xyzw(frame.orientation_xyzw)
@@ -424,6 +418,13 @@ def validate_hardware_motion_config(
     config: HardwareMotionConfig, env: BelloMotionTrackingEnv | None = None
 ) -> None:
     validate_hardware_control_config(config)
+    if (
+        not math.isfinite(config.max_initial_position_error_radians)
+        or config.max_initial_position_error_radians <= 0.0
+    ):
+        raise ValueError(
+            "max_initial_position_error_radians must be positive and finite"
+        )
     if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
         raise ValueError("start_time_seconds must be finite and nonnegative")
     for name in ("max_estimated_linear_velocity", "max_estimated_position_error"):
@@ -469,14 +470,8 @@ def run_hardware_motion(
             )
             validate_hardware_frame(frame, config, expected_group_state="IDLE")
             adapter.precompile(frame)
-            initial_target = adapter.initial_physical_target
+            initial_target = adapter.nominal_physical_target
             initial_error = float(np.max(np.abs(frame.positions - initial_target)))
-            if initial_error > config.max_initial_position_error_radians:
-                raise RuntimeError(
-                    "robot is too far from the motion's starting pose: "
-                    f"max error {initial_error:.3f} rad exceeds "
-                    f"{config.max_initial_position_error_radians:.3f} rad"
-                )
             print(
                 {
                     "hardware_motion_preflight": "passed",
@@ -488,7 +483,7 @@ def run_hardware_motion(
                     "motion_sha256": metadata.motion.content_sha256,
                     "start_time_seconds": config.start_time_seconds,
                     "remaining_duration_seconds": adapter.remaining_duration,
-                    "initial_pose_error_max": initial_error,
+                    "nominal_ramp_distance_max": initial_error,
                     "odometry": "gravity-removed IMU dead reckoning",
                     "armed": config.arm,
                 }
@@ -550,7 +545,7 @@ def control_physical_motion(
         for step in range(1, ramp_steps + 1):
             fraction = step / ramp_steps
             requested = initial_frame.positions + fraction * (
-                adapter.initial_physical_target - initial_frame.positions
+                adapter.nominal_physical_target - initial_frame.positions
             )
             previous_target = limit_target_step(
                 previous_target, requested, config.max_target_step_radians
@@ -576,6 +571,7 @@ def control_physical_motion(
             )
             validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
+        require_nominal_pose(frame, adapter, config.max_initial_position_error_radians)
         adapter.initialize(frame)
         duration = min(config.max_duration_seconds, adapter.remaining_duration)
         start_time = time.monotonic()
@@ -653,6 +649,24 @@ def control_physical_motion(
         except KeyboardInterrupt:
             print("Hardware motion interrupted; stopping and disabling groups.")
         stop_hardware_controls(controls, config, executor)
+
+
+def require_nominal_pose(
+    frame: HardwareFrame,
+    adapter: HardwareMotionPolicyAdapter,
+    tolerance_radians: float,
+) -> None:
+    error = np.abs(frame.positions - adapter.nominal_physical_target)
+    index = int(np.argmax(error))
+    if error[index] > tolerance_radians:
+        name = adapter.physical_coordinate_names[index]
+        raise RuntimeError(
+            "robot did not reach the nominal pose during the ramp: "
+            f"{name} remains {error[index]:.3f} rad away "
+            f"(measured={frame.positions[index]:.3f}, "
+            f"nominal={adapter.nominal_physical_target[index]:.3f}); "
+            f"arrival tolerance is {tolerance_radians:.3f} rad"
+        )
 
 
 def yaw_from_xyzw(quaternion: np.ndarray) -> float:

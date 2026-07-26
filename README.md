@@ -29,9 +29,10 @@ uv run bello-prepare-assets asset=full_body
 Asset preparation converts the tracked Bello descriptions into deterministic
 training and viewer MJCF, with configurable collision geometry, mesh
 simplification, end-effector spheres, joint availability, IMU metadata, and
-motor gain/effort scaling. The physical differential ankle tendons and their
-actuators are always generated. Generated assets are cached outside the source
-tree.
+motor gain/effort scaling. Set `target_total_mass_kg=60` to uniformly scale the
+prepared morphology's link masses and inertia tensors to a 60 kg total. The
+physical differential ankle tendons and their actuators are always generated.
+Generated assets are cached outside the source tree.
 
 For the native visualizer, use the maintained 20,000-face visual-mesh recipe:
 
@@ -163,7 +164,9 @@ The preflight acquires no lease and sends no motor command. See
 recipe, inventory and IMU contract, guarded arming command, and shutdown
 behavior.
 
-Motion-tracking checkpoints use a separate read-only-by-default runner. It
+## Run a motion policy on Bello hardware
+
+Motion-tracking checkpoints use a read-only-by-default installed runner. It
 validates the checkpoint's clip hash and fixed-head sphere-hand contract before
 touching a lease:
 
@@ -175,6 +178,23 @@ uv run --with ~/bello_stack/components/bello-hardware-python \
 
 See [hardware_motion.md](docs/hardware_motion.md), especially its short-horizon
 IMU odometry limitation, before enabling physical playback.
+
+Schema-6 checkpoints that require external pelvis odometry can instead use the
+fingerprint-neutral repository script. It consumes motor and IMU telemetry from
+`bello-hardwared` plus local pelvis odometry from `bello-state-estimatord` and
+is also read-only by default:
+
+```bash
+uv run --with ~/bello_stack/components/bello-hardware-python \
+  ./scripts/bello-run-motion-hardware \
+  checkpoints/balance-level4-schema6-main-4741853-20260720-v3
+```
+
+The script lives outside the installed `bello_mujoco` package so adding it does
+not invalidate a checkpoint's implementation fingerprint. Run it from the
+exact checkout recorded by the checkpoint and use it against the RobStride/vCAN
+HIL stack before considering physical arming. See
+[hardware_motion_tracking.md](docs/hardware_motion_tracking.md).
 
 ## Validate changes
 
@@ -203,6 +223,9 @@ The supported installed commands are:
 - `bello-robstride-runner`
 - `bello-run-locomotion-hardware`
 - `bello-run-motion-hardware`
+
+The repository also provides the fingerprint-neutral executable script
+`./scripts/bello-run-motion-hardware` for schema-6 motion checkpoints.
 
 ## Repository layout
 

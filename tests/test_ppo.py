@@ -29,12 +29,14 @@ from bello_mujoco.train.ppo import (
     adapt_learning_rate,
     adaptive_learning_rate_kl,
     aggregate_ppo_metrics,
+    command_diagnostic_means,
     compute_gae,
     denormalize_value,
     init_observation_norm_state,
     init_runner_state,
     init_train_state,
     init_value_norm_state,
+    gait_diagnostics,
     learning_rate_for_update,
     make_train,
     normalize_advantages,
@@ -68,6 +70,27 @@ def small_config(**updates) -> PPOConfig:
     )
     values.update(updates)
     return PPOConfig(**values)
+
+
+def test_command_and_gait_metrics_split_standing_from_moving() -> None:
+    info = {
+        "command/standing": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
+        "command/moving": jnp.asarray([[0.0, 1.0, 0.0, 1.0]]),
+        "gait/touchdown": jnp.asarray([[2.0, 1.0, 0.0, 1.0]]),
+        "gait/double_support": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
+    }
+
+    command_metrics = command_diagnostic_means(info)
+    gait_metrics = gait_diagnostics(info, control_timestep=0.02)
+
+    assert command_metrics["command/standing_fraction"] == pytest.approx(0.5)
+    assert command_metrics["command/moving_fraction"] == pytest.approx(0.5)
+    assert gait_metrics["gait/standing_touchdown"] == pytest.approx(1.0)
+    assert gait_metrics["gait/moving_touchdown"] == pytest.approx(1.0)
+    assert gait_metrics["gait/standing_double_support"] == pytest.approx(1.0)
+    assert gait_metrics["gait/moving_double_support"] == pytest.approx(0.0)
+    assert gait_metrics["gait/standing_footfalls_per_second"] == pytest.approx(50.0)
+    assert gait_metrics["gait/moving_footfalls_per_second"] == pytest.approx(50.0)
 
 
 def test_library_training_rejects_policy_environment_action_limit_mismatch() -> None:

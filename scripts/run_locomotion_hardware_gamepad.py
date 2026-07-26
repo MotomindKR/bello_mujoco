@@ -25,7 +25,6 @@ class GamepadHardwareConfig:
     wait_for_start_button: bool = True
     ramp_seconds: float = 10.0
     max_duration_seconds: float = 10.0
-    max_initial_position_error_radians: float = 0.75
     command_validity_seconds: float = 0.08
     acknowledgement_timeout_seconds: float = 0.08
     max_loop_lag_seconds: float = 0.10
@@ -67,9 +66,6 @@ def main(config: GamepadHardwareConfig) -> None:
         "operator_confirmation": config.operator_confirmation,
         "ramp_seconds": config.ramp_seconds,
         "max_duration_seconds": config.max_duration_seconds,
-        "max_initial_position_error_radians": (
-            config.max_initial_position_error_radians
-        ),
         "command_validity_seconds": config.command_validity_seconds,
         "acknowledgement_timeout_seconds": (config.acknowledgement_timeout_seconds),
         "max_loop_lag_seconds": config.max_loop_lag_seconds,

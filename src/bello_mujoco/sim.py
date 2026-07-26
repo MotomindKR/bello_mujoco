@@ -182,6 +182,7 @@ class BelloModel:
     policy_ctrl_indices: np.ndarray
     actuator_qpos_indices: np.ndarray
     actuator_qvel_indices: np.ndarray
+    actuator_peak_force: np.ndarray
     hold_ctrl_indices: np.ndarray
     imu_body_name: str
     actuator_coordinate_transform: np.ndarray
@@ -394,6 +395,9 @@ def _load_bello_model_from_path(
         [int(mj_model.jnt_dofadr[joint_id]) for joint_id in actuator_joint_ids],
         dtype=np.int32,
     )
+    actuator_peak_force = np.max(
+        np.abs(np.asarray(mj_model.actuator_forcerange, dtype=np.float32)), axis=1
+    )
     hold_ctrl_indices = np.asarray(
         [
             actuator_id
@@ -500,6 +504,7 @@ def _load_bello_model_from_path(
         policy_ctrl_indices=policy_ctrl_indices,
         actuator_qpos_indices=actuator_qpos_indices,
         actuator_qvel_indices=actuator_qvel_indices,
+        actuator_peak_force=actuator_peak_force,
         hold_ctrl_indices=hold_ctrl_indices,
         imu_body_name=imu_body_name,
         actuator_coordinate_transform=actuator_coordinate_transform_matrix,

@@ -24,12 +24,11 @@ from bello_mujoco.checkpoint import (
     CheckpointNormalizationState,
     restore_evaluation_checkpoint,
 )
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
-from bello_mujoco.policy import apply_actor
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.policy_inference import infer_policy_action
 from bello_mujoco.render import quat_rotate_inverse_np
 from bello_mujoco.rerun_eval import GamepadCommandSource, GamepadConfig, GamepadInput
 from bello_mujoco.tools.eval_policy import validate_checkpoint_shape
-from bello_mujoco.train.ppo import normalize_observation
 
 ARM_CONFIRMATION = "I_HAVE_A_SPOTTER_AND_ESTOP_READY"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
@@ -58,7 +57,6 @@ class HardwareLocomotionConfig:
     max_duration_seconds: float = 10.0
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
-    max_initial_position_error_radians: float = 0.75
     max_target_step_radians: float = 0.05
     max_tilt_radians: float = 0.70
     max_angular_velocity: float = 20.0
@@ -130,10 +128,15 @@ class HardwarePolicyAdapter:
             env.model.default_joint_target, dtype=np.float64
         )
         self.kp, self.kd = actuator_impedance_gains(env)
-        self.gait_frequency = deployment_gait_frequency(env.config.gait)
         self._normalization = normalization.observation
-        self._actor = eqx.filter_jit(
-            lambda observation: apply_actor(policy, observation)
+        self._infer_action = eqx.filter_jit(
+            lambda observation: infer_policy_action(
+                policy,
+                observation,
+                self._normalization,
+                metadata.ppo,
+                env.action_clip,
+            )
         )
         zero_offset = jnp.zeros(len(self.physical_coordinate_names), dtype=jnp.float32)
         self._action_ctrl = jax.jit(
@@ -183,19 +186,11 @@ class HardwarePolicyAdapter:
         specific_force = specific_force_from_gravity_removed_acceleration(
             frame.linear_acceleration, projected_gravity
         )
-        foot_phase = foot_phase_sin_cos(
-            self.env.config.gait,
-            step_count=self._step_count,
-            control_timestep=self.control_timestep,
-            command=command,
-            randomized_frequency=self.gait_frequency,
-        )
         scale = self.env.config.observation.scale
         components = {
             "imu_linear_acceleration": specific_force * scale.base_lin_acc,
             "imu_angular_velocity": frame.angular_velocity * scale.base_ang_vel,
             "projected_gravity": projected_gravity * scale.projected_gravity,
-            "foot_phase": foot_phase * scale.foot_phase,
             "command": command * scale.command,
             "joint_position": (
                 logical_position[self.policy_indices]
@@ -234,13 +229,8 @@ class HardwarePolicyAdapter:
                 (self._obs_stack[1:], observation[None, :]), axis=0
             )
         stacked = jnp.asarray(self._obs_stack.reshape(-1), dtype=jnp.float32)
-        normalized = normalize_observation(
-            stacked,
-            self._normalization,
-            self.metadata.ppo,
-        )
-        action = np.asarray(jax.device_get(self._actor(normalized)), dtype=np.float32)
-        action = np.clip(action, -self.env.action_clip, self.env.action_clip)
+        inference = self._infer_action(stacked)
+        action = np.asarray(jax.device_get(inference.applied_action), dtype=np.float32)
         if action.shape != (self.env.action_size,) or not np.all(np.isfinite(action)):
             raise RuntimeError(
                 f"policy produced an invalid hardware action with shape {action.shape}"
@@ -264,7 +254,7 @@ def load_hardware_policy(
     checkpoint_path: Path,
 ) -> tuple[HardwarePolicyAdapter, CheckpointMetadata]:
     train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path
+        checkpoint_path, validate_implementation=False
     )
     if metadata.task != "locomotion":
         raise ValueError(f"checkpoint task is {metadata.task!r}, not 'locomotion'")
@@ -362,9 +352,6 @@ def validate_hardware_control_config(config: Any) -> None:
         "rpc_timeout_seconds": config.rpc_timeout_seconds,
         "ramp_seconds": config.ramp_seconds,
         "max_duration_seconds": config.max_duration_seconds,
-        "max_initial_position_error_radians": (
-            config.max_initial_position_error_radians
-        ),
         "max_target_step_radians": config.max_target_step_radians,
         "max_tilt_radians": config.max_tilt_radians,
         "max_angular_velocity": config.max_angular_velocity,
@@ -528,36 +515,6 @@ def normalized_quaternion_xyzw(value: np.ndarray) -> np.ndarray:
     return quaternion / norm
 
 
-def deployment_gait_frequency(config: GaitConfig) -> float:
-    if config.randomize_frequency:
-        return 0.5 * (config.frequency_range[0] + config.frequency_range[1])
-    return 0.0
-
-
-def foot_phase_sin_cos(
-    config: GaitConfig,
-    *,
-    step_count: int,
-    control_timestep: float,
-    command: np.ndarray,
-    randomized_frequency: float,
-) -> np.ndarray:
-    if float(np.linalg.norm(command)) <= config.standing_command_threshold:
-        return np.zeros(4, dtype=np.float32)
-    if config.randomize_frequency:
-        frequency = randomized_frequency
-    else:
-        frequency = np.clip(
-            1.0 / config.cycle_time
-            + config.command_speed_frequency_gain * float(np.linalg.norm(command[:2])),
-            config.min_frequency,
-            config.max_frequency,
-        )
-    phase = (step_count * control_timestep * frequency) % 1.0
-    angles = 2.0 * np.pi * (phase + np.asarray(config.phase_offsets, dtype=np.float64))
-    return np.concatenate((np.cos(angles), np.sin(angles))).astype(np.float32)
-
-
 def limit_target_step(
     previous: np.ndarray, requested: np.ndarray, maximum_step: float
 ) -> np.ndarray:
@@ -635,12 +592,6 @@ def run_hardware_locomotion(
         initial_error = float(
             np.max(np.abs(frame.positions - adapter.nominal_physical_target))
         )
-        if initial_error > config.max_initial_position_error_radians:
-            raise RuntimeError(
-                "robot is too far from the checkpoint nominal pose: "
-                f"max error {initial_error:.3f} rad exceeds "
-                f"{config.max_initial_position_error_radians:.3f} rad"
-            )
         print(
             {
                 "hardware_preflight": "passed",

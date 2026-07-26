@@ -4,6 +4,7 @@ defaults:
   - _self_
 
 asset_config:
+  target_total_mass_kg: 60.0
   joint_availability:
     waist_yaw: true
     waist_roll: false
@@ -16,19 +17,6 @@ config:
   # that cause a slow standing fall one or two seconds later.
   gamma: 0.995
   gae_lambda: 0.98
-
-command_config:
-  # Failed standing episodes are shorter than walking episodes, so a balanced
-  # episode sampler is needed to keep standing well represented in rollouts.
-  standing_probability: 0.50
-
-reward_config:
-  standing_foot_vel:
-    weight: -4.0
-  standing_foot_air_time:
-    weight: -5.0
-  termination:
-    weight: -5.0
 
 checkpoint_config:
   name: hardware_locomotion_seed0

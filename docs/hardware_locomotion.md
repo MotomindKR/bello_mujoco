@@ -8,8 +8,9 @@ current sphere-hand Bello inventory only. It does not support the standard
 The data path is:
 
 ```text
-hardwared telemetry -> physical-to-logical transmission -> 55-value actor frame
-                    -> ten-frame stack -> deterministic policy mean
+hardwared telemetry -> physical-to-logical transmission -> 51-value actor frame
+                    -> ten-frame stack -> checkpoint observation normalization
+                    -> deterministic bounded policy mean
                     -> logical target -> physical differential-ankle target
                     -> hardwared position/impedance command
 ```
@@ -22,9 +23,16 @@ checkout to this repository's lock file.
 The hardware recipe inherits the maintained locomotion algorithm and fixes the
 four coordinates absent from the physical inventory: waist roll, waist pitch,
 neck yaw, and head pitch. Waist yaw remains actuated, hands are spheres, and the
-policy retains its 13 logical leg/waist actions. It samples standing for half of
-new commands, uses a longer PPO credit horizon and stronger standing/fall
-penalties, and masks standing foot phase to a distinct all-zero observation.
+policy retains its 13 logical leg/waist actions. It samples exactly zero for 10%
+of new commands and conditions the other 90% to contain genuine commanded
+motion. It uses a longer PPO credit horizon and prepares the robot at an
+explicit total mass of 60 kg by uniformly scaling all link masses and inertia
+tensors. The policy is phase-free. Touchdown and contact-timing shaping are
+command-gated, while a bounded zero-command foot-motion penalty discourages
+stepping without requiring binary dual-foot contact. Dense height/orientation
+penalties lead into the terminal fall penalty. Vertical-velocity and
+locomotion-gated flight penalties discourage the short synchronized hopping
+gait, while touchdown air-time credit remains deliberately small.
 Its scheduled deterministic video is a ten-second zero-command rollout, making
 a failed neutral stance visible before deployment.
 
@@ -34,10 +42,12 @@ uv run bello-train-ppo \
   --config-name hardware_locomotion
 ```
 
-The runner rejects checkpoints whose task, checkpoint schema, runtime
-fingerprints, observation/action layouts, policy distribution, sphere-hand
-mode, or joint availability differ. A standard `locomotion.yaml` checkpoint is
-therefore intentionally incompatible.
+The runner rejects checkpoints whose task, checkpoint schema, assets, generated
+scenes, dependency lock, observation/action layouts, policy distribution,
+sphere-hand mode, or joint availability differ. Runner-only implementation
+changes are allowed for evaluation and deployment; training resume retains the
+exact implementation check. A standard `locomotion.yaml` checkpoint is therefore
+intentionally incompatible.
 
 ## Read-only preflight
 
@@ -59,7 +69,8 @@ connecting, then verifies:
 - online motor and `imu` inventory status;
 - complete, finite, fresh position, velocity, quaternion, gyro, and
   gravity-removed local-acceleration telemetry;
-- an upright robot within 0.75 rad of the checkpoint nominal motor pose; and
+- an upright robot, while reporting its maximum deviation from the checkpoint
+  nominal motor pose for operator inspection; and
 - a command within the velocity bounds stored in the checkpoint.
 
 The read-only path does not acquire a lease, enable a motor group, or send a
@@ -87,8 +98,9 @@ uv run --with ~/bello_stack/components/bello-hardware-python \
   hardware.operator_confirmation=I_HAVE_A_SPOTTER_AND_ESTOP_READY
 ```
 
-The runner acquires both group leases, starts each group at its measured
-position, ramps to the nominal pose over ten seconds, and then executes the
+The runner does not reject an initial pose based on its distance from nominal.
+It acquires both group leases, starts each group at its measured position,
+ramps to the nominal pose over ten seconds, and then executes the
 deterministic actor at 50 Hz. Independent motor groups are started and sent
 targets concurrently so neither group's command watchdog waits behind the
 other group's acknowledgement. By default, the inverted left-stick Y commands
@@ -107,9 +119,8 @@ the ramp is not latched, so it must be released and pressed again at the prompt.
 Fixed-command operation requires `hardware.wait_for_start_button=false` together
 with `hardware.gamepad.enabled=false`.
 
-For a checkpoint that must run from its original fingerprint-pinned worktree,
-invoke the repository-level compatibility launcher by absolute path from that
-worktree:
+The repository-level gamepad launcher remains available as a compact deployment
+entry point:
 
 ```bash
 uv run --with ~/bello_stack/components/bello-hardware-python \
@@ -119,8 +130,8 @@ uv run --with ~/bello_stack/components/bello-hardware-python \
   --operator-confirmation I_HAVE_A_SPOTTER_AND_ESTOP_READY
 ```
 
-This keeps checkpoint restoration in the pinned package while adding only the
-deployment-side gamepad command source.
+It uses the same checkpoint validation and deployment-side gamepad command
+source as the installed runner.
 When developing the local Python binding itself, add `--no-cache` before
 `--with` so uv rebuilds the current source. Armed execution requires the
 binding's asynchronous command-receipt API; the runner rejects an older cached

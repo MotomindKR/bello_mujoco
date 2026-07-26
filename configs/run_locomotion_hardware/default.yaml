@@ -22,7 +22,6 @@ hardware:
   max_duration_seconds: 10.0
   max_motor_age_ms: 100
   max_imu_age_ms: 100
-  max_initial_position_error_radians: 0.75
   max_target_step_radians: 0.05
   max_tilt_radians: 0.70
   max_angular_velocity: 20.0

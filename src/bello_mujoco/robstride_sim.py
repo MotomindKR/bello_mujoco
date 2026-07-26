@@ -35,7 +35,10 @@ class NativeActuatorBinding:
 
 
 def configure_robstride_actuators(
-    model: BelloModel, specs: tuple[MotorSpec, ...]
+    model: BelloModel,
+    specs: tuple[MotorSpec, ...],
+    *,
+    enforce_torque_limits: bool = True,
 ) -> BelloModel:
     """Replace mapped position actuators with native MIT actuator triples."""
 
@@ -81,8 +84,13 @@ def configure_robstride_actuators(
                 f"motor {motor.name!r} maps to missing MuJoCo {target.type} "
                 f"{target.name!r}"
             )
-        coordinate.actfrclimited = mujoco.mjtLimited.mjLIMITED_TRUE
-        coordinate.actfrcrange = (-max_torque, max_torque)
+        coordinate.actfrclimited = (
+            mujoco.mjtLimited.mjLIMITED_TRUE
+            if enforce_torque_limits
+            else mujoco.mjtLimited.mjLIMITED_FALSE
+        )
+        if enforce_torque_limits:
+            coordinate.actfrcrange = (-max_torque, max_torque)
 
         position = spec.add_actuator(
             name=_actuator_name(motor.name, "position"),
@@ -140,9 +148,16 @@ def configure_robstride_actuators(
 class BelloRobstrideTransmission:
     """Physical-motor to native MuJoCo actuator transmission for Bello."""
 
-    def __init__(self, model: BelloModel, motors: tuple[RobstrideMotor, ...]) -> None:
+    def __init__(
+        self,
+        model: BelloModel,
+        motors: tuple[RobstrideMotor, ...],
+        *,
+        enforce_torque_limits: bool = True,
+    ) -> None:
         self.model = model
         self.motors = {motor.spec.name: motor for motor in motors}
+        self.enforce_torque_limits = enforce_torque_limits
         self.bindings = self._joint_bindings()
         self.direct: dict[str, str] = {}
         self.tendons: dict[str, TendonBinding] = {}
@@ -193,7 +208,10 @@ class BelloRobstrideTransmission:
             )
             data.ctrl[binding.velocity_id] = motor.command.velocity if enabled else 0.0
             data.ctrl[binding.feedforward_id] = motor.command.torque if enabled else 0.0
-            self._set_common_force_limit(binding, motor.torque_limit)
+            self._set_common_force_limit(
+                binding,
+                motor.torque_limit if self.enforce_torque_limits else None,
+            )
 
     def _joint_bindings(self) -> dict[str, JointBinding]:
         mj_model = self.model.mj_model
@@ -308,13 +326,21 @@ class BelloRobstrideTransmission:
         )
 
     def _set_common_force_limit(
-        self, binding: NativeActuatorBinding, limit: float
+        self, binding: NativeActuatorBinding, limit: float | None
     ) -> None:
-        force_range = (-limit, limit)
         if binding.target_type == "joint":
-            self.model.mj_model.jnt_actfrcrange[binding.target_id] = force_range
+            self.model.mj_model.jnt_actfrclimited[binding.target_id] = limit is not None
+            if limit is not None:
+                self.model.mj_model.jnt_actfrcrange[binding.target_id] = (-limit, limit)
         else:
-            self.model.mj_model.tendon_actfrcrange[binding.target_id] = force_range
+            self.model.mj_model.tendon_actfrclimited[binding.target_id] = (
+                limit is not None
+            )
+            if limit is not None:
+                self.model.mj_model.tendon_actfrcrange[binding.target_id] = (
+                    -limit,
+                    limit,
+                )
 
     def _set_motor_state(self, name: str, position: float, velocity: float) -> None:
         motor = self.motors[name]

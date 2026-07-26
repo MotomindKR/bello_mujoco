@@ -15,7 +15,7 @@ from hydra import compose, initialize_config_dir
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.checkpoint import CheckpointNormalizationState
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware_locomotion import (
     ARM_CONFIRMATION,
@@ -25,7 +25,6 @@ from bello_mujoco.hardware_locomotion import (
     actuator_coordinate_names,
     actuator_impedance_gains,
     command_ranges,
-    foot_phase_sin_cos,
     hardware_command,
     limit_target_step,
     projected_gravity_from_xyzw,
@@ -107,18 +106,30 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     config = compose_hardware_training_config()
 
     assert config.asset_config.end_effector_sphere_mode == "both"
+    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
-    assert config.command_config.standing_probability == pytest.approx(0.5)
+    assert config.command_config.standing_probability == pytest.approx(0.1)
+    assert config.command_config.minimum_moving_linear_speed == pytest.approx(0.2)
+    assert config.command_config.minimum_moving_yaw_speed == pytest.approx(0.2)
     assert config.config.gamma == pytest.approx(0.995)
     assert config.config.gae_lambda == pytest.approx(0.98)
-    assert config.reward_config.standing_foot_vel.weight == pytest.approx(-4.0)
-    assert config.reward_config.standing_foot_air_time.weight == pytest.approx(-5.0)
-    assert config.reward_config.termination.weight == pytest.approx(-5.0)
+    assert config.reward_config.track_ang_vel_z.weight == pytest.approx(1.0)
+    assert config.reward_config.joint_pose.weight == pytest.approx(-0.1)
+    assert config.reward_config.lin_vel_z.weight == pytest.approx(-2.0)
+    assert config.reward_config.flight.weight == pytest.approx(-2.0)
+    assert config.reward_config.touchdown_air_time.weight == pytest.approx(0.5)
+    assert config.reward_config.torque_l1.weight == pytest.approx(-1.2)
+    assert config.reward_config.torque_peak.weight == pytest.approx(-12.0)
+    assert config.reward_config.stand_foot_motion.weight == pytest.approx(-1.0)
+    assert config.reward_config.base_height.weight == pytest.approx(-10.0)
+    assert config.reward_config.flat_orientation.weight == pytest.approx(-2.0)
+    assert config.reward_config.termination.weight == pytest.approx(-100.0)
     assert config.video_config.command == (0.0, 0.0, 0.0)
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
+    assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(60.0)
 
     metadata = SimpleNamespace(
         task="locomotion",
@@ -212,11 +223,11 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
 
     result = adapter.step(frame, command)
 
-    assert result.observation.shape == (55,)
+    assert result.observation.shape == (51,)
     assert result.observation[:3] == pytest.approx((0.0, 0.0, 0.980665))
     assert result.observation[3:6] == pytest.approx(np.zeros(3))
     assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
-    assert result.observation[13:16] == pytest.approx(command)
+    assert result.observation[9:12] == pytest.approx(command)
     assert result.action.shape == (13,)
     assert result.physical_target.shape == (25,)
     assert np.all(np.isfinite(result.physical_target))
@@ -226,7 +237,7 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
     )
 
 
-def test_hardware_imu_and_gait_terms_match_deployment_conventions() -> None:
+def test_hardware_imu_terms_match_deployment_conventions() -> None:
     projected_gravity = projected_gravity_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0)))
     assert projected_gravity == pytest.approx((0.0, 0.0, -1.0))
     assert specific_force_from_gravity_removed_acceleration(
@@ -242,25 +253,6 @@ def test_hardware_imu_and_gait_terms_match_deployment_conventions() -> None:
         gravity_removed, tilted_gravity
     ) == pytest.approx(expected_specific_force, abs=1.0e-6)
     assert tilt_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0))) == pytest.approx(0.0)
-
-    gait = GaitConfig(randomize_frequency=False)
-    standing = foot_phase_sin_cos(
-        gait,
-        step_count=20,
-        control_timestep=0.02,
-        command=np.zeros(3),
-        randomized_frequency=0.0,
-    )
-    walking = foot_phase_sin_cos(
-        gait,
-        step_count=20,
-        control_timestep=0.02,
-        command=np.asarray((0.2, 0.0, 0.0)),
-        randomized_frequency=0.0,
-    )
-
-    assert standing == pytest.approx(np.zeros(4), abs=1.0e-6)
-    assert walking != pytest.approx(standing)
 
 
 def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> None:
@@ -513,7 +505,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
 
     states = SimpleNamespace(
         coordinate=lambda name: SimpleNamespace(
-            position=0.0, velocity=0.0, feedback_age_ms=0
+            position=2.014, velocity=0.0, feedback_age_ms=0
         ),
         imu=lambda name: SimpleNamespace(
             orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -565,7 +557,9 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
         ),
     )
 
-    assert "no lease was acquired" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "'initial_pose_error_max': 2.014" in output
+    assert "no lease was acquired" in output
 
 
 def test_inventory_rejects_coordinate_mismatch() -> None:

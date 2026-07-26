@@ -67,18 +67,22 @@ eval_config:
 `steps=null` runs until stopped. Evaluation is always paced by the environment
 control timestep. Deterministic evaluation uses the transformed actor mean;
 `stochastic_actions=true` samples the bounded tanh-Gaussian policy with
-`action_seed`.
+`action_seed`. Actor inference is JIT-compiled once at startup. The evaluator
+restores and applies the checkpoint's observation-normalization state before
+every actor call, using the same stacked-observation and bounded-action path as
+training and physical-hardware deployment.
 
 Asset, environment, reward, command, termination, and Warp configuration are
 always restored from checkpoint metadata. Evaluation rejects mismatched actor
 or critic observation layouts and action layouts instead of guessing a
 compatible runtime. It also verifies source assets, the complete generated
 URDF/MJCF dependency closure (including referenced meshes), the exact runtime
-simulation and viewer scenes, the implementation, and `uv.lock`; use the exact
-checkout and locked transitive runtime distribution versions that created a
-checkpoint rather than silently evaluating it under changed dynamics. These
-runtime inputs are bundled in installed wheels, so the same verification works
-outside a source checkout.
+simulation and viewer scenes, `uv.lock`, and the locked transitive runtime
+distribution versions. Evaluation and hardware deployment intentionally allow
+runner implementation changes after training; training resume still requires
+the exact implementation fingerprint recorded by the checkpoint. Runtime
+inputs are bundled in installed wheels, so the same verification works outside
+a source checkout.
 
 Checkpoint schemas are intentionally not migrated. Evaluate an older artifact
 from the exact commit and lockfile that produced it; a current checkout rejects
@@ -112,6 +116,10 @@ and streams transforms and telemetry. Done episodes reset automatically unless
 contact memory. Both backends place the root after forward kinematics so the
 lowest physical foot sole starts at the configured terrain-local spawn
 clearance, including on sloped terrain.
+
+Asset preparation follows the checkpoint contract, including
+`target_total_mass_kg`. Hardware-locomotion checkpoints therefore evaluate at
+60 kg by default without a separate evaluator override.
 
 ## Validation
 

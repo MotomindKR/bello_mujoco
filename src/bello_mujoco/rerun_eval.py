@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import mujoco
@@ -18,12 +19,11 @@ from rerun.urdf import UrdfTree
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.policy import (
-    apply_actor,
     init_observation_stack,
-    sample_actor_action,
     stacked_observation,
     update_observation_stack,
 )
+from bello_mujoco.policy_inference import infer_policy_action
 from bello_mujoco.render import (
     mujoco_action_to_ctrl,
     mujoco_contact_terms,
@@ -39,6 +39,7 @@ from bello_mujoco.render import (
     reset_mujoco_data,
     sync_mj_data,
 )
+from bello_mujoco.train.ppo import ObservationNormState, PPOConfig
 
 DONE_KEYS = (
     "done/any",
@@ -646,6 +647,8 @@ def run_rerun_evaluation(
     env: BelloLocomotionEnv,
     policy,
     *,
+    normalization: ObservationNormState,
+    ppo_config: PPOConfig,
     urdf_path: Path,
     command: tuple[float, float, float],
     gamepad_config: GamepadConfig,
@@ -668,6 +671,16 @@ def run_rerun_evaluation(
         env.command_config.ang_vel_yaw,
     )
     mjx_step = jax.jit(env.step) if simulation_backend == "mjx" else None
+    infer_action = eqx.filter_jit(
+        lambda observation, rng: infer_policy_action(
+            policy,
+            observation,
+            normalization,
+            ppo_config,
+            env.action_clip,
+            rng=rng,
+        )
+    )
     action_key = jax.random.PRNGKey(action_seed)
     global_step = 0
     episode = 0
@@ -768,20 +781,20 @@ def run_rerun_evaluation(
                 reset_episode()
                 logger.log_event("episode reset requested by gamepad")
 
-            action_mean = apply_actor(policy, stacked_observation(obs_stack))
-            action = action_mean
+            action_rng = None
             if stochastic_actions:
                 action_key, action_rng = jax.random.split(action_key)
-                action = sample_actor_action(
-                    policy, stacked_observation(obs_stack), action_rng
-                )
-            requested_action = action
-            action = jnp.clip(action, -env.action_clip, env.action_clip)
-            action_mean_np = np.asarray(jax.device_get(action_mean), dtype=np.float32)
+            policy_step = infer_action(stacked_observation(obs_stack), action_rng)
+            requested_action = policy_step.requested_action
+            action_mean_np = np.asarray(
+                jax.device_get(policy_step.action_mean), dtype=np.float32
+            )
             requested_action_np = np.asarray(
                 jax.device_get(requested_action), dtype=np.float32
             )
-            action_np = np.asarray(jax.device_get(action), dtype=np.float32)
+            action_np = np.asarray(
+                jax.device_get(policy_step.applied_action), dtype=np.float32
+            )
             if simulation_backend == "mjx":
                 mjx_state = mjx_state.replace(command=jnp.asarray(current_command))
                 mjx_state, obs, reward, done, info = mjx_step(
@@ -831,7 +844,6 @@ def run_rerun_evaluation(
                 contact_terms = mujoco_contact_terms(env, mj_data)
                 (
                     raw_foot_contact,
-                    foot_height,
                     lateral_speed,
                     angular_speed,
                     undesired,
@@ -847,7 +859,6 @@ def run_rerun_evaluation(
                     jnp.asarray(requested_action_np),
                     jnp.asarray(done_flags["done/terminal"]),
                     foot_contact,
-                    foot_height,
                     lateral_speed,
                     angular_speed,
                     undesired,

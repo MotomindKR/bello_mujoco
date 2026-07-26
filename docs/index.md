@@ -28,6 +28,10 @@ bello-run-locomotion-hardware
 bello-run-motion-hardware
 ```
 
+Schema-6 motion checkpoints use the fingerprint-neutral repository script
+`./scripts/bello-run-motion-hardware`; see
+[hardware_motion_tracking.md](hardware_motion_tracking.md).
+
 All Python commands work as `uv run <command>` outside an activated development
 shell. Use `<command> --help` and `<command> --hydra-help` for the current config
 tree rather than relying on copied option lists.
@@ -51,7 +55,8 @@ The tracked `assets/source/bello/lower_body/` and
 full-body description, not standalone prepared asset choices.
 
 The preparation pipeline validates and converts the tracked descriptions,
-simplifies visual and collision meshes, creates training and viewer MJCF,
+simplifies visual and collision meshes, optionally scales every link mass and
+inertia tensor to an explicit target total mass, creates training and viewer MJCF,
 configures actuators, optionally replaces hands with spheres, and always
 generates and actuates the physical differential ankle tendons. Runtime terrain
 is added after asset generation; it is not embedded in the source descriptions.
@@ -97,19 +102,18 @@ from that prepared morphology. Its deployable actor frame is:
 pelvis-mounted IMU-frame linear acceleration[3]
 pelvis-mounted IMU-frame angular velocity[3]
 projected gravity[3]
-left/right foot phase sin/cos[4]
 command[3]
 policy joint position[13]
 policy joint velocity[13]
 last action[13]
 ```
 
-With commands enabled this is 55 values per frame. The IMU terms have the same
+With commands enabled this is 51 values per frame. The IMU terms have the same
 specific-force and gyro semantics as the configured pelvis-mounted MuJoCo
 accelerometer and gyro. The privileged critic adds root-frame linear velocity,
-terrain-relative root clearance, and policy-actuator force for 72 values per
+terrain-relative root clearance, and policy-actuator force for 68 values per
 frame. The package training default stacks ten frames, producing actor and
-critic inputs of 550 and 720 values. Observation noise and scaling do not change
+critic inputs of 510 and 680 values. Observation noise and scaling do not change
 the layout.
 
 The generated IMU site is the source of truth for its body frame. When sensor
@@ -130,7 +134,7 @@ Environment configuration covers:
 - numerical bounds for finite physics excursions and constraint forces;
 - flat or seeded-slope planes and rough terrain;
 - joint-origin, target-offset, and inertia randomization;
-- reward, termination, gait, and safety terms.
+- reward, termination, contact, and safety terms.
 
 The rollout and reward hot path remains JAX-compatible. Asset generation,
 checkpoint I/O, W&B, rendering, and CLI setup remain host-side operations.
@@ -199,6 +203,10 @@ Training uses a local JAX PPO implementation with Equinox policies and Optax.
 It supports separate actor and critic observations, observation stacking and
 explicit scaling, GAE, configurable learning-rate schedules, KL guardrails,
 invalid-update rejection, Orbax checkpoints, W&B metrics, and rollout video.
+Locomotion commands use an explicit 10% standing mixture; every other sampled
+command is conditioned to lie outside the shared standing deadband. Positive
+touchdown and contact-timing shaping is command-gated, while zero-command foot
+motion is penalized continuously without a dual-contact objective.
 
 See [training.md](training.md) for the maintained training contract and smoke
 commands.
@@ -264,9 +272,9 @@ See [robstride_vcan.md](robstride_vcan.md).
 `bello-run-locomotion-hardware` deploys a compatible locomotion checkpoint
 through the blocking Python client supplied by `~/bello_stack`. It validates the
 complete 25-coordinate inventory, group rates and state, online motors and IMU,
-checkpoint morphology, command bounds, telemetry freshness, initial pose, and
-tilt before control. The default invocation is a read-only preflight and cannot
-acquire a control lease.
+checkpoint morphology, command bounds, telemetry freshness, and tilt before
+control. It reports the initial pose deviation without rejecting it. The
+default invocation is a read-only preflight and cannot acquire a control lease.
 
 The armed path starts from measured motor positions, ramps to the policy nominal
 pose, runs deterministic inference at 50 Hz, and relies on both local limits and

@@ -14,6 +14,12 @@ duration of training. Transient SSH interruptions are recovered as described
 below, but the controller still needs network access to monitor and eventually
 tear down the instance.
 
+Each controller owns a lifecycle state directory, `.vast/` by default. To run
+multiple intentional jobs from one checkout, give every additional controller a
+distinct directory under `.vast/`, for example
+`--lifecycle-state-dir .vast/yaw-run`. Its lock, recovery record, and teardown
+then remain isolated from controllers using other lifecycle state directories.
+
 ## Credentials
 
 Store the Vast.ai and W&B API keys with the Python `keyring` command:
@@ -231,11 +237,11 @@ with the instance during teardown.
 ## Teardown and Recovery
 
 Immediately before every create API call, the controller writes a pending label
-atomically to `.vast/active_instance.json` and fsyncs it. A returned or
-reconciled instance ID atomically transitions that state to active. A `finally`
-block destroys the instance after success, setup failure, training failure,
-Ctrl-C, or handled `SIGTERM`, `SIGHUP`, or `SIGQUIT`, then removes the state only
-after destruction is confirmed. There is no keep-instance option.
+atomically to `<lifecycle-state-dir>/active_instance.json` and fsyncs it. A
+returned or reconciled instance ID atomically transitions that state to active.
+A `finally` block destroys the instance after success, setup failure, training
+failure, Ctrl-C, or handled `SIGTERM`, `SIGHUP`, or `SIGQUIT`, then removes the
+state only after destruction is confirmed. There is no keep-instance option.
 
 An ambiguous create response retains the pending label and is reconciled by
 that unique label before another offer can be rented. If the instance is not yet
@@ -246,13 +252,14 @@ successful teardown: destruction is confirmed only by an explicit
 destroyed/not-found response or by the instance being absent from a successful,
 well-formed instance listing.
 
-Only one controller may run from a checkout at a time. If a previous process
-left active state, the next launch first destroys that recorded instance and
-refuses to rent another one if cleanup cannot be confirmed.
+Only one controller may use a lifecycle state directory at a time. If a previous
+process left active state there, the next launch first destroys that recorded
+instance and refuses to rent another one if cleanup cannot be confirmed. A
+concurrent job must select a distinct state directory explicitly.
 
 Local-controller cleanup cannot run after local power loss, `SIGKILL`, or a
 complete network outage. If teardown retries fail, the command exits nonzero,
-keeps `.vast/active_instance.json`, and prints the exact instance ID and manual
+keeps its `active_instance.json`, and prints the exact instance ID and manual
 command:
 
 ```bash

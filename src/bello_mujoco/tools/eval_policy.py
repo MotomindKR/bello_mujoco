@@ -9,7 +9,10 @@ import hydra
 from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
-from bello_mujoco.checkpoint import CheckpointMetadata, restore_training_checkpoint
+from bello_mujoco.checkpoint import (
+    CheckpointMetadata,
+    restore_evaluation_checkpoint,
+)
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.policy import policy_observation_size
@@ -39,7 +42,9 @@ def main(
     eval_config: EvalPolicyConfig = EvalPolicyConfig(),
 ) -> None:
     validate_eval_config(eval_config)
-    train_state, metadata = restore_training_checkpoint(checkpoint_path)
+    train_state, metadata, normalization = restore_evaluation_checkpoint(
+        checkpoint_path, validate_implementation=False
+    )
     if metadata.task != "locomotion":
         raise ValueError(
             f"checkpoint task is {metadata.task!r}, not 'locomotion'; use "
@@ -67,6 +72,8 @@ def main(
     run_rerun_evaluation(
         env,
         train_state.policy,
+        normalization=normalization.observation,
+        ppo_config=metadata.ppo,
         urdf_path=prepared.urdf_path,
         command=eval_config.command,
         gamepad_config=eval_config.gamepad,

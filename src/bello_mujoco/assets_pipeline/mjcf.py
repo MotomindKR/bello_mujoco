@@ -50,6 +50,7 @@ def compile_urdf_to_mjcf(
     include_visuals: bool = False,
     actuator_config: ActuatorConfig = ActuatorConfig(),
     actuated_joint_order: tuple[str, ...] = (),
+    enforce_policy_effort_limits: bool = True,
     imu_config: ImuSensorConfig = ImuSensorConfig(),
     ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig(),
 ) -> None:
@@ -70,9 +71,19 @@ def compile_urdf_to_mjcf(
         ensure_visual_geoms(root)
         ensure_collision_geoms_transparent(root)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
-    ensure_position_actuators(root, actuator_config, actuated_joint_order)
+    ensure_position_actuators(
+        root,
+        actuator_config,
+        actuated_joint_order,
+        enforce_policy_effort_limits=enforce_policy_effort_limits,
+    )
     ensure_ankle_differential_tendons(root)
-    replace_ankle_joint_actuators(root, actuator_config, ankle_differential_config)
+    replace_ankle_joint_actuators(
+        root,
+        actuator_config,
+        ankle_differential_config,
+        enforce_policy_effort_limits=enforce_policy_effort_limits,
+    )
     ensure_imu_sensors(root, imu_config)
     ensure_home_keyframe(root, actuator_config)
 
@@ -142,6 +153,8 @@ def replace_ankle_joint_actuators(
     root: ET.Element,
     config: ActuatorConfig,
     differential_config: AnkleDifferentialConfig,
+    *,
+    enforce_policy_effort_limits: bool = True,
 ) -> None:
     actuator = root.find("actuator")
     if actuator is None:
@@ -210,7 +223,9 @@ def replace_ankle_joint_actuators(
                 force_low *= differential_config.motor_effort_limit_scale
                 force_high *= differential_config.motor_effort_limit_scale
                 attributes["forcerange"] = f"{force_low:g} {force_high:g}"
-                attributes["forcelimited"] = "true"
+                attributes["forcelimited"] = str(
+                    pitch_config.mode != "policy" or enforce_policy_effort_limits
+                ).lower()
             actuator.insert(index, ET.Element("position", attributes))
 
 
@@ -618,6 +633,8 @@ def ensure_position_actuators(
     root: ET.Element,
     config: ActuatorConfig,
     actuated_joint_order: tuple[str, ...],
+    *,
+    enforce_policy_effort_limits: bool = True,
 ) -> None:
     actuator = root.find("actuator")
     if actuator is None:
@@ -651,7 +668,9 @@ def ensure_position_actuators(
         if force_range is not None:
             force_low, force_high = force_range
             attributes["forcerange"] = f"{force_low:g} {force_high:g}"
-            attributes["forcelimited"] = "true"
+            attributes["forcelimited"] = str(
+                joint_config.mode != "policy" or enforce_policy_effort_limits
+            ).lower()
         ET.SubElement(
             actuator,
             "position",

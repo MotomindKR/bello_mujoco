@@ -52,17 +52,6 @@ env_config:
     root_yaw_range: [-3.14159265, 3.14159265]
     joint_pos_scale_range: [0.5, 1.5]
     root_vel_range: [-0.5, 0.5]
-  gait:
-    cycle_time: 0.7272727
-    command_speed_frequency_gain: 0.0
-    min_frequency: 1.25
-    max_frequency: 1.50
-    duty_factor: 0.5
-    phase_offsets: [0.0, 0.5]
-    standing_command_threshold: 0.1
-    randomize_frequency: true
-    frequency_range: [1.25, 1.50]
-    foot_height: 0.10
   contact:
     foot_contact_on_seconds: 0.04
     foot_contact_off_seconds: 0.04
@@ -83,6 +72,7 @@ command_config:
   lin_vel_x: [-1.0, 1.0]
   lin_vel_y: [-1.0, 1.0]
   ang_vel_yaw: [-1.0, 1.0]
+  # Non-standing samples are conditioned outside the inherited deadbands.
   standing_probability: 0.10
   resample_seconds: 10.0
 
@@ -96,6 +86,8 @@ reward_config:
     link: torso_link
   flat_orientation:
     link: torso_link
+  base_height:
+    link: pelvis_link
 
 done_config:
   base_height:

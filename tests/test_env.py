@@ -16,7 +16,6 @@ from bello_mujoco.envs.locomotion import (
     BelloLocomotionEnv,
     ContactConfig,
     DoneConfig,
-    GaitConfig,
     ObservationConfig,
     ObservationNoiseConfig,
     RandomPushConfig,
@@ -76,7 +75,6 @@ def test_reset_exposes_explicit_actor_critic_and_action_contracts(
         ("imu_linear_acceleration", 3),
         ("imu_angular_velocity", 3),
         ("projected_gravity", 3),
-        ("foot_phase", 4),
         ("command", 3),
         ("joint_position", 13),
         ("joint_velocity", 13),
@@ -102,6 +100,7 @@ def test_actor_observation_contains_only_deployable_signals(
     assert "base_linear_velocity" not in actor_names
     assert "base_height" not in actor_names
     assert "actuator_force" not in actor_names
+    assert "foot_phase" not in actor_names
     assert {"imu_linear_acceleration", "imu_angular_velocity"} <= actor_names
     assert actor_names < critic_names
 
@@ -358,60 +357,6 @@ def test_contact_debounce_and_memory_have_explicit_transitions(
     assert previous.tolist() == [False, True]
 
 
-def test_standing_command_freezes_randomized_gait_phase(
-    full_body_asset: PreparedAsset,
-) -> None:
-    env = BelloLocomotionEnv.load_prepared(
-        full_body_asset,
-        env_config=BelloEnvConfig(
-            gait=GaitConfig(randomize_frequency=True, frequency_range=(1.2, 1.5))
-        ),
-    )
-    state, _ = env.reset(rng=jax.random.PRNGKey(0))
-    state = state.replace(step_count=jnp.asarray(20))
-    standing = state.replace(command=jnp.zeros(3))
-    moving = state.replace(command=jnp.asarray([0.2, 0.0, 0.0]))
-
-    assert env._gait_phase(standing) == pytest.approx(0.0)
-    assert env._gait_phase(moving) > 0.0
-    assert env._foot_phase_sin_cos(standing) == pytest.approx(jnp.zeros(4))
-    assert env._foot_phase_height_target(standing) == pytest.approx(jnp.zeros(2))
-
-
-def test_foot_phase_has_duty_factor_stance_plateau_and_swing_only_clearance(
-    full_body_asset: PreparedAsset,
-) -> None:
-    env = BelloLocomotionEnv.load_prepared(
-        full_body_asset,
-        env_config=BelloEnvConfig(
-            gait=GaitConfig(
-                cycle_time=1.0,
-                command_speed_frequency_gain=0.0,
-                min_frequency=1.0,
-                max_frequency=1.0,
-                duty_factor=0.6,
-                phase_offsets=(0.0, 0.5),
-                foot_height=0.1,
-            )
-        ),
-    )
-    state, _ = env.reset(command=jnp.asarray([0.5, 0.0, 0.0]))
-
-    phase_zero = env._foot_phase_height_target(state)
-    phase_point_two = env._foot_phase_height_target(
-        state.replace(step_count=jnp.asarray(10))
-    )
-    phase_point_seven = env._foot_phase_height_target(
-        state.replace(step_count=jnp.asarray(35))
-    )
-
-    assert phase_zero == pytest.approx(jnp.zeros(2), abs=1.0e-7)
-    assert phase_point_two[0] == pytest.approx(0.0, abs=1.0e-7)
-    assert phase_point_two[1] > 0.0
-    assert phase_point_seven[0] > 0.0
-    assert phase_point_seven[1] == pytest.approx(0.0, abs=1.0e-7)
-
-
 def test_observation_noise_changes_only_noisy_evaluation(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -442,13 +387,15 @@ def test_command_sampling_and_periodic_resampling_are_bounded(
         full_body_asset, batch_size=4, command_config=command_config
     )
     state, _ = env.reset_batch(4, rng=jax.random.PRNGKey(0))
-    next_state, *_ = env.step_batch(
+    next_state, _, _, _, info = env.step_batch(
         state,
         jnp.zeros((4, env.action_size)),
         rng=jax.random.PRNGKey(1),
     )
 
     assert jnp.all((state.command[:, 0] >= 0.2) & (state.command[:, 0] <= 0.4))
+    assert info["command/standing"] == pytest.approx(jnp.zeros(4))
+    assert info["command/moving"] == pytest.approx(jnp.ones(4))
     assert not jnp.allclose(next_state.command, state.command)
 
 

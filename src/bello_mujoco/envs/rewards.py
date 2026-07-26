@@ -12,13 +12,17 @@ import jax.numpy as jnp
 
 @dataclass(frozen=True)
 class CommandConfig:
-    """Uniform ``[forward, lateral, yaw]`` velocity command sampler."""
+    """Explicit standing plus conditioned moving velocity command sampler."""
 
     enabled: bool = True
-    lin_vel_x: tuple[float, float] = (-0.1, 0.1)
-    lin_vel_y: tuple[float, float] = (-0.1, 0.1)
-    ang_vel_yaw: tuple[float, float] = (-0.1, 0.1)
+    lin_vel_x: tuple[float, float] = (-0.5, 0.5)
+    lin_vel_y: tuple[float, float] = (-0.5, 0.5)
+    ang_vel_yaw: tuple[float, float] = (-0.5, 0.5)
     standing_probability: float = 0.10
+    linear_deadband: float = 0.10
+    yaw_deadband: float = 0.10
+    minimum_moving_linear_speed: float = 0.20
+    minimum_moving_yaw_speed: float = 0.20
     resample_seconds: float = 10.0
 
     def __post_init__(self) -> None:
@@ -30,6 +34,31 @@ class CommandConfig:
                 "standing_probability must be in [0, 1], got "
                 f"{self.standing_probability}"
             )
+        for name, value in (
+            ("linear_deadband", self.linear_deadband),
+            ("yaw_deadband", self.yaw_deadband),
+            ("minimum_moving_linear_speed", self.minimum_moving_linear_speed),
+            ("minimum_moving_yaw_speed", self.minimum_moving_yaw_speed),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+        if self.minimum_moving_linear_speed <= self.linear_deadband:
+            raise ValueError(
+                "minimum_moving_linear_speed must exceed linear_deadband, got "
+                f"{self.minimum_moving_linear_speed} <= {self.linear_deadband}"
+            )
+        if self.minimum_moving_yaw_speed <= self.yaw_deadband:
+            raise ValueError(
+                "minimum_moving_yaw_speed must exceed yaw_deadband, got "
+                f"{self.minimum_moving_yaw_speed} <= {self.yaw_deadband}"
+            )
+        if self.enabled and self.standing_probability < 1.0:
+            moving_axes = self._moving_axis_mask()
+            if not any(moving_axes):
+                raise ValueError(
+                    "at least one command range must reach its minimum moving "
+                    "speed when standing_probability is below 1"
+                )
         if not math.isfinite(self.resample_seconds) or self.resample_seconds <= 0:
             raise ValueError(
                 f"resample_seconds must be positive, got {self.resample_seconds}"
@@ -40,6 +69,23 @@ class CommandConfig:
             (self.lin_vel_x, self.lin_vel_y, self.ang_vel_yaw), dtype=jnp.float32
         )
 
+    def _minimum_moving_speeds(self) -> tuple[float, float, float]:
+        return (
+            self.minimum_moving_linear_speed,
+            self.minimum_moving_linear_speed,
+            self.minimum_moving_yaw_speed,
+        )
+
+    def _moving_axis_mask(self) -> tuple[bool, bool, bool]:
+        return tuple(
+            low <= -minimum or high >= minimum
+            for (low, high), minimum in zip(
+                (self.lin_vel_x, self.lin_vel_y, self.ang_vel_yaw),
+                self._minimum_moving_speeds(),
+                strict=True,
+            )
+        )
+
     def sample(
         self,
         rng: jax.Array,
@@ -47,16 +93,74 @@ class CommandConfig:
     ) -> jax.Array:
         if not self.enabled:
             return jnp.zeros(shape + (3,), dtype=jnp.float32)
+        if self.standing_probability == 1.0:
+            return jnp.zeros(shape + (3,), dtype=jnp.float32)
+
         bounds = self.range_array()
-        command_key, stand_key = jax.random.split(rng)
-        command = jax.random.uniform(
-            command_key,
-            shape + (3,),
-            minval=bounds[:, 0].astype(jnp.float32),
-            maxval=bounds[:, 1].astype(jnp.float32),
+        minimums = jnp.asarray(self._minimum_moving_speeds(), dtype=jnp.float32)
+        negative_available = bounds[:, 0] <= -minimums
+        positive_available = bounds[:, 1] >= minimums
+        axis_available = negative_available | positive_available
+        axis_probability = axis_available.astype(jnp.float32)
+        axis_probability /= jnp.sum(axis_probability)
+
+        command_key, stand_key, axis_key, sign_key, magnitude_key = jax.random.split(
+            rng, 5
         )
+        command_uniform = jax.random.uniform(
+            command_key, shape + (3,), dtype=jnp.float32
+        )
+        command = bounds[:, 0] + command_uniform * (bounds[:, 1] - bounds[:, 0])
+        active_axis = jax.random.choice(
+            axis_key,
+            3,
+            shape=shape,
+            p=axis_probability,
+        )
+        selected_negative_available = negative_available[active_axis]
+        selected_positive_available = positive_available[active_axis]
+        positive = jnp.where(
+            selected_negative_available & selected_positive_available,
+            jax.random.bernoulli(sign_key, shape=shape),
+            selected_positive_available,
+        )
+        active_low = jnp.where(
+            positive,
+            jnp.maximum(minimums[active_axis], bounds[active_axis, 0]),
+            bounds[active_axis, 0],
+        )
+        active_high = jnp.where(
+            positive,
+            bounds[active_axis, 1],
+            jnp.minimum(-minimums[active_axis], bounds[active_axis, 1]),
+        )
+        magnitude_uniform = jax.random.uniform(
+            magnitude_key, shape=shape, dtype=jnp.float32
+        )
+        active_value = active_low + magnitude_uniform * (active_high - active_low)
+        active_mask = jax.nn.one_hot(active_axis, 3, dtype=jnp.float32)
+        moving_command = (
+            command * (1.0 - active_mask) + active_value[..., None] * active_mask
+        )
+
         standing = jax.random.bernoulli(stand_key, self.standing_probability, shape)
-        return jnp.where(standing[..., None], jnp.zeros_like(command), command)
+        return jnp.where(
+            standing[..., None], jnp.zeros_like(moving_command), moving_command
+        )
+
+
+def command_is_standing(command: jax.Array, config: CommandConfig) -> jax.Array:
+    """Return whether every command axis is inside its standing deadband."""
+
+    linear_still = jnp.all(jnp.abs(command[..., :2]) < config.linear_deadband, axis=-1)
+    yaw_still = jnp.abs(command[..., 2]) < config.yaw_deadband
+    return linear_still & yaw_still
+
+
+def command_is_moving(command: jax.Array, config: CommandConfig) -> jax.Array:
+    """Return whether any command axis requests motion."""
+
+    return ~command_is_standing(command, config)
 
 
 @dataclass(frozen=True)
@@ -77,13 +181,15 @@ class LinkRewardConfig(WeightedRewardConfig):
 
 @dataclass(frozen=True)
 class TrackLinVelXYRewardConfig(LinkRewardConfig):
-    sigma: float = 0.5
+    moving_std: float = 0.75
+    still_std: float = 0.25
     frame_link: str | None = None
 
 
 @dataclass(frozen=True)
 class TrackAngVelZRewardConfig(LinkRewardConfig):
-    sigma: float = 0.5
+    moving_std: float = 0.50
+    still_std: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -102,6 +208,11 @@ class FlatOrientationRewardConfig(LinkRewardConfig):
 
 
 @dataclass(frozen=True)
+class BaseHeightRewardConfig(LinkRewardConfig):
+    target_height: float = 0.86
+
+
+@dataclass(frozen=True)
 class ActionRateRewardConfig(WeightedRewardConfig):
     pass
 
@@ -117,8 +228,20 @@ class TorqueL1RewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class TorquePeakRewardConfig(WeightedRewardConfig):
+    pass
+
+
+@dataclass(frozen=True)
 class JointPoseRewardConfig(WeightedRewardConfig):
     pass
+
+
+@dataclass(frozen=True)
+class StandFootMotionRewardConfig(WeightedRewardConfig):
+    linear_speed_scale: float = 0.15
+    angular_speed_scale: float = 1.0
+    angular_weight: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -148,32 +271,21 @@ class FootSlipRewardConfig(WeightedRewardConfig):
 
 
 @dataclass(frozen=True)
+class FlightRewardConfig(WeightedRewardConfig):
+    body_speed_threshold: float = 0.10
+    yaw_speed_threshold: float = 0.10
+
+
+@dataclass(frozen=True)
 class ContactTimingRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
     min_contact_time: float = 0.30
-    command_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
 class TouchdownAirTimeRewardConfig(WeightedRewardConfig):
     min_air_time: float = 0.20
     max_air_time: float = 0.50
-    command_speed_threshold: float = 0.10
-
-
-@dataclass(frozen=True)
-class FootPhaseRewardConfig(WeightedRewardConfig):
-    sigma: float = 0.01
-
-
-@dataclass(frozen=True)
-class StandingFootVelRewardConfig(WeightedRewardConfig):
-    command_speed_threshold: float = 0.10
-
-
-@dataclass(frozen=True)
-class StandingFootAirTimeRewardConfig(WeightedRewardConfig):
-    command_speed_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -196,35 +308,34 @@ class RewardConfig:
     """Canonical Bello locomotion reward configuration."""
 
     track_lin_vel_xy: TrackLinVelXYRewardConfig = TrackLinVelXYRewardConfig(weight=1.0)
-    track_ang_vel_z: TrackAngVelZRewardConfig = TrackAngVelZRewardConfig(weight=0.5)
-    lin_vel_z: LinVelZRewardConfig = LinVelZRewardConfig()
+    track_ang_vel_z: TrackAngVelZRewardConfig = TrackAngVelZRewardConfig(weight=1.0)
+    lin_vel_z: LinVelZRewardConfig = LinVelZRewardConfig(weight=-2.0)
     ang_vel_xy: AngVelXYRewardConfig = AngVelXYRewardConfig(weight=-0.15)
     flat_orientation: FlatOrientationRewardConfig = FlatOrientationRewardConfig(
-        weight=-1.0
+        weight=-2.0
     )
+    base_height: BaseHeightRewardConfig = BaseHeightRewardConfig(weight=-10.0)
     action_rate: ActionRateRewardConfig = ActionRateRewardConfig(weight=-0.01)
     action_limit: ActionLimitRewardConfig = ActionLimitRewardConfig(weight=-1.0)
-    torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-2.5e-5)
-    joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-1.0)
+    torque_l1: TorqueL1RewardConfig = TorqueL1RewardConfig(weight=-1.2)
+    torque_peak: TorquePeakRewardConfig = TorquePeakRewardConfig(weight=-12.0)
+    joint_pose: JointPoseRewardConfig = JointPoseRewardConfig(weight=-0.1)
+    stand_foot_motion: StandFootMotionRewardConfig = StandFootMotionRewardConfig(
+        weight=-1.0
+    )
     hip_deviation: HipDeviationRewardConfig = HipDeviationRewardConfig(weight=-0.25)
     knee_deviation: KneeDeviationRewardConfig = KneeDeviationRewardConfig(weight=-0.1)
     joint_limit: JointLimitRewardConfig = JointLimitRewardConfig(weight=-1.0)
     invalid_action: InvalidActionRewardConfig = InvalidActionRewardConfig()
     foot_slip: FootSlipRewardConfig = FootSlipRewardConfig(weight=-0.25)
+    flight: FlightRewardConfig = FlightRewardConfig(weight=-2.0)
     contact_timing: ContactTimingRewardConfig = ContactTimingRewardConfig(weight=-5.0)
     touchdown_air_time: TouchdownAirTimeRewardConfig = TouchdownAirTimeRewardConfig(
-        weight=2.0
-    )
-    foot_phase: FootPhaseRewardConfig = FootPhaseRewardConfig(weight=0.25)
-    standing_foot_vel: StandingFootVelRewardConfig = StandingFootVelRewardConfig(
-        weight=-2.0
-    )
-    standing_foot_air_time: StandingFootAirTimeRewardConfig = (
-        StandingFootAirTimeRewardConfig(weight=-3.0)
+        weight=0.5
     )
     undesired_contact: UndesiredContactRewardConfig = UndesiredContactRewardConfig()
     self_collision: SelfCollisionRewardConfig = SelfCollisionRewardConfig()
-    termination: TerminationRewardConfig = TerminationRewardConfig(weight=-1.0)
+    termination: TerminationRewardConfig = TerminationRewardConfig(weight=-100.0)
 
     def __post_init__(self) -> None:
         validate_reward_config(self)
@@ -235,16 +346,15 @@ class RewardConfig:
             term.enabled
             for term in (
                 self.foot_slip,
+                self.flight,
                 self.contact_timing,
                 self.touchdown_air_time,
-                self.standing_foot_vel,
-                self.standing_foot_air_time,
             )
         )
 
     @property
     def uses_foot_metadata(self) -> bool:
-        return self.uses_foot_contact_metadata or self.foot_phase.enabled
+        return self.uses_foot_contact_metadata or self.stand_foot_motion.enabled
 
     @property
     def uses_terrain_contact_metadata(self) -> bool:
@@ -258,6 +368,7 @@ class RewardConfig:
             self.lin_vel_z,
             self.ang_vel_xy,
             self.flat_orientation,
+            self.base_height,
         )
         links = {term.link for term in terms if term.enabled and term.link}
         if self.track_lin_vel_xy.enabled and self.track_lin_vel_xy.frame_link:
@@ -275,12 +386,14 @@ class RewardInputs:
     lin_vel_z: jax.Array
     ang_vel_xy: jax.Array
     projected_gravity: jax.Array
+    base_height: jax.Array
     joint_pos: jax.Array
     joint_pos_rel: jax.Array
     action: jax.Array
     requested_action: jax.Array
     last_action: jax.Array
     actuator_force: jax.Array
+    actuator_peak_force: jax.Array
     joint_limit_low: jax.Array
     joint_limit_high: jax.Array
     policy_joint_indices: jax.Array
@@ -288,13 +401,11 @@ class RewardInputs:
     action_target_low: jax.Array
     action_target_high: jax.Array
     foot_contact: jax.Array
-    foot_height: jax.Array
-    foot_lateral_speed_sq: jax.Array
+    foot_linear_velocity: jax.Array
     foot_angular_speed: jax.Array
     foot_air_time: jax.Array
     foot_contact_time: jax.Array
     last_foot_contact: jax.Array
-    foot_phase_height_target: jax.Array
     joint_pose_weights: jax.Array
     hip_joint_indices: jax.Array
     knee_joint_indices: jax.Array
@@ -306,17 +417,37 @@ class RewardInputs:
 
 
 def compute_locomotion_reward(
-    config: RewardConfig, inputs: RewardInputs
+    config: RewardConfig,
+    inputs: RewardInputs,
+    command_config: CommandConfig | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Return the canonical weighted reward and its weighted components."""
 
-    lin_vel_error = jnp.sum((inputs.lin_vel_xy - inputs.command[:2]) ** 2)
-    yaw_vel_error = (inputs.yaw_vel_z - inputs.command[2]) ** 2
-    track_lin_vel_xy = jnp.exp(-lin_vel_error / config.track_lin_vel_xy.sigma)
-    track_ang_vel_z = jnp.exp(-yaw_vel_error / config.track_ang_vel_z.sigma)
+    if command_config is None:
+        command_config = CommandConfig()
+
+    linear_still = jnp.abs(inputs.command[:2]) < command_config.linear_deadband
+    linear_target = jnp.where(linear_still, 0.0, inputs.command[:2])
+    linear_std = jnp.where(
+        linear_still,
+        config.track_lin_vel_xy.still_std,
+        config.track_lin_vel_xy.moving_std,
+    )
+    lin_vel_error = jnp.sum(((inputs.lin_vel_xy - linear_target) / linear_std) ** 2)
+    yaw_still = jnp.abs(inputs.command[2]) < command_config.yaw_deadband
+    yaw_target = jnp.where(yaw_still, 0.0, inputs.command[2])
+    yaw_std = jnp.where(
+        yaw_still,
+        config.track_ang_vel_z.still_std,
+        config.track_ang_vel_z.moving_std,
+    )
+    yaw_vel_error = ((inputs.yaw_vel_z - yaw_target) / yaw_std) ** 2
+    track_lin_vel_xy = jnp.exp(-lin_vel_error)
+    track_ang_vel_z = jnp.exp(-yaw_vel_error)
     lin_vel_z = inputs.lin_vel_z**2
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
+    base_height = (inputs.base_height - config.base_height.target_height) ** 2
     action_rate = jnp.sum((inputs.action - inputs.last_action) ** 2)
 
     action_soft_limit = config.action_limit.soft_limit_ratio * inputs.action_clip_limit
@@ -328,8 +459,30 @@ def compute_locomotion_reward(
         )
         ** 2
     )
-    torque_l1 = jnp.sum(jnp.abs(inputs.actuator_force[inputs.policy_joint_indices]))
+    policy_force = jnp.abs(inputs.actuator_force[inputs.policy_joint_indices])
+    policy_peak_force = inputs.actuator_peak_force[inputs.policy_joint_indices]
+    normalized_torque = policy_force / policy_peak_force
+    torque_l1 = jnp.mean(normalized_torque)
+    torque_peak = jnp.mean(jnp.maximum(normalized_torque - 1.0, 0.0) ** 2)
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
+    standing_command = command_is_standing(inputs.command, command_config)
+    moving_command = ~standing_command
+    body_speed = jnp.linalg.norm(inputs.lin_vel_xy)
+    foot_linear_speed_sq = jnp.sum(inputs.foot_linear_velocity**2, axis=1)
+    stand_foot_linear_motion = jnp.tanh(
+        foot_linear_speed_sq / config.stand_foot_motion.linear_speed_scale**2
+    )
+    stand_foot_angular_motion = jnp.tanh(
+        (inputs.foot_angular_speed / config.stand_foot_motion.angular_speed_scale) ** 2
+    )
+    stand_foot_motion = jnp.where(
+        standing_command,
+        jnp.mean(
+            stand_foot_linear_motion
+            + config.stand_foot_motion.angular_weight * stand_foot_angular_motion
+        ),
+        0.0,
+    )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
     lateral_command = inputs.command[config.hip_deviation.lateral_command_index]
     hip_deviation *= (
@@ -371,7 +524,7 @@ def compute_locomotion_reward(
     )
     invalid_action = jnp.sum(unit_violation**2 + clip_violation**2)
 
-    foot_speed = jnp.sqrt(jnp.maximum(inputs.foot_lateral_speed_sq, 0.0))
+    foot_speed = jnp.linalg.norm(inputs.foot_linear_velocity[:, :2], axis=1)
     foot_slip = jnp.sum(
         inputs.foot_contact
         * (
@@ -379,10 +532,21 @@ def compute_locomotion_reward(
             + config.foot_slip.angular_speed_scale * inputs.foot_angular_speed
         )
     )
-    command_speed = jnp.linalg.norm(inputs.command)
-    moving = command_speed > config.contact_timing.command_speed_threshold
     contact = inputs.foot_contact.astype(bool)
     previous_contact = inputs.last_foot_contact.astype(bool)
+    filtered_contact = contact | previous_contact
+    flight_motion_active = motion_active(
+        moving_command,
+        body_speed,
+        jnp.abs(inputs.yaw_vel_z),
+        body_speed_threshold=config.flight.body_speed_threshold,
+        yaw_speed_threshold=config.flight.yaw_speed_threshold,
+    )
+    flight = jnp.where(
+        flight_motion_active,
+        ~jnp.any(filtered_contact),
+        False,
+    ).astype(jnp.float32)
     touchdown = contact & ~previous_contact
     liftoff = ~contact & previous_contact
     short_air = (
@@ -396,7 +560,7 @@ def compute_locomotion_reward(
         / config.contact_timing.min_contact_time
     )
     contact_timing = jnp.where(
-        moving,
+        moving_command,
         jnp.sum(
             touchdown.astype(jnp.float32) * short_air**2
             + liftoff.astype(jnp.float32) * short_contact**2
@@ -404,7 +568,6 @@ def compute_locomotion_reward(
         0.0,
     )
 
-    filtered_contact = contact | previous_contact
     first_contact = (inputs.foot_air_time > 0.0) & filtered_contact
     touchdown_air_time = jnp.sum(
         jnp.minimum(
@@ -415,22 +578,8 @@ def compute_locomotion_reward(
         )
     )
     touchdown_air_time = jnp.where(
-        command_speed > config.touchdown_air_time.command_speed_threshold,
+        moving_command,
         touchdown_air_time,
-        0.0,
-    )
-    foot_phase = jnp.exp(
-        -jnp.sum((inputs.foot_height - inputs.foot_phase_height_target) ** 2)
-        / config.foot_phase.sigma
-    )
-    standing_foot_vel = jnp.where(
-        command_speed <= config.standing_foot_vel.command_speed_threshold,
-        safe_mean(inputs.foot_lateral_speed_sq),
-        0.0,
-    )
-    standing_foot_air_time = jnp.where(
-        command_speed <= config.standing_foot_air_time.command_speed_threshold,
-        safe_mean(inputs.foot_air_time),
         0.0,
     )
 
@@ -440,20 +589,21 @@ def compute_locomotion_reward(
         "lin_vel_z": lin_vel_z,
         "ang_vel_xy": ang_vel_xy,
         "flat_orientation": flat_orientation,
+        "base_height": base_height,
         "action_rate": action_rate,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
+        "torque_peak": torque_peak,
         "joint_pose": joint_pose,
+        "stand_foot_motion": stand_foot_motion,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
         "invalid_action": invalid_action,
         "foot_slip": foot_slip,
+        "flight": flight,
         "contact_timing": contact_timing,
         "touchdown_air_time": touchdown_air_time,
-        "foot_phase": foot_phase,
-        "standing_foot_vel": standing_foot_vel,
-        "standing_foot_air_time": standing_foot_air_time,
         "undesired_contact": inputs.undesired_contact,
         "self_collision": inputs.self_collision,
         "termination": inputs.done.astype(jnp.float32),
@@ -471,8 +621,19 @@ def reward_terms(config: RewardConfig) -> dict[str, WeightedRewardConfig]:
     return {field.name: getattr(config, field.name) for field in fields(config)}
 
 
-def safe_mean(values: jax.Array) -> jax.Array:
-    return jnp.mean(values) if values.size else jnp.asarray(0.0, dtype=jnp.float32)
+def motion_active(
+    moving_command: jax.Array,
+    body_speed: jax.Array,
+    yaw_speed: jax.Array,
+    *,
+    body_speed_threshold: float,
+    yaw_speed_threshold: float,
+) -> jax.Array:
+    return (
+        moving_command
+        | (body_speed > body_speed_threshold)
+        | (yaw_speed > yaw_speed_threshold)
+    )
 
 
 def validate_reward_config(config: RewardConfig) -> None:
@@ -480,12 +641,21 @@ def validate_reward_config(config: RewardConfig) -> None:
         if not math.isfinite(term.weight):
             raise ValueError(f"{name}.weight must be finite, got {term.weight}")
     for name, sigma in (
-        ("track_lin_vel_xy", config.track_lin_vel_xy.sigma),
-        ("track_ang_vel_z", config.track_ang_vel_z.sigma),
-        ("foot_phase", config.foot_phase.sigma),
+        ("track_lin_vel_xy.moving_std", config.track_lin_vel_xy.moving_std),
+        ("track_lin_vel_xy.still_std", config.track_lin_vel_xy.still_std),
+        ("track_ang_vel_z.moving_std", config.track_ang_vel_z.moving_std),
+        ("track_ang_vel_z.still_std", config.track_ang_vel_z.still_std),
+        (
+            "stand_foot_motion.linear_speed_scale",
+            config.stand_foot_motion.linear_speed_scale,
+        ),
+        (
+            "stand_foot_motion.angular_speed_scale",
+            config.stand_foot_motion.angular_speed_scale,
+        ),
     ):
         if not math.isfinite(sigma) or sigma <= 0:
-            raise ValueError(f"{name}.sigma must be positive and finite, got {sigma}")
+            raise ValueError(f"{name} must be positive and finite, got {sigma}")
     if not 0.0 <= config.action_limit.soft_limit_ratio < 1.0:
         raise ValueError("action_limit.soft_limit_ratio must be in [0, 1)")
     if not 0.0 < config.joint_limit.soft_limit_factor <= 1.0:
@@ -494,25 +664,21 @@ def validate_reward_config(config: RewardConfig) -> None:
         raise ValueError("hip_deviation.lateral_command_index must be 0 or 1")
     nonnegative = {
         "foot_slip.angular_speed_scale": config.foot_slip.angular_speed_scale,
+        "stand_foot_motion.angular_weight": config.stand_foot_motion.angular_weight,
         "hip_deviation.lateral_command_threshold": (
             config.hip_deviation.lateral_command_threshold
         ),
-        "contact_timing.command_speed_threshold": (
-            config.contact_timing.command_speed_threshold
-        ),
-        "touchdown_air_time.command_speed_threshold": (
-            config.touchdown_air_time.command_speed_threshold
-        ),
-        "standing_foot_vel.command_speed_threshold": (
-            config.standing_foot_vel.command_speed_threshold
-        ),
-        "standing_foot_air_time.command_speed_threshold": (
-            config.standing_foot_air_time.command_speed_threshold
-        ),
+        "flight.body_speed_threshold": config.flight.body_speed_threshold,
+        "flight.yaw_speed_threshold": config.flight.yaw_speed_threshold,
     }
     for name, value in nonnegative.items():
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+    if (
+        not math.isfinite(config.base_height.target_height)
+        or config.base_height.target_height <= 0
+    ):
+        raise ValueError("base_height.target_height must be positive and finite")
     if (
         not math.isfinite(config.contact_timing.min_air_time)
         or config.contact_timing.min_air_time <= 0

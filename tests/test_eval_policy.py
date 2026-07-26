@@ -10,7 +10,7 @@ import pytest
 from rerun.urdf import UrdfTree
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
-from bello_mujoco.checkpoint import CheckpointMetadata
+from bello_mujoco.checkpoint import CheckpointMetadata, CheckpointNormalizationState
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
@@ -19,6 +19,7 @@ from bello_mujoco.envs.locomotion import (
 )
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.policy import ActorCriticConfig
+from bello_mujoco.policy_inference import infer_policy_action
 from bello_mujoco.render import (
     NativeDataImplementation,
     NativeDataView,
@@ -36,7 +37,12 @@ from bello_mujoco.rerun_eval import (
 )
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import TerrainConfig
-from bello_mujoco.train.ppo import PPOConfig
+from bello_mujoco.train.ppo import (
+    ObservationNormState,
+    PPOConfig,
+    init_observation_norm_state,
+    init_value_norm_state,
+)
 import bello_mujoco.tools.eval_policy as eval_policy
 import bello_mujoco.rerun_eval as rerun_eval
 from bello_mujoco.tools.eval_policy import (
@@ -193,6 +199,11 @@ def test_eval_main_uses_checkpoint_runtime_contract(
         visual_mesh_count=0,
     )
     policy = object()
+    normalization = CheckpointNormalizationState(
+        value=init_value_norm_state(),
+        observation=init_observation_norm_state(metadata.obs_size),
+        critic_observation=init_observation_norm_state(metadata.critic_obs_size),
+    )
     calls: dict[str, object] = {}
 
     @dataclass(frozen=True)
@@ -212,10 +223,14 @@ def test_eval_main_uses_checkpoint_runtime_contract(
     def fake_run(env, restored_policy, **kwargs) -> None:
         calls["run"] = (env, restored_policy, kwargs)
 
+    def fake_restore(path, **kwargs):
+        calls["restore"] = (path, kwargs)
+        return RestoredTrainState(policy), metadata, normalization
+
     monkeypatch.setattr(
         eval_policy,
-        "restore_training_checkpoint",
-        lambda path: (RestoredTrainState(policy), metadata),
+        "restore_evaluation_checkpoint",
+        fake_restore,
     )
     monkeypatch.setattr(eval_policy, "prepare_asset", fake_prepare_asset)
     monkeypatch.setattr(eval_policy, "BelloLocomotionEnv", FakeLocomotionEnv)
@@ -226,6 +241,10 @@ def test_eval_main_uses_checkpoint_runtime_contract(
         EvalPolicyConfig(simulation_backend=backend),
     )
 
+    assert calls["restore"] == (
+        Path("checkpoint"),
+        {"validate_implementation": False},
+    )
     assert calls["asset"] == metadata.asset
     loaded_asset, load_kwargs = calls["load"]
     assert loaded_asset == prepared
@@ -243,9 +262,39 @@ def test_eval_main_uses_checkpoint_runtime_contract(
     run_env, run_policy, run_kwargs = calls["run"]
     assert run_env is runtime_env
     assert run_policy is policy
+    assert run_kwargs["normalization"] is normalization.observation
+    assert run_kwargs["ppo_config"] is metadata.ppo
     assert run_kwargs["simulation_backend"] == backend
     assert run_kwargs["obs_stack_size"] == 3
     assert run_kwargs["urdf_path"] == prepared.urdf_path
+
+
+def test_policy_inference_applies_checkpoint_observation_normalization() -> None:
+    class Policy:
+        def action_mean(self, observation):
+            return observation
+
+    config = PPOConfig(
+        normalize_observations=True,
+        policy=ActorCriticConfig(obs_stack_size=1),
+    )
+    normalization = ObservationNormState(
+        mean=jnp.asarray((1.0, 2.0)),
+        var=jnp.asarray((4.0, 9.0)),
+        count=jnp.asarray(10.0),
+    )
+
+    result = infer_policy_action(
+        Policy(),
+        jnp.asarray((3.0, 5.0)),
+        normalization,
+        config,
+        action_clip=0.75,
+    )
+
+    np.testing.assert_allclose(result.action_mean, (1.0, 1.0))
+    np.testing.assert_allclose(result.requested_action, (1.0, 1.0))
+    np.testing.assert_allclose(result.applied_action, (0.75, 0.75))
 
 
 def test_native_eval_adapter_is_typed_and_uses_shared_observation(
@@ -618,6 +667,8 @@ def test_rerun_evaluation_closes_acquired_resources_on_startup_failure(
         run_rerun_evaluation(
             env,
             object(),
+            normalization=init_observation_norm_state(env.observation_size),
+            ppo_config=PPOConfig(policy=ActorCriticConfig(obs_stack_size=1)),
             urdf_path=Path("unused.urdf"),
             command=(0.0, 0.0, 0.0),
             gamepad_config=GamepadConfig(enabled=False),
