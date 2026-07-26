@@ -1,0 +1,7 @@
+profile: physical
+output_root: null
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/prepare_assets/${now:%Y-%m-%d}/${now:%H-%M-%S}

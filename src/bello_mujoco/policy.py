@@ -19,9 +19,7 @@ def identity_activation(x: jax.Array) -> jax.Array:
 
 @dataclass(frozen=True)
 class ActorCriticConfig:
-    hidden_size: int = 256
-    hidden_depth: int = 2
-    hidden_dims: tuple[int, ...] | None = None
+    hidden_dims: tuple[int, ...] = (256, 256)
     activation: Literal["tanh", "relu", "elu", "swish"] = "tanh"
     init_log_std: float = 0.0
     min_log_std: float = -5.0
@@ -142,20 +140,10 @@ def make_mlp(
     activation: Callable[[jax.Array], jax.Array],
     key: jax.Array,
 ) -> eqx.Module:
-    if config.hidden_dims is None:
-        return eqx.nn.MLP(
-            obs_size,
-            output_size,
-            width_size=config.hidden_size,
-            depth=config.hidden_depth,
-            activation=activation,
-            final_activation=identity_activation,
-            key=key,
-        )
     return LayeredMLP(
         obs_size,
         output_size,
-        tuple(config.hidden_dims),
+        config.hidden_dims,
         activation=activation,
         final_activation=identity_activation,
         key=key,

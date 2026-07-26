@@ -21,7 +21,7 @@ from bello_mujoco.envs.locomotion import (
     RandomPushConfig,
     SpawnConfig,
 )
-from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
+from bello_mujoco.envs.rewards import CommandConfig, RewardConfig, RewardLinks
 from bello_mujoco.render import (
     mujoco_done_flags,
     mujoco_eval_info,
@@ -809,9 +809,7 @@ def test_environment_rejects_invalid_static_contracts(
 def test_environment_rejects_missing_reward_link(
     full_body_asset: PreparedAsset,
 ) -> None:
-    reward = RewardConfig(
-        track_lin_vel_xy=replace(RewardConfig().track_lin_vel_xy, link="missing_link")
-    )
+    reward = RewardConfig(links=RewardLinks(track_lin_vel_xy="missing_link"))
     with pytest.raises(ValueError, match="missing_link"):
         BelloLocomotionEnv.load_prepared(full_body_asset, reward_config=reward)
 

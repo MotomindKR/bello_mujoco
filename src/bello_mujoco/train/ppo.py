@@ -1418,17 +1418,7 @@ def validate_ppo_config(config: PPOConfig) -> None:
     for name, value in magnitude_limits.items():
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be positive and finite, got {value}")
-    if config.policy.hidden_size <= 0:
-        raise ValueError(
-            f"policy.hidden_size must be positive, got {config.policy.hidden_size}"
-        )
-    if config.policy.hidden_depth < 0:
-        raise ValueError(
-            f"policy.hidden_depth must be nonnegative, got {config.policy.hidden_depth}"
-        )
-    if config.policy.hidden_dims is not None and any(
-        hidden_dim <= 0 for hidden_dim in config.policy.hidden_dims
-    ):
+    if any(hidden_dim <= 0 for hidden_dim in config.policy.hidden_dims):
         raise ValueError(
             "policy.hidden_dims entries must be positive, got "
             f"{config.policy.hidden_dims}"

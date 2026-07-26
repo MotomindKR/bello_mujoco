@@ -1,24 +1,23 @@
-"""Deploy a motion-tracking checkpoint through bello_stack's hardware client."""
+"""Deploy a motion-tracking checkpoint through Bello's hardware services."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
-import math
 from pathlib import Path
+import math
+import threading
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
-import chex
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import mujoco
 import numpy as np
 
-from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.checkpoint import (
     CheckpointMetadata,
     CheckpointNormalizationState,
@@ -28,7 +27,9 @@ from bello_mujoco.checkpoint import (
 from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingState,
+    quat_distance,
 )
+from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.hardware_locomotion import (
     HardwareFrame,
     actuator_coordinate_names,
@@ -36,13 +37,11 @@ from bello_mujoco.hardware_locomotion import (
     drain_command_receipts,
     import_hardware_binding,
     limit_target_step,
-    normalized_quaternion_xyzw,
     pace_hardware_loop,
     require_async_hardware_binding,
     send_targets,
     start_hardware_controls,
     stop_hardware_controls,
-    tilt_from_xyzw,
     validate_hardware_control_config,
     validate_hardware_frame,
     validate_hardware_inventory,
@@ -50,20 +49,19 @@ from bello_mujoco.hardware_locomotion import (
     wait_for_hardware_frame,
 )
 from bello_mujoco.policy import apply_actor
-from bello_mujoco.tools.eval_policy import validate_checkpoint_shape
+from bello_mujoco.render import quat_rotate_np
 from bello_mujoco.train.ppo import normalize_observation
 
 
 @dataclass(frozen=True)
 class HardwareMotionConfig:
-    """Motion source, hardware endpoint, and fail-closed deployment limits."""
+    """Hardware, pose-estimator, and fail-closed motion deployment settings."""
 
     endpoint: str = "http://127.0.0.1:50051"
     groups: tuple[str, ...] = ("lower_body", "upper_body")
     imu_name: str = "imu"
     client_name: str = "bello-motion-policy"
     motion_path: Path | None = None
-    start_time_seconds: float = 0.0
     arm: bool = False
     operator_confirmation: str = ""
     connection_timeout_seconds: float = 3.0
@@ -72,7 +70,7 @@ class HardwareMotionConfig:
     acknowledgement_timeout_seconds: float = 0.08
     rpc_timeout_seconds: float = 2.0
     ramp_seconds: float = 3.0
-    max_duration_seconds: float = 10.0
+    max_duration_seconds: float | None = 10.0
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
     max_initial_position_error_radians: float = 0.75
@@ -84,31 +82,468 @@ class HardwareMotionConfig:
     kp_scale: float = 1.0
     kd_scale: float = 1.0
     status_interval_seconds: float = 1.0
-    max_estimated_linear_velocity: float = 2.0
-    max_estimated_position_error: float = 0.75
+    pose_endpoint: str = "127.0.0.1:50052"
+    pose_reference_frame: str = "odom"
+    pose_tracked_frame: str = "pelvis_link"
+    pose_timeout_seconds: float = 2.0
+    max_pose_age_ms: int = 100
+    velocity_filter_alpha: float = 0.2
+    start_time_seconds: float = 0.0
+    max_action_abs: float = 1.0
+    max_raw_action_abs: float = 5.0
+    max_pose_imu_orientation_error: float = 0.25
+    max_base_linear_velocity: float = 5.0
 
 
-@chex.dataclass(frozen=True)
-class _HardwareMotionData:
-    qpos: jax.Array
-    qvel: jax.Array
-    xpos: jax.Array
-    xquat: jax.Array
+@dataclass(frozen=True)
+class PoseFrame:
+    position: np.ndarray
+    orientation_xyzw: np.ndarray
+    linear_velocity: np.ndarray
+    sequence: int
+    source_age_ms: int
+    received_at: float
+
+    def age_ms(self, now: float | None = None) -> float:
+        current = time.monotonic() if now is None else now
+        return self.source_age_ms + 1000.0 * max(0.0, current - self.received_at)
 
 
 @dataclass(frozen=True)
 class HardwareMotionStep:
     action: np.ndarray
+    raw_action: np.ndarray
     physical_target: np.ndarray
     observation: np.ndarray
     reference_time: float
-    tilt_radians: float
-    estimated_linear_velocity: float
-    estimated_position_error: float
+    anchor_position_error: float
+    anchor_orientation_error: float
+    action_clipped: bool
+
+
+@dataclass(frozen=True)
+class _HardwareContactData:
+    contact__geom: jax.Array
+    nacon: jax.Array
+    contact__worldid: jax.Array
+    contact__efc_address: jax.Array
+    efc__force: jax.Array
+
+
+@dataclass(frozen=True)
+class _HardwareMotionData:
+    qpos: jax.Array
+    qvel: jax.Array
+    ctrl: jax.Array
+    xpos: jax.Array
+    xquat: jax.Array
+    cvel: jax.Array
+    subtree_com: jax.Array
+    actuator_force: jax.Array
+    _impl: _HardwareContactData
+
+
+@dataclass(frozen=True)
+class _MotionInferenceLayout:
+    qpos: slice
+    qvel: slice
+    ctrl: slice
+    xpos: slice
+    xquat: slice
+    last_action: slice
+    reference_time: int
+    alignment_xy: slice
+    alignment_yaw: int
+    initialize_stack: int
+    size: int
+
+
+def _motion_inference_layout(env: BelloMotionTrackingEnv) -> _MotionInferenceLayout:
+    offset = 0
+
+    def take(size: int) -> slice:
+        nonlocal offset
+        result = slice(offset, offset + size)
+        offset += size
+        return result
+
+    qpos = take(env.model.mj_model.nq)
+    qvel = take(env.model.mj_model.nv)
+    ctrl = take(env.model.mj_model.nu)
+    xpos = take(env.model.mj_model.nbody * 3)
+    xquat = take(env.model.mj_model.nbody * 4)
+    last_action = take(env.action_size)
+    reference_time = offset
+    offset += 1
+    alignment_xy = take(2)
+    alignment_yaw = offset
+    offset += 1
+    initialize_stack = offset
+    offset += 1
+    return _MotionInferenceLayout(
+        qpos=qpos,
+        qvel=qvel,
+        ctrl=ctrl,
+        xpos=xpos,
+        xquat=xquat,
+        last_action=last_action,
+        reference_time=reference_time,
+        alignment_xy=alignment_xy,
+        alignment_yaw=alignment_yaw,
+        initialize_stack=initialize_stack,
+        size=offset,
+    )
+
+
+class _MotionInferenceResult(NamedTuple):
+    observation_stack: jax.Array
+    observation: jax.Array
+    raw_action: jax.Array
+    action: jax.Array
+    physical_target: jax.Array
+    done_flags: dict[str, jax.Array]
+    anchor_position_error: jax.Array
+    anchor_orientation_error: jax.Array
+
+
+def _build_motion_inference(
+    env: BelloMotionTrackingEnv,
+    policy: Any,
+    normalization: Any,
+    metadata: CheckpointMetadata,
+    config: HardwareMotionConfig,
+) -> Any:
+    layout = _motion_inference_layout(env)
+    body_count = env.model.mj_model.nbody
+    stack_size = metadata.ppo.policy.obs_stack_size
+    empty_contacts = _HardwareContactData(
+        contact__geom=jnp.zeros((0, 2), dtype=jnp.int32),
+        nacon=jnp.zeros(1, dtype=jnp.int32),
+        contact__worldid=jnp.zeros(0, dtype=jnp.int32),
+        contact__efc_address=jnp.zeros((0, 1), dtype=jnp.int32),
+        efc__force=jnp.zeros(1, dtype=jnp.float32),
+    )
+    empty_subtree_com = jnp.zeros((0, 3), dtype=jnp.float32)
+    empty_cvel = jnp.zeros((body_count, 6), dtype=jnp.float32)
+    empty_actuator_force = jnp.zeros(env.model.mj_model.nu, dtype=jnp.float32)
+    joint_default_offset = jnp.zeros(env.action_size, dtype=jnp.float32)
+    empty_sampling_state = jnp.zeros(env.sampling_bin_count, dtype=jnp.float32)
+
+    def inference(
+        hardware_state: jax.Array,
+        observation_stack: jax.Array,
+    ) -> _MotionInferenceResult:
+        qpos = hardware_state[layout.qpos]
+        qvel = hardware_state[layout.qvel]
+        ctrl = hardware_state[layout.ctrl]
+        xpos = hardware_state[layout.xpos].reshape(body_count, 3)
+        xquat = hardware_state[layout.xquat].reshape(body_count, 4)
+        state = MotionTrackingState(
+            data=_HardwareMotionData(
+                qpos=qpos,
+                qvel=qvel,
+                ctrl=ctrl,
+                xpos=xpos,
+                xquat=xquat,
+                cvel=empty_cvel,
+                subtree_com=empty_subtree_com,
+                actuator_force=empty_actuator_force,
+                _impl=empty_contacts,
+            ),
+            last_action=hardware_state[layout.last_action],
+            reference_time=hardware_state[layout.reference_time],
+            alignment_xy=hardware_state[layout.alignment_xy],
+            alignment_yaw=hardware_state[layout.alignment_yaw],
+            joint_default_offset=joint_default_offset,
+            next_push_step=jnp.asarray(0, dtype=jnp.int32),
+            sampling_failure_ema=empty_sampling_state,
+            step_count=jnp.asarray(0, dtype=jnp.int32),
+            episode_return=jnp.asarray(0.0, dtype=jnp.float32),
+            episode_length=jnp.asarray(0, dtype=jnp.int32),
+            last_episode_return=jnp.asarray(0.0, dtype=jnp.float32),
+            last_episode_length=jnp.asarray(0, dtype=jnp.int32),
+        )
+        done_flags = env._done_flags(state)
+        observation = env.observation(state)
+        initial_stack = jnp.repeat(observation[None, :], stack_size, axis=0)
+        shifted_stack = jnp.concatenate(
+            (observation_stack[1:], observation[None, :]), axis=0
+        )
+        next_stack = jnp.where(
+            hardware_state[layout.initialize_stack] > 0.5,
+            initial_stack,
+            shifted_stack,
+        )
+        normalized = normalize_observation(
+            next_stack.reshape(-1),
+            normalization,
+            metadata.ppo,
+        )
+        raw_action = apply_actor(policy, normalized)
+        action = jnp.clip(raw_action, -config.max_action_abs, config.max_action_abs)
+        physical_target = env._action_to_ctrl(state, action)
+        reference = env._aligned_reference(
+            state.reference_time,
+            state.alignment_xy,
+            state.alignment_yaw,
+        )
+        anchor_position_error = jnp.linalg.norm(
+            state.data.xpos[env.anchor_body_id]
+            - reference.body_pos[env.anchor_body_index]
+        )
+        anchor_orientation_error = quat_distance(
+            state.data.xquat[env.anchor_body_id],
+            reference.body_quat[env.anchor_body_index],
+        )
+        return _MotionInferenceResult(
+            observation_stack=next_stack,
+            observation=observation,
+            raw_action=raw_action,
+            action=action,
+            physical_target=physical_target,
+            done_flags=done_flags,
+            anchor_position_error=anchor_position_error,
+            anchor_orientation_error=anchor_orientation_error,
+        )
+
+    return eqx.filter_jit(inference)
+
+
+def _pose_message_types() -> tuple[type[Any], type[Any]]:
+    """Build the small PoseService message schema without generated sources."""
+
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+    file = descriptor_pb2.FileDescriptorProto(
+        name="bello/pose/v1/pose.proto",
+        package="bello.pose.v1",
+        syntax="proto3",
+    )
+
+    def message(name: str, fields: tuple[tuple[str, int, int, str | None], ...]):
+        item = file.message_type.add(name=name)
+        for field_name, number, field_type, type_name in fields:
+            field = item.field.add(
+                name=field_name,
+                number=number,
+                label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+                type=field_type,
+            )
+            if type_name is not None:
+                field.type_name = type_name
+
+    string = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+    uint64 = descriptor_pb2.FieldDescriptorProto.TYPE_UINT64
+    double = descriptor_pb2.FieldDescriptorProto.TYPE_DOUBLE
+    nested = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE
+    message(
+        "WatchPoseRequest",
+        (("reference_frame", 1, string, None), ("tracked_frame", 2, string, None)),
+    )
+    message(
+        "Translation",
+        (("x", 1, double, None), ("y", 2, double, None), ("z", 3, double, None)),
+    )
+    message(
+        "Orientation",
+        (
+            ("x", 1, double, None),
+            ("y", 2, double, None),
+            ("z", 3, double, None),
+            ("w", 4, double, None),
+        ),
+    )
+    message(
+        "WatchPoseResponse",
+        (
+            ("reference_frame", 1, string, None),
+            ("tracked_frame", 2, string, None),
+            ("sequence", 3, uint64, None),
+            ("translation_metres", 4, nested, ".bello.pose.v1.Translation"),
+            ("orientation_xyzw", 5, nested, ".bello.pose.v1.Orientation"),
+            ("sample_age_ms", 6, uint64, None),
+        ),
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(file)
+    request = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("bello.pose.v1.WatchPoseRequest")
+    )
+    response = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("bello.pose.v1.WatchPoseResponse")
+    )
+    return request, response
+
+
+class PoseStream:
+    """Background latest-value client for bello-state-estimatord."""
+
+    def __init__(self, config: HardwareMotionConfig) -> None:
+        self.config = config
+        self._condition = threading.Condition()
+        self._latest: PoseFrame | None = None
+        self._error: BaseException | None = None
+        self._channel: Any | None = None
+        self._call: Any | None = None
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "PoseStream":
+        import grpc
+
+        endpoint = self.config.pose_endpoint.removeprefix("http://")
+        if endpoint.startswith("https://"):
+            raise ValueError(
+                "the motion runner currently requires a local insecure pose endpoint"
+            )
+        request_type, response_type = _pose_message_types()
+        request = request_type(
+            reference_frame=self.config.pose_reference_frame,
+            tracked_frame=self.config.pose_tracked_frame,
+        )
+        self._channel = grpc.insecure_channel(endpoint)
+        method = self._channel.unary_stream(
+            "/bello.pose.v1.PoseService/WatchPose",
+            request_serializer=lambda value: value.SerializeToString(),
+            response_deserializer=response_type.FromString,
+        )
+        self._call = method(request)
+        self._thread = threading.Thread(
+            target=self._consume,
+            name="bello-motion-pose-stream",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        if self._call is not None:
+            self._call.cancel()
+        if self._channel is not None:
+            self._channel.close()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def _consume(self) -> None:
+        previous: PoseFrame | None = None
+        filtered_velocity = np.zeros(3, dtype=np.float64)
+        try:
+            for response in self._responses():
+                received = time.monotonic()
+                if (
+                    response.reference_frame != self.config.pose_reference_frame
+                    or response.tracked_frame != self.config.pose_tracked_frame
+                ):
+                    raise RuntimeError(
+                        "pose-estimator response frame mismatch: "
+                        f"{response.reference_frame}_from_{response.tracked_frame}"
+                    )
+                sequence = int(response.sequence)
+                if previous is not None and sequence <= previous.sequence:
+                    raise RuntimeError(
+                        "pose-estimator sequence did not increase: "
+                        f"{sequence} after {previous.sequence}"
+                    )
+                position = np.asarray(
+                    (
+                        response.translation_metres.x,
+                        response.translation_metres.y,
+                        response.translation_metres.z,
+                    ),
+                    dtype=np.float64,
+                )
+                orientation = np.asarray(
+                    (
+                        response.orientation_xyzw.x,
+                        response.orientation_xyzw.y,
+                        response.orientation_xyzw.z,
+                        response.orientation_xyzw.w,
+                    ),
+                    dtype=np.float64,
+                )
+                source_age = int(response.sample_age_ms)
+                sample_time = received - source_age / 1000.0
+                if previous is not None:
+                    previous_time = (
+                        previous.received_at - previous.source_age_ms / 1000.0
+                    )
+                    interval = sample_time - previous_time
+                    if 1.0e-4 <= interval <= 0.5:
+                        measured = (position - previous.position) / interval
+                        alpha = self.config.velocity_filter_alpha
+                        filtered_velocity = (
+                            alpha * measured + (1.0 - alpha) * filtered_velocity
+                        )
+                frame = PoseFrame(
+                    position=position,
+                    orientation_xyzw=orientation,
+                    linear_velocity=filtered_velocity.copy(),
+                    sequence=sequence,
+                    source_age_ms=source_age,
+                    received_at=received,
+                )
+                validate_pose_frame(frame, self.config)
+                previous = frame
+                with self._condition:
+                    self._latest = frame
+                    self._condition.notify_all()
+        except BaseException as error:
+            with self._condition:
+                self._error = error
+                self._condition.notify_all()
+
+    def _responses(self) -> Iterator[Any]:
+        if self._call is None:
+            raise RuntimeError("pose stream is not open")
+        return iter(self._call)
+
+    def latest(self, timeout: float | None = None) -> PoseFrame:
+        timeout = self.config.pose_timeout_seconds if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while self._latest is None and self._error is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise TimeoutError("timed out waiting for pose-estimator telemetry")
+                self._condition.wait(remaining)
+            if self._error is not None:
+                raise RuntimeError("pose-estimator stream failed") from self._error
+            assert self._latest is not None
+            frame = self._latest
+        validate_pose_frame(frame, self.config)
+        return frame
+
+
+def validate_pose_frame(frame: PoseFrame, config: HardwareMotionConfig) -> None:
+    values = {
+        "position": (frame.position, (3,)),
+        "orientation": (frame.orientation_xyzw, (4,)),
+        "linear velocity": (frame.linear_velocity, (3,)),
+    }
+    for name, (value, shape) in values.items():
+        array = np.asarray(value)
+        if array.shape != shape or not np.all(np.isfinite(array)):
+            raise RuntimeError(
+                f"pose-estimator {name} must contain {shape[0]} finite values"
+            )
+    normalized_xyzw(frame.orientation_xyzw)
+    if frame.sequence < 0 or frame.source_age_ms < 0:
+        raise RuntimeError("pose-estimator sequence and age must be nonnegative")
+    age = frame.age_ms()
+    if age > config.max_pose_age_ms:
+        raise RuntimeError(
+            f"pose-estimator telemetry is stale: {age:.1f} ms exceeds "
+            f"{config.max_pose_age_ms} ms"
+        )
+    speed = float(np.linalg.norm(frame.linear_velocity))
+    if speed > config.max_base_linear_velocity:
+        raise RuntimeError(
+            f"estimated base speed {speed:.3f} m/s exceeds "
+            f"{config.max_base_linear_velocity:.3f} m/s"
+        )
 
 
 class HardwareMotionPolicyAdapter:
-    """Build motion observations from joints, IMU, and bounded inertial odometry."""
+    """Reconstruct a motion actor frame and physical motor target."""
 
     def __init__(
         self,
@@ -116,19 +551,13 @@ class HardwareMotionPolicyAdapter:
         policy: Any,
         metadata: CheckpointMetadata,
         normalization: CheckpointNormalizationState,
-        *,
-        start_time_seconds: float = 0.0,
+        config: HardwareMotionConfig,
     ) -> None:
         validate_hardware_motion_checkpoint(env, metadata)
-        if not math.isfinite(start_time_seconds) or not (
-            0.0 <= start_time_seconds < env.motion.duration
-        ):
-            raise ValueError(
-                "start_time_seconds must be finite and inside the motion clip"
-            )
+        validate_hardware_motion_config(config, env)
         self.env = env
         self.metadata = metadata
-        self.start_time_seconds = float(start_time_seconds)
+        self.config = config
         self.physical_coordinate_names = actuator_coordinate_names(env)
         self.coordinate_index = {
             name: index for index, name in enumerate(self.physical_coordinate_names)
@@ -138,12 +567,9 @@ class HardwareMotionPolicyAdapter:
         self.transform = np.asarray(
             env.model.actuator_coordinate_transform, dtype=np.float64
         )
-        if self.transform.shape != (
-            len(self.physical_coordinate_names),
-            len(self.physical_coordinate_names),
-        ):
+        if self.transform.shape != (25, 25):
             raise ValueError(
-                "hardware deployment requires a square actuator coordinate transform"
+                "motion hardware deployment requires a 25x25 actuator transform"
             )
         condition = float(np.linalg.cond(self.transform))
         if not math.isfinite(condition) or condition > 1.0e6:
@@ -153,36 +579,37 @@ class HardwareMotionPolicyAdapter:
             )
         self.inverse_transform = np.linalg.inv(self.transform)
         self.kp, self.kd = actuator_impedance_gains(env)
-        self._normalization = normalization.observation
-        self._actor = eqx.filter_jit(
-            lambda observation: apply_actor(policy, observation)
+        self._inference = _build_motion_inference(
+            env,
+            policy,
+            normalization.observation,
+            metadata,
+            config,
         )
-        self._observation = jax.jit(env.observation)
-        self._action_ctrl = jax.jit(env._action_to_ctrl)
+        self._inference_layout = _motion_inference_layout(env)
+        self._inference_input = np.empty(self._inference_layout.size, dtype=np.float32)
         self._mj_data = mujoco.MjData(env.model.mj_model)
+        self._empty_obs_stack = jnp.zeros(
+            (metadata.ppo.policy.obs_stack_size, env.observation_size),
+            dtype=jnp.float32,
+        )
+        self._obs_stack: jax.Array | None = None
+        self._last_action = np.zeros(env.action_size, dtype=np.float32)
+        self._last_physical_target = np.asarray(
+            env.model.mj_model.actuator_ctrlrange.mean(axis=1), dtype=np.float64
+        )
+        self._step_count = 0
         self._alignment_xy = np.zeros(2, dtype=np.float32)
         self._alignment_yaw = 0.0
-        self._root_position = np.zeros(3, dtype=np.float64)
-        self._root_velocity = np.zeros(3, dtype=np.float64)
-        self._last_action = np.zeros(env.action_size, dtype=np.float32)
-        self._observation_stack: np.ndarray | None = None
-        self._step_count = 0
-        self._initialized = False
+        self._aligned = False
 
     @property
     def control_timestep(self) -> float:
         return self.env.control_timestep
 
     @property
-    def remaining_duration(self) -> float:
-        return self.env.motion.duration - self.start_time_seconds
-
-    @property
-    def reference_time(self) -> float:
-        return min(
-            self.start_time_seconds + self._step_count * self.control_timestep,
-            self.env.motion.duration,
-        )
+    def start_time(self) -> float:
+        return self.config.start_time_seconds
 
     @property
     def nominal_physical_target(self) -> np.ndarray:
@@ -191,248 +618,270 @@ class HardwareMotionPolicyAdapter:
         limits = np.asarray(self.env.model.mj_model.actuator_ctrlrange)
         return np.clip(target, limits[:, 0], limits[:, 1])
 
-    def initialize(self, frame: HardwareFrame) -> None:
-        orientation = normalized_quaternion_xyzw(frame.orientation_xyzw)
+    def initialize_alignment(self, pose: PoseFrame) -> None:
+        pose_quat = xyzw_to_wxyz(pose.orientation_xyzw)
         source = self.env._aligned_reference(
-            jnp.asarray(self.start_time_seconds, dtype=jnp.float32),
+            jnp.asarray(self.start_time, dtype=jnp.float32),
             jnp.zeros(2, dtype=jnp.float32),
-            jnp.zeros((), dtype=jnp.float32),
+            jnp.asarray(0.0, dtype=jnp.float32),
         )
-        reference_yaw = yaw_from_wxyz(np.asarray(source.qpos[3:7]))
-        measured_yaw = yaw_from_xyzw(orientation)
-        self._alignment_yaw = wrap_angle(measured_yaw - reference_yaw)
-        rotated_source_xy = rotate_z(np.asarray(source.qpos[:2]), self._alignment_yaw)
-        self._alignment_xy = -rotated_source_xy.astype(np.float32)
-        aligned = self.env._aligned_reference(
-            jnp.asarray(self.start_time_seconds, dtype=jnp.float32),
-            jnp.asarray(self._alignment_xy),
-            jnp.asarray(self._alignment_yaw, dtype=jnp.float32),
-        )
-        self._root_position = np.asarray(aligned.qpos[:3], dtype=np.float64)
-        self._root_velocity = np.zeros(3, dtype=np.float64)
-        self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
-        self._observation_stack = None
-        self._step_count = 0
-        self._initialized = True
-
-    def precompile(self, frame: HardwareFrame) -> None:
-        self.initialize(frame)
-        self.step(frame)
-        self.initialize(frame)
-
-    def step(self, frame: HardwareFrame) -> HardwareMotionStep:
-        if not self._initialized:
-            raise RuntimeError("motion adapter must be initialized from hardware")
-        dt = self.control_timestep
-        acceleration_world = rotate_vector_xyzw(
-            frame.orientation_xyzw, frame.linear_acceleration
-        )
-        previous_velocity = self._root_velocity.copy()
-        self._root_velocity = previous_velocity + acceleration_world * dt
-        self._root_position = (
-            self._root_position
-            + previous_velocity * dt
-            + 0.5 * acceleration_world * dt * dt
-        )
-        state = self._state_from_frame(frame)
-        observation = np.asarray(
-            jax.device_get(self._observation(state)), dtype=np.float32
-        )
-        if observation.shape != (self.env.observation_size,) or not np.all(
-            np.isfinite(observation)
-        ):
-            raise RuntimeError(
-                f"motion hardware observation is invalid: shape={observation.shape}"
-            )
-        stack_size = self.metadata.ppo.policy.obs_stack_size
-        if self._observation_stack is None:
-            self._observation_stack = np.repeat(
-                observation[None, :], stack_size, axis=0
-            )
-        else:
-            self._observation_stack = np.concatenate(
-                (self._observation_stack[1:], observation[None, :]), axis=0
-            )
-        stacked = jnp.asarray(self._observation_stack.reshape(-1), dtype=jnp.float32)
-        normalized = normalize_observation(
-            stacked, self._normalization, self.metadata.ppo
-        )
-        action = np.asarray(jax.device_get(self._actor(normalized)), dtype=np.float32)
-        action = np.clip(action, -self.env.action_clip, self.env.action_clip)
-        if action.shape != (self.env.action_size,) or not np.all(np.isfinite(action)):
-            raise RuntimeError(
-                f"policy produced an invalid motion action with shape {action.shape}"
-            )
-        physical_target = np.asarray(
-            jax.device_get(self._action_ctrl(state, jnp.asarray(action))),
+        source_position = np.asarray(source.qpos[:3], dtype=np.float64)
+        source_quat = np.asarray(source.qpos[3:7], dtype=np.float64)
+        yaw = wrap_angle(quaternion_yaw(pose_quat) - quaternion_yaw(source_quat))
+        yaw_quat = np.asarray(
+            (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)),
             dtype=np.float64,
         )
+        rotated_source = quat_rotate_np(yaw_quat, source_position)
+        self._alignment_xy = np.asarray(
+            pose.position[:2] - rotated_source[:2], dtype=np.float32
+        )
+        self._alignment_yaw = yaw
+        self._aligned = True
+        self.reset()
+
+    def reset(self) -> None:
+        self._obs_stack = None
+        self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
+        self._step_count = 0
+
+    def precompile(self) -> None:
+        source = self.env._aligned_reference(
+            jnp.asarray(self.start_time, dtype=jnp.float32),
+            jnp.zeros(2, dtype=jnp.float32),
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+        pose = PoseFrame(
+            position=np.asarray(source.qpos[:3], dtype=np.float64),
+            orientation_xyzw=wxyz_to_xyzw(np.asarray(source.qpos[3:7])),
+            linear_velocity=np.asarray(source.qvel[:3], dtype=np.float64),
+            sequence=0,
+            source_age_ms=0,
+            received_at=time.monotonic(),
+        )
+        logical_position = np.asarray(source.qpos)[self.env.model.actuator_qpos_indices]
+        logical_velocity = np.asarray(source.qvel)[self.env.model.actuator_qvel_indices]
+        frame = HardwareFrame(
+            positions=self.transform @ logical_position,
+            velocities=self.transform @ logical_velocity,
+            orientation_xyzw=pose.orientation_xyzw,
+            angular_velocity=np.zeros(3, dtype=np.float64),
+            linear_acceleration=np.zeros(3, dtype=np.float64),
+            max_motor_age_ms=0,
+            imu_age_ms=0,
+            group_states=(),
+        )
+        self.initialize_alignment(pose)
+        self.step(frame, pose, reference_time=self.start_time)
+        self._aligned = False
+        self.reset()
+
+    def step(
+        self,
+        frame: HardwareFrame,
+        pose: PoseFrame,
+        *,
+        reference_time: float,
+    ) -> HardwareMotionStep:
+        if not self._aligned:
+            raise RuntimeError("motion alignment must be initialized before policy use")
+        validate_pose_imu_agreement(frame, pose, self.config)
+        state = self._state(frame, pose, reference_time)
+        initialize_stack = self._obs_stack is None
+        state[self._inference_layout.initialize_stack] = initialize_stack
+        observation_stack = (
+            self._empty_obs_stack if initialize_stack else self._obs_stack
+        )
+        assert observation_stack is not None
+        inference = self._inference(
+            state,
+            observation_stack,
+        )
+        host = jax.device_get(inference)
+        done_flags = host.done_flags
+        active_done = {name: bool(value) for name, value in done_flags.items()}
+        if active_done["done/nonfinite"]:
+            raise RuntimeError("motion policy state became non-finite")
+        if active_done["done/timeout"]:
+            raise StopIteration("motion reference completed")
+        terminal = sorted(
+            name.removeprefix("done/")
+            for name, active in active_done.items()
+            if active and name not in {"done/any", "done/timeout"}
+        )
+        if terminal:
+            raise RuntimeError(
+                "motion tracking termination triggered on hardware: "
+                + ", ".join(terminal)
+            )
+        observation = np.asarray(host.observation)
+        raw_action = np.asarray(host.raw_action, dtype=np.float32)
+        if raw_action.shape != (self.env.action_size,) or not np.all(
+            np.isfinite(raw_action)
+        ):
+            raise RuntimeError(
+                f"policy produced an invalid hardware action with shape {raw_action.shape}"
+            )
+        raw_abs = float(np.max(np.abs(raw_action)))
+        if raw_abs > self.config.max_raw_action_abs:
+            raise RuntimeError(
+                f"raw policy action {raw_abs:.3f} exceeds fail-closed limit "
+                f"{self.config.max_raw_action_abs:.3f}"
+            )
+        action = np.asarray(host.action, dtype=np.float32)
+        physical_target = np.asarray(host.physical_target, dtype=np.float64)
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("policy produced non-finite physical motor targets")
-        reference = self.env._aligned_reference(
-            jnp.asarray(self.reference_time, dtype=jnp.float32),
-            jnp.asarray(self._alignment_xy),
-            jnp.asarray(self._alignment_yaw, dtype=jnp.float32),
-        )
-        estimated_position_error = float(
-            np.linalg.norm(self._root_position - np.asarray(reference.qpos[:3]))
-        )
-        estimated_linear_velocity = float(np.linalg.norm(self._root_velocity))
-        result = HardwareMotionStep(
+        self._obs_stack = inference.observation_stack
+        self._last_action = action
+        self._last_physical_target = physical_target
+        self._step_count += 1
+        return HardwareMotionStep(
             action=action,
+            raw_action=raw_action,
             physical_target=physical_target,
             observation=observation,
-            reference_time=self.reference_time,
-            tilt_radians=tilt_from_xyzw(frame.orientation_xyzw),
-            estimated_linear_velocity=estimated_linear_velocity,
-            estimated_position_error=estimated_position_error,
+            reference_time=reference_time,
+            anchor_position_error=float(host.anchor_position_error),
+            anchor_orientation_error=float(host.anchor_orientation_error),
+            action_clipped=not np.array_equal(action, raw_action),
         )
-        self._last_action = action
-        self._step_count += 1
-        return result
 
-    def _state_from_frame(self, frame: HardwareFrame) -> MotionTrackingState:
+    def _state(self, frame: HardwareFrame, pose: PoseFrame, reference_time: float):
+        model = self.env.model
         logical_position = self.inverse_transform @ frame.positions
         logical_velocity = self.inverse_transform @ frame.velocities
-        orientation = normalized_quaternion_xyzw(frame.orientation_xyzw)
-        root_qpos = self.env.model.root_qpos_adr
-        root_qvel = self.env.model.root_qvel_adr
-        self._mj_data.qpos[:] = np.asarray(self.env.model.default_qpos)
-        self._mj_data.qvel[:] = 0.0
-        self._mj_data.qpos[root_qpos : root_qpos + 3] = self._root_position
-        self._mj_data.qpos[root_qpos + 3 : root_qpos + 7] = orientation[[3, 0, 1, 2]]
-        self._mj_data.qpos[self.env.model.actuator_qpos_indices] = logical_position
-        self._mj_data.qvel[root_qvel : root_qvel + 3] = self._root_velocity
-        self._mj_data.qvel[root_qvel + 3 : root_qvel + 6] = rotate_vector_xyzw(
-            orientation, frame.angular_velocity
+        qpos = np.asarray(model.mj_model.qpos0).copy()
+        qvel = np.zeros(model.mj_model.nv, dtype=np.float64)
+        root = model.root_qpos_adr
+        root_velocity = model.root_qvel_adr
+        root_quat = xyzw_to_wxyz(pose.orientation_xyzw)
+        qpos[root : root + 3] = pose.position
+        qpos[root + 3 : root + 7] = root_quat
+        qpos[model.actuator_qpos_indices] = logical_position
+        qvel[root_velocity : root_velocity + 3] = pose.linear_velocity
+        qvel[root_velocity + 3 : root_velocity + 6] = quat_rotate_np(
+            root_quat, frame.angular_velocity
         )
-        self._mj_data.qvel[self.env.model.actuator_qvel_indices] = logical_velocity
-        mujoco.mj_forward(self.env.model.mj_model, self._mj_data)
-        data = _HardwareMotionData(
-            qpos=jnp.asarray(np.asarray(self._mj_data.qpos), dtype=jnp.float32),
-            qvel=jnp.asarray(np.asarray(self._mj_data.qvel), dtype=jnp.float32),
-            xpos=jnp.asarray(np.asarray(self._mj_data.xpos), dtype=jnp.float32),
-            xquat=jnp.asarray(np.asarray(self._mj_data.xquat), dtype=jnp.float32),
-        )
-        return MotionTrackingState(
-            data=data,
-            last_action=jnp.asarray(self._last_action),
-            reference_time=jnp.asarray(self.reference_time, dtype=jnp.float32),
-            alignment_xy=jnp.asarray(self._alignment_xy),
-            alignment_yaw=jnp.asarray(self._alignment_yaw, dtype=jnp.float32),
-            joint_default_offset=jnp.zeros(self.env.action_size, dtype=jnp.float32),
-            next_push_step=jnp.asarray(0, dtype=jnp.int32),
-            sampling_failure_ema=jnp.zeros(
-                self.env.sampling_bin_count, dtype=jnp.float32
-            ),
-            step_count=jnp.asarray(self._step_count, dtype=jnp.int32),
-            episode_return=jnp.asarray(0.0, dtype=jnp.float32),
-            episode_length=jnp.asarray(self._step_count, dtype=jnp.int32),
-            last_episode_return=jnp.asarray(0.0, dtype=jnp.float32),
-            last_episode_length=jnp.asarray(0, dtype=jnp.int32),
-        )
-
-
-def load_hardware_motion_policy(
-    checkpoint_path: Path,
-    *,
-    motion_path: Path | None = None,
-    start_time_seconds: float = 0.0,
-) -> tuple[HardwareMotionPolicyAdapter, CheckpointMetadata]:
-    train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path
-    )
-    if (
-        metadata.task != "motion_tracking"
-        or metadata.motion_env is None
-        or metadata.motion is None
-    ):
-        raise ValueError(f"checkpoint task is {metadata.task!r}, not motion_tracking")
-    resolved_motion_path = (
-        metadata.motion.path if motion_path is None else Path(motion_path)
-    )
-    env_config = replace(metadata.motion_env, motion_path=resolved_motion_path)
-    prepared = prepare_asset(metadata.asset)
-    env = BelloMotionTrackingEnv.load_prepared_native(
-        prepared,
-        env_config,
-        actuator_config=metadata.asset.actuator_config,
-    )
-    validate_motion_clip_contract(resolved_motion_path, env.motion, metadata.motion)
-    validate_checkpoint_shape(env, metadata)
-    return (
-        HardwareMotionPolicyAdapter(
-            env,
-            train_state.policy,
-            metadata,
-            normalization,
-            start_time_seconds=start_time_seconds,
-        ),
-        metadata,
-    )
+        qvel[model.actuator_qvel_indices] = logical_velocity
+        self._mj_data.qpos[:] = qpos
+        self._mj_data.qvel[:] = qvel
+        self._mj_data.ctrl[:] = self._last_physical_target
+        mujoco.mj_kinematics(model.mj_model, self._mj_data)
+        layout = self._inference_layout
+        inference_input = self._inference_input
+        inference_input[layout.qpos] = self._mj_data.qpos
+        inference_input[layout.qvel] = self._mj_data.qvel
+        inference_input[layout.ctrl] = self._mj_data.ctrl
+        inference_input[layout.xpos] = self._mj_data.xpos.reshape(-1)
+        inference_input[layout.xquat] = self._mj_data.xquat.reshape(-1)
+        inference_input[layout.last_action] = self._last_action
+        inference_input[layout.reference_time] = reference_time
+        inference_input[layout.alignment_xy] = self._alignment_xy
+        inference_input[layout.alignment_yaw] = self._alignment_yaw
+        return inference_input
 
 
 def validate_hardware_motion_checkpoint(
     env: BelloMotionTrackingEnv, metadata: CheckpointMetadata
 ) -> None:
     if metadata.task != "motion_tracking":
+        raise ValueError("motion hardware runner requires a motion-tracking checkpoint")
+    if metadata.motion is None or metadata.motion_env is None:
+        raise ValueError("motion checkpoint is missing its motion contract")
+    if metadata.motion_env.formulation != "beyondmimic_joint_limits":
         raise ValueError(
-            "hardware motion playback requires a motion-tracking checkpoint"
+            "motion hardware deployment requires the bounded BeyondMimic formulation"
         )
-    if metadata.motion_env is None or metadata.motion is None:
-        raise ValueError("motion-tracking checkpoint is missing its motion contract")
+    if metadata.ppo.policy.action_distribution != "tanh_gaussian":
+        raise ValueError(
+            "bounded BeyondMimic hardware deployment requires "
+            "'tanh_gaussian' policy actions"
+        )
     if metadata.asset.end_effector_sphere_mode != "both":
-        raise ValueError("hardware motion playback requires sphere hands")
+        raise ValueError("motion hardware runner requires sphere hands")
     availability = metadata.asset.joint_availability
-    unexpected = sorted(
-        availability.enabled_joint_names
-        & {
-            "waist_roll_joint",
-            "waist_pitch_joint",
-            "neck_yaw_joint",
-            "head_pitch_joint",
-        }
-    )
-    if unexpected:
+    if availability.enabled_joint_names != {"waist_yaw_joint"}:
         raise ValueError(
-            "motion checkpoint contains joints absent from bello_stack hardware: "
-            + ", ".join(unexpected)
+            "motion hardware runner requires only waist yaw among optional joints"
         )
-    if not availability.waist_yaw:
-        raise ValueError("hardware motion playback requires waist_yaw_joint")
-    if env.action_size != 25 or env.model.mj_model.nu != 25:
+    if env.action_size != 25:
         raise ValueError(
-            "hardware motion playback requires the 25-coordinate fixed-head model"
+            f"motion hardware runner requires 25 policy joints, got {env.action_size}"
         )
-    expected_distribution = (
-        "gaussian" if env.config.formulation == "beyondmimic" else "tanh_gaussian"
-    )
-    if metadata.ppo.policy.action_distribution != expected_distribution:
-        raise ValueError(
-            f"{env.config.formulation} hardware playback requires "
-            f"{expected_distribution!r} policy actions"
-        )
+    if env.action_layout != metadata.action_layout:
+        raise ValueError("motion hardware action layout does not match checkpoint")
+    if env.observation_layout != metadata.actor_observation_layout:
+        raise ValueError("motion hardware observation layout does not match checkpoint")
 
 
 def validate_hardware_motion_config(
-    config: HardwareMotionConfig, env: BelloMotionTrackingEnv | None = None
+    config: HardwareMotionConfig,
+    env: BelloMotionTrackingEnv | None = None,
 ) -> None:
     validate_hardware_control_config(config)
-    if (
-        not math.isfinite(config.max_initial_position_error_radians)
-        or config.max_initial_position_error_radians <= 0.0
-    ):
-        raise ValueError(
-            "max_initial_position_error_radians must be positive and finite"
-        )
-    if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
-        raise ValueError("start_time_seconds must be finite and nonnegative")
-    for name in ("max_estimated_linear_velocity", "max_estimated_position_error"):
-        value = getattr(config, name)
+    if not config.pose_endpoint.strip():
+        raise ValueError("pose_endpoint must not be empty")
+    if not config.pose_reference_frame.strip() or not config.pose_tracked_frame.strip():
+        raise ValueError("pose frame names must not be empty")
+    positive = {
+        "pose_timeout_seconds": config.pose_timeout_seconds,
+        "max_action_abs": config.max_action_abs,
+        "max_raw_action_abs": config.max_raw_action_abs,
+        "max_pose_imu_orientation_error": config.max_pose_imu_orientation_error,
+        "max_base_linear_velocity": config.max_base_linear_velocity,
+        "max_initial_position_error_radians": (
+            config.max_initial_position_error_radians
+        ),
+    }
+    for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be positive and finite")
+    if config.max_pose_age_ms <= 0:
+        raise ValueError("max_pose_age_ms must be positive")
+    if not 0.0 < config.velocity_filter_alpha <= 1.0:
+        raise ValueError("velocity_filter_alpha must be in (0, 1]")
+    if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
+        raise ValueError("start_time_seconds must be finite and nonnegative")
     if env is not None and config.start_time_seconds >= env.motion.duration:
-        raise ValueError("start_time_seconds must be inside the checkpoint motion")
+        raise ValueError(
+            f"start_time_seconds must be in [0, {env.motion.duration}), got "
+            f"{config.start_time_seconds}"
+        )
+    if config.max_action_abs > config.max_raw_action_abs:
+        raise ValueError("max_action_abs must not exceed max_raw_action_abs")
+
+
+def load_hardware_motion_policy(
+    checkpoint_path: Path,
+    config: HardwareMotionConfig,
+) -> tuple[HardwareMotionPolicyAdapter, CheckpointMetadata]:
+    train_state, metadata, normalization = restore_evaluation_checkpoint(
+        checkpoint_path
+    )
+    if (
+        metadata.task != "motion_tracking"
+        or metadata.motion is None
+        or metadata.motion_env is None
+    ):
+        raise ValueError("checkpoint is not a complete motion-tracking checkpoint")
+    resolved_motion = (
+        metadata.motion.path if config.motion_path is None else config.motion_path
+    )
+    env_config = replace(metadata.motion_env, motion_path=resolved_motion)
+    prepared = prepare_asset(metadata.asset)
+    env = BelloMotionTrackingEnv.load_prepared_native(
+        prepared,
+        env_config,
+        actuator_config=metadata.asset.actuator_config,
+    )
+    validate_motion_clip_contract(resolved_motion, env.motion, metadata.motion)
+    return (
+        HardwareMotionPolicyAdapter(
+            env, train_state.policy, metadata, normalization, config
+        ),
+        metadata,
+    )
 
 
 def run_hardware_motion(
@@ -440,20 +889,21 @@ def run_hardware_motion(
     config: HardwareMotionConfig = HardwareMotionConfig(),
     *,
     hardware_binding: Any | None = None,
+    pose_stream_factory: Any = PoseStream,
 ) -> None:
     validate_hardware_motion_config(config)
-    adapter, metadata = load_hardware_motion_policy(
-        checkpoint_path,
-        motion_path=config.motion_path,
-        start_time_seconds=config.start_time_seconds,
-    )
+    adapter, metadata = load_hardware_motion_policy(checkpoint_path, config)
     validate_hardware_motion_config(config, adapter.env)
+    adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
     if config.arm:
         require_async_hardware_binding(binding)
-    with binding.Robot.connect(
-        config.endpoint, timeout=config.connection_timeout_seconds
-    ) as robot:
+    with (
+        pose_stream_factory(config) as poses,
+        binding.Robot.connect(
+            config.endpoint, timeout=config.connection_timeout_seconds
+        ) as robot,
+    ):
         groups = validate_hardware_inventory(robot, adapter, config, binding)
         with robot.states(
             groups=config.groups,
@@ -468,38 +918,48 @@ def run_hardware_motion(
                 binding.StateUnavailableError,
                 config.telemetry_timeout_seconds,
             )
+            pose = poses.latest()
             validate_hardware_frame(frame, config, expected_group_state="IDLE")
-            adapter.precompile(frame)
-            initial_target = adapter.nominal_physical_target
-            initial_error = float(np.max(np.abs(frame.positions - initial_target)))
+            validate_pose_imu_agreement(frame, pose, config)
+            adapter.initialize_alignment(pose)
+            initial_delta = np.abs(frame.positions - adapter.nominal_physical_target)
+            initial_error = float(np.max(initial_delta))
+            preview = adapter.step(frame, pose, reference_time=adapter.start_time)
+            adapter.reset()
             print(
                 {
-                    "hardware_motion_preflight": "passed",
+                    "motion_hardware_preflight": "passed",
+                    "checkpoint_task": metadata.task,
                     "endpoint": config.endpoint,
+                    "pose_endpoint": config.pose_endpoint,
                     "groups": config.groups,
-                    "imu": config.imu_name,
                     "coordinates": len(adapter.physical_coordinate_names),
-                    "formulation": adapter.env.config.formulation,
-                    "motion_sha256": metadata.motion.content_sha256,
-                    "start_time_seconds": config.start_time_seconds,
-                    "remaining_duration_seconds": adapter.remaining_duration,
+                    "policy_joints": adapter.env.action_size,
+                    "control_rate_hz": 1.0 / adapter.control_timestep,
+                    "jax_backend": jax.default_backend(),
+                    "motion_start_seconds": adapter.start_time,
                     "nominal_ramp_distance_max": initial_error,
-                    "odometry": "gravity-removed IMU dead reckoning",
+                    "preview_action_abs_max": float(np.max(np.abs(preview.raw_action))),
+                    "preview_action_clipped": preview.action_clipped,
                     "armed": config.arm,
                 }
             )
             if not config.arm:
                 print(
-                    "Read-only preflight complete; no lease was acquired and no motor command was sent."
+                    "Read-only motion preflight complete; no lease was acquired "
+                    "and no motor command was sent."
                 )
                 return
-            control_physical_motion(binding, groups, states, frame, adapter, config)
+            control_physical_motion(
+                binding, groups, states, poses, frame, adapter, config
+            )
 
 
 def control_physical_motion(
     binding: Any,
     groups: Mapping[str, Any],
     states: Any,
+    poses: PoseStream,
     initial_frame: HardwareFrame,
     adapter: HardwareMotionPolicyAdapter,
     config: HardwareMotionConfig,
@@ -519,9 +979,10 @@ def control_physical_motion(
         executor = resources.enter_context(
             ThreadPoolExecutor(
                 max_workers=len(config.groups),
-                thread_name_prefix="bello-group-control",
+                thread_name_prefix="bello-motion-control",
             )
         )
+        resources.callback(stop_hardware_controls, controls, config, executor)
         start_hardware_controls(
             binding,
             controls,
@@ -571,15 +1032,41 @@ def control_physical_motion(
             )
             validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
+        send_targets(
+            binding,
+            controls,
+            groups,
+            previous_target,
+            adapter,
+            config,
+            executor,
+            pending_receipts,
+        )
         require_nominal_pose(frame, adapter, config.max_initial_position_error_radians)
-        adapter.initialize(frame)
-        duration = min(config.max_duration_seconds, adapter.remaining_duration)
-        start_time = time.monotonic()
-        next_status = start_time
-        deadline = start_time
+        adapter.initialize_alignment(poses.latest())
+        send_targets(
+            binding,
+            controls,
+            groups,
+            previous_target,
+            adapter,
+            config,
+            executor,
+            pending_receipts,
+        )
+        start = time.monotonic()
+        deadline = start
+        next_status = start
         step = 0
+        maximum_inference_ms = 0.0
+        maximum_command_submission_ms = 0.0
+        maximum_loop_work_ms = 0.0
         try:
-            while time.monotonic() - start_time < duration:
+            while (
+                config.max_duration_seconds is None
+                or time.monotonic() - start < config.max_duration_seconds
+            ):
+                loop_started = time.monotonic()
                 frame = wait_for_hardware_frame(
                     states,
                     adapter.physical_coordinate_names,
@@ -588,24 +1075,20 @@ def control_physical_motion(
                     binding.StateUnavailableError,
                     config.telemetry_timeout_seconds,
                 )
+                pose = poses.latest()
                 validate_hardware_frame(frame, config, expected_group_state="RUNNING")
-                policy_step = adapter.step(frame)
-                if (
-                    policy_step.estimated_linear_velocity
-                    > config.max_estimated_linear_velocity
-                ):
-                    raise RuntimeError(
-                        "estimated root velocity exceeds motion safety limit: "
-                        f"{policy_step.estimated_linear_velocity:.3f} m/s"
+                elapsed = time.monotonic() - start
+                reference_time = adapter.start_time + elapsed
+                inference_started = time.monotonic()
+                try:
+                    policy_step = adapter.step(
+                        frame, pose, reference_time=reference_time
                     )
-                if (
-                    policy_step.estimated_position_error
-                    > config.max_estimated_position_error
-                ):
-                    raise RuntimeError(
-                        "estimated root position error exceeds motion safety limit: "
-                        f"{policy_step.estimated_position_error:.3f} m"
-                    )
+                except StopIteration:
+                    print("Motion reference completed; stopping and disabling groups.")
+                    break
+                inference_ms = (time.monotonic() - inference_started) * 1_000.0
+                command_started = time.monotonic()
                 previous_target = limit_target_step(
                     previous_target,
                     policy_step.physical_target,
@@ -621,34 +1104,71 @@ def control_physical_motion(
                     executor,
                     pending_receipts,
                 )
+                command_submission_ms = (time.monotonic() - command_started) * 1_000.0
+                loop_work_ms = (time.monotonic() - loop_started) * 1_000.0
+                maximum_inference_ms = max(maximum_inference_ms, inference_ms)
+                maximum_command_submission_ms = max(
+                    maximum_command_submission_ms, command_submission_ms
+                )
+                maximum_loop_work_ms = max(maximum_loop_work_ms, loop_work_ms)
                 step += 1
                 now = time.monotonic()
                 if now >= next_status:
                     print(
                         {
-                            "hardware_motion_step": step,
-                            "elapsed_seconds": now - start_time,
+                            "motion_hardware_step": step,
+                            "elapsed_seconds": elapsed,
                             "reference_time": policy_step.reference_time,
-                            "tilt_radians": policy_step.tilt_radians,
-                            "action_abs_max": float(np.max(np.abs(policy_step.action))),
-                            "estimated_linear_velocity": (
-                                policy_step.estimated_linear_velocity
+                            "action_abs_max": float(
+                                np.max(np.abs(policy_step.raw_action))
                             ),
-                            "estimated_position_error": (
-                                policy_step.estimated_position_error
+                            "action_clipped": policy_step.action_clipped,
+                            "anchor_position_error": policy_step.anchor_position_error,
+                            "anchor_orientation_error": (
+                                policy_step.anchor_orientation_error
                             ),
                             "motor_age_ms": frame.max_motor_age_ms,
                             "imu_age_ms": frame.imu_age_ms,
+                            "pose_age_ms": pose.age_ms(now),
+                            "inference_ms": inference_ms,
+                            "command_submission_ms": command_submission_ms,
+                            "loop_work_ms": loop_work_ms,
+                            "maximum_inference_ms": maximum_inference_ms,
+                            "maximum_command_submission_ms": (
+                                maximum_command_submission_ms
+                            ),
+                            "maximum_loop_work_ms": maximum_loop_work_ms,
                         }
                     )
                     next_status = now + config.status_interval_seconds
-                deadline = pace_hardware_loop(
-                    deadline, adapter.control_timestep, config
-                )
+                try:
+                    deadline = pace_hardware_loop(
+                        deadline, adapter.control_timestep, config
+                    )
+                except RuntimeError:
+                    print(
+                        {
+                            "motion_hardware_timing_failure": True,
+                            "step": step,
+                            "inference_ms": inference_ms,
+                            "command_submission_ms": command_submission_ms,
+                            "loop_work_ms": loop_work_ms,
+                            "maximum_inference_ms": maximum_inference_ms,
+                            "maximum_command_submission_ms": (
+                                maximum_command_submission_ms
+                            ),
+                            "maximum_loop_work_ms": maximum_loop_work_ms,
+                            "accumulated_lag_ms": (
+                                time.monotonic() - (deadline + adapter.control_timestep)
+                            )
+                            * 1_000.0,
+                        },
+                        flush=True,
+                    )
+                    raise
             drain_command_receipts(pending_receipts)
         except KeyboardInterrupt:
-            print("Hardware motion interrupted; stopping and disabling groups.")
-        stop_hardware_controls(controls, config, executor)
+            print("Motion hardware run interrupted; stopping and disabling groups.")
 
 
 def require_nominal_pose(
@@ -669,34 +1189,55 @@ def require_nominal_pose(
         )
 
 
-def yaw_from_xyzw(quaternion: np.ndarray) -> float:
-    x, y, z, w = normalized_quaternion_xyzw(quaternion)
+def validate_pose_imu_agreement(
+    frame: HardwareFrame, pose: PoseFrame, config: HardwareMotionConfig
+) -> None:
+    difference = quaternion_distance(
+        xyzw_to_wxyz(frame.orientation_xyzw),
+        xyzw_to_wxyz(pose.orientation_xyzw),
+    )
+    if difference > config.max_pose_imu_orientation_error:
+        raise RuntimeError(
+            f"pose/IMU orientation mismatch {difference:.3f} rad exceeds "
+            f"{config.max_pose_imu_orientation_error:.3f} rad"
+        )
+
+
+def normalized_xyzw(value: np.ndarray) -> np.ndarray:
+    quaternion = np.asarray(value, dtype=np.float64)
+    if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
+        raise RuntimeError("pose orientation must be a finite xyzw quaternion")
+    norm = float(np.linalg.norm(quaternion))
+    if norm <= 1.0e-12:
+        raise RuntimeError("pose orientation quaternion has near-zero norm")
+    return quaternion / norm
+
+
+def xyzw_to_wxyz(value: np.ndarray) -> np.ndarray:
+    normalized = normalized_xyzw(value)
+    return normalized[[3, 0, 1, 2]]
+
+
+def wxyz_to_xyzw(value: np.ndarray) -> np.ndarray:
+    quaternion = np.asarray(value, dtype=np.float64)
+    norm = float(np.linalg.norm(quaternion))
+    if quaternion.shape != (4,) or not math.isfinite(norm) or norm <= 1.0e-12:
+        raise RuntimeError("motion orientation must be a finite quaternion")
+    return (quaternion / norm)[[1, 2, 3, 0]]
+
+
+def quaternion_yaw(value: np.ndarray) -> float:
+    w, x, y, z = np.asarray(value, dtype=np.float64)
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
-def yaw_from_wxyz(quaternion: np.ndarray) -> float:
-    value = np.asarray(quaternion, dtype=np.float64)
-    if value.shape != (4,) or not np.all(np.isfinite(value)):
-        raise ValueError("reference quaternion must be finite wxyz")
-    return yaw_from_xyzw(value[[1, 2, 3, 0]])
+def quaternion_distance(left: np.ndarray, right: np.ndarray) -> float:
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    left /= np.linalg.norm(left)
+    right /= np.linalg.norm(right)
+    return 2.0 * math.acos(float(np.clip(abs(np.dot(left, right)), 0.0, 1.0)))
 
 
 def wrap_angle(value: float) -> float:
-    return math.atan2(math.sin(value), math.cos(value))
-
-
-def rotate_z(value_xy: np.ndarray, angle: float) -> np.ndarray:
-    value = np.asarray(value_xy, dtype=np.float64)
-    cosine, sine = math.cos(angle), math.sin(angle)
-    return np.asarray(
-        (cosine * value[0] - sine * value[1], sine * value[0] + cosine * value[1])
-    )
-
-
-def rotate_vector_xyzw(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
-    q = normalized_quaternion_xyzw(quaternion)
-    value = np.asarray(vector, dtype=np.float64)
-    if value.shape != (3,) or not np.all(np.isfinite(value)):
-        raise RuntimeError("IMU vector must contain three finite values")
-    xyz = q[:3]
-    return value + 2.0 * np.cross(xyz, np.cross(xyz, value) + q[3] * value)
+    return (value + math.pi) % (2.0 * math.pi) - math.pi

@@ -1805,24 +1805,24 @@ class BelloLocomotionEnv:
         joint_pos_rel, _ = self._all_actuator_joint_terms(next_state)
         lin_vel_xy = self._link_yaw_frame_lin_vel(
             next_state,
-            self._reward_link(self.reward_config.track_lin_vel_xy),
-            self._reward_frame_link(self.reward_config.track_lin_vel_xy),
+            self._reward_link("track_lin_vel_xy"),
+            self._reward_frame_link("track_lin_vel_xy"),
         )[:2]
         yaw_vel_z = self._link_body_ang_vel(
-            next_state, self._reward_link(self.reward_config.track_ang_vel_z)
+            next_state, self._reward_link("track_ang_vel_z")
         )[2]
-        lin_vel_z = self._link_body_lin_vel(
-            next_state, self._reward_link(self.reward_config.lin_vel_z)
-        )[2]
+        lin_vel_z = self._link_body_lin_vel(next_state, self._reward_link("lin_vel_z"))[
+            2
+        ]
         ang_vel_xy = self._link_body_ang_vel(
-            next_state, self._reward_link(self.reward_config.ang_vel_xy)
+            next_state, self._reward_link("ang_vel_xy")
         )[:2]
         projected_gravity = self._link_projected_gravity(
-            next_state, self._reward_link(self.reward_config.flat_orientation)
+            next_state, self._reward_link("flat_orientation")
         )
         base_height = self._link_clearance(
             next_state,
-            self._reward_link(self.reward_config.base_height),
+            self._reward_link("base_height"),
             world_id,
         )
         return compute_locomotion_reward(
@@ -1945,15 +1945,20 @@ class BelloLocomotionEnv:
             contact,
         )
 
-    def _reward_link(self, term) -> str:
-        if term.enabled and term.link is not None:
-            return term.link
+    def _reward_link(self, term_name: str) -> str:
+        link = getattr(self.reward_config.links, term_name)
+        if self.reward_config.enabled(term_name) and link is not None:
+            return link
         return self.config.root_link
 
-    def _reward_frame_link(self, term) -> str:
-        velocity_link = self._reward_link(term)
-        frame_link = getattr(term, "frame_link", None)
-        if term.enabled and frame_link is not None:
+    def _reward_frame_link(self, term_name: str) -> str:
+        velocity_link = self._reward_link(term_name)
+        frame_link = (
+            self.reward_config.links.track_lin_vel_xy_frame
+            if term_name == "track_lin_vel_xy"
+            else None
+        )
+        if self.reward_config.enabled(term_name) and frame_link is not None:
             return frame_link
         return velocity_link
 
@@ -2228,14 +2233,14 @@ class BelloLocomotionEnv:
         moving = command_is_moving(state.command, self.command_config)
         premature_touchdown = (
             touchdown
-            & (state.foot_air_time < self.reward_config.contact_timing.min_air_time)
+            & (state.foot_air_time < self.reward_config.gait.contact_min_air_time)
             & moving
         )
         premature_liftoff = (
             liftoff
             & (
                 state.foot_contact_time
-                < self.reward_config.contact_timing.min_contact_time
+                < self.reward_config.gait.contact_min_contact_time
             )
             & moving
         )

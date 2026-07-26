@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import argparse
-from dataclasses import asdict, dataclass
-import json
+from dataclasses import dataclass
 import math
 from pathlib import Path
 
@@ -258,23 +256,3 @@ def tracked_end_effector_error(
     reference = np.asarray(motion.body_pos)[frame, body_indices]
     current = data.xpos[body_ids]
     return float(np.max(np.linalg.norm(current - reference, axis=-1)))
-
-
-def entrypoint() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("motion", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--require-complete", action="store_true")
-    args = parser.parse_args()
-    report = replay_motion_reference(args.motion)
-    payload = json.dumps(asdict(report), indent=2, sort_keys=True)
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(payload + "\n")
-    print(payload)
-    if args.require_complete and not report.completed:
-        raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    entrypoint()

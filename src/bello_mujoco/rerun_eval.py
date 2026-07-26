@@ -6,7 +6,6 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import equinox as eqx
 import jax
@@ -37,7 +36,6 @@ from bello_mujoco.render import (
     quat_rotate_inverse_np,
     quat_rotate_np,
     reset_mujoco_data,
-    sync_mj_data,
 )
 from bello_mujoco.train.ppo import ObservationNormState, PPOConfig
 
@@ -371,7 +369,7 @@ class RerunEvaluationLogger:
         actual_yaw_vel = mujoco_link_ang_vel(
             self.env,
             mj_data,
-            self.env._reward_link(self.env.reward_config.track_ang_vel_z),
+            self.env._reward_link("track_ang_vel_z"),
         )[2]
         self.recording.log(
             "metrics/command",
@@ -627,9 +625,8 @@ def rough_terrain_mesh(config) -> tuple[np.ndarray, np.ndarray]:
 def command_frame_linear_velocity(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData
 ) -> np.ndarray:
-    reward = env.reward_config.track_lin_vel_xy
-    link_name = env._reward_link(reward)
-    frame_link_name = env._reward_frame_link(reward)
+    link_name = env._reward_link("track_lin_vel_xy")
+    frame_link_name = env._reward_frame_link("track_lin_vel_xy")
     body_velocity = mujoco_link_lin_vel(env, mj_data, link_name)
     world_velocity = quat_rotate_np(
         mujoco_link_quat(env, mj_data, link_name), body_velocity
@@ -654,15 +651,10 @@ def run_rerun_evaluation(
     gamepad_config: GamepadConfig,
     steps: int | None,
     stop_on_done: bool,
-    simulation_backend: Literal["mujoco", "mjx"] = "mujoco",
     obs_stack_size: int,
     stochastic_actions: bool,
     action_seed: int,
 ) -> None:
-    if simulation_backend not in {"mujoco", "mjx"}:
-        raise ValueError(
-            f"simulation_backend must be 'mujoco' or 'mjx', got {simulation_backend!r}"
-        )
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     command_ranges = (
@@ -670,7 +662,6 @@ def run_rerun_evaluation(
         env.command_config.lin_vel_y,
         env.command_config.ang_vel_yaw,
     )
-    mjx_step = jax.jit(env.step) if simulation_backend == "mjx" else None
     infer_action = eqx.filter_jit(
         lambda observation, rng: infer_policy_action(
             policy,
@@ -686,7 +677,6 @@ def run_rerun_evaluation(
     episode = 0
     fixed_command = np.asarray(command, dtype=np.float32)
     current_command = np.zeros(3, dtype=np.float32)
-    mjx_state = None
 
     last_action = np.zeros(env.action_size, dtype=np.float32)
     foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
@@ -704,16 +694,10 @@ def run_rerun_evaluation(
     )
 
     def reset_episode() -> None:
-        nonlocal mjx_state
         nonlocal last_action, foot_air_time, foot_contact_time
         nonlocal foot_contact_debounce_time
         nonlocal last_foot_contact, episode_return, episode_track_lin_vel_xy
         nonlocal episode_length, episode_step_count, obs_stack
-        if simulation_backend == "mjx":
-            mjx_state, obs = env.reset(jnp.asarray(current_command))
-            sync_mj_data(mj_model, mj_data, mjx_state)
-            obs_stack = init_observation_stack(obs, obs_stack_size)
-            return
         reset_mujoco_data(env, mj_data)
         last_action = np.zeros(env.action_size, dtype=np.float32)
         foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
@@ -795,100 +779,87 @@ def run_rerun_evaluation(
             action_np = np.asarray(
                 jax.device_get(policy_step.applied_action), dtype=np.float32
             )
-            if simulation_backend == "mjx":
-                mjx_state = mjx_state.replace(command=jnp.asarray(current_command))
-                mjx_state, obs, reward, done, info = mjx_step(
-                    mjx_state, requested_action
-                )
-                sync_mj_data(mj_model, mj_data, mjx_state)
-                ctrl = np.asarray(mj_data.ctrl, dtype=np.float32).copy()
-                done_flags = {key: bool(jax.device_get(info[key])) for key in DONE_KEYS}
-                display_state = mjx_state
-            else:
-                ctrl = mujoco_action_to_ctrl(env, action_np)
-                state = mujoco_eval_state(
-                    env,
-                    mj_data,
-                    command=current_command,
-                    last_action=last_action,
-                    foot_air_time=foot_air_time,
-                    foot_contact_time=foot_contact_time,
-                    foot_contact_debounce_time=foot_contact_debounce_time,
-                    last_foot_contact=last_foot_contact,
-                    step_count=episode_step_count,
-                    episode_return=episode_return,
-                    episode_track_lin_vel_xy=episode_track_lin_vel_xy,
-                    episode_length=episode_length,
-                )
-                mj_data.ctrl[:] = ctrl
-                for _ in range(env.decimation):
-                    mujoco.mj_step(mj_model, mj_data)
-                last_action = action_np
-                episode_step_count += 1
-                done_flags = mujoco_done_flags(env, mj_data, episode_step_count)
-                done = jnp.asarray(done_flags["done/any"])
-                next_state = mujoco_eval_state(
-                    env,
-                    mj_data,
-                    command=current_command,
-                    last_action=last_action,
-                    foot_air_time=foot_air_time,
-                    foot_contact_time=foot_contact_time,
-                    foot_contact_debounce_time=foot_contact_debounce_time,
-                    last_foot_contact=last_foot_contact,
-                    step_count=episode_step_count,
-                    episode_return=episode_return,
-                    episode_track_lin_vel_xy=episode_track_lin_vel_xy,
-                    episode_length=episode_length,
-                )
-                contact_terms = mujoco_contact_terms(env, mj_data)
-                (
-                    raw_foot_contact,
-                    lateral_speed,
-                    angular_speed,
-                    undesired,
-                    self_collision,
-                ) = contact_terms
-                foot_contact, foot_contact_debounce_time = env.debounce_foot_contact(
-                    next_state, raw_foot_contact, done
-                )
-                reward, reward_info = env.reward(
-                    state,
-                    next_state,
-                    jnp.asarray(action_np),
-                    jnp.asarray(requested_action_np),
-                    jnp.asarray(done_flags["done/terminal"]),
-                    foot_contact,
-                    lateral_speed,
-                    angular_speed,
-                    undesired,
-                    self_collision,
-                )
-                done_info = {
-                    key: jnp.asarray(value) for key, value in done_flags.items()
-                }
-                reward, reward_info = env.sanitize_nonfinite_reward(
-                    reward, reward_info, done_info
-                )
-                episode_return = episode_return + reward
-                episode_track_lin_vel_xy = (
-                    episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
-                )
-                episode_length = episode_length + 1
-                (
-                    foot_air_time,
-                    foot_contact_time,
-                    last_foot_contact,
-                ) = env.next_foot_memory(next_state, foot_contact, done)
-                info = {
-                    **mujoco_eval_info(env, mj_data, command=current_command),
-                    **done_info,
-                    **reward_info,
-                }
-                display_state = EpisodeDisplayState(
-                    episode_return=episode_return,
-                    episode_length=episode_length,
-                )
+            ctrl = mujoco_action_to_ctrl(env, action_np)
+            state = mujoco_eval_state(
+                env,
+                mj_data,
+                command=current_command,
+                last_action=last_action,
+                foot_air_time=foot_air_time,
+                foot_contact_time=foot_contact_time,
+                foot_contact_debounce_time=foot_contact_debounce_time,
+                last_foot_contact=last_foot_contact,
+                step_count=episode_step_count,
+                episode_return=episode_return,
+                episode_track_lin_vel_xy=episode_track_lin_vel_xy,
+                episode_length=episode_length,
+            )
+            mj_data.ctrl[:] = ctrl
+            for _ in range(env.decimation):
+                mujoco.mj_step(mj_model, mj_data)
+            last_action = action_np
+            episode_step_count += 1
+            done_flags = mujoco_done_flags(env, mj_data, episode_step_count)
+            done = jnp.asarray(done_flags["done/any"])
+            next_state = mujoco_eval_state(
+                env,
+                mj_data,
+                command=current_command,
+                last_action=last_action,
+                foot_air_time=foot_air_time,
+                foot_contact_time=foot_contact_time,
+                foot_contact_debounce_time=foot_contact_debounce_time,
+                last_foot_contact=last_foot_contact,
+                step_count=episode_step_count,
+                episode_return=episode_return,
+                episode_track_lin_vel_xy=episode_track_lin_vel_xy,
+                episode_length=episode_length,
+            )
+            (
+                raw_foot_contact,
+                lateral_speed,
+                angular_speed,
+                undesired,
+                self_collision,
+            ) = mujoco_contact_terms(env, mj_data)
+            foot_contact, foot_contact_debounce_time = env.debounce_foot_contact(
+                next_state, raw_foot_contact, done
+            )
+            reward, reward_info = env.reward(
+                state,
+                next_state,
+                jnp.asarray(action_np),
+                jnp.asarray(requested_action_np),
+                jnp.asarray(done_flags["done/terminal"]),
+                foot_contact,
+                lateral_speed,
+                angular_speed,
+                undesired,
+                self_collision,
+            )
+            done_info = {key: jnp.asarray(value) for key, value in done_flags.items()}
+            reward, reward_info = env.sanitize_nonfinite_reward(
+                reward, reward_info, done_info
+            )
+            episode_return = episode_return + reward
+            episode_track_lin_vel_xy = (
+                episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
+            )
+            episode_length = episode_length + 1
+            (
+                foot_air_time,
+                foot_contact_time,
+                last_foot_contact,
+            ) = env.next_foot_memory(next_state, foot_contact, done)
+            info = {
+                **mujoco_eval_info(env, mj_data, command=current_command),
+                **done_info,
+                **reward_info,
+            }
+            display_state = EpisodeDisplayState(
+                episode_return=episode_return,
+                episode_length=episode_length,
+            )
             global_step += 1
             logger.log_step(
                 global_step=global_step,
@@ -914,14 +885,13 @@ def run_rerun_evaluation(
                 episode += 1
                 reset_episode()
             else:
-                if simulation_backend == "mujoco":
-                    obs = mujoco_policy_observation(
-                        env,
-                        mj_data,
-                        command=current_command,
-                        last_action=last_action,
-                        step_count=episode_step_count,
-                    )
+                obs = mujoco_policy_observation(
+                    env,
+                    mj_data,
+                    command=current_command,
+                    last_action=last_action,
+                    step_count=episode_step_count,
+                )
                 obs_stack = update_observation_stack(obs_stack, obs, done)
             elapsed = time.perf_counter() - started
             time.sleep(max(0.0, env.control_timestep - elapsed))

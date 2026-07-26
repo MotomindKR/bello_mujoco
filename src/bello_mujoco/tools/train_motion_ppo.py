@@ -6,18 +6,16 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 import warnings
 
-import hydra
 import jax
 import optax
-from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
-    RuntimeFingerprints,
-    capture_asset_runtime_fingerprints,
-    capture_runtime_fingerprints,
+    DeploymentContract,
+    capture_asset_contract,
+    capture_deployment_contract,
     checkpoint_path,
     load_checkpoint_metadata,
     motion_clip_contract,
@@ -31,7 +29,6 @@ from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingEnvConfig,
 )
-from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.motion_evaluation import (
     MotionEvaluationRequest,
     MotionEvaluationWorker,
@@ -156,7 +153,7 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
             policy_obs_size,
             critic_policy_obs_size,
         )
-        runtime_fingerprints = capture_runtime_fingerprints(metadata)
+        deployment_contract = capture_deployment_contract(metadata)
         rng = jax.random.PRNGKey(run_config.config.seed)
         if run_config.dry_run:
             train_state, _ = init_train_state(
@@ -247,7 +244,7 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
             checkpoint_root=checkpoint_root,
             checkpoint_context=(
                 metadata,
-                runtime_fingerprints,
+                deployment_contract,
                 run_config.checkpoint_config,
             ),
             initial_runner=initial_runner,
@@ -260,7 +257,7 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
                 final_checkpoint,
                 runner_state,
                 metadata,
-                runtime_fingerprints,
+                deployment_contract,
             )
             upload_motion_checkpoint(
                 run,
@@ -314,7 +311,7 @@ def motion_train_update_loop(
     jit: bool,
     *,
     checkpoint_root: Path | None = None,
-    checkpoint_context: tuple[CheckpointMetadata, RuntimeFingerprints, CheckpointConfig]
+    checkpoint_context: tuple[CheckpointMetadata, DeploymentContract, CheckpointConfig]
     | None = None,
     initial_runner: RunnerInitialization | None = None,
 ) -> dict:
@@ -332,12 +329,12 @@ def motion_train_update_loop(
             raise ValueError("initial evaluation requires checkpoint context")
         initial_update = int(jax.device_get(runner_state.update))
         initial_checkpoint = checkpoint_root / f"update_{initial_update:06d}"
-        metadata, runtime_fingerprints, _ = checkpoint_context
+        metadata, deployment_contract, _ = checkpoint_context
         save_motion_checkpoint(
             initial_checkpoint,
             runner_state,
             metadata,
-            runtime_fingerprints,
+            deployment_contract,
         )
         try_render_motion_checkpoint_video(
             evaluation_worker,
@@ -376,13 +373,13 @@ def motion_train_update_loop(
             and checkpoint_context is not None
             and should_save_motion_checkpoint(update, checkpoint_context[2])
         ):
-            metadata, runtime_fingerprints, checkpoint_config = checkpoint_context
+            metadata, deployment_contract, checkpoint_config = checkpoint_context
             scheduled_checkpoint = checkpoint_root / f"update_{update:06d}"
             save_motion_checkpoint(
                 scheduled_checkpoint,
                 runner_state,
                 metadata,
-                runtime_fingerprints,
+                deployment_contract,
             )
             upload_motion_checkpoint(
                 run,
@@ -399,12 +396,12 @@ def motion_train_update_loop(
                 else checkpoint_root / f"eval_{update:06d}"
             )
             if scheduled_checkpoint is None:
-                metadata, runtime_fingerprints, _ = checkpoint_context
+                metadata, deployment_contract, _ = checkpoint_context
                 save_motion_checkpoint(
                     evaluation_checkpoint,
                     runner_state,
                     metadata,
-                    runtime_fingerprints,
+                    deployment_contract,
                 )
             try_render_motion_checkpoint_video(
                 evaluation_worker,
@@ -451,13 +448,13 @@ def save_motion_checkpoint(
     path: Path,
     runner_state: RunnerState,
     metadata: CheckpointMetadata,
-    runtime_fingerprints: RuntimeFingerprints,
+    deployment_contract: DeploymentContract,
 ) -> None:
     save_training_checkpoint(
         path,
         runner_state,
         motion_metadata_with_runner_state(metadata, runner_state),
-        runtime_fingerprints,
+        deployment_contract,
     )
 
 
@@ -469,10 +466,10 @@ def motion_checkpoint_metadata(
 ) -> CheckpointMetadata:
     normalized_asset = normalized_asset_config(run_config.asset_config)
     if run_config.asset_config.output_root is not None:
-        actual_runtime = capture_asset_runtime_fingerprints(
+        actual_runtime = capture_asset_contract(
             run_config.asset_config, run_config.env_config.terrain
         )
-        reproducible_runtime = capture_asset_runtime_fingerprints(
+        reproducible_runtime = capture_asset_contract(
             normalized_asset, run_config.env_config.terrain
         )
         if actual_runtime != reproducible_runtime:
@@ -524,10 +521,10 @@ def load_motion_resume(
         critic_policy_obs_size,
     )
     runner_state, static_policy, optimizer, restored_metadata = (
-        restore_runner_checkpoint(path, env)
+        restore_runner_checkpoint(path, env, expected_metadata)
     )
-    if restored_metadata != metadata:
-        raise RuntimeError("checkpoint metadata changed while restoring")
+    if restored_metadata != expected_metadata:
+        raise RuntimeError("resume did not resolve to the requested run")
     return runner_state, static_policy, optimizer
 
 
@@ -748,20 +745,3 @@ def _validate_fixed_tracking_asset(config: AssetPrepConfig) -> None:
         raise ValueError(
             "motion tracking requires the canonical differential-ankle contract"
         )
-
-
-def entrypoint() -> None:
-    hydra_entrypoint()
-
-
-@hydra.main(
-    version_base=None,
-    config_path=config_path("train_motion"),
-    config_name="default",
-)
-def hydra_entrypoint(config: DictConfig) -> None:
-    run_training(structured_config(MotionTrainingRunConfig, config))
-
-
-if __name__ == "__main__":
-    entrypoint()

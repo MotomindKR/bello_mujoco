@@ -1,40 +1,41 @@
-from dataclasses import fields, replace
+from dataclasses import fields
 
 import jax
 import jax.numpy as jnp
 import pytest
 
 from bello_mujoco.envs.rewards import (
-    ActionLimitRewardConfig,
-    BaseHeightRewardConfig,
     CommandConfig,
-    ContactTimingRewardConfig,
-    FlightRewardConfig,
-    HipDeviationRewardConfig,
-    InvalidActionRewardConfig,
-    JointLimitRewardConfig,
+    GaitRewardConfig,
+    LimitsPoseRewardConfig,
     RewardConfig,
     RewardInputs,
-    StandFootMotionRewardConfig,
-    TouchdownAirTimeRewardConfig,
-    TorqueL1RewardConfig,
-    TorquePeakRewardConfig,
-    TrackAngVelZRewardConfig,
-    TrackLinVelXYRewardConfig,
+    RewardWeights,
+    StandingRewardConfig,
+    TrackingRewardConfig,
     command_is_moving,
     command_is_standing,
     compute_locomotion_reward,
 )
 
 
-def reward_config(**terms) -> RewardConfig:
-    base = RewardConfig()
-    disabled = {
-        field.name: replace(getattr(base, field.name), weight=0.0)
-        for field in fields(base)
-    }
-    disabled.update(terms)
-    return RewardConfig(**disabled)
+def reward_config(
+    *,
+    tracking: TrackingRewardConfig = TrackingRewardConfig(),
+    standing: StandingRewardConfig = StandingRewardConfig(),
+    gait: GaitRewardConfig = GaitRewardConfig(),
+    limits_pose: LimitsPoseRewardConfig = LimitsPoseRewardConfig(),
+    **weights: float,
+) -> RewardConfig:
+    disabled = {field.name: 0.0 for field in fields(RewardWeights)}
+    disabled.update(weights)
+    return RewardConfig(
+        weights=RewardWeights(**disabled),
+        tracking=tracking,
+        standing=standing,
+        gait=gait,
+        limits_pose=limits_pose,
+    )
 
 
 def reward_inputs(**updates) -> RewardInputs:
@@ -121,11 +122,11 @@ def test_command_semantics_use_per_axis_deadbands() -> None:
 
 def test_tracking_reward_is_maximal_at_command_and_scales_with_timestep() -> None:
     config = reward_config(
-        track_lin_vel_xy=TrackLinVelXYRewardConfig(
-            weight=2.0,
-            moving_std=0.75,
-            still_std=0.25,
-        )
+        track_lin_vel_xy=2.0,
+        tracking=TrackingRewardConfig(
+            lin_vel_xy_moving_std=0.75,
+            lin_vel_xy_still_std=0.25,
+        ),
     )
     inputs = reward_inputs(
         command=jnp.asarray([0.5, -0.25, 0.0]),
@@ -142,15 +143,13 @@ def test_tracking_reward_is_maximal_at_command_and_scales_with_timestep() -> Non
 
 def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> None:
     config = reward_config(
-        track_lin_vel_xy=TrackLinVelXYRewardConfig(
-            weight=1.0,
-            moving_std=0.75,
-            still_std=0.25,
-        ),
-        track_ang_vel_z=TrackAngVelZRewardConfig(
-            weight=1.0,
-            moving_std=0.5,
-            still_std=0.2,
+        track_lin_vel_xy=1.0,
+        track_ang_vel_z=1.0,
+        tracking=TrackingRewardConfig(
+            lin_vel_xy_moving_std=0.75,
+            lin_vel_xy_still_std=0.25,
+            ang_vel_z_moving_std=0.5,
+            ang_vel_z_still_std=0.2,
         ),
     )
     inputs = reward_inputs(command=jnp.asarray([0.5, 0.0, 0.0]))
@@ -188,7 +187,8 @@ def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> N
 
 def test_joint_limit_penalty_increases_with_distance_past_soft_limit() -> None:
     config = reward_config(
-        joint_limit=JointLimitRewardConfig(weight=-1.0, soft_limit_factor=0.9)
+        joint_limit=-1.0,
+        limits_pose=LimitsPoseRewardConfig(joint_soft_limit_factor=0.9),
     )
     _, near = compute_locomotion_reward(
         config, reward_inputs(joint_pos=jnp.asarray([0.95, 0.0]))
@@ -202,7 +202,8 @@ def test_joint_limit_penalty_increases_with_distance_past_soft_limit() -> None:
 
 def test_negative_total_reward_is_not_discarded() -> None:
     config = reward_config(
-        joint_limit=JointLimitRewardConfig(weight=-1.0, soft_limit_factor=0.9)
+        joint_limit=-1.0,
+        limits_pose=LimitsPoseRewardConfig(joint_soft_limit_factor=0.9),
     )
     reward, terms = compute_locomotion_reward(
         config, reward_inputs(joint_pos=jnp.asarray([1.2, 0.0]))
@@ -213,8 +214,7 @@ def test_negative_total_reward_is_not_discarded() -> None:
 
 
 def test_termination_penalty_scales_with_timestep() -> None:
-    base = RewardConfig()
-    config = reward_config(termination=replace(base.termination, weight=-2.0))
+    config = reward_config(termination=-2.0)
 
     first, first_terms = compute_locomotion_reward(
         config,
@@ -232,9 +232,8 @@ def test_termination_penalty_scales_with_timestep() -> None:
 
 def test_hip_deviation_uses_lateral_command_axis() -> None:
     config = reward_config(
-        hip_deviation=HipDeviationRewardConfig(
-            weight=-1.0, lateral_command_threshold=0.1
-        )
+        hip_deviation=-1.0,
+        limits_pose=LimitsPoseRewardConfig(hip_lateral_command_threshold=0.1),
     )
     inputs = reward_inputs(joint_pos_rel=jnp.asarray([0.5, 0.0]))
 
@@ -251,7 +250,8 @@ def test_hip_deviation_uses_lateral_command_axis() -> None:
 
 def test_action_limit_penalty_is_quadratic_outside_soft_band() -> None:
     config = reward_config(
-        action_limit=ActionLimitRewardConfig(weight=-1.0, soft_limit_ratio=0.8)
+        action_limit=-1.0,
+        limits_pose=LimitsPoseRewardConfig(action_soft_limit_ratio=0.8),
     )
     _, boundary = compute_locomotion_reward(
         config, reward_inputs(action=jnp.asarray([0.8, 0.0]))
@@ -265,8 +265,8 @@ def test_action_limit_penalty_is_quadratic_outside_soft_band() -> None:
 
 def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> None:
     config = reward_config(
-        torque_l1=TorqueL1RewardConfig(weight=-1.0),
-        torque_peak=TorquePeakRewardConfig(weight=-10.0),
+        torque_l1=-1.0,
+        torque_peak=-10.0,
     )
     inputs = reward_inputs(
         actuator_force=jnp.asarray([1.0, 4.0]),
@@ -285,7 +285,7 @@ def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> N
 
 
 def test_invalid_action_checks_requested_target_and_policy_clip() -> None:
-    config = reward_config(invalid_action=InvalidActionRewardConfig(weight=-1.0))
+    config = reward_config(invalid_action=-1.0)
     _, terms = compute_locomotion_reward(
         config,
         reward_inputs(
@@ -298,11 +298,11 @@ def test_invalid_action_checks_requested_target_and_policy_clip() -> None:
 
 def test_contact_timing_event_penalty_scales_with_timestep() -> None:
     config = reward_config(
-        contact_timing=ContactTimingRewardConfig(
-            weight=-5.0,
-            min_air_time=0.2,
-            min_contact_time=0.3,
-        )
+        contact_timing=-5.0,
+        gait=GaitRewardConfig(
+            contact_min_air_time=0.2,
+            contact_min_contact_time=0.3,
+        ),
     )
     _, terms = compute_locomotion_reward(
         config,
@@ -341,11 +341,11 @@ def test_contact_timing_event_penalty_scales_with_timestep() -> None:
 
 def test_flight_penalty_requires_motion_and_both_feet_airborne() -> None:
     config = reward_config(
-        flight=FlightRewardConfig(
-            weight=-2.0,
-            body_speed_threshold=0.1,
-            yaw_speed_threshold=0.1,
-        )
+        flight=-2.0,
+        gait=GaitRewardConfig(
+            flight_body_speed_threshold=0.1,
+            flight_yaw_speed_threshold=0.1,
+        ),
     )
     airborne = reward_inputs(
         foot_contact=jnp.zeros(2),
@@ -375,15 +375,13 @@ def test_flight_penalty_requires_motion_and_both_feet_airborne() -> None:
 
 def test_pure_yaw_command_enables_stepping_event_rewards() -> None:
     config = reward_config(
-        contact_timing=ContactTimingRewardConfig(
-            weight=-0.1,
-            min_air_time=0.2,
-            min_contact_time=0.3,
-        ),
-        touchdown_air_time=TouchdownAirTimeRewardConfig(
-            weight=2.0,
-            min_air_time=0.2,
-            max_air_time=0.5,
+        contact_timing=-0.1,
+        touchdown_air_time=2.0,
+        gait=GaitRewardConfig(
+            contact_min_air_time=0.2,
+            contact_min_contact_time=0.3,
+            touchdown_min_air_time=0.2,
+            touchdown_max_air_time=0.5,
         ),
     )
     _, terms = compute_locomotion_reward(
@@ -403,11 +401,11 @@ def test_pure_yaw_command_enables_stepping_event_rewards() -> None:
 
 def test_touchdown_air_time_requires_a_moving_command() -> None:
     config = reward_config(
-        touchdown_air_time=TouchdownAirTimeRewardConfig(
-            weight=2.0,
-            min_air_time=0.2,
-            max_air_time=0.5,
-        )
+        touchdown_air_time=2.0,
+        gait=GaitRewardConfig(
+            touchdown_min_air_time=0.2,
+            touchdown_max_air_time=0.5,
+        ),
     )
     inputs = reward_inputs(
         foot_contact=jnp.asarray([1.0, 1.0]),
@@ -436,11 +434,11 @@ def test_touchdown_air_time_requires_a_moving_command() -> None:
 
 def test_stand_foot_motion_is_bounded_command_gated_and_contact_free() -> None:
     config = reward_config(
-        stand_foot_motion=StandFootMotionRewardConfig(
-            weight=-0.25,
-            linear_speed_scale=0.15,
-            angular_speed_scale=1.0,
-            angular_weight=0.25,
+        stand_foot_motion=-0.25,
+        standing=StandingRewardConfig(
+            foot_linear_speed_scale=0.15,
+            foot_angular_speed_scale=1.0,
+            foot_angular_weight=0.25,
         ),
     )
     inputs = reward_inputs()
@@ -488,13 +486,63 @@ def test_stand_foot_motion_is_bounded_command_gated_and_contact_free() -> None:
     assert saturated["reward/stand_foot_motion"] == pytest.approx(-0.00625)
 
 
+def test_default_reward_matches_strong_stand_numerical_baseline() -> None:
+    inputs = reward_inputs(
+        command=jnp.asarray([0.35, -0.22, 0.28]),
+        lin_vel_xy=jnp.asarray([0.18, -0.31]),
+        yaw_vel_z=jnp.asarray(0.11),
+        lin_vel_z=jnp.asarray(-0.07),
+        ang_vel_xy=jnp.asarray([0.04, -0.09]),
+        projected_gravity=jnp.asarray([0.08, -0.03, -0.99]),
+        base_height=jnp.asarray(0.82),
+        joint_pos=jnp.asarray([0.95, -0.93]),
+        joint_pos_rel=jnp.asarray([0.12, -0.19]),
+        action=jnp.asarray([0.91, -0.84]),
+        requested_action=jnp.asarray([1.15, -0.92]),
+        last_action=jnp.asarray([0.64, -0.55]),
+        actuator_force=jnp.asarray([2.4, -3.2]),
+        actuator_peak_force=jnp.asarray([2.0, 4.0]),
+        foot_contact=jnp.asarray([1.0, 0.0]),
+        last_foot_contact=jnp.asarray([False, True]),
+        foot_air_time=jnp.asarray([0.12, 0.34]),
+        foot_contact_time=jnp.asarray([0.0, 0.18]),
+        foot_linear_velocity=jnp.asarray([[0.17, 0.03, -0.02], [0.09, -0.11, 0.04]]),
+        foot_angular_speed=jnp.asarray([0.6, 0.9]),
+        undesired_contact=jnp.asarray(1.0),
+        self_collision=jnp.asarray(0.5),
+        done=jnp.asarray(True),
+    )
+
+    reward, terms = compute_locomotion_reward(RewardConfig(), inputs)
+    assert reward == pytest.approx(-2.031494140625)
+    assert terms["reward/track_lin_vel_xy"] == pytest.approx(0.0187267773)
+    assert terms["reward/track_ang_vel_z"] == pytest.approx(0.0178166311)
+    assert terms["reward/action_limit"] == pytest.approx(-0.003425)
+    assert terms["reward/torque_peak"] == pytest.approx(-0.0048000021)
+    assert terms["reward/contact_timing"] == pytest.approx(-0.0320000052)
+    assert terms["reward/touchdown_air_time"] == pytest.approx(0.0005999999)
+    assert terms["reward/termination"] == pytest.approx(-2.0)
+
+    standing_reward, standing_terms = compute_locomotion_reward(
+        RewardConfig(),
+        inputs.replace(
+            command=jnp.zeros(3),
+            lin_vel_xy=jnp.asarray([0.05, -0.02]),
+            yaw_vel_z=jnp.asarray(0.03),
+            foot_contact=jnp.ones(2),
+            last_foot_contact=jnp.ones(2, dtype=bool),
+            done=jnp.asarray(False),
+        ),
+    )
+    assert standing_reward == pytest.approx(-0.0168412589)
+    assert standing_terms["reward/stand_foot_motion"] == pytest.approx(-0.0187412165)
+    assert standing_terms["reward/contact_timing"] == pytest.approx(0.0)
+    assert standing_terms["reward/touchdown_air_time"] == pytest.approx(0.0)
+
+
 def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
-    base = RewardConfig()
     config = RewardConfig(
-        **{
-            field.name: replace(getattr(base, field.name), weight=1.0)
-            for field in fields(base)
-        }
+        weights=RewardWeights(**{field.name: 1.0 for field in fields(RewardWeights)})
     )
     moving_inputs = reward_inputs(
         command=jnp.asarray([0.5, 0.5, 0.5]),
@@ -549,7 +597,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
     assert jnp.isfinite(reward)
     assert all(bool(jnp.isfinite(term)) for term in moving_terms.values())
     assert set(moving_terms) == {
-        f"reward/{field.name}" for field in fields(RewardConfig())
+        f"reward/{field.name}" for field in fields(RewardWeights)
     }
     for name in moving_terms:
         coarse = moving_terms[name]
@@ -566,38 +614,19 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
 
 def test_reward_validation_rejects_invalid_safety_ranges() -> None:
     with pytest.raises(ValueError, match="soft_limit_ratio"):
-        reward_config(
-            action_limit=ActionLimitRewardConfig(weight=-1.0, soft_limit_ratio=1.0)
-        )
+        RewardConfig(limits_pose=LimitsPoseRewardConfig(action_soft_limit_ratio=1.0))
     with pytest.raises(ValueError, match="soft_limit_factor"):
-        reward_config(
-            joint_limit=JointLimitRewardConfig(weight=-1.0, soft_limit_factor=0.0)
+        RewardConfig(limits_pose=LimitsPoseRewardConfig(joint_soft_limit_factor=0.0))
+    with pytest.raises(ValueError, match="base_height_target"):
+        RewardConfig(limits_pose=LimitsPoseRewardConfig(base_height_target=0.0))
+    with pytest.raises(ValueError, match="foot_linear_speed_scale"):
+        RewardConfig(standing=StandingRewardConfig(foot_linear_speed_scale=0.0))
+    with pytest.raises(ValueError, match="foot_angular_speed_scale"):
+        RewardConfig(
+            standing=StandingRewardConfig(foot_angular_speed_scale=float("nan"))
         )
-    with pytest.raises(ValueError, match="target_height"):
-        reward_config(
-            base_height=BaseHeightRewardConfig(weight=-1.0, target_height=0.0)
-        )
-    with pytest.raises(ValueError, match="linear_speed_scale"):
-        reward_config(
-            stand_foot_motion=StandFootMotionRewardConfig(
-                weight=-0.25,
-                linear_speed_scale=0.0,
-            )
-        )
-    with pytest.raises(ValueError, match="angular_speed_scale"):
-        reward_config(
-            stand_foot_motion=StandFootMotionRewardConfig(
-                weight=-0.25,
-                angular_speed_scale=float("nan"),
-            )
-        )
-    with pytest.raises(ValueError, match="angular_weight"):
-        reward_config(
-            stand_foot_motion=StandFootMotionRewardConfig(
-                weight=-0.25,
-                angular_weight=-1.0,
-            )
-        )
+    with pytest.raises(ValueError, match="foot_angular_weight"):
+        RewardConfig(standing=StandingRewardConfig(foot_angular_weight=-1.0))
 
 
 def test_command_validation_requires_a_separate_moving_range() -> None:
@@ -615,28 +644,32 @@ def test_command_validation_requires_a_separate_moving_range() -> None:
 
 
 @pytest.mark.parametrize(
-    "term",
+    "gait",
     [
-        ContactTimingRewardConfig(min_air_time=float("nan")),
-        ContactTimingRewardConfig(min_air_time=float("inf")),
-        ContactTimingRewardConfig(min_contact_time=float("nan")),
-        ContactTimingRewardConfig(min_contact_time=float("inf")),
+        GaitRewardConfig(contact_min_air_time=float("nan")),
+        GaitRewardConfig(contact_min_air_time=float("inf")),
+        GaitRewardConfig(contact_min_contact_time=float("nan")),
+        GaitRewardConfig(contact_min_contact_time=float("inf")),
     ],
 )
-def test_contact_timing_validation_rejects_nonfinite_bounds(term) -> None:
+def test_contact_timing_validation_rejects_nonfinite_bounds(
+    gait: GaitRewardConfig,
+) -> None:
     with pytest.raises(ValueError, match="positive and finite"):
-        reward_config(contact_timing=term)
+        RewardConfig(gait=gait)
 
 
 @pytest.mark.parametrize(
-    "term",
+    "gait",
     [
-        TouchdownAirTimeRewardConfig(min_air_time=float("nan")),
-        TouchdownAirTimeRewardConfig(min_air_time=float("inf")),
-        TouchdownAirTimeRewardConfig(max_air_time=float("nan")),
-        TouchdownAirTimeRewardConfig(max_air_time=float("inf")),
+        GaitRewardConfig(touchdown_min_air_time=float("nan")),
+        GaitRewardConfig(touchdown_min_air_time=float("inf")),
+        GaitRewardConfig(touchdown_max_air_time=float("nan")),
+        GaitRewardConfig(touchdown_max_air_time=float("inf")),
     ],
 )
-def test_touchdown_air_time_validation_rejects_nonfinite_bounds(term) -> None:
+def test_touchdown_air_time_validation_rejects_nonfinite_bounds(
+    gait: GaitRewardConfig,
+) -> None:
     with pytest.raises(ValueError, match="finite"):
-        reward_config(touchdown_air_time=term)
+        RewardConfig(gait=gait)

@@ -9,7 +9,6 @@ import mujoco
 from mujoco import mjx
 import numpy as np
 import pytest
-from hydra import compose, initialize_config_dir
 
 from bello_mujoco.assets_pipeline.prepare import (
     PreparedAsset,
@@ -27,6 +26,7 @@ from bello_mujoco.envs.motion_tracking import (
     quat_multiply,
     yaw_quat_from_angle,
 )
+from bello_mujoco.experiment_profiles import motion_training_profile
 from bello_mujoco.motion import (
     DEFAULT_TRACKED_BODY_NAMES,
     FIXED_TRACKING_JOINT_AVAILABILITY,
@@ -38,7 +38,6 @@ from bello_mujoco.motion import (
     sample_motion,
 )
 from bello_mujoco.sim import load_prepared_bello_model
-from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.tools.import_gmr_motion import (
     _build_qpos,
     _validate_legacy_motion,
@@ -209,15 +208,7 @@ def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
 
 
 def test_default_motion_training_config_has_fixed_waist_and_head_contract() -> None:
-    from bello_mujoco.tools.train_motion_ppo import MotionTrainingRunConfig
-
-    clear_hydra()
-    with initialize_config_dir(
-        version_base=None, config_dir=str(CONFIG_ROOT / "train_motion")
-    ):
-        config = structured_config(
-            MotionTrainingRunConfig, compose(config_name="default")
-        )
+    config = motion_training_profile()
 
     assert config.asset_config.joint_availability == FIXED_TRACKING_JOINT_AVAILABILITY
     assert config.asset_config.end_effector_sphere_mode == "both"
@@ -225,81 +216,17 @@ def test_default_motion_training_config_has_fixed_waist_and_head_contract() -> N
     assert len(config.asset_config.actuator_config.policy_joint_names) == 25
     assert config.motion.directory == Path("motions/local/lafan1_fixed_head")
     assert config.motion.sequence == "walk1_subject1"
-    assert config.checkpoint_config.name == "walk1_subject1_wholebody"
+    assert config.checkpoint_config.name == "walk1_subject1_bello_motion_seed0"
     assert config.video_config.enabled
     assert config.video_config.render_final
     assert config.video_config.log_wandb
     assert config.video_config.wandb_name == "eval/motion_policy"
-    assert config.config.num_envs == 1024
-    assert config.config.learning_rate == pytest.approx(3.0e-4)
-    assert config.config.policy.init_log_std == pytest.approx(-2.0)
-    assert config.config.policy.action_distribution == "tanh_gaussian"
-    assert config.warp.njmax == 2048
-
-
-def test_walk_overfit_config_is_reproducible_and_mildly_perturbed() -> None:
-    from bello_mujoco.tools.train_motion_ppo import MotionTrainingRunConfig
-
-    clear_hydra()
-    config_dir = CONFIG_ROOT.parent / "experiments" / "train_motion"
-    with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
-        config = structured_config(
-            MotionTrainingRunConfig,
-            compose(
-                config_name="walk_overfit",
-                overrides=[f"hydra.searchpath=[file://{CONFIG_ROOT / 'train_motion'}]"],
-            ),
-        )
-
-    assert not config.dry_run
-    assert config.config.num_updates == 1024
-    assert config.env_config.reset.random_start
-    assert config.env_config.reset.initial_xy_range == (0.0, 0.0)
-    assert config.env_config.reset.initial_yaw_range == (0.0, 0.0)
-    assert config.env_config.reset.joint_pos_noise == pytest.approx((-0.01, 0.01))
-    assert config.config.schedule == "constant"
-    assert config.config.learning_rate == pytest.approx(1.0e-4)
-    assert config.config.ent_coef == pytest.approx(1.0e-3)
-    assert config.checkpoint_config.every_updates == 100
-    assert config.video_config.every_updates == 100
-
-
-def test_beyondmimic_config_matches_paper_contract() -> None:
-    from bello_mujoco.tools.train_motion_ppo import MotionTrainingRunConfig
-
-    clear_hydra()
-    config_dir = CONFIG_ROOT.parent / "experiments" / "train_motion"
-    with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
-        config = structured_config(
-            MotionTrainingRunConfig,
-            compose(
-                config_name="beyondmimic",
-                overrides=[f"hydra.searchpath=[file://{CONFIG_ROOT / 'train_motion'}]"],
-            ),
-        )
-
-    assert config.env_config.formulation == "beyondmimic"
-    assert config.env_config.anchor_body_name == "torso_link"
     assert config.config.num_envs == 4096
-    assert config.config.num_steps == 24
-    assert config.config.num_updates == 30000
-    assert config.config.num_minibatches == 4
-    assert config.config.policy.hidden_dims == (512, 256, 128)
-    assert config.config.policy.activation == "elu"
-    assert config.config.policy.obs_stack_size == 1
+    assert config.config.learning_rate == pytest.approx(1.0e-3)
     assert config.config.policy.init_log_std == pytest.approx(0.0)
-    assert config.env_config.observation_noise.enabled
-    assert config.env_config.adaptive_sampling.enabled
-    assert config.env_config.adaptive_sampling.bin_seconds == pytest.approx(1.0)
-    assert config.env_config.adaptive_sampling.ema_alpha == pytest.approx(0.001)
-    assert config.env_config.adaptive_sampling.kernel_size == 3
-    assert config.env_config.adaptive_sampling.kernel_decay == pytest.approx(0.8)
-    assert config.env_config.adaptive_sampling.uniform_ratio == pytest.approx(0.1)
-    assert config.checkpoint_config.name == ("walk1_subject1_bello_beyondmimic_seed0")
-    assert config.env_config.push.enabled
-    assert config.env_config.reward.joint_position_weight == 0.0
-    assert config.env_config.reward.body_linear_velocity_weight == 1.0
-    assert config.env_config.reward.undesired_contact_weight == pytest.approx(-0.1)
+    assert config.config.policy.action_distribution == "tanh_gaussian"
+    assert config.env_config.formulation == "beyondmimic_joint_limits"
+    assert config.warp.njmax == 2048
 
 
 def test_gmr_joint_columns_are_remapped_by_name(

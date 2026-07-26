@@ -11,17 +11,14 @@ import sys
 import time
 from typing import TextIO
 
-import hydra
 import mujoco
 import numpy as np
-from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
 from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.assets import project_data_path
 from bello_mujoco.ebimu_serial import EbimuSerialEmulator
-from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.imu import (
     ImuNoiseConfig,
     ImuNoiseInjector,
@@ -91,7 +88,7 @@ class RobstrideRunnerConfig:
     )
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
-    enforce_torque_limits: bool = False
+    enforce_torque_limits: bool = True
     headless: bool = False
     real_time: bool = True
     max_steps: int | None = None
@@ -346,6 +343,67 @@ def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
             "feedback still saturates at each model's protocol torque range"
         )
     run_simulation(model, emulators, transmission, config, torso_hold)
+
+
+def run_prescribed_gains(
+    config: RobstrideRunnerConfig = RobstrideRunnerConfig(),
+) -> None:
+    """Run the physical morphology under its generated nominal PD targets."""
+
+    validate_config(config)
+    prepared = prepare_asset(config.asset_config)
+    model = load_prepared_bello_model(
+        prepared,
+        terrain=FLAT_TERRAIN,
+        simulation_physics=config.simulation_physics,
+        actuator_config=config.asset_config.actuator_config,
+        use_viewer_model=not config.headless,
+        load_mjx=False,
+    )
+    torso_hold = None
+    if config.torso_hold:
+        model, torso_hold = add_torso_hold(model, config.torso_drop_limit_m)
+    data = mujoco.MjData(model.mj_model)
+    reset_data(model, data)
+    if torso_hold is not None:
+        torso_hold.initialize(model.mj_model, data)
+
+    viewer_context = nullcontext(None)
+    if not config.headless:
+        from mujoco import viewer as mj_viewer
+
+        viewer_context = mj_viewer.launch_passive(model.mj_model, data)
+
+    print("Bello prescribed-gains simulation ready")
+    print("  target: generated nominal pose")
+    print("  torque limits: enforced by the canonical actuator profile")
+    start_wall = time.monotonic()
+    start_sim = float(data.time)
+    released = torso_hold is None
+    steps = 0
+    with viewer_context as viewer:
+        while config.max_steps is None or steps < config.max_steps:
+            if viewer is not None and not viewer.is_running():
+                break
+            if (
+                not released
+                and torso_hold is not None
+                and config.release_after_seconds is not None
+                and float(data.time) - start_sim >= config.release_after_seconds
+            ):
+                released = torso_hold.release(data)
+                if released:
+                    print("Torso released; robot is now free")
+            data.ctrl[:] = model.default_ctrl
+            mujoco.mj_step(model.mj_model, data)
+            steps += 1
+            if viewer is not None:
+                viewer.sync()
+            if config.real_time:
+                deadline = start_wall + (float(data.time) - start_sim)
+                delay = deadline - time.monotonic()
+                if delay > 0.0:
+                    time.sleep(delay)
 
 
 def run_simulation(
@@ -847,20 +905,3 @@ def print_runner_summary(
             f"  {name}: {emulator.spec.interface} host={emulator.spec.host_id} "
             f"motors=[{ids}]"
         )
-
-
-def entrypoint() -> None:
-    hydra_entrypoint()
-
-
-@hydra.main(
-    version_base=None,
-    config_path=config_path("robstride_runner"),
-    config_name="default",
-)
-def hydra_entrypoint(config: DictConfig) -> None:
-    main(structured_config(RobstrideRunnerConfig, config))
-
-
-if __name__ == "__main__":
-    entrypoint()

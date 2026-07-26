@@ -12,7 +12,6 @@ from bello_mujoco.vast import (
     GitSelection,
     VastLifecycle,
     VastOffer,
-    VastOfferConfig,
     VastSdkClient,
     VastTrainConfig,
     credential,
@@ -83,8 +82,9 @@ class LifecycleApi:
 
 
 def valid_config(**kwargs) -> VastTrainConfig:
+    kwargs.setdefault("hydra_overrides", ("experiment=locomotion",))
     return VastTrainConfig(
-        train_config=Path("experiments/train/locomotion.yaml"),
+        train_config=Path("configs/profiles/train/locomotion.yaml"),
         max_price=1.25,
         branch="main",
         yes=True,
@@ -96,14 +96,22 @@ def selection() -> GitSelection:
     return GitSelection(
         branch="main",
         commit="a" * 40,
-        config_path=PurePosixPath("experiments/train/locomotion.yaml"),
+        config_path=PurePosixPath("configs/profiles/train/locomotion.yaml"),
         repo_url="https://github.com/MotomindKR/bello_mujoco.git",
     )
 
 
 def motion_config(**kwargs) -> VastTrainConfig:
+    kwargs.setdefault(
+        "hydra_overrides",
+        (
+            "experiment=motion",
+            "motion_path=motions/asap_fixed_head/"
+            "video_single_foot_balance_level1_filter_amass.npz",
+        ),
+    )
     return VastTrainConfig(
-        train_config=Path("experiments/train_motion/asap_single_foot_balance.yaml"),
+        train_config=Path("configs/profiles/train/motion.yaml"),
         task="motion-tracking",
         max_price=1.25,
         branch="main",
@@ -116,9 +124,7 @@ def motion_selection() -> GitSelection:
     return GitSelection(
         branch="main",
         commit="b" * 40,
-        config_path=PurePosixPath(
-            "experiments/train_motion/asap_single_foot_balance.yaml"
-        ),
+        config_path=PurePosixPath("configs/profiles/train/motion.yaml"),
         repo_url="https://github.com/MotomindKR/bello_mujoco.git",
         motion_path=PurePosixPath(
             "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
@@ -139,7 +145,7 @@ def test_vast_task_defaults_to_locomotion_and_rejects_unknown_values() -> None:
         validate_config(valid_config(task="unsupported"))  # type: ignore[arg-type]
 
 
-def test_resolve_vast_motion_path_uses_recipe_and_hydra_overrides() -> None:
+def test_resolve_vast_motion_path_uses_public_motion_path_override() -> None:
     recipe = """
 motion:
   directory: motions/local/lafan1_fixed_head
@@ -149,8 +155,8 @@ motion:
     assert vast.resolve_vast_motion_path(
         recipe,
         (
-            'motion.directory="motions/asap_fixed_head"',
-            "motion.sequence=video_single_foot_balance_level4_filter_amass",
+            'motion_path="motions/asap_fixed_head/'
+            'video_single_foot_balance_level4_filter_amass.npz"',
         ),
     ) == PurePosixPath(
         "motions/asap_fixed_head/video_single_foot_balance_level4_filter_amass.npz"
@@ -169,6 +175,11 @@ motion:
         vast.resolve_vast_motion_path(
             "motion: {directory: motions/asap_fixed_head, sequence: ../clip}"
         )
+    with pytest.raises(ValueError, match="must name an .npz clip"):
+        vast.resolve_vast_motion_path(
+            local_recipe,
+            ("motion_path=motions/asap_fixed_head/clip.pkl",),
+        )
 
 
 def test_motion_git_selection_verifies_clip_at_selected_commit(
@@ -178,8 +189,8 @@ def test_motion_git_selection_verifies_clip_at_selected_commit(
     checked_objects = []
     recipe = """
 motion:
-  directory: motions/asap_fixed_head
-  sequence: video_single_foot_balance_level1_filter_amass
+  directory: motions/local/lafan1_fixed_head
+  sequence: walk1_subject1
 """
 
     monkeypatch.setattr(vast, "remote_branches", lambda repo_root: ["main"])
@@ -193,7 +204,7 @@ motion:
             return ""
         if args == (
             "show",
-            f"{commit}:experiments/train_motion/asap_single_foot_balance.yaml",
+            f"{commit}:configs/profiles/train/motion.yaml",
         ):
             return recipe
         if args == ("remote", "get-url", "origin"):
@@ -222,10 +233,6 @@ def test_validate_config_restricts_lifecycle_state_to_vast_directory(
 ) -> None:
     with pytest.raises(ValueError, match="lifecycle-state-dir"):
         validate_config(valid_config(lifecycle_state_dir=state_dir))
-
-
-def test_validate_config_accepts_isolated_lifecycle_state_directory() -> None:
-    validate_config(valid_config(lifecycle_state_dir=Path(".vast/yaw-run")))
 
 
 def test_launch_pipeline_isolates_lifecycle_state_directory(
@@ -404,39 +411,29 @@ def test_sdk_client_normalizes_raw_vast_response_shapes() -> None:
     assert raw_client.destroyed == [456]
 
 
-def test_sdk_client_rejects_error_mapping_as_instance_listing() -> None:
+@pytest.mark.parametrize(
+    ("method", "response", "message"),
+    [
+        ("instances", {"error": "rate limited"}, "instances"),
+        ("instances", {"instances": [{"error": "rate limited"}]}, "instances"),
+        ("offers", {"error": "rate limited"}, "offer"),
+        ("offers", {"offers": [{"error": "rate limited"}]}, "offer"),
+    ],
+)
+def test_sdk_client_rejects_error_mappings(method, response, message) -> None:
     class RawClient:
-        def __init__(self, response):
-            self.response = response
-
         def show_instances(self):
-            return json.dumps(self.response)
-
-    for response in (
-        {"error": "rate limited"},
-        {"instances": [{"error": "rate limited"}]},
-    ):
-        client = object.__new__(VastSdkClient)
-        client._client = RawClient(response)
-        with pytest.raises(RuntimeError, match="unexpected Vast instances response"):
-            client.show_instances()
-
-
-def test_sdk_client_rejects_error_mapping_as_offer_listing() -> None:
-    class RawClient:
-        def __init__(self, response):
-            self.response = response
+            return json.dumps(response)
 
         def search_offers(self, **kwargs):
-            return json.dumps(self.response)
+            return json.dumps(response)
 
-    for response in (
-        {"error": "rate limited"},
-        {"offers": [{"error": "rate limited"}]},
-    ):
-        client = object.__new__(VastSdkClient)
-        client._client = RawClient(response)
-        with pytest.raises(RuntimeError, match="unexpected Vast offer response"):
+    client = object.__new__(VastSdkClient)
+    client._client = RawClient()
+    with pytest.raises(RuntimeError, match=f"unexpected Vast {message}"):
+        if method == "instances":
+            client.show_instances()
+        else:
             client.search_offers("query", order="score-", limit=1, storage=80.0)
 
 
@@ -781,9 +778,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     assert (job_dir / "output.log").read_text() == "available\n"
 
 
-def test_motion_remote_command_uses_motion_trainer_for_validation_and_training(
-    tmp_path,
-) -> None:
+def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> None:
     command = vast._remote_start_command(
         str(tmp_path / "job"),
         motion_selection(),
@@ -792,14 +787,17 @@ def test_motion_remote_command_uses_motion_trainer_for_validation_and_training(
     )
 
     assert shlex.split(command)[-1] == "motion-tracking"
-    assert (
-        'motion-tracking) train_command="bello-train-motion-ppo"'
-        in vast.REMOTE_TRAIN_SCRIPT
+    assert 'locomotion|motion-tracking) train_command="bello-train"' in (
+        vast.REMOTE_TRAIN_SCRIPT
     )
     assert vast.REMOTE_TRAIN_SCRIPT.count('uv run "$train_command"') == 2
     overrides_index = vast.REMOTE_TRAIN_SCRIPT.index("mapfile -t user_overrides")
-    validation_index = vast.REMOTE_TRAIN_SCRIPT.index("dry_run=true")
+    validation_index = vast.REMOTE_TRAIN_SCRIPT.index("total_timesteps=768")
+    user_index = vast.REMOTE_TRAIN_SCRIPT.index('"${user_overrides[@]}"')
+    forced_index = vast.REMOTE_TRAIN_SCRIPT.rindex("wandb_enabled=true")
+    checkpoint_index = vast.REMOTE_TRAIN_SCRIPT.index('checkpoint_name="$run_name"')
     assert overrides_index < validation_index
+    assert user_index < forced_index < checkpoint_index
 
 
 def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> None:
@@ -1165,23 +1163,3 @@ def test_pipeline_retains_recovery_state_when_destroy_fails(
 
     state_path = tmp_path / ".vast" / "active_instance.json"
     assert json.loads(state_path.read_text())["instance_id"] == 456
-
-
-def test_mandatory_training_overrides_follow_user_overrides() -> None:
-    user_index = vast.REMOTE_TRAIN_SCRIPT.index('"${user_overrides[@]}"')
-    forced_index = vast.REMOTE_TRAIN_SCRIPT.index("wandb_config.enabled=true")
-    checkpoint_index = vast.REMOTE_TRAIN_SCRIPT.index(
-        "checkpoint_config.upload_wandb_artifact=true"
-    )
-
-    assert user_index < forced_index < checkpoint_index
-
-
-def test_offer_config_can_override_asia_tier() -> None:
-    config = valid_config(
-        offer=VastOfferConfig(asia_countries=("JP", "TH")),
-    )
-
-    assert "geolocation in [JP,TH]" in offer_query(
-        config, countries=config.offer.asia_countries
-    )

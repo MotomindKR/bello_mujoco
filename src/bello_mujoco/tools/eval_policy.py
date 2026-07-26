@@ -2,11 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import sys
-from typing import Literal
-
-import hydra
-from omegaconf import DictConfig
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.checkpoint import (
@@ -14,7 +9,6 @@ from bello_mujoco.checkpoint import (
     restore_evaluation_checkpoint,
 )
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.rerun_eval import GamepadConfig, run_rerun_evaluation
 from bello_mujoco.train.ppo import critic_observation_size
@@ -25,16 +19,9 @@ class EvalPolicyConfig:
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     steps: int | None = None
     stop_on_done: bool = False
-    simulation_backend: Literal["mujoco", "mjx"] = "mujoco"
     stochastic_actions: bool = False
     action_seed: int = 0
     gamepad: GamepadConfig = GamepadConfig()
-
-
-@dataclass(frozen=True)
-class EvalToolConfig:
-    checkpoint_path: Path | None = None
-    eval_config: EvalPolicyConfig = EvalPolicyConfig()
 
 
 def main(
@@ -43,12 +30,12 @@ def main(
 ) -> None:
     validate_eval_config(eval_config)
     train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path, validate_implementation=False
+        checkpoint_path
     )
     if metadata.task != "locomotion":
         raise ValueError(
             f"checkpoint task is {metadata.task!r}, not 'locomotion'; use "
-            "bello-eval-motion-policy for motion checkpoints"
+            "`bello-eval task=motion` for motion checkpoints"
         )
     if any(
         value is None
@@ -66,7 +53,7 @@ def main(
         command_config=metadata.command,
         done_config=metadata.done,
         use_viewer_model=True,
-        load_mjx=eval_config.simulation_backend == "mjx",
+        load_mjx=False,
     )
     validate_checkpoint_shape(env, metadata)
     run_rerun_evaluation(
@@ -79,7 +66,6 @@ def main(
         gamepad_config=eval_config.gamepad,
         steps=eval_config.steps,
         stop_on_done=eval_config.stop_on_done,
-        simulation_backend=eval_config.simulation_backend,
         obs_stack_size=metadata.ppo.policy.obs_stack_size,
         stochastic_actions=eval_config.stochastic_actions,
         action_seed=eval_config.action_seed,
@@ -92,11 +78,6 @@ def validate_eval_config(config: EvalPolicyConfig) -> None:
     if len(config.command) != 3:
         raise ValueError(
             f"eval_config.command must have three values, got {config.command}"
-        )
-    if config.simulation_backend not in {"mujoco", "mjx"}:
-        raise ValueError(
-            "eval_config.simulation_backend must be 'mujoco' or 'mjx', got "
-            f"{config.simulation_backend!r}"
         )
     if config.action_seed < 0:
         raise ValueError(
@@ -146,36 +127,3 @@ def validate_checkpoint_shape(
         raise ValueError("checkpoint critic observation layout does not match runtime")
     if env.action_layout != metadata.action_layout:
         raise ValueError("checkpoint action layout does not match runtime")
-
-
-def entrypoint() -> None:
-    sys.argv[1:] = [expand_checkpoint_override(arg) for arg in sys.argv[1:]]
-    hydra_entrypoint()
-
-
-def expand_checkpoint_override(argument: str) -> str:
-    prefix = "checkpoint_path="
-    if not argument.startswith(prefix):
-        return argument
-    value = argument.removeprefix(prefix)
-    if not value.startswith("~"):
-        return argument
-    return prefix + str(Path(value).expanduser())
-
-
-@hydra.main(
-    version_base=None,
-    config_path=config_path("eval_policy"),
-    config_name="default",
-)
-def hydra_entrypoint(config: DictConfig) -> None:
-    cfg = structured_config(EvalToolConfig, config)
-    if cfg.checkpoint_path is None:
-        raise ValueError(
-            "checkpoint_path must be set, e.g. checkpoint_path=checkpoints/ppo_seed_0"
-        )
-    main(cfg.checkpoint_path.expanduser(), cfg.eval_config)
-
-
-if __name__ == "__main__":
-    entrypoint()

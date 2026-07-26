@@ -1,0 +1,14 @@
+experiment: hardware_locomotion
+motion_path: null
+max_price: null
+branch: null
+run_name: null
+duration_hours: 6.0
+yes: false
+dry_run: false
+overrides: []
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/vast_train/${now:%Y-%m-%d}/${now:%H-%M-%S}

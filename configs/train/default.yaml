@@ -34,9 +34,7 @@ config:
   target_max_abs: 10000.0
   gradient_norm_max: 10000.0
   policy:
-    hidden_size: 256
-    hidden_depth: 2
-    hidden_dims: null
+    hidden_dims: [256, 256]
     activation: tanh
     init_log_std: 0.0
     min_log_std: -5.0
@@ -50,7 +48,7 @@ asset_config:
   mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
   end_effector_sphere_mode: both
-  target_total_mass_kg: null
+  target_total_mass_kg: 60.0
   neighbor_exclusion_depth: 2
   # Preserve effort limits as reward normalization metadata without clipping
   # policy-actuator force before the over-peak penalty can observe it.
@@ -60,153 +58,10 @@ asset_config:
     motor_effort_limit_scale: 1.0
   joint_availability:
     waist_yaw: true
-    waist_roll: true
-    waist_pitch: true
-    neck_yaw: true
-    head_pitch: true
-  actuator_config:
-    joints:
-      left_hip_pitch_joint:
-        mode: policy
-        default_pos: -0.325
-        soft_limit: [-1.41372, 1.41372]
-        gains: [200.0, 5.0]
-        effort_limit: 120.0
-      right_hip_pitch_joint:
-        mode: policy
-        default_pos: 0.325
-        soft_limit: [-1.41372, 1.41372]
-        gains: [200.0, 5.0]
-        effort_limit: 120.0
-      left_hip_roll_joint:
-        mode: policy
-        default_pos: 0.0
-        soft_limit: [-1.41372, 1.41372]
-        gains: [150.0, 5.0]
-        effort_limit: 60.0
-      right_hip_roll_joint:
-        mode: policy
-        default_pos: 0.0
-        soft_limit: [-1.41372, 1.41372]
-        gains: [150.0, 5.0]
-        effort_limit: 60.0
-      left_hip_yaw_joint:
-        mode: policy
-        default_pos: 0.125
-        soft_limit: [-1.41372, 1.41372]
-        gains: [150.0, 5.0]
-        effort_limit: 60.0
-      right_hip_yaw_joint:
-        mode: policy
-        default_pos: -0.125
-        soft_limit: [-1.41372, 1.41372]
-        gains: [150.0, 5.0]
-        effort_limit: 60.0
-      left_knee_joint:
-        mode: policy
-        default_pos: 0.45
-        soft_limit: [0.0, 1.98968]
-        gains: [220.0, 6.0]
-        effort_limit: 120.0
-      right_knee_joint:
-        mode: policy
-        default_pos: 0.45
-        soft_limit: [0.0, 1.98968]
-        gains: [220.0, 6.0]
-        effort_limit: 120.0
-      left_ankle_pitch_joint:
-        mode: policy
-        default_pos: 0.3
-        soft_limit: [-0.44506, 0.96866]
-        gains: [22.0, 1.0]
-        effort_limit: 36.0
-      right_ankle_pitch_joint:
-        mode: policy
-        default_pos: 0.3
-        soft_limit: [-0.44506, 0.96866]
-        gains: [22.0, 1.0]
-        effort_limit: 36.0
-      left_ankle_roll_joint:
-        mode: policy
-        default_pos: 0.0
-        soft_limit: [-0.07857, 0.07857]
-        gains: [22.0, 1.0]
-        effort_limit: 36.0
-      right_ankle_roll_joint:
-        mode: policy
-        default_pos: 0.0
-        soft_limit: [-0.07857, 0.07857]
-        gains: [22.0, 1.0]
-        effort_limit: 36.0
-      waist_yaw_joint:
-        mode: policy
-        soft_limit: [-0.45, 0.45]
-        gains: [180.0, 12.0]
-        effort_limit: 120.0
-      waist_roll_joint:
-        mode: hold
-        gains: [240.0, 20.0]
-        effort_limit: 120.0
-      waist_pitch_joint:
-        mode: hold
-        gains: [240.0, 20.0]
-        effort_limit: 120.0
-      neck_yaw_joint:
-        mode: hold
-        gains: [5.5, 0.5]
-        effort_limit: 5.5
-      head_pitch_joint:
-        mode: hold
-        gains: [5.5, 0.5]
-        effort_limit: 5.5
-      right_shoulder_pitch_joint:
-        mode: hold
-        gains: [70.0, 2.0]
-        effort_limit: 120.0
-      right_shoulder_roll_joint:
-        mode: hold
-        gains: [70.0, 2.0]
-        effort_limit: 60.0
-      right_shoulder_yaw_joint:
-        mode: hold
-        gains: [20.0, 1.0]
-        effort_limit: 36.0
-      right_elbow_pitch_joint:
-        mode: hold
-        gains: [40.0, 2.0]
-        effort_limit: 36.0
-      right_elbow_yaw_joint:
-        mode: hold
-        gains: [20.0, 1.0]
-        effort_limit: 14.0
-      right_wrist_pitch_joint:
-        mode: hold
-        gains: [10.0, 1.0]
-        effort_limit: 14.0
-      left_shoulder_pitch_joint:
-        mode: hold
-        gains: [70.0, 2.0]
-        effort_limit: 120.0
-      left_shoulder_roll_joint:
-        mode: hold
-        gains: [70.0, 2.0]
-        effort_limit: 60.0
-      left_shoulder_yaw_joint:
-        mode: hold
-        gains: [20.0, 1.0]
-        effort_limit: 36.0
-      left_elbow_pitch_joint:
-        mode: hold
-        gains: [40.0, 2.0]
-        effort_limit: 36.0
-      left_elbow_yaw_joint:
-        mode: hold
-        gains: [20.0, 1.0]
-        effort_limit: 14.0
-      left_wrist_pitch_joint:
-        mode: hold
-        gains: [10.0, 1.0]
-        effort_limit: 14.0
+    waist_roll: false
+    waist_pitch: false
+    neck_yaw: false
+    head_pitch: false
 env_config:
   decimation: 4
   max_episode_steps: 1000
@@ -279,78 +134,61 @@ env_config:
     noise:
       enabled: false
 reward_config:
-  track_lin_vel_xy:
-    weight: 1.0
-    link: null
-    moving_std: 0.75
-    still_std: 0.25
-    frame_link: null
-  track_ang_vel_z:
-    weight: 1.0
-    link: null
-    moving_std: 0.5
-    still_std: 0.2
-  lin_vel_z:
-    weight: -2.0
-    link: null
-  ang_vel_xy:
-    weight: -0.15
-    link: null
-  flat_orientation:
-    weight: -2.0
-    link: null
-  base_height:
-    weight: -10.0
-    link: null
-    target_height: 0.86
-  action_rate:
-    weight: -0.01
-  action_limit:
-    weight: -1.0
-    soft_limit_ratio: 0.8
-  torque_l1:
-    weight: -1.2
-  torque_peak:
-    weight: -12.0
-  joint_pose:
-    weight: -0.1
-  stand_foot_motion:
-    weight: -1.0
-    linear_speed_scale: 0.15
-    angular_speed_scale: 1.0
-    angular_weight: 0.25
-  hip_deviation:
-    weight: -0.25
-    lateral_command_index: 1
-    lateral_command_threshold: 0.1
-  knee_deviation:
-    weight: -0.1
-  joint_limit:
-    weight: -1.0
-    soft_limit_factor: 0.9
-  invalid_action:
-    weight: 0.0
-  foot_slip:
-    weight: -0.25
-    angular_speed_scale: 0.0
-  flight:
-    weight: -2.0
-    body_speed_threshold: 0.1
-    yaw_speed_threshold: 0.1
-  contact_timing:
-    weight: -5.0
-    min_air_time: 0.2
-    min_contact_time: 0.3
-  touchdown_air_time:
-    weight: 0.5
-    min_air_time: 0.2
-    max_air_time: 0.5
-  undesired_contact:
-    weight: 0.0
-  self_collision:
-    weight: 0.0
-  termination:
-    weight: -100.0
+  weights:
+    track_lin_vel_xy: 1.0
+    track_ang_vel_z: 1.0
+    lin_vel_z: -2.0
+    ang_vel_xy: -0.15
+    flat_orientation: -2.0
+    base_height: -10.0
+    action_rate: -0.01
+    action_limit: -1.0
+    torque_l1: -1.2
+    torque_peak: -12.0
+    joint_pose: -0.1
+    stand_foot_motion: -1.0
+    hip_deviation: -0.25
+    knee_deviation: -0.1
+    joint_limit: -1.0
+    invalid_action: 0.0
+    foot_slip: -0.25
+    flight: -2.0
+    contact_timing: -5.0
+    touchdown_air_time: 0.5
+    undesired_contact: 0.0
+    self_collision: 0.0
+    termination: -100.0
+  links:
+    track_lin_vel_xy: null
+    track_lin_vel_xy_frame: null
+    track_ang_vel_z: null
+    lin_vel_z: null
+    ang_vel_xy: null
+    flat_orientation: null
+    base_height: null
+  tracking:
+    lin_vel_xy_moving_std: 0.75
+    lin_vel_xy_still_std: 0.25
+    ang_vel_z_moving_std: 0.5
+    ang_vel_z_still_std: 0.2
+  standing:
+    foot_linear_speed_scale: 0.15
+    foot_angular_speed_scale: 1.0
+    foot_angular_weight: 0.25
+  gait:
+    foot_slip_angular_speed_scale: 0.0
+    flight_body_speed_threshold: 0.1
+    flight_yaw_speed_threshold: 0.1
+    contact_min_air_time: 0.2
+    contact_min_contact_time: 0.3
+    touchdown_min_air_time: 0.2
+    touchdown_max_air_time: 0.5
+  limits_pose:
+    base_height_target: 0.86
+    action_soft_limit_ratio: 0.8
+    joint_soft_limit_factor: 0.9
+    hip_lateral_command_index: 1
+    hip_lateral_command_threshold: 0.1
 command_config:
   enabled: true
   lin_vel_x: [-0.5, 0.5]
@@ -386,7 +224,6 @@ video_config:
   every_updates: 100
   render_initial: false
   render_final: true
-  simulation_backend: mujoco
   output_dir: outputs/train_videos
   filename_prefix: rollout
   command: [0.0, 0.0, 0.0]

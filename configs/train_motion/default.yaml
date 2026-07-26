@@ -37,9 +37,7 @@ config:
   target_max_abs: 10000.0
   gradient_norm_max: 10000.0
   policy:
-    hidden_size: 256
-    hidden_depth: 2
-    hidden_dims: null
+    hidden_dims: [256, 256]
     activation: tanh
     init_log_std: -2.0
     min_log_std: -5.0

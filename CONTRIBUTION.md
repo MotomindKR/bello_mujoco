@@ -46,8 +46,8 @@ chore/update-lockfile
 - Include the validation commands you ran.
 - Keep generated files out of the diff.
 - Update [docs/index.md](docs/index.md) and any relevant topic doc, especially
-  [docs/training.md](docs/training.md) or [docs/evaluation.md](docs/evaluation.md),
-  when user-facing behavior changes.
+  [docs/training_and_evaluation.md](docs/training_and_evaluation.md) or
+  [docs/hardware.md](docs/hardware.md), when user-facing behavior changes.
 
 ## Validation
 
@@ -66,10 +66,10 @@ iteration, run focused files directly with `uv run pytest`.
 For simulation or training changes, also run:
 
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train-ppo \
-  --config-dir "$PWD/experiments/train" \
-  --config-name smoke
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train experiment=smoke
 ```
 
-See [docs/index.md](docs/index.md) for supported workflows, the training smoke,
-and links to topic-specific docs.
+The public commands are backed by `configs/commands/`; maintained training
+numerics live in `configs/profiles/train/`. See
+[docs/index.md](docs/index.md) for supported workflows, the training smoke, and
+links to topic-specific docs.

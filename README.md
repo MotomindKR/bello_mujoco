@@ -1,10 +1,11 @@
 # bello_mujoco
 
-MuJoCo/MJX-Warp simulation, locomotion and whole-body motion training, policy
-evaluation, and hardware-in-the-loop tooling for the Bello humanoid.
+Training, native MuJoCo evaluation, motion tracking, RobStride HIL, and
+physical-hardware deployment for the Bello humanoid.
 
-The repository uses repo-owned Bello descriptions under `assets/source/bello/`.
-Nix supplies `uv` and Git; `uv` manages Python 3.12 and the project dependencies.
+The repository owns its robot descriptions under `assets/source/bello/`.
+Generated assets, environments, checkpoints, W&B runs, videos, and caches are
+not source files.
 
 ## Setup
 
@@ -12,189 +13,134 @@ Nix supplies `uv` and Git; `uv` manages Python 3.12 and the project dependencies
 nix develop
 ```
 
-With direnv:
+Outside the development shell, prefix commands with `uv run`.
 
-```bash
-direnv allow
+## Supported commands
+
+The public interface consists of seven Hydra commands:
+
+```text
+bello-prepare-assets
+bello-train
+bello-eval
+bello-motion
+bello-vast-train
+bello-run-robstride
+bello-run-hardware
 ```
 
-Outside the activated shell, prefix commands with `uv run`.
+Use `<command> --help`, `<command> --hydra-help`, or `<command> --cfg job`.
+Unknown configuration keys fail instead of falling back to aliases.
 
-## Prepare the robot assets
-
-```bash
-uv run bello-prepare-assets asset=full_body
-```
-
-Asset preparation converts the tracked Bello descriptions into deterministic
-training and viewer MJCF, with configurable collision geometry, mesh
-simplification, end-effector spheres, joint availability, IMU metadata, and
-motor gain/effort scaling. Set `target_total_mass_kg=60` to uniformly scale the
-prepared morphology's link masses and inertia tensors to a 60 kg total. The
-physical differential ankle tendons and their actuators are always generated.
-Generated assets are cached outside the source tree.
-
-For the native visualizer, use the maintained 20,000-face visual-mesh recipe:
+Prepare the canonical 60 kg, sphere-hand physical morphology:
 
 ```bash
-uv run bello-prepare-assets --config-name visualizer
+uv run bello-prepare-assets
 ```
 
-The recipe uses sphere end effectors and writes the flattened viewer MJCF and
-referenced meshes under the ignored `assets/generated/visualizer/` directory.
-The RobStride runner exposes its MuJoCo `odom_from_pelvis_link` ground-truth
-pose through `bello.pose.v1.PoseService` bound to `0.0.0.0:50052`, so the
-visualizer does not need the hardware contact-aided estimator during a
-simulation run. Local clients connect through `127.0.0.1:50052`.
-Press Enter in the runner terminal to cycle between releasing the torso guide
-and resetting the robot to its home pose with the guide re-engaged. This also
-works with `headless=true`.
-
-## Train
-
-Validate the complete training path with the lightweight recipe:
+Prepare its native visualizer assets:
 
 ```bash
-uv run bello-train-ppo \
-  --config-dir "$PWD/experiments/train" \
-  --config-name smoke
+uv run bello-prepare-assets profile=visualizer
 ```
 
-Run the maintained locomotion recipe:
+Validate the MJX-Warp PPO path:
 
 ```bash
-uv run bello-train-ppo \
-  --config-dir "$PWD/experiments/train" \
-  --config-name locomotion
+uv run bello-train experiment=smoke
 ```
 
-Train the sphere-hand 25-motor morphology used by the physical robot with
-`--config-name hardware_locomotion`. Its checkpoint is the only locomotion
-checkpoint accepted by the physical-hardware runner.
-
-The standard recipe uses one seeded sloped plane per run and the physical ankle
-transmission. Root-yaw randomization exposes the policy to that incline from
-different headings. Change its budget with an explicit Hydra override instead
-of selecting a duplicate recipe.
-Training is dry-run by default only in the package configuration; maintained
-experiment recipes explicitly select their intended execution mode.
-
-See [training.md](docs/training.md) for the runtime contract, checkpoints,
-tracking, and validation workflow.
-
-## Track whole-body motion
-
-The fixed-head tracker exposes 25 logical policy joints while retaining the
-physical differential ankle transmissions. Render and replay a tracked ASAP
-reference before training:
+Train the physical locomotion policy:
 
 ```bash
-uv run bello-render-motion-reference \
-  motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz \
-  outputs/motion_tracking/reference_balance.mp4
-
-uv run bello-check-motion-feasibility \
-  motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz \
-  --output outputs/motion_tracking/balance_feasibility.json
+uv run bello-train \
+  experiment=hardware_locomotion \
+  total_timesteps=2000000000 \
+  run_name=hardware-locomotion
 ```
 
-`uv run bello-train-motion-ppo` validates the default training setup. The
-default and BeyondMimic walk recipes use a locally regenerated fixed-head
-LAFAN1 dataset; those license-controlled binaries remain ignored and are not
-distributed. See [motion_tracking.md](docs/motion_tracking.md) for import,
-dataset licensing, training, resume, and deterministic evaluation.
-
-## Evaluate
+Train bounded BeyondMimic motion tracking:
 
 ```bash
-uv run bello-eval-policy checkpoint_path=checkpoints/ppo_seed_0
+uv run bello-train \
+  experiment=motion \
+  motion_path=motions/asap_fixed_head/video_single_foot_balance_level4_filter_amass.npz
 ```
 
-Evaluation restores the environment and policy contract from checkpoint
-metadata, runs either CPU MuJoCo or single-environment MJX-Warp, and streams the
-robot and diagnostics to Rerun. An SDL-compatible gamepad can provide live
-velocity commands.
-
-See [evaluation.md](docs/evaluation.md).
-
-## Train on Vast.ai
+Evaluate locomotion in native MuJoCo and Rerun:
 
 ```bash
-uv run bello-vast-train \
-  --branch main \
-  --train-config experiments/train/locomotion.yaml \
-  --max-price 1.25
+uv run bello-eval \
+  task=locomotion \
+  checkpoint_path=checkpoints/hardware-locomotion/final \
+  command='[0.5,0.0,0.0]'
 ```
 
-The launcher pins a remote commit, provisions one compatible instance, performs
-the remote setup and training, uploads configured checkpoint snapshots through
-W&B, and destroys the instance. See [vast_ai.md](docs/vast_ai.md) before
-renting.
+Render a motion checkpoint:
 
-Locomotion remains the default Vast task. A motion job must select
-`--task motion-tracking` explicitly and may use repository-tracked clips; the
-launcher does not silently upload ignored `motions/local/` datasets.
+```bash
+uv run bello-eval \
+  task=motion \
+  checkpoint_path=checkpoints/motion/final \
+  output_path=outputs/evaluation/motion.mp4
+```
 
-## Run the RobStride HIL emulator
+Import, inspect, or render a motion through `bello-motion`:
+
+```bash
+uv run bello-motion operation=import source=legacy.pkl output=motions/local/walk.npz
+uv run bello-motion operation=inspect source=motions/local/walk.npz
+uv run bello-motion operation=render source=motions/local/walk.npz output=outputs/walk.mp4
+```
+
+Start the RobStride HIL emulator after creating its VCAN interfaces:
 
 ```bash
 ./scripts/setup_hil.sh
-uv run bello-robstride-runner
+uv run bello-run-robstride
 ```
 
-The runner simulates Bello in CPU MuJoCo and exposes its actuators as RobStride
-devices on Linux SocketCAN. It uses sphere hands by default, matching the
-training morphology. See [robstride_vcan.md](docs/robstride_vcan.md).
+The runner enforces the canonical motor torque limits. A direct nominal-pose
+simulation is available with `mode=prescribed_gains`.
 
-## Run a locomotion policy on Bello hardware
-
-The physical runner uses the blocking `bello_hardware` binding from
-`~/bello_stack`, reconstructs the checkpoint observation at 50 Hz, and maps
-logical ankle targets through the differential transmission. It is read-only by
-default:
+Run a read-only physical-hardware preflight:
 
 ```bash
-uv run --with ~/bello_stack/components/bello-hardware-python \
-  bello-run-locomotion-hardware \
-  checkpoint_path=checkpoints/hardware_locomotion_seed0
+uv run --no-cache \
+  --with ../bello-stack/components/bello-hardware-python \
+  bello-run-hardware \
+  task=locomotion \
+  checkpoint_path=checkpoints/hardware-locomotion/final
 ```
 
-The preflight acquires no lease and sends no motor command. See
-[hardware_locomotion.md](docs/hardware_locomotion.md) for the required training
-recipe, inventory and IMU contract, guarded arming command, and shutdown
-behavior.
+Arming requires both `arm=true` and the explicit operator confirmation. Set
+`duration_seconds=null` for an unbounded run. Motion deployment additionally
+requires `bello-state-estimatord` PoseService at `127.0.0.1:50052`.
 
-## Run a motion policy on Bello hardware
-
-Motion-tracking checkpoints use a read-only-by-default installed runner. It
-validates the checkpoint's clip hash and fixed-head sphere-hand contract before
-touching a lease:
+Launch one billing-safe Vast.ai job:
 
 ```bash
-uv run --with ~/bello_stack/components/bello-hardware-python \
-  bello-run-motion-hardware \
-  checkpoint_path=checkpoints/asap_balance_level4/final
+uv run bello-vast-train \
+  experiment=hardware_locomotion \
+  branch=main \
+  max_price=1.25 \
+  duration_hours=6 \
+  run_name=hardware-locomotion
 ```
 
-See [hardware_motion.md](docs/hardware_motion.md), especially its short-horizon
-IMU odometry limitation, before enabling physical playback.
+## Canonical contracts
 
-Schema-6 checkpoints that require external pelvis odometry can instead use the
-fingerprint-neutral repository script. It consumes motor and IMU telemetry from
-`bello-hardwared` plus local pelvis odometry from `bello-state-estimatord` and
-is also read-only by default:
+- Training uses MJX-Warp; evaluation, rendering, HIL, and deployment use native
+  MuJoCo.
+- The physical morphology has sphere hands, 60 kg total mass, 25 physical
+  coordinates, fixed waist roll/pitch and neck/head, and active waist yaw.
+- Locomotion controls 13 lower-body/waist coordinates and holds the arms.
+- Motion tracking controls all 25 coordinates with bounded asymmetric
+  joint-limit actions.
+- New checkpoints use semantic schema 7. Older checkpoints require the archived
+  source revision that created them.
 
-```bash
-uv run --with ~/bello_stack/components/bello-hardware-python \
-  ./scripts/bello-run-motion-hardware \
-  checkpoints/balance-level4-schema6-main-4741853-20260720-v3
-```
-
-The script lives outside the installed `bello_mujoco` package so adding it does
-not invalidate a checkpoint's implementation fingerprint. Run it from the
-exact checkout recorded by the checkpoint and use it against the RobStride/vCAN
-HIL stack before considering physical arming. See
-[hardware_motion_tracking.md](docs/hardware_motion_tracking.md).
+See [docs/index.md](docs/index.md) for the focused workflow guides.
 
 ## Validate changes
 
@@ -204,46 +150,5 @@ uv run ruff check src tests
 ./scripts/test.sh
 ```
 
-The full test runner starts each test module in a fresh CPU JAX process so
-compiled executables cannot accumulate until the host runs out of memory. Use
-`uv run pytest tests/test_<area>.py` for a focused iteration.
-
-The supported installed commands are:
-
-- `bello-prepare-assets`
-- `bello-train-ppo`
-- `bello-eval-policy`
-- `bello-import-gmr-motion`
-- `bello-import-gmr-motion-dataset`
-- `bello-render-motion-reference`
-- `bello-check-motion-feasibility`
-- `bello-train-motion-ppo`
-- `bello-eval-motion-policy`
-- `bello-vast-train`
-- `bello-robstride-runner`
-- `bello-run-locomotion-hardware`
-- `bello-run-motion-hardware`
-
-The repository also provides the fingerprint-neutral executable script
-`./scripts/bello-run-motion-hardware` for schema-6 motion checkpoints.
-
-## Repository layout
-
-```text
-assets/source/bello/       tracked robot descriptions
-configs/                   installed Hydra and HIL configuration
-experiments/train/         maintained training recipes
-experiments/train_motion/  maintained whole-body tracking recipes
-motions/asap_fixed_head/   tracked, attributed ASAP reference clips
-src/bello_mujoco/          simulation, training, evaluation, and HIL code
-tests/                     automated validation
-docs/                      user-facing reference
-```
-
-Do not commit generated environments, caches, W&B runs, checkpoints, videos, or
-prepared assets. Common generated paths include `.venv/`, `.uv-cache/`,
-`.warp-cache/`, `.wandb/`, `checkpoints/`, `artifacts/`, `outputs/`,
-`motions/local/`, and `/tmp/bello-mujoco-assets/`.
-
-For contribution workflow and repository rules, see [CONTRIBUTION.md](CONTRIBUTION.md)
-and [docs/index.md](docs/index.md).
+Repository rules and contribution workflow are in [AGENTS.md](AGENTS.md) and
+[CONTRIBUTION.md](CONTRIBUTION.md).

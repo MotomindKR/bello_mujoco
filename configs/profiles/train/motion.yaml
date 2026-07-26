@@ -1,16 +1,9 @@
-# Paper-aligned BeyondMimic tracker for fixed-waist, fixed-head Bello.
-defaults:
-  - default
-  - _self_
-
 dry_run: false
-
 motion:
   directory: motions/local/lafan1_fixed_head
   sequence: walk1_subject1
-
 config:
-  total_timesteps: 2949120000  # 30,000 updates x 4,096 envs x 24 steps.
+  total_timesteps: 2949120000
   num_envs: 4096
   num_steps: 24
   update_epochs: 5
@@ -27,12 +20,11 @@ config:
     activation: elu
     init_log_std: 0.0
     obs_stack_size: 1
-    action_distribution: gaussian
-
+    action_distribution: tanh_gaussian
 env_config:
-  formulation: beyondmimic
+  formulation: beyondmimic_joint_limits
   anchor_body_name: torso_link
-  action_clip: 100.0
+  action_clip: 1.0
   reset:
     random_start: true
     initial_xy_range: [0.0, 0.0]
@@ -88,20 +80,16 @@ env_config:
     root_height_error: 0.25
     root_orientation_error: 0.8
     end_effector_position_error: 0.25
-
 checkpoint_config:
-  name: ${motion.sequence}_bello_beyondmimic_seed0
+  name: ${motion.sequence}_bello_motion_seed0
   every_updates: 500
-
 wandb_config:
   enabled: true
-  run_name: ${motion.sequence}-bello-beyondmimic-seed0
-  tags: [bello, fixed-waist, fixed-head, gmr, beyondmimic]
-
+  run_name: ${motion.sequence}-bello-motion-seed0
+  tags: [bello, fixed-waist, fixed-head, bounded-motion]
 video_config:
   every_updates: 500
-  filename_prefix: ${motion.sequence}_beyondmimic
-
+  filename_prefix: ${motion.sequence}_motion
 warp:
   contact_budget_per_env: 64
   njmax: 2048

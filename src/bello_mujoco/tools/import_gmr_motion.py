@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 from pathlib import Path
 import pickle
@@ -11,7 +10,6 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.motion import (
-    BEYONDMIMIC_TRACKED_BODY_NAMES,
     DEFAULT_TRACKED_BODY_NAMES,
     FIXED_TRACKING_JOINT_NAMES,
     GMR_BELLO_JOINT_NAMES,
@@ -285,36 +283,3 @@ def _body_trajectories(mj_model, qpos, qvel, body_ids):
             ang_vel[frame, output_index] = velocity[:3]
             lin_vel[frame, output_index] = velocity[3:]
     return pos, quat, lin_vel, ang_vel
-
-
-def entrypoint() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source", type=Path)
-    parser.add_argument("output", type=Path)
-    parser.add_argument(
-        "--collision-mode",
-        choices=("box", "mesh"),
-        default="box",
-    )
-    parser.add_argument(
-        "--tracked-body-profile",
-        choices=("baseline", "beyondmimic"),
-        default="baseline",
-    )
-    args = parser.parse_args()
-    tracked_body_names = (
-        BEYONDMIMIC_TRACKED_BODY_NAMES
-        if args.tracked_body_profile == "beyondmimic"
-        else DEFAULT_TRACKED_BODY_NAMES
-    )
-    output = import_gmr_motion(
-        args.source,
-        args.output,
-        collision_mode=args.collision_mode,
-        tracked_body_names=tracked_body_names,
-    )
-    print(output)
-
-
-if __name__ == "__main__":
-    entrypoint()

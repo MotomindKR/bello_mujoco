@@ -1,11 +1,11 @@
 import xml.etree.ElementTree as ET
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import mujoco
 import numpy as np
 import pytest
-from hydra import compose, initialize_config_dir
 
 import bello_mujoco.assets_pipeline.prepare as prepare_module
 from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
@@ -26,7 +26,7 @@ from bello_mujoco.assets_pipeline.prepare import (
     validate_actuator_joint_contract,
     write_prepared_asset_manifest,
 )
-from bello_mujoco.hydra_config import config_path, structured_config
+from bello_mujoco.tools.commands import canonical_physical_asset_config
 
 
 def test_end_effector_sphere_replacement_prunes_both_subtrees() -> None:
@@ -186,14 +186,11 @@ def test_prepared_asset_always_has_ankle_differential_tendons(
 def test_visualizer_recipe_produces_loadable_flattened_viewer_mjcf(
     tmp_path: Path,
 ) -> None:
-    with initialize_config_dir(
-        version_base=None,
-        config_dir=config_path("prepare_assets"),
-    ):
-        recipe = structured_config(
-            AssetPrepConfig,
-            compose(config_name="visualizer", overrides=[f"output_root={tmp_path}"]),
-        )
+    recipe = replace(
+        canonical_physical_asset_config(),
+        output_root=tmp_path,
+        visual_mesh_face_budget=20_000,
+    )
 
     assert recipe.visual_mesh_face_budget == 20_000
     assert recipe.end_effector_sphere_mode == "both"

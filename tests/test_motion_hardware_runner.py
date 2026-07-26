@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from dataclasses import replace
 from enum import Enum
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 import time
 
 import jax
@@ -14,17 +13,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from bello_mujoco.hardware_locomotion import (
-    HardwareFrame,
-    HardwareLocomotionConfig,
-)
-
-SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "run_motion_hardware.py"
-SPEC = importlib.util.spec_from_file_location("run_motion_hardware", SCRIPT_PATH)
-assert SPEC is not None and SPEC.loader is not None
-motion_hardware = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = motion_hardware
-SPEC.loader.exec_module(motion_hardware)
+from bello_mujoco import hardware_motion as motion_hardware
+from bello_mujoco import hardware_locomotion as hardware_runtime
+from bello_mujoco.hardware_locomotion import HardwareFrame
 
 
 def pose_frame(*, age_ms: int = 0) -> motion_hardware.PoseFrame:
@@ -57,11 +48,11 @@ def test_pose_service_dynamic_messages_round_trip() -> None:
 
 
 def test_pose_validation_is_fail_closed() -> None:
-    config = motion_hardware.MotionHardwareConfig(max_pose_age_ms=10)
+    config = motion_hardware.HardwareMotionConfig(max_pose_age_ms=100)
 
     motion_hardware.validate_pose_frame(pose_frame(age_ms=5), config)
     with pytest.raises(RuntimeError, match="stale"):
-        motion_hardware.validate_pose_frame(pose_frame(age_ms=20), config)
+        motion_hardware.validate_pose_frame(pose_frame(age_ms=200), config)
     with pytest.raises(RuntimeError, match="near-zero"):
         motion_hardware.validate_pose_frame(
             motion_hardware.PoseFrame(
@@ -72,6 +63,11 @@ def test_pose_validation_is_fail_closed() -> None:
                 source_age_ms=0,
                 received_at=time.monotonic(),
             ),
+            config,
+        )
+    with pytest.raises(RuntimeError, match="position must contain 3"):
+        motion_hardware.validate_pose_frame(
+            replace(pose_frame(), position=np.zeros(2)),
             config,
         )
 
@@ -91,21 +87,27 @@ def test_pose_and_imu_orientation_must_agree() -> None:
         motion_hardware.validate_pose_imu_agreement(
             frame,
             pose_frame(),
-            motion_hardware.MotionHardwareConfig(max_pose_imu_orientation_error=0.1),
+            motion_hardware.HardwareMotionConfig(max_pose_imu_orientation_error=0.1),
         )
 
 
 def test_motion_config_rejects_unsafe_ranges() -> None:
+    motion_hardware.validate_hardware_motion_config(
+        motion_hardware.HardwareMotionConfig(max_duration_seconds=None)
+    )
+    with pytest.raises(ValueError, match="max_duration_seconds"):
+        motion_hardware.validate_hardware_motion_config(
+            motion_hardware.HardwareMotionConfig(max_duration_seconds=0.0)
+        )
     with pytest.raises(ValueError, match="start_time_seconds"):
-        motion_hardware.validate_motion_config(
-            motion_hardware.MotionHardwareConfig(start_time_seconds=3.0), 2.0
+        motion_hardware.validate_hardware_motion_config(
+            motion_hardware.HardwareMotionConfig(start_time_seconds=-1.0)
         )
     with pytest.raises(ValueError, match="max_action_abs"):
-        motion_hardware.validate_motion_config(
-            motion_hardware.MotionHardwareConfig(
+        motion_hardware.validate_hardware_motion_config(
+            motion_hardware.HardwareMotionConfig(
                 max_action_abs=2.0, max_raw_action_abs=1.0
-            ),
-            3.0,
+            )
         )
 
 
@@ -132,11 +134,16 @@ def test_bounded_beyondmimic_checkpoint_is_hardware_compatible() -> None:
         observation_layout=observation_layout,
     )
 
-    motion_hardware.validate_motion_hardware_checkpoint(env, metadata)
+    motion_hardware.validate_hardware_motion_checkpoint(env, metadata)
 
+    metadata.motion_env.formulation = "beyondmimic"
+    with pytest.raises(ValueError, match="bounded BeyondMimic"):
+        motion_hardware.validate_hardware_motion_checkpoint(env, metadata)
+
+    metadata.motion_env.formulation = "beyondmimic_joint_limits"
     metadata.ppo.policy.action_distribution = "gaussian"
     with pytest.raises(ValueError, match="tanh_gaussian"):
-        motion_hardware.validate_motion_hardware_checkpoint(env, metadata)
+        motion_hardware.validate_hardware_motion_checkpoint(env, metadata)
 
 
 def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> None:
@@ -182,7 +189,7 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
         None,
         None,
         metadata,
-        motion_hardware.MotionHardwareConfig(max_action_abs=0.5),
+        motion_hardware.HardwareMotionConfig(max_action_abs=0.5),
     )
     layout = motion_hardware._motion_inference_layout(env)
     hardware_state = np.zeros(layout.size, dtype=np.float32)
@@ -213,8 +220,8 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
 
 
 def test_nominal_physical_target_uses_model_default_pose() -> None:
-    adapter = motion_hardware.MotionHardwarePolicyAdapter.__new__(
-        motion_hardware.MotionHardwarePolicyAdapter
+    adapter = motion_hardware.HardwareMotionPolicyAdapter.__new__(
+        motion_hardware.HardwareMotionPolicyAdapter
     )
     adapter.transform = np.asarray(((1.0, 0.5), (0.0, 2.0)))
     adapter.env = SimpleNamespace(
@@ -271,19 +278,19 @@ def test_motion_targets_are_submitted_to_both_groups_asynchronously(
             submitted.append((self.name, targets))
             return Receipt()
 
-    config = HardwareLocomotionConfig(groups=("lower", "upper"))
+    config = motion_hardware.HardwareMotionConfig(groups=("lower", "upper"))
     groups = {name: SimpleNamespace(coordinates=(name,)) for name in config.groups}
     controls = {name: Control(name) for name in config.groups}
     adapter = SimpleNamespace(control_timestep=0.02)
     monkeypatch.setattr(
-        motion_hardware,
+        hardware_runtime,
         "coordinate_targets",
         lambda _binding, coordinates, *_args: {coordinates[0]: coordinates[0]},
     )
     pending = []
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        motion_hardware.send_motion_targets(
+        motion_hardware.send_targets(
             SimpleNamespace(),
             controls,
             groups,
@@ -299,6 +306,55 @@ def test_motion_targets_are_submitted_to_both_groups_asynchronously(
         ("lower", {"lower": "lower"}),
         ("upper", {"upper": "upper"}),
     ]
+
+
+def test_control_failure_stops_all_groups(monkeypatch) -> None:
+    stopped = []
+
+    def miss_deadline(*_args):
+        raise RuntimeError("deadline missed")
+
+    controls = {name: SimpleNamespace() for name in ("lower_body", "upper_body")}
+    groups = {
+        name: SimpleNamespace(
+            control=lambda *_args, _name=name, **_kwargs: nullcontext(controls[_name])
+        )
+        for name in controls
+    }
+    config = motion_hardware.HardwareMotionConfig()
+    adapter = SimpleNamespace(
+        control_timestep=0.02,
+        physical_coordinate_names=("left", "right"),
+        nominal_physical_target=np.zeros(2),
+    )
+    frame = SimpleNamespace(positions=np.zeros(2))
+
+    monkeypatch.setattr(motion_hardware, "start_hardware_controls", lambda *_args: None)
+    monkeypatch.setattr(
+        motion_hardware,
+        "stop_hardware_controls",
+        lambda active, *_args: stopped.extend(active),
+    )
+    monkeypatch.setattr(motion_hardware, "wait_for_group_state", lambda *_args: None)
+    monkeypatch.setattr(motion_hardware, "send_targets", lambda *_args: None)
+    monkeypatch.setattr(
+        motion_hardware,
+        "pace_hardware_loop",
+        miss_deadline,
+    )
+
+    with pytest.raises(RuntimeError, match="deadline missed"):
+        motion_hardware.control_physical_motion(
+            SimpleNamespace(StateUnavailableError=RuntimeError),
+            groups,
+            SimpleNamespace(),
+            SimpleNamespace(latest=lambda: pose_frame()),
+            frame,
+            adapter,
+            config,
+        )
+
+    assert sorted(stopped) == ["lower_body", "upper_body"]
 
 
 class FakeGroupState(Enum):
@@ -385,7 +441,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
         DeviceState=FakeDeviceState,
         StateUnavailableError=FakeUnavailableError,
     )
-    preview = motion_hardware.MotionHardwareStep(
+    preview = motion_hardware.HardwareMotionStep(
         action=np.zeros(2),
         raw_action=np.zeros(2),
         physical_target=np.zeros(2),
@@ -398,7 +454,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
         nominal_physical_target=np.zeros(2),
-        env=SimpleNamespace(action_size=25),
+        env=SimpleNamespace(action_size=25, motion=SimpleNamespace(duration=1.0)),
         control_timestep=0.02,
         start_time=0.0,
         precompile=lambda: None,
@@ -408,7 +464,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     )
     monkeypatch.setattr(
         motion_hardware,
-        "load_motion_hardware_policy",
+        "load_hardware_motion_policy",
         lambda *_args, **_kwargs: (adapter, SimpleNamespace(task="motion_tracking")),
     )
 
@@ -425,10 +481,9 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
         def latest(self):
             return pose_frame()
 
-    motion_hardware.run_motion_hardware(
+    motion_hardware.run_hardware_motion(
         Path("unused"),
-        HardwareLocomotionConfig(),
-        motion_hardware.MotionHardwareConfig(),
+        motion_hardware.HardwareMotionConfig(),
         hardware_binding=binding,
         pose_stream_factory=FakePoseStream,
     )

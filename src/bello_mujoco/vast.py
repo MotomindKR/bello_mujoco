@@ -424,7 +424,7 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
 def resolve_vast_motion_path(
     config_text: str, hydra_overrides: Sequence[str] = ()
 ) -> PurePosixPath:
-    """Resolve the tracked clip selected by a motion recipe and its overrides."""
+    """Resolve the repository-tracked clip selected by the public command."""
 
     try:
         document = yaml.safe_load(config_text) or {}
@@ -437,33 +437,34 @@ def resolve_vast_motion_path(
         raise ValueError("motion training config motion field must be a mapping")
     directory = motion.get("directory")
     sequence = motion.get("sequence")
+    selected_path: str | None = None
     for override in hydra_overrides:
         key, separator, value = override.partition("=")
         key = key.lstrip("+")
-        if not separator or key not in {"motion.directory", "motion.sequence"}:
+        if not separator or key != "motion_path":
             continue
         try:
             parsed_value = yaml.safe_load(value)
         except yaml.YAMLError as error:
             raise ValueError(f"invalid Hydra override {override!r}") from error
-        if key == "motion.directory":
-            directory = parsed_value
-        else:
-            sequence = parsed_value
-    if not isinstance(directory, str) or not directory:
-        raise ValueError(
-            "motion-tracking Vast config must select motion.directory explicitly"
-        )
-    if not isinstance(sequence, str) or not sequence:
-        raise ValueError(
-            "motion-tracking Vast config must select motion.sequence explicitly"
-        )
-    sequence_path = PurePosixPath(sequence)
-    if sequence_path.name != sequence or sequence_path.suffix:
-        raise ValueError("motion.sequence must be a name without a path or suffix")
-    path = PurePosixPath(directory) / f"{sequence}.npz"
+        if not isinstance(parsed_value, str) or not parsed_value:
+            raise ValueError("motion_path must be a non-empty repository path")
+        selected_path = parsed_value
+    if selected_path is None:
+        if not isinstance(directory, str) or not directory:
+            raise ValueError("motion profile must select motion.directory")
+        if not isinstance(sequence, str) or not sequence:
+            raise ValueError("motion profile must select motion.sequence")
+        sequence_path = PurePosixPath(sequence)
+        if sequence_path.name != sequence or sequence_path.suffix:
+            raise ValueError("motion.sequence must be a name without a path or suffix")
+        path = PurePosixPath(directory) / f"{sequence}.npz"
+    else:
+        path = PurePosixPath(selected_path)
     if path.is_absolute() or ".." in path.parts:
         raise ValueError("motion clip must be a repository-relative path")
+    if path.suffix != ".npz" or path.name == ".npz":
+        raise ValueError("motion_path must name an .npz clip")
     if path.parts[:2] == ("motions", "local"):
         raise ValueError(
             "motions/local is ignored and is not uploaded to Vast; choose a "
@@ -1142,8 +1143,7 @@ run_name="$6"
 task="$7"
 
 case "$task" in
-  locomotion) train_command="bello-train-ppo" ;;
-  motion-tracking) train_command="bello-train-motion-ppo" ;;
+  locomotion|motion-tracking) train_command="bello-train" ;;
   *) echo "unsupported Vast training task: $task" >&2; exit 2 ;;
 esac
 
@@ -1202,40 +1202,20 @@ uv python install 3.12
 uv sync --frozen
 uv run python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
 
-config_dir="$remote_dir/$(dirname "$config_path")"
-config_name="$(basename "$config_path")"
-config_name="${config_name%.*}"
-
 mapfile -t user_overrides < <(python3 -c 'import json, os, sys; sys.stdout.write("\n".join(json.loads(os.environ["BELLO_HYDRA_OVERRIDES"])))')
 
 uv run "$train_command" \
-  --config-dir "$config_dir" \
-  --config-name "$config_name" \
   "${user_overrides[@]}" \
-  dry_run=true \
-  config.num_envs=1 \
-  config.num_steps=1 \
-  config.num_minibatches=1 \
-  wandb_config.enabled=false
+  total_timesteps=768 \
+  num_envs=32 \
+  wandb_enabled=false \
+  video_enabled=false
 
-entity_override=()
-if [ -n "${WANDB_ENTITY:-}" ]; then
-  entity_override+=("wandb_config.entity=$WANDB_ENTITY")
-fi
 uv run "$train_command" \
-  --config-dir "$config_dir" \
-  --config-name "$config_name" \
   "${user_overrides[@]}" \
-  dry_run=false \
-  wandb_config.enabled=true \
-  wandb_config.mode=online \
-  wandb_config.project="$WANDB_PROJECT" \
-  "${entity_override[@]}" \
-  wandb_config.run_name="$run_name" \
-  checkpoint_config.enabled=true \
-  checkpoint_config.name="$run_name" \
-  checkpoint_config.upload_wandb_artifact=true \
-  checkpoint_config.wandb_artifact_name="$run_name"
+  wandb_enabled=true \
+  run_name="$run_name" \
+  checkpoint_name="$run_name"
 """
 
 

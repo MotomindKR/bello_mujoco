@@ -3,32 +3,27 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import equinox as eqx
-import hydra
 import jax
 import jax.numpy as jnp
 import optax
-from omegaconf import DictConfig
 from tqdm.auto import tqdm
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
-    RuntimeFingerprints,
-    capture_asset_runtime_fingerprints,
-    capture_runtime_fingerprints,
+    DeploymentContract,
+    capture_asset_contract,
+    capture_deployment_contract,
     checkpoint_path,
-    load_checkpoint_metadata,
     normalized_asset_config,
     restore_runner_checkpoint,
     save_training_checkpoint,
 )
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
-from bello_mujoco.hydra_config import config_path, structured_config
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.render import CameraConfig, render_policy_rollout
 from bello_mujoco.sim import (
@@ -69,7 +64,6 @@ class TrainingVideoConfig:
     every_updates: int = 100
     render_initial: bool = False
     render_final: bool = True
-    simulation_backend: Literal["mjx", "mujoco"] = "mujoco"
     output_dir: Path = Path("outputs/train_videos")
     filename_prefix: str = "rollout"
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -173,7 +167,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 command_config=command_config,
                 done_config=done_config,
                 use_viewer_model=True,
-                load_mjx=video_config.simulation_backend == "mjx",
+                load_mjx=False,
             )
             if video_config.enabled
             else env
@@ -188,7 +182,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
             policy_obs_size=policy_obs_size,
             critic_policy_obs_size=critic_policy_obs_size,
         )
-        runtime_fingerprints = capture_runtime_fingerprints(metadata)
+        deployment_contract = capture_deployment_contract(metadata)
         if dry_run:
             state, _ = init_train_state(
                 rng,
@@ -259,20 +253,14 @@ def run_training(run_config: TrainingRunConfig) -> None:
         initial_runner: RunnerInitialization | None = None
         if checkpoint_config.resume_path is not None:
             resume_path = checkpoint_config.resume_path.expanduser()
-            recorded_metadata = load_checkpoint_metadata(resume_path)
-            if recorded_metadata != metadata:
-                raise ValueError(
-                    "resume checkpoint training configuration does not exactly match "
-                    "the resolved run configuration"
-                )
             (
                 resumed_state,
                 static_policy,
                 optimizer,
                 resumed_metadata,
-            ) = restore_runner_checkpoint(resume_path, env)
-            if resumed_metadata != recorded_metadata:
-                raise RuntimeError("checkpoint metadata changed while restoring")
+            ) = restore_runner_checkpoint(resume_path, env, metadata)
+            if resumed_metadata != metadata:
+                raise RuntimeError("resume did not resolve to the requested run")
             initial_runner = resumed_state, static_policy, optimizer
         log_config(
             run,
@@ -315,7 +303,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
             checkpoint_callback=periodic_checkpoint_callback(
                 checkpoint_dir,
                 metadata,
-                runtime_fingerprints,
+                deployment_contract,
                 checkpoint_config,
                 run,
             ),
@@ -326,7 +314,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 checkpoint_dir,
                 out["runner_state"],
                 metadata,
-                runtime_fingerprints,
+                deployment_contract,
             )
             if checkpoint_config.upload_wandb_artifact and run is not None:
                 track_checkpoint_artifact(
@@ -352,10 +340,10 @@ def checkpoint_metadata(
 ) -> CheckpointMetadata:
     normalized_asset = normalized_asset_config(run_config.asset_config)
     if run_config.asset_config.output_root is not None:
-        actual_runtime = capture_asset_runtime_fingerprints(
+        actual_runtime = capture_asset_contract(
             run_config.asset_config, run_config.env_config.terrain
         )
-        reproducible_runtime = capture_asset_runtime_fingerprints(
+        reproducible_runtime = capture_asset_contract(
             normalized_asset, run_config.env_config.terrain
         )
         if actual_runtime != reproducible_runtime:
@@ -384,7 +372,7 @@ def checkpoint_metadata(
 def periodic_checkpoint_callback(
     final_path: Path | None,
     metadata: CheckpointMetadata,
-    runtime_fingerprints: RuntimeFingerprints,
+    deployment_contract: DeploymentContract,
     config: CheckpointConfig,
     run,
 ) -> Callable[[RunnerState], None] | None:
@@ -394,7 +382,7 @@ def periodic_checkpoint_callback(
     def save(runner_state: RunnerState) -> None:
         update = int(jax.device_get(runner_state.update))
         path = periodic_checkpoint_path(final_path, update)
-        save_training_checkpoint(path, runner_state, metadata, runtime_fingerprints)
+        save_training_checkpoint(path, runner_state, metadata, deployment_contract)
         if config.upload_wandb_artifact and run is not None:
             base_name = config.wandb_artifact_name or final_path.name
             track_checkpoint_artifact(
@@ -545,7 +533,6 @@ def render_training_video(
         fps=config.fps,
         stop_on_done=config.stop_on_done,
         camera_config=config.camera_config,
-        simulation_backend=config.simulation_backend,
         obs_stack_size=obs_stack_size,
         stochastic_actions=config.stochastic_actions,
         action_seed=config.action_seed,
@@ -653,11 +640,6 @@ def validate_video_config(config: TrainingVideoConfig) -> None:
         raise ValueError(
             f"video_config.action_seed must be nonnegative, got {config.action_seed}"
         )
-    if config.simulation_backend not in {"mjx", "mujoco"}:
-        raise ValueError(
-            "video_config.simulation_backend must be 'mjx' or 'mujoco', got "
-            f"{config.simulation_backend!r}"
-        )
 
 
 def validate_checkpoint_config(config: CheckpointConfig) -> None:
@@ -670,20 +652,3 @@ def validate_checkpoint_config(config: CheckpointConfig) -> None:
         raise ValueError(
             "checkpoint_config.every_updates requires checkpoint_config.enabled=true"
         )
-
-
-def entrypoint() -> None:
-    hydra_entrypoint()
-
-
-@hydra.main(
-    version_base=None,
-    config_path=config_path("train"),
-    config_name="default",
-)
-def hydra_entrypoint(config: DictConfig) -> None:
-    run_training(structured_config(TrainingRunConfig, config))
-
-
-if __name__ == "__main__":
-    entrypoint()

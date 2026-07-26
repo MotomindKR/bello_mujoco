@@ -200,90 +200,25 @@ def render_policy_rollout(
     fps: int,
     stop_on_done: bool,
     camera_config: CameraConfig,
-    simulation_backend: Literal["mjx", "mujoco"] = "mjx",
     obs_stack_size: int = 1,
     stochastic_actions: bool = False,
     action_seed: int = 0,
 ) -> RolloutStats:
-    if simulation_backend == "mujoco":
-        return render_policy_rollout_mujoco(
-            env,
-            policy,
-            output_path=output_path,
-            command=command,
-            steps=steps,
-            width=width,
-            height=height,
-            fps=fps,
-            stop_on_done=stop_on_done,
-            camera_config=camera_config,
-            obs_stack_size=obs_stack_size,
-            stochastic_actions=stochastic_actions,
-            action_seed=action_seed,
-        )
-    if simulation_backend != "mjx":
-        raise ValueError(
-            f"simulation_backend must be 'mjx' or 'mujoco', got {simulation_backend!r}"
-        )
-    command_array = jnp.asarray(command, dtype=jnp.float32)
-    state, obs = env.reset(command_array)
-    obs_stack = init_observation_stack(obs, obs_stack_size)
-    mj_model = env.model.mj_model
-    mj_data = mujoco.MjData(mj_model)
-    action_key = jax.random.PRNGKey(action_seed)
-    stats = init_rollout_stats(
-        steps, stochastic_actions=stochastic_actions, action_seed=action_seed
-    )
-    episode_length = 0
-    resources, renderer, camera, writer = open_rollout_video_resources(
-        mj_model,
-        output_path,
+    return render_policy_rollout_mujoco(
+        env,
+        policy,
+        output_path=output_path,
+        command=command,
+        steps=steps,
         width=width,
         height=height,
         fps=fps,
+        stop_on_done=stop_on_done,
         camera_config=camera_config,
+        obs_stack_size=obs_stack_size,
+        stochastic_actions=stochastic_actions,
+        action_seed=action_seed,
     )
-    try:
-        for step_index in range(steps):
-            sync_mj_data(mj_model, mj_data, state)
-            update_camera(camera, mj_model, mj_data, camera_config)
-            renderer.update_scene(mj_data, camera=camera)
-            writer.append_data(renderer.render())
-            action_rng = None
-            if stochastic_actions:
-                action_key, action_rng = jax.random.split(action_key)
-            action = rollout_policy_action(
-                policy,
-                obs_stack,
-                action_rng=action_rng,
-                action_clip=env.action_clip,
-            )
-            state, obs, _, done, info = env.step(state, action)
-            episode_length += 1
-            done_bool = bool(jax.device_get(done))
-            if done_bool:
-                record_rollout_done(
-                    stats,
-                    step_index=step_index + 1,
-                    episode_length=episode_length,
-                    done_flags=jax.device_get(info),
-                    control_timestep=env.control_timestep,
-                )
-            if done_bool and stop_on_done:
-                sync_mj_data(mj_model, mj_data, state)
-                update_camera(camera, mj_model, mj_data, camera_config)
-                renderer.update_scene(mj_data, camera=camera)
-                writer.append_data(renderer.render())
-                break
-            if done_bool:
-                state, obs = env.reset(command_array)
-                obs_stack = init_observation_stack(obs, obs_stack_size)
-                episode_length = 0
-            else:
-                obs_stack = update_observation_stack(obs_stack, obs, done)
-    finally:
-        resources.close()
-    return finalize_rollout_stats(stats, current_episode_length=episode_length)
 
 
 def render_policy_rollout_mujoco(
@@ -1060,13 +995,6 @@ def mujoco_contact_normal_force(
     contact_force = np.zeros(6, dtype=np.float64)
     mujoco.mj_contactForce(mj_model, mj_data, contact_index, contact_force)
     return abs(float(contact_force[0]))
-
-
-def sync_mj_data(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, state) -> None:
-    mj_data.qpos[:] = np.asarray(jax.device_get(state.data.qpos))
-    mj_data.qvel[:] = np.asarray(jax.device_get(state.data.qvel))
-    mj_data.ctrl[:] = np.asarray(jax.device_get(state.data.ctrl))
-    mujoco.mj_forward(mj_model, mj_data)
 
 
 def make_camera(mj_model: mujoco.MjModel, config: CameraConfig) -> mujoco.MjvCamera:

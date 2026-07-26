@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -89,34 +86,3 @@ def import_dataset(
         sorted(motions, key=lambda item: item["sequence"]),
         sorted(failures, key=lambda item: item["sequence"]),
     )
-
-
-def entrypoint() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source_dir", type=Path)
-    parser.add_argument("output_dir", type=Path)
-    parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
-    parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
-    motions, failures = import_dataset(
-        args.source_dir,
-        args.output_dir,
-        jobs=args.jobs,
-        overwrite=args.overwrite,
-    )
-    manifest = {
-        "format": "bello-motion-dataset-v1",
-        "collision_mode": "box",
-        "tracked_body_profile": "beyondmimic",
-        "motions": motions,
-        "failures": failures,
-    }
-    manifest_path = args.output_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"wrote {manifest_path} with {len(motions)} motions")
-    if failures:
-        raise SystemExit(f"{len(failures)} motion(s) failed; see {manifest_path}")
-
-
-if __name__ == "__main__":
-    entrypoint()

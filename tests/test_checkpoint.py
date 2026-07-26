@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -153,8 +150,7 @@ def ppo_config() -> PPOConfig:
     return PPOConfig(
         seed=11,
         policy=ActorCriticConfig(
-            hidden_size=8,
-            hidden_depth=1,
+            hidden_dims=(8,),
             obs_stack_size=2,
         ),
         total_timesteps=24,
@@ -288,7 +284,7 @@ def checkpoint_document(
         metadata,
         checkpoint._train_checkpoint_item(state),
         checkpoint._continuation_checkpoint_item(state),
-        checkpoint.capture_runtime_fingerprints(metadata),
+        checkpoint.capture_deployment_contract(metadata),
     )
 
 
@@ -299,7 +295,7 @@ def save_checkpoint(
         path,
         state,
         metadata,
-        checkpoint.capture_runtime_fingerprints(metadata),
+        checkpoint.capture_deployment_contract(metadata),
     )
 
 
@@ -330,7 +326,7 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     train_state, training_metadata = restore_training_checkpoint(path)
     evaluation_state, eval_metadata, normalization = restore_evaluation_checkpoint(path)
     restored, static_policy, optimizer, resume_metadata = restore_runner_checkpoint(
-        path, env
+        path, env, checkpoint_metadata
     )
     document = json.loads((path / checkpoint.METADATA_FILE).read_text(encoding="utf-8"))
 
@@ -366,20 +362,28 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     assert int(evaluation_state.update) == 3
     assert (path / checkpoint.STATE_DIR).is_dir()
     assert (path / checkpoint.CONTINUATION_DIR).is_dir()
-    assert document["schema_version"] == checkpoint.CHECKPOINT_SCHEMA_VERSION == 6
+    assert document["schema_version"] == checkpoint.CHECKPOINT_SCHEMA_VERSION == 7
     assert document["kind"] == checkpoint.CHECKPOINT_KIND
     assert document["update"] == 3
-    assert document["config_fingerprint"].startswith("sha256:")
-    assert document["train_layout_fingerprint"].startswith("sha256:")
-    assert document["continuation_layout_fingerprint"].startswith("sha256:")
-    assert set(document["runtime_fingerprints"]) == {
-        "source_assets",
-        "prepared_assets",
-        "simulation_scene",
-        "viewer_scene",
-        "implementation",
-        "dependency_lock",
-        "active_distributions",
+    assert document["resolved_config_sha256"].startswith("sha256:")
+    assert document["resume_contract_sha256"].startswith("sha256:")
+    assert document["train_layout_sha256"].startswith("sha256:")
+    assert document["continuation_layout_sha256"].startswith("sha256:")
+    assert document["deployment_contract_sha256"].startswith("sha256:")
+    assert set(document["deployment_contract"]) == {
+        "version",
+        "task_profile",
+        "robot_profile",
+        "policy",
+        "obs_size",
+        "critic_obs_size",
+        "action_size",
+        "actor_observation_layout",
+        "critic_observation_layout",
+        "action_layout",
+        "assets",
+        "motion_content_sha256",
+        "motion_schema_sha256",
     }
 
 
@@ -396,7 +400,9 @@ def test_motion_checkpoint_rejects_locomotion_environment_task(
     path = tmp_path / "motion_checkpoint"
     save_checkpoint(path, state, checkpoint_metadata)
 
-    restored, _, _, restored_metadata = restore_runner_checkpoint(path, motion_env)
+    restored, _, _, restored_metadata = restore_runner_checkpoint(
+        path, motion_env, checkpoint_metadata
+    )
 
     assert_tree_equal(restored, state)
     assert restored_metadata == checkpoint_metadata
@@ -425,7 +431,7 @@ def test_motion_checkpoint_rejects_locomotion_environment_task(
         ValueError,
         match="checkpoint task 'motion_tracking'.*environment task 'locomotion'",
     ):
-        restore_runner_checkpoint(path, FakeEnv())
+        restore_runner_checkpoint(path, FakeEnv(), checkpoint_metadata)
 
 
 def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
@@ -449,7 +455,7 @@ def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
 
     normalization_tamper = json.loads(json.dumps(original_document))
     normalization_tamper["metadata"]["observation_norm"]["mean"][0] += 0.5
-    normalization_tamper["config_fingerprint"] = checkpoint._fingerprint(
+    normalization_tamper["resolved_config_sha256"] = checkpoint._fingerprint(
         normalization_tamper["metadata"]
     )
     metadata_path.write_text(json.dumps(normalization_tamper), encoding="utf-8")
@@ -462,7 +468,7 @@ def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
 
     sampler_tamper = json.loads(json.dumps(original_document))
     sampler_tamper["metadata"]["motion_sampling_failure_ema"][0] += 0.125
-    sampler_tamper["config_fingerprint"] = checkpoint._fingerprint(
+    sampler_tamper["resolved_config_sha256"] = checkpoint._fingerprint(
         sampler_tamper["metadata"]
     )
     metadata_path.write_text(json.dumps(sampler_tamper), encoding="utf-8")
@@ -471,7 +477,7 @@ def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
         ValueError,
         match="adaptive-sampler state does not match its metadata snapshot",
     ):
-        restore_runner_checkpoint(path, motion_env)
+        restore_runner_checkpoint(path, motion_env, checkpoint_metadata)
 
 
 def test_motion_contract_allows_relocation_and_rejects_content_or_schema_tampering(
@@ -545,7 +551,9 @@ def test_checkpoint_round_trips_real_mjx_continuation_state(
     path = tmp_path / "mjx_checkpoint"
 
     save_checkpoint(path, state, checkpoint_metadata)
-    restored, _, _, restored_metadata = restore_runner_checkpoint(path, env)
+    restored, _, _, restored_metadata = restore_runner_checkpoint(
+        path, env, checkpoint_metadata
+    )
 
     assert_tree_equal(restored, state)
     assert restored_metadata == checkpoint_metadata
@@ -616,7 +624,10 @@ def test_checkpoint_refuses_existing_path(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("mutation", "error_match"),
     [
-        (lambda document: document.update(schema_version=2), "unsupported.*version 2"),
+        (
+            lambda document: document.update(schema_version=6),
+            "schema version 6.*archived source revision",
+        ),
         (
             lambda document: document.update(kind="evaluation"),
             "unsupported checkpoint kind",
@@ -626,12 +637,12 @@ def test_checkpoint_refuses_existing_path(tmp_path: Path) -> None:
             "unknown field.*unexpected",
         ),
         (
-            lambda document: document.update(config_fingerprint="not-a-hash"),
-            "config_fingerprint must have the form",
+            lambda document: document.update(resolved_config_sha256="not-a-hash"),
+            "resolved_config_sha256 must have the form",
         ),
         (
             lambda document: document["metadata"]["env"].update(decimation=7),
-            "config fingerprint does not match",
+            "resolved configuration fingerprint does not match",
         ),
     ],
 )
@@ -656,7 +667,7 @@ def test_metadata_rejects_unknown_resolved_config_key(tmp_path: Path) -> None:
         metadata(config, tmp_path), runner_state(config, FakeEnv())
     )
     document["metadata"]["env"]["not_a_field"] = True
-    document["config_fingerprint"] = checkpoint._fingerprint(document["metadata"])
+    document["resolved_config_sha256"] = checkpoint._fingerprint(document["metadata"])
     path = tmp_path / "unknown_config"
     write_checkpoint_document(path, document)
 
@@ -664,102 +675,87 @@ def test_metadata_rejects_unknown_resolved_config_key(tmp_path: Path) -> None:
         load_checkpoint_metadata(path)
 
 
-def test_checkpoint_rejects_runtime_fingerprint_mismatch(tmp_path: Path) -> None:
+def test_checkpoint_rejects_deployment_contract_tampering(tmp_path: Path) -> None:
     config = ppo_config()
     document = checkpoint_document(
         metadata(config, tmp_path), runner_state(config, FakeEnv())
     )
-    document["runtime_fingerprints"]["implementation"] = "sha256:" + "0" * 64
-    path = tmp_path / "runtime_mismatch"
+    document["deployment_contract"]["assets"]["prepared_assets"] = "sha256:" + "0" * 64
+    document["deployment_contract_sha256"] = checkpoint._fingerprint(
+        document["deployment_contract"]
+    )
+    path = tmp_path / "deployment_mismatch"
     write_checkpoint_document(path, document)
 
     with pytest.raises(
-        ValueError, match="runtime fingerprint mismatch.*implementation"
+        ValueError, match="deployment contract mismatch.*assets.prepared_assets"
     ):
         load_checkpoint_metadata(path)
 
 
-def test_evaluation_restore_accepts_implementation_only_mismatch(
+def test_deployment_contract_excludes_source_and_dependency_versions(
     tmp_path: Path,
 ) -> None:
     env = FakeEnv()
     config = ppo_config()
     state = runner_state(config, env)
-    path = tmp_path / "evaluation_implementation_mismatch"
+    path = tmp_path / "semantic_deployment"
     save_checkpoint(path, state, metadata(config, tmp_path))
-    metadata_path = path / checkpoint.METADATA_FILE
-    document = json.loads(metadata_path.read_text(encoding="utf-8"))
-    document["runtime_fingerprints"]["implementation"] = "sha256:" + "0" * 64
-    metadata_path.write_text(json.dumps(document), encoding="utf-8")
 
-    restored, restored_metadata, normalization = restore_evaluation_checkpoint(
-        path, validate_implementation=False
-    )
+    restored, restored_metadata, normalization = restore_evaluation_checkpoint(path)
+    document = json.loads((path / checkpoint.METADATA_FILE).read_text(encoding="utf-8"))
 
     assert int(restored.update) == int(state.update)
     assert restored_metadata == metadata(config, tmp_path)
     assert_tree_equal(normalization.observation, state.observation_norm_state)
-    with pytest.raises(
-        ValueError, match="runtime fingerprint mismatch.*implementation"
-    ):
-        restore_training_checkpoint(path)
+    serialized = json.dumps(document["deployment_contract"], sort_keys=True)
+    assert "implementation" not in serialized
+    assert "dependency_lock" not in serialized
+    assert "active_distributions" not in serialized
 
 
-def test_checkpoint_rejects_runtime_inputs_changed_after_training_start(
+def test_checkpoint_rejects_deployment_contract_changed_after_training_start(
     tmp_path: Path,
 ) -> None:
     config = ppo_config()
     checkpoint_metadata = metadata(config, tmp_path)
     state = runner_state(config, FakeEnv())
-    startup_runtime = checkpoint.capture_runtime_fingerprints(checkpoint_metadata)
-    stale_runtime = replace(
-        startup_runtime,
-        implementation="sha256:" + "0" * 64,
+    startup_contract = checkpoint.capture_deployment_contract(checkpoint_metadata)
+    stale_contract = replace(
+        startup_contract,
+        assets=replace(
+            startup_contract.assets,
+            prepared_assets="sha256:" + "0" * 64,
+        ),
     )
 
-    with pytest.raises(RuntimeError, match="runtime inputs changed.*implementation"):
+    with pytest.raises(RuntimeError, match="deployment contract changed.*assets"):
         checkpoint._checkpoint_document(
             checkpoint_metadata,
             checkpoint._train_checkpoint_item(state),
             checkpoint._continuation_checkpoint_item(state),
-            stale_runtime,
+            stale_contract,
         )
-
-
-def test_active_runtime_distributions_must_match_lock(monkeypatch) -> None:
-    monkeypatch.setattr(
-        checkpoint,
-        "_active_runtime_distribution_pairs",
-        lambda: ("bello-mujoco==9.9.9",),
-    )
-    monkeypatch.setattr(
-        checkpoint,
-        "_locked_distribution_versions",
-        lambda: {"bello-mujoco": "0.1.0"},
-    )
-
-    with pytest.raises(RuntimeError, match=r"bello-mujoco==9\.9\.9 \(lock: 0\.1\.0\)"):
-        checkpoint._active_distributions_fingerprint()
 
 
 def test_prepared_asset_fingerprint_covers_referenced_meshes(tmp_path: Path) -> None:
     asset_config = AssetPrepConfig(output_root=tmp_path / "prepared")
-    initial = checkpoint.capture_asset_runtime_fingerprints(asset_config)
+    initial = checkpoint.capture_asset_contract(asset_config)
     prepared = checkpoint.prepare_asset(asset_config)
     mesh_path = next((prepared.urdf_path.parents[1] / "meshes").glob("*.stl"))
 
     mesh_path.write_bytes(mesh_path.read_bytes() + b"changed")
-    changed = checkpoint.capture_asset_runtime_fingerprints(asset_config)
+    changed = checkpoint.capture_asset_contract(asset_config)
 
     assert changed.prepared_assets != initial.prepared_assets
     assert changed.simulation_scene == initial.simulation_scene
 
 
-def test_runtime_scene_fingerprints_cover_resolved_terrain() -> None:
-    flat = checkpoint.capture_asset_runtime_fingerprints(
+def test_deployment_scene_hashes_cover_resolved_terrain() -> None:
+    flat = checkpoint.capture_asset_contract(
         AssetPrepConfig(), checkpoint.TerrainConfig(mode="plane")
     )
-    tilted = checkpoint.capture_asset_runtime_fingerprints(
+    tilted = checkpoint.capture_asset_contract(
         AssetPrepConfig(),
         checkpoint.TerrainConfig(
             mode="plane",
@@ -773,74 +769,42 @@ def test_runtime_scene_fingerprints_cover_resolved_terrain() -> None:
     assert tilted.viewer_scene != flat.viewer_scene
 
 
-@pytest.mark.integration
-def test_built_wheel_contains_checkpoint_runtime_inputs(tmp_path: Path) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    source_fingerprints = checkpoint.capture_asset_runtime_fingerprints(
-        AssetPrepConfig()
-    )
-    dist_dir = tmp_path / "dist"
-    build_env = os.environ.copy()
-    build_env["UV_CACHE_DIR"] = str(tmp_path / "uv-cache")
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(dist_dir)],
-        cwd=repo_root,
-        env=build_env,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    wheel_path = next(dist_dir.glob("*.whl"))
-    installed = tmp_path / "installed"
-    subprocess.run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--target",
-            str(installed),
-            "--no-deps",
-            str(wheel_path),
-        ],
-        cwd=tmp_path,
-        env=build_env,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+def test_resume_allows_budget_extension_and_rejects_semantic_changes(
+    tmp_path: Path,
+) -> None:
+    env = FakeEnv()
+    config = ppo_config()
+    state = runner_state(config, env)
+    recorded_metadata = metadata(config, tmp_path)
+    path = tmp_path / "resume"
+    save_checkpoint(path, state, recorded_metadata)
+    extended = replace(
+        recorded_metadata,
+        ppo=replace(config, total_timesteps=config.total_timesteps * 2),
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "\n".join(
-                (
-                    "from pathlib import Path",
-                    "from dataclasses import asdict",
-                    "import json",
-                    "import bello_mujoco.checkpoint as checkpoint",
-                    f"root = Path({str(installed)!r}).resolve()",
-                    "assert Path(checkpoint.__file__).resolve().is_relative_to(root)",
-                    "assert checkpoint._runtime_input_bytes('pyproject.toml')",
-                    "assert checkpoint._runtime_input_bytes('uv.lock')",
-                    "assert checkpoint._implementation_fingerprint().startswith('sha256:')",
-                    "captured = checkpoint.capture_asset_runtime_fingerprints(",
-                    "    checkpoint.AssetPrepConfig()",
-                    ")",
-                    "print(json.dumps(asdict(captured), sort_keys=True))",
-                )
+    restored, _, _, effective_metadata = restore_runner_checkpoint(path, env, extended)
+
+    assert int(restored.update) == int(state.update)
+    assert effective_metadata.ppo == extended.ppo
+    changed_reward = replace(
+        extended,
+        reward=replace(
+            extended.reward,
+            weights=replace(
+                extended.reward.weights,
+                track_lin_vel_xy=2.0,
             ),
-        ],
-        cwd=tmp_path,
-        env=os.environ | {"PYTHONPATH": str(installed)},
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        ),
     )
-    assert json.loads(result.stdout) == checkpoint.to_builtin(source_fingerprints)
+    with pytest.raises(ValueError, match="resume checkpoint contract.*reward"):
+        restore_runner_checkpoint(path, env, changed_reward)
+    too_short = replace(
+        recorded_metadata,
+        ppo=replace(config, total_timesteps=config.num_envs * config.num_steps * 2),
+    )
+    with pytest.raises(ValueError, match="budget ends before.*2 < 3"):
+        restore_runner_checkpoint(path, env, too_short)
 
 
 def test_checkpoint_rejects_operational_asset_output_root(tmp_path: Path) -> None:
@@ -862,9 +826,9 @@ def test_fixed_tuple_coercion_rejects_truncation() -> None:
 @pytest.mark.parametrize(
     ("fingerprint_field", "restore_runner", "error_match"),
     [
-        ("train_layout_fingerprint", False, "training state layout does not match"),
+        ("train_layout_sha256", False, "training state layout does not match"),
         (
-            "continuation_layout_fingerprint",
+            "continuation_layout_sha256",
             True,
             "continuation state layout does not match",
         ),
@@ -904,7 +868,7 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
 
     with pytest.raises(ValueError, match=error_match):
         if restore_runner:
-            restore_runner_checkpoint(path, env)
+            restore_runner_checkpoint(path, env, metadata(config, tmp_path))
         else:
             restore_training_checkpoint(path)
 
@@ -967,4 +931,11 @@ def test_runner_restore_rejects_environment_contract_mismatch(
     write_checkpoint_document(path, document)
 
     with pytest.raises(ValueError, match="action layout"):
-        restore_runner_checkpoint(path, env)
+        restore_runner_checkpoint(
+            path,
+            env,
+            replace(
+                metadata(config, tmp_path),
+                action_layout=ActionLayout(("other_0", "other_1")),
+            ),
+        )

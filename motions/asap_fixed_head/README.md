@@ -27,10 +27,11 @@ cd "$GMR_REPO"
 nix develop -c python scripts/prepare_asap_bello_dataset.py --jobs 2
 
 cd "$BELLO_MUJOCO_REPO"
-nix develop -c uv run bello-import-gmr-motion-dataset \
-  "$GMR_REPO/motion_data/asap_bello_fixed_head" \
-  motions/local/asap_fixed_head \
-  --jobs 2
+nix develop -c uv run bello-motion \
+  operation=import_dataset \
+  source="$GMR_REPO/motion_data/asap_bello_fixed_head" \
+  output=motions/local/asap_fixed_head \
+  jobs=2
 ```
 
 The complete 51-clip import remains ignored under `motions/local/`. These two

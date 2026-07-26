@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from importlib.metadata import PackageNotFoundError, distribution
-from importlib.resources import files
 import json
 import math
 import os
 import re
 import shutil
 import tempfile
-import tomllib
 import xml.etree.ElementTree as ET
-from collections import deque
 from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from pathlib import Path
@@ -25,9 +21,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import orbax.checkpoint as ocp
-from packaging.markers import default_environment
-from packaging.requirements import Requirement
-from packaging.utils import canonicalize_name
 
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
@@ -45,6 +38,7 @@ from bello_mujoco.envs.locomotion import (
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.motion import MOTION_FORMAT_VERSION, MotionClip
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
+from bello_mujoco.policy import ActorCriticConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.terrain import ROBOT_ONLY_TERRAIN, TerrainConfig, runtime_mjcf_path
 from bello_mujoco.tracking import to_builtin
@@ -64,18 +58,21 @@ from bello_mujoco.train.ppo import (
 METADATA_FILE = "metadata.json"
 STATE_DIR = "state"
 CONTINUATION_DIR = "continuation"
-CHECKPOINT_SCHEMA_VERSION = 6
+CHECKPOINT_SCHEMA_VERSION = 7
 CHECKPOINT_KIND = "training_resume"
+DEPLOYMENT_CONTRACT_VERSION = 1
 
 _CHECKPOINT_DOCUMENT_FIELDS = frozenset(
     {
         "schema_version",
         "kind",
         "update",
-        "config_fingerprint",
-        "train_layout_fingerprint",
-        "continuation_layout_fingerprint",
-        "runtime_fingerprints",
+        "resolved_config_sha256",
+        "resume_contract_sha256",
+        "train_layout_sha256",
+        "continuation_layout_sha256",
+        "deployment_contract_sha256",
+        "deployment_contract",
         "metadata",
     }
 )
@@ -160,16 +157,32 @@ class CheckpointNormalizationState(NamedTuple):
 
 
 @dataclass(frozen=True)
-class RuntimeFingerprints:
-    """Immutable inputs needed to interpret a policy checkpoint."""
+class AssetContract:
+    """Content-addressed simulation assets used by a policy."""
 
     source_assets: str
     prepared_assets: str
     simulation_scene: str
     viewer_scene: str
-    implementation: str
-    dependency_lock: str
-    active_distributions: str
+
+
+@dataclass(frozen=True)
+class DeploymentContract:
+    """Versioned semantic inputs required to deploy a policy."""
+
+    version: int
+    task_profile: str
+    robot_profile: str
+    policy: ActorCriticConfig
+    obs_size: int
+    critic_obs_size: int
+    action_size: int
+    actor_observation_layout: ObservationLayout
+    critic_observation_layout: ObservationLayout
+    action_layout: ActionLayout
+    assets: AssetContract
+    motion_content_sha256: str | None
+    motion_schema_sha256: str | None
 
 
 def checkpoint_path(config: CheckpointConfig, ppo_config: PPOConfig) -> Path:
@@ -193,7 +206,7 @@ def save_training_checkpoint(
     path: Path,
     runner_state: RunnerState,
     metadata: CheckpointMetadata,
-    runtime_fingerprints: RuntimeFingerprints,
+    deployment_contract: DeploymentContract,
 ) -> None:
     path = Path(path).resolve()
     if path.exists():
@@ -207,7 +220,7 @@ def save_training_checkpoint(
         metadata,
         train_item,
         continuation_item,
-        runtime_fingerprints,
+        deployment_contract,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     staging_path = Path(tempfile.mkdtemp(prefix=f".{path.name}.tmp-", dir=path.parent))
@@ -272,15 +285,11 @@ def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetad
 
 def restore_evaluation_checkpoint(
     path: Path,
-    *,
-    validate_implementation: bool = True,
 ) -> tuple[TrainState, CheckpointMetadata, CheckpointNormalizationState]:
     """Restore a policy plus the exact running statistics used by its actor."""
 
     path = Path(path).resolve()
-    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
-        path, validate_implementation=validate_implementation
-    )
+    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(path)
     template_state, _ = init_train_state(
         jax.random.PRNGKey(metadata.ppo.seed),
         metadata.obs_size,
@@ -313,6 +322,7 @@ def restore_evaluation_checkpoint(
 def restore_runner_checkpoint(
     path: Path,
     env: PPOEnvironment,
+    expected_metadata: CheckpointMetadata,
 ) -> tuple[
     RunnerState,
     eqx.Module,
@@ -320,12 +330,19 @@ def restore_runner_checkpoint(
     CheckpointMetadata,
 ]:
     path = Path(path).resolve()
-    metadata, saved_update, train_fingerprint, continuation_fingerprint = (
+    recorded_metadata, saved_update, train_fingerprint, continuation_fingerprint = (
         _load_checkpoint_document(path)
     )
-    _validate_environment_layouts(env, metadata)
+    effective_metadata = resumed_checkpoint_metadata(
+        recorded_metadata,
+        expected_metadata,
+        saved_update=saved_update,
+    )
+    _validate_environment_layouts(env, effective_metadata)
     template, static_policy, optimizer = init_runner_state(
-        jax.random.PRNGKey(metadata.ppo.seed), env, metadata.ppo
+        jax.random.PRNGKey(effective_metadata.ppo.seed),
+        env,
+        effective_metadata.ppo,
     )
     train_item = _restore_checkpoint_item(
         path / STATE_DIR,
@@ -339,8 +356,10 @@ def restore_runner_checkpoint(
         continuation_fingerprint,
         label="continuation state",
     )
-    _validate_restored_normalization_state(train_item, metadata)
-    _validate_restored_update(train_item["update"], saved_update, metadata.ppo)
+    _validate_restored_normalization_state(train_item, recorded_metadata)
+    _validate_restored_update(
+        train_item["update"], saved_update, effective_metadata.ppo
+    )
     runner_state = RunnerState(
         params=train_item["policy"],
         opt_state=train_item["opt_state"],
@@ -354,13 +373,41 @@ def restore_runner_checkpoint(
         observation_norm_state=train_item["observation_norm_state"],
         critic_observation_norm_state=train_item["critic_observation_norm_state"],
     )
-    _validate_restored_motion_runner_state(runner_state, metadata)
-    return runner_state, static_policy, optimizer, metadata
+    _validate_restored_motion_runner_state(runner_state, recorded_metadata)
+    return runner_state, static_policy, optimizer, effective_metadata
 
 
 def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
     metadata, _, _, _ = _load_checkpoint_document(Path(path).resolve())
     return metadata
+
+
+def resumed_checkpoint_metadata(
+    recorded: CheckpointMetadata,
+    requested: CheckpointMetadata,
+    *,
+    saved_update: int,
+) -> CheckpointMetadata:
+    """Validate a resume request and apply its operationally mutable fields."""
+
+    recorded_payload = _resume_contract_payload(recorded)
+    requested_payload = _resume_contract_payload(requested)
+    if recorded_payload != requested_payload:
+        mismatches = sorted(
+            key
+            for key in set(recorded_payload) | set(requested_payload)
+            if recorded_payload.get(key) != requested_payload.get(key)
+        )
+        raise ValueError(
+            "resume checkpoint contract differs from the requested run for "
+            + ", ".join(mismatches)
+        )
+    if requested.ppo.num_updates < saved_update:
+        raise ValueError(
+            "requested training budget ends before the saved checkpoint update: "
+            f"{requested.ppo.num_updates} < {saved_update}"
+        )
+    return requested
 
 
 def _train_state_checkpoint_item(
@@ -404,7 +451,7 @@ def _checkpoint_document(
     metadata: CheckpointMetadata,
     train_item: dict[str, Any],
     continuation_item: dict[str, Any],
-    runtime_fingerprints: RuntimeFingerprints,
+    deployment_contract: DeploymentContract,
 ) -> dict[str, Any]:
     if metadata.asset.output_root is not None:
         raise ValueError(
@@ -420,36 +467,60 @@ def _checkpoint_document(
         path="metadata",
     )
     _validate_metadata_layouts(resolved_metadata)
-    current_runtime_fingerprints = capture_runtime_fingerprints(resolved_metadata)
-    if current_runtime_fingerprints != runtime_fingerprints:
+    current_contract = capture_deployment_contract(resolved_metadata)
+    if current_contract != deployment_contract:
         mismatches = [
             field.name
-            for field in fields(RuntimeFingerprints)
-            if getattr(current_runtime_fingerprints, field.name)
-            != getattr(runtime_fingerprints, field.name)
+            for field in fields(DeploymentContract)
+            if getattr(current_contract, field.name)
+            != getattr(deployment_contract, field.name)
         ]
         raise RuntimeError(
-            "checkpoint runtime inputs changed after training initialization: "
+            "checkpoint deployment contract changed after training initialization: "
             f"{', '.join(mismatches)}"
         )
     update = _validate_update(train_item["update"], resolved_metadata.ppo)
     canonical_payload = to_builtin(resolved_metadata)
+    contract_payload = to_builtin(deployment_contract)
     return {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "kind": CHECKPOINT_KIND,
         "update": update,
-        "config_fingerprint": _fingerprint(canonical_payload),
-        "train_layout_fingerprint": _layout_fingerprint(train_item),
-        "continuation_layout_fingerprint": _layout_fingerprint(continuation_item),
-        "runtime_fingerprints": to_builtin(runtime_fingerprints),
+        "resolved_config_sha256": _fingerprint(canonical_payload),
+        "resume_contract_sha256": _fingerprint(
+            _resume_contract_payload(resolved_metadata)
+        ),
+        "train_layout_sha256": _layout_fingerprint(train_item),
+        "continuation_layout_sha256": _layout_fingerprint(continuation_item),
+        "deployment_contract_sha256": _fingerprint(contract_payload),
+        "deployment_contract": contract_payload,
         "metadata": canonical_payload,
     }
 
 
+def _resume_contract_payload(metadata: CheckpointMetadata) -> dict[str, Any]:
+    """Return training semantics, excluding budget and persisted running state."""
+
+    payload = to_builtin(metadata)
+    payload["ppo"].pop("total_timesteps")
+    for key in (
+        "value_norm",
+        "observation_norm",
+        "critic_observation_norm",
+        "motion_sampling_failure_ema",
+    ):
+        payload.pop(key)
+    motion_env = payload.get("motion_env")
+    if motion_env is not None:
+        motion_env.pop("motion_path")
+    motion = payload.get("motion")
+    if motion is not None:
+        motion.pop("path")
+    return payload
+
+
 def _load_checkpoint_document(
     path: Path,
-    *,
-    validate_implementation: bool = True,
 ) -> tuple[CheckpointMetadata, int, str, str]:
     metadata_path = Path(path).resolve() / METADATA_FILE
     try:
@@ -462,14 +533,14 @@ def _load_checkpoint_document(
         raise TypeError(f"checkpoint metadata root must be a mapping: {metadata_path}")
     if "schema_version" not in document:
         raise ValueError(
-            "unversioned checkpoint metadata is not supported; expected checkpoint "
-            f"schema version {CHECKPOINT_SCHEMA_VERSION}"
+            "unversioned checkpoint metadata requires the archived source revision "
+            "that created it"
         )
     schema_version = document["schema_version"]
     if type(schema_version) is not int or schema_version != CHECKPOINT_SCHEMA_VERSION:
         raise ValueError(
-            f"unsupported checkpoint schema version {schema_version!r}; expected "
-            f"{CHECKPOINT_SCHEMA_VERSION}. Legacy checkpoints are not supported."
+            f"checkpoint schema version {schema_version!r} requires its archived "
+            f"source revision; this source supports version {CHECKPOINT_SCHEMA_VERSION}"
         )
     _require_exact_fields(
         document,
@@ -481,27 +552,36 @@ def _load_checkpoint_document(
             f"unsupported checkpoint kind {document['kind']!r}; expected "
             f"{CHECKPOINT_KIND!r}"
         )
-    config_fingerprint = _validated_fingerprint(
-        document["config_fingerprint"], "config_fingerprint"
+    resolved_config_sha256 = _validated_fingerprint(
+        document["resolved_config_sha256"], "resolved_config_sha256"
+    )
+    resume_contract_sha256 = _validated_fingerprint(
+        document["resume_contract_sha256"], "resume_contract_sha256"
     )
     train_fingerprint = _validated_fingerprint(
-        document["train_layout_fingerprint"], "train_layout_fingerprint"
+        document["train_layout_sha256"], "train_layout_sha256"
     )
     continuation_fingerprint = _validated_fingerprint(
-        document["continuation_layout_fingerprint"],
-        "continuation_layout_fingerprint",
+        document["continuation_layout_sha256"],
+        "continuation_layout_sha256",
     )
-    recorded_runtime = dataclass_from_dict(
-        RuntimeFingerprints,
-        document["runtime_fingerprints"],
+    deployment_contract_sha256 = _validated_fingerprint(
+        document["deployment_contract_sha256"],
+        "deployment_contract_sha256",
+    )
+    recorded_contract = dataclass_from_dict(
+        DeploymentContract,
+        document["deployment_contract"],
         strict=True,
         require_all_fields=True,
-        path="runtime_fingerprints",
+        path="deployment_contract",
     )
-    for field in fields(RuntimeFingerprints):
-        _validated_fingerprint(
-            getattr(recorded_runtime, field.name),
-            f"runtime_fingerprints.{field.name}",
+    _validate_deployment_contract(recorded_contract)
+    canonical_contract = to_builtin(recorded_contract)
+    if _fingerprint(canonical_contract) != deployment_contract_sha256:
+        raise ValueError(
+            "checkpoint deployment contract fingerprint does not match its "
+            "contents; the checkpoint is corrupt or has been modified"
         )
     metadata = dataclass_from_dict(
         CheckpointMetadata,
@@ -512,32 +592,25 @@ def _load_checkpoint_document(
     )
     _validate_metadata_layouts(metadata)
     canonical_payload = to_builtin(metadata)
-    if _fingerprint(canonical_payload) != config_fingerprint:
+    if _fingerprint(canonical_payload) != resolved_config_sha256:
         raise ValueError(
-            "checkpoint config fingerprint does not match its resolved metadata; "
+            "checkpoint resolved configuration fingerprint does not match its "
+            "metadata; "
             "the checkpoint is corrupt or has been modified"
         )
-    current_runtime = capture_runtime_fingerprints(metadata)
-    if current_runtime != recorded_runtime:
-        mismatches = [
-            field.name
-            for field in fields(RuntimeFingerprints)
-            if getattr(current_runtime, field.name)
-            != getattr(recorded_runtime, field.name)
-            and (validate_implementation or field.name != "implementation")
-        ]
-        if mismatches:
-            requirement = (
-                "source, generated assets, implementation, uv.lock, and installed "
-                "runtime versions"
-                if validate_implementation
-                else "source assets, generated assets, uv.lock, and installed runtime "
-                "versions"
-            )
-            raise ValueError(
-                "checkpoint runtime fingerprint mismatch for "
-                f"{', '.join(mismatches)}; use the exact {requirement} that created it"
-            )
+    if _fingerprint(_resume_contract_payload(metadata)) != resume_contract_sha256:
+        raise ValueError(
+            "checkpoint resume contract fingerprint does not match its resolved "
+            "configuration; the checkpoint is corrupt or has been modified"
+        )
+    current_contract = capture_deployment_contract(metadata)
+    mismatches = _deployment_contract_mismatches(recorded_contract, current_contract)
+    if mismatches:
+        raise ValueError(
+            "checkpoint deployment contract mismatch for "
+            f"{', '.join(mismatches)}; use matching robot, task, policy, and "
+            "content-addressed assets"
+        )
     update = document["update"]
     if type(update) is not int:
         raise ValueError("checkpoint update must be an integer")
@@ -1044,26 +1117,54 @@ def validate_motion_clip_contract(
     return actual
 
 
-def capture_runtime_fingerprints(
+def capture_deployment_contract(
     metadata: CheckpointMetadata,
-) -> RuntimeFingerprints:
+) -> DeploymentContract:
+    """Capture the semantic policy, task, robot, and asset deployment contract."""
+
     if metadata.task == "locomotion":
         if metadata.env is None:
             raise ValueError("locomotion checkpoint is missing its environment")
         terrain = metadata.env.terrain
+        task_profile = "bello/locomotion"
     else:
         if metadata.motion_env is None:
             raise ValueError("motion checkpoint is missing its environment")
         terrain = metadata.motion_env.terrain
-    return capture_asset_runtime_fingerprints(metadata.asset, terrain)
+        task_profile = f"bello/motion_tracking/{metadata.motion_env.formulation}"
+    motion_content_sha256 = (
+        metadata.motion.content_sha256 if metadata.motion is not None else None
+    )
+    motion_schema_sha256 = (
+        _fingerprint(_motion_schema_payload(metadata.motion))
+        if metadata.motion is not None
+        else None
+    )
+    contract = DeploymentContract(
+        version=DEPLOYMENT_CONTRACT_VERSION,
+        task_profile=task_profile,
+        robot_profile=f"bello/{metadata.asset.asset}",
+        policy=metadata.ppo.policy,
+        obs_size=metadata.obs_size,
+        critic_obs_size=metadata.critic_obs_size,
+        action_size=metadata.action_size,
+        actor_observation_layout=metadata.actor_observation_layout,
+        critic_observation_layout=metadata.critic_observation_layout,
+        action_layout=metadata.action_layout,
+        assets=capture_asset_contract(metadata.asset, terrain),
+        motion_content_sha256=motion_content_sha256,
+        motion_schema_sha256=motion_schema_sha256,
+    )
+    _validate_deployment_contract(contract)
+    return contract
 
 
-def capture_asset_runtime_fingerprints(
+def capture_asset_contract(
     asset_config: AssetPrepConfig,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
-) -> RuntimeFingerprints:
+) -> AssetContract:
     prepared = prepare_asset(asset_config)
-    return RuntimeFingerprints(
+    return AssetContract(
         source_assets=f"sha256:{source_asset_fingerprint()}",
         prepared_assets=_prepared_asset_closure_fingerprint(prepared),
         simulation_scene=_file_fingerprint(
@@ -1072,97 +1173,101 @@ def capture_asset_runtime_fingerprints(
         viewer_scene=_file_fingerprint(
             runtime_mjcf_path(prepared.viewer_mjcf_path, terrain)
         ),
-        implementation=_implementation_fingerprint(),
-        dependency_lock=_content_fingerprint(_runtime_input_bytes("uv.lock")),
-        active_distributions=_active_distributions_fingerprint(),
     )
 
 
-def _active_distributions_fingerprint() -> str:
-    pairs = _active_runtime_distribution_pairs()
-    locked_versions = _locked_distribution_versions()
-    mismatches = []
-    for pair in pairs:
-        name, version = pair.rsplit("==", 1)
-        locked_version = locked_versions.get(name)
-        if locked_version != version:
-            expected = "missing" if locked_version is None else locked_version
-            mismatches.append(f"{pair} (lock: {expected})")
-    if mismatches:
-        raise RuntimeError(
-            "active runtime distributions do not match uv.lock: "
-            + ", ".join(mismatches)
+def _validate_deployment_contract(contract: DeploymentContract) -> None:
+    if contract.version != DEPLOYMENT_CONTRACT_VERSION:
+        raise ValueError(
+            "unsupported deployment contract version "
+            f"{contract.version!r}; expected {DEPLOYMENT_CONTRACT_VERSION}"
         )
-    return _fingerprint(pairs)
+    if not contract.task_profile or not contract.robot_profile:
+        raise ValueError(
+            "deployment contract requires nonempty task and robot profile identifiers"
+        )
+    for field in fields(AssetContract):
+        _validated_fingerprint(
+            getattr(contract.assets, field.name),
+            f"deployment_contract.assets.{field.name}",
+        )
+    expected_obs_size = (
+        contract.actor_observation_layout.size * contract.policy.obs_stack_size
+    )
+    if contract.obs_size != expected_obs_size:
+        raise ValueError(
+            "deployment actor observation layout resolves to "
+            f"{expected_obs_size} values, but obs_size is {contract.obs_size}"
+        )
+    expected_critic_obs_size = (
+        contract.critic_observation_layout.size * contract.policy.obs_stack_size
+    )
+    if contract.critic_obs_size != expected_critic_obs_size:
+        raise ValueError(
+            "deployment critic observation layout resolves to "
+            f"{expected_critic_obs_size} values, but critic_obs_size is "
+            f"{contract.critic_obs_size}"
+        )
+    if contract.action_size != contract.action_layout.size:
+        raise ValueError(
+            "deployment action layout contains "
+            f"{contract.action_layout.size} actions, but action_size is "
+            f"{contract.action_size}"
+        )
+    is_motion = contract.task_profile.startswith("bello/motion_tracking/")
+    if is_motion:
+        if (
+            contract.motion_content_sha256 is None
+            or contract.motion_schema_sha256 is None
+        ):
+            raise ValueError(
+                "motion deployment contract requires content and schema hashes"
+            )
+        _validated_fingerprint(
+            contract.motion_content_sha256,
+            "deployment_contract.motion_content_sha256",
+        )
+        _validated_fingerprint(
+            contract.motion_schema_sha256,
+            "deployment_contract.motion_schema_sha256",
+        )
+    elif (
+        contract.motion_content_sha256 is not None
+        or contract.motion_schema_sha256 is not None
+    ):
+        raise ValueError(
+            "non-motion deployment contract must not contain motion hashes"
+        )
 
 
-def _active_runtime_distribution_pairs() -> tuple[str, ...]:
-    """Resolve installed runtime dependencies, including requested extras."""
-
-    pending = deque([(canonicalize_name("bello-mujoco"), frozenset())])
-    processed_extras: dict[str, frozenset[str]] = {}
-    versions: dict[str, str] = {}
-    marker_environment = default_environment()
-    while pending:
-        requested_name, requested_extras = pending.popleft()
-        previous_extras = processed_extras.get(requested_name, frozenset())
-        if requested_name in processed_extras and requested_extras <= previous_extras:
+def _deployment_contract_mismatches(
+    recorded: DeploymentContract,
+    current: DeploymentContract,
+) -> list[str]:
+    mismatches: list[str] = []
+    for field in fields(DeploymentContract):
+        name = field.name
+        recorded_value = getattr(recorded, name)
+        current_value = getattr(current, name)
+        if recorded_value == current_value:
             continue
-        active_extras = previous_extras | requested_extras
-        processed_extras[requested_name] = active_extras
-        try:
-            installed = distribution(requested_name)
-        except PackageNotFoundError as error:
-            raise RuntimeError(
-                f"required runtime distribution is not installed: {requested_name}"
-            ) from error
-        name = canonicalize_name(installed.metadata["Name"] or requested_name)
-        existing_version = versions.setdefault(name, installed.version)
-        if existing_version != installed.version:
-            raise RuntimeError(
-                f"multiple active versions found for {name}: "
-                f"{existing_version}, {installed.version}"
+        if name == "assets":
+            mismatches.extend(
+                f"assets.{asset_field.name}"
+                for asset_field in fields(AssetContract)
+                if getattr(recorded_value, asset_field.name)
+                != getattr(current_value, asset_field.name)
             )
-        marker_extras = ("", *sorted(active_extras))
-        for raw_requirement in installed.requires or ():
-            requirement = Requirement(raw_requirement)
-            if requirement.marker is not None and not any(
-                requirement.marker.evaluate(marker_environment | {"extra": extra})
-                for extra in marker_extras
-            ):
-                continue
-            pending.append(
-                (canonicalize_name(requirement.name), frozenset(requirement.extras))
-            )
-    return tuple(f"{name}=={versions[name]}" for name in sorted(versions))
+        else:
+            mismatches.append(name)
+    return mismatches
 
 
-def _locked_distribution_versions() -> dict[str, str]:
-    try:
-        lock = tomllib.loads(_runtime_input_bytes("uv.lock").decode("utf-8"))
-        packages = lock["package"]
-    except (KeyError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise RuntimeError("bundled uv.lock is malformed") from error
-    if not isinstance(packages, list):
-        raise RuntimeError("bundled uv.lock package table must be a list")
-    versions: dict[str, str] = {}
-    for package in packages:
-        if not isinstance(package, dict):
-            raise RuntimeError("bundled uv.lock contains a malformed package entry")
-        try:
-            name = canonicalize_name(package["name"])
-            version = str(package["version"])
-        except (KeyError, TypeError) as error:
-            raise RuntimeError(
-                "bundled uv.lock contains a malformed package entry"
-            ) from error
-        previous = versions.setdefault(name, version)
-        if previous != version:
-            raise RuntimeError(
-                f"bundled uv.lock contains multiple versions for {name}: "
-                f"{previous}, {version}"
-            )
-    return versions
+def _motion_schema_payload(contract: MotionClipContract) -> dict[str, Any]:
+    payload = to_builtin(contract)
+    payload.pop("path")
+    payload.pop("content_sha256")
+    return payload
 
 
 def _file_fingerprint(path: Path) -> str:
@@ -1245,41 +1350,6 @@ def _prepared_asset_closure_fingerprint(prepared: PreparedAsset) -> str:
         hasher.update(path.read_bytes())
         hasher.update(b"\0")
     return f"sha256:{hasher.hexdigest()}"
-
-
-def _implementation_fingerprint() -> str:
-    package_root = Path(__file__).resolve().parent
-    hasher = hashlib.sha256()
-    hasher.update(f"checkpoint-schema:{CHECKPOINT_SCHEMA_VERSION}\0".encode())
-    for path in sorted(package_root.rglob("*.py")):
-        hasher.update(path.relative_to(package_root).as_posix().encode())
-        hasher.update(b"\0")
-        hasher.update(path.read_bytes())
-        hasher.update(b"\0")
-    hasher.update(b"pyproject.toml\0")
-    hasher.update(_runtime_input_bytes("pyproject.toml"))
-    return f"sha256:{hasher.hexdigest()}"
-
-
-def _runtime_input_bytes(name: str) -> bytes:
-    package_file = Path(__file__).resolve()
-    source_root = package_file.parents[2]
-    source_package_file = source_root / "src" / "bello_mujoco" / "checkpoint.py"
-    if source_package_file.is_file() and source_package_file.resolve() == package_file:
-        source_input = source_root / name
-        if not source_input.is_file():
-            raise FileNotFoundError(
-                f"checkpoint runtime input is missing: {source_input}"
-            )
-        return source_input.read_bytes()
-
-    resource = files("bello_mujoco").joinpath("_runtime", name)
-    try:
-        return resource.read_bytes()
-    except FileNotFoundError as error:
-        raise FileNotFoundError(
-            f"installed checkpoint runtime input is missing: bello_mujoco/_runtime/{name}"
-        ) from error
 
 
 def _layout_fingerprint(tree: Any) -> str:

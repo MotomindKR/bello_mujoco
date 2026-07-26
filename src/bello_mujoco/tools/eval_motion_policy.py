@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
@@ -418,43 +417,3 @@ def native_motion_state(
         last_episode_return=jax.numpy.asarray(0.0, dtype=jax.numpy.float32),
         last_episode_length=jax.numpy.asarray(0, dtype=jax.numpy.int32),
     )
-
-
-def entrypoint() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("checkpoint", type=Path)
-    parser.add_argument("output", type=Path)
-    parser.add_argument("--steps", type=int)
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=50)
-    parser.add_argument(
-        "--motion",
-        type=Path,
-        help=(
-            "relocated motion .npz; its complete schema and content hash must "
-            "match the checkpoint"
-        ),
-    )
-    parser.add_argument(
-        "--full-clip",
-        action="store_true",
-        help="continue the rollout after early-termination flags until the motion ends",
-    )
-    args = parser.parse_args()
-    print(
-        render_checkpoint(
-            args.checkpoint,
-            args.output,
-            steps=args.steps,
-            stop_on_terminal=not args.full_clip,
-            width=args.width,
-            height=args.height,
-            fps=args.fps,
-            motion_path=args.motion,
-        )
-    )
-
-
-if __name__ == "__main__":
-    entrypoint()

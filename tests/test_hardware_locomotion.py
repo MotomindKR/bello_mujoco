@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import jax
-from hydra import compose, initialize_config_dir
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.checkpoint import CheckpointNormalizationState
@@ -40,9 +39,8 @@ from bello_mujoco.hardware_locomotion import (
     validate_hardware_inventory,
     wait_for_policy_start,
 )
-from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
+from bello_mujoco.experiment_profiles import locomotion_training_profile
 from bello_mujoco.policy import init_actor_critic, policy_observation_size
-from bello_mujoco.tools.run_locomotion_hardware import HardwareLocomotionToolConfig
 from bello_mujoco.tools.train_ppo import TrainingRunConfig, checkpoint_metadata
 from bello_mujoco.train.ppo import (
     init_observation_norm_state,
@@ -52,35 +50,11 @@ from bello_mujoco.rerun_eval import GamepadConfig, GamepadInput
 
 
 def compose_hardware_training_config() -> TrainingRunConfig:
-    clear_hydra()
-    try:
-        with initialize_config_dir(
-            version_base=None,
-            config_dir=str(CONFIG_ROOT.parent / "experiments" / "train"),
-        ):
-            config = compose(
-                config_name="hardware_locomotion",
-                overrides=[f"hydra.searchpath=[file://{CONFIG_ROOT / 'train'}]"],
-            )
-        return structured_config(TrainingRunConfig, config)
-    finally:
-        clear_hydra()
+    return locomotion_training_profile("hardware_locomotion")
 
 
-def compose_hardware_runner_config() -> HardwareLocomotionToolConfig:
-    clear_hydra()
-    try:
-        with initialize_config_dir(
-            version_base=None,
-            config_dir=str(CONFIG_ROOT / "run_locomotion_hardware"),
-        ):
-            config = compose(
-                config_name="default",
-                overrides=["checkpoint_path=checkpoints/hardware"],
-            )
-        return structured_config(HardwareLocomotionToolConfig, config)
-    finally:
-        clear_hydra()
+def compose_hardware_runner_config() -> SimpleNamespace:
+    return SimpleNamespace(hardware=HardwareLocomotionConfig())
 
 
 @pytest.fixture(scope="module")
@@ -115,17 +89,18 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.command_config.minimum_moving_yaw_speed == pytest.approx(0.2)
     assert config.config.gamma == pytest.approx(0.995)
     assert config.config.gae_lambda == pytest.approx(0.98)
-    assert config.reward_config.track_ang_vel_z.weight == pytest.approx(1.0)
-    assert config.reward_config.joint_pose.weight == pytest.approx(-0.1)
-    assert config.reward_config.lin_vel_z.weight == pytest.approx(-2.0)
-    assert config.reward_config.flight.weight == pytest.approx(-2.0)
-    assert config.reward_config.touchdown_air_time.weight == pytest.approx(0.5)
-    assert config.reward_config.torque_l1.weight == pytest.approx(-1.2)
-    assert config.reward_config.torque_peak.weight == pytest.approx(-12.0)
-    assert config.reward_config.stand_foot_motion.weight == pytest.approx(-1.0)
-    assert config.reward_config.base_height.weight == pytest.approx(-10.0)
-    assert config.reward_config.flat_orientation.weight == pytest.approx(-2.0)
-    assert config.reward_config.termination.weight == pytest.approx(-100.0)
+    weights = config.reward_config.weights
+    assert weights.track_ang_vel_z == pytest.approx(1.0)
+    assert weights.joint_pose == pytest.approx(-0.1)
+    assert weights.lin_vel_z == pytest.approx(-2.0)
+    assert weights.flight == pytest.approx(-2.0)
+    assert weights.touchdown_air_time == pytest.approx(0.5)
+    assert weights.torque_l1 == pytest.approx(-1.2)
+    assert weights.torque_peak == pytest.approx(-12.0)
+    assert weights.stand_foot_motion == pytest.approx(-1.0)
+    assert weights.base_height == pytest.approx(-10.0)
+    assert weights.flat_orientation == pytest.approx(-2.0)
+    assert weights.termination == pytest.approx(-100.0)
     assert config.video_config.command == (0.0, 0.0, 0.0)
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25

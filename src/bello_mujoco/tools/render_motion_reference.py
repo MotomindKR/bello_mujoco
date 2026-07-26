@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import mujoco
@@ -56,26 +55,3 @@ def render_reference(
         writer.close()
         renderer.close()
     return output_path
-
-
-def entrypoint() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("motion", type=Path)
-    parser.add_argument("output", type=Path)
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=30)
-    args = parser.parse_args()
-    print(
-        render_reference(
-            args.motion,
-            args.output,
-            width=args.width,
-            height=args.height,
-            fps=args.fps,
-        )
-    )
-
-
-if __name__ == "__main__":
-    entrypoint()

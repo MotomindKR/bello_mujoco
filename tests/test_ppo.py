@@ -61,8 +61,7 @@ def small_config(**updates) -> PPOConfig:
         min_learning_rate=1.0e-5,
         max_learning_rate=1.0e-3,
         policy=ActorCriticConfig(
-            hidden_size=16,
-            hidden_depth=1,
+            hidden_dims=(16,),
             obs_stack_size=1,
             init_log_std=-1.0,
             action_limit=1.0,
@@ -159,8 +158,7 @@ def test_actor_critic_has_explicit_asymmetric_shapes_and_bounded_actions() -> No
 def test_sampled_action_log_probability_matches_evaluation() -> None:
     config = small_config(
         policy=ActorCriticConfig(
-            hidden_size=8,
-            hidden_depth=1,
+            hidden_dims=(8,),
             obs_stack_size=1,
             init_log_std=-3.0,
             action_limit=0.75,
@@ -178,8 +176,7 @@ def test_sampled_action_log_probability_matches_evaluation() -> None:
 def test_actor_only_sampling_is_bounded_with_asymmetric_critic() -> None:
     config = small_config(
         policy=ActorCriticConfig(
-            hidden_size=8,
-            hidden_depth=1,
+            hidden_dims=(8,),
             obs_stack_size=1,
             init_log_std=1.0,
             action_limit=0.6,
@@ -195,8 +192,7 @@ def test_actor_only_sampling_is_bounded_with_asymmetric_critic() -> None:
 def test_gaussian_actions_are_unsquashed_with_exact_log_prob_and_entropy() -> None:
     config = small_config(
         policy=ActorCriticConfig(
-            hidden_size=8,
-            hidden_depth=1,
+            hidden_dims=(8,),
             obs_stack_size=1,
             init_log_std=0.0,
             action_distribution="gaussian",
@@ -225,8 +221,7 @@ def test_gaussian_actions_are_unsquashed_with_exact_log_prob_and_entropy() -> No
 def test_gaussian_samples_above_tanh_limit_are_not_rejected() -> None:
     config = small_config(
         policy=ActorCriticConfig(
-            hidden_size=8,
-            hidden_depth=1,
+            hidden_dims=(8,),
             obs_stack_size=1,
             init_log_std=-1.0,
             action_distribution="gaussian",
@@ -365,8 +360,7 @@ def test_staggered_initial_step_counts_match_actor_and_critic_observations(
     config = small_config(
         num_envs=num_envs,
         policy=ActorCriticConfig(
-            hidden_size=8,
-            hidden_depth=1,
+            hidden_dims=(8,),
             obs_stack_size=2,
             init_log_std=-1.0,
         ),

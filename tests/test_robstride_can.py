@@ -1,8 +1,8 @@
+from dataclasses import replace
 from pathlib import Path
 import os
 import struct
 
-from hydra import compose, initialize_config_dir
 import mujoco
 import numpy as np
 import pytest
@@ -35,7 +35,6 @@ from bello_mujoco.robstride_sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )
-from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.tools.robstride_runner import (
@@ -394,21 +393,8 @@ motors:
         load_robstride_configs(default_motor_kind_config(), (path,))
 
 
-def compose_runner_config(overrides: list[str] | None = None) -> RobstrideRunnerConfig:
-    clear_hydra()
-    try:
-        with initialize_config_dir(
-            version_base=None,
-            config_dir=str(CONFIG_ROOT / "robstride_runner"),
-        ):
-            config = compose(config_name="default", overrides=overrides or [])
-        return structured_config(RobstrideRunnerConfig, config)
-    finally:
-        clear_hydra()
-
-
-def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
-    config = compose_runner_config()
+def test_default_runner_selects_vcan_imu_torque_limits_and_torso_guide() -> None:
+    config = RobstrideRunnerConfig()
 
     assert config.asset_config.asset == "full_body"
     assert config.asset_config.collision_mode == "box"
@@ -426,7 +412,7 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert config.motor_kind_config.name == "motor_kinds.yaml"
     assert config.simulation_physics.timestep == pytest.approx(0.0025)
     assert config.feedback_rate_hz == pytest.approx(100.0)
-    assert not config.enforce_torque_limits
+    assert config.enforce_torque_limits
     assert config.imu_serial_rate_hz == pytest.approx(250.0)
     assert config.imu_serial_enabled
     assert config.imu_serial_device == Path("/dev/ttyIMU-mujoco")
@@ -448,34 +434,6 @@ def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
     assert config.pose_service.reference_frame == "odom"
     assert config.pose_service.tracked_frame == "pelvis_link"
     assert config.pose_service.publish_rate_hz == pytest.approx(200.0)
-
-
-def test_direct_runner_default_matches_hil_morphology() -> None:
-    config = RobstrideRunnerConfig()
-
-    assert config.asset_config.collision_mode == "box"
-    assert config.asset_config.end_effector_sphere_mode == "both"
-    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
-    assert config.simulation_physics.timestep == pytest.approx(0.0025)
-    assert config.feedback_rate_hz == pytest.approx(100.0)
-    assert not config.enforce_torque_limits
-    assert config.imu_serial_rate_hz == pytest.approx(250.0)
-    assert config.imu_noise.enabled
-    assert config.imu_noise.orientation_std_radians == pytest.approx(0.005)
-    assert config.imu_noise.linear_acceleration_std_mps2 == pytest.approx(0.1)
-    assert config.pose_service.listen == "0.0.0.0:50052"
-
-
-def test_runner_hydra_can_enable_head_joints() -> None:
-    config = compose_runner_config(
-        [
-            "asset_config.joint_availability.neck_yaw=true",
-            "asset_config.joint_availability.head_pitch=true",
-        ]
-    )
-
-    assert config.asset_config.joint_availability.neck_yaw
-    assert config.asset_config.joint_availability.head_pitch
 
 
 def test_runner_optional_joints_require_matching_motor_assignments() -> None:
@@ -517,41 +475,22 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
         )
 
 
-def test_runner_hydra_rejects_unknown_config_keys() -> None:
-    clear_hydra()
-    try:
-        with initialize_config_dir(
-            version_base=None,
-            config_dir=str(CONFIG_ROOT / "robstride_runner"),
-        ):
-            raw = compose(config_name="default", overrides=["+backend=mjx"])
-        with pytest.raises(ValueError, match="unknown config key.*backend"):
-            structured_config(RobstrideRunnerConfig, raw)
-    finally:
-        clear_hydra()
-
-
-def test_runner_hydra_can_disable_imu() -> None:
-    config = compose_runner_config(
-        [
-            "asset_config.imu_config.enabled=false",
-            "imu_serial_enabled=false",
-        ]
-    )
-
-    assert not config.asset_config.imu_config.enabled
-    validate_config(config)
-
-
 def test_runner_rejects_serial_output_without_an_imu_sensor() -> None:
-    config = compose_runner_config(["asset_config.imu_config.enabled=false"])
+    default = RobstrideRunnerConfig()
+    config = replace(
+        default,
+        asset_config=replace(
+            default.asset_config,
+            imu_config=replace(default.asset_config.imu_config, enabled=False),
+        ),
+    )
 
     with pytest.raises(ValueError, match="imu_serial_enabled requires"):
         validate_config(config)
 
 
-def test_runner_hydra_can_disable_ebimu_serial_device() -> None:
-    config = compose_runner_config(["imu_serial_enabled=false"])
+def test_runner_can_disable_ebimu_serial_device() -> None:
+    config = replace(RobstrideRunnerConfig(), imu_serial_enabled=False)
 
     assert not config.imu_serial_enabled
 
@@ -563,7 +502,7 @@ def test_runner_resolves_relative_motor_configs_from_bundled_config_root() -> No
 
 
 def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
-    config = compose_runner_config()
+    config = RobstrideRunnerConfig()
     robstride = load_robstride_configs(
         resolve_motor_config_path(config.motor_kind_config),
         tuple(resolve_motor_config_path(path) for path in config.motor_configs),
@@ -606,42 +545,6 @@ def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
                 body_name,
             )
             >= 0
-        )
-
-
-def test_runner_can_select_detailed_hands_with_wrist_yaw_motors() -> None:
-    config = compose_runner_config(
-        [
-            "asset_config.end_effector_sphere_mode=none",
-            "motor_configs=[robstride/lower_body.yaml,robstride/upper_body.yaml]",
-        ]
-    )
-    robstride = load_robstride_configs(
-        resolve_motor_config_path(config.motor_kind_config),
-        tuple(resolve_motor_config_path(path) for path in config.motor_configs),
-    )
-    prepared = prepare_asset(config.asset_config)
-    model = load_prepared_bello_model(
-        prepared,
-        terrain=FLAT_TERRAIN,
-        load_mjx=False,
-    )
-    configured = configure_robstride_actuators(model, robstride.motors)
-    transmission = BelloRobstrideTransmission(
-        configured,
-        tuple(RobstrideMotor(spec) for spec in robstride.motors),
-    )
-
-    assert "left_wrist_yaw_joint" in transmission.mapped_joint_names
-    assert "right_wrist_yaw_joint" in transmission.mapped_joint_names
-    for body_name in ("l_end_effector_sphere_link", "r_end_effector_sphere_link"):
-        assert (
-            mujoco.mj_name2id(
-                configured.mj_model,
-                mujoco.mjtObj.mjOBJ_BODY,
-                body_name,
-            )
-            == -1
         )
 
 

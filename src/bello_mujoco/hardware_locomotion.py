@@ -54,7 +54,7 @@ class HardwareLocomotionConfig:
     acknowledgement_timeout_seconds: float = 0.08
     rpc_timeout_seconds: float = 2.0
     ramp_seconds: float = 10.0
-    max_duration_seconds: float = 10.0
+    max_duration_seconds: float | None = 10.0
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
     max_target_step_radians: float = 0.05
@@ -254,7 +254,7 @@ def load_hardware_policy(
     checkpoint_path: Path,
 ) -> tuple[HardwarePolicyAdapter, CheckpointMetadata]:
     train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path, validate_implementation=False
+        checkpoint_path
     )
     if metadata.task != "locomotion":
         raise ValueError(f"checkpoint task is {metadata.task!r}, not 'locomotion'")
@@ -302,7 +302,7 @@ def validate_hardware_checkpoint(
         raise ValueError(
             "checkpoint morphology contains joints absent from bello_stack hardware: "
             + ", ".join(unexpected)
-            + "; train with experiments/train/hardware_locomotion.yaml"
+            + "; train with `bello-train experiment=hardware_locomotion`"
         )
     if not availability.waist_yaw:
         raise ValueError("hardware locomotion requires waist_yaw_joint")
@@ -351,7 +351,6 @@ def validate_hardware_control_config(config: Any) -> None:
         "acknowledgement_timeout_seconds": config.acknowledgement_timeout_seconds,
         "rpc_timeout_seconds": config.rpc_timeout_seconds,
         "ramp_seconds": config.ramp_seconds,
-        "max_duration_seconds": config.max_duration_seconds,
         "max_target_step_radians": config.max_target_step_radians,
         "max_tilt_radians": config.max_tilt_radians,
         "max_angular_velocity": config.max_angular_velocity,
@@ -364,6 +363,11 @@ def validate_hardware_control_config(config: Any) -> None:
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be positive and finite")
+    if config.max_duration_seconds is not None and (
+        not math.isfinite(config.max_duration_seconds)
+        or config.max_duration_seconds <= 0.0
+    ):
+        raise ValueError("max_duration_seconds must be positive or null")
     if config.kp_scale > 1.0 or config.kd_scale > 1.0:
         raise ValueError("kp_scale and kd_scale must not exceed the trained gains")
     if config.max_motor_age_ms <= 0 or config.max_imu_age_ms <= 0:
@@ -532,7 +536,7 @@ def import_hardware_binding() -> Any:
         raise RuntimeError(
             "bello_hardware is not installed; run with `uv run --with "
             "~/bello_stack/components/bello-hardware-python "
-            "bello-run-locomotion-hardware ...`"
+            "bello-run-hardware ...`"
         ) from error
 
 
@@ -873,7 +877,10 @@ def control_physical_robot(
         deadline = start_time
         step = 0
         try:
-            while time.monotonic() - start_time < config.max_duration_seconds:
+            while (
+                config.max_duration_seconds is None
+                or time.monotonic() - start_time < config.max_duration_seconds
+            ):
                 gamepad_input = gamepad.poll()
                 report_gamepad_connection(gamepad_input)
                 if gamepad_input.exit_requested:
