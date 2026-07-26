@@ -3,7 +3,9 @@
 `./scripts/bello-run-motion-hardware` connects a schema-6 BeyondMimic motion
 checkpoint to the existing `bello-hardwared` Python client. It is separate from
 the 13-action locomotion runner and supports the current 25-action sphere-hand,
-fixed-head, waist-yaw-only motion morphology.
+fixed-head, waist-yaw-only motion morphology. Both the Gaussian
+`beyondmimic` formulation and bounded `beyondmimic_joint_limits` formulation
+are supported.
 
 The script intentionally remains outside `src/bello_mujoco` and is not
 registered in `pyproject.toml`. Schema-6 checkpoints fingerprint every Python
@@ -34,11 +36,14 @@ so foot slip, flight, or prolonged single-foot balance can cause drift. Stale,
 non-finite, out-of-order, excessive-speed, or IMU-inconsistent pose samples
 stop the run.
 
-The checkpoint uses an unbounded Gaussian actor. Hardware execution adds an
-independent default action clamp of `[-1, 1]` and fails closed if an unbounded
-mean exceeds the larger raw-action limit. Every motor target also passes the
-checkpoint actuator limits, the runner's per-step target limit, and
-`hardwared` command policy.
+Legacy `beyondmimic` checkpoints use an unbounded Gaussian actor. Hardware
+execution adds an independent default action clamp of `[-1, 1]` and fails
+closed if an unbounded mean exceeds the larger raw-action limit.
+`beyondmimic_joint_limits` checkpoints instead require a `tanh_gaussian`
+actor and map each bounded action asymmetrically from the nominal joint target
+to its lower or upper soft joint limit, matching locomotion deployment. Every
+motor target also passes the checkpoint actuator limits, the runner's per-step
+target limit, and `hardwared` command policy.
 
 ## Required services
 

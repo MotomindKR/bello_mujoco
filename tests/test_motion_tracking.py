@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import jax
@@ -537,6 +538,50 @@ def test_beyondmimic_uses_effort_stiffness_scale_without_logical_clipping(
     )
     np.testing.assert_allclose(np.asarray(ctrl), expected_ctrl, atol=1.0e-6)
     assert not np.allclose(expected_ctrl, clipped_ctrl)
+
+
+def test_beyondmimic_joint_limit_actions_use_asymmetric_bounded_mapping(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    config = replace(
+        beyondmimic_config(fixed_waist_motion),
+        formulation="beyondmimic_joint_limits",
+    )
+    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    state, _ = env.reset(reference_time=jnp.asarray(0.1))
+    policy = env.model.policy_ctrl_indices
+    offset = np.linspace(-0.005, 0.005, env.action_size, dtype=np.float32)
+    center = np.clip(
+        env.model.default_joint_target[policy] + offset,
+        env.model.joint_target_low[policy],
+        env.model.joint_target_high[policy],
+    )
+
+    low = env.beyondmimic_action_to_joint_target(
+        -jnp.ones(env.action_size), jnp.asarray(offset)
+    )
+    zero = env.beyondmimic_action_to_joint_target(
+        jnp.zeros(env.action_size), jnp.asarray(offset)
+    )
+    high = env.beyondmimic_action_to_joint_target(
+        jnp.ones(env.action_size), jnp.asarray(offset)
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(low)[policy], env.model.joint_target_low[policy], atol=1.0e-6
+    )
+    np.testing.assert_allclose(np.asarray(zero)[policy], center, atol=1.0e-6)
+    np.testing.assert_allclose(
+        np.asarray(high)[policy], env.model.joint_target_high[policy], atol=1.0e-6
+    )
+
+    state = state.replace(joint_default_offset=jnp.asarray(offset))
+    ctrl = env._action_to_ctrl(state, jnp.ones(env.action_size))
+    np.testing.assert_allclose(
+        np.asarray(ctrl),
+        expected_physical_ctrl(env, env.model.joint_target_high),
+        atol=1.0e-6,
+    )
 
 
 def test_motion_layouts_and_ppo_protocol_are_explicit(

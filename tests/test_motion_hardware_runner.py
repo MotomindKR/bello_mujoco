@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import sys
 import time
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -105,6 +107,109 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
             ),
             3.0,
         )
+
+
+def test_bounded_beyondmimic_checkpoint_is_hardware_compatible() -> None:
+    action_layout = object()
+    observation_layout = object()
+    metadata = SimpleNamespace(
+        task="motion_tracking",
+        motion=object(),
+        motion_env=SimpleNamespace(formulation="beyondmimic_joint_limits"),
+        ppo=SimpleNamespace(
+            policy=SimpleNamespace(action_distribution="tanh_gaussian")
+        ),
+        asset=SimpleNamespace(
+            end_effector_sphere_mode="both",
+            joint_availability=SimpleNamespace(enabled_joint_names={"waist_yaw_joint"}),
+        ),
+        action_layout=action_layout,
+        actor_observation_layout=observation_layout,
+    )
+    env = SimpleNamespace(
+        action_size=25,
+        action_layout=action_layout,
+        observation_layout=observation_layout,
+    )
+
+    motion_hardware.validate_motion_hardware_checkpoint(env, metadata)
+
+    metadata.ppo.policy.action_distribution = "gaussian"
+    with pytest.raises(ValueError, match="tanh_gaussian"):
+        motion_hardware.validate_motion_hardware_checkpoint(env, metadata)
+
+
+def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> None:
+    class FakeEnv:
+        sampling_bin_count = 1
+        observation_size = 2
+        action_size = 2
+        anchor_body_id = 0
+        anchor_body_index = 0
+
+        def _done_flags(self, _state):
+            return {"done/any": jnp.asarray(False)}
+
+        def observation(self, state):
+            return state.data.qpos[:2] + state.last_action[:2]
+
+        def _action_to_ctrl(self, state, action):
+            return action + state.joint_default_offset[:2]
+
+        def _aligned_reference(self, _time, _alignment_xy, _alignment_yaw):
+            return SimpleNamespace(
+                body_pos=jnp.zeros((1, 3), dtype=jnp.float32),
+                body_quat=jnp.asarray(((1.0, 0.0, 0.0, 0.0),)),
+            )
+
+    monkeypatch.setattr(
+        motion_hardware,
+        "normalize_observation",
+        lambda observation, *_args: observation,
+    )
+    monkeypatch.setattr(
+        motion_hardware,
+        "apply_actor",
+        lambda _policy, observation: observation[:2],
+    )
+    metadata = SimpleNamespace(
+        ppo=SimpleNamespace(policy=SimpleNamespace(obs_stack_size=2))
+    )
+    env = FakeEnv()
+    env.model = SimpleNamespace(mj_model=SimpleNamespace(nq=2, nv=2, nu=2, nbody=1))
+    inference = motion_hardware._build_motion_inference(
+        env,
+        None,
+        None,
+        metadata,
+        motion_hardware.MotionHardwareConfig(max_action_abs=0.5),
+    )
+    layout = motion_hardware._motion_inference_layout(env)
+    hardware_state = np.zeros(layout.size, dtype=np.float32)
+    hardware_state[layout.qpos] = (0.75, -0.25)
+    hardware_state[layout.xpos] = (1.0, 0.0, 0.0)
+    hardware_state[layout.xquat] = (1.0, 0.0, 0.0, 0.0)
+    hardware_state[layout.last_action] = (0.1, 0.2)
+    hardware_state[layout.alignment_xy] = 0.0
+    hardware_state[layout.initialize_stack] = 1.0
+    result = jax.device_get(
+        inference(
+            hardware_state,
+            jnp.zeros((2, 2)),
+        )
+    )
+
+    assert result.observation == pytest.approx((0.85, -0.05))
+    np.testing.assert_allclose(
+        result.observation_stack,
+        ((0.85, -0.05), (0.85, -0.05)),
+    )
+    assert result.raw_action == pytest.approx((0.85, -0.05))
+    assert result.action == pytest.approx((0.5, -0.05))
+    assert result.physical_target == pytest.approx((0.5, -0.05))
+    assert not bool(result.done_flags["done/any"])
+    assert float(result.anchor_position_error) == pytest.approx(1.0)
+    assert float(result.anchor_orientation_error) == pytest.approx(0.0)
 
 
 def test_nominal_physical_target_uses_model_default_pose() -> None:

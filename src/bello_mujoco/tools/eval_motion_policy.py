@@ -190,7 +190,10 @@ def render_motion_policy(
             )
             root = env.model.root_qpos_adr
             policy_qpos = jax.numpy.asarray(env.model.policy_qpos_indices)
-            if env.config.formulation == "beyondmimic":
+            if env.config.formulation in {
+                "beyondmimic",
+                "beyondmimic_joint_limits",
+            }:
                 actual_position = state.data.xpos[env.anchor_body_id]
                 actual_orientation = state.data.xquat[env.anchor_body_id]
                 target_position = reference.body_pos[env.anchor_body_index]

@@ -16,7 +16,7 @@ from pathlib import Path
 import math
 import threading
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import equinox as eqx
 import jax
@@ -30,7 +30,11 @@ from bello_mujoco.checkpoint import (
     restore_evaluation_checkpoint,
     validate_motion_clip_contract,
 )
-from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
+from bello_mujoco.envs.motion_tracking import (
+    BelloMotionTrackingEnv,
+    MotionTrackingState,
+    quat_distance,
+)
 from bello_mujoco.hardware_locomotion import (
     HardwareFrame,
     HardwareLocomotionConfig,
@@ -48,7 +52,6 @@ from bello_mujoco.hardware_locomotion import (
 )
 from bello_mujoco.policy import apply_actor
 from bello_mujoco.render import quat_rotate_np
-from bello_mujoco.tools.eval_motion_policy import native_motion_state
 from bello_mujoco.train.ppo import normalize_observation
 
 
@@ -94,6 +97,194 @@ class MotionHardwareStep:
     anchor_position_error: float
     anchor_orientation_error: float
     action_clipped: bool
+
+
+@dataclass(frozen=True)
+class _HardwareContactData:
+    contact__geom: jax.Array
+    nacon: jax.Array
+    contact__worldid: jax.Array
+    contact__efc_address: jax.Array
+    efc__force: jax.Array
+
+
+@dataclass(frozen=True)
+class _HardwareMotionData:
+    qpos: jax.Array
+    qvel: jax.Array
+    ctrl: jax.Array
+    xpos: jax.Array
+    xquat: jax.Array
+    cvel: jax.Array
+    subtree_com: jax.Array
+    actuator_force: jax.Array
+    _impl: _HardwareContactData
+
+
+@dataclass(frozen=True)
+class _MotionInferenceLayout:
+    qpos: slice
+    qvel: slice
+    ctrl: slice
+    xpos: slice
+    xquat: slice
+    last_action: slice
+    reference_time: int
+    alignment_xy: slice
+    alignment_yaw: int
+    initialize_stack: int
+    size: int
+
+
+def _motion_inference_layout(env: BelloMotionTrackingEnv) -> _MotionInferenceLayout:
+    offset = 0
+
+    def take(size: int) -> slice:
+        nonlocal offset
+        result = slice(offset, offset + size)
+        offset += size
+        return result
+
+    qpos = take(env.model.mj_model.nq)
+    qvel = take(env.model.mj_model.nv)
+    ctrl = take(env.model.mj_model.nu)
+    xpos = take(env.model.mj_model.nbody * 3)
+    xquat = take(env.model.mj_model.nbody * 4)
+    last_action = take(env.action_size)
+    reference_time = offset
+    offset += 1
+    alignment_xy = take(2)
+    alignment_yaw = offset
+    offset += 1
+    initialize_stack = offset
+    offset += 1
+    return _MotionInferenceLayout(
+        qpos=qpos,
+        qvel=qvel,
+        ctrl=ctrl,
+        xpos=xpos,
+        xquat=xquat,
+        last_action=last_action,
+        reference_time=reference_time,
+        alignment_xy=alignment_xy,
+        alignment_yaw=alignment_yaw,
+        initialize_stack=initialize_stack,
+        size=offset,
+    )
+
+
+class _MotionInferenceResult(NamedTuple):
+    observation_stack: jax.Array
+    observation: jax.Array
+    raw_action: jax.Array
+    action: jax.Array
+    physical_target: jax.Array
+    done_flags: dict[str, jax.Array]
+    anchor_position_error: jax.Array
+    anchor_orientation_error: jax.Array
+
+
+def _build_motion_inference(
+    env: BelloMotionTrackingEnv,
+    policy: Any,
+    normalization: Any,
+    metadata: CheckpointMetadata,
+    config: MotionHardwareConfig,
+) -> Any:
+    layout = _motion_inference_layout(env)
+    body_count = env.model.mj_model.nbody
+    stack_size = metadata.ppo.policy.obs_stack_size
+    empty_contacts = _HardwareContactData(
+        contact__geom=jnp.zeros((0, 2), dtype=jnp.int32),
+        nacon=jnp.zeros(1, dtype=jnp.int32),
+        contact__worldid=jnp.zeros(0, dtype=jnp.int32),
+        contact__efc_address=jnp.zeros((0, 1), dtype=jnp.int32),
+        efc__force=jnp.zeros(1, dtype=jnp.float32),
+    )
+    empty_subtree_com = jnp.zeros((0, 3), dtype=jnp.float32)
+    empty_cvel = jnp.zeros((body_count, 6), dtype=jnp.float32)
+    empty_actuator_force = jnp.zeros(env.model.mj_model.nu, dtype=jnp.float32)
+    joint_default_offset = jnp.zeros(env.action_size, dtype=jnp.float32)
+    empty_sampling_state = jnp.zeros(env.sampling_bin_count, dtype=jnp.float32)
+
+    def inference(
+        hardware_state: jax.Array,
+        observation_stack: jax.Array,
+    ) -> _MotionInferenceResult:
+        qpos = hardware_state[layout.qpos]
+        qvel = hardware_state[layout.qvel]
+        ctrl = hardware_state[layout.ctrl]
+        xpos = hardware_state[layout.xpos].reshape(body_count, 3)
+        xquat = hardware_state[layout.xquat].reshape(body_count, 4)
+        state = MotionTrackingState(
+            data=_HardwareMotionData(
+                qpos=qpos,
+                qvel=qvel,
+                ctrl=ctrl,
+                xpos=xpos,
+                xquat=xquat,
+                cvel=empty_cvel,
+                subtree_com=empty_subtree_com,
+                actuator_force=empty_actuator_force,
+                _impl=empty_contacts,
+            ),
+            last_action=hardware_state[layout.last_action],
+            reference_time=hardware_state[layout.reference_time],
+            alignment_xy=hardware_state[layout.alignment_xy],
+            alignment_yaw=hardware_state[layout.alignment_yaw],
+            joint_default_offset=joint_default_offset,
+            next_push_step=jnp.asarray(0, dtype=jnp.int32),
+            sampling_failure_ema=empty_sampling_state,
+            step_count=jnp.asarray(0, dtype=jnp.int32),
+            episode_return=jnp.asarray(0.0, dtype=jnp.float32),
+            episode_length=jnp.asarray(0, dtype=jnp.int32),
+            last_episode_return=jnp.asarray(0.0, dtype=jnp.float32),
+            last_episode_length=jnp.asarray(0, dtype=jnp.int32),
+        )
+        done_flags = env._done_flags(state)
+        observation = env.observation(state)
+        initial_stack = jnp.repeat(observation[None, :], stack_size, axis=0)
+        shifted_stack = jnp.concatenate(
+            (observation_stack[1:], observation[None, :]), axis=0
+        )
+        next_stack = jnp.where(
+            hardware_state[layout.initialize_stack] > 0.5,
+            initial_stack,
+            shifted_stack,
+        )
+        normalized = normalize_observation(
+            next_stack.reshape(-1),
+            normalization,
+            metadata.ppo,
+        )
+        raw_action = apply_actor(policy, normalized)
+        action = jnp.clip(raw_action, -config.max_action_abs, config.max_action_abs)
+        physical_target = env._action_to_ctrl(state, action)
+        reference = env._aligned_reference(
+            state.reference_time,
+            state.alignment_xy,
+            state.alignment_yaw,
+        )
+        anchor_position_error = jnp.linalg.norm(
+            state.data.xpos[env.anchor_body_id]
+            - reference.body_pos[env.anchor_body_index]
+        )
+        anchor_orientation_error = quat_distance(
+            state.data.xquat[env.anchor_body_id],
+            reference.body_quat[env.anchor_body_index],
+        )
+        return _MotionInferenceResult(
+            observation_stack=next_stack,
+            observation=observation,
+            raw_action=raw_action,
+            action=action,
+            physical_target=physical_target,
+            done_flags=done_flags,
+            anchor_position_error=anchor_position_error,
+            anchor_orientation_error=anchor_orientation_error,
+        )
+
+    return eqx.filter_jit(inference)
 
 
 def _pose_message_types() -> tuple[type[Any], type[Any]]:
@@ -358,12 +549,21 @@ class MotionHardwarePolicyAdapter:
             )
         self.inverse_transform = np.linalg.inv(self.transform)
         self.kp, self.kd = actuator_impedance_gains(env)
-        self._actor = eqx.filter_jit(
-            lambda observation: apply_actor(policy, observation)
+        self._inference = _build_motion_inference(
+            env,
+            policy,
+            normalization.observation,
+            metadata,
+            config,
         )
-        self._normalization = normalization.observation
+        self._inference_layout = _motion_inference_layout(env)
+        self._inference_input = np.empty(self._inference_layout.size, dtype=np.float32)
         self._mj_data = mujoco.MjData(env.model.mj_model)
-        self._obs_stack: np.ndarray | None = None
+        self._empty_obs_stack = jnp.zeros(
+            (metadata.ppo.policy.obs_stack_size, env.observation_size),
+            dtype=jnp.float32,
+        )
+        self._obs_stack: jax.Array | None = None
         self._last_action = np.zeros(env.action_size, dtype=np.float32)
         self._last_physical_target = np.asarray(
             env.model.mj_model.actuator_ctrlrange.mean(axis=1), dtype=np.float64
@@ -457,10 +657,19 @@ class MotionHardwarePolicyAdapter:
             raise RuntimeError("motion alignment must be initialized before policy use")
         validate_pose_imu_agreement(frame, pose, self.config)
         state = self._state(frame, pose, reference_time)
-        done_flags = self.env._done_flags(state)
-        active_done = {
-            name: bool(jax.device_get(value)) for name, value in done_flags.items()
-        }
+        initialize_stack = self._obs_stack is None
+        state[self._inference_layout.initialize_stack] = initialize_stack
+        observation_stack = (
+            self._empty_obs_stack if initialize_stack else self._obs_stack
+        )
+        assert observation_stack is not None
+        inference = self._inference(
+            state,
+            observation_stack,
+        )
+        host = jax.device_get(inference)
+        done_flags = host.done_flags
+        active_done = {name: bool(value) for name, value in done_flags.items()}
         if active_done["done/nonfinite"]:
             raise RuntimeError("motion policy state became non-finite")
         if active_done["done/timeout"]:
@@ -475,22 +684,8 @@ class MotionHardwarePolicyAdapter:
                 "motion tracking termination triggered on hardware: "
                 + ", ".join(terminal)
             )
-        observation = np.asarray(jax.device_get(self.env.observation(state)))
-        stack_size = self.metadata.ppo.policy.obs_stack_size
-        if self._obs_stack is None:
-            self._obs_stack = np.repeat(observation[None, :], stack_size, axis=0)
-        else:
-            self._obs_stack = np.concatenate(
-                (self._obs_stack[1:], observation[None, :]), axis=0
-            )
-        normalized = normalize_observation(
-            jnp.asarray(self._obs_stack.reshape(-1), dtype=jnp.float32),
-            self._normalization,
-            self.metadata.ppo,
-        )
-        raw_action = np.asarray(
-            jax.device_get(self._actor(normalized)), dtype=np.float32
-        )
+        observation = np.asarray(host.observation)
+        raw_action = np.asarray(host.raw_action, dtype=np.float32)
         if raw_action.shape != (self.env.action_size,) or not np.all(
             np.isfinite(raw_action)
         ):
@@ -503,41 +698,23 @@ class MotionHardwarePolicyAdapter:
                 f"raw policy action {raw_abs:.3f} exceeds fail-closed limit "
                 f"{self.config.max_raw_action_abs:.3f}"
             )
-        action = np.clip(
-            raw_action, -self.config.max_action_abs, self.config.max_action_abs
-        )
-        physical_target = np.asarray(
-            jax.device_get(self.env._action_to_ctrl(state, jnp.asarray(action))),
-            dtype=np.float64,
-        )
+        action = np.asarray(host.action, dtype=np.float32)
+        physical_target = np.asarray(host.physical_target, dtype=np.float64)
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("policy produced non-finite physical motor targets")
+        self._obs_stack = inference.observation_stack
         self._last_action = action
         self._last_physical_target = physical_target
         self._step_count += 1
-        anchor_position_error, anchor_orientation_error = self._anchor_errors(state)
         return MotionHardwareStep(
             action=action,
             raw_action=raw_action,
             physical_target=physical_target,
             observation=observation,
             reference_time=reference_time,
-            anchor_position_error=anchor_position_error,
-            anchor_orientation_error=anchor_orientation_error,
+            anchor_position_error=float(host.anchor_position_error),
+            anchor_orientation_error=float(host.anchor_orientation_error),
             action_clipped=not np.array_equal(action, raw_action),
-        )
-
-    def _reference(self, reference_time: float):
-        if not self._aligned:
-            alignment_xy = jnp.zeros(2, dtype=jnp.float32)
-            alignment_yaw = jnp.asarray(0.0, dtype=jnp.float32)
-        else:
-            alignment_xy = jnp.asarray(self._alignment_xy)
-            alignment_yaw = jnp.asarray(self._alignment_yaw, dtype=jnp.float32)
-        return self.env._aligned_reference(
-            jnp.asarray(reference_time, dtype=jnp.float32),
-            alignment_xy,
-            alignment_yaw,
         )
 
     def _state(self, frame: HardwareFrame, pose: PoseFrame, reference_time: float):
@@ -560,31 +737,19 @@ class MotionHardwarePolicyAdapter:
         self._mj_data.qpos[:] = qpos
         self._mj_data.qvel[:] = qvel
         self._mj_data.ctrl[:] = self._last_physical_target
-        mujoco.mj_forward(model.mj_model, self._mj_data)
-        return native_motion_state(
-            self.env,
-            self._mj_data,
-            last_action=self._last_action,
-            reference_time=jnp.asarray(reference_time, dtype=jnp.float32),
-            alignment_xy=jnp.asarray(self._alignment_xy),
-            alignment_yaw=jnp.asarray(self._alignment_yaw, dtype=jnp.float32),
-            joint_default_offset=jnp.zeros(self.env.action_size, dtype=jnp.float32),
-            step_count=self._step_count,
-            episode_return=0.0,
-        )
-
-    def _anchor_errors(self, state: Any) -> tuple[float, float]:
-        reference = self._reference(float(state.reference_time))
-        anchor_id = self.env.anchor_body_id
-        anchor_index = self.env.anchor_body_index
-        position = np.asarray(state.data.xpos[anchor_id])
-        target_position = np.asarray(reference.body_pos[anchor_index])
-        orientation = np.asarray(state.data.xquat[anchor_id])
-        target_orientation = np.asarray(reference.body_quat[anchor_index])
-        return (
-            float(np.linalg.norm(position - target_position)),
-            quaternion_distance(orientation, target_orientation),
-        )
+        mujoco.mj_kinematics(model.mj_model, self._mj_data)
+        layout = self._inference_layout
+        inference_input = self._inference_input
+        inference_input[layout.qpos] = self._mj_data.qpos
+        inference_input[layout.qvel] = self._mj_data.qvel
+        inference_input[layout.ctrl] = self._mj_data.ctrl
+        inference_input[layout.xpos] = self._mj_data.xpos.reshape(-1)
+        inference_input[layout.xquat] = self._mj_data.xquat.reshape(-1)
+        inference_input[layout.last_action] = self._last_action
+        inference_input[layout.reference_time] = reference_time
+        inference_input[layout.alignment_xy] = self._alignment_xy
+        inference_input[layout.alignment_yaw] = self._alignment_yaw
+        return inference_input
 
 
 def validate_motion_hardware_checkpoint(
@@ -594,9 +759,22 @@ def validate_motion_hardware_checkpoint(
         raise ValueError("motion hardware runner requires a motion-tracking checkpoint")
     if metadata.motion is None or metadata.motion_env is None:
         raise ValueError("motion checkpoint is missing its motion contract")
-    if metadata.motion_env.formulation != "beyondmimic":
+    if metadata.motion_env.formulation not in {
+        "beyondmimic",
+        "beyondmimic_joint_limits",
+    }:
         raise ValueError(
-            "hardware deployment currently requires BeyondMimic formulation"
+            "hardware deployment currently requires a BeyondMimic formulation"
+        )
+    expected_distribution = (
+        "gaussian"
+        if metadata.motion_env.formulation == "beyondmimic"
+        else "tanh_gaussian"
+    )
+    if metadata.ppo.policy.action_distribution != expected_distribution:
+        raise ValueError(
+            f"{metadata.motion_env.formulation} hardware deployment requires "
+            f"{expected_distribution!r} policy actions"
         )
     if metadata.asset.end_effector_sphere_mode != "both":
         raise ValueError("motion hardware runner requires sphere hands")
@@ -726,6 +904,7 @@ def run_motion_hardware(
                     "coordinates": len(adapter.physical_coordinate_names),
                     "policy_joints": adapter.env.action_size,
                     "control_rate_hz": 1.0 / adapter.control_timestep,
+                    "jax_backend": jax.default_backend(),
                     "motion_start_seconds": adapter.start_time,
                     "nominal_ramp_distance_max": initial_error,
                     "preview_action_abs_max": float(np.max(np.abs(preview.raw_action))),
@@ -821,14 +1000,38 @@ def control_motion_robot(
             )
             validate_hardware_frame(frame, config, expected_group_state="RUNNING")
 
+        send_motion_targets(
+            binding,
+            controls,
+            groups,
+            previous_target,
+            adapter,
+            config,
+            executor,
+            pending_receipts,
+        )
         require_nominal_pose(frame, adapter, motion.max_nominal_arrival_error)
         adapter.initialize_alignment(poses.latest())
+        send_motion_targets(
+            binding,
+            controls,
+            groups,
+            previous_target,
+            adapter,
+            config,
+            executor,
+            pending_receipts,
+        )
         start = time.monotonic()
         deadline = start
         next_status = start
         step = 0
+        maximum_inference_ms = 0.0
+        maximum_command_submission_ms = 0.0
+        maximum_loop_work_ms = 0.0
         try:
             while time.monotonic() - start < config.max_duration_seconds:
+                loop_started = time.monotonic()
                 frame = wait_for_hardware_frame(
                     states,
                     adapter.physical_coordinate_names,
@@ -841,6 +1044,7 @@ def control_motion_robot(
                 validate_hardware_frame(frame, config, expected_group_state="RUNNING")
                 elapsed = time.monotonic() - start
                 reference_time = adapter.start_time + elapsed
+                inference_started = time.monotonic()
                 try:
                     policy_step = adapter.step(
                         frame, pose, reference_time=reference_time
@@ -848,6 +1052,8 @@ def control_motion_robot(
                 except StopIteration:
                     print("Motion reference completed; stopping and disabling groups.")
                     break
+                inference_ms = (time.monotonic() - inference_started) * 1_000.0
+                command_started = time.monotonic()
                 previous_target = limit_target_step(
                     previous_target,
                     policy_step.physical_target,
@@ -863,6 +1069,13 @@ def control_motion_robot(
                     executor,
                     pending_receipts,
                 )
+                command_submission_ms = (time.monotonic() - command_started) * 1_000.0
+                loop_work_ms = (time.monotonic() - loop_started) * 1_000.0
+                maximum_inference_ms = max(maximum_inference_ms, inference_ms)
+                maximum_command_submission_ms = max(
+                    maximum_command_submission_ms, command_submission_ms
+                )
+                maximum_loop_work_ms = max(maximum_loop_work_ms, loop_work_ms)
                 step += 1
                 now = time.monotonic()
                 if now >= next_status:
@@ -882,12 +1095,42 @@ def control_motion_robot(
                             "motor_age_ms": frame.max_motor_age_ms,
                             "imu_age_ms": frame.imu_age_ms,
                             "pose_age_ms": pose.age_ms(now),
+                            "inference_ms": inference_ms,
+                            "command_submission_ms": command_submission_ms,
+                            "loop_work_ms": loop_work_ms,
+                            "maximum_inference_ms": maximum_inference_ms,
+                            "maximum_command_submission_ms": (
+                                maximum_command_submission_ms
+                            ),
+                            "maximum_loop_work_ms": maximum_loop_work_ms,
                         }
                     )
                     next_status = now + config.status_interval_seconds
-                deadline = pace_hardware_loop(
-                    deadline, adapter.control_timestep, config
-                )
+                try:
+                    deadline = pace_hardware_loop(
+                        deadline, adapter.control_timestep, config
+                    )
+                except RuntimeError:
+                    print(
+                        {
+                            "motion_hardware_timing_failure": True,
+                            "step": step,
+                            "inference_ms": inference_ms,
+                            "command_submission_ms": command_submission_ms,
+                            "loop_work_ms": loop_work_ms,
+                            "maximum_inference_ms": maximum_inference_ms,
+                            "maximum_command_submission_ms": (
+                                maximum_command_submission_ms
+                            ),
+                            "maximum_loop_work_ms": maximum_loop_work_ms,
+                            "accumulated_lag_ms": (
+                                time.monotonic() - (deadline + adapter.control_timestep)
+                            )
+                            * 1_000.0,
+                        },
+                        flush=True,
+                    )
+                    raise
             drain_command_receipts(pending_receipts)
         except KeyboardInterrupt:
             print("Motion hardware run interrupted; stopping and disabling groups.")
