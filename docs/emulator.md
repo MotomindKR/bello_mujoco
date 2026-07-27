@@ -7,27 +7,25 @@ physical hardware, while native MuJoCo supplies real-time dynamics.
 Public controls are documented under
 [`bello-run-emulator`](commands.md#bello-run-emulator).
 
-## Fixed runtime contract
-
-The emulator has one execution mode:
+## Runtime
 
 | Concern | Behavior |
 | --- | --- |
 | Dynamics | Native MuJoCo at a 0.0025-second timestep, paced against wall-clock time. |
-| Control | RobStride commands received through SocketCAN and applied through the physical transmission model. |
+| Control | MIT impedance commands received through RobStride SocketCAN and applied through the physical transmission model. |
 | Published state | Active motor feedback, EBIMU serial samples, and pelvis PoseService updates. |
 | Visual interface | Native passive viewer on every run, plus the Bello torso-control window when the guide is enabled. A graphical display is required. |
 | Limits | Motor-catalog torque limits and transmission ownership are always enforced. |
 
-This fixed runtime is specifically for hardware-interface and controller
-integration testing; it is not policy evaluation.
+The emulator is intended for hardware-interface and controller integration
+testing. Policy checkpoints are evaluated with `bello-eval`.
 
 ## Canonical inventory
 
 The emulated motor contract is:
 
-- `configs/robstride/motor_kinds.yaml`: motor kinds, protocol ranges, and torque
-  limits;
+- `configs/robstride/motor_kinds.yaml`: motor kinds, protocol ranges, and the
+  voltage, current, and speed defaults reported through parameter registers;
 - `configs/robstride/lower_body.yaml`: lower-body bus identities and targets;
 - `configs/robstride/upper_body_sphere_hands.yaml`: upper-body inventory for the
   fixed-head, sphere-hand morphology.
@@ -49,8 +47,6 @@ Logical bus mappings use `name=interface` entries. The defaults map the
 configured `can0` and `can1` buses to `vcan0` and `vcan1`.
 
 ## Simulation and torso guide
-
-`max_steps` counts MuJoCo physics steps and is the optional bounded-run control.
 
 The commissioning guide is enabled by default and welds the torso/root assembly
 to a world-Z slider, limiting downward motion while allowing the rest of the

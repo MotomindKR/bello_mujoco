@@ -18,7 +18,7 @@ from bello_mujoco.policy import (
     policy_log_prob,
     reparameterized_policy_entropy,
     sample_actor_action,
-    sample_action,
+    sample_action_with_latent_and_mean,
     stacked_observation,
     update_observation_stack,
 )
@@ -38,7 +38,6 @@ from bello_mujoco.training.ppo import (
     init_value_norm_state,
     gait_diagnostics,
     learning_rate_for_update,
-    make_train,
     normalize_advantages,
     normalize_observation,
     normalize_value,
@@ -92,11 +91,9 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     assert gait_metrics["gait/moving_footfalls_per_second"] == pytest.approx(50.0)
 
 
-def test_library_training_rejects_policy_environment_action_limit_mismatch() -> None:
-    env = SimpleNamespace(action_clip=0.5)
-
+def test_action_limit_contract_rejects_environment_mismatch() -> None:
     with pytest.raises(ValueError, match="action_limit must equal.*action_clip"):
-        make_train(small_config(), env)
+        validate_action_limit_contract(small_config(), env_action_clip=0.5)
 
 
 def transitions(
@@ -143,7 +140,7 @@ def test_actor_critic_has_explicit_asymmetric_shapes_and_bounded_actions() -> No
     state, _ = init_train_state(jax.random.PRNGKey(0), 5, 2, config, critic_obs_size=7)
     actor_obs = jnp.zeros((config.num_envs, 5), dtype=jnp.float32)
     critic_obs = jnp.zeros((config.num_envs, 7), dtype=jnp.float32)
-    action, log_prob, value = sample_action(
+    action, _, log_prob, value, _ = sample_action_with_latent_and_mean(
         state.policy,
         actor_obs,
         jax.random.PRNGKey(1),
@@ -166,7 +163,7 @@ def test_sampled_action_log_probability_matches_evaluation() -> None:
     )
     state, _ = init_train_state(jax.random.PRNGKey(0), 4, 2, config)
     obs = jnp.zeros((4, 4), dtype=jnp.float32)
-    action, sampled_log_prob, _ = sample_action(
+    action, _, sampled_log_prob, _, _ = sample_action_with_latent_and_mean(
         state.policy, obs, jax.random.PRNGKey(1)
     )
     evaluated_log_prob, _, _ = evaluate_actions(state.policy, obs, action)
@@ -201,7 +198,7 @@ def test_gaussian_actions_are_unsquashed_with_exact_log_prob_and_entropy() -> No
     )
     state, _ = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
     obs = jnp.zeros((2048, 3), dtype=jnp.float32)
-    action, sampled_log_prob, _ = sample_action(
+    action, _, sampled_log_prob, _, _ = sample_action_with_latent_and_mean(
         state.policy, obs, jax.random.PRNGKey(1)
     )
     evaluated_log_prob, entropy, _ = evaluate_actions(
@@ -417,7 +414,7 @@ def test_advantage_normalization_is_zero_mean_and_unit_scale() -> None:
     assert normalized.std() == pytest.approx(1.0, abs=1.0e-6)
 
 
-def test_learning_rate_schedules_have_no_legacy_fallback() -> None:
+def test_linear_and_constant_learning_rate_schedules() -> None:
     linear = small_config(schedule="linear", total_timesteps=64)
     constant = small_config(schedule="constant")
     current = jnp.asarray(2.0e-4)

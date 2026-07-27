@@ -1,11 +1,3 @@
-asset_config:
-  target_total_mass_kg: 60.0
-  joint_availability:
-    waist_yaw: true
-    waist_roll: false
-    waist_pitch: false
-    neck_yaw: false
-    head_pitch: false
 config:
   gamma: 0.995
   gae_lambda: 0.98

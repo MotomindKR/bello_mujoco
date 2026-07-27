@@ -274,10 +274,6 @@ class RewardConfig:
         return self.uses_foot_contact_metadata or self.enabled("stand_foot_motion")
 
     @property
-    def uses_terrain_contact_metadata(self) -> bool:
-        return self.uses_foot_contact_metadata or self.enabled("undesired_contact")
-
-    @property
     def enabled_link_names(self) -> tuple[str, ...]:
         term_names = (
             "track_lin_vel_xy",

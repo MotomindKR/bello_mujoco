@@ -34,26 +34,13 @@ held arm joints. Commands contain forward, lateral, and yaw velocity. Ten
 percent of sampled commands are exactly zero; moving samples are conditioned
 outside the shared standing deadbands.
 
-The strong-stand reward baseline keeps these principal weights:
-
-```text
-linear velocity tracking       1.0
-yaw velocity tracking          1.0
-vertical velocity             -2.0
-flat orientation              -2.0
-base height                  -10.0
-normalized torque L1          -1.2
-over-peak normalized torque  -12.0
-standing foot motion          -1.0
-contact timing                -5.0
-touchdown air time             0.5
-termination                 -100.0
-```
-
-Torque is normalized by each policy joint's available peak torque. The
-over-peak term is quadratic. Training intentionally leaves policy effort
-unclipped so the penalty observes excess demand; the emulator and hardware
-enforce physical limits.
+The canonical reward combines command tracking, base stability, normalized
+torque costs, standing foot motion, contact timing, touchdown air time, and
+termination cost. Exact terms and weights are defined in
+[`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
+the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
+Training leaves policy effort unclipped so the over-peak torque penalty observes
+excess demand; the emulator and hardware enforce physical limits.
 
 ## Evaluation
 
@@ -67,8 +54,9 @@ command is zero. Disable gamepad input to apply a fixed command. An unbounded
 `steps=null` rollout continues until controller exit or interruption, and
 completed episodes reset unless `stop_on_done=true`.
 
-Motion evaluation ignores locomotion command/gamepad/stochastic fields. Its
-default step horizon is the checkpoint environment's maximum episode length.
+Motion evaluation rejects non-default locomotion command/gamepad/stochastic
+fields. Its default step horizon is the checkpoint environment's maximum
+episode length.
 
 There is no public MJX evaluation backend. This keeps evaluation behavior
 aligned with the native emulator and physical deployment.

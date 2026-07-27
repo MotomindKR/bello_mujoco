@@ -457,12 +457,6 @@ def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.nda
     )
 
 
-def mujoco_done(
-    env: BelloLocomotionEnv, mj_data: mujoco.MjData, step_count: int
-) -> bool:
-    return bool(mujoco_done_flags(env, mj_data, step_count)["done/any"])
-
-
 def mujoco_done_flags(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, step_count: int
 ) -> dict[str, bool]:
@@ -497,15 +491,6 @@ def mujoco_link_quat(
     if body_id < 0:
         raise ValueError(f"configured link/body not found: {link_name!r}")
     return np.asarray(mj_data.xquat[body_id], dtype=np.float32)
-
-
-def mujoco_link_projected_gravity(
-    env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
-) -> np.ndarray:
-    return quat_rotate_inverse_np(
-        mujoco_link_quat(env, mj_data, link_name),
-        np.asarray([0.0, 0.0, -1.0], dtype=np.float32),
-    )
 
 
 def mujoco_link_clearance(
@@ -558,24 +543,6 @@ def mujoco_link_lin_vel(
     return np.asarray(velocity[3:6], dtype=np.float32)
 
 
-def mujoco_link_lin_acc(
-    env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
-) -> np.ndarray:
-    body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
-    if body_id < 0:
-        raise ValueError(f"configured link/body not found: {link_name!r}")
-    acceleration = np.empty(6, dtype=np.float64)
-    mujoco.mj_objectAcceleration(
-        env.model.mj_model,
-        mj_data,
-        mujoco.mjtObj.mjOBJ_XBODY,
-        body_id,
-        acceleration,
-        1,
-    )
-    return np.asarray(acceleration[3:6], dtype=np.float32)
-
-
 def mujoco_link_ang_vel(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> np.ndarray:
@@ -611,10 +578,6 @@ def quat_rotate_np(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
     uv = np.cross(qvec, vec)
     uuv = np.cross(qvec, uv)
     return (vec + 2.0 * (w * uv + uuv)).astype(np.float32)
-
-
-def projected_gravity_tilt_angle_np(projected_gravity: np.ndarray) -> float:
-    return float(np.arccos(np.clip(-projected_gravity[2], -1.0, 1.0)))
 
 
 def mujoco_eval_state(
@@ -708,11 +671,6 @@ def mujoco_contact_terms(
         jnp.asarray(mujoco_undesired_contact(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_self_collision(env, mj_data), dtype=jnp.float32),
     )
-
-
-def mjx_foot_contact(env: BelloLocomotionEnv, state) -> np.ndarray:
-    foot_contact, *_ = env._contact_terms(state, jnp.asarray(0, dtype=jnp.int32))
-    return np.asarray(jax.device_get(foot_contact), dtype=np.float32)
 
 
 def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:

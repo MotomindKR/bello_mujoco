@@ -30,7 +30,7 @@ from bello_mujoco.envs.locomotion import (
     yaw_quat,
     yaw_quat_from_angle,
 )
-from bello_mujoco.motion import (
+from bello_mujoco.motion.clip import (
     MotionClip,
     MotionSample,
     load_motion_clip,
@@ -141,7 +141,9 @@ class MotionDoneConfig:
 
 @dataclass(frozen=True)
 class MotionTrackingEnvConfig:
-    motion_path: Path = Path("motions/local/walk1_subject1_fixed_waist.npz")
+    motion_path: Path = Path(
+        "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
+    )
     decimation: int = CONTROL_DECIMATION
     action_clip: float = 1.0
     formulation: Literal[
@@ -1260,26 +1262,6 @@ class BelloMotionTrackingEnv:
         policy_target = (
             logical_target[policy] + self.reference_residual_action_scale * action
         )
-        logical_target = logical_target.at[policy].set(policy_target)
-        logical_target = jnp.clip(
-            logical_target,
-            jnp.asarray(self.model.joint_target_low),
-            jnp.asarray(self.model.joint_target_high),
-        )
-        return self._logical_target_to_ctrl(logical_target)
-
-    def _diagnostic_action_to_ctrl(
-        self, stacked_observation: jax.Array, action: jax.Array
-    ) -> jax.Array:
-        logical_target = jnp.asarray(self.model.default_joint_target)
-        policy = jnp.asarray(self.model.policy_ctrl_indices)
-        if self.uses_beyondmimic_formulation:
-            return self._logical_target_to_ctrl(
-                self.beyondmimic_action_to_joint_target(action)
-            )
-        observation = stacked_observation[-self.observation_size :]
-        reference_target = logical_target[policy] + observation[: self.action_size]
-        policy_target = reference_target + self.reference_residual_action_scale * action
         logical_target = logical_target.at[policy].set(policy_target)
         logical_target = jnp.clip(
             logical_target,

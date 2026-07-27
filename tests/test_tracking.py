@@ -154,7 +154,6 @@ def test_track_video_logs_encoded_file_without_fps(monkeypatch, tmp_path) -> Non
         video_path,
         name="train/rollout",
         step=128,
-        fps=50,
         caption="rollout",
     )
 

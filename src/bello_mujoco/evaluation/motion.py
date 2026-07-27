@@ -86,30 +86,6 @@ class _NativeMotionData:
     _impl: _NativeContactData
 
 
-def render_checkpoint(
-    checkpoint: Path,
-    output_path: Path,
-    *,
-    steps: int | None = None,
-    stop_on_terminal: bool = True,
-    width: int = 640,
-    height: int = 480,
-    fps: int = 50,
-    motion_path: Path | None = None,
-) -> Path:
-    render_checkpoint_with_stats(
-        checkpoint,
-        output_path,
-        steps=steps,
-        stop_on_terminal=stop_on_terminal,
-        width=width,
-        height=height,
-        fps=fps,
-        motion_path=motion_path,
-    )
-    return output_path
-
-
 def render_checkpoint_with_stats(
     checkpoint: Path,
     output_path: Path,
@@ -590,5 +566,5 @@ class MotionEvaluationWorker:
     def __enter__(self) -> "MotionEvaluationWorker":
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback_value) -> None:
+    def __exit__(self, *_exc_info) -> None:
         self.close()

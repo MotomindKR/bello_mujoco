@@ -14,11 +14,10 @@ from bello_mujoco.training.checkpoint import (
 from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
 from bello_mujoco.configuration import (
     CONFIG_ROOT,
-    clear_hydra,
     motion_training_profile,
     structured_config,
 )
-from bello_mujoco.hardware.locomotion import HardwareFrame
+from bello_mujoco.hardware.runtime import HardwareFrame
 from bello_mujoco.hardware.motion import (
     HardwareMotionConfig,
     HardwareMotionPolicyAdapter,
@@ -55,22 +54,18 @@ def load_level4_recipe() -> MotionTrainingRunConfig:
 
 
 def load_runner_config() -> HardwareCommandConfig:
-    clear_hydra()
-    try:
-        with initialize_config_dir(
-            version_base=None,
-            config_dir=str(CONFIG_ROOT / "commands"),
-        ):
-            config = compose(
-                config_name="hardware",
-                overrides=[
-                    "task=motion",
-                    "checkpoint_path=checkpoints/motion",
-                ],
-            )
-        return structured_config(HardwareCommandConfig, config)
-    finally:
-        clear_hydra()
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        config = compose(
+            config_name="hardware",
+            overrides=[
+                "task=motion",
+                "checkpoint_path=checkpoints/motion",
+            ],
+        )
+    return structured_config(HardwareCommandConfig, config)
 
 
 @pytest.fixture(scope="module")
@@ -151,7 +146,7 @@ def reference_frame(
     )
 
 
-def test_level4_adapter_uses_new_motion_schema_and_physical_targets(
+def test_level4_adapter_uses_motion_schema_and_physical_targets(
     level4_adapter: HardwareMotionPolicyAdapter,
 ) -> None:
     adapter = level4_adapter
@@ -201,7 +196,7 @@ def test_motion_runner_checks_nominal_pose_after_ramp(
         require_nominal_pose(replace(frame, positions=positions), adapter, 0.75)
 
 
-def test_motion_runner_defaults_to_read_only_and_requires_confirmation() -> None:
+def test_motion_runner_defaults_to_read_only() -> None:
     config = load_runner_config()
 
     assert config.checkpoint_path == Path("checkpoints/motion")
@@ -209,10 +204,7 @@ def test_motion_runner_defaults_to_read_only_and_requires_confirmation() -> None
     assert not config.arm
     assert config.motion_path is None
     validate_hardware_motion_config(HardwareMotionConfig())
-    with pytest.raises(ValueError, match="operator_confirmation"):
-        validate_hardware_motion_config(
-            HardwareMotionConfig(arm=True, operator_confirmation="yes")
-        )
+    validate_hardware_motion_config(HardwareMotionConfig(arm=True))
 
 
 def test_motion_checkpoint_validation_rejects_task_and_hand_mismatch(
@@ -229,6 +221,31 @@ def test_motion_checkpoint_validation_rejects_task_and_hand_mismatch(
             replace(
                 adapter.metadata,
                 asset=replace(adapter.metadata.asset, end_effector_sphere_mode="none"),
+            ),
+        )
+    with pytest.raises(ValueError, match="bounded BeyondMimic"):
+        validate_hardware_motion_checkpoint(
+            adapter.env,
+            replace(
+                adapter.metadata,
+                motion_env=replace(
+                    adapter.metadata.motion_env,
+                    formulation="beyondmimic",
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="tanh_gaussian"):
+        validate_hardware_motion_checkpoint(
+            adapter.env,
+            replace(
+                adapter.metadata,
+                ppo=replace(
+                    adapter.metadata.ppo,
+                    policy=replace(
+                        adapter.metadata.ppo.policy,
+                        action_distribution="gaussian",
+                    ),
+                ),
             ),
         )
 

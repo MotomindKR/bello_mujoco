@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from dataclasses import replace
-from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -13,9 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from bello_mujoco.hardware import locomotion as hardware_runtime
 from bello_mujoco.hardware import motion as motion_hardware
-from bello_mujoco.hardware.locomotion import HardwareFrame
+from bello_mujoco.hardware.runtime import HardwareFrame
 
 
 def pose_frame(*, age_ms: int = 0) -> motion_hardware.PoseFrame:
@@ -27,24 +23,6 @@ def pose_frame(*, age_ms: int = 0) -> motion_hardware.PoseFrame:
         source_age_ms=age_ms,
         received_at=time.monotonic(),
     )
-
-
-def test_pose_service_dynamic_messages_round_trip() -> None:
-    request_type, response_type = motion_hardware._pose_message_types()
-    request = request_type(reference_frame="odom", tracked_frame="pelvis_link")
-    response = response_type(
-        reference_frame="odom",
-        tracked_frame="pelvis_link",
-        sequence=9,
-        sample_age_ms=4,
-    )
-
-    restored = response_type.FromString(response.SerializeToString())
-
-    assert request.reference_frame == "odom"
-    assert request.tracked_frame == "pelvis_link"
-    assert restored.sequence == 9
-    assert restored.sample_age_ms == 4
 
 
 def test_pose_validation_is_fail_closed() -> None:
@@ -109,41 +87,6 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
                 max_action_abs=2.0, max_raw_action_abs=1.0
             )
         )
-
-
-def test_bounded_beyondmimic_checkpoint_is_hardware_compatible() -> None:
-    action_layout = object()
-    observation_layout = object()
-    metadata = SimpleNamespace(
-        task="motion_tracking",
-        motion=object(),
-        motion_env=SimpleNamespace(formulation="beyondmimic_joint_limits"),
-        ppo=SimpleNamespace(
-            policy=SimpleNamespace(action_distribution="tanh_gaussian")
-        ),
-        asset=SimpleNamespace(
-            end_effector_sphere_mode="both",
-            joint_availability=SimpleNamespace(enabled_joint_names={"waist_yaw_joint"}),
-        ),
-        action_layout=action_layout,
-        actor_observation_layout=observation_layout,
-    )
-    env = SimpleNamespace(
-        action_size=25,
-        action_layout=action_layout,
-        observation_layout=observation_layout,
-    )
-
-    motion_hardware.validate_hardware_motion_checkpoint(env, metadata)
-
-    metadata.motion_env.formulation = "beyondmimic"
-    with pytest.raises(ValueError, match="bounded BeyondMimic"):
-        motion_hardware.validate_hardware_motion_checkpoint(env, metadata)
-
-    metadata.motion_env.formulation = "beyondmimic_joint_limits"
-    metadata.ppo.policy.action_distribution = "gaussian"
-    with pytest.raises(ValueError, match="tanh_gaussian"):
-        motion_hardware.validate_hardware_motion_checkpoint(env, metadata)
 
 
 def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> None:
@@ -219,228 +162,13 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
     assert float(result.anchor_orientation_error) == pytest.approx(0.0)
 
 
-def test_nominal_physical_target_uses_model_default_pose() -> None:
-    adapter = motion_hardware.HardwareMotionPolicyAdapter.__new__(
-        motion_hardware.HardwareMotionPolicyAdapter
-    )
-    adapter.transform = np.asarray(((1.0, 0.5), (0.0, 2.0)))
-    adapter.env = SimpleNamespace(
-        model=SimpleNamespace(
-            default_joint_target=np.asarray((0.2, -0.4)),
-            mj_model=SimpleNamespace(
-                actuator_ctrlrange=np.asarray(((-1.0, 1.0), (-0.5, 0.5)))
-            ),
-        )
-    )
-
-    assert adapter.nominal_physical_target == pytest.approx((0.0, -0.5))
-
-
-def test_nominal_pose_is_checked_after_ramp() -> None:
-    adapter = SimpleNamespace(
-        nominal_physical_target=np.zeros(2),
-        physical_coordinate_names=("left", "right"),
-    )
-    frame = SimpleNamespace(positions=np.asarray((0.1, 0.8)))
-
-    with pytest.raises(RuntimeError, match="did not reach.*right"):
-        motion_hardware.require_nominal_pose(frame, adapter, 0.75)
-
-    motion_hardware.require_nominal_pose(frame, adapter, 0.8)
-
-
-def test_armed_runner_requires_async_hardware_binding() -> None:
-    with pytest.raises(RuntimeError, match="send_async"):
-        motion_hardware.require_async_hardware_binding(SimpleNamespace())
-
-    motion_hardware.require_async_hardware_binding(
-        SimpleNamespace(ControlSession=SimpleNamespace(send_async=lambda: None))
-    )
-
-
-def test_motion_targets_are_submitted_to_both_groups_asynchronously(
+def test_read_only_preflight_never_acquires_control(
     monkeypatch,
+    capsys,
+    hardware_preflight_factory,
 ) -> None:
-    submitted = []
-
-    class Receipt:
-        def done(self):
-            return True
-
-        def result(self):
-            return None
-
-    class Control:
-        def __init__(self, name):
-            self.name = name
-
-        def send_async(self, targets):
-            submitted.append((self.name, targets))
-            return Receipt()
-
-    config = motion_hardware.HardwareMotionConfig(groups=("lower", "upper"))
-    groups = {name: SimpleNamespace(coordinates=(name,)) for name in config.groups}
-    controls = {name: Control(name) for name in config.groups}
-    adapter = SimpleNamespace(control_timestep=0.02)
-    monkeypatch.setattr(
-        hardware_runtime,
-        "coordinate_targets",
-        lambda _binding, coordinates, *_args: {coordinates[0]: coordinates[0]},
-    )
-    pending = []
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        motion_hardware.send_targets(
-            SimpleNamespace(),
-            controls,
-            groups,
-            np.zeros(2),
-            adapter,
-            config,
-            executor,
-            pending,
-        )
-        motion_hardware.drain_command_receipts(pending)
-
-    assert sorted(submitted) == [
-        ("lower", {"lower": "lower"}),
-        ("upper", {"upper": "upper"}),
-    ]
-
-
-def test_control_failure_stops_all_groups(monkeypatch) -> None:
-    stopped = []
-
-    def miss_deadline(*_args):
-        raise RuntimeError("deadline missed")
-
-    controls = {name: SimpleNamespace() for name in ("lower_body", "upper_body")}
-    groups = {
-        name: SimpleNamespace(
-            control=lambda *_args, _name=name, **_kwargs: nullcontext(controls[_name])
-        )
-        for name in controls
-    }
-    config = motion_hardware.HardwareMotionConfig()
-    adapter = SimpleNamespace(
-        control_timestep=0.02,
-        physical_coordinate_names=("left", "right"),
-        nominal_physical_target=np.zeros(2),
-    )
-    frame = SimpleNamespace(positions=np.zeros(2))
-
-    monkeypatch.setattr(motion_hardware, "start_hardware_controls", lambda *_args: None)
-    monkeypatch.setattr(
-        motion_hardware,
-        "stop_hardware_controls",
-        lambda active, *_args: stopped.extend(active),
-    )
-    monkeypatch.setattr(motion_hardware, "wait_for_group_state", lambda *_args: None)
-    monkeypatch.setattr(motion_hardware, "send_targets", lambda *_args: None)
-    monkeypatch.setattr(
-        motion_hardware,
-        "pace_hardware_loop",
-        miss_deadline,
-    )
-
-    with pytest.raises(RuntimeError, match="deadline missed"):
-        motion_hardware.control_physical_motion(
-            SimpleNamespace(StateUnavailableError=RuntimeError),
-            groups,
-            SimpleNamespace(),
-            SimpleNamespace(latest=lambda: pose_frame()),
-            frame,
-            adapter,
-            config,
-        )
-
-    assert sorted(stopped) == ["lower_body", "upper_body"]
-
-
-class FakeGroupState(Enum):
-    IDLE = 1
-
-
-class FakeDeviceState(Enum):
-    ONLINE = 1
-
-
-class FakeUnavailableError(Exception):
-    pass
-
-
-def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None:
     coordinates = ("left", "right")
-    control_requested = False
-
-    def forbidden_control(*_args, **_kwargs):
-        nonlocal control_requested
-        control_requested = True
-        raise AssertionError("read-only preflight acquired control")
-
-    groups = {
-        "lower_body": SimpleNamespace(
-            name="lower_body",
-            coordinates=("left",),
-            control_rate_hz=100.0,
-            initial_state=FakeGroupState.IDLE,
-            motors=(
-                SimpleNamespace(
-                    name="left",
-                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
-                ),
-            ),
-            control=forbidden_control,
-        ),
-        "upper_body": SimpleNamespace(
-            name="upper_body",
-            coordinates=("right",),
-            control_rate_hz=100.0,
-            initial_state=FakeGroupState.IDLE,
-            motors=(
-                SimpleNamespace(
-                    name="right",
-                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
-                ),
-            ),
-            control=forbidden_control,
-        ),
-    }
-
-    def vector(*values):
-        return SimpleNamespace(x=values[0], y=values[1], z=values[2])
-
-    states = SimpleNamespace(
-        coordinate=lambda _name: SimpleNamespace(
-            position=2.0, velocity=0.0, feedback_age_ms=0
-        ),
-        imu=lambda _name: SimpleNamespace(
-            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
-            angular_velocity=vector(0.0, 0.0, 0.0),
-            linear_acceleration=vector(0.0, 0.0, 0.0),
-            sample_age_ms=0,
-        ),
-        group=lambda _name: SimpleNamespace(state=SimpleNamespace(name="IDLE")),
-    )
-    robot = SimpleNamespace(
-        group_names=tuple(groups),
-        group=lambda name: groups[name],
-        inventory=SimpleNamespace(
-            imus=(
-                SimpleNamespace(
-                    name="imu",
-                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
-                ),
-            )
-        ),
-        states=lambda **_kwargs: nullcontext(states),
-    )
-    binding = SimpleNamespace(
-        Robot=SimpleNamespace(connect=lambda *_args, **_kwargs: nullcontext(robot)),
-        GroupState=FakeGroupState,
-        DeviceState=FakeDeviceState,
-        StateUnavailableError=FakeUnavailableError,
-    )
+    hardware = hardware_preflight_factory(coordinates, (2.0, 2.0))
     preview = motion_hardware.HardwareMotionStep(
         action=np.zeros(2),
         raw_action=np.zeros(2),
@@ -484,11 +212,11 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     motion_hardware.run_hardware_motion(
         Path("unused"),
         motion_hardware.HardwareMotionConfig(),
-        hardware_binding=binding,
+        hardware_binding=hardware.binding,
         pose_stream_factory=FakePoseStream,
     )
 
-    assert not control_requested
+    assert not hardware.control_requests
     output = capsys.readouterr().out
     assert "'nominal_ramp_distance_max': 2.0" in output
     assert "no lease was acquired" in output

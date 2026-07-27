@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 import json
-import os
+import math
 from pathlib import Path
 import sys
 from typing import Literal
@@ -22,7 +22,6 @@ from bello_mujoco.configuration import (
     config_path,
     locomotion_training_profile,
     motion_training_profile,
-    profile_config_path,
     structured_config,
 )
 from bello_mujoco.evaluation.locomotion import (
@@ -90,7 +89,7 @@ class MotionCommandConfig:
     operation: Literal["import", "import_dataset", "inspect", "render"] = "inspect"
     source: Path | None = None
     output: Path | None = None
-    jobs: int = min(8, os.cpu_count() or 1)
+    jobs: int = 8
     overwrite: bool = False
     reject_self_collisions: bool = True
     width: int = 640
@@ -107,15 +106,13 @@ class VastTrainCommandConfig:
     branch: str | None = None
     run_name: str | None = None
     duration_hours: float = 6.0
-    yes: bool = False
+    skip_confirmation: bool = False
     dry_run: bool = False
-    overrides: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
-    max_steps: int | None = None
     torso_hold: bool = True
     release_after_seconds: float | None = None
 
@@ -129,12 +126,8 @@ class HardwareCommandConfig:
     motion_path: Path | None = None
     duration_seconds: float | None = 10.0
     ramp_seconds: float | None = None
-    kp_scale: float = 1.0
-    kd_scale: float = 1.0
     gamepad_enabled: bool = True
-    wait_for_start_button: bool = True
     arm: bool = False
-    operator_confirmation: str = ""
 
 
 def prepare_assets_entrypoint() -> None:
@@ -194,6 +187,8 @@ def _train_hydra(config: DictConfig) -> None:
         )
         run_motion_training(run_config)
         return
+    if command.motion_path is not None:
+        raise ValueError("motion_path is only valid for the motion experiment")
     run_config = locomotion_training_profile(command.experiment)
     run_config = replace(
         run_config,
@@ -222,6 +217,11 @@ def _eval_hydra(config: DictConfig) -> None:
     command = structured_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     if command.task == "motion":
+        _reject_non_default_fields(
+            command,
+            ("command", "stochastic_actions", "action_seed", "gamepad_enabled"),
+            context="task=motion",
+        )
         stats = render_checkpoint_with_stats(
             checkpoint,
             command.output_path.expanduser(),
@@ -230,6 +230,7 @@ def _eval_hydra(config: DictConfig) -> None:
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
+    _reject_non_default_fields(command, ("output_path",), context="task=locomotion")
     evaluate_locomotion_checkpoint(
         checkpoint,
         EvalPolicyConfig(
@@ -260,6 +261,11 @@ def _motion_hydra(config: DictConfig) -> None:
     command = structured_config(MotionCommandConfig, config)
     source = _required_path(command.source, "source")
     if command.operation == "import":
+        _reject_non_default_fields(
+            command,
+            ("jobs", "overwrite", "width", "height", "fps", "require_complete"),
+            context="operation=import",
+        )
         output = _required_path(command.output, "output")
         print(
             import_gmr_motion(
@@ -270,6 +276,17 @@ def _motion_hydra(config: DictConfig) -> None:
         )
         return
     if command.operation == "import_dataset":
+        _reject_non_default_fields(
+            command,
+            (
+                "reject_self_collisions",
+                "width",
+                "height",
+                "fps",
+                "require_complete",
+            ),
+            context="operation=import_dataset",
+        )
         output = _required_path(command.output, "output")
         motions, failures = import_dataset(
             source,
@@ -292,6 +309,16 @@ def _motion_hydra(config: DictConfig) -> None:
             raise RuntimeError(f"{len(failures)} motion(s) failed")
         return
     if command.operation == "render":
+        _reject_non_default_fields(
+            command,
+            (
+                "jobs",
+                "overwrite",
+                "reject_self_collisions",
+                "require_complete",
+            ),
+            context="operation=render",
+        )
         output = _required_path(command.output, "output")
         print(
             render_reference(
@@ -303,6 +330,18 @@ def _motion_hydra(config: DictConfig) -> None:
             )
         )
         return
+    _reject_non_default_fields(
+        command,
+        (
+            "jobs",
+            "overwrite",
+            "reject_self_collisions",
+            "width",
+            "height",
+            "fps",
+        ),
+        context="operation=inspect",
+    )
     report = replay_motion_reference(source)
     payload = json.dumps(asdict(report), indent=2, sort_keys=True)
     if command.output is not None:
@@ -324,47 +363,29 @@ def vast_train_entrypoint() -> None:
 )
 def _vast_train_hydra(config: DictConfig) -> None:
     command = structured_config(VastTrainCommandConfig, config)
-    if command.duration_hours <= 0:
-        raise ValueError("duration_hours must be positive")
+    if not math.isfinite(command.duration_hours) or command.duration_hours <= 0:
+        raise ValueError("duration_hours must be finite and positive")
     if command.experiment == "motion":
         if command.motion_path is None:
             raise ValueError(
                 "motion_path must select a repository-tracked clip for Vast motion "
                 "training"
             )
-        motion_overrides = (f"motion_path={command.motion_path.as_posix()}",)
     else:
         if command.motion_path is not None:
             raise ValueError("motion_path is only valid for the motion experiment")
-        motion_overrides = ()
-    reserved_overrides = {
-        override.partition("=")[0].lstrip("+") for override in command.overrides
-    } & {"experiment", "motion_path"}
-    if reserved_overrides:
-        names = ", ".join(sorted(reserved_overrides))
-        raise ValueError(f"use the dedicated Vast command field(s) instead: {names}")
     root = repo_root()
-    profile_path = profile_config_path(command.experiment).resolve()
-    try:
-        relative_profile = profile_path.relative_to(root)
-    except ValueError as error:
-        raise ValueError("training profile must be inside the repository") from error
     internal = VastTrainConfig(
-        train_config=relative_profile,
-        task="motion-tracking" if command.experiment == "motion" else "locomotion",
+        experiment=command.experiment,
+        motion_path=command.motion_path,
         max_price=command.max_price,
         branch=command.branch,
         run_name=command.run_name,
-        yes=command.yes,
+        skip_confirmation=command.skip_confirmation,
         dry_run=command.dry_run,
         job_timeout_seconds=round(command.duration_hours * 3600),
         progress_timeout_seconds=min(
             1800, max(60, round(command.duration_hours * 3600))
-        ),
-        hydra_overrides=(
-            f"experiment={command.experiment}",
-            *motion_overrides,
-            *command.overrides,
         ),
     )
     try:
@@ -392,7 +413,6 @@ def _emulator_hydra(config: DictConfig) -> None:
     emulator.run_emulator(
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
-            max_steps=command.max_steps,
             torso_hold=command.torso_hold,
             release_after_seconds=command.release_after_seconds,
         )
@@ -413,6 +433,11 @@ def _hardware_hydra(config: DictConfig) -> None:
     command = structured_config(HardwareCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     if command.task == "motion":
+        _reject_non_default_fields(
+            command,
+            ("command", "gamepad_enabled"),
+            context="task=motion",
+        )
         base = HardwareMotionConfig()
         run_hardware_motion(
             checkpoint,
@@ -422,13 +447,11 @@ def _hardware_hydra(config: DictConfig) -> None:
                 motion_path=command.motion_path,
                 max_duration_seconds=command.duration_seconds,
                 ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
-                kp_scale=command.kp_scale,
-                kd_scale=command.kd_scale,
                 arm=command.arm,
-                operator_confirmation=command.operator_confirmation,
             ),
         )
         return
+    _reject_non_default_fields(command, ("motion_path",), context="task=locomotion")
     base = HardwareLocomotionConfig()
     run_hardware_locomotion(
         checkpoint,
@@ -438,12 +461,8 @@ def _hardware_hydra(config: DictConfig) -> None:
             command=command.command,
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
-            kp_scale=command.kp_scale,
-            kd_scale=command.kd_scale,
             gamepad=replace(base.gamepad, enabled=command.gamepad_enabled),
-            wait_for_start_button=command.wait_for_start_button,
             arm=command.arm,
-            operator_confirmation=command.operator_confirmation,
         ),
     )
 
@@ -481,6 +500,20 @@ def _required_path(value: Path | None, name: str) -> Path:
     if value is None:
         raise ValueError(f"{name} must be set")
     return value.expanduser()
+
+
+def _reject_non_default_fields(
+    config,
+    names: tuple[str, ...],
+    *,
+    context: str,
+) -> None:
+    defaults = type(config)()
+    invalid = [
+        name for name in names if getattr(config, name) != getattr(defaults, name)
+    ]
+    if invalid:
+        raise ValueError(f"{context} does not accept: {', '.join(invalid)}")
 
 
 def _coalesce(value, default):

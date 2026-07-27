@@ -14,7 +14,6 @@ from typing import (
     get_type_hints,
 )
 
-from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from bello_mujoco.assets_pipeline import project_data_path
@@ -26,6 +25,12 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 ExperimentName = Literal["smoke", "locomotion", "hardware_locomotion", "motion"]
 CONFIG_ROOT = project_data_path("configs")
+_PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
+    "smoke": Path("profiles/train/smoke.yaml"),
+    "locomotion": Path("profiles/train/locomotion.yaml"),
+    "hardware_locomotion": Path("profiles/train/hardware_locomotion.yaml"),
+    "motion": Path("profiles/train/motion.yaml"),
+}
 
 
 def dataclass_from_dict(
@@ -76,8 +81,12 @@ def coerce_value(
     path: str | None = None,
 ):
     if value is None:
-        return None
-    if annotation is Path or annotation == "Path":
+        if annotation is Any or type(None) in get_args(annotation):
+            return None
+        raise TypeError(f"{path or 'value'} must not be null")
+    if annotation is Path:
+        if not isinstance(value, (str, Path)):
+            raise TypeError(f"{path or 'value'} must be a path")
         return Path(value)
     if isinstance(annotation, type) and is_dataclass(annotation):
         return dataclass_from_dict(
@@ -87,9 +96,16 @@ def coerce_value(
             require_all_fields=require_all_fields,
             path=path,
         )
-    if "Path" in str(annotation) and "None" in str(annotation):
-        return Path(value)
     origin = get_origin(annotation)
+    if origin is Literal:
+        allowed = get_args(annotation)
+        if not any(
+            value == choice and type(value) is type(choice) for choice in allowed
+        ):
+            location = path or "value"
+            choices = ", ".join(repr(choice) for choice in allowed)
+            raise ValueError(f"{location} must be one of {choices}, got {value!r}")
+        return value
     if origin is dict:
         key_type, value_type = get_args(annotation)
         return {
@@ -149,8 +165,23 @@ def coerce_value(
                 require_all_fields=require_all_fields,
                 path=path,
             )
-    if str(annotation).startswith("tuple["):
-        return tuple(value)
+    location = path or "value"
+    if annotation is bool:
+        if type(value) is not bool:
+            raise TypeError(f"{location} must be a boolean")
+        return value
+    if annotation is int:
+        if type(value) is not int:
+            raise TypeError(f"{location} must be an integer")
+        return value
+    if annotation is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{location} must be a number")
+        return float(value)
+    if annotation is str:
+        if not isinstance(value, str):
+            raise TypeError(f"{location} must be a string")
+        return value
     return value
 
 
@@ -163,11 +194,6 @@ def structured_config(cls: type[T], config: DictConfig) -> T:
     if not isinstance(data, dict):
         raise TypeError(f"Hydra config for {cls.__name__} must be a mapping")
     return dataclass_from_dict(cls, data, strict=True)
-
-
-def clear_hydra() -> None:
-    if GlobalHydra.instance().is_initialized():
-        GlobalHydra.instance().clear()
 
 
 def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
@@ -214,14 +240,8 @@ def motion_training_profile(
     )
 
 
-def profile_config_path(name: ExperimentName) -> Path:
-    mapping = {
-        "smoke": _config("profiles/train/smoke.yaml"),
-        "locomotion": _config("profiles/train/locomotion.yaml"),
-        "hardware_locomotion": _config("profiles/train/hardware_locomotion.yaml"),
-        "motion": _config("profiles/train/motion.yaml"),
-    }
-    return mapping[name]
+def profile_config_relative_path(name: ExperimentName) -> Path:
+    return Path("configs") / _PROFILE_CONFIG_PATHS[name]
 
 
 def _config(relative_path: str) -> Path:
@@ -234,9 +254,6 @@ def _merged_profile(paths: tuple[Path, ...] | list[Path]) -> DictConfig:
         config = OmegaConf.load(path)
         if not isinstance(config, DictConfig):
             raise TypeError(f"training profile {path} must be a mapping")
-        for internal_key in ("defaults", "hydra"):
-            if internal_key in config:
-                del config[internal_key]
         configs.append(config)
     merged = OmegaConf.merge(*configs)
     OmegaConf.resolve(merged)

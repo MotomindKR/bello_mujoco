@@ -28,7 +28,6 @@ from bello_mujoco.sim import (
 from bello_mujoco.terrain import (
     FLAT_TERRAIN,
     ROBOT_ONLY_TERRAIN,
-    ROUGH_TERRAIN,
     TerrainConfig,
     random_slope_angles,
     rough_height_data,
@@ -657,7 +656,6 @@ def test_loading_viewer_model_preserves_policy_contract(
     viewer_model = load_prepared_bello_model(full_body_asset, use_viewer_model=True)
 
     assert viewer_model.xml_path == full_body_asset.viewer_mjcf_path
-    assert viewer_model.viewer_xml_path == full_body_asset.viewer_mjcf_path
     assert viewer_model.mj_model.ngeom == sim_model.mj_model.ngeom + 40
     assert viewer_model.mj_model.nq == sim_model.mj_model.nq
     assert viewer_model.mj_model.nv == sim_model.mj_model.nv
@@ -705,7 +703,8 @@ def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
 def test_runtime_rough_terrain_uses_heightfield(
     full_body_asset: PreparedAsset,
 ) -> None:
-    scene = load_prepared_bello_model(full_body_asset, terrain=ROUGH_TERRAIN)
+    rough_terrain = TerrainConfig(mode="rough")
+    scene = load_prepared_bello_model(full_body_asset, terrain=rough_terrain)
     model = scene.mj_model
     hfield_geoms = [
         geom_id
@@ -722,7 +721,7 @@ def test_runtime_rough_terrain_uses_heightfield(
     assert np.ptp(model.hfield_data) == pytest.approx(1.0)
     hfield_id = int(model.geom_dataid[hfield_geoms[0]])
     assert model.hfield_size[hfield_id, 2] == pytest.approx(
-        ROUGH_TERRAIN.hfield_amplitude
+        rough_terrain.hfield_amplitude
     )
 
 

@@ -30,13 +30,6 @@ Do not add a second recipe in a script or command wrapper. Change:
 - `configs/profiles/train/*.yaml` for maintained experiment numerics;
 - Python dataclasses only when the configuration schema or validation changes.
 
-Both training roots also contain:
-
-| Field | Meaning |
-| --- | --- |
-| `dry_run` | Build and validate the environment, policy, optimizer, and checkpoint contract without entering the update loop. Maintained runnable profiles set it to `false`. |
-| `jit` | JIT-compile PPO updates. It should remain enabled for real training. |
-
 ## PPO: `config`
 
 The `config` section is shared by locomotion and motion tracking.

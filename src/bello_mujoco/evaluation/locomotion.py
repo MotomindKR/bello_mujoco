@@ -978,6 +978,10 @@ def validate_eval_config(config: EvalPolicyConfig) -> None:
         raise ValueError(
             f"eval_config.command must have three values, got {config.command}"
         )
+    if not all(math.isfinite(value) for value in config.command):
+        raise ValueError(
+            f"eval_config.command must contain finite values, got {config.command}"
+        )
     if config.action_seed < 0:
         raise ValueError(
             f"eval_config.action_seed must be nonnegative, got {config.action_seed}"

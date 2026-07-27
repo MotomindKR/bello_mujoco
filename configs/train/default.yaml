@@ -1,7 +1,5 @@
 # Canonical 13-joint Bello locomotion contract. Experiment recipes override only
 # task-specific training, randomization, reward-link, and output settings.
-dry_run: true
-jit: true
 config:
   seed: 0
   total_timesteps: 1000000
@@ -247,8 +245,3 @@ warp:
   naconmax: null
   naccdmax: null
   njmax: 256
-hydra:
-  job:
-    chdir: false
-  run:
-    dir: outputs/hydra/train/${now:%Y-%m-%d}/${now:%H-%M-%S}

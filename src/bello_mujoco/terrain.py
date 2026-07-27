@@ -55,7 +55,6 @@ class TerrainConfig:
 
 ROBOT_ONLY_TERRAIN = TerrainConfig(mode="none")
 FLAT_TERRAIN = TerrainConfig(mode="plane")
-ROUGH_TERRAIN = TerrainConfig(mode="rough")
 
 
 def runtime_mjcf_path(robot_mjcf_path: Path, config: TerrainConfig) -> Path:

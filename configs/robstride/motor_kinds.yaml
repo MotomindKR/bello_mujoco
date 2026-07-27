@@ -11,16 +11,9 @@ motor_kinds:
       kp: [0.0, 500.0]
       kd: [0.0, 5.0]
     hardware:
-      rated_torque: 5.0
-      peak_torque: 14.0
-      rated_speed_rpm: 100.0
       no_load_speed_rpm: 315.0
       rated_voltage: 48.0
-      voltage: [24.0, 60.0]
-      rated_phase_current: 4.7
       peak_phase_current: 15.5
-      reduction_ratio: 10.0
-      temperature_c: [-20.0, 50.0]
 
   ROBSTRIDE_03:
     protocol:
@@ -30,16 +23,9 @@ motor_kinds:
       kp: [0.0, 5000.0]
       kd: [0.0, 100.0]
     hardware:
-      rated_torque: 21.0
-      peak_torque: 60.0
-      rated_speed_rpm: 100.0
       no_load_speed_rpm: 195.0
       rated_voltage: 48.0
-      voltage: [15.0, 60.0]
-      rated_phase_current: 12.0
       peak_phase_current: 43.0
-      reduction_ratio: 9.0
-      temperature_c: [-20.0, 50.0]
 
   ROBSTRIDE_04:
     protocol:
@@ -49,35 +35,9 @@ motor_kinds:
       kp: [0.0, 5000.0]
       kd: [0.0, 100.0]
     hardware:
-      rated_torque: 40.0
-      peak_torque: 120.0
-      rated_speed_rpm: 50.0
       no_load_speed_rpm: 200.0
       rated_voltage: 48.0
-      voltage: [15.0, 60.0]
-      rated_phase_current: 27.0
       peak_phase_current: 90.0
-      reduction_ratio: 9.0
-      temperature_c: [-20.0, 50.0]
-
-  ROBSTRIDE_05:
-    protocol:
-      position: [-12.57, 12.57]
-      velocity: [-50.0, 50.0]
-      torque: [-5.5, 5.5]
-      kp: [0.0, 500.0]
-      kd: [0.0, 5.0]
-    hardware:
-      rated_torque: 1.8
-      peak_torque: 5.5
-      rated_speed_rpm: 100.0
-      no_load_speed_rpm: 480.0
-      rated_voltage: 48.0
-      voltage: [15.0, 60.0]
-      rated_phase_current: 2.4
-      peak_phase_current: 11.0
-      reduction_ratio: 7.75
-      temperature_c: [-20.0, 50.0]
 
   ROBSTRIDE_06:
     protocol:
@@ -87,13 +47,6 @@ motor_kinds:
       kp: [0.0, 5000.0]
       kd: [0.0, 100.0]
     hardware:
-      rated_torque: 11.0
-      peak_torque: 36.0
-      rated_speed_rpm: 100.0
       no_load_speed_rpm: 480.0
       rated_voltage: 48.0
-      voltage: [15.0, 60.0]
-      rated_phase_current: 14.3
       peak_phase_current: 57.0
-      reduction_ratio: 9.0
-      temperature_c: [-20.0, 50.0]

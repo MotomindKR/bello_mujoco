@@ -3,9 +3,8 @@
 The repository exposes seven public commands. Each command has a strict Hydra
 key set: keys not declared by that command fail during decoding, and the
 resulting mapping is loaded into an immutable dataclass before the workflow
-starts. The tables below define the supported value domains. Some workflow
-validators fail early, while ordinary scalar and selector annotations are not
-uniformly enforced by the generic decoder.
+starts. The tables below define the supported value domains. Workflow validators
+also fail early on invalid ranges and task-specific fields.
 
 ## Invocation and inspection
 
@@ -67,7 +66,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
-| `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. It has no effect on locomotion profiles. |
+| `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. A non-null value is rejected for locomotion profiles. |
 | `resume_path` | path or `null`; `null` | Restore a schema-7 continuation checkpoint. Resume validates the full training and environment contract. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. |
 | `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. |
@@ -108,6 +107,9 @@ Configuration source: `configs/commands/eval.yaml`.
 | `action_seed` | nonnegative integer; `0` | locomotion | PRNG seed used only for stochastic actions. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Read commands from controller zero. When disconnected, the command is zero. When false, `command` is used continuously. |
 
+Fields that apply to only one task must retain their documented defaults when
+the other task is selected.
+
 The locomotion gamepad maps left-stick vertical to forward velocity,
 left-stick horizontal to lateral velocity, and right-stick horizontal to yaw.
 A/Cross requests an episode reset and Start/Options exits. Stick values are
@@ -120,10 +122,8 @@ Evaluation validates the checkpoint task, policy and critic observation sizes,
 action size, asset contract, and environment metadata. It does not accept
 runtime overrides for the trained robot or reward formulation.
 
-Motion-policy evaluation always renders at 640 by 480 pixels and 50 fps. The
-public eval command does not expose those renderer settings; the `width`,
-`height`, and `fps` fields below apply only to reference rendering with
-`bello-motion`.
+Motion-policy evaluation renders at 640 by 480 pixels and 50 fps. The `width`,
+`height`, and `fps` fields under `bello-motion` configure reference rendering.
 
 ## `bello-motion`
 
@@ -143,6 +143,9 @@ Configuration source: `configs/commands/motion.yaml`.
 | `height` | positive integer; `480` | render | Output video height in pixels. |
 | `fps` | positive integer; `30` | render | Output video frame rate. |
 | `require_complete` | boolean; `false` | inspect | Fail the command when feasibility replay terminates before the clip completes. |
+
+Operation-specific fields must retain their documented defaults when another
+operation is selected.
 
 `import` and `import_dataset` read trusted local GMR pickle data and emit the
 canonical NPZ schema. Dataset import also writes `manifest.json`; any failed
@@ -182,12 +185,11 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, or `motion`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs and forbidden for other jobs. The clip must exist in the selected remote commit. |
 | `max_price` | positive float or `null`; `null` | Maximum total hourly rental price. A positive value is required, including for dry-run offer queries. |
-| `branch` | string or `null`; `null` | Remote `origin` branch. With `null`, an interactive terminal prompts from current remote branches; noninteractive use requires a branch. |
+| `branch` | string or `null`; `null` | Required remote `origin` branch. A null value is rejected before rental. |
 | `run_name` | string or `null`; `null` | Explicit lifecycle/W&B run label. Otherwise a unique name is generated from the profile, branch, commit, and current UTC timestamp. |
 | `duration_hours` | positive float; `6.0` | Hard job timeout. The progress timeout is capped at 30 minutes and never exceeds this duration. |
-| `yes` | boolean; `false` | Skip the final rental confirmation for unattended operation. |
-| `dry_run` | boolean; `false` | Resolve Git state and print regional offer queries without reading credentials or renting. |
-| `overrides` | list of strings; `[]` | Additional `bello-train` Hydra overrides passed to the remote job. `experiment` and `motion_path` must use their dedicated fields. |
+| `skip_confirmation` | boolean; `false` | Skip the final rental confirmation for unattended operation. |
+| `dry_run` | boolean; `false` | Resolve Git state and print the offer query without reading credentials or renting. |
 
 The selected profile, `pyproject.toml`, `uv.lock`, and any motion clip are
 verified in the exact `origin/<branch>` commit before rental. Ignored local
@@ -197,8 +199,8 @@ optionally `GITHUB_TOKEN` or keyring `github/bello_mujoco_read_token`.
 
 The maintained offer policy requests one RTX 5090, at least 64 GB CPU RAM and
 80 GB disk, reliability of at least 0.98, CUDA 13 compatibility, verification,
-rentability, and direct SSH. It searches Korea, then the rest of Asia, then
-globally. Non-dry execution requires Vast and W&B credentials; GitHub
+rentability, and direct SSH. The marketplace search is global. Non-dry
+execution requires Vast and W&B credentials; GitHub
 credentials are optional for public repositories.
 
 Durable lifecycle state lives under `.vast/`. Do not remove it while a rental
@@ -217,14 +219,13 @@ Configuration source: `configs/commands/emulator.yaml`.
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
-| `max_steps` | positive integer or `null`; `null` | Stop after a fixed number of simulation steps. |
 | `torso_hold` | boolean; `true` | Start with the torso/root assembly constrained by the commissioning vertical guide. |
 | `release_after_seconds` | nonnegative float or `null`; `null` | Automatically release the torso guide after this much simulated time. It requires `torso_hold=true`. |
 
 The emulator uses the repository motor catalog and lower/upper-body inventories
-under `configs/robstride/`. It enforces torque limits from that catalog and
-publishes the pelvis IMU serial stream and PoseService. Graphical display and
-real-time pacing are fixed runtime behavior rather than alternate modes.
+under `configs/robstride/`. It applies MIT impedance control, enforces catalog
+torque limits, publishes the pelvis IMU serial stream and PoseService, opens the
+native viewer, and paces simulation against wall-clock time.
 
 ## `bello-run-hardware`
 
@@ -246,22 +247,25 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `duration_seconds` | positive float or `null`; `10.0` | both | Maximum armed policy duration. `null` runs until operator exit, interruption, or a safety failure. |
-| `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for locomotion and 3 seconds for motion. |
-| `kp_scale` | float in `(0,1]`; `1.0` | both | Multiply trained proportional gains without allowing amplification above the checkpoint contract. |
-| `kd_scale` | float in `(0,1]`; `1.0` | both | Multiply trained derivative gains without allowing amplification above the checkpoint contract. |
+| `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for both tasks. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
-| `wait_for_start_button` | boolean; `true` | locomotion | Hold after the nominal ramp until A/Cross is pressed. Requires gamepad input. |
 | `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |
-| `operator_confirmation` | string; empty | both | Arming requires the exact value `I_HAVE_A_SPOTTER_AND_ESTOP_READY`. |
+
+Fields that apply to only one task must retain their documented defaults when
+the other task is selected.
 
 Locomotion uses the same stick mapping as `bello-eval`; Start/Options aborts.
 Motion additionally requires absolute pelvis pose from
 `bello-state-estimatord` PoseService at `127.0.0.1:50052`.
-Gamepad, command, and start-button fields do not affect motion mode. Motion
-starts tracking after its nominal-pose ramp and consistency checks.
 
-`duration_seconds` measures the post-ramp policy loop. Ramp time and the
-locomotion start-button wait are outside that duration.
+Both armed tasks require the operator to type exact interactive confirmations:
+`HOLD` before the nominal-pose ramp and `RUN` before policy control. While
+waiting for `RUN`, the runner continues refreshing the hold target and checking
+telemetry. `duration_seconds` measures only the post-`RUN` policy loop; the
+ramp and confirmation waits are outside that duration.
+
+Hardware targets use the proportional and derivative gains stored in the
+checkpoint robot contract.
 
 Preflight validates the checkpoint task, sphere-hand/fixed-joint morphology,
 policy layouts, generated transmission, motor inventory, IMU presence,

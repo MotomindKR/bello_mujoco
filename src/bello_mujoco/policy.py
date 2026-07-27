@@ -224,33 +224,6 @@ def sample_actor_action(
     return jax.vmap(sample_one)(obs, jax.random.split(rng, obs.shape[0]))
 
 
-def sample_action(
-    policy: ActorCritic,
-    obs: jax.Array,
-    rng: jax.Array,
-    critic_obs: jax.Array | None = None,
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    action, log_prob, value, _ = sample_action_with_mean(
-        policy, obs, rng, critic_obs=critic_obs
-    )
-    return action, log_prob, value
-
-
-def sample_action_with_mean(
-    policy: ActorCritic,
-    obs: jax.Array,
-    rng: jax.Array,
-    critic_obs: jax.Array | None = None,
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    action, _, log_prob, value, action_mean = sample_action_with_latent_and_mean(
-        policy,
-        obs,
-        rng,
-        critic_obs=critic_obs,
-    )
-    return action, log_prob, value, action_mean
-
-
 def sample_action_with_latent_and_mean(
     policy: ActorCritic,
     obs: jax.Array,

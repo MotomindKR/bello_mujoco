@@ -57,10 +57,6 @@ class EbimuSerialEmulator:
         self._last_simulation_time: float | None = None
         self._distance_origin: tuple[float, float, float] | None = None
 
-    @property
-    def is_open(self) -> bool:
-        return self._fd is not None
-
     def open(self) -> None:
         if self._fd is not None:
             return

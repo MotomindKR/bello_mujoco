@@ -32,16 +32,25 @@ No motor target is sent in this mode.
 
 ## Arming contract
 
-Arming requires a spotter, a working E-stop, `arm=true`, and the exact
-confirmation:
-
-```text
-operator_confirmation=I_HAVE_A_SPOTTER_AND_ESTOP_READY
-```
-
-The confirmation is intentionally not configurable or inferred. Armed control
+Arming requires a spotter, a working E-stop, and `arm=true`. Armed control
 requires the asynchronous hardware binding so target acknowledgements do not
 block the policy-rate loop.
+
+After preflight, both task modes use the same interactive sequence:
+
+1. The operator supports the robot and types the exact word `HOLD`.
+2. The runner acquires control and ramps to the checkpoint nominal pose over
+   ten seconds by default.
+3. The runner continuously refreshes the nominal target and checks telemetry
+   while the operator releases external support and lets the robot settle.
+4. The operator types the exact word `RUN`, immediately before policy control.
+
+Any other input fails closed. The `RUN` prompt is read asynchronously so motor
+targets, command receipts, and safety checks continue while the terminal waits
+for the operator.
+
+Both tasks use the proportional and derivative gains stored in the checkpoint's
+robot contract.
 
 Safety failures are terminal and unwind the acquired control sessions.
 Explicit completion, gamepad abort, and keyboard interruption stop and disable
@@ -55,14 +64,12 @@ waist yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy.
 The runner controls the 13 policy coordinates and supplies nominal targets for
 the remaining physical coordinates.
 
-The default ten-second nominal-pose ramp is target-step limited. With the
-default gamepad settings, the runner then holds until A/Cross starts the policy.
-Left-stick vertical/horizontal commands forward/lateral velocity, right-stick
-horizontal commands yaw, and Start/Options aborts. Controller disconnection
-commands zero.
+The nominal-pose ramp is target-step limited. After the shared `HOLD`, ramp,
+and `RUN` sequence, left-stick vertical/horizontal commands forward/lateral
+velocity, right-stick horizontal commands yaw, and Start/Options aborts.
+Controller disconnection commands zero.
 
-A fixed command is active only when gamepad input is disabled. Disabling the
-gamepad also requires disabling the start-button gate.
+A fixed command is active only when gamepad input is disabled.
 
 ## Motion mode
 
@@ -75,10 +82,10 @@ normally from PoseService at `127.0.0.1:50052`. IMU orientation is retained as
 an independent agreement check. Root translation is never estimated by
 double-integrating acceleration.
 
-After its default three-second ramp, motion mode verifies nominal-pose arrival,
-Pose/IMU orientation agreement, reference bounds, and initial policy output,
-then starts without a gamepad gate. Gamepad, velocity-command, and
-wait-for-start fields are locomotion-only.
+Motion uses the same default ten-second ramp and manual `HOLD` and `RUN`
+confirmations as locomotion. It additionally verifies nominal-pose arrival,
+Pose/IMU orientation agreement, reference bounds, and initial policy output.
+Gamepad and velocity-command fields are locomotion-only.
 
 Motion inference fuses observation construction, stacking, normalization, actor
 execution, bounded action mapping, and diagnostics into one JIT call. Timing
@@ -99,6 +106,6 @@ Both armed modes continuously check:
 Motion adds pose age/frame validation, pose/IMU agreement, base-velocity bounds,
 reference completion, and raw-versus-applied action bounds.
 
-`duration_seconds` covers only the post-ramp policy loop. Ramp time and the
-locomotion start wait are not included. A `null` duration runs until operator
-exit, reference completion, interruption, or a safety failure.
+`duration_seconds` covers only the post-`RUN` policy loop. Ramp time and both
+manual confirmation waits are not included. A `null` duration runs until
+operator exit, reference completion, interruption, or a safety failure.

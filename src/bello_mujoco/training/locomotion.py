@@ -42,9 +42,7 @@ from bello_mujoco.training.ppo import (
     PPOConfig,
     RunnerState,
     critic_observation_size,
-    effective_learning_rate_schedule,
     init_runner_state,
-    init_train_state,
     runner_train_state,
     update_runner_state,
     validate_ppo_config,
@@ -91,40 +89,6 @@ class TrainingRunConfig:
     wandb_config: WandbConfig = WandbConfig()
     video_config: TrainingVideoConfig = TrainingVideoConfig()
     warp: WarpConfig = WarpConfig()
-    dry_run: bool = True
-    jit: bool = True
-
-
-def main(
-    config: PPOConfig = PPOConfig(),
-    asset_config: AssetPrepConfig = AssetPrepConfig(),
-    reward_config: RewardConfig = RewardConfig(),
-    command_config: CommandConfig = CommandConfig(),
-    done_config: DoneConfig = DoneConfig(),
-    env_config: BelloEnvConfig = BelloEnvConfig(),
-    checkpoint_config: CheckpointConfig = CheckpointConfig(),
-    wandb_config: WandbConfig = WandbConfig(),
-    video_config: TrainingVideoConfig = TrainingVideoConfig(),
-    warp: WarpConfig = WarpConfig(),
-    dry_run: bool = True,
-    jit: bool = True,
-) -> None:
-    run_training(
-        TrainingRunConfig(
-            config=config,
-            asset_config=asset_config,
-            reward_config=reward_config,
-            command_config=command_config,
-            done_config=done_config,
-            env_config=env_config,
-            checkpoint_config=checkpoint_config,
-            wandb_config=wandb_config,
-            video_config=video_config,
-            warp=warp,
-            dry_run=dry_run,
-            jit=jit,
-        )
-    )
 
 
 def run_training(run_config: TrainingRunConfig) -> None:
@@ -138,14 +102,12 @@ def run_training(run_config: TrainingRunConfig) -> None:
     wandb_config = run_config.wandb_config
     video_config = run_config.video_config
     warp = run_config.warp
-    dry_run = run_config.dry_run
-    jit = run_config.jit
 
     validate_ppo_config(config)
     validate_video_config(video_config)
     validate_checkpoint_config(checkpoint_config)
     validate_action_limit_contract(config, env_config.action_clip)
-    run = create_wandb_run(wandb_config) if not dry_run else None
+    run = create_wandb_run(wandb_config)
     succeeded = False
     try:
         env = BelloLocomotionEnv.load(
@@ -183,68 +145,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
             critic_policy_obs_size=critic_policy_obs_size,
         )
         deployment_contract = capture_deployment_contract(metadata)
-        if dry_run:
-            state, _ = init_train_state(
-                rng,
-                policy_obs_size,
-                env.action_size,
-                config,
-                critic_obs_size=critic_policy_obs_size,
-            )
-            batch_state, batch_obs = env.reset_batch(config.num_envs)
-            print(
-                {
-                    "backend": jax.default_backend(),
-                    "mjx_impl": "warp",
-                    "terrain": env_config.terrain.mode,
-                    "sim_timestep": env.model.mj_model.opt.timestep,
-                    "decimation": env_config.decimation,
-                    "control_timestep": env.control_timestep,
-                    "max_episode_steps": env_config.max_episode_steps,
-                    "warp_naconmax": env.model.warp_naconmax,
-                    "warp_njmax": env.model.warp_njmax,
-                    "obs_size": env.observation_size,
-                    "actor_observation_layout": env.observation_layout.components,
-                    "policy_obs_size": policy_obs_size,
-                    "critic_obs_size": critic_obs_size,
-                    "critic_observation_layout": (
-                        env.critic_observation_layout.components
-                    ),
-                    "critic_policy_obs_size": critic_policy_obs_size,
-                    "obs_stack_size": config.policy.obs_stack_size,
-                    "action_size": env.action_size,
-                    "action_layout": env.action_layout.names,
-                    "num_envs": config.num_envs,
-                    "num_steps": config.num_steps,
-                    "num_updates": config.num_updates,
-                    "policy_hidden_dims": config.policy.hidden_dims,
-                    "policy_activation": config.policy.activation,
-                    "command_ranges": tuple(
-                        tuple(row) for row in command_config.range_array().tolist()
-                    ),
-                    "model_randomization_enabled": (
-                        env_config.model_randomization.enabled
-                    ),
-                    "random_push_enabled": env_config.random_push.enabled,
-                    "observation_noise_enabled": env_config.observation.noise.enabled,
-                    "learning_rate": config.learning_rate,
-                    "learning_rate_schedule": effective_learning_rate_schedule(config),
-                    "desired_kl": config.desired_kl,
-                    "target_kl": config.target_kl,
-                    "ent_coef": config.ent_coef,
-                    "batch_obs_shape": tuple(batch_obs.shape),
-                    "batch_action_shape": tuple(batch_state.last_action.shape),
-                    "checkpoint_enabled": checkpoint_config.enabled,
-                    "checkpoint_every_updates": checkpoint_config.every_updates,
-                    "resume_path": checkpoint_config.resume_path,
-                    "wandb_enabled": wandb_config.enabled,
-                    "video_enabled": video_config.enabled,
-                    "params_leaves": len(jax.tree.leaves(state.policy)),
-                }
-            )
-            succeeded = True
-            return
-
         checkpoint_dir = (
             checkpoint_path(checkpoint_config, config)
             if checkpoint_config.enabled
@@ -297,7 +197,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
             rng,
             video_config,
             run,
-            jit,
             initial_runner=initial_runner,
             checkpoint_every_updates=checkpoint_config.every_updates,
             checkpoint_callback=periodic_checkpoint_callback(
@@ -406,7 +305,6 @@ def train_update_loop(
     rng: jax.Array,
     video_config: TrainingVideoConfig,
     run,
-    jit: bool,
     *,
     initial_runner: RunnerInitialization | None = None,
     checkpoint_every_updates: int | None = None,
@@ -426,7 +324,7 @@ def train_update_loop(
     def update_fn(state):
         return update_runner_state(state, static_policy, optimizer, env, config)
 
-    update_fn = jax.jit(update_fn) if jit else update_fn
+    update_fn = jax.jit(update_fn)
     last_metrics = None
     if video_config.render_initial and start_update == 0:
         render_training_video(
@@ -543,7 +441,6 @@ def render_training_video(
             output_path,
             name=config.wandb_name,
             step=env_steps,
-            fps=config.fps,
             caption=video_rollout_caption(update, rollout_stats),
         )
     return output_path

@@ -110,11 +110,11 @@ sections.
 
 ## Safety and reproducibility boundaries
 
-Physical execution is read-only unless both `arm=true` and the exact operator
-confirmation are supplied. Hardware runners validate checkpoint task and
-morphology, motor inventory, telemetry freshness, IMU bounds, command timing,
-and control-group state before and during execution. Safety failures are
-terminal and unwind the acquired control sessions; explicit completion and
+Physical execution is read-only unless `arm=true` and the operator completes
+the interactive `HOLD` and `RUN` sequence. Hardware runners validate checkpoint
+task and morphology, motor inventory, telemetry freshness, IMU bounds, command
+timing, and control-group state before and during execution. Safety failures
+are terminal and unwind the acquired control sessions; explicit completion and
 operator-interrupt paths stop and disable the groups.
 
 Vast.ai orchestration records durable rental state under `.vast/` and attempts

@@ -32,8 +32,8 @@ src/bello_mujoco/
 tests/                     contract and integration tests
 ```
 
-The supported prepared asset name is `full_body`. There are no asset aliases or
-external robot-description fallbacks.
+The supported prepared asset is `full_body`, sourced from
+`assets/source/bello/`.
 
 ## Runtime boundaries
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from typing import Literal
 
 import chex
 import jax
@@ -229,6 +230,10 @@ class BelloLocomotionEnv:
     def __post_init__(self) -> None:
         self._validate_config()
         self._validate_model_metadata()
+
+    @property
+    def task(self) -> Literal["locomotion"]:
+        return "locomotion"
 
     def _validate_config(self) -> None:
         if self.decimation <= 0:
@@ -1577,9 +1582,6 @@ class BelloLocomotionEnv:
             return state.data.qpos[root_qpos + 3 : root_qpos + 7]
         return state.data.xquat[self._link_body_id(link_name)]
 
-    def _link_height(self, state: BelloState, link_name: str) -> jax.Array:
-        return self._link_position(state, link_name)[2]
-
     def _link_position(self, state: BelloState, link_name: str) -> jax.Array:
         if link_name == "bello_root":
             root_qpos = int(self.model.root_qpos_adr)
@@ -1661,9 +1663,6 @@ class BelloLocomotionEnv:
             yaw_quat(self._link_quat(state, frame_link_name)),
             self._link_world_lin_vel(state, link_name),
         )
-
-    def _link_ang_vel(self, state: BelloState, link_name: str) -> jax.Array:
-        return self._link_body_ang_vel(state, link_name)
 
     def _link_body_ang_vel(self, state: BelloState, link_name: str) -> jax.Array:
         if link_name == "bello_root":

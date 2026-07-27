@@ -68,11 +68,6 @@ def test_end_effector_sphere_replacement_prunes_both_subtrees() -> None:
         assert sphere.find("./collision/geometry/sphere").get("radius") == "0.0325"
 
 
-def test_end_effector_sphere_replacement_rejects_removed_modes() -> None:
-    with pytest.raises(ValueError, match="must be 'none' or 'both'"):
-        replace_end_effectors_with_spheres(ET.Element("robot"), "right")
-
-
 def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
     root = ET.Element("robot", {"name": "test"})
 
@@ -232,26 +227,6 @@ def test_prepared_asset_always_actuates_ankle_tendons(
             )
             assert model.actuator_gainprm[actuator_id, 0] == pytest.approx(11.0)
             assert model.actuator_biasprm[actuator_id, 2] == pytest.approx(-0.5)
-
-
-@pytest.mark.parametrize("asset", ["lower_body", "upper_body"])
-def test_asset_config_rejects_removed_prepared_variants(asset: str) -> None:
-    with pytest.raises(ValueError, match="asset must be 'full_body'"):
-        AssetPrepConfig(asset=asset)
-
-
-def test_asset_config_rejects_removed_foot_mesh_collision_mode() -> None:
-    with pytest.raises(ValueError, match="collision_mode must be 'mesh' or 'box'"):
-        AssetPrepConfig(collision_mode="foot-mesh")
-
-
-@pytest.mark.parametrize("mode", ["right", "left", "both_articulated"])
-def test_asset_config_rejects_removed_end_effector_modes(mode: str) -> None:
-    with pytest.raises(
-        ValueError,
-        match="end_effector_sphere_mode must be 'none' or 'both'",
-    ):
-        AssetPrepConfig(end_effector_sphere_mode=mode)
 
 
 @pytest.mark.parametrize("target", [0.0, -1.0, float("nan"), float("inf")])
@@ -595,14 +570,15 @@ def test_clean_asset_builds_are_byte_reproducible_within_one_process(
         assert first_path.read_bytes() == second_path.read_bytes()
 
 
-def test_asset_cache_version_invalidates_precanonical_generator_outputs(
-    monkeypatch,
-) -> None:
+def test_asset_cache_version_changes_cache_key(monkeypatch) -> None:
     config = AssetPrepConfig()
     current_key = asset_config_hash(config)
-    assert prepare_module.ASSET_CACHE_VERSION >= 8
 
-    monkeypatch.setattr(prepare_module, "ASSET_CACHE_VERSION", 7)
+    monkeypatch.setattr(
+        prepare_module,
+        "ASSET_CACHE_VERSION",
+        prepare_module.ASSET_CACHE_VERSION + 1,
+    )
 
     assert asset_config_hash(config) != current_key
 

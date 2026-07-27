@@ -5,12 +5,8 @@ command: [0.0, 0.0, 0.0]
 motion_path: null
 duration_seconds: 10.0
 ramp_seconds: null
-kp_scale: 1.0
-kd_scale: 1.0
 gamepad_enabled: true
-wait_for_start_button: true
 arm: false
-operator_confirmation: ""
 hydra:
   job:
     chdir: false

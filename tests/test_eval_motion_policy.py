@@ -246,7 +246,7 @@ def test_native_rollout_uses_normalized_deterministic_actor_and_reports_stats(
     monkeypatch.setattr(eval_motion, "apply_actor", apply_actor)
     step_count = 0
 
-    def native_step(loaded_env, data, previous_state, action):
+    def native_step(loaded_env, data, _previous_state, action):
         nonlocal step_count
         step_count += 1
         done = step_count == 2

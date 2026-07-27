@@ -24,10 +24,8 @@ class CommType(IntEnum):
     MOTOR_ENABLE = 3
     MOTOR_STOP = 4
     SET_MECHANICAL_ZERO = 6
-    SET_CAN_ID = 7
     PARAM_READ = 17
     PARAM_WRITE = 18
-    FAULT_FEEDBACK = 21
     DATA_SAVE = 22
     ACTIVE_REPORT = 24
 
@@ -169,22 +167,14 @@ class MotorProtocolLimits:
     kd: tuple[float, float] = (0.0, 5.0)
 
 
-RUN_MODE_NAMES = {"mit": 0, "position": 1, "velocity": 2, "current": 3, "csp": 5}
 TargetType = Literal["joint", "tendon"]
 
 
 @dataclass(frozen=True)
 class MotorHardwareLimits:
-    rated_torque: float
-    peak_torque: float
-    rated_speed_rpm: float
     no_load_speed_rpm: float
     rated_voltage: float
-    voltage: tuple[float, float]
-    rated_phase_current: float
     peak_phase_current: float
-    reduction_ratio: float
-    temperature_c: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -211,7 +201,6 @@ class MotorSpec:
     kind: MotorKindSpec
     target: MotorTargetSpec
     direction: int
-    run_mode: int
 
 
 @dataclass(frozen=True)
@@ -223,7 +212,6 @@ class BusSpec:
 
 @dataclass(frozen=True)
 class RobstrideConfig:
-    motor_kinds: tuple[MotorKindSpec, ...]
     buses: tuple[BusSpec, ...]
     motors: tuple[MotorSpec, ...]
 
@@ -277,7 +265,7 @@ def load_robstride_configs(
             names.add(motor.name)
             motors.append(motor)
     _validate_coupling_groups(tuple(motors))
-    return RobstrideConfig(motor_kinds, tuple(buses.values()), tuple(motors))
+    return RobstrideConfig(tuple(buses.values()), tuple(motors))
 
 
 def load_motor_kinds(path: Path) -> tuple[MotorKindSpec, ...]:
@@ -315,16 +303,9 @@ def _motor_kind_spec(name: str, entry: dict[str, Any]) -> MotorKindSpec:
             + ", ".join(sorted(protocol_unknown))
         )
     required_hardware = {
-        "rated_torque",
-        "peak_torque",
-        "rated_speed_rpm",
         "no_load_speed_rpm",
         "rated_voltage",
-        "voltage",
-        "rated_phase_current",
         "peak_phase_current",
-        "reduction_ratio",
-        "temperature_c",
     }
     if set(hardware) != required_hardware:
         missing = required_hardware - set(hardware)
@@ -343,40 +324,10 @@ def _motor_kind_spec(name: str, entry: dict[str, Any]) -> MotorKindSpec:
         kd=_bounds(protocol, "kd"),
     )
     hardware_limits = MotorHardwareLimits(
-        rated_torque=_positive_float(hardware, "rated_torque"),
-        peak_torque=_positive_float(hardware, "peak_torque"),
-        rated_speed_rpm=_positive_float(hardware, "rated_speed_rpm"),
         no_load_speed_rpm=_positive_float(hardware, "no_load_speed_rpm"),
         rated_voltage=_positive_float(hardware, "rated_voltage"),
-        voltage=_bounds(hardware, "voltage"),
-        rated_phase_current=_positive_float(hardware, "rated_phase_current"),
         peak_phase_current=_positive_float(hardware, "peak_phase_current"),
-        reduction_ratio=_positive_float(hardware, "reduction_ratio"),
-        temperature_c=_bounds(hardware, "temperature_c"),
     )
-    if hardware_limits.rated_torque > hardware_limits.peak_torque:
-        raise ValueError(f"motor kind {name!r} rated torque exceeds peak torque")
-    if hardware_limits.rated_speed_rpm > hardware_limits.no_load_speed_rpm:
-        raise ValueError(f"motor kind {name!r} rated speed exceeds no-load speed")
-    if hardware_limits.rated_phase_current > hardware_limits.peak_phase_current:
-        raise ValueError(
-            f"motor kind {name!r} rated phase current exceeds peak phase current"
-        )
-    if not (
-        hardware_limits.voltage[0]
-        <= hardware_limits.rated_voltage
-        <= hardware_limits.voltage[1]
-    ):
-        raise ValueError(
-            f"motor kind {name!r} rated voltage is outside its voltage range"
-        )
-    if protocol_limits.torque != (
-        -hardware_limits.peak_torque,
-        hardware_limits.peak_torque,
-    ):
-        raise ValueError(
-            f"motor kind {name!r} protocol torque range must match hardware peak torque"
-        )
     return MotorKindSpec(name, protocol_limits, hardware_limits)
 
 
@@ -385,16 +336,10 @@ def _motor_spec(
 ) -> MotorSpec:
     if not isinstance(entry, dict):
         raise ValueError("motor assignment must be a mapping")
-    allowed = {"name", "id", "bus", "kind", "target", "direction", "run_mode"}
+    allowed = {"name", "id", "bus", "kind", "target", "direction"}
     unknown = set(entry) - allowed
     if unknown:
         raise ValueError("unknown motor assignment keys: " + ", ".join(sorted(unknown)))
-    run_mode = entry.get("run_mode", "mit")
-    if isinstance(run_mode, str):
-        try:
-            run_mode = RUN_MODE_NAMES[run_mode.lower()]
-        except KeyError as error:
-            raise ValueError(f"unsupported run mode: {run_mode!r}") from error
     motor_id = int(entry["id"])
     if not 0 <= motor_id <= 0xFF:
         raise ValueError(f"motor id out of range: {motor_id}")
@@ -410,7 +355,6 @@ def _motor_spec(
         kind=kind,
         target=_motor_target_spec(entry.get("target")),
         direction=1 if int(entry.get("direction", 1)) >= 0 else -1,
-        run_mode=int(run_mode),
     )
 
 
@@ -524,7 +468,7 @@ class RobstrideMotor:
         hardware = self.spec.kind.hardware
         self.params.update(
             {
-                PARAM_RUN_MODE: self.spec.run_mode,
+                PARAM_RUN_MODE: 0,
                 PARAM_IQ_REF: 0.0,
                 PARAM_SPEED_REF: 0.0,
                 PARAM_LIMIT_TORQUE: max(abs(value) for value in limits.torque),
@@ -586,18 +530,6 @@ class RobstrideMotor:
             kp=uint_to_float(_be16(frame.data, 4), *limits.kp),
             kd=uint_to_float(_be16(frame.data, 6), *limits.kd),
         )
-
-    def compute_torque(self) -> float:
-        if not self.enabled or int(self.params[PARAM_RUN_MODE]) != 0:
-            self.applied_torque = 0.0
-            return 0.0
-        value = (
-            self.command.kd * (self.command.velocity - self.mechanical_velocity)
-            + self.command.kp * (self.command.position - self.reported_position)
-            + self.command.torque
-        )
-        self.applied_torque = min(max(value, -self.torque_limit), self.torque_limit)
-        return self.applied_torque
 
     def feedback_frame(self, response_type: CommType, host_id: int) -> CanFrame:
         limits = self.limits
@@ -736,7 +668,9 @@ class RobstrideBusEmulator:
         if len(frame.data) < 2:
             return []
         index = _le16(frame.data, 0)
-        kind = PARAM_TYPES.get(index, "f")
+        kind = PARAM_TYPES.get(index)
+        if kind is None:
+            return []
         payload = bytearray(8)
         struct.pack_into("<H", payload, 0, index)
         struct.pack_into("<" + kind, payload, 4, motor.parameter_value(index))
@@ -755,7 +689,9 @@ class RobstrideBusEmulator:
         if len(frame.data) < 5:
             return []
         index = _le16(frame.data, 0)
-        kind = PARAM_TYPES.get(index, "f")
+        kind = PARAM_TYPES.get(index)
+        if kind is None:
+            return []
         size = struct.calcsize(kind)
         if len(frame.data) < 4 + size or index in {
             PARAM_MECHANICAL_POSITION,
@@ -764,6 +700,8 @@ class RobstrideBusEmulator:
         }:
             return [motor.feedback_frame(CommType.MOTOR_FEEDBACK, host_id)]
         value = struct.unpack_from("<" + kind, frame.data, 4)[0]
+        if index == PARAM_RUN_MODE and value != 0:
+            return []
         motor.params[index] = value
         return [
             CanFrame(

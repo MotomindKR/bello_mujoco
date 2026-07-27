@@ -24,7 +24,7 @@ dependencies = [
   "rerun-sdk==0.34.1",
   "tqdm>=4.67.0",
   "trimesh>=4.6.0",
-  "vastai>=0.2.0",
+  "vastai>=1.3,<2",
   "wandb>=0.28.0",
 ]
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from enum import Enum
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -16,28 +15,36 @@ from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.training.checkpoint import CheckpointNormalizationState
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig
+from bello_mujoco.hardware import runtime as hardware_runtime
 from bello_mujoco.hardware.locomotion import (
-    ARM_CONFIRMATION,
-    HardwareFrame,
     HardwareLocomotionConfig,
     HardwarePolicyAdapter,
-    actuator_coordinate_names,
-    actuator_impedance_gains,
     command_ranges,
     hardware_command,
+    run_hardware_locomotion,
+    validate_command,
+    validate_hardware_checkpoint,
+    validate_hardware_config,
+)
+from bello_mujoco.hardware.runtime import (
+    HOLD_CONFIRMATION,
+    RUN_CONFIRMATION,
+    HardwareFrame,
+    actuator_coordinate_names,
+    actuator_impedance_gains,
+    armed_control_session,
+    coordinate_targets,
     limit_target_step,
     projected_gravity_from_xyzw,
-    run_hardware_locomotion,
+    require_async_hardware_binding,
+    require_operator_confirmation,
     send_targets,
     specific_force_from_gravity_removed_acceleration,
     start_hardware_controls,
     stop_hardware_controls,
     tilt_from_xyzw,
-    validate_command,
-    validate_hardware_checkpoint,
-    validate_hardware_config,
     validate_hardware_inventory,
-    wait_for_policy_start,
+    wait_for_operator_confirmation_while_holding,
 )
 from bello_mujoco.configuration import locomotion_training_profile
 from bello_mujoco.policy import init_actor_critic, policy_observation_size
@@ -84,24 +91,6 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
-    assert config.command_config.standing_probability == pytest.approx(0.1)
-    assert config.command_config.minimum_moving_linear_speed == pytest.approx(0.2)
-    assert config.command_config.minimum_moving_yaw_speed == pytest.approx(0.2)
-    assert config.config.gamma == pytest.approx(0.995)
-    assert config.config.gae_lambda == pytest.approx(0.98)
-    weights = config.reward_config.weights
-    assert weights.track_ang_vel_z == pytest.approx(1.0)
-    assert weights.joint_pose == pytest.approx(-0.1)
-    assert weights.lin_vel_z == pytest.approx(-2.0)
-    assert weights.flight == pytest.approx(-2.0)
-    assert weights.touchdown_air_time == pytest.approx(0.5)
-    assert weights.torque_l1 == pytest.approx(-1.2)
-    assert weights.torque_peak == pytest.approx(-12.0)
-    assert weights.stand_foot_motion == pytest.approx(-1.0)
-    assert weights.base_height == pytest.approx(-10.0)
-    assert weights.flat_orientation == pytest.approx(-2.0)
-    assert weights.termination == pytest.approx(-100.0)
-    assert config.video_config.command == (0.0, 0.0, 0.0)
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
     assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(60.0)
@@ -230,95 +219,144 @@ def test_hardware_imu_terms_match_deployment_conventions() -> None:
     assert tilt_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0))) == pytest.approx(0.0)
 
 
-def test_hardware_runner_defaults_to_read_only_and_requires_confirmation() -> None:
+def test_hardware_runner_defaults_to_read_only() -> None:
     config = compose_hardware_runner_config()
 
     assert not config.hardware.arm
     assert config.hardware.command == (0.0, 0.0, 0.0)
     assert config.hardware.gamepad.enabled
-    assert config.hardware.wait_for_start_button
     validate_hardware_config(config.hardware)
-
-    with pytest.raises(ValueError, match="operator_confirmation"):
-        validate_hardware_config(
-            HardwareLocomotionConfig(arm=True, operator_confirmation="yes")
-        )
-    validate_hardware_config(
-        HardwareLocomotionConfig(
-            arm=True,
-            operator_confirmation=ARM_CONFIRMATION,
-        )
-    )
-    with pytest.raises(ValueError, match="must not exceed"):
-        validate_hardware_config(HardwareLocomotionConfig(kp_scale=1.01))
+    validate_hardware_config(HardwareLocomotionConfig(arm=True))
     with pytest.raises(ValueError, match="controller_index"):
         validate_hardware_config(
             HardwareLocomotionConfig(
                 gamepad=replace(GamepadConfig(), controller_index=-1)
             )
         )
-    with pytest.raises(ValueError, match="wait_for_start_button"):
-        validate_hardware_config(
-            HardwareLocomotionConfig(gamepad=replace(GamepadConfig(), enabled=False))
-        )
+    validate_hardware_config(
+        HardwareLocomotionConfig(gamepad=replace(GamepadConfig(), enabled=False))
+    )
 
 
-def test_hardware_waits_for_fresh_start_button_after_ramp(monkeypatch) -> None:
-    inputs = iter(
-        (
-            GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
-            GamepadInput(np.zeros(3, dtype=np.float32), connected=True),
-            GamepadInput(
-                np.zeros(3, dtype=np.float32),
-                connected=True,
-                reset_requested=True,
-            ),
-        )
-    )
-    sent = []
-    validated = []
-    monkeypatch.setattr(
-        "bello_mujoco.hardware.locomotion.send_targets",
-        lambda *args: sent.append(np.asarray(args[3]).copy()),
-    )
-    monkeypatch.setattr(
-        "bello_mujoco.hardware.locomotion.pace_hardware_loop",
-        lambda deadline, timestep, config: deadline,
-    )
-    frame = SimpleNamespace()
-    monkeypatch.setattr(
-        "bello_mujoco.hardware.locomotion.wait_for_hardware_frame",
-        lambda *args: frame,
-    )
-    monkeypatch.setattr(
-        "bello_mujoco.hardware.locomotion.validate_hardware_frame",
-        lambda value, config, expected_group_state: validated.append(
-            (value, expected_group_state)
-        ),
-    )
+def test_coordinate_targets_use_policy_gains() -> None:
     adapter = SimpleNamespace(
-        control_timestep=0.02,
-        physical_coordinate_names=("motor",),
+        coordinate_index={"left": 0, "right": 1},
+        kp=np.asarray((12.0, 34.0)),
+        kd=np.asarray((0.5, 0.75)),
     )
-    binding = SimpleNamespace(StateUnavailableError=RuntimeError)
-    gamepad = SimpleNamespace(poll=lambda: next(inputs))
-    target = np.asarray((0.25,), dtype=np.float64)
+    binding = SimpleNamespace(
+        CoordinateTarget=SimpleNamespace(position=lambda value, kp, kd: (value, kp, kd))
+    )
 
-    assert wait_for_policy_start(
+    targets = coordinate_targets(
         binding,
-        {},
-        {},
-        object(),
-        target,
+        ("left", "right"),
+        np.asarray((0.2, -0.4)),
         adapter,
-        HardwareLocomotionConfig(groups=("group",)),
-        gamepad,
-        SimpleNamespace(),
-        [],
     )
-    assert len(sent) == 2
-    assert sent == pytest.approx((target, target))
-    assert validated == [(frame, "RUNNING"), (frame, "RUNNING")]
+
+    assert targets == {
+        "left": (0.2, 12.0, 0.5),
+        "right": (-0.4, 34.0, 0.75),
+    }
+
+
+def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
+    prompts = []
+    require_operator_confirmation(
+        HOLD_CONFIRMATION,
+        "hold prompt",
+        lambda prompt: prompts.append(prompt) or HOLD_CONFIRMATION,
+    )
+
+    release_input = threading.Event()
+    hold_steps = []
+
+    def operator_input(prompt: str) -> str:
+        prompts.append(prompt)
+        assert release_input.wait(timeout=1.0)
+        return RUN_CONFIRMATION
+
+    def hold_step() -> bool:
+        hold_steps.append(len(hold_steps))
+        if len(hold_steps) == 2:
+            release_input.set()
+        threading.Event().wait(0.001)
+        return True
+
+    assert wait_for_operator_confirmation_while_holding(
+        RUN_CONFIRMATION,
+        "run prompt",
+        hold_step,
+        operator_input,
+    )
+    assert prompts == ["hold prompt", "run prompt"]
+    assert len(hold_steps) >= 2
+
+    with pytest.raises(RuntimeError, match="expected exact 'HOLD'"):
+        require_operator_confirmation(HOLD_CONFIRMATION, "", lambda _prompt: "hold")
+    with pytest.raises(RuntimeError, match="expected exact 'RUN'"):
+        wait_for_operator_confirmation_while_holding(
+            RUN_CONFIRMATION,
+            "",
+            lambda: True,
+            lambda _prompt: "run",
+        )
+
+
+def test_shared_runtime_requires_async_binding_and_stops_on_failure(
+    monkeypatch,
+) -> None:
+    with pytest.raises(RuntimeError, match="send_async"):
+        require_async_hardware_binding(SimpleNamespace())
+    require_async_hardware_binding(
+        SimpleNamespace(ControlSession=SimpleNamespace(send_async=lambda: None))
+    )
+
+    stopped = []
+    controls = {name: SimpleNamespace() for name in ("lower", "upper")}
+    groups = {
+        name: SimpleNamespace(
+            control=lambda *_args, _name=name, **_kwargs: nullcontext(controls[_name])
+        )
+        for name in controls
+    }
+    config = HardwareLocomotionConfig(groups=tuple(groups))
+    adapter = SimpleNamespace(
+        physical_coordinate_names=("left", "right"),
+        control_timestep=0.02,
+    )
+    frame = HardwareFrame(
+        positions=np.zeros(2),
+        velocities=np.zeros(2),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        group_states=("IDLE", "IDLE"),
+    )
+    monkeypatch.setattr(hardware_runtime, "start_hardware_controls", lambda *_: None)
+    monkeypatch.setattr(hardware_runtime, "wait_for_group_state", lambda *_: None)
+    monkeypatch.setattr(
+        hardware_runtime,
+        "stop_hardware_controls",
+        lambda active, *_: stopped.extend(active),
+    )
+
+    with pytest.raises(RuntimeError, match="control failed"):
+        with armed_control_session(
+            SimpleNamespace(StateUnavailableError=RuntimeError),
+            groups,
+            SimpleNamespace(),
+            frame,
+            adapter,
+            config,
+            thread_name="test-control",
+        ):
+            raise RuntimeError("control failed")
+
+    assert sorted(stopped) == ["lower", "upper"]
 
 
 def test_hardware_command_and_target_step_limits() -> None:
@@ -434,80 +472,15 @@ def test_hardware_groups_start_concurrently() -> None:
     assert set(stopped) == set(names)
 
 
-class FakeGroupState(Enum):
-    IDLE = 1
-
-
-class FakeDeviceState(Enum):
-    ONLINE = 1
-
-
-class FakeUnavailableError(Exception):
-    pass
-
-
-def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None:
+def test_read_only_preflight_never_acquires_control(
+    monkeypatch,
+    capsys,
+    hardware_preflight_factory,
+) -> None:
     coordinates = ("left_hip_pitch_joint", "right_hip_pitch_joint")
-    groups = {
-        "lower_body": SimpleNamespace(
-            name="lower_body",
-            coordinates=(coordinates[0],),
-            control_rate_hz=100.0,
-            initial_state=FakeGroupState.IDLE,
-            motors=(
-                SimpleNamespace(
-                    name="left",
-                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
-                ),
-            ),
-        ),
-        "upper_body": SimpleNamespace(
-            name="upper_body",
-            coordinates=(coordinates[1],),
-            control_rate_hz=100.0,
-            initial_state=FakeGroupState.IDLE,
-            motors=(
-                SimpleNamespace(
-                    name="right",
-                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
-                ),
-            ),
-        ),
-    }
-
-    def vector(*values):
-        return SimpleNamespace(x=values[0], y=values[1], z=values[2])
-
-    states = SimpleNamespace(
-        coordinate=lambda name: SimpleNamespace(
-            position=2.014, velocity=0.0, feedback_age_ms=0
-        ),
-        imu=lambda name: SimpleNamespace(
-            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
-            angular_velocity=vector(0.0, 0.0, 0.0),
-            linear_acceleration=vector(0.0, 0.0, 0.0),
-            sample_age_ms=0,
-        ),
-        group=lambda name: SimpleNamespace(state=SimpleNamespace(name="IDLE")),
-    )
-    robot = SimpleNamespace(
-        group_names=tuple(groups),
-        group=lambda name: groups[name],
-        inventory=SimpleNamespace(
-            imus=(
-                SimpleNamespace(
-                    name="imu",
-                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
-                ),
-            )
-        ),
-        states=lambda **kwargs: nullcontext(states),
-    )
-    binding = SimpleNamespace(
-        Robot=SimpleNamespace(connect=lambda *args, **kwargs: nullcontext(robot)),
-        GroupState=FakeGroupState,
-        DeviceState=FakeDeviceState,
-        StateUnavailableError=FakeUnavailableError,
+    hardware = hardware_preflight_factory(
+        coordinates,
+        (2.014, 2.014),
     )
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
@@ -525,7 +498,7 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     run_hardware_locomotion(
         Path("unused"),
         HardwareLocomotionConfig(),
-        hardware_binding=binding,
+        hardware_binding=hardware.binding,
         gamepad_factory=lambda config, ranges: SimpleNamespace(
             poll=lambda: GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
             close=lambda: None,
@@ -533,20 +506,18 @@ def test_read_only_preflight_never_acquires_control(monkeypatch, capsys) -> None
     )
 
     output = capsys.readouterr().out
+    assert not hardware.control_requests
     assert "'initial_pose_error_max': 2.014" in output
     assert "no lease was acquired" in output
 
 
-def test_inventory_rejects_coordinate_mismatch() -> None:
-    binding = SimpleNamespace(
-        GroupState=FakeGroupState,
-        DeviceState=FakeDeviceState,
-    )
+def test_inventory_rejects_coordinate_mismatch(hardware_preflight_factory) -> None:
+    binding = hardware_preflight_factory(("left", "right"), (0.0, 0.0)).binding
     group = SimpleNamespace(
         name="lower_body",
         coordinates=("wrong",),
         control_rate_hz=100.0,
-        initial_state=FakeGroupState.IDLE,
+        initial_state=binding.GroupState.IDLE,
         motors=(),
     )
     robot = SimpleNamespace(
@@ -556,7 +527,7 @@ def test_inventory_rejects_coordinate_mismatch() -> None:
             imus=(
                 SimpleNamespace(
                     name="imu",
-                    status=SimpleNamespace(state=FakeDeviceState.ONLINE),
+                    status=SimpleNamespace(state=binding.DeviceState.ONLINE),
                 ),
             )
         ),

@@ -94,15 +94,12 @@ def track_video(
     *,
     name: str,
     step: int,
-    fps: int = 30,
     caption: str | None = None,
 ) -> None:
     if run is None:
         return
     import wandb
 
-    # W&B ignores fps for already encoded file paths and emits a warning if it
-    # is provided. The MP4 writer has already encoded the intended frame rate.
     run.log(
         {name: wandb.Video(str(path), format=path.suffix.lstrip("."), caption=caption)},
         step=step,

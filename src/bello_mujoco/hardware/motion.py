@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 import math
@@ -30,22 +28,20 @@ from bello_mujoco.envs.motion_tracking import (
     quat_distance,
 )
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
-from bello_mujoco.hardware.locomotion import (
+from bello_mujoco.hardware import _pose_pb2
+from bello_mujoco.hardware.runtime import (
+    HOLD_CONFIRMATION,
     HardwareFrame,
     actuator_coordinate_names,
     actuator_impedance_gains,
-    drain_command_receipts,
+    armed_control_session,
     import_hardware_binding,
     limit_target_step,
-    pace_hardware_loop,
+    require_operator_confirmation,
     require_async_hardware_binding,
-    send_targets,
-    start_hardware_controls,
-    stop_hardware_controls,
     validate_hardware_control_config,
     validate_hardware_frame,
     validate_hardware_inventory,
-    wait_for_group_state,
     wait_for_hardware_frame,
 )
 from bello_mujoco.policy import apply_actor
@@ -63,13 +59,12 @@ class HardwareMotionConfig:
     client_name: str = "bello-motion-policy"
     motion_path: Path | None = None
     arm: bool = False
-    operator_confirmation: str = ""
     connection_timeout_seconds: float = 3.0
     telemetry_timeout_seconds: float = 2.0
     command_validity_seconds: float = 0.08
     acknowledgement_timeout_seconds: float = 0.08
     rpc_timeout_seconds: float = 2.0
-    ramp_seconds: float = 3.0
+    ramp_seconds: float = 10.0
     max_duration_seconds: float | None = 10.0
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
@@ -79,8 +74,6 @@ class HardwareMotionConfig:
     max_angular_velocity: float = 20.0
     max_linear_acceleration: float = 100.0
     max_loop_lag_seconds: float = 0.10
-    kp_scale: float = 1.0
-    kd_scale: float = 1.0
     status_interval_seconds: float = 1.0
     pose_endpoint: str = "127.0.0.1:50052"
     pose_reference_frame: str = "odom"
@@ -309,72 +302,6 @@ def _build_motion_inference(
     return eqx.filter_jit(inference)
 
 
-def _pose_message_types() -> tuple[type[Any], type[Any]]:
-    """Build the small PoseService message schema without generated sources."""
-
-    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
-
-    file = descriptor_pb2.FileDescriptorProto(
-        name="bello/pose/v1/pose.proto",
-        package="bello.pose.v1",
-        syntax="proto3",
-    )
-
-    def message(name: str, fields: tuple[tuple[str, int, int, str | None], ...]):
-        item = file.message_type.add(name=name)
-        for field_name, number, field_type, type_name in fields:
-            field = item.field.add(
-                name=field_name,
-                number=number,
-                label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
-                type=field_type,
-            )
-            if type_name is not None:
-                field.type_name = type_name
-
-    string = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
-    uint64 = descriptor_pb2.FieldDescriptorProto.TYPE_UINT64
-    double = descriptor_pb2.FieldDescriptorProto.TYPE_DOUBLE
-    nested = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE
-    message(
-        "WatchPoseRequest",
-        (("reference_frame", 1, string, None), ("tracked_frame", 2, string, None)),
-    )
-    message(
-        "Translation",
-        (("x", 1, double, None), ("y", 2, double, None), ("z", 3, double, None)),
-    )
-    message(
-        "Orientation",
-        (
-            ("x", 1, double, None),
-            ("y", 2, double, None),
-            ("z", 3, double, None),
-            ("w", 4, double, None),
-        ),
-    )
-    message(
-        "WatchPoseResponse",
-        (
-            ("reference_frame", 1, string, None),
-            ("tracked_frame", 2, string, None),
-            ("sequence", 3, uint64, None),
-            ("translation_metres", 4, nested, ".bello.pose.v1.Translation"),
-            ("orientation_xyzw", 5, nested, ".bello.pose.v1.Orientation"),
-            ("sample_age_ms", 6, uint64, None),
-        ),
-    )
-    pool = descriptor_pool.DescriptorPool()
-    pool.Add(file)
-    request = message_factory.GetMessageClass(
-        pool.FindMessageTypeByName("bello.pose.v1.WatchPoseRequest")
-    )
-    response = message_factory.GetMessageClass(
-        pool.FindMessageTypeByName("bello.pose.v1.WatchPoseResponse")
-    )
-    return request, response
-
-
 class PoseStream:
     """Background latest-value client for bello-state-estimatord."""
 
@@ -395,8 +322,7 @@ class PoseStream:
             raise ValueError(
                 "the motion runner currently requires a local insecure pose endpoint"
             )
-        request_type, response_type = _pose_message_types()
-        request = request_type(
+        request = _pose_pb2.WatchPoseRequest(
             reference_frame=self.config.pose_reference_frame,
             tracked_frame=self.config.pose_tracked_frame,
         )
@@ -404,7 +330,7 @@ class PoseStream:
         method = self._channel.unary_stream(
             "/bello.pose.v1.PoseService/WatchPose",
             request_serializer=lambda value: value.SerializeToString(),
-            response_deserializer=response_type.FromString,
+            response_deserializer=_pose_pb2.WatchPoseResponse.FromString,
         )
         self._call = method(request)
         self._thread = threading.Thread(
@@ -598,7 +524,6 @@ class HardwareMotionPolicyAdapter:
         self._last_physical_target = np.asarray(
             env.model.mj_model.actuator_ctrlrange.mean(axis=1), dtype=np.float64
         )
-        self._step_count = 0
         self._alignment_xy = np.zeros(2, dtype=np.float32)
         self._alignment_yaw = 0.0
         self._aligned = False
@@ -643,7 +568,6 @@ class HardwareMotionPolicyAdapter:
     def reset(self) -> None:
         self._obs_stack = None
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
-        self._step_count = 0
 
     def precompile(self) -> None:
         source = self.env._aligned_reference(
@@ -735,7 +659,6 @@ class HardwareMotionPolicyAdapter:
         self._obs_stack = inference.observation_stack
         self._last_action = action
         self._last_physical_target = physical_target
-        self._step_count += 1
         return HardwareMotionStep(
             action=action,
             raw_action=raw_action,
@@ -890,6 +813,7 @@ def run_hardware_motion(
     *,
     hardware_binding: Any | None = None,
     pose_stream_factory: Any = PoseStream,
+    operator_input: Callable[[str], str] | None = None,
 ) -> None:
     validate_hardware_motion_config(config)
     adapter, metadata = load_hardware_motion_policy(checkpoint_path, config)
@@ -950,78 +874,12 @@ def run_hardware_motion(
                     "and no motor command was sent."
                 )
                 return
-            control_physical_motion(
-                binding, groups, states, poses, frame, adapter, config
+            require_operator_confirmation(
+                HOLD_CONFIRMATION,
+                "Support the robot, then type HOLD to acquire control and begin "
+                "the nominal-pose ramp: ",
+                operator_input,
             )
-
-
-def control_physical_motion(
-    binding: Any,
-    groups: Mapping[str, Any],
-    states: Any,
-    poses: PoseStream,
-    initial_frame: HardwareFrame,
-    adapter: HardwareMotionPolicyAdapter,
-    config: HardwareMotionConfig,
-) -> None:
-    with ExitStack() as resources:
-        controls = {
-            name: resources.enter_context(
-                group.control(
-                    config.client_name,
-                    command_validity=config.command_validity_seconds,
-                    acknowledgement_timeout=config.acknowledgement_timeout_seconds,
-                    rpc_timeout=config.rpc_timeout_seconds,
-                )
-            )
-            for name, group in groups.items()
-        }
-        executor = resources.enter_context(
-            ThreadPoolExecutor(
-                max_workers=len(config.groups),
-                thread_name_prefix="bello-motion-control",
-            )
-        )
-        resources.callback(stop_hardware_controls, controls, config, executor)
-        start_hardware_controls(
-            binding,
-            controls,
-            groups,
-            initial_frame.positions,
-            adapter,
-            config,
-            executor,
-        )
-        pending_receipts: list[Any] = []
-        wait_for_group_state(
-            states,
-            adapter.physical_coordinate_names,
-            config,
-            binding.StateUnavailableError,
-            "RUNNING",
-        )
-        previous_target = initial_frame.positions.copy()
-        deadline = time.monotonic()
-        ramp_steps = max(1, math.ceil(config.ramp_seconds / adapter.control_timestep))
-        for step in range(1, ramp_steps + 1):
-            fraction = step / ramp_steps
-            requested = initial_frame.positions + fraction * (
-                adapter.nominal_physical_target - initial_frame.positions
-            )
-            previous_target = limit_target_step(
-                previous_target, requested, config.max_target_step_radians
-            )
-            send_targets(
-                binding,
-                controls,
-                groups,
-                previous_target,
-                adapter,
-                config,
-                executor,
-                pending_receipts,
-            )
-            deadline = pace_hardware_loop(deadline, adapter.control_timestep, config)
             frame = wait_for_hardware_frame(
                 states,
                 adapter.physical_coordinate_names,
@@ -1030,32 +888,67 @@ def control_physical_motion(
                 binding.StateUnavailableError,
                 config.telemetry_timeout_seconds,
             )
-            validate_hardware_frame(frame, config, expected_group_state="RUNNING")
+            pose = poses.latest()
+            validate_hardware_frame(frame, config, expected_group_state="IDLE")
+            validate_pose_imu_agreement(frame, pose, config)
+            control_physical_motion(
+                binding,
+                groups,
+                states,
+                poses,
+                frame,
+                adapter,
+                config,
+                operator_input=operator_input,
+            )
 
-        send_targets(
-            binding,
-            controls,
-            groups,
-            previous_target,
+
+def control_physical_motion(
+    binding: Any,
+    groups: dict[str, Any],
+    states: Any,
+    poses: PoseStream,
+    initial_frame: HardwareFrame,
+    adapter: HardwareMotionPolicyAdapter,
+    config: HardwareMotionConfig,
+    *,
+    operator_input: Callable[[str], str] | None = None,
+) -> None:
+    with armed_control_session(
+        binding,
+        groups,
+        states,
+        initial_frame,
+        adapter,
+        config,
+        thread_name="bello-motion-control",
+    ) as control:
+        frame = control.ramp_to_nominal(initial_frame.positions)
+        if frame is None:
+            raise RuntimeError("motion nominal-pose ramp ended unexpectedly")
+        require_nominal_pose(
+            frame,
             adapter,
-            config,
-            executor,
-            pending_receipts,
+            config.max_initial_position_error_radians,
         )
+
+        def validate_hold(held_frame: HardwareFrame) -> None:
+            held_pose = poses.latest()
+            validate_pose_imu_agreement(held_frame, held_pose, config)
+
+        control.wait_for_run(
+            "Nominal-pose ramp complete. Release external support, let the robot "
+            "settle, then type RUN to start policy control: ",
+            operator_input=operator_input,
+            validate_hold=validate_hold,
+        )
+        frame = control.read_frame()
+        pose = poses.latest()
+        validate_pose_imu_agreement(frame, pose, config)
         require_nominal_pose(frame, adapter, config.max_initial_position_error_radians)
-        adapter.initialize_alignment(poses.latest())
-        send_targets(
-            binding,
-            controls,
-            groups,
-            previous_target,
-            adapter,
-            config,
-            executor,
-            pending_receipts,
-        )
+        adapter.initialize_alignment(pose)
         start = time.monotonic()
-        deadline = start
+        control.reset_deadline()
         next_status = start
         step = 0
         maximum_inference_ms = 0.0
@@ -1067,16 +960,8 @@ def control_physical_motion(
                 or time.monotonic() - start < config.max_duration_seconds
             ):
                 loop_started = time.monotonic()
-                frame = wait_for_hardware_frame(
-                    states,
-                    adapter.physical_coordinate_names,
-                    config.groups,
-                    config.imu_name,
-                    binding.StateUnavailableError,
-                    config.telemetry_timeout_seconds,
-                )
+                frame = control.read_frame()
                 pose = poses.latest()
-                validate_hardware_frame(frame, config, expected_group_state="RUNNING")
                 elapsed = time.monotonic() - start
                 reference_time = adapter.start_time + elapsed
                 inference_started = time.monotonic()
@@ -1089,21 +974,12 @@ def control_physical_motion(
                     break
                 inference_ms = (time.monotonic() - inference_started) * 1_000.0
                 command_started = time.monotonic()
-                previous_target = limit_target_step(
-                    previous_target,
+                target = limit_target_step(
+                    control.previous_target,
                     policy_step.physical_target,
                     config.max_target_step_radians,
                 )
-                send_targets(
-                    binding,
-                    controls,
-                    groups,
-                    previous_target,
-                    adapter,
-                    config,
-                    executor,
-                    pending_receipts,
-                )
+                control.send_target(target)
                 command_submission_ms = (time.monotonic() - command_started) * 1_000.0
                 loop_work_ms = (time.monotonic() - loop_started) * 1_000.0
                 maximum_inference_ms = max(maximum_inference_ms, inference_ms)
@@ -1142,9 +1018,7 @@ def control_physical_motion(
                     )
                     next_status = now + config.status_interval_seconds
                 try:
-                    deadline = pace_hardware_loop(
-                        deadline, adapter.control_timestep, config
-                    )
+                    control.pace()
                 except RuntimeError:
                     print(
                         {
@@ -1159,14 +1033,15 @@ def control_physical_motion(
                             ),
                             "maximum_loop_work_ms": maximum_loop_work_ms,
                             "accumulated_lag_ms": (
-                                time.monotonic() - (deadline + adapter.control_timestep)
+                                time.monotonic()
+                                - (control.deadline + adapter.control_timestep)
                             )
                             * 1_000.0,
                         },
                         flush=True,
                     )
                     raise
-            drain_command_receipts(pending_receipts)
+            control.drain()
         except KeyboardInterrupt:
             print("Motion hardware run interrupted; stopping and disabling groups.")
 

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from concurrent.futures import Executor, ThreadPoolExecutor
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
-import importlib
 import math
 from pathlib import Path
 import time
@@ -15,7 +13,6 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import mujoco
 import numpy as np
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
@@ -31,12 +28,25 @@ from bello_mujoco.evaluation.locomotion import (
     GamepadInput,
     validate_checkpoint_shape,
 )
-from bello_mujoco.evaluation.render import quat_rotate_inverse_np
+from bello_mujoco.hardware.runtime import (
+    HOLD_CONFIRMATION,
+    HardwareFrame,
+    actuator_coordinate_names,
+    actuator_impedance_gains,
+    armed_control_session,
+    import_hardware_binding,
+    limit_target_step,
+    projected_gravity_from_xyzw,
+    require_async_hardware_binding,
+    require_operator_confirmation,
+    specific_force_from_gravity_removed_acceleration,
+    tilt_from_xyzw,
+    validate_hardware_control_config,
+    validate_hardware_frame,
+    validate_hardware_inventory,
+    wait_for_hardware_frame,
+)
 from bello_mujoco.policy import infer_policy_action
-
-ARM_CONFIRMATION = "I_HAVE_A_SPOTTER_AND_ESTOP_READY"
-FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
-STANDARD_GRAVITY = 9.80665
 
 
 @dataclass(frozen=True)
@@ -49,9 +59,7 @@ class HardwareLocomotionConfig:
     client_name: str = "bello-locomotion-policy"
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     gamepad: GamepadConfig = GamepadConfig()
-    wait_for_start_button: bool = True
     arm: bool = False
-    operator_confirmation: str = ""
     connection_timeout_seconds: float = 3.0
     telemetry_timeout_seconds: float = 2.0
     command_validity_seconds: float = 0.08
@@ -66,21 +74,7 @@ class HardwareLocomotionConfig:
     max_angular_velocity: float = 20.0
     max_linear_acceleration: float = 100.0
     max_loop_lag_seconds: float = 0.10
-    kp_scale: float = 1.0
-    kd_scale: float = 1.0
     status_interval_seconds: float = 1.0
-
-
-@dataclass(frozen=True)
-class HardwareFrame:
-    positions: np.ndarray
-    velocities: np.ndarray
-    orientation_xyzw: np.ndarray
-    angular_velocity: np.ndarray
-    linear_acceleration: np.ndarray
-    max_motor_age_ms: int
-    imu_age_ms: int
-    group_states: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -148,7 +142,6 @@ class HardwarePolicyAdapter:
         )
         self._obs_stack: np.ndarray | None = None
         self._last_action = np.zeros(env.action_size, dtype=np.float32)
-        self._step_count = 0
 
     @property
     def control_timestep(self) -> float:
@@ -166,7 +159,6 @@ class HardwarePolicyAdapter:
     def reset(self) -> None:
         self._obs_stack = None
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
-        self._step_count = 0
 
     def precompile(self) -> None:
         nominal = self.nominal_physical_target
@@ -245,7 +237,6 @@ class HardwarePolicyAdapter:
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("policy produced non-finite physical motor targets")
         self._last_action = action
-        self._step_count += 1
         return HardwarePolicyStep(
             action=action,
             physical_target=physical_target,
@@ -333,54 +324,6 @@ def validate_hardware_config(
         raise ValueError("gamepad.controller_index must be nonnegative")
     if not 0.0 <= config.gamepad.deadzone < 1.0:
         raise ValueError("gamepad.deadzone must be in [0, 1)")
-    if config.wait_for_start_button and not config.gamepad.enabled:
-        raise ValueError("wait_for_start_button requires gamepad.enabled")
-
-
-def validate_hardware_control_config(config: Any) -> None:
-    """Validate controls shared by physical locomotion and motion playback."""
-
-    if not config.endpoint.strip():
-        raise ValueError("endpoint must not be empty")
-    if not config.groups or any(not group.strip() for group in config.groups):
-        raise ValueError("groups must contain non-empty names")
-    if len(set(config.groups)) != len(config.groups):
-        raise ValueError("groups must not contain duplicates")
-    if not config.imu_name.strip() or not config.client_name.strip():
-        raise ValueError("imu_name and client_name must not be empty")
-    positive = {
-        "connection_timeout_seconds": config.connection_timeout_seconds,
-        "telemetry_timeout_seconds": config.telemetry_timeout_seconds,
-        "command_validity_seconds": config.command_validity_seconds,
-        "acknowledgement_timeout_seconds": config.acknowledgement_timeout_seconds,
-        "rpc_timeout_seconds": config.rpc_timeout_seconds,
-        "ramp_seconds": config.ramp_seconds,
-        "max_target_step_radians": config.max_target_step_radians,
-        "max_tilt_radians": config.max_tilt_radians,
-        "max_angular_velocity": config.max_angular_velocity,
-        "max_linear_acceleration": config.max_linear_acceleration,
-        "max_loop_lag_seconds": config.max_loop_lag_seconds,
-        "kp_scale": config.kp_scale,
-        "kd_scale": config.kd_scale,
-        "status_interval_seconds": config.status_interval_seconds,
-    }
-    for name, value in positive.items():
-        if not math.isfinite(value) or value <= 0.0:
-            raise ValueError(f"{name} must be positive and finite")
-    if config.max_duration_seconds is not None and (
-        not math.isfinite(config.max_duration_seconds)
-        or config.max_duration_seconds <= 0.0
-    ):
-        raise ValueError("max_duration_seconds must be positive or null")
-    if config.kp_scale > 1.0 or config.kd_scale > 1.0:
-        raise ValueError("kp_scale and kd_scale must not exceed the trained gains")
-    if config.max_motor_age_ms <= 0 or config.max_imu_age_ms <= 0:
-        raise ValueError("telemetry age limits must be positive")
-    if config.arm and config.operator_confirmation != ARM_CONFIRMATION:
-        raise ValueError(
-            "arming physical hardware requires operator_confirmation="
-            f"{ARM_CONFIRMATION}"
-        )
 
 
 def validate_command(command: np.ndarray, metadata: CheckpointMetadata) -> None:
@@ -450,116 +393,13 @@ def report_gamepad_connection(gamepad_input: GamepadInput) -> None:
     print(f"Hardware gamepad {state}{suffix}; command is zero while disconnected.")
 
 
-def actuator_coordinate_names(env: BelloLocomotionEnv) -> tuple[str, ...]:
-    model = env.model.mj_model
-    result = []
-    for actuator_id in range(model.nu):
-        transmission = int(model.actuator_trntype[actuator_id])
-        object_id = int(model.actuator_trnid[actuator_id, 0])
-        if transmission == int(mujoco.mjtTrn.mjTRN_JOINT):
-            object_type = mujoco.mjtObj.mjOBJ_JOINT
-        elif transmission == int(mujoco.mjtTrn.mjTRN_TENDON):
-            object_type = mujoco.mjtObj.mjOBJ_TENDON
-        else:
-            raise ValueError(
-                "hardware deployment supports only joint and tendon actuators; "
-                f"actuator {actuator_id} uses transmission {transmission}"
-            )
-        name = mujoco.mj_id2name(model, object_type, object_id)
-        if name is None:
-            raise ValueError(f"actuator {actuator_id} has an unnamed coordinate")
-        result.append(name)
-    return tuple(result)
-
-
-def actuator_impedance_gains(env: BelloLocomotionEnv) -> tuple[np.ndarray, np.ndarray]:
-    model = env.model.mj_model
-    kp = np.asarray(model.actuator_gainprm[:, 0], dtype=np.float64)
-    kd = -np.asarray(model.actuator_biasprm[:, 2], dtype=np.float64)
-    if (
-        kp.shape != (model.nu,)
-        or kd.shape != (model.nu,)
-        or not np.all(np.isfinite(kp))
-        or not np.all(np.isfinite(kd))
-        or np.any(kp < 0.0)
-        or np.any(kd < 0.0)
-    ):
-        raise ValueError("generated hardware actuator gains are invalid")
-    return kp, kd
-
-
-def projected_gravity_from_xyzw(orientation_xyzw: np.ndarray) -> np.ndarray:
-    orientation = normalized_quaternion_xyzw(orientation_xyzw)
-    wxyz = orientation[[3, 0, 1, 2]]
-    return quat_rotate_inverse_np(
-        wxyz.astype(np.float32), np.asarray((0.0, 0.0, -1.0), dtype=np.float32)
-    )
-
-
-def specific_force_from_gravity_removed_acceleration(
-    linear_acceleration: np.ndarray, projected_gravity: np.ndarray
-) -> np.ndarray:
-    """Recover the MuJoCo accelerometer quantity expected by the policy."""
-
-    acceleration = np.asarray(linear_acceleration, dtype=np.float32)
-    gravity = np.asarray(projected_gravity, dtype=np.float32)
-    if acceleration.shape != (3,) or gravity.shape != (3,):
-        raise ValueError("IMU acceleration and projected gravity must be 3-vectors")
-    return acceleration - STANDARD_GRAVITY * gravity
-
-
-def tilt_from_xyzw(orientation_xyzw: np.ndarray) -> float:
-    projected = projected_gravity_from_xyzw(orientation_xyzw)
-    return float(np.arccos(np.clip(-projected[2], -1.0, 1.0)))
-
-
-def normalized_quaternion_xyzw(value: np.ndarray) -> np.ndarray:
-    quaternion = np.asarray(value, dtype=np.float64)
-    if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
-        raise RuntimeError("hardware IMU orientation is not a finite xyzw quaternion")
-    norm = float(np.linalg.norm(quaternion))
-    if not math.isfinite(norm) or norm < 0.9 or norm > 1.1:
-        raise RuntimeError(f"hardware IMU quaternion norm is invalid: {norm}")
-    return quaternion / norm
-
-
-def limit_target_step(
-    previous: np.ndarray, requested: np.ndarray, maximum_step: float
-) -> np.ndarray:
-    previous = np.asarray(previous, dtype=np.float64)
-    requested = np.asarray(requested, dtype=np.float64)
-    if previous.shape != requested.shape:
-        raise ValueError("previous and requested targets must have the same shape")
-    return previous + np.clip(requested - previous, -maximum_step, maximum_step)
-
-
-def import_hardware_binding() -> Any:
-    try:
-        return importlib.import_module("bello_hardware")
-    except ImportError as error:
-        raise RuntimeError(
-            "bello_hardware is not installed; run with `uv run --with "
-            "~/bello_stack/components/bello-hardware-python "
-            "bello-run-hardware ...`"
-        ) from error
-
-
-def require_async_hardware_binding(binding: Any) -> None:
-    control_session = getattr(binding, "ControlSession", None)
-    if control_session is None or not hasattr(control_session, "send_async"):
-        raise RuntimeError(
-            "armed hardware execution requires bello_hardware.ControlSession.send_async; "
-            "rebuild the local binding (use `uv run --no-cache --with "
-            "~/bello_stack/components/bello-hardware-python ...`)"
-        )
-
-
 def run_hardware_locomotion(
     checkpoint_path: Path,
     config: HardwareLocomotionConfig = HardwareLocomotionConfig(),
     *,
     hardware_binding: Any | None = None,
     gamepad_factory: Any = GamepadCommandSource,
+    operator_input: Callable[[str], str] | None = None,
 ) -> None:
     validate_hardware_config(config)
     adapter, metadata = load_hardware_policy(checkpoint_path)
@@ -621,6 +461,21 @@ def run_hardware_locomotion(
                 "Read-only preflight complete; no lease was acquired and no motor command was sent."
             )
             return
+        require_operator_confirmation(
+            HOLD_CONFIRMATION,
+            "Support the robot, then type HOLD to acquire control and begin the "
+            "nominal-pose ramp: ",
+            operator_input,
+        )
+        frame = wait_for_hardware_frame(
+            states,
+            adapter.physical_coordinate_names,
+            config.groups,
+            config.imu_name,
+            binding.StateUnavailableError,
+            config.telemetry_timeout_seconds,
+        )
+        validate_hardware_frame(frame, config, expected_group_state="IDLE")
         control_physical_robot(
             binding,
             groups,
@@ -629,256 +484,71 @@ def run_hardware_locomotion(
             adapter,
             config,
             gamepad,
+            operator_input=operator_input,
         )
-
-
-def validate_hardware_inventory(
-    robot: Any,
-    adapter: HardwarePolicyAdapter,
-    config: HardwareLocomotionConfig,
-    binding: Any,
-) -> dict[str, Any]:
-    unknown = sorted(set(config.groups) - set(robot.group_names))
-    if unknown:
-        raise ValueError(f"hardware inventory is missing motor groups: {unknown}")
-    groups = {name: robot.group(name) for name in config.groups}
-    coordinates = tuple(
-        coordinate for group in groups.values() for coordinate in group.coordinates
-    )
-    if len(set(coordinates)) != len(coordinates):
-        raise ValueError("hardware groups contain duplicate coordinates")
-    expected = set(adapter.physical_coordinate_names)
-    actual = set(coordinates)
-    if actual != expected:
-        raise ValueError(
-            "checkpoint/hardware coordinate mismatch; missing from hardware="
-            f"{sorted(expected - actual)}, unexpected hardware="
-            f"{sorted(actual - expected)}"
-        )
-    policy_rate = 1.0 / adapter.control_timestep
-    for group in groups.values():
-        if group.control_rate_hz + 1.0e-6 < policy_rate:
-            raise ValueError(
-                f"hardware group {group.name!r} runs at {group.control_rate_hz} Hz, "
-                f"below the {policy_rate} Hz policy rate"
-            )
-        if group.initial_state != binding.GroupState.IDLE:
-            raise RuntimeError(
-                f"hardware group {group.name!r} must start IDLE, got "
-                f"{group.initial_state.name}"
-            )
-        for motor in group.motors:
-            if motor.status is None or motor.status.state != binding.DeviceState.ONLINE:
-                state = "missing" if motor.status is None else motor.status.state.name
-                raise RuntimeError(f"motor {motor.name!r} is not online: {state}")
-    matching_imus = [imu for imu in robot.inventory.imus if imu.name == config.imu_name]
-    if len(matching_imus) != 1:
-        raise ValueError(f"hardware inventory does not contain IMU {config.imu_name!r}")
-    imu = matching_imus[0]
-    if imu.status is None or imu.status.state != binding.DeviceState.ONLINE:
-        state = "missing" if imu.status is None else imu.status.state.name
-        raise RuntimeError(f"IMU {config.imu_name!r} is not online: {state}")
-    return groups
-
-
-def wait_for_hardware_frame(
-    states: Any,
-    coordinate_names: tuple[str, ...],
-    group_names: tuple[str, ...],
-    imu_name: str,
-    unavailable_error: type[BaseException],
-    timeout_seconds: float,
-) -> HardwareFrame:
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        try:
-            motors = tuple(states.coordinate(name) for name in coordinate_names)
-            imu = states.imu(imu_name)
-            groups = tuple(states.group(name) for name in group_names)
-            return HardwareFrame(
-                positions=np.asarray([motor.position for motor in motors]),
-                velocities=np.asarray([motor.velocity for motor in motors]),
-                orientation_xyzw=np.asarray(
-                    (
-                        imu.orientation.x,
-                        imu.orientation.y,
-                        imu.orientation.z,
-                        imu.orientation.w,
-                    )
-                ),
-                angular_velocity=np.asarray(
-                    (
-                        imu.angular_velocity.x,
-                        imu.angular_velocity.y,
-                        imu.angular_velocity.z,
-                    )
-                ),
-                linear_acceleration=np.asarray(
-                    (
-                        imu.linear_acceleration.x,
-                        imu.linear_acceleration.y,
-                        imu.linear_acceleration.z,
-                    )
-                ),
-                max_motor_age_ms=max(motor.feedback_age_ms for motor in motors),
-                imu_age_ms=imu.sample_age_ms,
-                group_states=tuple(group.state.name for group in groups),
-            )
-        except unavailable_error:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.0 or not states.wait_for_change(timeout=remaining):
-                raise TimeoutError("timed out waiting for complete hardware telemetry")
-
-
-def validate_hardware_frame(
-    frame: HardwareFrame,
-    config: HardwareLocomotionConfig,
-    *,
-    expected_group_state: str | None = None,
-) -> None:
-    values = (
-        frame.positions,
-        frame.velocities,
-        frame.angular_velocity,
-        frame.linear_acceleration,
-    )
-    if any(not np.all(np.isfinite(value)) for value in values):
-        raise RuntimeError("hardware telemetry contains non-finite values")
-    normalized_quaternion_xyzw(frame.orientation_xyzw)
-    if frame.max_motor_age_ms > config.max_motor_age_ms:
-        raise RuntimeError(f"motor telemetry is stale: {frame.max_motor_age_ms} ms")
-    if frame.imu_age_ms > config.max_imu_age_ms:
-        raise RuntimeError(f"IMU telemetry is stale: {frame.imu_age_ms} ms")
-    bad_states = sorted(set(frame.group_states) & FAULT_GROUP_STATES)
-    if bad_states:
-        raise RuntimeError(f"hardware group entered unsafe state: {bad_states}")
-    if expected_group_state is not None and any(
-        state != expected_group_state for state in frame.group_states
-    ):
-        raise RuntimeError(
-            f"hardware groups must be {expected_group_state}, got {frame.group_states}"
-        )
-    tilt = tilt_from_xyzw(frame.orientation_xyzw)
-    if tilt > config.max_tilt_radians:
-        raise RuntimeError(
-            f"robot tilt {tilt:.3f} rad exceeds {config.max_tilt_radians:.3f} rad"
-        )
-    angular_speed = float(np.linalg.norm(frame.angular_velocity))
-    if angular_speed > config.max_angular_velocity:
-        raise RuntimeError(
-            f"IMU angular velocity {angular_speed:.3f} exceeds safety limit"
-        )
-    acceleration = float(np.linalg.norm(frame.linear_acceleration))
-    if acceleration > config.max_linear_acceleration:
-        raise RuntimeError(f"IMU acceleration {acceleration:.3f} exceeds safety limit")
 
 
 def control_physical_robot(
     binding: Any,
-    groups: Mapping[str, Any],
+    groups: dict[str, Any],
     states: Any,
     initial_frame: HardwareFrame,
     adapter: HardwarePolicyAdapter,
     config: HardwareLocomotionConfig,
     gamepad: GamepadCommandSource,
+    *,
+    operator_input: Callable[[str], str] | None = None,
 ) -> None:
-    with ExitStack() as resources:
-        controls = {
-            name: resources.enter_context(
-                group.control(
-                    config.client_name,
-                    command_validity=config.command_validity_seconds,
-                    acknowledgement_timeout=config.acknowledgement_timeout_seconds,
-                    rpc_timeout=config.rpc_timeout_seconds,
-                )
-            )
-            for name, group in groups.items()
-        }
-        executor = resources.enter_context(
-            ThreadPoolExecutor(
-                max_workers=len(config.groups),
-                thread_name_prefix="bello-group-control",
-            )
-        )
-        start_hardware_controls(
-            binding,
-            controls,
-            groups,
-            initial_frame.positions,
-            adapter,
-            config,
-            executor,
-        )
-        pending_receipts: list[Any] = []
+    with armed_control_session(
+        binding,
+        groups,
+        states,
+        initial_frame,
+        adapter,
+        config,
+        thread_name="bello-group-control",
+    ) as control:
 
-        wait_for_group_state(
-            states,
-            adapter.physical_coordinate_names,
-            config,
-            binding.StateUnavailableError,
-            "RUNNING",
-        )
-        previous_target = initial_frame.positions.copy()
-        deadline = time.monotonic()
-        ramp_steps = max(1, math.ceil(config.ramp_seconds / adapter.control_timestep))
-        for step in range(1, ramp_steps + 1):
+        def continue_ramp() -> bool:
             gamepad_input = gamepad.poll()
             report_gamepad_connection(gamepad_input)
             if gamepad_input.exit_requested:
                 print("Hardware gamepad requested exit during the nominal-pose ramp.")
-                drain_command_receipts(pending_receipts)
-                stop_hardware_controls(controls, config, executor)
-                return
-            fraction = step / ramp_steps
-            requested = initial_frame.positions + fraction * (
-                adapter.nominal_physical_target - initial_frame.positions
-            )
-            previous_target = limit_target_step(
-                previous_target, requested, config.max_target_step_radians
-            )
-            send_targets(
-                binding,
-                controls,
-                groups,
-                previous_target,
-                adapter,
-                config,
-                executor,
-                pending_receipts,
-            )
-            deadline = pace_hardware_loop(deadline, adapter.control_timestep, config)
-            frame = wait_for_hardware_frame(
-                states,
-                adapter.physical_coordinate_names,
-                config.groups,
-                config.imu_name,
-                binding.StateUnavailableError,
-                config.telemetry_timeout_seconds,
-            )
-            validate_hardware_frame(frame, config, expected_group_state="RUNNING")
+                return False
+            return True
 
-        if config.wait_for_start_button:
-            started = wait_for_policy_start(
-                binding,
-                controls,
-                groups,
-                states,
-                previous_target,
-                adapter,
-                config,
-                gamepad,
-                executor,
-                pending_receipts,
+        if (
+            control.ramp_to_nominal(
+                initial_frame.positions,
+                before_step=continue_ramp,
             )
-            if not started:
-                drain_command_receipts(pending_receipts)
-                stop_hardware_controls(controls, config, executor)
-                return
+            is None
+        ):
+            control.drain()
+            return
+
+        def continue_hold() -> bool:
+            gamepad_input = gamepad.poll()
+            report_gamepad_connection(gamepad_input)
+            if gamepad_input.exit_requested:
+                print("Hardware gamepad requested exit before policy start.")
+                return False
+            return True
+
+        started = control.wait_for_run(
+            "Nominal-pose ramp complete. Release external support, let the robot "
+            "settle, then type RUN to start policy control: ",
+            operator_input=operator_input,
+            before_step=continue_hold,
+        )
+        if not started:
+            control.drain()
+            return
 
         adapter.reset()
         start_time = time.monotonic()
         next_status = start_time
-        deadline = start_time
+        control.reset_deadline()
         step = 0
         try:
             while (
@@ -893,31 +563,14 @@ def control_physical_robot(
                     )
                     break
                 command = hardware_command(config, adapter.metadata, gamepad_input)
-                frame = wait_for_hardware_frame(
-                    states,
-                    adapter.physical_coordinate_names,
-                    config.groups,
-                    config.imu_name,
-                    binding.StateUnavailableError,
-                    config.telemetry_timeout_seconds,
-                )
-                validate_hardware_frame(frame, config, expected_group_state="RUNNING")
+                frame = control.read_frame()
                 policy_step = adapter.step(frame, command)
-                previous_target = limit_target_step(
-                    previous_target,
+                target = limit_target_step(
+                    control.previous_target,
                     policy_step.physical_target,
                     config.max_target_step_radians,
                 )
-                send_targets(
-                    binding,
-                    controls,
-                    groups,
-                    previous_target,
-                    adapter,
-                    config,
-                    executor,
-                    pending_receipts,
-                )
+                control.send_target(target)
                 step += 1
                 now = time.monotonic()
                 if now >= next_status:
@@ -934,211 +587,7 @@ def control_physical_robot(
                         }
                     )
                     next_status = now + config.status_interval_seconds
-                deadline = pace_hardware_loop(
-                    deadline, adapter.control_timestep, config
-                )
-            drain_command_receipts(pending_receipts)
+                control.pace()
+            control.drain()
         except KeyboardInterrupt:
             print("Hardware locomotion interrupted; stopping and disabling groups.")
-        stop_hardware_controls(controls, config, executor)
-
-
-def wait_for_policy_start(
-    binding: Any,
-    controls: Mapping[str, Any],
-    groups: Mapping[str, Any],
-    states: Any,
-    hold_target: np.ndarray,
-    adapter: HardwarePolicyAdapter,
-    config: HardwareLocomotionConfig,
-    gamepad: GamepadCommandSource,
-    executor: Executor,
-    pending_receipts: list[Any],
-) -> bool:
-    print(
-        "Nominal-pose ramp complete; policy is held. Release the torso support, "
-        "let the robot settle, then press A/Cross to start. Press Start/Options "
-        "to abort."
-    )
-    deadline = time.monotonic()
-    while True:
-        gamepad_input = gamepad.poll()
-        report_gamepad_connection(gamepad_input)
-        if gamepad_input.exit_requested:
-            print("Hardware gamepad requested exit before policy start.")
-            return False
-        if gamepad_input.connected and gamepad_input.reset_requested:
-            print("Hardware policy start confirmed with A/Cross.")
-            return True
-        send_targets(
-            binding,
-            controls,
-            groups,
-            hold_target,
-            adapter,
-            config,
-            executor,
-            pending_receipts,
-        )
-        deadline = pace_hardware_loop(deadline, adapter.control_timestep, config)
-        frame = wait_for_hardware_frame(
-            states,
-            adapter.physical_coordinate_names,
-            config.groups,
-            config.imu_name,
-            binding.StateUnavailableError,
-            config.telemetry_timeout_seconds,
-        )
-        validate_hardware_frame(frame, config, expected_group_state="RUNNING")
-
-
-def start_hardware_controls(
-    binding: Any,
-    controls: Mapping[str, Any],
-    groups: Mapping[str, Any],
-    physical_target: np.ndarray,
-    adapter: HardwarePolicyAdapter,
-    config: HardwareLocomotionConfig,
-    executor: Executor,
-) -> None:
-    targets = {
-        name: coordinate_targets(
-            binding,
-            groups[name].coordinates,
-            physical_target,
-            adapter,
-            config,
-        )
-        for name in config.groups
-    }
-    starts = {
-        name: executor.submit(controls[name].start, targets[name])
-        for name in config.groups
-    }
-    for name in config.groups:
-        starts[name].result()
-
-
-def stop_hardware_controls(
-    controls: Mapping[str, Any],
-    config: HardwareLocomotionConfig,
-    executor: Executor,
-) -> None:
-    stops = {name: executor.submit(controls[name].stop) for name in config.groups}
-    for name in config.groups:
-        stops[name].result()
-
-
-def coordinate_targets(
-    binding: Any,
-    coordinate_names: tuple[str, ...],
-    physical_target: np.ndarray,
-    adapter: HardwarePolicyAdapter,
-    config: HardwareLocomotionConfig,
-) -> dict[str, Any]:
-    targets = {}
-    for name in coordinate_names:
-        index = adapter.coordinate_index[name]
-        targets[name] = binding.CoordinateTarget.position(
-            float(physical_target[index]),
-            kp=float(adapter.kp[index] * config.kp_scale),
-            kd=float(adapter.kd[index] * config.kd_scale),
-        )
-    return targets
-
-
-def send_targets(
-    binding: Any,
-    controls: Mapping[str, Any],
-    groups: Mapping[str, Any],
-    physical_target: np.ndarray,
-    adapter: HardwarePolicyAdapter,
-    config: HardwareLocomotionConfig,
-    executor: Executor,
-    pending_receipts: list[Any],
-) -> None:
-    reap_command_receipts(pending_receipts)
-    targets = {
-        name: coordinate_targets(
-            binding,
-            groups[name].coordinates,
-            physical_target,
-            adapter,
-            config,
-        )
-        for name in config.groups
-    }
-    submissions = {
-        name: executor.submit(controls[name].send_async, targets[name])
-        for name in config.groups
-    }
-    for name in config.groups:
-        pending_receipts.append(submissions[name].result())
-    maximum_pending = len(config.groups) * (
-        math.ceil(config.acknowledgement_timeout_seconds / adapter.control_timestep) + 1
-    )
-    while len(pending_receipts) > maximum_pending:
-        pending_receipts.pop(0).result()
-
-
-def reap_command_receipts(pending_receipts: list[Any]) -> None:
-    unresolved = []
-    for receipt in pending_receipts:
-        if receipt.done():
-            receipt.result()
-        else:
-            unresolved.append(receipt)
-    pending_receipts[:] = unresolved
-
-
-def drain_command_receipts(pending_receipts: list[Any]) -> None:
-    while pending_receipts:
-        pending_receipts.pop(0).result()
-
-
-def wait_for_group_state(
-    states: Any,
-    coordinate_names: tuple[str, ...],
-    config: HardwareLocomotionConfig,
-    unavailable_error: type[BaseException],
-    expected_state: str,
-) -> None:
-    deadline = time.monotonic() + config.telemetry_timeout_seconds
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0.0:
-            raise TimeoutError(
-                f"timed out waiting for hardware groups to enter {expected_state}"
-            )
-        frame = wait_for_hardware_frame(
-            states,
-            coordinate_names,
-            config.groups,
-            config.imu_name,
-            unavailable_error,
-            remaining,
-        )
-        if all(state == expected_state for state in frame.group_states):
-            validate_hardware_frame(frame, config, expected_group_state=expected_state)
-            return
-        if set(frame.group_states) & FAULT_GROUP_STATES:
-            raise RuntimeError(
-                f"hardware group fault while arming: {frame.group_states}"
-            )
-        states.wait_for_change(timeout=remaining)
-
-
-def pace_hardware_loop(
-    previous_deadline: float,
-    control_timestep: float,
-    config: HardwareLocomotionConfig,
-) -> float:
-    deadline = previous_deadline + control_timestep
-    remaining = deadline - time.monotonic()
-    if remaining > 0.0:
-        time.sleep(remaining)
-    elif -remaining > config.max_loop_lag_seconds:
-        raise RuntimeError(
-            f"hardware policy loop missed its deadline by {-remaining:.3f} seconds"
-        )
-    return deadline

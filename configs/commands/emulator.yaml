@@ -1,5 +1,4 @@
 bus_interfaces: [can0=vcan0, can1=vcan1]
-max_steps: null
 torso_hold: true
 release_after_seconds: null
 hydra:

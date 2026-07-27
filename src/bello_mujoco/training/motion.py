@@ -32,9 +32,8 @@ from bello_mujoco.envs.motion_tracking import (
 from bello_mujoco.evaluation.motion import (
     MotionEvaluationRequest,
     MotionEvaluationWorker,
-    render_motion_policy,
 )
-from bello_mujoco.motion import motion_tracking_asset_config
+from bello_mujoco.motion.clip import motion_tracking_asset_config
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.training.locomotion import (
@@ -55,10 +54,7 @@ from bello_mujoco.training.ppo import (
     PPOConfig,
     RunnerState,
     critic_observation_size,
-    effective_learning_rate_schedule,
     init_runner_state,
-    init_train_state,
-    runner_train_state,
     update_runner_state,
     validate_action_limit_contract,
     validate_ppo_config,
@@ -73,8 +69,8 @@ RunnerInitialization = tuple[
 
 @dataclass(frozen=True)
 class MotionSelectionConfig:
-    directory: Path = Path("motions/local/lafan1_fixed_head")
-    sequence: str = "walk1_subject1"
+    directory: Path = Path("motions/asap_fixed_head")
+    sequence: str = "video_single_foot_balance_level1_filter_amass"
 
 
 @dataclass(frozen=True)
@@ -103,8 +99,6 @@ class MotionTrainingRunConfig:
     wandb_config: WandbConfig = WandbConfig()
     video_config: MotionEvalVideoConfig = MotionEvalVideoConfig()
     warp: WarpConfig = WarpConfig()
-    dry_run: bool = True
-    jit: bool = True
 
 
 def run_training(run_config: MotionTrainingRunConfig) -> None:
@@ -114,26 +108,16 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
     _validate_fixed_tracking_asset(run_config.asset_config)
     validate_motion_video_config(run_config.video_config)
     validate_motion_checkpoint_config(run_config.checkpoint_config)
-    if (
-        not run_config.dry_run
-        and run_config.video_config.enabled
-        and not run_config.checkpoint_config.enabled
-    ):
+    if run_config.video_config.enabled and not run_config.checkpoint_config.enabled:
         raise ValueError("motion evaluation requires checkpointing to be enabled")
     evaluation_worker = None
     run = None
     succeeded = False
     try:
         evaluation_worker = (
-            MotionEvaluationWorker()
-            if not run_config.dry_run and run_config.video_config.enabled
-            else None
+            MotionEvaluationWorker() if run_config.video_config.enabled else None
         )
-        run = (
-            create_wandb_run(run_config.wandb_config)
-            if not run_config.dry_run
-            else None
-        )
+        run = create_wandb_run(run_config.wandb_config)
         env = BelloMotionTrackingEnv.load(
             run_config.asset_config,
             run_config.env_config,
@@ -155,59 +139,6 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
         )
         deployment_contract = capture_deployment_contract(metadata)
         rng = jax.random.PRNGKey(run_config.config.seed)
-        if run_config.dry_run:
-            train_state, _ = init_train_state(
-                rng,
-                policy_obs_size,
-                env.action_size,
-                run_config.config,
-                critic_obs_size=critic_policy_obs_size,
-            )
-            state, observation = env.reset_batch(
-                run_config.config.num_envs, jax.random.PRNGKey(run_config.config.seed)
-            )
-            print(
-                {
-                    "task": "motion_tracking",
-                    "backend": jax.default_backend(),
-                    "motion_path": str(run_config.env_config.motion_path),
-                    "motion_frames": env.motion.num_frames,
-                    "motion_duration": env.motion.duration,
-                    "sim_timestep": env.model.mj_model.opt.timestep,
-                    "control_timestep": env.control_timestep,
-                    "obs_size": env.observation_size,
-                    "policy_obs_size": policy_obs_size,
-                    "critic_obs_size": critic_obs_size,
-                    "critic_policy_obs_size": critic_policy_obs_size,
-                    "action_size": env.action_size,
-                    "num_envs": run_config.config.num_envs,
-                    "num_steps": run_config.config.num_steps,
-                    "num_updates": run_config.config.num_updates,
-                    "batch_obs_shape": tuple(observation.shape),
-                    "batch_action_shape": tuple(state.last_action.shape),
-                    "formulation": run_config.env_config.formulation,
-                    "disabled_joint_names": tuple(
-                        sorted(
-                            run_config.asset_config.joint_availability.disabled_joint_names
-                        )
-                    ),
-                    "sphere_mode": run_config.asset_config.end_effector_sphere_mode,
-                    "actor_observation_layout": env.observation_layout.components,
-                    "critic_observation_layout": (
-                        env.critic_observation_layout.components
-                    ),
-                    "action_layout": env.action_layout.names,
-                    "learning_rate_schedule": effective_learning_rate_schedule(
-                        run_config.config
-                    ),
-                    "eval_video_enabled": run_config.video_config.enabled,
-                    "eval_video_wandb_name": run_config.video_config.wandb_name,
-                    "params_leaves": len(jax.tree.leaves(train_state.policy)),
-                }
-            )
-            succeeded = True
-            return
-
         log_config(
             run,
             {
@@ -240,7 +171,6 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
             rng,
             run_config.video_config,
             run,
-            run_config.jit,
             checkpoint_root=checkpoint_root,
             checkpoint_context=(
                 metadata,
@@ -308,7 +238,6 @@ def motion_train_update_loop(
     rng: jax.Array,
     video_config: MotionEvalVideoConfig,
     run,
-    jit: bool,
     *,
     checkpoint_root: Path | None = None,
     checkpoint_context: tuple[CheckpointMetadata, DeploymentContract, CheckpointConfig]
@@ -323,7 +252,7 @@ def motion_train_update_loop(
     def update_fn(state):
         return update_runner_state(state, static_policy, optimizer, env, config)
 
-    update_fn = jax.jit(update_fn) if jit else update_fn
+    update_fn = jax.jit(update_fn)
     if video_config.render_initial:
         if checkpoint_root is None or checkpoint_context is None:
             raise ValueError("initial evaluation requires checkpoint context")
@@ -573,36 +502,6 @@ def validate_motion_resume(
     )
 
 
-def render_motion_training_video(
-    env: BelloMotionTrackingEnv,
-    runner_state,
-    static_policy,
-    config: MotionEvalVideoConfig,
-    run,
-    *,
-    env_steps: int,
-    obs_stack_size: int,
-    ppo_config: PPOConfig | None = None,
-) -> Path:
-    update = int(jax.device_get(runner_state.update))
-    output_path = config.output_dir / f"{config.filename_prefix}_{update:06d}.mp4"
-    train_state = runner_train_state(runner_state, static_policy)
-    stats = render_motion_policy(
-        env,
-        train_state.policy,
-        output_path,
-        steps=config.steps,
-        width=config.width,
-        height=config.height,
-        fps=config.fps,
-        obs_stack_size=obs_stack_size,
-        ppo_config=ppo_config,
-        observation_norm_state=runner_state.observation_norm_state,
-    )
-    log_motion_evaluation(run, output_path, stats, config, update, env_steps)
-    return output_path
-
-
 def render_motion_checkpoint_video(
     worker: MotionEvaluationWorker,
     checkpoint: Path,
@@ -657,7 +556,6 @@ def log_motion_evaluation(
         output_path,
         name=config.wandb_name,
         step=env_steps,
-        fps=config.fps,
         caption=(
             f"update={update}, rendered_steps={stats['rendered_steps']}, "
             f"episode_return={stats['episode_return']:.3f}, "
@@ -668,19 +566,6 @@ def log_motion_evaluation(
             f"terminal={int(stats['terminal'])}, timeout={int(stats['timeout'])}"
         ),
     )
-
-
-def try_render_motion_training_video(*args, **kwargs) -> Path | None:
-    update = int(jax.device_get(args[1].update))
-    try:
-        return render_motion_training_video(*args, **kwargs)
-    except Exception as error:  # noqa: BLE001 - evaluation is noncritical
-        warnings.warn(
-            f"motion evaluation failed at update {update}: {error}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return None
 
 
 def try_render_motion_checkpoint_video(*args, **kwargs) -> Path | None:

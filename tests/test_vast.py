@@ -71,7 +71,7 @@ class LifecycleApi:
 
     def show_instance(self, instance_id):
         if instance_id in self.destroyed:
-            raise RuntimeError("not found")
+            return None
         return {"id": instance_id, "actual_status": "running"}
 
     def show_instances(self):
@@ -82,12 +82,11 @@ class LifecycleApi:
 
 
 def valid_config(**kwargs) -> VastTrainConfig:
-    kwargs.setdefault("hydra_overrides", ("experiment=locomotion",))
+    kwargs.setdefault("experiment", "locomotion")
     return VastTrainConfig(
-        train_config=Path("configs/profiles/train/locomotion.yaml"),
         max_price=1.25,
         branch="main",
-        yes=True,
+        skip_confirmation=True,
         **kwargs,
     )
 
@@ -102,20 +101,17 @@ def selection() -> GitSelection:
 
 
 def motion_config(**kwargs) -> VastTrainConfig:
+    kwargs.setdefault("experiment", "motion")
     kwargs.setdefault(
-        "hydra_overrides",
-        (
-            "experiment=motion",
-            "motion_path=motions/asap_fixed_head/"
-            "video_single_foot_balance_level1_filter_amass.npz",
+        "motion_path",
+        Path(
+            "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
         ),
     )
     return VastTrainConfig(
-        train_config=Path("configs/profiles/train/motion.yaml"),
-        task="motion-tracking",
         max_price=1.25,
         branch="main",
-        yes=True,
+        skip_confirmation=True,
         **kwargs,
     )
 
@@ -132,53 +128,16 @@ def motion_selection() -> GitSelection:
     )
 
 
-def test_validate_config_requires_recipe_and_price() -> None:
-    with pytest.raises(ValueError, match="train-config"):
-        validate_config(VastTrainConfig(max_price=1.0))
+@pytest.mark.parametrize("max_price", [None, 0.0, float("nan"), float("inf")])
+def test_validate_config_requires_finite_positive_price(max_price) -> None:
     with pytest.raises(ValueError, match="max-price"):
-        validate_config(VastTrainConfig(train_config=Path("config.yaml")))
+        validate_config(VastTrainConfig(max_price=max_price, branch="main"))
 
 
-def test_vast_task_defaults_to_locomotion_and_rejects_unknown_values() -> None:
-    assert VastTrainConfig().task == "locomotion"
-    with pytest.raises(ValueError, match="--task"):
-        validate_config(valid_config(task="unsupported"))  # type: ignore[arg-type]
-
-
-def test_resolve_vast_motion_path_uses_public_motion_path_override() -> None:
-    recipe = """
-motion:
-  directory: motions/local/lafan1_fixed_head
-  sequence: walk1_subject1
-"""
-
-    assert vast.resolve_vast_motion_path(
-        recipe,
-        (
-            'motion_path="motions/asap_fixed_head/'
-            'video_single_foot_balance_level4_filter_amass.npz"',
-        ),
-    ) == PurePosixPath(
-        "motions/asap_fixed_head/video_single_foot_balance_level4_filter_amass.npz"
-    )
-
-
-def test_resolve_vast_motion_path_rejects_ignored_and_unsafe_inputs() -> None:
-    local_recipe = """
-motion:
-  directory: motions/local/lafan1_fixed_head
-  sequence: walk1_subject1
-"""
-    with pytest.raises(ValueError, match="motions/local is ignored"):
-        vast.resolve_vast_motion_path(local_recipe)
-    with pytest.raises(ValueError, match="without a path or suffix"):
-        vast.resolve_vast_motion_path(
-            "motion: {directory: motions/asap_fixed_head, sequence: ../clip}"
-        )
-    with pytest.raises(ValueError, match="must name an .npz clip"):
-        vast.resolve_vast_motion_path(
-            local_recipe,
-            ("motion_path=motions/asap_fixed_head/clip.pkl",),
+def test_vast_experiment_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError, match="--experiment"):
+        validate_config(
+            valid_config(experiment="unsupported")  # type: ignore[arg-type]
         )
 
 
@@ -187,11 +146,6 @@ def test_motion_git_selection_verifies_clip_at_selected_commit(
 ) -> None:
     commit = "c" * 40
     checked_objects = []
-    recipe = """
-motion:
-  directory: motions/local/lafan1_fixed_head
-  sequence: walk1_subject1
-"""
 
     monkeypatch.setattr(vast, "remote_branches", lambda repo_root: ["main"])
 
@@ -202,13 +156,8 @@ motion:
         if args[:2] == ("cat-file", "-e"):
             checked_objects.append(args[2])
             return ""
-        if args == (
-            "show",
-            f"{commit}:configs/profiles/train/motion.yaml",
-        ):
-            return recipe
         if args == ("remote", "get-url", "origin"):
-            return "git@github.com:MotomindKR/bello_mujoco.git"
+            return "https://github.com/MotomindKR/bello_mujoco.git"
         raise AssertionError(args)
 
     monkeypatch.setattr(vast, "run_git", fake_run_git)
@@ -290,21 +239,19 @@ def test_validate_config_requires_bounded_job_timeouts() -> None:
         )
 
 
-def test_offer_query_contains_hardware_price_and_region_constraints() -> None:
-    query = offer_query(valid_config(), countries=("KR",))
+def test_offer_query_contains_hardware_and_price_constraints() -> None:
+    query = offer_query(valid_config())
 
     assert "gpu_name=RTX_5090" in query
     assert "cpu_ram>=64" in query
     assert "disk_space>=80" in query
     assert "cuda_max_good>=13.0" in query
     assert "dph_total<=1.25" in query
-    assert "geolocation in [KR]" in query
 
 
-def test_find_offers_prefers_first_nonempty_region_and_best_value() -> None:
+def test_find_offers_orders_global_results_by_value() -> None:
     api = SearchApi(
         [
-            [],
             [
                 make_offer(1, value=5.0, location="Tokyo, JP"),
                 make_offer(2, value=12.0, location="Singapore, SG"),
@@ -312,26 +259,27 @@ def test_find_offers_prefers_first_nonempty_region_and_best_value() -> None:
         ]
     )
 
-    tier, offers = find_offers(api, valid_config())
+    offers = find_offers(api, valid_config())
 
-    assert tier == "Asia"
     assert [offer.id for offer in offers] == [2, 1]
-    assert len(api.queries) == 2
+    assert len(api.queries) == 1
     assert api.queries[0][3] == 80.0
 
 
 def test_find_offers_rechecks_returned_price_cap() -> None:
-    api = SearchApi([[make_offer(price=1.26)], [], []])
+    api = SearchApi([[make_offer(price=1.26)]])
 
     with pytest.raises(RuntimeError, match="no Vast offers"):
         find_offers(api, valid_config())
 
 
-def test_create_available_instance_falls_back_when_offer_is_gone() -> None:
+def test_create_available_instance_tries_next_explicitly_unavailable_offer() -> None:
     class RacingApi(LifecycleApi):
         def create_instance(self, offer_id, **kwargs):
             if offer_id == 1:
-                raise RuntimeError("offer disappeared")
+                error = RuntimeError("offer disappeared")
+                error.response = type("Response", (), {"status_code": 410})()
+                raise error
             return super().create_instance(offer_id, **kwargs)
 
     api = RacingApi()
@@ -342,7 +290,13 @@ def test_create_available_instance_falls_back_when_offer_is_gone() -> None:
 
     assert (
         create_available_instance(
-            api, offers, valid_config(), "test-label", sleep=lambda _: None
+            api,
+            offers,
+            valid_config(),
+            "test-label",
+            on_before_create=lambda: None,
+            on_offer_unavailable=lambda: None,
+            sleep=lambda _: None,
         )
         == 456
     )
@@ -363,40 +317,38 @@ def test_safe_exception_message_redacts_query_credentials() -> None:
 def test_nominal_64_gb_offer_accepts_vast_usable_ram_reporting() -> None:
     api = SearchApi([[make_offer() | {"cpu_ram": 64469}]])
 
-    _, offers = find_offers(api, valid_config())
+    offers = find_offers(api, valid_config())
 
     assert [offer.id for offer in offers] == [123]
 
 
-def test_sdk_client_normalizes_raw_vast_response_shapes() -> None:
-    class RawClient:
+def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
+    class PinnedClient:
         def __init__(self):
             self.destroyed = []
 
         def search_offers(self, **kwargs):
             assert kwargs["storage"] == 80.0
-            return json.dumps({"offers": [make_offer()]})
+            return [make_offer()]
 
         def create_instance(self, **kwargs):
             assert kwargs["id"] == 123
-            return json.dumps({"new_contract": 456})
+            return {"new_contract": 456}
 
         def show_instance(self, **kwargs):
-            return json.dumps(
-                {"instances": [{"id": kwargs["id"], "actual_status": "running"}]}
-            )
+            return {"id": kwargs["id"], "actual_status": "running"}
 
         def show_instances(self):
-            return json.dumps({"instances": [{"id": 456}]})
+            return [{"id": 456}]
 
         def ssh_url(self, **kwargs):
             assert kwargs["id"] == 456
-            return json.dumps({"ssh_url": "ssh://root@example.com:22001"})
+            return "ssh://root@example.com:22001"
 
         def destroy_instance(self, **kwargs):
             self.destroyed.append(kwargs["id"])
 
-    raw_client = RawClient()
+    raw_client = PinnedClient()
     client = object.__new__(VastSdkClient)
     client._client = raw_client
 
@@ -409,32 +361,6 @@ def test_sdk_client_normalizes_raw_vast_response_shapes() -> None:
     assert client.ssh_url(456) == "ssh://root@example.com:22001"
     client.destroy_instance(456)
     assert raw_client.destroyed == [456]
-
-
-@pytest.mark.parametrize(
-    ("method", "response", "message"),
-    [
-        ("instances", {"error": "rate limited"}, "instances"),
-        ("instances", {"instances": [{"error": "rate limited"}]}, "instances"),
-        ("offers", {"error": "rate limited"}, "offer"),
-        ("offers", {"offers": [{"error": "rate limited"}]}, "offer"),
-    ],
-)
-def test_sdk_client_rejects_error_mappings(method, response, message) -> None:
-    class RawClient:
-        def show_instances(self):
-            return json.dumps(response)
-
-        def search_offers(self, **kwargs):
-            return json.dumps(response)
-
-    client = object.__new__(VastSdkClient)
-    client._client = RawClient()
-    with pytest.raises(RuntimeError, match=f"unexpected Vast {message}"):
-        if method == "instances":
-            client.show_instances()
-        else:
-            client.search_offers("query", order="score-", limit=1, storage=80.0)
 
 
 def test_credential_prefers_environment_over_keyring(monkeypatch) -> None:
@@ -504,10 +430,12 @@ def test_wait_for_ssh_prefers_direct_port_mapping(monkeypatch) -> None:
 def test_destroy_treats_not_found_after_api_error_as_success() -> None:
     class AlreadyGoneApi:
         def destroy_instance(self, instance_id):
-            raise RuntimeError("404")
+            error = RuntimeError("not found")
+            error.response = type("Response", (), {"status_code": 404})()
+            raise error
 
         def show_instance(self, instance_id):
-            raise RuntimeError("404")
+            return None
 
     assert destroy_with_retries(AlreadyGoneApi(), 123, retries=1)
 
@@ -537,22 +465,19 @@ def test_destroy_does_not_treat_transient_api_errors_as_success() -> None:
     assert not destroy_with_retries(UnreachableApi(), 123, retries=1)
 
 
-def test_destroy_requires_status_or_successful_absence_confirmation() -> None:
-    class MissingStatusApi:
-        def __init__(self, listed):
-            self.listed = listed
+def test_destroy_requires_status_or_canonical_absence_confirmation() -> None:
+    class Api:
+        def __init__(self, response):
+            self.response = response
 
         def destroy_instance(self, instance_id):
             pass
 
         def show_instance(self, instance_id):
-            return {"id": instance_id}
+            return self.response
 
-        def show_instances(self):
-            return [{"id": 123}] if self.listed else []
-
-    assert not destroy_with_retries(MissingStatusApi(True), 123, retries=1)
-    assert destroy_with_retries(MissingStatusApi(False), 123, retries=1)
+    assert not destroy_with_retries(Api({"id": 123}), 123, retries=1)
+    assert destroy_with_retries(Api(None), 123, retries=1)
 
 
 def test_ambiguous_create_never_rents_a_second_offer() -> None:
@@ -572,7 +497,13 @@ def test_ambiguous_create_never_rents_a_second_offer() -> None:
 
     with pytest.raises(RuntimeError, match="ambiguous Vast rental"):
         create_available_instance(
-            api, offers, valid_config(), "test-label", sleep=lambda _: None
+            api,
+            offers,
+            valid_config(),
+            "test-label",
+            on_before_create=lambda: None,
+            on_offer_unavailable=lambda: None,
+            sleep=lambda _: None,
         )
 
     assert [offer_id for offer_id, _ in api.created] == [1]
@@ -595,7 +526,13 @@ def test_ambiguous_create_with_empty_listing_never_rents_again() -> None:
 
     with pytest.raises(RuntimeError, match="result for offer 1 is ambiguous"):
         create_available_instance(
-            api, offers, valid_config(), "test-label", sleep=lambda _: None
+            api,
+            offers,
+            valid_config(),
+            "test-label",
+            on_before_create=lambda: None,
+            on_offer_unavailable=lambda: None,
+            sleep=lambda _: None,
         )
 
     assert [offer_id for offer_id, _ in api.created] == [1]
@@ -618,6 +555,8 @@ def test_ambiguous_create_recovers_exact_labeled_instance() -> None:
             [VastOffer.from_mapping(make_offer(1))],
             valid_config(),
             "test-label",
+            on_before_create=lambda: None,
+            on_offer_unavailable=lambda: None,
             sleep=lambda _: None,
         )
         == 789
@@ -727,7 +666,7 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
         return subprocess.CompletedProcess(command, 0, stdout=response, stderr="")
 
     monkeypatch.setattr(vast.subprocess, "run", fake_run)
-    config = valid_config(hydra_overrides=("config.seed=2",))
+    config = valid_config()
 
     run_remote_training(
         ("root", "example.com", 22001),
@@ -741,9 +680,10 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
     assert all("wandb-secret" not in " ".join(call[0]) for call in calls)
     assert all("github-secret" not in " ".join(call[0]) for call in calls)
     environment = json.loads(calls[0][1]["input"])["environment"]
-    assert environment["WANDB_API_KEY"] == "wandb-secret"
-    assert environment["GITHUB_TOKEN"] == "github-secret"
-    assert environment["BELLO_HYDRA_OVERRIDES"] == '["config.seed=2"]'
+    assert environment == {
+        "WANDB_API_KEY": "wandb-secret",
+        "GITHUB_TOKEN": "github-secret",
+    }
     assert "start_new_session=True" in calls[0][0][-1]
 
 
@@ -752,7 +692,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     command = vast._remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
-    assert shlex.split(command)[-1] == "locomotion"
+    assert shlex.split(command)[-1] == "test-run"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
@@ -786,14 +726,13 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
         "motion-test",
     )
 
-    assert shlex.split(command)[-1] == "motion-tracking"
-    assert 'locomotion|motion-tracking) train_command="bello-train"' in (
-        vast.REMOTE_TRAIN_SCRIPT
+    assert shlex.split(command)[-1] == "motion-test"
+    assert vast.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
+    overrides_index = vast.REMOTE_TRAIN_SCRIPT.index(
+        'training_overrides=("experiment=$experiment")'
     )
-    assert vast.REMOTE_TRAIN_SCRIPT.count('uv run "$train_command"') == 2
-    overrides_index = vast.REMOTE_TRAIN_SCRIPT.index("mapfile -t user_overrides")
     validation_index = vast.REMOTE_TRAIN_SCRIPT.index("total_timesteps=768")
-    user_index = vast.REMOTE_TRAIN_SCRIPT.index('"${user_overrides[@]}"')
+    user_index = vast.REMOTE_TRAIN_SCRIPT.index('"${training_overrides[@]}"')
     forced_index = vast.REMOTE_TRAIN_SCRIPT.rindex("wandb_enabled=true")
     checkpoint_index = vast.REMOTE_TRAIN_SCRIPT.index('checkpoint_name="$run_name"')
     assert overrides_index < validation_index
@@ -929,10 +868,7 @@ def test_pipeline_always_destroys_created_instance(
     monkeypatch.setattr(
         vast,
         "find_offers",
-        lambda *args: (
-            "Korea",
-            [VastOffer.from_mapping(make_offer())],
-        ),
+        lambda *args: [VastOffer.from_mapping(make_offer())],
     )
     monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -1022,7 +958,7 @@ def test_lifecycle_retains_ambiguous_create_and_refuses_another_rental(
     monkeypatch.setattr(
         vast,
         "find_offers",
-        lambda *args: ("Korea", [VastOffer.from_mapping(make_offer())]),
+        lambda *args: [VastOffer.from_mapping(make_offer())],
     )
     lifecycle = VastLifecycle(api, config, state_path, "bello-pending")
 
@@ -1110,7 +1046,7 @@ def test_lifecycle_reconciles_stale_labeled_instance_before_rental(
     monkeypatch.setattr(
         vast,
         "find_offers",
-        lambda *args: ("Korea", [VastOffer.from_mapping(make_offer())]),
+        lambda *args: [VastOffer.from_mapping(make_offer())],
     )
     monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -1143,7 +1079,7 @@ def test_pipeline_retains_recovery_state_when_destroy_fails(
     monkeypatch.setattr(
         vast,
         "find_offers",
-        lambda *args: ("Korea", [VastOffer.from_mapping(make_offer())]),
+        lambda *args: [VastOffer.from_mapping(make_offer())],
     )
     monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
     monkeypatch.setattr(

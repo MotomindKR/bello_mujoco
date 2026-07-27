@@ -243,10 +243,6 @@ def _raise_for_self_collisions(report: dict) -> None:
     )
 
 
-def _validate_self_collisions(model, qpos: np.ndarray) -> None:
-    _raise_for_self_collisions(_self_collision_report(model, qpos))
-
-
 def _differentiate_qpos(mj_model, qpos: np.ndarray, fps: float) -> np.ndarray:
     qvel = np.empty((qpos.shape[0], mj_model.nv), dtype=np.float64)
     dt = 1.0 / fps

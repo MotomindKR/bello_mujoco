@@ -1,9 +1,6 @@
-dry_run: true
-jit: true
-
 motion:
-  directory: motions/local/lafan1_fixed_head
-  sequence: walk1_subject1
+  directory: motions/asap_fixed_head
+  sequence: video_single_foot_balance_level1_filter_amass
 
 config:
   seed: 0
@@ -120,9 +117,3 @@ warp:
   naconmax: null
   naccdmax: null
   njmax: 2048
-
-hydra:
-  job:
-    chdir: false
-  run:
-    dir: outputs/hydra/train_motion/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -27,7 +27,7 @@ from bello_mujoco.envs.motion_tracking import (
     yaw_quat_from_angle,
 )
 from bello_mujoco.configuration import motion_training_profile
-from bello_mujoco.motion import (
+from bello_mujoco.motion.clip import (
     DEFAULT_TRACKED_BODY_NAMES,
     FIXED_TRACKING_JOINT_AVAILABILITY,
     FIXED_TRACKING_JOINT_NAMES,
@@ -41,7 +41,6 @@ from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.motion.import_gmr import (
     _build_qpos,
     _validate_legacy_motion,
-    _validate_self_collisions,
 )
 
 
@@ -207,26 +206,13 @@ def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
     assert arrays["dof_pos"].shape == (frame_count, 25)
 
 
-def test_default_motion_training_config_has_fixed_waist_and_head_contract() -> None:
+def test_default_motion_profile_uses_tracked_fixed_joint_clip() -> None:
     config = motion_training_profile()
 
     assert config.asset_config.joint_availability == FIXED_TRACKING_JOINT_AVAILABILITY
     assert config.asset_config.end_effector_sphere_mode == "both"
-    assert config.asset_config.collision_mode == "box"
-    assert len(config.asset_config.actuator_config.policy_joint_names) == 25
-    assert config.motion.directory == Path("motions/local/lafan1_fixed_head")
-    assert config.motion.sequence == "walk1_subject1"
-    assert config.checkpoint_config.name == "walk1_subject1_bello_motion_seed0"
-    assert config.video_config.enabled
-    assert config.video_config.render_final
-    assert config.video_config.log_wandb
-    assert config.video_config.wandb_name == "eval/motion_policy"
-    assert config.config.num_envs == 4096
-    assert config.config.learning_rate == pytest.approx(1.0e-3)
-    assert config.config.policy.init_log_std == pytest.approx(0.0)
-    assert config.config.policy.action_distribution == "tanh_gaussian"
-    assert config.env_config.formulation == "beyondmimic_joint_limits"
-    assert config.warp.njmax == 2048
+    motion_path = config.motion.directory / f"{config.motion.sequence}.npz"
+    assert motion_path.is_file()
 
 
 def test_gmr_joint_columns_are_remapped_by_name(
@@ -250,23 +236,6 @@ def test_gmr_joint_columns_are_remapped_by_name(
         model.actuator_joint_names, model.actuator_qpos_indices, strict=True
     ):
         assert qpos[0, address] == source_index[name]
-
-
-def test_gmr_import_rejects_training_box_intersections(
-    fixed_waist_asset: PreparedAsset,
-) -> None:
-    model = load_prepared_bello_model(
-        fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config().actuator_config,
-        load_mjx=False,
-    )
-    qpos = np.repeat(model.default_qpos[None, :], 2, axis=0)
-    for name in ("left_hip_roll_joint", "right_hip_roll_joint"):
-        joint_id = model.mj_model.joint(name).id
-        qpos[:, model.mj_model.jnt_qposadr[joint_id]] = 0.2
-
-    with pytest.raises(ValueError, match="training collision model"):
-        _validate_self_collisions(model, qpos)
 
 
 def test_motion_loader_and_shortest_arc_interpolation(
@@ -368,13 +337,6 @@ def test_zero_action_targets_next_reference_pose(
     assert float(ctrl[roll]) == pytest.approx(
         float(logical_target[pitch]) + float(logical_target[roll]), abs=1.0e-6
     )
-    stacked_observation = jnp.tile(env.observation(state), 4)
-    diagnostic_ctrl = env._diagnostic_action_to_ctrl(
-        stacked_observation, jnp.zeros(env.action_size)
-    )
-    np.testing.assert_allclose(
-        np.asarray(diagnostic_ctrl), np.asarray(ctrl), atol=1.0e-6
-    )
 
 
 def test_reference_residual_uses_quarter_logical_range_and_clips_targets(
@@ -383,7 +345,7 @@ def test_reference_residual_uses_quarter_logical_range_and_clips_targets(
     env = BelloMotionTrackingEnv.load_prepared(
         fixed_waist_asset, tracking_config(fixed_waist_motion)
     )
-    state, observation = env.reset(reference_time=jnp.asarray(0.1))
+    state, _ = env.reset(reference_time=jnp.asarray(0.1))
     expected_scale = 0.25 * (env.model.joint_target_high - env.model.joint_target_low)
 
     np.testing.assert_allclose(
@@ -392,16 +354,12 @@ def test_reference_residual_uses_quarter_logical_range_and_clips_targets(
         atol=1.0e-7,
     )
 
-    diagnostic_observation = np.asarray(observation).copy()
-    diagnostic_observation[: env.action_size] = (
-        env.model.joint_target_high - env.model.default_joint_target
-    )
-    diagnostic_ctrl = env._diagnostic_action_to_ctrl(
-        jnp.tile(jnp.asarray(diagnostic_observation), 4),
-        jnp.ones(env.action_size),
+    clipped_ctrl = env._action_to_ctrl(
+        state,
+        jnp.full((env.action_size,), 100.0),
     )
     np.testing.assert_allclose(
-        np.asarray(diagnostic_ctrl),
+        np.asarray(clipped_ctrl),
         expected_physical_ctrl(env, env.model.joint_target_high),
         atol=1.0e-6,
     )

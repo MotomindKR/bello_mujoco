@@ -1,32 +1,19 @@
-dry_run: false
-motion:
-  directory: motions/local/lafan1_fixed_head
-  sequence: walk1_subject1
 config:
   total_timesteps: 2949120000
   num_envs: 4096
-  num_steps: 24
-  update_epochs: 5
   num_minibatches: 4
   learning_rate: 0.001
-  schedule: adaptive
-  adaptive_kl_statistic: mean
-  desired_kl: 0.01
   ent_coef: 0.005
-  max_grad_norm: 1.0
   normalize_observations: true
   policy:
     hidden_dims: [512, 256, 128]
     activation: elu
     init_log_std: 0.0
     obs_stack_size: 1
-    action_distribution: tanh_gaussian
 env_config:
   formulation: beyondmimic_joint_limits
   anchor_body_name: torso_link
-  action_clip: 1.0
   reset:
-    random_start: true
     initial_xy_range: [0.0, 0.0]
     initial_yaw_range: [0.0, 0.0]
     joint_pos_noise: [-0.1, 0.1]
@@ -46,16 +33,9 @@ env_config:
     joint_velocity: 0.5
   adaptive_sampling:
     enabled: true
-    bin_seconds: 1.0
-    ema_alpha: 0.001
     kernel_size: 3
-    kernel_decay: 0.8
-    uniform_ratio: 0.1
   push:
     enabled: true
-    interval_seconds: [1.0, 3.0]
-    linear_velocity: [0.5, 0.5, 0.2]
-    angular_velocity: [0.52, 0.52, 0.78]
   reward:
     root_position_weight: 0.5
     root_orientation_weight: 0.5
@@ -73,9 +53,6 @@ env_config:
     root_orientation_sigma: 0.4
     body_position_sigma: 0.3
     body_orientation_sigma: 0.4
-    body_linear_velocity_sigma: 1.0
-    body_angular_velocity_sigma: 3.141592653589793
-    undesired_contact_force_threshold: 1.0
   done:
     root_height_error: 0.25
     root_orientation_error: 0.8
@@ -92,4 +69,3 @@ video_config:
   filename_prefix: ${motion.sequence}_motion
 warp:
   contact_budget_per_env: 64
-  njmax: 2048

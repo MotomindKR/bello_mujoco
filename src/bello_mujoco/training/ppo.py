@@ -18,7 +18,6 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.policy import (
     ActorCritic,
     ActorCriticConfig,
@@ -1266,31 +1265,6 @@ def update_runner_state(
         ),
         metrics,
     )
-
-
-def make_train(config: PPOConfig, env: PPOEnvironment | None = None):
-    validate_ppo_config(config)
-    env = BelloLocomotionEnv.load(batch_size=config.num_envs) if env is None else env
-    validate_action_limit_contract(config, env.action_clip)
-
-    def train(rng: jax.Array):
-        runner_state, static_policy, optimizer = init_runner_state(rng, env, config)
-
-        def update_step(carry: RunnerState, _: None):
-            return update_runner_state(
-                carry,
-                static_policy,
-                optimizer,
-                env,
-                config,
-            )
-
-        runner_state, metrics = jax.lax.scan(
-            update_step, runner_state, None, config.num_updates
-        )
-        return {"runner_state": runner_state, "metrics": metrics}
-
-    return train
 
 
 def validate_action_limit_contract(config: PPOConfig, env_action_clip: float) -> None:

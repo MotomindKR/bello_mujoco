@@ -36,7 +36,7 @@ from bello_mujoco.envs.locomotion import (
     DoneConfig,
 )
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
-from bello_mujoco.motion import MOTION_FORMAT_VERSION, MotionClip
+from bello_mujoco.motion.clip import MOTION_FORMAT_VERSION, MotionClip
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.policy import ActorCriticConfig
 from bello_mujoco.sim import WarpConfig
@@ -253,34 +253,6 @@ def save_training_checkpoint(
     except BaseException:
         shutil.rmtree(staging_path, ignore_errors=True)
         raise
-
-
-def restore_training_checkpoint(path: Path) -> tuple[TrainState, CheckpointMetadata]:
-    path = Path(path).resolve()
-    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(path)
-    template_state, _ = init_train_state(
-        jax.random.PRNGKey(metadata.ppo.seed),
-        metadata.obs_size,
-        metadata.action_size,
-        metadata.ppo,
-        critic_obs_size=metadata.critic_obs_size,
-    )
-    _, static_policy = eqx.partition(template_state.policy, eqx.is_array)
-    item_template = _train_state_checkpoint_item(template_state, metadata)
-    restored = _restore_checkpoint_item(
-        path / STATE_DIR,
-        item_template,
-        train_fingerprint,
-        label="training state",
-    )
-    _validate_restored_normalization_state(restored, metadata)
-    _validate_restored_update(restored["update"], saved_update, metadata.ppo)
-    train_state = TrainState(
-        policy=eqx.combine(restored["policy"], static_policy),
-        opt_state=restored["opt_state"],
-        update=restored["update"],
-    )
-    return train_state, metadata
 
 
 def restore_evaluation_checkpoint(
@@ -881,7 +853,7 @@ def _validate_restored_motion_runner_state(
 
 
 def _validate_environment_layouts(env, metadata: CheckpointMetadata) -> None:
-    env_task = getattr(env, "task", "locomotion")
+    env_task = env.task
     if env_task != metadata.task:
         raise ValueError(
             f"checkpoint task {metadata.task!r} does not match environment task "

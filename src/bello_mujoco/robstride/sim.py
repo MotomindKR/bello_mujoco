@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 import mujoco
 import numpy as np
 
-from bello_mujoco.robstride.can import PARAM_RUN_MODE, MotorSpec, RobstrideMotor
+from bello_mujoco.robstride.can import MotorSpec, RobstrideMotor
 from bello_mujoco.sim import BelloModel, preserve_runtime_physics
 
 
@@ -37,8 +37,6 @@ class NativeActuatorBinding:
 def configure_robstride_actuators(
     model: BelloModel,
     specs: tuple[MotorSpec, ...],
-    *,
-    enforce_torque_limits: bool = True,
 ) -> BelloModel:
     """Replace mapped position actuators with native MIT actuator triples."""
 
@@ -84,13 +82,8 @@ def configure_robstride_actuators(
                 f"motor {motor.name!r} maps to missing MuJoCo {target.type} "
                 f"{target.name!r}"
             )
-        coordinate.actfrclimited = (
-            mujoco.mjtLimited.mjLIMITED_TRUE
-            if enforce_torque_limits
-            else mujoco.mjtLimited.mjLIMITED_FALSE
-        )
-        if enforce_torque_limits:
-            coordinate.actfrcrange = (-max_torque, max_torque)
+        coordinate.actfrclimited = mujoco.mjtLimited.mjLIMITED_TRUE
+        coordinate.actfrcrange = (-max_torque, max_torque)
 
         position = spec.add_actuator(
             name=_actuator_name(motor.name, "position"),
@@ -152,12 +145,9 @@ class BelloRobstrideTransmission:
         self,
         model: BelloModel,
         motors: tuple[RobstrideMotor, ...],
-        *,
-        enforce_torque_limits: bool = True,
     ) -> None:
         self.model = model
         self.motors = {motor.spec.name: motor for motor in motors}
-        self.enforce_torque_limits = enforce_torque_limits
         self.bindings = self._joint_bindings()
         self.direct: dict[str, str] = {}
         self.tendons: dict[str, TendonBinding] = {}
@@ -194,7 +184,7 @@ class BelloRobstrideTransmission:
         data.qfrc_applied[:] = 0.0
         for motor_name, motor in self.motors.items():
             binding = self.actuators[motor_name]
-            enabled = motor.enabled and int(motor.params[PARAM_RUN_MODE]) == 0
+            enabled = motor.enabled
             kp = motor.command.kp if enabled else 0.0
             kd = motor.command.kd if enabled else 0.0
 
@@ -210,7 +200,7 @@ class BelloRobstrideTransmission:
             data.ctrl[binding.feedforward_id] = motor.command.torque if enabled else 0.0
             self._set_common_force_limit(
                 binding,
-                motor.torque_limit if self.enforce_torque_limits else None,
+                motor.torque_limit,
             )
 
     def _joint_bindings(self) -> dict[str, JointBinding]:

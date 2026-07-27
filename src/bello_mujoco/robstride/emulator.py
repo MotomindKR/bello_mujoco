@@ -61,13 +61,6 @@ def default_emulator_asset_config() -> AssetPrepConfig:
     return canonical_physical_asset_config(imu_enabled=True)
 
 
-def resolve_motor_config_path(path: Path) -> Path:
-    path = Path(path).expanduser()
-    if path.is_absolute():
-        return path
-    return (project_data_path("configs") / path).resolve()
-
-
 @dataclass(frozen=True)
 class EmulatorConfig:
     """Runtime settings for the RobStride/MuJoCo hardware emulator."""
@@ -81,10 +74,7 @@ class EmulatorConfig:
     )
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
-    enforce_torque_limits: bool = True
-    max_steps: int | None = None
     imu_serial_rate_hz: float = 250.0
-    imu_serial_enabled: bool = True
     imu_serial_device: Path = Path("/dev/ttyIMU-mujoco")
     imu_noise: ImuNoiseConfig = ImuNoiseConfig(
         enabled=True,
@@ -105,7 +95,6 @@ class TorsoHold:
     equality_id: int
     body_id: int
     support_body_id: int
-    support_joint_id: int
     drop_limit_m: float
 
     def initialize(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -271,11 +260,7 @@ class TerminalEnterInput:
 
 def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     validate_config(config)
-    motor_kind_config = resolve_motor_config_path(config.motor_kind_config)
-    motor_configs = tuple(
-        resolve_motor_config_path(path) for path in config.motor_configs
-    )
-    robstride = load_robstride_configs(motor_kind_config, motor_configs)
+    robstride = load_robstride_configs(config.motor_kind_config, config.motor_configs)
     validate_motor_coverage(config.asset_config.joint_availability, robstride.motors)
     overrides = parse_bus_interfaces(config.bus_interfaces)
     unknown_buses = set(overrides) - {bus.name for bus in robstride.buses}
@@ -298,11 +283,7 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
         use_viewer_model=True,
         load_mjx=False,
     )
-    model = configure_robstride_actuators(
-        model,
-        robstride.motors,
-        enforce_torque_limits=config.enforce_torque_limits,
-    )
+    model = configure_robstride_actuators(model, robstride.motors)
     torso_hold = None
     if config.torso_hold:
         model, torso_hold = add_torso_hold(model, config.torso_drop_limit_m)
@@ -324,13 +305,7 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
             for emulator in emulators.values()
             for motor in emulator.motors.values()
         ),
-        enforce_torque_limits=config.enforce_torque_limits,
     )
-    if not config.enforce_torque_limits:
-        print(
-            "WARNING: simulated actuator torque limits are disabled; RobStride "
-            "feedback still saturates at each model's protocol torque range"
-        )
     run_simulation(model, emulators, transmission, config, torso_hold)
 
 
@@ -382,15 +357,17 @@ def run_simulation(
                     f"{bus_name!r}; create and bring up the VCAN interface first"
                 ) from error
 
-        imu_serial = None
-        if imu_sensor is not None and config.imu_serial_enabled:
-            imu_serial = stack.enter_context(
+        imu_serial = (
+            stack.enter_context(
                 EbimuSerialEmulator(
                     config.imu_serial_device,
                     output_rate_hz=config.imu_serial_rate_hz,
                     temperature_c=config.temperature_c,
                 )
             )
+            if imu_sensor is not None
+            else None
+        )
 
         from mujoco import viewer as mj_viewer
 
@@ -500,7 +477,7 @@ def _simulation_loop(
     next_pose_sim = start_sim + pose_period
     steps = 0
     torso_released = torso_hold is None
-    while config.max_steps is None or steps < config.max_steps:
+    while True:
         if not viewer.is_running():
             break
         enter_requested = terminal_enter.poll()
@@ -722,7 +699,6 @@ def add_torso_hold(
         equality_id,
         body_id,
         support_body_id,
-        support_joint_id,
         drop_limit_m,
     )
 
@@ -744,6 +720,11 @@ def parse_bus_interfaces(values: tuple[str, ...]) -> dict[str, str]:
 def validate_config(config: EmulatorConfig) -> None:
     if not config.motor_configs:
         raise ValueError("motor_configs must not be empty")
+    if any(
+        not path.is_absolute()
+        for path in (config.motor_kind_config, *config.motor_configs)
+    ):
+        raise ValueError("motor config paths must be absolute")
     if not config.bus_interfaces:
         raise ValueError("bus_interfaces must not be empty")
     parse_bus_interfaces(config.bus_interfaces)
@@ -751,14 +732,12 @@ def validate_config(config: EmulatorConfig) -> None:
         raise ValueError("feedback_rate_hz must be positive")
     if not math.isfinite(config.temperature_c) or config.temperature_c < 0.0:
         raise ValueError("temperature_c must be nonnegative")
-    if config.max_steps is not None and config.max_steps <= 0:
-        raise ValueError("max_steps must be positive when provided")
     if not math.isfinite(config.imu_serial_rate_hz) or config.imu_serial_rate_hz <= 0.0:
         raise ValueError("imu_serial_rate_hz must be finite and positive")
-    if config.imu_serial_enabled and not str(config.imu_serial_device):
+    if not str(config.imu_serial_device):
         raise ValueError("imu_serial_device must not be empty")
-    if config.imu_serial_enabled and not config.asset_config.imu_config.enabled:
-        raise ValueError("imu_serial_enabled requires asset_config.imu_config.enabled")
+    if not config.asset_config.imu_config.enabled:
+        raise ValueError("the emulator asset must include the IMU sensor")
     validate_imu_noise_config(config.imu_noise)
     if not math.isfinite(config.torso_drop_limit_m) or config.torso_drop_limit_m <= 0.0:
         raise ValueError("torso_drop_limit_m must be finite and positive")

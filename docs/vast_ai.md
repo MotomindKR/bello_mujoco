@@ -19,10 +19,10 @@ Before rental, the launcher:
 Motion jobs require an explicit tracked clip. Ignored local datasets are never
 uploaded implicitly.
 
-The default offer policy searches Korea, the rest of Asia, then globally for
-one RTX 5090 with at least 64 GB CPU RAM, 80 GB disk, 0.98 reliability, CUDA 13,
-verification, rentability, and direct SSH. `max_price` is a required upper
-bound on total hourly price.
+The default offer policy performs one global search for an RTX 5090 with at
+least 64 GB CPU RAM, 80 GB disk, 0.98 reliability, CUDA 13, verification,
+rentability, and direct SSH. `max_price` is a required upper bound on total
+hourly price.
 
 ## Lifecycle
 
@@ -45,8 +45,7 @@ Non-dry execution:
     fails closed.
 
 The preflight uses a small fixed rollout and disables W&B and videos. The real
-job forces W&B on and assigns the resolved run/checkpoint names after user
-overrides.
+job forces W&B on and assigns the resolved run/checkpoint names.
 
 ## Time bounds
 
@@ -75,12 +74,12 @@ not interpolated into diagnostic command previews.
 
 ## Dry run and confirmation
 
-Dry run still fetches and validates Git selection, then prints the regional
-offer query strings. It does not read credentials, query marketplace results,
+Dry run still fetches and validates Git selection, then prints the offer query.
+It does not read credentials, query marketplace results,
 provision an instance, or print the complete remote command protocol.
 
 Interactive rental asks for confirmation after showing the chosen offer.
-`yes=true` is reserved for explicitly unattended operation.
+`skip_confirmation=true` is reserved for explicitly unattended operation.
 
 ## Durable state and recovery
 

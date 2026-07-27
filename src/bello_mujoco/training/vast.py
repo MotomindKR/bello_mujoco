@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import json
+import math
 import os
 import re
 import shlex
@@ -19,11 +20,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import FrameType
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 import keyring
-import yaml
+
+from bello_mujoco.configuration import ExperimentName, profile_config_relative_path
 
 
 VAST_KEYRING_SERVICE = "vast"
@@ -49,32 +51,18 @@ class VastOfferConfig:
     min_cuda: float = 13.0
     image: str = "vastai/base-image:cuda-13.0.3-auto"
     search_limit: int = 10
-    korea_countries: tuple[str, ...] = ("KR",)
-    asia_countries: tuple[str, ...] = (
-        "JP",
-        "SG",
-        "TW",
-        "HK",
-        "CN",
-        "VN",
-        "TH",
-        "MY",
-        "ID",
-        "PH",
-        "IN",
-    )
 
 
 @dataclass(frozen=True)
 class VastTrainConfig:
-    """User-facing configuration for a complete Vast training lifecycle."""
+    """Resolved configuration for one complete Vast training lifecycle."""
 
-    train_config: Path | None = None
-    task: Literal["locomotion", "motion-tracking"] = "locomotion"
+    experiment: ExperimentName = "hardware_locomotion"
+    motion_path: Path | None = None
     max_price: float | None = None
     branch: str | None = None
     run_name: str | None = None
-    yes: bool = False
+    skip_confirmation: bool = False
     dry_run: bool = False
     remote_dir: str = "/workspace/bello_mujoco"
     lifecycle_state_dir: Path = Path(".vast")
@@ -85,7 +73,6 @@ class VastTrainConfig:
     reconcile_retries: int = 3
     destroy_retries: int = 3
     offer: VastOfferConfig = field(default_factory=VastOfferConfig)
-    hydra_overrides: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,25 +121,23 @@ class VastOffer:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> VastOffer:
-        offer_id = value.get("id", value.get("ask_contract_id"))
-        if offer_id is None:
-            raise ValueError(f"Vast offer has no id: {value!r}")
-        return cls(
-            id=int(offer_id),
-            gpu_name=str(value.get("gpu_name", "unknown")),
-            dph_total=float(value.get("dph_total", float("inf"))),
-            dlperf_per_dphtotal=float(
-                value.get("dlperf_per_dphtotal", value.get("dlperf_usd", 0.0))
-            ),
-            reliability=float(value.get("reliability", 0.0)),
-            geolocation=str(value.get("geolocation", "unknown")),
-            cpu_ram_mb=int(value.get("cpu_ram", 0)),
-            gpu_ram_mb=int(value.get("gpu_ram", 0)),
-            num_gpus=int(value.get("num_gpus", 0)),
-            cuda_max_good=float(value.get("cuda_max_good", 0.0)),
-            disk_space_gb=float(value.get("disk_space", 0.0)),
-            direct_port_count=int(value.get("direct_port_count", 0)),
-        )
+        try:
+            return cls(
+                id=int(value["id"]),
+                gpu_name=str(value["gpu_name"]),
+                dph_total=float(value["dph_total"]),
+                dlperf_per_dphtotal=float(value["dlperf_per_dphtotal"]),
+                reliability=float(value["reliability"]),
+                geolocation=str(value["geolocation"]),
+                cpu_ram_mb=int(value["cpu_ram"]),
+                gpu_ram_mb=int(value["gpu_ram"]),
+                num_gpus=int(value["num_gpus"]),
+                cuda_max_good=float(value["cuda_max_good"]),
+                disk_space_gb=float(value["disk_space"]),
+                direct_port_count=int(value["direct_port_count"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid Vast offer response: {value!r}") from exc
 
 
 class VastApi(Protocol):
@@ -162,7 +147,7 @@ class VastApi(Protocol):
 
     def create_instance(self, offer_id: int, **kwargs: Any) -> int: ...
 
-    def show_instance(self, instance_id: int) -> Mapping[str, Any]: ...
+    def show_instance(self, instance_id: int) -> Mapping[str, Any] | None: ...
 
     def show_instances(self) -> list[Mapping[str, Any]]: ...
 
@@ -172,78 +157,47 @@ class VastApi(Protocol):
 
 
 class VastSdkClient:
-    """Small typed boundary around the Vast SDK's mixed response shapes."""
+    """Typed boundary around the lock-pinned Vast SDK."""
 
     def __init__(self, api_key: str):
         from vastai import VastAI
 
-        self._client = VastAI(api_key=api_key, raw=True)
+        self._client = VastAI(api_key=api_key)
 
     def search_offers(
         self, query: str, *, order: str, limit: int, storage: float
     ) -> list[Mapping[str, Any]]:
-        value = _json_value(
-            self._client.search_offers(
-                query=query,
-                order=order,
-                limit=limit,
-                storage=storage,
-            )
+        value = self._client.search_offers(
+            query=query,
+            order=order,
+            limit=limit,
+            storage=storage,
         )
-        if isinstance(value, Mapping):
-            if "offers" in value:
-                value = value["offers"]
-            elif "instances" in value:
-                value = value["instances"]
-            elif ("id" in value or "ask_contract_id" in value) and "gpu_name" in value:
-                value = [value]
-            else:
-                raise RuntimeError(f"unexpected Vast offer response: {value!r}")
-        if isinstance(value, Mapping):
-            value = [value]
         if not isinstance(value, list):
             raise RuntimeError(f"unexpected Vast offer response: {value!r}")
-        if any(
-            not isinstance(item, Mapping)
-            or ("id" not in item and "ask_contract_id" not in item)
-            for item in value
-        ):
+        if any(not isinstance(item, Mapping) or "id" not in item for item in value):
             raise RuntimeError(f"unexpected Vast offer response: {value!r}")
         return value
 
     def create_instance(self, offer_id: int, **kwargs: Any) -> int:
-        value = _json_value(self._client.create_instance(id=offer_id, **kwargs))
-        if isinstance(value, Mapping):
-            instance_id = value.get("new_contract", value.get("id"))
-            if instance_id is not None:
-                return int(instance_id)
-        raise RuntimeError(f"Vast did not return a new instance id: {value!r}")
+        value = self._client.create_instance(id=offer_id, **kwargs)
+        try:
+            return int(value["new_contract"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Vast did not return a new instance id: {value!r}"
+            ) from exc
 
-    def show_instance(self, instance_id: int) -> Mapping[str, Any]:
-        value = _json_value(self._client.show_instance(id=instance_id))
-        if isinstance(value, Mapping) and "instances" in value:
-            value = value["instances"]
-        if isinstance(value, list):
-            if len(value) != 1:
-                raise RuntimeError(f"unexpected Vast instance response: {value!r}")
-            value = value[0]
+    def show_instance(self, instance_id: int) -> Mapping[str, Any] | None:
+        value = self._client.show_instance(id=instance_id)
+        if value is None:
+            return None
         if not isinstance(value, Mapping) or "id" not in value:
             raise RuntimeError(f"unexpected Vast instance response: {value!r}")
         return value
 
     def show_instances(self) -> list[Mapping[str, Any]]:
-        value = _json_value(self._client.show_instances())
-        if isinstance(value, Mapping):
-            if "instances" in value:
-                value = value["instances"]
-            elif "id" in value and (
-                "actual_status" in value or "cur_state" in value or "label" in value
-            ):
-                value = [value]
-            else:
-                raise RuntimeError(f"unexpected Vast instances response: {value!r}")
-        if isinstance(value, Mapping):
-            value = [value]
+        value = self._client.show_instances()
         if not isinstance(value, list):
             raise RuntimeError(f"unexpected Vast instances response: {value!r}")
         if any(not isinstance(item, Mapping) or "id" not in item for item in value):
@@ -251,25 +205,13 @@ class VastSdkClient:
         return value
 
     def ssh_url(self, instance_id: int) -> str:
-        value = _json_value(self._client.ssh_url(id=instance_id))
-        if isinstance(value, Mapping):
-            value = value.get("ssh_url", value.get("url"))
+        value = self._client.ssh_url(id=instance_id)
         if not isinstance(value, str):
             raise RuntimeError(f"unexpected Vast SSH URL response: {value!r}")
         return value.strip()
 
     def destroy_instance(self, instance_id: int) -> None:
         self._client.destroy_instance(id=instance_id)
-
-
-def _json_value(value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-    text = value.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return text
 
 
 def credential(env_name: str, service: str, username: str, *, required: bool) -> str:
@@ -293,12 +235,27 @@ def credential(env_name: str, service: str, username: str, *, required: bool) ->
 
 
 def validate_config(config: VastTrainConfig) -> None:
-    if config.train_config is None:
-        raise ValueError("--train-config is required")
-    if config.task not in {"locomotion", "motion-tracking"}:
-        raise ValueError("--task must be 'locomotion' or 'motion-tracking'")
-    if config.max_price is None or config.max_price <= 0:
-        raise ValueError("--max-price must be positive")
+    if config.experiment not in {
+        "smoke",
+        "locomotion",
+        "hardware_locomotion",
+        "motion",
+    }:
+        raise ValueError("--experiment is invalid")
+    if config.experiment == "motion":
+        if config.motion_path is None:
+            raise ValueError("--motion-path is required for the motion experiment")
+        _repository_motion_path(config.motion_path)
+    elif config.motion_path is not None:
+        raise ValueError("--motion-path is only valid for the motion experiment")
+    if (
+        config.max_price is None
+        or not math.isfinite(config.max_price)
+        or config.max_price <= 0
+    ):
+        raise ValueError("--max-price must be finite and positive")
+    if not config.branch:
+        raise ValueError("--branch is required")
     if config.ready_timeout_seconds <= 0 or config.ssh_timeout_seconds <= 0:
         raise ValueError("readiness timeouts must be positive")
     if config.job_timeout_seconds <= 0 or config.progress_timeout_seconds <= 0:
@@ -332,9 +289,6 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError("offer.min-reliability must be in (0, 1]")
     if offer.search_limit <= 0:
         raise ValueError("offer.search-limit must be positive")
-    for country in (*offer.korea_countries, *offer.asia_countries):
-        if not re.fullmatch(r"[A-Z]{2}", country):
-            raise ValueError(f"invalid two-letter country code: {country!r}")
 
 
 def run_git(repo_root: Path, *args: str) -> str:
@@ -362,35 +316,16 @@ def remote_branches(repo_root: Path) -> list[str]:
     )
 
 
-def select_branch(branches: Sequence[str]) -> str:
-    if not branches:
-        raise RuntimeError("origin has no remote branches")
-    if not sys.stdin.isatty():
-        raise RuntimeError("--branch is required when stdin is not interactive")
-    print("Available origin branches:")
-    for index, branch in enumerate(branches, start=1):
-        print(f"  {index:2d}. {branch}")
-    raw = input("Select branch number: ").strip()
-    try:
-        selected = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"invalid branch selection: {raw!r}") from exc
-    if selected < 1 or selected > len(branches):
-        raise ValueError(f"branch selection must be between 1 and {len(branches)}")
-    return branches[selected - 1]
-
-
 def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelection:
     branches = remote_branches(repo_root)
-    branch = config.branch or select_branch(branches)
+    branch = config.branch
+    assert branch is not None
     if branch not in branches:
         raise ValueError(f"branch {branch!r} does not exist on origin")
 
-    config_path = PurePosixPath(str(config.train_config))
-    if config_path.is_absolute() or ".." in config_path.parts:
-        raise ValueError("--train-config must be a repository-relative path")
-    if config_path.suffix not in {".yaml", ".yml"}:
-        raise ValueError("--train-config must name a YAML file")
+    config_path = PurePosixPath(
+        profile_config_relative_path(config.experiment).as_posix()
+    )
 
     ref = f"refs/remotes/origin/{branch}"
     commit = run_git(repo_root, "rev-parse", f"{ref}^{{commit}}")
@@ -400,9 +335,8 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         except subprocess.CalledProcessError as exc:
             raise ValueError(f"{path!r} does not exist on origin/{branch}") from exc
     motion_path = None
-    if config.task == "motion-tracking":
-        config_text = run_git(repo_root, "show", f"{commit}:{config_path}")
-        motion_path = resolve_vast_motion_path(config_text, config.hydra_overrides)
+    if config.motion_path is not None:
+        motion_path = _repository_motion_path(config.motion_path)
         try:
             run_git(repo_root, "cat-file", "-e", f"{commit}:{motion_path}")
         except subprocess.CalledProcessError as exc:
@@ -421,46 +355,8 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
     )
 
 
-def resolve_vast_motion_path(
-    config_text: str, hydra_overrides: Sequence[str] = ()
-) -> PurePosixPath:
-    """Resolve the repository-tracked clip selected by the public command."""
-
-    try:
-        document = yaml.safe_load(config_text) or {}
-    except yaml.YAMLError as error:
-        raise ValueError("motion training config is not valid YAML") from error
-    if not isinstance(document, Mapping):
-        raise ValueError("motion training config must contain a YAML mapping")
-    motion = document.get("motion", {})
-    if not isinstance(motion, Mapping):
-        raise ValueError("motion training config motion field must be a mapping")
-    directory = motion.get("directory")
-    sequence = motion.get("sequence")
-    selected_path: str | None = None
-    for override in hydra_overrides:
-        key, separator, value = override.partition("=")
-        key = key.lstrip("+")
-        if not separator or key != "motion_path":
-            continue
-        try:
-            parsed_value = yaml.safe_load(value)
-        except yaml.YAMLError as error:
-            raise ValueError(f"invalid Hydra override {override!r}") from error
-        if not isinstance(parsed_value, str) or not parsed_value:
-            raise ValueError("motion_path must be a non-empty repository path")
-        selected_path = parsed_value
-    if selected_path is None:
-        if not isinstance(directory, str) or not directory:
-            raise ValueError("motion profile must select motion.directory")
-        if not isinstance(sequence, str) or not sequence:
-            raise ValueError("motion profile must select motion.sequence")
-        sequence_path = PurePosixPath(sequence)
-        if sequence_path.name != sequence or sequence_path.suffix:
-            raise ValueError("motion.sequence must be a name without a path or suffix")
-        path = PurePosixPath(directory) / f"{sequence}.npz"
-    else:
-        path = PurePosixPath(selected_path)
+def _repository_motion_path(value: Path) -> PurePosixPath:
+    path = PurePosixPath(str(value))
     if path.is_absolute() or ".." in path.parts:
         raise ValueError("motion clip must be a repository-relative path")
     if path.suffix != ".npz" or path.name == ".npz":
@@ -473,14 +369,14 @@ def resolve_vast_motion_path(
     return path
 
 
+def _task_name(config: VastTrainConfig) -> str:
+    return "motion-tracking" if config.experiment == "motion" else "locomotion"
+
+
 def normalized_repo_url(repo_url: str) -> str:
-    if repo_url.startswith("git@github.com:"):
-        return f"https://github.com/{repo_url.removeprefix('git@github.com:')}"
     parsed = urlparse(repo_url)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError(
-            "origin must be an HTTPS Git remote or git@github.com URL for remote cloning"
-        )
+    if parsed.scheme != "https":
+        raise ValueError("origin must be an HTTPS Git remote for remote cloning")
     if parsed.username or parsed.password:
         raise ValueError(
             "origin URL must not embed credentials; use the GitHub keyring"
@@ -488,7 +384,7 @@ def normalized_repo_url(repo_url: str) -> str:
     return repo_url
 
 
-def offer_query(config: VastTrainConfig, *, countries: tuple[str, ...] | None) -> str:
+def offer_query(config: VastTrainConfig) -> str:
     offer = config.offer
     parts = [
         f"gpu_name={offer.gpu_name}",
@@ -503,29 +399,21 @@ def offer_query(config: VastTrainConfig, *, countries: tuple[str, ...] | None) -
         f"cuda_max_good>={offer.min_cuda}",
         f"dph_total<={config.max_price}",
     ]
-    if countries:
-        parts.append(f"geolocation in [{','.join(countries)}]")
     return " ".join(parts)
 
 
-def find_offers(api: VastApi, config: VastTrainConfig) -> tuple[str, list[VastOffer]]:
-    tiers: tuple[tuple[str, tuple[str, ...] | None], ...] = (
-        ("Korea", config.offer.korea_countries),
-        ("Asia", config.offer.asia_countries),
-        ("global", None),
+def find_offers(api: VastApi, config: VastTrainConfig) -> list[VastOffer]:
+    raw_offers = api.search_offers(
+        offer_query(config),
+        order="dlperf_per_dphtotal-",
+        limit=config.offer.search_limit,
+        storage=float(config.offer.disk_gb),
     )
-    for tier_name, countries in tiers:
-        raw_offers = api.search_offers(
-            offer_query(config, countries=countries),
-            order="dlperf_usd-",
-            limit=config.offer.search_limit,
-            storage=float(config.offer.disk_gb),
-        )
-        offers = [VastOffer.from_mapping(item) for item in raw_offers]
-        offers = [offer for offer in offers if offer_matches(offer, config)]
-        offers.sort(key=lambda offer: (-offer.dlperf_per_dphtotal, offer.dph_total))
-        if offers:
-            return tier_name, offers
+    offers = [VastOffer.from_mapping(item) for item in raw_offers]
+    offers = [offer for offer in offers if offer_matches(offer, config)]
+    offers.sort(key=lambda offer: (-offer.dlperf_per_dphtotal, offer.dph_total))
+    if offers:
+        return offers
     raise RuntimeError(
         "no Vast offers matched the configured hardware and price limits"
     )
@@ -547,8 +435,8 @@ def offer_matches(offer: VastOffer, config: VastTrainConfig) -> bool:
     )
 
 
-def print_offers(tier: str, offers: Sequence[VastOffer], *, limit: int = 5) -> None:
-    print(f"Matching {tier} offers (best value first):")
+def print_offers(offers: Sequence[VastOffer], *, limit: int = 5) -> None:
+    print("Matching Vast offers (best value first):")
     print("  offer       $/hr   reliability  location             CPU RAM  GPU RAM")
     for offer in offers[:limit]:
         print(
@@ -560,7 +448,9 @@ def print_offers(tier: str, offers: Sequence[VastOffer], *, limit: int = 5) -> N
 
 def confirm_rental(offer: VastOffer) -> None:
     if not sys.stdin.isatty():
-        raise RuntimeError("--yes is required when stdin is not interactive")
+        raise RuntimeError(
+            "skip_confirmation=true is required when stdin is not interactive"
+        )
     answer = input(
         f"Rent offer {offer.id} ({offer.gpu_name}, ${offer.dph_total:.3f}/hr)? [y/N] "
     )
@@ -720,53 +610,20 @@ def _instance_absent_or_destroyed(api: VastApi, instance_id: int) -> bool:
     try:
         info = api.show_instance(instance_id)
     except Exception as exc:
-        if _is_explicit_not_found(exc):
-            return True
-    else:
-        if info.get("cur_state") == "unloaded" or info.get("actual_status") == (
-            "destroyed"
-        ):
-            return True
-        if info.get("actual_status") is not None:
-            return False
-
-    try:
-        instances = api.show_instances()
-    except Exception:
-        return False
-    return all(int(item.get("id", -1)) != instance_id for item in instances)
+        return _is_explicit_not_found(exc)
+    if info is None:
+        return True
+    return info.get("actual_status") == "destroyed"
 
 
 def _is_explicit_not_found(exc: BaseException) -> bool:
-    if _exception_http_status(exc) == 404:
-        return True
-    message = str(exc).lower()
-    return bool(
-        re.fullmatch(r"\s*404(?:\s+not found)?\s*", message)
-        or re.search(r"\binstance\b.{0,80}\bnot found\b", message)
-        or re.search(r"\binstance\b.{0,80}\bdoes not exist\b", message)
-        or re.search(r"\bno such instance\b", message)
-    )
+    return _exception_http_status(exc) == 404
 
 
 def _exception_http_status(exc: BaseException) -> int | None:
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        response = getattr(current, "response", None)
-        for owner, attribute in (
-            (current, "status_code"),
-            (current, "http_status"),
-            (response, "status_code"),
-        ):
-            raw_status = getattr(owner, attribute, None)
-            if type(raw_status) is int:
-                return raw_status
-            if isinstance(raw_status, str) and raw_status.isdigit():
-                return int(raw_status)
-        current = current.__cause__ or current.__context__
-    return None
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if type(status) is int else None
 
 
 def reconcile_stale_state(
@@ -874,17 +731,16 @@ def create_available_instance(
     config: VastTrainConfig,
     label: str,
     *,
+    on_before_create: Callable[[], None],
+    on_offer_unavailable: Callable[[], None],
     sleep: Callable[[float], None] = time.sleep,
-    on_before_create: Callable[[], None] | None = None,
-    on_offer_unavailable: Callable[[], None] | None = None,
 ) -> int:
     """Rent the first still-available offer without exposing SDK error URLs."""
 
     for offer in offers:
-        if not config.yes:
+        if not config.skip_confirmation:
             confirm_rental(offer)
-        if on_before_create is not None:
-            on_before_create()
+        on_before_create()
         try:
             return api.create_instance(
                 offer.id,
@@ -910,8 +766,7 @@ def create_available_instance(
                     f"no instance with label {label!r} was visible after "
                     "reconciliation, so another offer will not be rented"
                 ) from exc
-            if on_offer_unavailable is not None:
-                on_offer_unavailable()
+            on_offer_unavailable()
             print(
                 f"Vast offer {offer.id} could not be rented "
                 f"({type(exc).__name__}); trying the next match."
@@ -920,16 +775,7 @@ def create_available_instance(
 
 
 def _is_explicit_offer_unavailable(exc: BaseException) -> bool:
-    if _exception_http_status(exc) in {404, 410}:
-        return True
-    message = str(exc).lower()
-    return bool(
-        re.fullmatch(r"\s*(?:404|410)(?:\s+(?:gone|not found))?\s*", message)
-        or re.search(
-            r"\boffer\b.{0,80}\b(?:disappeared|unavailable|not rentable)\b",
-            message,
-        )
-    )
+    return _exception_http_status(exc) in {404, 410}
 
 
 def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> int:
@@ -991,7 +837,14 @@ def wait_for_instance(
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         info = api.show_instance(instance_id)
-        status = info.get("actual_status")
+        if info is None:
+            raise RuntimeError(f"Vast instance {instance_id} is absent")
+        try:
+            status = str(info["actual_status"])
+        except KeyError as exc:
+            raise RuntimeError(
+                f"Vast instance {instance_id} response has no actual_status"
+            ) from exc
         print(f"Vast instance {instance_id}: {status}")
         if status == "running":
             return
@@ -1138,28 +991,15 @@ branch="$1"
 expected_commit="$2"
 repo_url="$3"
 remote_dir="$4"
-config_path="$5"
-run_name="$6"
-task="$7"
-
-case "$task" in
-  locomotion|motion-tracking) train_command="bello-train" ;;
-  *) echo "unsupported Vast training task: $task" >&2; exit 2 ;;
-esac
+experiment="$5"
+motion_path="$6"
+run_name="$7"
 
 export DEBIAN_FRONTEND=noninteractive
-if command -v apt-get >/dev/null 2>&1; then
-  apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip
-fi
+apt-get update
+apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip
 
-if ! command -v uv >/dev/null 2>&1; then
-  timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
-  export PATH="$HOME/.local/bin:$PATH"
-fi
-if ! command -v uv >/dev/null 2>&1; then
-  python3 -m pip install --break-system-packages --upgrade uv
-fi
+python3 -m pip install --break-system-packages --disable-pip-version-check uv==0.11.25
 command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
 
 askpass="$(mktemp /tmp/bello-git-askpass.XXXXXX)"
@@ -1202,17 +1042,20 @@ uv python install 3.12
 uv sync --frozen
 uv run python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
 
-mapfile -t user_overrides < <(python3 -c 'import json, os, sys; sys.stdout.write("\n".join(json.loads(os.environ["BELLO_HYDRA_OVERRIDES"])))')
+training_overrides=("experiment=$experiment")
+if [ -n "$motion_path" ]; then
+  training_overrides+=("motion_path=$motion_path")
+fi
 
-uv run "$train_command" \
-  "${user_overrides[@]}" \
+uv run bello-train \
+  "${training_overrides[@]}" \
   total_timesteps=768 \
   num_envs=32 \
   wandb_enabled=false \
   video_enabled=false
 
-uv run "$train_command" \
-  "${user_overrides[@]}" \
+uv run bello-train \
+  "${training_overrides[@]}" \
   wandb_enabled=true \
   run_name="$run_name" \
   checkpoint_name="$run_name"
@@ -1231,14 +1074,9 @@ def run_remote_training(
     executor: SshExecutor | None = None,
 ) -> None:
     executor = executor or SshExecutor()
-    project = os.environ.get("WANDB_PROJECT", "bello-mujoco")
-    entity = os.environ.get("WANDB_ENTITY", "")
     remote_env = {
         "WANDB_API_KEY": wandb_key,
-        "WANDB_PROJECT": project,
-        "WANDB_ENTITY": entity,
         "GITHUB_TOKEN": github_token,
-        "BELLO_HYDRA_OVERRIDES": json.dumps(config.hydra_overrides),
     }
     job_dir = f"/workspace/.bello-vast-jobs/{run_name}"
     start_command = _remote_start_command(
@@ -1415,8 +1253,8 @@ if status_path.exists():
 if pid_path.exists():
     try:
         os.kill(int(pid_path.read_text()), 0)
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"Detached remote job has a stale PID in {job_dir}.") from error
     else:
         print(f"Detached remote job already running in {job_dir}.")
         raise SystemExit(0)
@@ -1455,9 +1293,13 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             selection.commit,
             selection.repo_url,
             str(config.remote_dir),
-            str(selection.config_path),
+            config.experiment,
+            (
+                str(_repository_motion_path(config.motion_path))
+                if config.motion_path is not None
+                else ""
+            ),
             run_name,
-            config.task,
         ]
     )
 
@@ -1469,10 +1311,12 @@ offset = int(sys.argv[2])
 log_path = job_dir / "output.log"
 status_path = job_dir / "status"
 pid_path = job_dir / "pid"
-size = log_path.stat().st_size if log_path.exists() else 0
+if not log_path.is_file():
+    raise RuntimeError(f"detached remote job log is missing: {log_path}")
+size = log_path.stat().st_size
 if offset > size:
-    offset = 0
-with log_path.open("rb") if log_path.exists() else open(os.devnull, "rb") as log:
+    raise RuntimeError(f"log offset {offset} exceeds current size {size}")
+with log_path.open("rb") as log:
     log.seek(offset)
     output = log.read(262144)
 next_offset = offset + len(output)
@@ -1569,8 +1413,8 @@ class VastLifecycle:
             reconcile_retries=self.config.reconcile_retries,
             destroy_retries=self.config.destroy_retries,
         )
-        tier, offers = find_offers(self.api, self.config)
-        print_offers(tier, offers)
+        offers = find_offers(self.api, self.config)
+        print_offers(offers)
         instance_id: int | None = None
         failure: BaseException | None = None
         try:
@@ -1644,18 +1488,13 @@ def launch_pipeline(
     run_name = generated_run_name(selection, config)
     print(
         f"Selected origin/{selection.branch} at {selection.commit[:12]} with "
-        f"{selection.config_path} for {config.task} (run {run_name})."
+        f"{selection.config_path} for {_task_name(config)} (run {run_name})."
     )
     if selection.motion_path is not None:
         print(f"Selected repository-tracked motion {selection.motion_path}.")
 
     if config.dry_run:
-        for tier, countries in (
-            ("Korea", config.offer.korea_countries),
-            ("Asia", config.offer.asia_countries),
-            ("global", None),
-        ):
-            print(f"{tier} query: {offer_query(config, countries=countries)}")
+        print(f"Offer query: {offer_query(config)}")
         print("Dry run: no credentials were read and no instance was rented.")
         return 0
 
@@ -1685,12 +1524,6 @@ def launch_pipeline(
             github_token=github_token,
         )
     return 0
-
-
-def shell_preview(command: Sequence[str]) -> str:
-    """Format a command for diagnostics without interpolating secrets."""
-
-    return shlex.join(command)
 
 
 def safe_exception_message(exc: BaseException) -> str:

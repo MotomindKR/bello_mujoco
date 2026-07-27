@@ -10,7 +10,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_04
     direction: -1
-    run_mode: mit
     target: {type: joint, name: left_shoulder_pitch_joint}
 
   - name: left_arm_2
@@ -18,7 +17,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_03
     direction: -1
-    run_mode: mit
     target: {type: joint, name: left_shoulder_roll_joint}
 
   - name: left_arm_3
@@ -26,7 +24,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_06
     direction: 1
-    run_mode: mit
     target: {type: joint, name: left_shoulder_yaw_joint}
 
   - name: left_arm_4
@@ -34,7 +31,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_06
     direction: 1
-    run_mode: mit
     target: {type: joint, name: left_elbow_pitch_joint}
 
   - name: left_arm_5
@@ -42,7 +38,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_00
     direction: 1
-    run_mode: mit
     target: {type: joint, name: left_elbow_yaw_joint}
 
   - name: left_arm_6
@@ -50,7 +45,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_00
     direction: -1
-    run_mode: mit
     target: {type: joint, name: left_wrist_pitch_joint}
 
   - name: right_arm_1
@@ -58,7 +52,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_04
     direction: -1
-    run_mode: mit
     target: {type: joint, name: right_shoulder_pitch_joint}
 
   - name: right_arm_2
@@ -66,7 +59,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_03
     direction: -1
-    run_mode: mit
     target: {type: joint, name: right_shoulder_roll_joint}
 
   - name: right_arm_3
@@ -74,7 +66,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_06
     direction: 1
-    run_mode: mit
     target: {type: joint, name: right_shoulder_yaw_joint}
 
   - name: right_arm_4
@@ -82,7 +73,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_06
     direction: 1
-    run_mode: mit
     target: {type: joint, name: right_elbow_pitch_joint}
 
   - name: right_arm_5
@@ -90,7 +80,6 @@ motors:
     bus: can1
     kind: ROBSTRIDE_00
     direction: 1
-    run_mode: mit
     target: {type: joint, name: right_elbow_yaw_joint}
 
   - name: right_arm_6
@@ -98,5 +87,4 @@ motors:
     bus: can1
     kind: ROBSTRIDE_00
     direction: -1
-    run_mode: mit
     target: {type: joint, name: right_wrist_pitch_joint}

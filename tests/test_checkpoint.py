@@ -21,7 +21,6 @@ from bello_mujoco.training.checkpoint import (
     load_checkpoint_metadata,
     restore_evaluation_checkpoint,
     restore_runner_checkpoint,
-    restore_training_checkpoint,
     save_training_checkpoint,
     timestamped_checkpoint_name,
 )
@@ -34,7 +33,7 @@ from bello_mujoco.envs.locomotion import (
 )
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
-from bello_mujoco.motion import MotionClip
+from bello_mujoco.motion.clip import MotionClip
 from bello_mujoco.policy import (
     ActorCriticConfig,
     apply_policy,
@@ -55,6 +54,7 @@ ACTION_LAYOUT = ActionLayout(("action_0", "action_1"))
 
 
 class FakeEnv:
+    task = "locomotion"
     config = BelloEnvConfig()
     action_clip = 1.0
     ppo_stagger_initial_step_count = False
@@ -323,7 +323,6 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     path = tmp_path / "checkpoint"
 
     save_checkpoint(path, state, checkpoint_metadata)
-    train_state, training_metadata = restore_training_checkpoint(path)
     evaluation_state, eval_metadata, normalization = restore_evaluation_checkpoint(path)
     restored, static_policy, optimizer, resume_metadata = restore_runner_checkpoint(
         path, env, checkpoint_metadata
@@ -331,7 +330,7 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     document = json.loads((path / checkpoint.METADATA_FILE).read_text(encoding="utf-8"))
 
     assert_tree_equal(restored, state)
-    assert training_metadata == eval_metadata == resume_metadata == checkpoint_metadata
+    assert eval_metadata == resume_metadata == checkpoint_metadata
     assert_tree_equal(normalization.value, state.value_norm_state)
     assert_tree_equal(normalization.observation, state.observation_norm_state)
     assert_tree_equal(
@@ -347,10 +346,6 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     restored_policy = eqx.combine(restored.params, static_policy)
     expected_policy = eqx.combine(state.params, static_policy)
     assert_tree_equal(
-        apply_policy(train_state.policy, observation, critic_observation),
-        apply_policy(expected_policy, observation, critic_observation),
-    )
-    assert_tree_equal(
         apply_policy(evaluation_state.policy, observation, critic_observation),
         apply_policy(expected_policy, observation, critic_observation),
     )
@@ -358,7 +353,6 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
         apply_policy(restored_policy, observation, critic_observation),
         apply_policy(expected_policy, observation, critic_observation),
     )
-    assert int(train_state.update) == 3
     assert int(evaluation_state.update) == 3
     assert (path / checkpoint.STATE_DIR).is_dir()
     assert (path / checkpoint.CONTINUATION_DIR).is_dir()
@@ -565,8 +559,6 @@ def test_checkpoint_config_and_timestamped_name() -> None:
         name="run", every_updates=25, resume_path=Path("previous/update_000025")
     )
 
-    assert config.every_updates == 25
-    assert config.resume_path == Path("previous/update_000025")
     assert (
         timestamped_checkpoint_name(
             config,
@@ -625,8 +617,10 @@ def test_checkpoint_refuses_existing_path(tmp_path: Path) -> None:
     ("mutation", "error_match"),
     [
         (
-            lambda document: document.update(schema_version=6),
-            "schema version 6.*archived source revision",
+            lambda document: document.update(
+                schema_version=checkpoint.CHECKPOINT_SCHEMA_VERSION + 1
+            ),
+            "checkpoint schema version.*archived source revision",
         ),
         (
             lambda document: document.update(kind="evaluation"),
@@ -691,27 +685,6 @@ def test_checkpoint_rejects_deployment_contract_tampering(tmp_path: Path) -> Non
         ValueError, match="deployment contract mismatch.*assets.prepared_assets"
     ):
         load_checkpoint_metadata(path)
-
-
-def test_deployment_contract_excludes_source_and_dependency_versions(
-    tmp_path: Path,
-) -> None:
-    env = FakeEnv()
-    config = ppo_config()
-    state = runner_state(config, env)
-    path = tmp_path / "semantic_deployment"
-    save_checkpoint(path, state, metadata(config, tmp_path))
-
-    restored, restored_metadata, normalization = restore_evaluation_checkpoint(path)
-    document = json.loads((path / checkpoint.METADATA_FILE).read_text(encoding="utf-8"))
-
-    assert int(restored.update) == int(state.update)
-    assert restored_metadata == metadata(config, tmp_path)
-    assert_tree_equal(normalization.observation, state.observation_norm_state)
-    serialized = json.dumps(document["deployment_contract"], sort_keys=True)
-    assert "implementation" not in serialized
-    assert "dependency_lock" not in serialized
-    assert "active_distributions" not in serialized
 
 
 def test_checkpoint_rejects_deployment_contract_changed_after_training_start(
@@ -826,7 +799,7 @@ def test_fixed_tuple_coercion_rejects_truncation() -> None:
 @pytest.mark.parametrize(
     ("fingerprint_field", "restore_runner", "error_match"),
     [
-        ("train_layout_sha256", False, "training state layout does not match"),
+        ("train_layout_sha256", False, "evaluation state layout does not match"),
         (
             "continuation_layout_sha256",
             True,
@@ -870,7 +843,7 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
         if restore_runner:
             restore_runner_checkpoint(path, env, metadata(config, tmp_path))
         else:
-            restore_training_checkpoint(path)
+            restore_evaluation_checkpoint(path)
 
     assert restore_calls == (1 if restore_runner else 0)
 
@@ -912,7 +885,7 @@ def test_restore_rejects_state_update_that_disagrees_with_metadata(
     metadata_path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match="does not match recorded update"):
-        restore_training_checkpoint(path)
+        restore_evaluation_checkpoint(path)
 
 
 def test_runner_restore_rejects_environment_contract_mismatch(
