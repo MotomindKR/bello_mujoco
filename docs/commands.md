@@ -66,10 +66,10 @@ Configuration source: `configs/commands/train.yaml`.
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
-| `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. A non-null value is rejected for locomotion profiles. |
-| `resume_path` | path or `null`; `null` | Restore a schema-7 continuation checkpoint. Resume validates the full training and environment contract. |
-| `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. |
-| `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. |
+| `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. A non-null value is rejected for locomotion profiles. |
+| `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and exactly match its recorded Git commit; resume then validates the full training and environment contract. |
+| `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
+| `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. It must be one path component. |
 | `wandb_enabled` | boolean or `null`; `null` | Enable or disable W&B independently of the profile default. |
 | `run_name` | string or `null`; `null` | Override the W&B run name. |
 | `video_enabled` | boolean or `null`; `null` | Enable or disable scheduled native-MuJoCo evaluation videos. |
@@ -89,9 +89,9 @@ and its contract.
 
 ## `bello-eval`
 
-Restore a deployment-compatible checkpoint and evaluate it with native MuJoCo.
-Locomotion opens a Rerun recording; motion tracking renders a video and prints
-tracking statistics.
+Restore a checkpoint from its exact clean Git revision and evaluate it with
+native MuJoCo. Locomotion opens a Rerun recording; motion tracking renders a
+video and prints tracking statistics.
 
 Configuration source: `configs/commands/eval.yaml`.
 
@@ -119,7 +119,7 @@ through without clipping or range validation, so it should remain within the
 checkpoint's trained bounds.
 
 Evaluation validates the checkpoint task, policy and critic observation sizes,
-action size, asset contract, and environment metadata. It does not accept
+action size, asset configuration, and environment metadata. It does not accept
 runtime overrides for the trained robot or reward formulation.
 
 Motion-policy evaluation renders at 640 by 480 pixels and 50 fps. The `width`,
@@ -242,7 +242,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
 | `task` | `locomotion` or `motion`; `locomotion` | both | Select the checkpoint and observation contract. |
-| `checkpoint_path` | path or `null`; `null` | both | Required schema-7 checkpoint directory. |
+| `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. Its recorded Git commit must equal the current clean checkout. |
 | `endpoint` | string; `http://127.0.0.1:50051` | both | `bello-hardwared` endpoint. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
@@ -264,8 +264,8 @@ waiting for `RUN`, the runner continues refreshing the hold target and checking
 telemetry. `duration_seconds` measures only the post-`RUN` policy loop; the
 ramp and confirmation waits are outside that duration.
 
-Hardware targets use the proportional and derivative gains stored in the
-checkpoint robot contract.
+Hardware targets use the proportional and derivative gains stored in checkpoint
+metadata.
 
 Preflight validates the checkpoint task, sphere-hand/fixed-joint morphology,
 policy layouts, generated transmission, motor inventory, IMU presence,
@@ -278,8 +278,8 @@ paths stop and disable the groups.
 ## What is intentionally not public
 
 The seven command documents expose workflow choices and operator controls.
-Robot topology, coordinate ownership, motor identities, checkpoint schema,
-telemetry limits, control validity windows, pose frames, and other safety
-guardrails remain validated implementation constants. Changing those contracts
-requires a reviewed source/config change and corresponding tests rather than an
-ad hoc command-line override.
+Robot topology, coordinate ownership, motor identities, checkpoint integrity
+rules, telemetry limits, control validity windows, pose frames, and other
+safety guardrails remain validated implementation constants. Changing those
+contracts requires a reviewed source/config change and corresponding tests
+rather than an ad hoc command-line override.

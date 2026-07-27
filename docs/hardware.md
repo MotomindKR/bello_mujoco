@@ -13,20 +13,27 @@ The runner has two task modes:
 
 The `bello-hardware` Python binding is distributed with `bello-stack`, not this
 repository. Supply that local component through uv as documented in the command
-reference.
+reference. The checkpoint neither records nor checks the separate `bello-stack`
+checkout, hardware daemon, or firmware revisions. Deployment is responsible for
+selecting versions that match the recorded `bello_mujoco` source.
+
+An exact checkout also restores that revision's hardware runner and safety
+checks. Review old runner code and its guards before using `arm=true`; a later
+safety fix is not inherited automatically by a historical checkpoint.
 
 ## Read-only preflight
 
 `arm=false` is the default. Preflight:
 
-1. restores and validates the checkpoint document and deployment state;
-2. prepares the exact robot asset bound into checkpoint metadata;
-3. reconstructs observation, action, and physical-coordinate layouts;
-4. compiles policy inference;
-5. connects to the hardware daemon without acquiring a control lease;
-6. validates motor groups, coordinate ownership, IMU presence, group state, and
+1. requires a clean checkout at the checkpoint's exact Git commit;
+2. restores and validates checkpoint integrity and policy state;
+3. prepares the robot asset described by checkpoint metadata;
+4. reconstructs observation, action, and physical-coordinate layouts;
+5. compiles policy inference;
+6. connects to the hardware daemon without acquiring a control lease;
+7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite telemetry;
-7. evaluates one preview policy step and reports the resolved contract.
+8. evaluates one preview policy step and reports the resolved configuration.
 
 No motor target is sent in this mode.
 
@@ -49,8 +56,8 @@ Any other input fails closed. The `RUN` prompt is read asynchronously so motor
 targets, command receipts, and safety checks continue while the terminal waits
 for the operator.
 
-Both tasks use the proportional and derivative gains stored in the checkpoint's
-robot contract.
+Both tasks use the proportional and derivative gains stored in checkpoint
+metadata.
 
 Safety failures are terminal and unwind the acquired control sessions.
 Explicit completion, gamepad abort, and keyboard interruption stop and disable

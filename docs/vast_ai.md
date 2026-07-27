@@ -45,7 +45,9 @@ Non-dry execution:
     fails closed.
 
 The preflight uses a small fixed rollout and disables W&B and videos. The real
-job forces W&B on and assigns the resolved run/checkpoint names.
+job forces W&B on and assigns the resolved run/checkpoint names. Every produced
+checkpoint records the same full commit selected by the launcher, and W&B logs
+that commit with the run configuration.
 
 ## Time bounds
 

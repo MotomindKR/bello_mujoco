@@ -9,6 +9,11 @@ contracts.
 
 Avoid mixing unrelated refactors with behavior changes.
 
+Checkpoint-producing training must run from a clean commit contained by a local
+`origin/*` tracking branch. Fetch or push immediately before training so that
+tracking state is current. Checkpoints record that full commit and deliberately
+require the same clean revision for resume, evaluation, and hardware execution.
+
 ## Branch Naming
 
 Use short lowercase branch names:

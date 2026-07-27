@@ -290,11 +290,14 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
         '<mujoco><asset><mesh name="body" file="../meshes/body.stl" /></asset></mujoco>'
     )
     viewer_mjcf_path.write_text("<mujoco><asset /></mujoco>")
+    mesh_path = mesh_dir / "body.stl"
+    mesh_path.write_bytes(b"mesh")
     write_prepared_asset_manifest(
         PreparedAsset("full_body", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
         manifest_path,
         "cache-a",
     )
+    mesh_path.unlink()
     assert (
         read_prepared_asset_manifest(
             urdf_path,
@@ -307,7 +310,9 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
     )
 
 
-def test_cached_manifest_requires_matching_cache_key(tmp_path: Path) -> None:
+def test_cached_manifest_requires_matching_cache_key_and_content(
+    tmp_path: Path,
+) -> None:
     asset_dir = tmp_path / "full_body"
     mjcf_dir = asset_dir / "mjcf"
     urdf_dir = asset_dir / "urdf"
@@ -345,6 +350,28 @@ def test_cached_manifest_requires_matching_cache_key(tmp_path: Path) -> None:
             "cache-a",
         )
         is not None
+    )
+    (mjcf_dir / "bello_full_body.scene.runtime.xml").write_text("<mujoco />")
+    assert (
+        read_prepared_asset_manifest(
+            urdf_path,
+            mjcf_path,
+            viewer_mjcf_path,
+            manifest_path,
+            "cache-a",
+        )
+        is not None
+    )
+    urdf_path.write_text("<robot name='changed' />")
+    assert (
+        read_prepared_asset_manifest(
+            urdf_path,
+            mjcf_path,
+            viewer_mjcf_path,
+            manifest_path,
+            "cache-a",
+        )
+        is None
     )
 
 
@@ -570,17 +597,17 @@ def test_clean_asset_builds_are_byte_reproducible_within_one_process(
         assert first_path.read_bytes() == second_path.read_bytes()
 
 
-def test_asset_cache_version_changes_cache_key(monkeypatch) -> None:
+def test_asset_cache_key_tracks_generator_revision(monkeypatch) -> None:
     config = AssetPrepConfig()
     current_key = asset_config_hash(config)
 
     monkeypatch.setattr(
         prepare_module,
-        "ASSET_CACHE_VERSION",
-        prepare_module.ASSET_CACHE_VERSION + 1,
+        "repository_cache_revision",
+        lambda: "f" * 40,
     )
-
-    assert asset_config_hash(config) != current_key
+    revision_key = asset_config_hash(config)
+    assert revision_key != current_key
 
 
 def test_actuator_config_does_not_expose_mutable_joint_mapping() -> None:

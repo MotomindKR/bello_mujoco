@@ -29,7 +29,7 @@ asset preparation -----> generated URDF, runtime MJCF, viewer MJCF
                         PPO
                          |
                          v
-                schema-7 checkpoint
+              exact-source checkpoint
                          |
                          +-------------------+
                          |                   |
@@ -37,11 +37,10 @@ asset preparation -----> generated URDF, runtime MJCF, viewer MJCF
                  native evaluation   physical hardware
 ```
 
-One source robot description feeds every downstream runtime. Prepared assets
-record their source and configuration fingerprints. Checkpoints bind the
-policy, observation/action layouts, environment contract, robot assets, and
-normalization state needed to reproduce evaluation or safely reject an
-incompatible runtime.
+One source robot description feeds every downstream runtime. Checkpoints record
+the complete training state and the exact Git commit that created it.
+Evaluation, resume, and hardware deployment require a clean checkout at that
+commit instead of attempting compatibility across repository revisions.
 
 ## Execution paths
 
@@ -77,8 +76,9 @@ JAX-compatible on the training path.
   Physical deployment uses a native model to reconstruct the policy,
   observation, and transmission contract, while the robot supplies the actual
   dynamics.
-- Current checkpoints use semantic schema 7. Older schemas require the source
-  revision that created them; there is no silent compatibility path.
+- Checkpoints are revision-bound. They can be created only from a clean commit
+  contained by a local `origin/*` tracking branch, and they can be loaded only
+  by that exact clean commit. There is no compatibility override.
 
 ## Configuration model
 
@@ -119,7 +119,8 @@ operator-interrupt paths stop and disable the groups.
 
 Vast.ai orchestration records durable rental state under `.vast/` and attempts
 teardown after success, failure, timeout, or interruption. W&B is the supported
-remote checkpoint transport.
+remote checkpoint transport. The selected remote commit is written into every
+checkpoint and its W&B configuration.
 
 Generated assets, caches, W&B state, checkpoints, videos, and remote lifecycle
 state are runtime artifacts, not source. They must not be committed.

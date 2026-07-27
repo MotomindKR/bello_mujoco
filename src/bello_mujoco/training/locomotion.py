@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import equinox as eqx
@@ -14,13 +14,10 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
-    DeploymentContract,
-    capture_asset_contract,
-    capture_deployment_contract,
     checkpoint_path,
-    normalized_asset_config,
     restore_runner_checkpoint,
     save_training_checkpoint,
+    validate_checkpoint_name,
 )
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
@@ -47,6 +44,10 @@ from bello_mujoco.training.ppo import (
     update_runner_state,
     validate_ppo_config,
     validate_action_limit_contract,
+)
+from bello_mujoco.repository import (
+    capture_repository_commit,
+    require_checkpoint_output_directory,
 )
 
 RunnerInitialization = tuple[
@@ -107,6 +108,13 @@ def run_training(run_config: TrainingRunConfig) -> None:
     validate_video_config(video_config)
     validate_checkpoint_config(checkpoint_config)
     validate_action_limit_contract(config, env_config.action_clip)
+    git_commit = None
+    if checkpoint_config.enabled:
+        checkpoint_config = replace(
+            checkpoint_config,
+            directory=require_checkpoint_output_directory(checkpoint_config.directory),
+        )
+        git_commit = capture_repository_commit()
     run = create_wandb_run(wandb_config)
     succeeded = False
     try:
@@ -144,7 +152,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
             policy_obs_size=policy_obs_size,
             critic_policy_obs_size=critic_policy_obs_size,
         )
-        deployment_contract = capture_deployment_contract(metadata)
         checkpoint_dir = (
             checkpoint_path(checkpoint_config, config)
             if checkpoint_config.enabled
@@ -172,6 +179,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 "done": done_config,
                 "env_config": env_config,
                 "checkpoint": checkpoint_config,
+                "git_commit": git_commit,
                 "video": video_config,
                 "warp": warp,
                 "env": {
@@ -202,18 +210,20 @@ def run_training(run_config: TrainingRunConfig) -> None:
             checkpoint_callback=periodic_checkpoint_callback(
                 checkpoint_dir,
                 metadata,
-                deployment_contract,
+                git_commit,
                 checkpoint_config,
                 run,
             ),
         )
         metrics = out["metrics"]
         if checkpoint_config.enabled:
+            if git_commit is None:
+                raise RuntimeError("checkpoint Git commit was not captured")
             save_training_checkpoint(
                 checkpoint_dir,
                 out["runner_state"],
                 metadata,
-                deployment_contract,
+                git_commit,
             )
             if checkpoint_config.upload_wandb_artifact and run is not None:
                 track_checkpoint_artifact(
@@ -237,23 +247,14 @@ def checkpoint_metadata(
     policy_obs_size: int,
     critic_policy_obs_size: int,
 ) -> CheckpointMetadata:
-    normalized_asset = normalized_asset_config(run_config.asset_config)
     if run_config.asset_config.output_root is not None:
-        actual_runtime = capture_asset_contract(
-            run_config.asset_config, run_config.env_config.terrain
+        raise ValueError(
+            "training requires asset_config.output_root=null so the exact source "
+            "revision owns asset generation"
         )
-        reproducible_runtime = capture_asset_contract(
-            normalized_asset, run_config.env_config.terrain
-        )
-        if actual_runtime != reproducible_runtime:
-            raise ValueError(
-                "asset_config.output_root resolved to prepared assets that differ "
-                "from the repository-derived cache; refusing to create a "
-                "checkpoint that cannot be reproduced"
-            )
     return CheckpointMetadata(
         ppo=run_config.config,
-        asset=normalized_asset,
+        asset=run_config.asset_config,
         reward=run_config.reward_config,
         command=run_config.command_config,
         done=run_config.done_config,
@@ -271,17 +272,19 @@ def checkpoint_metadata(
 def periodic_checkpoint_callback(
     final_path: Path | None,
     metadata: CheckpointMetadata,
-    deployment_contract: DeploymentContract,
+    git_commit: str | None,
     config: CheckpointConfig,
     run,
 ) -> Callable[[RunnerState], None] | None:
     if final_path is None or config.every_updates is None:
         return None
+    if git_commit is None:
+        raise RuntimeError("checkpoint Git commit was not captured")
 
     def save(runner_state: RunnerState) -> None:
         update = int(jax.device_get(runner_state.update))
         path = periodic_checkpoint_path(final_path, update)
-        save_training_checkpoint(path, runner_state, metadata, deployment_contract)
+        save_training_checkpoint(path, runner_state, metadata, git_commit)
         if config.upload_wandb_artifact and run is not None:
             base_name = config.wandb_artifact_name or final_path.name
             track_checkpoint_artifact(
@@ -540,6 +543,7 @@ def validate_video_config(config: TrainingVideoConfig) -> None:
 
 
 def validate_checkpoint_config(config: CheckpointConfig) -> None:
+    validate_checkpoint_name(config.name)
     if config.every_updates is not None and config.every_updates <= 0:
         raise ValueError(
             "checkpoint_config.every_updates must be null or positive, got "

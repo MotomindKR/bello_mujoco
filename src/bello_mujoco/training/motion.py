@@ -13,16 +13,13 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
-    DeploymentContract,
-    capture_asset_contract,
-    capture_deployment_contract,
     checkpoint_path,
     load_checkpoint_metadata,
     motion_clip_contract,
     motion_metadata_with_runner_state,
-    normalized_asset_config,
     restore_runner_checkpoint,
     save_training_checkpoint,
+    validate_checkpoint_name,
     validate_motion_clip_contract,
 )
 from bello_mujoco.envs.motion_tracking import (
@@ -58,6 +55,12 @@ from bello_mujoco.training.ppo import (
     update_runner_state,
     validate_action_limit_contract,
     validate_ppo_config,
+)
+from bello_mujoco.repository import (
+    capture_repository_commit,
+    require_checkpoint_output_directory,
+    require_tracked_repository_path,
+    resolve_repository_path,
 )
 
 RunnerInitialization = tuple[
@@ -110,6 +113,28 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
     validate_motion_checkpoint_config(run_config.checkpoint_config)
     if run_config.video_config.enabled and not run_config.checkpoint_config.enabled:
         raise ValueError("motion evaluation requires checkpointing to be enabled")
+    git_commit = None
+    if run_config.checkpoint_config.enabled:
+        run_config = replace(
+            run_config,
+            checkpoint_config=replace(
+                run_config.checkpoint_config,
+                directory=require_checkpoint_output_directory(
+                    run_config.checkpoint_config.directory
+                ),
+            ),
+        )
+        git_commit = capture_repository_commit()
+        tracked_motion = require_tracked_repository_path(
+            run_config.env_config.motion_path
+        )
+        run_config = replace(
+            run_config,
+            env_config=replace(
+                run_config.env_config,
+                motion_path=resolve_repository_path(tracked_motion),
+            ),
+        )
     evaluation_worker = None
     run = None
     succeeded = False
@@ -137,7 +162,6 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
             policy_obs_size,
             critic_policy_obs_size,
         )
-        deployment_contract = capture_deployment_contract(metadata)
         rng = jax.random.PRNGKey(run_config.config.seed)
         log_config(
             run,
@@ -147,6 +171,7 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
                 "asset": run_config.asset_config,
                 "env": run_config.env_config,
                 "checkpoint": run_config.checkpoint_config,
+                "git_commit": git_commit,
                 "video": run_config.video_config,
                 "warp": run_config.warp,
             },
@@ -173,21 +198,23 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
             run,
             checkpoint_root=checkpoint_root,
             checkpoint_context=(
-                metadata,
-                deployment_contract,
-                run_config.checkpoint_config,
+                (metadata, git_commit, run_config.checkpoint_config)
+                if git_commit is not None
+                else None
             ),
             initial_runner=initial_runner,
         )
         final_checkpoint = None
         if checkpoint_root is not None:
+            if git_commit is None:
+                raise RuntimeError("checkpoint Git commit was not captured")
             final_checkpoint = checkpoint_root / "final"
             runner_state = out["runner_state"]
             save_motion_checkpoint(
                 final_checkpoint,
                 runner_state,
                 metadata,
-                deployment_contract,
+                git_commit,
             )
             upload_motion_checkpoint(
                 run,
@@ -240,7 +267,11 @@ def motion_train_update_loop(
     run,
     *,
     checkpoint_root: Path | None = None,
-    checkpoint_context: tuple[CheckpointMetadata, DeploymentContract, CheckpointConfig]
+    checkpoint_context: tuple[
+        CheckpointMetadata,
+        str,
+        CheckpointConfig,
+    ]
     | None = None,
     initial_runner: RunnerInitialization | None = None,
 ) -> dict:
@@ -258,12 +289,12 @@ def motion_train_update_loop(
             raise ValueError("initial evaluation requires checkpoint context")
         initial_update = int(jax.device_get(runner_state.update))
         initial_checkpoint = checkpoint_root / f"update_{initial_update:06d}"
-        metadata, deployment_contract, _ = checkpoint_context
+        metadata, git_commit, _ = checkpoint_context
         save_motion_checkpoint(
             initial_checkpoint,
             runner_state,
             metadata,
-            deployment_contract,
+            git_commit,
         )
         try_render_motion_checkpoint_video(
             evaluation_worker,
@@ -302,13 +333,13 @@ def motion_train_update_loop(
             and checkpoint_context is not None
             and should_save_motion_checkpoint(update, checkpoint_context[2])
         ):
-            metadata, deployment_contract, checkpoint_config = checkpoint_context
+            metadata, git_commit, checkpoint_config = checkpoint_context
             scheduled_checkpoint = checkpoint_root / f"update_{update:06d}"
             save_motion_checkpoint(
                 scheduled_checkpoint,
                 runner_state,
                 metadata,
-                deployment_contract,
+                git_commit,
             )
             upload_motion_checkpoint(
                 run,
@@ -325,12 +356,12 @@ def motion_train_update_loop(
                 else checkpoint_root / f"eval_{update:06d}"
             )
             if scheduled_checkpoint is None:
-                metadata, deployment_contract, _ = checkpoint_context
+                metadata, git_commit, _ = checkpoint_context
                 save_motion_checkpoint(
                     evaluation_checkpoint,
                     runner_state,
                     metadata,
-                    deployment_contract,
+                    git_commit,
                 )
             try_render_motion_checkpoint_video(
                 evaluation_worker,
@@ -377,13 +408,13 @@ def save_motion_checkpoint(
     path: Path,
     runner_state: RunnerState,
     metadata: CheckpointMetadata,
-    deployment_contract: DeploymentContract,
+    git_commit: str,
 ) -> None:
     save_training_checkpoint(
         path,
         runner_state,
         motion_metadata_with_runner_state(metadata, runner_state),
-        deployment_contract,
+        git_commit,
     )
 
 
@@ -393,23 +424,17 @@ def motion_checkpoint_metadata(
     policy_obs_size: int,
     critic_policy_obs_size: int,
 ) -> CheckpointMetadata:
-    normalized_asset = normalized_asset_config(run_config.asset_config)
     if run_config.asset_config.output_root is not None:
-        actual_runtime = capture_asset_contract(
-            run_config.asset_config, run_config.env_config.terrain
+        raise ValueError(
+            "training requires asset_config.output_root=null so the exact source "
+            "revision owns asset generation"
         )
-        reproducible_runtime = capture_asset_contract(
-            normalized_asset, run_config.env_config.terrain
-        )
-        if actual_runtime != reproducible_runtime:
-            raise ValueError(
-                "asset_config.output_root resolved to prepared assets that differ "
-                "from the repository-derived cache; refusing to create a "
-                "checkpoint that cannot be reproduced"
-            )
+    motion_path = run_config.env_config.motion_path
+    if run_config.checkpoint_config.enabled:
+        motion_path = require_tracked_repository_path(motion_path)
     return CheckpointMetadata(
         ppo=run_config.config,
-        asset=normalized_asset,
+        asset=run_config.asset_config,
         reward=None,
         command=None,
         done=None,
@@ -422,10 +447,16 @@ def motion_checkpoint_metadata(
         critic_observation_layout=env.critic_observation_layout,
         action_layout=env.action_layout,
         task="motion_tracking",
-        motion_env=run_config.env_config,
-        motion=motion_clip_contract(
-            run_config.env_config.motion_path,
-            env.motion,
+        motion_env=replace(
+            run_config.env_config,
+            motion_path=motion_path,
+        ),
+        motion=replace(
+            motion_clip_contract(
+                run_config.env_config.motion_path,
+                env.motion,
+            ),
+            path=motion_path,
         ),
     )
 
@@ -606,6 +637,7 @@ def validate_motion_video_config(config: MotionEvalVideoConfig) -> None:
 
 
 def validate_motion_checkpoint_config(config: CheckpointConfig) -> None:
+    validate_checkpoint_name(config.name)
     if config.every_updates is not None and config.every_updates <= 0:
         raise ValueError("checkpoint_config.every_updates must be positive or null")
     if config.resume_path is not None and not Path(config.resume_path).exists():

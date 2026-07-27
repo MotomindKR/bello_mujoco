@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 
 import bello_mujoco.training.checkpoint as checkpoint
+import bello_mujoco.repository as source
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
@@ -23,6 +25,7 @@ from bello_mujoco.training.checkpoint import (
     restore_runner_checkpoint,
     save_training_checkpoint,
     timestamped_checkpoint_name,
+    validate_checkpoint_name,
 )
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
@@ -51,6 +54,29 @@ from bello_mujoco.training.ppo import (
 ACTOR_LAYOUT = ObservationLayout((("actor_observation", 4),))
 CRITIC_LAYOUT = ObservationLayout((("critic_observation", 5),))
 ACTION_LAYOUT = ActionLayout(("action_0", "action_1"))
+GIT_COMMIT = "1" * 40
+
+
+@pytest.fixture(autouse=True)
+def exact_source_checkout(monkeypatch: pytest.MonkeyPatch):
+    state = {"commit": GIT_COMMIT}
+
+    def require_commit(expected: str) -> None:
+        source.validate_repository_commit(expected)
+        current = state["commit"]
+        if expected != current:
+            raise ValueError(
+                "checkpoint source commit does not match this checkout: "
+                f"checkpoint={expected}, current={current}"
+            )
+
+    monkeypatch.setattr(
+        checkpoint,
+        "capture_repository_commit",
+        lambda: state["commit"],
+    )
+    monkeypatch.setattr(checkpoint, "require_repository_commit", require_commit)
+    return state
 
 
 class FakeEnv:
@@ -284,7 +310,7 @@ def checkpoint_document(
         metadata,
         checkpoint._train_checkpoint_item(state),
         checkpoint._continuation_checkpoint_item(state),
-        checkpoint.capture_deployment_contract(metadata),
+        GIT_COMMIT,
     )
 
 
@@ -295,7 +321,7 @@ def save_checkpoint(
         path,
         state,
         metadata,
-        checkpoint.capture_deployment_contract(metadata),
+        GIT_COMMIT,
     )
 
 
@@ -304,6 +330,15 @@ def write_checkpoint_document(path: Path, document: dict[str, Any]) -> None:
     (path / checkpoint.METADATA_FILE).write_text(
         json.dumps(document, indent=2, sort_keys=True), encoding="utf-8"
     )
+
+
+def run_git(path: Path, *arguments: str) -> str:
+    return subprocess.run(
+        ("git", "-C", str(path), *arguments),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def assert_tree_equal(actual: Any, expected: Any) -> None:
@@ -356,29 +391,11 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     assert int(evaluation_state.update) == 3
     assert (path / checkpoint.STATE_DIR).is_dir()
     assert (path / checkpoint.CONTINUATION_DIR).is_dir()
-    assert document["schema_version"] == checkpoint.CHECKPOINT_SCHEMA_VERSION == 7
-    assert document["kind"] == checkpoint.CHECKPOINT_KIND
+    assert document["git_commit"] == GIT_COMMIT
     assert document["update"] == 3
-    assert document["resolved_config_sha256"].startswith("sha256:")
-    assert document["resume_contract_sha256"].startswith("sha256:")
+    assert document["metadata_sha256"].startswith("sha256:")
     assert document["train_layout_sha256"].startswith("sha256:")
     assert document["continuation_layout_sha256"].startswith("sha256:")
-    assert document["deployment_contract_sha256"].startswith("sha256:")
-    assert set(document["deployment_contract"]) == {
-        "version",
-        "task_profile",
-        "robot_profile",
-        "policy",
-        "obs_size",
-        "critic_obs_size",
-        "action_size",
-        "actor_observation_layout",
-        "critic_observation_layout",
-        "action_layout",
-        "assets",
-        "motion_content_sha256",
-        "motion_schema_sha256",
-    }
 
 
 def test_motion_checkpoint_rejects_locomotion_environment_task(
@@ -449,7 +466,7 @@ def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
 
     normalization_tamper = json.loads(json.dumps(original_document))
     normalization_tamper["metadata"]["observation_norm"]["mean"][0] += 0.5
-    normalization_tamper["resolved_config_sha256"] = checkpoint._fingerprint(
+    normalization_tamper["metadata_sha256"] = checkpoint._fingerprint(
         normalization_tamper["metadata"]
     )
     metadata_path.write_text(json.dumps(normalization_tamper), encoding="utf-8")
@@ -462,7 +479,7 @@ def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
 
     sampler_tamper = json.loads(json.dumps(original_document))
     sampler_tamper["metadata"]["motion_sampling_failure_ema"][0] += 0.125
-    sampler_tamper["resolved_config_sha256"] = checkpoint._fingerprint(
+    sampler_tamper["metadata_sha256"] = checkpoint._fingerprint(
         sampler_tamper["metadata"]
     )
     metadata_path.write_text(json.dumps(sampler_tamper), encoding="utf-8")
@@ -567,6 +584,59 @@ def test_checkpoint_config_and_timestamped_name() -> None:
         )
         == "run_20260712_013045_123456"
     )
+    with pytest.raises(ValueError, match="path component"):
+        validate_checkpoint_name("../run")
+
+
+def test_repository_commit_requires_origin_tracked_clean_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_git(tmp_path, "init", "-b", "main")
+    run_git(tmp_path, "config", "user.name", "Checkpoint Test")
+    run_git(tmp_path, "config", "user.email", "checkpoint@example.com")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("initial\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("checkpoints/\n", encoding="utf-8")
+    run_git(tmp_path, "add", "tracked.txt", ".gitignore")
+    run_git(tmp_path, "commit", "-m", "initial")
+    run_git(
+        tmp_path,
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/MotomindKR/bello_mujoco.git",
+    )
+    run_git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    monkeypatch.setattr(source, "repository_root", lambda: tmp_path)
+
+    commit = source.capture_repository_commit()
+
+    assert commit == run_git(tmp_path, "rev-parse", "HEAD")
+    assert source.require_tracked_repository_path(tracked) == Path("tracked.txt")
+    assert source.resolve_repository_path(Path("tracked.txt")) == tracked
+    assert source.require_checkpoint_output_directory(tmp_path.parent) == (
+        tmp_path.parent
+    )
+    assert source.require_checkpoint_output_directory(tmp_path / "checkpoints") == (
+        tmp_path / "checkpoints"
+    )
+    with pytest.raises(ValueError, match="must be Git-ignored"):
+        source.require_checkpoint_output_directory(tmp_path / "results")
+
+    untracked = tmp_path / "untracked.txt"
+    untracked.write_text("not committed\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="clean Git worktree"):
+        source.capture_repository_commit()
+    with pytest.raises(ValueError, match="must be tracked in HEAD"):
+        source.require_tracked_repository_path(untracked)
+
+    untracked.unlink()
+    tracked.write_text("second\n", encoding="utf-8")
+    run_git(tmp_path, "add", "tracked.txt")
+    run_git(tmp_path, "commit", "-m", "second")
+    with pytest.raises(ValueError, match="source commit does not match"):
+        source.require_repository_commit(commit)
 
 
 def test_checkpoint_failure_never_publishes_partial_directory(
@@ -617,26 +687,24 @@ def test_checkpoint_refuses_existing_path(tmp_path: Path) -> None:
     ("mutation", "error_match"),
     [
         (
-            lambda document: document.update(
-                schema_version=checkpoint.CHECKPOINT_SCHEMA_VERSION + 1
-            ),
-            "checkpoint schema version.*archived source revision",
+            lambda document: document.pop("git_commit"),
+            "predates embedded Git provenance",
         ),
         (
-            lambda document: document.update(kind="evaluation"),
-            "unsupported checkpoint kind",
+            lambda document: document.update(git_commit="not-a-commit"),
+            "git_commit must contain exactly 40",
         ),
         (
             lambda document: document.update(unexpected=True),
             "unknown field.*unexpected",
         ),
         (
-            lambda document: document.update(resolved_config_sha256="not-a-hash"),
-            "resolved_config_sha256 must have the form",
+            lambda document: document.update(metadata_sha256="not-a-hash"),
+            "metadata_sha256 must have the form",
         ),
         (
             lambda document: document["metadata"]["env"].update(decimation=7),
-            "resolved configuration fingerprint does not match",
+            "metadata fingerprint does not match",
         ),
     ],
 )
@@ -661,7 +729,7 @@ def test_metadata_rejects_unknown_resolved_config_key(tmp_path: Path) -> None:
         metadata(config, tmp_path), runner_state(config, FakeEnv())
     )
     document["metadata"]["env"]["not_a_field"] = True
-    document["resolved_config_sha256"] = checkpoint._fingerprint(document["metadata"])
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
     path = tmp_path / "unknown_config"
     write_checkpoint_document(path, document)
 
@@ -669,77 +737,36 @@ def test_metadata_rejects_unknown_resolved_config_key(tmp_path: Path) -> None:
         load_checkpoint_metadata(path)
 
 
-def test_checkpoint_rejects_deployment_contract_tampering(tmp_path: Path) -> None:
+def test_checkpoint_checks_git_commit_before_revision_private_fields(
+    tmp_path: Path,
+    exact_source_checkout,
+) -> None:
     config = ppo_config()
     document = checkpoint_document(
         metadata(config, tmp_path), runner_state(config, FakeEnv())
     )
-    document["deployment_contract"]["assets"]["prepared_assets"] = "sha256:" + "0" * 64
-    document["deployment_contract_sha256"] = checkpoint._fingerprint(
-        document["deployment_contract"]
-    )
-    path = tmp_path / "deployment_mismatch"
+    document["git_commit"] = "2" * 40
+    document["future_revision_field"] = True
+    path = tmp_path / "source_mismatch"
     write_checkpoint_document(path, document)
 
-    with pytest.raises(
-        ValueError, match="deployment contract mismatch.*assets.prepared_assets"
-    ):
+    with pytest.raises(ValueError, match="source commit does not match"):
         load_checkpoint_metadata(path)
 
 
-def test_checkpoint_rejects_deployment_contract_changed_after_training_start(
+def test_checkpoint_rechecks_source_before_publishing(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = ppo_config()
     checkpoint_metadata = metadata(config, tmp_path)
     state = runner_state(config, FakeEnv())
-    startup_contract = checkpoint.capture_deployment_contract(checkpoint_metadata)
-    stale_contract = replace(
-        startup_contract,
-        assets=replace(
-            startup_contract.assets,
-            prepared_assets="sha256:" + "0" * 64,
-        ),
-    )
+    commits = iter((GIT_COMMIT, "2" * 40))
+    monkeypatch.setattr(checkpoint, "capture_repository_commit", lambda: next(commits))
 
-    with pytest.raises(RuntimeError, match="deployment contract changed.*assets"):
-        checkpoint._checkpoint_document(
-            checkpoint_metadata,
-            checkpoint._train_checkpoint_item(state),
-            checkpoint._continuation_checkpoint_item(state),
-            stale_contract,
-        )
-
-
-def test_prepared_asset_fingerprint_covers_referenced_meshes(tmp_path: Path) -> None:
-    asset_config = AssetPrepConfig(output_root=tmp_path / "prepared")
-    initial = checkpoint.capture_asset_contract(asset_config)
-    prepared = checkpoint.prepare_asset(asset_config)
-    mesh_path = next((prepared.urdf_path.parents[1] / "meshes").glob("*.stl"))
-
-    mesh_path.write_bytes(mesh_path.read_bytes() + b"changed")
-    changed = checkpoint.capture_asset_contract(asset_config)
-
-    assert changed.prepared_assets != initial.prepared_assets
-    assert changed.simulation_scene == initial.simulation_scene
-
-
-def test_deployment_scene_hashes_cover_resolved_terrain() -> None:
-    flat = checkpoint.capture_asset_contract(
-        AssetPrepConfig(), checkpoint.TerrainConfig(mode="plane")
-    )
-    tilted = checkpoint.capture_asset_contract(
-        AssetPrepConfig(),
-        checkpoint.TerrainConfig(
-            mode="plane",
-            seed=7,
-            slope_angle_range=(-0.02, 0.02),
-        ),
-    )
-
-    assert tilted.prepared_assets == flat.prepared_assets
-    assert tilted.simulation_scene != flat.simulation_scene
-    assert tilted.viewer_scene != flat.viewer_scene
+    with pytest.raises(RuntimeError, match="commit changed after training"):
+        save_checkpoint(tmp_path / "source_changed", state, checkpoint_metadata)
+    assert not (tmp_path / "source_changed").exists()
 
 
 def test_resume_allows_budget_extension_and_rejects_semantic_changes(

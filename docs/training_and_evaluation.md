@@ -63,24 +63,76 @@ aligned with the native emulator and physical deployment.
 
 ## Checkpoints
 
-Schema-7 checkpoints store:
+Checkpoints store:
 
+- the full Git commit that created it;
 - resolved task and training metadata;
 - policy architecture/distribution;
 - actor, critic, and action layouts;
-- task and robot profile identifiers;
-- source/prepared/simulation/viewer asset hashes;
-- motion content and schema hashes when applicable;
+- motion content and its named data layout when applicable;
 - normalization, optimizer, environment continuation, RNG, and sampler state.
 
-Evaluation validates document integrity, metadata/config hashes,
-policy/value/optimizer state layout, normalization, saved update, semantic task
-contract, and runtime assets. Resume additionally requires environment
-continuation, observation stacks, RNG, current learning rate, sampler state,
-environment layout, and the full resume contract. A revised `total_timesteps`
-value is accepted when its resulting update budget still covers the saved
-update; output destinations may change. Old schemas fail with an instruction to
-use their archived Git revision.
+There is no cross-revision checkpoint compatibility layer. Checkpoint-producing
+training requires a clean `HEAD` contained by a local `origin/*` tracking
+branch and rechecks that revision immediately before every checkpoint is
+published. Fetch or push before a local run so that tracking state is current.
+Evaluation, resume, and hardware execution reject a dirty worktree or a
+different `HEAD` before decoding revision-private metadata.
+
+Checkpoint output must be outside the source repository or covered by a Git
+ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name
+is one path component, so output cannot escape the validated parent.
+
+Checkpointed motion training additionally requires the selected archive to be
+tracked in `HEAD`; its checkpoint path is stored relative to the repository so
+the exact checkout is portable across machines.
+
+The default generated-asset cache is namespaced by the source commit; a dirty
+worktree receives a separate content-derived namespace and cannot populate the
+clean commit's cache. The manifest verifies the canonical generated XML and
+referenced mesh content, and runtime terrain scenes are regenerated
+deterministically instead of trusted across launches.
+
+Within the exact revision, evaluation still validates document integrity,
+metadata and state-layout hashes, task and observation/action layouts,
+normalization, saved update, motion content, and restored state. Resume
+additionally requires environment continuation, observation stacks, RNG,
+current learning rate, sampler state, environment layout, and the full resume
+contract. A revised `total_timesteps` value is accepted when its resulting
+update budget still covers the saved update; output destinations may change.
 
 Locomotion final checkpoints are timestamped checkpoint roots. Motion runs also
 maintain a `final` child below their timestamped root.
+
+Read the required revision without loading policy state:
+
+```bash
+jq -r .git_commit checkpoints/<checkpoint>/metadata.json
+```
+
+Run it from a separate checkout:
+
+```bash
+CHECKPOINT="$(cd checkpoints/<checkpoint> && pwd -P)"
+COMMIT="$(jq -r .git_commit "$CHECKPOINT/metadata.json")"
+REPOSITORY="$(git remote get-url origin)"
+CHECKOUT="$(cd .. && pwd -P)/bello_mujoco-${COMMIT:0:12}"
+git clone "$REPOSITORY" "$CHECKOUT"
+git -C "$CHECKOUT" switch --detach "$COMMIT"
+cd "$CHECKOUT" && uv sync --frozen
+```
+
+Reference the absolute `$CHECKPOINT` path and use that revision's documented
+`bello-eval` or `bello-run-hardware` command. Keep each checkpoint commit
+reachable through a protected remote ref or retain a source bundle beside the
+artifact; a deleted or force-pushed commit cannot be reconstructed from the
+checkpoint alone.
+
+The Git commit is provenance, not a cryptographic signature over policy
+weights. Checkpoint state is shape-checked but is not authenticated, so only
+load artifacts from a trusted store.
+
+Checkpoints created before embedded Git provenance remain tied to their
+historical source and must be run from the revision identified by their
+training run or artifact name; they are not converted or stamped
+retroactively.

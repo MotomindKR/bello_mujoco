@@ -22,6 +22,7 @@ from bello_mujoco.training.checkpoint import (
     restore_evaluation_checkpoint,
     validate_motion_clip_contract,
 )
+from bello_mujoco.repository import resolve_repository_path
 from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingState,
@@ -789,7 +790,9 @@ def load_hardware_motion_policy(
     ):
         raise ValueError("checkpoint is not a complete motion-tracking checkpoint")
     resolved_motion = (
-        metadata.motion.path if config.motion_path is None else config.motion_path
+        resolve_repository_path(metadata.motion.path)
+        if config.motion_path is None
+        else config.motion_path
     )
     env_config = replace(metadata.motion_env, motion_path=resolved_motion)
     prepared = prepare_asset(metadata.asset)

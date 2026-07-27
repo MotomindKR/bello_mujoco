@@ -33,9 +33,9 @@ from bello_mujoco.assets_pipeline.mjcf import (
 )
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
+from bello_mujoco.repository import repository_cache_revision
 
 AssetName = Literal["full_body"]
-ASSET_CACHE_VERSION = 8
 SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
     {
         "right_wrist_yaw_joint",
@@ -312,7 +312,6 @@ def resolved_output_root(config: AssetPrepConfig) -> Path:
 
 def asset_config_hash(config: AssetPrepConfig) -> str:
     payload = {
-        "cache_version": ASSET_CACHE_VERSION,
         "asset": config.asset,
         "mesh_face_budget": config.mesh_face_budget,
         "visual_mesh_face_budget": config.visual_mesh_face_budget,
@@ -326,6 +325,7 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "joint_availability": asdict(config.joint_availability),
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
+        "generator_revision": repository_cache_revision(),
         "source": source_asset_fingerprint(),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -380,6 +380,17 @@ def read_prepared_asset_manifest(
     if data.get("cache_key") != cache_key:
         return None
     try:
+        content_sha256 = prepared_asset_content_sha256(
+            urdf_path,
+            mjcf_path,
+            viewer_mjcf_path,
+            manifest_path,
+        )
+    except (ET.ParseError, OSError, ValueError):
+        return None
+    if data.get("content_sha256") != content_sha256:
+        return None
+    try:
         return PreparedAsset(
             "full_body",
             urdf_path,
@@ -400,10 +411,74 @@ def write_prepared_asset_manifest(
         "name": prepared.name,
         "collision_mesh_count": prepared.collision_mesh_count,
         "visual_mesh_count": prepared.visual_mesh_count,
+        "content_sha256": prepared_asset_content_sha256(
+            prepared.urdf_path,
+            prepared.mjcf_path,
+            prepared.viewer_mjcf_path,
+            manifest_path,
+        ),
     }
     tmp_path = manifest_path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(data, sort_keys=True))
     tmp_path.replace(manifest_path)
+
+
+def prepared_asset_content_sha256(
+    urdf_path: Path,
+    mjcf_path: Path,
+    viewer_mjcf_path: Path,
+    manifest_path: Path,
+) -> str:
+    """Hash the canonical prepared XML and every runtime mesh it references."""
+
+    asset_root = manifest_path.parent.resolve()
+    documents = {
+        urdf_path.resolve(),
+        mjcf_path.resolve(),
+        viewer_mjcf_path.resolve(),
+    }
+    files = set(documents)
+    pending_xml = list(documents)
+    parsed_xml: set[Path] = set()
+    while pending_xml:
+        document = pending_xml.pop()
+        if document in parsed_xml:
+            continue
+        parsed_xml.add(document)
+        root = ET.parse(document).getroot()
+        for element in root.iter():
+            tag = element.tag.rsplit("}", 1)[-1]
+            reference = None
+            if tag == "mesh":
+                reference = element.get("filename") or element.get("file")
+            elif tag in {"hfield", "include", "skin", "texture"}:
+                reference = element.get("file")
+            if not reference:
+                continue
+            if "://" in reference:
+                raise ValueError(
+                    f"prepared asset contains a nonlocal reference: {reference!r}"
+                )
+            referenced = (document.parent / reference).resolve()
+            try:
+                referenced.relative_to(asset_root)
+            except ValueError as error:
+                raise ValueError(
+                    f"prepared asset references a file outside its cache: {referenced}"
+                ) from error
+            files.add(referenced)
+            if tag == "include":
+                pending_xml.append(referenced)
+
+    hasher = hashlib.sha256()
+    for path in sorted(files, key=lambda candidate: candidate.as_posix()):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        hasher.update(path.relative_to(asset_root).as_posix().encode())
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 def mjcf_mesh_files_exist(mjcf_path: Path) -> bool:

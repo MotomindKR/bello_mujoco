@@ -698,6 +698,16 @@ def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
         mujoco.mj_id2name(scene_model, mujoco.mjtObj.mjOBJ_GEOM, plane_geoms[0])
         == "ground"
     )
+    scene.xml_path.write_text("<mujoco />", encoding="utf-8")
+    regenerated = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    assert (
+        mujoco.mj_name2id(
+            regenerated.mj_model,
+            mujoco.mjtObj.mjOBJ_GEOM,
+            "ground",
+        )
+        >= 0
+    )
 
 
 def test_runtime_rough_terrain_uses_heightfield(

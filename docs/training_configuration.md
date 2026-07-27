@@ -91,7 +91,7 @@ The asset section selects a deterministic prepared morphology.
 | Field | Locomotion baseline | Meaning |
 | --- | --- | --- |
 | `asset` | `full_body` | The only supported prepared asset. |
-| `output_root` | `null` | Optional prepared-asset destination; `null` uses the content-addressed cache. Training profiles normally leave this unset. |
+| `output_root` | `null` | Optional prepared-asset destination for standalone preparation. Training requires `null` so an exact source revision regenerates through the canonical content-addressed cache. |
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
 | `visual_mesh_face_budget` | `200000` | Per-mesh viewer simplification budget. |
@@ -112,9 +112,10 @@ Each `actuator_config.joints` entry has a `mode` (`policy` or `hold`),
 `default_pos`, optional `soft_limit`, `[kp, kd]` `gains`, and optional
 `effort_limit`.
 
-The asset configuration and generated URDF/MJCF content are fingerprinted into
-the checkpoint. Changing morphology, limits, gains, or prepared sources creates
-a different deployment contract.
+The complete asset configuration is stored in checkpoint metadata. Because a
+checkpoint runs only from its exact clean Git revision, its source descriptions
+and asset-generation implementation come from that revision. Training rejects
+a custom `output_root`.
 
 Motion training supplies its `asset_config` from the
 `MotionTrainingRunConfig` default factory rather than its YAML. The fixed
@@ -204,8 +205,8 @@ Scale and noise fields are `base_lin_vel`, `base_lin_acc`, `base_ang_vel`,
 `actuator_force`, and `last_action`. Scales multiply observations; noise values
 are ordered uniform ranges applied before stacking.
 
-Actor observations are the deployment contract. Hardware locomotion rejects a
-checkpoint whose actor observation is privileged. Critic-only fields do not
+Actor observations are the hardware policy input. Hardware locomotion rejects
+a checkpoint whose actor observation is privileged. Critic-only fields do not
 enter the deployed policy.
 
 ## Locomotion commands: `command_config`
@@ -344,21 +345,21 @@ The exact reward fields are:
 | Field | Meaning |
 | --- | --- |
 | `enabled` | Write periodic and final checkpoints. |
-| `directory` | Parent output directory. |
-| `name` | Stable run label. Locomotion final checkpoints are timestamped roots; motion also maintains a `final` child. |
+| `directory` | Parent output directory. It must be outside the source repository or covered by a Git ignore rule so saving cannot dirty the exact-source checkout. |
+| `name` | Stable, single-component run label. Locomotion final checkpoints are timestamped roots; motion also maintains a `final` child. |
 | `every_updates` | Periodic save interval, or `null` for final-only behavior. |
-| `resume_path` | Schema-7 checkpoint to continue. |
+| `resume_path` | Checkpoint to continue from its exact clean Git revision. |
 | `upload_wandb_artifact` | Upload saved checkpoints when a W&B run exists. |
 | `wandb_artifact_name` | Explicit artifact name or profile-derived default. |
 | `wandb_artifact_type` | W&B artifact type, normally `checkpoint`. |
 
-Evaluation validates checkpoint document integrity, metadata/config hashes,
-policy/value/optimizer state layout, normalization state, saved update,
-semantic task contract, and prepared/runtime assets. Resume additionally
-validates and restores environment continuation, observation stacks, RNG,
-current learning rate, sampler state, environment layout, and the full resume
-contract. A changed `total_timesteps` is allowed only when the resulting update
-budget still covers the saved update.
+Evaluation first requires the checkpoint's recorded Git commit and a clean
+worktree, then validates checkpoint document integrity, metadata and state
+layout hashes, normalization state, saved update, task, and runtime layouts.
+Resume additionally validates and restores environment continuation,
+observation stacks, RNG, current learning rate, sampler state, environment
+layout, and the full resume contract. A changed `total_timesteps` is allowed
+only when the resulting update budget still covers the saved update.
 
 ## W&B: `wandb_config`
 

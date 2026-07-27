@@ -37,6 +37,7 @@ from bello_mujoco.training.ppo import (
     init_observation_norm_state,
     normalize_observation,
 )
+from bello_mujoco.repository import resolve_repository_path
 from bello_mujoco.evaluation.render import (
     CameraConfig,
     VideoWriter,
@@ -105,7 +106,9 @@ def render_checkpoint_with_stats(
     ):
         raise ValueError(f"checkpoint task is {metadata.task!r}, not motion_tracking")
     resolved_motion_path = (
-        metadata.motion.path if motion_path is None else Path(motion_path)
+        resolve_repository_path(metadata.motion.path)
+        if motion_path is None
+        else Path(motion_path)
     )
     env_config = replace(metadata.motion_env, motion_path=resolved_motion_path)
     env = BelloMotionTrackingEnv.load_native(
