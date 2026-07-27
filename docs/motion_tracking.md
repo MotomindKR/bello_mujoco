@@ -1,62 +1,86 @@
 # Motion data and tracking
 
-The supported motion schema is the 25-joint, fixed-waist/fixed-head,
-sphere-hand Bello layout. The canonical tracker is
-`beyondmimic_joint_limits`: a tanh-Gaussian policy maps normalized actions
-asymmetrically from the nominal pose toward each joint's lower or upper soft
-limit, then applies the physical differential-ankle transform.
+The supported motion schema is the 25-coordinate, fixed-waist/fixed-head,
+sphere-hand Bello layout. Motion archives are canonical NPZ files with explicit
+format version, frame rate, joint/body names, kinematics, and source identity.
+Repository importers additionally emit self-collision diagnostics.
 
-## Import
+The full offline command surface is documented under
+[`bello-motion`](commands.md#bello-motion); training and evaluation fields are
+documented under [`bello-train`](commands.md#bello-train) and
+[`bello-eval`](commands.md#bello-eval).
 
-Legacy GMR pickle input is trusted local data:
+## Data lifecycle
 
-```bash
-uv run bello-motion \
-  operation=import \
-  source=/path/to/source.pkl \
-  output=motions/local/sequence.npz
-```
+| Stage | Behavior |
+| --- | --- |
+| Import | Convert a trusted local GMR pickle, validate its schema and joint ranges, reconstruct qpos/qvel and tracked-body state, and write one canonical archive. |
+| Dataset import | Process a nonrecursive directory of GMR pickles in parallel, reuse or overwrite existing outputs, and write a manifest containing successes and failures. |
+| Inspect | Replay a canonical archive through native MuJoCo and report completion, errors, force ratios, contacts, and foot slip. |
+| Reference render | Render the archive itself without loading a policy. |
+| Training | Bind one archive into the motion environment and learn its tracking policy with MJX-Warp PPO. |
+| Policy evaluation | Restore a checkpoint, validate its bound archive, run deterministic native MuJoCo tracking, and emit video plus RMS metrics. |
 
-Import a directory with a manifest:
+Legacy pickle input is executable Python serialization and is accepted only as
+trusted local data. LAFAN1-derived outputs remain local because of their source
+license. Repository-tracked ASAP clips under `motions/asap_fixed_head/` can be
+selected by local or Vast training.
 
-```bash
-uv run bello-motion \
-  operation=import_dataset \
-  source=/path/to/gmr \
-  output=motions/local/lafan1_fixed_head \
-  jobs=8
-```
+Single-file import rejects self-collision by default. Dataset import instead
+records collision diagnostics so a complete corpus can be reviewed; the global
+single-import rejection setting does not change that dataset behavior.
 
-LAFAN1-derived binaries remain local because of their source license. The
-tracked ASAP clips under `motions/asap_fixed_head/` may be used directly.
+Inspection emits its report even when replay terminates early. Use
+`require_complete=true` when incomplete replay must make the operation fail.
 
-## Inspect and render
+## Tracking formulation
 
-```bash
-uv run bello-motion operation=inspect source=motions/local/sequence.npz
-uv run bello-motion \
-  operation=render \
-  source=motions/local/sequence.npz \
-  output=outputs/reference.mp4
-```
+The maintained profile uses `beyondmimic_joint_limits`. A tanh-Gaussian policy
+maps each normalized action asymmetrically from the nominal pose toward that
+joint's lower or upper soft limit, then applies the physical
+differential-ankle transform.
 
-Inspection replays the reference through the canonical native MuJoCo model and
-reports completion, tracking errors, actuator-force ratios, contacts, and foot
-slip.
+Observations include aligned reference state, anchor/body tracking features,
+base and joint state, previous action, and optional noise. Training can:
 
-## Train and evaluate
+- randomize reference start time and initial root/joint state;
+- perturb observations;
+- apply random base velocity pushes;
+- bias future resets toward time bins with higher failure EMA;
+- terminate on root height/orientation or end-effector tracking error.
 
-```bash
-uv run bello-train \
-  experiment=motion \
-  motion_path=motions/local/sequence.npz
+The reward combines Gaussian root, joint, tracked-body pose, and velocity terms
+with action-rate, joint-limit, and undesired-contact penalties. Exact fields,
+weights, sigmas, and profile values are in the
+[training configuration reference](training_configuration.md#motion-selection-and-environment).
 
-uv run bello-eval \
-  task=motion \
-  checkpoint_path=checkpoints/sequence/final \
-  output_path=outputs/sequence_eval.mp4
-```
+## Checkpoint binding
 
-Motion checkpoints bind the motion archive's complete schema and content hash.
-Relocation is allowed only when those values match exactly. Adaptive
-failure-bin state and observation normalization are restored for resume.
+Motion checkpoints store the archive's:
+
+- content and source hashes;
+- format version and frame rate;
+- frame count;
+- ordered joint and tracked-body schemas;
+- selected environment and action formulation.
+
+APIs and runners that expose a motion-path override allow relocation only when
+the replacement archive matches that complete contract. The public
+`bello-eval task=motion` command exposes no such override and therefore requires
+the checkpoint's stored path to remain available. Resume additionally restores
+optimizer, environment continuation, observation/value normalization, RNG, and
+adaptive failure-bin state.
+
+Motion checkpoints maintain a `final` child below their timestamped run root.
+This differs from locomotion, whose final checkpoint is the timestamped root
+itself.
+
+## Native evaluation and deployment
+
+Native evaluation uses the same bounded action transformation and observation
+normalization stored by training. It reports completion fraction, episode
+return, terminal/timeout state, and RMS root, orientation, and joint errors.
+
+Physical motion deployment adds absolute pelvis PoseService input and validates
+Pose/IMU agreement, nominal-pose arrival, action bounds, and reference
+completion. See [Physical hardware](hardware.md) for that safety boundary.

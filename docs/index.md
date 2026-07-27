@@ -1,13 +1,15 @@
 # Bello MuJoCo reference
 
-The [README](../README.md) is the quick start. These guides define the supported
-contracts:
+The [README](../README.md) defines the project scope and architecture. These
+guides define the supported interfaces and contracts:
 
-- [Training and evaluation](training_and_evaluation.md)
+- [Command reference](commands.md)
+- [Training configuration](training_configuration.md)
+- [Training and evaluation contracts](training_and_evaluation.md)
 - [Motion data and tracking](motion_tracking.md)
 - [Physical hardware](hardware.md)
 - [RobStride HIL](robstride_vcan.md)
-- [Vast.ai](vast_ai.md)
+- [Vast.ai lifecycle](vast_ai.md)
 
 ## Repository shape
 

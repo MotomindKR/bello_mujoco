@@ -1,5 +1,10 @@
 # Training and evaluation
 
+The complete public fields are in the
+[command reference](commands.md#bello-train). Nested PPO, environment, reward,
+asset, and output fields are in the
+[training configuration reference](training_configuration.md).
+
 ## Profiles
 
 `bello-train` exposes four profiles:
@@ -16,10 +21,11 @@ gait baseline. `hardware_locomotion` uses the same reward and policy contract
 with the longer credit horizon used by the physical policy. `motion` is bounded
 BeyondMimic tracking.
 
-Common public overrides are seed, total timesteps, environment count, motion
-path, resume path, checkpoint destination/name, W&B enablement/run name, and
-video enablement. Edit a maintained profile in `configs/profiles/train/` when
-changing task numerics; do not add a parallel recipe.
+The public command can override seed, total timesteps, environment count,
+motion path, resume path, checkpoint destination/name, W&B enablement/run name,
+and video enablement. Other task numerics are maintained in
+`configs/profiles/train/`; arbitrary nested profile keys are not part of the
+public command.
 
 ## Locomotion baseline
 
@@ -55,6 +61,15 @@ physical limits.
 actions, rewards, and termination diagnostics to Rerun. Motion evaluation
 renders a deterministic video and reports completion and RMS tracking errors.
 
+Locomotion gamepad input is enabled by default. With a connected controller it
+replaces the configured fixed command; with a disconnected controller the
+command is zero. Disable gamepad input to apply a fixed command. An unbounded
+`steps=null` rollout continues until controller exit or interruption, and
+completed episodes reset unless `stop_on_done=true`.
+
+Motion evaluation ignores locomotion command/gamepad/stochastic fields. Its
+default step horizon is the checkpoint environment's maximum episode length.
+
 There is no public MJX evaluation backend. This keeps evaluation behavior
 aligned with HIL and physical deployment.
 
@@ -70,14 +85,14 @@ Schema-7 checkpoints store:
 - motion content and schema hashes when applicable;
 - normalization, optimizer, environment continuation, RNG, and sampler state.
 
-Evaluation validates only the semantic deployment contract. Resume additionally
-requires the training and continuation contract, but permits a larger
-`total_timesteps` value and a different output destination. Old schemas fail
-with an instruction to use their archived Git revision.
+Evaluation validates document integrity, metadata/config hashes,
+policy/value/optimizer state layout, normalization, saved update, semantic task
+contract, and runtime assets. Resume additionally requires environment
+continuation, observation stacks, RNG, current learning rate, sampler state,
+environment layout, and the full resume contract. A revised `total_timesteps`
+value is accepted when its resulting update budget still covers the saved
+update; output destinations may change. Old schemas fail with an instruction to
+use their archived Git revision.
 
-## Validation
-
-```bash
-uv run bello-train experiment=smoke
-uv run pytest -q tests/test_commands.py tests/test_rewards.py tests/test_checkpoint.py
-```
+Locomotion final checkpoints are timestamped checkpoint roots. Motion runs also
+maintain a `final` child below their timestamped root.

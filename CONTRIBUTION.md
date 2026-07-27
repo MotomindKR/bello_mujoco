@@ -70,6 +70,8 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train experiment=smoke
 ```
 
 The public commands are backed by `configs/commands/`; maintained training
-numerics live in `configs/profiles/train/`. See
-[docs/index.md](docs/index.md) for supported workflows, the training smoke, and
-links to topic-specific docs.
+numerics live in `configs/profiles/train/`. Keep
+[the command reference](docs/commands.md) and
+[the training configuration reference](docs/training_configuration.md) aligned
+with any public schema change. See [docs/index.md](docs/index.md) for the
+remaining topic-specific contracts.
