@@ -69,7 +69,7 @@ class EbimuSerialEmulator:
         except OSError as error:
             raise RuntimeError(
                 f"cannot open MuJoCo EBIMU peer {str(self.device)!r}; "
-                "run ./scripts/setup_hil.sh first"
+                "run ./scripts/setup_emulator.sh first"
             ) from error
         try:
             tty.setraw(fd, termios.TCSANOW)

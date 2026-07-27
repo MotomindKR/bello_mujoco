@@ -1,8 +1,8 @@
-"""Run Bello in MuJoCo as a set of RobStride devices on SocketCAN."""
+"""Emulate Bello RobStride devices with real-time native MuJoCo."""
 
 from __future__ import annotations
 
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import math
@@ -14,8 +14,11 @@ from typing import TextIO
 import mujoco
 import numpy as np
 
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
-from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
+from bello_mujoco.assets_pipeline.prepare import (
+    AssetPrepConfig,
+    canonical_physical_asset_config,
+    prepare_asset,
+)
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.assets_pipeline import project_data_path
 from bello_mujoco.hardware.ebimu import EbimuSerialEmulator
@@ -54,6 +57,10 @@ def default_motor_kind_config() -> Path:
     return project_data_path("configs") / "robstride" / "motor_kinds.yaml"
 
 
+def default_emulator_asset_config() -> AssetPrepConfig:
+    return canonical_physical_asset_config(imu_enabled=True)
+
+
 def resolve_motor_config_path(path: Path) -> Path:
     path = Path(path).expanduser()
     if path.is_absolute():
@@ -62,35 +69,19 @@ def resolve_motor_config_path(path: Path) -> Path:
 
 
 @dataclass(frozen=True)
-class RobstrideRunnerConfig:
+class EmulatorConfig:
     """Runtime settings for the RobStride/MuJoCo hardware emulator."""
 
     motor_kind_config: Path = field(default_factory=default_motor_kind_config)
     motor_configs: tuple[Path, ...] = field(default_factory=default_motor_configs)
     bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
-    asset_config: AssetPrepConfig = AssetPrepConfig(
-        asset="full_body",
-        visual_mesh_face_budget=10_000,
-        collision_mode="box",
-        end_effector_sphere_mode="both",
-        target_total_mass_kg=60.0,
-        imu_config=ImuSensorConfig(enabled=True, body_name="pelvis_link"),
-        joint_availability=JointAvailabilityConfig(
-            waist_yaw=True,
-            waist_roll=False,
-            waist_pitch=False,
-            neck_yaw=False,
-            head_pitch=False,
-        ),
-    )
+    asset_config: AssetPrepConfig = field(default_factory=default_emulator_asset_config)
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(
         timestep=0.0025
     )
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
     enforce_torque_limits: bool = True
-    headless: bool = False
-    real_time: bool = True
     max_steps: int | None = None
     imu_serial_rate_hz: float = 250.0
     imu_serial_enabled: bool = True
@@ -151,7 +142,7 @@ class TorsoHold:
         return True
 
 
-class RunnerControlWindow:
+class EmulatorControlWindow:
     """Small Pygame command window for one-way simulation controls."""
 
     _SIZE = (440, 215)
@@ -167,8 +158,8 @@ class RunnerControlWindow:
         except pygame.error as error:
             pygame.quit()
             raise RuntimeError(
-                "cannot open the Bello command window; use headless=true on a "
-                "machine without a display"
+                "cannot open the Bello emulator controls; a graphical display "
+                "is required"
             ) from error
         pygame.display.set_caption("Bello controls")
         self._title_font = pygame.font.Font(None, 32)
@@ -179,7 +170,7 @@ class RunnerControlWindow:
         self._released = False
         self._draw()
 
-    def __enter__(self) -> RunnerControlWindow:
+    def __enter__(self) -> EmulatorControlWindow:
         return self
 
     def __exit__(self, *_args) -> None:
@@ -247,7 +238,7 @@ class RunnerControlWindow:
 
 
 class TerminalEnterInput:
-    """Nonblocking Enter detection for interactive and headless terminals."""
+    """Nonblocking Enter detection for an interactive terminal."""
 
     def __init__(
         self,
@@ -278,16 +269,14 @@ class TerminalEnterInput:
         return True
 
 
-def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
+def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     validate_config(config)
     motor_kind_config = resolve_motor_config_path(config.motor_kind_config)
     motor_configs = tuple(
         resolve_motor_config_path(path) for path in config.motor_configs
     )
     robstride = load_robstride_configs(motor_kind_config, motor_configs)
-    validate_runner_motor_coverage(
-        config.asset_config.joint_availability, robstride.motors
-    )
+    validate_motor_coverage(config.asset_config.joint_availability, robstride.motors)
     overrides = parse_bus_interfaces(config.bus_interfaces)
     unknown_buses = set(overrides) - {bus.name for bus in robstride.buses}
     if unknown_buses:
@@ -306,7 +295,7 @@ def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
         terrain=FLAT_TERRAIN,
         simulation_physics=config.simulation_physics,
         actuator_config=config.asset_config.actuator_config,
-        use_viewer_model=not config.headless,
+        use_viewer_model=True,
         load_mjx=False,
     )
     model = configure_robstride_actuators(
@@ -345,72 +334,11 @@ def main(config: RobstrideRunnerConfig = RobstrideRunnerConfig()) -> None:
     run_simulation(model, emulators, transmission, config, torso_hold)
 
 
-def run_prescribed_gains(
-    config: RobstrideRunnerConfig = RobstrideRunnerConfig(),
-) -> None:
-    """Run the physical morphology under its generated nominal PD targets."""
-
-    validate_config(config)
-    prepared = prepare_asset(config.asset_config)
-    model = load_prepared_bello_model(
-        prepared,
-        terrain=FLAT_TERRAIN,
-        simulation_physics=config.simulation_physics,
-        actuator_config=config.asset_config.actuator_config,
-        use_viewer_model=not config.headless,
-        load_mjx=False,
-    )
-    torso_hold = None
-    if config.torso_hold:
-        model, torso_hold = add_torso_hold(model, config.torso_drop_limit_m)
-    data = mujoco.MjData(model.mj_model)
-    reset_data(model, data)
-    if torso_hold is not None:
-        torso_hold.initialize(model.mj_model, data)
-
-    viewer_context = nullcontext(None)
-    if not config.headless:
-        from mujoco import viewer as mj_viewer
-
-        viewer_context = mj_viewer.launch_passive(model.mj_model, data)
-
-    print("Bello prescribed-gains simulation ready")
-    print("  target: generated nominal pose")
-    print("  torque limits: enforced by the canonical actuator profile")
-    start_wall = time.monotonic()
-    start_sim = float(data.time)
-    released = torso_hold is None
-    steps = 0
-    with viewer_context as viewer:
-        while config.max_steps is None or steps < config.max_steps:
-            if viewer is not None and not viewer.is_running():
-                break
-            if (
-                not released
-                and torso_hold is not None
-                and config.release_after_seconds is not None
-                and float(data.time) - start_sim >= config.release_after_seconds
-            ):
-                released = torso_hold.release(data)
-                if released:
-                    print("Torso released; robot is now free")
-            data.ctrl[:] = model.default_ctrl
-            mujoco.mj_step(model.mj_model, data)
-            steps += 1
-            if viewer is not None:
-                viewer.sync()
-            if config.real_time:
-                deadline = start_wall + (float(data.time) - start_sim)
-                delay = deadline - time.monotonic()
-                if delay > 0.0:
-                    time.sleep(delay)
-
-
 def run_simulation(
     model: BelloModel,
     emulators: dict[str, RobstrideBusEmulator],
     transmission: BelloRobstrideTransmission,
-    config: RobstrideRunnerConfig,
+    config: EmulatorConfig,
     torso_hold: TorsoHold | None = None,
 ) -> None:
     data = mujoco.MjData(model.mj_model)
@@ -464,13 +392,9 @@ def run_simulation(
                 )
             )
 
-        viewer_context = nullcontext(None)
-        if not config.headless:
-            from mujoco import viewer as mj_viewer
+        from mujoco import viewer as mj_viewer
 
-            viewer_context = mj_viewer.launch_passive(model.mj_model, data)
-
-        print_runner_summary(model, emulators)
+        print_emulator_summary(model, emulators)
         fixed_joints = sorted(
             config.asset_config.joint_availability.disabled_joint_names
         )
@@ -481,8 +405,6 @@ def run_simulation(
                 release_note = (
                     f"release after {config.release_after_seconds:g} simulated seconds"
                 )
-            elif config.headless:
-                release_note = "no automatic release"
             else:
                 release_note = "use the Bello controls window to release"
             print(
@@ -516,7 +438,7 @@ def run_simulation(
                 f"{config.pose_service.publish_rate_hz:g} Hz -> "
                 f"{config.pose_service.listen}"
             )
-        with viewer_context as viewer:
+        with mj_viewer.launch_passive(model.mj_model, data) as viewer:
             terminal_enter = TerminalEnterInput()
             if terminal_enter.enabled:
                 action = (
@@ -526,9 +448,9 @@ def run_simulation(
                 )
                 print(f"  keyboard: press Enter to {action}")
             control_window = None
-            if torso_hold is not None and not config.headless:
+            if torso_hold is not None:
                 control_window = stack.enter_context(
-                    RunnerControlWindow(torso_hold.drop_limit_m)
+                    EmulatorControlWindow(torso_hold.drop_limit_m)
                 )
             _simulation_loop(
                 model,
@@ -555,10 +477,10 @@ def _simulation_loop(
     emulators: dict[str, RobstrideBusEmulator],
     endpoints: dict[str, SocketCanEndpoint],
     transmission: BelloRobstrideTransmission,
-    config: RobstrideRunnerConfig,
+    config: EmulatorConfig,
     viewer,
     torso_hold: TorsoHold | None,
-    control_window: RunnerControlWindow | None,
+    control_window: EmulatorControlWindow | None,
     imu_sensor: MujocoImu | None,
     imu_serial: EbimuSerialEmulator | None,
     imu_noise: ImuNoiseInjector,
@@ -579,7 +501,7 @@ def _simulation_loop(
     steps = 0
     torso_released = torso_hold is None
     while config.max_steps is None or steps < config.max_steps:
-        if viewer is not None and not viewer.is_running():
+        if not viewer.is_running():
             break
         enter_requested = terminal_enter.poll()
         if control_window is not None:
@@ -661,13 +583,11 @@ def _simulation_loop(
             if next_feedback < now - feedback_period:
                 next_feedback = now + feedback_period
 
-        if viewer is not None:
-            viewer.sync()
-        if config.real_time:
-            deadline = start_wall + (float(data.time) - start_sim)
-            delay = deadline - time.monotonic()
-            if delay > 0.0:
-                time.sleep(delay)
+        viewer.sync()
+        deadline = start_wall + (float(data.time) - start_sim)
+        delay = deadline - time.monotonic()
+        if delay > 0.0:
+            time.sleep(delay)
 
 
 def publish_body_pose(
@@ -742,9 +662,9 @@ def add_torso_hold(
         raise ValueError(f"cannot hold missing MuJoCo body {body_name!r}")
 
     spec = mujoco.MjSpec.from_file(str(model.xml_path))
-    support_body_name = "robstride_runner_torso_support"
-    support_joint_name = "robstride_runner_torso_slider"
-    equality_name = "robstride_runner_torso_hold"
+    support_body_name = "bello_emulator_torso_support"
+    support_joint_name = "bello_emulator_torso_slider"
+    equality_name = "bello_emulator_torso_hold"
     support = spec.worldbody.add_body(name=support_body_name)
     support.explicitinertial = True
     support.mass = 0.1
@@ -821,7 +741,7 @@ def parse_bus_interfaces(values: tuple[str, ...]) -> dict[str, str]:
     return result
 
 
-def validate_config(config: RobstrideRunnerConfig) -> None:
+def validate_config(config: EmulatorConfig) -> None:
     if not config.motor_configs:
         raise ValueError("motor_configs must not be empty")
     if not config.bus_interfaces:
@@ -867,7 +787,7 @@ def validate_config(config: RobstrideRunnerConfig) -> None:
             raise ValueError("pose_service.publish_rate_hz must be finite and positive")
 
 
-def validate_runner_motor_coverage(
+def validate_motor_coverage(
     availability: JointAvailabilityConfig, motors: tuple[MotorSpec, ...]
 ) -> None:
     mapped: set[str] = set()
@@ -893,7 +813,7 @@ def validate_runner_motor_coverage(
         )
 
 
-def print_runner_summary(
+def print_emulator_summary(
     model: BelloModel, emulators: dict[str, RobstrideBusEmulator]
 ) -> None:
     print("Bello RobStride MuJoCo emulator ready")

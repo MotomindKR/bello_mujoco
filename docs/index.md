@@ -8,7 +8,7 @@ guides define the supported interfaces and contracts:
 - [Training and evaluation contracts](training_and_evaluation.md)
 - [Motion data and tracking](motion_tracking.md)
 - [Physical hardware](hardware.md)
-- [RobStride HIL](robstride_vcan.md)
+- [RobStride emulator](emulator.md)
 - [Vast.ai lifecycle](vast_ai.md)
 
 ## Repository shape
@@ -25,7 +25,7 @@ src/bello_mujoco/
   evaluation/              native rendering and policy evaluation
   hardware/                physical runners, IMU, and pose service
   motion/                  motion clips, import, and feasibility tools
-  robstride/               CAN protocol, simulation, and HIL runner
+  robstride/               CAN protocol, transmission, and hardware emulator
   training/                PPO, checkpoints, tracking, and Vast orchestration
   cli.py                   seven public Hydra command adapters
   configuration.py         config decoding and maintained profiles
@@ -38,9 +38,10 @@ external robot-description fallbacks.
 ## Runtime boundaries
 
 MJX-Warp is the training backend. Native MuJoCo is the evaluation, rendering,
-HIL, and physical-deployment backend. Host-side Python handles setup, assets,
-logging, checkpoints, and services; rollout and reward math remains JAX
-compatible.
+and hardware-emulation backend; physical deployment uses the native model for
+policy-contract reconstruction without stepping simulated dynamics. Host-side
+Python handles setup, assets, logging, checkpoints, and services; rollout and
+reward math remains JAX compatible.
 
 The public configuration is profile-oriented. Internal topology, link names,
 coordinate partitions, numerical guardrails, and safety limits are validated

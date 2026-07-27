@@ -40,7 +40,7 @@ from bello_mujoco.hardware.locomotion import (
 from bello_mujoco.hardware.motion import HardwareMotionConfig, run_hardware_motion
 from bello_mujoco.motion.feasibility import replay_motion_reference
 from bello_mujoco.motion.import_gmr import import_dataset, import_gmr_motion
-from bello_mujoco.robstride import runner as robstride_runner
+from bello_mujoco.robstride import emulator
 from bello_mujoco.training.locomotion import run_training as run_locomotion_training
 from bello_mujoco.training.motion import run_training as run_motion_training
 from bello_mujoco.training.tracking import WandbConfig
@@ -113,11 +113,8 @@ class VastTrainCommandConfig:
 
 
 @dataclass(frozen=True)
-class RobstrideCommandConfig:
-    mode: Literal["hil", "prescribed_gains"] = "hil"
+class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
-    headless: bool = False
-    real_time: bool = True
     max_steps: int | None = None
     torso_hold: bool = True
     release_after_seconds: float | None = None
@@ -381,31 +378,25 @@ def _vast_train_hydra(config: DictConfig) -> None:
     raise SystemExit(status)
 
 
-def robstride_entrypoint() -> None:
-    _robstride_hydra()
+def emulator_entrypoint() -> None:
+    _emulator_hydra()
 
 
 @hydra.main(
     version_base=None,
     config_path=config_path("commands"),
-    config_name="robstride",
+    config_name="emulator",
 )
-def _robstride_hydra(config: DictConfig) -> None:
-    command = structured_config(RobstrideCommandConfig, config)
-    runner = robstride_runner.RobstrideRunnerConfig(
-        bus_interfaces=command.bus_interfaces,
-        asset_config=canonical_physical_asset_config(imu_enabled=True),
-        enforce_torque_limits=True,
-        headless=command.headless,
-        real_time=command.real_time,
-        max_steps=command.max_steps,
-        torso_hold=command.torso_hold,
-        release_after_seconds=command.release_after_seconds,
+def _emulator_hydra(config: DictConfig) -> None:
+    command = structured_config(EmulatorCommandConfig, config)
+    emulator.run_emulator(
+        emulator.EmulatorConfig(
+            bus_interfaces=command.bus_interfaces,
+            max_steps=command.max_steps,
+            torso_hold=command.torso_hold,
+            release_after_seconds=command.release_after_seconds,
+        )
     )
-    if command.mode == "prescribed_gains":
-        robstride_runner.run_prescribed_gains(runner)
-    else:
-        robstride_runner.main(runner)
 
 
 def hardware_entrypoint() -> None:

@@ -1,7 +1,4 @@
-mode: hil
 bus_interfaces: [can0=vcan0, can1=vcan1]
-headless: false
-real_time: true
 max_steps: null
 torso_hold: true
 release_after_seconds: null
@@ -9,4 +6,4 @@ hydra:
   job:
     chdir: false
   run:
-    dir: outputs/hydra/robstride/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: outputs/hydra/emulator/${now:%Y-%m-%d}/${now:%H-%M-%S}

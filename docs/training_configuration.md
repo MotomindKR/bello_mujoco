@@ -105,7 +105,7 @@ The asset section selects a deterministic prepared morphology.
 | `end_effector_sphere_mode` | `both` | Replace both wrist/gripper subtrees with fixed sphere hands. |
 | `target_total_mass_kg` | `60` | Uniformly rescale all link masses and inertias to the target total. |
 | `neighbor_exclusion_depth` | `2` | Exclude nearby kinematic neighbors from generated self-collision pairs. |
-| `enforce_policy_effort_limits` | `false` | When false, training can observe and penalize over-peak requested force. Native HIL/hardware still enforces physical limits. |
+| `enforce_policy_effort_limits` | `false` | When false, training can observe and penalize over-peak requested force. The native emulator and hardware still enforce physical limits. |
 | `imu_config` | disabled | Optional generated IMU site/sensors. Its `enabled` field controls generation and `body_name` selects the instrumented body. Training observations derive simulated IMU features without requiring this native sensor block. |
 | `ankle_differential_config.motor_gain_scale` | `0.5` | Gain multiplier applied to each differential-ankle motor. |
 | `ankle_differential_config.motor_effort_limit_scale` | `1` | Motor effort-limit multiplier. |

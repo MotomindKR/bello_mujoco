@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Prepare the host interfaces required by the Bello hardware emulator.
 set -euo pipefail
 
 readonly queue_length=10000

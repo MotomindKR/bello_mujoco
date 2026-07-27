@@ -1,9 +1,10 @@
 # bello_mujoco
 
-`bello_mujoco` is the simulation, reinforcement-learning, evaluation, HIL, and
-physical-deployment repository for the Bello humanoid. It owns the robot model
-used by every runtime and keeps training, native MuJoCo evaluation, RobStride
-emulation, and hardware policy execution on one explicit contract.
+`bello_mujoco` is the simulation, reinforcement-learning, evaluation,
+hardware-emulation, and physical-deployment repository for the Bello humanoid.
+It owns the robot model used by every runtime and keeps training, native MuJoCo
+evaluation, RobStride emulation, and hardware policy execution on one explicit
+contract.
 
 The repository is intentionally narrower than a general robotics framework. It
 supports the Bello morphology, its locomotion and motion-tracking policies, and
@@ -22,7 +23,7 @@ asset preparation -----> generated URDF, runtime MJCF, viewer MJCF
                          +-------------------+-------------------+
                          |                                       |
                          v                                       v
-               MJX-Warp environments                       RobStride HIL
+               MJX-Warp environments                 RobStride emulator
                          |
                          v
                         PPO
@@ -50,7 +51,7 @@ incompatible runtime.
 | Locomotion training | JAX, MJX-Warp, PPO | Learn command-conditioned walking and standing with batched simulation. |
 | Motion tracking | JAX, MJX-Warp, PPO | Track canonical motion clips with bounded joint-limit actions and adaptive sampling. |
 | Evaluation | Native MuJoCo | Run the deployment dynamics path, stream locomotion to Rerun, or render motion tracking to video. |
-| RobStride HIL | Native MuJoCo, SocketCAN, serial, gRPC | Emulate the physical motor, IMU, and pose interfaces against simulated dynamics. |
+| RobStride emulator | Native MuJoCo, SocketCAN, serial, gRPC | Emulate the physical motor, IMU, and pose interfaces against real-time simulated dynamics. |
 | Hardware deployment | `bello-hardware` client and optional pose estimator | Validate and execute locomotion or motion policies on the robot with fail-closed controls. |
 | Remote training | Vast.ai, SSH, detached process, W&B | Provision one bounded training job, monitor it, retain checkpoints, and verify rental teardown. |
 
@@ -71,7 +72,8 @@ JAX-compatible on the training path.
   hardware runner holds the arm coordinates.
 - Motion policies act on all 25 coordinates using asymmetric bounds from the
   nominal pose to each joint's soft limit.
-- Training uses MJX-Warp. Evaluation and HIL step native MuJoCo dynamics.
+- Training uses MJX-Warp. Evaluation and the emulator step native MuJoCo
+  dynamics.
   Physical deployment uses a native model to reconstruct the policy,
   observation, and transmission contract, while the robot supplies the actual
   dynamics.
@@ -97,7 +99,7 @@ through a one-off wrapper or duplicate recipe.
 | `bello-eval` | Evaluate a locomotion or motion checkpoint through native MuJoCo. |
 | `bello-motion` | Import, inspect, batch-import, or render canonical motion data. |
 | `bello-vast-train` | Launch one branch-pinned, billing-bounded Vast.ai training lifecycle. |
-| `bello-run-robstride` | Run RobStride HIL or prescribed-gain simulation. |
+| `bello-run-emulator` | Run the graphical, real-time RobStride hardware-interface emulator. |
 | `bello-run-hardware` | Perform hardware preflight or explicitly armed policy execution. |
 
 The [command reference](docs/commands.md) documents every public field, default,
@@ -136,7 +138,7 @@ state are runtime artifacts, not source. They must not be committed.
 | `src/bello_mujoco/training/` | PPO, checkpointing, tracking, training loops, and Vast orchestration. |
 | `src/bello_mujoco/evaluation/` | Native rollout reconstruction, Rerun, and video rendering. |
 | `src/bello_mujoco/hardware/` | Hardware policy runners, EBIMU, and pose service. |
-| `src/bello_mujoco/robstride/` | RobStride protocol, motor simulation, and HIL runner. |
+| `src/bello_mujoco/robstride/` | RobStride protocol, transmission, and hardware emulator. |
 | `src/bello_mujoco/motion/` | Motion schema, import, feasibility, and reference tools. |
 | `tests/` | Contract, numerical, safety, and workflow tests. |
 
@@ -160,7 +162,7 @@ the command reference.
 - [Training and evaluation contracts](docs/training_and_evaluation.md)
 - [Motion data and tracking](docs/motion_tracking.md)
 - [Physical hardware](docs/hardware.md)
-- [RobStride HIL](docs/robstride_vcan.md)
+- [RobStride emulator](docs/emulator.md)
 - [Vast.ai lifecycle](docs/vast_ai.md)
 - [Repository reference](docs/index.md)
 

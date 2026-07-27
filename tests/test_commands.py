@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 
 from bello_mujoco.assets_pipeline.prepare import canonical_physical_asset_config
 from bello_mujoco.cli import (
+    EmulatorCommandConfig,
     HardwareCommandConfig,
     TrainCommandConfig,
 )
@@ -90,6 +91,14 @@ def test_hardware_command_surface_contains_only_operator_essentials() -> None:
     assert not hasattr(config, "max_loop_lag_seconds")
 
 
+def test_emulator_command_has_one_fixed_runtime_mode() -> None:
+    config = EmulatorCommandConfig()
+
+    assert not hasattr(config, "mode")
+    assert not hasattr(config, "headless")
+    assert not hasattr(config, "real_time")
+
+
 def test_all_public_hydra_documents_are_bundled() -> None:
     root = Path(config_path("commands"))
     assert {path.stem for path in root.glob("*.yaml")} == {
@@ -98,6 +107,6 @@ def test_all_public_hydra_documents_are_bundled() -> None:
         "eval",
         "motion",
         "vast_train",
-        "robstride",
+        "emulator",
         "hardware",
     }

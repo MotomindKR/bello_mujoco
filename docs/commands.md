@@ -49,9 +49,9 @@ Both profiles use the 60 kg, box-collision, sphere-hand morphology with active
 waist yaw and fixed waist roll/pitch, neck yaw, and head pitch. The physical
 profile keeps a 200,000-face visual budget; the visualizer profile uses 20,000.
 The collision budget remains 1,000 faces. Both standalone profiles omit
-generated IMU sensors and enforce policy effort limits. HIL and checkpoint-bound
-runtimes prepare their own explicitly configured variants rather than assuming
-this standalone output is interchangeable.
+generated IMU sensors and enforce policy effort limits. The emulator and
+checkpoint-bound runtimes prepare their own explicitly configured variants
+rather than assuming this standalone output is interchangeable.
 
 ## `bello-train`
 
@@ -205,28 +205,26 @@ Durable lifecycle state lives under `.vast/`. Do not remove it while a rental
 may exist; rerunning the launcher allows reconciliation to inspect and destroy a
 recorded instance.
 
-## `bello-run-robstride`
+## `bello-run-emulator`
 
-Run the native-MuJoCo RobStride hardware emulator or a direct prescribed-gain
-commissioning simulation.
+Run the native-MuJoCo RobStride hardware-interface emulator. It always exposes
+the configured SocketCAN buses, pelvis EBIMU stream, and PoseService while
+stepping the canonical model in real time with its native viewer open. The
+default torso guide also opens the Bello controls window.
 
-Configuration source: `configs/commands/robstride.yaml`.
+Configuration source: `configs/commands/emulator.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `mode` | `hil` or `prescribed_gains`; `hil` | In HIL mode, expose RobStride buses plus IMU and pose services. Prescribed-gain mode bypasses CAN control and applies the generated nominal targets directly. |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
-| `headless` | boolean; `false` | Disable the native MuJoCo viewer and Pygame torso-control window. Terminal control remains available from an interactive stdin. |
-| `real_time` | boolean; `true` | Pace simulation against wall-clock time. |
 | `max_steps` | positive integer or `null`; `null` | Stop after a fixed number of simulation steps. |
-| `torso_hold` | boolean; `true` | Start with the pelvis constrained by the commissioning torso guide. |
+| `torso_hold` | boolean; `true` | Start with the torso/root assembly constrained by the commissioning vertical guide. |
 | `release_after_seconds` | nonnegative float or `null`; `null` | Automatically release the torso guide after this much simulated time. It requires `torso_hold=true`. |
 
-The runner uses the repository motor catalog and lower/upper-body inventories
-under `configs/robstride/`. HIL enforces torque limits from that catalog and
-publishes the pelvis IMU serial stream and PoseService. Prescribed-gain mode
-does not open CAN, serial, or PoseService; it uses the canonical MuJoCo
-actuator-profile limits directly.
+The emulator uses the repository motor catalog and lower/upper-body inventories
+under `configs/robstride/`. It enforces torque limits from that catalog and
+publishes the pelvis IMU serial stream and PoseService. Graphical display and
+real-time pacing are fixed runtime behavior rather than alternate modes.
 
 ## `bello-run-hardware`
 

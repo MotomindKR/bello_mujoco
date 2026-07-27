@@ -52,8 +52,8 @@ termination                 -100.0
 
 Torque is normalized by each policy joint's available peak torque. The
 over-peak term is quadratic. Training intentionally leaves policy effort
-unclipped so the penalty observes excess demand; HIL and hardware enforce
-physical limits.
+unclipped so the penalty observes excess demand; the emulator and hardware
+enforce physical limits.
 
 ## Evaluation
 
@@ -71,7 +71,7 @@ Motion evaluation ignores locomotion command/gamepad/stochastic fields. Its
 default step horizon is the checkpoint environment's maximum episode length.
 
 There is no public MJX evaluation backend. This keeps evaluation behavior
-aligned with HIL and physical deployment.
+aligned with the native emulator and physical deployment.
 
 ## Checkpoints
 

@@ -37,8 +37,8 @@ from bello_mujoco.robstride.sim import (
 )
 from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
-from bello_mujoco.robstride.runner import (
-    RobstrideRunnerConfig,
+from bello_mujoco.robstride.emulator import (
+    EmulatorConfig,
     TerminalEnterInput,
     add_torso_hold,
     cycle_torso_release_reset,
@@ -46,7 +46,7 @@ from bello_mujoco.robstride.runner import (
     default_motor_configs,
     reset_data,
     resolve_motor_config_path,
-    validate_runner_motor_coverage,
+    validate_motor_coverage,
     validate_config,
 )
 
@@ -393,12 +393,12 @@ motors:
         load_robstride_configs(default_motor_kind_config(), (path,))
 
 
-def test_default_runner_selects_vcan_imu_torque_limits_and_torso_guide() -> None:
-    config = RobstrideRunnerConfig()
+def test_default_emulator_selects_vcan_imu_torque_limits_and_torso_guide() -> None:
+    config = EmulatorConfig()
 
     assert config.asset_config.asset == "full_body"
     assert config.asset_config.collision_mode == "box"
-    assert config.asset_config.visual_mesh_face_budget == 10_000
+    assert config.asset_config.visual_mesh_face_budget == 200_000
     assert config.asset_config.end_effector_sphere_mode == "both"
     assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
     assert config.asset_config.imu_config.enabled
@@ -427,8 +427,8 @@ def test_default_runner_selects_vcan_imu_torque_limits_and_torso_guide() -> None
     ]
     assert config.torso_hold
     assert config.torso_drop_limit_m == pytest.approx(0.05)
-    assert not config.headless
-    assert config.real_time
+    assert not hasattr(config, "headless")
+    assert not hasattr(config, "real_time")
     assert config.pose_service.enabled
     assert config.pose_service.listen == "0.0.0.0:50052"
     assert config.pose_service.reference_frame == "odom"
@@ -436,11 +436,11 @@ def test_default_runner_selects_vcan_imu_torque_limits_and_torso_guide() -> None
     assert config.pose_service.publish_rate_hz == pytest.approx(200.0)
 
 
-def test_runner_optional_joints_require_matching_motor_assignments() -> None:
+def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
     config = load_robstride_configs(
         default_motor_kind_config(), default_motor_configs()
     )
-    validate_runner_motor_coverage(
+    validate_motor_coverage(
         JointAvailabilityConfig(
             waist_yaw=True,
             waist_roll=False,
@@ -452,7 +452,7 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
     )
 
     with pytest.raises(ValueError, match="require RobStride motor mappings"):
-        validate_runner_motor_coverage(
+        validate_motor_coverage(
             JointAvailabilityConfig(
                 waist_yaw=True,
                 waist_roll=False,
@@ -463,7 +463,7 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
             config.motors,
         )
     with pytest.raises(ValueError, match="fixed by joint availability"):
-        validate_runner_motor_coverage(
+        validate_motor_coverage(
             JointAvailabilityConfig(
                 waist_yaw=False,
                 waist_roll=False,
@@ -475,8 +475,8 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
         )
 
 
-def test_runner_rejects_serial_output_without_an_imu_sensor() -> None:
-    default = RobstrideRunnerConfig()
+def test_emulator_rejects_serial_output_without_an_imu_sensor() -> None:
+    default = EmulatorConfig()
     config = replace(
         default,
         asset_config=replace(
@@ -489,20 +489,20 @@ def test_runner_rejects_serial_output_without_an_imu_sensor() -> None:
         validate_config(config)
 
 
-def test_runner_can_disable_ebimu_serial_device() -> None:
-    config = replace(RobstrideRunnerConfig(), imu_serial_enabled=False)
+def test_emulator_can_disable_ebimu_serial_device() -> None:
+    config = replace(EmulatorConfig(), imu_serial_enabled=False)
 
     assert not config.imu_serial_enabled
 
 
-def test_runner_resolves_relative_motor_configs_from_bundled_config_root() -> None:
+def test_emulator_resolves_relative_motor_configs_from_bundled_config_root() -> None:
     assert resolve_motor_config_path(Path("robstride/motor_kinds.yaml")) == (
         default_motor_kind_config().resolve()
     )
 
 
-def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
-    config = RobstrideRunnerConfig()
+def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
+    config = EmulatorConfig()
     robstride = load_robstride_configs(
         resolve_motor_config_path(config.motor_kind_config),
         tuple(resolve_motor_config_path(path) for path in config.motor_configs),
@@ -608,9 +608,7 @@ def test_terminal_enter_is_detected_without_blocking() -> None:
 
 def test_release_timer_requires_an_initial_torso_hold() -> None:
     with pytest.raises(ValueError, match="requires torso_hold"):
-        validate_config(
-            RobstrideRunnerConfig(torso_hold=False, release_after_seconds=1.0)
-        )
+        validate_config(EmulatorConfig(torso_hold=False, release_after_seconds=1.0))
 
 
 def test_bello_transmission_maps_knee_and_differential_ankle(

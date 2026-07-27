@@ -34,7 +34,7 @@ bello-train = "bello_mujoco.cli:train_entrypoint"
 bello-eval = "bello_mujoco.cli:eval_entrypoint"
 bello-motion = "bello_mujoco.cli:motion_entrypoint"
 bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
-bello-run-robstride = "bello_mujoco.cli:robstride_entrypoint"
+bello-run-emulator = "bello_mujoco.cli:emulator_entrypoint"
 bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
 
 [dependency-groups]
