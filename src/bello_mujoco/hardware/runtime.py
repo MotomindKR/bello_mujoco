@@ -8,6 +8,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import importlib
 import math
+from pathlib import Path
 import sys
 import threading
 import time
@@ -167,14 +168,36 @@ def limit_target_step(
 
 
 def import_hardware_binding() -> Any:
+    from bello_mujoco.repository import repository_root
+
+    root = repository_root()
+    expected_package = (
+        root
+        / "deps"
+        / "bello-stack"
+        / "components"
+        / "bello-hardware-python"
+        / "src"
+        / "bello_hardware"
+    ).resolve()
     try:
-        return importlib.import_module("bello_hardware")
+        binding = importlib.import_module("bello_hardware")
     except ImportError as error:
         raise RuntimeError(
-            "bello_hardware is not installed; run with `uv run --with "
-            "~/bello_stack/components/bello-hardware-python "
-            "bello-run-hardware ...`"
+            "bello_hardware is not installed from the pinned bello-stack workspace; "
+            "run `git submodule update --init --recursive` and `uv sync --frozen`"
         ) from error
+    module_file = getattr(binding, "__file__", None)
+    if module_file is None:
+        raise RuntimeError("bello_hardware does not expose its installed source path")
+    try:
+        Path(module_file).resolve().relative_to(expected_package)
+    except ValueError as error:
+        raise RuntimeError(
+            "bello_hardware was not loaded from the pinned bello-stack workspace; "
+            "run `uv sync --frozen` in this checkout"
+        ) from error
+    return binding
 
 
 def require_async_hardware_binding(binding: Any) -> None:
@@ -182,8 +205,7 @@ def require_async_hardware_binding(binding: Any) -> None:
     if control_session is None or not hasattr(control_session, "send_async"):
         raise RuntimeError(
             "armed hardware execution requires bello_hardware.ControlSession.send_async; "
-            "rebuild the local binding (use `uv run --no-cache --with "
-            "~/bello_stack/components/bello-hardware-python ...`)"
+            "run `uv sync --frozen` to rebuild the pinned workspace binding"
         )
 
 

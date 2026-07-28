@@ -10,8 +10,8 @@ Before rental, the launcher:
 
 1. fetches current `origin` branches;
 2. resolves the selected branch to one immutable commit;
-3. verifies the selected profile, `.python-version`, `pyproject.toml`, and
-   `uv.lock` in that commit;
+3. verifies the selected profile, `.gitmodules`, pinned `deps/bello-stack`
+   gitlink, `.python-version`, `pyproject.toml`, and `uv.lock` in that commit;
 4. verifies any motion archive is repository-tracked in that commit;
 5. generates a unique timestamped run/lifecycle label;
 6. builds offer queries from the maintained hardware policy.
@@ -33,7 +33,8 @@ Non-dry execution:
 3. records a creating state before requesting the instance;
 4. records the active instance ID as soon as it is known;
 5. waits for instance readiness and its required direct SSH mapping;
-6. clones the exact commit and performs a frozen dependency sync;
+6. recursively clones the exact root commit and pinned submodules, then performs
+   a frozen workspace dependency sync;
 7. verifies the JAX GPU backend;
 8. runs a bounded training preflight;
 9. starts the real job in a detached process, records PID/status/log files, and
@@ -67,8 +68,8 @@ Non-dry execution requires:
 - `VAST_API_KEY` or keyring entry `vast/api_key`;
 - `WANDB_API_KEY` or keyring entry `wandb/api_key`;
 - optionally `GITHUB_TOKEN` or keyring entry
-  `github/bello_mujoco_read_token` when the remote repository cannot be cloned
-  anonymously.
+  `github/bello_mujoco_read_token` when either the root repository or its
+  submodules cannot be cloned anonymously.
 
 Credentials are read from the supported environment/keyring entries and are
 not interpolated into diagnostic command previews.

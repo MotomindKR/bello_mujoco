@@ -31,12 +31,26 @@ def project_data_path(name: str) -> Path:
     return package_data_path(name)
 
 
-def assets_root() -> Path:
-    return project_data_path("assets")
+def robot_description_root() -> Path:
+    checkout_path = repo_root() / "deps" / "bello-stack" / "descriptions" / "bello"
+    if checkout_path.is_dir():
+        return checkout_path
+    if (repo_root() / "pyproject.toml").is_file():
+        raise RuntimeError(
+            "the pinned bello-stack robot description is not initialized; "
+            "run `git submodule update --init --recursive`"
+        )
+    return package_data_path("descriptions/bello")
 
 
-def source_assets_root() -> Path:
-    return assets_root() / "source" / "bello"
+def stack_description_path(relative_path: str) -> Path:
+    path = repo_root() / "deps" / "bello-stack" / "descriptions" / relative_path
+    if not path.exists():
+        raise RuntimeError(
+            "this operation requires a source checkout with the pinned bello-stack "
+            "submodule initialized; run `git submodule update --init --recursive`"
+        )
+    return path
 
 
 def generated_model_path(output_root: Path) -> Path:

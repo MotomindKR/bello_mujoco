@@ -21,7 +21,7 @@ from bello_mujoco.assets_pipeline.prepare import (
     prepare_asset,
 )
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
-from bello_mujoco.assets_pipeline import project_data_path
+from bello_mujoco.assets_pipeline import stack_description_path
 from bello_mujoco.hardware.ebimu import EbimuSerialEmulator
 from bello_mujoco.imu import (
     ImuNoiseConfig,
@@ -34,7 +34,7 @@ from bello_mujoco.robstride.can import (
     MotorSpec,
     RobstrideBusEmulator,
     SocketCanEndpoint,
-    load_robstride_configs,
+    load_robstride_description,
 )
 from bello_mujoco.robstride.sim import (
     BelloRobstrideTransmission,
@@ -49,13 +49,16 @@ from bello_mujoco.sim import (
 from bello_mujoco.terrain import FLAT_TERRAIN
 
 
-def default_motor_configs() -> tuple[Path, ...]:
-    root = project_data_path("configs") / "robstride"
-    return root / "lower_body.yaml", root / "upper_body_sphere_hands.yaml"
+def default_hardware_description() -> Path:
+    return stack_description_path("bello/hardware.yaml")
 
 
-def default_motor_kind_config() -> Path:
-    return project_data_path("configs") / "robstride" / "motor_kinds.yaml"
+def default_motor_model_catalog() -> Path:
+    return stack_description_path("robstride/models.yaml")
+
+
+def default_robot_urdf() -> Path:
+    return stack_description_path("bello/full_body/urdf/bello_full_body.urdf")
 
 
 def default_emulator_asset_config() -> AssetPrepConfig:
@@ -66,8 +69,6 @@ def default_emulator_asset_config() -> AssetPrepConfig:
 class EmulatorConfig:
     """Runtime settings for the RobStride/MuJoCo hardware emulator."""
 
-    motor_kind_config: Path = field(default_factory=default_motor_kind_config)
-    motor_configs: tuple[Path, ...] = field(default_factory=default_motor_configs)
     bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
     asset_config: AssetPrepConfig = field(default_factory=default_emulator_asset_config)
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(
@@ -287,19 +288,14 @@ class TerminalEnterInput:
 
 def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     validate_config(config)
-    robstride = load_robstride_configs(config.motor_kind_config, config.motor_configs)
-    validate_motor_coverage(config.asset_config.joint_availability, robstride.motors)
     overrides = parse_bus_interfaces(config.bus_interfaces)
-    unknown_buses = set(overrides) - {bus.name for bus in robstride.buses}
-    if unknown_buses:
-        raise ValueError(
-            "bus interface overrides reference undefined buses: "
-            + ", ".join(sorted(unknown_buses))
-        )
-    buses = tuple(
-        replace(bus, interface=overrides.get(bus.name, bus.interface))
-        for bus in robstride.buses
+    robstride = load_robstride_description(
+        default_hardware_description(),
+        default_motor_model_catalog(),
+        default_robot_urdf(),
+        overrides,
     )
+    validate_motor_coverage(config.asset_config.joint_availability, robstride.motors)
 
     prepared = prepare_asset(config.asset_config)
     model = load_prepared_bello_model(
@@ -319,7 +315,7 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
             bus,
             tuple(motor for motor in robstride.motors if motor.bus == bus.name),
         )
-        for bus in buses
+        for bus in robstride.buses
     }
     for emulator in emulators.values():
         for motor in emulator.motors.values():
@@ -773,13 +769,6 @@ def parse_bus_interfaces(values: tuple[str, ...]) -> dict[str, str]:
 
 
 def validate_config(config: EmulatorConfig) -> None:
-    if not config.motor_configs:
-        raise ValueError("motor_configs must not be empty")
-    if any(
-        not path.is_absolute()
-        for path in (config.motor_kind_config, *config.motor_configs)
-    ):
-        raise ValueError("motor config paths must be absolute")
     if not config.bus_interfaces:
         raise ValueError("bus_interfaces must not be empty")
     parse_bus_interfaces(config.bus_interfaces)

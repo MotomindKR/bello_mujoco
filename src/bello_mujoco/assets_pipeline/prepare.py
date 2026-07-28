@@ -23,7 +23,7 @@ from bello_mujoco.assets_pipeline import (
     generated_model_path,
     generated_urdf_path,
     generated_viewer_model_path,
-    source_assets_root,
+    robot_description_root,
 )
 from bello_mujoco.assets_pipeline.mesh import (
     EndEffectorSphereMode,
@@ -216,7 +216,7 @@ def prepare_asset_unlocked(
     output_root: Path,
 ) -> PreparedAsset:
     asset = "full_body"
-    source_root = source_assets_root()
+    source_root = robot_description_root()
     source_urdf = source_root / asset / "urdf" / f"bello_{asset}.urdf"
     if not source_urdf.exists():
         raise FileNotFoundError(source_urdf)
@@ -436,10 +436,26 @@ def asset_generator_fingerprint() -> str:
 
 
 def source_asset_fingerprint() -> str:
-    asset = "full_body"
-    source_root = source_assets_root() / asset
+    source_root = robot_description_root()
     hasher = hashlib.sha256()
-    for path in sorted(p for p in source_root.rglob("*") if p.is_file()):
+    source_paths = (
+        source_root / "full_body" / "urdf",
+        source_root / "lower_body" / "meshes",
+        source_root / "upper_body" / "meshes",
+    )
+    missing = [path for path in source_paths if not path.is_dir()]
+    if missing:
+        raise FileNotFoundError(
+            "canonical robot description directories are missing: "
+            + ", ".join(str(path) for path in missing)
+        )
+    files = sorted(
+        path
+        for source_path in source_paths
+        for path in source_path.rglob("*")
+        if path.is_file()
+    )
+    for path in files:
         hasher.update(path.relative_to(source_root).as_posix().encode())
         hasher.update(b"\0")
         hasher.update(path.read_bytes())

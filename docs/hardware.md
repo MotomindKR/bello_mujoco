@@ -11,11 +11,12 @@ The runner has two task modes:
 | Locomotion | Motor state, pelvis IMU, previous action, and fixed or gamepad velocity command | `bello-hardwared` |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
 
-The `bello-hardware` Python binding is distributed with `bello-stack`, not this
-repository. Supply that local component through uv as documented in the command
-reference. The checkpoint neither records nor checks the separate `bello-stack`
-checkout, hardware daemon, or firmware revisions. Deployment is responsible for
-selecting versions compatible with the `bello_mujoco` checkout used at runtime.
+The `bello-hardware` Python binding is installed from the pinned
+`deps/bello-stack` uv workspace member. Hardware execution requires a source
+checkout; installed wheels contain neither that binding nor the hardware
+description. The root Git commit pins the stack gitlink, and exact-source checks
+require the recursive submodule checkout to be initialized, clean, and at that
+commit. The checkpoint does not record daemon or firmware revisions.
 
 An exact checkout also restores that revision's hardware runner and safety
 checks. Review old runner code and its guards before using `arm=true`; a later

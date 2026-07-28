@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.25"
@@ -24,6 +26,17 @@ jobs:
         run: |
           wheel_path="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
           test -n "$wheel_path"
+          python - "$wheel_path" <<'PY'
+          import sys
+          from zipfile import ZipFile
+
+          with ZipFile(sys.argv[1]) as wheel:
+              names = set(wheel.namelist())
+          assert "bello_mujoco/descriptions/bello/full_body/urdf/bello_full_body.urdf" in names
+          assert "bello_mujoco/descriptions/bello/hardware.yaml" not in names
+          assert "bello_mujoco/descriptions/robstride/models.yaml" not in names
+          assert not any(name.startswith("bello_hardware/") for name in names)
+          PY
           uv run --isolated --no-project --with "$wheel_path" python -c \
             'from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, asset_config_hash; print(asset_config_hash(AssetPrepConfig()))'
       - run: uv run --no-sync python -m compileall -q src tests

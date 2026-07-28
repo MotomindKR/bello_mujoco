@@ -1,0 +1,3 @@
+[submodule "deps/bello-stack"]
+	path = deps/bello-stack
+	url = https://github.com/MotomindKR/bello-stack.git

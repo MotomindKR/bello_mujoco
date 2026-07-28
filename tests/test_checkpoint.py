@@ -599,7 +599,24 @@ def test_repository_commit_requires_origin_tracked_clean_source(
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("initial\n", encoding="utf-8")
     (tmp_path / ".gitignore").write_text("checkpoints/\n", encoding="utf-8")
-    run_git(tmp_path, "add", "tracked.txt", ".gitignore")
+    stack_source = tmp_path.parent / f"{tmp_path.name}-stack"
+    stack_source.mkdir()
+    run_git(stack_source, "init", "-b", "main")
+    run_git(stack_source, "config", "user.name", "Checkpoint Test")
+    run_git(stack_source, "config", "user.email", "checkpoint@example.com")
+    (stack_source / "description.txt").write_text("pinned\n", encoding="utf-8")
+    run_git(stack_source, "add", "description.txt")
+    run_git(stack_source, "commit", "-m", "description")
+    run_git(
+        tmp_path,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(stack_source),
+        "deps/bello-stack",
+    )
+    run_git(tmp_path, "add", "tracked.txt", ".gitignore", ".gitmodules")
     run_git(tmp_path, "commit", "-m", "initial")
     run_git(
         tmp_path,
@@ -633,6 +650,12 @@ def test_repository_commit_requires_origin_tracked_clean_source(
         source.require_tracked_repository_path(untracked)
 
     untracked.unlink()
+    (tmp_path / "deps/bello-stack/description.txt").write_text(
+        "dirty submodule\n", encoding="utf-8"
+    )
+    with pytest.raises(RuntimeError, match="clean Git worktree"):
+        source.capture_repository_commit()
+    run_git(tmp_path / "deps/bello-stack", "restore", "description.txt")
     tracked.write_text("second\n", encoding="utf-8")
     run_git(tmp_path, "add", "tracked.txt")
     run_git(tmp_path, "commit", "-m", "second")

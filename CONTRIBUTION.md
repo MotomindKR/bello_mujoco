@@ -6,6 +6,9 @@
 - Read the affected implementation, tests, and documentation before editing.
 - Do not mix unrelated cleanup with behavior changes.
 - Do not commit generated assets, checkpoints, caches, videos, or W&B output.
+- Initialize dependencies with `git submodule update --init --recursive`.
+- Change canonical robot or hardware descriptions in `bello-stack`; update the
+  `deps/bello-stack` gitlink here only after that stack commit is available.
 
 Use branch names in the form `<type>/<short-description>`. Supported types are
 `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, and `experiment`.

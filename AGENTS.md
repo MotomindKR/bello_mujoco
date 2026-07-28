@@ -10,8 +10,9 @@ follow the linked docs for repository behavior and user-facing contracts.
   style before adding new patterns.
 - Prefer small, direct changes over broad rewrites. Refactor only when it
   removes real ambiguity, duplication, or stale compatibility surface.
-- Treat generated files as disposable artifacts. Source robot descriptions live
-  in this repo; generated assets and caches do not.
+- Treat generated files as disposable artifacts. Source robot descriptions come
+  from the pinned `deps/bello-stack` submodule; generated assets and caches do
+  not belong in Git.
 - Keep compatibility only when it is intentional. Do not add aliases, fallback
   paths, or duplicate config routes unless the user explicitly asks for them.
 - Make behavior explicit. Silent fallbacks, inert CLI flags, and hidden defaults
@@ -43,11 +44,10 @@ follow the linked docs for repository behavior and user-facing contracts.
 
 ## Repository Rules
 
-- Do not reintroduce external robot asset paths. The asset pipeline's canonical
-  robot input is
-  `assets/source/bello/full_body/urdf/bello_full_body.urdf`; the component
-  lower- and upper-body URDFs are reference descriptions, not alternate asset
-  inputs.
+- The asset pipeline's canonical robot input is
+  `deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`.
+  Treat the submodule as read-only here: change descriptions in `bello-stack`,
+  then advance the pinned gitlink deliberately.
 - Do not add asset aliases. Valid asset names are documented in
   [docs/index.md](docs/index.md).
 - Do not commit generated assets, `.venv`, uv caches, Warp caches, W&B runs, or

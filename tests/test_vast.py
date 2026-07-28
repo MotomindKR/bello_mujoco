@@ -166,6 +166,8 @@ def test_motion_git_selection_verifies_clip_at_selected_commit(
 
     assert resolved.motion_path == motion_selection().motion_path
     assert f"{commit}:{resolved.motion_path}" in checked_objects
+    assert f"{commit}:.gitmodules" in checked_objects
+    assert f"{commit}:deps/bello-stack" in checked_objects
 
 
 @pytest.mark.parametrize(
@@ -723,6 +725,8 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
 
     assert shlex.split(command)[-1] == "motion-test"
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
+    assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
     overrides_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
         'training_overrides=("experiment=$experiment")'
     )

@@ -1,4 +1,4 @@
-"""Deploy a locomotion checkpoint through bello_stack's hardware client."""
+"""Deploy a locomotion checkpoint through bello-stack's hardware client."""
 
 from __future__ import annotations
 
@@ -258,7 +258,7 @@ def validate_hardware_checkpoint(
     )
     if unexpected:
         raise ValueError(
-            "checkpoint morphology contains joints absent from bello_stack hardware: "
+            "checkpoint morphology contains joints absent from bello-stack hardware: "
             + ", ".join(unexpected)
             + "; train with `bello-train experiment=hardware_locomotion`"
         )

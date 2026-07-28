@@ -37,6 +37,12 @@
           UV_PROJECT_ENVIRONMENT = ".venv";
 
           shellHook = ''
+            if [ ! -f deps/bello-stack/components/bello-hardware-python/pyproject.toml ]; then
+              echo "The pinned bello-stack submodule is not initialized." >&2
+              echo "Run: git submodule update --init --recursive" >&2
+              exit 1
+            fi
+
             export UV_CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/uv"
             export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
             export WARP_CACHE_PATH="$PWD/.warp-cache"

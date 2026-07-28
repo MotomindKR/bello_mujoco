@@ -47,6 +47,9 @@ dev = [
   "pytest>=8.0.0",
   "ruff>=0.8.0",
 ]
+hardware = [
+  "bello-hardware",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -57,9 +60,12 @@ packages = ["src/bello_mujoco"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "configs" = "bello_mujoco/configs"
-"assets/source" = "bello_mujoco/assets/source"
+"deps/bello-stack/descriptions/bello/full_body/urdf" = "bello_mujoco/descriptions/bello/full_body/urdf"
+"deps/bello-stack/descriptions/bello/lower_body/meshes" = "bello_mujoco/descriptions/bello/lower_body/meshes"
+"deps/bello-stack/descriptions/bello/upper_body/meshes" = "bello_mujoco/descriptions/bello/upper_body/meshes"
 
 [tool.uv]
+default-groups = ["dev", "hardware"]
 environments = [
   "sys_platform == 'darwin' and platform_machine == 'arm64'",
   "sys_platform == 'linux'",
@@ -68,6 +74,12 @@ required-environments = [
   "sys_platform == 'darwin' and platform_machine == 'arm64'",
   "sys_platform == 'linux'",
 ]
+
+[tool.uv.sources]
+bello-hardware = { workspace = true }
+
+[tool.uv.workspace]
+members = ["deps/bello-stack/components/bello-hardware-python"]
 
 [tool.pytest.ini_options]
 markers = [

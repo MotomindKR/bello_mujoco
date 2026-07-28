@@ -218,7 +218,14 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
 
     ref = f"refs/remotes/origin/{branch}"
     commit = run_git(repo_root, "rev-parse", f"{ref}^{{commit}}")
-    for path in (str(config_path), ".python-version", "pyproject.toml", "uv.lock"):
+    for path in (
+        str(config_path),
+        ".gitmodules",
+        ".python-version",
+        "deps/bello-stack",
+        "pyproject.toml",
+        "uv.lock",
+    ):
         try:
             run_git(repo_root, "cat-file", "-e", f"{commit}:{path}")
         except subprocess.CalledProcessError as exc:

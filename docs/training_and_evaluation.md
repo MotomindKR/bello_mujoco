@@ -75,12 +75,14 @@ Checkpoints store:
 There is no automatic cross-revision adaptation. Checkpoint-producing training
 requires a clean `HEAD` contained by a local `origin/*` tracking
 branch and rechecks that revision immediately before every checkpoint is
-published. Fetch or push before a local run so that tracking state is current.
-Evaluation, resume, and hardware execution reject a dirty worktree. They also
-reject a different `HEAD` unless `allow_git_commit_mismatch=true` is explicitly
-set. That override bypasses only commit equality; metadata, state layout, task,
-motion content, and runtime validation remain active. It cannot load older
-checkpoint envelopes that do not contain `git_commit`.
+published. The root commit pins `deps/bello-stack`; its recursive submodules
+must be initialized, clean, and at their recorded commits. Fetch or push before
+a local run so that tracking state is current. Evaluation, resume, and hardware
+execution reject a dirty root or submodule worktree. They also reject a
+different `HEAD` unless `allow_git_commit_mismatch=true` is explicitly set. That
+override bypasses only root-commit equality; metadata, state layout, task,
+motion content, submodule integrity, and runtime validation remain active. It
+cannot load older checkpoint envelopes that do not contain `git_commit`.
 
 Checkpoint output must be outside the source repository or covered by a Git
 ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name
@@ -90,11 +92,12 @@ Checkpointed motion training additionally requires the selected archive to be
 tracked in `HEAD`; its checkpoint path is stored relative to the repository so
 the exact checkout is portable across machines.
 
-The default generated-asset cache is namespaced by the source commit; a dirty
-worktree receives a separate content-derived namespace and cannot populate the
-clean commit's cache. The manifest verifies the canonical generated XML and
-referenced mesh content, and runtime terrain scenes are regenerated
-deterministically instead of trusted across launches.
+The default generated-asset cache is content-addressed by the preparation
+configuration, generator code and runtime versions, and canonical URDF and mesh
+content. Relevant source changes therefore receive a different cache key. The
+manifest verifies the canonical generated XML and referenced mesh content, and
+runtime terrain scenes are regenerated deterministically instead of trusted
+across launches.
 
 Regardless of whether the commit override is used, evaluation validates
 document integrity, metadata and state-layout hashes, task and
@@ -121,8 +124,9 @@ CHECKPOINT="$(cd checkpoints/<checkpoint> && pwd -P)"
 COMMIT="$(jq -r .git_commit "$CHECKPOINT/metadata.json")"
 REPOSITORY="$(git remote get-url origin)"
 CHECKOUT="$(cd .. && pwd -P)/bello_mujoco-${COMMIT:0:12}"
-git clone "$REPOSITORY" "$CHECKOUT"
+git clone --recurse-submodules "$REPOSITORY" "$CHECKOUT"
 git -C "$CHECKOUT" switch --detach "$COMMIT"
+git -C "$CHECKOUT" submodule update --init --recursive
 cd "$CHECKOUT" && uv sync --frozen
 ```
 

@@ -8,7 +8,8 @@ from pathlib import Path
 import math
 import socket
 import struct
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
+import xml.etree.ElementTree as ET
 
 from omegaconf import OmegaConf
 
@@ -178,10 +179,10 @@ class MotorHardwareLimits:
 
 
 @dataclass(frozen=True)
-class MotorKindSpec:
+class MotorModelSpec:
     name: str
     protocol: MotorProtocolLimits
-    hardware: MotorHardwareLimits
+    hardware: MotorHardwareLimits | None
 
 
 @dataclass(frozen=True)
@@ -198,7 +199,7 @@ class MotorSpec:
     name: str
     motor_id: int
     bus: str
-    kind: MotorKindSpec
+    model: MotorModelSpec
     target: MotorTargetSpec
     direction: int
 
@@ -216,188 +217,429 @@ class RobstrideConfig:
     motors: tuple[MotorSpec, ...]
 
 
-def load_robstride_configs(
-    motor_kind_path: Path, paths: tuple[Path, ...]
+def load_robstride_description(
+    hardware_path: Path,
+    model_path: Path,
+    urdf_path: Path,
+    bus_interfaces: Mapping[str, str],
+    *,
+    enabled_groups: tuple[str, ...] = ("lower_body", "upper_body"),
 ) -> RobstrideConfig:
-    if not paths:
-        raise ValueError("at least one RobStride actuator config is required")
-    motor_kinds = load_motor_kinds(motor_kind_path)
-    kinds_by_name = {kind.name: kind for kind in motor_kinds}
-    buses: dict[str, BusSpec] = {}
-    motors: list[MotorSpec] = []
+    hardware = _load_mapping(hardware_path, "Bello hardware description")
+    expected_sections = {
+        "logical_buses",
+        "serial_devices",
+        "imus",
+        "motors",
+        "motor_groups",
+    }
+    if set(hardware) != expected_sections:
+        raise ValueError(
+            "Bello hardware description sections must be exactly "
+            + ", ".join(sorted(expected_sections))
+        )
+    for section in ("serial_devices", "imus"):
+        if not isinstance(hardware[section], list) or not hardware[section]:
+            raise ValueError(f"Bello {section} must be a nonempty list")
+    models = load_motor_models(model_path)
+    models_by_name = {model.name: model for model in models}
+    targets = load_urdf_motor_targets(urdf_path)
+
+    bus_descriptions = hardware["logical_buses"]
+    if not isinstance(bus_descriptions, list) or not bus_descriptions:
+        raise ValueError("Bello logical_buses must be a nonempty list")
+    buses_by_name: dict[str, BusSpec] = {}
+    for entry in bus_descriptions:
+        if not isinstance(entry, dict):
+            raise ValueError("Bello logical bus entries must be mappings")
+        expected_bus_keys = {
+            "name",
+            "host_id",
+            "bitrate",
+            "maximum_utilization",
+            "reconnect",
+        }
+        if set(entry) != expected_bus_keys:
+            raise ValueError(
+                "Bello logical bus keys must be exactly "
+                + ", ".join(sorted(expected_bus_keys))
+            )
+        name = entry["name"]
+        host_id = entry["host_id"]
+        if not isinstance(name, str) or not name or name in buses_by_name:
+            raise ValueError(f"invalid or duplicate Bello logical bus name {name!r}")
+        if isinstance(host_id, bool) or not isinstance(host_id, int):
+            raise ValueError(f"Bello logical bus {name!r} host_id must be an integer")
+        if not 0 <= host_id <= 0xFF:
+            raise ValueError(f"Bello logical bus {name!r} host_id is out of range")
+        buses_by_name[name] = BusSpec(
+            name=name,
+            interface="",
+            host_id=host_id,
+        )
+    if set(bus_interfaces) != set(buses_by_name):
+        raise ValueError(
+            "emulator bus mappings must exactly match Bello hardware buses; "
+            f"expected={sorted(buses_by_name)}, actual={sorted(bus_interfaces)}"
+        )
+    buses_list = []
+    for name, bus in buses_by_name.items():
+        interface = bus_interfaces[name]
+        if not isinstance(interface, str) or not interface.strip():
+            raise ValueError(f"emulator interface for {name!r} must be nonempty")
+        buses_list.append(BusSpec(bus.name, interface, bus.host_id))
+    buses = tuple(buses_list)
+
+    raw_motors = hardware["motors"]
+    if not isinstance(raw_motors, list) or not raw_motors:
+        raise ValueError("Bello hardware motors must be a nonempty list")
+    motor_entries: dict[str, dict[str, Any]] = {}
+    for entry in raw_motors:
+        if not isinstance(entry, dict):
+            raise ValueError("Bello hardware motor entries must be mappings")
+        name = entry.get("name")
+        if not isinstance(name, str):
+            raise ValueError("Bello hardware motor names must be strings")
+        if not name or name in motor_entries:
+            raise ValueError(f"invalid or duplicate Bello hardware motor name {name!r}")
+        motor_entries[name] = entry
+    all_motors = tuple(
+        _motor_spec(entry, models_by_name, targets) for entry in motor_entries.values()
+    )
     ids_by_bus: set[tuple[str, int]] = set()
     names: set[str] = set()
-    for raw_path in paths:
-        path = Path(raw_path).expanduser()
-        if not path.exists():
-            raise FileNotFoundError(path)
-        raw = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
-        if not isinstance(raw, dict):
-            raise ValueError(f"RobStride config must be a mapping: {path}")
-        for name, value in (raw.get("buses") or {}).items():
-            bus = BusSpec(
-                name=str(name),
-                interface=str(value.get("interface", name)),
-                host_id=int(value.get("host_id", 0)),
-            )
-            previous = buses.get(bus.name)
-            if previous is not None and previous != bus:
-                raise ValueError(f"conflicting definitions for bus {bus.name!r}")
-            buses[bus.name] = bus
-        unknown = set(raw) - {"buses", "motors"}
-        if unknown:
+    bus_names = {bus.name for bus in buses}
+    for motor in all_motors:
+        key = (motor.bus, motor.motor_id)
+        if key in ids_by_bus:
+            raise ValueError(f"duplicate motor id {motor.motor_id} on {motor.bus}")
+        if motor.name in names:
+            raise ValueError(f"duplicate motor name {motor.name!r}")
+        if motor.bus not in bus_names:
             raise ValueError(
-                f"unknown RobStride assignment keys in {path}: "
-                + ", ".join(sorted(unknown))
+                f"motor {motor.name!r} references undefined bus {motor.bus!r}"
             )
-        for entry in raw.get("motors") or []:
-            motor = _motor_spec(entry, kinds_by_name)
-            key = (motor.bus, motor.motor_id)
-            if key in ids_by_bus:
-                raise ValueError(f"duplicate motor id {motor.motor_id} on {motor.bus}")
-            if motor.name in names:
-                raise ValueError(f"duplicate motor name {motor.name!r}")
-            if motor.bus not in buses:
-                raise ValueError(
-                    f"motor {motor.name!r} references undefined bus {motor.bus!r}"
-                )
-            ids_by_bus.add(key)
-            names.add(motor.name)
-            motors.append(motor)
-    _validate_coupling_groups(tuple(motors))
-    return RobstrideConfig(tuple(buses.values()), tuple(motors))
+        ids_by_bus.add(key)
+        names.add(motor.name)
+
+    selected_motor_names = _selected_motor_names(
+        hardware["motor_groups"],
+        enabled_groups,
+        available_motors=names,
+    )
+    motors = tuple(motor for motor in all_motors if motor.name in selected_motor_names)
+    _validate_coupling_groups(all_motors)
+    _validate_coupling_groups(motors)
+    return RobstrideConfig(buses, motors)
 
 
-def load_motor_kinds(path: Path) -> tuple[MotorKindSpec, ...]:
-    path = Path(path).expanduser()
-    if not path.exists():
-        raise FileNotFoundError(path)
-    raw = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
-    if not isinstance(raw, dict) or set(raw) != {"motor_kinds"}:
-        raise ValueError(f"motor-kind config must contain only 'motor_kinds': {path}")
-    values = raw["motor_kinds"]
+def load_motor_models(path: Path) -> tuple[MotorModelSpec, ...]:
+    raw = _load_mapping(path, "RobStride model catalog")
+    if set(raw) != {"models"}:
+        raise ValueError(f"RobStride model catalog must contain only 'models': {path}")
+    values = raw["models"]
     if not isinstance(values, dict) or not values:
-        raise ValueError("motor_kinds must be a nonempty mapping")
-    kinds = tuple(_motor_kind_spec(str(name), value) for name, value in values.items())
-    if len({kind.name for kind in kinds}) != len(kinds):
-        raise ValueError("duplicate RobStride motor-kind names")
-    return kinds
+        raise ValueError("models must be a nonempty mapping")
+    models = tuple(
+        _motor_model_spec(str(name), value) for name, value in values.items()
+    )
+    if len({model.name for model in models}) != len(models):
+        raise ValueError("duplicate RobStride model names")
+    return models
 
 
-def _motor_kind_spec(name: str, entry: dict[str, Any]) -> MotorKindSpec:
-    if not isinstance(entry, dict):
-        raise ValueError(f"motor kind {name!r} must be a mapping")
-    unknown = set(entry) - {"protocol", "hardware"}
+def _motor_model_spec(name: str, entry: dict[str, Any]) -> MotorModelSpec:
+    if not name or not isinstance(entry, dict):
+        raise ValueError(f"motor model {name!r} must be a mapping")
+    protocol_fields = {"position", "velocity", "torque", "kp", "kd"}
+    unknown = set(entry) - protocol_fields - {"hardware"}
     if unknown:
         raise ValueError(
-            f"unknown motor-kind keys for {name!r}: {', '.join(sorted(unknown))}"
+            f"unknown motor-model keys for {name!r}: {', '.join(sorted(unknown))}"
         )
-    protocol = entry.get("protocol")
-    hardware = entry.get("hardware")
-    if not isinstance(protocol, dict) or not isinstance(hardware, dict):
-        raise ValueError(f"motor kind {name!r} requires protocol and hardware mappings")
-    protocol_unknown = set(protocol) - {"position", "velocity", "torque", "kp", "kd"}
-    if protocol_unknown:
-        raise ValueError(
-            f"unknown protocol keys for {name!r}: "
-            + ", ".join(sorted(protocol_unknown))
-        )
-    required_hardware = {
-        "no_load_speed_rpm",
-        "rated_voltage",
-        "peak_phase_current",
-    }
-    if set(hardware) != required_hardware:
-        missing = required_hardware - set(hardware)
-        unknown = set(hardware) - required_hardware
-        details = []
-        if missing:
-            details.append("missing " + ", ".join(sorted(missing)))
-        if unknown:
-            details.append("unknown " + ", ".join(sorted(unknown)))
-        raise ValueError(f"invalid hardware keys for {name!r}: {'; '.join(details)}")
     protocol_limits = MotorProtocolLimits(
-        position=_bounds(protocol, "position"),
-        velocity=_bounds(protocol, "velocity"),
-        torque=_bounds(protocol, "torque"),
-        kp=_bounds(protocol, "kp"),
-        kd=_bounds(protocol, "kd"),
+        position=_bounds(entry, "position"),
+        velocity=_bounds(entry, "velocity"),
+        torque=_bounds(entry, "torque"),
+        kp=_bounds(entry, "kp"),
+        kd=_bounds(entry, "kd"),
     )
-    hardware_limits = MotorHardwareLimits(
-        no_load_speed_rpm=_positive_float(hardware, "no_load_speed_rpm"),
-        rated_voltage=_positive_float(hardware, "rated_voltage"),
-        peak_phase_current=_positive_float(hardware, "peak_phase_current"),
-    )
-    return MotorKindSpec(name, protocol_limits, hardware_limits)
+    hardware = entry.get("hardware")
+    hardware_limits = None
+    if hardware is not None:
+        if not isinstance(hardware, dict):
+            raise ValueError(f"motor model {name!r} hardware must be a mapping")
+        required_hardware = {
+            "no_load_speed_rpm",
+            "rated_voltage",
+            "peak_phase_current",
+        }
+        if set(hardware) != required_hardware:
+            raise ValueError(
+                f"motor model {name!r} hardware keys must be exactly "
+                + ", ".join(sorted(required_hardware))
+            )
+        hardware_limits = MotorHardwareLimits(
+            no_load_speed_rpm=_positive_float(hardware, "no_load_speed_rpm"),
+            rated_voltage=_positive_float(hardware, "rated_voltage"),
+            peak_phase_current=_positive_float(hardware, "peak_phase_current"),
+        )
+    return MotorModelSpec(name, protocol_limits, hardware_limits)
 
 
 def _motor_spec(
-    entry: dict[str, Any], kinds_by_name: dict[str, MotorKindSpec]
+    entry: dict[str, Any],
+    models_by_name: dict[str, MotorModelSpec],
+    targets: dict[str, MotorTargetSpec],
 ) -> MotorSpec:
-    if not isinstance(entry, dict):
-        raise ValueError("motor assignment must be a mapping")
-    allowed = {"name", "id", "bus", "kind", "target", "direction"}
+    required = {
+        "name",
+        "coordinate",
+        "bus",
+        "id",
+        "model",
+        "direction",
+    }
+    allowed = required | {
+        "limits",
+        "health",
+        "command_policy",
+        "fault_damping_kd",
+    }
+    missing = required - set(entry)
+    if missing:
+        raise ValueError(
+            "missing Bello hardware motor keys: " + ", ".join(sorted(missing))
+        )
     unknown = set(entry) - allowed
     if unknown:
-        raise ValueError("unknown motor assignment keys: " + ", ".join(sorted(unknown)))
-    motor_id = int(entry["id"])
+        raise ValueError(
+            "unknown Bello hardware motor keys: " + ", ".join(sorted(unknown))
+        )
+    if isinstance(entry["id"], bool) or not isinstance(entry["id"], int):
+        raise ValueError("motor id must be an integer")
+    motor_id = entry["id"]
     if not 0 <= motor_id <= 0xFF:
         raise ValueError(f"motor id out of range: {motor_id}")
-    kind_name = str(entry.get("kind", ""))
+    model_name = entry["model"]
+    if not isinstance(model_name, str) or not model_name:
+        raise ValueError("motor model must be a nonempty string")
     try:
-        kind = kinds_by_name[kind_name]
+        model = models_by_name[model_name]
     except KeyError as error:
-        raise ValueError(f"motor references unknown kind {kind_name!r}") from error
+        raise ValueError(f"motor references unknown model {model_name!r}") from error
+    coordinate = entry["coordinate"]
+    if not isinstance(coordinate, str) or not coordinate:
+        raise ValueError("motor coordinate must be a nonempty string")
+    try:
+        target = targets[coordinate]
+    except KeyError as error:
+        raise ValueError(
+            f"motor coordinate {coordinate!r} is absent from the canonical URDF"
+        ) from error
+    if isinstance(entry["direction"], bool) or not isinstance(entry["direction"], int):
+        raise ValueError("motor direction must be -1 or 1")
+    direction = entry["direction"]
+    if direction not in {-1, 1}:
+        raise ValueError("motor direction must be -1 or 1")
+    bus = entry["bus"]
+    if not isinstance(bus, str) or not bus:
+        raise ValueError("motor bus must be a nonempty string")
     return MotorSpec(
-        name=str(entry.get("name", f"motor_{motor_id}")),
+        name=entry["name"],
         motor_id=motor_id,
-        bus=str(entry.get("bus", "can0")),
-        kind=kind,
-        target=_motor_target_spec(entry.get("target")),
-        direction=1 if int(entry.get("direction", 1)) >= 0 else -1,
+        bus=bus,
+        model=model,
+        target=target,
+        direction=direction,
     )
 
 
-def _motor_target_spec(value: Any) -> MotorTargetSpec:
-    if not isinstance(value, dict):
-        raise ValueError("motor target must be a mapping")
-    allowed = {"type", "name", "owned_joints", "coupling_group", "coupling_size"}
-    unknown = set(value) - allowed
-    if unknown:
-        raise ValueError(f"unknown motor target keys: {', '.join(sorted(unknown))}")
-    target_type = str(value.get("type", ""))
-    if target_type not in {"joint", "tendon"}:
-        raise ValueError("motor target type must be 'joint' or 'tendon'")
-    name = str(value.get("name", ""))
-    if not name:
-        raise ValueError("motor target name must not be empty")
-    owned_values = value.get("owned_joints", [])
-    if not isinstance(owned_values, list) or not all(
-        isinstance(item, str) and item for item in owned_values
-    ):
-        raise ValueError("motor target owned_joints must be a list of joint names")
-    owned_joints = tuple(owned_values)
-    coupling_group = value.get("coupling_group")
-    coupling_size = value.get("coupling_size")
-    if target_type == "joint":
-        if owned_joints or coupling_group is not None or coupling_size is not None:
-            raise ValueError(
-                "joint targets cannot define owned_joints or coupling settings"
+def load_urdf_motor_targets(path: Path) -> dict[str, MotorTargetSpec]:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    root = ET.parse(path).getroot()
+    if root.tag != "robot":
+        raise ValueError(f"canonical robot description is not a URDF: {path}")
+    targets: dict[str, MotorTargetSpec] = {}
+    joint_names: set[str] = set()
+    movable_joint_names: set[str] = set()
+    for joint in root.findall("joint"):
+        name = joint.get("name", "")
+        if not name or name in joint_names:
+            raise ValueError(f"invalid or duplicate canonical URDF joint {name!r}")
+        joint_names.add(name)
+        if joint.get("type") != "fixed":
+            movable_joint_names.add(name)
+            targets[name] = MotorTargetSpec(type="joint", name=name)
+
+    used_coordinates: set[str] = set()
+    used_joints: set[str] = set()
+    for transmission in root.iter("transmission"):
+        transmission_type = next(
+            (
+                (child.text or "").strip()
+                for child in transmission
+                if child.tag in {"type", "plugin"}
+            ),
+            "",
+        )
+        if not transmission_type.endswith("DifferentialTransmission"):
+            continue
+        name = transmission.get("name", "unnamed")
+        actuator_names = _ordered_transmission_members(
+            transmission, "actuator", "actuator", name
+        )
+        owned_joint_names = _ordered_transmission_members(
+            transmission, "joint", "joint", name
+        )
+        for actuator_name in actuator_names:
+            if actuator_name in used_coordinates or actuator_name in targets:
+                raise ValueError(f"transmission coordinate {actuator_name!r} is reused")
+            used_coordinates.add(actuator_name)
+        for joint_name in owned_joint_names:
+            if joint_name not in movable_joint_names:
+                raise ValueError(
+                    f"transmission {name!r} references unknown or fixed joint "
+                    f"{joint_name!r}"
+                )
+            if joint_name in used_joints:
+                raise ValueError(f"transmission joint {joint_name!r} is reused")
+            used_joints.add(joint_name)
+            targets.pop(joint_name)
+        for actuator_name in actuator_names:
+            targets[actuator_name] = MotorTargetSpec(
+                type="tendon",
+                name=actuator_name,
+                owned_joints=owned_joint_names,
+                coupling_group=name,
+                coupling_size=len(actuator_names),
             )
-    else:
-        if not owned_joints:
-            raise ValueError("tendon targets must define owned_joints")
-        if not isinstance(coupling_group, str) or not coupling_group:
-            raise ValueError("tendon targets must define coupling_group")
-        if not isinstance(coupling_size, int) or coupling_size < 2:
-            raise ValueError("tendon targets must define coupling_size >= 2")
-    return MotorTargetSpec(
-        type=target_type,
-        name=name,
-        owned_joints=owned_joints,
-        coupling_group=coupling_group,
-        coupling_size=coupling_size,
-    )
+    return targets
+
+
+def _load_mapping(path: Path, description: str) -> dict[str, Any]:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    raw = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{description} must be a mapping: {path}")
+    return raw
+
+
+def _selected_motor_names(
+    raw_groups: Any,
+    selected: tuple[str, ...],
+    *,
+    available_motors: set[str],
+) -> set[str]:
+    if not selected or len(set(selected)) != len(selected):
+        raise ValueError("enabled Bello hardware groups must be unique and nonempty")
+    if not isinstance(raw_groups, list) or not raw_groups:
+        raise ValueError("Bello hardware motor_groups must be a nonempty list")
+    groups: dict[str, tuple[str, ...]] = {}
+    allowed = {
+        "name",
+        "motors",
+        "control_rate_hz",
+        "command_timeout_ms",
+        "feedback_timeout_ms",
+        "enable_timeout_ms",
+        "enable_retries",
+        "fault_policy",
+    }
+    for entry in raw_groups:
+        if not isinstance(entry, dict):
+            raise ValueError("Bello hardware motor-group entries must be mappings")
+        unknown = set(entry) - allowed
+        if unknown:
+            raise ValueError(
+                "unknown Bello hardware motor-group keys: " + ", ".join(sorted(unknown))
+            )
+        name = entry.get("name")
+        motors = entry.get("motors")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in groups
+            or not isinstance(motors, list)
+            or not motors
+            or not all(isinstance(item, str) and item for item in motors)
+        ):
+            raise ValueError(f"invalid Bello hardware motor group {name!r}")
+        if len(set(motors)) != len(motors):
+            raise ValueError(f"Bello hardware group {name!r} repeats motors")
+        groups[name] = tuple(motors)
+
+    memberships = [motor for motors in groups.values() for motor in motors]
+    if len(set(memberships)) != len(memberships):
+        raise ValueError("Bello hardware motor groups share motors")
+    described_motors = set(memberships)
+    if described_motors != available_motors:
+        details = []
+        undefined = described_motors - available_motors
+        ungrouped = available_motors - described_motors
+        if undefined:
+            details.append("undefined: " + ", ".join(sorted(undefined)))
+        if ungrouped:
+            details.append("ungrouped: " + ", ".join(sorted(ungrouped)))
+        raise ValueError(
+            "Bello hardware motor groups are incomplete: " + "; ".join(details)
+        )
+
+    missing = set(selected) - set(groups)
+    if missing:
+        raise ValueError(
+            "required emulator motor groups are absent: " + ", ".join(sorted(missing))
+        )
+    return {motor for group in selected for motor in groups[group]}
+
+
+def _ordered_transmission_members(
+    transmission: ET.Element,
+    tag: str,
+    role_prefix: str,
+    transmission_name: str,
+) -> tuple[str, str]:
+    members: list[tuple[int | None, str]] = []
+    for element in transmission.findall(tag):
+        name = element.get("name", "")
+        if not name:
+            raise ValueError(f"transmission {transmission_name!r} has an unnamed {tag}")
+        role = element.get("role", "")
+        suffix = role.removeprefix(role_prefix) if role.startswith(role_prefix) else ""
+        order = int(suffix) if suffix.isdigit() else None
+        reduction_text = element.findtext("mechanical_reduction")
+        if reduction_text is None:
+            reduction_text = element.findtext("mechanicalReduction")
+        reduction = 1.0 if reduction_text is None else float(reduction_text)
+        offset_text = element.findtext("offset")
+        offset = 0.0 if offset_text is None else float(offset_text)
+        if not math.isfinite(reduction) or abs(reduction) <= 1.0e-12:
+            raise ValueError(
+                f"transmission {transmission_name!r} member {name!r} "
+                "has invalid reduction"
+            )
+        if not math.isfinite(offset):
+            raise ValueError(
+                f"transmission {transmission_name!r} member {name!r} has invalid offset"
+            )
+        members.append((order, name))
+    if len(members) != 2:
+        raise ValueError(
+            f"differential transmission {transmission_name!r} must have "
+            f"exactly two {tag}s"
+        )
+    if all(order is not None for order, _ in members):
+        members.sort(key=lambda item: int(item[0]))
+        if [order for order, _ in members] != [1, 2]:
+            raise ValueError(
+                f"transmission {transmission_name!r} {tag} roles must be "
+                f"{role_prefix}1 and {role_prefix}2"
+            )
+    return members[0][1], members[1][1]
 
 
 def _validate_coupling_groups(motors: tuple[MotorSpec, ...]) -> None:
@@ -425,7 +667,8 @@ def _bounds(values: dict[str, Any], key: str) -> tuple[float, float]:
         raise ValueError(f"missing {key} bounds")
     bounds = values[key]
     if (
-        len(bounds) != 2
+        not isinstance(bounds, (list, tuple))
+        or len(bounds) != 2
         or not all(math.isfinite(float(value)) for value in bounds)
         or float(bounds[0]) >= float(bounds[1])
     ):
@@ -464,8 +707,12 @@ class RobstrideMotor:
     params: dict[int, int | float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        limits = self.spec.kind.protocol
-        hardware = self.spec.kind.hardware
+        limits = self.spec.model.protocol
+        hardware = self.spec.model.hardware
+        if hardware is None:
+            raise ValueError(
+                f"motor model {self.spec.model.name!r} lacks emulator hardware data"
+            )
         self.params.update(
             {
                 PARAM_RUN_MODE: 0,
@@ -501,7 +748,7 @@ class RobstrideMotor:
 
     @property
     def limits(self) -> MotorProtocolLimits:
-        return self.spec.kind.protocol
+        return self.spec.model.protocol
 
     @property
     def reported_position(self) -> float:
@@ -719,7 +966,7 @@ class RobstrideBusEmulator:
 
 def _stable_device_id(spec: MotorSpec) -> int:
     value = 0x5253000000000000 | (spec.motor_id << 32)
-    for byte in spec.kind.name.encode("ascii"):
+    for byte in spec.model.name.encode("ascii"):
         value = ((value << 5) - value + byte) & 0xFFFFFFFFFFFFFFFF
     return value
 

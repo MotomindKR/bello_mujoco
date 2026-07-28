@@ -8,6 +8,7 @@ import warnings
 from pathlib import Path
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+_BELLO_STACK_SUBMODULE = "deps/bello-stack"
 
 
 def capture_repository_commit() -> str:
@@ -15,6 +16,7 @@ def capture_repository_commit() -> str:
 
     root = repository_root()
     _require_clean_worktree(root)
+    _require_pinned_submodules(root)
     commit = _head_commit(root)
     remote_refs = _git_output(
         root,
@@ -44,6 +46,7 @@ def require_repository_commit(
     validate_repository_commit(expected)
     root = repository_root()
     _require_clean_worktree(root)
+    _require_pinned_submodules(root)
     current_commit = _head_commit(root)
     if current_commit != expected:
         if allow_mismatch:
@@ -168,6 +171,43 @@ def _require_clean_worktree(root: Path) -> None:
         "exact-source checkpoint operations require a clean Git worktree; "
         f"commit or remove these changes first: {preview}"
     )
+
+
+def _require_pinned_submodules(root: Path) -> None:
+    result = _run_git(
+        root,
+        "submodule",
+        "status",
+        "--recursive",
+        "--",
+        _BELLO_STACK_SUBMODULE,
+        text=True,
+    )
+    if result.returncode != 0:
+        _raise_git_error(
+            result,
+            (
+                "submodule",
+                "status",
+                "--recursive",
+                "--",
+                _BELLO_STACK_SUBMODULE,
+            ),
+        )
+    assert isinstance(result.stdout, str)
+    status = result.stdout
+    lines = status.splitlines()
+    if not lines:
+        raise RuntimeError(
+            "exact-source operations require the pinned bello-stack submodule"
+        )
+    invalid = [line for line in lines if not line.startswith(" ")]
+    if invalid:
+        raise RuntimeError(
+            "exact-source operations require initialized submodules at their pinned "
+            "commits; run `git submodule update --init --recursive`: "
+            + ", ".join(invalid)
+        )
 
 
 def _head_commit(root: Path) -> str:

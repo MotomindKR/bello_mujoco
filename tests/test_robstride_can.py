@@ -1,5 +1,4 @@
 from dataclasses import replace
-from pathlib import Path
 import os
 import struct
 import sys
@@ -27,8 +26,9 @@ from bello_mujoco.robstride.can import (
     comm_type,
     data_field,
     float_to_uint,
-    load_motor_kinds,
-    load_robstride_configs,
+    load_motor_models,
+    load_robstride_description,
+    load_urdf_motor_targets,
     target_id,
     uint_to_float,
 )
@@ -45,8 +45,9 @@ from bello_mujoco.robstride.emulator import (
     _open_emulator_resources,
     add_torso_hold,
     cycle_torso_release_reset,
-    default_motor_kind_config,
-    default_motor_configs,
+    default_hardware_description,
+    default_motor_model_catalog,
+    default_robot_urdf,
     reset_data,
     validate_motor_coverage,
     validate_config,
@@ -73,10 +74,10 @@ def motor_spec(
     model: str = "ROBSTRIDE_04",
     direction: int = -1,
 ) -> MotorSpec:
-    kind = next(
-        kind
-        for kind in load_motor_kinds(default_motor_kind_config())
-        if kind.name == model
+    motor_model = next(
+        candidate
+        for candidate in load_motor_models(default_motor_model_catalog())
+        if candidate.name == model
     )
     if "_ankle_" in name:
         side = name.split("_", 1)[0]
@@ -100,7 +101,7 @@ def motor_spec(
         name=name,
         motor_id=motor_id,
         bus="can0",
-        kind=kind,
+        model=motor_model,
         target=target,
         direction=direction,
     )
@@ -144,9 +145,9 @@ def test_model_protocol_ranges_match_platform_driver(
     model: str, velocity: float, torque: float, kp: float, kd: float
 ) -> None:
     limits = next(
-        kind.protocol
-        for kind in load_motor_kinds(default_motor_kind_config())
-        if kind.name == model
+        candidate.protocol
+        for candidate in load_motor_models(default_motor_model_catalog())
+        if candidate.name == model
     )
 
     assert limits.velocity == (-velocity, velocity)
@@ -349,93 +350,43 @@ def test_float_encoding_clamps_and_round_trips() -> None:
     assert uint_to_float(midpoint, -10.0, 10.0) == pytest.approx(0.0, abs=0.001)
 
 
-def test_load_robstride_configs_validates_and_preserves_bus_motor_data(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "actuators.yaml"
-    path.write_text(
-        """
-buses:
-  can0:
-    interface: can0
-    host_id: 7
-motors:
-  - name: waist_yaw
-    id: 53
-    bus: can0
-    kind: ROBSTRIDE_04
-    target:
-      type: joint
-      name: waist_yaw_joint
-    direction: -1
-"""
+def test_canonical_hardware_description_drives_emulator_inventory() -> None:
+    targets = load_urdf_motor_targets(default_robot_urdf())
+    config = load_robstride_description(
+        default_hardware_description(),
+        default_motor_model_catalog(),
+        default_robot_urdf(),
+        {"can0": "vcan0", "can1": "vcan1"},
     )
+    motors = {motor.name: motor for motor in config.motors}
 
-    config = load_robstride_configs(default_motor_kind_config(), (path,))
-
-    assert config.buses == (BusSpec("can0", "can0", 7),)
-    assert config.motors[0].motor_id == 53
-    assert config.motors[0].direction == -1
-    assert config.motors[0].kind.name == "ROBSTRIDE_04"
-    assert config.motors[0].target.name == "waist_yaw_joint"
-
-
-def test_default_motor_configs_load() -> None:
-    paths = default_motor_configs()
-
-    assert all(path.exists() for path in paths)
-
-    config = load_robstride_configs(default_motor_kind_config(), paths)
-    assert config.buses
-    assert config.motors
-
-
-def test_motor_assignment_rejects_unknown_kind(tmp_path: Path) -> None:
-    path = tmp_path / "actuators.yaml"
-    path.write_text(
-        """
-buses:
-  can0: {interface: can0, host_id: 0}
-motors:
-  - name: waist_yaw
-    id: 53
-    bus: can0
-    kind: NOT_A_MOTOR
-    target: {type: joint, name: waist_yaw_joint}
-"""
+    assert config.buses == (
+        BusSpec("can0", "vcan0", 0),
+        BusSpec("can1", "vcan1", 0),
     )
-
-    with pytest.raises(ValueError, match="unknown kind"):
-        load_robstride_configs(default_motor_kind_config(), (path,))
-
-
-def test_motor_assignment_rejects_incomplete_tendon_coupling(tmp_path: Path) -> None:
-    path = tmp_path / "actuators.yaml"
-    path.write_text(
-        """
-buses:
-  can0: {interface: can0, host_id: 0}
-motors:
-  - name: left_ankle_1
-    id: 67
-    bus: can0
-    kind: ROBSTRIDE_06
-    target:
-      type: tendon
-      name: left_ankle_motor_1
-      owned_joints: [left_ankle_pitch_joint, left_ankle_roll_joint]
-      coupling_group: left_ankle
-      coupling_size: 2
-"""
+    assert motors["waist_yaw"].bus == "can1"
+    assert motors["waist_yaw"].target == MotorTargetSpec(
+        type="joint", name="waist_yaw_joint"
     )
-
-    with pytest.raises(ValueError, match="requires 2 motors; got 1"):
-        load_robstride_configs(default_motor_kind_config(), (path,))
+    assert motors["left_ankle_1"].target == MotorTargetSpec(
+        type="tendon",
+        name="left_ankle_motor_1",
+        owned_joints=("left_ankle_roll_joint", "left_ankle_pitch_joint"),
+        coupling_group="left_ankle_differential",
+        coupling_size=2,
+    )
+    assert "left_ankle_pitch_joint" not in targets
+    assert "left_ankle_roll_joint" not in targets
+    assert "left_arm_7" not in motors
+    assert "right_arm_7" not in motors
 
 
 def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
-    config = load_robstride_configs(
-        default_motor_kind_config(), default_motor_configs()
+    config = load_robstride_description(
+        default_hardware_description(),
+        default_motor_model_catalog(),
+        default_robot_urdf(),
+        {"can0": "vcan0", "can1": "vcan1"},
     )
     validate_motor_coverage(
         JointAvailabilityConfig(
@@ -474,9 +425,11 @@ def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
 
 def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
     config = EmulatorConfig()
-    robstride = load_robstride_configs(
-        config.motor_kind_config,
-        config.motor_configs,
+    robstride = load_robstride_description(
+        default_hardware_description(),
+        default_motor_model_catalog(),
+        default_robot_urdf(),
+        {"can0": "vcan0", "can1": "vcan1"},
     )
     prepared = prepare_asset(config.asset_config)
     model = load_prepared_bello_model(

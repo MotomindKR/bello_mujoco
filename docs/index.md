@@ -14,10 +14,9 @@ guides define the supported interfaces and contracts:
 ## Repository shape
 
 ```text
-assets/source/bello/       robot source of truth
 configs/commands/          seven public Hydra command documents
 configs/profiles/train/    maintained training profiles
-configs/robstride/         canonical motor inventory and limits
+deps/bello-stack/          pinned robot, hardware, and client dependency
 motions/asap_fixed_head/   tracked reference clips
 src/bello_mujoco/
   assets_pipeline/         asset preparation and project data paths
@@ -32,10 +31,10 @@ tests/                     contract and integration tests
 ```
 
 The supported prepared asset is `full_body`. Its canonical URDF is
-`assets/source/bello/full_body/urdf/bello_full_body.urdf`, which directly
-references meshes under the lower- and upper-body directories. The component
-URDFs in those directories are retained as engineering references; asset
-preparation does not merge or read them.
+`deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`,
+which directly references the lower- and upper-body meshes in that submodule.
+The same gitlink pins the hardware topology, RobStride model catalog, and
+Python hardware client used by source-checkout workflows.
 
 ## Runtime boundaries
 
@@ -57,8 +56,14 @@ They must not be committed. The uv download cache lives under
 ## Distribution boundary
 
 Training, Vast orchestration, and exact-source checkpoints operate from a Git
-checkout. The tracked reference motion clips are intentionally repository data,
-not installed wheel data.
+checkout with initialized submodules. Exact-source checks require both the root
+worktree and recursive submodules to be clean and at their pinned commits. The
+wheel embeds only the pinned URDF and meshes needed to prepare simulation
+assets; the hardware topology, RobStride catalog, Python hardware binding, and
+tracked reference motion clips remain checkout-only. Checkpoint training,
+evaluation, and hardware deployment also remain exact-source checkout
+workflows; the wheel supports asset preparation and non-checkpoint simulation
+imports.
 
 This repository currently records neither a license grant nor a provenance
 manifest for the robot descriptions and meshes. Establish both before

@@ -2,18 +2,22 @@
 
 Simulation, reinforcement learning, evaluation, hardware emulation, and robot
 deployment for the Bello humanoid. The repository supports locomotion and
-motion-tracking policies built from the robot sources in `assets/source/bello/`.
+motion-tracking policies built from the robot descriptions pinned through
+`deps/bello-stack`.
 
 ## Setup
 
 Use the reproducible development environment:
 
 ```bash
+git submodule update --init --recursive
 nix develop
 ```
 
 Direnv may enter it automatically. Outside that environment, run commands
-through `uv run`.
+through `uv run` after `uv sync --frozen`. The uv workspace installs the pinned
+`bello-hardware` Python binding from the submodule; no sibling checkout is
+required.
 
 ## Commands
 

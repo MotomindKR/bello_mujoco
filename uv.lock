@@ -14,6 +14,12 @@ required-markers = [
     "sys_platform == 'linux'",
 ]
 
+[manifest]
+members = [
+    "bello-hardware",
+    "bello-mujoco",
+]
+
 [[package]]
 name = "absl-py"
 version = "2.5.0"
@@ -145,6 +151,21 @@ wheels = [
 ]
 
 [[package]]
+name = "bello-hardware"
+version = "0.1.0"
+source = { editable = "deps/bello-stack/components/bello-hardware-python" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "protobuf" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "grpcio", specifier = ">=1.81,<2" },
+    { name = "protobuf", specifier = ">=6.33.5,<8" },
+]
+
+[[package]]
 name = "bello-mujoco"
 version = "0.1.0"
 source = { editable = "." }
@@ -179,6 +200,9 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+hardware = [
+    { name = "bello-hardware" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -212,6 +236,7 @@ dev = [
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
 ]
+hardware = [{ name = "bello-hardware", editable = "deps/bello-stack/components/bello-hardware-python" }]
 
 [[package]]
 name = "borb"

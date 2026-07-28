@@ -24,15 +24,20 @@ testing. Policy checkpoints are evaluated with `bello-eval`.
 
 The emulated motor contract is:
 
-- `configs/robstride/motor_kinds.yaml`: motor kinds, protocol ranges, and the
-  voltage, current, and speed defaults reported through parameter registers;
-- `configs/robstride/lower_body.yaml`: lower-body bus identities and targets;
-- `configs/robstride/upper_body_sphere_hands.yaml`: upper-body inventory for the
-  fixed-head, sphere-hand morphology.
+- `deps/bello-stack/descriptions/bello/hardware.yaml`: logical buses, motors,
+  coordinates, directions, and group membership;
+- `deps/bello-stack/descriptions/robstride/models.yaml`: protocol ranges and the
+  voltage, current, and speed values reported through parameter registers;
+- `deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`:
+  direct joints and differential-transmission ownership.
 
-Differential ankles remain two coupled tendon motors per side. Initialization
-validates unique bus/CAN identities, motor-kind ranges, optional-joint coverage,
-complete coupling groups, transmission ownership, and torque enforcement.
+The sphere-hand emulator selects the canonical `lower_body` and `upper_body`
+groups and leaves the physical `wrist_yaw` group inactive. Differential ankles
+remain two coupled tendon motors per side. Initialization validates unique
+bus/CAN identities, model ranges, optional-joint coverage, complete coupling
+groups, URDF transmission ownership, and torque enforcement. The command
+requires a source checkout because the wheel intentionally omits hardware
+topology and model catalogs.
 
 The command always uses the canonical physical asset with a generated pelvis
 IMU. It publishes 100 Hz motor feedback, a 250 Hz EBIMU stream at

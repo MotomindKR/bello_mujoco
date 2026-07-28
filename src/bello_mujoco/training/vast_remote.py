@@ -184,7 +184,12 @@ ASKPASS
 chmod 700 "$askpass"
 
 rm -rf "$remote_dir"
-GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --single-branch --branch "$branch" "$repo_url" "$remote_dir"
+GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --recurse-submodules --single-branch --branch "$branch" "$repo_url" "$remote_dir"
+submodule_status="$(git -C "$remote_dir" submodule status --recursive)"
+if [ -z "$submodule_status" ] || printf '%s\n' "$submodule_status" | grep -Eq '^[-+U]'; then
+  echo "bello-stack submodule is absent, uninitialized, or not at its pinned commit" >&2
+  exit 1
+fi
 unset GITHUB_TOKEN
 cleanup_askpass
 trap - EXIT

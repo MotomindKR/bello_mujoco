@@ -36,8 +36,9 @@ directories are written below `outputs/hydra/<command>/`.
 ## `bello-prepare-assets`
 
 Build the canonical Bello URDF, runtime MJCF, and viewer MJCF from
-`assets/source/bello/`. Meshes and XML are validated before the prepared asset
-is returned.
+`deps/bello-stack/descriptions/bello/`. Installed wheels carry the pinned URDF
+and meshes, so standalone asset preparation does not require a source checkout.
+Meshes and XML are validated before the prepared asset is returned.
 
 Configuration source: `configs/commands/prepare_assets.yaml`.
 
@@ -232,20 +233,28 @@ Configuration source: `configs/commands/emulator.yaml`.
 | `torso_hold` | boolean; `true` | Start with the torso/root assembly constrained by the commissioning vertical guide. |
 | `release_after_seconds` | nonnegative float or `null`; `null` | Automatically release the torso guide after this much simulated time. It requires `torso_hold=true`. |
 
-The emulator uses the repository motor catalog and lower/upper-body inventories
-under `configs/robstride/`. It applies MIT impedance control, enforces catalog
-torque limits, publishes the pelvis IMU serial stream and PoseService, opens the
-native viewer, and paces simulation against wall-clock time.
+The emulator is checkout-only. It selects the canonical `lower_body` and
+`upper_body` groups from `deps/bello-stack/descriptions/bello/hardware.yaml`,
+uses `deps/bello-stack/descriptions/robstride/models.yaml` for protocol and
+hardware limits, and derives direct and differential transmissions from the
+canonical URDF. Only the logical-to-SocketCAN interface mapping is local. It
+applies MIT impedance control, publishes the pelvis IMU serial stream and
+PoseService, opens the native viewer, and paces simulation against wall-clock
+time.
 
 ## `bello-run-hardware`
 
-Validate or execute a policy through the separately distributed
-`bello-hardware` Python binding. From a checkout adjacent to `bello-stack`, the
-binding is supplied with this invocation prefix:
+Validate or execute a policy through the `bello-hardware` Python binding. It is
+installed from the pinned `deps/bello-stack` uv workspace member:
 
 ```text
-uv run --no-cache --with ../bello-stack/components/bello-hardware-python bello-run-hardware
+git submodule update --init --recursive
+uv sync --frozen
+uv run bello-run-hardware checkpoint_path=...
 ```
+
+Physical hardware execution is checkout-only. A wheel installation does not
+contain the binding or hardware description.
 
 Configuration source: `configs/commands/hardware.yaml`.
 

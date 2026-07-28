@@ -70,7 +70,7 @@ def configure_robstride_actuators(
 
     for motor in specs:
         target = motor.target
-        max_torque = max(abs(value) for value in motor.kind.protocol.torque)
+        max_torque = max(abs(value) for value in motor.model.protocol.torque)
         if target.type == "joint":
             coordinate = spec.joint(target.name)
             transmission = mujoco.mjtTrn.mjTRN_JOINT
