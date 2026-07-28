@@ -17,12 +17,11 @@ from bello_mujoco.configuration import (
     motion_training_profile,
     structured_config,
 )
-from bello_mujoco.hardware.runtime import HardwareFrame
+from bello_mujoco.hardware.runtime import HardwareFrame, require_nominal_pose
 from bello_mujoco.hardware.motion import (
     HardwareMotionConfig,
     HardwareMotionPolicyAdapter,
     PoseFrame,
-    require_nominal_pose,
     validate_hardware_motion_checkpoint,
     validate_hardware_motion_config,
     wrap_angle,
@@ -187,13 +186,17 @@ def test_motion_runner_checks_nominal_pose_after_ramp(
     adapter = level4_adapter
     frame, _ = reference_frame(adapter)
     frame = replace(frame, positions=adapter.nominal_physical_target.copy())
-    require_nominal_pose(frame, adapter, 0.1)
+    require_nominal_pose(frame, adapter)
 
     index = adapter.physical_coordinate_names.index("left_shoulder_yaw_joint")
     positions = frame.positions.copy()
-    positions[index] += 0.8
+    positions[index] += 0.26
     with pytest.raises(RuntimeError, match="left_shoulder_yaw_joint"):
-        require_nominal_pose(replace(frame, positions=positions), adapter, 0.75)
+        require_nominal_pose(replace(frame, positions=positions), adapter)
+
+    positions[index] = np.nan
+    with pytest.raises(RuntimeError, match="non-finite"):
+        require_nominal_pose(replace(frame, positions=positions), adapter)
 
 
 def test_motion_hardware_preserves_body_local_gyro_at_nonzero_yaw(

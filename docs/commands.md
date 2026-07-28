@@ -284,8 +284,9 @@ Motion additionally requires absolute pelvis pose from
 Both armed tasks require the operator to type exact interactive confirmations:
 `HOLD` before the nominal-pose ramp and `RUN` before policy control. While
 waiting for `RUN`, the runner continues refreshing the hold target and checking
-telemetry. `duration_seconds` measures only the post-`RUN` policy loop; the
-ramp and confirmation waits are outside that duration.
+telemetry and the fixed 0.25 rad per-coordinate measured nominal-pose error
+bound. `duration_seconds` measures only the post-`RUN` policy loop; the ramp and
+confirmation waits are outside that duration.
 
 Hardware targets use the proportional and derivative gains stored in checkpoint
 metadata.

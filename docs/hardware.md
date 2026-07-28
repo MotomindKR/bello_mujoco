@@ -55,7 +55,8 @@ After preflight, both task modes use the same interactive sequence:
 2. The runner acquires control and ramps to the checkpoint nominal pose over
    ten seconds by default.
 3. The runner continuously refreshes the nominal target and checks telemetry
-   while the operator releases external support and lets the robot settle.
+   and the fixed 0.25 rad per-coordinate nominal-pose error bound while the
+   operator releases external support and lets the robot settle.
 4. The operator types the exact word `RUN`, immediately before policy control.
 
 Any other input fails closed. The `RUN` prompt is read asynchronously so motor
@@ -97,8 +98,8 @@ normally from PoseService at `127.0.0.1:50052`. IMU orientation is retained as
 an independent agreement check. Root translation is never estimated by
 double-integrating acceleration.
 
-Motion uses the same default ten-second ramp and manual `HOLD` and `RUN`
-confirmations as locomotion. It additionally verifies nominal-pose arrival,
+Motion uses the same default ten-second ramp, bounded nominal-pose arrival, and
+manual `HOLD` and `RUN` confirmations as locomotion. It additionally verifies
 Pose/IMU orientation agreement, reference bounds, and initial policy output.
 Gamepad and velocity-command fields are locomotion-only.
 
@@ -115,6 +116,7 @@ Both armed modes continuously check:
 - motor and IMU sample freshness;
 - finite position, velocity, orientation, acceleration, and action values;
 - quaternion normalization, robot tilt, angular velocity, and acceleration;
+- bounded checkpoint nominal-pose error from ramp completion through `RUN`;
 - policy target bounds and maximum per-step target movement;
 - accumulated control-loop deadline lag.
 

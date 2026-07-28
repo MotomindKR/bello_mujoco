@@ -37,6 +37,7 @@ from bello_mujoco.hardware.runtime import (
     armed_control_session,
     import_hardware_binding,
     limit_target_step,
+    require_nominal_pose,
     require_operator_confirmation,
     require_async_hardware_binding,
     validate_hardware_control_config,
@@ -55,7 +56,6 @@ class HardwareMotionConfig(HardwareControlConfig):
 
     client_name: str = "bello-motion-policy"
     motion_path: Path | None = None
-    max_initial_position_error_radians: float = 0.75
     pose_endpoint: str = "127.0.0.1:50052"
     pose_reference_frame: str = "odom"
     pose_tracked_frame: str = "pelvis_link"
@@ -709,9 +709,6 @@ def validate_hardware_motion_config(
         "max_raw_action_abs": config.max_raw_action_abs,
         "max_pose_imu_orientation_error": config.max_pose_imu_orientation_error,
         "max_base_linear_velocity": config.max_base_linear_velocity,
-        "max_initial_position_error_radians": (
-            config.max_initial_position_error_radians
-        ),
     }
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
@@ -872,13 +869,10 @@ def control_physical_motion(
         frame = control.ramp_to_nominal(initial_frame.positions)
         if frame is None:
             raise RuntimeError("motion nominal-pose ramp ended unexpectedly")
-        require_nominal_pose(
-            frame,
-            adapter,
-            config.max_initial_position_error_radians,
-        )
+        require_nominal_pose(frame, adapter)
 
         def validate_hold(held_frame: HardwareFrame) -> None:
+            require_nominal_pose(held_frame, adapter)
             held_pose = poses.latest()
             validate_pose_imu_agreement(held_frame, held_pose, config)
 
@@ -891,7 +885,7 @@ def control_physical_motion(
         frame = control.read_frame()
         pose = poses.latest()
         validate_pose_imu_agreement(frame, pose, config)
-        require_nominal_pose(frame, adapter, config.max_initial_position_error_radians)
+        require_nominal_pose(frame, adapter)
         adapter.initialize_alignment(pose)
         start = time.monotonic()
         control.reset_deadline()
@@ -990,24 +984,6 @@ def control_physical_motion(
             control.drain()
         except KeyboardInterrupt:
             print("Motion hardware run interrupted; stopping and disabling groups.")
-
-
-def require_nominal_pose(
-    frame: HardwareFrame,
-    adapter: HardwareMotionPolicyAdapter,
-    tolerance_radians: float,
-) -> None:
-    error = np.abs(frame.positions - adapter.nominal_physical_target)
-    index = int(np.argmax(error))
-    if error[index] > tolerance_radians:
-        name = adapter.physical_coordinate_names[index]
-        raise RuntimeError(
-            "robot did not reach the nominal pose during the ramp: "
-            f"{name} remains {error[index]:.3f} rad away "
-            f"(measured={frame.positions[index]:.3f}, "
-            f"nominal={adapter.nominal_physical_target[index]:.3f}); "
-            f"arrival tolerance is {tolerance_radians:.3f} rad"
-        )
 
 
 def validate_pose_imu_agreement(

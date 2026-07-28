@@ -21,6 +21,7 @@ from bello_mujoco.hardware.locomotion import (
     HardwarePolicyAdapter,
     command_minimum_moving_speeds,
     command_ranges,
+    control_physical_robot,
     hardware_command,
     run_hardware_locomotion,
     validate_command,
@@ -358,6 +359,78 @@ def test_shared_runtime_requires_async_binding_and_stops_on_failure(
             raise RuntimeError("control failed")
 
     assert sorted(stopped) == ["lower", "upper"]
+
+
+def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None:
+    nominal = np.asarray((0.1, -0.2))
+    frame = HardwareFrame(
+        positions=nominal.copy(),
+        velocities=np.zeros(2),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        group_states=("RUNNING",),
+    )
+    checks = []
+
+    def ramp_to_nominal(_positions, *, before_step):
+        assert before_step()
+        return frame
+
+    def wait_for_run(_prompt, *, operator_input, before_step, validate_hold):
+        del operator_input
+        assert before_step()
+        validate_hold(frame)
+        return True
+
+    control = SimpleNamespace(
+        previous_target=nominal.copy(),
+        ramp_to_nominal=ramp_to_nominal,
+        wait_for_run=wait_for_run,
+        read_frame=lambda: frame,
+        reset_deadline=lambda: None,
+        drain=lambda: None,
+    )
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.locomotion.armed_control_session",
+        lambda *_args, **_kwargs: nullcontext(control),
+    )
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.locomotion.require_nominal_pose",
+        lambda checked_frame, _adapter: checks.append(checked_frame),
+    )
+    gamepad_inputs = iter(
+        (
+            GamepadInput(np.zeros(3, dtype=np.float32), connected=True),
+            GamepadInput(np.zeros(3, dtype=np.float32), connected=True),
+            GamepadInput(
+                np.zeros(3, dtype=np.float32),
+                connected=True,
+                exit_held=True,
+            ),
+        )
+    )
+
+    adapter = SimpleNamespace(
+        physical_coordinate_names=("left", "right"),
+        nominal_physical_target=nominal,
+        control_timestep=0.02,
+        reset=lambda: None,
+    )
+    control_physical_robot(
+        SimpleNamespace(),
+        {},
+        SimpleNamespace(),
+        frame,
+        adapter,
+        HardwareLocomotionConfig(max_duration_seconds=None),
+        SimpleNamespace(poll=lambda: next(gamepad_inputs)),
+    )
+
+    assert len(checks) == 3
+    assert all(checked is frame for checked in checks)
 
 
 def test_hardware_command_and_target_step_limits() -> None:

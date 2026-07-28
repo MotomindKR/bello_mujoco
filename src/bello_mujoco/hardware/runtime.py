@@ -24,6 +24,7 @@ HOLD_CONFIRMATION = "HOLD"
 RUN_CONFIRMATION = "RUN"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
 STANDARD_GRAVITY = 9.80665
+NOMINAL_POSE_MAX_ERROR_RADIANS = 0.25
 
 
 @dataclass(frozen=True)
@@ -427,6 +428,40 @@ def validate_hardware_frame(
     acceleration = float(np.linalg.norm(frame.linear_acceleration))
     if acceleration > config.max_linear_acceleration:
         raise RuntimeError(f"IMU acceleration {acceleration:.3f} exceeds safety limit")
+
+
+def require_nominal_pose(
+    frame: HardwareFrame,
+    adapter: HardwarePolicyAdapter,
+) -> None:
+    """Require measured coordinates to remain near the checkpoint nominal pose."""
+
+    measured = np.asarray(frame.positions, dtype=np.float64)
+    nominal = np.asarray(adapter.nominal_physical_target, dtype=np.float64)
+    coordinate_count = len(adapter.physical_coordinate_names)
+    if coordinate_count == 0:
+        raise RuntimeError("nominal-pose validation requires physical coordinates")
+    expected_shape = (coordinate_count,)
+    if measured.shape != expected_shape or nominal.shape != expected_shape:
+        raise RuntimeError(
+            "nominal-pose validation requires one measured and target value per "
+            "physical coordinate"
+        )
+    if not np.all(np.isfinite(measured)):
+        raise RuntimeError("measured nominal-pose coordinates are non-finite")
+    if not np.all(np.isfinite(nominal)):
+        raise RuntimeError("checkpoint nominal-pose target is non-finite")
+    error = np.abs(measured - nominal)
+    index = int(np.argmax(error))
+    if error[index] > NOMINAL_POSE_MAX_ERROR_RADIANS:
+        name = adapter.physical_coordinate_names[index]
+        raise RuntimeError(
+            "robot is too far from the checkpoint nominal pose: "
+            f"{name} is {error[index]:.3f} rad away "
+            f"(measured={measured[index]:.3f}, nominal={nominal[index]:.3f}); "
+            "maximum allowed error is "
+            f"{NOMINAL_POSE_MAX_ERROR_RADIANS:.3f} rad"
+        )
 
 
 def coordinate_targets(

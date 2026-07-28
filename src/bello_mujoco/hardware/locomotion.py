@@ -32,6 +32,7 @@ from bello_mujoco.hardware.runtime import (
     limit_target_step,
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
+    require_nominal_pose,
     require_operator_confirmation,
     specific_force_from_gravity_removed_acceleration,
     tilt_from_xyzw,
@@ -504,15 +505,14 @@ def control_physical_robot(
                 return False
             return True
 
-        if (
-            control.ramp_to_nominal(
-                initial_frame.positions,
-                before_step=continue_ramp,
-            )
-            is None
-        ):
+        frame = control.ramp_to_nominal(
+            initial_frame.positions,
+            before_step=continue_ramp,
+        )
+        if frame is None:
             control.drain()
             return
+        require_nominal_pose(frame, adapter)
 
         def continue_hold() -> bool:
             gamepad_input = gamepad.poll()
@@ -527,10 +527,12 @@ def control_physical_robot(
             "settle, then type RUN to start policy control: ",
             operator_input=operator_input,
             before_step=continue_hold,
+            validate_hold=lambda held_frame: require_nominal_pose(held_frame, adapter),
         )
         if not started:
             control.drain()
             return
+        require_nominal_pose(control.read_frame(), adapter)
 
         adapter.reset()
         start_time = time.monotonic()
