@@ -106,6 +106,5 @@ jobs:
       - name: CPU tests
         env:
           JAX_PLATFORMS: cpu
-          MUJOCO_GL: egl
           XLA_PYTHON_CLIENT_PREALLOCATE: "false"
         run: uv run --no-sync pytest -q -m "not integration" tests
