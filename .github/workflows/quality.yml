@@ -11,9 +11,27 @@ jobs:
   static:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Resolve pinned Bello stack revision
+        id: bello_stack
+        run: |
+          git submodule init
+          echo "commit=$(git rev-parse HEAD:deps/bello-stack)" >> "$GITHUB_OUTPUT"
+      - name: Check out pinned Bello stack revision
+        uses: actions/checkout@v6
         with:
-          submodules: recursive
+          repository: MotomindKR/bello-stack
+          ref: ${{ steps.bello_stack.outputs.commit }}
+          path: deps/bello-stack
+          # Fine-grained token with read-only Contents access to bello-stack.
+          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
+          persist-credentials: false
+      - name: Register Bello stack checkout as the pinned submodule
+        run: |
+          git submodule absorbgitdirs deps/bello-stack
+          test "$(git rev-parse HEAD:deps/bello-stack)" = \
+            "$(git -C deps/bello-stack rev-parse HEAD)"
+          test "$(git submodule status --recursive | cut -c1)" = " "
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.25"
