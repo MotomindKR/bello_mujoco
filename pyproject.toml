@@ -3,6 +3,9 @@ name = "bello-mujoco"
 version = "0.1.0"
 description = "MuJoCo/MJX robot-learning environment managed by uv."
 readme = "README.md"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+classifiers = ["Private :: Do Not Upload"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "chex>=0.1.90",
@@ -63,6 +66,7 @@ packages = ["src/bello_mujoco"]
 "deps/bello-stack/descriptions/bello/full_body/urdf" = "bello_mujoco/descriptions/bello/full_body/urdf"
 "deps/bello-stack/descriptions/bello/lower_body/meshes" = "bello_mujoco/descriptions/bello/lower_body/meshes"
 "deps/bello-stack/descriptions/bello/upper_body/meshes" = "bello_mujoco/descriptions/bello/upper_body/meshes"
+"ASSET_PROVENANCE.md" = "bello_mujoco/ASSET_PROVENANCE.md"
 
 [tool.uv]
 default-groups = ["dev", "hardware"]

@@ -65,6 +65,9 @@ evaluation, and hardware deployment also remain exact-source checkout
 workflows; the wheel supports asset preparation and non-checkpoint simulation
 imports.
 
-This repository currently records neither a license grant nor a provenance
-manifest for the robot descriptions and meshes. Establish both before
-distributing the project or its assets outside their current environment.
+The package and embedded robot assets are proprietary and internal-only; see
+the repository `LICENSE` and `ASSET_PROVENANCE.md`; the latter records the
+exact stack commit embedded in the wheel. The wheel smoke test resolves every
+URDF mesh and prepares both simulation and viewer MJCFs from the installed
+package. External redistribution requires a separate written agreement with
+the applicable rights holder.

@@ -39,24 +39,66 @@ jobs:
       - run: uv python install
       - run: uv lock --check
       - run: uv sync --frozen
-      - run: uv build --wheel
+      - name: Build wheel
+        run: |
+          stack_commit="$(git rev-parse HEAD:deps/bello-stack)"
+          grep -F "$stack_commit" ASSET_PROVENANCE.md
+          uv build --wheel
       - name: Installed wheel smoke test
         run: |
           wheel_path="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          stack_commit="$(git rev-parse HEAD:deps/bello-stack)"
           test -n "$wheel_path"
-          python - "$wheel_path" <<'PY'
+          python - "$wheel_path" "$stack_commit" <<'PY'
           import sys
+          import xml.etree.ElementTree as ET
+          from posixpath import dirname, join, normpath
           from zipfile import ZipFile
 
+          urdf_name = (
+              "bello_mujoco/descriptions/bello/full_body/urdf/"
+              "bello_full_body.urdf"
+          )
           with ZipFile(sys.argv[1]) as wheel:
               names = set(wheel.namelist())
-          assert "bello_mujoco/descriptions/bello/full_body/urdf/bello_full_body.urdf" in names
-          assert "bello_mujoco/descriptions/bello/hardware.yaml" not in names
-          assert "bello_mujoco/descriptions/robstride/models.yaml" not in names
-          assert not any(name.startswith("bello_hardware/") for name in names)
+              assert urdf_name in names
+              urdf = ET.fromstring(wheel.read(urdf_name))
+              mesh_names = {
+                  normpath(join(dirname(urdf_name), mesh.attrib["filename"]))
+                  for mesh in urdf.iter("mesh")
+              }
+              missing = sorted(mesh_names - names)
+              assert not missing, f"wheel is missing URDF meshes: {missing}"
+              provenance_name = "bello_mujoco/ASSET_PROVENANCE.md"
+              assert provenance_name in names
+              assert sys.argv[2] in wheel.read(provenance_name).decode()
+              license_names = [
+                  name for name in names if name.endswith(".dist-info/licenses/LICENSE")
+              ]
+              assert len(license_names) == 1
+              assert wheel.read(license_names[0]).decode().startswith("Proprietary")
+              assert "bello_mujoco/descriptions/bello/hardware.yaml" not in names
+              assert "bello_mujoco/descriptions/robstride/models.yaml" not in names
+              assert not any(name.startswith("bello_hardware/") for name in names)
           PY
-          uv run --isolated --no-project --with "$wheel_path" python -c \
-            'from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, asset_config_hash; print(asset_config_hash(AssetPrepConfig()))'
+          uv run --isolated --no-project --with "$wheel_path" python - "$RUNNER_TEMP/wheel-assets" <<'PY'
+          import sys
+          from pathlib import Path
+
+          import mujoco
+
+          from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
+
+          prepared = prepare_asset(
+              AssetPrepConfig(
+                  output_root=Path(sys.argv[1]),
+                  mesh_face_budget=50,
+                  visual_mesh_face_budget=50,
+              )
+          )
+          mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
+          mujoco.MjModel.from_xml_path(str(prepared.viewer_mjcf_path))
+          PY
       - run: uv run --no-sync python -m compileall -q src tests
       - run: uv run --no-sync ruff format --check src tests
       - run: uv run --no-sync ruff check src tests
