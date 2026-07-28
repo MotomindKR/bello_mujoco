@@ -41,7 +41,9 @@ joint's lower or upper soft limit, then applies the physical
 differential-ankle transform.
 
 Observations include aligned reference state, anchor/body tracking features,
-base and joint state, previous action, and optional noise. Training can:
+base and joint state, previous action, and optional noise. Root linear velocity
+uses world coordinates in MuJoCo state, while root angular velocity and the
+hardware gyro use the root-local free-joint convention. Training can:
 
 - randomize reference start time and initial root/joint state;
 - perturb observations;

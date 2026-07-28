@@ -747,7 +747,7 @@ class BelloMotionTrackingEnv:
             )
             root_quat = state.data.qpos[3:7]
             base_linear_velocity = quat_rotate_inverse(root_quat, state.data.qvel[:3])
-            base_angular_velocity = quat_rotate_inverse(root_quat, state.data.qvel[3:6])
+            base_angular_velocity = state.data.qvel[3:6]
             current_joint_position = (
                 state.data.qpos[qpos_indices]
                 - joint_default
@@ -776,8 +776,15 @@ class BelloMotionTrackingEnv:
         root_velocity_error = quat_rotate_inverse(
             heading, reference.qvel[:3] - state.data.qvel[:3]
         )
+        reference_root_angular_velocity_world = quat_rotate(
+            reference.qpos[3:7], reference.qvel[3:6]
+        )
+        root_angular_velocity_world = quat_rotate(
+            state.data.qpos[3:7], state.data.qvel[3:6]
+        )
         root_angular_velocity_error = quat_rotate_inverse(
-            heading, reference.qvel[3:6] - state.data.qvel[3:6]
+            heading,
+            reference_root_angular_velocity_world - root_angular_velocity_world,
         )
         phase = 2.0 * jnp.pi * state.reference_time / self.motion.duration
         return jnp.concatenate(
@@ -1142,7 +1149,7 @@ class BelloMotionTrackingEnv:
         root_pos = quat_rotate(rotation, qpos[:3]).at[:2].add(alignment_xy)
         qpos = qpos.at[:3].set(root_pos).at[3:7].set(quat_multiply(rotation, qpos[3:7]))
         qvel = source.qvel.at[:3].set(quat_rotate(rotation, source.qvel[:3]))
-        qvel = qvel.at[3:6].set(quat_rotate(rotation, source.qvel[3:6]))
+        # Free-joint angular qvel is root-local, so world-yaw alignment leaves it.
         body_pos = (
             jax.vmap(lambda value: quat_rotate(rotation, value))(source.body_pos)
             .at[:, :2]

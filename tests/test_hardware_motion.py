@@ -196,6 +196,33 @@ def test_motion_runner_checks_nominal_pose_after_ramp(
         require_nominal_pose(replace(frame, positions=positions), adapter, 0.75)
 
 
+def test_motion_hardware_preserves_body_local_gyro_at_nonzero_yaw(
+    level4_adapter: HardwareMotionPolicyAdapter,
+) -> None:
+    adapter = level4_adapter
+    frame, pose = reference_frame(adapter)
+    half_sqrt_two = np.sqrt(0.5)
+    orientation_xyzw = np.asarray((0.0, 0.0, half_sqrt_two, half_sqrt_two))
+    angular_velocity = np.asarray((0.4, -0.2, 0.1))
+    frame = replace(
+        frame,
+        orientation_xyzw=orientation_xyzw,
+        angular_velocity=angular_velocity,
+    )
+    pose = replace(pose, orientation_xyzw=orientation_xyzw)
+    adapter.initialize_alignment(pose)
+
+    hardware_state = adapter._state(frame, pose, adapter.start_time)
+    qvel = hardware_state[adapter._inference_layout.qvel]
+    root_qvel = adapter.env.model.root_qvel_adr
+
+    np.testing.assert_allclose(
+        qvel[root_qvel + 3 : root_qvel + 6],
+        angular_velocity,
+        atol=1.0e-7,
+    )
+
+
 def test_motion_runner_defaults_to_read_only() -> None:
     config = load_runner_config()
 

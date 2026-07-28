@@ -177,6 +177,17 @@ def expected_physical_ctrl(
     return np.clip(requested, ctrlrange[:, 0], ctrlrange[:, 1])
 
 
+def observation_component_slice(
+    env: BelloMotionTrackingEnv, component_name: str
+) -> slice:
+    offset = 0
+    for name, size in env.observation_layout.components:
+        if name == component_name:
+            return slice(offset, offset + size)
+        offset += size
+    raise KeyError(component_name)
+
+
 def test_legacy_gmr_import_defaults_missing_foot_contacts() -> None:
     frame_count = 2
     arrays = _validate_legacy_motion(
@@ -310,6 +321,89 @@ def test_tracking_reset_matches_reference_and_is_nonterminal(
     assert env.critic_observation(state).shape == (env.critic_observation_size,)
     assert float(reward) > 0.8
     assert not bool(done["done/any"])
+
+
+def test_aligned_reference_preserves_body_local_root_angular_velocity(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    env = BelloMotionTrackingEnv.load_prepared(
+        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    )
+    angular_velocity = jnp.asarray((0.4, -0.2, 0.1))
+    motion = replace(
+        env.motion,
+        qvel=env.motion.qvel.at[:, 3:6].set(angular_velocity),
+    )
+    env = replace(env, motion=motion)
+
+    reference = env.aligned_reference(
+        jnp.asarray(0.1),
+        jnp.zeros(2),
+        jnp.asarray(np.pi / 2.0),
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(reference.qvel[3:6]),
+        np.asarray(angular_velocity),
+        atol=1.0e-7,
+    )
+
+
+def test_beyondmimic_observes_body_local_root_gyro_at_nonzero_yaw(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    env = BelloMotionTrackingEnv.load_prepared(
+        fixed_waist_asset, beyondmimic_config(fixed_waist_motion)
+    )
+    state, _ = env.reset(reference_time=jnp.asarray(0.1))
+    root_quat = yaw_quat_from_angle(jnp.asarray(np.pi / 2.0))
+    angular_velocity = jnp.asarray((0.4, -0.2, 0.1))
+    data = state.data.replace(
+        qpos=state.data.qpos.at[3:7].set(root_quat),
+        qvel=state.data.qvel.at[3:6].set(angular_velocity),
+    )
+    state = state.replace(data=mjx.forward(env.model.mjx_model, data))
+
+    observation = env.observation(state)
+
+    np.testing.assert_allclose(
+        np.asarray(
+            observation[observation_component_slice(env, "base_angular_velocity")]
+        ),
+        np.asarray(angular_velocity),
+        atol=1.0e-6,
+    )
+
+
+def test_root_angular_velocity_error_compares_common_world_frame(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    env = BelloMotionTrackingEnv.load_prepared(
+        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    )
+    reference_quat = yaw_quat_from_angle(jnp.asarray(np.pi / 2.0))
+    motion = replace(
+        env.motion,
+        qpos=env.motion.qpos.at[:, 3:7].set(reference_quat),
+        qvel=env.motion.qvel.at[:, 3:6].set(jnp.asarray((1.0, 0.0, 0.0))),
+    )
+    env = replace(env, motion=motion)
+    state, _ = env.reset(reference_time=jnp.asarray(0.1))
+    data = state.data.replace(
+        qpos=state.data.qpos.at[3:7].set(jnp.asarray((1.0, 0.0, 0.0, 0.0))),
+        qvel=state.data.qvel.at[3:6].set(jnp.asarray((0.0, 1.0, 0.0))),
+    )
+    state = state.replace(data=mjx.forward(env.model.mjx_model, data))
+
+    observation = env.observation(state)
+
+    np.testing.assert_allclose(
+        np.asarray(
+            observation[observation_component_slice(env, "root_angular_velocity_error")]
+        ),
+        np.zeros(3),
+        atol=1.0e-6,
+    )
 
 
 def test_zero_action_targets_next_reference_pose(

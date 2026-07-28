@@ -642,9 +642,8 @@ class HardwareMotionPolicyAdapter:
         qpos[root + 3 : root + 7] = root_quat
         qpos[model.actuator_qpos_indices] = logical_position
         qvel[root_velocity : root_velocity + 3] = pose.linear_velocity
-        qvel[root_velocity + 3 : root_velocity + 6] = quat_rotate_wxyz(
-            root_quat, frame.angular_velocity
-        )
+        # The hardware gyro and MuJoCo free-joint angular qvel are both root-local.
+        qvel[root_velocity + 3 : root_velocity + 6] = frame.angular_velocity
         qvel[model.actuator_qvel_indices] = logical_velocity
         self._mj_data.qpos[:] = qpos
         self._mj_data.qvel[:] = qvel
