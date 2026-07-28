@@ -153,6 +153,8 @@ def test_motion_git_selection_verifies_clip_at_selected_commit(
         assert repo_root == tmp_path
         if args == ("rev-parse", "refs/remotes/origin/main^{commit}"):
             return commit
+        if args == ("ls-tree", commit, "--", "deps/bello-stack"):
+            return f"160000 commit {'s' * 40}\tdeps/bello-stack"
         if args[:2] == ("cat-file", "-e"):
             checked_objects.append(args[2])
             return ""
@@ -167,7 +169,6 @@ def test_motion_git_selection_verifies_clip_at_selected_commit(
     assert resolved.motion_path == motion_selection().motion_path
     assert f"{commit}:{resolved.motion_path}" in checked_objects
     assert f"{commit}:.gitmodules" in checked_objects
-    assert f"{commit}:deps/bello-stack" in checked_objects
 
 
 @pytest.mark.parametrize(

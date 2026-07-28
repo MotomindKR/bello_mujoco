@@ -222,7 +222,6 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         str(config_path),
         ".gitmodules",
         ".python-version",
-        "deps/bello-stack",
         "pyproject.toml",
         "uv.lock",
     ):
@@ -230,6 +229,18 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             run_git(repo_root, "cat-file", "-e", f"{commit}:{path}")
         except subprocess.CalledProcessError as exc:
             raise ValueError(f"{path!r} does not exist on origin/{branch}") from exc
+    submodule_path = "deps/bello-stack"
+    submodule_entry = run_git(
+        repo_root, "ls-tree", commit, "--", submodule_path
+    ).split()
+    if (
+        len(submodule_entry) != 4
+        or submodule_entry[:2] != ["160000", "commit"]
+        or submodule_entry[3] != submodule_path
+    ):
+        raise ValueError(
+            f"{submodule_path!r} is not a submodule on origin/{branch}"
+        )
     motion_path = None
     if config.motion_path is not None:
         motion_path = _repository_motion_path(config.motion_path)
