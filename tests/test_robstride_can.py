@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import mujoco
 import numpy as np
 import pytest
+from omegaconf import OmegaConf
 
+from bello_mujoco.assets_pipeline import stack_description_path
 from bello_mujoco.assets_pipeline.prepare import PreparedAsset, prepare_asset
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.robstride.can import (
@@ -47,7 +49,6 @@ from bello_mujoco.robstride.emulator import (
     cycle_torso_release_reset,
     default_hardware_description,
     default_motor_model_catalog,
-    default_robot_urdf,
     reset_data,
     validate_motor_coverage,
     validate_config,
@@ -351,11 +352,12 @@ def test_float_encoding_clamps_and_round_trips() -> None:
 
 
 def test_canonical_hardware_description_drives_emulator_inventory() -> None:
-    targets = load_urdf_motor_targets(default_robot_urdf())
+    targets = load_urdf_motor_targets(
+        stack_description_path("bello/full_body/urdf/bello_full_body.urdf")
+    )
     config = load_robstride_description(
         default_hardware_description(),
         default_motor_model_catalog(),
-        default_robot_urdf(),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     motors = {motor.name: motor for motor in config.motors}
@@ -381,11 +383,24 @@ def test_canonical_hardware_description_drives_emulator_inventory() -> None:
     assert "right_arm_7" not in motors
 
 
+def test_hardware_description_requires_existing_robot_description(tmp_path) -> None:
+    description = OmegaConf.load(default_hardware_description())
+    description.robot_description = "missing.urdf"
+    hardware_path = tmp_path / "hardware.yaml"
+    OmegaConf.save(description, hardware_path)
+
+    with pytest.raises(ValueError, match="must reference an existing file"):
+        load_robstride_description(
+            hardware_path,
+            default_motor_model_catalog(),
+            {"can0": "vcan0", "can1": "vcan1"},
+        )
+
+
 def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
     config = load_robstride_description(
         default_hardware_description(),
         default_motor_model_catalog(),
-        default_robot_urdf(),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     validate_motor_coverage(
@@ -428,7 +443,6 @@ def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
     robstride = load_robstride_description(
         default_hardware_description(),
         default_motor_model_catalog(),
-        default_robot_urdf(),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     prepared = prepare_asset(config.asset_config)

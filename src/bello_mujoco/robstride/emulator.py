@@ -57,10 +57,6 @@ def default_motor_model_catalog() -> Path:
     return stack_description_path("robstride/models.yaml")
 
 
-def default_robot_urdf() -> Path:
-    return stack_description_path("bello/full_body/urdf/bello_full_body.urdf")
-
-
 def default_emulator_asset_config() -> AssetPrepConfig:
     return canonical_physical_asset_config(imu_enabled=True)
 
@@ -292,7 +288,6 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     robstride = load_robstride_description(
         default_hardware_description(),
         default_motor_model_catalog(),
-        default_robot_urdf(),
         overrides,
     )
     validate_motor_coverage(config.asset_config.joint_availability, robstride.motors)

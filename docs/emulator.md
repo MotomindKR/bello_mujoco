@@ -25,11 +25,12 @@ testing. Policy checkpoints are evaluated with `bello-eval`.
 The emulated motor contract is:
 
 - `deps/bello-stack/descriptions/bello/hardware.yaml`: logical buses, motors,
-  coordinates, directions, and group membership;
+  coordinates, directions, group membership, and the canonical robot-description
+  reference;
 - `deps/bello-stack/descriptions/robstride/models.yaml`: protocol ranges and the
   voltage, current, and speed values reported through parameter registers;
-- `deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`:
-  direct joints and differential-transmission ownership.
+- the URDF referenced by the hardware description: direct joints and
+  differential-transmission ownership.
 
 The sphere-hand emulator selects the canonical `lower_body` and `upper_body`
 groups and leaves the physical `wrist_yaw` group inactive. Differential ankles

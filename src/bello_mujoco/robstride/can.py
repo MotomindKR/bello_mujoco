@@ -220,13 +220,13 @@ class RobstrideConfig:
 def load_robstride_description(
     hardware_path: Path,
     model_path: Path,
-    urdf_path: Path,
     bus_interfaces: Mapping[str, str],
     *,
     enabled_groups: tuple[str, ...] = ("lower_body", "upper_body"),
 ) -> RobstrideConfig:
     hardware = _load_mapping(hardware_path, "Bello hardware description")
     expected_sections = {
+        "robot_description",
         "logical_buses",
         "serial_devices",
         "imus",
@@ -243,7 +243,9 @@ def load_robstride_description(
             raise ValueError(f"Bello {section} must be a nonempty list")
     models = load_motor_models(model_path)
     models_by_name = {model.name: model for model in models}
-    targets = load_urdf_motor_targets(urdf_path)
+    targets = load_urdf_motor_targets(
+        _robot_description_path(hardware_path, hardware["robot_description"])
+    )
 
     bus_descriptions = hardware["logical_buses"]
     if not isinstance(bus_descriptions, list) or not bus_descriptions:
@@ -331,6 +333,19 @@ def load_robstride_description(
     _validate_coupling_groups(all_motors)
     _validate_coupling_groups(motors)
     return RobstrideConfig(buses, motors)
+
+
+def _robot_description_path(hardware_path: Path, value: Any) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Bello robot_description must be a nonempty path")
+    path = Path(value)
+    if not path.is_absolute():
+        path = hardware_path.parent / path
+    if not path.is_file():
+        raise ValueError(
+            f"Bello robot_description must reference an existing file: {path}"
+        )
+    return path.resolve()
 
 
 def load_motor_models(path: Path) -> tuple[MotorModelSpec, ...]:
