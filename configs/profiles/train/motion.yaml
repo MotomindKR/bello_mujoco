@@ -1,0 +1,71 @@
+config:
+  total_timesteps: 2949120000
+  num_envs: 4096
+  num_minibatches: 4
+  learning_rate: 0.001
+  ent_coef: 0.005
+  normalize_observations: true
+  policy:
+    hidden_dims: [512, 256, 128]
+    activation: elu
+    init_log_std: 0.0
+    obs_stack_size: 1
+env_config:
+  formulation: beyondmimic_joint_limits
+  anchor_body_name: torso_link
+  reset:
+    initial_xy_range: [0.0, 0.0]
+    initial_yaw_range: [0.0, 0.0]
+    joint_pos_noise: [-0.1, 0.1]
+    joint_vel_noise: [0.0, 0.0]
+    root_position_noise: [0.05, 0.05, 0.01]
+    root_rotation_noise: [0.1, 0.1, 0.2]
+    root_linear_velocity_noise: [0.5, 0.5, 0.2]
+    root_angular_velocity_noise: [0.52, 0.52, 0.78]
+    joint_default_offset_noise: 0.01
+  observation_noise:
+    enabled: true
+    anchor_position: 0.25
+    anchor_orientation: 0.05
+    base_linear_velocity: 0.5
+    base_angular_velocity: 0.2
+    joint_position: 0.01
+    joint_velocity: 0.5
+  adaptive_sampling:
+    enabled: true
+    kernel_size: 3
+  push:
+    enabled: true
+  reward:
+    root_position_weight: 0.5
+    root_orientation_weight: 0.5
+    joint_position_weight: 0.0
+    joint_velocity_weight: 0.0
+    body_position_weight: 1.0
+    body_orientation_weight: 1.0
+    body_velocity_weight: 0.0
+    body_linear_velocity_weight: 1.0
+    body_angular_velocity_weight: 1.0
+    action_rate_weight: -0.1
+    joint_limit_weight: -10.0
+    undesired_contact_weight: -0.1
+    root_position_sigma: 0.3
+    root_orientation_sigma: 0.4
+    body_position_sigma: 0.3
+    body_orientation_sigma: 0.4
+  done:
+    root_height_error: 0.25
+    root_orientation_error: 0.8
+    end_effector_position_error: 0.25
+checkpoint_config:
+  name: ${motion.sequence}_bello_motion_seed0
+  every_updates: 500
+wandb_config:
+  enabled: true
+  run_name: ${motion.sequence}-bello-motion-seed0
+  tags: [bello, fixed-waist, fixed-head, bounded-motion]
+video_config:
+  every_updates: 500
+  filename_prefix: ${motion.sequence}_motion
+warp:
+  contact_budget_per_env: 64

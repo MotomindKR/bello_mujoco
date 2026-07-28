@@ -1,0 +1,78 @@
+config:
+  total_timesteps: 150000000
+  num_envs: 2048
+  num_steps: 20
+  update_epochs: 4
+  num_minibatches: 32
+  learning_rate: 0.0001
+  target_kl: 0.03
+  max_learning_rate: 0.0001
+  gamma: 0.97
+  ent_coef: 0.005
+  policy:
+    hidden_dims: [512, 256, 128]
+    activation: swish
+    init_log_std: -1.5
+    max_log_std: -1.0
+env_config:
+  terrain:
+    slope_angle_range: [-0.034906585, 0.034906585]
+  model_randomization:
+    enabled: true
+    joint_origin_range: [-0.001, 0.001]
+    joint_angle_offset_range: [-0.02, 0.02]
+    joint_inertia_scale_range: [0.95, 1.05]
+  spawn:
+    root_xy_range: [-0.5, 0.5]
+    root_yaw_range: [-3.14159265, 3.14159265]
+    joint_pos_scale_range: [0.5, 1.5]
+    root_vel_range: [-0.5, 0.5]
+  contact:
+    foot_contact_on_seconds: 0.04
+    foot_contact_off_seconds: 0.04
+  random_push:
+    enabled: true
+    lin_vel_x: [-2.0, 2.0]
+    lin_vel_y: [-2.0, 2.0]
+  observation:
+    noise:
+      enabled: true
+      base_lin_acc: [-0.2, 0.2]
+      joint_pos: [-0.05, 0.05]
+command_config:
+  lin_vel_x: [-1.0, 1.0]
+  lin_vel_y: [-1.0, 1.0]
+  ang_vel_yaw: [-1.0, 1.0]
+reward_config:
+  links:
+    track_lin_vel_xy: pelvis_link
+    track_lin_vel_xy_frame: pelvis_link
+    track_ang_vel_z: pelvis_link
+    ang_vel_xy: torso_link
+    flat_orientation: torso_link
+    base_height: pelvis_link
+done_config:
+  base_height:
+    min_height: 0.55
+    link: pelvis_link
+  bad_orientation:
+    limit_angle: 0.80
+    link: torso_link
+checkpoint_config:
+  enabled: true
+  name: locomotion_seed0
+  wandb_artifact_name: locomotion_seed0
+wandb_config:
+  enabled: true
+  group: locomotion
+  run_name: locomotion_seed0
+  tags: [locomotion, physical-ankle, seeded-plane-slope]
+video_config:
+  enabled: true
+  every_updates: 512
+  filename_prefix: locomotion
+  command: [0.0, 0.5, 0.0]
+  steps: 1000
+warp:
+  contact_budget_per_env: 40
+  njmax: 2048

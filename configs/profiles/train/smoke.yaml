@@ -1,0 +1,6 @@
+config:
+  total_timesteps: 4
+  num_envs: 2
+  num_steps: 2
+  update_epochs: 1
+  num_minibatches: 1

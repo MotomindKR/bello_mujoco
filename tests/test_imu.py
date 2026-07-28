@@ -9,7 +9,7 @@ from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
 from bello_mujoco.imu import ImuNoiseConfig, ImuNoiseInjector, ImuSample, MujocoImu
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
-from bello_mujoco.render import mujoco_eval_state
+from bello_mujoco.evaluation.render import mujoco_eval_state
 from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.terrain import ROBOT_ONLY_TERRAIN
 

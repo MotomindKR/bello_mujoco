@@ -1,0 +1,14 @@
+config:
+  gamma: 0.995
+  gae_lambda: 0.98
+checkpoint_config:
+  name: hardware_locomotion_seed0
+  wandb_artifact_name: hardware_locomotion_seed0
+wandb_config:
+  group: hardware-locomotion
+  run_name: hardware_locomotion_seed0
+  tags: [locomotion, hardware, sphere-hands, fixed-waist, fixed-head]
+video_config:
+  filename_prefix: hardware_locomotion
+  command: [0.0, 0.0, 0.0]
+  steps: 500

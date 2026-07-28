@@ -1,15 +1,18 @@
-from pathlib import Path
+from dataclasses import replace
 import os
 import struct
+import sys
+from types import SimpleNamespace
 
-from hydra import compose, initialize_config_dir
 import mujoco
 import numpy as np
 import pytest
+from omegaconf import OmegaConf
 
+from bello_mujoco.assets_pipeline import stack_description_path
 from bello_mujoco.assets_pipeline.prepare import PreparedAsset, prepare_asset
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
-from bello_mujoco.robstride_can import (
+from bello_mujoco.robstride.can import (
     CAN_FRAME,
     BusSpec,
     CanFrame,
@@ -19,37 +22,50 @@ from bello_mujoco.robstride_can import (
     MotorTargetSpec,
     PARAM_LIMIT_TORQUE,
     PARAM_MECHANICAL_POSITION,
-    PARAM_RUN_MODE,
     RobstrideBusEmulator,
     RobstrideMotor,
     build_can_id,
     comm_type,
     data_field,
     float_to_uint,
-    load_motor_kinds,
-    load_robstride_configs,
+    load_motor_models,
+    load_robstride_description,
+    load_urdf_motor_targets,
     target_id,
     uint_to_float,
 )
-from bello_mujoco.robstride_sim import (
+from bello_mujoco.robstride.sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )
-from bello_mujoco.hydra_config import CONFIG_ROOT, clear_hydra, structured_config
 from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
-from bello_mujoco.tools.robstride_runner import (
-    RobstrideRunnerConfig,
+from bello_mujoco.robstride.emulator import (
+    EmulatorConfig,
+    EmulatorControlWindow,
     TerminalEnterInput,
+    _open_emulator_resources,
     add_torso_hold,
     cycle_torso_release_reset,
-    default_motor_kind_config,
-    default_motor_configs,
+    default_hardware_description,
+    default_motor_model_catalog,
     reset_data,
-    resolve_motor_config_path,
-    validate_runner_motor_coverage,
+    validate_motor_coverage,
     validate_config,
 )
+
+
+class TrackedContext:
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name = name
+        self.events = events
+
+    def __enter__(self):
+        self.events.append(f"enter:{self.name}")
+        return self
+
+    def __exit__(self, *_args):
+        self.events.append(f"exit:{self.name}")
 
 
 def motor_spec(
@@ -59,10 +75,10 @@ def motor_spec(
     model: str = "ROBSTRIDE_04",
     direction: int = -1,
 ) -> MotorSpec:
-    kind = next(
-        kind
-        for kind in load_motor_kinds(default_motor_kind_config())
-        if kind.name == model
+    motor_model = next(
+        candidate
+        for candidate in load_motor_models(default_motor_model_catalog())
+        if candidate.name == model
     )
     if "_ankle_" in name:
         side = name.split("_", 1)[0]
@@ -86,10 +102,9 @@ def motor_spec(
         name=name,
         motor_id=motor_id,
         bus="can0",
-        kind=kind,
+        model=motor_model,
         target=target,
         direction=direction,
-        run_mode=0,
     )
 
 
@@ -124,7 +139,6 @@ def test_can_id_layout_matches_robstride_private_protocol() -> None:
         ("ROBSTRIDE_00", 33.0, 14.0, 500.0, 5.0),
         ("ROBSTRIDE_03", 20.0, 60.0, 5000.0, 100.0),
         ("ROBSTRIDE_04", 15.0, 120.0, 5000.0, 100.0),
-        ("ROBSTRIDE_05", 50.0, 5.5, 500.0, 5.0),
         ("ROBSTRIDE_06", 50.0, 36.0, 5000.0, 100.0),
     ],
 )
@@ -132,43 +146,15 @@ def test_model_protocol_ranges_match_platform_driver(
     model: str, velocity: float, torque: float, kp: float, kd: float
 ) -> None:
     limits = next(
-        kind.protocol
-        for kind in load_motor_kinds(default_motor_kind_config())
-        if kind.name == model
+        candidate.protocol
+        for candidate in load_motor_models(default_motor_model_catalog())
+        if candidate.name == model
     )
 
     assert limits.velocity == (-velocity, velocity)
     assert limits.torque == (-torque, torque)
     assert limits.kp == (0.0, kp)
     assert limits.kd == (0.0, kd)
-
-
-@pytest.mark.parametrize(
-    ("name", "rated_torque", "peak_torque", "no_load_speed_rpm"),
-    [
-        ("ROBSTRIDE_00", 5.0, 14.0, 315.0),
-        ("ROBSTRIDE_03", 21.0, 60.0, 195.0),
-        ("ROBSTRIDE_04", 40.0, 120.0, 200.0),
-        ("ROBSTRIDE_05", 1.8, 5.5, 480.0),
-        ("ROBSTRIDE_06", 11.0, 36.0, 480.0),
-    ],
-)
-def test_motor_kind_catalog_contains_published_hardware_limits(
-    name: str,
-    rated_torque: float,
-    peak_torque: float,
-    no_load_speed_rpm: float,
-) -> None:
-    kind = next(
-        kind
-        for kind in load_motor_kinds(default_motor_kind_config())
-        if kind.name == name
-    )
-
-    assert kind.hardware.rated_torque == rated_torque
-    assert kind.hardware.peak_torque == peak_torque
-    assert kind.hardware.no_load_speed_rpm == no_load_speed_rpm
-    assert max(abs(value) for value in kind.protocol.torque) == peak_torque
 
 
 def test_motor_control_decodes_direction_and_impedance_fields() -> None:
@@ -240,27 +226,106 @@ def test_enable_stop_and_active_reporting_match_gateway_contract() -> None:
     assert data_field(feedback.can_id) >> 14 == 0
 
 
-def test_parameter_write_ack_and_readback_match_platform_driver() -> None:
+def test_emulator_reset_disables_motors_and_clears_stale_commands() -> None:
     spec = motor_spec()
     emulator = RobstrideBusEmulator(BusSpec("can0", "vcan0", 0), (spec,))
-    write_payload = struct.pack("<H2xB3x", PARAM_RUN_MODE, 5)
-    write = CanFrame(
-        build_can_id(CommType.PARAM_WRITE, 0, spec.motor_id), write_payload
+    motor = emulator.motors[spec.motor_id]
+    motor.mode_status = 2
+    motor.applied_torque = 4.0
+    motor.command = MotorCommand(
+        position=1.0,
+        velocity=2.0,
+        torque=3.0,
+        kp=80.0,
+        kd=4.0,
+    )
+    motor.active_reporting = True
+
+    emulator.reset_control_state()
+
+    assert not motor.enabled
+    assert motor.applied_torque == 0.0
+    assert motor.command == MotorCommand()
+    assert motor.active_reporting
+
+
+def test_emulator_resources_close_in_reverse_acquisition_order(monkeypatch) -> None:
+    events = []
+    endpoint = TrackedContext("endpoint", events)
+    viewer = TrackedContext("viewer", events)
+    monkeypatch.setattr(
+        "bello_mujoco.robstride.emulator.SocketCanEndpoint",
+        lambda _interface: endpoint,
+    )
+    monkeypatch.setattr(
+        "bello_mujoco.robstride.emulator._launch_passive_viewer",
+        lambda _model, _data: viewer,
+    )
+    config = replace(
+        EmulatorConfig(),
+        pose_service=replace(EmulatorConfig().pose_service, enabled=False),
+    )
+    model = SimpleNamespace(mj_model=object())
+    emulators = {
+        "can0": SimpleNamespace(spec=SimpleNamespace(interface="vcan0")),
+    }
+
+    with pytest.raises(LookupError):
+        with _open_emulator_resources(
+            model,
+            object(),
+            emulators,
+            config,
+            torso_hold=None,
+            imu_sensor=None,
+        ) as resources:
+            assert resources.endpoints == {"can0": endpoint}
+            assert resources.viewer is viewer
+            raise LookupError("stop")
+
+    assert events == (
+        ["enter:endpoint", "enter:viewer", "exit:viewer", "exit:endpoint"]
     )
 
-    ack = emulator.handle_frame(write)[0]
 
-    assert comm_type(ack.can_id) == CommType.PARAM_WRITE
-    assert data_field(ack.can_id) == spec.motor_id
-    assert ack.data == write_payload
+def test_control_window_constructor_cleans_partial_pygame_state(monkeypatch) -> None:
+    events = []
 
-    read = CanFrame(
-        build_can_id(CommType.PARAM_READ, 0, spec.motor_id),
-        struct.pack("<H6x", PARAM_RUN_MODE),
+    class PygameError(Exception):
+        pass
+
+    display = SimpleNamespace(
+        init=lambda: events.append("display:init"),
+        set_mode=lambda _size: events.append("display:set_mode"),
+        set_caption=lambda _caption: events.append("display:set_caption"),
     )
-    response = emulator.handle_frame(read)[0]
-    assert comm_type(response.can_id) == CommType.PARAM_READ
-    assert response.data[4] == 5
+
+    def font(_name, _size):
+        events.append("font:create")
+        raise PygameError("font unavailable")
+
+    pygame = SimpleNamespace(
+        display=display,
+        font=SimpleNamespace(
+            init=lambda: events.append("font:init"),
+            Font=font,
+        ),
+        error=PygameError,
+        quit=lambda: events.append("quit"),
+    )
+    monkeypatch.setitem(sys.modules, "pygame", pygame)
+
+    with pytest.raises(RuntimeError, match="graphical display"):
+        EmulatorControlWindow(0.05)
+
+    assert events == [
+        "display:init",
+        "font:init",
+        "display:set_mode",
+        "display:set_caption",
+        "font:create",
+        "quit",
+    ]
 
 
 def test_mechanical_position_read_uses_wire_direction_and_returns_feedback() -> None:
@@ -286,203 +351,59 @@ def test_float_encoding_clamps_and_round_trips() -> None:
     assert uint_to_float(midpoint, -10.0, 10.0) == pytest.approx(0.0, abs=0.001)
 
 
-def test_load_robstride_configs_validates_and_preserves_bus_motor_data(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "actuators.yaml"
-    path.write_text(
-        """
-buses:
-  can0:
-    interface: can0
-    host_id: 7
-motors:
-  - name: waist_yaw
-    id: 53
-    bus: can0
-    kind: ROBSTRIDE_04
-    target:
-      type: joint
-      name: waist_yaw_joint
-    direction: -1
-    run_mode: mit
-"""
+def test_canonical_hardware_description_drives_emulator_inventory() -> None:
+    targets = load_urdf_motor_targets(
+        stack_description_path("bello/full_body/urdf/bello_full_body.urdf")
     )
-
-    config = load_robstride_configs(default_motor_kind_config(), (path,))
-
-    assert config.buses == (BusSpec("can0", "can0", 7),)
-    assert config.motors[0].motor_id == 53
-    assert config.motors[0].direction == -1
-    assert config.motors[0].run_mode == 0
-    assert config.motors[0].kind.name == "ROBSTRIDE_04"
-    assert config.motors[0].target.name == "waist_yaw_joint"
-
-
-def test_default_motor_configs_are_repository_local_and_complete() -> None:
-    paths = default_motor_configs()
-
-    assert [path.name for path in paths] == [
-        "lower_body.yaml",
-        "upper_body_sphere_hands.yaml",
-    ]
-    assert all(path.exists() for path in paths)
-    assert all(
-        path.parent.name == "robstride" and path.parent.parent.name == "configs"
-        for path in paths
+    config = load_robstride_description(
+        default_hardware_description(),
+        default_motor_model_catalog(),
+        {"can0": "vcan0", "can1": "vcan1"},
     )
+    motors = {motor.name: motor for motor in config.motors}
 
-    config = load_robstride_configs(default_motor_kind_config(), paths)
-    assert {kind.name for kind in config.motor_kinds} == {
-        "ROBSTRIDE_00",
-        "ROBSTRIDE_03",
-        "ROBSTRIDE_04",
-        "ROBSTRIDE_05",
-        "ROBSTRIDE_06",
-    }
-    assert len(config.motors) == 25
-    assert {bus.name for bus in config.buses} == {"can0", "can1"}
-    assert all(motor.target.type in {"joint", "tendon"} for motor in config.motors)
-    by_name = {motor.name: motor for motor in config.motors}
-    assert by_name["left_arm_1"].target.name == "left_shoulder_pitch_joint"
-    assert by_name["right_knee_mix_1"].target.name == "right_knee_joint"
-    assert by_name["left_ankle_1"].target.name == "left_ankle_motor_1"
-    assert "left_arm_7" not in by_name
-    assert "right_arm_7" not in by_name
-
-
-def test_motor_assignment_rejects_unknown_kind(tmp_path: Path) -> None:
-    path = tmp_path / "actuators.yaml"
-    path.write_text(
-        """
-buses:
-  can0: {interface: can0, host_id: 0}
-motors:
-  - name: waist_yaw
-    id: 53
-    bus: can0
-    kind: NOT_A_MOTOR
-    target: {type: joint, name: waist_yaw_joint}
-"""
+    assert config.buses == (
+        BusSpec("can0", "vcan0", 0),
+        BusSpec("can1", "vcan1", 0),
     )
-
-    with pytest.raises(ValueError, match="unknown kind"):
-        load_robstride_configs(default_motor_kind_config(), (path,))
-
-
-def test_motor_assignment_rejects_incomplete_tendon_coupling(tmp_path: Path) -> None:
-    path = tmp_path / "actuators.yaml"
-    path.write_text(
-        """
-buses:
-  can0: {interface: can0, host_id: 0}
-motors:
-  - name: left_ankle_1
-    id: 67
-    bus: can0
-    kind: ROBSTRIDE_06
-    target:
-      type: tendon
-      name: left_ankle_motor_1
-      owned_joints: [left_ankle_pitch_joint, left_ankle_roll_joint]
-      coupling_group: left_ankle
-      coupling_size: 2
-"""
+    assert motors["waist_yaw"].bus == "can1"
+    assert motors["waist_yaw"].target == MotorTargetSpec(
+        type="joint", name="waist_yaw_joint"
     )
-
-    with pytest.raises(ValueError, match="requires 2 motors; got 1"):
-        load_robstride_configs(default_motor_kind_config(), (path,))
-
-
-def compose_runner_config(overrides: list[str] | None = None) -> RobstrideRunnerConfig:
-    clear_hydra()
-    try:
-        with initialize_config_dir(
-            version_base=None,
-            config_dir=str(CONFIG_ROOT / "robstride_runner"),
-        ):
-            config = compose(config_name="default", overrides=overrides or [])
-        return structured_config(RobstrideRunnerConfig, config)
-    finally:
-        clear_hydra()
-
-
-def test_default_runner_hydra_config_selects_vcan_imu_and_torso_guide() -> None:
-    config = compose_runner_config()
-
-    assert config.asset_config.asset == "full_body"
-    assert config.asset_config.collision_mode == "box"
-    assert config.asset_config.visual_mesh_face_budget == 10_000
-    assert config.asset_config.end_effector_sphere_mode == "both"
-    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
-    assert config.asset_config.imu_config.enabled
-    assert config.asset_config.imu_config.body_name == "pelvis_link"
-    availability = config.asset_config.joint_availability
-    assert availability.waist_yaw
-    assert not availability.waist_roll
-    assert not availability.waist_pitch
-    assert not availability.neck_yaw
-    assert not availability.head_pitch
-    assert config.motor_kind_config.name == "motor_kinds.yaml"
-    assert config.simulation_physics.timestep == pytest.approx(0.0025)
-    assert config.feedback_rate_hz == pytest.approx(100.0)
-    assert not config.enforce_torque_limits
-    assert config.imu_serial_rate_hz == pytest.approx(250.0)
-    assert config.imu_serial_enabled
-    assert config.imu_serial_device == Path("/dev/ttyIMU-mujoco")
-    assert config.imu_noise.enabled
-    assert config.imu_noise.orientation_std_radians == pytest.approx(0.005)
-    assert config.imu_noise.linear_acceleration_std_mps2 == pytest.approx(0.1)
-    assert config.imu_noise.seed == 0
-    assert config.bus_interfaces == ("can0=vcan0", "can1=vcan1")
-    assert [path.name for path in config.motor_configs] == [
-        "lower_body.yaml",
-        "upper_body_sphere_hands.yaml",
-    ]
-    assert config.torso_hold
-    assert config.torso_drop_limit_m == pytest.approx(0.05)
-    assert not config.headless
-    assert config.real_time
-    assert config.pose_service.enabled
-    assert config.pose_service.listen == "0.0.0.0:50052"
-    assert config.pose_service.reference_frame == "odom"
-    assert config.pose_service.tracked_frame == "pelvis_link"
-    assert config.pose_service.publish_rate_hz == pytest.approx(200.0)
-
-
-def test_direct_runner_default_matches_hil_morphology() -> None:
-    config = RobstrideRunnerConfig()
-
-    assert config.asset_config.collision_mode == "box"
-    assert config.asset_config.end_effector_sphere_mode == "both"
-    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
-    assert config.simulation_physics.timestep == pytest.approx(0.0025)
-    assert config.feedback_rate_hz == pytest.approx(100.0)
-    assert not config.enforce_torque_limits
-    assert config.imu_serial_rate_hz == pytest.approx(250.0)
-    assert config.imu_noise.enabled
-    assert config.imu_noise.orientation_std_radians == pytest.approx(0.005)
-    assert config.imu_noise.linear_acceleration_std_mps2 == pytest.approx(0.1)
-    assert config.pose_service.listen == "0.0.0.0:50052"
-
-
-def test_runner_hydra_can_enable_head_joints() -> None:
-    config = compose_runner_config(
-        [
-            "asset_config.joint_availability.neck_yaw=true",
-            "asset_config.joint_availability.head_pitch=true",
-        ]
+    assert motors["left_ankle_1"].target == MotorTargetSpec(
+        type="tendon",
+        name="left_ankle_motor_1",
+        owned_joints=("left_ankle_roll_joint", "left_ankle_pitch_joint"),
+        coupling_group="left_ankle_differential",
+        coupling_size=2,
     )
+    assert "left_ankle_pitch_joint" not in targets
+    assert "left_ankle_roll_joint" not in targets
+    assert "left_arm_7" not in motors
+    assert "right_arm_7" not in motors
 
-    assert config.asset_config.joint_availability.neck_yaw
-    assert config.asset_config.joint_availability.head_pitch
+
+def test_hardware_description_requires_existing_robot_description(tmp_path) -> None:
+    description = OmegaConf.load(default_hardware_description())
+    description.robot_description = "missing.urdf"
+    hardware_path = tmp_path / "hardware.yaml"
+    OmegaConf.save(description, hardware_path)
+
+    with pytest.raises(ValueError, match="must reference an existing file"):
+        load_robstride_description(
+            hardware_path,
+            default_motor_model_catalog(),
+            {"can0": "vcan0", "can1": "vcan1"},
+        )
 
 
-def test_runner_optional_joints_require_matching_motor_assignments() -> None:
-    config = load_robstride_configs(
-        default_motor_kind_config(), default_motor_configs()
+def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
+    config = load_robstride_description(
+        default_hardware_description(),
+        default_motor_model_catalog(),
+        {"can0": "vcan0", "can1": "vcan1"},
     )
-    validate_runner_motor_coverage(
+    validate_motor_coverage(
         JointAvailabilityConfig(
             waist_yaw=True,
             waist_roll=False,
@@ -494,7 +415,7 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
     )
 
     with pytest.raises(ValueError, match="require RobStride motor mappings"):
-        validate_runner_motor_coverage(
+        validate_motor_coverage(
             JointAvailabilityConfig(
                 waist_yaw=True,
                 waist_roll=False,
@@ -505,7 +426,7 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
             config.motors,
         )
     with pytest.raises(ValueError, match="fixed by joint availability"):
-        validate_runner_motor_coverage(
+        validate_motor_coverage(
             JointAvailabilityConfig(
                 waist_yaw=False,
                 waist_roll=False,
@@ -517,56 +438,12 @@ def test_runner_optional_joints_require_matching_motor_assignments() -> None:
         )
 
 
-def test_runner_hydra_rejects_unknown_config_keys() -> None:
-    clear_hydra()
-    try:
-        with initialize_config_dir(
-            version_base=None,
-            config_dir=str(CONFIG_ROOT / "robstride_runner"),
-        ):
-            raw = compose(config_name="default", overrides=["+backend=mjx"])
-        with pytest.raises(ValueError, match="unknown config key.*backend"):
-            structured_config(RobstrideRunnerConfig, raw)
-    finally:
-        clear_hydra()
-
-
-def test_runner_hydra_can_disable_imu() -> None:
-    config = compose_runner_config(
-        [
-            "asset_config.imu_config.enabled=false",
-            "imu_serial_enabled=false",
-        ]
-    )
-
-    assert not config.asset_config.imu_config.enabled
-    validate_config(config)
-
-
-def test_runner_rejects_serial_output_without_an_imu_sensor() -> None:
-    config = compose_runner_config(["asset_config.imu_config.enabled=false"])
-
-    with pytest.raises(ValueError, match="imu_serial_enabled requires"):
-        validate_config(config)
-
-
-def test_runner_hydra_can_disable_ebimu_serial_device() -> None:
-    config = compose_runner_config(["imu_serial_enabled=false"])
-
-    assert not config.imu_serial_enabled
-
-
-def test_runner_resolves_relative_motor_configs_from_bundled_config_root() -> None:
-    assert resolve_motor_config_path(Path("robstride/motor_kinds.yaml")) == (
-        default_motor_kind_config().resolve()
-    )
-
-
-def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
-    config = compose_runner_config()
-    robstride = load_robstride_configs(
-        resolve_motor_config_path(config.motor_kind_config),
-        tuple(resolve_motor_config_path(path) for path in config.motor_configs),
+def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
+    config = EmulatorConfig()
+    robstride = load_robstride_description(
+        default_hardware_description(),
+        default_motor_model_catalog(),
+        {"can0": "vcan0", "can1": "vcan1"},
     )
     prepared = prepare_asset(config.asset_config)
     model = load_prepared_bello_model(
@@ -609,42 +486,6 @@ def test_default_runner_sphere_hands_preserve_all_motor_coordinates() -> None:
         )
 
 
-def test_runner_can_select_detailed_hands_with_wrist_yaw_motors() -> None:
-    config = compose_runner_config(
-        [
-            "asset_config.end_effector_sphere_mode=none",
-            "motor_configs=[robstride/lower_body.yaml,robstride/upper_body.yaml]",
-        ]
-    )
-    robstride = load_robstride_configs(
-        resolve_motor_config_path(config.motor_kind_config),
-        tuple(resolve_motor_config_path(path) for path in config.motor_configs),
-    )
-    prepared = prepare_asset(config.asset_config)
-    model = load_prepared_bello_model(
-        prepared,
-        terrain=FLAT_TERRAIN,
-        load_mjx=False,
-    )
-    configured = configure_robstride_actuators(model, robstride.motors)
-    transmission = BelloRobstrideTransmission(
-        configured,
-        tuple(RobstrideMotor(spec) for spec in robstride.motors),
-    )
-
-    assert "left_wrist_yaw_joint" in transmission.mapped_joint_names
-    assert "right_wrist_yaw_joint" in transmission.mapped_joint_names
-    for body_name in ("l_end_effector_sphere_link", "r_end_effector_sphere_link"):
-        assert (
-            mujoco.mj_name2id(
-                configured.mj_model,
-                mujoco.mjtObj.mjOBJ_BODY,
-                body_name,
-            )
-            == -1
-        )
-
-
 def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -659,7 +500,7 @@ def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(
     reset_data(model, data)
     torso_hold.initialize(model.mj_model, data)
     initial_position = np.asarray(data.xpos[torso_hold.body_id]).copy()
-    slider_range = model.mj_model.jnt_range[torso_hold.support_joint_id]
+    slider_range = model.mj_model.joint("bello_emulator_torso_slider").range
 
     assert slider_range == pytest.approx((-0.05, 0.0))
 
@@ -705,9 +546,7 @@ def test_terminal_enter_is_detected_without_blocking() -> None:
 
 def test_release_timer_requires_an_initial_torso_hold() -> None:
     with pytest.raises(ValueError, match="requires torso_hold"):
-        validate_config(
-            RobstrideRunnerConfig(torso_hold=False, release_after_seconds=1.0)
-        )
+        validate_config(EmulatorConfig(torso_hold=False, release_after_seconds=1.0))
 
 
 def test_bello_transmission_maps_knee_and_differential_ankle(
@@ -864,39 +703,3 @@ def test_native_actuator_triple_uses_one_common_dynamic_torque_limit(
     assert model.mj_model.actuator_gainprm[actuator.position_id, 0] == 0.0
     assert model.mj_model.actuator_gainprm[actuator.velocity_id, 0] == 0.0
     assert data.ctrl[actuator.feedforward_id] == 0.0
-
-
-def test_native_actuator_triple_can_disable_dynamic_torque_limit(
-    full_body_asset: PreparedAsset,
-) -> None:
-    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
-    motor = RobstrideMotor(motor_spec())
-    model = configure_robstride_actuators(
-        model,
-        (motor.spec,),
-        enforce_torque_limits=False,
-    )
-    transmission = BelloRobstrideTransmission(
-        model,
-        (motor,),
-        enforce_torque_limits=False,
-    )
-    data = mujoco.MjData(model.mj_model)
-    data.qpos[:] = model.default_qpos
-    data.qvel[:] = model.default_qvel
-    mujoco.mj_forward(model.mj_model, data)
-    motor.mode_status = 2
-    motor.params[PARAM_LIMIT_TORQUE] = 7.0
-    motor.command = MotorCommand(torque=20.0)
-
-    transmission.apply_motor_controls(data)
-    mujoco.mj_forward(model.mj_model, data)
-    transmission.update_motor_states(data)
-
-    joint_id = mujoco.mj_name2id(
-        model.mj_model, mujoco.mjtObj.mjOBJ_JOINT, "waist_yaw_joint"
-    )
-    assert not model.mj_model.jnt_actfrclimited[joint_id]
-    qvel_index = transmission.bindings["waist_yaw_joint"].qvel_index
-    assert data.qfrc_actuator[qvel_index] == pytest.approx(20.0)
-    assert motor.applied_torque == pytest.approx(20.0)

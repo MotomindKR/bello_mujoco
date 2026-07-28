@@ -5,10 +5,54 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import bello_mujoco.tools.eval_motion_policy as eval_motion
+import bello_mujoco.evaluation.motion as eval_motion
+import bello_mujoco.motion.runtime as motion_runtime
+from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.policy import ActorCriticConfig
-from bello_mujoco.train.ppo import ObservationNormState, PPOConfig
+from bello_mujoco.training.checkpoint import MotionCheckpointMetadata
+from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
+
+ACTOR_LAYOUT = ObservationLayout((("actor", 2),))
+CRITIC_LAYOUT = ObservationLayout((("critic", 3),))
+ACTION_LAYOUT = ActionLayout(("left", "right"))
+
+
+def motion_metadata(
+    motion_path: Path,
+    *,
+    ppo: PPOConfig = PPOConfig(),
+    motion_contract=None,
+) -> MotionCheckpointMetadata:
+    stack_size = ppo.policy.obs_stack_size
+    return MotionCheckpointMetadata(
+        ppo=ppo,
+        asset=SimpleNamespace(actuator_config=object()),
+        warp=object(),
+        obs_size=ACTOR_LAYOUT.size * stack_size,
+        critic_obs_size=CRITIC_LAYOUT.size * stack_size,
+        action_size=ACTION_LAYOUT.size,
+        actor_observation_layout=ACTOR_LAYOUT,
+        critic_observation_layout=CRITIC_LAYOUT,
+        action_layout=ACTION_LAYOUT,
+        motion_env=MotionTrackingEnvConfig(motion_path=motion_path),
+        motion=motion_contract or SimpleNamespace(path=motion_path),
+    )
+
+
+def motion_runtime_env(**overrides):
+    values = {
+        "motion": object(),
+        "max_episode_steps": 17,
+        "observation_size": ACTOR_LAYOUT.size,
+        "critic_observation_size": CRITIC_LAYOUT.size,
+        "action_size": ACTION_LAYOUT.size,
+        "observation_layout": ACTOR_LAYOUT,
+        "critic_observation_layout": CRITIC_LAYOUT,
+        "action_layout": ACTION_LAYOUT,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def rollout_stats() -> eval_motion.MotionRolloutStats:
@@ -25,23 +69,17 @@ def rollout_stats() -> eval_motion.MotionRolloutStats:
 
 
 def test_render_checkpoint_rejects_non_motion_task(monkeypatch, tmp_path: Path) -> None:
-    metadata = SimpleNamespace(
-        task="locomotion",
-        motion_env=None,
-        motion=None,
-    )
     monkeypatch.setattr(
-        eval_motion,
+        motion_runtime,
         "restore_evaluation_checkpoint",
-        lambda path: (SimpleNamespace(policy=object()), metadata, object()),
-    )
-    monkeypatch.setattr(
-        eval_motion.BelloMotionTrackingEnv,
-        "load_native",
-        staticmethod(lambda *args, **kwargs: pytest.fail("must not load motion env")),
+        lambda *args, **kwargs: (
+            SimpleNamespace(policy=object()),
+            SimpleNamespace(task="locomotion"),
+            object(),
+        ),
     )
 
-    with pytest.raises(ValueError, match="not motion_tracking"):
+    with pytest.raises(ValueError, match="not 'motion_tracking'"):
         eval_motion.render_checkpoint_with_stats(
             tmp_path / "checkpoint", tmp_path / "rollout.mp4"
         )
@@ -50,43 +88,59 @@ def test_render_checkpoint_rejects_non_motion_task(monkeypatch, tmp_path: Path) 
 def test_relocated_motion_is_loaded_validated_and_rendered(
     monkeypatch, tmp_path: Path
 ) -> None:
-    original = tmp_path / "original.npz"
     relocated = tmp_path / "relocated.npz"
+    original = tmp_path / "original.npz"
     motion_contract = SimpleNamespace(path=original)
     ppo = PPOConfig(policy=ActorCriticConfig(obs_stack_size=3))
     normalization = SimpleNamespace(observation=object())
-    metadata = SimpleNamespace(
-        task="motion_tracking",
-        motion_env=MotionTrackingEnvConfig(motion_path=original),
-        motion=motion_contract,
-        asset=object(),
+    metadata = motion_metadata(
+        original,
         ppo=ppo,
+        motion_contract=motion_contract,
     )
     policy = object()
-    clip = object()
-    env = SimpleNamespace(motion=clip, max_episode_steps=17)
+    env = motion_runtime_env()
     calls = {}
 
+    def restore(checkpoint, **kwargs):
+        calls["restore"] = checkpoint, kwargs
+        return SimpleNamespace(policy=policy), metadata, normalization
+
+    monkeypatch.setattr(motion_runtime, "restore_evaluation_checkpoint", restore)
+    prepared = object()
     monkeypatch.setattr(
-        eval_motion,
-        "restore_evaluation_checkpoint",
-        lambda path: (SimpleNamespace(policy=policy), metadata, normalization),
+        motion_runtime,
+        "prepare_asset",
+        lambda asset: prepared,
     )
 
-    def load_native(asset, env_config, *, use_viewer_model):
-        calls["load"] = asset, env_config, use_viewer_model
+    def load_prepared_native(
+        loaded_prepared,
+        env_config,
+        *,
+        actuator_config,
+        use_viewer_model,
+    ):
+        calls["load"] = (
+            loaded_prepared,
+            env_config,
+            actuator_config,
+            use_viewer_model,
+        )
         return env
 
     monkeypatch.setattr(
-        eval_motion.BelloMotionTrackingEnv,
-        "load_native",
-        staticmethod(load_native),
+        motion_runtime.BelloMotionTrackingEnv,
+        "load_prepared_native",
+        staticmethod(load_prepared_native),
     )
-
-    def validate(path, loaded_clip, expected):
-        calls["validate"] = path, loaded_clip, expected
-
-    monkeypatch.setattr(eval_motion, "validate_motion_clip_contract", validate)
+    monkeypatch.setattr(
+        motion_runtime,
+        "validate_motion_clip_contract",
+        lambda path, clip, contract: calls.setdefault(
+            "validate", (path, clip, contract)
+        ),
+    )
 
     def render(loaded_env, loaded_policy, output_path, **kwargs):
         calls["render"] = loaded_env, loaded_policy, output_path, kwargs
@@ -102,12 +156,21 @@ def test_relocated_motion_is_loaded_validated_and_rendered(
         width=80,
         height=60,
         fps=25,
+        allow_git_commit_mismatch=True,
     )
 
-    _, loaded_config, use_viewer_model = calls["load"]
+    assert calls["restore"] == (
+        tmp_path / "checkpoint",
+        {
+            "allow_git_commit_mismatch": True,
+        },
+    )
+    loaded_prepared, loaded_config, actuator_config, use_viewer_model = calls["load"]
+    assert loaded_prepared is prepared
     assert loaded_config.motion_path == relocated
+    assert actuator_config is metadata.asset.actuator_config
     assert use_viewer_model is True
-    assert calls["validate"] == (relocated, clip, motion_contract)
+    assert calls["validate"] == (relocated, env.motion, motion_contract)
     loaded_env, loaded_policy, loaded_output, render_kwargs = calls["render"]
     assert loaded_env is env
     assert loaded_policy is policy
@@ -121,32 +184,26 @@ def test_relocated_motion_is_loaded_validated_and_rendered(
 def test_relocated_motion_validation_failure_prevents_rollout(
     monkeypatch, tmp_path: Path
 ) -> None:
-    original = tmp_path / "original.npz"
     relocated = tmp_path / "tampered.npz"
-    metadata = SimpleNamespace(
-        task="motion_tracking",
-        motion_env=MotionTrackingEnvConfig(motion_path=original),
-        motion=SimpleNamespace(path=original),
-        asset=object(),
-        ppo=PPOConfig(),
-    )
-    env = SimpleNamespace(motion=object(), max_episode_steps=1)
+    metadata = motion_metadata(relocated)
+    env = motion_runtime_env()
     monkeypatch.setattr(
-        eval_motion,
+        motion_runtime,
         "restore_evaluation_checkpoint",
-        lambda path: (
+        lambda *args, **kwargs: (
             SimpleNamespace(policy=object()),
             metadata,
             SimpleNamespace(observation=object()),
         ),
     )
+    monkeypatch.setattr(motion_runtime, "prepare_asset", lambda asset: object())
     monkeypatch.setattr(
-        eval_motion.BelloMotionTrackingEnv,
-        "load_native",
+        motion_runtime.BelloMotionTrackingEnv,
+        "load_prepared_native",
         staticmethod(lambda *args, **kwargs: env),
     )
     monkeypatch.setattr(
-        eval_motion,
+        motion_runtime,
         "validate_motion_clip_contract",
         lambda *args: (_ for _ in ()).throw(
             ValueError("motion clip does not match checkpoint content/schema")
@@ -164,6 +221,38 @@ def test_relocated_motion_validation_failure_prevents_rollout(
             tmp_path / "rollout.mp4",
             motion_path=relocated,
         )
+
+
+@pytest.mark.parametrize(
+    ("env_changes", "match"),
+    [
+        ({"observation_size": 3}, "policy observation_size"),
+        ({"critic_observation_size": 4}, "critic observation_size"),
+        ({"action_size": 3}, "action_size"),
+        (
+            {"observation_layout": ObservationLayout((("other_actor", 2),))},
+            "actor observation layout",
+        ),
+        (
+            {"critic_observation_layout": ObservationLayout((("other_critic", 3),))},
+            "critic observation layout",
+        ),
+        (
+            {"action_layout": ActionLayout(("right", "left"))},
+            "action layout",
+        ),
+    ],
+)
+def test_motion_runtime_contract_rejects_size_and_layout_mismatches(
+    tmp_path: Path,
+    env_changes: dict,
+    match: str,
+) -> None:
+    env = motion_runtime_env(**env_changes)
+    metadata = motion_metadata(tmp_path / "motion.npz")
+
+    with pytest.raises(ValueError, match=match):
+        motion_runtime.validate_motion_checkpoint_runtime(env, metadata)
 
 
 class _Resources:
@@ -213,7 +302,7 @@ def install_native_rollout_fakes(monkeypatch):
         ),
         config=SimpleNamespace(formulation="reference_residual"),
         max_episode_steps=4,
-        _aligned_reference=lambda *args: reference,
+        aligned_reference=lambda *args: reference,
     )
     resources = _Resources()
     renderer = _Renderer()
@@ -246,7 +335,7 @@ def test_native_rollout_uses_normalized_deterministic_actor_and_reports_stats(
     monkeypatch.setattr(eval_motion, "apply_actor", apply_actor)
     step_count = 0
 
-    def native_step(loaded_env, data, previous_state, action):
+    def native_step(loaded_env, data, _previous_state, action):
         nonlocal step_count
         step_count += 1
         done = step_count == 2

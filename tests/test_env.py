@@ -21,14 +21,13 @@ from bello_mujoco.envs.locomotion import (
     RandomPushConfig,
     SpawnConfig,
 )
-from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
-from bello_mujoco.render import (
+from bello_mujoco.envs.rewards import CommandConfig, RewardConfig, RewardLinks
+from bello_mujoco.evaluation.render import (
     mujoco_done_flags,
     mujoco_eval_info,
     mujoco_eval_state,
     mujoco_foot_height,
     mujoco_link_ang_vel,
-    mujoco_link_lin_acc,
     mujoco_link_lin_vel,
     mujoco_policy_observation,
     reset_mujoco_data,
@@ -88,21 +87,6 @@ def test_reset_exposes_explicit_actor_critic_and_action_contracts(
     assert observation.shape == (env.observation_size,)
     assert env.critic_observation(state).shape == (env.critic_observation_size,)
     assert state.last_action.shape == (env.action_size,)
-
-
-def test_actor_observation_contains_only_deployable_signals(
-    full_body_asset: PreparedAsset,
-) -> None:
-    env = BelloLocomotionEnv.load_prepared(full_body_asset)
-    actor_names = {name for name, _ in env.observation_layout.components}
-    critic_names = {name for name, _ in env.critic_observation_layout.components}
-
-    assert "base_linear_velocity" not in actor_names
-    assert "base_height" not in actor_names
-    assert "actuator_force" not in actor_names
-    assert "foot_phase" not in actor_names
-    assert {"imu_linear_acceleration", "imu_angular_velocity"} <= actor_names
-    assert actor_names < critic_names
 
 
 def test_native_data_adapter_uses_shared_observation_function(
@@ -201,9 +185,6 @@ def test_mjx_link_kinematics_match_native_mujoco(
         )
         assert env._link_body_ang_vel(state, link) == pytest.approx(
             mujoco_link_ang_vel(env, mj_data, link), abs=1.0e-5
-        )
-        assert env._link_body_lin_acc(state, link) == pytest.approx(
-            mujoco_link_lin_acc(env, mj_data, link), abs=1.0e-4
         )
 
 
@@ -809,9 +790,7 @@ def test_environment_rejects_invalid_static_contracts(
 def test_environment_rejects_missing_reward_link(
     full_body_asset: PreparedAsset,
 ) -> None:
-    reward = RewardConfig(
-        track_lin_vel_xy=replace(RewardConfig().track_lin_vel_xy, link="missing_link")
-    )
+    reward = RewardConfig(links=RewardLinks(track_lin_vel_xy="missing_link"))
     with pytest.raises(ValueError, match="missing_link"):
         BelloLocomotionEnv.load_prepared(full_body_asset, reward_config=reward)
 

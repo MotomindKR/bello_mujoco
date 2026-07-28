@@ -1,23 +1,29 @@
 from __future__ import annotations
 
+import atexit
 import fcntl
 import hashlib
 import json
 import math
+import os
+import platform
+import re
 import shutil
-import tempfile
+import threading
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
+from importlib.metadata import version as distribution_version
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TextIO
 
-from bello_mujoco.assets import (
+from bello_mujoco.assets_pipeline import (
     generated_model_path,
     generated_urdf_path,
     generated_viewer_model_path,
-    source_assets_root,
+    robot_description_root,
 )
 from bello_mujoco.assets_pipeline.mesh import (
     EndEffectorSphereMode,
@@ -35,7 +41,26 @@ from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
 
 AssetName = Literal["full_body"]
-ASSET_CACHE_VERSION = 8
+DEFAULT_ASSET_CACHE_LIMIT = 8
+_CACHE_KEY_PATTERN = re.compile(r"[0-9a-f]{16}\Z")
+_GENERATOR_SOURCE_PATHS = (
+    "actuators.py",
+    "assets_pipeline/__init__.py",
+    "assets_pipeline/mesh.py",
+    "assets_pipeline/mjcf.py",
+    "assets_pipeline/prepare.py",
+    "contracts.py",
+    "spatial.py",
+)
+_GENERATOR_DISTRIBUTIONS = (
+    "fast-simplification",
+    "mujoco",
+    "numpy",
+    "trimesh",
+)
+_DEFAULT_CACHE_GUARD = threading.Lock()
+_DEFAULT_CACHE_LEASES: dict[Path, TextIO] = {}
+_DEFAULT_CACHE_ASSETS: dict[Path, PreparedAsset] = {}
 SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
     {
         "right_wrist_yaw_joint",
@@ -46,6 +71,17 @@ SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
         "left_finger_left_slide_joint",
     }
 )
+
+
+def _close_default_asset_cache_leases() -> None:
+    with _DEFAULT_CACHE_GUARD:
+        for lease in _DEFAULT_CACHE_LEASES.values():
+            lease.close()
+        _DEFAULT_CACHE_LEASES.clear()
+        _DEFAULT_CACHE_ASSETS.clear()
+
+
+atexit.register(_close_default_asset_cache_leases)
 
 
 @dataclass(frozen=True)
@@ -100,6 +136,28 @@ class AssetPrepConfig:
             )
 
 
+def canonical_physical_asset_config(
+    *,
+    imu_enabled: bool = False,
+) -> AssetPrepConfig:
+    return AssetPrepConfig(
+        collision_mode="box",
+        end_effector_sphere_mode="both",
+        target_total_mass_kg=60.0,
+        imu_config=ImuSensorConfig(
+            enabled=imu_enabled,
+            body_name="pelvis_link",
+        ),
+        joint_availability=JointAvailabilityConfig(
+            waist_yaw=True,
+            waist_roll=False,
+            waist_pitch=False,
+            neck_yaw=False,
+            head_pitch=False,
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class PreparedAsset:
     name: AssetName
@@ -113,8 +171,44 @@ class PreparedAsset:
 def prepare_asset(config: AssetPrepConfig) -> PreparedAsset:
     output_root = resolved_output_root(config)
     lock_path = output_root.parent / f"{output_root.name}.lock"
+    if config.output_root is None:
+        return prepare_default_cached_asset(config, output_root, lock_path)
     with asset_generation_lock(lock_path):
         return prepare_asset_unlocked(config, output_root)
+
+
+def prepare_default_cached_asset(
+    config: AssetPrepConfig,
+    output_root: Path,
+    lock_path: Path,
+) -> PreparedAsset:
+    with _DEFAULT_CACHE_GUARD:
+        cached = _DEFAULT_CACHE_ASSETS.get(output_root)
+        if cached is not None and all(
+            path.exists()
+            for path in (
+                cached.urdf_path,
+                cached.mjcf_path,
+                cached.viewer_mjcf_path,
+            )
+        ):
+            os.utime(output_root)
+            return cached
+        if cached is not None:
+            _DEFAULT_CACHE_ASSETS.pop(output_root)
+            _DEFAULT_CACHE_LEASES.pop(output_root).close()
+
+        with asset_generation_lock(lock_path):
+            prepared = prepare_asset_unlocked(config, output_root)
+            os.utime(output_root)
+            lease_path = output_root.parent / f"{output_root.name}.lease"
+            lease = lease_path.open("w")
+            fcntl.flock(lease.fileno(), fcntl.LOCK_SH)
+        _DEFAULT_CACHE_ASSETS[output_root] = prepared
+        _DEFAULT_CACHE_LEASES[output_root] = lease
+
+    prune_default_asset_cache(output_root.parent, keep=output_root)
+    return prepared
 
 
 def prepare_asset_unlocked(
@@ -122,7 +216,7 @@ def prepare_asset_unlocked(
     output_root: Path,
 ) -> PreparedAsset:
     asset = "full_body"
-    source_root = source_assets_root()
+    source_root = robot_description_root()
     source_urdf = source_root / asset / "urdf" / f"bello_{asset}.urdf"
     if not source_urdf.exists():
         raise FileNotFoundError(source_urdf)
@@ -283,14 +377,22 @@ def validate_actuator_joint_contract(
 def resolved_output_root(config: AssetPrepConfig) -> Path:
     if config.output_root is not None:
         return config.output_root
-    return (
-        Path(tempfile.gettempdir()) / "bello-mujoco-assets" / asset_config_hash(config)
-    )
+    return default_asset_cache_root() / asset_config_hash(config)
+
+
+def default_asset_cache_root() -> Path:
+    configured_root = os.environ.get("XDG_CACHE_HOME")
+    if configured_root:
+        root = Path(configured_root).expanduser()
+        if not root.is_absolute():
+            raise ValueError("XDG_CACHE_HOME must be an absolute path")
+    else:
+        root = Path.home() / ".cache"
+    return root / "bello-mujoco" / "assets"
 
 
 def asset_config_hash(config: AssetPrepConfig) -> str:
     payload = {
-        "cache_version": ASSET_CACHE_VERSION,
         "asset": config.asset,
         "mesh_face_budget": config.mesh_face_budget,
         "visual_mesh_face_budget": config.visual_mesh_face_budget,
@@ -304,17 +406,56 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "joint_availability": asdict(config.joint_availability),
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
+        "generator": asset_generator_fingerprint(),
         "source": source_asset_fingerprint(),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def source_asset_fingerprint() -> str:
-    asset = "full_body"
-    source_root = source_assets_root() / asset
+@lru_cache(maxsize=1)
+def asset_generator_fingerprint() -> str:
+    package_root = Path(__file__).resolve().parents[1]
     hasher = hashlib.sha256()
-    for path in sorted(p for p in source_root.rglob("*") if p.is_file()):
+    for relative in _GENERATOR_SOURCE_PATHS:
+        path = package_root / relative
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"asset generator source is missing from the installation: {path}"
+            )
+        hasher.update(relative.encode())
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    hasher.update(f"python={platform.python_version()}".encode())
+    hasher.update(b"\0")
+    for distribution in _GENERATOR_DISTRIBUTIONS:
+        hasher.update(f"{distribution}={distribution_version(distribution)}".encode())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
+def source_asset_fingerprint() -> str:
+    source_root = robot_description_root()
+    hasher = hashlib.sha256()
+    source_paths = (
+        source_root / "full_body" / "urdf",
+        source_root / "lower_body" / "meshes",
+        source_root / "upper_body" / "meshes",
+    )
+    missing = [path for path in source_paths if not path.is_dir()]
+    if missing:
+        raise FileNotFoundError(
+            "canonical robot description directories are missing: "
+            + ", ".join(str(path) for path in missing)
+        )
+    files = sorted(
+        path
+        for source_path in source_paths
+        for path in source_path.rglob("*")
+        if path.is_file()
+    )
+    for path in files:
         hasher.update(path.relative_to(source_root).as_posix().encode())
         hasher.update(b"\0")
         hasher.update(path.read_bytes())
@@ -331,6 +472,47 @@ def asset_generation_lock(lock_path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def prune_default_asset_cache(cache_root: Path, *, keep: Path) -> None:
+    with asset_generation_lock(cache_root / ".prune.lock"):
+        candidates = sorted(
+            (
+                path
+                for path in cache_root.iterdir()
+                if path.is_dir() and _CACHE_KEY_PATTERN.fullmatch(path.name)
+            ),
+            key=lambda path: path.stat().st_mtime,
+        )
+        remaining = len(candidates)
+        for candidate in candidates:
+            if remaining <= DEFAULT_ASSET_CACHE_LIMIT:
+                break
+            if candidate == keep:
+                continue
+            lock_path = cache_root / f"{candidate.name}.lock"
+            with lock_path.open("w") as lock_file:
+                try:
+                    fcntl.flock(
+                        lock_file.fileno(),
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                except BlockingIOError:
+                    continue
+                lease_path = cache_root / f"{candidate.name}.lease"
+                with lease_path.open("w") as lease_file:
+                    try:
+                        fcntl.flock(
+                            lease_file.fileno(),
+                            fcntl.LOCK_EX | fcntl.LOCK_NB,
+                        )
+                    except BlockingIOError:
+                        continue
+                    try:
+                        shutil.rmtree(candidate)
+                    finally:
+                        fcntl.flock(lease_file.fileno(), fcntl.LOCK_UN)
+            remaining -= 1
 
 
 def read_prepared_asset_manifest(
@@ -358,6 +540,17 @@ def read_prepared_asset_manifest(
     if data.get("cache_key") != cache_key:
         return None
     try:
+        content_sha256 = prepared_asset_content_sha256(
+            urdf_path,
+            mjcf_path,
+            viewer_mjcf_path,
+            manifest_path,
+        )
+    except (ET.ParseError, OSError, ValueError):
+        return None
+    if data.get("content_sha256") != content_sha256:
+        return None
+    try:
         return PreparedAsset(
             "full_body",
             urdf_path,
@@ -378,10 +571,74 @@ def write_prepared_asset_manifest(
         "name": prepared.name,
         "collision_mesh_count": prepared.collision_mesh_count,
         "visual_mesh_count": prepared.visual_mesh_count,
+        "content_sha256": prepared_asset_content_sha256(
+            prepared.urdf_path,
+            prepared.mjcf_path,
+            prepared.viewer_mjcf_path,
+            manifest_path,
+        ),
     }
     tmp_path = manifest_path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(data, sort_keys=True))
     tmp_path.replace(manifest_path)
+
+
+def prepared_asset_content_sha256(
+    urdf_path: Path,
+    mjcf_path: Path,
+    viewer_mjcf_path: Path,
+    manifest_path: Path,
+) -> str:
+    """Hash the canonical prepared XML and every runtime mesh it references."""
+
+    asset_root = manifest_path.parent.resolve()
+    documents = {
+        urdf_path.resolve(),
+        mjcf_path.resolve(),
+        viewer_mjcf_path.resolve(),
+    }
+    files = set(documents)
+    pending_xml = list(documents)
+    parsed_xml: set[Path] = set()
+    while pending_xml:
+        document = pending_xml.pop()
+        if document in parsed_xml:
+            continue
+        parsed_xml.add(document)
+        root = ET.parse(document).getroot()
+        for element in root.iter():
+            tag = element.tag.rsplit("}", 1)[-1]
+            reference = None
+            if tag == "mesh":
+                reference = element.get("filename") or element.get("file")
+            elif tag in {"hfield", "include", "skin", "texture"}:
+                reference = element.get("file")
+            if not reference:
+                continue
+            if "://" in reference:
+                raise ValueError(
+                    f"prepared asset contains a nonlocal reference: {reference!r}"
+                )
+            referenced = (document.parent / reference).resolve()
+            try:
+                referenced.relative_to(asset_root)
+            except ValueError as error:
+                raise ValueError(
+                    f"prepared asset references a file outside its cache: {referenced}"
+                ) from error
+            files.add(referenced)
+            if tag == "include":
+                pending_xml.append(referenced)
+
+    hasher = hashlib.sha256()
+    for path in sorted(files, key=lambda candidate: candidate.as_posix()):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        hasher.update(path.relative_to(asset_root).as_posix().encode())
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 def mjcf_mesh_files_exist(mjcf_path: Path) -> bool:

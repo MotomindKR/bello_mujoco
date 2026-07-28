@@ -10,16 +10,17 @@ follow the linked docs for repository behavior and user-facing contracts.
   style before adding new patterns.
 - Prefer small, direct changes over broad rewrites. Refactor only when it
   removes real ambiguity, duplication, or stale compatibility surface.
-- Treat generated files as disposable artifacts. Source robot descriptions live
-  in this repo; generated assets and caches do not.
+- Treat generated files as disposable artifacts. Source robot descriptions come
+  from the pinned `deps/bello-stack` submodule; generated assets and caches do
+  not belong in Git.
 - Keep compatibility only when it is intentional. Do not add aliases, fallback
   paths, or duplicate config routes unless the user explicitly asks for them.
 - Make behavior explicit. Silent fallbacks, inert CLI flags, and hidden defaults
   should be removed or validated.
 - Keep the training hot path JAX/MJX-Warp compatible. Python-side convenience is
   fine around setup, assets, logging, and tests, but not inside rollout math.
-- Favor dataclass configs and tyro exposure for user-facing knobs. Avoid ad hoc
-  parallel CLI arguments when a config object already exists.
+- Favor frozen dataclass configs decoded from the public Hydra documents. Avoid
+  ad hoc parallel CLI arguments when a config object already exists.
 - Use the Nix/uv environment for repo work. Prefer `nix develop`, direnv, and
   `uv run ...` over system Python or globally installed tools.
 - Keep all changes inside this repository unless the user explicitly asks for an
@@ -43,8 +44,10 @@ follow the linked docs for repository behavior and user-facing contracts.
 
 ## Repository Rules
 
-- Do not reintroduce external robot asset paths. The repo must use
-  `assets/source/bello/` as the robot source of truth.
+- The asset pipeline's canonical robot input is
+  `deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`.
+  Treat the submodule as read-only here: change descriptions in `bello-stack`,
+  then advance the pinned gitlink deliberately.
 - Do not add asset aliases. Valid asset names are documented in
   [docs/index.md](docs/index.md).
 - Do not commit generated assets, `.venv`, uv caches, Warp caches, W&B runs, or

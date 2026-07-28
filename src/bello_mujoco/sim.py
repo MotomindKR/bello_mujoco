@@ -170,7 +170,6 @@ class BelloModel:
     mj_model: mujoco.MjModel
     mjx_model: mjx.Model | None
     xml_path: Path
-    viewer_xml_path: Path | None
     warp_naconmax: int | None
     warp_naccdmax: int | None
     warp_njmax: int | None
@@ -304,7 +303,6 @@ def load_prepared_bello_model(
     xml_path = prepared.viewer_mjcf_path if use_viewer_model else prepared.mjcf_path
     return _load_bello_model_from_path(
         xml_path,
-        viewer_xml_path=prepared.viewer_mjcf_path,
         warp=warp,
         batch_size=batch_size,
         terrain=terrain,
@@ -320,7 +318,6 @@ def load_prepared_bello_model(
 def _load_bello_model_from_path(
     xml_path: Path,
     *,
-    viewer_xml_path: Path | None = None,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
@@ -339,12 +336,6 @@ def _load_bello_model_from_path(
     if not path.exists():
         raise FileNotFoundError(path)
     path = runtime_mjcf_path(path, terrain)
-    viewer_path = None
-    if viewer_xml_path is not None:
-        viewer_path = Path(viewer_xml_path)
-        if not viewer_path.exists():
-            raise FileNotFoundError(viewer_path)
-        viewer_path = runtime_mjcf_path(viewer_path, terrain)
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
     imu_body_name = resolve_imu_body_name(mj_model, imu_body_name)
@@ -492,7 +483,6 @@ def _load_bello_model_from_path(
         mj_model=mj_model,
         mjx_model=mjx_model,
         xml_path=path,
-        viewer_xml_path=viewer_path,
         warp_naconmax=warp.resolved_naconmax(batch_size),
         warp_naccdmax=warp.naccdmax,
         warp_njmax=warp.njmax,

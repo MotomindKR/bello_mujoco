@@ -30,7 +30,7 @@ from bello_mujoco.envs.locomotion import (
     yaw_quat,
     yaw_quat_from_angle,
 )
-from bello_mujoco.motion import (
+from bello_mujoco.motion.clip import (
     MotionClip,
     MotionSample,
     load_motion_clip,
@@ -141,10 +141,16 @@ class MotionDoneConfig:
 
 @dataclass(frozen=True)
 class MotionTrackingEnvConfig:
-    motion_path: Path = Path("motions/local/walk1_subject1_fixed_waist.npz")
+    motion_path: Path = Path(
+        "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
+    )
     decimation: int = CONTROL_DECIMATION
     action_clip: float = 1.0
-    formulation: Literal["reference_residual", "beyondmimic"] = "reference_residual"
+    formulation: Literal[
+        "reference_residual",
+        "beyondmimic",
+        "beyondmimic_joint_limits",
+    ] = "reference_residual"
     anchor_body_name: str = "pelvis_link"
     terrain: TerrainConfig = FLAT_TERRAIN
     reset: MotionResetConfig = MotionResetConfig()
@@ -196,9 +202,14 @@ class BelloMotionTrackingEnv:
             raise ValueError("decimation must be positive")
         if not math.isfinite(self.config.action_clip) or self.config.action_clip <= 0:
             raise ValueError("action_clip must be positive and finite")
-        if self.config.formulation not in {"reference_residual", "beyondmimic"}:
+        if self.config.formulation not in {
+            "reference_residual",
+            "beyondmimic",
+            "beyondmimic_joint_limits",
+        }:
             raise ValueError(
-                "formulation must be 'reference_residual' or 'beyondmimic'"
+                "formulation must be 'reference_residual', 'beyondmimic', or "
+                "'beyondmimic_joint_limits'"
             )
         self._validate_range("initial_xy_range", self.config.reset.initial_xy_range)
         self._validate_range("initial_yaw_range", self.config.reset.initial_yaw_range)
@@ -340,6 +351,13 @@ class BelloMotionTrackingEnv:
         return self.config.action_clip
 
     @property
+    def uses_beyondmimic_formulation(self) -> bool:
+        return self.config.formulation in {
+            "beyondmimic",
+            "beyondmimic_joint_limits",
+        }
+
+    @property
     def task(self) -> Literal["motion_tracking"]:
         return "motion_tracking"
 
@@ -363,7 +381,7 @@ class BelloMotionTrackingEnv:
     @property
     def observation_layout(self) -> ObservationLayout:
         action_size = self.action_size
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             return ObservationLayout(
                 (
                     ("reference_joint_position", action_size),
@@ -395,7 +413,7 @@ class BelloMotionTrackingEnv:
     @property
     def critic_observation_layout(self) -> ObservationLayout:
         body_count = len(self.motion.body_names)
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             extra = (
                 ("tracked_body_position_relative_to_anchor", 3 * body_count),
                 ("tracked_body_orientation_relative_to_anchor_6d", 6 * body_count),
@@ -426,7 +444,7 @@ class BelloMotionTrackingEnv:
 
     @property
     def end_effector_names(self) -> tuple[str, ...]:
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             return (
                 "left_ankle_roll_link",
                 "right_ankle_roll_link",
@@ -497,7 +515,7 @@ class BelloMotionTrackingEnv:
             jnp.concatenate([source.qpos[:2], jnp.zeros(1)]),
         )[:2]
         alignment_xy = desired_xy - rotated_source_xy
-        reference = self._aligned_reference(reference_time, alignment_xy, alignment_yaw)
+        reference = self.aligned_reference(reference_time, alignment_xy, alignment_yaw)
         qpos, qvel = reference.qpos, reference.qvel
         if joint_key is not None:
             qpos_key, qvel_key = jax.random.split(joint_key)
@@ -586,7 +604,7 @@ class BelloMotionTrackingEnv:
     ]:
         self._require_mjx()
         action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
-        data = state.data.replace(ctrl=self._action_to_ctrl(state, action))
+        data = state.data.replace(ctrl=self.action_target(state, action))
         data = jax.lax.fori_loop(
             0,
             self.decimation,
@@ -603,7 +621,7 @@ class BelloMotionTrackingEnv:
         reward, reward_info = self._reward(
             state, stepped, jnp.asarray(0, dtype=jnp.int32)
         )
-        done_flags = self._done_flags(stepped)
+        done_flags = self.termination_flags(stepped)
         reward, reward_info = self._sanitize_nonfinite_reward(
             reward, reward_info, done_flags
         )
@@ -636,7 +654,7 @@ class BelloMotionTrackingEnv:
         if rng is not None:
             reset_rng, push_rng, obs_rng = jax.random.split(rng, 3)
         action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
-        ctrl = jax.vmap(self._action_to_ctrl)(state, action)
+        ctrl = jax.vmap(self.action_target)(state, action)
         data = state.data.replace(
             ctrl=ctrl, _impl=state.data._impl.replace(nworld=batch_size)
         )
@@ -659,7 +677,7 @@ class BelloMotionTrackingEnv:
         )
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         reward, reward_info = jax.vmap(self._reward)(state, stepped, world_ids)
-        done_flags = jax.vmap(self._done_flags)(stepped)
+        done_flags = jax.vmap(self.termination_flags)(stepped)
         reward, reward_info = self._sanitize_nonfinite_reward(
             reward, reward_info, done_flags
         )
@@ -702,7 +720,7 @@ class BelloMotionTrackingEnv:
     def observation(
         self, state: MotionTrackingState, rng: jax.Array | None = None
     ) -> jax.Array:
-        reference = self._aligned_reference(
+        reference = self.aligned_reference(
             jnp.minimum(
                 state.reference_time + self.control_timestep, self.motion.duration
             ),
@@ -713,7 +731,7 @@ class BelloMotionTrackingEnv:
         qvel_indices = jnp.asarray(self.model.policy_qvel_indices)
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
         joint_default = jnp.asarray(self.model.default_joint_target)[policy_indices]
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             anchor_id = self.anchor_body_id
             anchor_index = self.anchor_body_index
             anchor_quat = state.data.xquat[anchor_id]
@@ -729,7 +747,7 @@ class BelloMotionTrackingEnv:
             )
             root_quat = state.data.qpos[3:7]
             base_linear_velocity = quat_rotate_inverse(root_quat, state.data.qvel[:3])
-            base_angular_velocity = quat_rotate_inverse(root_quat, state.data.qvel[3:6])
+            base_angular_velocity = state.data.qvel[3:6]
             current_joint_position = (
                 state.data.qpos[qpos_indices]
                 - joint_default
@@ -758,8 +776,15 @@ class BelloMotionTrackingEnv:
         root_velocity_error = quat_rotate_inverse(
             heading, reference.qvel[:3] - state.data.qvel[:3]
         )
+        reference_root_angular_velocity_world = quat_rotate(
+            reference.qpos[3:7], reference.qvel[3:6]
+        )
+        root_angular_velocity_world = quat_rotate(
+            state.data.qpos[3:7], state.data.qvel[3:6]
+        )
         root_angular_velocity_error = quat_rotate_inverse(
-            heading, reference.qvel[3:6] - state.data.qvel[3:6]
+            heading,
+            reference_root_angular_velocity_world - root_angular_velocity_world,
         )
         phase = 2.0 * jnp.pi * state.reference_time / self.motion.duration
         return jnp.concatenate(
@@ -786,7 +811,7 @@ class BelloMotionTrackingEnv:
         return jax.vmap(self.observation)(state, keys)
 
     def critic_observation(self, state: MotionTrackingState) -> jax.Array:
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             ids = jnp.asarray(self.tracked_body_ids)
             anchor_id = self.anchor_body_id
             anchor_position = state.data.xpos[anchor_id]
@@ -807,7 +832,7 @@ class BelloMotionTrackingEnv:
                 ]
             )
 
-        reference = self._aligned_reference(
+        reference = self.aligned_reference(
             jnp.minimum(
                 state.reference_time + self.control_timestep, self.motion.duration
             ),
@@ -854,12 +879,12 @@ class BelloMotionTrackingEnv:
         state: MotionTrackingState,
         world_id: jax.Array | int = 0,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
-        reference = self._aligned_reference(
+        reference = self.aligned_reference(
             jnp.minimum(state.reference_time, self.motion.duration),
             state.alignment_xy,
             state.alignment_yaw,
         )
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             return self._beyondmimic_reward(previous, state, reference, world_id)
         qpos_indices = jnp.asarray(self.model.policy_qpos_indices)
         qvel_indices = jnp.asarray(self.model.policy_qvel_indices)
@@ -963,14 +988,16 @@ class BelloMotionTrackingEnv:
         }
         return jnp.sum(jnp.stack(tuple(components.values()))), components
 
-    def _done_flags(self, state: MotionTrackingState) -> dict[str, jax.Array]:
-        reference = self._aligned_reference(
+    def termination_flags(self, state: MotionTrackingState) -> dict[str, jax.Array]:
+        """Return named termination conditions for one policy frame."""
+
+        reference = self.aligned_reference(
             jnp.minimum(state.reference_time, self.motion.duration),
             state.alignment_xy,
             state.alignment_yaw,
         )
         ids = jnp.asarray(self.tracked_body_ids)
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             anchor_id = self.anchor_body_id
             anchor_index = self.anchor_body_index
             target_pos, _ = self._relative_body_targets(state, reference)
@@ -999,7 +1026,9 @@ class BelloMotionTrackingEnv:
             end_effector = jnp.any(
                 ee_error > self.config.done.end_effector_position_error
             )
-            return self._finish_done_flags(state, height, orientation, end_effector)
+            return self._finish_termination_flags(
+                state, height, orientation, end_effector
+            )
         height = (
             jnp.abs(state.data.qpos[2] - reference.qpos[2])
             > self.config.done.root_height_error
@@ -1014,9 +1043,9 @@ class BelloMotionTrackingEnv:
             axis=-1,
         )
         end_effector = jnp.any(ee_error > self.config.done.end_effector_position_error)
-        return self._finish_done_flags(state, height, orientation, end_effector)
+        return self._finish_termination_flags(state, height, orientation, end_effector)
 
-    def _finish_done_flags(
+    def _finish_termination_flags(
         self,
         state: MotionTrackingState,
         height: jax.Array,
@@ -1109,16 +1138,18 @@ class BelloMotionTrackingEnv:
         }
         return sum(sanitized.values(), jnp.zeros_like(reward)), sanitized
 
-    def _aligned_reference(
+    def aligned_reference(
         self, time: jax.Array, alignment_xy: jax.Array, alignment_yaw: jax.Array
     ) -> MotionSample:
+        """Sample the motion after applying the episode's planar alignment."""
+
         source = sample_motion(self.motion, time)
         rotation = yaw_quat_from_angle(alignment_yaw)
         qpos = source.qpos
         root_pos = quat_rotate(rotation, qpos[:3]).at[:2].add(alignment_xy)
         qpos = qpos.at[:3].set(root_pos).at[3:7].set(quat_multiply(rotation, qpos[3:7]))
         qvel = source.qvel.at[:3].set(quat_rotate(rotation, source.qvel[:3]))
-        qvel = qvel.at[3:6].set(quat_rotate(rotation, source.qvel[3:6]))
+        # Free-joint angular qvel is root-local, so world-yaw alignment leaves it.
         body_pos = (
             jax.vmap(lambda value: quat_rotate(rotation, value))(source.body_pos)
             .at[:, :2]
@@ -1181,29 +1212,59 @@ class BelloMotionTrackingEnv:
             scales.append(0.25 * joint.effort_limit / stiffness)
         return jnp.asarray(scales, dtype=jnp.float32)
 
+    def beyondmimic_action_to_joint_target(
+        self,
+        action: jax.Array,
+        joint_default_offset: jax.Array | None = None,
+    ) -> jax.Array:
+        """Map a BeyondMimic action to logical joint targets."""
+        policy = jnp.asarray(self.model.policy_ctrl_indices)
+        logical_target = jnp.asarray(self.model.default_joint_target)
+        if joint_default_offset is None:
+            joint_default_offset = jnp.zeros(self.action_size, dtype=jnp.float32)
+        policy_default = logical_target[policy] + joint_default_offset
+        if not self.uses_beyondmimic_formulation:
+            raise ValueError("BeyondMimic actions require a BeyondMimic formulation")
+        if self.config.formulation == "beyondmimic":
+            policy_target = policy_default + self.beyondmimic_action_scale * action
+            return logical_target.at[policy].set(policy_target)
+
+        target_low = jnp.asarray(self.model.joint_target_low)[policy]
+        target_high = jnp.asarray(self.model.joint_target_high)[policy]
+        policy_default = jnp.clip(policy_default, target_low, target_high)
+        normalized_action = jnp.clip(
+            jnp.asarray(action, dtype=jnp.float32) / self.action_clip,
+            -1.0,
+            1.0,
+        )
+        target_span = jnp.where(
+            normalized_action >= 0.0,
+            target_high - policy_default,
+            policy_default - target_low,
+        )
+        policy_target = policy_default + target_span * normalized_action
+        return logical_target.at[policy].set(policy_target)
+
     def _initial_ctrl(
         self, reference: MotionSample, joint_default_offset: jax.Array
     ) -> jax.Array:
-        if self.config.formulation == "beyondmimic":
+        if self.uses_beyondmimic_formulation:
             logical_target = jnp.asarray(self.model.default_joint_target)
             policy = jnp.asarray(self.model.policy_ctrl_indices)
             logical_target = logical_target.at[policy].add(joint_default_offset)
             return self._logical_target_to_ctrl(logical_target)
         return self._reference_ctrl(reference)
 
-    def _action_to_ctrl(
-        self, state: MotionTrackingState, action: jax.Array
-    ) -> jax.Array:
+    def action_target(self, state: MotionTrackingState, action: jax.Array) -> jax.Array:
+        """Convert one normalized policy action into native actuator targets."""
+
         policy = jnp.asarray(self.model.policy_ctrl_indices)
-        if self.config.formulation == "beyondmimic":
-            logical_target = jnp.asarray(self.model.default_joint_target)
-            policy_target = (
-                logical_target[policy]
-                + state.joint_default_offset
-                + self.beyondmimic_action_scale * action
+        if self.uses_beyondmimic_formulation:
+            return self._logical_target_to_ctrl(
+                self.beyondmimic_action_to_joint_target(
+                    action, state.joint_default_offset
+                )
             )
-            logical_target = logical_target.at[policy].set(policy_target)
-            return self._logical_target_to_ctrl(logical_target)
         reference = sample_motion(
             self.motion,
             jnp.minimum(
@@ -1214,27 +1275,6 @@ class BelloMotionTrackingEnv:
         policy_target = (
             logical_target[policy] + self.reference_residual_action_scale * action
         )
-        logical_target = logical_target.at[policy].set(policy_target)
-        logical_target = jnp.clip(
-            logical_target,
-            jnp.asarray(self.model.joint_target_low),
-            jnp.asarray(self.model.joint_target_high),
-        )
-        return self._logical_target_to_ctrl(logical_target)
-
-    def _diagnostic_action_to_ctrl(
-        self, stacked_observation: jax.Array, action: jax.Array
-    ) -> jax.Array:
-        logical_target = jnp.asarray(self.model.default_joint_target)
-        policy = jnp.asarray(self.model.policy_ctrl_indices)
-        if self.config.formulation == "beyondmimic":
-            logical_target = logical_target.at[policy].set(
-                logical_target[policy] + self.beyondmimic_action_scale * action
-            )
-            return self._logical_target_to_ctrl(logical_target)
-        observation = stacked_observation[-self.observation_size :]
-        reference_target = logical_target[policy] + observation[: self.action_size]
-        policy_target = reference_target + self.reference_residual_action_scale * action
         logical_target = logical_target.at[policy].set(policy_target)
         logical_target = jnp.clip(
             logical_target,

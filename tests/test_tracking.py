@@ -4,14 +4,14 @@ from pathlib import Path
 
 import jax.numpy as jnp
 
-from bello_mujoco.tracking import (
+from bello_mujoco.training.tracking import (
     close_run,
     log_config,
     to_builtin,
     track_checkpoint_artifact,
     track_video,
 )
-from bello_mujoco.tracking import track_metric_snapshot
+from bello_mujoco.training.tracking import track_metric_snapshot
 
 
 class FakeRun:
@@ -154,7 +154,6 @@ def test_track_video_logs_encoded_file_without_fps(monkeypatch, tmp_path) -> Non
         video_path,
         name="train/rollout",
         step=128,
-        fps=50,
         caption="rollout",
     )
 

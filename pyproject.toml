@@ -2,6 +2,10 @@
 name = "bello-mujoco"
 version = "0.1.0"
 description = "MuJoCo/MJX robot-learning environment managed by uv."
+readme = "README.md"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+classifiers = ["Private :: Do Not Upload"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "chex>=0.1.90",
@@ -9,45 +13,45 @@ dependencies = [
   "fast-simplification>=0.1.12",
   "grpcio>=1.81,<2",
   "hydra-core>=1.3.2",
-  "imageio[ffmpeg]>=2.37.3",
+  "imageio-ffmpeg>=0.6.0",
   "jax>=0.6.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "jax[cuda13]>=0.6.0; sys_platform == 'linux'",
   "keyring>=25.6.0",
   "mujoco>=3.3.0",
   "mujoco-mjx[warp]>=3.3.0",
+  "numpy>=2.0",
+  "omegaconf>=2.3.0",
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
-  "packaging>=24.0",
-  "pyyaml>=6.0",
   "pygame-ce>=2.5.7",
   "protobuf>=7.35.1,<8",
   "rerun-sdk==0.34.1",
   "tqdm>=4.67.0",
   "trimesh>=4.6.0",
-  "tyro>=0.9.0",
-  "vastai>=0.2.0",
+  "vastai>=1.3,<2",
   "wandb>=0.28.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/MotomindKR/bello_mujoco"
+
 [project.scripts]
-bello-prepare-assets = "bello_mujoco.tools.prepare_assets:entrypoint"
-bello-train-ppo = "bello_mujoco.tools.train_ppo:entrypoint"
-bello-eval-policy = "bello_mujoco.tools.eval_policy:entrypoint"
-bello-vast-train = "bello_mujoco.tools.vast_train:entrypoint"
-bello-robstride-runner = "bello_mujoco.tools.robstride_runner:entrypoint"
-bello-run-locomotion-hardware = "bello_mujoco.tools.run_locomotion_hardware:entrypoint"
-bello-run-motion-hardware = "bello_mujoco.tools.run_motion_hardware:entrypoint"
-bello-import-gmr-motion = "bello_mujoco.tools.import_gmr_motion:entrypoint"
-bello-import-gmr-motion-dataset = "bello_mujoco.tools.import_gmr_motion_dataset:entrypoint"
-bello-render-motion-reference = "bello_mujoco.tools.render_motion_reference:entrypoint"
-bello-check-motion-feasibility = "bello_mujoco.tools.check_motion_feasibility:entrypoint"
-bello-train-motion-ppo = "bello_mujoco.tools.train_motion_ppo:entrypoint"
-bello-eval-motion-policy = "bello_mujoco.tools.eval_motion_policy:entrypoint"
+bello-prepare-assets = "bello_mujoco.cli:prepare_assets_entrypoint"
+bello-train = "bello_mujoco.cli:train_entrypoint"
+bello-eval = "bello_mujoco.cli:eval_entrypoint"
+bello-motion = "bello_mujoco.cli:motion_entrypoint"
+bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
+bello-run-emulator = "bello_mujoco.cli:emulator_entrypoint"
+bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
 
 [dependency-groups]
 dev = [
+  "grpcio-tools>=1.81,<2",
   "pytest>=8.0.0",
   "ruff>=0.8.0",
+]
+hardware = [
+  "bello-hardware",
 ]
 
 [build-system]
@@ -59,11 +63,13 @@ packages = ["src/bello_mujoco"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "configs" = "bello_mujoco/configs"
-"assets/source" = "bello_mujoco/assets/source"
-"pyproject.toml" = "bello_mujoco/_runtime/pyproject.toml"
-"uv.lock" = "bello_mujoco/_runtime/uv.lock"
+"deps/bello-stack/descriptions/bello/full_body/urdf" = "bello_mujoco/descriptions/bello/full_body/urdf"
+"deps/bello-stack/descriptions/bello/lower_body/meshes" = "bello_mujoco/descriptions/bello/lower_body/meshes"
+"deps/bello-stack/descriptions/bello/upper_body/meshes" = "bello_mujoco/descriptions/bello/upper_body/meshes"
+"ASSET_PROVENANCE.md" = "bello_mujoco/ASSET_PROVENANCE.md"
 
 [tool.uv]
+default-groups = ["dev", "hardware"]
 environments = [
   "sys_platform == 'darwin' and platform_machine == 'arm64'",
   "sys_platform == 'linux'",
@@ -73,10 +79,28 @@ required-environments = [
   "sys_platform == 'linux'",
 ]
 
+[tool.uv.sources]
+bello-hardware = { workspace = true }
+
+[tool.uv.workspace]
+members = ["deps/bello-stack/components/bello-hardware-python"]
+
 [tool.pytest.ini_options]
 markers = [
   "integration: slower end-to-end tests that compile and run training loops",
 ]
 
 [tool.ruff]
-extend-exclude = ["src/bello_mujoco/_pose_pb2.py"]
+extend-exclude = ["src/bello_mujoco/hardware/_pose_pb2.py"]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E4", "E7", "E9", "F"]
+ignore = [
+  # Frozen configuration values are intentionally safe shared defaults.
+  "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The predicate is invoked synchronously while last_sequence remains in scope.
+"src/bello_mujoco/hardware/pose.py" = ["B023"]

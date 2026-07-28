@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Literal
 
 TerrainMode = Literal["none", "plane", "rough"]
-SCENE_CACHE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -55,7 +54,6 @@ class TerrainConfig:
 
 ROBOT_ONLY_TERRAIN = TerrainConfig(mode="none")
 FLAT_TERRAIN = TerrainConfig(mode="plane")
-ROUGH_TERRAIN = TerrainConfig(mode="rough")
 
 
 def runtime_mjcf_path(robot_mjcf_path: Path, config: TerrainConfig) -> Path:
@@ -71,8 +69,6 @@ def runtime_mjcf_path(robot_mjcf_path: Path, config: TerrainConfig) -> Path:
         f"{robot_mjcf_path.stem}.scene."
         f"{robot_mjcf_hash(robot_mjcf_path)}.{terrain_config_hash(config)}.xml"
     )
-    if scene_path.exists():
-        return scene_path
 
     root = ET.parse(robot_mjcf_path).getroot()
     if config.mode == "plane":
@@ -374,7 +370,7 @@ def random_slope_quat(config: TerrainConfig) -> tuple[float, float, float, float
 
 
 def terrain_config_hash(config: TerrainConfig) -> str:
-    payload = {"cache_version": SCENE_CACHE_VERSION, **asdict(config)}
+    payload = asdict(config)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
 

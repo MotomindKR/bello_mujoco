@@ -1,9 +1,6 @@
-dry_run: true
-jit: true
-
 motion:
-  directory: motions/local/lafan1_fixed_head
-  sequence: walk1_subject1
+  directory: motions/asap_fixed_head
+  sequence: video_single_foot_balance_level1_filter_amass
 
 config:
   seed: 0
@@ -37,9 +34,7 @@ config:
   target_max_abs: 10000.0
   gradient_norm_max: 10000.0
   policy:
-    hidden_size: 256
-    hidden_depth: 2
-    hidden_dims: null
+    hidden_dims: [256, 256]
     activation: tanh
     init_log_std: -2.0
     min_log_std: -5.0
@@ -88,6 +83,7 @@ checkpoint_config:
   name: ${motion.sequence}_wholebody
   every_updates: 100
   resume_path: null
+  allow_git_commit_mismatch: false
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint
@@ -122,9 +118,3 @@ warp:
   naconmax: null
   naccdmax: null
   njmax: 2048
-
-hydra:
-  job:
-    chdir: false
-  run:
-    dir: outputs/hydra/train_motion/${now:%Y-%m-%d}/${now:%H-%M-%S}

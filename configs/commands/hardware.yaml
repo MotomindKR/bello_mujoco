@@ -1,0 +1,15 @@
+task: locomotion
+checkpoint_path: null
+allow_git_commit_mismatch: false
+endpoint: http://127.0.0.1:50051
+command: [0.0, 0.0, 0.0]
+motion_path: null
+duration_seconds: 10.0
+ramp_seconds: null
+gamepad_enabled: true
+arm: false
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/hardware/${now:%Y-%m-%d}/${now:%H-%M-%S}

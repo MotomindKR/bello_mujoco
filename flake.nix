@@ -29,19 +29,30 @@
             pkgs.git
             pkgs.socat
             pkgs.uv
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.iproute2
+            pkgs.kmod
           ];
 
           UV_PROJECT_ENVIRONMENT = ".venv";
 
           shellHook = ''
+            if [ ! -f deps/bello-stack/components/bello-hardware-python/pyproject.toml ]; then
+              echo "The pinned bello-stack submodule is not initialized." >&2
+              echo "Run: git submodule update --init --recursive" >&2
+              exit 1
+            fi
+
             export UV_CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/uv"
             export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
             export WARP_CACHE_PATH="$PWD/.warp-cache"
             export MUJOCO_GL=${mujocoGl}
-            export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
+            ''}
 
-            uv python install 3.12
-            uv sync
+            uv python install
+            uv sync --frozen
 
             if [ -f .venv/bin/activate ]; then
               source .venv/bin/activate

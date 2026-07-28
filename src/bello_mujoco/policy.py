@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+import math
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-LOG_2PI = jnp.log(2.0 * jnp.pi)
+if TYPE_CHECKING:
+    from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
+
+LOG_2PI = math.log(2.0 * math.pi)
 
 
 def identity_activation(x: jax.Array) -> jax.Array:
@@ -19,9 +23,7 @@ def identity_activation(x: jax.Array) -> jax.Array:
 
 @dataclass(frozen=True)
 class ActorCriticConfig:
-    hidden_size: int = 256
-    hidden_depth: int = 2
-    hidden_dims: tuple[int, ...] | None = None
+    hidden_dims: tuple[int, ...] = (256, 256)
     activation: Literal["tanh", "relu", "elu", "swish"] = "tanh"
     init_log_std: float = 0.0
     min_log_std: float = -5.0
@@ -142,20 +144,10 @@ def make_mlp(
     activation: Callable[[jax.Array], jax.Array],
     key: jax.Array,
 ) -> eqx.Module:
-    if config.hidden_dims is None:
-        return eqx.nn.MLP(
-            obs_size,
-            output_size,
-            width_size=config.hidden_size,
-            depth=config.hidden_depth,
-            activation=activation,
-            final_activation=identity_activation,
-            key=key,
-        )
     return LayeredMLP(
         obs_size,
         output_size,
-        tuple(config.hidden_dims),
+        config.hidden_dims,
         activation=activation,
         final_activation=identity_activation,
         key=key,
@@ -231,33 +223,6 @@ def sample_actor_action(
     if obs.ndim == 1:
         return sample_one(obs, rng)
     return jax.vmap(sample_one)(obs, jax.random.split(rng, obs.shape[0]))
-
-
-def sample_action(
-    policy: ActorCritic,
-    obs: jax.Array,
-    rng: jax.Array,
-    critic_obs: jax.Array | None = None,
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    action, log_prob, value, _ = sample_action_with_mean(
-        policy, obs, rng, critic_obs=critic_obs
-    )
-    return action, log_prob, value
-
-
-def sample_action_with_mean(
-    policy: ActorCritic,
-    obs: jax.Array,
-    rng: jax.Array,
-    critic_obs: jax.Array | None = None,
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    action, _, log_prob, value, action_mean = sample_action_with_latent_and_mean(
-        policy,
-        obs,
-        rng,
-        critic_obs=critic_obs,
-    )
-    return action, log_prob, value, action_mean
 
 
 def sample_action_with_latent_and_mean(
@@ -372,3 +337,32 @@ def activation_function(name: str):
     if name == "swish":
         return jax.nn.swish
     raise ValueError(f"unsupported activation: {name!r}")
+
+
+class PolicyInferenceStep(NamedTuple):
+    action_mean: jax.Array
+    requested_action: jax.Array
+    applied_action: jax.Array
+
+
+def infer_policy_action(
+    policy: Any,
+    observation: jax.Array,
+    normalization: ObservationNormState,
+    config: PPOConfig,
+    action_clip: float,
+    *,
+    rng: jax.Array | None = None,
+) -> PolicyInferenceStep:
+    """Evaluate the actor with the same input and action contract used by PPO."""
+    from bello_mujoco.training.ppo import normalize_observation
+
+    policy_observation = normalize_observation(observation, normalization, config)
+    action_mean = apply_actor(policy, policy_observation)
+    requested_action = (
+        action_mean
+        if rng is None
+        else sample_actor_action(policy, policy_observation, rng)
+    )
+    applied_action = jnp.clip(requested_action, -action_clip, action_clip)
+    return PolicyInferenceStep(action_mean, requested_action, applied_action)

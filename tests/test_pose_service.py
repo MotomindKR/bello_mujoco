@@ -3,8 +3,8 @@ import time
 import grpc
 import pytest
 
-from bello_mujoco import _pose_pb2
-from bello_mujoco.pose_service import PoseServiceConfig, PoseServiceServer
+from bello_mujoco.hardware import _pose_pb2
+from bello_mujoco.hardware.pose import PoseServiceConfig, PoseServiceServer
 
 
 def pose_stream(channel: grpc.Channel):

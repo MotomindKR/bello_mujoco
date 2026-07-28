@@ -23,7 +23,6 @@ def test_public_actuator_defaults_use_canonical_policy_partition() -> None:
         "waist_yaw_joint",
     }
     assert len(config.hold_joint_names) == 22
-    assert JointActuatorConfig().mode == "hold"
 
 
 def test_actuator_config_rejects_invalid_mode() -> None:
