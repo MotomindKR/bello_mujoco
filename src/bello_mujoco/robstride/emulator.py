@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import math
 import select
 import sys
 import time
-from typing import TextIO
+from typing import Protocol, TextIO
 
 import mujoco
 import numpy as np
@@ -88,6 +89,12 @@ class EmulatorConfig:
     pose_service: PoseServiceConfig = PoseServiceConfig()
 
 
+class _PassiveViewer(Protocol):
+    def is_running(self) -> bool: ...
+
+    def sync(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class TorsoHold:
     """Runtime handle for the torso's world-vertical guide constraint."""
@@ -140,29 +147,39 @@ class EmulatorControlWindow:
         import pygame
 
         self._pygame = pygame
+        self._closed = False
         try:
             pygame.display.init()
             pygame.font.init()
             self._surface = pygame.display.set_mode(self._SIZE)
+            pygame.display.set_caption("Bello controls")
+            self._title_font = pygame.font.Font(None, 32)
+            self._body_font = pygame.font.Font(None, 23)
+            self._button_font = pygame.font.Font(None, 27)
+            self._button = pygame.Rect(45, 130, 350, 55)
+            self._drop_limit_cm = drop_limit_m * 100.0
+            self._released = False
+            self._draw()
         except pygame.error as error:
             pygame.quit()
             raise RuntimeError(
                 "cannot open the Bello emulator controls; a graphical display "
                 "is required"
             ) from error
-        pygame.display.set_caption("Bello controls")
-        self._title_font = pygame.font.Font(None, 32)
-        self._body_font = pygame.font.Font(None, 23)
-        self._button_font = pygame.font.Font(None, 27)
-        self._button = pygame.Rect(45, 130, 350, 55)
-        self._drop_limit_cm = drop_limit_m * 100.0
-        self._released = False
-        self._draw()
+        except BaseException:
+            pygame.quit()
+            raise
 
     def __enter__(self) -> EmulatorControlWindow:
         return self
 
     def __exit__(self, *_args) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._pygame.quit()
 
     def poll(self) -> tuple[bool, bool, bool]:
@@ -224,6 +241,16 @@ class EmulatorControlWindow:
         label = self._button_font.render(button_text, True, (255, 255, 255))
         surface.blit(label, label.get_rect(center=self._button.center))
         self._pygame.display.flip()
+
+
+@dataclass(frozen=True)
+class _EmulatorResources:
+    endpoints: dict[str, SocketCanEndpoint]
+    imu_serial: EbimuSerialEmulator | None
+    pose_server: PoseServiceServer | None
+    pose_body_id: int
+    viewer: _PassiveViewer
+    control_window: EmulatorControlWindow | None
 
 
 class TerminalEnterInput:
@@ -309,25 +336,21 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     run_simulation(model, emulators, transmission, config, torso_hold)
 
 
-def run_simulation(
-    model: BelloModel,
-    emulators: dict[str, RobstrideBusEmulator],
-    transmission: BelloRobstrideTransmission,
-    config: EmulatorConfig,
-    torso_hold: TorsoHold | None = None,
-) -> None:
-    data = mujoco.MjData(model.mj_model)
-    reset_data(model, data)
-    if torso_hold is not None:
-        torso_hold.initialize(model.mj_model, data)
-    transmission.update_motor_states(data)
-    imu_sensor = (
-        MujocoImu.bind(model.mj_model)
-        if config.asset_config.imu_config.enabled
-        else None
-    )
-    imu_noise = ImuNoiseInjector(config.imu_noise)
+def _launch_passive_viewer(model: mujoco.MjModel, data: mujoco.MjData):
+    from mujoco import viewer
 
+    return viewer.launch_passive(model, data)
+
+
+@contextmanager
+def _open_emulator_resources(
+    model: BelloModel,
+    data: mujoco.MjData,
+    emulators: dict[str, RobstrideBusEmulator],
+    config: EmulatorConfig,
+    torso_hold: TorsoHold | None,
+    imu_sensor: MujocoImu | None,
+) -> Iterator[_EmulatorResources]:
     with ExitStack() as stack:
         pose_server = None
         pose_body_id = -1
@@ -368,9 +391,49 @@ def run_simulation(
             if imu_sensor is not None
             else None
         )
+        viewer = stack.enter_context(_launch_passive_viewer(model.mj_model, data))
+        control_window = (
+            stack.enter_context(EmulatorControlWindow(torso_hold.drop_limit_m))
+            if torso_hold is not None
+            else None
+        )
+        yield _EmulatorResources(
+            endpoints=endpoints,
+            imu_serial=imu_serial,
+            pose_server=pose_server,
+            pose_body_id=pose_body_id,
+            viewer=viewer,
+            control_window=control_window,
+        )
 
-        from mujoco import viewer as mj_viewer
 
+def run_simulation(
+    model: BelloModel,
+    emulators: dict[str, RobstrideBusEmulator],
+    transmission: BelloRobstrideTransmission,
+    config: EmulatorConfig,
+    torso_hold: TorsoHold | None = None,
+) -> None:
+    data = mujoco.MjData(model.mj_model)
+    reset_data(model, data)
+    if torso_hold is not None:
+        torso_hold.initialize(model.mj_model, data)
+    transmission.update_motor_states(data)
+    imu_sensor = (
+        MujocoImu.bind(model.mj_model)
+        if config.asset_config.imu_config.enabled
+        else None
+    )
+    imu_noise = ImuNoiseInjector(config.imu_noise)
+
+    with _open_emulator_resources(
+        model,
+        data,
+        emulators,
+        config,
+        torso_hold,
+        imu_sensor,
+    ) as resources:
         print_emulator_summary(model, emulators)
         fixed_joints = sorted(
             config.asset_config.joint_availability.disabled_joint_names
@@ -390,7 +453,7 @@ def run_simulation(
             )
         if imu_sensor is not None:
             print(f"  imu: {config.asset_config.imu_config.body_name}")
-            if imu_serial is not None:
+            if resources.imu_serial is not None:
                 print(
                     f"  ebimu: E2BOX EBIMU-9DOFV6 at "
                     f"{config.imu_serial_rate_hz:g} Hz -> "
@@ -408,63 +471,53 @@ def run_simulation(
                     print("  ebimu noise: disabled")
             else:
                 print("  ebimu: disabled")
-        if pose_server is not None:
+        if resources.pose_server is not None:
             print(
                 f"  pose: {config.pose_service.reference_frame}_from_"
                 f"{config.pose_service.tracked_frame} at "
                 f"{config.pose_service.publish_rate_hz:g} Hz -> "
                 f"{config.pose_service.listen}"
             )
-        with mj_viewer.launch_passive(model.mj_model, data) as viewer:
-            terminal_enter = TerminalEnterInput()
-            if terminal_enter.enabled:
-                action = (
-                    "cycle torso release and reset/guide"
-                    if torso_hold is not None
-                    else "reset the robot"
-                )
-                print(f"  keyboard: press Enter to {action}")
-            control_window = None
-            if torso_hold is not None:
-                control_window = stack.enter_context(
-                    EmulatorControlWindow(torso_hold.drop_limit_m)
-                )
-            _simulation_loop(
-                model,
-                data,
-                emulators,
-                endpoints,
-                transmission,
-                config,
-                viewer,
-                torso_hold,
-                control_window,
-                imu_sensor,
-                imu_serial,
-                imu_noise,
-                pose_server,
-                pose_body_id,
-                terminal_enter,
+        terminal_enter = TerminalEnterInput()
+        if terminal_enter.enabled:
+            action = (
+                "cycle torso release and reset/guide"
+                if torso_hold is not None
+                else "reset the robot"
             )
+            print(f"  keyboard: press Enter to {action}")
+        _simulation_loop(
+            model,
+            data,
+            emulators,
+            transmission,
+            config,
+            torso_hold,
+            imu_sensor,
+            imu_noise,
+            terminal_enter,
+            resources,
+        )
 
 
 def _simulation_loop(
     model: BelloModel,
     data: mujoco.MjData,
     emulators: dict[str, RobstrideBusEmulator],
-    endpoints: dict[str, SocketCanEndpoint],
     transmission: BelloRobstrideTransmission,
     config: EmulatorConfig,
-    viewer,
     torso_hold: TorsoHold | None,
-    control_window: EmulatorControlWindow | None,
     imu_sensor: MujocoImu | None,
-    imu_serial: EbimuSerialEmulator | None,
     imu_noise: ImuNoiseInjector,
-    pose_server: PoseServiceServer | None,
-    pose_body_id: int,
     terminal_enter: TerminalEnterInput,
+    resources: _EmulatorResources,
 ) -> None:
+    endpoints = resources.endpoints
+    viewer = resources.viewer
+    control_window = resources.control_window
+    imu_serial = resources.imu_serial
+    pose_server = resources.pose_server
+    pose_body_id = resources.pose_body_id
     start_wall = time.monotonic()
     start_sim = float(data.time)
     feedback_period = 1.0 / config.feedback_rate_hz
@@ -504,6 +557,8 @@ def _simulation_loop(
                     control_window.mark_released()
                 print("Torso released; robot is now free")
                 continue
+            for emulator in emulators.values():
+                emulator.reset_control_state()
             transmission.update_motor_states(data)
             start_wall = time.monotonic()
             start_sim = float(data.time)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from dataclasses import replace
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -16,10 +15,6 @@ import jax
 import mujoco
 import numpy as np
 
-from bello_mujoco.training.checkpoint import (
-    restore_evaluation_checkpoint,
-    validate_motion_clip_contract,
-)
 from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingState,
@@ -37,7 +32,6 @@ from bello_mujoco.training.ppo import (
     init_observation_norm_state,
     normalize_observation,
 )
-from bello_mujoco.repository import resolve_repository_path
 from bello_mujoco.evaluation.render import (
     CameraConfig,
     VideoWriter,
@@ -50,6 +44,8 @@ from bello_mujoco.motion.clip import (
     motion_tracking_asset_config,
     sample_motion,
 )
+from bello_mujoco.motion.native import NativeContactData, NativeMotionData
+from bello_mujoco.motion.runtime import load_motion_policy_runtime
 from bello_mujoco.sim import load_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 
@@ -65,28 +61,6 @@ class MotionRolloutStats(TypedDict):
     joint_position_rms_rad: float
 
 
-@dataclass(frozen=True)
-class _NativeContactData:
-    contact__geom: jax.Array
-    nacon: jax.Array
-    contact__worldid: jax.Array
-    contact__efc_address: jax.Array
-    efc__force: jax.Array
-
-
-@dataclass(frozen=True)
-class _NativeMotionData:
-    qpos: jax.Array
-    qvel: jax.Array
-    ctrl: jax.Array
-    xpos: jax.Array
-    xquat: jax.Array
-    cvel: jax.Array
-    subtree_com: jax.Array
-    actuator_force: jax.Array
-    _impl: _NativeContactData
-
-
 def render_checkpoint_with_stats(
     checkpoint: Path,
     output_path: Path,
@@ -97,38 +71,27 @@ def render_checkpoint_with_stats(
     height: int = 480,
     fps: int = 50,
     motion_path: Path | None = None,
+    allow_git_commit_mismatch: bool = False,
 ) -> MotionRolloutStats:
-    train_state, metadata, normalization = restore_evaluation_checkpoint(checkpoint)
-    if (
-        metadata.task != "motion_tracking"
-        or metadata.motion_env is None
-        or metadata.motion is None
-    ):
-        raise ValueError(f"checkpoint task is {metadata.task!r}, not motion_tracking")
-    resolved_motion_path = (
-        resolve_repository_path(metadata.motion.path)
-        if motion_path is None
-        else Path(motion_path)
-    )
-    env_config = replace(metadata.motion_env, motion_path=resolved_motion_path)
-    env = BelloMotionTrackingEnv.load_native(
-        metadata.asset,
-        env_config,
+    runtime = load_motion_policy_runtime(
+        checkpoint,
+        motion_path=motion_path,
         use_viewer_model=True,
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
-    validate_motion_clip_contract(resolved_motion_path, env.motion, metadata.motion)
+    metadata = runtime.metadata
     return render_motion_policy(
-        env,
-        train_state.policy,
+        runtime.env,
+        runtime.policy,
         output_path,
-        steps=env.max_episode_steps if steps is None else steps,
+        steps=runtime.env.max_episode_steps if steps is None else steps,
         stop_on_terminal=stop_on_terminal,
         width=width,
         height=height,
         fps=fps,
         obs_stack_size=metadata.ppo.policy.obs_stack_size,
         ppo_config=metadata.ppo,
-        observation_norm_state=normalization.observation,
+        observation_norm_state=runtime.normalization.observation,
     )
 
 
@@ -177,7 +140,7 @@ def render_motion_policy(
     joint_position_errors = []
     try:
         for _ in range(steps):
-            reference = env._aligned_reference(
+            reference = env.aligned_reference(
                 state.reference_time, state.alignment_xy, state.alignment_yaw
             )
             root = env.model.root_qpos_adr
@@ -263,14 +226,14 @@ def reset_native_motion_rollout(
     env: BelloMotionTrackingEnv, mj_data: mujoco.MjData
 ) -> tuple[MotionTrackingState, jax.Array]:
     reference_time = jax.numpy.asarray(0.0, dtype=jax.numpy.float32)
-    source = env._aligned_reference(
+    source = env.aligned_reference(
         reference_time,
         jax.numpy.zeros(2, dtype=jax.numpy.float32),
         jax.numpy.asarray(0.0, dtype=jax.numpy.float32),
     )
     alignment_xy = -source.qpos[:2]
     alignment_yaw = jax.numpy.asarray(0.0, dtype=jax.numpy.float32)
-    reference = env._aligned_reference(reference_time, alignment_xy, alignment_yaw)
+    reference = env.aligned_reference(reference_time, alignment_xy, alignment_yaw)
     joint_default_offset = jax.numpy.zeros(env.action_size, dtype=jax.numpy.float32)
     mj_data.qpos[:] = np.asarray(reference.qpos)
     mj_data.qvel[:] = np.asarray(reference.qvel)
@@ -301,7 +264,7 @@ def native_motion_step(
     action = jax.numpy.clip(
         jax.numpy.asarray(action), -env.action_clip, env.action_clip
     )
-    mj_data.ctrl[:] = np.asarray(env._action_to_ctrl(state, action), dtype=np.float64)
+    mj_data.ctrl[:] = np.asarray(env.action_target(state, action), dtype=np.float64)
     for _ in range(env.decimation):
         mujoco.mj_step(env.model.mj_model, mj_data)
     next_reference_time = state.reference_time + env.control_timestep
@@ -319,7 +282,7 @@ def native_motion_step(
     reward, reward_info = env._reward(
         state, stepped, jax.numpy.asarray(0, dtype=jax.numpy.int32)
     )
-    done_flags = env._done_flags(stepped)
+    done_flags = env.termination_flags(stepped)
     reward, reward_info = env._sanitize_nonfinite_reward(
         reward, reward_info, done_flags
     )
@@ -359,14 +322,14 @@ def native_motion_state(
     efc_force = np.zeros(max(nefc, 1), dtype=np.float32)
     if nefc:
         efc_force[:nefc] = np.asarray(mj_data.efc_force[:nefc], dtype=np.float32)
-    impl = _NativeContactData(
+    impl = NativeContactData(
         contact__geom=jax.numpy.asarray(contact_geom),
         nacon=jax.numpy.asarray([ncon], dtype=jax.numpy.int32),
         contact__worldid=jax.numpy.zeros(ncon, dtype=jax.numpy.int32),
         contact__efc_address=jax.numpy.asarray(contact_address[:, None]),
         efc__force=jax.numpy.asarray(efc_force),
     )
-    data = _NativeMotionData(
+    data = NativeMotionData(
         qpos=jax.numpy.asarray(
             np.asarray(mj_data.qpos).copy(), dtype=jax.numpy.float32
         ),

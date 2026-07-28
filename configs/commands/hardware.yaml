@@ -1,5 +1,6 @@
 task: locomotion
 checkpoint_path: null
+allow_git_commit_mismatch: false
 endpoint: http://127.0.0.1:50051
 command: [0.0, 0.0, 0.0]
 motion_path: null

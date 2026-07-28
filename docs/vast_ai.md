@@ -10,8 +10,8 @@ Before rental, the launcher:
 
 1. fetches current `origin` branches;
 2. resolves the selected branch to one immutable commit;
-3. verifies the selected profile, `pyproject.toml`, and `uv.lock` in that
-   commit;
+3. verifies the selected profile, `.python-version`, `pyproject.toml`, and
+   `uv.lock` in that commit;
 4. verifies any motion archive is repository-tracked in that commit;
 5. generates a unique timestamped run/lifecycle label;
 6. builds offer queries from the maintained hardware policy.
@@ -32,8 +32,7 @@ Non-dry execution:
 2. selects and confirms one compatible offer;
 3. records a creating state before requesting the instance;
 4. records the active instance ID as soon as it is known;
-5. waits for instance readiness and an SSH route, preferring the direct mapping
-   and falling back to the Vast proxy;
+5. waits for instance readiness and its required direct SSH mapping;
 6. clones the exact commit and performs a frozen dependency sync;
 7. verifies the JAX GPU backend;
 8. runs a bounded training preflight;

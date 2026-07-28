@@ -72,12 +72,15 @@ Checkpoints store:
 - motion content and its named data layout when applicable;
 - normalization, optimizer, environment continuation, RNG, and sampler state.
 
-There is no cross-revision checkpoint compatibility layer. Checkpoint-producing
-training requires a clean `HEAD` contained by a local `origin/*` tracking
+There is no automatic cross-revision adaptation. Checkpoint-producing training
+requires a clean `HEAD` contained by a local `origin/*` tracking
 branch and rechecks that revision immediately before every checkpoint is
 published. Fetch or push before a local run so that tracking state is current.
-Evaluation, resume, and hardware execution reject a dirty worktree or a
-different `HEAD` before decoding revision-private metadata.
+Evaluation, resume, and hardware execution reject a dirty worktree. They also
+reject a different `HEAD` unless `allow_git_commit_mismatch=true` is explicitly
+set. That override bypasses only commit equality; metadata, state layout, task,
+motion content, and runtime validation remain active. It cannot load older
+checkpoint envelopes that do not contain `git_commit`.
 
 Checkpoint output must be outside the source repository or covered by a Git
 ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name
@@ -93,24 +96,25 @@ clean commit's cache. The manifest verifies the canonical generated XML and
 referenced mesh content, and runtime terrain scenes are regenerated
 deterministically instead of trusted across launches.
 
-Within the exact revision, evaluation still validates document integrity,
-metadata and state-layout hashes, task and observation/action layouts,
-normalization, saved update, motion content, and restored state. Resume
-additionally requires environment continuation, observation stacks, RNG,
-current learning rate, sampler state, environment layout, and the full resume
-contract. A revised `total_timesteps` value is accepted when its resulting
-update budget still covers the saved update; output destinations may change.
+Regardless of whether the commit override is used, evaluation validates
+document integrity, metadata and state-layout hashes, task and
+actor/critic observation and action sizes/layouts, normalization, saved update,
+motion content, and restored state. Resume additionally requires environment
+continuation, observation stacks, RNG, current learning rate, sampler state,
+environment layout, and the full resume contract. A revised `total_timesteps`
+value is accepted when its resulting update budget still covers the saved
+update; output destinations may change.
 
 Locomotion final checkpoints are timestamped checkpoint roots. Motion runs also
 maintain a `final` child below their timestamped root.
 
-Read the required revision without loading policy state:
+Read the recorded revision without loading policy state:
 
 ```bash
 jq -r .git_commit checkpoints/<checkpoint>/metadata.json
 ```
 
-Run it from a separate checkout:
+The recommended workflow is to run it from a separate checkout:
 
 ```bash
 CHECKPOINT="$(cd checkpoints/<checkpoint> && pwd -P)"

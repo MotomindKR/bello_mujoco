@@ -117,7 +117,7 @@ def level4_adapter() -> HardwareMotionPolicyAdapter:
 def reference_frame(
     adapter: HardwareMotionPolicyAdapter,
 ) -> tuple[HardwareFrame, PoseFrame]:
-    reference = adapter.env._aligned_reference(
+    reference = adapter.env.aligned_reference(
         jax.numpy.asarray(adapter.start_time),
         jax.numpy.zeros(2),
         jax.numpy.zeros(()),

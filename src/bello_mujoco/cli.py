@@ -7,127 +7,104 @@ import json
 import math
 from pathlib import Path
 import sys
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import hydra
 from omegaconf import DictConfig
 
-from bello_mujoco.assets_pipeline import repo_root
-from bello_mujoco.assets_pipeline.prepare import (
-    canonical_physical_asset_config,
-    prepare_asset,
-)
 from bello_mujoco.configuration import (
     ExperimentName,
+    command_config,
     config_path,
     locomotion_training_profile,
     motion_training_profile,
-    structured_config,
 )
-from bello_mujoco.evaluation.locomotion import (
-    EvalPolicyConfig,
-    evaluate_locomotion_checkpoint,
-)
-from bello_mujoco.evaluation.motion import (
-    render_checkpoint_with_stats,
-    render_reference,
-)
-from bello_mujoco.hardware.locomotion import (
-    HardwareLocomotionConfig,
-    run_hardware_locomotion,
-)
-from bello_mujoco.hardware.motion import HardwareMotionConfig, run_hardware_motion
-from bello_mujoco.motion.feasibility import replay_motion_reference
-from bello_mujoco.motion.import_gmr import import_dataset, import_gmr_motion
-from bello_mujoco.robstride import emulator
-from bello_mujoco.training.locomotion import run_training as run_locomotion_training
-from bello_mujoco.training.motion import run_training as run_motion_training
-from bello_mujoco.training.tracking import WandbConfig
-from bello_mujoco.training.vast import (
-    VastTrainConfig,
-    launch_pipeline,
-    safe_exception_message,
-)
+
+if TYPE_CHECKING:
+    from bello_mujoco.training.tracking import WandbConfig
 
 
 @dataclass(frozen=True)
 class PrepareAssetsCommandConfig:
-    profile: Literal["physical", "visualizer"] = "physical"
-    output_root: Path | None = None
+    profile: Literal["physical", "visualizer"]
+    output_root: Path | None
 
 
 @dataclass(frozen=True)
 class TrainCommandConfig:
-    experiment: ExperimentName = "smoke"
-    seed: int | None = None
-    total_timesteps: int | None = None
-    num_envs: int | None = None
-    motion_path: Path | None = None
-    resume_path: Path | None = None
-    checkpoint_directory: Path | None = None
-    checkpoint_name: str | None = None
-    wandb_enabled: bool | None = None
-    run_name: str | None = None
-    video_enabled: bool | None = None
+    experiment: ExperimentName
+    seed: int | None
+    total_timesteps: int | None
+    num_envs: int | None
+    motion_path: Path | None
+    resume_path: Path | None
+    allow_git_commit_mismatch: bool
+    checkpoint_directory: Path | None
+    checkpoint_name: str | None
+    wandb_enabled: bool | None
+    run_name: str | None
+    video_enabled: bool | None
 
 
 @dataclass(frozen=True)
 class EvalCommandConfig:
-    task: Literal["locomotion", "motion"] = "locomotion"
-    checkpoint_path: Path | None = None
-    output_path: Path = Path("outputs/evaluation/motion.mp4")
-    command: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    steps: int | None = None
-    stop_on_done: bool = False
-    stochastic_actions: bool = False
-    action_seed: int = 0
-    gamepad_enabled: bool = True
+    task: Literal["locomotion", "motion"]
+    checkpoint_path: Path | None
+    allow_git_commit_mismatch: bool
+    output_path: Path
+    command: tuple[float, float, float]
+    steps: int | None
+    stop_on_done: bool
+    stochastic_actions: bool
+    action_seed: int
+    gamepad_enabled: bool
 
 
 @dataclass(frozen=True)
 class MotionCommandConfig:
-    operation: Literal["import", "import_dataset", "inspect", "render"] = "inspect"
-    source: Path | None = None
-    output: Path | None = None
-    jobs: int = 8
-    overwrite: bool = False
-    reject_self_collisions: bool = True
-    width: int = 640
-    height: int = 480
-    fps: int = 30
-    require_complete: bool = False
+    operation: Literal["import", "import_dataset", "inspect", "render"]
+    source: Path | None
+    output: Path | None
+    jobs: int
+    overwrite: bool
+    reject_self_collisions: bool
+    width: int
+    height: int
+    fps: int
+    require_complete: bool
 
 
 @dataclass(frozen=True)
 class VastTrainCommandConfig:
-    experiment: ExperimentName = "hardware_locomotion"
-    motion_path: Path | None = None
-    max_price: float | None = None
-    branch: str | None = None
-    run_name: str | None = None
-    duration_hours: float = 6.0
-    skip_confirmation: bool = False
-    dry_run: bool = False
+    experiment: ExperimentName
+    motion_path: Path | None
+    max_price: float | None
+    branch: str | None
+    run_name: str | None
+    duration_hours: float
+    skip_confirmation: bool
+    dry_run: bool
 
 
 @dataclass(frozen=True)
 class EmulatorCommandConfig:
-    bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
-    torso_hold: bool = True
-    release_after_seconds: float | None = None
+    bus_interfaces: tuple[str, ...]
+    torso_hold: bool
+    release_after_seconds: float | None
 
 
 @dataclass(frozen=True)
 class HardwareCommandConfig:
-    task: Literal["locomotion", "motion"] = "locomotion"
-    checkpoint_path: Path | None = None
-    endpoint: str = "http://127.0.0.1:50051"
-    command: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    motion_path: Path | None = None
-    duration_seconds: float | None = 10.0
-    ramp_seconds: float | None = None
-    gamepad_enabled: bool = True
-    arm: bool = False
+    task: Literal["locomotion", "motion"]
+    checkpoint_path: Path | None
+    allow_git_commit_mismatch: bool
+    endpoint: str
+    command: tuple[float, float, float]
+    motion_path: Path | None
+    duration_seconds: float | None
+    ramp_seconds: float | None
+    gamepad_enabled: bool
+    arm: bool
 
 
 def prepare_assets_entrypoint() -> None:
@@ -140,7 +117,12 @@ def prepare_assets_entrypoint() -> None:
     config_name="prepare_assets",
 )
 def _prepare_assets_hydra(config: DictConfig) -> None:
-    command = structured_config(PrepareAssetsCommandConfig, config)
+    command = command_config(PrepareAssetsCommandConfig, config)
+    from bello_mujoco.assets_pipeline.prepare import (
+        canonical_physical_asset_config,
+        prepare_asset,
+    )
+
     asset = canonical_physical_asset_config()
     if command.profile == "visualizer":
         asset = replace(
@@ -168,8 +150,12 @@ def train_entrypoint() -> None:
     config_name="train",
 )
 def _train_hydra(config: DictConfig) -> None:
-    command = structured_config(TrainCommandConfig, config)
+    command = command_config(TrainCommandConfig, config)
     if command.experiment == "motion":
+        from bello_mujoco.training.motion import (
+            run_training as run_motion_training,
+        )
+
         run_config = motion_training_profile(command.motion_path)
         run_config = replace(
             run_config,
@@ -189,6 +175,14 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.motion_path is not None:
         raise ValueError("motion_path is only valid for the motion experiment")
+    _reject_explicit_fields(
+        ("motion_path",),
+        context=f"experiment={command.experiment}",
+    )
+    from bello_mujoco.training.locomotion import (
+        run_training as run_locomotion_training,
+    )
+
     run_config = locomotion_training_profile(command.experiment)
     run_config = replace(
         run_config,
@@ -214,23 +208,37 @@ def eval_entrypoint() -> None:
     config_name="eval",
 )
 def _eval_hydra(config: DictConfig) -> None:
-    command = structured_config(EvalCommandConfig, config)
+    command = command_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     if command.task == "motion":
-        _reject_non_default_fields(
-            command,
+        _reject_explicit_fields(
             ("command", "stochastic_actions", "action_seed", "gamepad_enabled"),
             context="task=motion",
         )
+        from bello_mujoco.evaluation.motion import render_checkpoint_with_stats
+
         stats = render_checkpoint_with_stats(
             checkpoint,
             command.output_path.expanduser(),
             steps=command.steps,
             stop_on_terminal=command.stop_on_done,
+            allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
-    _reject_non_default_fields(command, ("output_path",), context="task=locomotion")
+    _reject_explicit_fields(("output_path",), context="task=locomotion")
+    if command.gamepad_enabled:
+        _reject_explicit_fields(("command",), context="gamepad_enabled=true")
+    if not command.stochastic_actions:
+        _reject_explicit_fields(
+            ("action_seed",),
+            context="stochastic_actions=false",
+        )
+    from bello_mujoco.evaluation.locomotion import (
+        EvalPolicyConfig,
+        evaluate_locomotion_checkpoint,
+    )
+
     evaluate_locomotion_checkpoint(
         checkpoint,
         EvalPolicyConfig(
@@ -243,6 +251,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 EvalPolicyConfig().gamepad,
                 enabled=command.gamepad_enabled,
             ),
+            allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         ),
     )
 
@@ -258,14 +267,15 @@ def motion_entrypoint() -> None:
     config_name="motion",
 )
 def _motion_hydra(config: DictConfig) -> None:
-    command = structured_config(MotionCommandConfig, config)
+    command = command_config(MotionCommandConfig, config)
     source = _required_path(command.source, "source")
     if command.operation == "import":
-        _reject_non_default_fields(
-            command,
+        _reject_explicit_fields(
             ("jobs", "overwrite", "width", "height", "fps", "require_complete"),
             context="operation=import",
         )
+        from bello_mujoco.motion.import_gmr import import_gmr_motion
+
         output = _required_path(command.output, "output")
         print(
             import_gmr_motion(
@@ -276,8 +286,7 @@ def _motion_hydra(config: DictConfig) -> None:
         )
         return
     if command.operation == "import_dataset":
-        _reject_non_default_fields(
-            command,
+        _reject_explicit_fields(
             (
                 "reject_self_collisions",
                 "width",
@@ -287,6 +296,8 @@ def _motion_hydra(config: DictConfig) -> None:
             ),
             context="operation=import_dataset",
         )
+        from bello_mujoco.motion.import_gmr import import_dataset
+
         output = _required_path(command.output, "output")
         motions, failures = import_dataset(
             source,
@@ -309,8 +320,7 @@ def _motion_hydra(config: DictConfig) -> None:
             raise RuntimeError(f"{len(failures)} motion(s) failed")
         return
     if command.operation == "render":
-        _reject_non_default_fields(
-            command,
+        _reject_explicit_fields(
             (
                 "jobs",
                 "overwrite",
@@ -319,6 +329,8 @@ def _motion_hydra(config: DictConfig) -> None:
             ),
             context="operation=render",
         )
+        from bello_mujoco.evaluation.motion import render_reference
+
         output = _required_path(command.output, "output")
         print(
             render_reference(
@@ -330,8 +342,7 @@ def _motion_hydra(config: DictConfig) -> None:
             )
         )
         return
-    _reject_non_default_fields(
-        command,
+    _reject_explicit_fields(
         (
             "jobs",
             "overwrite",
@@ -342,6 +353,8 @@ def _motion_hydra(config: DictConfig) -> None:
         ),
         context="operation=inspect",
     )
+    from bello_mujoco.motion.feasibility import replay_motion_reference
+
     report = replay_motion_reference(source)
     payload = json.dumps(asdict(report), indent=2, sort_keys=True)
     if command.output is not None:
@@ -362,7 +375,7 @@ def vast_train_entrypoint() -> None:
     config_name="vast_train",
 )
 def _vast_train_hydra(config: DictConfig) -> None:
-    command = structured_config(VastTrainCommandConfig, config)
+    command = command_config(VastTrainCommandConfig, config)
     if not math.isfinite(command.duration_hours) or command.duration_hours <= 0:
         raise ValueError("duration_hours must be finite and positive")
     if command.experiment == "motion":
@@ -374,6 +387,17 @@ def _vast_train_hydra(config: DictConfig) -> None:
     else:
         if command.motion_path is not None:
             raise ValueError("motion_path is only valid for the motion experiment")
+        _reject_explicit_fields(
+            ("motion_path",),
+            context=f"experiment={command.experiment}",
+        )
+    from bello_mujoco.assets_pipeline import repo_root
+    from bello_mujoco.training.vast import (
+        VastTrainConfig,
+        launch_pipeline,
+        safe_exception_message,
+    )
+
     root = repo_root()
     internal = VastTrainConfig(
         experiment=command.experiment,
@@ -409,7 +433,14 @@ def emulator_entrypoint() -> None:
     config_name="emulator",
 )
 def _emulator_hydra(config: DictConfig) -> None:
-    command = structured_config(EmulatorCommandConfig, config)
+    command = command_config(EmulatorCommandConfig, config)
+    if not command.torso_hold:
+        _reject_explicit_fields(
+            ("release_after_seconds",),
+            context="torso_hold=false",
+        )
+    from bello_mujoco.robstride import emulator
+
     emulator.run_emulator(
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
@@ -430,14 +461,15 @@ def hardware_entrypoint() -> None:
     config_name="hardware",
 )
 def _hardware_hydra(config: DictConfig) -> None:
-    command = structured_config(HardwareCommandConfig, config)
+    command = command_config(HardwareCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     if command.task == "motion":
-        _reject_non_default_fields(
-            command,
-            ("command", "gamepad_enabled"),
-            context="task=motion",
+        _reject_explicit_fields(("command", "gamepad_enabled"), context="task=motion")
+        from bello_mujoco.hardware.motion import (
+            HardwareMotionConfig,
+            run_hardware_motion,
         )
+
         base = HardwareMotionConfig()
         run_hardware_motion(
             checkpoint,
@@ -448,10 +480,20 @@ def _hardware_hydra(config: DictConfig) -> None:
                 max_duration_seconds=command.duration_seconds,
                 ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
                 arm=command.arm,
+                allow_git_commit_mismatch=command.allow_git_commit_mismatch,
             ),
         )
         return
-    _reject_non_default_fields(command, ("motion_path",), context="task=locomotion")
+    if command.motion_path is not None:
+        raise ValueError("motion_path is only valid for task=motion")
+    _reject_explicit_fields(("motion_path",), context="task=locomotion")
+    if command.gamepad_enabled:
+        _reject_explicit_fields(("command",), context="gamepad_enabled=true")
+    from bello_mujoco.hardware.locomotion import (
+        HardwareLocomotionConfig,
+        run_hardware_locomotion,
+    )
+
     base = HardwareLocomotionConfig()
     run_hardware_locomotion(
         checkpoint,
@@ -463,6 +505,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
             gamepad=replace(base.gamepad, enabled=command.gamepad_enabled),
             arm=command.arm,
+            allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         ),
     )
 
@@ -477,7 +520,9 @@ def _ppo_overrides(config, command: TrainCommandConfig):
 
 
 def _checkpoint_overrides(config, command: TrainCommandConfig):
-    values = {}
+    values = {
+        "allow_git_commit_mismatch": command.allow_git_commit_mismatch,
+    }
     if command.resume_path is not None:
         values["resume_path"] = command.resume_path.expanduser()
     if command.checkpoint_directory is not None:
@@ -487,7 +532,10 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
     return replace(config, **values)
 
 
-def _wandb_overrides(config: WandbConfig, command: TrainCommandConfig) -> WandbConfig:
+def _wandb_overrides(
+    config: WandbConfig,
+    command: TrainCommandConfig,
+) -> WandbConfig:
     values = {}
     if command.wandb_enabled is not None:
         values["enabled"] = command.wandb_enabled
@@ -502,18 +550,29 @@ def _required_path(value: Path | None, name: str) -> Path:
     return value.expanduser()
 
 
-def _reject_non_default_fields(
-    config,
+def _reject_explicit_fields(
     names: tuple[str, ...],
     *,
     context: str,
 ) -> None:
-    defaults = type(config)()
-    invalid = [
-        name for name in names if getattr(config, name) != getattr(defaults, name)
-    ]
+    explicit = _explicit_override_fields()
+    invalid = [name for name in names if name in explicit]
     if invalid:
         raise ValueError(f"{context} does not accept: {', '.join(invalid)}")
+
+
+def _explicit_override_fields() -> frozenset[str]:
+    from hydra.core.hydra_config import HydraConfig
+
+    overrides = (
+        HydraConfig.get().overrides.task if HydraConfig.initialized() else sys.argv[1:]
+    )
+    names: set[str] = set()
+    for override in overrides:
+        key = override.partition("=")[0].lstrip("+~")
+        if key and not key.startswith("-"):
+            names.add(key)
+    return frozenset(names)
 
 
 def _coalesce(value, default):

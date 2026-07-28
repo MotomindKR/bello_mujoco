@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import fields, replace
 from types import SimpleNamespace
 
 import equinox as eqx
@@ -68,6 +68,16 @@ def small_config(**updates) -> PPOConfig:
     )
     values.update(updates)
     return PPOConfig(**values)
+
+
+def test_every_ppo_field_declares_local_validation() -> None:
+    invalid = [
+        config_field.name
+        for config_field in fields(PPOConfig)
+        if not callable(config_field.metadata.get("validator"))
+    ]
+
+    assert invalid == []
 
 
 def test_command_and_gait_metrics_split_standing_from_moving() -> None:
@@ -664,9 +674,13 @@ def test_action_diagnostics_use_each_worlds_joint_angle_offset() -> None:
 @pytest.mark.parametrize(
     "config, message",
     [
+        (small_config(num_envs=0), "num_envs"),
         (small_config(num_minibatches=3), "divisible"),
         (small_config(schedule="unknown"), "schedule"),
         (small_config(adaptive_kl_statistic="median"), "adaptive_kl_statistic"),
+        (small_config(target_kl=0.0), "target_kl"),
+        (small_config(gamma=1.1), "gamma"),
+        (small_config(ent_coef=-1.0), "ent_coef"),
         (
             small_config(learning_rate=1.0e-6),
             "adaptive learning_rate",

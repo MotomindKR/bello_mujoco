@@ -8,9 +8,9 @@ single-file implementation style while using Equinox for the actor-critic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 import math
-from typing import Any, Literal, NamedTuple, Protocol
+from typing import Any, Callable, Literal, NamedTuple, Protocol, get_args
 
 import chex
 import equinox as eqx
@@ -36,6 +36,62 @@ from bello_mujoco.policy import (
 LearningRateSchedule = Literal["constant", "linear", "adaptive"]
 AdaptiveKLStatistic = Literal["mean", "max"]
 LOG_RATIO_CLIP = 20.0
+_VALIDATOR_METADATA_KEY = "validator"
+
+
+FieldValidator = Callable[[str, Any], None]
+
+
+def _validated(default: Any, validator: FieldValidator):
+    return field(
+        default=default,
+        metadata={_VALIDATOR_METADATA_KEY: validator},
+    )
+
+
+def _no_scalar_constraint(_name: str, _value: Any) -> None:
+    pass
+
+
+def _positive_integer(name: str, value: int) -> None:
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+
+
+def _positive_finite(name: str, value: float) -> None:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be positive and finite, got {value}")
+
+
+def _optional_positive_finite(name: str, value: float | None) -> None:
+    if value is not None:
+        _positive_finite(name, value)
+
+
+def _nonnegative_finite(name: str, value: float) -> None:
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+
+
+def _unit_interval(name: str, value: float) -> None:
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be in [0, 1], got {value}")
+
+
+def _greater_than_one_finite(name: str, value: float) -> None:
+    if not math.isfinite(value) or value <= 1:
+        raise ValueError(f"{name} must be finite and > 1, got {value}")
+
+
+def _one_of(*choices: str) -> FieldValidator:
+    allowed = frozenset(choices)
+
+    def validate(name: str, value: str) -> None:
+        if value not in allowed:
+            options = ", ".join(repr(choice) for choice in choices)
+            raise ValueError(f"{name} must be one of {options}, got {value!r}")
+
+    return validate
 
 
 class PPOEnvironment(Protocol):
@@ -84,37 +140,46 @@ class PPOEnvironment(Protocol):
 
 @dataclass(frozen=True)
 class PPOConfig:
-    seed: int = 0
-    total_timesteps: int = 1_000_000
-    num_envs: int = 64
-    num_steps: int = 24
-    update_epochs: int = 5
-    num_minibatches: int = 4
-    learning_rate: float = 1.0e-3
-    schedule: LearningRateSchedule = "adaptive"
-    desired_kl: float = 0.01
-    target_kl: float | None = None
-    min_learning_rate: float = 1.0e-5
-    max_learning_rate: float = 1.0e-2
-    adaptive_lr_factor: float = 1.5
-    adaptive_kl_statistic: AdaptiveKLStatistic = "max"
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_eps: float = 0.2
-    ent_coef: float = 0.01
-    vf_coef: float = 1.0
-    max_grad_norm: float = 1.0
-    normalize_value: bool = False
-    value_norm_eps: float = 1.0e-8
-    normalize_observations: bool = False
-    observation_norm_eps: float = 1.0e-5
-    observation_norm_clip: float = 10.0
-    rollout_observation_max_abs: float = 1.0e4
-    rollout_reward_max_abs: float = 1.0e3
-    rollout_value_max_abs: float = 1.0e4
-    target_max_abs: float = 1.0e4
-    gradient_norm_max: float = 1.0e4
-    policy: ActorCriticConfig = ActorCriticConfig()
+    seed: int = _validated(0, _no_scalar_constraint)
+    total_timesteps: int = _validated(1_000_000, _positive_integer)
+    num_envs: int = _validated(64, _positive_integer)
+    num_steps: int = _validated(24, _positive_integer)
+    update_epochs: int = _validated(5, _positive_integer)
+    num_minibatches: int = _validated(4, _positive_integer)
+    learning_rate: float = _validated(1.0e-3, _positive_finite)
+    schedule: LearningRateSchedule = _validated(
+        "adaptive",
+        _one_of(*get_args(LearningRateSchedule)),
+    )
+    desired_kl: float = _validated(0.01, _positive_finite)
+    target_kl: float | None = _validated(None, _optional_positive_finite)
+    min_learning_rate: float = _validated(1.0e-5, _positive_finite)
+    max_learning_rate: float = _validated(1.0e-2, _positive_finite)
+    adaptive_lr_factor: float = _validated(1.5, _greater_than_one_finite)
+    adaptive_kl_statistic: AdaptiveKLStatistic = _validated(
+        "max",
+        _one_of(*get_args(AdaptiveKLStatistic)),
+    )
+    gamma: float = _validated(0.99, _unit_interval)
+    gae_lambda: float = _validated(0.95, _unit_interval)
+    clip_eps: float = _validated(0.2, _positive_finite)
+    ent_coef: float = _validated(0.01, _nonnegative_finite)
+    vf_coef: float = _validated(1.0, _nonnegative_finite)
+    max_grad_norm: float = _validated(1.0, _positive_finite)
+    normalize_value: bool = _validated(False, _no_scalar_constraint)
+    value_norm_eps: float = _validated(1.0e-8, _positive_finite)
+    normalize_observations: bool = _validated(False, _no_scalar_constraint)
+    observation_norm_eps: float = _validated(1.0e-5, _positive_finite)
+    observation_norm_clip: float = _validated(10.0, _positive_finite)
+    rollout_observation_max_abs: float = _validated(1.0e4, _positive_finite)
+    rollout_reward_max_abs: float = _validated(1.0e3, _positive_finite)
+    rollout_value_max_abs: float = _validated(1.0e4, _positive_finite)
+    target_max_abs: float = _validated(1.0e4, _positive_finite)
+    gradient_norm_max: float = _validated(1.0e4, _positive_finite)
+    policy: ActorCriticConfig = _validated(
+        ActorCriticConfig(),
+        _no_scalar_constraint,
+    )
 
     @property
     def num_updates(self) -> int:
@@ -1282,17 +1347,22 @@ def critic_observation_size(env: PPOEnvironment) -> int:
     return env.critic_observation_size
 
 
+def _validate_declared_fields(config: PPOConfig) -> None:
+    for config_field in fields(config):
+        if _VALIDATOR_METADATA_KEY not in config_field.metadata:
+            raise RuntimeError(
+                f"PPOConfig.{config_field.name} has no declared validation"
+            )
+        validator = config_field.metadata[_VALIDATOR_METADATA_KEY]
+        if not callable(validator):
+            raise RuntimeError(
+                f"PPOConfig.{config_field.name} has an invalid validator"
+            )
+        validator(config_field.name, getattr(config, config_field.name))
+
+
 def validate_ppo_config(config: PPOConfig) -> None:
-    positive_ints = {
-        "total_timesteps": config.total_timesteps,
-        "num_envs": config.num_envs,
-        "num_steps": config.num_steps,
-        "update_epochs": config.update_epochs,
-        "num_minibatches": config.num_minibatches,
-    }
-    for name, value in positive_ints.items():
-        if value <= 0:
-            raise ValueError(f"{name} must be positive, got {value}")
+    _validate_declared_fields(config)
     if config.num_updates <= 0:
         raise ValueError(
             "total_timesteps must cover at least one rollout batch, got "
@@ -1301,39 +1371,6 @@ def validate_ppo_config(config: PPOConfig) -> None:
         )
     if config.batch_size % config.num_minibatches != 0:
         raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
-    if config.learning_rate <= 0:
-        raise ValueError(f"learning_rate must be positive, got {config.learning_rate}")
-    if not math.isfinite(config.learning_rate):
-        raise ValueError(f"learning_rate must be finite, got {config.learning_rate}")
-    if effective_learning_rate_schedule(config) not in {
-        "constant",
-        "linear",
-        "adaptive",
-    }:
-        raise ValueError(
-            "schedule must be one of 'constant', 'linear', or 'adaptive', got "
-            f"{config.schedule!r}"
-        )
-    if not math.isfinite(config.desired_kl) or config.desired_kl <= 0:
-        raise ValueError(
-            f"desired_kl must be positive and finite, got {config.desired_kl}"
-        )
-    if config.target_kl is not None and (
-        not math.isfinite(config.target_kl) or config.target_kl <= 0
-    ):
-        raise ValueError(
-            f"target_kl must be null or positive and finite, got {config.target_kl}"
-        )
-    if not math.isfinite(config.min_learning_rate) or config.min_learning_rate <= 0:
-        raise ValueError(
-            "min_learning_rate must be positive and finite, got "
-            f"{config.min_learning_rate}"
-        )
-    if not math.isfinite(config.max_learning_rate) or config.max_learning_rate <= 0:
-        raise ValueError(
-            "max_learning_rate must be positive and finite, got "
-            f"{config.max_learning_rate}"
-        )
     if config.min_learning_rate > config.max_learning_rate:
         raise ValueError(
             "min_learning_rate must be <= max_learning_rate, got "
@@ -1348,50 +1385,6 @@ def validate_ppo_config(config: PPOConfig) -> None:
             f"{config.learning_rate} outside "
             f"[{config.min_learning_rate}, {config.max_learning_rate}]"
         )
-    if not math.isfinite(config.adaptive_lr_factor) or config.adaptive_lr_factor <= 1:
-        raise ValueError(
-            "adaptive_lr_factor must be finite and > 1, got "
-            f"{config.adaptive_lr_factor}"
-        )
-    if config.adaptive_kl_statistic not in {"mean", "max"}:
-        raise ValueError(
-            "adaptive_kl_statistic must be 'mean' or 'max', got "
-            f"{config.adaptive_kl_statistic!r}"
-        )
-    if not 0.0 <= config.gamma <= 1.0:
-        raise ValueError(f"gamma must be in [0, 1], got {config.gamma}")
-    if not 0.0 <= config.gae_lambda <= 1.0:
-        raise ValueError(f"gae_lambda must be in [0, 1], got {config.gae_lambda}")
-    if not math.isfinite(config.clip_eps) or config.clip_eps <= 0:
-        raise ValueError(f"clip_eps must be positive, got {config.clip_eps}")
-    if not math.isfinite(config.ent_coef) or config.ent_coef < 0:
-        raise ValueError(
-            f"ent_coef must be nonnegative and finite, got {config.ent_coef}"
-        )
-    if not math.isfinite(config.vf_coef) or config.vf_coef < 0:
-        raise ValueError(
-            f"vf_coef must be nonnegative and finite, got {config.vf_coef}"
-        )
-    if not math.isfinite(config.max_grad_norm) or config.max_grad_norm <= 0:
-        raise ValueError(f"max_grad_norm must be positive, got {config.max_grad_norm}")
-    normalization_limits = {
-        "value_norm_eps": config.value_norm_eps,
-        "observation_norm_eps": config.observation_norm_eps,
-        "observation_norm_clip": config.observation_norm_clip,
-    }
-    for name, value in normalization_limits.items():
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(f"{name} must be positive and finite, got {value}")
-    magnitude_limits = {
-        "rollout_observation_max_abs": config.rollout_observation_max_abs,
-        "rollout_reward_max_abs": config.rollout_reward_max_abs,
-        "rollout_value_max_abs": config.rollout_value_max_abs,
-        "target_max_abs": config.target_max_abs,
-        "gradient_norm_max": config.gradient_norm_max,
-    }
-    for name, value in magnitude_limits.items():
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(f"{name} must be positive and finite, got {value}")
     if any(hidden_dim <= 0 for hidden_dim in config.policy.hidden_dims):
         raise ValueError(
             "policy.hidden_dims entries must be positive, got "

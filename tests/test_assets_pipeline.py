@@ -1,5 +1,5 @@
+import fcntl
 import xml.etree.ElementTree as ET
-import tempfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -258,19 +258,39 @@ def test_urdf_mass_scaling_preserves_mass_distribution_and_inertia_ratio(
     assert float(first_inertia.attrib["ixy"]) == pytest.approx(1.2)
 
 
-def test_default_output_root_is_deterministic_tmp_cache() -> None:
+def test_default_output_root_is_deterministic_bounded_user_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     config = AssetPrepConfig(asset="full_body")
 
     assert resolved_output_root(config) == resolved_output_root(config)
-    assert resolved_output_root(config).parent == (
-        Path(tempfile.gettempdir()) / "bello-mujoco-assets"
-    )
+    assert resolved_output_root(config).parent == tmp_path / "bello-mujoco" / "assets"
 
 
 def test_explicit_output_root_overrides_tmp_cache() -> None:
     root = Path("/tmp/custom-bello-assets")
 
     assert resolved_output_root(AssetPrepConfig(output_root=root)) == root
+
+
+def test_default_asset_cache_prunes_inactive_variants_and_keeps_leases(
+    tmp_path: Path,
+) -> None:
+    limit = prepare_module.DEFAULT_ASSET_CACHE_LIMIT
+    variants = [tmp_path / f"{index:016x}" for index in range(limit + 2)]
+    for variant in variants:
+        variant.mkdir()
+
+    lease_path = tmp_path / f"{variants[0].name}.lease"
+    with lease_path.open("w") as lease:
+        fcntl.flock(lease.fileno(), fcntl.LOCK_SH)
+        prepare_module.prune_default_asset_cache(tmp_path, keep=variants[-1])
+
+    remaining = {path for path in tmp_path.iterdir() if path.is_dir()}
+    assert len(remaining) == limit
+    assert variants[0] in remaining
+    assert variants[-1] in remaining
 
 
 def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
@@ -603,7 +623,7 @@ def test_asset_cache_key_tracks_generator_revision(monkeypatch) -> None:
 
     monkeypatch.setattr(
         prepare_module,
-        "repository_cache_revision",
+        "asset_generator_fingerprint",
         lambda: "f" * 40,
     )
     revision_key = asset_config_hash(config)

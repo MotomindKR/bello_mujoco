@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import atexit
 import fcntl
 import hashlib
 import json
 import math
+import os
+import platform
+import re
 import shutil
-import tempfile
+import threading
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
+from importlib.metadata import version as distribution_version
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TextIO
 
 from bello_mujoco.assets_pipeline import (
     generated_model_path,
@@ -33,9 +39,28 @@ from bello_mujoco.assets_pipeline.mjcf import (
 )
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.contracts import SIM_TIMESTEP
-from bello_mujoco.repository import repository_cache_revision
 
 AssetName = Literal["full_body"]
+DEFAULT_ASSET_CACHE_LIMIT = 8
+_CACHE_KEY_PATTERN = re.compile(r"[0-9a-f]{16}\Z")
+_GENERATOR_SOURCE_PATHS = (
+    "actuators.py",
+    "assets_pipeline/__init__.py",
+    "assets_pipeline/mesh.py",
+    "assets_pipeline/mjcf.py",
+    "assets_pipeline/prepare.py",
+    "contracts.py",
+    "spatial.py",
+)
+_GENERATOR_DISTRIBUTIONS = (
+    "fast-simplification",
+    "mujoco",
+    "numpy",
+    "trimesh",
+)
+_DEFAULT_CACHE_GUARD = threading.Lock()
+_DEFAULT_CACHE_LEASES: dict[Path, TextIO] = {}
+_DEFAULT_CACHE_ASSETS: dict[Path, PreparedAsset] = {}
 SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
     {
         "right_wrist_yaw_joint",
@@ -46,6 +71,17 @@ SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
         "left_finger_left_slide_joint",
     }
 )
+
+
+def _close_default_asset_cache_leases() -> None:
+    with _DEFAULT_CACHE_GUARD:
+        for lease in _DEFAULT_CACHE_LEASES.values():
+            lease.close()
+        _DEFAULT_CACHE_LEASES.clear()
+        _DEFAULT_CACHE_ASSETS.clear()
+
+
+atexit.register(_close_default_asset_cache_leases)
 
 
 @dataclass(frozen=True)
@@ -135,8 +171,44 @@ class PreparedAsset:
 def prepare_asset(config: AssetPrepConfig) -> PreparedAsset:
     output_root = resolved_output_root(config)
     lock_path = output_root.parent / f"{output_root.name}.lock"
+    if config.output_root is None:
+        return prepare_default_cached_asset(config, output_root, lock_path)
     with asset_generation_lock(lock_path):
         return prepare_asset_unlocked(config, output_root)
+
+
+def prepare_default_cached_asset(
+    config: AssetPrepConfig,
+    output_root: Path,
+    lock_path: Path,
+) -> PreparedAsset:
+    with _DEFAULT_CACHE_GUARD:
+        cached = _DEFAULT_CACHE_ASSETS.get(output_root)
+        if cached is not None and all(
+            path.exists()
+            for path in (
+                cached.urdf_path,
+                cached.mjcf_path,
+                cached.viewer_mjcf_path,
+            )
+        ):
+            os.utime(output_root)
+            return cached
+        if cached is not None:
+            _DEFAULT_CACHE_ASSETS.pop(output_root)
+            _DEFAULT_CACHE_LEASES.pop(output_root).close()
+
+        with asset_generation_lock(lock_path):
+            prepared = prepare_asset_unlocked(config, output_root)
+            os.utime(output_root)
+            lease_path = output_root.parent / f"{output_root.name}.lease"
+            lease = lease_path.open("w")
+            fcntl.flock(lease.fileno(), fcntl.LOCK_SH)
+        _DEFAULT_CACHE_ASSETS[output_root] = prepared
+        _DEFAULT_CACHE_LEASES[output_root] = lease
+
+    prune_default_asset_cache(output_root.parent, keep=output_root)
+    return prepared
 
 
 def prepare_asset_unlocked(
@@ -305,9 +377,18 @@ def validate_actuator_joint_contract(
 def resolved_output_root(config: AssetPrepConfig) -> Path:
     if config.output_root is not None:
         return config.output_root
-    return (
-        Path(tempfile.gettempdir()) / "bello-mujoco-assets" / asset_config_hash(config)
-    )
+    return default_asset_cache_root() / asset_config_hash(config)
+
+
+def default_asset_cache_root() -> Path:
+    configured_root = os.environ.get("XDG_CACHE_HOME")
+    if configured_root:
+        root = Path(configured_root).expanduser()
+        if not root.is_absolute():
+            raise ValueError("XDG_CACHE_HOME must be an absolute path")
+    else:
+        root = Path.home() / ".cache"
+    return root / "bello-mujoco" / "assets"
 
 
 def asset_config_hash(config: AssetPrepConfig) -> str:
@@ -325,11 +406,33 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "joint_availability": asdict(config.joint_availability),
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
-        "generator_revision": repository_cache_revision(),
+        "generator": asset_generator_fingerprint(),
         "source": source_asset_fingerprint(),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+@lru_cache(maxsize=1)
+def asset_generator_fingerprint() -> str:
+    package_root = Path(__file__).resolve().parents[1]
+    hasher = hashlib.sha256()
+    for relative in _GENERATOR_SOURCE_PATHS:
+        path = package_root / relative
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"asset generator source is missing from the installation: {path}"
+            )
+        hasher.update(relative.encode())
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    hasher.update(f"python={platform.python_version()}".encode())
+    hasher.update(b"\0")
+    for distribution in _GENERATOR_DISTRIBUTIONS:
+        hasher.update(f"{distribution}={distribution_version(distribution)}".encode())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 def source_asset_fingerprint() -> str:
@@ -353,6 +456,47 @@ def asset_generation_lock(lock_path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def prune_default_asset_cache(cache_root: Path, *, keep: Path) -> None:
+    with asset_generation_lock(cache_root / ".prune.lock"):
+        candidates = sorted(
+            (
+                path
+                for path in cache_root.iterdir()
+                if path.is_dir() and _CACHE_KEY_PATTERN.fullmatch(path.name)
+            ),
+            key=lambda path: path.stat().st_mtime,
+        )
+        remaining = len(candidates)
+        for candidate in candidates:
+            if remaining <= DEFAULT_ASSET_CACHE_LIMIT:
+                break
+            if candidate == keep:
+                continue
+            lock_path = cache_root / f"{candidate.name}.lock"
+            with lock_path.open("w") as lock_file:
+                try:
+                    fcntl.flock(
+                        lock_file.fileno(),
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                except BlockingIOError:
+                    continue
+                lease_path = cache_root / f"{candidate.name}.lease"
+                with lease_path.open("w") as lease_file:
+                    try:
+                        fcntl.flock(
+                            lease_file.fileno(),
+                            fcntl.LOCK_EX | fcntl.LOCK_NB,
+                        )
+                    except BlockingIOError:
+                        continue
+                    try:
+                        shutil.rmtree(candidate)
+                    finally:
+                        fcntl.flock(lease_file.fileno(), fcntl.LOCK_UN)
+            remaining -= 1
 
 
 def read_prepared_asset_manifest(

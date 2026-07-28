@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import os
 import re
 import subprocess
+import warnings
 from pathlib import Path
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
@@ -35,14 +34,27 @@ def capture_repository_commit() -> str:
     return commit
 
 
-def require_repository_commit(expected: str) -> None:
-    """Require an unmodified checkout at the checkpoint's exact commit."""
+def require_repository_commit(
+    expected: str,
+    *,
+    allow_mismatch: bool = False,
+) -> None:
+    """Validate a clean checkout and, by default, its exact commit."""
 
     validate_repository_commit(expected)
     root = repository_root()
     _require_clean_worktree(root)
     current_commit = _head_commit(root)
     if current_commit != expected:
+        if allow_mismatch:
+            warnings.warn(
+                "Git commit mismatch override enabled: "
+                f"checkpoint={expected}, current={current_commit}. Compatibility "
+                "is not guaranteed.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
         raise ValueError(
             "checkpoint source commit does not match this checkout: "
             f"checkpoint={expected}, current={current_commit}. Create a separate "
@@ -125,39 +137,6 @@ def resolve_repository_path(path: Path) -> Path:
     except ValueError as error:
         raise ValueError(f"checkpoint path escapes the repository: {path}") from error
     return resolved
-
-
-def repository_cache_revision() -> str:
-    """Keep dirty generators out of their clean commit's asset cache."""
-
-    root = repository_root()
-    commit = _head_commit(root)
-    tracked_diff = _git_bytes(root, "diff", "--binary", "HEAD", "--")
-    untracked = tuple(
-        path
-        for path in _git_bytes(
-            root,
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ).split(b"\0")
-        if path
-    )
-    if not tracked_diff and not untracked:
-        return commit
-
-    hasher = hashlib.sha256()
-    hasher.update(tracked_diff)
-    for relative_bytes in sorted(untracked):
-        relative = Path(os.fsdecode(relative_bytes))
-        path = root / relative
-        hasher.update(relative_bytes)
-        hasher.update(b"\0")
-        if path.is_file():
-            hasher.update(path.read_bytes())
-        hasher.update(b"\0")
-    return f"{commit}-dirty-{hasher.hexdigest()[:16]}"
 
 
 def repository_root() -> Path:

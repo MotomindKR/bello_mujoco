@@ -515,7 +515,7 @@ class BelloMotionTrackingEnv:
             jnp.concatenate([source.qpos[:2], jnp.zeros(1)]),
         )[:2]
         alignment_xy = desired_xy - rotated_source_xy
-        reference = self._aligned_reference(reference_time, alignment_xy, alignment_yaw)
+        reference = self.aligned_reference(reference_time, alignment_xy, alignment_yaw)
         qpos, qvel = reference.qpos, reference.qvel
         if joint_key is not None:
             qpos_key, qvel_key = jax.random.split(joint_key)
@@ -604,7 +604,7 @@ class BelloMotionTrackingEnv:
     ]:
         self._require_mjx()
         action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
-        data = state.data.replace(ctrl=self._action_to_ctrl(state, action))
+        data = state.data.replace(ctrl=self.action_target(state, action))
         data = jax.lax.fori_loop(
             0,
             self.decimation,
@@ -621,7 +621,7 @@ class BelloMotionTrackingEnv:
         reward, reward_info = self._reward(
             state, stepped, jnp.asarray(0, dtype=jnp.int32)
         )
-        done_flags = self._done_flags(stepped)
+        done_flags = self.termination_flags(stepped)
         reward, reward_info = self._sanitize_nonfinite_reward(
             reward, reward_info, done_flags
         )
@@ -654,7 +654,7 @@ class BelloMotionTrackingEnv:
         if rng is not None:
             reset_rng, push_rng, obs_rng = jax.random.split(rng, 3)
         action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
-        ctrl = jax.vmap(self._action_to_ctrl)(state, action)
+        ctrl = jax.vmap(self.action_target)(state, action)
         data = state.data.replace(
             ctrl=ctrl, _impl=state.data._impl.replace(nworld=batch_size)
         )
@@ -677,7 +677,7 @@ class BelloMotionTrackingEnv:
         )
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         reward, reward_info = jax.vmap(self._reward)(state, stepped, world_ids)
-        done_flags = jax.vmap(self._done_flags)(stepped)
+        done_flags = jax.vmap(self.termination_flags)(stepped)
         reward, reward_info = self._sanitize_nonfinite_reward(
             reward, reward_info, done_flags
         )
@@ -720,7 +720,7 @@ class BelloMotionTrackingEnv:
     def observation(
         self, state: MotionTrackingState, rng: jax.Array | None = None
     ) -> jax.Array:
-        reference = self._aligned_reference(
+        reference = self.aligned_reference(
             jnp.minimum(
                 state.reference_time + self.control_timestep, self.motion.duration
             ),
@@ -825,7 +825,7 @@ class BelloMotionTrackingEnv:
                 ]
             )
 
-        reference = self._aligned_reference(
+        reference = self.aligned_reference(
             jnp.minimum(
                 state.reference_time + self.control_timestep, self.motion.duration
             ),
@@ -872,7 +872,7 @@ class BelloMotionTrackingEnv:
         state: MotionTrackingState,
         world_id: jax.Array | int = 0,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
-        reference = self._aligned_reference(
+        reference = self.aligned_reference(
             jnp.minimum(state.reference_time, self.motion.duration),
             state.alignment_xy,
             state.alignment_yaw,
@@ -981,8 +981,10 @@ class BelloMotionTrackingEnv:
         }
         return jnp.sum(jnp.stack(tuple(components.values()))), components
 
-    def _done_flags(self, state: MotionTrackingState) -> dict[str, jax.Array]:
-        reference = self._aligned_reference(
+    def termination_flags(self, state: MotionTrackingState) -> dict[str, jax.Array]:
+        """Return named termination conditions for one policy frame."""
+
+        reference = self.aligned_reference(
             jnp.minimum(state.reference_time, self.motion.duration),
             state.alignment_xy,
             state.alignment_yaw,
@@ -1017,7 +1019,9 @@ class BelloMotionTrackingEnv:
             end_effector = jnp.any(
                 ee_error > self.config.done.end_effector_position_error
             )
-            return self._finish_done_flags(state, height, orientation, end_effector)
+            return self._finish_termination_flags(
+                state, height, orientation, end_effector
+            )
         height = (
             jnp.abs(state.data.qpos[2] - reference.qpos[2])
             > self.config.done.root_height_error
@@ -1032,9 +1036,9 @@ class BelloMotionTrackingEnv:
             axis=-1,
         )
         end_effector = jnp.any(ee_error > self.config.done.end_effector_position_error)
-        return self._finish_done_flags(state, height, orientation, end_effector)
+        return self._finish_termination_flags(state, height, orientation, end_effector)
 
-    def _finish_done_flags(
+    def _finish_termination_flags(
         self,
         state: MotionTrackingState,
         height: jax.Array,
@@ -1127,9 +1131,11 @@ class BelloMotionTrackingEnv:
         }
         return sum(sanitized.values(), jnp.zeros_like(reward)), sanitized
 
-    def _aligned_reference(
+    def aligned_reference(
         self, time: jax.Array, alignment_xy: jax.Array, alignment_yaw: jax.Array
     ) -> MotionSample:
+        """Sample the motion after applying the episode's planar alignment."""
+
         source = sample_motion(self.motion, time)
         rotation = yaw_quat_from_angle(alignment_yaw)
         qpos = source.qpos
@@ -1242,9 +1248,9 @@ class BelloMotionTrackingEnv:
             return self._logical_target_to_ctrl(logical_target)
         return self._reference_ctrl(reference)
 
-    def _action_to_ctrl(
-        self, state: MotionTrackingState, action: jax.Array
-    ) -> jax.Array:
+    def action_target(self, state: MotionTrackingState, action: jax.Array) -> jax.Array:
+        """Convert one normalized policy action into native actuator targets."""
+
         policy = jnp.asarray(self.model.policy_ctrl_indices)
         if self.uses_beyondmimic_formulation:
             return self._logical_target_to_ctrl(

@@ -7,19 +7,19 @@ from pathlib import Path
 import warnings
 
 import jax
-import optax
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
+    MotionCheckpointMetadata,
     checkpoint_path,
     load_checkpoint_metadata,
     motion_clip_contract,
     motion_metadata_with_runner_state,
     restore_runner_checkpoint,
     save_training_checkpoint,
-    validate_checkpoint_name,
+    validate_checkpoint_options,
     validate_motion_clip_contract,
 )
 from bello_mujoco.envs.motion_tracking import (
@@ -33,7 +33,8 @@ from bello_mujoco.evaluation.motion import (
 from bello_mujoco.motion.clip import motion_tracking_asset_config
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.sim import WarpConfig
-from bello_mujoco.training.locomotion import (
+from bello_mujoco.training.runtime import (
+    RunnerInitialization,
     raise_on_invalid_training_metrics,
     should_render_training_video,
     training_update_range,
@@ -62,12 +63,6 @@ from bello_mujoco.repository import (
     require_tracked_repository_path,
     resolve_repository_path,
 )
-
-RunnerInitialization = tuple[
-    RunnerState,
-    object,
-    optax.GradientTransformation,
-]
 
 
 @dataclass(frozen=True)
@@ -268,7 +263,7 @@ def motion_train_update_loop(
     *,
     checkpoint_root: Path | None = None,
     checkpoint_context: tuple[
-        CheckpointMetadata,
+        MotionCheckpointMetadata,
         str,
         CheckpointConfig,
     ]
@@ -407,7 +402,7 @@ def upload_motion_checkpoint(
 def save_motion_checkpoint(
     path: Path,
     runner_state: RunnerState,
-    metadata: CheckpointMetadata,
+    metadata: MotionCheckpointMetadata,
     git_commit: str,
 ) -> None:
     save_training_checkpoint(
@@ -423,7 +418,7 @@ def motion_checkpoint_metadata(
     env: BelloMotionTrackingEnv,
     policy_obs_size: int,
     critic_policy_obs_size: int,
-) -> CheckpointMetadata:
+) -> MotionCheckpointMetadata:
     if run_config.asset_config.output_root is not None:
         raise ValueError(
             "training requires asset_config.output_root=null so the exact source "
@@ -432,13 +427,9 @@ def motion_checkpoint_metadata(
     motion_path = run_config.env_config.motion_path
     if run_config.checkpoint_config.enabled:
         motion_path = require_tracked_repository_path(motion_path)
-    return CheckpointMetadata(
+    return MotionCheckpointMetadata(
         ppo=run_config.config,
         asset=run_config.asset_config,
-        reward=None,
-        command=None,
-        done=None,
-        env=None,
         warp=run_config.warp,
         obs_size=policy_obs_size,
         critic_obs_size=critic_policy_obs_size,
@@ -446,7 +437,6 @@ def motion_checkpoint_metadata(
         actor_observation_layout=env.observation_layout,
         critic_observation_layout=env.critic_observation_layout,
         action_layout=env.action_layout,
-        task="motion_tracking",
         motion_env=replace(
             run_config.env_config,
             motion_path=motion_path,
@@ -465,13 +455,18 @@ def load_motion_resume(
     path: Path | None,
     run_config: MotionTrainingRunConfig,
     env: BelloMotionTrackingEnv,
-    expected_metadata: CheckpointMetadata,
+    expected_metadata: MotionCheckpointMetadata,
     policy_obs_size: int,
     critic_policy_obs_size: int,
 ) -> RunnerInitialization | None:
     if path is None:
         return None
-    metadata = load_checkpoint_metadata(path)
+    metadata = load_checkpoint_metadata(
+        path,
+        allow_git_commit_mismatch=(
+            run_config.checkpoint_config.allow_git_commit_mismatch
+        ),
+    )
     validate_motion_resume(
         metadata,
         run_config,
@@ -481,7 +476,14 @@ def load_motion_resume(
         critic_policy_obs_size,
     )
     runner_state, static_policy, optimizer, restored_metadata = (
-        restore_runner_checkpoint(path, env, expected_metadata)
+        restore_runner_checkpoint(
+            path,
+            env,
+            expected_metadata,
+            allow_git_commit_mismatch=(
+                run_config.checkpoint_config.allow_git_commit_mismatch
+            ),
+        )
     )
     if restored_metadata != expected_metadata:
         raise RuntimeError("resume did not resolve to the requested run")
@@ -492,15 +494,11 @@ def validate_motion_resume(
     metadata: CheckpointMetadata,
     run_config: MotionTrainingRunConfig,
     env: BelloMotionTrackingEnv,
-    expected_metadata: CheckpointMetadata,
+    expected_metadata: MotionCheckpointMetadata,
     policy_obs_size: int,
     critic_policy_obs_size: int,
 ) -> None:
-    if (
-        metadata.task != "motion_tracking"
-        or metadata.motion_env is None
-        or metadata.motion is None
-    ):
+    if not isinstance(metadata, MotionCheckpointMetadata):
         raise ValueError("resume checkpoint is not a motion-tracking checkpoint")
     if metadata.asset != expected_metadata.asset:
         raise ValueError("resume checkpoint asset config does not match this run")
@@ -637,7 +635,7 @@ def validate_motion_video_config(config: MotionEvalVideoConfig) -> None:
 
 
 def validate_motion_checkpoint_config(config: CheckpointConfig) -> None:
-    validate_checkpoint_name(config.name)
+    validate_checkpoint_options(config)
     if config.every_updates is not None and config.every_updates <= 0:
         raise ValueError("checkpoint_config.every_updates must be positive or null")
     if config.resume_path is not None and not Path(config.resume_path).exists():

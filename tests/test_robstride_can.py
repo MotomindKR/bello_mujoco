@@ -1,6 +1,9 @@
+from dataclasses import replace
 from pathlib import Path
 import os
 import struct
+import sys
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -37,7 +40,9 @@ from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.robstride.emulator import (
     EmulatorConfig,
+    EmulatorControlWindow,
     TerminalEnterInput,
+    _open_emulator_resources,
     add_torso_hold,
     cycle_torso_release_reset,
     default_motor_kind_config,
@@ -46,6 +51,19 @@ from bello_mujoco.robstride.emulator import (
     validate_motor_coverage,
     validate_config,
 )
+
+
+class TrackedContext:
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name = name
+        self.events = events
+
+    def __enter__(self):
+        self.events.append(f"enter:{self.name}")
+        return self
+
+    def __exit__(self, *_args):
+        self.events.append(f"exit:{self.name}")
 
 
 def motor_spec(
@@ -204,6 +222,108 @@ def test_enable_stop_and_active_reporting_match_gateway_contract() -> None:
     stop = CanFrame(build_can_id(CommType.MOTOR_STOP, 0, spec.motor_id), bytes(8))
     feedback = emulator.handle_frame(stop)[0]
     assert data_field(feedback.can_id) >> 14 == 0
+
+
+def test_emulator_reset_disables_motors_and_clears_stale_commands() -> None:
+    spec = motor_spec()
+    emulator = RobstrideBusEmulator(BusSpec("can0", "vcan0", 0), (spec,))
+    motor = emulator.motors[spec.motor_id]
+    motor.mode_status = 2
+    motor.applied_torque = 4.0
+    motor.command = MotorCommand(
+        position=1.0,
+        velocity=2.0,
+        torque=3.0,
+        kp=80.0,
+        kd=4.0,
+    )
+    motor.active_reporting = True
+
+    emulator.reset_control_state()
+
+    assert not motor.enabled
+    assert motor.applied_torque == 0.0
+    assert motor.command == MotorCommand()
+    assert motor.active_reporting
+
+
+def test_emulator_resources_close_in_reverse_acquisition_order(monkeypatch) -> None:
+    events = []
+    endpoint = TrackedContext("endpoint", events)
+    viewer = TrackedContext("viewer", events)
+    monkeypatch.setattr(
+        "bello_mujoco.robstride.emulator.SocketCanEndpoint",
+        lambda _interface: endpoint,
+    )
+    monkeypatch.setattr(
+        "bello_mujoco.robstride.emulator._launch_passive_viewer",
+        lambda _model, _data: viewer,
+    )
+    config = replace(
+        EmulatorConfig(),
+        pose_service=replace(EmulatorConfig().pose_service, enabled=False),
+    )
+    model = SimpleNamespace(mj_model=object())
+    emulators = {
+        "can0": SimpleNamespace(spec=SimpleNamespace(interface="vcan0")),
+    }
+
+    with pytest.raises(LookupError):
+        with _open_emulator_resources(
+            model,
+            object(),
+            emulators,
+            config,
+            torso_hold=None,
+            imu_sensor=None,
+        ) as resources:
+            assert resources.endpoints == {"can0": endpoint}
+            assert resources.viewer is viewer
+            raise LookupError("stop")
+
+    assert events == (
+        ["enter:endpoint", "enter:viewer", "exit:viewer", "exit:endpoint"]
+    )
+
+
+def test_control_window_constructor_cleans_partial_pygame_state(monkeypatch) -> None:
+    events = []
+
+    class PygameError(Exception):
+        pass
+
+    display = SimpleNamespace(
+        init=lambda: events.append("display:init"),
+        set_mode=lambda _size: events.append("display:set_mode"),
+        set_caption=lambda _caption: events.append("display:set_caption"),
+    )
+
+    def font(_name, _size):
+        events.append("font:create")
+        raise PygameError("font unavailable")
+
+    pygame = SimpleNamespace(
+        display=display,
+        font=SimpleNamespace(
+            init=lambda: events.append("font:init"),
+            Font=font,
+        ),
+        error=PygameError,
+        quit=lambda: events.append("quit"),
+    )
+    monkeypatch.setitem(sys.modules, "pygame", pygame)
+
+    with pytest.raises(RuntimeError, match="graphical display"):
+        EmulatorControlWindow(0.05)
+
+    assert events == [
+        "display:init",
+        "font:init",
+        "display:set_mode",
+        "display:set_caption",
+        "font:create",
+        "quit",
+    ]
 
 
 def test_mechanical_position_read_uses_wire_direction_and_returns_feedback() -> None:

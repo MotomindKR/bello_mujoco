@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 import math
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,12 +17,12 @@ import rerun as rr
 import rerun.blueprint as rrb
 from rerun.urdf import UrdfTree
 
-from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.gamepad import GamepadCommandSource, GamepadConfig
+from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.policy import (
     infer_policy_action,
     init_observation_stack,
-    policy_observation_size,
     stacked_observation,
     update_observation_stack,
 )
@@ -37,18 +36,12 @@ from bello_mujoco.evaluation.render import (
     mujoco_link_lin_vel,
     mujoco_link_quat,
     mujoco_policy_observation,
-    quat_rotate_inverse_np,
-    quat_rotate_np,
     reset_mujoco_data,
 )
-from bello_mujoco.training.checkpoint import (
-    CheckpointMetadata,
-    restore_evaluation_checkpoint,
-)
+from bello_mujoco.spatial import quat_rotate_inverse_wxyz, quat_rotate_wxyz
 from bello_mujoco.training.ppo import (
     ObservationNormState,
     PPOConfig,
-    critic_observation_size,
 )
 
 DONE_KEYS = (
@@ -63,39 +56,9 @@ DONE_KEYS = (
 
 
 @dataclass(frozen=True)
-class GamepadConfig:
-    enabled: bool = True
-    controller_index: int = 0
-    deadzone: float = 0.1
-
-
-@dataclass(frozen=True)
-class GamepadInput:
-    command: np.ndarray
-    connected: bool
-    reset_requested: bool = False
-    exit_requested: bool = False
-    connection_changed: bool = False
-    controller_name: str | None = None
-
-
-@dataclass(frozen=True)
 class EpisodeDisplayState:
     episode_return: jax.Array
     episode_length: jax.Array
-
-
-def apply_deadzone(value: float, deadzone: float) -> float:
-    value = float(np.clip(value, -1.0, 1.0))
-    magnitude = abs(value)
-    if magnitude <= deadzone:
-        return 0.0
-    return math.copysign((magnitude - deadzone) / (1.0 - deadzone), value)
-
-
-def axis_to_range(value: float, bounds: tuple[float, float]) -> float:
-    low, high = bounds
-    return value * (high if value >= 0.0 else -low)
 
 
 def ctrl_saturation_fraction(env: BelloLocomotionEnv, ctrl: np.ndarray) -> float:
@@ -105,177 +68,6 @@ def ctrl_saturation_fraction(env: BelloLocomotionEnv, ctrl: np.ndarray) -> float
     ranges = np.asarray(env.model.mj_model.actuator_ctrlrange[indices])
     values = np.asarray(ctrl)[indices]
     return float(np.mean((values <= ranges[:, 0]) | (values >= ranges[:, 1])))
-
-
-class GamepadCommandSource:
-    def __init__(
-        self,
-        config: GamepadConfig,
-        command_ranges: tuple[
-            tuple[float, float], tuple[float, float], tuple[float, float]
-        ],
-        *,
-        controller_module=None,
-        event_module=None,
-        constants_module=None,
-        pygame_module=None,
-    ) -> None:
-        display_initialized = False
-        if controller_module is None or event_module is None:
-            os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-            import pygame
-            from pygame._sdl2 import controller
-
-            if config.enabled:
-                try:
-                    pygame.display.init()
-                    display_initialized = True
-                except BaseException:
-                    pygame.display.quit()
-                    raise
-            controller_module = controller
-            event_module = pygame.event
-            constants_module = pygame
-            pygame_module = pygame
-        elif constants_module is None:
-            constants_module = controller_module
-        self.config = config
-        self.command_ranges = command_ranges
-        self.controller_module = controller_module
-        self.event_module = event_module
-        self.constants = constants_module
-        self.pygame = pygame_module
-        self.controller = None
-        self._was_connected = False
-        self._reset_pressed = False
-        self._exit_pressed = False
-        self._closed = False
-        if config.enabled:
-            try:
-                self.controller_module.init()
-            except BaseException:
-                try:
-                    self.controller_module.quit()
-                except BaseException:
-                    pass
-                if display_initialized:
-                    try:
-                        self.pygame.display.quit()
-                    except BaseException:
-                        pass
-                raise
-
-    def poll(self) -> GamepadInput:
-        if not self.config.enabled:
-            return GamepadInput(np.zeros(3, dtype=np.float32), connected=False)
-        try:
-            self.event_module.pump()
-            self._refresh_controller()
-            connected = self.controller is not None and self.controller.attached()
-        except Exception:
-            self._close_controller()
-            connected = False
-        connection_changed = connected != self._was_connected
-        self._was_connected = connected
-        if not connected:
-            self._reset_pressed = False
-            self._exit_pressed = False
-            return GamepadInput(
-                np.zeros(3, dtype=np.float32),
-                connected=False,
-                connection_changed=connection_changed,
-            )
-
-        try:
-            module = self.constants
-            left_x = self._axis(module.CONTROLLER_AXIS_LEFTX)
-            left_y = self._axis(module.CONTROLLER_AXIS_LEFTY)
-            right_x = self._axis(module.CONTROLLER_AXIS_RIGHTX)
-            normalized = (
-                apply_deadzone(-left_y, self.config.deadzone),
-                apply_deadzone(left_x, self.config.deadzone),
-                apply_deadzone(-right_x, self.config.deadzone),
-            )
-            command = np.asarray(
-                [
-                    axis_to_range(value, bounds)
-                    for value, bounds in zip(
-                        normalized, self.command_ranges, strict=True
-                    )
-                ],
-                dtype=np.float32,
-            )
-            reset_pressed = bool(self.controller.get_button(module.CONTROLLER_BUTTON_A))
-            exit_pressed = bool(
-                self.controller.get_button(module.CONTROLLER_BUTTON_START)
-            )
-            controller_name = self.controller.as_joystick().get_name()
-        except Exception:
-            self._close_controller()
-            self._was_connected = False
-            self._reset_pressed = False
-            self._exit_pressed = False
-            return GamepadInput(
-                np.zeros(3, dtype=np.float32),
-                connected=False,
-                connection_changed=True,
-            )
-        result = GamepadInput(
-            command,
-            connected=True,
-            reset_requested=reset_pressed and not self._reset_pressed,
-            exit_requested=exit_pressed and not self._exit_pressed,
-            connection_changed=connection_changed,
-            controller_name=controller_name,
-        )
-        self._reset_pressed = reset_pressed
-        self._exit_pressed = exit_pressed
-        return result
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self._close_controller()
-            if self.config.enabled:
-                self.controller_module.quit()
-        finally:
-            if self.pygame is not None and self.config.enabled:
-                self.pygame.display.quit()
-
-    def _axis(self, axis: int) -> float:
-        raw = int(self.controller.get_axis(axis))
-        divisor = 32767.0 if raw >= 0 else 32768.0
-        return float(np.clip(raw / divisor, -1.0, 1.0))
-
-    def _refresh_controller(self) -> None:
-        if self.controller is not None:
-            try:
-                if self.controller.attached():
-                    return
-            except Exception:
-                pass
-        self._close_controller()
-        index = self.config.controller_index
-        if (
-            index < self.controller_module.get_count()
-            and self.controller_module.is_controller(index)
-        ):
-            try:
-                self.controller = self.controller_module.Controller(index)
-            except Exception:
-                self.controller = None
-
-    def _close_controller(self) -> None:
-        if self.controller is None:
-            return
-        try:
-            self.controller.quit()
-        except Exception:
-            pass
-        self.controller = None
 
 
 class RerunEvaluationLogger:
@@ -563,7 +355,7 @@ class RerunEvaluationLogger:
             quaternion = np.asarray(
                 self.env.model.mj_model.geom_quat[terrain_geom_id], dtype=np.float32
             )
-            center = np.asarray(config.pos, dtype=np.float32) + quat_rotate_np(
+            center = np.asarray(config.pos, dtype=np.float32) + quat_rotate_wxyz(
                 quaternion,
                 np.asarray([0.0, 0.0, -config.size[2]], dtype=np.float32),
             )
@@ -615,7 +407,7 @@ def rough_terrain_mesh(config) -> tuple[np.ndarray, np.ndarray]:
             normalized.ravel() * config.hfield_amplitude,
         ]
     ).astype(np.float32)
-    vertices = quat_rotate_np(
+    vertices = quat_rotate_wxyz(
         np.asarray(random_slope_quat(config), dtype=np.float32), local_vertices
     ) + np.asarray(config.pos, dtype=np.float32)
     triangles = []
@@ -640,7 +432,7 @@ def command_frame_linear_velocity(
     link_name = env._reward_link("track_lin_vel_xy")
     frame_link_name = env._reward_frame_link("track_lin_vel_xy")
     body_velocity = mujoco_link_lin_vel(env, mj_data, link_name)
-    world_velocity = quat_rotate_np(
+    world_velocity = quat_rotate_wxyz(
         mujoco_link_quat(env, mj_data, link_name), body_velocity
     )
     frame_quat = mujoco_link_quat(env, mj_data, frame_link_name)
@@ -649,7 +441,7 @@ def command_frame_linear_velocity(
     yaw_quat = np.asarray(
         [np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)], dtype=np.float32
     )
-    return quat_rotate_inverse_np(yaw_quat, world_velocity)
+    return quat_rotate_inverse_wxyz(yaw_quat, world_velocity)
 
 
 def run_rerun_evaluation(
@@ -733,7 +525,16 @@ def run_rerun_evaluation(
 
     resources = ExitStack()
     try:
-        gamepad = GamepadCommandSource(gamepad_config, command_ranges)
+        minimum_moving_speeds = (
+            env.command_config.minimum_moving_linear_speed,
+            env.command_config.minimum_moving_linear_speed,
+            env.command_config.minimum_moving_yaw_speed,
+        )
+        gamepad = GamepadCommandSource(
+            gamepad_config,
+            command_ranges,
+            minimum_moving_speeds,
+        )
         resources.callback(gamepad.close)
         logger = RerunEvaluationLogger(env, urdf_path)
         resources.callback(logger.close)
@@ -777,6 +578,14 @@ def run_rerun_evaluation(
                 reset_episode()
                 logger.log_event("episode reset requested by gamepad")
 
+            current_observation = mujoco_policy_observation(
+                env,
+                mj_data,
+                command=current_command,
+                last_action=last_action,
+                step_count=episode_step_count,
+            )
+            obs_stack = obs_stack.at[-1].set(current_observation)
             action_rng = None
             if stochastic_actions:
                 action_key, action_rng = jax.random.split(action_key)
@@ -921,6 +730,7 @@ class EvalPolicyConfig:
     stochastic_actions: bool = False
     action_seed: int = 0
     gamepad: GamepadConfig = GamepadConfig()
+    allow_git_commit_mismatch: bool = False
 
 
 def evaluate_locomotion_checkpoint(
@@ -928,44 +738,22 @@ def evaluate_locomotion_checkpoint(
     eval_config: EvalPolicyConfig = EvalPolicyConfig(),
 ) -> None:
     validate_eval_config(eval_config)
-    train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path
-    )
-    if metadata.task != "locomotion":
-        raise ValueError(
-            f"checkpoint task is {metadata.task!r}, not 'locomotion'; use "
-            "`bello-eval task=motion` for motion checkpoints"
-        )
-    if any(
-        value is None
-        for value in (metadata.env, metadata.reward, metadata.command, metadata.done)
-    ):
-        raise ValueError("locomotion checkpoint is missing its environment contract")
-    prepared = prepare_asset(metadata.asset)
-    env = BelloLocomotionEnv.load_prepared(
-        prepared,
-        warp=metadata.warp,
-        batch_size=1,
-        env_config=metadata.env,
-        actuator_config=metadata.asset.actuator_config,
-        reward_config=metadata.reward,
-        command_config=metadata.command,
-        done_config=metadata.done,
+    runtime = load_locomotion_policy_runtime(
+        checkpoint_path,
         use_viewer_model=True,
-        load_mjx=False,
+        allow_git_commit_mismatch=eval_config.allow_git_commit_mismatch,
     )
-    validate_checkpoint_shape(env, metadata)
     run_rerun_evaluation(
-        env,
-        train_state.policy,
-        normalization=normalization.observation,
-        ppo_config=metadata.ppo,
-        urdf_path=prepared.urdf_path,
+        runtime.env,
+        runtime.policy,
+        normalization=runtime.normalization.observation,
+        ppo_config=runtime.metadata.ppo,
+        urdf_path=runtime.urdf_path,
         command=eval_config.command,
         gamepad_config=eval_config.gamepad,
         steps=eval_config.steps,
         stop_on_done=eval_config.stop_on_done,
-        obs_stack_size=metadata.ppo.policy.obs_stack_size,
+        obs_stack_size=runtime.metadata.ppo.policy.obs_stack_size,
         stochastic_actions=eval_config.stochastic_actions,
         action_seed=eval_config.action_seed,
     )
@@ -996,37 +784,3 @@ def validate_eval_config(config: EvalPolicyConfig) -> None:
             "eval_config.gamepad.deadzone must be in [0, 1), got "
             f"{config.gamepad.deadzone}"
         )
-
-
-def validate_checkpoint_shape(
-    env: BelloLocomotionEnv,
-    metadata: CheckpointMetadata,
-) -> None:
-    expected_obs_size = policy_observation_size(
-        env.observation_size, metadata.ppo.policy
-    )
-    expected_critic_obs_size = policy_observation_size(
-        critic_observation_size(env), metadata.ppo.policy
-    )
-    if expected_obs_size != metadata.obs_size:
-        raise ValueError(
-            "eval runtime config produced policy observation_size="
-            f"{expected_obs_size}, but checkpoint expects {metadata.obs_size}"
-        )
-    if expected_critic_obs_size != metadata.critic_obs_size:
-        raise ValueError(
-            "eval runtime config produced critic observation_size="
-            f"{expected_critic_obs_size}, but checkpoint expects "
-            f"{metadata.critic_obs_size}"
-        )
-    if env.action_size != metadata.action_size:
-        raise ValueError(
-            "eval runtime config produced action_size="
-            f"{env.action_size}, but checkpoint expects {metadata.action_size}"
-        )
-    if env.observation_layout != metadata.actor_observation_layout:
-        raise ValueError("checkpoint actor observation layout does not match runtime")
-    if env.critic_observation_layout != metadata.critic_observation_layout:
-        raise ValueError("checkpoint critic observation layout does not match runtime")
-    if env.action_layout != metadata.action_layout:
-        raise ValueError("checkpoint action layout does not match runtime")

@@ -1,0 +1,38 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.25"
+          enable-cache: true
+      - run: uv python install
+      - run: uv lock --check
+      - run: uv sync --frozen
+      - run: uv build --wheel
+      - name: Installed wheel smoke test
+        run: |
+          wheel_path="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel_path"
+          uv run --isolated --no-project --with "$wheel_path" python -c \
+            'from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, asset_config_hash; print(asset_config_hash(AssetPrepConfig()))'
+      - run: uv run --no-sync python -m compileall -q src tests
+      - run: uv run --no-sync ruff format --check src tests
+      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync bash scripts/protobuf.sh --check
+      - name: CPU tests
+        env:
+          JAX_PLATFORMS: cpu
+          MUJOCO_GL: egl
+          XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+        run: uv run --no-sync pytest -q -m "not integration" tests

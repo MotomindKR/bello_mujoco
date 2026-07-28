@@ -83,6 +83,7 @@ checkpoint_config:
   name: ${motion.sequence}_wholebody
   every_updates: 100
   resume_path: null
+  allow_git_commit_mismatch: false
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint

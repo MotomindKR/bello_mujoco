@@ -662,6 +662,12 @@ class RobstrideBusEmulator:
             if motor.active_reporting
         ]
 
+    def reset_control_state(self) -> None:
+        for motor in self.motors.values():
+            motor.mode_status = 0
+            motor.applied_torque = 0.0
+            motor.command = MotorCommand()
+
     def _read_parameter(
         self, motor: RobstrideMotor, frame: CanFrame, host_id: int
     ) -> list[CanFrame]:

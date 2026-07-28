@@ -43,6 +43,11 @@ from bello_mujoco.motion.import_gmr import (
     _validate_legacy_motion,
 )
 
+requires_warp_gpu = pytest.mark.skipif(
+    jax.default_backend() != "gpu",
+    reason="compiled MJX-Warp integration requires a GPU backend",
+)
+
 
 @pytest.fixture(scope="module")
 def fixed_waist_asset(tmp_path_factory) -> PreparedAsset:
@@ -293,7 +298,7 @@ def test_tracking_reset_matches_reference_and_is_nonterminal(
     )
     state, observation = env.reset(reference_time=jnp.asarray(0.1))
     reward, _ = env._reward(state, state)
-    done = env._done_flags(state)
+    done = env.termination_flags(state)
 
     assert (env.model.mj_model.nq, env.model.mj_model.nv, env.model.mj_model.nu) == (
         32,
@@ -314,7 +319,7 @@ def test_zero_action_targets_next_reference_pose(
         fixed_waist_asset, tracking_config(fixed_waist_motion)
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
-    ctrl = env._action_to_ctrl(state, jnp.zeros(env.action_size))
+    ctrl = env.action_target(state, jnp.zeros(env.action_size))
     reference = sample_motion(env.motion, jnp.asarray(0.1 + env.control_timestep))
     logical_target = np.asarray(reference.qpos)[env.model.actuator_qpos_indices]
     logical_target = np.clip(
@@ -354,7 +359,7 @@ def test_reference_residual_uses_quarter_logical_range_and_clips_targets(
         atol=1.0e-7,
     )
 
-    clipped_ctrl = env._action_to_ctrl(
+    clipped_ctrl = env.action_target(
         state,
         jnp.full((env.action_size,), 100.0),
     )
@@ -373,7 +378,7 @@ def test_beyondmimic_zero_action_targets_nominal_pose(
         beyondmimic_config(fixed_waist_motion),
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
-    ctrl = env._action_to_ctrl(state, jnp.zeros(env.action_size))
+    ctrl = env.action_target(state, jnp.zeros(env.action_size))
 
     np.testing.assert_allclose(
         np.asarray(ctrl),
@@ -411,7 +416,7 @@ def test_beyondmimic_uses_effort_stiffness_scale_without_logical_clipping(
     logical_target = env.model.default_joint_target + expected_scale * action
     assert logical_target[roll] > env.model.joint_target_high[roll]
 
-    ctrl = env._action_to_ctrl(state, jnp.asarray(action))
+    ctrl = env.action_target(state, jnp.asarray(action))
     expected_ctrl = expected_physical_ctrl(env, logical_target)
     clipped_ctrl = expected_physical_ctrl(
         env,
@@ -461,7 +466,7 @@ def test_beyondmimic_joint_limit_actions_use_asymmetric_bounded_mapping(
     )
 
     state = state.replace(joint_default_offset=jnp.asarray(offset))
-    ctrl = env._action_to_ctrl(state, jnp.ones(env.action_size))
+    ctrl = env.action_target(state, jnp.ones(env.action_size))
     np.testing.assert_allclose(
         np.asarray(ctrl),
         expected_physical_ctrl(env, env.model.joint_target_high),
@@ -530,7 +535,7 @@ def test_beyondmimic_body_targets_follow_anchor_xy_and_yaw(
     state = state.replace(
         data=mjx.forward(env.model.mjx_model, state.data.replace(qpos=qpos))
     )
-    reference = env._aligned_reference(
+    reference = env.aligned_reference(
         state.reference_time, state.alignment_xy, state.alignment_yaw
     )
     target_position, _ = env._relative_body_targets(state, reference)
@@ -544,7 +549,7 @@ def test_beyondmimic_body_targets_follow_anchor_xy_and_yaw(
     assert float(target_position[anchor_index, 2]) == pytest.approx(
         float(reference.body_pos[anchor_index, 2]), abs=1.0e-5
     )
-    assert not bool(env._done_flags(state)["done/orientation"])
+    assert not bool(env.termination_flags(state)["done/orientation"])
 
 
 def test_adaptive_sampling_spreads_failure_weight_backward(
@@ -689,7 +694,7 @@ def test_tracking_nonfinite_state_is_terminal_and_reward_is_sanitized(
     state = state.replace(
         data=state.data.replace(cvel=state.data.cvel.at[0, 0].set(jnp.nan))
     )
-    done_flags = env._done_flags(state)
+    done_flags = env.termination_flags(state)
     reward, reward_info = env._reward(state, state)
     reward, reward_info = env._sanitize_nonfinite_reward(
         reward, reward_info, done_flags
@@ -717,6 +722,7 @@ def test_tracking_joint_limit_cost_is_bounded(
 
 
 @pytest.mark.integration
+@requires_warp_gpu
 def test_tracking_batch_reset_and_step_are_jittable(
     fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
 ) -> None:
@@ -731,6 +737,7 @@ def test_tracking_batch_reset_and_step_are_jittable(
         jnp.zeros((2, env.action_size), dtype=jnp.float32),
         jax.random.PRNGKey(1),
     )
+    jax.block_until_ready((next_state, next_observation, reward, done, info))
 
     assert observation.shape == (2, env.observation_size)
     assert next_observation.shape == (2, env.observation_size)
@@ -741,6 +748,7 @@ def test_tracking_batch_reset_and_step_are_jittable(
 
 
 @pytest.mark.integration
+@requires_warp_gpu
 def test_beyondmimic_batch_step_with_sampling_noise_and_push_is_jittable(
     fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
 ) -> None:
@@ -780,6 +788,7 @@ def test_beyondmimic_batch_step_with_sampling_noise_and_push_is_jittable(
         jnp.zeros((2, env.action_size), dtype=jnp.float32),
         jax.random.PRNGKey(1),
     )
+    jax.block_until_ready((next_state, next_observation, reward, done, info))
 
     assert observation.shape == (2, env.observation_size)
     assert next_observation.shape == observation.shape

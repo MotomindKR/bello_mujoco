@@ -107,6 +107,8 @@ def coerce_value(
             raise ValueError(f"{location} must be one of {choices}, got {value!r}")
         return value
     if origin is dict:
+        if not isinstance(value, dict):
+            raise TypeError(f"{path or 'value'} must be a mapping")
         key_type, value_type = get_args(annotation)
         return {
             coerce_value(
@@ -125,6 +127,8 @@ def coerce_value(
             for item_key, item_value in value.items()
         }
     if origin is tuple:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError(f"{path or 'value'} must be a list or tuple")
         args = get_args(annotation)
         if len(args) == 2 and args[1] is Ellipsis:
             return tuple(
@@ -194,6 +198,19 @@ def structured_config(cls: type[T], config: DictConfig) -> T:
     if not isinstance(data, dict):
         raise TypeError(f"Hydra config for {cls.__name__} must be a mapping")
     return dataclass_from_dict(cls, data, strict=True)
+
+
+def command_config(cls: type[T], config: DictConfig) -> T:
+    """Decode a complete public command config without dataclass fallbacks."""
+    data = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
+    if not isinstance(data, dict):
+        raise TypeError(f"Hydra config for {cls.__name__} must be a mapping")
+    return dataclass_from_dict(
+        cls,
+        data,
+        strict=True,
+        require_all_fields=True,
+    )
 
 
 def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:

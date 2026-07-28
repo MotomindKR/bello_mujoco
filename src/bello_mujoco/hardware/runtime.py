@@ -11,12 +11,13 @@ import math
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import mujoco
 import numpy as np
 
-from bello_mujoco.evaluation.render import quat_rotate_inverse_np
+from bello_mujoco.hardware.config import HardwareControlConfig
+from bello_mujoco.spatial import quat_rotate_inverse_wxyz
 
 HOLD_CONFIRMATION = "HOLD"
 RUN_CONFIRMATION = "RUN"
@@ -36,7 +37,20 @@ class HardwareFrame:
     group_states: tuple[str, ...]
 
 
-def validate_hardware_control_config(config: Any) -> None:
+class HardwarePolicyAdapter(Protocol):
+    physical_coordinate_names: tuple[str, ...]
+    coordinate_index: dict[str, int]
+    kp: np.ndarray
+    kd: np.ndarray
+
+    @property
+    def control_timestep(self) -> float: ...
+
+    @property
+    def nominal_physical_target(self) -> np.ndarray: ...
+
+
+def validate_hardware_control_config(config: HardwareControlConfig) -> None:
     if not config.endpoint.strip():
         raise ValueError("endpoint must not be empty")
     if not config.groups or any(not group.strip() for group in config.groups):
@@ -112,7 +126,7 @@ def actuator_impedance_gains(env: Any) -> tuple[np.ndarray, np.ndarray]:
 def projected_gravity_from_xyzw(orientation_xyzw: np.ndarray) -> np.ndarray:
     orientation = normalized_quaternion_xyzw(orientation_xyzw)
     wxyz = orientation[[3, 0, 1, 2]]
-    return quat_rotate_inverse_np(
+    return quat_rotate_inverse_wxyz(
         wxyz.astype(np.float32), np.asarray((0.0, 0.0, -1.0), dtype=np.float32)
     )
 
@@ -252,8 +266,8 @@ def wait_for_operator_confirmation_while_holding(
 
 def validate_hardware_inventory(
     robot: Any,
-    adapter: Any,
-    config: Any,
+    adapter: HardwarePolicyAdapter,
+    config: HardwareControlConfig,
     binding: Any,
 ) -> dict[str, Any]:
     unknown = sorted(set(config.groups) - set(robot.group_names))
@@ -342,15 +356,17 @@ def wait_for_hardware_frame(
                 imu_age_ms=imu.sample_age_ms,
                 group_states=tuple(group.state.name for group in groups),
             )
-        except unavailable_error:
+        except unavailable_error as error:
             remaining = deadline - time.monotonic()
             if remaining <= 0.0 or not states.wait_for_change(timeout=remaining):
-                raise TimeoutError("timed out waiting for complete hardware telemetry")
+                raise TimeoutError(
+                    "timed out waiting for complete hardware telemetry"
+                ) from error
 
 
 def validate_hardware_frame(
     frame: HardwareFrame,
-    config: Any,
+    config: HardwareControlConfig,
     *,
     expected_group_state: str | None = None,
 ) -> None:
@@ -395,7 +411,7 @@ def coordinate_targets(
     binding: Any,
     coordinate_names: tuple[str, ...],
     physical_target: np.ndarray,
-    adapter: Any,
+    adapter: HardwarePolicyAdapter,
 ) -> dict[str, Any]:
     return {
         name: binding.CoordinateTarget.position(
@@ -412,8 +428,8 @@ def start_hardware_controls(
     controls: Mapping[str, Any],
     groups: Mapping[str, Any],
     physical_target: np.ndarray,
-    adapter: Any,
-    config: Any,
+    adapter: HardwarePolicyAdapter,
+    config: HardwareControlConfig,
     executor: Executor,
 ) -> None:
     starts = {
@@ -434,7 +450,7 @@ def start_hardware_controls(
 
 def stop_hardware_controls(
     controls: Mapping[str, Any],
-    config: Any,
+    config: HardwareControlConfig,
     executor: Executor,
 ) -> None:
     stops = {name: executor.submit(controls[name].stop) for name in config.groups}
@@ -447,8 +463,8 @@ def send_targets(
     controls: Mapping[str, Any],
     groups: Mapping[str, Any],
     physical_target: np.ndarray,
-    adapter: Any,
-    config: Any,
+    adapter: HardwarePolicyAdapter,
+    config: HardwareControlConfig,
     executor: Executor,
     pending_receipts: list[Any],
 ) -> None:
@@ -492,7 +508,7 @@ def drain_command_receipts(pending_receipts: list[Any]) -> None:
 def wait_for_group_state(
     states: Any,
     coordinate_names: tuple[str, ...],
-    config: Any,
+    config: HardwareControlConfig,
     unavailable_error: type[BaseException],
     expected_state: str,
 ) -> None:
@@ -524,7 +540,7 @@ def wait_for_group_state(
 def pace_hardware_loop(
     previous_deadline: float,
     control_timestep: float,
-    config: Any,
+    config: HardwareControlConfig,
 ) -> float:
     deadline = previous_deadline + control_timestep
     remaining = deadline - time.monotonic()
@@ -543,8 +559,8 @@ class ArmedControlSession:
     controls: Mapping[str, Any]
     groups: Mapping[str, Any]
     states: Any
-    adapter: Any
-    config: Any
+    adapter: HardwarePolicyAdapter
+    config: HardwareControlConfig
     executor: Executor
     pending_receipts: list[Any]
     previous_target: np.ndarray
@@ -647,8 +663,8 @@ def armed_control_session(
     groups: Mapping[str, Any],
     states: Any,
     initial_frame: HardwareFrame,
-    adapter: Any,
-    config: Any,
+    adapter: HardwarePolicyAdapter,
+    config: HardwareControlConfig,
     *,
     thread_name: str,
 ) -> Iterator[ArmedControlSession]:

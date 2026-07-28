@@ -20,12 +20,14 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
+    LocomotionCheckpointMetadata,
+    MotionCheckpointMetadata,
     load_checkpoint_metadata,
     restore_evaluation_checkpoint,
     restore_runner_checkpoint,
     save_training_checkpoint,
     timestamped_checkpoint_name,
-    validate_checkpoint_name,
+    validate_checkpoint_options,
 )
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
@@ -61,10 +63,12 @@ GIT_COMMIT = "1" * 40
 def exact_source_checkout(monkeypatch: pytest.MonkeyPatch):
     state = {"commit": GIT_COMMIT}
 
-    def require_commit(expected: str) -> None:
+    def require_commit(expected: str, *, allow_mismatch: bool = False) -> None:
         source.validate_repository_commit(expected)
         current = state["commit"]
         if expected != current:
+            if allow_mismatch:
+                return
             raise ValueError(
                 "checkpoint source commit does not match this checkout: "
                 f"checkpoint={expected}, current={current}"
@@ -187,7 +191,7 @@ def ppo_config() -> PPOConfig:
 
 
 def metadata(config: PPOConfig, tmp_path: Path) -> CheckpointMetadata:
-    return CheckpointMetadata(
+    return LocomotionCheckpointMetadata(
         ppo=config,
         asset=AssetPrepConfig(),
         reward=RewardConfig(),
@@ -233,13 +237,9 @@ def motion_metadata(
     state: RunnerState,
 ) -> CheckpointMetadata:
     return checkpoint.motion_metadata_with_runner_state(
-        CheckpointMetadata(
+        MotionCheckpointMetadata(
             ppo=config,
             asset=AssetPrepConfig(),
-            reward=None,
-            command=None,
-            done=None,
-            env=None,
             warp=WarpConfig(contact_budget_per_env=12),
             obs_size=ACTOR_LAYOUT.size * config.policy.obs_stack_size,
             critic_obs_size=CRITIC_LAYOUT.size * config.policy.obs_stack_size,
@@ -247,7 +247,6 @@ def motion_metadata(
             actor_observation_layout=ACTOR_LAYOUT,
             critic_observation_layout=CRITIC_LAYOUT,
             action_layout=ACTION_LAYOUT,
-            task="motion_tracking",
             motion_env=MotionTrackingEnvConfig(motion_path=motion_path),
             motion=checkpoint.motion_clip_contract(motion_path, clip),
         ),
@@ -542,7 +541,7 @@ def test_checkpoint_round_trips_real_mjx_continuation_state(
         warp=warp_config,
     )
     state, _, _ = init_runner_state(jax.random.PRNGKey(7), env, config)
-    checkpoint_metadata = CheckpointMetadata(
+    checkpoint_metadata = LocomotionCheckpointMetadata(
         ppo=config,
         asset=asset_config,
         reward=reward_config,
@@ -585,7 +584,9 @@ def test_checkpoint_config_and_timestamped_name() -> None:
         == "run_20260712_013045_123456"
     )
     with pytest.raises(ValueError, match="path component"):
-        validate_checkpoint_name("../run")
+        validate_checkpoint_options(CheckpointConfig(name="../run"))
+    with pytest.raises(ValueError, match="requires resume_path"):
+        validate_checkpoint_options(CheckpointConfig(allow_git_commit_mismatch=True))
 
 
 def test_repository_commit_requires_origin_tracked_clean_source(
@@ -637,6 +638,11 @@ def test_repository_commit_requires_origin_tracked_clean_source(
     run_git(tmp_path, "commit", "-m", "second")
     with pytest.raises(ValueError, match="source commit does not match"):
         source.require_repository_commit(commit)
+    with pytest.warns(RuntimeWarning, match="mismatch override enabled"):
+        source.require_repository_commit(commit, allow_mismatch=True)
+    tracked.write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="clean Git worktree"):
+        source.require_repository_commit(commit, allow_mismatch=True)
 
 
 def test_checkpoint_failure_never_publishes_partial_directory(
@@ -752,6 +758,9 @@ def test_checkpoint_checks_git_commit_before_revision_private_fields(
 
     with pytest.raises(ValueError, match="source commit does not match"):
         load_checkpoint_metadata(path)
+
+    with pytest.raises(ValueError, match="unknown field.*future_revision_field"):
+        load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
 
 
 def test_checkpoint_rechecks_source_before_publishing(

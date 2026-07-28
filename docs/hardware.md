@@ -15,7 +15,7 @@ The `bello-hardware` Python binding is distributed with `bello-stack`, not this
 repository. Supply that local component through uv as documented in the command
 reference. The checkpoint neither records nor checks the separate `bello-stack`
 checkout, hardware daemon, or firmware revisions. Deployment is responsible for
-selecting versions that match the recorded `bello_mujoco` source.
+selecting versions compatible with the `bello_mujoco` checkout used at runtime.
 
 An exact checkout also restores that revision's hardware runner and safety
 checks. Review old runner code and its guards before using `arm=true`; a later
@@ -25,7 +25,8 @@ safety fix is not inherited automatically by a historical checkpoint.
 
 `arm=false` is the default. Preflight:
 
-1. requires a clean checkout at the checkpoint's exact Git commit;
+1. requires a clean checkout and, unless explicitly overridden, the
+   checkpoint's exact Git commit;
 2. restores and validates checkpoint integrity and policy state;
 3. prepares the robot asset described by checkpoint metadata;
 4. reconstructs observation, action, and physical-coordinate layouts;
@@ -36,6 +37,10 @@ safety fix is not inherited automatically by a historical checkpoint.
 8. evaluates one preview policy step and reports the resolved configuration.
 
 No motor target is sent in this mode.
+
+With `allow_git_commit_mismatch=true`, the current checkout's runner and
+generated assets are used without adaptation. Run an unarmed preflight and
+review the source differences before arming.
 
 ## Arming contract
 
@@ -75,6 +80,8 @@ The nominal-pose ramp is target-step limited. After the shared `HOLD`, ramp,
 and `RUN` sequence, left-stick vertical/horizontal commands forward/lateral
 velocity, right-stick horizontal commands yaw, and Start/Options aborts.
 Controller disconnection commands zero.
+The abort is level-sensitive, including when Start/Options is already held
+during startup.
 
 A fixed command is active only when gamepad input is disabled.
 

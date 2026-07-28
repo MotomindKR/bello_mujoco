@@ -4,20 +4,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import equinox as eqx
 import jax
-import jax.numpy as jnp
-import optax
-from tqdm.auto import tqdm
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
-    CheckpointMetadata,
+    LocomotionCheckpointMetadata,
     checkpoint_path,
     restore_runner_checkpoint,
     save_training_checkpoint,
-    validate_checkpoint_name,
+    validate_checkpoint_options,
 )
 from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
@@ -45,16 +41,16 @@ from bello_mujoco.training.ppo import (
     validate_ppo_config,
     validate_action_limit_contract,
 )
+from bello_mujoco.training.runtime import (
+    RunnerInitialization,
+    raise_on_invalid_training_metrics,
+    should_render_training_video,
+    training_update_range,
+)
 from bello_mujoco.repository import (
     capture_repository_commit,
     require_checkpoint_output_directory,
 )
-
-RunnerInitialization = tuple[
-    RunnerState,
-    eqx.Module,
-    optax.GradientTransformation,
-]
 
 
 @dataclass(frozen=True)
@@ -165,7 +161,12 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 static_policy,
                 optimizer,
                 resumed_metadata,
-            ) = restore_runner_checkpoint(resume_path, env, metadata)
+            ) = restore_runner_checkpoint(
+                resume_path,
+                env,
+                metadata,
+                allow_git_commit_mismatch=(checkpoint_config.allow_git_commit_mismatch),
+            )
             if resumed_metadata != metadata:
                 raise RuntimeError("resume did not resolve to the requested run")
             initial_runner = resumed_state, static_policy, optimizer
@@ -246,13 +247,13 @@ def checkpoint_metadata(
     *,
     policy_obs_size: int,
     critic_policy_obs_size: int,
-) -> CheckpointMetadata:
+) -> LocomotionCheckpointMetadata:
     if run_config.asset_config.output_root is not None:
         raise ValueError(
             "training requires asset_config.output_root=null so the exact source "
             "revision owns asset generation"
         )
-    return CheckpointMetadata(
+    return LocomotionCheckpointMetadata(
         ppo=run_config.config,
         asset=run_config.asset_config,
         reward=run_config.reward_config,
@@ -271,7 +272,7 @@ def checkpoint_metadata(
 
 def periodic_checkpoint_callback(
     final_path: Path | None,
-    metadata: CheckpointMetadata,
+    metadata: LocomotionCheckpointMetadata,
     git_commit: str | None,
     config: CheckpointConfig,
     run,
@@ -337,6 +338,7 @@ def train_update_loop(
             video_config,
             run,
             env_steps=0,
+            ppo_config=config,
             obs_stack_size=config.policy.obs_stack_size,
         )
     for _ in training_update_range(start_update, config.num_updates):
@@ -369,6 +371,7 @@ def train_update_loop(
                 video_config,
                 run,
                 env_steps=env_steps,
+                ppo_config=config,
                 obs_stack_size=config.policy.obs_stack_size,
             )
     if last_metrics is None:
@@ -379,35 +382,12 @@ def train_update_loop(
     }
 
 
-def training_update_range(start_update: int, num_updates: int):
-    return tqdm(
-        range(start_update, num_updates),
-        desc="PPO updates",
-        unit="update",
-        dynamic_ncols=True,
-        initial=start_update,
-        total=num_updates,
-    )
-
-
 def should_save_periodic_checkpoint(
     update: int,
     num_updates: int,
     every_updates: int,
 ) -> bool:
     return 0 < update < num_updates and update % every_updates == 0
-
-
-def should_render_training_video(
-    update: int, num_updates: int, config: TrainingVideoConfig
-) -> bool:
-    if not config.enabled:
-        return False
-    if update <= 0:
-        return False
-    if config.render_final and update == num_updates:
-        return True
-    return update % config.every_updates == 0
 
 
 def render_training_video(
@@ -418,6 +398,7 @@ def render_training_video(
     run,
     *,
     env_steps: int,
+    ppo_config: PPOConfig,
     obs_stack_size: int = 1,
 ) -> Path:
     update = int(jax.device_get(runner_state.update))
@@ -434,6 +415,8 @@ def render_training_video(
         fps=config.fps,
         stop_on_done=config.stop_on_done,
         camera_config=config.camera_config,
+        ppo_config=ppo_config,
+        observation_norm_state=runner_state.observation_norm_state,
         obs_stack_size=obs_stack_size,
         stochastic_actions=config.stochastic_actions,
         action_seed=config.action_seed,
@@ -464,62 +447,6 @@ def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:
     )
 
 
-def raise_on_invalid_training_metrics(metrics: dict, update: int) -> None:
-    contaminated: list[tuple[str, str]] = []
-    for name, value in metrics.items():
-        prefix = next(
-            (
-                prefix
-                for prefix in ("nonfinite/", "invalid/")
-                if name.startswith(prefix)
-            ),
-            None,
-        )
-        if prefix is None or value is None:
-            continue
-        if float(jax.device_get(value)) > 0.0:
-            contaminated.append((prefix.removesuffix("/"), name.removeprefix(prefix)))
-    if contaminated:
-        kind, source = contaminated[0]
-        raise RuntimeError(
-            f"PPO encountered {kind} {source} at update {update}; "
-            "the poisoned optimizer step was skipped."
-        )
-    invalid_update = metrics.get("invalid_update")
-    if invalid_update is not None and float(jax.device_get(invalid_update)) > 0.0:
-        raise RuntimeError(
-            f"PPO rejected an implausible update at update {update}; "
-            "the poisoned optimizer step was skipped."
-        )
-    nonfinite_update = metrics.get("nonfinite_update")
-    if nonfinite_update is not None and float(jax.device_get(nonfinite_update)) > 0.0:
-        raise RuntimeError(
-            "PPO produced a nonfinite update at update "
-            f"{update}; skipped the poisoned optimizer step. "
-            "Lower learning_rate/init_log_std or inspect rewards/observations."
-        )
-    checked_keys = (
-        "loss",
-        "actor_loss",
-        "value_loss",
-        "value_loss_raw",
-        "entropy",
-        "approx_kl",
-        "action_std_mean",
-        "action_std_min",
-        "action_std_max",
-    )
-    for name in checked_keys:
-        value = metrics.get(name)
-        if value is None:
-            continue
-        if not bool(jnp.all(jnp.isfinite(jax.device_get(value)))):
-            raise RuntimeError(
-                f"PPO metric {name!r} became nonfinite at update {update}; "
-                "stopping training instead of continuing with invalid policy state."
-            )
-
-
 def validate_video_config(config: TrainingVideoConfig) -> None:
     if not config.enabled:
         return
@@ -543,7 +470,7 @@ def validate_video_config(config: TrainingVideoConfig) -> None:
 
 
 def validate_checkpoint_config(config: CheckpointConfig) -> None:
-    validate_checkpoint_name(config.name)
+    validate_checkpoint_options(config)
     if config.every_updates is not None and config.every_updates <= 0:
         raise ValueError(
             "checkpoint_config.every_updates must be null or positive, got "

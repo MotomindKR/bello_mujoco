@@ -18,8 +18,8 @@ follow the linked docs for repository behavior and user-facing contracts.
   should be removed or validated.
 - Keep the training hot path JAX/MJX-Warp compatible. Python-side convenience is
   fine around setup, assets, logging, and tests, but not inside rollout math.
-- Favor dataclass configs and tyro exposure for user-facing knobs. Avoid ad hoc
-  parallel CLI arguments when a config object already exists.
+- Favor frozen dataclass configs decoded from the public Hydra documents. Avoid
+  ad hoc parallel CLI arguments when a config object already exists.
 - Use the Nix/uv environment for repo work. Prefer `nix develop`, direnv, and
   `uv run ...` over system Python or globally installed tools.
 - Keep all changes inside this repository unless the user explicitly asks for an
@@ -43,8 +43,11 @@ follow the linked docs for repository behavior and user-facing contracts.
 
 ## Repository Rules
 
-- Do not reintroduce external robot asset paths. The repo must use
-  `assets/source/bello/` as the robot source of truth.
+- Do not reintroduce external robot asset paths. The asset pipeline's canonical
+  robot input is
+  `assets/source/bello/full_body/urdf/bello_full_body.urdf`; the component
+  lower- and upper-body URDFs are reference descriptions, not alternate asset
+  inputs.
 - Do not add asset aliases. Valid asset names are documented in
   [docs/index.md](docs/index.md).
 - Do not commit generated assets, `.venv`, uv caches, Warp caches, W&B runs, or

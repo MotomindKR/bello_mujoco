@@ -19,6 +19,7 @@ from bello_mujoco.hardware import runtime as hardware_runtime
 from bello_mujoco.hardware.locomotion import (
     HardwareLocomotionConfig,
     HardwarePolicyAdapter,
+    command_minimum_moving_speeds,
     command_ranges,
     hardware_command,
     run_hardware_locomotion,
@@ -53,7 +54,7 @@ from bello_mujoco.training.ppo import (
     init_observation_norm_state,
     init_value_norm_state,
 )
-from bello_mujoco.evaluation.locomotion import GamepadConfig, GamepadInput
+from bello_mujoco.gamepad import GamepadConfig, GamepadInput, axis_to_range
 
 
 def compose_hardware_training_config() -> TrainingRunConfig:
@@ -387,6 +388,7 @@ def test_hardware_gamepad_commands_fail_closed_and_use_checkpoint_bounds() -> No
     config = HardwareLocomotionConfig(command=(0.1, 0.1, 0.1))
 
     assert command_ranges(metadata) == ((-0.5, 1.0), (-0.2, 0.3), (-0.4, 0.6))
+    assert command_minimum_moving_speeds(metadata) == (0.2, 0.2, 0.2)
     assert hardware_command(
         config,
         metadata,
@@ -397,6 +399,51 @@ def test_hardware_gamepad_commands_fail_closed_and_use_checkpoint_bounds() -> No
         metadata,
         GamepadInput(np.asarray((0.8, -0.1, 0.4)), connected=True),
     ) == pytest.approx((0.8, -0.1, 0.4))
+
+
+def test_gamepad_axis_mapping_preserves_standing_and_conditioned_ranges() -> None:
+    assert axis_to_range(0.0, (0.3, 1.0), 0.2) == 0.0
+    assert axis_to_range(0.5, (0.3, 1.0), 0.2) == pytest.approx(0.65)
+    assert axis_to_range(-0.5, (0.3, 1.0), 0.2) == 0.0
+    assert axis_to_range(-0.5, (-1.0, -0.3), 0.2) == pytest.approx(-0.65)
+    assert axis_to_range(0.5, (-1.0, -0.3), 0.2) == 0.0
+    assert axis_to_range(0.25, (-1.0, 1.0), 0.2) == pytest.approx(0.4)
+
+
+def test_hardware_honors_held_gamepad_abort_before_connect(monkeypatch) -> None:
+    adapter = SimpleNamespace(precompile=lambda: None)
+    metadata = SimpleNamespace(command=CommandConfig())
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.locomotion.load_hardware_policy",
+        lambda *_args, **_kwargs: (adapter, metadata),
+    )
+    connect_calls = []
+
+    def connect(*_args, **_kwargs):
+        connect_calls.append(True)
+        raise AssertionError("hardware abort connected to the robot")
+
+    binding = SimpleNamespace(
+        ControlSession=SimpleNamespace(send_async=lambda: None),
+        Robot=SimpleNamespace(connect=connect),
+    )
+    gamepad = SimpleNamespace(
+        poll=lambda: GamepadInput(
+            np.zeros(3, dtype=np.float32),
+            connected=True,
+            exit_held=True,
+        ),
+        close=lambda: None,
+    )
+
+    run_hardware_locomotion(
+        Path("unused"),
+        HardwareLocomotionConfig(arm=True),
+        hardware_binding=binding,
+        gamepad_factory=lambda *_args: gamepad,
+    )
+
+    assert not connect_calls
 
 
 def test_hardware_groups_start_concurrently() -> None:
@@ -489,25 +536,48 @@ def test_read_only_preflight_never_acquires_control(
         control_timestep=0.02,
         precompile=lambda: None,
     )
+    preview_calls = []
+
+    def preview(frame, command):
+        preview_calls.append(("step", frame, command.copy()))
+        return SimpleNamespace(action=np.asarray((0.25, -0.5)), tilt_radians=0.0)
+
+    adapter.step = preview
+    adapter.reset = lambda: preview_calls.append(("reset",))
     metadata = SimpleNamespace(command=CommandConfig())
+    load_calls = []
+
+    def load_policy(path, **kwargs):
+        load_calls.append((path, kwargs))
+        return adapter, metadata
+
     monkeypatch.setattr(
         "bello_mujoco.hardware.locomotion.load_hardware_policy",
-        lambda path: (adapter, metadata),
+        load_policy,
     )
 
     run_hardware_locomotion(
         Path("unused"),
-        HardwareLocomotionConfig(),
+        HardwareLocomotionConfig(allow_git_commit_mismatch=True),
         hardware_binding=hardware.binding,
-        gamepad_factory=lambda config, ranges: SimpleNamespace(
+        gamepad_factory=lambda config, ranges, minimums: SimpleNamespace(
             poll=lambda: GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
             close=lambda: None,
         ),
     )
 
     output = capsys.readouterr().out
+    assert load_calls == [
+        (Path("unused"), {"allow_git_commit_mismatch": True}),
+    ]
     assert not hardware.control_requests
+    assert len(preview_calls) == 2
+    assert preview_calls[0][0] == "step"
+    assert preview_calls[0][1].positions == pytest.approx((2.014, 2.014))
+    assert preview_calls[0][2] == pytest.approx(np.zeros(3))
+    assert preview_calls[1] == ("reset",)
     assert "'initial_pose_error_max': 2.014" in output
+    assert "'preview_action_abs_max': 0.5" in output
     assert "no lease was acquired" in output
 
 

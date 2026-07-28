@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import math
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import equinox as eqx
@@ -13,7 +14,7 @@ import jax.numpy as jnp
 if TYPE_CHECKING:
     from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
 
-LOG_2PI = jnp.log(2.0 * jnp.pi)
+LOG_2PI = math.log(2.0 * math.pi)
 
 
 def identity_activation(x: jax.Array) -> jax.Array:

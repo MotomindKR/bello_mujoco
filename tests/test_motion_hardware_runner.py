@@ -97,16 +97,16 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
         anchor_body_id = 0
         anchor_body_index = 0
 
-        def _done_flags(self, _state):
+        def termination_flags(self, _state):
             return {"done/any": jnp.asarray(False)}
 
         def observation(self, state):
             return state.data.qpos[:2] + state.last_action[:2]
 
-        def _action_to_ctrl(self, state, action):
+        def action_target(self, state, action):
             return action + state.joint_default_offset[:2]
 
-        def _aligned_reference(self, _time, _alignment_xy, _alignment_yaw):
+        def aligned_reference(self, _time, _alignment_xy, _alignment_yaw):
             return SimpleNamespace(
                 body_pos=jnp.zeros((1, 3), dtype=jnp.float32),
                 body_quat=jnp.asarray(((1.0, 0.0, 0.0, 0.0),)),

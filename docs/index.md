@@ -27,13 +27,15 @@ src/bello_mujoco/
   motion/                  motion clips, import, and feasibility tools
   robstride/               CAN protocol, transmission, and hardware emulator
   training/                PPO, checkpoints, tracking, and Vast orchestration
-  cli.py                   seven public Hydra command adapters
   configuration.py         config decoding and maintained profiles
 tests/                     contract and integration tests
 ```
 
-The supported prepared asset is `full_body`, sourced from
-`assets/source/bello/`.
+The supported prepared asset is `full_body`. Its canonical URDF is
+`assets/source/bello/full_body/urdf/bello_full_body.urdf`, which directly
+references meshes under the lower- and upper-body directories. The component
+URDFs in those directories are retained as engineering references; asset
+preparation does not merge or read them.
 
 ## Runtime boundaries
 
@@ -47,6 +49,17 @@ The public configuration is profile-oriented. Internal topology, link names,
 coordinate partitions, numerical guardrails, and safety limits are validated
 constants rather than user-selectable Hydra branches.
 
-Generated paths include `.venv/`, `.uv-cache/`, `.uv-python/`, `.warp-cache/`,
-`.wandb/`, `assets/generated/`, `artifacts/`, `outputs/`, and `checkpoints/`.
-They must not be committed.
+Generated paths include `.venv/`, `.uv-python/`, `.warp-cache/`, `.wandb/`,
+`.vast/`, `assets/generated/`, `artifacts/`, `outputs/`, and `checkpoints/`.
+They must not be committed. The uv download cache lives under
+`$XDG_CACHE_HOME/uv`, outside the repository.
+
+## Distribution boundary
+
+Training, Vast orchestration, and exact-source checkpoints operate from a Git
+checkout. The tracked reference motion clips are intentionally repository data,
+not installed wheel data.
+
+This repository currently records neither a license grant nor a provenance
+manifest for the robot descriptions and meshes. Establish both before
+distributing the project or its assets outside their current environment.

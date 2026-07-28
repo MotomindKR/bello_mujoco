@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 import math
 import threading
@@ -17,19 +17,18 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.training.checkpoint import (
-    CheckpointMetadata,
     CheckpointNormalizationState,
-    restore_evaluation_checkpoint,
-    validate_motion_clip_contract,
+    MotionCheckpointMetadata,
 )
-from bello_mujoco.repository import resolve_repository_path
 from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingState,
     quat_distance,
 )
-from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.hardware import _pose_pb2
+from bello_mujoco.hardware.config import HardwareControlConfig
+from bello_mujoco.motion.native import NativeContactData, NativeMotionData
+from bello_mujoco.motion.runtime import load_motion_policy_runtime
 from bello_mujoco.hardware.runtime import (
     HOLD_CONFIRMATION,
     HardwareFrame,
@@ -46,36 +45,17 @@ from bello_mujoco.hardware.runtime import (
     wait_for_hardware_frame,
 )
 from bello_mujoco.policy import apply_actor
-from bello_mujoco.evaluation.render import quat_rotate_np
+from bello_mujoco.spatial import quat_rotate_wxyz
 from bello_mujoco.training.ppo import normalize_observation
 
 
 @dataclass(frozen=True)
-class HardwareMotionConfig:
+class HardwareMotionConfig(HardwareControlConfig):
     """Hardware, pose-estimator, and fail-closed motion deployment settings."""
 
-    endpoint: str = "http://127.0.0.1:50051"
-    groups: tuple[str, ...] = ("lower_body", "upper_body")
-    imu_name: str = "imu"
     client_name: str = "bello-motion-policy"
     motion_path: Path | None = None
-    arm: bool = False
-    connection_timeout_seconds: float = 3.0
-    telemetry_timeout_seconds: float = 2.0
-    command_validity_seconds: float = 0.08
-    acknowledgement_timeout_seconds: float = 0.08
-    rpc_timeout_seconds: float = 2.0
-    ramp_seconds: float = 10.0
-    max_duration_seconds: float | None = 10.0
-    max_motor_age_ms: int = 100
-    max_imu_age_ms: int = 100
     max_initial_position_error_radians: float = 0.75
-    max_target_step_radians: float = 0.05
-    max_tilt_radians: float = 0.70
-    max_angular_velocity: float = 20.0
-    max_linear_acceleration: float = 100.0
-    max_loop_lag_seconds: float = 0.10
-    status_interval_seconds: float = 1.0
     pose_endpoint: str = "127.0.0.1:50052"
     pose_reference_frame: str = "odom"
     pose_tracked_frame: str = "pelvis_link"
@@ -113,28 +93,6 @@ class HardwareMotionStep:
     anchor_position_error: float
     anchor_orientation_error: float
     action_clipped: bool
-
-
-@dataclass(frozen=True)
-class _HardwareContactData:
-    contact__geom: jax.Array
-    nacon: jax.Array
-    contact__worldid: jax.Array
-    contact__efc_address: jax.Array
-    efc__force: jax.Array
-
-
-@dataclass(frozen=True)
-class _HardwareMotionData:
-    qpos: jax.Array
-    qvel: jax.Array
-    ctrl: jax.Array
-    xpos: jax.Array
-    xquat: jax.Array
-    cvel: jax.Array
-    subtree_com: jax.Array
-    actuator_force: jax.Array
-    _impl: _HardwareContactData
 
 
 @dataclass(frozen=True)
@@ -204,13 +162,13 @@ def _build_motion_inference(
     env: BelloMotionTrackingEnv,
     policy: Any,
     normalization: Any,
-    metadata: CheckpointMetadata,
+    metadata: MotionCheckpointMetadata,
     config: HardwareMotionConfig,
 ) -> Any:
     layout = _motion_inference_layout(env)
     body_count = env.model.mj_model.nbody
     stack_size = metadata.ppo.policy.obs_stack_size
-    empty_contacts = _HardwareContactData(
+    empty_contacts = NativeContactData(
         contact__geom=jnp.zeros((0, 2), dtype=jnp.int32),
         nacon=jnp.zeros(1, dtype=jnp.int32),
         contact__worldid=jnp.zeros(0, dtype=jnp.int32),
@@ -233,7 +191,7 @@ def _build_motion_inference(
         xpos = hardware_state[layout.xpos].reshape(body_count, 3)
         xquat = hardware_state[layout.xquat].reshape(body_count, 4)
         state = MotionTrackingState(
-            data=_HardwareMotionData(
+            data=NativeMotionData(
                 qpos=qpos,
                 qvel=qvel,
                 ctrl=ctrl,
@@ -257,7 +215,7 @@ def _build_motion_inference(
             last_episode_return=jnp.asarray(0.0, dtype=jnp.float32),
             last_episode_length=jnp.asarray(0, dtype=jnp.int32),
         )
-        done_flags = env._done_flags(state)
+        done_flags = env.termination_flags(state)
         observation = env.observation(state)
         initial_stack = jnp.repeat(observation[None, :], stack_size, axis=0)
         shifted_stack = jnp.concatenate(
@@ -275,8 +233,8 @@ def _build_motion_inference(
         )
         raw_action = apply_actor(policy, normalized)
         action = jnp.clip(raw_action, -config.max_action_abs, config.max_action_abs)
-        physical_target = env._action_to_ctrl(state, action)
-        reference = env._aligned_reference(
+        physical_target = env.action_target(state, action)
+        reference = env.aligned_reference(
             state.reference_time,
             state.alignment_xy,
             state.alignment_yaw,
@@ -476,7 +434,7 @@ class HardwareMotionPolicyAdapter:
         self,
         env: BelloMotionTrackingEnv,
         policy: Any,
-        metadata: CheckpointMetadata,
+        metadata: MotionCheckpointMetadata,
         normalization: CheckpointNormalizationState,
         config: HardwareMotionConfig,
     ) -> None:
@@ -546,7 +504,7 @@ class HardwareMotionPolicyAdapter:
 
     def initialize_alignment(self, pose: PoseFrame) -> None:
         pose_quat = xyzw_to_wxyz(pose.orientation_xyzw)
-        source = self.env._aligned_reference(
+        source = self.env.aligned_reference(
             jnp.asarray(self.start_time, dtype=jnp.float32),
             jnp.zeros(2, dtype=jnp.float32),
             jnp.asarray(0.0, dtype=jnp.float32),
@@ -558,7 +516,7 @@ class HardwareMotionPolicyAdapter:
             (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)),
             dtype=np.float64,
         )
-        rotated_source = quat_rotate_np(yaw_quat, source_position)
+        rotated_source = quat_rotate_wxyz(yaw_quat, source_position)
         self._alignment_xy = np.asarray(
             pose.position[:2] - rotated_source[:2], dtype=np.float32
         )
@@ -571,7 +529,7 @@ class HardwareMotionPolicyAdapter:
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
 
     def precompile(self) -> None:
-        source = self.env._aligned_reference(
+        source = self.env.aligned_reference(
             jnp.asarray(self.start_time, dtype=jnp.float32),
             jnp.zeros(2, dtype=jnp.float32),
             jnp.asarray(0.0, dtype=jnp.float32),
@@ -684,7 +642,7 @@ class HardwareMotionPolicyAdapter:
         qpos[root + 3 : root + 7] = root_quat
         qpos[model.actuator_qpos_indices] = logical_position
         qvel[root_velocity : root_velocity + 3] = pose.linear_velocity
-        qvel[root_velocity + 3 : root_velocity + 6] = quat_rotate_np(
+        qvel[root_velocity + 3 : root_velocity + 6] = quat_rotate_wxyz(
             root_quat, frame.angular_velocity
         )
         qvel[model.actuator_qvel_indices] = logical_velocity
@@ -707,12 +665,10 @@ class HardwareMotionPolicyAdapter:
 
 
 def validate_hardware_motion_checkpoint(
-    env: BelloMotionTrackingEnv, metadata: CheckpointMetadata
+    env: BelloMotionTrackingEnv, metadata: MotionCheckpointMetadata
 ) -> None:
     if metadata.task != "motion_tracking":
         raise ValueError("motion hardware runner requires a motion-tracking checkpoint")
-    if metadata.motion is None or metadata.motion_env is None:
-        raise ValueError("motion checkpoint is missing its motion contract")
     if metadata.motion_env.formulation != "beyondmimic_joint_limits":
         raise ValueError(
             "motion hardware deployment requires the bounded BeyondMimic formulation"
@@ -779,34 +735,22 @@ def validate_hardware_motion_config(
 def load_hardware_motion_policy(
     checkpoint_path: Path,
     config: HardwareMotionConfig,
-) -> tuple[HardwareMotionPolicyAdapter, CheckpointMetadata]:
-    train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path
+) -> tuple[HardwareMotionPolicyAdapter, MotionCheckpointMetadata]:
+    runtime = load_motion_policy_runtime(
+        checkpoint_path,
+        motion_path=config.motion_path,
+        use_viewer_model=False,
+        allow_git_commit_mismatch=config.allow_git_commit_mismatch,
     )
-    if (
-        metadata.task != "motion_tracking"
-        or metadata.motion is None
-        or metadata.motion_env is None
-    ):
-        raise ValueError("checkpoint is not a complete motion-tracking checkpoint")
-    resolved_motion = (
-        resolve_repository_path(metadata.motion.path)
-        if config.motion_path is None
-        else config.motion_path
-    )
-    env_config = replace(metadata.motion_env, motion_path=resolved_motion)
-    prepared = prepare_asset(metadata.asset)
-    env = BelloMotionTrackingEnv.load_prepared_native(
-        prepared,
-        env_config,
-        actuator_config=metadata.asset.actuator_config,
-    )
-    validate_motion_clip_contract(resolved_motion, env.motion, metadata.motion)
     return (
         HardwareMotionPolicyAdapter(
-            env, train_state.policy, metadata, normalization, config
+            runtime.env,
+            runtime.policy,
+            runtime.metadata,
+            runtime.normalization,
+            config,
         ),
-        metadata,
+        runtime.metadata,
     )
 
 

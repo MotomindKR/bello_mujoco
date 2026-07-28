@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import fcntl
 import json
 import math
@@ -20,12 +19,22 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import FrameType
-from typing import Any, Protocol
+from typing import Literal
 from urllib.parse import urlparse
 
 import keyring
 
 from bello_mujoco.configuration import ExperimentName, profile_config_relative_path
+from bello_mujoco.training.vast_provider import (
+    VastApi,
+    VastOffer,
+    VastSdkClient,
+    exception_http_status,
+)
+from bello_mujoco.training.vast_remote import (
+    run_remote_training,
+    wait_for_ssh,
+)
 
 
 VAST_KEYRING_SERVICE = "vast"
@@ -34,8 +43,6 @@ WANDB_KEYRING_SERVICE = "wandb"
 WANDB_KEYRING_USERNAME = "api_key"
 GITHUB_KEYRING_SERVICE = "github"
 GITHUB_KEYRING_USERNAME = "bello_mujoco_read_token"
-LIFECYCLE_STATE_VERSION = 1
-SSH_SUBPROCESS_TIMEOUT_SECONDS = 60.0
 WATCHDOG_TEARDOWN_GRACE_SECONDS = 900
 
 
@@ -85,133 +92,12 @@ class GitSelection:
 
 
 @dataclass(frozen=True)
-class RemoteJobUpdate:
-    """One bounded log/status response from a detached remote job."""
-
-    state: str
-    offset: int
-    output: bytes
-    returncode: int | None = None
-
-
-@dataclass(frozen=True)
 class VastLifecycleState:
     """Durable state for reconciling a possibly billed Vast instance."""
 
-    phase: str
+    phase: Literal["creating", "active"]
     label: str
     instance_id: int | None
-    created_at: str
-
-
-@dataclass(frozen=True)
-class VastOffer:
-    id: int
-    gpu_name: str
-    dph_total: float
-    dlperf_per_dphtotal: float
-    reliability: float
-    geolocation: str
-    cpu_ram_mb: int
-    gpu_ram_mb: int
-    num_gpus: int
-    cuda_max_good: float
-    disk_space_gb: float
-    direct_port_count: int
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> VastOffer:
-        try:
-            return cls(
-                id=int(value["id"]),
-                gpu_name=str(value["gpu_name"]),
-                dph_total=float(value["dph_total"]),
-                dlperf_per_dphtotal=float(value["dlperf_per_dphtotal"]),
-                reliability=float(value["reliability"]),
-                geolocation=str(value["geolocation"]),
-                cpu_ram_mb=int(value["cpu_ram"]),
-                gpu_ram_mb=int(value["gpu_ram"]),
-                num_gpus=int(value["num_gpus"]),
-                cuda_max_good=float(value["cuda_max_good"]),
-                disk_space_gb=float(value["disk_space"]),
-                direct_port_count=int(value["direct_port_count"]),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"invalid Vast offer response: {value!r}") from exc
-
-
-class VastApi(Protocol):
-    def search_offers(
-        self, query: str, *, order: str, limit: int, storage: float
-    ) -> list[Mapping[str, Any]]: ...
-
-    def create_instance(self, offer_id: int, **kwargs: Any) -> int: ...
-
-    def show_instance(self, instance_id: int) -> Mapping[str, Any] | None: ...
-
-    def show_instances(self) -> list[Mapping[str, Any]]: ...
-
-    def ssh_url(self, instance_id: int) -> str: ...
-
-    def destroy_instance(self, instance_id: int) -> None: ...
-
-
-class VastSdkClient:
-    """Typed boundary around the lock-pinned Vast SDK."""
-
-    def __init__(self, api_key: str):
-        from vastai import VastAI
-
-        self._client = VastAI(api_key=api_key)
-
-    def search_offers(
-        self, query: str, *, order: str, limit: int, storage: float
-    ) -> list[Mapping[str, Any]]:
-        value = self._client.search_offers(
-            query=query,
-            order=order,
-            limit=limit,
-            storage=storage,
-        )
-        if not isinstance(value, list):
-            raise RuntimeError(f"unexpected Vast offer response: {value!r}")
-        if any(not isinstance(item, Mapping) or "id" not in item for item in value):
-            raise RuntimeError(f"unexpected Vast offer response: {value!r}")
-        return value
-
-    def create_instance(self, offer_id: int, **kwargs: Any) -> int:
-        value = self._client.create_instance(id=offer_id, **kwargs)
-        try:
-            return int(value["new_contract"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"Vast did not return a new instance id: {value!r}"
-            ) from exc
-
-    def show_instance(self, instance_id: int) -> Mapping[str, Any] | None:
-        value = self._client.show_instance(id=instance_id)
-        if value is None:
-            return None
-        if not isinstance(value, Mapping) or "id" not in value:
-            raise RuntimeError(f"unexpected Vast instance response: {value!r}")
-        return value
-
-    def show_instances(self) -> list[Mapping[str, Any]]:
-        value = self._client.show_instances()
-        if not isinstance(value, list):
-            raise RuntimeError(f"unexpected Vast instances response: {value!r}")
-        if any(not isinstance(item, Mapping) or "id" not in item for item in value):
-            raise RuntimeError(f"unexpected Vast instances response: {value!r}")
-        return value
-
-    def ssh_url(self, instance_id: int) -> str:
-        value = self._client.ssh_url(id=instance_id)
-        if not isinstance(value, str):
-            raise RuntimeError(f"unexpected Vast SSH URL response: {value!r}")
-        return value.strip()
-
-    def destroy_instance(self, instance_id: int) -> None:
-        self._client.destroy_instance(id=instance_id)
 
 
 def credential(env_name: str, service: str, username: str, *, required: bool) -> str:
@@ -265,12 +151,15 @@ def validate_config(config: VastTrainConfig) -> None:
     if config.reconcile_retries <= 0 or config.destroy_retries <= 0:
         raise ValueError("reconcile-retries and destroy-retries must be positive")
     remote_dir = PurePosixPath(config.remote_dir)
+    workspace = PurePosixPath("/workspace")
     if (
         not remote_dir.is_absolute()
-        or len(remote_dir.parts) < 3
-        or remote_dir.parts[1] != "workspace"
+        or remote_dir.anchor != "/"
+        or workspace not in remote_dir.parents
+        or ".." in remote_dir.parts
+        or str(remote_dir) != config.remote_dir
     ):
-        raise ValueError("--remote-dir must be a child of /workspace")
+        raise ValueError("--remote-dir must be a normalized strict child of /workspace")
     state_dir = config.lifecycle_state_dir
     if (
         state_dir.is_absolute()
@@ -329,7 +218,7 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
 
     ref = f"refs/remotes/origin/{branch}"
     commit = run_git(repo_root, "rev-parse", f"{ref}^{{commit}}")
-    for path in (str(config_path), "pyproject.toml", "uv.lock"):
+    for path in (str(config_path), ".python-version", "pyproject.toml", "uv.lock"):
         try:
             run_git(repo_root, "cat-file", "-e", f"{commit}:{path}")
         except subprocess.CalledProcessError as exc:
@@ -492,7 +381,6 @@ def write_creating_state(state_path: Path, label: str) -> None:
             phase="creating",
             label=label,
             instance_id=None,
-            created_at=datetime.now(UTC).isoformat(),
         ),
     )
 
@@ -504,7 +392,6 @@ def write_active_state(state_path: Path, instance_id: int, label: str) -> None:
             phase="active",
             label=label,
             instance_id=instance_id,
-            created_at=datetime.now(UTC).isoformat(),
         ),
     )
 
@@ -514,11 +401,9 @@ def _write_lifecycle_state(state_path: Path, state: VastLifecycleState) -> None:
     payload = (
         json.dumps(
             {
-                "version": LIFECYCLE_STATE_VERSION,
                 "phase": state.phase,
                 "instance_id": state.instance_id,
                 "label": state.label,
-                "created_at": state.created_at,
             },
             indent=2,
             sort_keys=True,
@@ -553,16 +438,14 @@ def read_lifecycle_state(state_path: Path) -> VastLifecycleState | None:
     value = json.loads(state_path.read_text())
     if not isinstance(value, Mapping):
         raise ValueError(f"invalid Vast lifecycle state at {state_path}")
+    expected_fields = {"phase", "instance_id", "label"}
+    if set(value) != expected_fields:
+        raise ValueError(
+            f"invalid Vast lifecycle state fields at {state_path}: "
+            f"expected {sorted(expected_fields)}, got {sorted(value)}"
+        )
 
-    version = value.get("version")
-    if version is None:
-        # Legacy state contained only a confirmed active ID. Reading this narrow
-        # format is intentional because abandoning it could leak a billed instance.
-        phase = "active"
-    elif type(version) is not int or version != LIFECYCLE_STATE_VERSION:
-        raise ValueError(f"unsupported Vast lifecycle state version {version!r}")
-    else:
-        phase = value.get("phase")
+    phase = value["phase"]
     if phase not in {"creating", "active"}:
         raise ValueError(f"invalid Vast lifecycle phase {phase!r}")
 
@@ -575,14 +458,10 @@ def read_lifecycle_state(state_path: Path) -> VastLifecycleState | None:
             raise ValueError("creating Vast lifecycle state must not contain an ID")
     elif type(instance_id) is not int or instance_id <= 0:
         raise ValueError("active Vast lifecycle state requires a positive instance ID")
-    created_at = value.get("created_at", "")
-    if not isinstance(created_at, str):
-        raise ValueError("Vast lifecycle state created_at must be a string")
     return VastLifecycleState(
         phase=phase,
         label=label,
         instance_id=instance_id,
-        created_at=created_at,
     )
 
 
@@ -617,13 +496,7 @@ def _instance_absent_or_destroyed(api: VastApi, instance_id: int) -> bool:
 
 
 def _is_explicit_not_found(exc: BaseException) -> bool:
-    return _exception_http_status(exc) == 404
-
-
-def _exception_http_status(exc: BaseException) -> int | None:
-    response = getattr(exc, "response", None)
-    status = getattr(response, "status_code", None)
-    return status if type(status) is int else None
+    return exception_http_status(exc) == 404
 
 
 def reconcile_stale_state(
@@ -747,7 +620,7 @@ def create_available_instance(
                 image=config.offer.image,
                 disk=float(config.offer.disk_gb),
                 label=label,
-                runtype="ssh_direc ssh_proxy",
+                runtype="ssh_direc",
                 cancel_unavail=True,
                 onstart_cmd=watchdog_onstart_script(config),
             )
@@ -775,7 +648,7 @@ def create_available_instance(
 
 
 def _is_explicit_offer_unavailable(exc: BaseException) -> bool:
-    return _exception_http_status(exc) in {404, 410}
+    return exception_http_status(exc) in {404, 410}
 
 
 def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> int:
@@ -854,526 +727,13 @@ def wait_for_instance(
     raise TimeoutError(f"instance {instance_id} did not become ready in time")
 
 
-def parse_ssh_url(value: str) -> tuple[str, str, int]:
-    parsed = urlparse(value.strip())
-    if (
-        parsed.scheme != "ssh"
-        or not parsed.username
-        or not parsed.hostname
-        or not parsed.port
-    ):
-        raise ValueError(f"invalid Vast SSH URL: {value!r}")
-    return parsed.username, parsed.hostname, parsed.port
-
-
-def direct_ssh_target(info: Mapping[str, Any]) -> tuple[str, str, int] | None:
-    host = str(info.get("public_ipaddr", "")).strip()
-    ports = info.get("ports")
-    if not host or not isinstance(ports, Mapping):
-        return None
-    mappings = ports.get("22/tcp")
-    if not isinstance(mappings, list):
-        return None
-    for mapping in mappings:
-        if not isinstance(mapping, Mapping):
-            continue
-        host_port = mapping.get("HostPort")
-        try:
-            port = int(host_port)
-        except (TypeError, ValueError):
-            continue
-        if 0 < port <= 65535:
-            return "root", host, port
-    return None
-
-
-def ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
-    user, host, port = target
-    return [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "ConnectTimeout=10",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-p",
-        str(port),
-        f"{user}@{host}",
-        remote_command,
-    ]
-
-
-class SshExecutor:
-    """Subprocess boundary for non-interactive SSH probes and commands."""
-
-    def probe(self, target: tuple[str, str, int], *, timeout_seconds: float) -> None:
-        subprocess.run(
-            ssh_command(target, "true"),
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout_seconds,
-        )
-
-    def run(
-        self,
-        target: tuple[str, str, int],
-        remote_command: str,
-        *,
-        input_text: str | None = None,
-        timeout_seconds: float,
-    ) -> subprocess.CompletedProcess[str]:
-        kwargs: dict[str, Any] = {
-            "text": True,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-        }
-        if input_text is not None:
-            kwargs["input"] = input_text
-        return subprocess.run(
-            ssh_command(target, remote_command),
-            timeout=timeout_seconds,
-            **kwargs,
-        )
-
-
-def wait_for_ssh(
-    api: VastApi,
-    instance_id: int,
-    timeout_seconds: int,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-    executor: SshExecutor | None = None,
-) -> tuple[str, str, int]:
-    executor = executor or SshExecutor()
-    deadline = time.monotonic() + timeout_seconds
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        targets: list[tuple[str, str, int]] = []
-        try:
-            direct_target = direct_ssh_target(api.show_instance(instance_id))
-            if direct_target is not None:
-                targets.append(direct_target)
-            proxy_target = parse_ssh_url(api.ssh_url(instance_id))
-            if proxy_target not in targets:
-                targets.append(proxy_target)
-        except (OSError, ValueError) as exc:
-            last_error = exc
-        for target in targets:
-            try:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                executor.probe(
-                    target,
-                    timeout_seconds=min(SSH_SUBPROCESS_TIMEOUT_SECONDS, remaining),
-                )
-                return target
-            except (
-                OSError,
-                subprocess.CalledProcessError,
-                subprocess.TimeoutExpired,
-            ) as exc:
-                last_error = exc
-        if time.monotonic() < deadline:
-            sleep(10)
-    raise TimeoutError(f"SSH did not become ready: {last_error}")
-
-
-REMOTE_TRAIN_SCRIPT = r"""set -Eeuo pipefail
-
-branch="$1"
-expected_commit="$2"
-repo_url="$3"
-remote_dir="$4"
-experiment="$5"
-motion_path="$6"
-run_name="$7"
-
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip
-
-python3 -m pip install --break-system-packages --disable-pip-version-check uv==0.11.25
-command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
-
-askpass="$(mktemp /tmp/bello-git-askpass.XXXXXX)"
-cleanup_askpass() { rm -f "$askpass"; }
-trap cleanup_askpass EXIT
-cat > "$askpass" <<'ASKPASS'
-#!/usr/bin/env bash
-case "$1" in
-  *Username*) printf '%s\n' x-access-token ;;
-  *) printf '%s\n' "${GITHUB_TOKEN:-}" ;;
-esac
-ASKPASS
-chmod 700 "$askpass"
-
-rm -rf "$remote_dir"
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --single-branch --branch "$branch" "$repo_url" "$remote_dir"
-else
-  GIT_TERMINAL_PROMPT=0 git clone --single-branch --branch "$branch" "$repo_url" "$remote_dir"
-fi
-unset GITHUB_TOKEN
-cleanup_askpass
-trap - EXIT
-cd "$remote_dir"
-actual_commit="$(git rev-parse HEAD)"
-if [ "$actual_commit" != "$expected_commit" ]; then
-  echo "origin/$branch moved from $expected_commit to $actual_commit; refusing unpinned training" >&2
-  exit 1
-fi
-
-export UV_CACHE_DIR="$PWD/.uv-cache"
-export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
-export WARP_CACHE_PATH="$PWD/.warp-cache"
-export MUJOCO_GL=egl
-export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export JAX_DEFAULT_MATMUL_PRECISION=highest
-
-uv python install 3.12
-uv sync --frozen
-uv run python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
-
-training_overrides=("experiment=$experiment")
-if [ -n "$motion_path" ]; then
-  training_overrides+=("motion_path=$motion_path")
-fi
-
-uv run bello-train \
-  "${training_overrides[@]}" \
-  total_timesteps=768 \
-  num_envs=32 \
-  wandb_enabled=false \
-  video_enabled=false
-
-uv run bello-train \
-  "${training_overrides[@]}" \
-  wandb_enabled=true \
-  run_name="$run_name" \
-  checkpoint_name="$run_name"
-"""
-
-
-def run_remote_training(
-    target: tuple[str, str, int],
-    selection: GitSelection,
-    config: VastTrainConfig,
-    run_name: str,
-    *,
-    wandb_key: str,
-    github_token: str,
-    sleep: Callable[[float], None] = time.sleep,
-    executor: SshExecutor | None = None,
-) -> None:
-    executor = executor or SshExecutor()
-    remote_env = {
-        "WANDB_API_KEY": wandb_key,
-        "GITHUB_TOKEN": github_token,
-    }
-    job_dir = f"/workspace/.bello-vast-jobs/{run_name}"
-    start_command = _remote_start_command(
-        job_dir,
-        selection,
-        config,
-        run_name,
-    )
-    payload = json.dumps({"environment": remote_env, "script": REMOTE_TRAIN_SCRIPT})
-    started_at = time.monotonic()
-    ssh_start_deadline = started_at + config.ssh_timeout_seconds
-    job_deadline = started_at + config.job_timeout_seconds
-    disconnect_reported = False
-
-    while True:
-        now = time.monotonic()
-        if now >= job_deadline:
-            raise TimeoutError(
-                f"remote training exceeded {config.job_timeout_seconds} seconds "
-                "while starting"
-            )
-        if now >= ssh_start_deadline:
-            raise TimeoutError("SSH did not recover while starting remote training")
-        try:
-            result = executor.run(
-                target,
-                start_command,
-                input_text=payload,
-                timeout_seconds=min(
-                    SSH_SUBPROCESS_TIMEOUT_SECONDS,
-                    job_deadline - now,
-                    ssh_start_deadline - now,
-                ),
-            )
-        except subprocess.TimeoutExpired:
-            if not disconnect_reported:
-                print("SSH timed out while starting; retrying the detached remote job.")
-                disconnect_reported = True
-            sleep(5)
-            continue
-        if result.returncode == 0:
-            if result.stdout:
-                print(result.stdout, end="")
-            if result.stderr:
-                print(result.stderr, end="", file=sys.stderr)
-            break
-        if result.returncode != 255:
-            if result.stdout:
-                print(result.stdout, end="")
-            if result.stderr:
-                print(result.stderr, end="", file=sys.stderr)
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                result.args,
-                output=result.stdout,
-                stderr=result.stderr,
-            )
-        if time.monotonic() >= ssh_start_deadline:
-            raise TimeoutError("SSH did not recover while starting remote training")
-        if not disconnect_reported:
-            print("SSH disconnected while starting; retrying the detached remote job.")
-            disconnect_reported = True
-        sleep(5)
-
-    offset = 0
-    disconnected_at: float | None = None
-    last_progress_at = time.monotonic()
-    while True:
-        now = time.monotonic()
-        if now >= job_deadline:
-            raise TimeoutError(
-                f"remote training exceeded {config.job_timeout_seconds} seconds"
-            )
-        if now - last_progress_at >= config.progress_timeout_seconds:
-            raise TimeoutError(
-                "remote training produced no new output for "
-                f"{config.progress_timeout_seconds} seconds"
-            )
-        if (
-            disconnected_at is not None
-            and now - disconnected_at >= config.ssh_timeout_seconds
-        ):
-            raise TimeoutError(
-                "SSH did not recover while detached remote training was running"
-            )
-        call_deadlines = [
-            job_deadline,
-            last_progress_at + config.progress_timeout_seconds,
-        ]
-        if disconnected_at is not None:
-            call_deadlines.append(disconnected_at + config.ssh_timeout_seconds)
-        try:
-            result = executor.run(
-                target,
-                _remote_status_command(job_dir, offset),
-                timeout_seconds=min(
-                    SSH_SUBPROCESS_TIMEOUT_SECONDS,
-                    min(call_deadlines) - now,
-                ),
-            )
-        except subprocess.TimeoutExpired:
-            if disconnected_at is None:
-                disconnected_at = time.monotonic()
-                print("SSH timed out; remote training continues while reconnecting.")
-            sleep(5)
-            continue
-        if result.returncode == 255:
-            now = time.monotonic()
-            if disconnected_at is None:
-                disconnected_at = now
-                print("SSH disconnected; remote training continues while reconnecting.")
-            if now - disconnected_at >= config.ssh_timeout_seconds:
-                raise TimeoutError(
-                    "SSH did not recover while detached remote training was running"
-                )
-            sleep(5)
-            continue
-        if result.returncode != 0:
-            if result.stdout:
-                print(result.stdout, end="")
-            if result.stderr:
-                print(result.stderr, end="", file=sys.stderr)
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                result.args,
-                output=result.stdout,
-                stderr=result.stderr,
-            )
-        if disconnected_at is not None:
-            print("SSH reconnected; resuming remote training output.")
-            disconnected_at = None
-        if result.stderr:
-            print(result.stderr, end="", file=sys.stderr)
-        update = _parse_remote_job_update(result.stdout)
-        if update.output:
-            sys.stdout.flush()
-            sys.stdout.buffer.write(update.output)
-            sys.stdout.buffer.flush()
-        if update.offset != offset:
-            last_progress_at = time.monotonic()
-        offset = update.offset
-        if update.state == "running":
-            sleep(10)
-            continue
-        if update.state == "lost":
-            raise RuntimeError("detached remote training exited without a status")
-        if update.returncode:
-            raise subprocess.CalledProcessError(
-                update.returncode,
-                ["detached remote training", run_name],
-            )
-        return
-
-
-def _remote_start_command(
-    job_dir: str,
-    selection: GitSelection,
-    config: VastTrainConfig,
-    run_name: str,
-) -> str:
-    bootstrap = r"""import json, os, pathlib, subprocess, sys
-payload = json.load(sys.stdin)
-env = payload["environment"]
-script = payload["script"]
-job_dir = pathlib.Path(sys.argv[1])
-job_dir.mkdir(parents=True, exist_ok=True)
-script_path = job_dir / "train.sh"
-log_path = job_dir / "output.log"
-pid_path = job_dir / "pid"
-status_path = job_dir / "status"
-if status_path.exists():
-    print(f"Detached remote job already completed in {job_dir}.")
-    raise SystemExit(0)
-if pid_path.exists():
-    try:
-        os.kill(int(pid_path.read_text()), 0)
-    except (OSError, ValueError) as error:
-        raise RuntimeError(f"Detached remote job has a stale PID in {job_dir}.") from error
-    else:
-        print(f"Detached remote job already running in {job_dir}.")
-        raise SystemExit(0)
-script_path.write_text(script)
-wrapper = r'''set +e
-script_path="$1"
-status_path="$2"
-shift 2
-bash "$script_path" "$@"
-status=$?
-status_tmp="$status_path.$$"
-printf '%s\n' "$status" > "$status_tmp"
-mv "$status_tmp" "$status_path"
-exit "$status"
-'''
-with log_path.open("ab", buffering=0) as log:
-    process = subprocess.Popen(
-        ["bash", "-c", wrapper, "bello-vast-job", str(script_path), str(status_path), *sys.argv[2:]],
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        env=os.environ | env,
-        start_new_session=True,
-        close_fds=True,
-    )
-pid_path.write_text(f"{process.pid}\n")
-print(f"Started detached remote job {process.pid} in {job_dir}.")
-"""
-    return shlex.join(
-        [
-            "python3",
-            "-c",
-            bootstrap,
-            job_dir,
-            selection.branch,
-            selection.commit,
-            selection.repo_url,
-            str(config.remote_dir),
-            config.experiment,
-            (
-                str(_repository_motion_path(config.motion_path))
-                if config.motion_path is not None
-                else ""
-            ),
-            run_name,
-        ]
-    )
-
-
-def _remote_status_command(job_dir: str, offset: int) -> str:
-    status_reader = r"""import base64, json, os, pathlib, sys
-job_dir = pathlib.Path(sys.argv[1])
-offset = int(sys.argv[2])
-log_path = job_dir / "output.log"
-status_path = job_dir / "status"
-pid_path = job_dir / "pid"
-if not log_path.is_file():
-    raise RuntimeError(f"detached remote job log is missing: {log_path}")
-size = log_path.stat().st_size
-if offset > size:
-    raise RuntimeError(f"log offset {offset} exceeds current size {size}")
-with log_path.open("rb") as log:
-    log.seek(offset)
-    output = log.read(262144)
-next_offset = offset + len(output)
-returncode = int(status_path.read_text()) if status_path.exists() else None
-if returncode is not None and next_offset >= size:
-    state = "complete"
-elif returncode is not None:
-    state = "running"
-else:
-    try:
-        pid = int(pid_path.read_text())
-        os.kill(pid, 0)
-    except (OSError, ValueError):
-        state = "lost"
-    else:
-        state = "running"
-print(json.dumps({
-    "state": state,
-    "offset": next_offset,
-    "output": base64.b64encode(output).decode("ascii"),
-    "returncode": returncode,
-}))
-"""
-    return shlex.join(["python3", "-c", status_reader, job_dir, str(offset)])
-
-
-def _parse_remote_job_update(value: str) -> RemoteJobUpdate:
-    try:
-        parsed = json.loads(value)
-        state = str(parsed["state"])
-        offset = int(parsed["offset"])
-        output = base64.b64decode(parsed["output"], validate=True)
-        raw_returncode = parsed["returncode"]
-        returncode = None if raw_returncode is None else int(raw_returncode)
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"invalid detached remote job response: {value!r}") from exc
-    if state not in {"running", "complete", "lost"} or offset < 0:
-        raise RuntimeError(f"invalid detached remote job response: {value!r}")
-    return RemoteJobUpdate(
-        state=state,
-        offset=offset,
-        output=output,
-        returncode=returncode,
-    )
-
-
 class PipelineInterrupted(RuntimeError):
     pass
 
 
 @contextmanager
 def termination_handler():
-    handled_signals = tuple(
-        candidate
-        for candidate in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
-        if candidate is not None
-    )
+    handled_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
     previous = {candidate: signal.getsignal(candidate) for candidate in handled_signals}
 
     def handle_termination(signum: int, frame: FrameType | None) -> None:

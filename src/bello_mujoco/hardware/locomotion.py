@@ -15,19 +15,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.training.checkpoint import (
-    CheckpointMetadata,
     CheckpointNormalizationState,
-    restore_evaluation_checkpoint,
+    LocomotionCheckpointMetadata,
 )
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.evaluation.locomotion import (
-    GamepadCommandSource,
-    GamepadConfig,
-    GamepadInput,
-    validate_checkpoint_shape,
-)
+from bello_mujoco.gamepad import GamepadCommandSource, GamepadConfig, GamepadInput
+from bello_mujoco.hardware.config import HardwareControlConfig
 from bello_mujoco.hardware.runtime import (
     HOLD_CONFIRMATION,
     HardwareFrame,
@@ -47,34 +41,16 @@ from bello_mujoco.hardware.runtime import (
     wait_for_hardware_frame,
 )
 from bello_mujoco.policy import infer_policy_action
+from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 
 
 @dataclass(frozen=True)
-class HardwareLocomotionConfig:
+class HardwareLocomotionConfig(HardwareControlConfig):
     """Hardware endpoint, command, and fail-closed deployment limits."""
 
-    endpoint: str = "http://127.0.0.1:50051"
-    groups: tuple[str, ...] = ("lower_body", "upper_body")
-    imu_name: str = "imu"
     client_name: str = "bello-locomotion-policy"
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     gamepad: GamepadConfig = GamepadConfig()
-    arm: bool = False
-    connection_timeout_seconds: float = 3.0
-    telemetry_timeout_seconds: float = 2.0
-    command_validity_seconds: float = 0.08
-    acknowledgement_timeout_seconds: float = 0.08
-    rpc_timeout_seconds: float = 2.0
-    ramp_seconds: float = 10.0
-    max_duration_seconds: float | None = 10.0
-    max_motor_age_ms: int = 100
-    max_imu_age_ms: int = 100
-    max_target_step_radians: float = 0.05
-    max_tilt_radians: float = 0.70
-    max_angular_velocity: float = 20.0
-    max_linear_acceleration: float = 100.0
-    max_loop_lag_seconds: float = 0.10
-    status_interval_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -92,7 +68,7 @@ class HardwarePolicyAdapter:
         self,
         env: BelloLocomotionEnv,
         policy: Any,
-        metadata: CheckpointMetadata,
+        metadata: LocomotionCheckpointMetadata,
         normalization: CheckpointNormalizationState,
     ) -> None:
         validate_hardware_checkpoint(env, metadata)
@@ -247,37 +223,24 @@ class HardwarePolicyAdapter:
 
 def load_hardware_policy(
     checkpoint_path: Path,
-) -> tuple[HardwarePolicyAdapter, CheckpointMetadata]:
-    train_state, metadata, normalization = restore_evaluation_checkpoint(
-        checkpoint_path
+    *,
+    allow_git_commit_mismatch: bool = False,
+) -> tuple[HardwarePolicyAdapter, LocomotionCheckpointMetadata]:
+    runtime = load_locomotion_policy_runtime(
+        checkpoint_path,
+        use_viewer_model=False,
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
-    if metadata.task != "locomotion":
-        raise ValueError(f"checkpoint task is {metadata.task!r}, not 'locomotion'")
-    if any(
-        value is None
-        for value in (metadata.env, metadata.reward, metadata.command, metadata.done)
-    ):
-        raise ValueError("locomotion checkpoint is missing its environment contract")
-    prepared = prepare_asset(metadata.asset)
-    env = BelloLocomotionEnv.load_prepared(
-        prepared,
-        warp=metadata.warp,
-        batch_size=1,
-        env_config=metadata.env,
-        actuator_config=metadata.asset.actuator_config,
-        reward_config=metadata.reward,
-        command_config=metadata.command,
-        done_config=metadata.done,
-        load_mjx=False,
-    )
-    validate_checkpoint_shape(env, metadata)
     return HardwarePolicyAdapter(
-        env, train_state.policy, metadata, normalization
-    ), metadata
+        runtime.env,
+        runtime.policy,
+        runtime.metadata,
+        runtime.normalization,
+    ), runtime.metadata
 
 
 def validate_hardware_checkpoint(
-    env: BelloLocomotionEnv, metadata: CheckpointMetadata
+    env: BelloLocomotionEnv, metadata: LocomotionCheckpointMetadata
 ) -> None:
     if metadata.task != "locomotion":
         raise ValueError("hardware locomotion requires a locomotion checkpoint")
@@ -312,7 +275,8 @@ def validate_hardware_checkpoint(
 
 
 def validate_hardware_config(
-    config: HardwareLocomotionConfig, metadata: CheckpointMetadata | None = None
+    config: HardwareLocomotionConfig,
+    metadata: LocomotionCheckpointMetadata | None = None,
 ) -> None:
     validate_hardware_control_config(config)
     command = np.asarray(config.command, dtype=np.float64)
@@ -326,15 +290,18 @@ def validate_hardware_config(
         raise ValueError("gamepad.deadzone must be in [0, 1)")
 
 
-def validate_command(command: np.ndarray, metadata: CheckpointMetadata) -> None:
+def validate_command(
+    command: np.ndarray,
+    metadata: LocomotionCheckpointMetadata,
+) -> None:
     command_config = metadata.command
-    if command_config is None:
-        raise ValueError("locomotion checkpoint is missing command metadata")
     if not command_config.enabled:
         if np.any(command != 0.0):
             raise ValueError(
                 "checkpoint disables commands; hardware command must be zero"
             )
+        return
+    if command_config.standing_probability > 0.0 and np.all(command == 0.0):
         return
     bounds = np.asarray(command_config.range_array(), dtype=np.float64)
     if np.any(command < bounds[:, 0]) or np.any(command > bounds[:, 1]):
@@ -345,10 +312,8 @@ def validate_command(command: np.ndarray, metadata: CheckpointMetadata) -> None:
 
 
 def command_ranges(
-    metadata: CheckpointMetadata,
+    metadata: LocomotionCheckpointMetadata,
 ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
-    if metadata.command is None:
-        raise ValueError("locomotion checkpoint is missing command metadata")
     configured_bounds = (
         metadata.command.lin_vel_x,
         metadata.command.lin_vel_y,
@@ -364,9 +329,17 @@ def command_ranges(
     )
 
 
+def command_minimum_moving_speeds(
+    metadata: LocomotionCheckpointMetadata,
+) -> tuple[float, float, float]:
+    linear = float(metadata.command.minimum_moving_linear_speed)
+    yaw = float(metadata.command.minimum_moving_yaw_speed)
+    return (linear, linear, yaw)
+
+
 def hardware_command(
     config: HardwareLocomotionConfig,
-    metadata: CheckpointMetadata,
+    metadata: LocomotionCheckpointMetadata,
     gamepad_input: GamepadInput,
 ) -> np.ndarray:
     command = (
@@ -402,17 +375,27 @@ def run_hardware_locomotion(
     operator_input: Callable[[str], str] | None = None,
 ) -> None:
     validate_hardware_config(config)
-    adapter, metadata = load_hardware_policy(checkpoint_path)
+    adapter, metadata = load_hardware_policy(
+        checkpoint_path,
+        allow_git_commit_mismatch=config.allow_git_commit_mismatch,
+    )
     validate_hardware_config(config, metadata)
     adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
     if config.arm:
         require_async_hardware_binding(binding)
     with ExitStack() as resources:
-        gamepad = gamepad_factory(config.gamepad, command_ranges(metadata))
+        gamepad = gamepad_factory(
+            config.gamepad,
+            command_ranges(metadata),
+            command_minimum_moving_speeds(metadata),
+        )
         resources.callback(gamepad.close)
         gamepad_input = gamepad.poll()
         report_gamepad_connection(gamepad_input)
+        if gamepad_input.exit_active:
+            print("Hardware gamepad requested exit before preflight.")
+            return
         command = hardware_command(config, metadata, gamepad_input)
 
         robot = resources.enter_context(
@@ -440,6 +423,8 @@ def run_hardware_locomotion(
         initial_error = float(
             np.max(np.abs(frame.positions - adapter.nominal_physical_target))
         )
+        preview = adapter.step(frame, command)
+        adapter.reset()
         print(
             {
                 "hardware_preflight": "passed",
@@ -453,6 +438,8 @@ def run_hardware_locomotion(
                 "gamepad_connected": gamepad_input.connected,
                 "command": tuple(float(value) for value in command),
                 "initial_pose_error_max": initial_error,
+                "preview_action_abs_max": float(np.max(np.abs(preview.action))),
+                "preview_tilt_radians": preview.tilt_radians,
                 "armed": config.arm,
             }
         )
@@ -512,7 +499,7 @@ def control_physical_robot(
         def continue_ramp() -> bool:
             gamepad_input = gamepad.poll()
             report_gamepad_connection(gamepad_input)
-            if gamepad_input.exit_requested:
+            if gamepad_input.exit_active:
                 print("Hardware gamepad requested exit during the nominal-pose ramp.")
                 return False
             return True
@@ -530,7 +517,7 @@ def control_physical_robot(
         def continue_hold() -> bool:
             gamepad_input = gamepad.poll()
             report_gamepad_connection(gamepad_input)
-            if gamepad_input.exit_requested:
+            if gamepad_input.exit_active:
                 print("Hardware gamepad requested exit before policy start.")
                 return False
             return True
@@ -557,7 +544,7 @@ def control_physical_robot(
             ):
                 gamepad_input = gamepad.poll()
                 report_gamepad_connection(gamepad_input)
-                if gamepad_input.exit_requested:
+                if gamepad_input.exit_active:
                     print(
                         "Hardware gamepad requested exit; stopping and disabling groups."
                     )

@@ -6,8 +6,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Literal
-from typing import TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 import imageio_ffmpeg
 import jax
@@ -23,7 +22,11 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
+from bello_mujoco.spatial import quat_rotate_inverse_wxyz, quat_rotate_wxyz
 from bello_mujoco.terrain import terrain_surface_height
+
+if TYPE_CHECKING:
+    from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
 
 RolloutStats: TypeAlias = dict[str, float | int]
 DONE_FLAG_KEYS = (
@@ -202,6 +205,8 @@ def render_policy_rollout(
     fps: int,
     stop_on_done: bool,
     camera_config: CameraConfig,
+    ppo_config: PPOConfig,
+    observation_norm_state: ObservationNormState,
     obs_stack_size: int = 1,
     stochastic_actions: bool = False,
     action_seed: int = 0,
@@ -217,6 +222,8 @@ def render_policy_rollout(
         fps=fps,
         stop_on_done=stop_on_done,
         camera_config=camera_config,
+        ppo_config=ppo_config,
+        observation_norm_state=observation_norm_state,
         obs_stack_size=obs_stack_size,
         stochastic_actions=stochastic_actions,
         action_seed=action_seed,
@@ -235,6 +242,8 @@ def render_policy_rollout_mujoco(
     fps: int,
     stop_on_done: bool,
     camera_config: CameraConfig,
+    ppo_config: PPOConfig,
+    observation_norm_state: ObservationNormState,
     obs_stack_size: int = 1,
     stochastic_actions: bool = False,
     action_seed: int = 0,
@@ -279,6 +288,8 @@ def render_policy_rollout_mujoco(
                 obs_stack,
                 action_rng=action_rng,
                 action_clip=env.action_clip,
+                ppo_config=ppo_config,
+                observation_norm_state=observation_norm_state,
             )
             action = np.asarray(jax.device_get(action), dtype=np.float32)
             mj_data.ctrl[:] = mujoco_action_to_ctrl(env, action)
@@ -341,8 +352,16 @@ def rollout_policy_action(
     *,
     action_rng: jax.Array | None = None,
     action_clip: float,
+    ppo_config: PPOConfig,
+    observation_norm_state: ObservationNormState,
 ) -> jax.Array:
-    obs = stacked_observation(obs_stack)
+    from bello_mujoco.training.ppo import normalize_observation
+
+    obs = normalize_observation(
+        stacked_observation(obs_stack),
+        observation_norm_state,
+        ppo_config,
+    )
     mean = apply_actor(policy, obs)
     action = mean
     if action_rng is not None:
@@ -524,7 +543,7 @@ def mujoco_link_lin_vel(
     if link_name == "bello_root":
         root_qpos = int(env.model.root_qpos_adr)
         root_qvel = int(env.model.root_qvel_adr)
-        return quat_rotate_inverse_np(
+        return quat_rotate_inverse_wxyz(
             np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32),
             np.asarray(mj_data.qvel[root_qvel : root_qvel + 3], dtype=np.float32),
         )
@@ -562,22 +581,6 @@ def mujoco_link_ang_vel(
         1,
     )
     return np.asarray(velocity[:3], dtype=np.float32)
-
-
-def quat_rotate_inverse_np(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
-    w, x, y, z = quat_wxyz
-    qvec = np.asarray([x, y, z], dtype=np.float32)
-    uv = np.cross(qvec, vec)
-    uuv = np.cross(qvec, uv)
-    return (vec + 2.0 * (-w * uv + uuv)).astype(np.float32)
-
-
-def quat_rotate_np(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
-    w, x, y, z = quat_wxyz
-    qvec = np.asarray([x, y, z], dtype=np.float32)
-    uv = np.cross(qvec, vec)
-    uuv = np.cross(qvec, uv)
-    return (vec + 2.0 * (w * uv + uuv)).astype(np.float32)
 
 
 def mujoco_eval_state(
@@ -835,7 +838,7 @@ def mujoco_terrain_surface_normal(
         )
     if env.terrain_config.mode == "plane":
         terrain_geom_id = int(env.model.terrain_geom_ids[0])
-        terrain_up = quat_rotate_np(
+        terrain_up = quat_rotate_wxyz(
             np.asarray(env.model.mj_model.geom_quat[terrain_geom_id], dtype=np.float32),
             np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
         )

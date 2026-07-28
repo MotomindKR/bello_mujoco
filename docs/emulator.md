@@ -41,7 +41,16 @@ IMU. It publishes 100 Hz motor feedback, a 250 Hz EBIMU stream at
 ## Linux interfaces
 
 The emulator requires the configured SocketCAN interfaces and pseudo-terminal
-IMU consumer. `scripts/setup_emulator.sh` creates the default VCAN interfaces.
+IMU consumer. The Nix shell provides `ip`, `modprobe`, and `socat`;
+`scripts/setup_emulator.sh` creates the default VCAN interfaces and serial pair:
+
+```bash
+sudo ./scripts/setup_emulator.sh start
+sudo ./scripts/setup_emulator.sh status
+```
+
+Use `sudo ./scripts/setup_emulator.sh stop` to remove the serial pair. The VCAN
+interfaces are deliberately left up.
 
 Logical bus mappings use `name=interface` entries. The defaults map the
 configured `can0` and `can1` buses to `vcan0` and `vcan1`.

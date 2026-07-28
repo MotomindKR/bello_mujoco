@@ -3,8 +3,10 @@
 The repository exposes seven public commands. Each command has a strict Hydra
 key set: keys not declared by that command fail during decoding, and the
 resulting mapping is loaded into an immutable dataclass before the workflow
-starts. The tables below define the supported value domains. Workflow validators
-also fail early on invalid ranges and task-specific fields.
+starts. The command YAML is the sole owner of defaults; every schema field must
+be present, and decoding never fills a missing command field from Python.
+The tables below define the supported value domains. Workflow validators also
+fail early on invalid ranges and task-specific fields.
 
 ## Invocation and inspection
 
@@ -42,7 +44,7 @@ Configuration source: `configs/commands/prepare_assets.yaml`.
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `profile` | `physical` or `visualizer`; `physical` | Select the canonical physical recipe or the lower-resolution persistent viewer recipe. |
-| `output_root` | path or `null`; `null` | Override the generated-asset root. `~` is expanded. With the physical profile, `null` uses the content-addressed temporary cache. The visualizer profile defaults to `assets/generated/visualizer`. |
+| `output_root` | path or `null`; `null` | Override the generated-asset root. `~` is expanded. With the physical profile, `null` uses the content-addressed user cache at `$XDG_CACHE_HOME/bello-mujoco/assets` (or `~/.cache/bello-mujoco/assets`) and retains the eight most recently used variants. The visualizer profile defaults to `assets/generated/visualizer`. |
 
 Both profiles use the 60 kg, box-collision, sphere-hand morphology with active
 waist yaw and fixed waist roll/pitch, neck yaw, and head pitch. The physical
@@ -66,8 +68,9 @@ Configuration source: `configs/commands/train.yaml`.
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
-| `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. A non-null value is rejected for locomotion profiles. |
-| `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and exactly match its recorded Git commit; resume then validates the full training and environment contract. |
+| `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. Do not supply this field for locomotion profiles. |
+| `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and normally match its recorded Git commit; resume then validates the full training and environment state. |
+| `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; all metadata, layout, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
 | `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. It must be one path component. |
 | `wandb_enabled` | boolean or `null`; `null` | Enable or disable W&B independently of the profile default. |
@@ -89,9 +92,9 @@ and its contract.
 
 ## `bello-eval`
 
-Restore a checkpoint from its exact clean Git revision and evaluate it with
-native MuJoCo. Locomotion opens a Rerun recording; motion tracking renders a
-video and prints tracking statistics.
+Restore a checkpoint and evaluate it with native MuJoCo. The recorded Git
+commit is required by default. Locomotion opens a Rerun recording; motion
+tracking renders a video and prints tracking statistics.
 
 Configuration source: `configs/commands/eval.yaml`.
 
@@ -99,6 +102,7 @@ Configuration source: `configs/commands/eval.yaml`.
 | --- | --- | --- | --- |
 | `task` | `locomotion` or `motion`; `locomotion` | both | Select checkpoint validation and evaluation mode. |
 | `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. `~` is expanded. |
+| `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout than the checkpoint's recorded commit. Other checkpoint checks still apply. |
 | `output_path` | path; `outputs/evaluation/motion.mp4` | motion | Video destination. Parent directories are created by the renderer. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw velocity command. |
 | `steps` | positive integer or `null`; `null` | both | Bound rollout steps. `null` is unbounded for locomotion and uses the motion episode length for motion. |
@@ -107,20 +111,26 @@ Configuration source: `configs/commands/eval.yaml`.
 | `action_seed` | nonnegative integer; `0` | locomotion | PRNG seed used only for stochastic actions. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Read commands from controller zero. When disconnected, the command is zero. When false, `command` is used continuously. |
 
-Fields that apply to only one task must retain their documented defaults when
-the other task is selected.
+Fields that apply to only one task must not be explicitly supplied when the
+other task is selected, even if the supplied value equals the documented
+default.
+Likewise, supplying `command` requires `gamepad_enabled=false`, and supplying
+`action_seed` requires `stochastic_actions=true`; otherwise those values would
+have no effect.
 
 The locomotion gamepad maps left-stick vertical to forward velocity,
 left-stick horizontal to lateral velocity, and right-stick horizontal to yaw.
 A/Cross requests an episode reset and Start/Options exits. Stick values are
-dead-zoned at the fixed value 0.1 and scaled to the command bounds stored in the
-checkpoint; the controller index is fixed at zero. A fixed `command` is passed
-through without clipping or range validation, so it should remain within the
-checkpoint's trained bounds.
+dead-zoned at the fixed value 0.1. Neutral remains the exact standing command;
+each supported nonzero direction starts at the checkpoint's minimum moving
+speed and scales to its command bound. The controller index is fixed at zero. A
+fixed `command` is passed through without clipping or range validation, so it
+should remain within the checkpoint's trained bounds.
 
-Evaluation validates the checkpoint task, policy and critic observation sizes,
-action size, asset configuration, and environment metadata. It does not accept
-runtime overrides for the trained robot or reward formulation.
+Evaluation validates the checkpoint task, policy and critic observation
+sizes/layouts, action size/layout, asset configuration, and environment
+metadata. It does not accept runtime overrides for the trained robot or reward
+formulation.
 
 Motion-policy evaluation renders at 640 by 480 pixels and 50 fps. The `width`,
 `height`, and `fps` fields under `bello-motion` configure reference rendering.
@@ -144,8 +154,8 @@ Configuration source: `configs/commands/motion.yaml`.
 | `fps` | positive integer; `30` | render | Output video frame rate. |
 | `require_complete` | boolean; `false` | inspect | Fail the command when feasibility replay terminates before the clip completes. |
 
-Operation-specific fields must retain their documented defaults when another
-operation is selected.
+Operation-specific fields must not be explicitly supplied for another
+operation, even if the supplied value equals the documented default.
 
 `import` and `import_dataset` read trusted local GMR pickle data and emit the
 canonical NPZ schema. Dataset import also writes `manifest.json`; any failed
@@ -183,7 +193,7 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, or `motion`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
-| `motion_path` | path or `null`; `null` | Required for motion jobs and forbidden for other jobs. The clip must exist in the selected remote commit. |
+| `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
 | `max_price` | positive float or `null`; `null` | Maximum total hourly rental price. A positive value is required, including for dry-run offer queries. |
 | `branch` | string or `null`; `null` | Required remote `origin` branch. A null value is rejected before rental. |
 | `run_name` | string or `null`; `null` | Explicit lifecycle/W&B run label. Otherwise a unique name is generated from the profile, branch, commit, and current UTC timestamp. |
@@ -242,7 +252,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
 | `task` | `locomotion` or `motion`; `locomotion` | both | Select the checkpoint and observation contract. |
-| `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. Its recorded Git commit must equal the current clean checkout. |
+| `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
+| `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout. This does not disable task, shape, asset, motion-content, or hardware preflight checks. |
 | `endpoint` | string; `http://127.0.0.1:50051` | both | `bello-hardwared` endpoint. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
@@ -251,8 +262,11 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
 | `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |
 
-Fields that apply to only one task must retain their documented defaults when
-the other task is selected.
+Fields that apply to only one task must not be explicitly supplied when the
+other task is selected, even if the supplied value equals the documented
+default.
+For locomotion, supplying `command` requires `gamepad_enabled=false`; an
+enabled gamepad is the sole command source.
 
 Locomotion uses the same stick mapping as `bello-eval`; Start/Options aborts.
 Motion additionally requires absolute pelvis pose from

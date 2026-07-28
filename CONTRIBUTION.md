@@ -1,82 +1,56 @@
 # Contribution Guide
 
-## Scope
+## Changes
 
-Keep changes focused and intentional. A contribution should preserve asset
-generation, MJX-Warp environment stepping, PPO initialization/training,
-checkpointing, and evaluation unless it is explicitly changing one of those
-contracts.
+- Keep each change focused.
+- Read the affected implementation, tests, and documentation before editing.
+- Do not mix unrelated cleanup with behavior changes.
+- Do not commit generated assets, checkpoints, caches, videos, or W&B output.
 
-Avoid mixing unrelated refactors with behavior changes.
+Use branch names in the form `<type>/<short-description>`. Supported types are
+`feat`, `fix`, `docs`, `test`, `refactor`, `chore`, and `experiment`.
 
-Checkpoint-producing training must run from a clean commit contained by a local
-`origin/*` tracking branch. Fetch or push immediately before training so that
-tracking state is current. Checkpoints record that full commit and deliberately
-require the same clean revision for resume, evaluation, and hardware execution.
-
-## Branch Naming
-
-Use short lowercase branch names:
-
-```text
-<type>/<short-description>
-```
-
-Allowed types:
-
-```text
-feat      new user-facing behavior
-fix       bug fix
-docs      documentation only
-test      tests only
-refactor  internal cleanup without behavior change
-chore     tooling, metadata, dependency, or repo maintenance
-experiment temporary exploration that is not expected to merge as-is
-```
-
-Examples:
-
-```text
-feat/rough-terrain
-fix/contact-worldid
-docs/single-index
-refactor/reward-configs
-chore/update-lockfile
-```
-
-## Pull Request Shape
+## Before opening a pull request
 
 - Explain what changed and why.
-- Call out behavior, config, asset, reward, training, or checkpoint changes.
-- Include the validation commands you ran.
-- Keep generated files out of the diff.
-- Update [docs/index.md](docs/index.md) and any relevant topic doc, especially
-  [docs/training_and_evaluation.md](docs/training_and_evaluation.md) or
-  [docs/hardware.md](docs/hardware.md), when user-facing behavior changes.
+- Add or update tests for changed behavior.
+- Update the relevant user documentation.
+- Report the validation commands you ran.
+- Check that the diff contains no generated or unrelated files.
+
+Start documentation changes from [docs/index.md](docs/index.md). Public command
+fields belong in [docs/commands.md](docs/commands.md); training settings belong
+in [docs/training_configuration.md](docs/training_configuration.md).
+
+The pose-service Python module is generated from
+`src/bello_mujoco/hardware/_pose.proto`. Regenerate it after changing the
+protocol:
+
+```bash
+uv run bash scripts/protobuf.sh generate
+```
 
 ## Validation
 
-Run the smallest relevant checks during iteration, then run the full gate before
-merging:
+Run focused tests while iterating:
 
 ```bash
+uv run pytest -q tests/<relevant_test>.py
+```
+
+Run the full gate before merging:
+
+```bash
+uv lock --check
+uv run bash scripts/protobuf.sh --check
 uv run ruff format --check src tests
 uv run ruff check src tests
 ./scripts/test.sh
 ```
 
-The full runner isolates test modules in fresh CPU JAX processes. During
-iteration, run focused files directly with `uv run pytest`.
-
-For simulation or training changes, also run:
+The compiled MJX-Warp integration cases require a GPU backend. Run them on a
+CUDA development host with:
 
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false uv run bello-train experiment=smoke
+JAX_PLATFORMS=cuda ./scripts/test.sh tests/test_motion_tracking.py
 ```
-
-The public commands are backed by `configs/commands/`; maintained training
-numerics live in `configs/profiles/train/`. Keep
-[the command reference](docs/commands.md) and
-[the training configuration reference](docs/training_configuration.md) aligned
-with any public schema change. See [docs/index.md](docs/index.md) for the
-remaining topic-specific contracts.

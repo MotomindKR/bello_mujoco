@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 import bello_mujoco.training.vast as vast
+import bello_mujoco.training.vast_remote as vast_remote
 from bello_mujoco.training.vast import (
     GitSelection,
     VastLifecycle,
@@ -20,7 +21,6 @@ from bello_mujoco.training.vast import (
     find_offers,
     launch_pipeline,
     offer_query,
-    parse_ssh_url,
     run_remote_training,
     safe_exception_message,
     validate_config,
@@ -168,9 +168,35 @@ def test_motion_git_selection_verifies_clip_at_selected_commit(
     assert f"{commit}:{resolved.motion_path}" in checked_objects
 
 
-def test_validate_config_restricts_destructive_remote_path() -> None:
-    with pytest.raises(ValueError, match="child of /workspace"):
-        validate_config(valid_config(remote_dir="/"))
+@pytest.mark.parametrize(
+    "remote_dir",
+    [
+        "/",
+        "/workspace",
+        "/tmp/bello",
+        "workspace/bello",
+        "/workspace/../etc",
+        "/workspace/run/../../etc",
+        "/workspace/run/../other",
+        "//workspace/run",
+        "/workspace//run",
+        "/workspace/./run",
+        "/workspace/run/",
+    ],
+)
+def test_validate_config_restricts_destructive_remote_path(remote_dir: str) -> None:
+    with pytest.raises(ValueError, match="normalized strict child of /workspace"):
+        validate_config(valid_config(remote_dir=remote_dir))
+
+
+@pytest.mark.parametrize(
+    "remote_dir",
+    ["/workspace/bello", "/workspace/jobs/bello"],
+)
+def test_validate_config_accepts_normalized_workspace_children(
+    remote_dir: str,
+) -> None:
+    validate_config(valid_config(remote_dir=remote_dir))
 
 
 @pytest.mark.parametrize(
@@ -341,10 +367,6 @@ def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
         def show_instances(self):
             return [{"id": 456}]
 
-        def ssh_url(self, **kwargs):
-            assert kwargs["id"] == 456
-            return "ssh://root@example.com:22001"
-
         def destroy_instance(self, **kwargs):
             self.destroyed.append(kwargs["id"])
 
@@ -358,7 +380,6 @@ def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
     assert client.create_instance(123, image="test") == 456
     assert client.show_instance(456)["actual_status"] == "running"
     assert client.show_instances() == [{"id": 456}]
-    assert client.ssh_url(456) == "ssh://root@example.com:22001"
     client.destroy_instance(456)
     assert raw_client.destroyed == [456]
 
@@ -389,17 +410,7 @@ def test_credential_reads_python_keyring(monkeypatch) -> None:
     )
 
 
-def test_parse_ssh_url_requires_complete_ssh_url() -> None:
-    assert parse_ssh_url("ssh://root@example.com:22001") == (
-        "root",
-        "example.com",
-        22001,
-    )
-    with pytest.raises(ValueError, match="invalid Vast SSH URL"):
-        parse_ssh_url("example.com")
-
-
-def test_wait_for_ssh_prefers_direct_port_mapping(monkeypatch) -> None:
+def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch) -> None:
     class Api:
         def show_instance(self, instance_id):
             assert instance_id == 123
@@ -408,23 +419,19 @@ def test_wait_for_ssh_prefers_direct_port_mapping(monkeypatch) -> None:
                 "ports": {"22/tcp": [{"HostPort": "22022"}]},
             }
 
-        def ssh_url(self, instance_id):
-            assert instance_id == 123
-            return "ssh://root@proxy.example.com:22001"
-
     commands = []
 
     def fake_run(command, **kwargs):
         commands.append(command)
-        assert 0 < kwargs["timeout"] <= vast.SSH_SUBPROCESS_TIMEOUT_SECONDS
+        assert 0 < kwargs["timeout"] <= vast_remote.SSH_SUBPROCESS_TIMEOUT_SECONDS
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(vast.subprocess, "run", fake_run)
+    monkeypatch.setattr(vast_remote.subprocess, "run", fake_run)
 
     target = vast.wait_for_ssh(Api(), 123, 30, sleep=lambda _: None)
 
     assert target == ("root", "192.0.2.10", 22022)
-    assert commands == [vast.ssh_command(target, "true")]
+    assert commands == [vast_remote.ssh_command(target, "true")]
 
 
 def test_destroy_treats_not_found_after_api_error_as_success() -> None:
@@ -577,9 +584,7 @@ def test_active_state_write_is_atomic_and_round_trips(tmp_path) -> None:
     assert list(state_path.parent.glob("*.tmp")) == []
 
 
-def test_creating_state_is_durable_and_legacy_active_state_remains_readable(
-    tmp_path,
-) -> None:
+def test_creating_state_is_durable(tmp_path) -> None:
     state_path = tmp_path / "active_instance.json"
     vast.write_creating_state(state_path, "pending-label")
 
@@ -587,16 +592,6 @@ def test_creating_state_is_durable_and_legacy_active_state_remains_readable(
     assert pending is not None
     assert pending.phase == "creating"
     assert pending.instance_id is None
-
-    state_path.write_text(
-        json.dumps({"instance_id": 321, "label": "legacy-label"}),
-        encoding="utf-8",
-    )
-    legacy = vast.read_lifecycle_state(state_path)
-    assert legacy is not None
-    assert legacy.phase == "active"
-    assert legacy.instance_id == 321
-    assert legacy.label == "legacy-label"
 
 
 def test_watchdog_uses_restricted_container_credentials_and_absolute_deadline(
@@ -665,7 +660,7 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
         )
         return subprocess.CompletedProcess(command, 0, stdout=response, stderr="")
 
-    monkeypatch.setattr(vast.subprocess, "run", fake_run)
+    monkeypatch.setattr(vast_remote.subprocess, "run", fake_run)
     config = valid_config()
 
     run_remote_training(
@@ -689,7 +684,7 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
 
 def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     job_dir = tmp_path / "job"
-    command = vast._remote_start_command(
+    command = vast_remote.remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
     assert shlex.split(command)[-1] == "test-run"
@@ -719,7 +714,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
 
 
 def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> None:
-    command = vast._remote_start_command(
+    command = vast_remote.remote_start_command(
         str(tmp_path / "job"),
         motion_selection(),
         motion_config(),
@@ -727,14 +722,16 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     )
 
     assert shlex.split(command)[-1] == "motion-test"
-    assert vast.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
-    overrides_index = vast.REMOTE_TRAIN_SCRIPT.index(
+    assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
+    overrides_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
         'training_overrides=("experiment=$experiment")'
     )
-    validation_index = vast.REMOTE_TRAIN_SCRIPT.index("total_timesteps=768")
-    user_index = vast.REMOTE_TRAIN_SCRIPT.index('"${training_overrides[@]}"')
-    forced_index = vast.REMOTE_TRAIN_SCRIPT.rindex("wandb_enabled=true")
-    checkpoint_index = vast.REMOTE_TRAIN_SCRIPT.index('checkpoint_name="$run_name"')
+    validation_index = vast_remote.REMOTE_TRAIN_SCRIPT.index("total_timesteps=768")
+    user_index = vast_remote.REMOTE_TRAIN_SCRIPT.index('"${training_overrides[@]}"')
+    forced_index = vast_remote.REMOTE_TRAIN_SCRIPT.rindex("wandb_enabled=true")
+    checkpoint_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
+        'checkpoint_name="$run_name"'
+    )
     assert overrides_index < validation_index
     assert user_index < forced_index < checkpoint_index
 
@@ -778,7 +775,7 @@ def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> 
             stderr="",
         )
 
-    monkeypatch.setattr(vast.subprocess, "run", fake_run)
+    monkeypatch.setattr(vast_remote.subprocess, "run", fake_run)
 
     run_remote_training(
         ("root", "example.com", 22001),
@@ -806,7 +803,7 @@ def test_remote_runner_aborts_when_progress_deadline_expires(monkeypatch) -> Non
             return subprocess.CompletedProcess(remote_command, 0, stdout="", stderr="")
 
     moments = iter((0.0, 0.0, 0.0, 2.0))
-    monkeypatch.setattr(vast.time, "monotonic", lambda: next(moments))
+    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: next(moments))
 
     with pytest.raises(TimeoutError, match="no new output"):
         run_remote_training(
@@ -828,7 +825,7 @@ def test_remote_runner_enforces_hard_deadline_while_starting(monkeypatch) -> Non
             raise subprocess.TimeoutExpired(remote_command, timeout_seconds)
 
     moments = iter((0.0, 0.0, 2.0))
-    monkeypatch.setattr(vast.time, "monotonic", lambda: next(moments))
+    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: next(moments))
 
     with pytest.raises(TimeoutError, match="exceeded 1 seconds while starting"):
         run_remote_training(
@@ -902,7 +899,7 @@ def test_pipeline_always_destroys_created_instance(
 
     assert api.destroyed == [456]
     assert api.created[0][1]["label"].startswith("bello-")
-    assert api.created[0][1]["runtype"] == "ssh_direc ssh_proxy"
+    assert api.created[0][1]["runtype"] == "ssh_direc"
     assert "CONTAINER_ID" in api.created[0][1]["onstart_cmd"]
     assert "CONTAINER_API_KEY" in api.created[0][1]["onstart_cmd"]
     assert "ssh" not in api.created[0][1]

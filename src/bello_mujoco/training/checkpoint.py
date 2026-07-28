@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, TypeAlias
 
 import equinox as eqx
 import jax
@@ -78,33 +78,10 @@ class CheckpointConfig:
     name: str | None = None
     every_updates: int | None = None
     resume_path: Path | None = None
+    allow_git_commit_mismatch: bool = False
     upload_wandb_artifact: bool = True
     wandb_artifact_name: str | None = None
     wandb_artifact_type: str = "checkpoint"
-
-
-@dataclass(frozen=True)
-class CheckpointMetadata:
-    ppo: PPOConfig
-    asset: AssetPrepConfig
-    reward: RewardConfig | None
-    command: CommandConfig | None
-    done: DoneConfig | None
-    env: BelloEnvConfig | None
-    warp: WarpConfig
-    obs_size: int
-    critic_obs_size: int
-    action_size: int
-    actor_observation_layout: ObservationLayout
-    critic_observation_layout: ObservationLayout
-    action_layout: ActionLayout
-    task: Literal["locomotion", "motion_tracking"] = "locomotion"
-    motion_env: MotionTrackingEnvConfig | None = None
-    motion: MotionClipContract | None = None
-    value_norm: ValueNormMetadata | None = None
-    observation_norm: ObservationNormMetadata | None = None
-    critic_observation_norm: ObservationNormMetadata | None = None
-    motion_sampling_failure_ema: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +112,42 @@ class ObservationNormMetadata:
     mean: tuple[float, ...]
     var: tuple[float, ...]
     count: float
+
+
+@dataclass(frozen=True)
+class _CheckpointMetadataBase:
+    ppo: PPOConfig
+    asset: AssetPrepConfig
+    warp: WarpConfig
+    obs_size: int
+    critic_obs_size: int
+    action_size: int
+    actor_observation_layout: ObservationLayout
+    critic_observation_layout: ObservationLayout
+    action_layout: ActionLayout
+
+
+@dataclass(frozen=True)
+class LocomotionCheckpointMetadata(_CheckpointMetadataBase):
+    reward: RewardConfig
+    command: CommandConfig
+    done: DoneConfig
+    env: BelloEnvConfig
+    task: Literal["locomotion"] = "locomotion"
+
+
+@dataclass(frozen=True)
+class MotionCheckpointMetadata(_CheckpointMetadataBase):
+    motion_env: MotionTrackingEnvConfig
+    motion: MotionClipContract
+    task: Literal["motion_tracking"] = "motion_tracking"
+    value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
+    motion_sampling_failure_ema: tuple[float, ...] | None = None
+
+
+CheckpointMetadata: TypeAlias = LocomotionCheckpointMetadata | MotionCheckpointMetadata
 
 
 class CheckpointNormalizationState(NamedTuple):
@@ -168,6 +181,14 @@ def validate_checkpoint_name(name: str | None) -> None:
     if not name or Path(name).name != name or name in {".", ".."}:
         raise ValueError(
             f"checkpoint_config.name must be a nonempty path component, got {name!r}"
+        )
+
+
+def validate_checkpoint_options(config: CheckpointConfig) -> None:
+    validate_checkpoint_name(config.name)
+    if config.allow_git_commit_mismatch and config.resume_path is None:
+        raise ValueError(
+            "checkpoint_config.allow_git_commit_mismatch requires resume_path"
         )
 
 
@@ -227,11 +248,16 @@ def save_training_checkpoint(
 
 def restore_evaluation_checkpoint(
     path: Path,
+    *,
+    allow_git_commit_mismatch: bool = False,
 ) -> tuple[TrainState, CheckpointMetadata, CheckpointNormalizationState]:
     """Restore a policy plus the exact running statistics used by its actor."""
 
     path = Path(path).resolve()
-    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(path)
+    metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
+        path,
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
+    )
     template_state, _ = init_train_state(
         jax.random.PRNGKey(metadata.ppo.seed),
         metadata.obs_size,
@@ -265,6 +291,8 @@ def restore_runner_checkpoint(
     path: Path,
     env: PPOEnvironment,
     expected_metadata: CheckpointMetadata,
+    *,
+    allow_git_commit_mismatch: bool = False,
 ) -> tuple[
     RunnerState,
     eqx.Module,
@@ -273,7 +301,10 @@ def restore_runner_checkpoint(
 ]:
     path = Path(path).resolve()
     recorded_metadata, saved_update, train_fingerprint, continuation_fingerprint = (
-        _load_checkpoint_document(path)
+        _load_checkpoint_document(
+            path,
+            allow_git_commit_mismatch=allow_git_commit_mismatch,
+        )
     )
     effective_metadata = resumed_checkpoint_metadata(
         recorded_metadata,
@@ -319,8 +350,15 @@ def restore_runner_checkpoint(
     return runner_state, static_policy, optimizer, effective_metadata
 
 
-def load_checkpoint_metadata(path: Path) -> CheckpointMetadata:
-    metadata, _, _, _ = _load_checkpoint_document(Path(path).resolve())
+def load_checkpoint_metadata(
+    path: Path,
+    *,
+    allow_git_commit_mismatch: bool = False,
+) -> CheckpointMetadata:
+    metadata, _, _, _ = _load_checkpoint_document(
+        Path(path).resolve(),
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
+    )
     return metadata
 
 
@@ -401,8 +439,7 @@ def _checkpoint_document(
             "must be normalized to null before saving"
         )
     metadata_payload = to_builtin(metadata)
-    resolved_metadata = dataclass_from_dict(
-        CheckpointMetadata,
+    resolved_metadata = _metadata_from_dict(
         metadata_payload,
         strict=True,
         require_all_fields=True,
@@ -442,7 +479,7 @@ def _resume_contract_payload(metadata: CheckpointMetadata) -> dict[str, Any]:
         "critic_observation_norm",
         "motion_sampling_failure_ema",
     ):
-        payload.pop(key)
+        payload.pop(key, None)
     motion_env = payload.get("motion_env")
     if motion_env is not None:
         motion_env.pop("motion_path")
@@ -454,6 +491,8 @@ def _resume_contract_payload(metadata: CheckpointMetadata) -> dict[str, Any]:
 
 def _load_checkpoint_document(
     path: Path,
+    *,
+    allow_git_commit_mismatch: bool = False,
 ) -> tuple[CheckpointMetadata, int, str, str]:
     metadata_path = Path(path).resolve() / METADATA_FILE
     try:
@@ -472,7 +511,10 @@ def _load_checkpoint_document(
     git_commit = document["git_commit"]
     if not isinstance(git_commit, str):
         raise ValueError("git_commit must be a string")
-    require_repository_commit(git_commit)
+    require_repository_commit(
+        git_commit,
+        allow_mismatch=allow_git_commit_mismatch,
+    )
     _require_exact_fields(
         document,
         _CHECKPOINT_DOCUMENT_FIELDS,
@@ -488,8 +530,7 @@ def _load_checkpoint_document(
         document["continuation_layout_sha256"],
         "continuation_layout_sha256",
     )
-    metadata = dataclass_from_dict(
-        CheckpointMetadata,
+    metadata = _metadata_from_dict(
         document["metadata"],
         strict=True,
         require_all_fields=True,
@@ -509,47 +550,40 @@ def _load_checkpoint_document(
     return metadata, update, train_fingerprint, continuation_fingerprint
 
 
+def _metadata_from_dict(
+    value: Any,
+    *,
+    strict: bool,
+    require_all_fields: bool,
+    path: str,
+) -> CheckpointMetadata:
+    if not isinstance(value, dict):
+        raise TypeError(f"{path} must be a mapping")
+    task = value.get("task")
+    if task == "locomotion":
+        metadata_type = LocomotionCheckpointMetadata
+    elif task == "motion_tracking":
+        metadata_type = MotionCheckpointMetadata
+    else:
+        raise ValueError(
+            f"{path}.task must be 'locomotion' or 'motion_tracking', got {task!r}"
+        )
+    return dataclass_from_dict(
+        metadata_type,
+        value,
+        strict=strict,
+        require_all_fields=require_all_fields,
+        path=path,
+    )
+
+
 def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
     if metadata.asset.output_root is not None:
         raise ValueError(
             "checkpoint metadata asset.output_root must be null; generated asset "
             "cache locations are not part of the training contract"
         )
-    if metadata.task == "locomotion":
-        if any(
-            value is None
-            for value in (
-                metadata.reward,
-                metadata.command,
-                metadata.done,
-                metadata.env,
-            )
-        ):
-            raise ValueError(
-                "locomotion checkpoint metadata requires reward, command, done, "
-                "and env contracts"
-            )
-        if metadata.motion_env is not None or metadata.motion is not None:
-            raise ValueError(
-                "locomotion checkpoint metadata must not contain a motion contract"
-            )
-        if any(
-            value is not None
-            for value in (
-                metadata.value_norm,
-                metadata.observation_norm,
-                metadata.critic_observation_norm,
-                metadata.motion_sampling_failure_ema,
-            )
-        ):
-            raise ValueError(
-                "locomotion checkpoint metadata must not contain motion state snapshots"
-            )
-    elif metadata.task == "motion_tracking":
-        if metadata.motion_env is None or metadata.motion is None:
-            raise ValueError(
-                "motion-tracking checkpoint metadata requires motion_env and motion"
-            )
+    if isinstance(metadata, MotionCheckpointMetadata):
         if any(
             value is None
             for value in (
@@ -562,19 +596,6 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
             raise ValueError(
                 "motion-tracking checkpoint metadata requires normalization and "
                 "adaptive-sampler state snapshots"
-            )
-        if any(
-            value is not None
-            for value in (
-                metadata.reward,
-                metadata.command,
-                metadata.done,
-                metadata.env,
-            )
-        ):
-            raise ValueError(
-                "motion-tracking checkpoint metadata must not contain locomotion "
-                "reward, command, done, or env contracts"
             )
         if metadata.motion_env.motion_path != metadata.motion.path:
             raise ValueError(
@@ -628,8 +649,8 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
                 "checkpoint action layout does not match the motion joint order"
             )
         _validate_motion_state_metadata(metadata)
-    else:
-        raise ValueError(f"unsupported checkpoint task {metadata.task!r}")
+    elif not isinstance(metadata, LocomotionCheckpointMetadata):
+        raise TypeError(f"unsupported checkpoint metadata type {type(metadata)!r}")
     stack_size = metadata.ppo.policy.obs_stack_size
     expected_actor_size = metadata.actor_observation_layout.size * stack_size
     if metadata.obs_size != expected_actor_size:
@@ -653,7 +674,7 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
         )
 
 
-def _validate_motion_state_metadata(metadata: CheckpointMetadata) -> None:
+def _validate_motion_state_metadata(metadata: MotionCheckpointMetadata) -> None:
     value = metadata.value_norm
     actor = metadata.observation_norm
     critic = metadata.critic_observation_norm
@@ -709,7 +730,7 @@ def _validate_running_moments(
 def _validate_restored_normalization_state(
     restored: dict[str, Any], metadata: CheckpointMetadata
 ) -> None:
-    if metadata.task != "motion_tracking":
+    if not isinstance(metadata, MotionCheckpointMetadata):
         return
     value = metadata.value_norm
     actor = metadata.observation_norm
@@ -754,7 +775,7 @@ def _validate_restored_normalization_state(
 def _validate_restored_motion_runner_state(
     runner_state: RunnerState, metadata: CheckpointMetadata
 ) -> None:
-    if metadata.task != "motion_tracking":
+    if not isinstance(metadata, MotionCheckpointMetadata):
         return
     expected = metadata.motion_sampling_failure_ema
     if expected is None:
@@ -933,12 +954,10 @@ def observation_norm_metadata(state: ObservationNormState) -> ObservationNormMet
 
 
 def motion_metadata_with_runner_state(
-    metadata: CheckpointMetadata, runner_state: RunnerState
-) -> CheckpointMetadata:
+    metadata: MotionCheckpointMetadata, runner_state: RunnerState
+) -> MotionCheckpointMetadata:
     """Attach auditable state snapshots while Orbax retains exact continuation."""
 
-    if metadata.task != "motion_tracking":
-        raise ValueError("motion state metadata requires a motion-tracking checkpoint")
     failure_ema = np.asarray(
         jax.device_get(runner_state.env_state.sampling_failure_ema), dtype=np.float32
     )

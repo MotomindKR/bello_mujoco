@@ -11,6 +11,7 @@ import numpy as np
 import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.spatial import quat_rotate_wxyz
 from bello_mujoco.contracts import SIM_TIMESTEP
 
 CollisionMode = Literal["mesh", "box"]
@@ -321,7 +322,7 @@ def apply_collision_mode(
             geom.get("quat", "1 0 0 0"), 4, np.asarray([1.0, 0.0, 0.0, 0.0])
         )
         pos = parse_vec(geom.get("pos", "0 0 0"), 3, np.zeros(3))
-        adjusted_pos = pos + quat_rotate(quat, center)
+        adjusted_pos = pos + quat_rotate_wxyz(quat, center)
         geom.attrib.pop("mesh", None)
         geom.set("type", "box")
         geom.set("pos", format_vec(adjusted_pos))
@@ -488,14 +489,6 @@ def parse_vec(value: str, expected_size: int, default: np.ndarray) -> np.ndarray
     if array.size != expected_size:
         return default.astype(np.float64)
     return array
-
-
-def quat_rotate(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
-    w, x, y, z = quat_wxyz
-    qvec = np.asarray([x, y, z], dtype=np.float64)
-    uv = np.cross(qvec, vec)
-    uuv = np.cross(qvec, uv)
-    return vec + 2.0 * (w * uv + uuv)
 
 
 def format_vec(values: np.ndarray) -> str:

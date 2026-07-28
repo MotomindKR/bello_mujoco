@@ -2,6 +2,7 @@
 name = "bello-mujoco"
 version = "0.1.0"
 description = "MuJoCo/MJX robot-learning environment managed by uv."
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "chex>=0.1.90",
@@ -9,16 +10,16 @@ dependencies = [
   "fast-simplification>=0.1.12",
   "grpcio>=1.81,<2",
   "hydra-core>=1.3.2",
-  "imageio[ffmpeg]>=2.37.3",
+  "imageio-ffmpeg>=0.6.0",
   "jax>=0.6.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "jax[cuda13]>=0.6.0; sys_platform == 'linux'",
   "keyring>=25.6.0",
   "mujoco>=3.3.0",
   "mujoco-mjx[warp]>=3.3.0",
+  "numpy>=2.0",
+  "omegaconf>=2.3.0",
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
-  "packaging>=24.0",
-  "pyyaml>=6.0",
   "pygame-ce>=2.5.7",
   "protobuf>=7.35.1,<8",
   "rerun-sdk==0.34.1",
@@ -27,6 +28,9 @@ dependencies = [
   "vastai>=1.3,<2",
   "wandb>=0.28.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/MotomindKR/bello_mujoco"
 
 [project.scripts]
 bello-prepare-assets = "bello_mujoco.cli:prepare_assets_entrypoint"
@@ -39,6 +43,7 @@ bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
 
 [dependency-groups]
 dev = [
+  "grpcio-tools>=1.81,<2",
   "pytest>=8.0.0",
   "ruff>=0.8.0",
 ]
@@ -71,6 +76,15 @@ markers = [
 
 [tool.ruff]
 extend-exclude = ["src/bello_mujoco/hardware/_pose_pb2.py"]
+target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+select = ["B", "E4", "E7", "E9", "F"]
+ignore = [
+  # Frozen configuration values are intentionally safe shared defaults.
+  "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The predicate is invoked synchronously while last_sequence remains in scope.
+"src/bello_mujoco/hardware/pose.py" = ["B023"]
