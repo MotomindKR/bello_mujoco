@@ -1,7 +1,7 @@
-# ASAP Single-Foot Balance
+# ASAP Motions
 
-This directory contains fixed-head Bello retargets of ASAP single-foot balance
-motions used by reproducible Vast.ai training runs.
+This directory contains fixed-head Bello retargets of selected ASAP motions
+used by reproducible Vast.ai training runs.
 
 - Source repository: https://github.com/LeCAR-Lab/ASAP
 - Source revision: `df5320cc47dd8cad97961bdfabfe402dd62ad999`
@@ -14,6 +14,7 @@ motions used by reproducible Vast.ai training runs.
 | --- | ---: | ---: | --- |
 | `video_single_foot_balance_level1_filter_amass.npz` | 218 at 30 FPS | 0 | `869df4c491f19e3aee8d3bdbcabd99cedfd29fe889d152ea93d9e890936e3029` |
 | `video_single_foot_balance_level4_filter_amass.npz` | 265 at 30 FPS | 0 | `ccc079a5fb25a0275d53e152118664f3e3083e5d5385d12c9c40a332be979b08` |
+| `video_squat_level2_filter_amass.npz` | 191 at 30 FPS | 0 | `a275fc9570134227a24deec9b9ee0f33d7aea3369a78d4b3e0d0e6c74b6c7a52` |
 
 The archives were generated from the pinned ASAP checkout through GMR's
 fixed-head Bello pipeline. Set `GMR_REPO` to that checkout and run the first
