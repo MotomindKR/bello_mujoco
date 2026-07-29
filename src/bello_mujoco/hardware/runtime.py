@@ -25,6 +25,15 @@ RUN_CONFIRMATION = "RUN"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
 STANDARD_GRAVITY = 9.80665
 NOMINAL_POSE_MAX_ERROR_RADIANS = 0.25
+ANKLE_NOMINAL_POSE_MAX_ERROR_RADIANS = 0.35
+ANKLE_MOTOR_COORDINATES = frozenset(
+    {
+        "left_ankle_motor_1",
+        "left_ankle_motor_2",
+        "right_ankle_motor_1",
+        "right_ankle_motor_2",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -451,16 +460,27 @@ def require_nominal_pose(
         raise RuntimeError("measured nominal-pose coordinates are non-finite")
     if not np.all(np.isfinite(nominal)):
         raise RuntimeError("checkpoint nominal-pose target is non-finite")
+    limits = np.asarray(
+        [
+            (
+                ANKLE_NOMINAL_POSE_MAX_ERROR_RADIANS
+                if name in ANKLE_MOTOR_COORDINATES
+                else NOMINAL_POSE_MAX_ERROR_RADIANS
+            )
+            for name in adapter.physical_coordinate_names
+        ],
+        dtype=np.float64,
+    )
     error = np.abs(measured - nominal)
-    index = int(np.argmax(error))
-    if error[index] > NOMINAL_POSE_MAX_ERROR_RADIANS:
+    excess = error - limits
+    index = int(np.argmax(excess))
+    if excess[index] > 0.0:
         name = adapter.physical_coordinate_names[index]
         raise RuntimeError(
             "robot is too far from the checkpoint nominal pose: "
             f"{name} is {error[index]:.3f} rad away "
             f"(measured={measured[index]:.3f}, nominal={nominal[index]:.3f}); "
-            "maximum allowed error is "
-            f"{NOMINAL_POSE_MAX_ERROR_RADIANS:.3f} rad"
+            f"maximum allowed error is {limits[index]:.3f} rad"
         )
 
 

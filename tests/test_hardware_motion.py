@@ -194,6 +194,15 @@ def test_motion_runner_checks_nominal_pose_after_ramp(
     with pytest.raises(RuntimeError, match="left_shoulder_yaw_joint"):
         require_nominal_pose(replace(frame, positions=positions), adapter)
 
+    ankle_index = adapter.physical_coordinate_names.index("right_ankle_motor_2")
+    positions = frame.positions.copy()
+    positions[ankle_index] += 0.34
+    require_nominal_pose(replace(frame, positions=positions), adapter)
+
+    positions[ankle_index] += 0.02
+    with pytest.raises(RuntimeError, match="right_ankle_motor_2"):
+        require_nominal_pose(replace(frame, positions=positions), adapter)
+
     positions[index] = np.nan
     with pytest.raises(RuntimeError, match="non-finite"):
         require_nominal_pose(replace(frame, positions=positions), adapter)

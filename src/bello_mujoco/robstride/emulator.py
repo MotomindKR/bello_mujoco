@@ -10,7 +10,7 @@ import math
 import select
 import sys
 import time
-from typing import Protocol, TextIO
+from typing import TextIO
 
 import mujoco
 import numpy as np
@@ -80,16 +80,8 @@ class EmulatorConfig:
         linear_acceleration_std_mps2=0.1,
         seed=0,
     )
-    torso_hold: bool = True
     torso_drop_limit_m: float = 0.05
-    release_after_seconds: float | None = None
     pose_service: PoseServiceConfig = PoseServiceConfig()
-
-
-class _PassiveViewer(Protocol):
-    def is_running(self) -> bool: ...
-
-    def sync(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -135,119 +127,12 @@ class TorsoHold:
         return True
 
 
-class EmulatorControlWindow:
-    """Small Pygame command window for one-way simulation controls."""
-
-    _SIZE = (440, 215)
-
-    def __init__(self, drop_limit_m: float) -> None:
-        import pygame
-
-        self._pygame = pygame
-        self._closed = False
-        try:
-            pygame.display.init()
-            pygame.font.init()
-            self._surface = pygame.display.set_mode(self._SIZE)
-            pygame.display.set_caption("Bello controls")
-            self._title_font = pygame.font.Font(None, 32)
-            self._body_font = pygame.font.Font(None, 23)
-            self._button_font = pygame.font.Font(None, 27)
-            self._button = pygame.Rect(45, 130, 350, 55)
-            self._drop_limit_cm = drop_limit_m * 100.0
-            self._released = False
-            self._draw()
-        except pygame.error as error:
-            pygame.quit()
-            raise RuntimeError(
-                "cannot open the Bello emulator controls; a graphical display "
-                "is required"
-            ) from error
-        except BaseException:
-            pygame.quit()
-            raise
-
-    def __enter__(self) -> EmulatorControlWindow:
-        return self
-
-    def __exit__(self, *_args) -> None:
-        self.close()
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._pygame.quit()
-
-    def poll(self) -> tuple[bool, bool, bool]:
-        """Return (release_requested, enter_requested, close_requested)."""
-
-        release_requested = False
-        enter_requested = False
-        close_requested = False
-        for event in self._pygame.event.get():
-            if event.type == self._pygame.QUIT:
-                close_requested = True
-            elif event.type == self._pygame.KEYUP and event.key in (
-                self._pygame.K_RETURN,
-                self._pygame.K_KP_ENTER,
-            ):
-                enter_requested = True
-            elif (
-                event.type == self._pygame.MOUSEBUTTONUP
-                and event.button == 1
-                and not self._released
-                and self._button.collidepoint(event.pos)
-            ):
-                self._released = True
-                release_requested = True
-                self._draw()
-        return release_requested, enter_requested, close_requested
-
-    def mark_released(self) -> None:
-        if not self._released:
-            self._released = True
-            self._draw()
-
-    def mark_guided(self) -> None:
-        if self._released:
-            self._released = False
-            self._draw()
-
-    def _draw(self) -> None:
-        surface = self._surface
-        surface.fill((28, 31, 36))
-        title = self._title_font.render("Torso constraint", True, (240, 240, 240))
-        surface.blit(title, (25, 20))
-        status_text = (
-            "RELEASED - robot is free"
-            if self._released
-            else f"GUIDED - vertical drop limited to {self._drop_limit_cm:g} cm"
-        )
-        status_color = (110, 210, 140) if self._released else (255, 205, 90)
-        status = self._body_font.render(status_text, True, status_color)
-        surface.blit(status, (25, 61))
-        instruction = self._body_font.render(
-            "Enter: release / reset and re-engage", True, (190, 195, 205)
-        )
-        surface.blit(instruction, (25, 91))
-
-        button_color = (73, 78, 88) if self._released else (185, 63, 63)
-        self._pygame.draw.rect(surface, button_color, self._button, border_radius=7)
-        button_text = "Torso released" if self._released else "Release torso"
-        label = self._button_font.render(button_text, True, (255, 255, 255))
-        surface.blit(label, label.get_rect(center=self._button.center))
-        self._pygame.display.flip()
-
-
 @dataclass(frozen=True)
 class _EmulatorResources:
     endpoints: dict[str, SocketCanEndpoint]
     imu_serial: EbimuSerialEmulator | None
     pose_server: PoseServiceServer | None
     pose_body_id: int
-    viewer: _PassiveViewer
-    control_window: EmulatorControlWindow | None
 
 
 class TerminalEnterInput:
@@ -298,13 +183,11 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
         terrain=FLAT_TERRAIN,
         simulation_physics=config.simulation_physics,
         actuator_config=config.asset_config.actuator_config,
-        use_viewer_model=True,
+        use_viewer_model=False,
         load_mjx=False,
     )
     model = configure_robstride_actuators(model, robstride.motors)
-    torso_hold = None
-    if config.torso_hold:
-        model, torso_hold = add_torso_hold(model, config.torso_drop_limit_m)
+    model, torso_hold = add_torso_hold(model, config.torso_drop_limit_m)
     emulators = {
         bus.name: RobstrideBusEmulator(
             bus,
@@ -327,19 +210,12 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     run_simulation(model, emulators, transmission, config, torso_hold)
 
 
-def _launch_passive_viewer(model: mujoco.MjModel, data: mujoco.MjData):
-    from mujoco import viewer
-
-    return viewer.launch_passive(model, data)
-
-
 @contextmanager
 def _open_emulator_resources(
     model: BelloModel,
     data: mujoco.MjData,
     emulators: dict[str, RobstrideBusEmulator],
     config: EmulatorConfig,
-    torso_hold: TorsoHold | None,
     imu_sensor: MujocoImu | None,
 ) -> Iterator[_EmulatorResources]:
     with ExitStack() as stack:
@@ -382,19 +258,11 @@ def _open_emulator_resources(
             if imu_sensor is not None
             else None
         )
-        viewer = stack.enter_context(_launch_passive_viewer(model.mj_model, data))
-        control_window = (
-            stack.enter_context(EmulatorControlWindow(torso_hold.drop_limit_m))
-            if torso_hold is not None
-            else None
-        )
         yield _EmulatorResources(
             endpoints=endpoints,
             imu_serial=imu_serial,
             pose_server=pose_server,
             pose_body_id=pose_body_id,
-            viewer=viewer,
-            control_window=control_window,
         )
 
 
@@ -403,12 +271,11 @@ def run_simulation(
     emulators: dict[str, RobstrideBusEmulator],
     transmission: BelloRobstrideTransmission,
     config: EmulatorConfig,
-    torso_hold: TorsoHold | None = None,
+    torso_hold: TorsoHold,
 ) -> None:
     data = mujoco.MjData(model.mj_model)
     reset_data(model, data)
-    if torso_hold is not None:
-        torso_hold.initialize(model.mj_model, data)
+    torso_hold.initialize(model.mj_model, data)
     transmission.update_motor_states(data)
     imu_sensor = (
         MujocoImu.bind(model.mj_model)
@@ -422,7 +289,6 @@ def run_simulation(
         data,
         emulators,
         config,
-        torso_hold,
         imu_sensor,
     ) as resources:
         print_emulator_summary(model, emulators)
@@ -431,17 +297,7 @@ def run_simulation(
         )
         if fixed_joints:
             print("  fixed in URDF: " + ", ".join(fixed_joints))
-        if torso_hold is not None:
-            if config.release_after_seconds is not None:
-                release_note = (
-                    f"release after {config.release_after_seconds:g} simulated seconds"
-                )
-            else:
-                release_note = "use the Bello controls window to release"
-            print(
-                f"  torso: GUIDED (downward travel "
-                f"{torso_hold.drop_limit_m * 100:g} cm; {release_note})"
-            )
+        print(f"  torso: GUIDED (downward travel {torso_hold.drop_limit_m * 100:g} cm)")
         if imu_sensor is not None:
             print(f"  imu: {config.asset_config.imu_config.body_name}")
             if resources.imu_serial is not None:
@@ -471,12 +327,9 @@ def run_simulation(
             )
         terminal_enter = TerminalEnterInput()
         if terminal_enter.enabled:
-            action = (
-                "cycle torso release and reset/guide"
-                if torso_hold is not None
-                else "reset the robot"
-            )
-            print(f"  keyboard: press Enter to {action}")
+            print("  keyboard: press Enter to release; press again to reset/guide")
+        else:
+            print("  keyboard: unavailable; torso guide remains engaged")
         _simulation_loop(
             model,
             data,
@@ -497,15 +350,13 @@ def _simulation_loop(
     emulators: dict[str, RobstrideBusEmulator],
     transmission: BelloRobstrideTransmission,
     config: EmulatorConfig,
-    torso_hold: TorsoHold | None,
+    torso_hold: TorsoHold,
     imu_sensor: MujocoImu | None,
     imu_noise: ImuNoiseInjector,
     terminal_enter: TerminalEnterInput,
     resources: _EmulatorResources,
 ) -> None:
     endpoints = resources.endpoints
-    viewer = resources.viewer
-    control_window = resources.control_window
     imu_serial = resources.imu_serial
     pose_server = resources.pose_server
     pose_body_id = resources.pose_body_id
@@ -519,24 +370,9 @@ def _simulation_loop(
         else math.inf
     )
     next_pose_sim = start_sim + pose_period
-    steps = 0
-    torso_released = torso_hold is None
+    torso_released = False
     while True:
-        if not viewer.is_running():
-            break
-        enter_requested = terminal_enter.poll()
-        if control_window is not None:
-            release_requested, window_enter_requested, close_requested = (
-                control_window.poll()
-            )
-            enter_requested = enter_requested or window_enter_requested
-            if close_requested:
-                break
-            if release_requested and torso_hold is not None:
-                torso_released = torso_hold.release(data)
-                if torso_released:
-                    print("Torso released; robot is now free")
-        if enter_requested:
+        if terminal_enter.poll():
             torso_released, reset_performed = cycle_torso_release_reset(
                 model,
                 data,
@@ -544,8 +380,6 @@ def _simulation_loop(
                 torso_released=torso_released,
             )
             if not reset_performed:
-                if control_window is not None:
-                    control_window.mark_released()
                 print("Torso released; robot is now free")
                 continue
             for emulator in emulators.values():
@@ -562,22 +396,8 @@ def _simulation_loop(
                     pose_body_id,
                     produced_at=start_wall,
                 )
-            if control_window is not None:
-                control_window.mark_guided()
-            state = "free" if torso_hold is None else "torso guide engaged"
-            print(f"Robot reset to home state; {state}")
+            print("Robot reset to home state; torso guide engaged")
             continue
-        if (
-            not torso_released
-            and torso_hold is not None
-            and config.release_after_seconds is not None
-            and float(data.time) - start_sim >= config.release_after_seconds
-        ):
-            torso_released = torso_hold.release(data)
-            if torso_released:
-                print("Torso released; robot is now free")
-                if control_window is not None:
-                    control_window.mark_released()
         for bus_name, endpoint in endpoints.items():
             emulator = emulators[bus_name]
             while (frame := endpoint.receive()) is not None:
@@ -587,7 +407,6 @@ def _simulation_loop(
         transmission.apply_motor_controls(data)
         mujoco.mj_step(model.mj_model, data)
         transmission.update_motor_states(data)
-        steps += 1
 
         if imu_sensor is not None and imu_serial is not None:
             imu_serial.update(imu_noise.apply(imu_sensor.sample(data)))
@@ -606,7 +425,6 @@ def _simulation_loop(
             if next_feedback < now - feedback_period:
                 next_feedback = now + feedback_period
 
-        viewer.sync()
         deadline = start_wall + (float(data.time) - start_sim)
         delay = deadline - time.monotonic()
         if delay > 0.0:
@@ -643,19 +461,18 @@ def reset_data(model: BelloModel, data: mujoco.MjData) -> None:
 def reset_simulation(
     model: BelloModel,
     data: mujoco.MjData,
-    torso_hold: TorsoHold | None,
+    torso_hold: TorsoHold,
 ) -> None:
-    """Restore the home state and re-engage the configured torso guide."""
+    """Restore the home state and re-engage the torso guide."""
 
     reset_data(model, data)
-    if torso_hold is not None:
-        torso_hold.initialize(model.mj_model, data)
+    torso_hold.initialize(model.mj_model, data)
 
 
 def cycle_torso_release_reset(
     model: BelloModel,
     data: mujoco.MjData,
-    torso_hold: TorsoHold | None,
+    torso_hold: TorsoHold,
     *,
     torso_released: bool,
 ) -> tuple[bool, bool]:
@@ -664,10 +481,10 @@ def cycle_torso_release_reset(
     Returns ``(torso_released, reset_performed)``.
     """
 
-    if torso_hold is not None and not torso_released and torso_hold.release(data):
+    if not torso_released and torso_hold.release(data):
         return True, False
     reset_simulation(model, data, torso_hold)
-    return torso_hold is None, True
+    return False, True
 
 
 def add_torso_hold(
@@ -780,14 +597,6 @@ def validate_config(config: EmulatorConfig) -> None:
     validate_imu_noise_config(config.imu_noise)
     if not math.isfinite(config.torso_drop_limit_m) or config.torso_drop_limit_m <= 0.0:
         raise ValueError("torso_drop_limit_m must be finite and positive")
-    if config.release_after_seconds is not None:
-        if (
-            not math.isfinite(config.release_after_seconds)
-            or config.release_after_seconds < 0.0
-        ):
-            raise ValueError("release_after_seconds must be finite and nonnegative")
-        if not config.torso_hold:
-            raise ValueError("release_after_seconds requires torso_hold")
     if config.pose_service.enabled:
         for name, value in (
             ("pose_service.listen", config.pose_service.listen),

@@ -89,8 +89,6 @@ class VastTrainCommandConfig:
 @dataclass(frozen=True)
 class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...]
-    torso_hold: bool
-    release_after_seconds: float | None
 
 
 @dataclass(frozen=True)
@@ -434,18 +432,11 @@ def emulator_entrypoint() -> None:
 )
 def _emulator_hydra(config: DictConfig) -> None:
     command = command_config(EmulatorCommandConfig, config)
-    if not command.torso_hold:
-        _reject_explicit_fields(
-            ("release_after_seconds",),
-            context="torso_hold=false",
-        )
     from bello_mujoco.robstride import emulator
 
     emulator.run_emulator(
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
-            torso_hold=command.torso_hold,
-            release_after_seconds=command.release_after_seconds,
         )
     )
 
