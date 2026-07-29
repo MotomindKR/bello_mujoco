@@ -4,7 +4,7 @@ allow_git_commit_mismatch: false
 endpoint: http://127.0.0.1:50051
 command: [0.0, 0.0, 0.0]
 motion_path: null
-duration_seconds: 10.0
+duration_seconds: null
 ramp_seconds: null
 gamepad_enabled: true
 arm: false
