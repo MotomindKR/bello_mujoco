@@ -79,10 +79,9 @@ waist yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy.
 The runner controls the 13 policy coordinates and supplies nominal targets for
 the remaining physical coordinates.
 
-The nominal-pose ramp is target-step limited. After the shared `HOLD`, ramp,
-and `RUN` sequence, left-stick vertical/horizontal commands forward/lateral
-velocity, right-stick horizontal commands yaw, and Start/Options aborts.
-Controller disconnection commands zero.
+After the shared `HOLD`, ramp, and `RUN` sequence, left-stick
+vertical/horizontal commands forward/lateral velocity, right-stick horizontal
+commands yaw, and Start/Options aborts. Controller disconnection commands zero.
 The abort is level-sensitive, including when Start/Options is already held
 during startup.
 
@@ -118,7 +117,7 @@ Both armed modes continuously check:
 - finite position, velocity, orientation, acceleration, and action values;
 - quaternion normalization, robot tilt, angular velocity, and acceleration;
 - bounded checkpoint nominal-pose error from ramp completion through `RUN`;
-- policy target bounds and maximum per-step target movement;
+- policy target bounds;
 - accumulated control-loop deadline lag.
 
 Motion adds pose age/frame validation, pose/IMU agreement, base-velocity bounds,
@@ -127,3 +126,7 @@ reference completion, and raw-versus-applied action bounds.
 `duration_seconds` covers only the post-`RUN` policy loop. Ramp time and both
 manual confirmation waits are not included. A `null` duration runs until
 operator exit, reference completion, interruption, or a safety failure.
+
+The runner sends policy targets without applying its own target-step limiter.
+The pinned hardware daemon remains authoritative and rejects any motor target
+that moves more than 0.5 rad from its previously accepted target.

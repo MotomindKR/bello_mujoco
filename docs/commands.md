@@ -293,10 +293,12 @@ metadata.
 Preflight validates the checkpoint task, sphere-hand/fixed-joint morphology,
 policy layouts, generated transmission, motor inventory, IMU presence,
 telemetry freshness, and initial state. Armed loops continue checking group
-state, telemetry age, tilt, acceleration, angular velocity, loop lag, target
-steps, and asynchronous command receipts. A safety failure is terminal and
-unwinds the acquired control sessions; explicit completion and interruption
-paths stop and disable the groups.
+state, telemetry age, tilt, acceleration, angular velocity, loop lag, policy
+target bounds, and asynchronous command receipts. The runner does not clip
+per-step targets; the pinned hardware daemon rejects motor target steps above
+0.5 rad. A safety failure is terminal and unwinds the acquired control
+sessions; explicit completion and interruption paths stop and disable the
+groups.
 
 ## What is intentionally not public
 

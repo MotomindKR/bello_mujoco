@@ -36,7 +36,6 @@ from bello_mujoco.hardware.runtime import (
     actuator_impedance_gains,
     armed_control_session,
     import_hardware_binding,
-    limit_target_step,
     require_nominal_pose,
     require_operator_confirmation,
     require_async_hardware_binding,
@@ -914,12 +913,7 @@ def control_physical_motion(
                     break
                 inference_ms = (time.monotonic() - inference_started) * 1_000.0
                 command_started = time.monotonic()
-                target = limit_target_step(
-                    control.previous_target,
-                    policy_step.physical_target,
-                    config.max_target_step_radians,
-                )
-                control.send_target(target)
+                control.send_target(policy_step.physical_target)
                 command_submission_ms = (time.monotonic() - command_started) * 1_000.0
                 loop_work_ms = (time.monotonic() - loop_started) * 1_000.0
                 maximum_inference_ms = max(maximum_inference_ms, inference_ms)

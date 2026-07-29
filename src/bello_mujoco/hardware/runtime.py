@@ -77,7 +77,6 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
         "acknowledgement_timeout_seconds": config.acknowledgement_timeout_seconds,
         "rpc_timeout_seconds": config.rpc_timeout_seconds,
         "ramp_seconds": config.ramp_seconds,
-        "max_target_step_radians": config.max_target_step_radians,
         "max_tilt_radians": config.max_tilt_radians,
         "max_angular_velocity": config.max_angular_velocity,
         "max_linear_acceleration": config.max_linear_acceleration,
@@ -165,16 +164,6 @@ def normalized_quaternion_xyzw(value: np.ndarray) -> np.ndarray:
     if not math.isfinite(norm) or norm < 0.9 or norm > 1.1:
         raise RuntimeError(f"hardware IMU quaternion norm is invalid: {norm}")
     return quaternion / norm
-
-
-def limit_target_step(
-    previous: np.ndarray, requested: np.ndarray, maximum_step: float
-) -> np.ndarray:
-    previous = np.asarray(previous, dtype=np.float64)
-    requested = np.asarray(requested, dtype=np.float64)
-    if previous.shape != requested.shape:
-        raise ValueError("previous and requested targets must have the same shape")
-    return previous + np.clip(requested - previous, -maximum_step, maximum_step)
 
 
 def import_hardware_binding() -> Any:
@@ -530,7 +519,15 @@ def stop_hardware_controls(
     config: HardwareControlConfig,
     executor: Executor,
 ) -> None:
-    stops = {name: executor.submit(controls[name].stop) for name in config.groups}
+    def stop_or_close(control: Any) -> None:
+        if control.state.value == "running":
+            control.stop()
+        else:
+            control.close()
+
+    stops = {
+        name: executor.submit(stop_or_close, controls[name]) for name in config.groups
+    }
     for name in config.groups:
         stops[name].result()
 
@@ -692,13 +689,8 @@ class ArmedControlSession:
             if before_step is not None and not before_step():
                 return None
             fraction = step / ramp_steps
-            requested = initial_positions + fraction * (
+            target = initial_positions + fraction * (
                 self.adapter.nominal_physical_target - initial_positions
-            )
-            target = limit_target_step(
-                self.previous_target,
-                requested,
-                self.config.max_target_step_radians,
             )
             self.send_target(target)
             self.pace()

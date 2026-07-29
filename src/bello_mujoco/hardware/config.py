@@ -24,7 +24,6 @@ class HardwareControlConfig:
     max_duration_seconds: float | None = 10.0
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
-    max_target_step_radians: float = 0.05
     max_tilt_radians: float = 0.70
     max_angular_velocity: float = 20.0
     max_linear_acceleration: float = 100.0

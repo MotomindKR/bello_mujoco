@@ -29,7 +29,6 @@ from bello_mujoco.hardware.runtime import (
     actuator_impedance_gains,
     armed_control_session,
     import_hardware_binding,
-    limit_target_step,
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
     require_nominal_pose,
@@ -554,12 +553,7 @@ def control_physical_robot(
                 command = hardware_command(config, adapter.metadata, gamepad_input)
                 frame = control.read_frame()
                 policy_step = adapter.step(frame, command)
-                target = limit_target_step(
-                    control.previous_target,
-                    policy_step.physical_target,
-                    config.max_target_step_radians,
-                )
-                control.send_target(target)
+                control.send_target(policy_step.physical_target)
                 step += 1
                 now = time.monotonic()
                 if now >= next_status:
