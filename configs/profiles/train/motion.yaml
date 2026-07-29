@@ -1,6 +1,6 @@
 config:
   total_timesteps: 2949120000
-  num_envs: 4096
+  num_envs: 3072
   num_minibatches: 4
   learning_rate: 0.001
   ent_coef: 0.005

@@ -419,7 +419,7 @@ profiles raise these values for their larger batches and contact workloads.
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
-| `motion` | 4,096-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
+| `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 
 Headline resolved PPO values are:
 
@@ -428,7 +428,7 @@ Headline resolved PPO values are:
 | `smoke` | 4 | 2 × 2 | 1 × 1 | 0.001 | 0.99 / 0.95 | 256-256 tanh |
 | `locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
 | `hardware_locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.995 / 0.98 | 512-256-128 swish |
-| `motion` | 2,949,120,000 | 4,096 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
+| `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included
