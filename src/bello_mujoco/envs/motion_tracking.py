@@ -119,6 +119,8 @@ class MotionRewardConfig:
     body_angular_velocity_weight: float = 0.0
     action_rate_weight: float = -0.01
     joint_limit_weight: float = -0.02
+    torque_l1_weight: float = 0.0
+    torque_peak_weight: float = 0.0
     undesired_contact_weight: float = 0.0
     root_position_sigma: float = 0.20
     root_orientation_sigma: float = 0.35
@@ -190,6 +192,15 @@ class BelloMotionTrackingEnv:
                 "motion tracking requires every logical actuator to be policy "
                 f"controlled; got {self.action_size} policy joints for "
                 f"nu={actuator_count}"
+            )
+        policy_peak_force = self.model.actuator_peak_force[
+            self.model.policy_ctrl_indices
+        ]
+        if not np.all(np.isfinite(policy_peak_force)) or np.any(
+            policy_peak_force <= 0.0
+        ):
+            raise ValueError(
+                "policy actuators require positive finite peak-force metadata"
             )
         configured_actuators = self.actuator_config.by_name
         for name in self.model.actuator_joint_names:
@@ -900,6 +911,7 @@ class BelloMotionTrackingEnv:
             [reference.body_ang_vel, reference.body_lin_vel], axis=-1
         )
         cfg = self.config.reward
+        torque_l1, torque_peak = self._torque_costs(state)
         components = {
             "reward/root_position": cfg.root_position_weight
             * gaussian_reward(
@@ -930,6 +942,12 @@ class BelloMotionTrackingEnv:
             * jnp.mean((state.last_action - previous.last_action) ** 2),
             "reward/joint_limit": cfg.joint_limit_weight
             * self._joint_limit_cost(state),
+            "reward/torque_l1": cfg.torque_l1_weight
+            * self.control_timestep
+            * torque_l1,
+            "reward/torque_peak": cfg.torque_peak_weight
+            * self.control_timestep
+            * torque_peak,
         }
         return jnp.sum(jnp.stack(tuple(components.values()))), components
 
@@ -954,6 +972,7 @@ class BelloMotionTrackingEnv:
         linear_velocity_error = body_velocity[:, 3:6] - reference.body_lin_vel
         angular_velocity_error = body_velocity[:, :3] - reference.body_ang_vel
         cfg = self.config.reward
+        torque_l1, torque_peak = self._torque_costs(state)
         components = {
             "reward/global_anchor_position": cfg.root_position_weight
             * squared_norm_gaussian_reward(
@@ -983,6 +1002,12 @@ class BelloMotionTrackingEnv:
             * jnp.sum((state.last_action - previous.last_action) ** 2),
             "reward/joint_limit": cfg.joint_limit_weight
             * self._joint_limit_cost(state),
+            "reward/torque_l1": cfg.torque_l1_weight
+            * self.control_timestep
+            * torque_l1,
+            "reward/torque_peak": cfg.torque_peak_weight
+            * self.control_timestep
+            * torque_peak,
             "reward/undesired_contact": cfg.undesired_contact_weight
             * self._undesired_contact_count(state, world_id),
         }
@@ -1520,6 +1545,16 @@ class BelloMotionTrackingEnv:
             + jax.nn.relu(positions - upper + margin) ** 2
         )
         return jnp.clip(cost, 0.0, 1.0)
+
+    def _torque_costs(self, state: MotionTrackingState) -> tuple[jax.Array, jax.Array]:
+        policy = jnp.asarray(self.model.policy_ctrl_indices)
+        torque = jnp.abs(state.data.actuator_force[policy])
+        peak_torque = jnp.asarray(self.model.actuator_peak_force)[policy]
+        normalized_torque = torque / peak_torque
+        return (
+            jnp.mean(normalized_torque),
+            jnp.mean(jax.nn.relu(normalized_torque - 1.0) ** 2),
+        )
 
     def _body_world_velocity(
         self, state: MotionTrackingState, body_ids: jax.Array

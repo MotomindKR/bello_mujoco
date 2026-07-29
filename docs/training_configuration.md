@@ -306,7 +306,7 @@ content hash are stored in checkpoints.
 | `observation_noise` | Independent magnitudes for anchor pose, base velocity, and joint observation noise. |
 | `adaptive_sampling` | Failure-EMA binning, smoothing kernel, and uniform-sampling mixture. |
 | `push` | Random interval and root linear/angular velocity perturbation magnitudes. |
-| `reward` | Tracking term weights, Gaussian sigmas, action/joint penalties, and undesired-contact threshold. |
+| `reward` | Tracking term weights, Gaussian sigmas, action/joint/torque penalties, and undesired-contact threshold. |
 | `done` | Root-height, root-orientation, and end-effector tracking-error limits. |
 
 Nested motion fields are:
@@ -324,19 +324,23 @@ Nested motion fields are:
 Positive Gaussian terms cover root position/orientation, joint
 position/velocity, tracked-body position/orientation, combined body velocity,
 and separate body linear/angular velocity. Negative terms cover action rate,
-joint limits, and undesired contact. Each Gaussian term has a matching sigma;
-zero weight disables the term.
+joint limits, normalized actuator torque, torque above each actuator's peak
+rating, and undesired contact. Torque terms are multiplied by the control
+timestep. Each Gaussian term has a matching sigma; zero weight disables the
+term.
 
 The maintained `motion` profile emphasizes root and tracked-body pose plus body
 linear/angular velocity, disables direct joint tracking, and uses strong
-joint-limit and action-rate penalties.
+joint-limit and action-rate penalties. It does not enforce simulated policy
+actuator effort limits: normalized L1 torque has weight `-1.2`, while normalized
+torque above peak is penalized quadratically with weight `-12.0`.
 
 The exact reward fields are:
 
 | Kind | Fields |
 | --- | --- |
 | Positive weights | `root_position_weight`, `root_orientation_weight`, `joint_position_weight`, `joint_velocity_weight`, `body_position_weight`, `body_orientation_weight`, `body_velocity_weight`, `body_linear_velocity_weight`, `body_angular_velocity_weight` |
-| Penalty weights | `action_rate_weight`, `joint_limit_weight`, `undesired_contact_weight` |
+| Penalty weights | `action_rate_weight`, `joint_limit_weight`, `torque_l1_weight`, `torque_peak_weight`, `undesired_contact_weight` |
 | Gaussian scales | `root_position_sigma`, `root_orientation_sigma`, `joint_position_sigma`, `joint_velocity_sigma`, `body_position_sigma`, `body_orientation_sigma`, `body_velocity_sigma`, `body_linear_velocity_sigma`, `body_angular_velocity_sigma` |
 | Contact threshold | `undesired_contact_force_threshold` |
 
@@ -413,9 +417,9 @@ profiles raise these values for their larger batches and contact workloads.
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise, pushes, a larger policy, and periodic native video. |
+| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
-| `motion` | 4,096-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation. |
+| `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 
 Headline resolved PPO values are:
 
@@ -424,7 +428,7 @@ Headline resolved PPO values are:
 | `smoke` | 4 | 2 × 2 | 1 × 1 | 0.001 | 0.99 / 0.95 | 256-256 tanh |
 | `locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
 | `hardware_locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.995 / 0.98 | 512-256-128 swish |
-| `motion` | 2,949,120,000 | 4,096 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
+| `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included

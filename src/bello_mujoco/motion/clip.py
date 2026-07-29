@@ -119,6 +119,7 @@ def motion_tracking_asset_config(
         collision_mode=collision_mode,
         end_effector_sphere_mode="both",
         target_total_mass_kg=60.0,
+        enforce_policy_effort_limits=False,
         joint_availability=FIXED_TRACKING_JOINT_AVAILABILITY,
         actuator_config=motion_tracking_actuator_config(),
     )

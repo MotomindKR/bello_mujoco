@@ -65,6 +65,8 @@ env_config:
     body_velocity_weight: 0.05
     action_rate_weight: -0.01
     joint_limit_weight: -0.02
+    torque_l1_weight: 0.0
+    torque_peak_weight: 0.0
     root_position_sigma: 0.20
     root_orientation_sigma: 0.35
     joint_position_sigma: 0.35

@@ -1,6 +1,6 @@
 config:
   total_timesteps: 2949120000
-  num_envs: 4096
+  num_envs: 3072
   num_minibatches: 4
   learning_rate: 0.001
   ent_coef: 0.005
@@ -48,6 +48,8 @@ env_config:
     body_angular_velocity_weight: 1.0
     action_rate_weight: -0.1
     joint_limit_weight: -10.0
+    torque_l1_weight: -1.2
+    torque_peak_weight: -12.0
     undesired_contact_weight: -0.1
     root_position_sigma: 0.3
     root_orientation_sigma: 0.4
