@@ -123,6 +123,9 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.checkpoint_config.allow_git_commit_mismatch is False
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
+    assert locomotion.checkpoint_config.every_updates == 512
+    assert hardware.checkpoint_config.every_updates == 512
+    assert motion.checkpoint_config.every_updates == 500
 
 
 def test_motion_path_override_is_explicit(tmp_path: Path) -> None:

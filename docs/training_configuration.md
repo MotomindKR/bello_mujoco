@@ -413,9 +413,9 @@ profiles raise these values for their larger batches and contact workloads.
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise, pushes, a larger policy, and periodic native video. |
+| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
-| `motion` | 4,096-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation. |
+| `motion` | 4,096-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 
 Headline resolved PPO values are:
 

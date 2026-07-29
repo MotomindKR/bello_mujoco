@@ -61,6 +61,7 @@ done_config:
 checkpoint_config:
   enabled: true
   name: locomotion_seed0
+  every_updates: 512
   wandb_artifact_name: locomotion_seed0
 wandb_config:
   enabled: true
