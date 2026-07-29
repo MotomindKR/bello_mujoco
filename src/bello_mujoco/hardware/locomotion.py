@@ -538,9 +538,7 @@ def control_physical_robot(
 
         adapter.reset()
         start_time = time.monotonic()
-        next_status = (
-            start_time if config.status_interval_seconds is not None else None
-        )
+        next_status = start_time if config.status_interval_seconds is not None else None
         control.reset_deadline()
         step = 0
         try:
