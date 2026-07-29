@@ -55,8 +55,9 @@ After preflight, both task modes use the same interactive sequence:
 2. The runner acquires control and ramps to the checkpoint nominal pose over
    ten seconds by default.
 3. The runner continuously refreshes the nominal target and checks telemetry
-   and the fixed 0.25 rad per-coordinate nominal-pose error bound while the
-   operator releases external support and lets the robot settle.
+   and nominal-pose error bounds while the operator releases external support
+   and lets the robot settle. Direct coordinates use 0.25 rad; the
+   load-bearing differential ankle motor coordinates use 0.35 rad.
 4. The operator types the exact word `RUN`, immediately before policy control.
 
 Any other input fails closed. The `RUN` prompt is read asynchronously so motor
