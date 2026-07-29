@@ -69,12 +69,14 @@ metadata.
 
 Safety failures are terminal for the current run and unwind the acquired
 control sessions. A daemon command timeout or lease loss puts the affected
-group in `DAMPED`; the runner reports the group's cause and detail, does not
-resume automatically, stops any other group that is still `RUNNING`, and then
-disables and releases every session. Explicit completion, gamepad abort, and
-keyboard interruption follow the same stop, disable, and release cleanup. The
-external hardware daemon remains the final authority for command validity,
-leases, damping, and device faults.
+group in `DAMPED`; the runner reports the group's cause and detail and does not
+resume automatically. When cleanup can establish `DAMPED`, it stops any group
+that is still `RUNNING` and keeps the sessions damped until the operator supports
+the robot and types the exact word `IDLE`. Only then does it disable and release
+every session. Explicit completion, gamepad abort, and keyboard interruption
+follow the same stop-confirm-disable cleanup. A hard fault or lost daemon
+connection can prevent this handshake. The external hardware daemon remains the
+final authority for command validity, leases, damping, and device faults.
 
 ## Locomotion mode
 

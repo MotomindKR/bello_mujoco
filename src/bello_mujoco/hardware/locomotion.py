@@ -496,6 +496,7 @@ def control_physical_robot(
         adapter,
         config,
         thread_name="bello-group-control",
+        operator_input=operator_input,
     ) as control:
 
         def continue_ramp() -> bool:

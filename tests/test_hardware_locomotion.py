@@ -38,6 +38,7 @@ from bello_mujoco.hardware.runtime import (
     coordinate_targets,
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
+    require_idle_confirmation,
     require_operator_confirmation,
     send_targets,
     specific_force_from_gravity_removed_acceleration,
@@ -297,6 +298,14 @@ def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
     assert prompts == ["hold prompt", "run prompt"]
     assert len(hold_steps) >= 2
 
+    idle_prompts = []
+    idle_responses = iter(("idle", "IDLE"))
+    require_idle_confirmation(
+        "idle prompt",
+        lambda prompt: idle_prompts.append(prompt) or next(idle_responses),
+    )
+    assert idle_prompts == ["idle prompt", "idle prompt"]
+
     with pytest.raises(RuntimeError, match="expected exact 'HOLD'"):
         require_operator_confirmation(HOLD_CONFIRMATION, "", lambda _prompt: "hold")
     with pytest.raises(RuntimeError, match="expected exact 'RUN'"):
@@ -324,8 +333,13 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
     closed = []
     running = object()
     damped = object()
+
+    def stop_lower():
+        stopped.append("lower")
+        controls["lower"].state = damped
+
     controls = {
-        "lower": SimpleNamespace(state=running, stop=lambda: stopped.append("lower")),
+        "lower": SimpleNamespace(state=running, stop=stop_lower),
         "upper": SimpleNamespace(
             state=damped,
             stop=lambda: pytest.fail("already-damped group must not be stopped"),
@@ -357,12 +371,19 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
     )
     monkeypatch.setattr(hardware_runtime, "start_hardware_controls", lambda *_: None)
     monkeypatch.setattr(hardware_runtime, "wait_for_group_state", lambda *_: None)
+    confirmations = []
+
+    def confirm_idle(prompt):
+        confirmations.append(
+            (prompt, list(stopped), [control.state for control in controls.values()])
+        )
+        return "IDLE"
 
     with pytest.raises(RuntimeError, match="control failed"):
         with armed_control_session(
             SimpleNamespace(
                 StateUnavailableError=RuntimeError,
-                ControlState=SimpleNamespace(RUNNING=running),
+                ControlState=SimpleNamespace(RUNNING=running, DAMPED=damped),
             ),
             groups,
             SimpleNamespace(),
@@ -370,11 +391,20 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
             adapter,
             config,
             thread_name="test-control",
+            operator_input=confirm_idle,
         ):
             raise RuntimeError("control failed")
 
     assert stopped == ["lower"]
-    assert closed == ["upper"]
+    assert closed == []
+    assert confirmations == [
+        (
+            "Hardware controls are damped. Support the robot, then type IDLE to "
+            "disable motors and release control: ",
+            ["lower"],
+            [damped, damped],
+        )
+    ]
 
 
 def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None:

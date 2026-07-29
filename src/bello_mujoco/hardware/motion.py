@@ -866,6 +866,7 @@ def control_physical_motion(
         adapter,
         config,
         thread_name="bello-motion-control",
+        operator_input=operator_input,
     ) as control:
         frame = control.ramp_to_nominal(initial_frame.positions)
         if frame is None:

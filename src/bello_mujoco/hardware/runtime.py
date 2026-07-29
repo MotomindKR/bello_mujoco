@@ -22,6 +22,7 @@ from bello_mujoco.spatial import quat_rotate_inverse_wxyz
 
 HOLD_CONFIRMATION = "HOLD"
 RUN_CONFIRMATION = "RUN"
+IDLE_CONFIRMATION = "IDLE"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
 STANDARD_GRAVITY = 9.80665
 NOMINAL_POSE_MAX_ERROR_RADIANS = 0.25
@@ -242,6 +243,30 @@ def require_operator_confirmation(
             f"operator confirmation rejected; expected exact {expected!r}"
         )
     print(f"Operator confirmed {expected}.")
+
+
+def require_idle_confirmation(
+    prompt: str,
+    operator_input: Callable[[str], str] | None = None,
+) -> None:
+    if operator_input is None:
+        if not sys.stdin.isatty():
+            raise RuntimeError("IDLE confirmation requires an interactive terminal")
+        read = input
+    else:
+        read = operator_input
+    while True:
+        try:
+            response = read(prompt)
+        except (EOFError, OSError) as error:
+            raise RuntimeError(
+                "operator confirmation input failed while awaiting exact "
+                f"{IDLE_CONFIRMATION!r}"
+            ) from error
+        if response == IDLE_CONFIRMATION:
+            print(f"Operator confirmed {IDLE_CONFIRMATION}.")
+            return
+        print(f"Expected exact {IDLE_CONFIRMATION!r}; hardware controls remain damped.")
 
 
 def wait_for_operator_confirmation_while_holding(
@@ -562,10 +587,14 @@ def stop_hardware_controls(
     controls: Mapping[str, Any],
     config: HardwareControlConfig,
     executor: Executor,
-) -> None:
+) -> bool:
+    damped = getattr(binding.ControlState, "DAMPED", None)
+
     def stop_or_close(control: Any) -> None:
         if control.state == binding.ControlState.RUNNING:
             control.stop()
+        elif damped is not None and control.state == damped:
+            return
         else:
             control.close()
 
@@ -574,6 +603,25 @@ def stop_hardware_controls(
     }
     for name in config.groups:
         stops[name].result()
+    return damped is not None and any(
+        controls[name].state == damped for name in config.groups
+    )
+
+
+def stop_and_confirm_idle(
+    binding: Any,
+    controls: Mapping[str, Any],
+    config: HardwareControlConfig,
+    executor: Executor,
+    operator_input: Callable[[str], str] | None,
+) -> None:
+    if not stop_hardware_controls(binding, controls, config, executor):
+        return
+    require_idle_confirmation(
+        "Hardware controls are damped. Support the robot, then type IDLE to "
+        "disable motors and release control: ",
+        operator_input,
+    )
 
 
 def send_targets(
@@ -781,6 +829,7 @@ def armed_control_session(
     config: HardwareControlConfig,
     *,
     thread_name: str,
+    operator_input: Callable[[str], str] | None = None,
 ) -> Iterator[ArmedControlSession]:
     with ExitStack() as resources:
         controls = {
@@ -801,11 +850,12 @@ def armed_control_session(
             )
         )
         resources.callback(
-            stop_hardware_controls,
+            stop_and_confirm_idle,
             binding,
             controls,
             config,
             executor,
+            operator_input,
         )
         start_hardware_controls(
             binding,
