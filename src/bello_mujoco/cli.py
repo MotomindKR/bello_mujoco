@@ -95,12 +95,15 @@ class EmulatorCommandConfig:
 class HardwareCommandConfig:
     task: Literal["locomotion", "motion"]
     checkpoint_path: Path | None
+    standing_checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
     endpoint: str
     command: tuple[float, float, float]
     motion_path: Path | None
     duration_seconds: float | None
     ramp_seconds: float | None
+    policy_transition_seconds: float | None
+    status_interval_seconds: float | None
     gamepad_enabled: bool
     arm: bool
 
@@ -442,7 +445,9 @@ def _emulator_hydra(config: DictConfig) -> None:
 
 
 def hardware_entrypoint() -> None:
-    _expand_path_overrides(("checkpoint_path=", "motion_path="))
+    _expand_path_overrides(
+        ("checkpoint_path=", "standing_checkpoint_path=", "motion_path=")
+    )
     _hardware_hydra()
 
 
@@ -456,6 +461,10 @@ def _hardware_hydra(config: DictConfig) -> None:
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     if command.task == "motion":
         _reject_explicit_fields(("command", "gamepad_enabled"), context="task=motion")
+        standing_checkpoint = _required_path(
+            command.standing_checkpoint_path,
+            "standing_checkpoint_path",
+        )
         from bello_mujoco.hardware.motion import (
             HardwareMotionConfig,
             run_hardware_motion,
@@ -464,20 +473,31 @@ def _hardware_hydra(config: DictConfig) -> None:
         base = HardwareMotionConfig()
         run_hardware_motion(
             checkpoint,
+            standing_checkpoint,
             replace(
                 base,
                 endpoint=command.endpoint,
                 motion_path=command.motion_path,
                 max_duration_seconds=command.duration_seconds,
                 ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
+                policy_transition_seconds=_coalesce(
+                    command.policy_transition_seconds,
+                    base.policy_transition_seconds,
+                ),
+                status_interval_seconds=command.status_interval_seconds,
                 arm=command.arm,
                 allow_git_commit_mismatch=command.allow_git_commit_mismatch,
             ),
         )
         return
-    if command.motion_path is not None:
-        raise ValueError("motion_path is only valid for task=motion")
-    _reject_explicit_fields(("motion_path",), context="task=locomotion")
+    if command.motion_path is not None or command.standing_checkpoint_path is not None:
+        raise ValueError(
+            "motion_path and standing_checkpoint_path are only valid for task=motion"
+        )
+    _reject_explicit_fields(
+        ("motion_path", "standing_checkpoint_path", "policy_transition_seconds"),
+        context="task=locomotion",
+    )
     if command.gamepad_enabled:
         _reject_explicit_fields(("command",), context="gamepad_enabled=true")
     from bello_mujoco.hardware.locomotion import (
@@ -494,6 +514,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             command=command.command,
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
+            status_interval_seconds=command.status_interval_seconds,
             gamepad=replace(base.gamepad, enabled=command.gamepad_enabled),
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,

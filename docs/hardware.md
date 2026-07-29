@@ -49,7 +49,7 @@ Arming requires a spotter, a working E-stop, and `arm=true`. Armed control
 requires the asynchronous hardware binding so target acknowledgements do not
 block the policy-rate loop.
 
-After preflight, both task modes use the same interactive sequence:
+After preflight, both task modes begin with the same interactive sequence:
 
 1. The operator supports the robot and types the exact word `HOLD`.
 2. The runner acquires control and ramps to the checkpoint nominal pose over
@@ -58,7 +58,8 @@ After preflight, both task modes use the same interactive sequence:
    and nominal-pose error bounds while the operator releases external support
    and lets the robot settle. Direct coordinates use 0.25 rad; the
    load-bearing differential ankle motor coordinates use 0.35 rad.
-4. The operator types the exact word `RUN`, immediately before policy control.
+4. The operator types the exact word `RUN`, immediately before locomotion
+   policy control.
 
 Any other input fails closed. The `RUN` prompt is read asynchronously so motor
 targets, command receipts, and safety checks continue while the terminal waits
@@ -67,14 +68,18 @@ for the operator.
 Both tasks use the proportional and derivative gains stored in checkpoint
 metadata.
 
-Safety failures are terminal for the current run and unwind the acquired
-control sessions. A daemon command timeout or lease loss puts the affected
-group in `DAMPED`; the runner reports the group's cause and detail, does not
-resume automatically, stops any other group that is still `RUNNING`, and then
-disables and releases every session. Explicit completion, gamepad abort, and
-keyboard interruption follow the same stop, disable, and release cleanup. The
-external hardware daemon remains the final authority for command validity,
-leases, damping, and device faults.
+Safety failures are terminal for the current run. A daemon command timeout or
+lease loss puts the affected group in `DAMPED`; the runner reports the group's
+cause and detail and does not resume automatically. Cleanup attempts to stop
+every group that is still `RUNNING`, even if stopping another group fails. If
+any group is `DAMPED`, it remains damped until the operator supports the robot
+and types the exact word `IDLE`; only those damped groups are then explicitly
+disabled. Lease release preserves `DAMPED` and `FAULT` states, so an exception
+or failed confirmation does not automatically undamp the robot. Explicit
+completion, gamepad abort, and keyboard interruption use the same
+stop-confirm-disable sequence. A hard fault or lost daemon connection can
+prevent part of this handshake. The external hardware daemon remains the final
+authority for command validity, leases, damping, and device faults.
 
 ## Locomotion mode
 
@@ -93,7 +98,12 @@ A fixed command is active only when gamepad input is disabled.
 
 ## Motion mode
 
-Motion deployment restores the reference contract from the checkpoint.
+Motion deployment requires both a motion checkpoint in `checkpoint_path` and a
+locomotion checkpoint in `standing_checkpoint_path`. The locomotion checkpoint
+runs with a zero command before and after motion tracking. Both checkpoints must
+use the same ordered physical-coordinate mapping.
+
+The motion checkpoint restores the reference contract.
 `motion_path=null` reuses the saved path; a relocated archive is accepted only
 when its schema and content identity match.
 
@@ -102,15 +112,22 @@ normally from PoseService at `127.0.0.1:50052`. IMU orientation is retained as
 an independent agreement check. Root translation is never estimated by
 double-integrating acceleration.
 
-Motion uses the same default ten-second ramp, bounded nominal-pose arrival, and
-manual `HOLD` and `RUN` confirmations as locomotion. It additionally verifies
-Pose/IMU orientation agreement, reference bounds, and initial policy output.
-Gamepad and velocity-command fields are locomotion-only.
+Motion first uses the standing checkpoint's default ten-second ramp, bounded
+nominal-pose arrival, and manual `HOLD` and `RUN` confirmations. `RUN` starts
+standing locomotion. The runner continues sending standing-policy targets while
+waiting for the exact `MOTION` confirmation, then blends from live standing
+policy targets to live motion-policy targets. Reference completion blends back
+to live standing-policy targets and standing locomotion resumes. Each
+transition takes two seconds by default; it does not force the unsupported
+robot through either checkpoint's static nominal pose. Pose/IMU orientation
+agreement, reference bounds, and initial policy output remain checked. Gamepad
+and velocity-command fields are locomotion-only.
 
 Motion inference fuses observation construction, stacking, normalization, actor
-execution, bounded action mapping, and diagnostics into one JIT call. Timing
-reports distinguish inference, asynchronous command submission, total loop
-work, maxima, and accumulated deadline lag.
+execution, bounded action mapping, and diagnostics into one JIT call. Periodic
+state/timing output is disabled by default; set `status_interval_seconds` to a
+positive interval to enable it. Phase transitions and a final motion timing
+summary are always reported.
 
 ## Runtime safety checks
 
@@ -127,10 +144,11 @@ Both armed modes continuously check:
 Motion adds pose age/frame validation, pose/IMU agreement, base-velocity bounds,
 reference completion, and raw-versus-applied action bounds.
 
-`duration_seconds` covers only the post-`RUN` policy loop. Ramp time and both
-manual confirmation waits are not included. A `null` duration runs until
-operator exit, reference completion, interruption, or a safety failure.
+`duration_seconds` covers the complete post-`RUN` policy flow. Ramp time and the
+`HOLD`/`RUN` confirmation waits are not included. A `null` duration runs until
+operator exit, interruption, or a safety failure. Motion reference completion
+returns to standing locomotion rather than ending the process.
 
 The runner sends policy targets without applying its own target-step limiter.
 The pinned hardware daemon remains authoritative and rejects any motor target
-that moves more than 0.5 rad from its previously accepted target.
+that moves more than 2.0 rad from its previously accepted target.

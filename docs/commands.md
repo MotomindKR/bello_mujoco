@@ -259,13 +259,16 @@ Configuration source: `configs/commands/hardware.yaml`.
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
 | `task` | `locomotion` or `motion`; `locomotion` | both | Select the checkpoint and observation contract. |
-| `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
+| `checkpoint_path` | path or `null`; `null` | both | Required locomotion or motion checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
+| `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
 | `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout. This does not disable task, shape, asset, motion-content, or hardware preflight checks. |
 | `endpoint` | string; `http://127.0.0.1:50051` | both | `bello-hardwared` endpoint. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
-| `duration_seconds` | positive float or `null`; `10.0` | both | Maximum armed policy duration. `null` runs until operator exit, interruption, or a safety failure. |
+| `duration_seconds` | positive float or `null`; `null` | both | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
 | `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for both tasks. |
+| `policy_transition_seconds` | positive float or `null`; `null` | motion | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 2 seconds. |
+| `status_interval_seconds` | positive float or `null`; `null` | both | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
 | `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |
 
@@ -276,16 +279,23 @@ For locomotion, supplying `command` requires `gamepad_enabled=false`; an
 enabled gamepad is the sole command source.
 
 Locomotion uses the same stick mapping as `bello-eval`; Start/Options aborts.
-Motion additionally requires absolute pelvis pose from
-`bello-state-estimatord` PoseService at `127.0.0.1:50052`.
+Motion additionally requires a locomotion checkpoint selected by
+`standing_checkpoint_path` and absolute pelvis pose from
+`bello-state-estimatord` PoseService at `127.0.0.1:50052`. The standing and
+motion checkpoints must resolve to the same ordered physical-coordinate
+mapping.
 
 Both armed tasks require the operator to type exact interactive confirmations:
-`HOLD` before the nominal-pose ramp and `RUN` before policy control. While
-waiting for `RUN`, the runner continues refreshing the hold target and checking
-telemetry and measured nominal-pose error bounds: 0.25 rad for direct
-coordinates and 0.35 rad for the load-bearing differential ankle motor
-coordinates. `duration_seconds` measures only the post-`RUN` policy loop; the
-ramp and confirmation waits are outside that duration.
+`HOLD` before the nominal-pose ramp and `RUN` before policy control. Motion mode
+ramps to the standing checkpoint, starts its zero-command locomotion policy
+after `RUN`, and requires exact `MOTION` confirmation while that policy remains
+active. It then transitions to motion tracking and automatically transitions
+back to the standing policy when the reference completes. While waiting for
+`RUN`, the runner continues refreshing the hold target and checking telemetry
+and measured nominal-pose error bounds: 0.25 rad for direct coordinates and
+0.35 rad for the load-bearing differential ankle motor coordinates.
+`duration_seconds` measures only the post-`RUN` policy flow; the ramp and
+`HOLD`/`RUN` confirmation waits are outside that duration.
 
 Hardware targets use the proportional and derivative gains stored in checkpoint
 metadata.
@@ -296,9 +306,9 @@ telemetry freshness, and initial state. Armed loops continue checking group
 state, telemetry age, tilt, acceleration, angular velocity, loop lag, policy
 target bounds, and asynchronous command receipts. The runner does not clip
 per-step targets; the pinned hardware daemon rejects motor target steps above
-0.5 rad. A safety failure is terminal and unwinds the acquired control
-sessions; explicit completion and interruption paths stop and disable the
-groups.
+2.0 rad. A safety failure is terminal and requests damping. Damped groups
+remain damped until the operator supports the robot and confirms `IDLE`;
+unexpected cleanup releases leases without issuing an automatic disable.
 
 ## What is intentionally not public
 

@@ -238,9 +238,7 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         or submodule_entry[:2] != ["160000", "commit"]
         or submodule_entry[3] != submodule_path
     ):
-        raise ValueError(
-            f"{submodule_path!r} is not a submodule on origin/{branch}"
-        )
+        raise ValueError(f"{submodule_path!r} is not a submodule on origin/{branch}")
     motion_path = None
     if config.motion_path is not None:
         motion_path = _repository_motion_path(config.motion_path)

@@ -496,6 +496,7 @@ def control_physical_robot(
         adapter,
         config,
         thread_name="bello-group-control",
+        operator_input=operator_input,
     ) as control:
 
         def continue_ramp() -> bool:
@@ -537,7 +538,7 @@ def control_physical_robot(
 
         adapter.reset()
         start_time = time.monotonic()
-        next_status = start_time
+        next_status = start_time if config.status_interval_seconds is not None else None
         control.reset_deadline()
         step = 0
         try:
@@ -548,9 +549,7 @@ def control_physical_robot(
                 gamepad_input = gamepad.poll()
                 report_gamepad_connection(gamepad_input)
                 if gamepad_input.exit_active:
-                    print(
-                        "Hardware gamepad requested exit; stopping and disabling groups."
-                    )
+                    print("Hardware gamepad requested exit; entering damped shutdown.")
                     break
                 command = hardware_command(config, adapter.metadata, gamepad_input)
                 frame = control.read_frame()
@@ -558,7 +557,7 @@ def control_physical_robot(
                 control.send_target(policy_step.physical_target)
                 step += 1
                 now = time.monotonic()
-                if now >= next_status:
+                if next_status is not None and now >= next_status:
                     print(
                         {
                             "hardware_step": step,
@@ -571,8 +570,9 @@ def control_physical_robot(
                             "imu_age_ms": frame.imu_age_ms,
                         }
                     )
+                    assert config.status_interval_seconds is not None
                     next_status = now + config.status_interval_seconds
                 control.pace()
             control.drain()
         except KeyboardInterrupt:
-            print("Hardware locomotion interrupted; stopping and disabling groups.")
+            print("Hardware locomotion interrupted; entering damped shutdown.")

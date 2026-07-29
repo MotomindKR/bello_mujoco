@@ -38,10 +38,12 @@ from bello_mujoco.hardware.runtime import (
     coordinate_targets,
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
+    require_idle_confirmation,
     require_operator_confirmation,
     send_targets,
     specific_force_from_gravity_removed_acceleration,
     start_hardware_controls,
+    stop_and_confirm_idle,
     stop_hardware_controls,
     tilt_from_xyzw,
     validate_hardware_frame,
@@ -297,6 +299,14 @@ def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
     assert prompts == ["hold prompt", "run prompt"]
     assert len(hold_steps) >= 2
 
+    idle_prompts = []
+    idle_responses = iter(("idle", "IDLE"))
+    require_idle_confirmation(
+        "idle prompt",
+        lambda prompt: idle_prompts.append(prompt) or next(idle_responses),
+    )
+    assert idle_prompts == ["idle prompt", "idle prompt"]
+
     with pytest.raises(RuntimeError, match="expected exact 'HOLD'"):
         require_operator_confirmation(HOLD_CONFIRMATION, "", lambda _prompt: "hold")
     with pytest.raises(RuntimeError, match="expected exact 'RUN'"):
@@ -306,6 +316,27 @@ def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
             lambda: True,
             lambda _prompt: "run",
         )
+
+
+def test_terminal_confirmation_can_stop_without_leaving_an_input_reader(
+    monkeypatch,
+) -> None:
+    terminal = SimpleNamespace(
+        isatty=lambda: True,
+        readline=lambda: pytest.fail("stdin must not be read before it is ready"),
+    )
+    monkeypatch.setattr(hardware_runtime.sys, "stdin", terminal)
+    monkeypatch.setattr(
+        hardware_runtime.select,
+        "select",
+        lambda *_args: ([], [], []),
+    )
+
+    assert not wait_for_operator_confirmation_while_holding(
+        RUN_CONFIRMATION,
+        "run prompt",
+        lambda: False,
+    )
 
 
 def test_shared_runtime_preserves_failure_while_stopping_running_groups(
@@ -321,20 +352,40 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
     )
 
     stopped = []
-    closed = []
+    disabled = []
+    released = []
     running = object()
     damped = object()
+
+    def stop_lower():
+        stopped.append("lower")
+        controls["lower"].state = damped
+
+    def disable(name):
+        disabled.append(name)
+        controls[name].state = object()
+
     controls = {
-        "lower": SimpleNamespace(state=running, stop=lambda: stopped.append("lower")),
+        "lower": SimpleNamespace(
+            state=running,
+            stop=stop_lower,
+            disable=lambda: disable("lower"),
+            close=lambda *, preserve_damping: released.append(
+                ("lower", preserve_damping)
+            ),
+        ),
         "upper": SimpleNamespace(
             state=damped,
             stop=lambda: pytest.fail("already-damped group must not be stopped"),
-            close=lambda: closed.append("upper"),
+            disable=lambda: disable("upper"),
+            close=lambda *, preserve_damping: released.append(
+                ("upper", preserve_damping)
+            ),
         ),
     }
     groups = {
         name: SimpleNamespace(
-            control=lambda *_args, _name=name, **_kwargs: nullcontext(controls[_name])
+            control=lambda *_args, _name=name, **_kwargs: controls[_name]
         )
         for name in controls
     }
@@ -357,12 +408,19 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
     )
     monkeypatch.setattr(hardware_runtime, "start_hardware_controls", lambda *_: None)
     monkeypatch.setattr(hardware_runtime, "wait_for_group_state", lambda *_: None)
+    confirmations = []
+
+    def confirm_idle(prompt):
+        confirmations.append(
+            (prompt, list(stopped), [control.state for control in controls.values()])
+        )
+        return "IDLE"
 
     with pytest.raises(RuntimeError, match="control failed"):
         with armed_control_session(
             SimpleNamespace(
                 StateUnavailableError=RuntimeError,
-                ControlState=SimpleNamespace(RUNNING=running),
+                ControlState=SimpleNamespace(RUNNING=running, DAMPED=damped),
             ),
             groups,
             SimpleNamespace(),
@@ -370,11 +428,21 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
             adapter,
             config,
             thread_name="test-control",
+            operator_input=confirm_idle,
         ):
             raise RuntimeError("control failed")
 
     assert stopped == ["lower"]
-    assert closed == ["upper"]
+    assert disabled == ["lower", "upper"]
+    assert released == [("lower", True), ("upper", True)]
+    assert confirmations == [
+        (
+            "Hardware controls are damped. Support the robot, then type IDLE to "
+            "disable motors and release control: ",
+            ["lower"],
+            [damped, damped],
+        )
+    ]
 
 
 def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None:
@@ -557,12 +625,10 @@ def test_hardware_groups_start_concurrently() -> None:
             return SimpleNamespace(done=lambda: True, result=lambda: None)
 
         def stop(self) -> None:
-            barrier.wait()
             stopped.append(self.name)
 
-        def close(self) -> None:
-            barrier.wait()
-            closed.append(self.name)
+        def close(self, *, preserve_damping: bool = False) -> None:
+            closed.append((self.name, preserve_damping))
 
     names = ("lower_body", "upper_body")
     running = object()
@@ -619,7 +685,7 @@ def test_hardware_groups_start_concurrently() -> None:
     assert set(started) == set(names)
     assert set(sent) == set(names)
     assert stopped == ["lower_body"]
-    assert closed == ["upper_body"]
+    assert closed == []
 
 
 def test_hardware_cleanup_stops_only_running_groups() -> None:
@@ -648,7 +714,66 @@ def test_hardware_cleanup_stops_only_running_groups() -> None:
         )
 
     assert stopped == ["lower_body"]
-    assert closed == ["upper_body"]
+    assert closed == []
+
+
+def test_cleanup_keeps_damped_group_until_idle_confirmation_when_peer_faults() -> None:
+    running = object()
+    damped = object()
+    fault = object()
+    ready = object()
+    events = []
+
+    def stop_lower() -> None:
+        controls["lower_body"].state = damped
+        events.append("lower damped")
+
+    def stop_upper() -> None:
+        controls["upper_body"].state = fault
+        events.append("upper faulted")
+        raise RuntimeError("upper stop rejected in fault")
+
+    def disable_lower() -> None:
+        events.append("lower disabled")
+        controls["lower_body"].state = ready
+
+    controls = {
+        "lower_body": SimpleNamespace(
+            state=running,
+            stop=stop_lower,
+            disable=disable_lower,
+        ),
+        "upper_body": SimpleNamespace(
+            state=running,
+            stop=stop_upper,
+            disable=lambda: pytest.fail("faulted group must not be disabled"),
+        ),
+    }
+    binding = SimpleNamespace(
+        ControlState=SimpleNamespace(RUNNING=running, DAMPED=damped)
+    )
+
+    def confirm_idle(_prompt: str) -> str:
+        events.append("idle confirmed")
+        assert controls["lower_body"].state is damped
+        assert controls["upper_body"].state is fault
+        return "IDLE"
+
+    with (
+        ThreadPoolExecutor(max_workers=2) as executor,
+        pytest.raises(ExceptionGroup, match="hardware control cleanup failed"),
+    ):
+        stop_and_confirm_idle(
+            binding,
+            controls,
+            HardwareLocomotionConfig(groups=tuple(controls)),
+            executor,
+            confirm_idle,
+        )
+
+    assert events.index("idle confirmed") < events.index("lower disabled")
+    assert controls["lower_body"].state is ready
+    assert controls["upper_body"].state is fault
 
 
 def test_damped_group_failure_reports_cause_and_detail() -> None:

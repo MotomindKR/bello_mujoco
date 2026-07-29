@@ -826,9 +826,7 @@ def test_tracking_torque_costs_are_normalized_by_peak_torque(
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     peak = jnp.asarray(env.model.actuator_peak_force)
-    state = state.replace(
-        data=state.data.replace(actuator_force=peak * 1.5)
-    )
+    state = state.replace(data=state.data.replace(actuator_force=peak * 1.5))
 
     torque_l1, torque_peak = env._torque_costs(state)
 

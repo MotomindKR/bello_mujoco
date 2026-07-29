@@ -13,6 +13,7 @@ used by reproducible Vast.ai training runs.
 | Source clip | Frames | Primitive-box self-collision frames | Archive SHA-256 |
 | --- | ---: | ---: | --- |
 | `video_single_foot_balance_level1_filter_amass.npz` | 218 at 30 FPS | 0 | `869df4c491f19e3aee8d3bdbcabd99cedfd29fe889d152ea93d9e890936e3029` |
+| `video_single_foot_balance_level3_filter_amass.npz` | 271 at 30 FPS | 0 | `1d1456b5fb61a5e2037ffdf7c93506915635d8227824061a689612a3b3022621` |
 | `video_single_foot_balance_level4_filter_amass.npz` | 265 at 30 FPS | 0 | `ccc079a5fb25a0275d53e152118664f3e3083e5d5385d12c9c40a332be979b08` |
 | `video_squat_level2_filter_amass.npz` | 191 at 30 FPS | 0 | `a275fc9570134227a24deec9b9ee0f33d7aea3369a78d4b3e0d0e6c74b6c7a52` |
 
@@ -35,6 +36,6 @@ nix develop -c uv run bello-motion \
   jobs=2
 ```
 
-The complete 51-clip import remains ignored under `motions/local/`. These two
+The complete 51-clip import remains ignored under `motions/local/`. These
 tracked examples are byte-identical to the corresponding canonical imports;
 the table hashes are the distribution integrity check.

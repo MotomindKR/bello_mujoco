@@ -1546,9 +1546,7 @@ class BelloMotionTrackingEnv:
         )
         return jnp.clip(cost, 0.0, 1.0)
 
-    def _torque_costs(
-        self, state: MotionTrackingState
-    ) -> tuple[jax.Array, jax.Array]:
+    def _torque_costs(self, state: MotionTrackingState) -> tuple[jax.Array, jax.Array]:
         policy = jnp.asarray(self.model.policy_ctrl_indices)
         torque = jnp.abs(state.data.actuator_force[policy])
         peak_torque = jnp.asarray(self.model.actuator_peak_force)[policy]

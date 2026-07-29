@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -72,6 +73,7 @@ def test_pose_and_imu_orientation_must_agree() -> None:
 
 
 def test_motion_config_rejects_unsafe_ranges() -> None:
+    assert motion_hardware.HardwareMotionConfig().max_duration_seconds is None
     motion_hardware.validate_hardware_motion_config(
         motion_hardware.HardwareMotionConfig(max_duration_seconds=None)
     )
@@ -89,6 +91,24 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
                 max_action_abs=2.0, max_raw_action_abs=1.0
             )
         )
+
+
+def test_motion_transition_requires_matching_impedance_gains() -> None:
+    standing = SimpleNamespace(
+        physical_coordinate_names=("left", "right"),
+        nominal_physical_target=np.zeros(2),
+        kp=np.asarray((1.0, 2.0)),
+        kd=np.asarray((0.1, 0.2)),
+    )
+    motion = SimpleNamespace(
+        physical_coordinate_names=("left", "right"),
+        nominal_physical_target=np.zeros(2),
+        kp=np.asarray((1.0, 3.0)),
+        kd=np.asarray((0.1, 0.2)),
+    )
+
+    with pytest.raises(ValueError, match="different impedance gains"):
+        motion_hardware.validate_motion_transition_adapters(standing, motion)
 
 
 def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> None:
@@ -183,7 +203,10 @@ def test_read_only_preflight_never_acquires_control(
     )
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
+        coordinate_index={"left": 0, "right": 1},
         nominal_physical_target=np.zeros(2),
+        kp=np.ones(2),
+        kd=np.ones(2),
         env=SimpleNamespace(action_size=25, motion=SimpleNamespace(duration=1.0)),
         control_timestep=0.02,
         start_time=0.0,
@@ -192,10 +215,37 @@ def test_read_only_preflight_never_acquires_control(
         step=lambda _frame, _pose, reference_time: preview,
         reset=lambda: None,
     )
+    standing_preview = SimpleNamespace(action=np.zeros(2))
+    standing_adapter = SimpleNamespace(
+        physical_coordinate_names=coordinates,
+        coordinate_index={"left": 0, "right": 1},
+        nominal_physical_target=np.zeros(2),
+        kp=np.ones(2),
+        kd=np.ones(2),
+        env=SimpleNamespace(action_size=13),
+        control_timestep=0.02,
+        precompile=lambda: None,
+        step=lambda _frame, _command: standing_preview,
+        reset=lambda: None,
+    )
     monkeypatch.setattr(
         motion_hardware,
         "load_hardware_motion_policy",
         lambda *_args, **_kwargs: (adapter, SimpleNamespace(task="motion_tracking")),
+    )
+    monkeypatch.setattr(
+        motion_hardware,
+        "load_hardware_policy",
+        lambda *_args, **_kwargs: (
+            standing_adapter,
+            SimpleNamespace(
+                task="locomotion",
+                command=SimpleNamespace(
+                    enabled=True,
+                    standing_probability=1.0,
+                ),
+            ),
+        ),
     )
 
     class FakePoseStream:
@@ -213,6 +263,7 @@ def test_read_only_preflight_never_acquires_control(
 
     motion_hardware.run_hardware_motion(
         Path("unused"),
+        Path("standing"),
         motion_hardware.HardwareMotionConfig(),
         hardware_binding=hardware.binding,
         pose_stream_factory=FakePoseStream,
@@ -222,3 +273,138 @@ def test_read_only_preflight_never_acquires_control(
     output = capsys.readouterr().out
     assert "'nominal_ramp_distance_max': 2.0" in output
     assert "no lease was acquired" in output
+
+
+def test_motion_runner_flows_from_standing_to_motion_and_back(
+    monkeypatch,
+    capsys,
+) -> None:
+    coordinates = ("left", "right")
+    frame = HardwareFrame(
+        positions=np.zeros(2),
+        velocities=np.zeros(2),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        group_states=("RUNNING",),
+        group_causes=("START",),
+        group_details=("",),
+    )
+    transitions = []
+    standing_steps = []
+
+    standing_adapter = SimpleNamespace(
+        physical_coordinate_names=coordinates,
+        nominal_physical_target=np.zeros(2),
+        control_timestep=0.02,
+        reset=lambda: None,
+        step=lambda _frame, command: (
+            standing_steps.append(command.copy())
+            or SimpleNamespace(
+                physical_target=np.zeros(2),
+                tilt_radians=0.0,
+                action=np.zeros(2),
+            )
+        ),
+    )
+
+    motion_steps = []
+
+    def motion_step(*_args, **_kwargs):
+        motion_steps.append(True)
+        if len(motion_steps) > 1:
+            raise StopIteration
+        return SimpleNamespace(physical_target=np.zeros(2))
+
+    motion_adapter = SimpleNamespace(
+        physical_coordinate_names=coordinates,
+        nominal_physical_target=np.zeros(2),
+        control_timestep=0.02,
+        start_time=0.0,
+        initialize_alignment=lambda _pose: transitions.append("aligned"),
+        step=motion_step,
+    )
+
+    class FakeControl:
+        deadline = 0.0
+        previous_target = np.zeros(2)
+
+        @property
+        def adapter(self):
+            return self._adapter
+
+        @adapter.setter
+        def adapter(self, adapter):
+            self._adapter = adapter
+            transitions.append("motion" if adapter is motion_adapter else "standing")
+
+        def ramp_to_nominal(self, _positions):
+            return frame
+
+        def wait_for_run(
+            self,
+            _prompt,
+            *,
+            operator_input,
+            validate_hold,
+        ):
+            del operator_input
+            validate_hold(frame)
+            return True
+
+        def read_frame(self):
+            return frame
+
+        def send_target(self, target):
+            self.previous_target = np.asarray(target)
+
+        def pace(self):
+            time.sleep(0.002)
+
+        def reset_deadline(self):
+            return None
+
+        def drain(self):
+            return None
+
+    control = FakeControl()
+    monkeypatch.setattr(
+        motion_hardware,
+        "armed_control_session",
+        lambda *_args, **_kwargs: nullcontext(control),
+    )
+
+    def confirm_motion(expected, _prompt, hold_step, _operator_input):
+        assert expected == "MOTION"
+        assert hold_step()
+        return True
+
+    monkeypatch.setattr(
+        motion_hardware,
+        "wait_for_operator_confirmation_while_holding",
+        confirm_motion,
+    )
+    poses = SimpleNamespace(latest=pose_frame)
+
+    motion_hardware.control_physical_motion(
+        SimpleNamespace(),
+        {},
+        SimpleNamespace(),
+        poses,
+        frame,
+        standing_adapter,
+        motion_adapter,
+        motion_hardware.HardwareMotionConfig(
+            max_duration_seconds=0.01,
+            policy_transition_seconds=0.001,
+        ),
+    )
+
+    assert transitions[:3] == ["motion", "aligned", "standing"]
+    assert len(motion_steps) == 2
+    assert standing_steps
+    assert all(step == pytest.approx(np.zeros(3)) for step in standing_steps)
+    output = capsys.readouterr().out
+    assert "Standing locomotion policy resumed." in output

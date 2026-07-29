@@ -62,6 +62,7 @@ def load_runner_config() -> HardwareCommandConfig:
             overrides=[
                 "task=motion",
                 "checkpoint_path=checkpoints/motion",
+                "standing_checkpoint_path=checkpoints/standing",
             ],
         )
     return structured_config(HardwareCommandConfig, config)
@@ -241,6 +242,7 @@ def test_motion_runner_defaults_to_read_only() -> None:
     config = load_runner_config()
 
     assert config.checkpoint_path == Path("checkpoints/motion")
+    assert config.standing_checkpoint_path == Path("checkpoints/standing")
     assert config.task == "motion"
     assert not config.arm
     assert config.motion_path is None
