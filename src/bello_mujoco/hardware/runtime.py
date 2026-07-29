@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Executor, ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib
 import math
@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from typing import Any, Protocol
+import warnings
 
 import mujoco
 import numpy as np
@@ -22,6 +23,7 @@ from bello_mujoco.spatial import quat_rotate_inverse_wxyz
 
 HOLD_CONFIRMATION = "HOLD"
 RUN_CONFIRMATION = "RUN"
+MOTION_CONFIRMATION = "MOTION"
 IDLE_CONFIRMATION = "IDLE"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
 STANDARD_GRAVITY = 9.80665
@@ -84,7 +86,6 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
         "max_angular_velocity": config.max_angular_velocity,
         "max_linear_acceleration": config.max_linear_acceleration,
         "max_loop_lag_seconds": config.max_loop_lag_seconds,
-        "status_interval_seconds": config.status_interval_seconds,
     }
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
@@ -94,6 +95,11 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
         or config.max_duration_seconds <= 0.0
     ):
         raise ValueError("max_duration_seconds must be positive or null")
+    if config.status_interval_seconds is not None and (
+        not math.isfinite(config.status_interval_seconds)
+        or config.status_interval_seconds <= 0.0
+    ):
+        raise ValueError("status_interval_seconds must be positive or null")
     if config.max_motor_age_ms <= 0 or config.max_imu_age_ms <= 0:
         raise ValueError("telemetry age limits must be positive")
 
@@ -582,30 +588,73 @@ def start_hardware_controls(
         starts[name].result()
 
 
+@dataclass(frozen=True)
+class _StopResult:
+    damped: bool
+    errors: tuple[BaseException, ...]
+
+
+def _stop_hardware_controls(
+    binding: Any,
+    controls: Mapping[str, Any],
+    config: HardwareControlConfig,
+    executor: Executor,
+) -> _StopResult:
+    damped = getattr(binding.ControlState, "DAMPED", None)
+
+    def stop_if_running(control: Any) -> None:
+        if control.state == binding.ControlState.RUNNING:
+            control.stop()
+
+    stops = {
+        name: executor.submit(stop_if_running, controls[name]) for name in config.groups
+    }
+    errors = []
+    for name in config.groups:
+        try:
+            stops[name].result()
+        except BaseException as error:
+            errors.append(error)
+    return _StopResult(
+        damped=damped is not None
+        and any(controls[name].state == damped for name in config.groups),
+        errors=tuple(errors),
+    )
+
+
 def stop_hardware_controls(
     binding: Any,
     controls: Mapping[str, Any],
     config: HardwareControlConfig,
     executor: Executor,
 ) -> bool:
+    result = _stop_hardware_controls(binding, controls, config, executor)
+    if result.errors:
+        raise ExceptionGroup("failed to stop hardware controls", result.errors)
+    return result.damped
+
+
+def _disable_damped_hardware_controls(
+    binding: Any,
+    controls: Mapping[str, Any],
+    config: HardwareControlConfig,
+    executor: Executor,
+) -> tuple[BaseException, ...]:
     damped = getattr(binding.ControlState, "DAMPED", None)
-
-    def stop_or_close(control: Any) -> None:
-        if control.state == binding.ControlState.RUNNING:
-            control.stop()
-        elif damped is not None and control.state == damped:
-            return
-        else:
-            control.close()
-
-    stops = {
-        name: executor.submit(stop_or_close, controls[name]) for name in config.groups
+    disables = {
+        name: executor.submit(controls[name].disable)
+        for name in config.groups
+        if damped is not None and controls[name].state == damped
     }
+    errors = []
     for name in config.groups:
-        stops[name].result()
-    return damped is not None and any(
-        controls[name].state == damped for name in config.groups
-    )
+        if name not in disables:
+            continue
+        try:
+            disables[name].result()
+        except BaseException as error:
+            errors.append(error)
+    return tuple(errors)
 
 
 def stop_and_confirm_idle(
@@ -615,13 +664,35 @@ def stop_and_confirm_idle(
     executor: Executor,
     operator_input: Callable[[str], str] | None,
 ) -> None:
-    if not stop_hardware_controls(binding, controls, config, executor):
-        return
-    require_idle_confirmation(
-        "Hardware controls are damped. Support the robot, then type IDLE to "
-        "disable motors and release control: ",
-        operator_input,
-    )
+    result = _stop_hardware_controls(binding, controls, config, executor)
+    errors = list(result.errors)
+    if result.damped:
+        require_idle_confirmation(
+            "Hardware controls are damped. Support the robot, then type IDLE to "
+            "disable motors and release control: ",
+            operator_input,
+        )
+        errors.extend(
+            _disable_damped_hardware_controls(
+                binding,
+                controls,
+                config,
+                executor,
+            )
+        )
+    if errors:
+        raise ExceptionGroup("hardware control cleanup failed", errors)
+
+
+def _close_preserving_damping(control: Any) -> None:
+    try:
+        control.close(preserve_damping=True)
+    except BaseException as error:
+        warnings.warn(
+            f"failed to release hardware control while preserving damping: {error}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def send_targets(
@@ -790,6 +861,30 @@ class ArmedControlSession:
             frame = self.read_frame()
         return frame
 
+    def transition_to_nominal(
+        self,
+        adapter: HardwarePolicyAdapter,
+        duration_seconds: float,
+    ) -> HardwareFrame:
+        self.drain()
+        initial_target = self.previous_target.copy()
+        self.adapter = adapter
+        self.reset_deadline()
+        transition_steps = max(
+            1, math.ceil(duration_seconds / adapter.control_timestep)
+        )
+        frame = None
+        for step in range(1, transition_steps + 1):
+            fraction = step / transition_steps
+            target = initial_target + fraction * (
+                adapter.nominal_physical_target - initial_target
+            )
+            self.send_target(target)
+            self.pace()
+            frame = self.read_frame()
+        assert frame is not None
+        return frame
+
     def wait_for_run(
         self,
         prompt: str,
@@ -831,59 +926,74 @@ def armed_control_session(
     thread_name: str,
     operator_input: Callable[[str], str] | None = None,
 ) -> Iterator[ArmedControlSession]:
-    with ExitStack() as resources:
-        controls = {
-            name: resources.enter_context(
-                group.control(
+    controls: dict[str, Any] = {}
+    with ThreadPoolExecutor(
+        max_workers=len(config.groups),
+        thread_name_prefix=thread_name,
+    ) as executor:
+        try:
+            for name, group in groups.items():
+                controls[name] = group.control(
                     config.client_name,
                     command_validity=config.command_validity_seconds,
                     acknowledgement_timeout=config.acknowledgement_timeout_seconds,
                     rpc_timeout=config.rpc_timeout_seconds,
                 )
+            start_hardware_controls(
+                binding,
+                controls,
+                groups,
+                initial_frame.positions,
+                adapter,
+                config,
+                executor,
             )
-            for name, group in groups.items()
-        }
-        executor = resources.enter_context(
-            ThreadPoolExecutor(
-                max_workers=len(config.groups),
-                thread_name_prefix=thread_name,
+            wait_for_group_state(
+                states,
+                adapter.physical_coordinate_names,
+                config,
+                binding.StateUnavailableError,
+                "RUNNING",
             )
-        )
-        resources.callback(
-            stop_and_confirm_idle,
-            binding,
-            controls,
-            config,
-            executor,
-            operator_input,
-        )
-        start_hardware_controls(
-            binding,
-            controls,
-            groups,
-            initial_frame.positions,
-            adapter,
-            config,
-            executor,
-        )
-        wait_for_group_state(
-            states,
-            adapter.physical_coordinate_names,
-            config,
-            binding.StateUnavailableError,
-            "RUNNING",
-        )
-        yield ArmedControlSession(
-            binding=binding,
-            controls=controls,
-            groups=groups,
-            states=states,
-            adapter=adapter,
-            config=config,
-            executor=executor,
-            pending_receipts=[],
-            previous_target=np.asarray(
-                initial_frame.positions, dtype=np.float64
-            ).copy(),
-            deadline=time.monotonic(),
-        )
+            try:
+                yield ArmedControlSession(
+                    binding=binding,
+                    controls=controls,
+                    groups=groups,
+                    states=states,
+                    adapter=adapter,
+                    config=config,
+                    executor=executor,
+                    pending_receipts=[],
+                    previous_target=np.asarray(
+                        initial_frame.positions, dtype=np.float64
+                    ).copy(),
+                    deadline=time.monotonic(),
+                )
+            except BaseException:
+                try:
+                    stop_and_confirm_idle(
+                        binding,
+                        controls,
+                        config,
+                        executor,
+                        operator_input,
+                    )
+                except BaseException as cleanup:
+                    warnings.warn(
+                        f"control cleanup failed: {cleanup}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                raise
+            else:
+                stop_and_confirm_idle(
+                    binding,
+                    controls,
+                    config,
+                    executor,
+                    operator_input,
+                )
+        finally:
+            for control in controls.values():
+                _close_preserving_damping(control)

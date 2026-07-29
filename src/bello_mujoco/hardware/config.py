@@ -28,4 +28,4 @@ class HardwareControlConfig:
     max_angular_velocity: float = 20.0
     max_linear_acceleration: float = 100.0
     max_loop_lag_seconds: float = 0.10
-    status_interval_seconds: float = 1.0
+    status_interval_seconds: float | None = None

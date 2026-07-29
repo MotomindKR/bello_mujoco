@@ -27,10 +27,16 @@ from bello_mujoco.envs.motion_tracking import (
 )
 from bello_mujoco.hardware import _pose_pb2
 from bello_mujoco.hardware.config import HardwareControlConfig
+from bello_mujoco.hardware.locomotion import (
+    HardwarePolicyAdapter as HardwareLocomotionPolicyAdapter,
+    load_hardware_policy,
+    validate_command,
+)
 from bello_mujoco.motion.native import NativeContactData, NativeMotionData
 from bello_mujoco.motion.runtime import load_motion_policy_runtime
 from bello_mujoco.hardware.runtime import (
     HOLD_CONFIRMATION,
+    MOTION_CONFIRMATION,
     HardwareFrame,
     actuator_coordinate_names,
     actuator_impedance_gains,
@@ -42,6 +48,7 @@ from bello_mujoco.hardware.runtime import (
     validate_hardware_control_config,
     validate_hardware_frame,
     validate_hardware_inventory,
+    wait_for_operator_confirmation_while_holding,
     wait_for_hardware_frame,
 )
 from bello_mujoco.policy import apply_actor
@@ -66,6 +73,7 @@ class HardwareMotionConfig(HardwareControlConfig):
     max_raw_action_abs: float = 5.0
     max_pose_imu_orientation_error: float = 0.25
     max_base_linear_velocity: float = 5.0
+    policy_transition_seconds: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -710,6 +718,7 @@ def validate_hardware_motion_config(
         "max_raw_action_abs": config.max_raw_action_abs,
         "max_pose_imu_orientation_error": config.max_pose_imu_orientation_error,
         "max_base_linear_velocity": config.max_base_linear_velocity,
+        "policy_transition_seconds": config.policy_transition_seconds,
     }
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
@@ -753,6 +762,7 @@ def load_hardware_motion_policy(
 
 def run_hardware_motion(
     checkpoint_path: Path,
+    standing_checkpoint_path: Path,
     config: HardwareMotionConfig = HardwareMotionConfig(),
     *,
     hardware_binding: Any | None = None,
@@ -760,9 +770,17 @@ def run_hardware_motion(
     operator_input: Callable[[str], str] | None = None,
 ) -> None:
     validate_hardware_motion_config(config)
-    adapter, metadata = load_hardware_motion_policy(checkpoint_path, config)
-    validate_hardware_motion_config(config, adapter.env)
-    adapter.precompile()
+    motion_adapter, metadata = load_hardware_motion_policy(checkpoint_path, config)
+    standing_adapter, standing_metadata = load_hardware_policy(
+        standing_checkpoint_path,
+        allow_git_commit_mismatch=config.allow_git_commit_mismatch,
+    )
+    validate_hardware_motion_config(config, motion_adapter.env)
+    validate_motion_transition_adapters(standing_adapter, motion_adapter)
+    standing_command = np.zeros(3, dtype=np.float32)
+    validate_command(standing_command, standing_metadata)
+    motion_adapter.precompile()
+    standing_adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
     if config.arm:
         require_async_hardware_binding(binding)
@@ -772,7 +790,8 @@ def run_hardware_motion(
             config.endpoint, timeout=config.connection_timeout_seconds
         ) as robot,
     ):
-        groups = validate_hardware_inventory(robot, adapter, config, binding)
+        groups = validate_hardware_inventory(robot, standing_adapter, config, binding)
+        validate_hardware_inventory(robot, motion_adapter, config, binding)
         with robot.states(
             groups=config.groups,
             imus=(config.imu_name,),
@@ -780,7 +799,7 @@ def run_hardware_motion(
         ) as states:
             frame = wait_for_hardware_frame(
                 states,
-                adapter.physical_coordinate_names,
+                standing_adapter.physical_coordinate_names,
                 config.groups,
                 config.imu_name,
                 binding.StateUnavailableError,
@@ -789,26 +808,46 @@ def run_hardware_motion(
             pose = poses.latest()
             validate_hardware_frame(frame, config, expected_group_state="IDLE")
             validate_pose_imu_agreement(frame, pose, config)
-            adapter.initialize_alignment(pose)
-            initial_delta = np.abs(frame.positions - adapter.nominal_physical_target)
+            motion_adapter.initialize_alignment(pose)
+            initial_delta = np.abs(
+                frame.positions - standing_adapter.nominal_physical_target
+            )
             initial_error = float(np.max(initial_delta))
-            preview = adapter.step(frame, pose, reference_time=adapter.start_time)
-            adapter.reset()
+            standing_preview = standing_adapter.step(frame, standing_command)
+            motion_preview = motion_adapter.step(
+                frame,
+                pose,
+                reference_time=motion_adapter.start_time,
+            )
+            standing_adapter.reset()
+            motion_adapter.reset()
             print(
                 {
                     "motion_hardware_preflight": "passed",
                     "checkpoint_task": metadata.task,
+                    "standing_checkpoint_task": standing_metadata.task,
                     "endpoint": config.endpoint,
                     "pose_endpoint": config.pose_endpoint,
                     "groups": config.groups,
-                    "coordinates": len(adapter.physical_coordinate_names),
-                    "policy_joints": adapter.env.action_size,
-                    "control_rate_hz": 1.0 / adapter.control_timestep,
+                    "coordinates": len(motion_adapter.physical_coordinate_names),
+                    "motion_policy_joints": motion_adapter.env.action_size,
+                    "standing_policy_joints": standing_adapter.env.action_size,
+                    "motion_control_rate_hz": (
+                        1.0 / motion_adapter.control_timestep
+                    ),
+                    "standing_control_rate_hz": (
+                        1.0 / standing_adapter.control_timestep
+                    ),
                     "jax_backend": jax.default_backend(),
-                    "motion_start_seconds": adapter.start_time,
+                    "motion_start_seconds": motion_adapter.start_time,
                     "nominal_ramp_distance_max": initial_error,
-                    "preview_action_abs_max": float(np.max(np.abs(preview.raw_action))),
-                    "preview_action_clipped": preview.action_clipped,
+                    "standing_preview_action_abs_max": float(
+                        np.max(np.abs(standing_preview.action))
+                    ),
+                    "motion_preview_action_abs_max": float(
+                        np.max(np.abs(motion_preview.raw_action))
+                    ),
+                    "motion_preview_action_clipped": motion_preview.action_clipped,
                     "armed": config.arm,
                 }
             )
@@ -826,7 +865,7 @@ def run_hardware_motion(
             )
             frame = wait_for_hardware_frame(
                 states,
-                adapter.physical_coordinate_names,
+                standing_adapter.physical_coordinate_names,
                 config.groups,
                 config.imu_name,
                 binding.StateUnavailableError,
@@ -841,9 +880,40 @@ def run_hardware_motion(
                 states,
                 poses,
                 frame,
-                adapter,
+                standing_adapter,
+                motion_adapter,
                 config,
                 operator_input=operator_input,
+            )
+
+
+def validate_motion_transition_adapters(
+    standing_adapter: HardwareLocomotionPolicyAdapter,
+    motion_adapter: HardwareMotionPolicyAdapter,
+) -> None:
+    if (
+        standing_adapter.physical_coordinate_names
+        != motion_adapter.physical_coordinate_names
+    ):
+        raise ValueError(
+            "standing and motion checkpoints require different physical "
+            "coordinate mappings"
+        )
+    coordinate_count = len(standing_adapter.physical_coordinate_names)
+    expected_shape = (coordinate_count,)
+    arrays = {
+        "standing nominal target": standing_adapter.nominal_physical_target,
+        "motion nominal target": motion_adapter.nominal_physical_target,
+        "standing kp": standing_adapter.kp,
+        "standing kd": standing_adapter.kd,
+        "motion kp": motion_adapter.kp,
+        "motion kd": motion_adapter.kd,
+    }
+    for name, value in arrays.items():
+        array = np.asarray(value)
+        if array.shape != expected_shape or not np.all(np.isfinite(array)):
+            raise ValueError(
+                f"{name} must contain one finite value per physical coordinate"
             )
 
 
@@ -853,7 +923,8 @@ def control_physical_motion(
     states: Any,
     poses: PoseStream,
     initial_frame: HardwareFrame,
-    adapter: HardwareMotionPolicyAdapter,
+    standing_adapter: HardwareLocomotionPolicyAdapter,
+    motion_adapter: HardwareMotionPolicyAdapter,
     config: HardwareMotionConfig,
     *,
     operator_input: Callable[[str], str] | None = None,
@@ -863,56 +934,121 @@ def control_physical_motion(
         groups,
         states,
         initial_frame,
-        adapter,
+        standing_adapter,
         config,
         thread_name="bello-motion-control",
         operator_input=operator_input,
     ) as control:
         frame = control.ramp_to_nominal(initial_frame.positions)
         if frame is None:
-            raise RuntimeError("motion nominal-pose ramp ended unexpectedly")
-        require_nominal_pose(frame, adapter)
+            raise RuntimeError("standing nominal-pose ramp ended unexpectedly")
+        require_nominal_pose(frame, standing_adapter)
 
         def validate_hold(held_frame: HardwareFrame) -> None:
-            require_nominal_pose(held_frame, adapter)
+            require_nominal_pose(held_frame, standing_adapter)
             held_pose = poses.latest()
             validate_pose_imu_agreement(held_frame, held_pose, config)
 
         control.wait_for_run(
             "Nominal-pose ramp complete. Release external support, let the robot "
-            "settle, then type RUN to start policy control: ",
+            "settle, then type RUN to start the standing locomotion policy: ",
             operator_input=operator_input,
             validate_hold=validate_hold,
         )
-        frame = control.read_frame()
-        pose = poses.latest()
-        validate_pose_imu_agreement(frame, pose, config)
-        require_nominal_pose(frame, adapter)
-        adapter.initialize_alignment(pose)
-        start = time.monotonic()
+        require_nominal_pose(control.read_frame(), standing_adapter)
+        standing_adapter.reset()
+        standing_command = np.zeros(3, dtype=np.float32)
+        run_started = time.monotonic()
         control.reset_deadline()
-        next_status = start
-        step = 0
-        maximum_inference_ms = 0.0
-        maximum_command_submission_ms = 0.0
-        maximum_loop_work_ms = 0.0
-        try:
-            while (
+
+        def duration_available() -> bool:
+            return (
                 config.max_duration_seconds is None
-                or time.monotonic() - start < config.max_duration_seconds
-            ):
+                or time.monotonic() - run_started < config.max_duration_seconds
+            )
+
+        standing_step_count = 0
+        next_standing_status = (
+            run_started if config.status_interval_seconds is not None else None
+        )
+
+        def standing_step() -> bool:
+            nonlocal standing_step_count, next_standing_status
+            if not duration_available():
+                return False
+            frame = control.read_frame()
+            policy_step = standing_adapter.step(frame, standing_command)
+            control.send_target(policy_step.physical_target)
+            control.pace()
+            standing_step_count += 1
+            now = time.monotonic()
+            if next_standing_status is not None and now >= next_standing_status:
+                print(
+                    {
+                        "hardware_phase": "standing",
+                        "hardware_step": standing_step_count,
+                        "elapsed_seconds": now - run_started,
+                        "tilt_radians": policy_step.tilt_radians,
+                        "action_abs_max": float(
+                            np.max(np.abs(policy_step.action))
+                        ),
+                    }
+                )
+                assert config.status_interval_seconds is not None
+                next_standing_status = now + config.status_interval_seconds
+            return True
+
+        print(
+            "Standing locomotion policy is active with a zero command. "
+            "Type MOTION to begin motion tracking."
+        )
+        requested_motion = wait_for_operator_confirmation_while_holding(
+            MOTION_CONFIRMATION,
+            "Type MOTION to transition from standing locomotion to motion tracking: ",
+            standing_step,
+            operator_input,
+        )
+        if not requested_motion:
+            control.drain()
+            print("Hardware run duration completed before motion tracking.")
+            return
+
+        try:
+            print("Transitioning from standing locomotion to motion tracking.")
+            frame = control.transition_to_nominal(
+                motion_adapter,
+                config.policy_transition_seconds,
+            )
+            require_nominal_pose(frame, motion_adapter)
+            pose = poses.latest()
+            validate_pose_imu_agreement(frame, pose, config)
+            motion_adapter.initialize_alignment(pose)
+            motion_started = time.monotonic()
+            control.reset_deadline()
+            next_motion_status = (
+                motion_started
+                if config.status_interval_seconds is not None
+                else None
+            )
+            motion_step_count = 0
+            maximum_inference_ms = 0.0
+            maximum_command_submission_ms = 0.0
+            maximum_loop_work_ms = 0.0
+            reference_completed = False
+            print("Motion tracking policy is active.")
+            while duration_available():
                 loop_started = time.monotonic()
                 frame = control.read_frame()
                 pose = poses.latest()
-                elapsed = time.monotonic() - start
-                reference_time = adapter.start_time + elapsed
+                motion_elapsed = time.monotonic() - motion_started
+                reference_time = motion_adapter.start_time + motion_elapsed
                 inference_started = time.monotonic()
                 try:
-                    policy_step = adapter.step(
+                    policy_step = motion_adapter.step(
                         frame, pose, reference_time=reference_time
                     )
                 except StopIteration:
-                    print("Motion reference completed; stopping and disabling groups.")
+                    reference_completed = True
                     break
                 inference_ms = (time.monotonic() - inference_started) * 1_000.0
                 command_started = time.monotonic()
@@ -924,13 +1060,14 @@ def control_physical_motion(
                     maximum_command_submission_ms, command_submission_ms
                 )
                 maximum_loop_work_ms = max(maximum_loop_work_ms, loop_work_ms)
-                step += 1
+                motion_step_count += 1
                 now = time.monotonic()
-                if now >= next_status:
+                if next_motion_status is not None and now >= next_motion_status:
                     print(
                         {
-                            "motion_hardware_step": step,
-                            "elapsed_seconds": elapsed,
+                            "hardware_phase": "motion",
+                            "hardware_step": motion_step_count,
+                            "elapsed_seconds": now - run_started,
                             "reference_time": policy_step.reference_time,
                             "action_abs_max": float(
                                 np.max(np.abs(policy_step.raw_action))
@@ -953,14 +1090,15 @@ def control_physical_motion(
                             "maximum_loop_work_ms": maximum_loop_work_ms,
                         }
                     )
-                    next_status = now + config.status_interval_seconds
+                    assert config.status_interval_seconds is not None
+                    next_motion_status = now + config.status_interval_seconds
                 try:
                     control.pace()
                 except RuntimeError:
                     print(
                         {
                             "motion_hardware_timing_failure": True,
-                            "step": step,
+                            "step": motion_step_count,
                             "inference_ms": inference_ms,
                             "command_submission_ms": command_submission_ms,
                             "loop_work_ms": loop_work_ms,
@@ -971,7 +1109,10 @@ def control_physical_motion(
                             "maximum_loop_work_ms": maximum_loop_work_ms,
                             "accumulated_lag_ms": (
                                 time.monotonic()
-                                - (control.deadline + adapter.control_timestep)
+                                - (
+                                    control.deadline
+                                    + motion_adapter.control_timestep
+                                )
                             )
                             * 1_000.0,
                         },
@@ -979,8 +1120,39 @@ def control_physical_motion(
                     )
                     raise
             control.drain()
+            print(
+                {
+                    "motion_hardware_summary": (
+                        "reference_completed"
+                        if reference_completed
+                        else "duration_completed"
+                    ),
+                    "steps": motion_step_count,
+                    "maximum_inference_ms": maximum_inference_ms,
+                    "maximum_command_submission_ms": maximum_command_submission_ms,
+                    "maximum_loop_work_ms": maximum_loop_work_ms,
+                }
+            )
+
+            print("Transitioning from motion tracking back to standing locomotion.")
+            frame = control.transition_to_nominal(
+                standing_adapter,
+                config.policy_transition_seconds,
+            )
+            require_nominal_pose(frame, standing_adapter)
+            standing_adapter.reset()
+            control.reset_deadline()
+            next_standing_status = (
+                time.monotonic()
+                if config.status_interval_seconds is not None
+                else None
+            )
+            print("Standing locomotion policy resumed.")
+            while duration_available():
+                standing_step()
+            control.drain()
         except KeyboardInterrupt:
-            print("Motion hardware run interrupted; stopping and disabling groups.")
+            print("Motion hardware run interrupted; entering damped shutdown.")
 
 
 def validate_pose_imu_agreement(
