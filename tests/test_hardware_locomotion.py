@@ -44,6 +44,7 @@ from bello_mujoco.hardware.runtime import (
     start_hardware_controls,
     stop_hardware_controls,
     tilt_from_xyzw,
+    validate_hardware_frame,
     validate_hardware_inventory,
     wait_for_operator_confirmation_while_holding,
 )
@@ -183,6 +184,8 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
         max_motor_age_ms=0,
         imu_age_ms=0,
         group_states=("IDLE", "IDLE"),
+        group_causes=("UNSPECIFIED", "UNSPECIFIED"),
+        group_details=("", ""),
     )
     command = np.asarray((0.2, 0.0, 0.0), dtype=np.float32)
 
@@ -305,17 +308,30 @@ def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
         )
 
 
-def test_shared_runtime_requires_async_binding_and_stops_on_failure(
+def test_shared_runtime_preserves_failure_while_stopping_running_groups(
     monkeypatch,
 ) -> None:
     with pytest.raises(RuntimeError, match="send_async"):
         require_async_hardware_binding(SimpleNamespace())
     require_async_hardware_binding(
-        SimpleNamespace(ControlSession=SimpleNamespace(send_async=lambda: None))
+        SimpleNamespace(
+            ControlSession=SimpleNamespace(send_async=lambda: None),
+            ControlState=SimpleNamespace(RUNNING="running"),
+        )
     )
 
     stopped = []
-    controls = {name: SimpleNamespace() for name in ("lower", "upper")}
+    closed = []
+    running = object()
+    damped = object()
+    controls = {
+        "lower": SimpleNamespace(state=running, stop=lambda: stopped.append("lower")),
+        "upper": SimpleNamespace(
+            state=damped,
+            stop=lambda: pytest.fail("already-damped group must not be stopped"),
+            close=lambda: closed.append("upper"),
+        ),
+    }
     groups = {
         name: SimpleNamespace(
             control=lambda *_args, _name=name, **_kwargs: nullcontext(controls[_name])
@@ -336,18 +352,18 @@ def test_shared_runtime_requires_async_binding_and_stops_on_failure(
         max_motor_age_ms=0,
         imu_age_ms=0,
         group_states=("IDLE", "IDLE"),
+        group_causes=("UNSPECIFIED", "UNSPECIFIED"),
+        group_details=("", ""),
     )
     monkeypatch.setattr(hardware_runtime, "start_hardware_controls", lambda *_: None)
     monkeypatch.setattr(hardware_runtime, "wait_for_group_state", lambda *_: None)
-    monkeypatch.setattr(
-        hardware_runtime,
-        "stop_hardware_controls",
-        lambda active, *_: stopped.extend(active),
-    )
 
     with pytest.raises(RuntimeError, match="control failed"):
         with armed_control_session(
-            SimpleNamespace(StateUnavailableError=RuntimeError),
+            SimpleNamespace(
+                StateUnavailableError=RuntimeError,
+                ControlState=SimpleNamespace(RUNNING=running),
+            ),
             groups,
             SimpleNamespace(),
             frame,
@@ -357,7 +373,8 @@ def test_shared_runtime_requires_async_binding_and_stops_on_failure(
         ):
             raise RuntimeError("control failed")
 
-    assert sorted(stopped) == ["lower", "upper"]
+    assert stopped == ["lower"]
+    assert closed == ["upper"]
 
 
 def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None:
@@ -371,6 +388,8 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
         max_motor_age_ms=0,
         imu_age_ms=0,
         group_states=("RUNNING",),
+        group_causes=("START",),
+        group_details=("control started",),
     )
     checks = []
 
@@ -494,6 +513,7 @@ def test_hardware_honors_held_gamepad_abort_before_connect(monkeypatch) -> None:
 
     binding = SimpleNamespace(
         ControlSession=SimpleNamespace(send_async=lambda: None),
+        ControlState=SimpleNamespace(RUNNING="running"),
         Robot=SimpleNamespace(connect=connect),
     )
     gamepad = SimpleNamespace(
@@ -521,9 +541,9 @@ def test_hardware_groups_start_concurrently() -> None:
     sent = []
 
     class Control:
-        def __init__(self, name: str, state: str) -> None:
+        def __init__(self, name: str, state: object) -> None:
             self.name = name
-            self.state = SimpleNamespace(value=state)
+            self.state = state
 
         def start(self, targets) -> None:
             assert targets == {self.name: self.name}
@@ -545,9 +565,11 @@ def test_hardware_groups_start_concurrently() -> None:
             closed.append(self.name)
 
     names = ("lower_body", "upper_body")
+    running = object()
+    uncertain = object()
     controls = {
-        "lower_body": Control("lower_body", "running"),
-        "upper_body": Control("upper_body", "uncertain"),
+        "lower_body": Control("lower_body", running),
+        "upper_body": Control("upper_body", uncertain),
     }
     stopped = []
     closed = []
@@ -561,7 +583,8 @@ def test_hardware_groups_start_concurrently() -> None:
     binding = SimpleNamespace(
         CoordinateTarget=SimpleNamespace(
             position=lambda value, kp, kd: names[int(value)]
-        )
+        ),
+        ControlState=SimpleNamespace(RUNNING=running),
     )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -587,6 +610,7 @@ def test_hardware_groups_start_concurrently() -> None:
         )
         assert len(pending_receipts) == 2
         stop_hardware_controls(
+            binding,
             controls,
             HardwareLocomotionConfig(groups=names),
             executor,
@@ -596,6 +620,62 @@ def test_hardware_groups_start_concurrently() -> None:
     assert set(sent) == set(names)
     assert stopped == ["lower_body"]
     assert closed == ["upper_body"]
+
+
+def test_hardware_cleanup_stops_only_running_groups() -> None:
+    stopped = []
+    closed = []
+    running = object()
+    damped = object()
+    controls = {
+        "lower_body": SimpleNamespace(
+            state=running, stop=lambda: stopped.append("lower_body")
+        ),
+        "upper_body": SimpleNamespace(
+            state=damped,
+            stop=lambda: pytest.fail("already-damped group must not be stopped"),
+            close=lambda: closed.append("upper_body"),
+        ),
+    }
+    binding = SimpleNamespace(ControlState=SimpleNamespace(RUNNING=running))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        stop_hardware_controls(
+            binding,
+            controls,
+            HardwareLocomotionConfig(groups=tuple(controls)),
+            executor,
+        )
+
+    assert stopped == ["lower_body"]
+    assert closed == ["upper_body"]
+
+
+def test_damped_group_failure_reports_cause_and_detail() -> None:
+    frame = HardwareFrame(
+        positions=np.zeros(1),
+        velocities=np.zeros(1),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        group_states=("DAMPED",),
+        group_causes=("COMMAND_TIMEOUT",),
+        group_details=("command watchdog expired; damping applied",),
+    )
+
+    with pytest.raises(RuntimeError) as failure:
+        validate_hardware_frame(
+            frame,
+            HardwareLocomotionConfig(groups=("lower_body",)),
+            expected_group_state="RUNNING",
+        )
+
+    message = str(failure.value)
+    assert "lower_body=DAMPED" in message
+    assert "cause=COMMAND_TIMEOUT" in message
+    assert "command watchdog expired; damping applied" in message
 
 
 def test_read_only_preflight_never_acquires_control(

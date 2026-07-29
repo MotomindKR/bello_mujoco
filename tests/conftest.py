@@ -85,7 +85,11 @@ def hardware_preflight_factory():
                 linear_acceleration=vector(0.0, 0.0, 0.0),
                 sample_age_ms=0,
             ),
-            group=lambda _name: SimpleNamespace(state=SimpleNamespace(name="IDLE")),
+            group=lambda _name: SimpleNamespace(
+                state=SimpleNamespace(name="IDLE"),
+                cause=SimpleNamespace(name="UNSPECIFIED"),
+                detail="",
+            ),
         )
         robot = SimpleNamespace(
             group_names=tuple(groups),

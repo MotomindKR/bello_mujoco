@@ -46,6 +46,8 @@ class HardwareFrame:
     max_motor_age_ms: int
     imu_age_ms: int
     group_states: tuple[str, ...]
+    group_causes: tuple[str, ...]
+    group_details: tuple[str, ...]
 
 
 class HardwarePolicyAdapter(Protocol):
@@ -201,9 +203,16 @@ def import_hardware_binding() -> Any:
 
 def require_async_hardware_binding(binding: Any) -> None:
     control_session = getattr(binding, "ControlSession", None)
-    if control_session is None or not hasattr(control_session, "send_async"):
+    control_state = getattr(binding, "ControlState", None)
+    if (
+        control_session is None
+        or not hasattr(control_session, "send_async")
+        or control_state is None
+        or not hasattr(control_state, "RUNNING")
+    ):
         raise RuntimeError(
-            "armed hardware execution requires bello_hardware.ControlSession.send_async; "
+            "armed hardware execution requires bello_hardware.ControlSession.send_async "
+            "and ControlState.RUNNING; "
             "run `uv sync --frozen` to rebuild the pinned workspace binding"
         )
 
@@ -376,6 +385,8 @@ def wait_for_hardware_frame(
                 max_motor_age_ms=max(motor.feedback_age_ms for motor in motors),
                 imu_age_ms=imu.sample_age_ms,
                 group_states=tuple(group.state.name for group in groups),
+                group_causes=tuple(group.cause.name for group in groups),
+                group_details=tuple(group.detail for group in groups),
             )
         except unavailable_error as error:
             remaining = deadline - time.monotonic()
@@ -391,6 +402,16 @@ def validate_hardware_frame(
     *,
     expected_group_state: str | None = None,
 ) -> None:
+    group_count = len(config.groups)
+    if (
+        len(frame.group_states) != group_count
+        or len(frame.group_causes) != group_count
+        or len(frame.group_details) != group_count
+    ):
+        raise RuntimeError(
+            "hardware telemetry does not contain one state, cause, and detail "
+            "for every configured group"
+        )
     values = (
         frame.positions,
         frame.velocities,
@@ -406,12 +427,16 @@ def validate_hardware_frame(
         raise RuntimeError(f"IMU telemetry is stale: {frame.imu_age_ms} ms")
     bad_states = sorted(set(frame.group_states) & FAULT_GROUP_STATES)
     if bad_states:
-        raise RuntimeError(f"hardware group entered unsafe state: {bad_states}")
+        raise RuntimeError(
+            "hardware group entered unsafe state: "
+            f"{format_group_statuses(frame, config.groups)}"
+        )
     if expected_group_state is not None and any(
         state != expected_group_state for state in frame.group_states
     ):
         raise RuntimeError(
-            f"hardware groups must be {expected_group_state}, got {frame.group_states}"
+            f"hardware groups must be {expected_group_state}, got "
+            f"{format_group_statuses(frame, config.groups)}"
         )
     tilt = tilt_from_xyzw(frame.orientation_xyzw)
     if tilt > config.max_tilt_radians:
@@ -426,6 +451,24 @@ def validate_hardware_frame(
     acceleration = float(np.linalg.norm(frame.linear_acceleration))
     if acceleration > config.max_linear_acceleration:
         raise RuntimeError(f"IMU acceleration {acceleration:.3f} exceeds safety limit")
+
+
+def format_group_statuses(frame: HardwareFrame, group_names: tuple[str, ...]) -> str:
+    statuses = []
+    for name, state, cause, detail in zip(
+        group_names,
+        frame.group_states,
+        frame.group_causes,
+        frame.group_details,
+        strict=True,
+    ):
+        fields = [f"{name}={state}"]
+        if cause != "UNSPECIFIED":
+            fields.append(f"cause={cause}")
+        if detail:
+            fields.append(f"detail={detail!r}")
+        statuses.append(" ".join(fields))
+    return ", ".join(statuses)
 
 
 def require_nominal_pose(
@@ -515,12 +558,13 @@ def start_hardware_controls(
 
 
 def stop_hardware_controls(
+    binding: Any,
     controls: Mapping[str, Any],
     config: HardwareControlConfig,
     executor: Executor,
 ) -> None:
     def stop_or_close(control: Any) -> None:
-        if control.state.value == "running":
+        if control.state == binding.ControlState.RUNNING:
             control.stop()
         else:
             control.close()
@@ -606,7 +650,8 @@ def wait_for_group_state(
             return
         if set(frame.group_states) & FAULT_GROUP_STATES:
             raise RuntimeError(
-                f"hardware group fault while arming: {frame.group_states}"
+                "hardware group fault while arming: "
+                f"{format_group_statuses(frame, config.groups)}"
             )
         states.wait_for_change(timeout=remaining)
 
@@ -755,7 +800,13 @@ def armed_control_session(
                 thread_name_prefix=thread_name,
             )
         )
-        resources.callback(stop_hardware_controls, controls, config, executor)
+        resources.callback(
+            stop_hardware_controls,
+            binding,
+            controls,
+            config,
+            executor,
+        )
         start_hardware_controls(
             binding,
             controls,

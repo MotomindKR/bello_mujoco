@@ -133,6 +133,8 @@ def reference_frame(
             max_motor_age_ms=0,
             imu_age_ms=0,
             group_states=("IDLE", "IDLE"),
+            group_causes=("UNSPECIFIED", "UNSPECIFIED"),
+            group_details=("", ""),
         ),
         PoseFrame(
             position=np.asarray(reference.qpos[:3]),
