@@ -67,10 +67,14 @@ for the operator.
 Both tasks use the proportional and derivative gains stored in checkpoint
 metadata.
 
-Safety failures are terminal and unwind the acquired control sessions.
-Explicit completion, gamepad abort, and keyboard interruption stop and disable
-the groups. The external hardware daemon remains the final authority for
-command validity, leases, and device faults.
+Safety failures are terminal for the current run and unwind the acquired
+control sessions. A daemon command timeout or lease loss puts the affected
+group in `DAMPED`; the runner reports the group's cause and detail, does not
+resume automatically, stops any other group that is still `RUNNING`, and then
+disables and releases every session. Explicit completion, gamepad abort, and
+keyboard interruption follow the same stop, disable, and release cleanup. The
+external hardware daemon remains the final authority for command validity,
+leases, damping, and device faults.
 
 ## Locomotion mode
 

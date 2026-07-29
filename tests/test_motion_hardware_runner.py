@@ -60,6 +60,8 @@ def test_pose_and_imu_orientation_must_agree() -> None:
         max_motor_age_ms=0,
         imu_age_ms=0,
         group_states=("IDLE",),
+        group_causes=("UNSPECIFIED",),
+        group_details=("",),
     )
     with pytest.raises(RuntimeError, match="orientation mismatch"):
         motion_hardware.validate_pose_imu_agreement(

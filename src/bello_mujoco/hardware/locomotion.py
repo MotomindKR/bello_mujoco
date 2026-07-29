@@ -147,6 +147,8 @@ class HardwarePolicyAdapter:
             max_motor_age_ms=0,
             imu_age_ms=0,
             group_states=(),
+            group_causes=(),
+            group_details=(),
         )
         self.step(frame, np.zeros(3, dtype=np.float32))
         self.reset()
