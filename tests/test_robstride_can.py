@@ -1,8 +1,5 @@
-from dataclasses import replace
 import os
 import struct
-import sys
-from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -42,30 +39,14 @@ from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.robstride.emulator import (
     EmulatorConfig,
-    EmulatorControlWindow,
     TerminalEnterInput,
-    _open_emulator_resources,
     add_torso_hold,
     cycle_torso_release_reset,
     default_hardware_description,
     default_motor_model_catalog,
     reset_data,
     validate_motor_coverage,
-    validate_config,
 )
-
-
-class TrackedContext:
-    def __init__(self, name: str, events: list[str]) -> None:
-        self.name = name
-        self.events = events
-
-    def __enter__(self):
-        self.events.append(f"enter:{self.name}")
-        return self
-
-    def __exit__(self, *_args):
-        self.events.append(f"exit:{self.name}")
 
 
 def motor_spec(
@@ -247,85 +228,6 @@ def test_emulator_reset_disables_motors_and_clears_stale_commands() -> None:
     assert motor.applied_torque == 0.0
     assert motor.command == MotorCommand()
     assert motor.active_reporting
-
-
-def test_emulator_resources_close_in_reverse_acquisition_order(monkeypatch) -> None:
-    events = []
-    endpoint = TrackedContext("endpoint", events)
-    viewer = TrackedContext("viewer", events)
-    monkeypatch.setattr(
-        "bello_mujoco.robstride.emulator.SocketCanEndpoint",
-        lambda _interface: endpoint,
-    )
-    monkeypatch.setattr(
-        "bello_mujoco.robstride.emulator._launch_passive_viewer",
-        lambda _model, _data: viewer,
-    )
-    config = replace(
-        EmulatorConfig(),
-        pose_service=replace(EmulatorConfig().pose_service, enabled=False),
-    )
-    model = SimpleNamespace(mj_model=object())
-    emulators = {
-        "can0": SimpleNamespace(spec=SimpleNamespace(interface="vcan0")),
-    }
-
-    with pytest.raises(LookupError):
-        with _open_emulator_resources(
-            model,
-            object(),
-            emulators,
-            config,
-            torso_hold=None,
-            imu_sensor=None,
-        ) as resources:
-            assert resources.endpoints == {"can0": endpoint}
-            assert resources.viewer is viewer
-            raise LookupError("stop")
-
-    assert events == (
-        ["enter:endpoint", "enter:viewer", "exit:viewer", "exit:endpoint"]
-    )
-
-
-def test_control_window_constructor_cleans_partial_pygame_state(monkeypatch) -> None:
-    events = []
-
-    class PygameError(Exception):
-        pass
-
-    display = SimpleNamespace(
-        init=lambda: events.append("display:init"),
-        set_mode=lambda _size: events.append("display:set_mode"),
-        set_caption=lambda _caption: events.append("display:set_caption"),
-    )
-
-    def font(_name, _size):
-        events.append("font:create")
-        raise PygameError("font unavailable")
-
-    pygame = SimpleNamespace(
-        display=display,
-        font=SimpleNamespace(
-            init=lambda: events.append("font:init"),
-            Font=font,
-        ),
-        error=PygameError,
-        quit=lambda: events.append("quit"),
-    )
-    monkeypatch.setitem(sys.modules, "pygame", pygame)
-
-    with pytest.raises(RuntimeError, match="graphical display"):
-        EmulatorControlWindow(0.05)
-
-    assert events == [
-        "display:init",
-        "font:init",
-        "display:set_mode",
-        "display:set_caption",
-        "font:create",
-        "quit",
-    ]
 
 
 def test_mechanical_position_read_uses_wire_direction_and_returns_feedback() -> None:
@@ -542,11 +444,6 @@ def test_terminal_enter_is_detected_without_blocking() -> None:
         writer.flush()
         assert control.poll()
         assert not control.poll()
-
-
-def test_release_timer_requires_an_initial_torso_hold() -> None:
-    with pytest.raises(ValueError, match="requires torso_hold"):
-        validate_config(EmulatorConfig(torso_hold=False, release_after_seconds=1.0))
 
 
 def test_bello_transmission_maps_knee_and_differential_ankle(

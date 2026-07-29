@@ -220,18 +220,15 @@ recorded instance.
 
 ## `bello-run-emulator`
 
-Run the native-MuJoCo RobStride hardware-interface emulator. It always exposes
-the configured SocketCAN buses, pelvis EBIMU stream, and PoseService while
-stepping the canonical model in real time with its native viewer open. The
-default torso guide also opens the Bello controls window.
+Run the headless native-MuJoCo RobStride hardware-interface emulator. It always
+exposes the configured SocketCAN buses, pelvis EBIMU stream, and PoseService
+while stepping the canonical model in real time. It opens no graphical windows.
 
 Configuration source: `configs/commands/emulator.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
-| `torso_hold` | boolean; `true` | Start with the torso/root assembly constrained by the commissioning vertical guide. |
-| `release_after_seconds` | nonnegative float or `null`; `null` | Automatically release the torso guide after this much simulated time. It requires `torso_hold=true`. |
 
 The emulator is checkout-only. It selects the canonical `lower_body` and
 `upper_body` groups from `deps/bello-stack/descriptions/bello/hardware.yaml`,
@@ -239,8 +236,9 @@ uses `deps/bello-stack/descriptions/robstride/models.yaml` for protocol and
 hardware limits, and derives direct and differential transmissions from the
 canonical URDF. Only the logical-to-SocketCAN interface mapping is local. It
 applies MIT impedance control, publishes the pelvis IMU serial stream and
-PoseService, opens the native viewer, and paces simulation against wall-clock
-time.
+PoseService, and paces simulation against wall-clock time. Its torso guide is
+always engaged at startup; Enter releases it, and another Enter resets the robot
+and re-engages the guide.
 
 ## `bello-run-hardware`
 

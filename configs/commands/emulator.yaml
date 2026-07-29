@@ -1,6 +1,4 @@
 bus_interfaces: [can0=vcan0, can1=vcan1]
-torso_hold: true
-release_after_seconds: null
 hydra:
   job:
     chdir: false
