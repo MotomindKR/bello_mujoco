@@ -917,6 +917,66 @@ def validate_motion_transition_adapters(
             )
 
 
+def transition_to_motion_policy(
+    control: Any,
+    poses: PoseStream,
+    adapter: HardwareMotionPolicyAdapter,
+    config: HardwareMotionConfig,
+) -> None:
+    control.drain()
+    initial_target = control.previous_target.copy()
+    control.adapter = adapter
+    frame = control.read_frame()
+    pose = poses.latest()
+    validate_pose_imu_agreement(frame, pose, config)
+    adapter.initialize_alignment(pose)
+    control.reset_deadline()
+    transition_steps = max(
+        1, math.ceil(config.policy_transition_seconds / adapter.control_timestep)
+    )
+    for step in range(1, transition_steps + 1):
+        frame = control.read_frame()
+        pose = poses.latest()
+        policy_step = adapter.step(
+            frame,
+            pose,
+            reference_time=adapter.start_time,
+        )
+        fraction = step / transition_steps
+        target = initial_target + fraction * (
+            policy_step.physical_target - initial_target
+        )
+        control.send_target(target)
+        control.pace()
+    control.drain()
+
+
+def transition_to_standing_policy(
+    control: Any,
+    adapter: HardwareLocomotionPolicyAdapter,
+    command: np.ndarray,
+    config: HardwareMotionConfig,
+) -> None:
+    control.drain()
+    initial_target = control.previous_target.copy()
+    control.adapter = adapter
+    adapter.reset()
+    control.reset_deadline()
+    transition_steps = max(
+        1, math.ceil(config.policy_transition_seconds / adapter.control_timestep)
+    )
+    for step in range(1, transition_steps + 1):
+        frame = control.read_frame()
+        policy_step = adapter.step(frame, command)
+        fraction = step / transition_steps
+        target = initial_target + fraction * (
+            policy_step.physical_target - initial_target
+        )
+        control.send_target(target)
+        control.pace()
+    control.drain()
+
+
 def control_physical_motion(
     binding: Any,
     groups: dict[str, Any],
@@ -1015,14 +1075,12 @@ def control_physical_motion(
 
         try:
             print("Transitioning from standing locomotion to motion tracking.")
-            frame = control.transition_to_nominal(
+            transition_to_motion_policy(
+                control,
+                poses,
                 motion_adapter,
-                config.policy_transition_seconds,
+                config,
             )
-            require_nominal_pose(frame, motion_adapter)
-            pose = poses.latest()
-            validate_pose_imu_agreement(frame, pose, config)
-            motion_adapter.initialize_alignment(pose)
             motion_started = time.monotonic()
             control.reset_deadline()
             next_motion_status = (
@@ -1135,12 +1193,12 @@ def control_physical_motion(
             )
 
             print("Transitioning from motion tracking back to standing locomotion.")
-            frame = control.transition_to_nominal(
+            transition_to_standing_policy(
+                control,
                 standing_adapter,
-                config.policy_transition_seconds,
+                standing_command,
+                config,
             )
-            require_nominal_pose(frame, standing_adapter)
-            standing_adapter.reset()
             control.reset_deadline()
             next_standing_status = (
                 time.monotonic()

@@ -115,12 +115,13 @@ double-integrating acceleration.
 Motion first uses the standing checkpoint's default ten-second ramp, bounded
 nominal-pose arrival, and manual `HOLD` and `RUN` confirmations. `RUN` starts
 standing locomotion. The runner continues sending standing-policy targets while
-waiting for the exact `MOTION` confirmation, transitions to the motion
-checkpoint nominal pose, and starts motion tracking. Reference completion
-triggers the reverse transition and standing locomotion resumes. Each
-transition takes two seconds by default. Pose/IMU orientation agreement,
-reference bounds, and initial policy output remain checked. Gamepad and
-velocity-command fields are locomotion-only.
+waiting for the exact `MOTION` confirmation, then blends from live standing
+policy targets to live motion-policy targets. Reference completion blends back
+to live standing-policy targets and standing locomotion resumes. Each
+transition takes two seconds by default; it does not force the unsupported
+robot through either checkpoint's static nominal pose. Pose/IMU orientation
+agreement, reference bounds, and initial policy output remain checked. Gamepad
+and velocity-command fields are locomotion-only.
 
 Motion inference fuses observation construction, stacking, normalization, actor
 execution, bounded action mapping, and diagnostics into one JIT call. Periodic

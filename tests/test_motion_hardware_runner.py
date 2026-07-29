@@ -291,8 +291,13 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
         ),
     )
 
+    motion_steps = []
+
     def motion_step(*_args, **_kwargs):
-        raise StopIteration
+        motion_steps.append(True)
+        if len(motion_steps) > 1:
+            raise StopIteration
+        return SimpleNamespace(physical_target=np.zeros(2))
 
     motion_adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
@@ -305,6 +310,18 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
 
     class FakeControl:
         deadline = 0.0
+        previous_target = np.zeros(2)
+
+        @property
+        def adapter(self):
+            return self._adapter
+
+        @adapter.setter
+        def adapter(self, adapter):
+            self._adapter = adapter
+            transitions.append(
+                "motion" if adapter is motion_adapter else "standing"
+            )
 
         def ramp_to_nominal(self, _positions):
             return frame
@@ -323,8 +340,8 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
         def read_frame(self):
             return frame
 
-        def send_target(self, _target):
-            return None
+        def send_target(self, target):
+            self.previous_target = np.asarray(target)
 
         def pace(self):
             time.sleep(0.002)
@@ -334,12 +351,6 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
 
         def drain(self):
             return None
-
-        def transition_to_nominal(self, adapter, _duration):
-            transitions.append(
-                "motion" if adapter is motion_adapter else "standing"
-            )
-            return frame
 
     control = FakeControl()
     monkeypatch.setattr(
@@ -375,6 +386,7 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
     )
 
     assert transitions[:3] == ["motion", "aligned", "standing"]
+    assert len(motion_steps) == 2
     assert standing_steps
     assert all(step == pytest.approx(np.zeros(3)) for step in standing_steps)
     output = capsys.readouterr().out

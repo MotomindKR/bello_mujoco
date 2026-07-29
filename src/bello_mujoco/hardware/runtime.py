@@ -861,30 +861,6 @@ class ArmedControlSession:
             frame = self.read_frame()
         return frame
 
-    def transition_to_nominal(
-        self,
-        adapter: HardwarePolicyAdapter,
-        duration_seconds: float,
-    ) -> HardwareFrame:
-        self.drain()
-        initial_target = self.previous_target.copy()
-        self.adapter = adapter
-        self.reset_deadline()
-        transition_steps = max(
-            1, math.ceil(duration_seconds / adapter.control_timestep)
-        )
-        frame = None
-        for step in range(1, transition_steps + 1):
-            fraction = step / transition_steps
-            target = initial_target + fraction * (
-                adapter.nominal_physical_target - initial_target
-            )
-            self.send_target(target)
-            self.pace()
-            frame = self.read_frame()
-        assert frame is not None
-        return frame
-
     def wait_for_run(
         self,
         prompt: str,
