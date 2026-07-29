@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import importlib
 import math
 from pathlib import Path
+import select
 import sys
 import threading
 import time
@@ -287,9 +288,28 @@ def wait_for_operator_confirmation_while_holding(
                 f"operator confirmation requires an interactive terminal; "
                 f"expected exact {expected!r}"
             )
-        read = input
-    else:
-        read = operator_input
+        print(prompt, end="", flush=True)
+        while True:
+            readable, _, _ = select.select((sys.stdin,), (), (), 0.0)
+            if readable:
+                response = sys.stdin.readline()
+                if response == "":
+                    raise RuntimeError(
+                        f"operator confirmation input failed; expected exact {expected!r}"
+                    )
+                response = response.rstrip("\r\n")
+                break
+            if not hold_step():
+                print()
+                return False
+        if response != expected:
+            raise RuntimeError(
+                f"operator confirmation rejected; expected exact {expected!r}"
+            )
+        print(f"Operator confirmed {expected}.")
+        return True
+
+    read = operator_input
     response: list[str] = []
     errors: list[BaseException] = []
     complete = threading.Event()

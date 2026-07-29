@@ -6,7 +6,7 @@ the exact revision pinned by the `deps/bello-stack` gitlink and embeds only its
 full-body URDF plus referenced lower- and upper-body meshes in Python wheels.
 
 Asset source commit:
-`1b9c4b4759cdb5e358ad4e7cc595c5f996fdac75`.
+`a1fdb1eacd8a2a61a209474cc51d7ee77441c87f`.
 
 The assets are proprietary. This repository does not grant permission to
 redistribute them. The gitlink records the source revision used by each source

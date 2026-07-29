@@ -832,9 +832,7 @@ def run_hardware_motion(
                     "coordinates": len(motion_adapter.physical_coordinate_names),
                     "motion_policy_joints": motion_adapter.env.action_size,
                     "standing_policy_joints": standing_adapter.env.action_size,
-                    "motion_control_rate_hz": (
-                        1.0 / motion_adapter.control_timestep
-                    ),
+                    "motion_control_rate_hz": (1.0 / motion_adapter.control_timestep),
                     "standing_control_rate_hz": (
                         1.0 / standing_adapter.control_timestep
                     ),
@@ -915,6 +913,12 @@ def validate_motion_transition_adapters(
             raise ValueError(
                 f"{name} must contain one finite value per physical coordinate"
             )
+    if not np.array_equal(standing_adapter.kp, motion_adapter.kp) or not np.array_equal(
+        standing_adapter.kd, motion_adapter.kd
+    ):
+        raise ValueError(
+            "standing and motion checkpoints require different impedance gains"
+        )
 
 
 def transition_to_motion_policy(
@@ -1049,9 +1053,7 @@ def control_physical_motion(
                         "hardware_step": standing_step_count,
                         "elapsed_seconds": now - run_started,
                         "tilt_radians": policy_step.tilt_radians,
-                        "action_abs_max": float(
-                            np.max(np.abs(policy_step.action))
-                        ),
+                        "action_abs_max": float(np.max(np.abs(policy_step.action))),
                     }
                 )
                 assert config.status_interval_seconds is not None
@@ -1084,9 +1086,7 @@ def control_physical_motion(
             motion_started = time.monotonic()
             control.reset_deadline()
             next_motion_status = (
-                motion_started
-                if config.status_interval_seconds is not None
-                else None
+                motion_started if config.status_interval_seconds is not None else None
             )
             motion_step_count = 0
             maximum_inference_ms = 0.0
@@ -1167,10 +1167,7 @@ def control_physical_motion(
                             "maximum_loop_work_ms": maximum_loop_work_ms,
                             "accumulated_lag_ms": (
                                 time.monotonic()
-                                - (
-                                    control.deadline
-                                    + motion_adapter.control_timestep
-                                )
+                                - (control.deadline + motion_adapter.control_timestep)
                             )
                             * 1_000.0,
                         },
@@ -1201,9 +1198,7 @@ def control_physical_motion(
             )
             control.reset_deadline()
             next_standing_status = (
-                time.monotonic()
-                if config.status_interval_seconds is not None
-                else None
+                time.monotonic() if config.status_interval_seconds is not None else None
             )
             print("Standing locomotion policy resumed.")
             while duration_available():

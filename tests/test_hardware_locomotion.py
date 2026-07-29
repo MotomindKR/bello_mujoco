@@ -318,6 +318,27 @@ def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
         )
 
 
+def test_terminal_confirmation_can_stop_without_leaving_an_input_reader(
+    monkeypatch,
+) -> None:
+    terminal = SimpleNamespace(
+        isatty=lambda: True,
+        readline=lambda: pytest.fail("stdin must not be read before it is ready"),
+    )
+    monkeypatch.setattr(hardware_runtime.sys, "stdin", terminal)
+    monkeypatch.setattr(
+        hardware_runtime.select,
+        "select",
+        lambda *_args: ([], [], []),
+    )
+
+    assert not wait_for_operator_confirmation_while_holding(
+        RUN_CONFIRMATION,
+        "run prompt",
+        lambda: False,
+    )
+
+
 def test_shared_runtime_preserves_failure_while_stopping_running_groups(
     monkeypatch,
 ) -> None:

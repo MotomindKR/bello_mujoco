@@ -73,6 +73,7 @@ def test_pose_and_imu_orientation_must_agree() -> None:
 
 
 def test_motion_config_rejects_unsafe_ranges() -> None:
+    assert motion_hardware.HardwareMotionConfig().max_duration_seconds is None
     motion_hardware.validate_hardware_motion_config(
         motion_hardware.HardwareMotionConfig(max_duration_seconds=None)
     )
@@ -90,6 +91,24 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
                 max_action_abs=2.0, max_raw_action_abs=1.0
             )
         )
+
+
+def test_motion_transition_requires_matching_impedance_gains() -> None:
+    standing = SimpleNamespace(
+        physical_coordinate_names=("left", "right"),
+        nominal_physical_target=np.zeros(2),
+        kp=np.asarray((1.0, 2.0)),
+        kd=np.asarray((0.1, 0.2)),
+    )
+    motion = SimpleNamespace(
+        physical_coordinate_names=("left", "right"),
+        nominal_physical_target=np.zeros(2),
+        kp=np.asarray((1.0, 3.0)),
+        kd=np.asarray((0.1, 0.2)),
+    )
+
+    with pytest.raises(ValueError, match="different impedance gains"):
+        motion_hardware.validate_motion_transition_adapters(standing, motion)
 
 
 def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> None:
@@ -319,9 +338,7 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
         @adapter.setter
         def adapter(self, adapter):
             self._adapter = adapter
-            transitions.append(
-                "motion" if adapter is motion_adapter else "standing"
-            )
+            transitions.append("motion" if adapter is motion_adapter else "standing")
 
         def ramp_to_nominal(self, _positions):
             return frame
