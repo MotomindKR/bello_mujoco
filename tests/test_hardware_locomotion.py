@@ -36,7 +36,6 @@ from bello_mujoco.hardware.runtime import (
     actuator_impedance_gains,
     armed_control_session,
     coordinate_targets,
-    limit_target_step,
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
     require_operator_confirmation,
@@ -433,7 +432,7 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
     assert all(checked is frame for checked in checks)
 
 
-def test_hardware_command_and_target_step_limits() -> None:
+def test_hardware_command_limits() -> None:
     metadata = SimpleNamespace(
         command=CommandConfig(
             lin_vel_x=(-0.5, 0.5),
@@ -445,9 +444,6 @@ def test_hardware_command_and_target_step_limits() -> None:
     validate_command(np.asarray((0.5, -0.2, 0.3)), metadata)
     with pytest.raises(ValueError, match="exceeds checkpoint bounds"):
         validate_command(np.asarray((0.6, 0.0, 0.0)), metadata)
-
-    limited = limit_target_step(np.asarray((0.0, 0.0)), np.asarray((0.2, -0.1)), 0.05)
-    assert limited == pytest.approx((0.05, -0.05))
 
 
 def test_hardware_gamepad_commands_fail_closed_and_use_checkpoint_bounds() -> None:
@@ -525,8 +521,9 @@ def test_hardware_groups_start_concurrently() -> None:
     sent = []
 
     class Control:
-        def __init__(self, name: str) -> None:
+        def __init__(self, name: str, state: str) -> None:
             self.name = name
+            self.state = SimpleNamespace(value=state)
 
         def start(self, targets) -> None:
             assert targets == {self.name: self.name}
@@ -543,9 +540,17 @@ def test_hardware_groups_start_concurrently() -> None:
             barrier.wait()
             stopped.append(self.name)
 
+        def close(self) -> None:
+            barrier.wait()
+            closed.append(self.name)
+
     names = ("lower_body", "upper_body")
-    controls = {name: Control(name) for name in names}
+    controls = {
+        "lower_body": Control("lower_body", "running"),
+        "upper_body": Control("upper_body", "uncertain"),
+    }
     stopped = []
+    closed = []
     groups = {name: SimpleNamespace(coordinates=(name,)) for name in names}
     adapter = SimpleNamespace(
         coordinate_index={name: index for index, name in enumerate(names)},
@@ -589,7 +594,8 @@ def test_hardware_groups_start_concurrently() -> None:
 
     assert set(started) == set(names)
     assert set(sent) == set(names)
-    assert set(stopped) == set(names)
+    assert stopped == ["lower_body"]
+    assert closed == ["upper_body"]
 
 
 def test_read_only_preflight_never_acquires_control(
