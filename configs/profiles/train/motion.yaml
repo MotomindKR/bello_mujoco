@@ -48,6 +48,8 @@ env_config:
     body_angular_velocity_weight: 1.0
     action_rate_weight: -0.1
     joint_limit_weight: -10.0
+    torque_l1_weight: -1.2
+    torque_peak_weight: -12.0
     undesired_contact_weight: -0.1
     root_position_sigma: 0.3
     root_orientation_sigma: 0.4

@@ -306,7 +306,7 @@ content hash are stored in checkpoints.
 | `observation_noise` | Independent magnitudes for anchor pose, base velocity, and joint observation noise. |
 | `adaptive_sampling` | Failure-EMA binning, smoothing kernel, and uniform-sampling mixture. |
 | `push` | Random interval and root linear/angular velocity perturbation magnitudes. |
-| `reward` | Tracking term weights, Gaussian sigmas, action/joint penalties, and undesired-contact threshold. |
+| `reward` | Tracking term weights, Gaussian sigmas, action/joint/torque penalties, and undesired-contact threshold. |
 | `done` | Root-height, root-orientation, and end-effector tracking-error limits. |
 
 Nested motion fields are:
@@ -324,19 +324,23 @@ Nested motion fields are:
 Positive Gaussian terms cover root position/orientation, joint
 position/velocity, tracked-body position/orientation, combined body velocity,
 and separate body linear/angular velocity. Negative terms cover action rate,
-joint limits, and undesired contact. Each Gaussian term has a matching sigma;
-zero weight disables the term.
+joint limits, normalized actuator torque, torque above each actuator's peak
+rating, and undesired contact. Torque terms are multiplied by the control
+timestep. Each Gaussian term has a matching sigma; zero weight disables the
+term.
 
 The maintained `motion` profile emphasizes root and tracked-body pose plus body
 linear/angular velocity, disables direct joint tracking, and uses strong
-joint-limit and action-rate penalties.
+joint-limit and action-rate penalties. It does not enforce simulated policy
+actuator effort limits: normalized L1 torque has weight `-1.2`, while normalized
+torque above peak is penalized quadratically with weight `-12.0`.
 
 The exact reward fields are:
 
 | Kind | Fields |
 | --- | --- |
 | Positive weights | `root_position_weight`, `root_orientation_weight`, `joint_position_weight`, `joint_velocity_weight`, `body_position_weight`, `body_orientation_weight`, `body_velocity_weight`, `body_linear_velocity_weight`, `body_angular_velocity_weight` |
-| Penalty weights | `action_rate_weight`, `joint_limit_weight`, `undesired_contact_weight` |
+| Penalty weights | `action_rate_weight`, `joint_limit_weight`, `torque_l1_weight`, `torque_peak_weight`, `undesired_contact_weight` |
 | Gaussian scales | `root_position_sigma`, `root_orientation_sigma`, `joint_position_sigma`, `joint_velocity_sigma`, `body_position_sigma`, `body_orientation_sigma`, `body_velocity_sigma`, `body_linear_velocity_sigma`, `body_angular_velocity_sigma` |
 | Contact threshold | `undesired_contact_force_threshold` |
 

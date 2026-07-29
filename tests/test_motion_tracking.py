@@ -227,6 +227,9 @@ def test_default_motion_profile_uses_tracked_fixed_joint_clip() -> None:
 
     assert config.asset_config.joint_availability == FIXED_TRACKING_JOINT_AVAILABILITY
     assert config.asset_config.end_effector_sphere_mode == "both"
+    assert not config.asset_config.enforce_policy_effort_limits
+    assert config.env_config.reward.torque_l1_weight == -1.2
+    assert config.env_config.reward.torque_peak_weight == -12.0
     motion_path = config.motion.directory / f"{config.motion.sequence}.npz"
     assert motion_path.is_file()
 
@@ -813,6 +816,24 @@ def test_tracking_joint_limit_cost_is_bounded(
     )
 
     assert float(env._joint_limit_cost(state)) == 1.0
+
+
+def test_tracking_torque_costs_are_normalized_by_peak_torque(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    env = BelloMotionTrackingEnv.load_prepared(
+        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    )
+    state, _ = env.reset(reference_time=jnp.asarray(0.1))
+    peak = jnp.asarray(env.model.actuator_peak_force)
+    state = state.replace(
+        data=state.data.replace(actuator_force=peak * 1.5)
+    )
+
+    torque_l1, torque_peak = env._torque_costs(state)
+
+    assert float(torque_l1) == pytest.approx(1.5)
+    assert float(torque_peak) == pytest.approx(0.25)
 
 
 @pytest.mark.integration
