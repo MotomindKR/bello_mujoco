@@ -57,7 +57,7 @@ After preflight, both task modes begin with the same interactive sequence:
 3. The runner continuously refreshes the nominal target and checks telemetry
    and nominal-pose error bounds while the operator releases external support
    and lets the robot settle. Direct coordinates use 0.25 rad; the
-   load-bearing differential ankle motor coordinates use 0.40 rad.
+   load-bearing differential ankle motor coordinates use 1.00 rad.
 4. The operator types the exact word `RUN`, immediately before locomotion
    policy control.
 
