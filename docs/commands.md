@@ -281,7 +281,7 @@ enabled gamepad is the sole command source.
 Locomotion uses the same stick mapping as `bello-eval`; Start/Options aborts.
 Motion additionally requires a locomotion checkpoint selected by
 `standing_checkpoint_path` and absolute pelvis pose from
-`bello-state-estimatord` PoseService at `127.0.0.1:50052`. The standing and
+`bello-state-estimatord` PoseService at `127.0.0.1:50053`. The standing and
 motion checkpoints must resolve to the same ordered physical-coordinate
 mapping.
 
