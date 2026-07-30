@@ -18,6 +18,15 @@ description. The root Git commit pins the stack gitlink, and exact-source checks
 require the recursive submodule checkout to be initialized, clean, and at that
 commit. The checkpoint does not record daemon or firmware revisions.
 
+The runner requires the pinned daemon and Python binding's synchronous hardware
+states API. Each policy iteration requests one complete frame containing the
+latest motor, pelvis IMU, and group samples. It does not build observations by
+draining the individual-event telemetry stream, and no background frame stream
+can accumulate behind Python. The runner conservatively adds the complete RPC
+round-trip duration to every daemon-reported sample age before applying its
+configured motor, IMU, group, and sample-span limits. A stale or incoherent
+frame causes a fail-closed damped shutdown.
+
 An exact checkout also restores that revision's hardware runner and safety
 checks. Review old runner code and its guards before using `arm=true`; a later
 safety fix is not inherited automatically by a historical checkpoint.
@@ -34,7 +43,7 @@ safety fix is not inherited automatically by a historical checkpoint.
 5. compiles policy inference;
 6. connects to the hardware daemon without acquiring a control lease;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
-   fresh finite telemetry;
+   fresh finite complete state frames;
 8. evaluates one preview policy step and reports the resolved configuration.
 
 No motor target is sent in this mode.

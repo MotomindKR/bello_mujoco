@@ -28,6 +28,7 @@ MOTION_CONFIRMATION = "MOTION"
 IDLE_CONFIRMATION = "IDLE"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
 STANDARD_GRAVITY = 9.80665
+GROUP_STATE_POLL_INTERVAL_SECONDS = 0.01
 NOMINAL_POSE_MAX_ERROR_RADIANS = 0.25
 ANKLE_NOMINAL_POSE_MAX_ERROR_RADIANS = 1.00
 ANKLE_MOTOR_COORDINATES = frozenset(
@@ -49,6 +50,9 @@ class HardwareFrame:
     linear_acceleration: np.ndarray
     max_motor_age_ms: int
     imu_age_ms: int
+    max_group_age_ms: int
+    sample_span_ms: float
+    state_frame_round_trip_ms: float
     group_states: tuple[str, ...]
     group_causes: tuple[str, ...]
     group_details: tuple[str, ...]
@@ -87,6 +91,7 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
         "max_angular_velocity": config.max_angular_velocity,
         "max_linear_acceleration": config.max_linear_acceleration,
         "max_loop_lag_seconds": config.max_loop_lag_seconds,
+        "max_state_sample_span_ms": config.max_state_sample_span_ms,
     }
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
@@ -101,7 +106,11 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
         or config.status_interval_seconds <= 0.0
     ):
         raise ValueError("status_interval_seconds must be positive or null")
-    if config.max_motor_age_ms <= 0 or config.max_imu_age_ms <= 0:
+    if (
+        config.max_motor_age_ms <= 0
+        or config.max_imu_age_ms <= 0
+        or config.max_group_age_ms <= 0
+    ):
         raise ValueError("telemetry age limits must be positive")
 
 
@@ -222,6 +231,16 @@ def require_async_hardware_binding(binding: Any) -> None:
             "armed hardware execution requires bello_hardware.ControlSession.send_async "
             "and ControlState.RUNNING; "
             "run `uv sync --frozen` to rebuild the pinned workspace binding"
+        )
+
+
+def require_state_frame_binding(binding: Any) -> None:
+    robot = getattr(binding, "Robot", None)
+    if robot is None or not hasattr(robot, "states"):
+        raise RuntimeError(
+            "hardware execution requires the synchronous "
+            "bello_hardware.Robot.states API; run `uv sync --frozen` "
+            "to rebuild the pinned workspace binding"
         )
 
 
@@ -395,56 +414,67 @@ def validate_hardware_inventory(
 
 
 def wait_for_hardware_frame(
-    states: Any,
+    state_reader: Any,
     coordinate_names: tuple[str, ...],
     group_names: tuple[str, ...],
     imu_name: str,
-    unavailable_error: type[BaseException],
     timeout_seconds: float,
 ) -> HardwareFrame:
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        try:
-            motors = tuple(states.coordinate(name) for name in coordinate_names)
-            imu = states.imu(imu_name)
-            groups = tuple(states.group(name) for name in group_names)
-            return HardwareFrame(
-                positions=np.asarray([motor.position for motor in motors]),
-                velocities=np.asarray([motor.velocity for motor in motors]),
-                orientation_xyzw=np.asarray(
-                    (
-                        imu.orientation.x,
-                        imu.orientation.y,
-                        imu.orientation.z,
-                        imu.orientation.w,
-                    )
-                ),
-                angular_velocity=np.asarray(
-                    (
-                        imu.angular_velocity.x,
-                        imu.angular_velocity.y,
-                        imu.angular_velocity.z,
-                    )
-                ),
-                linear_acceleration=np.asarray(
-                    (
-                        imu.linear_acceleration.x,
-                        imu.linear_acceleration.y,
-                        imu.linear_acceleration.z,
-                    )
-                ),
-                max_motor_age_ms=max(motor.feedback_age_ms for motor in motors),
-                imu_age_ms=imu.sample_age_ms,
-                group_states=tuple(group.state.name for group in groups),
-                group_causes=tuple(group.cause.name for group in groups),
-                group_details=tuple(group.detail for group in groups),
+    frame = state_reader.read(timeout=timeout_seconds)
+    motors_by_coordinate = {motor.coordinate: motor for motor in frame.motors}
+    groups_by_name = {group.group: group for group in frame.groups}
+    imus_by_name = {imu.imu: imu for imu in frame.imus}
+    try:
+        motors = tuple(motors_by_coordinate[name] for name in coordinate_names)
+        groups = tuple(groups_by_name[name] for name in group_names)
+        imu = imus_by_name[imu_name]
+    except KeyError as error:
+        raise RuntimeError(
+            f"hardware state frame is missing {error.args[0]!r}"
+        ) from error
+    received_age_ns = max(0, time.monotonic_ns() - frame.received_monotonic_ns)
+    transport_age_ns = frame.round_trip_ns + received_age_ns
+    max_motor_age_ms = (
+        max(motor.sample_age_ns for motor in motors) + transport_age_ns
+    ) // 1_000_000
+    imu_age_ms = (imu.sample_age_ns + transport_age_ns) // 1_000_000
+    max_group_age_ms = (
+        max(group.sample_age_ns for group in groups) + transport_age_ns
+    ) // 1_000_000
+    return HardwareFrame(
+        positions=np.asarray([motor.position for motor in motors]),
+        velocities=np.asarray([motor.velocity for motor in motors]),
+        orientation_xyzw=np.asarray(
+            (
+                imu.orientation.x,
+                imu.orientation.y,
+                imu.orientation.z,
+                imu.orientation.w,
             )
-        except unavailable_error as error:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.0 or not states.wait_for_change(timeout=remaining):
-                raise TimeoutError(
-                    "timed out waiting for complete hardware telemetry"
-                ) from error
+        ),
+        angular_velocity=np.asarray(
+            (
+                imu.angular_velocity.x,
+                imu.angular_velocity.y,
+                imu.angular_velocity.z,
+            )
+        ),
+        linear_acceleration=np.asarray(
+            (
+                imu.linear_acceleration.x,
+                imu.linear_acceleration.y,
+                imu.linear_acceleration.z,
+            )
+        ),
+        max_motor_age_ms=max_motor_age_ms,
+        imu_age_ms=imu_age_ms,
+        group_states=tuple(group.state.name for group in groups),
+        group_causes=tuple(group.cause.name for group in groups),
+        group_details=tuple(group.detail for group in groups),
+        max_group_age_ms=max_group_age_ms,
+        sample_span_ms=frame.sample_span_ns / 1_000_000.0,
+        state_frame_round_trip_ms=frame.round_trip_ns / 1_000_000.0,
+    )
 
 
 def validate_hardware_frame(
@@ -476,6 +506,13 @@ def validate_hardware_frame(
         raise RuntimeError(f"motor telemetry is stale: {frame.max_motor_age_ms} ms")
     if frame.imu_age_ms > config.max_imu_age_ms:
         raise RuntimeError(f"IMU telemetry is stale: {frame.imu_age_ms} ms")
+    if frame.max_group_age_ms > config.max_group_age_ms:
+        raise RuntimeError(f"group telemetry is stale: {frame.max_group_age_ms} ms")
+    if frame.sample_span_ms > config.max_state_sample_span_ms:
+        raise RuntimeError(
+            f"hardware state sample span {frame.sample_span_ms:.3f} ms exceeds "
+            f"{config.max_state_sample_span_ms:.3f} ms"
+        )
     bad_states = sorted(set(frame.group_states) & FAULT_GROUP_STATES)
     if bad_states:
         raise RuntimeError(
@@ -763,10 +800,9 @@ def drain_command_receipts(pending_receipts: list[Any]) -> None:
 
 
 def wait_for_group_state(
-    states: Any,
+    state_reader: Any,
     coordinate_names: tuple[str, ...],
     config: HardwareControlConfig,
-    unavailable_error: type[BaseException],
     expected_state: str,
 ) -> None:
     deadline = time.monotonic() + config.telemetry_timeout_seconds
@@ -777,11 +813,10 @@ def wait_for_group_state(
                 f"timed out waiting for hardware groups to enter {expected_state}"
             )
         frame = wait_for_hardware_frame(
-            states,
+            state_reader,
             coordinate_names,
             config.groups,
             config.imu_name,
-            unavailable_error,
             remaining,
         )
         if all(state == expected_state for state in frame.group_states):
@@ -792,7 +827,12 @@ def wait_for_group_state(
                 "hardware group fault while arming: "
                 f"{format_group_statuses(frame, config.groups)}"
             )
-        states.wait_for_change(timeout=remaining)
+        time.sleep(
+            min(
+                GROUP_STATE_POLL_INTERVAL_SECONDS,
+                max(0.0, deadline - time.monotonic()),
+            )
+        )
 
 
 def pace_hardware_loop(
@@ -816,7 +856,7 @@ class ArmedControlSession:
     binding: Any
     controls: Mapping[str, Any]
     groups: Mapping[str, Any]
-    states: Any
+    state_reader: Any
     adapter: HardwarePolicyAdapter
     config: HardwareControlConfig
     executor: Executor
@@ -826,11 +866,10 @@ class ArmedControlSession:
 
     def read_frame(self) -> HardwareFrame:
         frame = wait_for_hardware_frame(
-            self.states,
+            self.state_reader,
             self.adapter.physical_coordinate_names,
             self.config.groups,
             self.config.imu_name,
-            self.binding.StateUnavailableError,
             self.config.telemetry_timeout_seconds,
         )
         validate_hardware_frame(frame, self.config, expected_group_state="RUNNING")
@@ -914,7 +953,7 @@ class ArmedControlSession:
 def armed_control_session(
     binding: Any,
     groups: Mapping[str, Any],
-    states: Any,
+    state_reader: Any,
     initial_frame: HardwareFrame,
     adapter: HardwarePolicyAdapter,
     config: HardwareControlConfig,
@@ -945,10 +984,9 @@ def armed_control_session(
                 executor,
             )
             wait_for_group_state(
-                states,
+                state_reader,
                 adapter.physical_coordinate_names,
                 config,
-                binding.StateUnavailableError,
                 "RUNNING",
             )
             try:
@@ -956,7 +994,7 @@ def armed_control_session(
                     binding=binding,
                     controls=controls,
                     groups=groups,
-                    states=states,
+                    state_reader=state_reader,
                     adapter=adapter,
                     config=config,
                     executor=executor,

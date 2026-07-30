@@ -33,6 +33,7 @@ from bello_mujoco.hardware.runtime import (
     require_async_hardware_binding,
     require_nominal_pose,
     require_operator_confirmation,
+    require_state_frame_binding,
     specific_force_from_gravity_removed_acceleration,
     tilt_from_xyzw,
     validate_hardware_control_config,
@@ -146,6 +147,9 @@ class HardwarePolicyAdapter:
             linear_acceleration=np.zeros(3),
             max_motor_age_ms=0,
             imu_age_ms=0,
+            max_group_age_ms=0,
+            sample_span_ms=0.0,
+            state_frame_round_trip_ms=0.0,
             group_states=(),
             group_causes=(),
             group_details=(),
@@ -384,8 +388,6 @@ def run_hardware_locomotion(
     validate_hardware_config(config, metadata)
     adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
-    if config.arm:
-        require_async_hardware_binding(binding)
     with ExitStack() as resources:
         gamepad = gamepad_factory(
             config.gamepad,
@@ -399,6 +401,9 @@ def run_hardware_locomotion(
             print("Hardware gamepad requested exit before preflight.")
             return
         command = hardware_command(config, metadata, gamepad_input)
+        require_state_frame_binding(binding)
+        if config.arm:
+            require_async_hardware_binding(binding)
 
         robot = resources.enter_context(
             binding.Robot.connect(
@@ -406,19 +411,15 @@ def run_hardware_locomotion(
             )
         )
         groups = validate_hardware_inventory(robot, adapter, config, binding)
-        states = resources.enter_context(
-            robot.states(
-                groups=config.groups,
-                imus=(config.imu_name,),
-                reconnect=False,
-            )
+        state_reader = robot.states(
+            groups=config.groups,
+            imus=(config.imu_name,),
         )
         frame = wait_for_hardware_frame(
-            states,
+            state_reader,
             adapter.physical_coordinate_names,
             config.groups,
             config.imu_name,
-            binding.StateUnavailableError,
             config.telemetry_timeout_seconds,
         )
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
@@ -442,6 +443,9 @@ def run_hardware_locomotion(
                 "initial_pose_error_max": initial_error,
                 "preview_action_abs_max": float(np.max(np.abs(preview.action))),
                 "preview_tilt_radians": preview.tilt_radians,
+                "group_age_ms": frame.max_group_age_ms,
+                "state_sample_span_ms": frame.sample_span_ms,
+                "state_frame_round_trip_ms": frame.state_frame_round_trip_ms,
                 "armed": config.arm,
             }
         )
@@ -457,18 +461,17 @@ def run_hardware_locomotion(
             operator_input,
         )
         frame = wait_for_hardware_frame(
-            states,
+            state_reader,
             adapter.physical_coordinate_names,
             config.groups,
             config.imu_name,
-            binding.StateUnavailableError,
             config.telemetry_timeout_seconds,
         )
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
         control_physical_robot(
             binding,
             groups,
-            states,
+            state_reader,
             frame,
             adapter,
             config,
@@ -480,7 +483,7 @@ def run_hardware_locomotion(
 def control_physical_robot(
     binding: Any,
     groups: dict[str, Any],
-    states: Any,
+    state_reader: Any,
     initial_frame: HardwareFrame,
     adapter: HardwarePolicyAdapter,
     config: HardwareLocomotionConfig,
@@ -491,7 +494,7 @@ def control_physical_robot(
     with armed_control_session(
         binding,
         groups,
-        states,
+        state_reader,
         initial_frame,
         adapter,
         config,
@@ -568,6 +571,11 @@ def control_physical_robot(
                             "gamepad_connected": gamepad_input.connected,
                             "motor_age_ms": frame.max_motor_age_ms,
                             "imu_age_ms": frame.imu_age_ms,
+                            "group_age_ms": frame.max_group_age_ms,
+                            "state_sample_span_ms": frame.sample_span_ms,
+                            "state_frame_round_trip_ms": (
+                                frame.state_frame_round_trip_ms
+                            ),
                         }
                     )
                     assert config.status_interval_seconds is not None

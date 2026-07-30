@@ -302,13 +302,17 @@ metadata.
 
 Preflight validates the checkpoint task, sphere-hand/fixed-joint morphology,
 policy layouts, generated transmission, motor inventory, IMU presence,
-telemetry freshness, and initial state. Armed loops continue checking group
-state, telemetry age, tilt, acceleration, angular velocity, loop lag, policy
-target bounds, and asynchronous command receipts. The runner does not clip
-per-step targets; the pinned hardware daemon rejects motor target steps above
-2.0 rad. A safety failure is terminal and requests damping. Damped groups
-remain damped until the operator supports the robot and confirms `IDLE`;
-unexpected cleanup releases leases without issuing an automatic disable.
+complete state-frame freshness, and initial state. Armed loops consume the latest
+complete daemon state frame through one client-paced RPC per policy step.
+The complete RPC round-trip counts toward motor, IMU, and group-state age.
+Samples outside the configured freshness or coherence limits fail closed.
+Armed loops continue checking group state, sample age, tilt, acceleration,
+angular velocity, loop lag, policy target bounds, and asynchronous command
+receipts. The runner does not clip per-step targets; the pinned hardware daemon
+rejects motor target steps above 2.0 rad. A safety failure is terminal and
+requests damping. Damped groups remain damped until the operator supports the
+robot and confirms `IDLE`; unexpected cleanup releases leases without issuing
+an automatic disable.
 
 ## What is intentionally not public
 

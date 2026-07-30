@@ -48,6 +48,8 @@ from bello_mujoco.hardware.runtime import (
     tilt_from_xyzw,
     validate_hardware_frame,
     validate_hardware_inventory,
+    wait_for_hardware_frame,
+    wait_for_group_state,
     wait_for_operator_confirmation_while_holding,
 )
 from bello_mujoco.configuration import locomotion_training_profile
@@ -66,6 +68,132 @@ def compose_hardware_training_config() -> TrainingRunConfig:
 
 def compose_hardware_runner_config() -> SimpleNamespace:
     return SimpleNamespace(hardware=HardwareLocomotionConfig())
+
+
+def test_hardware_state_frame_preserves_order_and_consumer_age(
+    monkeypatch,
+) -> None:
+    def vector(x: float, y: float, z: float) -> SimpleNamespace:
+        return SimpleNamespace(x=x, y=y, z=z)
+
+    state_frame = SimpleNamespace(
+        received_monotonic_ns=1_000_000_000,
+        round_trip_ns=6_000_000,
+        sample_span_ns=9_500_000,
+        motors=(
+            SimpleNamespace(
+                coordinate="right",
+                position=2.0,
+                velocity=0.2,
+                sample_age_ns=1_000_000,
+            ),
+            SimpleNamespace(
+                coordinate="left",
+                position=1.0,
+                velocity=0.1,
+                sample_age_ns=2_000_000,
+            ),
+        ),
+        imus=(
+            SimpleNamespace(
+                imu="pelvis",
+                sample_age_ns=4_000_000,
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                angular_velocity=vector(1.0, 2.0, 3.0),
+                linear_acceleration=vector(4.0, 5.0, 6.0),
+            ),
+        ),
+        groups=(
+            SimpleNamespace(
+                group="upper",
+                sample_age_ns=3_000_000,
+                state=SimpleNamespace(name="DAMPED"),
+                cause=SimpleNamespace(name="STOP"),
+                detail="held",
+            ),
+            SimpleNamespace(
+                group="lower",
+                sample_age_ns=2_500_000,
+                state=SimpleNamespace(name="RUNNING"),
+                cause=SimpleNamespace(name="START"),
+                detail="",
+            ),
+        ),
+    )
+    state_reader = SimpleNamespace(read=lambda **_kwargs: state_frame)
+    monkeypatch.setattr(hardware_runtime.time, "monotonic_ns", lambda: 1_003_500_000)
+
+    frame = wait_for_hardware_frame(
+        state_reader,
+        ("left", "right"),
+        ("lower", "upper"),
+        "pelvis",
+        0.5,
+    )
+
+    np.testing.assert_array_equal(frame.positions, np.asarray((1.0, 2.0)))
+    np.testing.assert_array_equal(frame.velocities, np.asarray((0.1, 0.2)))
+    assert frame.group_states == ("RUNNING", "DAMPED")
+    assert frame.group_causes == ("START", "STOP")
+    assert frame.max_motor_age_ms == 11
+    assert frame.imu_age_ms == 13
+    assert frame.max_group_age_ms == 12
+    assert frame.sample_span_ms == pytest.approx(9.5)
+    assert frame.state_frame_round_trip_ms == pytest.approx(6.0)
+    with pytest.raises(RuntimeError, match="motor telemetry is stale"):
+        validate_hardware_frame(
+            frame,
+            HardwareLocomotionConfig(max_motor_age_ms=10),
+        )
+    with pytest.raises(RuntimeError, match="group telemetry is stale"):
+        validate_hardware_frame(
+            frame,
+            HardwareLocomotionConfig(max_group_age_ms=11),
+        )
+    with pytest.raises(RuntimeError, match="hardware state sample span"):
+        validate_hardware_frame(
+            frame,
+            HardwareLocomotionConfig(max_state_sample_span_ms=9.0),
+        )
+
+
+def test_group_state_wait_uses_bounded_polling(monkeypatch) -> None:
+    frame = HardwareFrame(
+        positions=np.zeros(1),
+        velocities=np.zeros(1),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=("DAMPED",),
+        group_causes=("ENABLE",),
+        group_details=("",),
+    )
+    frames = iter((frame, replace(frame, group_states=("RUNNING",))))
+    reads = []
+    sleeps = []
+
+    def read(*_args, **_kwargs):
+        reads.append(None)
+        return next(frames)
+
+    monkeypatch.setattr(hardware_runtime, "wait_for_hardware_frame", read)
+    monkeypatch.setattr(hardware_runtime.time, "sleep", sleeps.append)
+
+    wait_for_group_state(
+        SimpleNamespace(),
+        ("hip",),
+        HardwareLocomotionConfig(groups=("lower_body",)),
+        "RUNNING",
+    )
+
+    assert len(reads) == 2
+    assert len(sleeps) == 1
+    assert 0.0 < sleeps[0] <= hardware_runtime.GROUP_STATE_POLL_INTERVAL_SECONDS
 
 
 @pytest.fixture(scope="module")
@@ -185,6 +313,9 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
         linear_acceleration=np.zeros(3),
         max_motor_age_ms=0,
         imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
         group_states=("IDLE", "IDLE"),
         group_causes=("UNSPECIFIED", "UNSPECIFIED"),
         group_details=("", ""),
@@ -402,6 +533,9 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
         linear_acceleration=np.zeros(3),
         max_motor_age_ms=0,
         imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
         group_states=("IDLE", "IDLE"),
         group_causes=("UNSPECIFIED", "UNSPECIFIED"),
         group_details=("", ""),
@@ -419,7 +553,6 @@ def test_shared_runtime_preserves_failure_while_stopping_running_groups(
     with pytest.raises(RuntimeError, match="control failed"):
         with armed_control_session(
             SimpleNamespace(
-                StateUnavailableError=RuntimeError,
                 ControlState=SimpleNamespace(RUNNING=running, DAMPED=damped),
             ),
             groups,
@@ -455,6 +588,9 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
         linear_acceleration=np.zeros(3),
         max_motor_age_ms=0,
         imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
         group_states=("RUNNING",),
         group_causes=("START",),
         group_details=("control started",),
@@ -785,6 +921,9 @@ def test_damped_group_failure_reports_cause_and_detail() -> None:
         linear_acceleration=np.zeros(3),
         max_motor_age_ms=0,
         imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
         group_states=("DAMPED",),
         group_causes=("COMMAND_TIMEOUT",),
         group_details=("command watchdog expired; damping applied",),

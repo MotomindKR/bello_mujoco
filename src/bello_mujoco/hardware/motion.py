@@ -45,6 +45,7 @@ from bello_mujoco.hardware.runtime import (
     require_nominal_pose,
     require_operator_confirmation,
     require_async_hardware_binding,
+    require_state_frame_binding,
     validate_hardware_control_config,
     validate_hardware_frame,
     validate_hardware_inventory,
@@ -559,6 +560,9 @@ class HardwareMotionPolicyAdapter:
             linear_acceleration=np.zeros(3, dtype=np.float64),
             max_motor_age_ms=0,
             imu_age_ms=0,
+            max_group_age_ms=0,
+            sample_span_ms=0.0,
+            state_frame_round_trip_ms=0.0,
             group_states=(),
             group_causes=(),
             group_details=(),
@@ -782,6 +786,7 @@ def run_hardware_motion(
     motion_adapter.precompile()
     standing_adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
+    require_state_frame_binding(binding)
     if config.arm:
         require_async_hardware_binding(binding)
     with (
@@ -792,97 +797,95 @@ def run_hardware_motion(
     ):
         groups = validate_hardware_inventory(robot, standing_adapter, config, binding)
         validate_hardware_inventory(robot, motion_adapter, config, binding)
-        with robot.states(
+        state_reader = robot.states(
             groups=config.groups,
             imus=(config.imu_name,),
-            reconnect=False,
-        ) as states:
-            frame = wait_for_hardware_frame(
-                states,
-                standing_adapter.physical_coordinate_names,
-                config.groups,
-                config.imu_name,
-                binding.StateUnavailableError,
-                config.telemetry_timeout_seconds,
-            )
-            pose = poses.latest()
-            validate_hardware_frame(frame, config, expected_group_state="IDLE")
-            validate_pose_imu_agreement(frame, pose, config)
-            motion_adapter.initialize_alignment(pose)
-            initial_delta = np.abs(
-                frame.positions - standing_adapter.nominal_physical_target
-            )
-            initial_error = float(np.max(initial_delta))
-            standing_preview = standing_adapter.step(frame, standing_command)
-            motion_preview = motion_adapter.step(
-                frame,
-                pose,
-                reference_time=motion_adapter.start_time,
-            )
-            standing_adapter.reset()
-            motion_adapter.reset()
+        )
+        frame = wait_for_hardware_frame(
+            state_reader,
+            standing_adapter.physical_coordinate_names,
+            config.groups,
+            config.imu_name,
+            config.telemetry_timeout_seconds,
+        )
+        pose = poses.latest()
+        validate_hardware_frame(frame, config, expected_group_state="IDLE")
+        validate_pose_imu_agreement(frame, pose, config)
+        motion_adapter.initialize_alignment(pose)
+        initial_delta = np.abs(
+            frame.positions - standing_adapter.nominal_physical_target
+        )
+        initial_error = float(np.max(initial_delta))
+        standing_preview = standing_adapter.step(frame, standing_command)
+        motion_preview = motion_adapter.step(
+            frame,
+            pose,
+            reference_time=motion_adapter.start_time,
+        )
+        standing_adapter.reset()
+        motion_adapter.reset()
+        print(
+            {
+                "motion_hardware_preflight": "passed",
+                "checkpoint_task": metadata.task,
+                "standing_checkpoint_task": standing_metadata.task,
+                "endpoint": config.endpoint,
+                "pose_endpoint": config.pose_endpoint,
+                "groups": config.groups,
+                "coordinates": len(motion_adapter.physical_coordinate_names),
+                "motion_policy_joints": motion_adapter.env.action_size,
+                "standing_policy_joints": standing_adapter.env.action_size,
+                "motion_control_rate_hz": (1.0 / motion_adapter.control_timestep),
+                "standing_control_rate_hz": (1.0 / standing_adapter.control_timestep),
+                "jax_backend": jax.default_backend(),
+                "motion_start_seconds": motion_adapter.start_time,
+                "nominal_ramp_distance_max": initial_error,
+                "standing_preview_action_abs_max": float(
+                    np.max(np.abs(standing_preview.action))
+                ),
+                "motion_preview_action_abs_max": float(
+                    np.max(np.abs(motion_preview.raw_action))
+                ),
+                "motion_preview_action_clipped": motion_preview.action_clipped,
+                "group_age_ms": frame.max_group_age_ms,
+                "state_sample_span_ms": frame.sample_span_ms,
+                "state_frame_round_trip_ms": frame.state_frame_round_trip_ms,
+                "armed": config.arm,
+            }
+        )
+        if not config.arm:
             print(
-                {
-                    "motion_hardware_preflight": "passed",
-                    "checkpoint_task": metadata.task,
-                    "standing_checkpoint_task": standing_metadata.task,
-                    "endpoint": config.endpoint,
-                    "pose_endpoint": config.pose_endpoint,
-                    "groups": config.groups,
-                    "coordinates": len(motion_adapter.physical_coordinate_names),
-                    "motion_policy_joints": motion_adapter.env.action_size,
-                    "standing_policy_joints": standing_adapter.env.action_size,
-                    "motion_control_rate_hz": (1.0 / motion_adapter.control_timestep),
-                    "standing_control_rate_hz": (
-                        1.0 / standing_adapter.control_timestep
-                    ),
-                    "jax_backend": jax.default_backend(),
-                    "motion_start_seconds": motion_adapter.start_time,
-                    "nominal_ramp_distance_max": initial_error,
-                    "standing_preview_action_abs_max": float(
-                        np.max(np.abs(standing_preview.action))
-                    ),
-                    "motion_preview_action_abs_max": float(
-                        np.max(np.abs(motion_preview.raw_action))
-                    ),
-                    "motion_preview_action_clipped": motion_preview.action_clipped,
-                    "armed": config.arm,
-                }
+                "Read-only motion preflight complete; no lease was acquired "
+                "and no motor command was sent."
             )
-            if not config.arm:
-                print(
-                    "Read-only motion preflight complete; no lease was acquired "
-                    "and no motor command was sent."
-                )
-                return
-            require_operator_confirmation(
-                HOLD_CONFIRMATION,
-                "Support the robot, then type HOLD to acquire control and begin "
-                "the nominal-pose ramp: ",
-                operator_input,
-            )
-            frame = wait_for_hardware_frame(
-                states,
-                standing_adapter.physical_coordinate_names,
-                config.groups,
-                config.imu_name,
-                binding.StateUnavailableError,
-                config.telemetry_timeout_seconds,
-            )
-            pose = poses.latest()
-            validate_hardware_frame(frame, config, expected_group_state="IDLE")
-            validate_pose_imu_agreement(frame, pose, config)
-            control_physical_motion(
-                binding,
-                groups,
-                states,
-                poses,
-                frame,
-                standing_adapter,
-                motion_adapter,
-                config,
-                operator_input=operator_input,
-            )
+            return
+        require_operator_confirmation(
+            HOLD_CONFIRMATION,
+            "Support the robot, then type HOLD to acquire control and begin "
+            "the nominal-pose ramp: ",
+            operator_input,
+        )
+        frame = wait_for_hardware_frame(
+            state_reader,
+            standing_adapter.physical_coordinate_names,
+            config.groups,
+            config.imu_name,
+            config.telemetry_timeout_seconds,
+        )
+        pose = poses.latest()
+        validate_hardware_frame(frame, config, expected_group_state="IDLE")
+        validate_pose_imu_agreement(frame, pose, config)
+        control_physical_motion(
+            binding,
+            groups,
+            state_reader,
+            poses,
+            frame,
+            standing_adapter,
+            motion_adapter,
+            config,
+            operator_input=operator_input,
+        )
 
 
 def validate_motion_transition_adapters(
@@ -984,7 +987,7 @@ def transition_to_standing_policy(
 def control_physical_motion(
     binding: Any,
     groups: dict[str, Any],
-    states: Any,
+    state_reader: Any,
     poses: PoseStream,
     initial_frame: HardwareFrame,
     standing_adapter: HardwareLocomotionPolicyAdapter,
@@ -996,7 +999,7 @@ def control_physical_motion(
     with armed_control_session(
         binding,
         groups,
-        states,
+        state_reader,
         initial_frame,
         standing_adapter,
         config,
@@ -1054,6 +1057,11 @@ def control_physical_motion(
                         "elapsed_seconds": now - run_started,
                         "tilt_radians": policy_step.tilt_radians,
                         "action_abs_max": float(np.max(np.abs(policy_step.action))),
+                        "motor_age_ms": frame.max_motor_age_ms,
+                        "imu_age_ms": frame.imu_age_ms,
+                        "group_age_ms": frame.max_group_age_ms,
+                        "state_sample_span_ms": frame.sample_span_ms,
+                        "state_frame_round_trip_ms": frame.state_frame_round_trip_ms,
                     }
                 )
                 assert config.status_interval_seconds is not None
@@ -1137,6 +1145,11 @@ def control_physical_motion(
                             ),
                             "motor_age_ms": frame.max_motor_age_ms,
                             "imu_age_ms": frame.imu_age_ms,
+                            "group_age_ms": frame.max_group_age_ms,
+                            "state_sample_span_ms": frame.sample_span_ms,
+                            "state_frame_round_trip_ms": (
+                                frame.state_frame_round_trip_ms
+                            ),
                             "pose_age_ms": pose.age_ms(now),
                             "inference_ms": inference_ms,
                             "command_submission_ms": command_submission_ms,
