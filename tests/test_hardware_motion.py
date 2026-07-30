@@ -199,7 +199,7 @@ def test_motion_runner_checks_nominal_pose_after_ramp(
 
     ankle_index = adapter.physical_coordinate_names.index("right_ankle_motor_2")
     positions = frame.positions.copy()
-    positions[ankle_index] += 0.34
+    positions[ankle_index] += 0.39
     require_nominal_pose(replace(frame, positions=positions), adapter)
 
     positions[ankle_index] += 0.02

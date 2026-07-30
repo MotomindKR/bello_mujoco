@@ -293,7 +293,7 @@ active. It then transitions to motion tracking and automatically transitions
 back to the standing policy when the reference completes. While waiting for
 `RUN`, the runner continues refreshing the hold target and checking telemetry
 and measured nominal-pose error bounds: 0.25 rad for direct coordinates and
-0.35 rad for the load-bearing differential ankle motor coordinates.
+0.40 rad for the load-bearing differential ankle motor coordinates.
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
