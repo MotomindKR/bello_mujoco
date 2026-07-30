@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 import shutil
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,10 +26,6 @@ class FakeGroupState(Enum):
 
 class FakeDeviceState(Enum):
     ONLINE = 1
-
-
-class FakeUnavailableError(Exception):
-    pass
 
 
 @dataclass
@@ -73,23 +70,46 @@ def hardware_preflight_factory():
         def vector(*values):
             return SimpleNamespace(x=values[0], y=values[1], z=values[2])
 
-        states = SimpleNamespace(
-            coordinate=lambda name: SimpleNamespace(
-                position=position_by_name[name],
-                velocity=0.0,
-                feedback_age_ms=0,
+        state_frame = SimpleNamespace(
+            received_monotonic_ns=time.monotonic_ns(),
+            round_trip_ns=0,
+            sample_span_ns=0,
+            motors=tuple(
+                SimpleNamespace(
+                    coordinate=name,
+                    position=position_by_name[name],
+                    velocity=0.0,
+                    sample_age_ns=0,
+                )
+                for name in coordinates
             ),
-            imu=lambda _name: SimpleNamespace(
-                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
-                angular_velocity=vector(0.0, 0.0, 0.0),
-                linear_acceleration=vector(0.0, 0.0, 0.0),
-                sample_age_ms=0,
+            imus=(
+                SimpleNamespace(
+                    imu="imu",
+                    sample_age_ns=0,
+                    orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                    angular_velocity=vector(0.0, 0.0, 0.0),
+                    linear_acceleration=vector(0.0, 0.0, 0.0),
+                ),
             ),
-            group=lambda _name: SimpleNamespace(
-                state=SimpleNamespace(name="IDLE"),
-                cause=SimpleNamespace(name="UNSPECIFIED"),
-                detail="",
+            groups=tuple(
+                SimpleNamespace(
+                    group=name,
+                    sample_age_ns=0,
+                    state=SimpleNamespace(name="IDLE"),
+                    cause=SimpleNamespace(name="UNSPECIFIED"),
+                    detail="",
+                )
+                for name in groups
             ),
+        )
+
+        def wait_for_frame(**_kwargs):
+            state_frame.received_monotonic_ns = time.monotonic_ns()
+            return state_frame
+
+        state_reader = SimpleNamespace(
+            read=wait_for_frame,
         )
         robot = SimpleNamespace(
             group_names=tuple(groups),
@@ -102,13 +122,15 @@ def hardware_preflight_factory():
                     ),
                 )
             ),
-            states=lambda **_kwargs: nullcontext(states),
+            states=lambda **_kwargs: state_reader,
         )
         binding = SimpleNamespace(
-            Robot=SimpleNamespace(connect=lambda *_args, **_kwargs: nullcontext(robot)),
+            Robot=SimpleNamespace(
+                connect=lambda *_args, **_kwargs: nullcontext(robot),
+                states=lambda **_kwargs: None,
+            ),
             GroupState=FakeGroupState,
             DeviceState=FakeDeviceState,
-            StateUnavailableError=FakeUnavailableError,
         )
         return HardwarePreflightHarness(binding, control_requests)
 

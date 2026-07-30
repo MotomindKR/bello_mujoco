@@ -60,6 +60,9 @@ def test_pose_and_imu_orientation_must_agree() -> None:
         linear_acceleration=np.zeros(3),
         max_motor_age_ms=0,
         imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
         group_states=("IDLE",),
         group_causes=("UNSPECIFIED",),
         group_details=("",),
@@ -90,6 +93,14 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
             motion_hardware.HardwareMotionConfig(
                 max_action_abs=2.0, max_raw_action_abs=1.0
             )
+        )
+    with pytest.raises(ValueError, match="telemetry age limits"):
+        motion_hardware.validate_hardware_motion_config(
+            motion_hardware.HardwareMotionConfig(max_group_age_ms=0)
+        )
+    with pytest.raises(ValueError, match="max_state_sample_span_ms"):
+        motion_hardware.validate_hardware_motion_config(
+            motion_hardware.HardwareMotionConfig(max_state_sample_span_ms=0.0)
         )
 
 
@@ -288,6 +299,9 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
         linear_acceleration=np.zeros(3),
         max_motor_age_ms=0,
         imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
         group_states=("RUNNING",),
         group_causes=("START",),
         group_details=("",),
