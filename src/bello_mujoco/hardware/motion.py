@@ -74,7 +74,7 @@ class HardwareMotionConfig(HardwareControlConfig):
     max_raw_action_abs: float = 5.0
     max_pose_imu_orientation_error: float = 0.25
     max_base_linear_velocity: float = 5.0
-    policy_transition_seconds: float = 2.0
+    policy_transition_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
