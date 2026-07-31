@@ -290,10 +290,12 @@ Both armed tasks require the operator to type exact interactive confirmations:
 ramps to the standing checkpoint, starts its zero-command locomotion policy
 after `RUN`, and requires exact `MOTION` confirmation while that policy remains
 active. It then transitions to motion tracking and automatically transitions
-back to the standing policy when the reference completes. While waiting for
-`RUN`, the runner continues refreshing the hold target and checking telemetry
-and measured nominal-pose error bounds: 0.25 rad for direct coordinates and
-1.00 rad for the load-bearing differential ankle motor coordinates.
+back to the standing policy when the reference completes or the operator presses
+Ctrl-C during active motion tracking. A subsequent Ctrl-C while standing enters
+damped shutdown. While waiting for `RUN`, the runner continues refreshing the
+hold target and checking telemetry and measured nominal-pose error bounds:
+0.25 rad for direct coordinates and 1.00 rad for the load-bearing differential
+ankle motor coordinates.
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
