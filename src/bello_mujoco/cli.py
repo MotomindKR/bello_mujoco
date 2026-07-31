@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 import json
 import math
+import os
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Literal
@@ -445,6 +446,8 @@ def _emulator_hydra(config: DictConfig) -> None:
 
 
 def hardware_entrypoint() -> None:
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ["JAX_PLATFORM_NAME"] = "cpu"
     _expand_path_overrides(
         ("checkpoint_path=", "standing_checkpoint_path=", "motion_path=")
     )

@@ -254,6 +254,10 @@ uv run bello-run-hardware checkpoint_path=...
 Physical hardware execution is checkout-only. A wheel installation does not
 contain the binding or hardware description.
 
+The command always selects JAX's CPU backend before loading either hardware
+runner. Inherited `JAX_PLATFORMS` and `JAX_PLATFORM_NAME` values are ignored;
+there is no hardware backend configuration field.
+
 Configuration source: `configs/commands/hardware.yaml`.
 
 | Field | Type and default | Applies to | Meaning |

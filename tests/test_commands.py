@@ -58,6 +58,33 @@ def test_importing_command_surface_does_not_import_jax() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_hardware_entrypoint_forces_cpu_backend() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys; "
+                "os.environ['JAX_PLATFORMS'] = 'gpu'; "
+                "os.environ['JAX_PLATFORM_NAME'] = 'gpu'; "
+                "sys.argv = ['bello-run-hardware']; "
+                "import bello_mujoco.cli as cli; "
+                "cli._hardware_hydra = lambda: None; "
+                "cli.hardware_entrypoint(); "
+                "import jax; "
+                "assert os.environ['JAX_PLATFORMS'] == 'cpu'; "
+                "assert os.environ['JAX_PLATFORM_NAME'] == 'cpu'; "
+                "assert jax.default_backend() == 'cpu'"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize(("name", "schema"), COMMAND_SCHEMAS.items())
 def test_command_yaml_is_complete(name: str, schema: type) -> None:
     with initialize_config_dir(

@@ -11,6 +11,10 @@ The runner has two task modes:
 | Locomotion | Motor state, pelvis IMU, previous action, and fixed or gamepad velocity command | `bello-hardwared` |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
 
+Both modes run policy inference on JAX's CPU backend. The command overrides
+inherited JAX platform selectors before importing either runner, and exposes no
+hardware backend option.
+
 The `bello-hardware` Python binding is installed from the pinned
 `deps/bello-stack` uv workspace member. Hardware execution requires a source
 checkout; installed wheels contain neither that binding nor the hardware
