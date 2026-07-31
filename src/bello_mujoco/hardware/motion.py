@@ -63,7 +63,7 @@ class HardwareMotionConfig(HardwareControlConfig):
 
     client_name: str = "bello-motion-policy"
     motion_path: Path | None = None
-    pose_endpoint: str = "127.0.0.1:50052"
+    pose_endpoint: str = "127.0.0.1:50053"
     pose_reference_frame: str = "odom"
     pose_tracked_frame: str = "pelvis_link"
     pose_timeout_seconds: float = 2.0

@@ -117,7 +117,7 @@ The motion checkpoint restores the reference contract.
 when its schema and content identity match.
 
 The pose stream supplies world-frame pelvis translation and orientation,
-normally from PoseService at `127.0.0.1:50052`. IMU orientation is retained as
+normally from PoseService at `127.0.0.1:50053`. IMU orientation is retained as
 an independent agreement check. Root translation is never estimated by
 double-integrating acceleration.
 

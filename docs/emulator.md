@@ -82,3 +82,21 @@ The default IMU model uses seed 0 and adds independent Gaussian noise with
 per-axis standard deviations of 0.005 rad for orientation and 0.1 m/s² for
 linear acceleration. PoseService remains ground-truth simulation state and is
 intentionally separate from the noisy IMU path.
+
+## Estimator comparison
+
+With MuJoCo ground truth on port 50052 and `bello-state-estimatord` on port
+50053, collect time-aligned pose errors with:
+
+```bash
+uv run python -m bello_mujoco.hardware.pose_metrics \
+  --duration-seconds 30
+```
+
+The report removes the initial XYZ translation offset before calculating
+position drift, because estimator odometry and MuJoCo world position can use
+different origins. It reports per-axis and total position RMSE, maximum and
+final position error, raw absolute-Z RMSE, quaternion angular error, paired
+sample count, and maximum pairing-time error. Keep the robot guided for a
+stationary-noise baseline, then repeat while stepping to measure contact
+handoff behavior.
