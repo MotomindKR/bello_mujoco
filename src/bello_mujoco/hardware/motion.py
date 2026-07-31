@@ -68,7 +68,6 @@ class HardwareMotionConfig(HardwareControlConfig):
     pose_tracked_frame: str = "pelvis_link"
     pose_timeout_seconds: float = 2.0
     max_pose_age_ms: int = 100
-    velocity_filter_alpha: float = 0.2
     start_time_seconds: float = 0.0
     max_action_abs: float = 1.0
     max_raw_action_abs: float = 5.0
@@ -317,8 +316,8 @@ class PoseStream:
             self._thread.join(timeout=1.0)
 
     def _consume(self) -> None:
-        previous: PoseFrame | None = None
-        filtered_velocity = np.zeros(3, dtype=np.float64)
+        previous_sequence: int | None = None
+        previous_sample_monotonic_ns: int | None = None
         try:
             for response in self._responses():
                 received = time.monotonic()
@@ -331,11 +330,33 @@ class PoseStream:
                         f"{response.reference_frame}_from_{response.tracked_frame}"
                     )
                 sequence = int(response.sequence)
-                if previous is not None and sequence <= previous.sequence:
+                if previous_sequence is not None and sequence <= previous_sequence:
                     raise RuntimeError(
                         "pose-estimator sequence did not increase: "
-                        f"{sequence} after {previous.sequence}"
+                        f"{sequence} after {previous_sequence}"
                     )
+                sample_monotonic_ns = int(response.sample_monotonic_ns)
+                if sample_monotonic_ns <= 0:
+                    raise RuntimeError(
+                        "pose-estimator source timestamp must be positive"
+                    )
+                if (
+                    previous_sample_monotonic_ns is not None
+                    and sample_monotonic_ns <= previous_sample_monotonic_ns
+                ):
+                    raise RuntimeError(
+                        "pose-estimator source timestamp did not increase: "
+                        f"{sample_monotonic_ns} after {previous_sample_monotonic_ns}"
+                    )
+                for field in (
+                    "translation_metres",
+                    "orientation_xyzw",
+                    "linear_velocity_metres_per_second",
+                ):
+                    if not response.HasField(field):
+                        raise RuntimeError(
+                            f"pose-estimator response has no {field.replace('_', ' ')}"
+                        )
                 position = np.asarray(
                     (
                         response.translation_metres.x,
@@ -353,29 +374,26 @@ class PoseStream:
                     ),
                     dtype=np.float64,
                 )
+                linear_velocity = np.asarray(
+                    (
+                        response.linear_velocity_metres_per_second.x,
+                        response.linear_velocity_metres_per_second.y,
+                        response.linear_velocity_metres_per_second.z,
+                    ),
+                    dtype=np.float64,
+                )
                 source_age = int(response.sample_age_ms)
-                sample_time = received - source_age / 1000.0
-                if previous is not None:
-                    previous_time = (
-                        previous.received_at - previous.source_age_ms / 1000.0
-                    )
-                    interval = sample_time - previous_time
-                    if 1.0e-4 <= interval <= 0.5:
-                        measured = (position - previous.position) / interval
-                        alpha = self.config.velocity_filter_alpha
-                        filtered_velocity = (
-                            alpha * measured + (1.0 - alpha) * filtered_velocity
-                        )
                 frame = PoseFrame(
                     position=position,
                     orientation_xyzw=orientation,
-                    linear_velocity=filtered_velocity.copy(),
+                    linear_velocity=linear_velocity,
                     sequence=sequence,
                     source_age_ms=source_age,
                     received_at=received,
                 )
                 validate_pose_frame(frame, self.config)
-                previous = frame
+                previous_sequence = sequence
+                previous_sample_monotonic_ns = sample_monotonic_ns
                 with self._condition:
                     self._latest = frame
                     self._condition.notify_all()
@@ -738,8 +756,6 @@ def validate_hardware_motion_config(
             raise ValueError(f"{name} must be positive and finite")
     if config.max_pose_age_ms <= 0:
         raise ValueError("max_pose_age_ms must be positive")
-    if not 0.0 < config.velocity_filter_alpha <= 1.0:
-        raise ValueError("velocity_filter_alpha must be in (0, 1]")
     if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
         raise ValueError("start_time_seconds must be finite and nonnegative")
     if env is not None and config.start_time_seconds >= env.motion.duration:

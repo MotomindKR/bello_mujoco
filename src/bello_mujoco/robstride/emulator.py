@@ -233,7 +233,7 @@ def _open_emulator_resources(
                     f"{config.pose_service.tracked_frame!r}"
                 )
             pose_server = stack.enter_context(PoseServiceServer(config.pose_service))
-            publish_body_pose(pose_server, data, pose_body_id)
+            publish_body_pose(pose_server, model.mj_model, data, pose_body_id)
 
         endpoints = {}
         for bus_name, emulator in emulators.items():
@@ -392,9 +392,9 @@ def _simulation_loop(
             if pose_server is not None:
                 publish_body_pose(
                     pose_server,
+                    model.mj_model,
                     data,
                     pose_body_id,
-                    produced_at=start_wall,
                 )
             print("Robot reset to home state; torso guide engaged")
             continue
@@ -413,7 +413,7 @@ def _simulation_loop(
 
         now = time.monotonic()
         if pose_server is not None and float(data.time) >= next_pose_sim:
-            publish_body_pose(pose_server, data, pose_body_id, produced_at=now)
+            publish_body_pose(pose_server, model.mj_model, data, pose_body_id)
             next_pose_sim += pose_period
             if next_pose_sim < float(data.time) - pose_period:
                 next_pose_sim = float(data.time) + pose_period
@@ -433,19 +433,28 @@ def _simulation_loop(
 
 def publish_body_pose(
     server: PoseServiceServer,
+    model: mujoco.MjModel,
     data: mujoco.MjData,
     body_id: int,
-    *,
-    produced_at: float | None = None,
 ) -> None:
-    """Copy one MuJoCo world-from-body transform into the pose mailbox."""
+    """Copy one MuJoCo world-frame body state into the pose mailbox."""
 
     position = np.asarray(data.xpos[body_id])
     quaternion = np.asarray(data.xquat[body_id])
+    velocity = np.empty(6, dtype=np.float64)
+    mujoco.mj_objectVelocity(
+        model,
+        data,
+        mujoco.mjtObj.mjOBJ_BODY,
+        body_id,
+        velocity,
+        0,
+    )
     server.publish(
         tuple(float(value) for value in position),
         tuple(float(value) for value in quaternion),
-        produced_at=produced_at,
+        tuple(float(value) for value in velocity[3:]),
+        sample_monotonic_ns=time.monotonic_ns(),
     )
 
 

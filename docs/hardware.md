@@ -120,10 +120,11 @@ The motion checkpoint restores the reference contract.
 `motion_path=null` reuses the saved path; a relocated archive is accepted only
 when its schema and content identity match.
 
-The pose stream supplies world-frame pelvis translation and orientation,
-normally from PoseService at `127.0.0.1:50053`. IMU orientation is retained as
-an independent agreement check. Root translation is never estimated by
-double-integrating acceleration.
+The pose stream supplies world-frame pelvis translation, estimator-state linear
+velocity, orientation, and a precise source timestamp, normally from PoseService
+at `127.0.0.1:50053`. The runner never differentiates received positions. IMU
+orientation is retained as an independent agreement check. Root translation is
+never estimated by double-integrating acceleration.
 
 Motion first uses the standing checkpoint's default ten-second ramp, bounded
 nominal-pose arrival, and manual `HOLD` and `RUN` confirmations. `RUN` starts
@@ -156,7 +157,8 @@ Both armed modes continuously check:
 - policy target bounds;
 - accumulated control-loop deadline lag.
 
-Motion adds pose age/frame validation, pose/IMU agreement, base-velocity bounds,
+Motion adds pose age/frame/source-time validation, pose/IMU agreement,
+estimator-provided base-velocity bounds,
 reference completion, and raw-versus-applied action bounds.
 
 `duration_seconds` covers the complete post-`RUN` policy flow. Ramp time and the
