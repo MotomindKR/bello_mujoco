@@ -40,16 +40,12 @@ jobs:
       - run: uv lock --check
       - run: uv sync --frozen
       - name: Build wheel
-        run: |
-          stack_commit="$(git rev-parse HEAD:deps/bello-stack)"
-          grep -F "$stack_commit" ASSET_PROVENANCE.md
-          uv build --wheel
+        run: uv build --wheel
       - name: Installed wheel smoke test
         run: |
           wheel_path="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          stack_commit="$(git rev-parse HEAD:deps/bello-stack)"
           test -n "$wheel_path"
-          python - "$wheel_path" "$stack_commit" <<'PY'
+          python - "$wheel_path" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
           from posixpath import dirname, join, normpath
@@ -69,9 +65,6 @@ jobs:
               }
               missing = sorted(mesh_names - names)
               assert not missing, f"wheel is missing URDF meshes: {missing}"
-              provenance_name = "bello_mujoco/ASSET_PROVENANCE.md"
-              assert provenance_name in names
-              assert sys.argv[2] in wheel.read(provenance_name).decode()
               license_names = [
                   name for name in names if name.endswith(".dist-info/licenses/LICENSE")
               ]

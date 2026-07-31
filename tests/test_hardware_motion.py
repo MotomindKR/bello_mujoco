@@ -249,6 +249,7 @@ def test_motion_runner_defaults_to_read_only() -> None:
     assert config.task == "motion"
     assert not config.arm
     assert config.motion_path is None
+    assert HardwareMotionConfig().policy_transition_seconds == 0.2
     validate_hardware_motion_config(HardwareMotionConfig())
     validate_hardware_motion_config(HardwareMotionConfig(arm=True))
 

@@ -74,7 +74,7 @@ class HardwareMotionConfig(HardwareControlConfig):
     max_raw_action_abs: float = 5.0
     max_pose_imu_orientation_error: float = 0.25
     max_base_linear_velocity: float = 5.0
-    policy_transition_seconds: float = 2.0
+    policy_transition_seconds: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -1083,6 +1083,23 @@ def control_physical_motion(
             print("Hardware run duration completed before motion tracking.")
             return
 
+        def resume_standing_control() -> None:
+            nonlocal next_standing_status
+            transition_to_standing_policy(
+                control,
+                standing_adapter,
+                standing_command,
+                config,
+            )
+            control.reset_deadline()
+            next_standing_status = (
+                time.monotonic() if config.status_interval_seconds is not None else None
+            )
+            print("Standing locomotion policy resumed.")
+            while duration_available():
+                standing_step()
+            control.drain()
+
         try:
             print("Transitioning from standing locomotion to motion tracking.")
             transition_to_motion_policy(
@@ -1203,22 +1220,20 @@ def control_physical_motion(
             )
 
             print("Transitioning from motion tracking back to standing locomotion.")
-            transition_to_standing_policy(
-                control,
-                standing_adapter,
-                standing_command,
-                config,
-            )
-            control.reset_deadline()
-            next_standing_status = (
-                time.monotonic() if config.status_interval_seconds is not None else None
-            )
-            print("Standing locomotion policy resumed.")
-            while duration_available():
-                standing_step()
-            control.drain()
+            resume_standing_control()
         except KeyboardInterrupt:
-            print("Motion hardware run interrupted; entering damped shutdown.")
+            if control.adapter is not motion_adapter:
+                print("Motion hardware run interrupted; entering damped shutdown.")
+                return
+            control.drain()
+            print(
+                "Motion tracking interrupted; transitioning back to standing "
+                "locomotion."
+            )
+            try:
+                resume_standing_control()
+            except KeyboardInterrupt:
+                print("Standing locomotion interrupted; entering damped shutdown.")
 
 
 def validate_pose_imu_agreement(

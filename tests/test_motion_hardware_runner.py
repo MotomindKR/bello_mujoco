@@ -286,9 +286,14 @@ def test_read_only_preflight_never_acquires_control(
     assert "no lease was acquired" in output
 
 
+@pytest.mark.parametrize(
+    "motion_exit",
+    (StopIteration, KeyboardInterrupt),
+)
 def test_motion_runner_flows_from_standing_to_motion_and_back(
     monkeypatch,
     capsys,
+    motion_exit,
 ) -> None:
     coordinates = ("left", "right")
     frame = HardwareFrame(
@@ -329,7 +334,7 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
     def motion_step(*_args, **_kwargs):
         motion_steps.append(True)
         if len(motion_steps) > 1:
-            raise StopIteration
+            raise motion_exit
         return SimpleNamespace(physical_target=np.zeros(2))
 
     motion_adapter = SimpleNamespace(
@@ -422,3 +427,8 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
     assert all(step == pytest.approx(np.zeros(3)) for step in standing_steps)
     output = capsys.readouterr().out
     assert "Standing locomotion policy resumed." in output
+    if motion_exit is KeyboardInterrupt:
+        assert "Motion tracking interrupted; transitioning back" in output
+        assert "entering damped shutdown" not in output
+    else:
+        assert "'motion_hardware_summary': 'reference_completed'" in output

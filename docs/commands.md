@@ -267,7 +267,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `duration_seconds` | positive float or `null`; `null` | both | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
 | `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for both tasks. |
-| `policy_transition_seconds` | positive float or `null`; `null` | motion | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 2 seconds. |
+| `policy_transition_seconds` | positive float or `null`; `null` | motion | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 0.2 seconds. |
 | `status_interval_seconds` | positive float or `null`; `null` | both | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
 | `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |
@@ -290,10 +290,12 @@ Both armed tasks require the operator to type exact interactive confirmations:
 ramps to the standing checkpoint, starts its zero-command locomotion policy
 after `RUN`, and requires exact `MOTION` confirmation while that policy remains
 active. It then transitions to motion tracking and automatically transitions
-back to the standing policy when the reference completes. While waiting for
-`RUN`, the runner continues refreshing the hold target and checking telemetry
-and measured nominal-pose error bounds: 0.25 rad for direct coordinates and
-1.00 rad for the load-bearing differential ankle motor coordinates.
+back to the standing policy when the reference completes or the operator presses
+Ctrl-C during active motion tracking. A subsequent Ctrl-C while standing enters
+damped shutdown. While waiting for `RUN`, the runner continues refreshing the
+hold target and checking telemetry and measured nominal-pose error bounds:
+0.25 rad for direct coordinates and 1.00 rad for the load-bearing differential
+ankle motor coordinates.
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
