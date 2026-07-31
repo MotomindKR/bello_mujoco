@@ -73,6 +73,7 @@ class HardwareMotionConfig(HardwareControlConfig):
     max_raw_action_abs: float = 5.0
     max_pose_imu_orientation_error: float = 0.25
     max_base_linear_velocity: float = 5.0
+    max_motion_tilt_radians: float = math.radians(70.0)
     policy_transition_seconds: float = 0.2
 
 
@@ -749,6 +750,7 @@ def validate_hardware_motion_config(
         "max_raw_action_abs": config.max_raw_action_abs,
         "max_pose_imu_orientation_error": config.max_pose_imu_orientation_error,
         "max_base_linear_velocity": config.max_base_linear_velocity,
+        "max_motion_tilt_radians": config.max_motion_tilt_radians,
         "policy_transition_seconds": config.policy_transition_seconds,
     }
     for name, value in positive.items():
@@ -958,7 +960,7 @@ def transition_to_motion_policy(
     control.drain()
     initial_target = control.previous_target.copy()
     control.adapter = adapter
-    frame = control.read_frame()
+    frame = control.read_frame(max_tilt_radians=config.max_motion_tilt_radians)
     pose = poses.latest()
     validate_pose_imu_agreement(frame, pose, config)
     adapter.initialize_alignment(pose)
@@ -967,7 +969,7 @@ def transition_to_motion_policy(
         1, math.ceil(config.policy_transition_seconds / adapter.control_timestep)
     )
     for step in range(1, transition_steps + 1):
-        frame = control.read_frame()
+        frame = control.read_frame(max_tilt_radians=config.max_motion_tilt_radians)
         pose = poses.latest()
         policy_step = adapter.step(
             frame,
@@ -998,7 +1000,7 @@ def transition_to_standing_policy(
         1, math.ceil(config.policy_transition_seconds / adapter.control_timestep)
     )
     for step in range(1, transition_steps + 1):
-        frame = control.read_frame()
+        frame = control.read_frame(max_tilt_radians=config.max_motion_tilt_radians)
         policy_step = adapter.step(frame, command)
         fraction = step / transition_steps
         target = initial_target + fraction * (
@@ -1146,7 +1148,9 @@ def control_physical_motion(
             print("Motion tracking policy is active.")
             while duration_available():
                 loop_started = time.monotonic()
-                frame = control.read_frame()
+                frame = control.read_frame(
+                    max_tilt_radians=config.max_motion_tilt_radians
+                )
                 pose = poses.latest()
                 motion_elapsed = time.monotonic() - motion_started
                 reference_time = motion_adapter.start_time + motion_elapsed

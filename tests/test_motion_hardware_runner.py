@@ -440,6 +440,7 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
     )
     transitions = []
     standing_steps = []
+    tilt_limits = []
 
     standing_adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
@@ -500,7 +501,8 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
             validate_hold(frame)
             return True
 
-        def read_frame(self):
+        def read_frame(self, *, max_tilt_radians=None):
+            tilt_limits.append(max_tilt_radians)
             return frame
 
         def send_target(self, target):
@@ -549,6 +551,8 @@ def test_motion_runner_flows_from_standing_to_motion_and_back(
     )
 
     assert transitions[:3] == ["motion", "aligned", "standing"]
+    assert None in tilt_limits
+    assert motion_hardware.HardwareMotionConfig().max_motion_tilt_radians in tilt_limits
     assert len(motion_steps) == 2
     assert standing_steps
     assert all(step == pytest.approx(np.zeros(3)) for step in standing_steps)

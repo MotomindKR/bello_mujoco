@@ -104,6 +104,7 @@ class HardwareCommandConfig:
     duration_seconds: float | None
     ramp_seconds: float | None
     policy_transition_seconds: float | None
+    max_motion_tilt_radians: float | None
     status_interval_seconds: float | None
     gamepad_enabled: bool
     arm: bool
@@ -487,6 +488,10 @@ def _hardware_hydra(config: DictConfig) -> None:
                     command.policy_transition_seconds,
                     base.policy_transition_seconds,
                 ),
+                max_motion_tilt_radians=_coalesce(
+                    command.max_motion_tilt_radians,
+                    base.max_motion_tilt_radians,
+                ),
                 status_interval_seconds=command.status_interval_seconds,
                 arm=command.arm,
                 allow_git_commit_mismatch=command.allow_git_commit_mismatch,
@@ -498,7 +503,12 @@ def _hardware_hydra(config: DictConfig) -> None:
             "motion_path and standing_checkpoint_path are only valid for task=motion"
         )
     _reject_explicit_fields(
-        ("motion_path", "standing_checkpoint_path", "policy_transition_seconds"),
+        (
+            "motion_path",
+            "standing_checkpoint_path",
+            "policy_transition_seconds",
+            "max_motion_tilt_radians",
+        ),
         context="task=locomotion",
     )
     if command.gamepad_enabled:

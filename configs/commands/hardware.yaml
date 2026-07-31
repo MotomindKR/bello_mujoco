@@ -8,6 +8,7 @@ motion_path: null
 duration_seconds: null
 ramp_seconds: null
 policy_transition_seconds: null
+max_motion_tilt_radians: null
 status_interval_seconds: null
 gamepad_enabled: true
 arm: false
