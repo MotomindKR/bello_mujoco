@@ -482,6 +482,7 @@ def validate_hardware_frame(
     config: HardwareControlConfig,
     *,
     expected_group_state: str | None = None,
+    max_tilt_radians: float | None = None,
 ) -> None:
     group_count = len(config.groups)
     if (
@@ -526,11 +527,12 @@ def validate_hardware_frame(
             f"hardware groups must be {expected_group_state}, got "
             f"{format_group_statuses(frame, config.groups)}"
         )
+    tilt_limit = (
+        config.max_tilt_radians if max_tilt_radians is None else max_tilt_radians
+    )
     tilt = tilt_from_xyzw(frame.orientation_xyzw)
-    if tilt > config.max_tilt_radians:
-        raise RuntimeError(
-            f"robot tilt {tilt:.3f} rad exceeds {config.max_tilt_radians:.3f} rad"
-        )
+    if tilt > tilt_limit:
+        raise RuntimeError(f"robot tilt {tilt:.3f} rad exceeds {tilt_limit:.3f} rad")
     angular_speed = float(np.linalg.norm(frame.angular_velocity))
     if angular_speed > config.max_angular_velocity:
         raise RuntimeError(
@@ -864,7 +866,11 @@ class ArmedControlSession:
     previous_target: np.ndarray
     deadline: float
 
-    def read_frame(self) -> HardwareFrame:
+    def read_frame(
+        self,
+        *,
+        max_tilt_radians: float | None = None,
+    ) -> HardwareFrame:
         frame = wait_for_hardware_frame(
             self.state_reader,
             self.adapter.physical_coordinate_names,
@@ -872,7 +878,12 @@ class ArmedControlSession:
             self.config.imu_name,
             self.config.telemetry_timeout_seconds,
         )
-        validate_hardware_frame(frame, self.config, expected_group_state="RUNNING")
+        validate_hardware_frame(
+            frame,
+            self.config,
+            expected_group_state="RUNNING",
+            max_tilt_radians=max_tilt_radians,
+        )
         return frame
 
     def send_target(self, target: np.ndarray) -> None:
