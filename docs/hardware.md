@@ -129,7 +129,7 @@ policy targets to live motion-policy targets. Reference completion blends back
 to live standing-policy targets and standing locomotion resumes. Pressing
 Ctrl-C while motion tracking is active performs the same transition back to
 standing; pressing Ctrl-C again while standing enters damped shutdown. Each
-transition takes one second by default; it does not force the unsupported
+transition takes 0.2 seconds by default; it does not force the unsupported
 robot through either checkpoint's static nominal pose. Pose/IMU orientation
 agreement, reference bounds, and initial policy output remain checked. Gamepad
 and velocity-command fields are locomotion-only.
