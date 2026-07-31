@@ -66,8 +66,7 @@ workflows; the wheel supports asset preparation and non-checkpoint simulation
 imports.
 
 The package and embedded robot assets are proprietary and internal-only; see
-the repository `LICENSE` and `ASSET_PROVENANCE.md`; the latter records the
-exact stack commit embedded in the wheel. The wheel smoke test resolves every
-URDF mesh and prepares both simulation and viewer MJCFs from the installed
-package. External redistribution requires a separate written agreement with
-the applicable rights holder.
+the repository `LICENSE`. The wheel smoke test resolves every URDF mesh and
+prepares both simulation and viewer MJCFs from the installed package. External
+redistribution requires a separate written agreement with the applicable
+rights holder.

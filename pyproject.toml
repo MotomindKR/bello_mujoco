@@ -66,7 +66,6 @@ packages = ["src/bello_mujoco"]
 "deps/bello-stack/descriptions/bello/full_body/urdf" = "bello_mujoco/descriptions/bello/full_body/urdf"
 "deps/bello-stack/descriptions/bello/lower_body/meshes" = "bello_mujoco/descriptions/bello/lower_body/meshes"
 "deps/bello-stack/descriptions/bello/upper_body/meshes" = "bello_mujoco/descriptions/bello/upper_body/meshes"
-"ASSET_PROVENANCE.md" = "bello_mujoco/ASSET_PROVENANCE.md"
 
 [tool.uv]
 default-groups = ["dev", "hardware"]
