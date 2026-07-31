@@ -15,14 +15,21 @@ def pose_stream(channel: grpc.Channel):
     )
 
 
-def test_pose_service_streams_latest_world_pose_in_xyzw_order() -> None:
+def test_pose_service_streams_latest_world_state_in_xyzw_order() -> None:
     config = PoseServiceConfig(listen="127.0.0.1:0")
     with PoseServiceServer(config) as server:
-        server.publish((1.0, 2.0, 3.0), (1.0, 0.0, 0.0, 0.0))
+        server.publish(
+            (1.0, 2.0, 3.0),
+            (1.0, 0.0, 0.0, 0.0),
+            (0.1, 0.2, 0.3),
+            sample_monotonic_ns=time.monotonic_ns(),
+        )
+        source_ns = time.monotonic_ns() - 20_000_000
         server.publish(
             (4.0, 5.0, 6.0),
             (2.0, 0.0, 0.0, 0.0),
-            produced_at=time.monotonic() - 0.02,
+            (0.4, 0.5, 0.6),
+            sample_monotonic_ns=source_ns,
         )
         with grpc.insecure_channel(f"127.0.0.1:{server.port}") as channel:
             stream = pose_stream(channel)(
@@ -45,6 +52,10 @@ def test_pose_service_streams_latest_world_pose_in_xyzw_order() -> None:
     assert sample.orientation_xyzw.y == pytest.approx(0.0)
     assert sample.orientation_xyzw.z == pytest.approx(0.0)
     assert sample.orientation_xyzw.w == pytest.approx(1.0)
+    assert sample.linear_velocity_metres_per_second.x == pytest.approx(0.4)
+    assert sample.linear_velocity_metres_per_second.y == pytest.approx(0.5)
+    assert sample.linear_velocity_metres_per_second.z == pytest.approx(0.6)
+    assert sample.sample_monotonic_ns == source_ns
     assert sample.sample_age_ms >= 15
 
 
@@ -68,6 +79,23 @@ def test_pose_service_rejects_an_unconfigured_frame_pair() -> None:
 def test_pose_service_rejects_invalid_samples() -> None:
     with PoseServiceServer(PoseServiceConfig(listen="127.0.0.1:0")) as server:
         with pytest.raises(ValueError, match="finite"):
-            server.publish((float("nan"), 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+            server.publish(
+                (float("nan"), 0.0, 0.0),
+                (1.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0),
+                sample_monotonic_ns=time.monotonic_ns(),
+            )
         with pytest.raises(ValueError, match="nonzero norm"):
-            server.publish((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0))
+            server.publish(
+                (0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0),
+                sample_monotonic_ns=time.monotonic_ns(),
+            )
+        with pytest.raises(ValueError, match="timestamp must be positive"):
+            server.publish(
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0),
+                sample_monotonic_ns=0,
+            )

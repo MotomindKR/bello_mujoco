@@ -18,6 +18,13 @@ message Translation {
   double z = 3;
 }
 
+// Tracked-frame origin velocity expressed in reference-frame axes.
+message LinearVelocity {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
 // Unit quaternion in renderer-friendly xyzw ordering.
 message Orientation {
   double x = 1;
@@ -33,4 +40,7 @@ message WatchPoseResponse {
   Translation translation_metres = 4;
   Orientation orientation_xyzw = 5;
   uint64 sample_age_ms = 6;
+  LinearVelocity linear_velocity_metres_per_second = 7;
+  // Producer monotonic source time; comparable only within this stream.
+  uint64 sample_monotonic_ns = 8;
 }

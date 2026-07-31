@@ -51,6 +51,106 @@ def test_pose_validation_is_fail_closed() -> None:
         )
 
 
+def pose_response(
+    *,
+    sequence: int,
+    sample_monotonic_ns: int,
+    position: tuple[float, float, float],
+    velocity: tuple[float, float, float] | None,
+):
+    response = motion_hardware._pose_pb2.WatchPoseResponse(
+        reference_frame="odom",
+        tracked_frame="pelvis_link",
+        sequence=sequence,
+        translation_metres=motion_hardware._pose_pb2.Translation(
+            x=position[0],
+            y=position[1],
+            z=position[2],
+        ),
+        orientation_xyzw=motion_hardware._pose_pb2.Orientation(w=1.0),
+        sample_age_ms=0,
+        sample_monotonic_ns=sample_monotonic_ns,
+    )
+    if velocity is not None:
+        response.linear_velocity_metres_per_second.CopyFrom(
+            motion_hardware._pose_pb2.LinearVelocity(
+                x=velocity[0],
+                y=velocity[1],
+                z=velocity[2],
+            )
+        )
+    return response
+
+
+def test_pose_stream_uses_estimator_velocity_without_differentiating_position() -> None:
+    stream = motion_hardware.PoseStream(
+        motion_hardware.HardwareMotionConfig(max_base_linear_velocity=0.5)
+    )
+    stream._call = iter(
+        (
+            pose_response(
+                sequence=1,
+                sample_monotonic_ns=1_000_000,
+                position=(0.0, 0.0, 0.8),
+                velocity=(0.1, 0.2, 0.0),
+            ),
+            pose_response(
+                sequence=2,
+                sample_monotonic_ns=3_000_000,
+                position=(10.0, -10.0, 0.8),
+                velocity=(0.1, 0.2, 0.0),
+            ),
+        )
+    )
+
+    stream._consume()
+
+    latest = stream.latest()
+    assert latest.sequence == 2
+    assert latest.position == pytest.approx((10.0, -10.0, 0.8))
+    assert latest.linear_velocity == pytest.approx((0.1, 0.2, 0.0))
+
+
+def test_pose_stream_requires_estimator_velocity() -> None:
+    stream = motion_hardware.PoseStream(motion_hardware.HardwareMotionConfig())
+    stream._call = iter(
+        (
+            pose_response(
+                sequence=1,
+                sample_monotonic_ns=1_000_000,
+                position=(0.0, 0.0, 0.8),
+                velocity=None,
+            ),
+        )
+    )
+
+    stream._consume()
+
+    with pytest.raises(RuntimeError, match="pose-estimator stream failed") as raised:
+        stream.latest()
+    assert "no linear velocity" in str(raised.value.__cause__)
+
+
+def test_pose_stream_requires_source_timestamp() -> None:
+    stream = motion_hardware.PoseStream(motion_hardware.HardwareMotionConfig())
+    stream._call = iter(
+        (
+            pose_response(
+                sequence=1,
+                sample_monotonic_ns=0,
+                position=(0.0, 0.0, 0.8),
+                velocity=(0.0, 0.0, 0.0),
+            ),
+        )
+    )
+
+    stream._consume()
+
+    with pytest.raises(RuntimeError, match="pose-estimator stream failed") as raised:
+        stream.latest()
+    assert "source timestamp must be positive" in str(raised.value.__cause__)
+
+
 def test_pose_and_imu_orientation_must_agree() -> None:
     frame = HardwareFrame(
         positions=np.zeros(1),

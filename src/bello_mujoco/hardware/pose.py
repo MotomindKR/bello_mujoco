@@ -31,7 +31,8 @@ class _PoseSample:
     sequence: int
     translation: tuple[float, float, float]
     orientation_xyzw: tuple[float, float, float, float]
-    produced_at: float
+    linear_velocity: tuple[float, float, float]
+    sample_monotonic_ns: int
 
 
 class PoseServiceServer:
@@ -84,21 +85,23 @@ class PoseServiceServer:
         self,
         translation: tuple[float, float, float],
         orientation_wxyz: tuple[float, float, float, float],
+        linear_velocity: tuple[float, float, float],
         *,
-        produced_at: float | None = None,
+        sample_monotonic_ns: int,
     ) -> None:
-        """Publish one world pose without waiting for any gRPC consumer."""
+        """Publish one world pose and velocity without waiting for a consumer."""
 
-        values = (*translation, *orientation_wxyz)
+        values = (*translation, *orientation_wxyz, *linear_velocity)
         if not all(math.isfinite(value) for value in values):
-            raise ValueError("pose translation and orientation must be finite")
+            raise ValueError(
+                "pose translation, orientation, and velocity must be finite"
+            )
         norm = math.sqrt(sum(value * value for value in orientation_wxyz))
         if norm <= 1.0e-12:
             raise ValueError("pose orientation must have nonzero norm")
         w, x, y, z = (value / norm for value in orientation_wxyz)
-        timestamp = time.monotonic() if produced_at is None else produced_at
-        if not math.isfinite(timestamp):
-            raise ValueError("pose production time must be finite")
+        if sample_monotonic_ns <= 0:
+            raise ValueError("pose source timestamp must be positive")
         with self._condition:
             if self._closed:
                 return
@@ -107,7 +110,8 @@ class PoseServiceServer:
                 sequence=self._sequence,
                 translation=translation,
                 orientation_xyzw=(x, y, z, w),
-                produced_at=timestamp,
+                linear_velocity=linear_velocity,
+                sample_monotonic_ns=sample_monotonic_ns,
             )
             self._condition.notify_all()
 
@@ -147,7 +151,9 @@ class PoseServiceServer:
             if sample is None or sample.sequence == last_sequence:
                 continue
             last_sequence = sample.sequence
-            age_ms = max(0, int((time.monotonic() - sample.produced_at) * 1000.0))
+            age_ms = max(
+                0, (time.monotonic_ns() - sample.sample_monotonic_ns) // 1_000_000
+            )
             yield _pose_pb2.WatchPoseResponse(
                 reference_frame=self.config.reference_frame,
                 tracked_frame=self.config.tracked_frame,
@@ -164,4 +170,10 @@ class PoseServiceServer:
                     w=sample.orientation_xyzw[3],
                 ),
                 sample_age_ms=age_ms,
+                linear_velocity_metres_per_second=_pose_pb2.LinearVelocity(
+                    x=sample.linear_velocity[0],
+                    y=sample.linear_velocity[1],
+                    z=sample.linear_velocity[2],
+                ),
+                sample_monotonic_ns=sample.sample_monotonic_ns,
             )
