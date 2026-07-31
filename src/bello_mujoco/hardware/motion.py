@@ -493,6 +493,7 @@ class HardwareMotionPolicyAdapter:
         )
         self._alignment_xy = np.zeros(2, dtype=np.float32)
         self._alignment_yaw = 0.0
+        self._alignment_source: tuple[np.ndarray, np.ndarray] | None = None
         self._aligned = False
 
     @property
@@ -512,13 +513,14 @@ class HardwareMotionPolicyAdapter:
 
     def initialize_alignment(self, pose: PoseFrame) -> None:
         pose_quat = xyzw_to_wxyz(pose.orientation_xyzw)
-        source = self.env.aligned_reference(
-            jnp.asarray(self.start_time, dtype=jnp.float32),
-            jnp.zeros(2, dtype=jnp.float32),
-            jnp.asarray(0.0, dtype=jnp.float32),
-        )
-        source_position = np.asarray(source.qpos[:3], dtype=np.float64)
-        source_quat = np.asarray(source.qpos[3:7], dtype=np.float64)
+        if self._alignment_source is None:
+            source = self.env.aligned_reference(
+                jnp.asarray(self.start_time, dtype=jnp.float32),
+                jnp.zeros(2, dtype=jnp.float32),
+                jnp.asarray(0.0, dtype=jnp.float32),
+            )
+            self._cache_alignment_source(source)
+        source_position, source_quat = self._alignment_source
         yaw = wrap_angle(quaternion_yaw(pose_quat) - quaternion_yaw(source_quat))
         yaw_quat = np.asarray(
             (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)),
@@ -536,12 +538,19 @@ class HardwareMotionPolicyAdapter:
         self._obs_stack = None
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
 
+    def _cache_alignment_source(self, source: Any) -> None:
+        self._alignment_source = (
+            np.asarray(source.qpos[:3], dtype=np.float64).copy(),
+            np.asarray(source.qpos[3:7], dtype=np.float64).copy(),
+        )
+
     def precompile(self) -> None:
         source = self.env.aligned_reference(
             jnp.asarray(self.start_time, dtype=jnp.float32),
             jnp.zeros(2, dtype=jnp.float32),
             jnp.asarray(0.0, dtype=jnp.float32),
         )
+        self._cache_alignment_source(source)
         pose = PoseFrame(
             position=np.asarray(source.qpos[:3], dtype=np.float64),
             orientation_xyzw=wxyz_to_xyzw(np.asarray(source.qpos[3:7])),

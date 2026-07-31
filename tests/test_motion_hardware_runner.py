@@ -122,6 +122,33 @@ def test_motion_transition_requires_matching_impedance_gains() -> None:
         motion_hardware.validate_motion_transition_adapters(standing, motion)
 
 
+def test_motion_alignment_reuses_cached_start_reference() -> None:
+    calls = 0
+
+    class FakeEnv:
+        action_size = 2
+
+        def aligned_reference(self, *_args):
+            nonlocal calls
+            calls += 1
+            return SimpleNamespace(
+                qpos=jnp.asarray((1.0, 2.0, 0.8, 1.0, 0.0, 0.0, 0.0))
+            )
+
+    adapter = object.__new__(motion_hardware.HardwareMotionPolicyAdapter)
+    adapter.env = FakeEnv()
+    adapter.config = motion_hardware.HardwareMotionConfig()
+    adapter._alignment_source = None
+    adapter._aligned = False
+
+    adapter.initialize_alignment(pose_frame())
+    first_alignment = adapter._alignment_xy.copy()
+    adapter.initialize_alignment(pose_frame())
+
+    assert calls == 1
+    np.testing.assert_array_equal(adapter._alignment_xy, first_alignment)
+
+
 def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> None:
     class FakeEnv:
         sampling_bin_count = 1
