@@ -58,8 +58,9 @@ uv run bello-twist-data operation=scan_amass \
 The scan records each source checksum, sub-dataset, subject/session path,
 surface model, frame rate, and a quantized motion fingerprint for duplicate
 detection. It can take substantial time because every source file must be read
-to produce trustworthy checksums. Review the generated manifest before
-validation and preserve it with reported runs.
+to produce trustworthy checksums. Malformed and duplicate clips are excluded
+and recorded beside the manifest in `source_manifest.scan_report.json`. Review
+both files before validation and preserve them with reported runs.
 
 Validate before doing any conversion:
 
@@ -105,12 +106,38 @@ Install GMR's optional dependencies in a separate environment following
 
 ```text
 /operator/models/body_models/
-  smplx/SMPLX_NEUTRAL.pkl
-  smplx/SMPLX_FEMALE.pkl
-  smplx/SMPLX_MALE.pkl
+  smplx/SMPLX_NEUTRAL.npz
+  smplx/SMPLX_FEMALE.npz
+  smplx/SMPLX_MALE.npz
 ```
 
-Common AMASS SMPL-H archives can be normalized without retaining hand pose:
+Initialize GMR's isolated environment once:
+
+```bash
+cd deps/GMR
+nix develop -c true
+cd ../..
+```
+
+Retarget a complete manifest with resumable workers. Each clip is normalized
+to a compact temporary archive, retargeted into an atomic output, and removed
+from the temporary directory after success. Existing output is reused only
+when its source, GMR, robot, and configuration fingerprints still match:
+
+```bash
+uv run python tools/twist_batch_retarget.py \
+  --manifest ~/amass/source_manifest.yaml \
+  --body-model-root ~/body_models \
+  --normalized-root ~/amass/twist_work/normalized \
+  --output-root ~/amass/twist_work/retargeted \
+  --jobs 1
+```
+
+Use `--limit 10` for an initial pipeline smoke run. Failed intermediates remain
+available for diagnosis, and `batch_retarget_report.json` records every result.
+Avoid high worker counts: each worker loads an SMPL-X model and performs CPU IK.
+
+The underlying single-clip normalizer remains available for diagnosis:
 
 ```bash
 uv run python tools/twist_normalize_smpl.py \
@@ -118,8 +145,8 @@ uv run python tools/twist_normalize_smpl.py \
   --output /operator/work/normalized/source.npz
 ```
 
-Run retargeting in the GMR environment. Use the stable manifest identifiers in
-the output filename:
+The underlying single-clip retargeter can likewise be run in the GMR
+environment. Use the stable manifest identifiers in the output filename:
 
 ```bash
 python tools/twist_gmr_retarget.py \

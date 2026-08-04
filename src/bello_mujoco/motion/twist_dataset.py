@@ -203,13 +203,57 @@ def scan_amass_manifest(
     if not paths:
         raise ValueError(f"no AMASS Stage II NPZ archives found below {source_root}")
     sequences = []
+    rejected: list[dict[str, str]] = []
+    quarantined: list[dict[str, str]] = []
+    source_checksums: dict[str, str] = {}
+    motion_fingerprints: dict[str, str] = {}
     for index, path in enumerate(paths, start=1):
         relative = path.relative_to(source_root)
         if len(relative.parts) < 3:
-            raise ValueError(
-                f"AMASS archive must be nested as subdataset/subject/file: {path}"
+            rejected.append(
+                {
+                    "relative_path": relative.as_posix(),
+                    "reason": "archive must be nested as subdataset/subject/file",
+                }
             )
-        archive = _inspect_amass_archive(path)
+            if progress is not None:
+                progress(index, len(paths), path)
+            continue
+        try:
+            archive = _inspect_amass_archive(path)
+        except ValueError as error:
+            rejected.append(
+                {"relative_path": relative.as_posix(), "reason": str(error)}
+            )
+            if progress is not None:
+                progress(index, len(paths), path)
+            continue
+        source_sha256 = _file_sha256(path)
+        if source_sha256 in source_checksums:
+            quarantined.append(
+                {
+                    "relative_path": relative.as_posix(),
+                    "reason": ("exact duplicate of " + source_checksums[source_sha256]),
+                }
+            )
+            if progress is not None:
+                progress(index, len(paths), path)
+            continue
+        motion_fingerprint = str(archive["near_duplicate_fingerprint"])
+        if motion_fingerprint in motion_fingerprints:
+            quarantined.append(
+                {
+                    "relative_path": relative.as_posix(),
+                    "reason": (
+                        "near duplicate of " + motion_fingerprints[motion_fingerprint]
+                    ),
+                }
+            )
+            if progress is not None:
+                progress(index, len(paths), path)
+            continue
+        source_checksums[source_sha256] = relative.as_posix()
+        motion_fingerprints[motion_fingerprint] = relative.as_posix()
         subdataset = relative.parts[0]
         subject_id = relative.parts[1]
         original_sequence_id = path.stem.removesuffix("_stageii")
@@ -230,7 +274,7 @@ def scan_amass_manifest(
                 frame_rate=float(archive["frame_rate"]),
                 requested_split="auto",
                 sampling_weight=sampling_weight,
-                source_sha256=_file_sha256(path),
+                source_sha256=source_sha256,
                 subdataset=subdataset,
                 near_duplicate_fingerprint=archive["near_duplicate_fingerprint"],
                 metadata={
@@ -255,6 +299,22 @@ def scan_amass_manifest(
         sequence["local_path"] = str(sequence["local_path"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(OmegaConf.create(payload), output_path)
+    scan_report_path = output_path.with_suffix(".scan_report.json")
+    scan_report_path.write_text(
+        json.dumps(
+            {
+                "source_root": str(source_root),
+                "discovered": len(paths),
+                "accepted": len(sequences),
+                "rejected": rejected,
+                "quarantined": quarantined,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return manifest
 
 
@@ -896,6 +956,7 @@ def load_and_normalize_retargeted_clip(
         "body_names",
         "source_timestamp_seconds",
         "source_sha256",
+        "retarget_format_version",
         "gmr_revision",
         "gmr_config_sha256",
         "robot_fingerprint",
@@ -905,6 +966,8 @@ def load_and_normalize_retargeted_clip(
         if missing:
             raise ValueError(f"{path.name} is missing fields: {missing}")
         arrays = {name: np.asarray(archive[name]) for name in archive.files}
+    if int(np.asarray(arrays["retarget_format_version"]).item()) != 3:
+        raise ValueError(f"{path.name}: unsupported retarget format version")
     frames = arrays["qpos"].shape[0]
     for name in (
         "timestamp_seconds",
@@ -1154,6 +1217,7 @@ def _resample_clip(
             "timestamp_seconds",
             "source_timestamp_seconds",
             "source_sha256",
+            "retarget_format_version",
             "joint_names",
             "body_names",
             "gmr_revision",
@@ -1194,6 +1258,7 @@ def _resample_clip(
         "joint_names",
         "body_names",
         "source_sha256",
+        "retarget_format_version",
         "gmr_revision",
         "gmr_config_sha256",
         "robot_fingerprint",
@@ -1328,9 +1393,9 @@ def _validate_body_model_root(root: Path | None) -> None:
         )
     root = Path(root).expanduser().resolve()
     expected = (
-        root / "smplx" / "SMPLX_NEUTRAL.pkl",
-        root / "smplx" / "SMPLX_FEMALE.pkl",
-        root / "smplx" / "SMPLX_MALE.pkl",
+        root / "smplx" / "SMPLX_NEUTRAL.npz",
+        root / "smplx" / "SMPLX_FEMALE.npz",
+        root / "smplx" / "SMPLX_MALE.npz",
     )
     missing = [str(path) for path in expected if not path.is_file()]
     if missing:

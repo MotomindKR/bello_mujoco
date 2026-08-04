@@ -13,22 +13,21 @@ import hashlib
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 GMR_ROOT = ROOT / "deps" / "GMR"
-sys.path.insert(0, str(GMR_ROOT))
+RETARGET_FORMAT_VERSION = 3
 
-from general_motion_retargeting import params as gmr_params  # noqa: E402
-from general_motion_retargeting.motion_retarget import (  # noqa: E402
-    GeneralMotionRetargeting,
-)
-from general_motion_retargeting.utils.smpl import (  # noqa: E402
-    get_smplx_data_offline_fast,
-    load_smplx_file,
-)
+ANKLE_TENDON_LOGICAL_JOINT = {
+    "left_ankle_motor_1": "left_ankle_pitch_joint",
+    "left_ankle_motor_2": "left_ankle_roll_joint",
+    "right_ankle_motor_1": "right_ankle_pitch_joint",
+    "right_ankle_motor_2": "right_ankle_roll_joint",
+}
 
 BODY_NAMES = (
     "pelvis_link",
@@ -49,6 +48,13 @@ BODY_NAMES = (
 
 
 def main() -> None:
+    sys.path.insert(0, str(GMR_ROOT))
+    from general_motion_retargeting import params as gmr_params
+    from general_motion_retargeting.motion_retarget import GeneralMotionRetargeting
+    from general_motion_retargeting.utils.smpl import get_smplx_data_offline_fast
+    import smplx
+    import torch
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument(
@@ -76,28 +82,28 @@ def main() -> None:
     config_path = ROOT / "configs" / "twist" / "gmr_smplx_to_bello.json"
     gmr_params.ROBOT_XML_DICT["bello"] = args.robot_xml.expanduser().resolve()
     gmr_params.IK_CONFIG_DICT.setdefault("smplx", {})["bello"] = config_path
-    smplx_data, body_model, smplx_output, human_height = load_smplx_file(
-        args.source.expanduser().resolve(),
-        args.body_model_root.expanduser().resolve(),
-    )
-    frames, fps = get_smplx_data_offline_fast(
-        smplx_data,
-        body_model,
-        smplx_output,
-        tgt_fps=args.target_fps,
-    )
+    with torch.inference_mode():
+        smplx_data, body_model, smplx_output, human_height = _load_smplx_bounded(
+            args.source.expanduser().resolve(),
+            args.body_model_root.expanduser().resolve(),
+            smplx_module=smplx,
+            torch_module=torch,
+        )
+        frames, fps = get_smplx_data_offline_fast(
+            smplx_data,
+            body_model,
+            smplx_output,
+            tgt_fps=args.target_fps,
+        )
+    del body_model, smplx_output
     retargeter = GeneralMotionRetargeting(
         src_human="smplx",
         tgt_robot="bello",
         actual_human_height=float(human_height),
         verbose=False,
     )
-    qpos = np.stack(
-        [
-            retargeter.retarget(frame, offset_to_ground=index == 0)
-            for index, frame in enumerate(frames)
-        ]
-    )
+    _settle_first_frame(retargeter, frames[0])
+    qpos = np.stack([retargeter.retarget(frame) for frame in frames])
     model = retargeter.model
     if qpos.shape[1] != model.nq:
         raise ValueError(f"GMR returned qpos shape {qpos.shape}; model nq={model.nq}")
@@ -107,12 +113,8 @@ def main() -> None:
     body_pos, body_quat, body_lin_vel, body_ang_vel = _body_state(
         model, qpos, qvel, body_ids
     )
-    joint_names = tuple(
-        model.joint(int(model.actuator_trnid[index, 0])).name
-        for index in range(model.nu)
-    )
-    joint_ids = np.asarray([model.joint(name).id for name in joint_names])
-    joint_ranges = model.jnt_range[joint_ids]
+    joint_names = _logical_actuator_joint_names(model)
+    joint_ranges = _qpos_ordered_joint_ranges(model, joint_names)
     foot_indices = [
         BODY_NAMES.index("left_ankle_roll_link"),
         BODY_NAMES.index("right_ankle_roll_link"),
@@ -138,6 +140,7 @@ def main() -> None:
         body_lin_vel=body_lin_vel.astype(np.float32),
         body_ang_vel=body_ang_vel.astype(np.float32),
         foot_contacts=contacts,
+        retarget_format_version=np.asarray(RETARGET_FORMAT_VERSION, dtype=np.int32),
         joint_names=np.asarray(joint_names),
         body_names=np.asarray(BODY_NAMES),
         joint_lower=joint_ranges[:, 0].astype(np.float32),
@@ -165,6 +168,136 @@ def main() -> None:
             )
         ),
     )
+
+
+def _load_smplx_bounded(
+    source: Path,
+    body_model_root: Path,
+    *,
+    smplx_module,
+    torch_module,
+    chunk_frames: int = 512,
+):
+    if chunk_frames < 1:
+        raise ValueError("SMPL-X inference chunk must contain at least one frame")
+    with np.load(source, allow_pickle=False) as archive:
+        smplx_data = {name: np.asarray(archive[name]) for name in archive.files}
+    required = {
+        "betas",
+        "gender",
+        "mocap_frame_rate",
+        "pose_body",
+        "root_orient",
+        "trans",
+    }
+    missing = sorted(required - smplx_data.keys())
+    if missing:
+        raise ValueError(f"normalized SMPL-X source is missing fields: {missing}")
+    pose_body = np.asarray(smplx_data["pose_body"], dtype=np.float32)
+    root_orient = np.asarray(smplx_data["root_orient"], dtype=np.float32)
+    translation = np.asarray(smplx_data["trans"], dtype=np.float32)
+    frames = pose_body.shape[0]
+    if pose_body.shape != (frames, 63):
+        raise ValueError(f"normalized pose_body has invalid shape {pose_body.shape}")
+    if root_orient.shape != (frames, 3) or translation.shape != (frames, 3):
+        raise ValueError("normalized root orientation or translation shape is invalid")
+    gender = str(np.asarray(smplx_data["gender"]).item())
+    body_model = smplx_module.create(
+        body_model_root,
+        "smplx",
+        gender=gender,
+        use_pca=False,
+    )
+    betas = torch_module.as_tensor(
+        np.asarray(smplx_data["betas"], dtype=np.float32).reshape(1, -1)
+    )
+    outputs = {"global_orient": [], "full_pose": [], "joints": []}
+    for start in range(0, frames, chunk_frames):
+        stop = min(start + chunk_frames, frames)
+        count = stop - start
+        zeros_45 = torch_module.zeros((count, 45), dtype=torch_module.float32)
+        zeros_3 = torch_module.zeros((count, 3), dtype=torch_module.float32)
+        output = body_model(
+            betas=betas,
+            global_orient=torch_module.as_tensor(root_orient[start:stop]),
+            body_pose=torch_module.as_tensor(pose_body[start:stop]),
+            transl=torch_module.as_tensor(translation[start:stop]),
+            left_hand_pose=zeros_45,
+            right_hand_pose=zeros_45,
+            jaw_pose=zeros_3,
+            leye_pose=zeros_3,
+            reye_pose=zeros_3,
+            return_full_pose=True,
+            return_verts=False,
+        )
+        for name in outputs:
+            outputs[name].append(getattr(output, name).detach())
+    smplx_output = SimpleNamespace(
+        **{name: torch_module.cat(chunks, dim=0) for name, chunks in outputs.items()}
+    )
+    if np.asarray(smplx_data["betas"]).ndim == 1:
+        human_height = 1.66 + 0.1 * float(np.asarray(smplx_data["betas"])[0])
+    else:
+        human_height = 1.66 + 0.1 * float(np.asarray(smplx_data["betas"])[0, 0])
+    return smplx_data, body_model, smplx_output, human_height
+
+
+def _settle_first_frame(retargeter, frame) -> None:
+    previous = retargeter.retarget(frame)
+    for _ in range(9):
+        current = retargeter.retarget(frame)
+        if np.max(np.abs(current - previous)) < 1.0e-4:
+            break
+        previous = current
+
+
+def _logical_actuator_joint_names(model) -> tuple[str, ...]:
+    names: list[str] = []
+    for actuator_id in range(model.nu):
+        transmission = model.actuator_trntype[actuator_id]
+        target_id = int(model.actuator_trnid[actuator_id, 0])
+        if transmission in {
+            mujoco.mjtTrn.mjTRN_JOINT,
+            mujoco.mjtTrn.mjTRN_JOINTINPARENT,
+        }:
+            name = model.joint(target_id).name
+        elif transmission == mujoco.mjtTrn.mjTRN_TENDON:
+            name = ANKLE_TENDON_LOGICAL_JOINT.get(model.tendon(target_id).name)
+        else:
+            name = None
+        if name is None:
+            raise ValueError(
+                f"actuator {model.actuator(actuator_id).name!r} has no supported "
+                "logical joint mapping"
+            )
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise ValueError("logical actuator joint mappings must be unique")
+    return tuple(names)
+
+
+def _qpos_ordered_joint_ranges(
+    model, actuator_joint_names: tuple[str, ...]
+) -> np.ndarray:
+    joint_ids = sorted(
+        (
+            joint_id
+            for joint_id in range(model.njnt)
+            if model.jnt_type[joint_id]
+            in {mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE}
+        ),
+        key=lambda joint_id: int(model.jnt_qposadr[joint_id]),
+    )
+    qpos_joint_names = tuple(model.joint(joint_id).name for joint_id in joint_ids)
+    if len(joint_ids) != model.nq - 7:
+        raise ValueError(
+            "Bello model must contain one free root followed by scalar joints"
+        )
+    if set(qpos_joint_names) != set(actuator_joint_names):
+        raise ValueError(
+            "Bello qpos and logical actuator joints do not describe the same joints"
+        )
+    return np.asarray(model.jnt_range[joint_ids])
 
 
 def _differentiate(model, qpos: np.ndarray, fps: float) -> np.ndarray:
@@ -200,7 +333,11 @@ def _body_state(model, qpos, qvel, body_ids):
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 if __name__ == "__main__":

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import jax
 import jax.numpy as jnp
 import equinox as eqx
+import mujoco
 import numpy as np
 import pytest
 
@@ -43,8 +46,9 @@ from bello_mujoco.motion.twist_dataset import (
     validate_source_manifest,
     validate_split_isolation,
 )
+from bello_mujoco.motion.twist_retarget import batch_retarget_manifest
 from bello_mujoco.policy import ActorCriticConfig, init_actor_critic
-from bello_mujoco.sim import WarpConfig
+from bello_mujoco.sim import WarpConfig, logical_actuator_joint_names
 from bello_mujoco.training.checkpoint import (
     ObservationNormMetadata,
     TwistDatasetContract,
@@ -152,6 +156,16 @@ def test_amass_scanner_generates_reviewable_stageii_manifest(tmp_path: Path) -> 
             pose_body=np.full((frames, 63), index * 0.2, dtype=np.float32),
         )
         np.savez(source_dir / "neutral_stagei.npz", betas=np.zeros(16))
+    invalid_dir = source_root / "EKUT" / "265"
+    invalid_dir.mkdir(parents=True)
+    np.savez(
+        invalid_dir / "empty_stageii.npz",
+        surface_model_type=np.asarray("smplx"),
+        mocap_frame_rate=np.asarray(60.0),
+        trans=np.zeros((1, 3), dtype=np.float32),
+        root_orient=np.zeros((1, 3), dtype=np.float32),
+        pose_body=np.zeros((1, 63), dtype=np.float32),
+    )
     output_path = tmp_path / "amass_manifest.yaml"
 
     generated = scan_amass_manifest(
@@ -177,6 +191,126 @@ def test_amass_scanner_generates_reviewable_stageii_manifest(tmp_path: Path) -> 
         if item.near_duplicate_fingerprint is not None
     )
     assert "neutral_stagei.npz" not in output_path.read_text(encoding="utf-8")
+    report = json.loads(
+        output_path.with_suffix(".scan_report.json").read_text(encoding="utf-8")
+    )
+    assert report["discovered"] == 3
+    assert report["accepted"] == 2
+    assert report["rejected"][0]["relative_path"] == "EKUT/265/empty_stageii.npz"
+
+
+def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
+    tmp_path: Path,
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    source = tmp_path / "source.npz"
+    source.write_bytes(b"licensed source fixture")
+    sequence = replace(
+        source_sequence(0),
+        local_path=source,
+        source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+    )
+    manifest_path = tmp_path / "manifest.json"
+    payload = {
+        "schema_version": 1,
+        "split_seed": 17,
+        "sequences": [
+            {
+                **sequence.__dict__,
+                "local_path": str(sequence.local_path),
+            }
+        ],
+    }
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    body_model_root = tmp_path / "body_models"
+    for gender in ("NEUTRAL", "FEMALE", "MALE"):
+        path = body_model_root / "smplx" / f"SMPLX_{gender}.npz"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"test body model")
+    robot_xml = tmp_path / "bello.xml"
+    robot_xml.write_text("<mujoco/>", encoding="utf-8")
+    commands = []
+
+    def fake_runner(command, **kwargs):
+        commands.append(command)
+        output = Path(command[command.index("--output") + 1])
+        if command[1].endswith("twist_normalize_smpl.py"):
+            output.write_bytes(b"normalized")
+        else:
+            config = repository / "configs/twist/gmr_smplx_to_bello.json"
+            robot = repository / (
+                "deps/bello-stack/descriptions/bello/full_body/urdf/"
+                "bello_full_body.urdf"
+            )
+            revision = subprocess.run(
+                ["git", "-C", str(repository / "deps/GMR"), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            np.savez(
+                output,
+                source_sha256=np.asarray(sequence.source_sha256),
+                retarget_format_version=np.asarray(3, dtype=np.int32),
+                gmr_revision=np.asarray(revision),
+                gmr_config_sha256=np.asarray(
+                    hashlib.sha256(config.read_bytes()).hexdigest()
+                ),
+                robot_fingerprint=np.asarray(
+                    "sha256:" + hashlib.sha256(robot.read_bytes()).hexdigest()
+                ),
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    options = {
+        "body_model_root": body_model_root,
+        "robot_xml": robot_xml,
+        "output_root": tmp_path / "retargeted",
+        "normalized_root": tmp_path / "normalized",
+        "gmr_python": Path(sys.executable),
+    }
+    first = batch_retarget_manifest(
+        manifest_path,
+        **options,
+        command_runner=fake_runner,
+        gmr_environment={},
+    )
+    second = batch_retarget_manifest(
+        manifest_path,
+        **options,
+        command_runner=lambda *args, **kwargs: pytest.fail(
+            "matching output should have been skipped"
+        ),
+        gmr_environment={},
+    )
+
+    assert (first.completed, first.skipped, first.failed) == (1, 0, 0)
+    assert (second.completed, second.skipped, second.failed) == (0, 1, 0)
+    assert len(commands) == 2
+    assert not tuple((tmp_path / "retargeted").glob("*.partial.npz"))
+    assert not tuple((tmp_path / "normalized").glob("*.npz"))
+    assert (tmp_path / "retargeted/batch_retarget_report.json").is_file()
+
+
+def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
+    full_body_asset,
+) -> None:
+    tool_path = Path(__file__).resolve().parents[1] / "tools/twist_gmr_retarget.py"
+    spec = importlib.util.spec_from_file_location("twist_gmr_retarget", tool_path)
+    assert spec is not None and spec.loader is not None
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+
+    names = tool._logical_actuator_joint_names(model)
+    ranges = tool._qpos_ordered_joint_ranges(model, names)
+    qpos_joint_ids = sorted(
+        range(1, model.njnt), key=lambda joint_id: int(model.jnt_qposadr[joint_id])
+    )
+
+    assert names == logical_actuator_joint_names(model)
+    assert names != tuple(model.joint(joint_id).name for joint_id in qpos_joint_ids)
+    np.testing.assert_array_equal(ranges, model.jnt_range[qpos_joint_ids])
 
 
 def test_twist_observation_contract_exact_dimensions_and_isolation() -> None:
@@ -450,6 +584,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
             timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_sha256=np.asarray(source_digest),
+            retarget_format_version=np.asarray(3, dtype=np.int32),
             qpos=qpos,
             qvel=np.zeros((frames, 31), dtype=np.float32),
             body_pos=np.zeros((frames, len(body_names), 3), dtype=np.float32),

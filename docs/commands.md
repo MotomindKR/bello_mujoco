@@ -204,7 +204,7 @@ It never downloads datasets or body models. Configuration source:
 | `split_seed` | integer; `20251009` | Fixed seed recorded in a generated manifest. |
 | `sampling_weight` | positive float; `1.0` | Explicit weight assigned to every scanned sequence. |
 | `overwrite` | boolean; `false` | Permit replacement of an existing generated manifest. |
-| `body_model_root` | path or `null`; `null` | Required for SMPL-H/SMPL-X and checked for the three SMPL-X model files. |
+| `body_model_root` | path or `null`; `null` | Required for SMPL-H/SMPL-X and checked for the three SMPL-X NPZ model files. |
 | `retargeted_root` | path or `null`; `null` | Required only for build; clips use `<source_id>__<sequence_id>.npz`. |
 | `output_root` | path or `null`; `null` | Required only for build and must be empty. |
 | `robot_model_path` | canonical Bello URDF path | Robot content used in provenance validation and the dataset fingerprint. |
