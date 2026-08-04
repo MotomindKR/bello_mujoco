@@ -110,6 +110,12 @@ update; output destinations may change.
 
 Locomotion final checkpoints are timestamped checkpoint roots. Motion runs also
 maintain a `final` child below their timestamped root.
+TWIST teacher and student runs likewise write `final` children, but their stage
+types are not interchangeable. TWIST metadata additionally binds the packed
+dataset, Bello model, joint/body order, observation contract, and source
+revision. Student metadata binds the exact teacher metadata fingerprint and
+corrected KL schedule. Public TWIST evaluation accepts only the student and
+reports deterministic global, per-source, and per-clip held-out metrics.
 
 Read the recorded revision without loading policy state:
 

@@ -1,0 +1,19 @@
+operation: validate
+manifest: null
+source_root: null
+dataset_release: null
+license_id: null
+split_seed: 20251009
+sampling_weight: 1.0
+overwrite: false
+body_model_root: null
+retargeted_root: null
+output_root: null
+robot_model_path: deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf
+gmr_root: deps/GMR
+quality_config: configs/twist/quality.yaml
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/twist_data/${now:%Y-%m-%d}/${now:%H-%M-%S}

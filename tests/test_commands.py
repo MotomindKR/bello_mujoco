@@ -16,6 +16,7 @@ from bello_mujoco.cli import (
     MotionCommandConfig,
     PrepareAssetsCommandConfig,
     TrainCommandConfig,
+    TwistDataCommandConfig,
     VastTrainCommandConfig,
     _reject_explicit_fields,
 )
@@ -26,6 +27,7 @@ from bello_mujoco.configuration import (
     locomotion_training_profile,
     motion_training_profile,
     structured_config,
+    twist_training_profile,
 )
 
 COMMAND_SCHEMAS = {
@@ -33,6 +35,7 @@ COMMAND_SCHEMAS = {
     "train": TrainCommandConfig,
     "eval": EvalCommandConfig,
     "motion": MotionCommandConfig,
+    "twist_data": TwistDataCommandConfig,
     "vast_train": VastTrainCommandConfig,
     "emulator": EmulatorCommandConfig,
     "hardware": HardwareCommandConfig,
@@ -139,10 +142,19 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     locomotion = locomotion_training_profile("locomotion")
     hardware = locomotion_training_profile("hardware_locomotion")
     motion = motion_training_profile()
+    twist_teacher = twist_training_profile("teacher")
+    twist_student = twist_training_profile("student")
 
     assert all(
         profile.config.num_updates > 0
-        for profile in (smoke, locomotion, hardware, motion)
+        for profile in (
+            smoke,
+            locomotion,
+            hardware,
+            motion,
+            twist_teacher,
+            twist_student,
+        )
     )
     assert smoke.config.num_envs == 2
     assert smoke.config.num_updates == 1
@@ -153,6 +165,9 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert locomotion.checkpoint_config.every_updates == 512
     assert hardware.checkpoint_config.every_updates == 512
     assert motion.checkpoint_config.every_updates == 500
+    assert twist_teacher.config.num_updates == 60_000
+    assert twist_teacher.config.policy.architecture == "twist_teacher"
+    assert twist_student.config.policy.architecture == "twist_student"
 
 
 def test_motion_path_override_is_explicit(tmp_path: Path) -> None:

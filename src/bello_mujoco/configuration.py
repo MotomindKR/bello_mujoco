@@ -21,15 +21,25 @@ from bello_mujoco.assets_pipeline import project_data_path
 if TYPE_CHECKING:
     from bello_mujoco.training.locomotion import TrainingRunConfig
     from bello_mujoco.training.motion import MotionTrainingRunConfig
+    from bello_mujoco.training.twist import TwistTrainingRunConfig
 
 T = TypeVar("T")
-ExperimentName = Literal["smoke", "locomotion", "hardware_locomotion", "motion"]
+ExperimentName = Literal[
+    "smoke",
+    "locomotion",
+    "hardware_locomotion",
+    "motion",
+    "twist_teacher",
+    "twist_student",
+]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "smoke": Path("profiles/train/smoke.yaml"),
     "locomotion": Path("profiles/train/locomotion.yaml"),
     "hardware_locomotion": Path("profiles/train/hardware_locomotion.yaml"),
     "motion": Path("profiles/train/motion.yaml"),
+    "twist_teacher": Path("profiles/train/twist_teacher.yaml"),
+    "twist_student": Path("profiles/train/twist_student.yaml"),
 }
 
 
@@ -255,6 +265,33 @@ def motion_training_profile(
             sequence=resolved.stem,
         ),
     )
+
+
+def twist_training_profile(
+    stage: Literal["teacher", "student"],
+    *,
+    dataset_index: Path | None = None,
+    teacher_checkpoint_path: Path | None = None,
+) -> TwistTrainingRunConfig:
+    from bello_mujoco.training.twist import TwistTrainingRunConfig
+
+    config = structured_config(
+        TwistTrainingRunConfig,
+        _merged_profile(
+            (
+                _config("train_twist/default.yaml"),
+                _config(f"profiles/train/twist_{stage}.yaml"),
+            )
+        ),
+    )
+    overrides = {}
+    if dataset_index is not None:
+        overrides["dataset_index"] = dataset_index.expanduser().resolve()
+    if teacher_checkpoint_path is not None:
+        overrides["teacher_checkpoint_path"] = (
+            teacher_checkpoint_path.expanduser().resolve()
+        )
+    return replace(config, **overrides)
 
 
 def profile_config_relative_path(name: ExperimentName) -> Path:

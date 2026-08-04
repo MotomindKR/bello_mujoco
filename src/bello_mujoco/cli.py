@@ -19,6 +19,7 @@ from bello_mujoco.configuration import (
     config_path,
     locomotion_training_profile,
     motion_training_profile,
+    twist_training_profile,
 )
 
 if TYPE_CHECKING:
@@ -38,6 +39,8 @@ class TrainCommandConfig:
     total_timesteps: int | None
     num_envs: int | None
     motion_path: Path | None
+    dataset_path: Path | None
+    teacher_checkpoint_path: Path | None
     resume_path: Path | None
     allow_git_commit_mismatch: bool
     checkpoint_directory: Path | None
@@ -49,7 +52,7 @@ class TrainCommandConfig:
 
 @dataclass(frozen=True)
 class EvalCommandConfig:
-    task: Literal["locomotion", "motion"]
+    task: Literal["locomotion", "motion", "twist_student"]
     checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
     output_path: Path
@@ -76,8 +79,26 @@ class MotionCommandConfig:
 
 
 @dataclass(frozen=True)
+class TwistDataCommandConfig:
+    operation: Literal["scan_amass", "validate", "build"]
+    manifest: Path | None
+    source_root: Path | None
+    dataset_release: str | None
+    license_id: str | None
+    split_seed: int
+    sampling_weight: float
+    overwrite: bool
+    body_model_root: Path | None
+    retargeted_root: Path | None
+    output_root: Path | None
+    robot_model_path: Path
+    gmr_root: Path
+    quality_config: Path
+
+
+@dataclass(frozen=True)
 class VastTrainCommandConfig:
-    experiment: ExperimentName
+    experiment: Literal["smoke", "locomotion", "hardware_locomotion", "motion"]
     motion_path: Path | None
     max_price: float | None
     branch: str | None
@@ -154,7 +175,39 @@ def train_entrypoint() -> None:
 )
 def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
+    if command.experiment in {"twist_teacher", "twist_student"}:
+        _reject_explicit_fields(
+            ("motion_path", "video_enabled"),
+            context=f"experiment={command.experiment}",
+        )
+        stage = command.experiment.removeprefix("twist_")
+        if stage == "teacher":
+            _reject_explicit_fields(
+                ("teacher_checkpoint_path",),
+                context="experiment=twist_teacher",
+            )
+        from bello_mujoco.training.twist import run_training as run_twist_training
+
+        run_config = twist_training_profile(
+            stage,
+            dataset_index=command.dataset_path,
+            teacher_checkpoint_path=command.teacher_checkpoint_path,
+        )
+        run_config = replace(
+            run_config,
+            config=_ppo_overrides(run_config.config, command),
+            checkpoint_config=_checkpoint_overrides(
+                run_config.checkpoint_config, command
+            ),
+            wandb_config=_wandb_overrides(run_config.wandb_config, command),
+        )
+        run_twist_training(run_config)
+        return
     if command.experiment == "motion":
+        _reject_explicit_fields(
+            ("dataset_path", "teacher_checkpoint_path"),
+            context="experiment=motion",
+        )
         from bello_mujoco.training.motion import (
             run_training as run_motion_training,
         )
@@ -179,7 +232,7 @@ def _train_hydra(config: DictConfig) -> None:
     if command.motion_path is not None:
         raise ValueError("motion_path is only valid for the motion experiment")
     _reject_explicit_fields(
-        ("motion_path",),
+        ("motion_path", "dataset_path", "teacher_checkpoint_path"),
         context=f"experiment={command.experiment}",
     )
     from bello_mujoco.training.locomotion import (
@@ -213,6 +266,36 @@ def eval_entrypoint() -> None:
 def _eval_hydra(config: DictConfig) -> None:
     command = command_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
+    if command.task == "twist_student":
+        _reject_explicit_fields(
+            (
+                "command",
+                "steps",
+                "stochastic_actions",
+                "action_seed",
+                "gamepad_enabled",
+            ),
+            context="task=twist_student",
+        )
+        from bello_mujoco.evaluation.twist import (
+            TwistEvaluationConfig,
+            evaluate_twist_student_checkpoint,
+        )
+
+        report = evaluate_twist_student_checkpoint(
+            checkpoint,
+            TwistEvaluationConfig(
+                output_path=(
+                    command.output_path
+                    if "output_path" in _explicit_override_fields()
+                    else Path("outputs/evaluation/twist_student.json")
+                ),
+                stop_on_terminal=command.stop_on_done,
+            ),
+            allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
     if command.task == "motion":
         _reject_explicit_fields(
             ("command", "stochastic_actions", "action_seed", "gamepad_enabled"),
@@ -262,6 +345,140 @@ def _eval_hydra(config: DictConfig) -> None:
 def motion_entrypoint() -> None:
     _expand_path_overrides(("source=", "output="))
     _motion_hydra()
+
+
+def twist_data_entrypoint() -> None:
+    _expand_path_overrides(
+        (
+            "manifest=",
+            "source_root=",
+            "body_model_root=",
+            "retargeted_root=",
+            "output_root=",
+            "robot_model_path=",
+            "gmr_root=",
+            "quality_config=",
+        )
+    )
+    _twist_data_hydra()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("commands"),
+    config_name="twist_data",
+)
+def _twist_data_hydra(config: DictConfig) -> None:
+    command = command_config(TwistDataCommandConfig, config)
+    manifest_path = _required_path(command.manifest, "manifest")
+    from bello_mujoco.motion.twist_dataset import (
+        assign_splits,
+        build_packed_dataset,
+        load_quality_config,
+        load_source_manifest,
+        portable_manifest_fingerprint,
+        scan_amass_manifest,
+    )
+
+    if command.operation == "scan_amass":
+        _reject_explicit_fields(
+            (
+                "body_model_root",
+                "retargeted_root",
+                "output_root",
+                "robot_model_path",
+                "gmr_root",
+                "quality_config",
+            ),
+            context="operation=scan_amass",
+        )
+        source_root = _required_path(command.source_root, "source_root")
+        if command.dataset_release is None:
+            raise ValueError("dataset_release is required for operation=scan_amass")
+        if command.license_id is None:
+            raise ValueError("license_id is required for operation=scan_amass")
+
+        def progress(current: int, total: int, path: Path) -> None:
+            if current == 1 or current % 250 == 0 or current == total:
+                print(f"scanned {current}/{total}: {path}", file=sys.stderr)
+
+        manifest = scan_amass_manifest(
+            source_root,
+            manifest_path,
+            dataset_release=command.dataset_release,
+            license_id=command.license_id,
+            split_seed=command.split_seed,
+            sampling_weight=command.sampling_weight,
+            overwrite=command.overwrite,
+            progress=progress,
+        )
+        print(
+            json.dumps(
+                {
+                    "manifest": str(manifest_path.resolve()),
+                    "sequences": len(manifest.sequences),
+                    "subdatasets": sorted(
+                        {item.subdataset for item in manifest.sequences}
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
+    _reject_explicit_fields(
+        (
+            "source_root",
+            "dataset_release",
+            "license_id",
+            "split_seed",
+            "sampling_weight",
+            "overwrite",
+        ),
+        context=f"operation={command.operation}",
+    )
+
+    if command.operation == "validate":
+        _reject_explicit_fields(
+            ("retargeted_root", "output_root"),
+            context="operation=validate",
+        )
+        manifest = load_source_manifest(
+            manifest_path,
+            body_model_root=command.body_model_root,
+            verify_files=True,
+        )
+        assignments = assign_splits(manifest)
+        print(
+            json.dumps(
+                {
+                    "sequences": len(assignments),
+                    "train": sum(item.split == "train" for item in assignments),
+                    "evaluation": sum(
+                        item.split == "evaluation" for item in assignments
+                    ),
+                    "portable_manifest_fingerprint": (
+                        portable_manifest_fingerprint(assignments)
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    retargeted_root = _required_path(command.retargeted_root, "retargeted_root")
+    output_root = _required_path(command.output_root, "output_root")
+    index = build_packed_dataset(
+        manifest_path,
+        retargeted_root,
+        output_root,
+        body_model_root=command.body_model_root,
+        quality=load_quality_config(command.quality_config),
+        robot_model_path=command.robot_model_path,
+        gmr_root=command.gmr_root,
+    )
+    print(json.dumps(index, indent=2, sort_keys=True))
 
 
 @hydra.main(

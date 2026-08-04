@@ -1,0 +1,10 @@
+stage: student
+config:
+  policy:
+    architecture: twist_student
+checkpoint_config:
+  name: twist_student_seed0
+  wandb_artifact_name: twist_student_seed0
+wandb_config:
+  run_name: twist_student_seed0
+  tags: [twist, student, distillation, whole-body]

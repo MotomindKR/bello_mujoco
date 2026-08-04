@@ -269,6 +269,7 @@ def load_bello_model(
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     use_viewer_model: bool = False,
     load_mjx: bool = True,
+    simulation_timestep: float | None = None,
 ) -> BelloModel:
     prepared = prepare_asset(config)
     return load_prepared_bello_model(
@@ -283,6 +284,7 @@ def load_bello_model(
         spawn_clearance=spawn_clearance,
         use_viewer_model=use_viewer_model,
         load_mjx=load_mjx,
+        simulation_timestep=simulation_timestep,
     )
 
 
@@ -299,6 +301,7 @@ def load_prepared_bello_model(
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     use_viewer_model: bool = False,
     load_mjx: bool = True,
+    simulation_timestep: float | None = None,
 ) -> BelloModel:
     xml_path = prepared.viewer_mjcf_path if use_viewer_model else prepared.mjcf_path
     return _load_bello_model_from_path(
@@ -312,6 +315,7 @@ def load_prepared_bello_model(
         imu_body_name=imu_body_name,
         spawn_clearance=spawn_clearance,
         load_mjx=load_mjx,
+        simulation_timestep=simulation_timestep,
     )
 
 
@@ -327,6 +331,7 @@ def _load_bello_model_from_path(
     imu_body_name: str | None = None,
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     load_mjx: bool = True,
+    simulation_timestep: float | None = None,
 ) -> BelloModel:
     if not math.isfinite(spawn_clearance) or spawn_clearance < 0.0:
         raise ValueError(
@@ -338,6 +343,9 @@ def _load_bello_model_from_path(
     path = runtime_mjcf_path(path, terrain)
 
     mj_model = mujoco.MjModel.from_xml_path(str(path))
+    if simulation_timestep is not None:
+        if not math.isfinite(simulation_timestep) or simulation_timestep <= 0.0:
+            raise ValueError("simulation_timestep must be positive and finite")
     imu_body_name = resolve_imu_body_name(mj_model, imu_body_name)
 
     actuator_names = tuple(
@@ -437,6 +445,8 @@ def _load_bello_model_from_path(
         foot_geom_ids=foot_geom_ids,
         terrain_geom_ids=terrain_geom_ids,
     )
+    if simulation_timestep is not None:
+        mj_model.opt.timestep = simulation_timestep
 
     mjx_model = None
     if load_mjx:

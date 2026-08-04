@@ -18,7 +18,6 @@ from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
 from bello_mujoco.contracts import (
     CONTROL_DECIMATION,
-    SIM_TIMESTEP,
     ActionLayout,
     ObservationLayout,
 )
@@ -260,6 +259,7 @@ class BelloMotionTrackingEnv:
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         use_viewer_model: bool = False,
+        simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
         model = load_bello_model(
             asset_config,
@@ -267,6 +267,7 @@ class BelloMotionTrackingEnv:
             batch_size=batch_size,
             terrain=env_config.terrain,
             use_viewer_model=use_viewer_model,
+            simulation_timestep=simulation_timestep,
         )
         return cls(
             model,
@@ -282,12 +283,14 @@ class BelloMotionTrackingEnv:
         env_config: MotionTrackingEnvConfig,
         *,
         use_viewer_model: bool = False,
+        simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
         model = load_bello_model(
             asset_config,
             terrain=env_config.terrain,
             use_viewer_model=use_viewer_model,
             load_mjx=False,
+            simulation_timestep=simulation_timestep,
         )
         return cls(
             model,
@@ -306,6 +309,7 @@ class BelloMotionTrackingEnv:
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         use_viewer_model: bool = False,
+        simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
         model = load_prepared_bello_model(
             prepared,
@@ -314,6 +318,7 @@ class BelloMotionTrackingEnv:
             terrain=env_config.terrain,
             actuator_config=actuator_config,
             use_viewer_model=use_viewer_model,
+            simulation_timestep=simulation_timestep,
         )
         return cls(
             model,
@@ -330,6 +335,7 @@ class BelloMotionTrackingEnv:
         *,
         actuator_config: ActuatorConfig = motion_tracking_asset_config().actuator_config,
         use_viewer_model: bool = False,
+        simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
         model = load_prepared_bello_model(
             prepared,
@@ -337,6 +343,7 @@ class BelloMotionTrackingEnv:
             actuator_config=actuator_config,
             use_viewer_model=use_viewer_model,
             load_mjx=False,
+            simulation_timestep=simulation_timestep,
         )
         return cls(
             model,
@@ -351,7 +358,7 @@ class BelloMotionTrackingEnv:
 
     @property
     def control_timestep(self) -> float:
-        return self.decimation * SIM_TIMESTEP
+        return self.decimation * float(self.model.mj_model.opt.timestep)
 
     @property
     def max_episode_steps(self) -> int:

@@ -194,6 +194,29 @@ class PPOConfig:
         return self.batch_size // self.num_minibatches
 
 
+@dataclass(frozen=True)
+class DistillationContext:
+    """Frozen teacher and schedule for a TWIST student PPO update."""
+
+    teacher_policy: ActorCritic
+    teacher_observation_size: int
+    start_weight: float = 0.1
+    end_weight: float = 0.01
+    anneal_updates: int = 60_000
+
+    def __post_init__(self) -> None:
+        if self.teacher_policy.action_distribution != "tanh_gaussian":
+            raise ValueError("TWIST teacher must use a tanh-Gaussian policy")
+        if self.teacher_observation_size <= 0:
+            raise ValueError("teacher_observation_size must be positive")
+        if self.start_weight < self.end_weight or self.end_weight < 0.0:
+            raise ValueError(
+                "distillation weights must be nonnegative and decrease over time"
+            )
+        if self.anneal_updates <= 0:
+            raise ValueError("distillation anneal_updates must be positive")
+
+
 @chex.dataclass(frozen=True)
 class TrainState:
     policy: ActorCritic
@@ -475,6 +498,62 @@ def normalize_advantages(advantages: jax.Array) -> jax.Array:
     return (advantages - advantages.mean()) / (advantages.std() + 1.0e-8)
 
 
+def cosine_distillation_weight(
+    update: jax.Array | int,
+    *,
+    start: float = 0.1,
+    end: float = 0.01,
+    anneal_updates: int = 60_000,
+) -> jax.Array:
+    """Correct decreasing cosine schedule, including both endpoints."""
+
+    if start < end or end < 0.0:
+        raise ValueError("cosine distillation weights must satisfy start >= end >= 0")
+    if anneal_updates <= 0:
+        raise ValueError("anneal_updates must be positive")
+    progress = jnp.clip(
+        jnp.asarray(update, dtype=jnp.float32) / float(anneal_updates), 0.0, 1.0
+    )
+    return end + (start - end) * 0.5 * (1.0 + jnp.cos(jnp.pi * progress))
+
+
+def gaussian_policy_kl_student_teacher(
+    student: ActorCritic,
+    teacher: ActorCritic,
+    student_observation: jax.Array,
+    teacher_observation: jax.Array,
+) -> jax.Array:
+    """KL(student || teacher) in latent Gaussian space.
+
+    Both policies use the same invertible tanh/action-scale transform, so the
+    latent-space KL is also the transformed policy KL.
+    """
+
+    student_mean = (
+        student.actor(student_observation)
+        if student_observation.ndim == 1
+        else jax.vmap(student.actor)(student_observation)
+    )
+    teacher_mean = (
+        teacher.actor(teacher_observation)
+        if teacher_observation.ndim == 1
+        else jax.vmap(teacher.actor)(teacher_observation)
+    )
+    teacher_mean = jax.lax.stop_gradient(teacher_mean)
+    student_log_std = policy_log_std(student)
+    teacher_log_std = jax.lax.stop_gradient(policy_log_std(teacher))
+    student_variance = jnp.exp(2.0 * student_log_std)
+    teacher_variance = jnp.exp(2.0 * teacher_log_std)
+    elementwise = (
+        teacher_log_std
+        - student_log_std
+        + (student_variance + jnp.square(student_mean - teacher_mean))
+        / (2.0 * teacher_variance)
+        - 0.5
+    )
+    return jnp.sum(elementwise, axis=-1)
+
+
 def ppo_loss(
     model: ActorCritic,
     transitions: Transition,
@@ -483,6 +562,8 @@ def ppo_loss(
     config: PPOConfig,
     entropy_rng: jax.Array | None = None,
     value_norm_state: ValueNormState | None = None,
+    distillation: DistillationContext | None = None,
+    distillation_weight: jax.Array | float = 0.0,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     log_prob, entropy, value = evaluate_actions(
         model,
@@ -521,8 +602,23 @@ def ppo_loss(
     )
     value_loss_raw = 0.5 * ((raw_value - targets) ** 2).mean()
     entropy_loss = entropy.mean()
+    distillation_kl = jnp.asarray(0.0, dtype=jnp.float32)
+    if distillation is not None:
+        teacher_observation = transitions.critic_obs[
+            ..., : distillation.teacher_observation_size
+        ]
+        distillation_kl = gaussian_policy_kl_student_teacher(
+            model,
+            distillation.teacher_policy,
+            transitions.obs,
+            teacher_observation,
+        ).mean()
+    distillation_weight = jnp.asarray(distillation_weight, dtype=jnp.float32)
     total_loss = (
-        actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy_loss
+        actor_loss
+        + config.vf_coef * value_loss
+        - config.ent_coef * entropy_loss
+        + distillation_weight * distillation_kl
     )
     metrics = {
         "loss": total_loss,
@@ -530,6 +626,8 @@ def ppo_loss(
         "value_loss": value_loss,
         "value_loss_raw": value_loss_raw,
         "entropy": entropy_loss,
+        "distillation/kl_student_teacher": distillation_kl,
+        "distillation/weight": distillation_weight,
         "approx_kl": ((ratio - 1.0) - safe_log_ratio).mean(),
         "nonfinite/current_log_probability": (~current_log_prob_finite).astype(
             jnp.float32
@@ -549,6 +647,8 @@ def update_ppo(
     config: PPOConfig,
     learning_rate: jax.Array | float | None = None,
     value_norm_state: ValueNormState | None = None,
+    distillation: DistillationContext | None = None,
+    distillation_weight: jax.Array | float = 0.0,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
     bounded_policy = config.policy.action_distribution == "tanh_gaussian"
     policy_action_max_abs = (
@@ -654,6 +754,8 @@ def update_ppo(
                     config,
                     entropy_rng=entropy_key,
                     value_norm_state=value_norm_state,
+                    distillation=distillation,
+                    distillation_weight=distillation_weight,
                 )
 
             (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
@@ -1159,7 +1261,10 @@ def init_runner_state(
     params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
     env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
     step_count = env.initial_step_counts(config.num_envs, step_count_key)
-    env_state = env_state.replace(step_count=step_count, episode_length=step_count)
+    if hasattr(env, "with_initial_step_counts"):
+        env_state = env.with_initial_step_counts(env_state, step_count)
+    else:
+        env_state = env_state.replace(step_count=step_count, episode_length=step_count)
     if env.ppo_stagger_initial_step_count:
         rng, staggered_obs_key = jax.random.split(rng)
         obs = env.observation_batch(env_state, staggered_obs_key)
@@ -1206,6 +1311,7 @@ def update_runner_state(
     optimizer: optax.GradientTransformation,
     env: PPOEnvironment,
     config: PPOConfig,
+    distillation: DistillationContext | None = None,
 ) -> tuple[RunnerState, dict[str, jax.Array]]:
     validate_action_limit_contract(config, env.action_clip)
     key, rollout_key, update_key = jax.random.split(runner_state.rng, 3)
@@ -1256,6 +1362,16 @@ def update_runner_state(
     learning_rate = learning_rate_for_update(
         config, runner_state.update, runner_state.learning_rate
     )
+    distillation_weight = (
+        cosine_distillation_weight(
+            runner_state.update,
+            start=distillation.start_weight,
+            end=distillation.end_weight,
+            anneal_updates=distillation.anneal_updates,
+        )
+        if distillation is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
     train_state, metrics = update_ppo(
         train_state,
         optimizer,
@@ -1266,6 +1382,8 @@ def update_runner_state(
         config,
         learning_rate=learning_rate,
         value_norm_state=value_norm_state,
+        distillation=distillation,
+        distillation_weight=distillation_weight,
     )
     next_learning_rate = adapt_learning_rate(
         learning_rate,
@@ -1405,6 +1523,26 @@ def validate_ppo_config(config: PPOConfig) -> None:
             "policy.action_distribution must be 'gaussian' or 'tanh_gaussian', got "
             f"{config.policy.action_distribution!r}"
         )
+    if config.policy.architecture not in {
+        "mlp",
+        "twist_teacher",
+        "twist_student",
+    }:
+        raise ValueError(
+            "policy.architecture must be 'mlp', 'twist_teacher', or "
+            f"'twist_student', got {config.policy.architecture!r}"
+        )
+    if config.policy.architecture.startswith("twist_"):
+        if config.policy.hidden_dims != (512, 512, 256, 128):
+            raise ValueError("TWIST policy.hidden_dims must be [512, 512, 256, 128]")
+        if config.policy.activation != "swish":
+            raise ValueError("TWIST policy.activation must be swish")
+        if config.policy.obs_stack_size != 1:
+            raise ValueError(
+                "TWIST histories are explicit; policy.obs_stack_size must be 1"
+            )
+        if not config.policy.layer_norm_final_hidden:
+            raise ValueError("TWIST requires final-hidden LayerNorm")
     if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
         raise ValueError(
             "policy.action_limit must be positive and finite, got "

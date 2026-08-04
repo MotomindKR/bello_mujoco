@@ -31,6 +31,8 @@ class ActorCriticConfig:
     obs_stack_size: int = 10
     action_distribution: Literal["gaussian", "tanh_gaussian"] = "tanh_gaussian"
     action_limit: float = 1.0
+    architecture: Literal["mlp", "twist_teacher", "twist_student"] = "mlp"
+    layer_norm_final_hidden: bool = False
 
 
 class LayeredMLP(eqx.Module):
@@ -91,20 +93,35 @@ class ActorCritic(eqx.Module):
         actor_key, critic_key = jax.random.split(key)
         critic_obs_size = obs_size if critic_obs_size is None else critic_obs_size
         activation_fn = activation_function(config.activation)
-        self.actor = make_mlp(
-            obs_size=obs_size,
-            output_size=action_size,
-            config=config,
-            activation=activation_fn,
-            key=actor_key,
-        )
-        self.critic = make_mlp(
-            obs_size=critic_obs_size,
-            output_size=1,
-            config=config,
-            activation=activation_fn,
-            key=critic_key,
-        )
+        if config.architecture == "mlp":
+            self.actor = make_mlp(
+                obs_size=obs_size,
+                output_size=action_size,
+                config=config,
+                activation=activation_fn,
+                key=actor_key,
+            )
+            self.critic = make_mlp(
+                obs_size=critic_obs_size,
+                output_size=1,
+                config=config,
+                activation=activation_fn,
+                key=critic_key,
+            )
+        else:
+            self.actor = TwistActor(
+                obs_size,
+                action_size,
+                stage=config.architecture.removeprefix("twist_"),
+                hidden_dims=config.hidden_dims,
+                key=actor_key,
+            )
+            self.critic = TwistBackbone(
+                critic_obs_size,
+                1,
+                config.hidden_dims,
+                key=critic_key,
+            )
         self.log_std = jnp.full((action_size,), config.init_log_std, dtype=jnp.float32)
         self.min_log_std = config.min_log_std
         self.max_log_std = config.max_log_std
@@ -152,6 +169,157 @@ def make_mlp(
         final_activation=identity_activation,
         key=key,
     )
+
+
+class TwistBackbone(eqx.Module):
+    """Released TWIST SiLU backbone with final-hidden LayerNorm."""
+
+    hidden: tuple[eqx.nn.Linear, ...]
+    final_norm: eqx.nn.LayerNorm
+    output: eqx.nn.Linear
+
+    def __init__(
+        self,
+        in_size: int,
+        out_size: int,
+        hidden_dims: tuple[int, ...],
+        *,
+        key: jax.Array,
+    ):
+        if hidden_dims != (512, 512, 256, 128):
+            raise ValueError(
+                "TWIST actor/critic hidden dimensions must be (512, 512, 256, 128)"
+            )
+        keys = jax.random.split(key, len(hidden_dims) + 1)
+        dims = (in_size, *hidden_dims)
+        self.hidden = tuple(
+            eqx.nn.Linear(input_size, output_size, key=layer_key)
+            for input_size, output_size, layer_key in zip(
+                dims[:-1], dims[1:], keys[:-1], strict=True
+            )
+        )
+        self.final_norm = eqx.nn.LayerNorm(hidden_dims[-1])
+        self.output = eqx.nn.Linear(hidden_dims[-1], out_size, key=keys[-1])
+
+    def __call__(self, value: jax.Array) -> jax.Array:
+        for index, layer in enumerate(self.hidden):
+            value = jax.nn.silu(layer(value))
+            if index == len(self.hidden) - 1:
+                value = self.final_norm(value)
+        return self.output(value)
+
+
+class TwistTeacherReferenceEncoder(eqx.Module):
+    """20-frame reference encoder from the released TWIST architecture."""
+
+    frame_projection: eqx.nn.Linear
+    convolution1: eqx.nn.Conv1d
+    convolution2: eqx.nn.Conv1d
+    latent_projection: eqx.nn.Linear
+    frame_count: int = eqx.field(static=True)
+    frame_size: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        frame_size: int,
+        *,
+        frame_count: int = 20,
+        key: jax.Array,
+    ):
+        if frame_count != 20:
+            raise ValueError("TWIST teacher encoder requires 20 future frames")
+        keys = jax.random.split(key, 4)
+        self.frame_projection = eqx.nn.Linear(frame_size, 60, key=keys[0])
+        self.convolution1 = eqx.nn.Conv1d(60, 40, kernel_size=6, stride=2, key=keys[1])
+        self.convolution2 = eqx.nn.Conv1d(40, 20, kernel_size=4, stride=2, key=keys[2])
+        self.latent_projection = eqx.nn.Linear(60, 128, key=keys[3])
+        self.frame_count = frame_count
+        self.frame_size = frame_size
+
+    def __call__(self, reference: jax.Array) -> jax.Array:
+        frames = reference.reshape((self.frame_count, self.frame_size))
+        projected = jax.vmap(self.frame_projection)(frames).T
+        hidden = jax.nn.silu(self.convolution1(projected))
+        hidden = jax.nn.silu(self.convolution2(hidden))
+        if hidden.shape != (20, 3):
+            raise RuntimeError(
+                f"TWIST teacher convolution shape drifted: {hidden.shape}"
+            )
+        return self.latent_projection(hidden.reshape(-1))
+
+
+class TwistStudentReferenceEncoder(eqx.Module):
+    """Separate current-frame encoder used only by the deployable student."""
+
+    projection: eqx.nn.Linear
+    latent_projection: eqx.nn.Linear
+
+    def __init__(self, frame_size: int, *, key: jax.Array):
+        key1, key2 = jax.random.split(key)
+        self.projection = eqx.nn.Linear(frame_size, 60, key=key1)
+        self.latent_projection = eqx.nn.Linear(60, 128, key=key2)
+
+    def __call__(self, reference: jax.Array) -> jax.Array:
+        return self.latent_projection(jax.nn.silu(self.projection(reference)))
+
+
+class TwistActor(eqx.Module):
+    reference_encoder: eqx.Module
+    backbone: TwistBackbone
+    stage: str = eqx.field(static=True)
+    reference_frame_size: int = eqx.field(static=True)
+    proprioception_frame_size: int = eqx.field(static=True)
+    reference_input_size: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        obs_size: int,
+        action_size: int,
+        *,
+        stage: str,
+        hidden_dims: tuple[int, ...],
+        key: jax.Array,
+    ):
+        if stage not in {"teacher", "student"}:
+            raise ValueError(f"invalid TWIST actor stage {stage!r}")
+        encoder_key, backbone_key = jax.random.split(key)
+        reference_frame_size = 38 + action_size
+        proprioception_frame_size = 5 + 3 * action_size
+        if stage == "teacher":
+            reference_input_size = 20 * reference_frame_size
+            expected_obs_size = reference_input_size + proprioception_frame_size
+            self.reference_encoder = TwistTeacherReferenceEncoder(
+                reference_frame_size, key=encoder_key
+            )
+            backbone_input_size = 128 + proprioception_frame_size
+        else:
+            reference_input_size = reference_frame_size
+            expected_obs_size = reference_frame_size + 11 * proprioception_frame_size
+            self.reference_encoder = TwistStudentReferenceEncoder(
+                reference_frame_size, key=encoder_key
+            )
+            backbone_input_size = 128 + 11 * proprioception_frame_size
+        if obs_size != expected_obs_size:
+            raise ValueError(
+                f"TWIST {stage} actor expected {expected_obs_size} observations, "
+                f"got {obs_size}"
+            )
+        self.backbone = TwistBackbone(
+            backbone_input_size,
+            action_size,
+            hidden_dims,
+            key=backbone_key,
+        )
+        self.stage = stage
+        self.reference_frame_size = reference_frame_size
+        self.proprioception_frame_size = proprioception_frame_size
+        self.reference_input_size = reference_input_size
+
+    def __call__(self, observation: jax.Array) -> jax.Array:
+        reference = observation[: self.reference_input_size]
+        proprioception = observation[self.reference_input_size :]
+        latent = self.reference_encoder(reference)
+        return self.backbone(jnp.concatenate((latent, proprioception)))
 
 
 def policy_log_std(policy: ActorCritic) -> jax.Array:

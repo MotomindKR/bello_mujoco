@@ -11,10 +11,13 @@ the source of maintained experiment overrides:
 
 - [Locomotion defaults](../configs/train/default.yaml)
 - [Motion defaults](../configs/train_motion/default.yaml)
+- [TWIST defaults](../configs/train_twist/default.yaml)
 - [Smoke profile](../configs/profiles/train/smoke.yaml)
 - [Locomotion profile](../configs/profiles/train/locomotion.yaml)
 - [Hardware-locomotion profile](../configs/profiles/train/hardware_locomotion.yaml)
 - [Motion profile](../configs/profiles/train/motion.yaml)
+- [TWIST teacher profile](../configs/profiles/train/twist_teacher.yaml)
+- [TWIST student profile](../configs/profiles/train/twist_student.yaml)
 
 ## Resolution and ownership
 
@@ -27,6 +30,7 @@ Do not add a second recipe in a script or command wrapper. Change:
 
 - `configs/train/default.yaml` for shared locomotion contracts;
 - `configs/train_motion/default.yaml` for shared motion contracts;
+- `configs/train_twist/default.yaml` for shared TWIST contracts;
 - `configs/profiles/train/*.yaml` for maintained experiment numerics;
 - Python dataclasses only when the configuration schema or validation changes.
 
@@ -344,6 +348,33 @@ The exact reward fields are:
 | Gaussian scales | `root_position_sigma`, `root_orientation_sigma`, `joint_position_sigma`, `joint_velocity_sigma`, `body_position_sigma`, `body_orientation_sigma`, `body_velocity_sigma`, `body_linear_velocity_sigma`, `body_angular_velocity_sigma` |
 | Contact threshold | `undesired_contact_force_threshold` |
 
+## TWIST: `configs/train_twist`
+
+TWIST uses the shared PPO scalar fields but owns an explicit temporal policy
+architecture and packed reference bank. Its maintained scalar values are 4,096
+environments, 24 steps, five epochs, four minibatches, learning rate `2e-4`,
+desired KL `0.008`, entropy `0.005`, gamma `0.99`, GAE lambda `0.95`, and clip
+ratio `0.2`.
+
+`stage` is exactly `teacher` or `student`; the corresponding policy
+architecture must be `twist_teacher` or `twist_student`. Both require
+`hidden_dims=[512,512,256,128]`, `activation=swish`,
+`obs_stack_size=1`, and final-hidden LayerNorm. Student history is part of the
+environment observation, not the generic PPO stack.
+
+`dataset_index` selects a schema-v1 packed index. `teacher_checkpoint_path` is
+required only for the student. `motion_env` retains the established
+BeyondMimic reward, reset, push, and actuator mappings but uses decimation 10.
+`twist_env` fixes 500 policy steps, 0–2 frame action delay, sensor noise, and
+the ordered nine-key-body contract. These values, observation layouts,
+dataset/robot fingerprints, and ordering are checkpointed and resume-checked.
+
+The teacher receives the 20 future offsets. The student actor receives current
+reference and 11 proprioceptive frames; its critic receives the teacher
+reference plus privileged physical and randomization state. Student PPO adds
+the frozen-teacher `KL(student || teacher)` schedule defined in the
+[TWIST guide](twist.md).
+
 ## Checkpoints: `checkpoint_config`
 
 | Field | Meaning |
@@ -420,6 +451,8 @@ profiles raise these values for their larger batches and contact workloads.
 | `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
+| `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
+| `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |
 
 Headline resolved PPO values are:
 
@@ -429,6 +462,8 @@ Headline resolved PPO values are:
 | `locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
 | `hardware_locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.995 / 0.98 | 512-256-128 swish |
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
+| `twist_teacher` | 5,898,240,000 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
+| `twist_student` | 5,898,240,000 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included
