@@ -38,6 +38,7 @@ from bello_mujoco.robstride.sim import (
 from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.robstride.emulator import (
+    _CommandLatencyQueue,
     EmulatorConfig,
     TerminalEnterInput,
     add_torso_hold,
@@ -45,6 +46,7 @@ from bello_mujoco.robstride.emulator import (
     default_hardware_description,
     default_motor_model_catalog,
     reset_data,
+    validate_config,
     validate_motor_coverage,
 )
 
@@ -205,6 +207,30 @@ def test_enable_stop_and_active_reporting_match_gateway_contract() -> None:
     stop = CanFrame(build_can_id(CommType.MOTOR_STOP, 0, spec.motor_id), bytes(8))
     feedback = emulator.handle_frame(stop)[0]
     assert data_field(feedback.can_id) >> 14 == 0
+
+
+def test_command_latency_queue_delays_only_motor_control() -> None:
+    queue = _CommandLatencyQueue(0.01)
+    control = CanFrame(build_can_id(CommType.MOTOR_CONTROL, 0, 53), bytes(8))
+    enable = CanFrame(build_can_id(CommType.MOTOR_ENABLE, 0, 53), bytes(8))
+
+    assert queue.enqueue("can0", control, received_at=4.0)
+    assert not queue.enqueue("can0", enable, received_at=4.0)
+    assert queue.pop_ready(4.009) == []
+    assert queue.pop_ready(4.01) == [("can0", control)]
+
+    queue.enqueue("can0", control, received_at=5.0)
+    queue.clear()
+    assert queue.pop_ready(6.0) == []
+
+
+@pytest.mark.parametrize("latency", (-0.001, float("inf"), float("nan")))
+def test_emulator_rejects_invalid_command_latency(latency: float) -> None:
+    with pytest.raises(
+        ValueError,
+        match="command_latency_seconds must be finite and nonnegative",
+    ):
+        validate_config(EmulatorConfig(command_latency_seconds=latency))
 
 
 def test_emulator_reset_disables_motors_and_clears_stale_commands() -> None:
