@@ -198,19 +198,27 @@ def _build_motion_inference(
         ctrl = hardware_state[layout.ctrl]
         xpos = hardware_state[layout.xpos].reshape(body_count, 3)
         xquat = hardware_state[layout.xquat].reshape(body_count, 4)
+        data = NativeMotionData(
+            qpos=qpos,
+            qvel=qvel,
+            ctrl=ctrl,
+            xpos=xpos,
+            xquat=xquat,
+            cvel=empty_cvel,
+            subtree_com=empty_subtree_com,
+            actuator_force=empty_actuator_force,
+            _impl=empty_contacts,
+        )
+        actor_feedback = env._actor_feedback(data)
         state = MotionTrackingState(
-            data=NativeMotionData(
-                qpos=qpos,
-                qvel=qvel,
-                ctrl=ctrl,
-                xpos=xpos,
-                xquat=xquat,
-                cvel=empty_cvel,
-                subtree_com=empty_subtree_com,
-                actuator_force=empty_actuator_force,
-                _impl=empty_contacts,
-            ),
+            data=data,
             last_action=hardware_state[layout.last_action],
+            actor_feedback_history=jnp.repeat(
+                actor_feedback[None, :],
+                env.maximum_observation_delay_steps + 1,
+                axis=0,
+            ),
+            actor_feedback_delay_steps=jnp.asarray(0, dtype=jnp.int32),
             reference_time=hardware_state[layout.reference_time],
             alignment_xy=hardware_state[layout.alignment_xy],
             alignment_yaw=hardware_state[layout.alignment_yaw],

@@ -31,6 +31,9 @@ env_config:
     base_angular_velocity: 0.2
     joint_position: 0.01
     joint_velocity: 0.5
+  observation_latency:
+    enabled: true
+    delay_steps: [0, 2]
   adaptive_sampling:
     enabled: true
     kernel_size: 3

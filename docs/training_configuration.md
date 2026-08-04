@@ -304,6 +304,7 @@ content hash are stored in checkpoints.
 | `terrain` | Native/MJX terrain contract. Maintained motion uses a plane. |
 | `reset` | Start-time, XY/yaw, joint, root pose/velocity, and default-offset randomization. |
 | `observation_noise` | Independent magnitudes for anchor pose, base velocity, and joint observation noise. |
+| `observation_latency` | Per-episode actor-feedback delay range in policy steps. |
 | `adaptive_sampling` | Failure-EMA binning, smoothing kernel, and uniform-sampling mixture. |
 | `push` | Random interval and root linear/angular velocity perturbation magnitudes. |
 | `reward` | Tracking term weights, Gaussian sigmas, action/joint/torque penalties, and undesired-contact threshold. |
@@ -315,9 +316,16 @@ Nested motion fields are:
 | --- | --- |
 | `reset` | `random_start`, `initial_xy_range`, `initial_yaw_range`, `joint_pos_noise`, `joint_vel_noise`, `root_position_noise`, `root_rotation_noise`, `root_linear_velocity_noise`, `root_angular_velocity_noise`, `joint_default_offset_noise` |
 | `observation_noise` | `enabled`, `anchor_position`, `anchor_orientation`, `base_linear_velocity`, `base_angular_velocity`, `joint_position`, `joint_velocity` |
+| `observation_latency` | `enabled`, `delay_steps` (inclusive integer lower/upper bounds) |
 | `adaptive_sampling` | `enabled`, `bin_seconds`, `ema_alpha`, `kernel_size`, `kernel_decay`, `uniform_ratio` |
 | `push` | `enabled`, `interval_seconds`, `linear_velocity`, `angular_velocity` |
 | `done` | `root_height_error`, `root_orientation_error`, `end_effector_position_error` |
+
+Observation latency applies only to measured actor feedback. Reference terms
+and the previous action use the current policy step, while the privileged
+critic remains undelayed. The maintained range `[0, 2]` corresponds to 0, 20,
+or 40 ms at 50 Hz. The sampled delay remains fixed for an episode. Synthetic
+delay is disabled in native evaluation and hardware deployment.
 
 ### Motion reward
 

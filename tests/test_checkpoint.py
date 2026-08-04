@@ -490,6 +490,34 @@ def test_motion_checkpoint_rejects_normalization_and_sampler_snapshot_tampering(
         restore_runner_checkpoint(path, motion_env, checkpoint_metadata)
 
 
+def test_motion_checkpoint_without_observation_latency_loads_as_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    motion_env = FakeMotionEnv()
+    state = runner_state(config, motion_env)
+    motion_path = tmp_path / "motion.npz"
+    motion_path.write_bytes(b"motion checkpoint fixture")
+    checkpoint_metadata = motion_metadata(
+        config,
+        motion_path,
+        synthetic_motion_clip(),
+        state,
+    )
+    path = tmp_path / "legacy_motion_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["motion_env"].pop("observation_latency")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert not restored.motion_env.observation_latency.enabled
+    assert restored.motion_env.observation_latency.delay_steps == (0, 0)
+
+
 def test_motion_contract_allows_relocation_and_rejects_content_or_schema_tampering(
     tmp_path: Path,
 ) -> None:

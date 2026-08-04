@@ -18,6 +18,7 @@ from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionAdaptiveSamplingConfig,
     MotionDoneConfig,
+    MotionObservationLatencyConfig,
     MotionObservationNoiseConfig,
     MotionPushConfig,
     MotionRewardConfig,
@@ -230,6 +231,8 @@ def test_default_motion_profile_uses_tracked_fixed_joint_clip() -> None:
     assert not config.asset_config.enforce_policy_effort_limits
     assert config.env_config.reward.torque_l1_weight == -1.2
     assert config.env_config.reward.torque_peak_weight == -12.0
+    assert config.env_config.observation_latency.enabled
+    assert config.env_config.observation_latency.delay_steps == (0, 2)
     motion_path = config.motion.directory / f"{config.motion.sequence}.npz"
     assert motion_path.is_file()
 
@@ -781,6 +784,65 @@ def test_beyondmimic_observation_noise_is_actor_only(
     )
 
 
+def test_beyondmimic_observation_latency_delays_only_actor_feedback(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    config = replace(
+        beyondmimic_config(fixed_waist_motion),
+        observation_latency=MotionObservationLatencyConfig(
+            enabled=True, delay_steps=(2, 2)
+        ),
+    )
+    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    state, initial_observation = env.reset(
+        jax.random.PRNGKey(0), reference_time=jnp.asarray(0.1)
+    )
+    qpos_indices = jnp.asarray(env.model.policy_qpos_indices)
+    data = state.data.replace(
+        qpos=state.data.qpos.at[qpos_indices].add(0.1),
+    )
+    data = mjx.forward(env.model.mjx_model, data)
+    state = state.replace(
+        data=data,
+        last_action=jnp.full(env.action_size, 0.4),
+        actor_feedback_history=env._advance_actor_feedback_history(
+            state.actor_feedback_history, data
+        ),
+    )
+
+    delayed = env.observation(state)
+    current = env.critic_observation(state)[: env.observation_size]
+    joint_slice = observation_component_slice(env, "joint_position")
+    action_slice = observation_component_slice(env, "last_action")
+
+    assert int(state.actor_feedback_delay_steps) == 2
+    np.testing.assert_allclose(
+        np.asarray(delayed[joint_slice]),
+        np.asarray(initial_observation[joint_slice]),
+        atol=1.0e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(current[joint_slice]),
+        np.asarray(initial_observation[joint_slice]) + 0.1,
+        atol=1.0e-6,
+    )
+    np.testing.assert_allclose(np.asarray(delayed[action_slice]), 0.4, atol=1.0e-6)
+
+
+def test_observation_latency_rejects_invalid_step_range(
+    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+) -> None:
+    config = replace(
+        beyondmimic_config(fixed_waist_motion),
+        observation_latency=MotionObservationLatencyConfig(
+            enabled=True, delay_steps=(2, 1)
+        ),
+    )
+
+    with pytest.raises(ValueError, match="lower bound exceeds upper bound"):
+        BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+
+
 def test_tracking_nonfinite_state_is_terminal_and_reward_is_sanitized(
     fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
 ) -> None:
@@ -878,6 +940,9 @@ def test_beyondmimic_batch_step_with_sampling_noise_and_push_is_jittable(
                 joint_position=0.01,
                 joint_velocity=0.5,
             ),
+            "observation_latency": MotionObservationLatencyConfig(
+                enabled=True, delay_steps=(0, 2)
+            ),
             "adaptive_sampling": MotionAdaptiveSamplingConfig(
                 enabled=True,
                 bin_seconds=0.1,
@@ -905,6 +970,8 @@ def test_beyondmimic_batch_step_with_sampling_noise_and_push_is_jittable(
 
     assert observation.shape == (2, env.observation_size)
     assert next_observation.shape == observation.shape
+    assert next_state.actor_feedback_history.shape[1] == 3
+    assert np.all(np.asarray(next_state.actor_feedback_delay_steps) <= 2)
     assert next_state.sampling_failure_ema.shape == (2, env.sampling_bin_count)
     assert reward.shape == (2,)
     assert done.shape == (2,)

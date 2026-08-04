@@ -356,9 +356,16 @@ def native_motion_state(
         ),
         _impl=impl,
     )
+    actor_feedback = env._actor_feedback(data)
     return MotionTrackingState(
         data=data,
         last_action=jax.numpy.asarray(last_action, dtype=jax.numpy.float32),
+        actor_feedback_history=jax.numpy.repeat(
+            actor_feedback[None, :],
+            env.maximum_observation_delay_steps + 1,
+            axis=0,
+        ),
+        actor_feedback_delay_steps=jax.numpy.asarray(0, dtype=jax.numpy.int32),
         reference_time=reference_time,
         alignment_xy=alignment_xy,
         alignment_yaw=alignment_yaw,
