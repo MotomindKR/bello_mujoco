@@ -559,6 +559,7 @@ def _selected_motor_names(
         "name",
         "motors",
         "control_rate_hz",
+        "command_refresh_rate_hz",
         "command_timeout_ms",
         "feedback_timeout_ms",
         "enable_timeout_ms",

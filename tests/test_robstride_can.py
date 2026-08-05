@@ -180,6 +180,21 @@ def test_motor_control_decodes_direction_and_impedance_fields() -> None:
     assert motor.command.kd == pytest.approx(kd, abs=resolution(limits.kd))
 
 
+def test_motor_control_returns_type_2_feedback() -> None:
+    spec = motor_spec()
+    emulator = RobstrideBusEmulator(BusSpec("can0", "vcan0", 0), (spec,))
+    frame = CanFrame(
+        build_can_id(CommType.MOTOR_CONTROL, 0, spec.motor_id),
+        bytes(8),
+    )
+
+    responses = emulator.handle_frame(frame)
+
+    assert len(responses) == 1
+    assert comm_type(responses[0].can_id) == CommType.MOTOR_FEEDBACK
+    assert target_id(responses[0].can_id) == emulator.spec.host_id
+
+
 def test_enable_stop_and_active_reporting_match_gateway_contract() -> None:
     spec = motor_spec()
     emulator = RobstrideBusEmulator(BusSpec("can0", "vcan0", 0), (spec,))
@@ -205,6 +220,10 @@ def test_enable_stop_and_active_reporting_match_gateway_contract() -> None:
     stop = CanFrame(build_can_id(CommType.MOTOR_STOP, 0, spec.motor_id), bytes(8))
     feedback = emulator.handle_frame(stop)[0]
     assert data_field(feedback.can_id) >> 14 == 0
+
+
+def test_emulator_defaults_to_current_firmware_feedback_rate() -> None:
+    assert EmulatorConfig().feedback_rate_hz == 100.0
 
 
 def test_emulator_reset_disables_motors_and_clears_stale_commands() -> None:
