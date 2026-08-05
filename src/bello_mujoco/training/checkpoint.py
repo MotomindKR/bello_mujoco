@@ -28,6 +28,7 @@ from bello_mujoco.configuration import dataclass_from_dict
 from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
     DoneConfig,
+    ObservationLatencyConfig,
 )
 from bello_mujoco.envs.motion_tracking import (
     MotionObservationLatencyConfig,
@@ -554,7 +555,18 @@ def _load_checkpoint_document(
 
 
 def _with_checkpoint_metadata_defaults(value: Any) -> Any:
-    if not isinstance(value, dict) or value.get("task") != "motion_tracking":
+    if not isinstance(value, dict):
+        return value
+    if value.get("task") == "locomotion":
+        env = value.get("env")
+        if not isinstance(env, dict) or "observation_latency" in env:
+            return value
+        normalized = dict(value)
+        normalized_env = dict(env)
+        normalized_env["observation_latency"] = to_builtin(ObservationLatencyConfig())
+        normalized["env"] = normalized_env
+        return normalized
+    if value.get("task") != "motion_tracking":
         return value
     motion_env = value.get("motion_env")
     if not isinstance(motion_env, dict) or "observation_latency" in motion_env:

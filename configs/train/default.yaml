@@ -116,6 +116,9 @@ env_config:
       last_action: 1.0
     noise:
       enabled: false
+  observation_latency:
+    enabled: false
+    delay_steps: [0, 0]
   critic_observation:
     privileged: true
     scale:

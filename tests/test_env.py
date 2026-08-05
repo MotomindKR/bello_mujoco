@@ -17,6 +17,7 @@ from bello_mujoco.envs.locomotion import (
     ContactConfig,
     DoneConfig,
     ObservationConfig,
+    ObservationLatencyConfig,
     ObservationNoiseConfig,
     RandomPushConfig,
     SpawnConfig,
@@ -352,6 +353,80 @@ def test_observation_noise_changes_only_noisy_evaluation(
     assert clean.shape == noisy.shape
     assert not jnp.allclose(clean, noisy)
     assert env.observation(state) == pytest.approx(clean)
+
+
+def test_observation_latency_delays_only_actor_feedback(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            observation_latency=ObservationLatencyConfig(
+                enabled=True,
+                delay_steps=(2, 2),
+            )
+        ),
+    )
+    state, _ = env.reset(rng=jax.random.PRNGKey(0))
+    assert int(state.actor_feedback_delay_steps) == 2
+    assert state.actor_feedback_history.shape == (3, env.actor_feedback_size)
+    current_feedback = env._actor_feedback(state)
+    delayed_feedback = current_feedback + 0.25
+    state = state.replace(
+        actor_feedback_history=state.actor_feedback_history.at[2].set(delayed_feedback),
+        actor_feedback_delay_steps=jnp.asarray(2, dtype=jnp.int32),
+        command=jnp.asarray((0.1, 0.2, 0.3), dtype=jnp.float32),
+        last_action=jnp.full(env.action_size, 0.4, dtype=jnp.float32),
+    )
+
+    observation = env.observation(state)
+    critic_observation = env.critic_observation(state)
+    delayed = env._unpack_actor_feedback(delayed_feedback)
+    current = env._unpack_actor_feedback(current_feedback)
+
+    for component, expected in zip(
+        (
+            "imu_linear_acceleration",
+            "imu_angular_velocity",
+            "projected_gravity",
+            "joint_position",
+            "joint_velocity",
+        ),
+        delayed,
+        strict=True,
+    ):
+        assert observation[observation_component_slice(env, component)] == (
+            pytest.approx(expected)
+        )
+    assert observation[observation_component_slice(env, "command")] == (
+        pytest.approx(state.command)
+    )
+    assert observation[observation_component_slice(env, "last_action")] == (
+        pytest.approx(state.last_action)
+    )
+    assert critic_observation[
+        observation_component_slice(env, "joint_position", critic=True)
+    ] == pytest.approx(current[3])
+
+
+@pytest.mark.parametrize(
+    "delay_steps",
+    ((-1, 1), (2, 1), (0, 1, 2)),
+)
+def test_observation_latency_rejects_invalid_step_range(
+    full_body_asset: PreparedAsset,
+    delay_steps: tuple[int, ...],
+) -> None:
+    with pytest.raises(ValueError, match="observation_latency.delay_steps"):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(
+                observation_latency=ObservationLatencyConfig(
+                    enabled=True,
+                    delay_steps=delay_steps,
+                )
+            ),
+        )
 
 
 def test_command_sampling_and_periodic_resampling_are_bounded(

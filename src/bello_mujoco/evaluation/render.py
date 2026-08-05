@@ -629,9 +629,17 @@ def mujoco_eval_state(
             ),
         ),
     )
-    return BelloState(
+    state = BelloState(
         data=data,
         last_action=jnp.asarray(last_action, dtype=jnp.float32),
+        actor_feedback_history=jnp.zeros(
+            (
+                env.maximum_observation_delay_steps + 1,
+                env.actor_feedback_size,
+            ),
+            dtype=jnp.float32,
+        ),
+        actor_feedback_delay_steps=jnp.asarray(0, dtype=jnp.int32),
         foot_air_time=foot_air_time,
         foot_contact_time=foot_contact_time,
         foot_contact_debounce_time=foot_contact_debounce_time,
@@ -644,6 +652,14 @@ def mujoco_eval_state(
         last_episode_return=jnp.asarray(0.0, dtype=jnp.float32),
         last_episode_track_lin_vel_xy=jnp.asarray(0.0, dtype=jnp.float32),
         last_episode_length=jnp.asarray(0, dtype=jnp.int32),
+    )
+    actor_feedback = env._actor_feedback(state)
+    return state.replace(
+        actor_feedback_history=jnp.repeat(
+            actor_feedback[None, :],
+            env.maximum_observation_delay_steps + 1,
+            axis=0,
+        )
     )
 
 

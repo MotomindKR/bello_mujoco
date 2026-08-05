@@ -110,6 +110,8 @@ class FakeEnv:
                 "position": jnp.zeros((batch_size, 3), dtype=jnp.float32),
             },
             last_action=jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
+            actor_feedback_history=jnp.zeros((batch_size, 1, 0), dtype=jnp.float32),
+            actor_feedback_delay_steps=jnp.zeros((batch_size,), dtype=jnp.int32),
             foot_air_time=foot_zeros,
             foot_contact_time=foot_zeros,
             foot_contact_debounce_time=foot_zeros,
@@ -516,6 +518,27 @@ def test_motion_checkpoint_without_observation_latency_loads_as_disabled(
 
     assert not restored.motion_env.observation_latency.enabled
     assert restored.motion_env.observation_latency.delay_steps == (0, 0)
+
+
+def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["env"].pop("observation_latency")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert not restored.env.observation_latency.enabled
+    assert restored.env.observation_latency.delay_steps == (0, 0)
 
 
 def test_motion_contract_allows_relocation_and_rejects_content_or_schema_tampering(
