@@ -187,6 +187,21 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
         )
         first_update = int(jax.device_get(runner.update))
         last_metrics = {}
+
+        def compile_update(current_env: BelloTwistEnv):
+            def update_fn(state):
+                return update_runner_state(
+                    state,
+                    static_policy,
+                    optimizer,
+                    current_env,
+                    run_config.config,
+                    distillation=distillation,
+                )
+
+            return jax.jit(update_fn)
+
+        update_fn = compile_update(env)
         for update in range(first_update, run_config.config.num_updates):
             if (
                 update > first_update
@@ -195,13 +210,10 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
                 active_shard, reference_bank = load_bank(update)
                 env = replace(env, reference_bank=reference_bank)
                 runner = _reset_runner_environment(runner, env, run_config.config)
-            runner, last_metrics = update_runner_state(
-                runner,
-                static_policy,
-                optimizer,
-                env,
-                run_config.config,
-                distillation=distillation,
+                update_fn = compile_update(env)
+            runner, last_metrics = update_fn(runner)
+            last_metrics = jax.tree_util.tree_map(
+                lambda value: value.block_until_ready(), last_metrics
             )
             last_metrics["dataset/reference_bank_shard"] = jax.numpy.asarray(
                 shard_names.index(active_shard), dtype=jax.numpy.float32
