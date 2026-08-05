@@ -354,7 +354,9 @@ TWIST uses the shared PPO scalar fields but owns an explicit temporal policy
 architecture and packed reference bank. Its maintained scalar values are 4,096
 environments, 24 steps, five epochs, four minibatches, learning rate `2e-4`,
 desired KL `0.008`, entropy `0.005`, gamma `0.99`, GAE lambda `0.95`, and clip
-ratio `0.2`.
+ratio `0.2`. TWIST alone sets Adam epsilon to `1e-8` and uses an unhalved
+value-loss scale of `1.0`; other training profiles retain their established
+optimizer and loss defaults.
 
 `stage` is exactly `teacher` or `student`; the corresponding policy
 architecture must be `twist_teacher` or `twist_student`. Both require
@@ -363,17 +365,22 @@ architecture must be `twist_teacher` or `twist_student`. Both require
 environment observation, not the generic PPO stack.
 
 `dataset_index` selects a schema-v1 packed index. `teacher_checkpoint_path` is
-required only for the student. `motion_env` retains the established
-BeyondMimic reward, reset, push, and actuator mappings but uses decimation 10.
-`twist_env` fixes 500 policy steps, 0–2 frame action delay, sensor noise, and
-the ordered nine-key-body contract. These values, observation layouts,
-dataset/robot fingerprints, and ordering are checkpointed and resume-checked.
+required only for the student. `simulation` configures only the dedicated
+TWIST terrain; the runtime motion is always materialized from the fingerprinted
+packed index. `twist_env` owns the TWIST
+reward, reset, disturbances, actuator mapping, domain randomization,
+termination, sensor noise, 500-step episode limit, released 0–1 frame action
+delay, and ordered nine-key-body contract. It has no dependency on the
+BeyondMimic or legacy motion-training environment. These values, observation
+layouts, dataset/robot fingerprints, and ordering are checkpointed and
+resume-checked.
 
-The teacher receives the 20 future offsets. The student actor receives current
-reference and 11 proprioceptive frames; its critic receives the teacher
+The teacher receives the 20 future offsets and the released privileged suffix.
+The student actor receives 11 chronological current-reference/proprioception
+frames and no future or privileged state; its critic receives the teacher
 reference plus privileged physical and randomization state. Student PPO adds
-the frozen-teacher `KL(student || teacher)` schedule defined in the
-[TWIST guide](twist.md).
+the frozen-teacher `KL(student || teacher)` schedule defined in the [TWIST
+guide](twist.md).
 
 ## Checkpoints: `checkpoint_config`
 
@@ -462,8 +469,8 @@ Headline resolved PPO values are:
 | `locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
 | `hardware_locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.995 / 0.98 | 512-256-128 swish |
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
-| `twist_teacher` | 5,898,240,000 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
-| `twist_student` | 5,898,240,000 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
+| `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
+| `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included

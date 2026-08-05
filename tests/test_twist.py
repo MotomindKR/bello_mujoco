@@ -19,11 +19,11 @@ from bello_mujoco.envs.twist import (
     TWIST_HISTORY_FRAMES,
     TwistEnvConfig,
     TwistObservationContract,
+    TwistSimulationConfig,
     teacher_observation_from_student_critic,
 )
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import ActionLayout
-from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.motion.clip import (
     FIXED_TRACKING_JOINT_NAMES,
     GMR_BELLO_JOINT_NAMES,
@@ -64,6 +64,7 @@ from bello_mujoco.training.ppo import (
     cosine_distillation_weight,
     gaussian_policy_kl_student_teacher,
 )
+from bello_mujoco.training.twist import _reference_bank_shard_index
 
 JOINT_NAMES = tuple(
     name for name in GMR_BELLO_JOINT_NAMES if name not in FIXED_TRACKING_JOINT_NAMES
@@ -254,7 +255,7 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
             np.savez(
                 output,
                 source_sha256=np.asarray(sequence.source_sha256),
-                retarget_format_version=np.asarray(5, dtype=np.int32),
+                retarget_format_version=np.asarray(6, dtype=np.int32),
                 gmr_revision=np.asarray(revision),
                 gmr_config_sha256=np.asarray(
                     hashlib.sha256(config.read_bytes()).hexdigest()
@@ -354,19 +355,19 @@ def test_gmr_grounding_preserves_flight_and_prevents_swing_foot_penetration() ->
 def test_twist_observation_contract_exact_dimensions_and_isolation() -> None:
     contract = TwistObservationContract(
         joint_names=JOINT_NAMES,
-        randomization_size=len(JOINT_NAMES) + 2,
+        randomization_size=5 + 2 * len(JOINT_NAMES),
     )
 
     assert len(JOINT_NAMES) == 25
-    assert contract.reference_frame_size == 63
+    assert contract.student_reference_frame_size == 33
+    assert contract.teacher_reference_frame_size == 60
     assert contract.proprioception_frame_size == 80
-    assert contract.teacher_observation_size == 1340
-    assert contract.student_observation_size == 943
-    assert contract.critic_observation_size == 1400
+    assert contract.teacher_observation_size == 1368
+    assert contract.student_observation_size == 1243
+    assert contract.critic_observation_size == 1368
     assert TWIST_HISTORY_FRAMES == 11
     assert contract.actor_layout("student").components == (
-        ("current_reference", 63),
-        ("proprioception_history", 880),
+        ("reference_proprioception_history", 1243),
     )
     critic = jnp.arange(contract.critic_observation_size)
     teacher = teacher_observation_from_student_critic(critic, contract)
@@ -377,9 +378,24 @@ def test_twist_observation_contract_exact_dimensions_and_isolation() -> None:
     )
 
 
+def test_twist_runtime_does_not_depend_on_motion_tracking_pipeline() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    for relative_path in (
+        "src/bello_mujoco/envs/twist.py",
+        "src/bello_mujoco/training/twist.py",
+        "src/bello_mujoco/evaluation/twist.py",
+        "configs/train_twist/default.yaml",
+    ):
+        source = (repository / relative_path).read_text(encoding="utf-8").lower()
+        assert "beyondmimic" not in source
+        assert "motiontrackingenv" not in source
+        assert "motion_tracking_asset_config" not in source
+        assert "motion_env" not in source
+
+
 @pytest.mark.parametrize(
     ("stage", "observation_size"),
-    (("teacher", 1340), ("student", 943)),
+    (("teacher", 1368), ("student", 1243)),
 )
 def test_twist_policy_encoder_and_backbone_shapes(
     stage: str, observation_size: int
@@ -390,23 +406,47 @@ def test_twist_policy_encoder_and_backbone_shapes(
         obs_stack_size=1,
         architecture=f"twist_{stage}",
         layer_norm_final_hidden=True,
+        action_distribution="gaussian",
     )
     policy = init_actor_critic(
         jax.random.PRNGKey(0),
         observation_size,
         len(JOINT_NAMES),
         config,
-        critic_obs_size=1400,
+        critic_obs_size=1368,
     )
 
     mean, log_std, value = eqx.filter_jit(policy)(
-        jnp.zeros(observation_size), jnp.zeros(1400)
+        jnp.zeros(observation_size), jnp.zeros(1368)
     )
 
     assert mean.shape == (25,)
     assert log_std.shape == (25,)
     assert value.shape == ()
     assert policy.actor.backbone.hidden[-1].out_features == 128
+
+
+def test_twist_student_encoder_reads_newest_current_reference() -> None:
+    config = ActorCriticConfig(
+        hidden_dims=(512, 512, 256, 128),
+        activation="swish",
+        obs_stack_size=1,
+        architecture="twist_student",
+        layer_norm_final_hidden=True,
+        action_distribution="gaussian",
+    )
+    policy = init_actor_critic(
+        jax.random.PRNGKey(3), 1243, len(JOINT_NAMES), config, critic_obs_size=1368
+    )
+    observation = jnp.arange(1243, dtype=jnp.float32)
+    frame_size = 33 + 80
+
+    reference = policy.actor._reference_observation(observation)
+
+    np.testing.assert_array_equal(
+        reference,
+        observation[10 * frame_size : 10 * frame_size + 33],
+    )
 
 
 def test_corrected_cosine_schedule_has_both_endpoints() -> None:
@@ -423,18 +463,19 @@ def test_distillation_kl_direction_and_teacher_is_frozen() -> None:
         obs_stack_size=1,
         architecture="twist_student",
         layer_norm_final_hidden=True,
+        action_distribution="gaussian",
     )
     teacher_config = replace(student_config, architecture="twist_teacher")
     student = init_actor_critic(
-        jax.random.PRNGKey(1), 943, 25, student_config, critic_obs_size=1400
+        jax.random.PRNGKey(1), 1243, 25, student_config, critic_obs_size=1368
     )
     teacher = init_actor_critic(
-        jax.random.PRNGKey(2), 1340, 25, teacher_config, critic_obs_size=1400
+        jax.random.PRNGKey(2), 1368, 25, teacher_config, critic_obs_size=1368
     )
     student = eqx.tree_at(lambda policy: policy.log_std, student, jnp.full((25,), -0.5))
     teacher = eqx.tree_at(lambda policy: policy.log_std, teacher, jnp.full((25,), 0.25))
-    student_obs = jnp.zeros((2, 943))
-    teacher_obs = jnp.zeros((2, 1340))
+    student_obs = jnp.zeros((2, 1243))
+    teacher_obs = jnp.zeros((2, 1368))
 
     forward = gaussian_policy_kl_student_teacher(
         student, teacher, student_obs, teacher_obs
@@ -568,6 +609,24 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
     np.testing.assert_array_equal(bank.offsets, (0, lengths[0]))
     np.testing.assert_array_equal(bank.lengths, lengths)
     np.testing.assert_array_equal(bank.qpos, qpos)
+    np.testing.assert_allclose(bank.sampling_probabilities, (0.5, 0.5))
+
+
+def test_reference_bank_shard_choice_is_resume_stable() -> None:
+    probabilities = np.asarray((0.2, 0.3, 0.5))
+    before_checkpoint = _reference_bank_shard_index(
+        probabilities, seed=11, update=499, refresh_updates=500
+    )
+    resumed = _reference_bank_shard_index(
+        probabilities, seed=11, update=500, refresh_updates=500
+    )
+
+    assert before_checkpoint == _reference_bank_shard_index(
+        probabilities, seed=11, update=0, refresh_updates=500
+    )
+    assert resumed == _reference_bank_shard_index(
+        probabilities, seed=11, update=999, refresh_updates=500
+    )
 
 
 def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
@@ -650,7 +709,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
             timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_sha256=np.asarray(source_digest),
-            retarget_format_version=np.asarray(5, dtype=np.int32),
+            retarget_format_version=np.asarray(6, dtype=np.int32),
             qpos=qpos,
             qvel=np.zeros((frames, 31), dtype=np.float32),
             body_pos=np.zeros((frames, len(body_names), 3), dtype=np.float32),
@@ -703,7 +762,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
 def test_typed_twist_checkpoints_validate_and_reject_cross_stage_resume() -> None:
     contract = TwistObservationContract(
         joint_names=JOINT_NAMES,
-        randomization_size=27,
+        randomization_size=55,
     )
     fingerprint = "sha256:" + "1" * 64
     dataset = TwistDatasetContract(
@@ -733,6 +792,7 @@ def test_typed_twist_checkpoints_validate_and_reject_cross_stage_resume() -> Non
                 obs_stack_size=1,
                 architecture=f"twist_{stage}",
                 layer_norm_final_hidden=True,
+                action_distribution="gaussian",
             ),
         )
 
@@ -750,7 +810,7 @@ def test_typed_twist_checkpoints_validate_and_reject_cross_stage_resume() -> Non
         "action_size": len(JOINT_NAMES),
         "critic_observation_layout": contract.critic_layout,
         "action_layout": action_layout,
-        "motion_env": MotionTrackingEnvConfig(),
+        "simulation": TwistSimulationConfig(),
         "twist_env": TwistEnvConfig(),
         "observation_contract": contract,
         "dataset": dataset,

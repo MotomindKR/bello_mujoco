@@ -127,6 +127,11 @@ class ModelRandomizationConfig:
     joint_angle_offset_range: tuple[float, float] = (0.0, 0.0)
     joint_angle_offset_scope: Literal["all", "policy"] = "all"
     joint_inertia_scale_range: tuple[float, float] = (1.0, 1.0)
+    added_base_mass_range: tuple[float, float] = (0.0, 0.0)
+    base_com_offset_range: tuple[float, float] = (0.0, 0.0)
+    friction_range: tuple[float, float] = (1.0, 1.0)
+    actuator_strength_range: tuple[float, float] = (1.0, 1.0)
+    gravity_fraction_range: tuple[float, float] = (0.0, 0.0)
 
     def __post_init__(self) -> None:
         if self.seed < 0:
@@ -149,6 +154,24 @@ class ModelRandomizationConfig:
             "model_randomization.joint_inertia_scale_range",
             self.joint_inertia_scale_range,
             positive=True,
+        )
+        _validate_randomization_range(
+            "model_randomization.added_base_mass_range", self.added_base_mass_range
+        )
+        _validate_randomization_range(
+            "model_randomization.base_com_offset_range", self.base_com_offset_range
+        )
+        _validate_randomization_range(
+            "model_randomization.friction_range", self.friction_range, positive=True
+        )
+        _validate_randomization_range(
+            "model_randomization.actuator_strength_range",
+            self.actuator_strength_range,
+            positive=True,
+        )
+        _validate_randomization_range(
+            "model_randomization.gravity_fraction_range",
+            self.gravity_fraction_range,
         )
 
 
@@ -186,6 +209,8 @@ class BelloModel:
     imu_body_name: str
     actuator_coordinate_transform: np.ndarray
     joint_angle_offset: np.ndarray
+    physical_randomization: np.ndarray
+    gravity_fraction: np.ndarray
     default_joint_target: np.ndarray
     joint_target_low: np.ndarray
     joint_target_high: np.ndarray
@@ -458,6 +483,11 @@ def _load_bello_model_from_path(
             mjx_model = mjx_model.replace(
                 jnt_pos=jnp.asarray(randomized_fields["jnt_pos"]),
                 body_inertia=jnp.asarray(randomized_fields["body_inertia"]),
+                body_mass=jnp.asarray(randomized_fields["body_mass"]),
+                body_ipos=jnp.asarray(randomized_fields["body_ipos"]),
+                geom_friction=jnp.asarray(randomized_fields["geom_friction"]),
+                actuator_gainprm=jnp.asarray(randomized_fields["actuator_gainprm"]),
+                actuator_biasprm=jnp.asarray(randomized_fields["actuator_biasprm"]),
             )
 
     default_qpos, default_qvel, default_ctrl = model_home_state(mj_model)
@@ -512,6 +542,16 @@ def _load_bello_model_from_path(
             randomized_fields["joint_angle_offset"]
             if randomized_fields is not None
             else np.zeros((1, mj_model.nu), dtype=np.float32)
+        ),
+        physical_randomization=(
+            randomized_fields["physical_randomization"]
+            if randomized_fields is not None
+            else np.zeros((1, 5 + 2 * mj_model.nu), dtype=np.float32)
+        ),
+        gravity_fraction=(
+            randomized_fields["gravity_fraction"]
+            if randomized_fields is not None
+            else np.zeros((1,), dtype=np.float32)
         ),
         default_joint_target=default_joint_target,
         joint_target_low=joint_target_range[:, 0],
@@ -579,6 +619,9 @@ def _randomized_model_fields(
     )
     body_inertia[:, joint_body_ids] *= inertia_scale
 
+    # Preserve the established random stream for the original joint fields.
+    # TWIST-only physical draws are intentionally appended after these draws so
+    # enabling the new neutral ranges cannot change legacy environments.
     offset_indices = (
         np.arange(mj_model.nu, dtype=np.int32)
         if config.joint_angle_offset_scope == "all"
@@ -591,9 +634,85 @@ def _randomized_model_fields(
             size=offset_indices.size,
         ).astype(np.float32)
 
+    base_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link")
+    if base_body_id < 0:
+        raise ValueError("model randomization requires pelvis_link")
+    central_body_ids = np.asarray(
+        [
+            mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in ("pelvis_link", "waist_yaw_link", "torso_link")
+        ],
+        dtype=np.int32,
+    )
+    if np.any(central_body_ids < 0):
+        raise ValueError("model randomization requires Bello central bodies")
+    body_mass = np.broadcast_to(
+        np.asarray(mj_model.body_mass, dtype=np.float32),
+        (batch_size, mj_model.nbody),
+    ).copy()
+    body_ipos = np.broadcast_to(
+        np.asarray(mj_model.body_ipos, dtype=np.float32),
+        (batch_size, mj_model.nbody, 3),
+    ).copy()
+    geom_friction = np.broadcast_to(
+        np.asarray(mj_model.geom_friction, dtype=np.float32),
+        (batch_size, mj_model.ngeom, 3),
+    ).copy()
+    actuator_gainprm = np.broadcast_to(
+        np.asarray(mj_model.actuator_gainprm, dtype=np.float32),
+        (batch_size,) + mj_model.actuator_gainprm.shape,
+    ).copy()
+    actuator_biasprm = np.broadcast_to(
+        np.asarray(mj_model.actuator_biasprm, dtype=np.float32),
+        (batch_size,) + mj_model.actuator_biasprm.shape,
+    ).copy()
+    physical_randomization = np.empty(
+        (batch_size, 5 + 2 * mj_model.nu), dtype=np.float32
+    )
+    gravity_fraction = np.empty((batch_size,), dtype=np.float32)
+    for world_index, rng in enumerate(random_generators):
+        mass_offset = float(rng.uniform(*config.added_base_mass_range))
+        com_offset = rng.uniform(*config.base_com_offset_range, size=3).astype(
+            np.float32
+        )
+        friction = float(rng.uniform(*config.friction_range))
+        kp_strength = rng.uniform(
+            *config.actuator_strength_range, size=mj_model.nu
+        ).astype(np.float32)
+        kd_strength = rng.uniform(
+            *config.actuator_strength_range, size=mj_model.nu
+        ).astype(np.float32)
+        gravity_fraction[world_index] = rng.uniform(*config.gravity_fraction_range)
+        central_mass = body_mass[world_index, central_body_ids]
+        distribution = central_mass / central_mass.sum()
+        body_mass[world_index, central_body_ids] += mass_offset * distribution
+        if np.any(body_mass[world_index, central_body_ids] <= 0.0):
+            raise ValueError("randomized central-body masses must remain positive")
+        body_ipos[world_index, base_body_id] += com_offset
+        geom_friction[world_index, :, 0] = friction
+        actuator_gainprm[world_index, :, 0] *= kp_strength
+        actuator_biasprm[world_index, :, 1] *= kp_strength
+        actuator_biasprm[world_index, :, 2] *= kd_strength
+        physical_randomization[world_index] = np.concatenate(
+            (
+                np.asarray([mass_offset], dtype=np.float32),
+                com_offset,
+                np.asarray([friction], dtype=np.float32),
+                kp_strength - 1.0,
+                kd_strength - 1.0,
+            )
+        )
+
     return {
         "jnt_pos": jnt_pos,
         "body_inertia": body_inertia,
+        "body_mass": body_mass,
+        "body_ipos": body_ipos,
+        "geom_friction": geom_friction,
+        "actuator_gainprm": actuator_gainprm,
+        "actuator_biasprm": actuator_biasprm,
+        "physical_randomization": physical_randomization,
+        "gravity_fraction": gravity_fraction,
         "joint_angle_offset": joint_angle_offset,
     }
 
@@ -606,6 +725,11 @@ def _apply_native_model_sample(
 ) -> None:
     mj_model.jnt_pos[:] = fields["jnt_pos"][sample]
     mj_model.body_inertia[:] = fields["body_inertia"][sample]
+    mj_model.body_mass[:] = fields["body_mass"][sample]
+    mj_model.body_ipos[:] = fields["body_ipos"][sample]
+    mj_model.geom_friction[:] = fields["geom_friction"][sample]
+    mj_model.actuator_gainprm[:] = fields["actuator_gainprm"][sample]
+    mj_model.actuator_biasprm[:] = fields["actuator_biasprm"][sample]
     mujoco.mj_setConst(mj_model, mujoco.MjData(mj_model))
 
 

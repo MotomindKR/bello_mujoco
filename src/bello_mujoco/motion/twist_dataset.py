@@ -22,6 +22,7 @@ from omegaconf import OmegaConf
 from bello_mujoco.configuration import dataclass_from_dict
 
 TWIST_DATASET_SCHEMA_VERSION = 1
+TWIST_RETARGET_FORMAT_VERSION = 6
 TWIST_POLICY_FPS = 50.0
 TWIST_FUTURE_OFFSETS = (
     1,
@@ -656,7 +657,9 @@ def build_packed_dataset(
     )
     gmr_config_fingerprint = f"sha256:{_file_sha256(gmr_config_path)}"
     decisions: list[ClipDecision] = []
-    accepted: list[tuple[AssignedSequence, dict[str, np.ndarray], str]] = []
+    # Keep only compact metadata here. Retaining every normalized motion array
+    # makes a full AMASS build scale with the entire corpus and can exhaust RAM.
+    accepted: list[tuple[AssignedSequence, str]] = []
     for assigned in assignments:
         sequence = assigned.sequence
         path = retargeted_root / f"{sequence.source_id}__{sequence.sequence_id}.npz"
@@ -717,7 +720,7 @@ def build_packed_dataset(
                 digest,
             )
         )
-        accepted.append((assigned, arrays, digest))
+        accepted.append((assigned, digest))
     if not accepted:
         _write_report(output_root / "conversion_report.json", decisions)
         raise ValueError("TWIST dataset build accepted no clips; see conversion report")
@@ -727,7 +730,11 @@ def build_packed_dataset(
     )
     _write_immutable_json(output_root / "heldout_manifest.json", heldout)
     shard_entries, joint_names, body_names = _write_shards(
-        output_root, accepted, quality.max_frames_per_shard
+        output_root,
+        accepted,
+        quality.max_frames_per_shard,
+        retargeted_root=retargeted_root,
+        quality=quality,
     )
     manifest_portable = portable_manifest(assignments)
     fingerprint_payload = {
@@ -736,7 +743,7 @@ def build_packed_dataset(
         "accepted_clip_hashes": sorted(
             {
                 f"{item.sequence.source_id}/{item.sequence.sequence_id}": digest
-                for item, _, digest in accepted
+                for item, digest in accepted
             }.items()
         ),
         "quality": asdict(quality),
@@ -846,13 +853,23 @@ class PackedReferenceBank:
 
 
 def load_packed_reference_bank(
-    index_path: Path, *, split: AssignedSplit
+    index_path: Path,
+    *,
+    split: AssignedSplit,
+    shard_name: str | None = None,
+    pad_frames: int | None = None,
+    pad_clips: int | None = None,
 ) -> PackedReferenceBank:
-    """Load a split into concatenated arrays suitable for one device transfer."""
+    """Load one bounded shard into arrays suitable for one device transfer."""
 
     index_path = Path(index_path).expanduser().resolve()
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    clips = [clip for clip in index["clips"] if clip["split"] == split]
+    clips = [
+        clip
+        for clip in index["clips"]
+        if clip["split"] == split
+        and (shard_name is None or clip["shard"] == shard_name)
+    ]
     if not clips:
         raise ValueError(f"TWIST packed dataset has no {split} clips")
     array_names = (
@@ -865,7 +882,12 @@ def load_packed_reference_bank(
         "foot_contacts",
     )
     lengths = np.asarray([int(clip["frames"]) for clip in clips], dtype=np.int32)
-    total_frames = int(lengths.sum(dtype=np.int64))
+    selected_frames = int(lengths.sum(dtype=np.int64))
+    total_frames = selected_frames if pad_frames is None else pad_frames
+    if total_frames < selected_frames:
+        raise ValueError(
+            f"pad_frames={total_frames} is smaller than {selected_frames} selected frames"
+        )
     if total_frames > np.iinfo(np.int32).max:
         raise ValueError("TWIST reference bank exceeds the JAX int32 index range")
     offsets = np.zeros(len(clips), dtype=np.int32)
@@ -875,7 +897,7 @@ def load_packed_reference_bank(
     first = clips[0]
     with np.load(index_path.parent / first["shard"], allow_pickle=False) as shard:
         packed = {
-            name: np.empty(
+            name: np.zeros(
                 (total_frames,) + shard[name].shape[1:], dtype=shard[name].dtype
             )
             for name in array_names
@@ -886,6 +908,7 @@ def load_packed_reference_bank(
         clips_by_shard.setdefault(clip["shard"], []).append((clip_index, clip))
     for shard_name, shard_clips in clips_by_shard.items():
         with np.load(index_path.parent / shard_name, allow_pickle=False) as shard:
+            source_arrays = {name: np.asarray(shard[name]) for name in array_names}
             for clip_index, clip in shard_clips:
                 source_start = int(clip["offset"])
                 frames = int(lengths[clip_index])
@@ -893,7 +916,7 @@ def load_packed_reference_bank(
                 target_start = int(offsets[clip_index])
                 target_stop = target_start + frames
                 for name in array_names:
-                    value = np.asarray(shard[name][source_start:source_stop])
+                    value = source_arrays[name][source_start:source_stop]
                     expected_shape = (frames,) + packed[name].shape[1:]
                     if value.shape != expected_shape:
                         raise ValueError(
@@ -902,20 +925,60 @@ def load_packed_reference_bank(
                             f"{expected_shape}"
                         )
                     packed[name][target_start:target_stop] = value
-    weights = np.asarray(
-        [clip["frames"] * clip["sampling_weight"] for clip in clips], dtype=np.float64
-    )
+    weights = np.asarray([clip["sampling_weight"] for clip in clips], dtype=np.float64)
     if split == "evaluation":
         weights = np.ones_like(weights)
     probabilities = weights / weights.sum()
+    clip_count = len(clips)
+    padded_clip_count = clip_count if pad_clips is None else pad_clips
+    if padded_clip_count < clip_count:
+        raise ValueError(
+            f"pad_clips={padded_clip_count} is smaller than {clip_count} selected clips"
+        )
+    if padded_clip_count > clip_count:
+        padding = padded_clip_count - clip_count
+        offsets = np.pad(offsets, (0, padding), constant_values=0)
+        lengths = np.pad(lengths, (0, padding), constant_values=1)
+        probabilities = np.pad(probabilities, (0, padding), constant_values=0.0)
     return PackedReferenceBank(
         **packed,
         offsets=offsets,
         lengths=lengths,
         sampling_probabilities=probabilities.astype(np.float32),
-        source_ids=tuple(clip["source_id"] for clip in clips),
-        sequence_ids=tuple(clip["sequence_id"] for clip in clips),
+        source_ids=tuple(clip["source_id"] for clip in clips)
+        + ("",) * (padded_clip_count - clip_count),
+        sequence_ids=tuple(clip["sequence_id"] for clip in clips)
+        + ("",) * (padded_clip_count - clip_count),
     )
+
+
+def packed_reference_bank_shards(
+    index_path: Path, *, split: AssignedSplit
+) -> tuple[tuple[str, ...], np.ndarray, int, int]:
+    """Return shard names, sampling masses, and fixed padded bank dimensions."""
+
+    index_path = Path(index_path).expanduser().resolve()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for clip in index["clips"]:
+        if clip["split"] == split:
+            grouped.setdefault(clip["shard"], []).append(clip)
+    if not grouped:
+        raise ValueError(f"TWIST packed dataset has no {split} clips")
+    names = tuple(sorted(grouped))
+    masses = np.asarray(
+        [
+            sum(float(clip["sampling_weight"]) for clip in grouped[name])
+            for name in names
+        ],
+        dtype=np.float64,
+    )
+    masses /= masses.sum()
+    max_frames = max(
+        sum(int(clip["frames"]) for clip in grouped[name]) for name in names
+    )
+    max_clips = max(len(grouped[name]) for name in names)
+    return names, masses.astype(np.float32), max_frames, max_clips
 
 
 def sample_packed_start_frames(
@@ -971,7 +1034,10 @@ def load_and_normalize_retargeted_clip(
         if missing:
             raise ValueError(f"{path.name} is missing fields: {missing}")
         arrays = {name: np.asarray(archive[name]) for name in archive.files}
-    if int(np.asarray(arrays["retarget_format_version"]).item()) != 5:
+    if (
+        int(np.asarray(arrays["retarget_format_version"]).item())
+        != TWIST_RETARGET_FORMAT_VERSION
+    ):
         raise ValueError(f"{path.name}: unsupported retarget format version")
     frames = arrays["qpos"].shape[0]
     for name in (
@@ -1106,8 +1172,11 @@ def _validate_retargeted_provenance(
 
 def _write_shards(
     output_root: Path,
-    clips: list[tuple[AssignedSequence, dict[str, np.ndarray], str]],
+    clips: list[tuple[AssignedSequence, str]],
     max_frames: int,
+    *,
+    retargeted_root: Path,
+    quality: QualityConfig,
 ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...]]:
     if max_frames <= 0:
         raise ValueError("max_frames_per_shard must be positive")
@@ -1117,14 +1186,21 @@ def _write_shards(
     shard_index = 0
     joint_names: tuple[str, ...] | None = None
     body_names: tuple[str, ...] | None = None
-    for clip in clips:
-        names = tuple(str(value) for value in clip[1]["joint_names"].tolist())
-        bodies = tuple(str(value) for value in clip[1]["body_names"].tolist())
+    for assigned, expected_digest in clips:
+        sequence = assigned.sequence
+        path = retargeted_root / f"{sequence.source_id}__{sequence.sequence_id}.npz"
+        arrays = load_and_normalize_retargeted_clip(path, quality)
+        digest = _arrays_fingerprint(arrays)
+        if digest != expected_digest:
+            raise ValueError(f"retargeted clip changed during build: {path}")
+        clip = (assigned, arrays, digest)
+        names = tuple(str(value) for value in arrays["joint_names"].tolist())
+        bodies = tuple(str(value) for value in arrays["body_names"].tolist())
         if joint_names is None:
             joint_names, body_names = names, bodies
         elif names != joint_names or bodies != body_names:
             raise ValueError("accepted clips do not share one joint/body ordering")
-        frames = int(clip[1]["qpos"].shape[0])
+        frames = int(arrays["qpos"].shape[0])
         if shard_clips and shard_frames + frames > max_frames:
             entries.extend(_flush_shard(output_root, shard_index, shard_clips))
             shard_index += 1
@@ -1140,12 +1216,10 @@ def _write_shards(
     )
     for entry in entries:
         if entry["split"] == "train":
-            weighted = entry["frames"] * entry["sampling_weight"]
+            weighted = entry["sampling_weight"]
             entry["sampling_probability_numerator"] = weighted
             entry["sampling_probability_denominator"] = sum(
-                item["frames"] * item["sampling_weight"]
-                for item in entries
-                if item["split"] == "train"
+                item["sampling_weight"] for item in entries if item["split"] == "train"
             )
         else:
             entry["evaluation_order"] = sum(
@@ -1470,10 +1544,10 @@ def _git_revision(root: Path) -> str:
 
 
 def _validate_retargeted_split_hashes(
-    accepted: list[tuple[AssignedSequence, dict[str, np.ndarray], str]],
+    accepted: list[tuple[AssignedSequence, str]],
 ) -> None:
     seen: dict[str, AssignedSplit] = {}
-    for assigned, _, digest in accepted:
+    for assigned, digest in accepted:
         _record_split(seen, digest, assigned.split, "retargeted content")
 
 

@@ -20,7 +20,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 GMR_ROOT = ROOT / "deps" / "GMR"
-RETARGET_FORMAT_VERSION = 5
+RETARGET_FORMAT_VERSION = 6
 
 ANKLE_TENDON_LOGICAL_JOINT = {
     "left_ankle_motor_1": "left_ankle_pitch_joint",
@@ -44,6 +44,7 @@ BODY_NAMES = (
     "r_shoulder_roll_link",
     "r_elbow_link",
     "r_wrist_link",
+    "head_link",
 )
 
 FOOT_SOLE_GEOM_NAMES = (

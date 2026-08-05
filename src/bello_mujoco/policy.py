@@ -116,9 +116,9 @@ class ActorCritic(eqx.Module):
                 hidden_dims=config.hidden_dims,
                 key=actor_key,
             )
-            self.critic = TwistBackbone(
+            self.critic = TwistCritic(
                 critic_obs_size,
-                1,
+                action_size,
                 config.hidden_dims,
                 key=critic_key,
             )
@@ -203,9 +203,10 @@ class TwistBackbone(eqx.Module):
 
     def __call__(self, value: jax.Array) -> jax.Array:
         for index, layer in enumerate(self.hidden):
-            value = jax.nn.silu(layer(value))
+            value = layer(value)
             if index == len(self.hidden) - 1:
                 value = self.final_norm(value)
+            value = jax.nn.silu(value)
         return self.output(value)
 
 
@@ -283,22 +284,31 @@ class TwistActor(eqx.Module):
         if stage not in {"teacher", "student"}:
             raise ValueError(f"invalid TWIST actor stage {stage!r}")
         encoder_key, backbone_key = jax.random.split(key)
-        reference_frame_size = 38 + action_size
+        teacher_reference_frame_size = 35 + action_size
+        student_reference_frame_size = 8 + action_size
         proprioception_frame_size = 5 + 3 * action_size
         if stage == "teacher":
+            reference_frame_size = teacher_reference_frame_size
             reference_input_size = 20 * reference_frame_size
-            expected_obs_size = reference_input_size + proprioception_frame_size
+            privileged_size = 3 + 1 + 27 + 2 + 5 + 2 * action_size
+            expected_obs_size = (
+                reference_input_size + proprioception_frame_size + privileged_size
+            )
             self.reference_encoder = TwistTeacherReferenceEncoder(
                 reference_frame_size, key=encoder_key
             )
-            backbone_input_size = 128 + proprioception_frame_size
+            backbone_input_size = (
+                128 + reference_frame_size + (obs_size - reference_input_size)
+            )
         else:
+            reference_frame_size = student_reference_frame_size
             reference_input_size = reference_frame_size
-            expected_obs_size = reference_frame_size + 11 * proprioception_frame_size
+            student_frame_size = reference_frame_size + proprioception_frame_size
+            expected_obs_size = 11 * student_frame_size
             self.reference_encoder = TwistStudentReferenceEncoder(
                 reference_frame_size, key=encoder_key
             )
-            backbone_input_size = 128 + 11 * proprioception_frame_size
+            backbone_input_size = 128 + obs_size
         if obs_size != expected_obs_size:
             raise ValueError(
                 f"TWIST {stage} actor expected {expected_obs_size} observations, "
@@ -316,10 +326,61 @@ class TwistActor(eqx.Module):
         self.reference_input_size = reference_input_size
 
     def __call__(self, observation: jax.Array) -> jax.Array:
-        reference = observation[: self.reference_input_size]
-        proprioception = observation[self.reference_input_size :]
+        reference = self._reference_observation(observation)
         latent = self.reference_encoder(reference)
-        return self.backbone(jnp.concatenate((latent, proprioception)))
+        if self.stage == "teacher":
+            remaining = observation[self.reference_input_size :]
+            current_reference = reference[: self.reference_frame_size]
+            features = jnp.concatenate((remaining, current_reference, latent))
+        else:
+            features = jnp.concatenate((observation, latent))
+        return self.backbone(features)
+
+    def _reference_observation(self, observation: jax.Array) -> jax.Array:
+        if self.stage == "teacher":
+            return observation[: self.reference_input_size]
+        frame_size = self.reference_frame_size + self.proprioception_frame_size
+        current_start = 10 * frame_size
+        return observation[current_start : current_start + self.reference_frame_size]
+
+
+class TwistCritic(eqx.Module):
+    """Released privileged critic with its own temporal reference encoder."""
+
+    reference_encoder: TwistTeacherReferenceEncoder
+    backbone: TwistBackbone
+    reference_frame_size: int = eqx.field(static=True)
+    reference_input_size: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        obs_size: int,
+        action_size: int,
+        hidden_dims: tuple[int, ...],
+        *,
+        key: jax.Array,
+    ):
+        encoder_key, backbone_key = jax.random.split(key)
+        self.reference_frame_size = 35 + action_size
+        self.reference_input_size = 20 * self.reference_frame_size
+        if obs_size <= self.reference_input_size:
+            raise ValueError("TWIST critic requires a privileged observation suffix")
+        self.reference_encoder = TwistTeacherReferenceEncoder(
+            self.reference_frame_size, key=encoder_key
+        )
+        self.backbone = TwistBackbone(
+            128 + self.reference_frame_size + obs_size - self.reference_input_size,
+            1,
+            hidden_dims,
+            key=backbone_key,
+        )
+
+    def __call__(self, observation: jax.Array) -> jax.Array:
+        reference = observation[: self.reference_input_size]
+        latent = self.reference_encoder(reference)
+        remaining = observation[self.reference_input_size :]
+        current_reference = reference[: self.reference_frame_size]
+        return self.backbone(jnp.concatenate((remaining, current_reference, latent)))
 
 
 def policy_log_std(policy: ActorCritic) -> jax.Array:

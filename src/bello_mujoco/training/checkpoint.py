@@ -30,7 +30,11 @@ from bello_mujoco.envs.locomotion import (
     DoneConfig,
 )
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
-from bello_mujoco.envs.twist import TwistEnvConfig, TwistObservationContract
+from bello_mujoco.envs.twist import (
+    TwistEnvConfig,
+    TwistObservationContract,
+    TwistSimulationConfig,
+)
 from bello_mujoco.motion.clip import MOTION_FORMAT_VERSION, MotionClip
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
@@ -169,7 +173,7 @@ class TwistKLSchedule:
 
 @dataclass(frozen=True)
 class TwistTeacherCheckpointMetadata(_CheckpointMetadataBase):
-    motion_env: MotionTrackingEnvConfig
+    simulation: TwistSimulationConfig
     twist_env: TwistEnvConfig
     observation_contract: TwistObservationContract
     dataset: TwistDatasetContract
@@ -184,7 +188,7 @@ class TwistTeacherCheckpointMetadata(_CheckpointMetadataBase):
 
 @dataclass(frozen=True)
 class TwistStudentCheckpointMetadata(_CheckpointMetadataBase):
-    motion_env: MotionTrackingEnvConfig
+    simulation: TwistSimulationConfig
     twist_env: TwistEnvConfig
     observation_contract: TwistObservationContract
     dataset: TwistDatasetContract
@@ -420,6 +424,20 @@ def load_checkpoint_metadata(
         allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
     return metadata
+
+
+def load_checkpoint_update(
+    path: Path,
+    *,
+    allow_git_commit_mismatch: bool = False,
+) -> int:
+    """Return the integrity-checked saved update without restoring arrays."""
+
+    _, saved_update, _, _ = _load_checkpoint_document(
+        Path(path).resolve(),
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
+    )
+    return saved_update
 
 
 def resumed_checkpoint_metadata(

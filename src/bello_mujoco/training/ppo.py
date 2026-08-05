@@ -166,6 +166,8 @@ class PPOConfig:
     ent_coef: float = _validated(0.01, _nonnegative_finite)
     vf_coef: float = _validated(1.0, _nonnegative_finite)
     max_grad_norm: float = _validated(1.0, _positive_finite)
+    adam_epsilon: float = _validated(1.0e-5, _positive_finite)
+    value_loss_scale: float = _validated(0.5, _positive_finite)
     normalize_value: bool = _validated(False, _no_scalar_constraint)
     value_norm_eps: float = _validated(1.0e-8, _positive_finite)
     normalize_observations: bool = _validated(False, _no_scalar_constraint)
@@ -200,13 +202,15 @@ class DistillationContext:
 
     teacher_policy: ActorCritic
     teacher_observation_size: int
+    teacher_observation_norm_state: ObservationNormState
+    teacher_config: PPOConfig
     start_weight: float = 0.1
     end_weight: float = 0.01
     anneal_updates: int = 60_000
 
     def __post_init__(self) -> None:
-        if self.teacher_policy.action_distribution != "tanh_gaussian":
-            raise ValueError("TWIST teacher must use a tanh-Gaussian policy")
+        if self.teacher_policy.action_distribution != "gaussian":
+            raise ValueError("TWIST teacher must use an unsquashed Gaussian policy")
         if self.teacher_observation_size <= 0:
             raise ValueError("teacher_observation_size must be positive")
         if self.start_weight < self.end_weight or self.end_weight < 0.0:
@@ -291,7 +295,7 @@ def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
     return optax.apply_if_finite(
         optax.chain(
             optax.clip_by_global_norm(config.max_grad_norm),
-            optax.scale_by_adam(eps=1.0e-5),
+            optax.scale_by_adam(eps=config.adam_epsilon),
         ),
         max_consecutive_errors=1,
     )
@@ -525,8 +529,7 @@ def gaussian_policy_kl_student_teacher(
 ) -> jax.Array:
     """KL(student || teacher) in latent Gaussian space.
 
-    Both policies use the same invertible tanh/action-scale transform, so the
-    latent-space KL is also the transformed policy KL.
+    The released TWIST actor uses an ordinary diagonal Gaussian.
     """
 
     student_mean = (
@@ -551,7 +554,7 @@ def gaussian_policy_kl_student_teacher(
         / (2.0 * teacher_variance)
         - 0.5
     )
-    return jnp.sum(elementwise, axis=-1)
+    return jnp.mean(elementwise, axis=-1)
 
 
 def ppo_loss(
@@ -593,20 +596,17 @@ def ppo_loss(
     value_clipped = old_value_for_loss + jnp.clip(
         value - old_value_for_loss, -config.clip_eps, config.clip_eps
     )
-    value_loss = (
-        0.5
-        * jnp.maximum(
+    value_loss = config.value_loss_scale * (
+        jnp.maximum(
             (value - targets_for_loss) ** 2,
             (value_clipped - targets_for_loss) ** 2,
         ).mean()
     )
-    value_loss_raw = 0.5 * ((raw_value - targets) ** 2).mean()
+    value_loss_raw = config.value_loss_scale * ((raw_value - targets) ** 2).mean()
     entropy_loss = entropy.mean()
     distillation_kl = jnp.asarray(0.0, dtype=jnp.float32)
     if distillation is not None:
-        teacher_observation = transitions.critic_obs[
-            ..., : distillation.teacher_observation_size
-        ]
+        teacher_observation = transitions.info["_distillation_teacher_observation"]
         distillation_kl = gaussian_policy_kl_student_teacher(
             model,
             distillation.teacher_policy,
@@ -1105,6 +1105,7 @@ def collect_rollout(
     value_norm_state: ValueNormState | None = None,
     observation_norm_state: ObservationNormState | None = None,
     critic_observation_norm_state: ObservationNormState | None = None,
+    distillation: DistillationContext | None = None,
 ) -> tuple[
     tuple[
         Any,
@@ -1203,6 +1204,17 @@ def collect_rollout(
             for name, value in info.items()
             if name not in {"bootstrap_observation", "bootstrap_critic_observation"}
         }
+        if distillation is not None:
+            raw_teacher_observation = raw_critic_policy_obs[
+                ..., : distillation.teacher_observation_size
+            ]
+            transition_info["_distillation_teacher_observation"] = (
+                normalize_observation(
+                    raw_teacher_observation,
+                    distillation.teacher_observation_norm_state,
+                    distillation.teacher_config,
+                )
+            )
         transition = Transition(
             done,
             terminal,
@@ -1342,6 +1354,7 @@ def update_runner_state(
         runner_state.value_norm_state,
         runner_state.observation_norm_state,
         runner_state.critic_observation_norm_state,
+        distillation,
     )
     _, _, last_value = apply_policy(
         policy,

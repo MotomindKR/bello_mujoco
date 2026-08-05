@@ -6,12 +6,13 @@ from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 import jax
+import numpy as np
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
-from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.envs.twist import (
     BelloTwistEnv,
     TwistEnvConfig,
+    TwistSimulationConfig,
     TwistStage,
     default_twist_asset_config,
 )
@@ -19,6 +20,7 @@ from bello_mujoco.motion.twist_dataset import (
     TWIST_DATASET_SCHEMA_VERSION,
     load_packed_reference_bank,
     materialize_packed_clip,
+    packed_reference_bank_shards,
 )
 from bello_mujoco.repository import (
     capture_repository_commit,
@@ -34,6 +36,7 @@ from bello_mujoco.training.checkpoint import (
     checkpoint_metadata_fingerprint,
     checkpoint_path,
     load_checkpoint_metadata,
+    load_checkpoint_update,
     restore_evaluation_checkpoint,
     restore_runner_checkpoint,
     save_training_checkpoint,
@@ -48,6 +51,7 @@ from bello_mujoco.training.ppo import (
     validate_action_limit_contract,
     validate_ppo_config,
 )
+from bello_mujoco.policy import init_observation_stack
 from bello_mujoco.training.tracking import (
     WandbConfig,
     close_run,
@@ -64,12 +68,13 @@ class TwistTrainingRunConfig:
     teacher_checkpoint_path: Path | None = None
     config: PPOConfig = PPOConfig()
     asset_config: AssetPrepConfig = field(default_factory=default_twist_asset_config)
-    motion_env: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
+    simulation: TwistSimulationConfig = TwistSimulationConfig()
     twist_env: TwistEnvConfig = TwistEnvConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
     runtime_clip_directory: Path = Path("outputs/twist_runtime_clips")
+    reference_bank_refresh_updates: int = 500
 
 
 def run_training(run_config: TwistTrainingRunConfig) -> None:
@@ -81,12 +86,41 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
         / "train.npz"
     )
     materialize_packed_clip(dataset_index, runtime_clip, split="train")
-    reference_bank = load_packed_reference_bank(dataset_index, split="train")
-    motion_env = replace(run_config.motion_env, motion_path=runtime_clip)
+    shard_names, shard_probabilities, pad_frames, pad_clips = (
+        packed_reference_bank_shards(dataset_index, split="train")
+    )
+    resume_update = 0
+    if run_config.checkpoint_config.resume_path is not None:
+        resume_update = load_checkpoint_update(
+            run_config.checkpoint_config.resume_path,
+            allow_git_commit_mismatch=(
+                run_config.checkpoint_config.allow_git_commit_mismatch
+            ),
+        )
+
+    def load_bank(update: int) -> tuple[str, object]:
+        shard_index = _reference_bank_shard_index(
+            shard_probabilities,
+            seed=run_config.config.seed,
+            update=update,
+            refresh_updates=run_config.reference_bank_refresh_updates,
+        )
+        shard_name = shard_names[shard_index]
+        return shard_name, load_packed_reference_bank(
+            dataset_index,
+            split="train",
+            shard_name=shard_name,
+            pad_frames=pad_frames,
+            pad_clips=pad_clips,
+        )
+
+    active_shard, reference_bank = load_bank(resume_update)
+    simulation = run_config.simulation
     env = BelloTwistEnv.load(
         run_config.stage,
         run_config.asset_config,
-        motion_env,
+        simulation,
+        motion_path=runtime_clip,
         config=run_config.twist_env,
         warp=run_config.warp,
         batch_size=run_config.config.num_envs,
@@ -101,7 +135,7 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
         )
     validate_action_limit_contract(run_config.config, env.action_clip)
     git_commit = capture_repository_commit()
-    metadata = _checkpoint_metadata(run_config, env, motion_env, dataset, git_commit)
+    metadata = _checkpoint_metadata(run_config, env, simulation, dataset, git_commit)
     checkpoint_config = replace(
         run_config.checkpoint_config,
         directory=require_checkpoint_output_directory(
@@ -126,6 +160,11 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
             metadata,
             allow_git_commit_mismatch=(checkpoint_config.allow_git_commit_mismatch),
         )
+        if (
+            resume_update > 0
+            and resume_update % run_config.reference_bank_refresh_updates == 0
+        ):
+            runner = _reset_runner_environment(runner, env, run_config.config)
     run = None
     succeeded = False
     try:
@@ -136,8 +175,12 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
                 "task": f"twist_{run_config.stage}",
                 "ppo": run_config.config,
                 "dataset": dataset,
-                "motion_env": motion_env,
+                "simulation": simulation,
                 "twist_env": run_config.twist_env,
+                "reference_bank_shards": len(shard_names),
+                "reference_bank_refresh_updates": (
+                    run_config.reference_bank_refresh_updates
+                ),
                 "checkpoint": checkpoint_config,
                 "git_commit": git_commit,
             },
@@ -145,6 +188,13 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
         first_update = int(jax.device_get(runner.update))
         last_metrics = {}
         for update in range(first_update, run_config.config.num_updates):
+            if (
+                update > first_update
+                and update % run_config.reference_bank_refresh_updates == 0
+            ):
+                active_shard, reference_bank = load_bank(update)
+                env = replace(env, reference_bank=reference_bank)
+                runner = _reset_runner_environment(runner, env, run_config.config)
             runner, last_metrics = update_runner_state(
                 runner,
                 static_policy,
@@ -152,6 +202,9 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
                 env,
                 run_config.config,
                 distillation=distillation,
+            )
+            last_metrics["dataset/reference_bank_shard"] = jax.numpy.asarray(
+                shard_names.index(active_shard), dtype=jax.numpy.float32
             )
             track_metric_snapshot(
                 run,
@@ -188,21 +241,47 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
 def validate_twist_training_config(config: TwistTrainingRunConfig) -> None:
     validate_ppo_config(config.config)
     validate_checkpoint_options(config.checkpoint_config)
+    if config.reference_bank_refresh_updates <= 0:
+        raise ValueError("reference_bank_refresh_updates must be positive")
     expected_architecture = f"twist_{config.stage}"
     if config.config.policy.architecture != expected_architecture:
         raise ValueError(
             f"stage={config.stage} requires policy.architecture={expected_architecture}"
         )
-    if config.config.normalize_observations:
+    if not config.config.normalize_observations:
         raise ValueError(
-            "TWIST uses its explicit sensor scaling contract; generic PPO "
-            "observation normalization must remain disabled so student critic "
-            "references match frozen teacher actor inputs"
+            "released TWIST training requires running observation normalization"
         )
     if config.stage == "teacher" and config.teacher_checkpoint_path is not None:
         raise ValueError("TWIST teacher does not accept teacher_checkpoint_path")
     if config.stage == "student" and config.teacher_checkpoint_path is None:
         raise ValueError("TWIST student requires teacher_checkpoint_path")
+
+
+def _reference_bank_shard_index(
+    probabilities: np.ndarray,
+    *,
+    seed: int,
+    update: int,
+    refresh_updates: int,
+) -> int:
+    refresh_epoch = update // refresh_updates
+    rng = np.random.default_rng(np.random.SeedSequence((seed, refresh_epoch)))
+    return int(rng.choice(len(probabilities), p=probabilities))
+
+
+def _reset_runner_environment(runner, env: BelloTwistEnv, config: PPOConfig):
+    rng, reset_key = jax.random.split(runner.rng)
+    env_state, observation = env.reset_batch(config.num_envs, reset_key)
+    critic_observation = env.critic_observation_batch(env_state)
+    return runner._replace(
+        env_state=env_state,
+        obs_stack=init_observation_stack(observation, config.policy.obs_stack_size),
+        critic_obs_stack=init_observation_stack(
+            critic_observation, config.policy.obs_stack_size
+        ),
+        rng=rng,
+    )
 
 
 def save_twist_checkpoint(
@@ -222,7 +301,7 @@ def save_twist_checkpoint(
 def _checkpoint_metadata(
     run_config: TwistTrainingRunConfig,
     env: BelloTwistEnv,
-    motion_env: MotionTrackingEnvConfig,
+    simulation: TwistSimulationConfig,
     dataset: TwistDatasetContract,
     source_revision: str,
 ):
@@ -236,7 +315,7 @@ def _checkpoint_metadata(
         "actor_observation_layout": env.observation_layout,
         "critic_observation_layout": env.critic_observation_layout,
         "action_layout": env.action_layout,
-        "motion_env": motion_env,
+        "simulation": simulation,
         "twist_env": run_config.twist_env,
         "observation_contract": env.contract,
         "dataset": dataset,
@@ -265,11 +344,13 @@ def _distillation_context(run_config: TwistTrainingRunConfig, student_metadata):
     teacher_path = run_config.teacher_checkpoint_path
     if teacher_path is None:
         raise ValueError("teacher checkpoint path is required")
-    teacher_state, teacher_metadata, _ = restore_evaluation_checkpoint(
-        teacher_path,
-        allow_git_commit_mismatch=(
-            run_config.checkpoint_config.allow_git_commit_mismatch
-        ),
+    teacher_state, teacher_metadata, teacher_normalization = (
+        restore_evaluation_checkpoint(
+            teacher_path,
+            allow_git_commit_mismatch=(
+                run_config.checkpoint_config.allow_git_commit_mismatch
+            ),
+        )
     )
     if not isinstance(teacher_metadata, TwistTeacherCheckpointMetadata):
         raise ValueError("student distillation requires a typed TWIST teacher")
@@ -281,6 +362,8 @@ def _distillation_context(run_config: TwistTrainingRunConfig, student_metadata):
     return DistillationContext(
         teacher_policy=teacher_state.policy,
         teacher_observation_size=teacher_metadata.obs_size,
+        teacher_observation_norm_state=teacher_normalization.observation,
+        teacher_config=teacher_metadata.ppo,
     )
 
 

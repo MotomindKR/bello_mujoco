@@ -188,16 +188,21 @@ root height, or more than 1 cm of sole collision-geometry penetration.
 reasons.
 
 Accepted clips are packed into pickle-free NPZ shards plus `index.json`.
-Training samples clips in proportion to accepted frame count multiplied by the
-explicit manifest weight, then samples a valid start frame without crossing a
-clip boundary. Evaluation visits every held-out clip in stable source/sequence
-order. The fingerprint covers the portable manifest, accepted hashes, quality
-configuration, Bello model, and GMR revision.
+The builder validates the corpus without retaining decoded motion arrays, then
+reloads only enough accepted clips to fill one shard. Peak host memory therefore
+depends on `max_frames_per_shard`, not total corpus size. Training samples clips
+using the explicit manifest weights (uniformly when every weight is `1.0`), then
+samples a start frame within the selected clip. The trainer transfers one shard
+at a time and periodically rotates shards, so the full corpus is never placed in
+host or device memory. Evaluation visits every held-out clip in stable
+source/sequence order. The fingerprint covers the portable manifest, accepted
+hashes, quality configuration, Bello model, and GMR revision.
 
 ## Observation and optimization contracts
 
 Simulation runs at 500 Hz, policy actions at 50 Hz, and episodes for at most 10
-seconds. A reference frame contains root height, root orientation in 6D form,
+seconds or until the selected clip ends. A reference frame contains root height,
+root roll/pitch/yaw,
 local root linear velocity, yaw rate, 25 ordered joint positions, and nine
 local key-body positions. Proprioception contains base angular velocity,
 roll/pitch, joint positions and velocities, and the previous action.
@@ -206,22 +211,30 @@ The teacher uses the 20 released future offsets
 `[1, 5, 10, ..., 95]`. Its temporal encoder is `frame→60`,
 `Conv1D(60→40, kernel=6, stride=2)`,
 `Conv1D(40→20, kernel=4, stride=2)`, then a 128-dimensional projection.
-The student has a separate current-reference encoder and receives only the
-current target plus the current and ten historical proprioceptive frames.
-Future reference, base linear velocity, root height, current key bodies, foot
-contacts, and randomization parameters are critic-only.
+The student has a separate one-frame reference encoder and receives 11
+chronological current-reference/proprioception frames. The newest frame is the
+encoder input; no frame contains a future offset or privileged value. Base
+linear velocity, root height, current key bodies, foot contacts, and physical
+randomization parameters are appended to the teacher and critic observations,
+matching the released teacher implementation.
 
 Both stages use `[512, 512, 256, 128]` SiLU actor/critic backbones with
 LayerNorm on the final hidden layer. Teacher training is PPO. Student training
 uses PPO plus `KL(student || teacher)` with frozen teacher parameters. Its
 weight follows the corrected cosine schedule from `0.1` to `0.01` over 60,000
-updates.
+updates. The maintained release-length run is 30,002 updates; continuing to
+60,000 reaches the configured KL endpoint.
 
 The maintained profile uses 4,096 environments, 24 rollout steps, five epochs,
 four minibatches, learning rate `2e-4`, desired KL `0.008`, entropy `0.005`,
 gamma `0.99`, lambda `0.95`, and clip ratio `0.2`. Command-level
 `total_timesteps` and `num_envs` overrides remain available for bounded smoke
 runs.
+
+TWIST owns its reset, reference sampling, observation history, action delay,
+PD-target mapping, rewards, disturbances, termination, and domain
+randomization. It imports neither the legacy motion-tracking environment nor
+the BeyondMimic training pipeline.
 
 ## Checkpoints and evaluation
 
