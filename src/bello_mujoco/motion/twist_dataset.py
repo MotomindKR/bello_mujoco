@@ -102,7 +102,7 @@ class QualityConfig:
     max_body_angular_velocity: float = 30.0
     min_root_height: float = 0.25
     max_root_height: float = 2.0
-    max_floor_penetration: float = 0.08
+    max_floor_penetration: float = 0.01
     max_frames_per_shard: int = 250_000
 
 
@@ -956,6 +956,7 @@ def load_and_normalize_retargeted_clip(
         "body_lin_vel",
         "body_ang_vel",
         "foot_contacts",
+        "foot_sole_z",
         "joint_names",
         "body_names",
         "source_timestamp_seconds",
@@ -970,7 +971,7 @@ def load_and_normalize_retargeted_clip(
         if missing:
             raise ValueError(f"{path.name} is missing fields: {missing}")
         arrays = {name: np.asarray(archive[name]) for name in archive.files}
-    if int(np.asarray(arrays["retarget_format_version"]).item()) != 4:
+    if int(np.asarray(arrays["retarget_format_version"]).item()) != 5:
         raise ValueError(f"{path.name}: unsupported retarget format version")
     frames = arrays["qpos"].shape[0]
     for name in (
@@ -982,6 +983,7 @@ def load_and_normalize_retargeted_clip(
         "body_lin_vel",
         "body_ang_vel",
         "foot_contacts",
+        "foot_sole_z",
     ):
         if arrays[name].shape[0] != frames:
             raise ValueError(
@@ -1010,6 +1012,7 @@ def clip_quality_reasons(
         "body_lin_vel",
         "body_ang_vel",
         "foot_contacts",
+        "foot_sole_z",
     )
     for name in numeric_names:
         if not np.all(np.isfinite(arrays[name])):
@@ -1060,8 +1063,8 @@ def clip_quality_reasons(
         reasons.append("root height falls below configured limit")
     if root_height.max() > quality.max_root_height:
         reasons.append("root height exceeds configured limit")
-    if arrays["body_pos"][..., 2].min() < -quality.max_floor_penetration:
-        reasons.append("body floor penetration exceeds configured limit")
+    if arrays["foot_sole_z"].min() < -quality.max_floor_penetration:
+        reasons.append("foot sole penetration exceeds configured limit")
     if {"joint_lower", "joint_upper"} <= arrays.keys():
         joint = arrays["qpos"][:, 7:]
         lower = np.asarray(arrays["joint_lower"])
@@ -1170,6 +1173,7 @@ def _flush_shard(
         "body_lin_vel",
         "body_ang_vel",
         "foot_contacts",
+        "foot_sole_z",
     )
     packed = {
         name: np.concatenate([clip[1][name] for clip in clips], axis=0)
@@ -1306,20 +1310,10 @@ def _align_floor_and_heading(
         np.broadcast_to(yaw_quat, result["body_quat_wxyz"].shape),
         result["body_quat_wxyz"],
     )
-    body_names = tuple(str(value) for value in result["body_names"].tolist())
-    foot_indices = [
-        index
-        for index, name in enumerate(body_names)
-        if "ankle" in name or "foot" in name
-    ]
-    floor_source = (
-        result["body_pos"][:, foot_indices, 2]
-        if foot_indices
-        else result["body_pos"][..., 2]
-    )
-    floor_height = float(np.quantile(floor_source, 0.01))
+    floor_height = float(np.min(result["foot_sole_z"]))
     result["qpos"][:, 2] -= floor_height
     result["body_pos"][..., 2] -= floor_height
+    result["foot_sole_z"] -= floor_height
     return result
 
 

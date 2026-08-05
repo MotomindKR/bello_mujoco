@@ -161,9 +161,11 @@ OMOMO human trajectories use the same SMPL-X retargeter. Object identifiers and
 interaction labels stay in the source manifest.
 
 Each retargeted clip records source timestamps, root/joint state, body
-transforms and velocities, contact hints, joint/body ordering, source checksum,
-GMR revision and configuration, and the Bello fingerprint. Conversion aligns
-initial heading and floor deterministically and resamples to 50 Hz.
+transforms and velocities, geometry-derived sole heights, contact hints,
+joint/body ordering, source checksum, GMR revision and configuration, and the
+Bello fingerprint. Conversion uses source foot motion to ground stance soles
+against the canonical collision geometry while preserving airborne phases,
+aligns initial heading deterministically, and resamples to 50 Hz.
 
 ## Quality control and packing
 
@@ -181,8 +183,9 @@ uv run bello-twist-data operation=build \
 The build rejects missing/non-finite state and provenance mismatches. It
 quarantines short clips, quaternion discontinuities, timestamp gaps,
 persistent joint-limit violations, conversion-scale velocities, implausible
-root height, or floor penetration. `conversion_report.json` gives accepted,
-quarantined, and rejected counts and reasons.
+root height, or more than 1 cm of sole collision-geometry penetration.
+`conversion_report.json` gives accepted, quarantined, and rejected counts and
+reasons.
 
 Accepted clips are packed into pickle-free NPZ shards plus `index.json`.
 Training samples clips in proportion to accepted frame count multiplied by the

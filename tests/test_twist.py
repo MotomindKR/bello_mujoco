@@ -33,6 +33,7 @@ from bello_mujoco.motion.twist_dataset import (
     QualityConfig,
     SourceManifest,
     SourceSequence,
+    _align_floor_and_heading,
     _arrays_fingerprint,
     assign_splits,
     build_packed_dataset,
@@ -253,7 +254,7 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
             np.savez(
                 output,
                 source_sha256=np.asarray(sequence.source_sha256),
-                retarget_format_version=np.asarray(4, dtype=np.int32),
+                retarget_format_version=np.asarray(5, dtype=np.int32),
                 gmr_revision=np.asarray(revision),
                 gmr_config_sha256=np.asarray(
                     hashlib.sha256(config.read_bytes()).hexdigest()
@@ -313,6 +314,41 @@ def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
     assert names == logical_actuator_joint_names(model)
     assert names != tuple(model.joint(joint_id).name for joint_id in qpos_joint_ids)
     np.testing.assert_array_equal(ranges, model.jnt_range[qpos_joint_ids])
+
+
+def test_gmr_retarget_measures_canonical_sole_collision_height(
+    full_body_asset,
+) -> None:
+    tool_path = Path(__file__).resolve().parents[1] / "tools/twist_gmr_retarget.py"
+    spec = importlib.util.spec_from_file_location("twist_gmr_retarget", tool_path)
+    assert spec is not None and spec.loader is not None
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    qpos = np.repeat(model.qpos0[None, :], 2, axis=0)
+    qpos[1, 2] += 0.125
+
+    sole_z = tool._foot_sole_z(model, qpos)
+
+    assert sole_z.shape == (2, 2)
+    np.testing.assert_allclose(sole_z[1] - sole_z[0], 0.125, atol=1.0e-8)
+
+
+def test_gmr_grounding_preserves_flight_and_prevents_swing_foot_penetration() -> None:
+    tool_path = Path(__file__).resolve().parents[1] / "tools/twist_gmr_retarget.py"
+    spec = importlib.util.spec_from_file_location("twist_gmr_retarget", tool_path)
+    assert spec is not None and spec.loader is not None
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    qpos = np.zeros((3, 7))
+    qpos[:, 2] = 1.0
+    sole_z = np.asarray([[0.1, 0.2], [0.05, 0.4], [0.3, 0.2]])
+    contacts = np.asarray([[True, False], [False, False], [False, True]])
+
+    grounded_qpos, grounded_sole = tool._ground_root_to_support(qpos, sole_z, contacts)
+
+    np.testing.assert_allclose(grounded_sole, [[0.0, 0.1], [0.0, 0.35], [0.1, 0.0]])
+    np.testing.assert_allclose(grounded_qpos[:, 2], [0.9, 0.95, 0.8])
 
 
 def test_twist_observation_contract_exact_dimensions_and_isolation() -> None:
@@ -435,6 +471,7 @@ def test_qc_rejects_short_and_nonfinite_clips_and_hashes_are_reproducible() -> N
         "body_lin_vel": np.zeros((frames, 14, 3), dtype=np.float32),
         "body_ang_vel": np.zeros((frames, 14, 3), dtype=np.float32),
         "foot_contacts": np.zeros((frames, 2), dtype=np.float32),
+        "foot_sole_z": np.zeros((frames, 2), dtype=np.float32),
     }
     quality = QualityConfig()
 
@@ -449,6 +486,31 @@ def test_qc_rejects_short_and_nonfinite_clips_and_hashes_are_reproducible() -> N
     invalid = {name: value.copy() for name, value in arrays.items()}
     invalid["qpos"][0, 0] = np.nan
     assert clip_quality_reasons(invalid, quality) == ["qpos contains non-finite values"]
+    penetrating = {name: value.copy() for name, value in arrays.items()}
+    penetrating["foot_sole_z"][0, 0] = -0.011
+    assert "foot sole penetration exceeds configured limit" in clip_quality_reasons(
+        penetrating, quality
+    )
+
+
+def test_floor_alignment_uses_lowest_canonical_sole_point() -> None:
+    frames = 3
+    arrays = {
+        "qpos": np.tile(
+            np.concatenate(([0.0, 0.0, 0.9], [1.0, 0.0, 0.0, 0.0], np.zeros(25))),
+            (frames, 1),
+        ),
+        "qvel": np.zeros((frames, 31)),
+        "body_pos": np.zeros((frames, 2, 3)),
+        "body_quat_wxyz": np.tile([1.0, 0.0, 0.0, 0.0], (frames, 2, 1)),
+        "body_lin_vel": np.zeros((frames, 2, 3)),
+        "foot_sole_z": np.asarray([[0.18, 0.16], [0.12, 0.2], [0.14, 0.13]]),
+    }
+
+    aligned = _align_floor_and_heading(arrays)
+
+    assert aligned["foot_sole_z"].min() == pytest.approx(0.0)
+    np.testing.assert_allclose(aligned["qpos"][:, 2], 0.78)
 
 
 def test_packed_sampler_is_jittable_and_never_crosses_clip_end() -> None:
@@ -588,7 +650,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
             timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_sha256=np.asarray(source_digest),
-            retarget_format_version=np.asarray(4, dtype=np.int32),
+            retarget_format_version=np.asarray(5, dtype=np.int32),
             qpos=qpos,
             qvel=np.zeros((frames, 31), dtype=np.float32),
             body_pos=np.zeros((frames, len(body_names), 3), dtype=np.float32),
@@ -596,6 +658,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
             body_lin_vel=np.zeros((frames, len(body_names), 3), dtype=np.float32),
             body_ang_vel=np.zeros((frames, len(body_names), 3), dtype=np.float32),
             foot_contacts=np.zeros((frames, 2), dtype=np.float32),
+            foot_sole_z=np.zeros((frames, 2), dtype=np.float32),
             joint_names=np.asarray(JOINT_NAMES),
             body_names=np.asarray(body_names),
             joint_lower=np.full((25,), -2.0, dtype=np.float32),

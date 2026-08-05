@@ -20,7 +20,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 GMR_ROOT = ROOT / "deps" / "GMR"
-RETARGET_FORMAT_VERSION = 4
+RETARGET_FORMAT_VERSION = 5
 
 ANKLE_TENDON_LOGICAL_JOINT = {
     "left_ankle_motor_1": "left_ankle_pitch_joint",
@@ -45,6 +45,14 @@ BODY_NAMES = (
     "r_elbow_link",
     "r_wrist_link",
 )
+
+FOOT_SOLE_GEOM_NAMES = (
+    "left_ankle_roll_link_collision_box_1",
+    "right_ankle_roll_link_collision_box_1",
+)
+HUMAN_FOOT_NAMES = ("left_foot", "right_foot")
+CONTACT_MAX_SPEED = 0.2
+CONTACT_HEIGHT_MARGIN = 0.03
 
 
 def main() -> None:
@@ -98,6 +106,7 @@ def main() -> None:
             tgt_fps=args.target_fps,
         )
     del body_model, smplx_output
+    source_contacts = _human_foot_contacts(frames, float(fps))
     retargeter = GeneralMotionRetargeting(
         src_human="smplx",
         tgt_robot="bello",
@@ -109,6 +118,8 @@ def main() -> None:
     model = retargeter.model
     if qpos.shape[1] != model.nq:
         raise ValueError(f"GMR returned qpos shape {qpos.shape}; model nq={model.nq}")
+    foot_sole_z = _foot_sole_z(model, qpos)
+    qpos, foot_sole_z = _ground_root_to_support(qpos, foot_sole_z, source_contacts)
     timestamps = np.arange(len(qpos), dtype=np.float64) / float(fps)
     qvel = _differentiate(model, qpos, float(fps))
     body_ids = np.asarray([model.body(name).id for name in BODY_NAMES])
@@ -117,13 +128,7 @@ def main() -> None:
     )
     joint_names = _logical_actuator_joint_names(model)
     joint_ranges = _qpos_ordered_joint_ranges(model, joint_names)
-    foot_indices = [
-        BODY_NAMES.index("left_ankle_roll_link"),
-        BODY_NAMES.index("right_ankle_roll_link"),
-    ]
-    foot_speed = np.linalg.norm(body_lin_vel[:, foot_indices], axis=-1)
-    foot_height = body_pos[:, foot_indices, 2]
-    contacts = ((foot_height < 0.04) & (foot_speed < 0.35)).astype(np.float32)
+    contacts = (source_contacts & (foot_sole_z < 0.03)).astype(np.float32)
     revision = subprocess.run(
         ["git", "-C", str(GMR_ROOT), "rev-parse", "HEAD"],
         check=True,
@@ -142,6 +147,7 @@ def main() -> None:
         body_lin_vel=body_lin_vel.astype(np.float32),
         body_ang_vel=body_ang_vel.astype(np.float32),
         foot_contacts=contacts,
+        foot_sole_z=foot_sole_z.astype(np.float32),
         retarget_format_version=np.asarray(RETARGET_FORMAT_VERSION, dtype=np.int32),
         joint_names=np.asarray(joint_names),
         body_names=np.asarray(BODY_NAMES),
@@ -332,6 +338,69 @@ def _body_state(model, qpos, qvel, body_ids):
             angular[frame, body_index] = velocity[:3]
             linear[frame, body_index] = velocity[3:]
     return position, quaternion, linear, angular
+
+
+def _foot_sole_z(model, qpos: np.ndarray) -> np.ndarray:
+    geom_ids = []
+    for name in FOOT_SOLE_GEOM_NAMES:
+        geom_id = model.geom(name).id
+        if model.geom_type[geom_id] != mujoco.mjtGeom.mjGEOM_BOX:
+            raise ValueError(f"Bello sole geometry {name!r} must be a box")
+        geom_ids.append(geom_id)
+    heights = np.empty((len(qpos), len(geom_ids)))
+    data = mujoco.MjData(model)
+    for frame, position in enumerate(qpos):
+        data.qpos[:] = position
+        mujoco.mj_forward(model, data)
+        for foot, geom_id in enumerate(geom_ids):
+            rotation = data.geom_xmat[geom_id].reshape(3, 3)
+            vertical_extent = np.abs(rotation[2]) @ model.geom_size[geom_id]
+            heights[frame, foot] = data.geom_xpos[geom_id, 2] - vertical_extent
+    return heights
+
+
+def _human_foot_contacts(frames, fps: float) -> np.ndarray:
+    positions = np.asarray(
+        [[np.asarray(frame[name][0]) for name in HUMAN_FOOT_NAMES] for frame in frames]
+    )
+    if positions.shape != (len(frames), len(HUMAN_FOOT_NAMES), 3):
+        raise ValueError(f"SMPL-X foot positions have invalid shape {positions.shape}")
+    velocity = np.gradient(positions, 1.0 / fps, axis=0)
+    speed = np.linalg.norm(velocity, axis=-1)
+    contacts = np.zeros(speed.shape, dtype=bool)
+    for foot in range(len(HUMAN_FOOT_NAMES)):
+        stationary = speed[:, foot] < CONTACT_MAX_SPEED
+        if not np.any(stationary):
+            continue
+        support_height = float(np.median(positions[stationary, foot, 2]))
+        contacts[:, foot] = stationary & (
+            positions[:, foot, 2] <= support_height + CONTACT_HEIGHT_MARGIN
+        )
+    return contacts
+
+
+def _ground_root_to_support(
+    qpos: np.ndarray,
+    foot_sole_z: np.ndarray,
+    source_contacts: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if foot_sole_z.shape != source_contacts.shape:
+        raise ValueError("sole heights and source contacts must have matching shapes")
+    support_height = np.full(len(qpos), np.nan)
+    for frame in range(len(qpos)):
+        if np.any(source_contacts[frame]):
+            support_height[frame] = np.min(foot_sole_z[frame, source_contacts[frame]])
+    anchors = np.flatnonzero(np.isfinite(support_height))
+    if len(anchors):
+        ground_offset = np.interp(
+            np.arange(len(qpos)), anchors, support_height[anchors]
+        )
+        ground_offset = np.minimum(ground_offset, np.min(foot_sole_z, axis=1))
+    else:
+        ground_offset = np.full(len(qpos), np.min(foot_sole_z))
+    grounded_qpos = np.array(qpos, copy=True)
+    grounded_qpos[:, 2] -= ground_offset
+    return grounded_qpos, foot_sole_z - ground_offset[:, None]
 
 
 def _sha256(path: Path) -> str:
