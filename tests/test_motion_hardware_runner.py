@@ -256,6 +256,10 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
         action_size = 2
         anchor_body_id = 0
         anchor_body_index = 0
+        maximum_observation_delay_steps = 0
+
+        def _actor_feedback(self, data):
+            return data.qpos
 
         def termination_flags(self, _state):
             return {"done/any": jnp.asarray(False)}
@@ -334,6 +338,7 @@ def test_read_only_preflight_never_acquires_control(
         raw_action=np.zeros(2),
         physical_target=np.zeros(2),
         observation=np.zeros(4),
+        policy_observation=np.zeros(4),
         reference_time=0.0,
         anchor_position_error=0.0,
         anchor_orientation_error=0.0,

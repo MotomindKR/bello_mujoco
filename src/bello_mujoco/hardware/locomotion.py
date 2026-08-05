@@ -22,6 +22,7 @@ from bello_mujoco.training.checkpoint import (
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.gamepad import GamepadCommandSource, GamepadConfig, GamepadInput
 from bello_mujoco.hardware.config import HardwareControlConfig
+from bello_mujoco.hardware.policy_log import PolicyStepLogger, policy_phase_schema
 from bello_mujoco.hardware.runtime import (
     HOLD_CONFIRMATION,
     HardwareFrame,
@@ -43,6 +44,7 @@ from bello_mujoco.hardware.runtime import (
 )
 from bello_mujoco.policy import infer_policy_action
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
+from bello_mujoco.training.ppo import normalize_observation
 
 
 @dataclass(frozen=True)
@@ -57,8 +59,10 @@ class HardwareLocomotionConfig(HardwareControlConfig):
 @dataclass(frozen=True)
 class HardwarePolicyStep:
     action: np.ndarray
+    raw_action: np.ndarray
     physical_target: np.ndarray
     observation: np.ndarray
+    policy_observation: np.ndarray
     tilt_radians: float
 
 
@@ -105,12 +109,19 @@ class HardwarePolicyAdapter:
         self.kp, self.kd = actuator_impedance_gains(env)
         self._normalization = normalization.observation
         self._infer_action = eqx.filter_jit(
-            lambda observation: infer_policy_action(
-                policy,
-                observation,
-                self._normalization,
-                metadata.ppo,
-                env.action_clip,
+            lambda observation: (
+                normalize_observation(
+                    observation,
+                    self._normalization,
+                    metadata.ppo,
+                ),
+                infer_policy_action(
+                    policy,
+                    observation,
+                    self._normalization,
+                    metadata.ppo,
+                    env.action_clip,
+                ),
             )
         )
         zero_offset = jnp.zeros(len(self.physical_coordinate_names), dtype=jnp.float32)
@@ -207,9 +218,20 @@ class HardwarePolicyAdapter:
                 (self._obs_stack[1:], observation[None, :]), axis=0
             )
         stacked = jnp.asarray(self._obs_stack.reshape(-1), dtype=jnp.float32)
-        inference = self._infer_action(stacked)
+        policy_observation, inference = self._infer_action(stacked)
+        policy_observation = np.asarray(
+            jax.device_get(policy_observation), dtype=np.float32
+        )
+        raw_action = np.asarray(
+            jax.device_get(inference.requested_action), dtype=np.float32
+        )
         action = np.asarray(jax.device_get(inference.applied_action), dtype=np.float32)
-        if action.shape != (self.env.action_size,) or not np.all(np.isfinite(action)):
+        if (
+            raw_action.shape != (self.env.action_size,)
+            or not np.all(np.isfinite(raw_action))
+            or action.shape != (self.env.action_size,)
+            or not np.all(np.isfinite(action))
+        ):
             raise RuntimeError(
                 f"policy produced an invalid hardware action with shape {action.shape}"
             )
@@ -221,8 +243,10 @@ class HardwarePolicyAdapter:
         self._last_action = action
         return HardwarePolicyStep(
             action=action,
+            raw_action=raw_action,
             physical_target=physical_target,
             observation=observation,
+            policy_observation=policy_observation,
             tilt_radians=tilt_from_xyzw(frame.orientation_xyzw),
         )
 
@@ -468,6 +492,18 @@ def run_hardware_locomotion(
             config.telemetry_timeout_seconds,
         )
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
+        policy_log = (
+            resources.enter_context(
+                PolicyStepLogger(
+                    config.policy_log_path,
+                    task="locomotion",
+                    checkpoints={"locomotion": checkpoint_path},
+                    phases={"locomotion": policy_phase_schema(adapter)},
+                )
+            )
+            if config.policy_log_path is not None
+            else None
+        )
         control_physical_robot(
             binding,
             groups,
@@ -476,6 +512,7 @@ def run_hardware_locomotion(
             adapter,
             config,
             gamepad,
+            policy_log=policy_log,
             operator_input=operator_input,
         )
 
@@ -489,6 +526,7 @@ def control_physical_robot(
     config: HardwareLocomotionConfig,
     gamepad: GamepadCommandSource,
     *,
+    policy_log: PolicyStepLogger | None = None,
     operator_input: Callable[[str], str] | None = None,
 ) -> None:
     with armed_control_session(
@@ -560,6 +598,18 @@ def control_physical_robot(
                 control.send_target(policy_step.physical_target)
                 step += 1
                 now = time.monotonic()
+                if policy_log is not None:
+                    policy_log.write_step(
+                        phase="locomotion",
+                        step=step,
+                        elapsed_seconds=now - start_time,
+                        observation=policy_step.observation,
+                        policy_observation=policy_step.policy_observation,
+                        raw_action=policy_step.raw_action,
+                        action=policy_step.action,
+                        physical_target=policy_step.physical_target,
+                        command=command,
+                    )
                 if next_status is not None and now >= next_status:
                     print(
                         {

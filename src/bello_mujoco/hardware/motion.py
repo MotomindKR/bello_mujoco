@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 import math
@@ -27,6 +28,7 @@ from bello_mujoco.envs.motion_tracking import (
 )
 from bello_mujoco.hardware import _pose_pb2
 from bello_mujoco.hardware.config import HardwareControlConfig
+from bello_mujoco.hardware.policy_log import PolicyStepLogger, policy_phase_schema
 from bello_mujoco.hardware.locomotion import (
     HardwarePolicyAdapter as HardwareLocomotionPolicyAdapter,
     load_hardware_policy,
@@ -97,6 +99,7 @@ class HardwareMotionStep:
     raw_action: np.ndarray
     physical_target: np.ndarray
     observation: np.ndarray
+    policy_observation: np.ndarray
     reference_time: float
     anchor_position_error: float
     anchor_orientation_error: float
@@ -158,6 +161,7 @@ def _motion_inference_layout(env: BelloMotionTrackingEnv) -> _MotionInferenceLay
 class _MotionInferenceResult(NamedTuple):
     observation_stack: jax.Array
     observation: jax.Array
+    policy_observation: jax.Array
     raw_action: jax.Array
     action: jax.Array
     physical_target: jax.Array
@@ -266,6 +270,7 @@ def _build_motion_inference(
         return _MotionInferenceResult(
             observation_stack=next_stack,
             observation=observation,
+            policy_observation=normalized,
             raw_action=raw_action,
             action=action,
             physical_target=physical_target,
@@ -647,6 +652,7 @@ class HardwareMotionPolicyAdapter:
                 + ", ".join(terminal)
             )
         observation = np.asarray(host.observation)
+        policy_observation = np.asarray(host.policy_observation)
         raw_action = np.asarray(host.raw_action, dtype=np.float32)
         if raw_action.shape != (self.env.action_size,) or not np.all(
             np.isfinite(raw_action)
@@ -672,6 +678,7 @@ class HardwareMotionPolicyAdapter:
             raw_action=raw_action,
             physical_target=physical_target,
             observation=observation,
+            policy_observation=policy_observation,
             reference_time=reference_time,
             anchor_position_error=float(host.anchor_position_error),
             anchor_orientation_error=float(host.anchor_orientation_error),
@@ -910,17 +917,39 @@ def run_hardware_motion(
         pose = poses.latest()
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
         validate_pose_imu_agreement(frame, pose, config)
-        control_physical_motion(
-            binding,
-            groups,
-            state_reader,
-            poses,
-            frame,
-            standing_adapter,
-            motion_adapter,
-            config,
-            operator_input=operator_input,
+        standing_schema = policy_phase_schema(standing_adapter)
+        motion_schema = policy_phase_schema(motion_adapter)
+        log_context = (
+            PolicyStepLogger(
+                config.policy_log_path,
+                task="motion",
+                checkpoints={
+                    "motion": checkpoint_path,
+                    "standing": standing_checkpoint_path,
+                },
+                phases={
+                    "standing": standing_schema,
+                    "transition_to_motion": motion_schema,
+                    "motion": motion_schema,
+                    "transition_to_standing": standing_schema,
+                },
+            )
+            if config.policy_log_path is not None
+            else nullcontext(None)
         )
+        with log_context as policy_log:
+            control_physical_motion(
+                binding,
+                groups,
+                state_reader,
+                poses,
+                frame,
+                standing_adapter,
+                motion_adapter,
+                config,
+                policy_log=policy_log,
+                operator_input=operator_input,
+            )
 
 
 def validate_motion_transition_adapters(
@@ -964,6 +993,9 @@ def transition_to_motion_policy(
     poses: PoseStream,
     adapter: HardwareMotionPolicyAdapter,
     config: HardwareMotionConfig,
+    *,
+    policy_log: PolicyStepLogger | None = None,
+    run_started: float | None = None,
 ) -> None:
     control.drain()
     initial_target = control.previous_target.copy()
@@ -989,6 +1021,21 @@ def transition_to_motion_policy(
             policy_step.physical_target - initial_target
         )
         control.send_target(target)
+        if policy_log is not None:
+            policy_log.write_step(
+                phase="transition_to_motion",
+                step=step,
+                elapsed_seconds=(
+                    time.monotonic() - run_started if run_started is not None else 0.0
+                ),
+                observation=policy_step.observation,
+                policy_observation=policy_step.policy_observation,
+                raw_action=policy_step.raw_action,
+                action=policy_step.action,
+                physical_target=target,
+                policy_target=policy_step.physical_target,
+                reference_time=policy_step.reference_time,
+            )
         control.pace()
     control.drain()
 
@@ -998,6 +1045,9 @@ def transition_to_standing_policy(
     adapter: HardwareLocomotionPolicyAdapter,
     command: np.ndarray,
     config: HardwareMotionConfig,
+    *,
+    policy_log: PolicyStepLogger | None = None,
+    run_started: float | None = None,
 ) -> None:
     control.drain()
     initial_target = control.previous_target.copy()
@@ -1015,6 +1065,21 @@ def transition_to_standing_policy(
             policy_step.physical_target - initial_target
         )
         control.send_target(target)
+        if policy_log is not None:
+            policy_log.write_step(
+                phase="transition_to_standing",
+                step=step,
+                elapsed_seconds=(
+                    time.monotonic() - run_started if run_started is not None else 0.0
+                ),
+                observation=policy_step.observation,
+                policy_observation=policy_step.policy_observation,
+                raw_action=policy_step.raw_action,
+                action=policy_step.action,
+                physical_target=target,
+                policy_target=policy_step.physical_target,
+                command=command,
+            )
         control.pace()
     control.drain()
 
@@ -1029,6 +1094,7 @@ def control_physical_motion(
     motion_adapter: HardwareMotionPolicyAdapter,
     config: HardwareMotionConfig,
     *,
+    policy_log: PolicyStepLogger | None = None,
     operator_input: Callable[[str], str] | None = None,
 ) -> None:
     with armed_control_session(
@@ -1081,9 +1147,21 @@ def control_physical_motion(
             frame = control.read_frame()
             policy_step = standing_adapter.step(frame, standing_command)
             control.send_target(policy_step.physical_target)
-            control.pace()
             standing_step_count += 1
             now = time.monotonic()
+            if policy_log is not None:
+                policy_log.write_step(
+                    phase="standing",
+                    step=standing_step_count,
+                    elapsed_seconds=now - run_started,
+                    observation=policy_step.observation,
+                    policy_observation=policy_step.policy_observation,
+                    raw_action=policy_step.raw_action,
+                    action=policy_step.action,
+                    physical_target=policy_step.physical_target,
+                    command=standing_command,
+                )
+            control.pace()
             if next_standing_status is not None and now >= next_standing_status:
                 print(
                     {
@@ -1125,6 +1203,8 @@ def control_physical_motion(
                 standing_adapter,
                 standing_command,
                 config,
+                policy_log=policy_log,
+                run_started=run_started,
             )
             control.reset_deadline()
             next_standing_status = (
@@ -1142,6 +1222,8 @@ def control_physical_motion(
                 poses,
                 motion_adapter,
                 config,
+                policy_log=policy_log,
+                run_started=run_started,
             )
             motion_started = time.monotonic()
             control.reset_deadline()
@@ -1182,6 +1264,18 @@ def control_physical_motion(
                 maximum_loop_work_ms = max(maximum_loop_work_ms, loop_work_ms)
                 motion_step_count += 1
                 now = time.monotonic()
+                if policy_log is not None:
+                    policy_log.write_step(
+                        phase="motion",
+                        step=motion_step_count,
+                        elapsed_seconds=now - run_started,
+                        observation=policy_step.observation,
+                        policy_observation=policy_step.policy_observation,
+                        raw_action=policy_step.raw_action,
+                        action=policy_step.action,
+                        physical_target=policy_step.physical_target,
+                        reference_time=policy_step.reference_time,
+                    )
                 if next_motion_status is not None and now >= next_motion_status:
                     print(
                         {

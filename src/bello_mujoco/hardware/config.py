@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -31,3 +32,4 @@ class HardwareControlConfig:
     max_linear_acceleration: float = 100.0
     max_loop_lag_seconds: float = 0.10
     status_interval_seconds: float | None = None
+    policy_log_path: Path | None = None
