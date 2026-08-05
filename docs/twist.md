@@ -236,7 +236,14 @@ The maintained profile uses 4,096 environments, 24 rollout steps, five epochs,
 four minibatches, learning rate `2e-4`, desired KL `0.008`, entropy `0.005`,
 gamma `0.99`, lambda `0.95`, and clip ratio `0.2`. Command-level
 `total_timesteps` and `num_envs` overrides remain available for bounded smoke
-runs.
+runs. Packed shards have one fixed padded shape and are passed to a single
+compiled PPO update as dynamic device buffers. Shard rotation therefore does
+not accumulate one executable and embedded reference bank per shard.
+
+The 4,096-environment Warp profile reserves 32 active contacts per environment.
+Training reports the peak active-contact capacity fraction and the fraction of
+steps that overflow capacity. `mean_physics/contact_capacity_overflow` must
+remain zero; otherwise increase `warp.contact_budget_per_env` deliberately.
 
 TWIST owns its reset, reference sampling, observation history, action delay,
 PD-target mapping, rewards, disturbances, termination, and domain

@@ -17,6 +17,7 @@ from bello_mujoco.envs.twist import (
     default_twist_asset_config,
 )
 from bello_mujoco.motion.twist_dataset import (
+    PackedReferenceBank,
     TWIST_DATASET_SCHEMA_VERSION,
     TWIST_PACKING_ALGORITHM,
     TWIST_TRAIN_SAMPLING,
@@ -100,7 +101,7 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
             ),
         )
 
-    def load_bank(update: int) -> tuple[str, object]:
+    def load_bank(update: int) -> tuple[str, PackedReferenceBank]:
         shard_index = _reference_bank_shard_index(
             shard_probabilities,
             seed=run_config.config.seed,
@@ -151,6 +152,7 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
     )
     distillation = _distillation_context(run_config, metadata)
     rng = jax.random.PRNGKey(run_config.config.seed)
+    reset_resumed_environment = False
     if checkpoint_config.resume_path is None:
         runner, static_policy, optimizer = init_runner_state(
             rng, env, run_config.config
@@ -162,11 +164,14 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
             metadata,
             allow_git_commit_mismatch=(checkpoint_config.allow_git_commit_mismatch),
         )
-        if (
+        reset_resumed_environment = (
             resume_update > 0
             and resume_update % run_config.reference_bank_refresh_updates == 0
-        ):
-            runner = _reset_runner_environment(runner, env, run_config.config)
+        )
+    static_env = _replace_reference_bank_unchecked(env, None)
+    reference_bank_arrays = _device_reference_bank_arrays(reference_bank)
+    del env, reference_bank
+    jax.clear_caches()
     run = None
     succeeded = False
     try:
@@ -190,30 +195,39 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
         first_update = int(jax.device_get(runner.update))
         last_metrics = {}
 
-        def compile_update(current_env: BelloTwistEnv):
-            def update_fn(state):
-                return update_runner_state(
-                    state,
-                    static_policy,
-                    optimizer,
-                    current_env,
-                    run_config.config,
-                    distillation=distillation,
-                )
+        def update_fn(state, bank_arrays):
+            current_env = _bind_reference_bank(static_env, bank_arrays)
+            return update_runner_state(
+                state,
+                static_policy,
+                optimizer,
+                current_env,
+                run_config.config,
+                distillation=distillation,
+            )
 
-            return jax.jit(update_fn)
+        def reset_fn(state, bank_arrays):
+            current_env = _bind_reference_bank(static_env, bank_arrays)
+            return _reset_runner_environment(state, current_env, run_config.config)
 
-        update_fn = compile_update(env)
+        update_fn = jax.jit(update_fn)
+        reset_fn = jax.jit(reset_fn)
+        if reset_resumed_environment:
+            runner = reset_fn(runner, reference_bank_arrays)
         for update in range(first_update, run_config.config.num_updates):
             if (
                 update > first_update
                 and update % run_config.reference_bank_refresh_updates == 0
             ):
-                active_shard, reference_bank = load_bank(update)
-                env = replace(env, reference_bank=reference_bank)
-                runner = _reset_runner_environment(runner, env, run_config.config)
-                update_fn = compile_update(env)
-            runner, last_metrics = update_fn(runner)
+                active_shard, next_reference_bank = load_bank(update)
+                _ = replace(static_env, reference_bank=next_reference_bank)
+                _delete_device_arrays(reference_bank_arrays)
+                reference_bank_arrays = _device_reference_bank_arrays(
+                    next_reference_bank
+                )
+                del next_reference_bank
+                runner = reset_fn(runner, reference_bank_arrays)
+            runner, last_metrics = update_fn(runner, reference_bank_arrays)
             last_metrics = jax.tree_util.tree_map(
                 lambda value: value.block_until_ready(), last_metrics
             )
@@ -303,6 +317,60 @@ def _reset_runner_environment(runner, env: BelloTwistEnv, config: PPOConfig):
         ),
         rng=rng,
     )
+
+
+_REFERENCE_BANK_ARRAY_FIELDS = (
+    "qpos",
+    "qvel",
+    "body_pos",
+    "body_quat_wxyz",
+    "body_lin_vel",
+    "body_ang_vel",
+    "foot_contacts",
+    "offsets",
+    "lengths",
+    "sampling_probabilities",
+)
+
+
+def _device_reference_bank_arrays(
+    reference_bank: PackedReferenceBank,
+) -> tuple[jax.Array, ...]:
+    return tuple(
+        jax.device_put(getattr(reference_bank, name))
+        for name in _REFERENCE_BANK_ARRAY_FIELDS
+    )
+
+
+def _delete_device_arrays(arrays: tuple[jax.Array, ...]) -> None:
+    for value in arrays:
+        value.delete()
+
+
+def _bind_reference_bank(
+    env: BelloTwistEnv, arrays: tuple[jax.Array, ...]
+) -> BelloTwistEnv:
+    if len(arrays) != len(_REFERENCE_BANK_ARRAY_FIELDS):
+        raise ValueError("TWIST reference bank array contract has drifted")
+    clip_count = int(arrays[-1].shape[0])
+    reference_bank = PackedReferenceBank(
+        **dict(zip(_REFERENCE_BANK_ARRAY_FIELDS, arrays, strict=True)),
+        source_ids=("",) * clip_count,
+        sequence_ids=("",) * clip_count,
+    )
+    return _replace_reference_bank_unchecked(env, reference_bank)
+
+
+def _replace_reference_bank_unchecked(
+    env: BelloTwistEnv, reference_bank: PackedReferenceBank | None
+) -> BelloTwistEnv:
+    bound = object.__new__(BelloTwistEnv)
+    object.__setattr__(bound, "model", env.model)
+    object.__setattr__(bound, "motion", env.motion)
+    object.__setattr__(bound, "stage", env.stage)
+    object.__setattr__(bound, "config", env.config)
+    object.__setattr__(bound, "reference_bank", reference_bank)
+    return bound
 
 
 def save_twist_checkpoint(

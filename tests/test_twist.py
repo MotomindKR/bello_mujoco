@@ -34,6 +34,7 @@ from bello_mujoco.motion.clip import (
 )
 from bello_mujoco.motion.twist_dataset import (
     AssignedSequence,
+    PackedReferenceBank,
     QualityConfig,
     SourceManifest,
     SourceSequence,
@@ -71,8 +72,14 @@ from bello_mujoco.training.ppo import (
     PPOConfig,
     cosine_distillation_weight,
     gaussian_policy_kl_student_teacher,
+    physics_diagnostics,
 )
-from bello_mujoco.training.twist import _reference_bank_shard_index
+from bello_mujoco.training.twist import (
+    _bind_reference_bank,
+    _delete_device_arrays,
+    _device_reference_bank_arrays,
+    _reference_bank_shard_index,
+)
 
 JOINT_NAMES = tuple(
     name for name in GMR_BELLO_JOINT_NAMES if name not in FIXED_TRACKING_JOINT_NAMES
@@ -704,6 +711,64 @@ def test_reference_bank_shard_choice_is_resume_stable() -> None:
     assert sorted(first_cycle) == sorted(second_cycle) == [0, 1, 2]
 
 
+def test_reference_bank_arrays_remain_dynamic_across_shard_swaps() -> None:
+    def bank(value: float) -> PackedReferenceBank:
+        scalar = np.full((4, 1), value, dtype=np.float32)
+        return PackedReferenceBank(
+            qpos=scalar,
+            qvel=scalar,
+            body_pos=np.full((4, 1, 3), value, dtype=np.float32),
+            body_quat_wxyz=np.full((4, 1, 4), value, dtype=np.float32),
+            body_lin_vel=np.full((4, 1, 3), value, dtype=np.float32),
+            body_ang_vel=np.full((4, 1, 3), value, dtype=np.float32),
+            foot_contacts=np.full((4, 2), value, dtype=np.float32),
+            offsets=np.asarray((0, 2), dtype=np.int32),
+            lengths=np.asarray((2, 2), dtype=np.int32),
+            sampling_probabilities=np.asarray((0.5, 0.5), dtype=np.float32),
+            source_ids=("source-a", "source-b"),
+            sequence_ids=("sequence-a", "sequence-b"),
+        )
+
+    static_env = object.__new__(BelloTwistEnv)
+    object.__setattr__(static_env, "model", None)
+    object.__setattr__(static_env, "motion", None)
+    object.__setattr__(static_env, "stage", "teacher")
+    object.__setattr__(static_env, "config", TwistEnvConfig())
+    object.__setattr__(static_env, "reference_bank", None)
+
+    @jax.jit
+    def bank_sum(arrays):
+        bound = _bind_reference_bank(static_env, arrays)
+        return jnp.sum(bound.reference_bank.qpos)
+
+    first = _device_reference_bank_arrays(bank(1.0))
+    second = _device_reference_bank_arrays(bank(2.0))
+    try:
+        assert float(bank_sum(first)) == pytest.approx(4.0)
+        assert float(bank_sum(second)) == pytest.approx(8.0)
+        assert bank_sum._cache_size() == 1
+    finally:
+        _delete_device_arrays(first)
+        _delete_device_arrays(second)
+
+
+def test_physics_diagnostics_report_peak_capacity_and_overflow_fraction() -> None:
+    diagnostics = physics_diagnostics(
+        {
+            "physics/contact_capacity_fraction": jnp.asarray((0.25, 0.75)),
+            "physics/contact_capacity_overflow": jnp.asarray((False, True)),
+            "unrelated": jnp.asarray((100.0,)),
+        }
+    )
+
+    assert diagnostics.keys() == {
+        "max_physics/contact_capacity_fraction",
+        "mean_physics/contact_capacity_overflow",
+    }
+    assert diagnostics["max_physics/contact_capacity_fraction"] == pytest.approx(0.75)
+    assert diagnostics["mean_physics/contact_capacity_overflow"] == pytest.approx(0.5)
+
+
 def test_balanced_mixed_shards_are_deterministic_and_split_isolated() -> None:
     clips = []
     for index in range(12):
@@ -943,3 +1008,25 @@ def test_typed_twist_checkpoints_validate_and_reject_cross_stage_resume() -> Non
     _validate_metadata_layouts(student)
     with pytest.raises(ValueError, match="resume checkpoint contract differs"):
         resumed_checkpoint_metadata(teacher, student, saved_update=0)
+    revised_teacher = replace(teacher, source_revision="5" * 40)
+    with pytest.raises(ValueError, match="source_revision"):
+        resumed_checkpoint_metadata(teacher, revised_teacher, saved_update=0)
+    assert (
+        resumed_checkpoint_metadata(
+            teacher,
+            revised_teacher,
+            saved_update=0,
+            allow_source_revision_mismatch=True,
+        )
+        == revised_teacher
+    )
+    with pytest.raises(ValueError, match="warp"):
+        resumed_checkpoint_metadata(
+            teacher,
+            replace(
+                revised_teacher,
+                warp=WarpConfig(contact_budget_per_env=64),
+            ),
+            saved_update=0,
+            allow_source_revision_mismatch=True,
+        )

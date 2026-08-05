@@ -86,7 +86,7 @@ wandb_config:
   tags: [twist, teacher, whole-body]
 
 warp:
-  contact_budget_per_env: 64
+  contact_budget_per_env: 32
   naconmax: null
   naccdmax: null
   njmax: 2048

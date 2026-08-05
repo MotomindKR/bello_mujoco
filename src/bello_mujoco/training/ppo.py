@@ -1006,6 +1006,19 @@ def target_saturation_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def physics_diagnostics(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    diagnostics = {}
+    for name, value in info.items():
+        if not name.startswith("physics/"):
+            continue
+        value = value.astype(jnp.float32)
+        if name.endswith("_overflow"):
+            diagnostics[f"mean_{name}"] = value.mean()
+        else:
+            diagnostics[f"max_{name}"] = value.max()
+    return diagnostics
+
+
 def gait_diagnostics(
     info: dict[str, jax.Array], control_timestep: float
 ) -> dict[str, jax.Array]:
@@ -1442,6 +1455,7 @@ def update_runner_state(
         **command_diagnostic_means(transitions.info),
         **foot_contact_means(transitions.info),
         **target_saturation_means(transitions.info),
+        **physics_diagnostics(transitions.info),
         **gait_diagnostics(transitions.info, env.control_timestep),
         **reward_means,
     }

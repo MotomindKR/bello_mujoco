@@ -80,9 +80,10 @@ must be initialized, clean, and at their recorded commits. Fetch or push before
 a local run so that tracking state is current. Evaluation, resume, and hardware
 execution reject a dirty root or submodule worktree. They also reject a
 different `HEAD` unless `allow_git_commit_mismatch=true` is explicitly set. That
-override bypasses only root-commit equality; metadata, state layout, task,
-motion content, submodule integrity, and runtime validation remain active. It
-cannot load older checkpoint envelopes that do not contain `git_commit`.
+override bypasses root-commit equality and provenance-only source-revision
+identity; metadata semantics, state layout, task, motion content, submodule
+integrity, and runtime validation remain active. It cannot load older
+checkpoint envelopes that do not contain `git_commit`.
 
 Checkpoint output must be outside the source repository or covered by a Git
 ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name

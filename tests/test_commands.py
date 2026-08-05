@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +19,7 @@ from bello_mujoco.cli import (
     TwistDataCommandConfig,
     VastTrainCommandConfig,
     _reject_explicit_fields,
+    _warp_overrides,
 )
 from bello_mujoco.configuration import (
     CONFIG_ROOT,
@@ -167,7 +168,22 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert motion.checkpoint_config.every_updates == 500
     assert twist_teacher.config.num_updates == 30_002
     assert twist_teacher.config.policy.architecture == "twist_teacher"
+    assert twist_teacher.warp.contact_budget_per_env == 32
     assert twist_student.config.policy.architecture == "twist_student"
+
+
+def test_contact_budget_command_override_is_explicit_and_positive() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        raw = compose(config_name="train", overrides=["contact_budget_per_env=64"])
+    command = command_config(TrainCommandConfig, raw)
+    warp = twist_training_profile("teacher").warp
+
+    assert _warp_overrides(warp, command).contact_budget_per_env == 64
+    with pytest.raises(ValueError, match="must be positive"):
+        _warp_overrides(warp, replace(command, contact_budget_per_env=0))
 
 
 def test_motion_path_override_is_explicit(tmp_path: Path) -> None:

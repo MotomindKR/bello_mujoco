@@ -391,13 +391,14 @@ guide](twist.md).
 | `name` | Stable, single-component run label. Locomotion final checkpoints are timestamped roots; motion also maintains a `final` child. |
 | `every_updates` | Periodic save interval, or `null` for final-only behavior. |
 | `resume_path` | Checkpoint to continue, normally from its exact clean Git revision. |
-| `allow_git_commit_mismatch` | Permit resume from a different clean commit. It requires `resume_path` and bypasses only commit equality. |
+| `allow_git_commit_mismatch` | Permit resume from a different clean commit. It requires `resume_path` and bypasses checkout/source-revision identity only. |
 | `upload_wandb_artifact` | Upload saved checkpoints when a W&B run exists. |
 | `wandb_artifact_name` | Explicit artifact name or profile-derived default. |
 | `wandb_artifact_type` | W&B artifact type, normally `checkpoint`. |
 
 Evaluation requires a clean worktree and, by default, the checkpoint's recorded
-Git commit. `allow_git_commit_mismatch=true` bypasses only that equality check.
+Git commit. `allow_git_commit_mismatch=true` bypasses checkout and recorded
+source-revision identity only.
 Checkpoint document integrity, metadata and state layout hashes, normalization
 state, saved update, task, and actor/critic observation and action runtime
 sizes/layouts are still validated.
@@ -449,6 +450,9 @@ evaluation worker.
 Capacity that is too small can fail or truncate contact processing; excessive
 capacity increases device memory. The maintained locomotion and motion
 profiles raise these values for their larger batches and contact workloads.
+TWIST uses 32 contacts per environment and logs
+`max_physics/contact_capacity_fraction` plus
+`mean_physics/contact_capacity_overflow` so capacity pressure is visible.
 
 ## Maintained profile intent
 

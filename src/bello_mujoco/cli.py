@@ -38,6 +38,7 @@ class TrainCommandConfig:
     seed: int | None
     total_timesteps: int | None
     num_envs: int | None
+    contact_budget_per_env: int | None
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
@@ -196,6 +197,7 @@ def _train_hydra(config: DictConfig) -> None:
         run_config = replace(
             run_config,
             config=_ppo_overrides(run_config.config, command),
+            warp=_warp_overrides(run_config.warp, command),
             checkpoint_config=_checkpoint_overrides(
                 run_config.checkpoint_config, command
             ),
@@ -216,6 +218,7 @@ def _train_hydra(config: DictConfig) -> None:
         run_config = replace(
             run_config,
             config=_ppo_overrides(run_config.config, command),
+            warp=_warp_overrides(run_config.warp, command),
             checkpoint_config=_checkpoint_overrides(
                 run_config.checkpoint_config, command
             ),
@@ -243,6 +246,7 @@ def _train_hydra(config: DictConfig) -> None:
     run_config = replace(
         run_config,
         config=_ppo_overrides(run_config.config, command),
+        warp=_warp_overrides(run_config.warp, command),
         checkpoint_config=_checkpoint_overrides(run_config.checkpoint_config, command),
         wandb_config=_wandb_overrides(run_config.wandb_config, command),
         video_config=replace(
@@ -772,6 +776,15 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
     if command.checkpoint_name is not None:
         values["name"] = command.checkpoint_name
     return replace(config, **values)
+
+
+def _warp_overrides(config, command: TrainCommandConfig):
+    value = command.contact_budget_per_env
+    if value is None:
+        return config
+    if value <= 0:
+        raise ValueError("contact_budget_per_env must be positive")
+    return replace(config, contact_budget_per_env=value)
 
 
 def _wandb_overrides(

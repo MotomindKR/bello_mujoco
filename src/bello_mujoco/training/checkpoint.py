@@ -374,6 +374,7 @@ def restore_runner_checkpoint(
         recorded_metadata,
         expected_metadata,
         saved_update=saved_update,
+        allow_source_revision_mismatch=allow_git_commit_mismatch,
     )
     _validate_environment_layouts(env, effective_metadata)
     template, static_policy, optimizer = init_runner_state(
@@ -445,11 +446,18 @@ def resumed_checkpoint_metadata(
     requested: CheckpointMetadata,
     *,
     saved_update: int,
+    allow_source_revision_mismatch: bool = False,
 ) -> CheckpointMetadata:
     """Validate a resume request and apply its operationally mutable fields."""
 
-    recorded_payload = _resume_contract_payload(recorded)
-    requested_payload = _resume_contract_payload(requested)
+    recorded_payload = _resume_contract_payload(
+        recorded,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    requested_payload = _resume_contract_payload(
+        requested,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
     if recorded_payload != requested_payload:
         mismatches = sorted(
             key
@@ -546,11 +554,15 @@ def _require_unchanged_git_commit(git_commit: str) -> None:
         )
 
 
-def _resume_contract_payload(metadata: CheckpointMetadata) -> dict[str, Any]:
+def _resume_contract_payload(
+    metadata: CheckpointMetadata, *, omit_source_revision: bool = False
+) -> dict[str, Any]:
     """Return training semantics, excluding budget and persisted running state."""
 
     payload = to_builtin(metadata)
     payload["ppo"].pop("total_timesteps")
+    if omit_source_revision:
+        payload.pop("source_revision", None)
     for key in (
         "value_norm",
         "observation_norm",

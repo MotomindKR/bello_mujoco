@@ -1189,7 +1189,7 @@ class BelloTwistEnv:
         done_flags: dict[str, jax.Array],
     ) -> dict[str, jax.Array]:
         done = done_flags["done/any"]
-        return {
+        info = {
             "bootstrap_observation": observation,
             "bootstrap_critic_observation": (
                 self.critic_observation_batch(state)
@@ -1205,6 +1205,21 @@ class BelloTwistEnv:
             **done_flags,
             **reward_info,
         }
+        nacon = jnp.ravel(jnp.asarray(state.motion_state.data._impl.nacon))[0]
+        capacity = self.model.warp_naconmax
+        if capacity is not None:
+            batch_size = observation.shape[0] if observation.ndim == 2 else 1
+            capacity_fraction = nacon.astype(jnp.float32) / float(capacity)
+            info["physics/contact_count_per_env"] = jnp.broadcast_to(
+                nacon.astype(jnp.float32) / float(batch_size), done.shape
+            )
+            info["physics/contact_capacity_fraction"] = jnp.broadcast_to(
+                capacity_fraction, done.shape
+            )
+            info["physics/contact_capacity_overflow"] = jnp.broadcast_to(
+                nacon > capacity, done.shape
+            )
+        return info
 
     def _bank_termination_flags(
         self,
