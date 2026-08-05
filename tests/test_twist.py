@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import MethodType, SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +17,7 @@ import numpy as np
 import pytest
 
 from bello_mujoco.envs.twist import (
+    BelloTwistEnv,
     TWIST_HISTORY_FRAMES,
     TwistEnvConfig,
     TwistObservationContract,
@@ -83,6 +85,25 @@ def test_batched_contact_reduction_is_linear_in_flattened_contacts() -> None:
         reduced,
         np.asarray([[4.0, 8.0], [7.0, 9.0], [5.0, 6.0], [0.0, 0.0]]),
     )
+
+
+def test_twist_action_diagnostics_accept_rollout_and_environment_axes() -> None:
+    fake_env = SimpleNamespace(
+        action_size=2,
+        model=SimpleNamespace(
+            policy_ctrl_indices=np.asarray([0, 1]),
+            actuator_coordinate_transform=np.eye(2, dtype=np.float32),
+            default_joint_target=np.zeros(2, dtype=np.float32),
+            joint_target_low=np.asarray([-1.0, -1.0], dtype=np.float32),
+            joint_target_high=np.asarray([1.0, 1.0], dtype=np.float32),
+        ),
+    )
+    fake_env._action_target = MethodType(BelloTwistEnv._action_target, fake_env)
+    actions = jnp.zeros((2, 3, 2), dtype=jnp.float32).at[1, 2, 0].set(3.0)
+
+    metrics = BelloTwistEnv.ppo_action_diagnostics(fake_env, actions)
+
+    assert metrics["target/outside_joint_limit_fraction"] == pytest.approx(1.0 / 12.0)
 
 
 def source_sequence(

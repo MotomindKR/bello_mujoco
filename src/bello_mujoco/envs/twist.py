@@ -663,7 +663,8 @@ class BelloTwistEnv:
         return self._teacher_observation(state, world_id)
 
     def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]:
-        targets = jax.vmap(self._action_target)(env_action)
+        flat_action = env_action.reshape((-1, self.action_size))
+        targets = jax.vmap(self._action_target)(flat_action)
         policy = jnp.asarray(self.model.policy_ctrl_indices)
         qpos_targets = jax.vmap(
             lambda ctrl: jnp.linalg.solve(
