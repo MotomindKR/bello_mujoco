@@ -278,8 +278,8 @@ def save_training_checkpoint(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     staging_path = Path(tempfile.mkdtemp(prefix=f".{path.name}.tmp-", dir=path.parent))
+    checkpointer = ocp.PyTreeCheckpointer()
     try:
-        checkpointer = ocp.PyTreeCheckpointer()
         checkpointer.save(
             staging_path / STATE_DIR,
             _orbax_storage_item(train_item),
@@ -308,6 +308,8 @@ def save_training_checkpoint(
     except BaseException:
         shutil.rmtree(staging_path, ignore_errors=True)
         raise
+    finally:
+        checkpointer.close()
 
 
 def restore_evaluation_checkpoint(
@@ -1041,11 +1043,15 @@ def _restore_checkpoint_item(
         )
     storage_template = _orbax_storage_item(template)
     restore_args = ocp.checkpoint_utils.construct_restore_args(storage_template)
-    restored_storage = ocp.PyTreeCheckpointer().restore(
-        path,
-        item=storage_template,
-        restore_args=restore_args,
-    )
+    checkpointer = ocp.PyTreeCheckpointer()
+    try:
+        restored_storage = checkpointer.restore(
+            path,
+            item=storage_template,
+            restore_args=restore_args,
+        )
+    finally:
+        checkpointer.close()
     restored = _restore_empty_arrays(restored_storage, template)
     if _layout_fingerprint(restored) != saved_fingerprint:
         raise ValueError(

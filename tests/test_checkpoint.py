@@ -675,6 +675,7 @@ def test_checkpoint_failure_never_publishes_partial_directory(
     config = ppo_config()
     final_path = tmp_path / "failed"
     save_calls = 0
+    closed = False
 
     class FailingCheckpointer:
         def save(self, path: Path, item: Any, *, force: bool) -> None:
@@ -686,6 +687,10 @@ def test_checkpoint_failure_never_publishes_partial_directory(
                 (path / "partial").write_text("partial", encoding="utf-8")
                 raise RuntimeError("simulated continuation failure")
 
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
     monkeypatch.setattr(
         checkpoint.ocp, "PyTreeCheckpointer", lambda: FailingCheckpointer()
     )
@@ -696,6 +701,7 @@ def test_checkpoint_failure_never_publishes_partial_directory(
         )
 
     assert save_calls == 2
+    assert closed
     assert not final_path.exists()
     assert list(tmp_path.glob(".failed.tmp-*")) == []
 
@@ -881,6 +887,7 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
     path = tmp_path / "layout_mismatch"
     write_checkpoint_document(path, document)
     restore_calls = 0
+    closed = False
 
     class FakeCheckpointer:
         def restore(self, path: Path, *, item: Any, restore_args: Any) -> Any:
@@ -888,6 +895,10 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
             del path, restore_args
             restore_calls += 1
             return item
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
 
     monkeypatch.setattr(
         checkpoint.ocp, "PyTreeCheckpointer", lambda: FakeCheckpointer()
@@ -905,6 +916,7 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
             restore_evaluation_checkpoint(path)
 
     assert restore_calls == (1 if restore_runner else 0)
+    assert closed == restore_runner
 
 
 def test_save_and_load_reject_updates_outside_training_range(

@@ -62,6 +62,32 @@ def test_importing_command_surface_does_not_import_jax() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_training_entrypoint_disables_jax_preallocation_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bello_mujoco.cli as cli
+
+    monkeypatch.delenv("XLA_PYTHON_CLIENT_PREALLOCATE", raising=False)
+    monkeypatch.setattr(cli, "_train_hydra", lambda: None)
+
+    cli.train_entrypoint()
+
+    assert cli.os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "false"
+
+
+def test_training_entrypoint_preserves_explicit_allocator_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bello_mujoco.cli as cli
+
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+    monkeypatch.setattr(cli, "_train_hydra", lambda: None)
+
+    cli.train_entrypoint()
+
+    assert cli.os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "true"
+
+
 def test_hardware_entrypoint_forces_cpu_backend() -> None:
     result = subprocess.run(
         [
