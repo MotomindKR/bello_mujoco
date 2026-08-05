@@ -18,6 +18,8 @@ from bello_mujoco.envs.twist import (
 )
 from bello_mujoco.motion.twist_dataset import (
     TWIST_DATASET_SCHEMA_VERSION,
+    TWIST_PACKING_ALGORITHM,
+    TWIST_TRAIN_SAMPLING,
     load_packed_reference_bank,
     materialize_packed_clip,
     packed_reference_bank_shards,
@@ -277,9 +279,16 @@ def _reference_bank_shard_index(
     update: int,
     refresh_updates: int,
 ) -> int:
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    if probabilities.ndim != 1 or probabilities.size == 0:
+        raise ValueError("TWIST shard probabilities must be a nonempty vector")
+    if np.any(~np.isfinite(probabilities)) or np.any(probabilities <= 0.0):
+        raise ValueError("TWIST shard probabilities must be positive and finite")
     refresh_epoch = update // refresh_updates
-    rng = np.random.default_rng(np.random.SeedSequence((seed, refresh_epoch)))
-    return int(rng.choice(len(probabilities), p=probabilities))
+    cycle, cycle_index = divmod(refresh_epoch, len(probabilities))
+    rng = np.random.default_rng(np.random.SeedSequence((seed, cycle)))
+    permutation = rng.permutation(len(probabilities))
+    return int(permutation[cycle_index])
 
 
 def _reset_runner_environment(runner, env: BelloTwistEnv, config: PPOConfig):
@@ -413,6 +422,14 @@ def _load_dataset_contract(
         ) from error
     if index.get("schema_version") != TWIST_DATASET_SCHEMA_VERSION:
         raise ValueError("unsupported TWIST dataset index schema")
+    packing = index.get("packing")
+    if (
+        not isinstance(packing, dict)
+        or packing.get("algorithm") != TWIST_PACKING_ALGORITHM
+    ):
+        raise ValueError("unsupported TWIST dataset packing algorithm")
+    if packing.get("train_sampling") != TWIST_TRAIN_SAMPLING:
+        raise ValueError("unsupported TWIST dataset sampling contract")
     return index_path, TwistDatasetContract(
         index_path=index_path,
         schema_version=index["schema_version"],

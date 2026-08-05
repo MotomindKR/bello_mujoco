@@ -190,13 +190,20 @@ reasons.
 Accepted clips are packed into pickle-free NPZ shards plus `index.json`.
 The builder validates the corpus without retaining decoded motion arrays, then
 reloads only enough accepted clips to fill one shard. Peak host memory therefore
-depends on `max_frames_per_shard`, not total corpus size. Training samples clips
-using the explicit manifest weights (uniformly when every weight is `1.0`), then
-samples a start frame within the selected clip. The trainer transfers one shard
-at a time and periodically rotates shards, so the full corpus is never placed in
-host or device memory. Evaluation visits every held-out clip in stable
-source/sequence order. The fingerprint covers the portable manifest, accepted
-hashes, quality configuration, Bello model, and GMR revision.
+depends on `max_frames_per_shard`, not total corpus size. Dataset schema 2 uses a
+split-seeded, frame-balanced packing pass so that every training shard is a
+representative mixture rather than a contiguous source-directory slice. Train
+and evaluation clips never share a shard.
+
+By default, clip sampling is proportional to accepted frame count and then
+uniform over valid start frames. An explicit manifest `sampling_weight`
+multiplies that frame mass. The trainer transfers one shard at a time and walks
+a deterministic shuffled permutation without replacement before beginning the
+next shard cycle. It therefore covers every training shard while keeping the
+full corpus out of host and device memory. Evaluation visits every held-out clip
+in stable source/sequence order. The fingerprint covers the portable manifest,
+accepted hashes, quality and packing configuration, Bello model, and GMR
+revision.
 
 ## Observation and optimization contracts
 

@@ -37,8 +37,12 @@ from bello_mujoco.motion.twist_dataset import (
     QualityConfig,
     SourceManifest,
     SourceSequence,
+    TWIST_DATASET_SCHEMA_VERSION,
+    TWIST_PACKING_ALGORITHM,
+    TWIST_TRAIN_SAMPLING,
     _align_floor_and_heading,
     _arrays_fingerprint,
+    _balanced_mixed_shard_groups,
     assign_splits,
     build_packed_dataset,
     clip_quality_reasons,
@@ -632,6 +636,7 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
             "offset": sum(lengths[:index]),
             "frames": frames,
             "sampling_weight": 1.0,
+            "sampling_probability_numerator": float(frames),
         }
         for index, frames in enumerate(lengths)
     ]
@@ -644,7 +649,10 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
     np.testing.assert_array_equal(bank.offsets, (0, lengths[0]))
     np.testing.assert_array_equal(bank.lengths, lengths)
     np.testing.assert_array_equal(bank.qpos, qpos)
-    np.testing.assert_allclose(bank.sampling_probabilities, (0.5, 0.5))
+    np.testing.assert_allclose(
+        bank.sampling_probabilities,
+        np.asarray(lengths, dtype=np.float64) / sum(lengths),
+    )
 
 
 def test_reference_bank_bounds_allow_zero_probability_padding() -> None:
@@ -678,6 +686,45 @@ def test_reference_bank_shard_choice_is_resume_stable() -> None:
     assert resumed == _reference_bank_shard_index(
         probabilities, seed=11, update=999, refresh_updates=500
     )
+    first_cycle = [
+        _reference_bank_shard_index(
+            probabilities, seed=11, update=500 * index, refresh_updates=500
+        )
+        for index in range(len(probabilities))
+    ]
+    second_cycle = [
+        _reference_bank_shard_index(
+            probabilities,
+            seed=11,
+            update=500 * (len(probabilities) + index),
+            refresh_updates=500,
+        )
+        for index in range(len(probabilities))
+    ]
+    assert sorted(first_cycle) == sorted(second_cycle) == [0, 1, 2]
+
+
+def test_balanced_mixed_shards_are_deterministic_and_split_isolated() -> None:
+    clips = []
+    for index in range(12):
+        split = "train" if index < 9 else "evaluation"
+        assigned = AssignedSequence(source_sequence(index), split)
+        clips.append((assigned, f"sha256:{index:064x}", 90 + index))
+
+    first = _balanced_mixed_shard_groups(clips, max_frames=350, split_seed=17)
+    second = _balanced_mixed_shard_groups(
+        list(reversed(clips)), max_frames=350, split_seed=17
+    )
+
+    def identities(groups):
+        return [[clip[0].sequence.sequence_id for clip in group] for group in groups]
+
+    assert identities(first) == identities(second)
+    assert {sequence for group in identities(first) for sequence in group} == {
+        f"sequence_{index}" for index in range(12)
+    }
+    assert all(len({clip[0].split for clip in group}) == 1 for group in first)
+    assert all(sum(clip[2] for clip in group) <= 350 for group in first)
 
 
 def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
@@ -801,6 +848,12 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
     )
 
     assert first["dataset_fingerprint"] == second["dataset_fingerprint"]
+    assert first["schema_version"] == TWIST_DATASET_SCHEMA_VERSION
+    assert first["packing"] == {
+        "algorithm": TWIST_PACKING_ALGORITHM,
+        "split_seed": 7,
+        "train_sampling": TWIST_TRAIN_SAMPLING,
+    }
     assert {clip["split"] for clip in first["clips"]} == {
         "train",
         "evaluation",

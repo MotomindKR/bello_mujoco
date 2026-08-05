@@ -21,9 +21,12 @@ from omegaconf import OmegaConf
 
 from bello_mujoco.configuration import dataclass_from_dict
 
-TWIST_DATASET_SCHEMA_VERSION = 1
+TWIST_SOURCE_MANIFEST_SCHEMA_VERSION = 1
+TWIST_DATASET_SCHEMA_VERSION = 2
 TWIST_RETARGET_FORMAT_VERSION = 6
 TWIST_POLICY_FPS = 50.0
+TWIST_PACKING_ALGORITHM = "balanced_mixed_shards_v1"
+TWIST_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
 TWIST_FUTURE_OFFSETS = (
     1,
     5,
@@ -290,7 +293,7 @@ def scan_amass_manifest(
             progress(index, len(paths), path)
 
     manifest = SourceManifest(
-        schema_version=TWIST_DATASET_SCHEMA_VERSION,
+        schema_version=TWIST_SOURCE_MANIFEST_SCHEMA_VERSION,
         split_seed=split_seed,
         sequences=tuple(sequences),
     )
@@ -427,10 +430,10 @@ def validate_source_manifest(
     body_model_root: Path | None = None,
     verify_files: bool = True,
 ) -> None:
-    if manifest.schema_version != TWIST_DATASET_SCHEMA_VERSION:
+    if manifest.schema_version != TWIST_SOURCE_MANIFEST_SCHEMA_VERSION:
         raise ValueError(
             f"unsupported TWIST manifest schema {manifest.schema_version}; "
-            f"expected {TWIST_DATASET_SCHEMA_VERSION}"
+            f"expected {TWIST_SOURCE_MANIFEST_SCHEMA_VERSION}"
         )
     if not manifest.sequences:
         raise ValueError("TWIST source manifest contains no sequences")
@@ -590,7 +593,7 @@ def validate_split_isolation(assignments: tuple[AssignedSequence, ...]) -> None:
 
 def portable_manifest(assignments: tuple[AssignedSequence, ...]) -> dict[str, Any]:
     return {
-        "schema_version": TWIST_DATASET_SCHEMA_VERSION,
+        "schema_version": TWIST_SOURCE_MANIFEST_SCHEMA_VERSION,
         "sequences": [
             {
                 **{
@@ -659,7 +662,7 @@ def build_packed_dataset(
     decisions: list[ClipDecision] = []
     # Keep only compact metadata here. Retaining every normalized motion array
     # makes a full AMASS build scale with the entire corpus and can exhaust RAM.
-    accepted: list[tuple[AssignedSequence, str]] = []
+    accepted: list[tuple[AssignedSequence, str, int]] = []
     for assigned in assignments:
         sequence = assigned.sequence
         path = retargeted_root / f"{sequence.source_id}__{sequence.sequence_id}.npz"
@@ -720,7 +723,7 @@ def build_packed_dataset(
                 digest,
             )
         )
-        accepted.append((assigned, digest))
+        accepted.append((assigned, digest, frames))
     if not accepted:
         _write_report(output_root / "conversion_report.json", decisions)
         raise ValueError("TWIST dataset build accepted no clips; see conversion report")
@@ -733,6 +736,7 @@ def build_packed_dataset(
         output_root,
         accepted,
         quality.max_frames_per_shard,
+        split_seed=manifest.split_seed,
         retargeted_root=retargeted_root,
         quality=quality,
     )
@@ -743,10 +747,15 @@ def build_packed_dataset(
         "accepted_clip_hashes": sorted(
             {
                 f"{item.sequence.source_id}/{item.sequence.sequence_id}": digest
-                for item, digest in accepted
+                for item, digest, _ in accepted
             }.items()
         ),
         "quality": asdict(quality),
+        "packing": {
+            "algorithm": TWIST_PACKING_ALGORITHM,
+            "split_seed": manifest.split_seed,
+            "train_sampling": TWIST_TRAIN_SAMPLING,
+        },
         "robot_fingerprint": robot_fingerprint,
         "gmr_revision": gmr_revision,
         "gmr_config_fingerprint": gmr_config_fingerprint,
@@ -764,6 +773,11 @@ def build_packed_dataset(
         "gmr_config_fingerprint": gmr_config_fingerprint,
         "policy_fps": quality.policy_fps,
         "future_offsets": list(TWIST_FUTURE_OFFSETS),
+        "packing": {
+            "algorithm": TWIST_PACKING_ALGORITHM,
+            "split_seed": manifest.split_seed,
+            "train_sampling": TWIST_TRAIN_SAMPLING,
+        },
         "joint_names": list(joint_names),
         "body_names": list(body_names),
         "clips": shard_entries,
@@ -925,9 +939,14 @@ def load_packed_reference_bank(
                             f"{expected_shape}"
                         )
                     packed[name][target_start:target_stop] = value
-    weights = np.asarray([clip["sampling_weight"] for clip in clips], dtype=np.float64)
-    if split == "evaluation":
-        weights = np.ones_like(weights)
+    weights = (
+        np.ones((len(clips),), dtype=np.float64)
+        if split == "evaluation"
+        else np.asarray(
+            [clip["sampling_probability_numerator"] for clip in clips],
+            dtype=np.float64,
+        )
+    )
     probabilities = weights / weights.sum()
     clip_count = len(clips)
     padded_clip_count = clip_count if pad_clips is None else pad_clips
@@ -968,7 +987,7 @@ def packed_reference_bank_shards(
     names = tuple(sorted(grouped))
     masses = np.asarray(
         [
-            sum(float(clip["sampling_weight"]) for clip in grouped[name])
+            sum(float(clip["sampling_probability_numerator"]) for clip in grouped[name])
             for name in names
         ],
         dtype=np.float64,
@@ -1172,63 +1191,115 @@ def _validate_retargeted_provenance(
 
 def _write_shards(
     output_root: Path,
-    clips: list[tuple[AssignedSequence, str]],
+    clips: list[tuple[AssignedSequence, str, int]],
     max_frames: int,
     *,
+    split_seed: int,
     retargeted_root: Path,
     quality: QualityConfig,
 ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...]]:
     if max_frames <= 0:
         raise ValueError("max_frames_per_shard must be positive")
     entries: list[dict[str, Any]] = []
-    shard_clips: list[tuple[AssignedSequence, dict[str, np.ndarray], str]] = []
-    shard_frames = 0
-    shard_index = 0
     joint_names: tuple[str, ...] | None = None
     body_names: tuple[str, ...] | None = None
-    for assigned, expected_digest in clips:
-        sequence = assigned.sequence
-        path = retargeted_root / f"{sequence.source_id}__{sequence.sequence_id}.npz"
-        arrays = load_and_normalize_retargeted_clip(path, quality)
-        digest = _arrays_fingerprint(arrays)
-        if digest != expected_digest:
-            raise ValueError(f"retargeted clip changed during build: {path}")
-        clip = (assigned, arrays, digest)
-        names = tuple(str(value) for value in arrays["joint_names"].tolist())
-        bodies = tuple(str(value) for value in arrays["body_names"].tolist())
-        if joint_names is None:
-            joint_names, body_names = names, bodies
-        elif names != joint_names or bodies != body_names:
-            raise ValueError("accepted clips do not share one joint/body ordering")
-        frames = int(arrays["qpos"].shape[0])
-        if shard_clips and shard_frames + frames > max_frames:
-            entries.extend(_flush_shard(output_root, shard_index, shard_clips))
-            shard_index += 1
-            shard_clips = []
-            shard_frames = 0
-        shard_clips.append(clip)
-        shard_frames += frames
-    if shard_clips:
+    groups = _balanced_mixed_shard_groups(clips, max_frames, split_seed)
+    for shard_index, group in enumerate(groups):
+        shard_clips: list[tuple[AssignedSequence, dict[str, np.ndarray], str]] = []
+        for assigned, expected_digest, expected_frames in group:
+            sequence = assigned.sequence
+            path = retargeted_root / f"{sequence.source_id}__{sequence.sequence_id}.npz"
+            arrays = load_and_normalize_retargeted_clip(path, quality)
+            digest = _arrays_fingerprint(arrays)
+            if digest != expected_digest:
+                raise ValueError(f"retargeted clip changed during build: {path}")
+            frames = int(arrays["qpos"].shape[0])
+            if frames != expected_frames:
+                raise ValueError(
+                    f"retargeted clip frame count changed during build: {path}"
+                )
+            names = tuple(str(value) for value in arrays["joint_names"].tolist())
+            bodies = tuple(str(value) for value in arrays["body_names"].tolist())
+            if joint_names is None:
+                joint_names, body_names = names, bodies
+            elif names != joint_names or bodies != body_names:
+                raise ValueError("accepted clips do not share one joint/body ordering")
+            shard_clips.append((assigned, arrays, digest))
         entries.extend(_flush_shard(output_root, shard_index, shard_clips))
     assert joint_names is not None and body_names is not None
     total_train_frames = sum(
         entry["frames"] for entry in entries if entry["split"] == "train"
     )
+    total_train_mass = sum(
+        entry["frames"] * entry["sampling_weight"]
+        for entry in entries
+        if entry["split"] == "train"
+    )
+    evaluation_order = {
+        (entry["source_id"], entry["sequence_id"]): index
+        for index, entry in enumerate(
+            sorted(
+                (entry for entry in entries if entry["split"] == "evaluation"),
+                key=lambda entry: (entry["source_id"], entry["sequence_id"]),
+            )
+        )
+    }
     for entry in entries:
         if entry["split"] == "train":
-            weighted = entry["sampling_weight"]
+            weighted = entry["frames"] * entry["sampling_weight"]
             entry["sampling_probability_numerator"] = weighted
-            entry["sampling_probability_denominator"] = sum(
-                item["sampling_weight"] for item in entries if item["split"] == "train"
-            )
+            entry["sampling_probability_denominator"] = total_train_mass
         else:
-            entry["evaluation_order"] = sum(
-                item["split"] == "evaluation"
-                for item in entries[: entries.index(entry)]
-            )
+            entry["evaluation_order"] = evaluation_order[
+                (entry["source_id"], entry["sequence_id"])
+            ]
     if total_train_frames <= 0:
         raise ValueError("packed dataset contains no training frames")
     return entries, joint_names, body_names
+
+
+def _balanced_mixed_shard_groups(
+    clips: list[tuple[AssignedSequence, str, int]],
+    max_frames: int,
+    split_seed: int,
+) -> list[list[tuple[AssignedSequence, str, int]]]:
+    """Mix each split deterministically while balancing resident frame counts."""
+
+    groups: list[list[tuple[AssignedSequence, str, int]]] = []
+    for split in ("train", "evaluation"):
+        selected = [clip for clip in clips if clip[0].split == split]
+        if not selected:
+            continue
+        frame_limit = max(max_frames, max(clip[2] for clip in selected))
+        shard_count = max(1, math.ceil(sum(clip[2] for clip in selected) / frame_limit))
+        ordered = sorted(
+            selected,
+            key=lambda clip: (
+                -clip[2],
+                hashlib.sha256(
+                    (
+                        f"{split_seed}\0{split}\0{clip[0].sequence.source_id}\0"
+                        f"{clip[0].sequence.sequence_id}"
+                    ).encode("utf-8")
+                ).digest(),
+            ),
+        )
+        while True:
+            split_groups: list[list[tuple[AssignedSequence, str, int]]] = [
+                [] for _ in range(shard_count)
+            ]
+            frame_counts = [0] * shard_count
+            for clip in ordered:
+                shard_index = min(
+                    range(shard_count), key=lambda index: (frame_counts[index], index)
+                )
+                split_groups[shard_index].append(clip)
+                frame_counts[shard_index] += clip[2]
+            if max(frame_counts) <= frame_limit:
+                groups.extend(split_groups)
+                break
+            shard_count += 1
+    return groups
 
 
 def _flush_shard(
@@ -1544,10 +1615,10 @@ def _git_revision(root: Path) -> str:
 
 
 def _validate_retargeted_split_hashes(
-    accepted: list[tuple[AssignedSequence, str]],
+    accepted: list[tuple[AssignedSequence, str, int]],
 ) -> None:
     seen: dict[str, AssignedSplit] = {}
-    for assigned, digest in accepted:
+    for assigned, digest, _ in accepted:
         _record_split(seen, digest, assigned.split, "retargeted content")
 
 
