@@ -18,7 +18,7 @@ from bello_mujoco.motion.twist_dataset import SourceSequence, load_source_manife
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
-RETARGET_FORMAT_VERSION = 3
+RETARGET_FORMAT_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,9 @@ def batch_retarget_manifest(
         gmr_environment = _nix_develop_environment(gmr_root)
     normalize_tool = repository / "tools" / "twist_normalize_smpl.py"
     retarget_tool = repository / "tools" / "twist_gmr_retarget.py"
-    config_path = repository / "configs" / "twist" / "gmr_smplx_to_bello.json"
+    config_path = (
+        gmr_root / "general_motion_retargeting" / "ik_configs" / "smplx_to_bello.json"
+    )
     robot_source = (
         repository
         / "deps"

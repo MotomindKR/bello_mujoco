@@ -237,7 +237,9 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
         if command[1].endswith("twist_normalize_smpl.py"):
             output.write_bytes(b"normalized")
         else:
-            config = repository / "configs/twist/gmr_smplx_to_bello.json"
+            config = repository / (
+                "deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello.json"
+            )
             robot = repository / (
                 "deps/bello-stack/descriptions/bello/full_body/urdf/"
                 "bello_full_body.urdf"
@@ -251,7 +253,7 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
             np.savez(
                 output,
                 source_sha256=np.asarray(sequence.source_sha256),
-                retarget_format_version=np.asarray(3, dtype=np.int32),
+                retarget_format_version=np.asarray(4, dtype=np.int32),
                 gmr_revision=np.asarray(revision),
                 gmr_config_sha256=np.asarray(
                     hashlib.sha256(config.read_bytes()).hexdigest()
@@ -515,7 +517,9 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
         / "deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf"
     )
     gmr_root = repository / "deps/GMR"
-    config_path = repository / "configs/twist/gmr_smplx_to_bello.json"
+    config_path = repository / (
+        "deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello.json"
+    )
     revision = subprocess.run(
         ["git", "-C", str(gmr_root), "rev-parse", "HEAD"],
         check=True,
@@ -584,7 +588,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
             timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_sha256=np.asarray(source_digest),
-            retarget_format_version=np.asarray(3, dtype=np.int32),
+            retarget_format_version=np.asarray(4, dtype=np.int32),
             qpos=qpos,
             qvel=np.zeros((frames, 31), dtype=np.float32),
             body_pos=np.zeros((frames, len(body_names), 3), dtype=np.float32),

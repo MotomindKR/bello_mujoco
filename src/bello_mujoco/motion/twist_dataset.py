@@ -649,10 +649,10 @@ def build_packed_dataset(
     gmr_revision = _git_revision(gmr_root)
     robot_fingerprint = f"sha256:{_file_sha256(robot_model_path)}"
     gmr_config_path = (
-        Path(__file__).resolve().parents[3]
-        / "configs"
-        / "twist"
-        / "gmr_smplx_to_bello.json"
+        Path(gmr_root).resolve()
+        / "general_motion_retargeting"
+        / "ik_configs"
+        / "smplx_to_bello.json"
     )
     gmr_config_fingerprint = f"sha256:{_file_sha256(gmr_config_path)}"
     decisions: list[ClipDecision] = []
@@ -742,6 +742,7 @@ def build_packed_dataset(
         "quality": asdict(quality),
         "robot_fingerprint": robot_fingerprint,
         "gmr_revision": gmr_revision,
+        "gmr_config_fingerprint": gmr_config_fingerprint,
     }
     dataset_fingerprint = _json_fingerprint(fingerprint_payload)
     index = {
@@ -750,7 +751,10 @@ def build_packed_dataset(
         "portable_manifest_fingerprint": _json_fingerprint(manifest_portable),
         "robot_fingerprint": robot_fingerprint,
         "gmr_revision": gmr_revision,
-        "gmr_configuration": "configs/twist/gmr_smplx_to_bello.json",
+        "gmr_configuration": (
+            "general_motion_retargeting/ik_configs/smplx_to_bello.json"
+        ),
+        "gmr_config_fingerprint": gmr_config_fingerprint,
         "policy_fps": quality.policy_fps,
         "future_offsets": list(TWIST_FUTURE_OFFSETS),
         "joint_names": list(joint_names),
@@ -966,7 +970,7 @@ def load_and_normalize_retargeted_clip(
         if missing:
             raise ValueError(f"{path.name} is missing fields: {missing}")
         arrays = {name: np.asarray(archive[name]) for name in archive.files}
-    if int(np.asarray(arrays["retarget_format_version"]).item()) != 3:
+    if int(np.asarray(arrays["retarget_format_version"]).item()) != 4:
         raise ValueError(f"{path.name}: unsupported retarget format version")
     frames = arrays["qpos"].shape[0]
     for name in (

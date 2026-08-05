@@ -20,7 +20,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 GMR_ROOT = ROOT / "deps" / "GMR"
-RETARGET_FORMAT_VERSION = 3
+RETARGET_FORMAT_VERSION = 4
 
 ANKLE_TENDON_LOGICAL_JOINT = {
     "left_ankle_motor_1": "left_ankle_pitch_joint",
@@ -79,7 +79,9 @@ def main() -> None:
         raise FileNotFoundError(
             f"provenance source not found: {args.provenance_source}"
         )
-    config_path = ROOT / "configs" / "twist" / "gmr_smplx_to_bello.json"
+    config_path = (
+        GMR_ROOT / "general_motion_retargeting" / "ik_configs" / "smplx_to_bello.json"
+    )
     gmr_params.ROBOT_XML_DICT["bello"] = args.robot_xml.expanduser().resolve()
     gmr_params.IK_CONFIG_DICT.setdefault("smplx", {})["bello"] = config_path
     with torch.inference_mode():
