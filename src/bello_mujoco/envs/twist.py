@@ -491,6 +491,13 @@ class BelloTwistEnv:
         )
 
     def reset(self, rng: jax.Array | None = None) -> tuple[TwistState, jax.Array]:
+        state = self._reset_state(rng)
+        obs_key = rng
+        if rng is not None:
+            obs_key = jax.random.split(rng, 4)[3]
+        return state, self.observation(state, obs_key)
+
+    def _reset_state(self, rng: jax.Array | None = None) -> TwistState:
         clip_key = pose_key = delay_key = obs_key = rng
         if rng is not None:
             clip_key, pose_key, delay_key, obs_key = jax.random.split(rng, 4)
@@ -556,17 +563,15 @@ class BelloTwistEnv:
                     frame[None, :], TWIST_HISTORY_FRAMES, axis=0
                 )
             )
-        return state, self.observation(state, obs_key)
+        return state
 
     def reset_batch(
         self, batch_size: int, rng: jax.Array | None = None
     ) -> tuple[TwistState, jax.Array]:
         if rng is None:
-            state, observation = jax.vmap(lambda _: self.reset())(
-                jnp.arange(batch_size)
-            )
+            state = jax.vmap(lambda _: self._reset_state())(jnp.arange(batch_size))
         else:
-            state, observation = jax.vmap(self.reset)(jax.random.split(rng, batch_size))
+            state = jax.vmap(self._reset_state)(jax.random.split(rng, batch_size))
         data = state.motion_state.data.replace(
             _impl=state.motion_state.data._impl.replace(nworld=batch_size)
         )
@@ -624,15 +629,15 @@ class BelloTwistEnv:
             return state.observation_history.reshape(
                 (state.observation_history.shape[0], -1)
             )
-        world_ids = jnp.arange(state.action_delay_steps.shape[0], dtype=jnp.int32)
         if rng is None:
-            return jax.vmap(
-                lambda item, world_id: self._teacher_observation(item, world_id)
-            )(state, world_ids)
-        keys = jax.random.split(rng, state.action_delay_steps.shape[0])
-        return jax.vmap(
-            lambda item, world_id, key: self._teacher_observation(item, world_id, key)
-        )(state, world_ids, keys)
+            core = jax.vmap(self._teacher_observation_core)(state)
+        else:
+            keys = jax.random.split(rng, state.action_delay_steps.shape[0])
+            core = jax.vmap(self._teacher_observation_core)(state, keys)
+        contacts = self._foot_contacts_batch(
+            state.motion_state, state.action_delay_steps.shape[0]
+        )
+        return jnp.concatenate((core, contacts, state.domain_randomization), axis=-1)
 
     def critic_observation(self, state: TwistState) -> jax.Array:
         return self._teacher_observation(state)
@@ -641,8 +646,16 @@ class BelloTwistEnv:
         self, state: TwistState, rng: jax.Array | None = None
     ) -> jax.Array:
         del rng
-        world_ids = jnp.arange(state.action_delay_steps.shape[0], dtype=jnp.int32)
-        return jax.vmap(self.critic_observation_with_world)(state, world_ids)
+        return jnp.concatenate(
+            (
+                jax.vmap(self._teacher_observation_core)(state),
+                self._foot_contacts_batch(
+                    state.motion_state, state.action_delay_steps.shape[0]
+                ),
+                state.domain_randomization,
+            ),
+            axis=-1,
+        )
 
     def critic_observation_with_world(
         self, state: TwistState, world_id: jax.Array
@@ -671,6 +684,17 @@ class BelloTwistEnv:
         world_id: jax.Array | int = 0,
         rng: jax.Array | None = None,
     ) -> jax.Array:
+        return jnp.concatenate(
+            (
+                self._teacher_observation_core(state, rng),
+                self._foot_contacts(state.motion_state, world_id),
+                state.domain_randomization,
+            )
+        )
+
+    def _teacher_observation_core(
+        self, state: TwistState, rng: jax.Array | None = None
+    ) -> jax.Array:
         future = jnp.concatenate(
             tuple(
                 self._teacher_reference_frame(state, offset)
@@ -689,8 +713,6 @@ class BelloTwistEnv:
                 base_linear_velocity,
                 motion_state.data.qpos[2:3],
                 self._current_key_body_positions(motion_state),
-                self._foot_contacts(motion_state, world_id),
-                state.domain_randomization,
             )
         )
 
@@ -867,17 +889,32 @@ class BelloTwistEnv:
             step_count=state.motion_state.step_count + 1,
             episode_length=state.motion_state.episode_length + 1,
         )
-        world_ids = jnp.arange(batch_size, dtype=jnp.int32)
-
-        contacts = jax.vmap(self._foot_contacts)(motion_state, world_ids).astype(bool)
+        contact_normal, contact_tangent = self._foot_contact_forces_batch(
+            motion_state, batch_size
+        )
+        contacts = (contact_normal > 5.0).astype(bool)
         foot_air_time = state.foot_air_time + self.control_timestep
 
         def reward_one(
-            previous, current, clip_index, contact, air_time, twist_state, world_id
+            previous,
+            current,
+            clip_index,
+            contact,
+            air_time,
+            twist_state,
+            normal_force,
+            tangent_force,
         ):
             reference = self._aligned_reference(current, clip_index, 0)
             return self._twist_reward(
-                twist_state, current, reference, contact, air_time, world_id
+                twist_state,
+                current,
+                reference,
+                contact,
+                air_time,
+                0,
+                contact_normal=normal_force,
+                contact_tangent=tangent_force,
             )
 
         reward, reward_info = jax.vmap(reward_one)(
@@ -887,13 +924,33 @@ class BelloTwistEnv:
             contacts,
             foot_air_time,
             state,
-            world_ids,
+            contact_normal,
+            contact_tangent,
         )
         references = jax.vmap(
             lambda current, clip: self._aligned_reference(current, clip, 0)
         )(motion_state, state.clip_index)
-        done_flags = jax.vmap(self._bank_termination_flags)(
-            motion_state, state.clip_index, references, world_ids
+        torso_contacts = self._body_has_forceful_contact_batch(
+            motion_state,
+            self._body_id("torso_link"),
+            self.config.done.torso_contact_force,
+            batch_size,
+        )
+        done_flags = jax.vmap(
+            lambda current, clip, reference, torso_contact: (
+                self._bank_termination_flags(
+                    current,
+                    clip,
+                    reference,
+                    0,
+                    torso_contact=torso_contact,
+                )
+            )
+        )(
+            motion_state,
+            state.clip_index,
+            references,
+            torso_contacts,
         )
         reward, reward_info = self._sanitize_reward(reward, reward_info, done_flags)
         done = done_flags["done/any"]
@@ -976,6 +1033,9 @@ class BelloTwistEnv:
         foot_contact: jax.Array,
         foot_air_time: jax.Array,
         world_id: jax.Array | int,
+        *,
+        contact_normal: jax.Array | None = None,
+        contact_tangent: jax.Array | None = None,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         policy_qpos = jnp.asarray(self.model.policy_qpos_indices)
         policy_qvel = jnp.asarray(self.model.policy_qvel_indices)
@@ -1005,7 +1065,10 @@ class BelloTwistEnv:
         current_key = jax.vmap(lambda x: quat_rotate_inverse(current_yaw, x))(
             current_key
         )
-        contact_normal, contact_tangent = self._foot_contact_forces(current, world_id)
+        if contact_normal is None or contact_tangent is None:
+            contact_normal, contact_tangent = self._foot_contact_forces(
+                current, world_id
+            )
         foot_velocity = self._body_linear_velocity(
             current, jnp.asarray(self.model.foot_body_ids)
         )
@@ -1148,6 +1211,8 @@ class BelloTwistEnv:
         clip_index: jax.Array,
         reference: MotionSample,
         world_id: jax.Array | int,
+        *,
+        torso_contact: jax.Array | None = None,
     ) -> dict[str, jax.Array]:
         cfg = self.config.done
         height = jnp.abs(state.data.qpos[2] - reference.qpos[2]) > cfg.root_height_error
@@ -1162,9 +1227,10 @@ class BelloTwistEnv:
         )
         pose = jnp.sum(key_error**2) > cfg.key_body_position_error**2
         root_velocity = jnp.linalg.norm(state.data.qvel[:3]) > cfg.root_velocity_limit
-        torso_contact = self._body_has_forceful_contact(
-            state, self._body_id("torso_link"), cfg.torso_contact_force, world_id
-        )
+        if torso_contact is None:
+            torso_contact = self._body_has_forceful_contact(
+                state, self._body_id("torso_link"), cfg.torso_contact_force, world_id
+            )
         nonfinite = ~(
             jnp.all(jnp.isfinite(state.data.qpos))
             & jnp.all(jnp.isfinite(state.data.qvel))
@@ -1400,63 +1466,81 @@ class BelloTwistEnv:
         return data.replace(qvel=qvel, xfrc_applied=xfrc), root_due | force_due
 
     def _foot_contact_forces(self, state, world_id):
-        impl = state.data._impl
-        geom = jnp.asarray(impl.contact__geom, dtype=jnp.int32)
-        geom = jnp.clip(geom, 0, self.model.mj_model.ngeom - 1)
-        active = (jnp.arange(geom.shape[0]) < jnp.ravel(jnp.asarray(impl.nacon))[0]) & (
-            jnp.asarray(impl.contact__worldid) == jnp.asarray(world_id)
-        )
-        address = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)[:, 0]
-        forces = jnp.asarray(impl.efc__force, dtype=jnp.float32)
-        normal = jnp.where(
-            address >= 0,
-            jnp.abs(forces[jnp.clip(address, 0, forces.shape[0] - 1)]),
-            0.0,
-        )
-        tangent1 = jnp.where(
-            address >= 0,
-            jnp.abs(forces[jnp.clip(address + 1, 0, forces.shape[0] - 1)]),
-            0.0,
-        )
-        tangent2 = jnp.where(
-            address >= 0,
-            jnp.abs(forces[jnp.clip(address + 2, 0, forces.shape[0] - 1)]),
-            0.0,
-        )
-        bodies = jnp.asarray(self.model.geom_body_ids)[geom]
+        contact_world, active, bodies, normal, tangent = self._contact_force_data(state)
+        selected = active & (contact_world == jnp.asarray(world_id))
         membership = (
-            pair_contains_each(bodies, self.model.foot_body_ids) & active[:, None]
+            pair_contains_each(bodies, self.model.foot_body_ids) & selected[:, None]
         )
         return (
             jnp.max(jnp.where(membership, normal[:, None], 0.0), axis=0),
-            jnp.max(
-                jnp.where(
-                    membership,
-                    jnp.sqrt(tangent1[:, None] ** 2 + tangent2[:, None] ** 2),
-                    0.0,
-                ),
-                axis=0,
-            ),
+            jnp.max(jnp.where(membership, tangent[:, None], 0.0), axis=0),
         )
 
-    def _body_has_forceful_contact(self, state, body_id, threshold, world_id):
+    def _foot_contact_forces_batch(self, state, batch_size: int):
+        contact_world, active, bodies, normal, tangent = self._contact_force_data(state)
+        valid_world = active & (contact_world >= 0) & (contact_world < batch_size)
+        safe_world = jnp.clip(contact_world, 0, batch_size - 1)
+        membership = pair_contains_each(bodies, self.model.foot_body_ids)
+        normal_values = jnp.where(
+            membership & valid_world[:, None], normal[:, None], 0.0
+        )
+        tangent_values = jnp.where(
+            membership & valid_world[:, None], tangent[:, None], 0.0
+        )
+        return (
+            _batched_contact_max(safe_world, normal_values, batch_size),
+            _batched_contact_max(safe_world, tangent_values, batch_size),
+        )
+
+    def _contact_force_data(self, state):
         impl = state.data._impl
         geom = jnp.asarray(impl.contact__geom, dtype=jnp.int32)
         geom = jnp.clip(geom, 0, self.model.mj_model.ngeom - 1)
-        active = (jnp.arange(geom.shape[0]) < jnp.ravel(jnp.asarray(impl.nacon))[0]) & (
-            jnp.asarray(impl.contact__worldid) == jnp.asarray(world_id)
-        )
+        active = jnp.arange(geom.shape[0]) < jnp.ravel(jnp.asarray(impl.nacon))[0]
+        contact_world = jnp.asarray(impl.contact__worldid, dtype=jnp.int32)
         address = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)[:, 0]
         forces = jnp.asarray(impl.efc__force, dtype=jnp.float32)
+        force_world = jnp.clip(contact_world, 0, forces.shape[0] - 1)
+        force_address = jnp.clip(address, 0, forces.shape[1] - 1)
         normal = jnp.where(
-            address >= 0,
-            jnp.abs(forces[jnp.clip(address, 0, forces.shape[0] - 1)]),
+            (contact_world >= 0) & (address >= 0),
+            jnp.abs(forces[force_world, force_address]),
+            0.0,
+        )
+        tangent1 = jnp.where(
+            (contact_world >= 0) & (address >= 0),
+            jnp.abs(forces[force_world, jnp.clip(address + 1, 0, forces.shape[1] - 1)]),
+            0.0,
+        )
+        tangent2 = jnp.where(
+            (contact_world >= 0) & (address >= 0),
+            jnp.abs(forces[force_world, jnp.clip(address + 2, 0, forces.shape[1] - 1)]),
             0.0,
         )
         bodies = jnp.asarray(self.model.geom_body_ids)[geom]
+        tangent = jnp.sqrt(tangent1**2 + tangent2**2)
+        return contact_world, active & (address >= 0), bodies, normal, tangent
+
+    def _body_has_forceful_contact(self, state, body_id, threshold, world_id):
+        contact_world, active, bodies, normal, _ = self._contact_force_data(state)
         return jnp.any(
-            active & (normal > threshold) & jnp.any(bodies == body_id, axis=-1)
+            active
+            & (contact_world == jnp.asarray(world_id))
+            & (normal > threshold)
+            & jnp.any(bodies == body_id, axis=-1)
         )
+
+    def _body_has_forceful_contact_batch(
+        self, state, body_id: int, threshold: float, batch_size: int
+    ) -> jax.Array:
+        contact_world, active, bodies, normal, _ = self._contact_force_data(state)
+        valid_world = active & (contact_world >= 0) & (contact_world < batch_size)
+        safe_world = jnp.clip(contact_world, 0, batch_size - 1)
+        values = jnp.where(
+            valid_world & jnp.any(bodies == body_id, axis=-1), normal, 0.0
+        )
+        maximum = _batched_contact_max(safe_world, values, batch_size)
+        return maximum > threshold
 
     def _body_linear_velocity(self, state, body_ids):
         cvel = state.data.cvel[body_ids]
@@ -1469,6 +1553,10 @@ class BelloTwistEnv:
 
     def _foot_contacts(self, state, world_id: jax.Array | int) -> jax.Array:
         normal, _ = self._foot_contact_forces(state, world_id)
+        return (normal > 5.0).astype(jnp.float32)
+
+    def _foot_contacts_batch(self, state, batch_size: int) -> jax.Array:
+        normal, _ = self._foot_contact_forces_batch(state, batch_size)
         return (normal > 5.0).astype(jnp.float32)
 
 
@@ -1503,6 +1591,15 @@ def _validate_reference_bank_clip_bounds(
         or not np.isclose(probabilities.sum(), 1.0)
     ):
         raise ValueError("TWIST reference bank sampling probabilities are invalid")
+
+
+def _batched_contact_max(
+    world_ids: jax.Array, values: jax.Array, batch_size: int
+) -> jax.Array:
+    """Reduce flattened contact values independently for each simulation world."""
+
+    output_shape = (batch_size, *values.shape[1:])
+    return jnp.zeros(output_shape, dtype=values.dtype).at[world_ids].max(values)
 
 
 def _roll_pitch(quaternion: jax.Array) -> jax.Array:

@@ -20,6 +20,7 @@ from bello_mujoco.envs.twist import (
     TwistEnvConfig,
     TwistObservationContract,
     TwistSimulationConfig,
+    _batched_contact_max,
     _validate_reference_bank_clip_bounds,
     teacher_observation_from_student_critic,
 )
@@ -70,6 +71,18 @@ from bello_mujoco.training.twist import _reference_bank_shard_index
 JOINT_NAMES = tuple(
     name for name in GMR_BELLO_JOINT_NAMES if name not in FIXED_TRACKING_JOINT_NAMES
 )
+
+
+def test_batched_contact_reduction_is_linear_in_flattened_contacts() -> None:
+    world_ids = jnp.asarray([0, 1, 0, 2, 1], dtype=jnp.int32)
+    values = jnp.asarray([[1.0, 8.0], [7.0, 2.0], [4.0, 3.0], [5.0, 6.0], [2.0, 9.0]])
+
+    reduced = jax.jit(lambda: _batched_contact_max(world_ids, values, 4))()
+
+    np.testing.assert_array_equal(
+        reduced,
+        np.asarray([[4.0, 8.0], [7.0, 9.0], [5.0, 6.0], [0.0, 0.0]]),
+    )
 
 
 def source_sequence(
