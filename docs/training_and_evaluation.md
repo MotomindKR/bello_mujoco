@@ -152,7 +152,9 @@ historical source and must be run from the revision identified by their
 training run or artifact name; they are not converted or stamped
 retroactively.
 
-`bello-train` disables JAX GPU-memory preallocation unless the operator has
-explicitly set `XLA_PYTHON_CLIENT_PREALLOCATE`. MJX-Warp and JAX use separate
-allocators, so reserving most device memory for JAX can starve Warp's transient
-collision workspace even when monitoring still reports apparent free memory.
+`bello-train` disables JAX GPU-memory preallocation and selects JAX's
+`cuda_malloc_async` allocator unless the operator has explicitly configured
+`XLA_PYTHON_CLIENT_PREALLOCATE` or `TF_GPU_ALLOCATOR`. MJX-Warp and JAX allocate
+device memory independently; the async allocator lets unused JAX allocations
+be reclaimed instead of leaving Warp's transient collision workspace starved
+even when monitoring still reports apparent free memory.

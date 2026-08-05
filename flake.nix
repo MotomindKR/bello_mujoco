@@ -47,6 +47,7 @@
             export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
             export WARP_CACHE_PATH="$PWD/.warp-cache"
             export XLA_PYTHON_CLIENT_PREALLOCATE="''${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+            export TF_GPU_ALLOCATOR="''${TF_GPU_ALLOCATOR:-cuda_malloc_async}"
             export MUJOCO_GL=${mujocoGl}
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"

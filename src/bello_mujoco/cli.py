@@ -167,6 +167,7 @@ def _prepare_assets_hydra(config: DictConfig) -> None:
 
 def train_entrypoint() -> None:
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    os.environ.setdefault("TF_GPU_ALLOCATOR", "cuda_malloc_async")
     _train_hydra()
 
 

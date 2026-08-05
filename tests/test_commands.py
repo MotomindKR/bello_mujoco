@@ -62,17 +62,19 @@ def test_importing_command_surface_does_not_import_jax() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_training_entrypoint_disables_jax_preallocation_by_default(
+def test_training_entrypoint_uses_memory_sharing_jax_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import bello_mujoco.cli as cli
 
     monkeypatch.delenv("XLA_PYTHON_CLIENT_PREALLOCATE", raising=False)
+    monkeypatch.delenv("TF_GPU_ALLOCATOR", raising=False)
     monkeypatch.setattr(cli, "_train_hydra", lambda: None)
 
     cli.train_entrypoint()
 
     assert cli.os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "false"
+    assert cli.os.environ["TF_GPU_ALLOCATOR"] == "cuda_malloc_async"
 
 
 def test_training_entrypoint_preserves_explicit_allocator_setting(
@@ -81,11 +83,13 @@ def test_training_entrypoint_preserves_explicit_allocator_setting(
     import bello_mujoco.cli as cli
 
     monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+    monkeypatch.setenv("TF_GPU_ALLOCATOR", "platform")
     monkeypatch.setattr(cli, "_train_hydra", lambda: None)
 
     cli.train_entrypoint()
 
     assert cli.os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "true"
+    assert cli.os.environ["TF_GPU_ALLOCATOR"] == "platform"
 
 
 def test_hardware_entrypoint_forces_cpu_backend() -> None:
