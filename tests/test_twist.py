@@ -20,6 +20,7 @@ from bello_mujoco.envs.twist import (
     TwistEnvConfig,
     TwistObservationContract,
     TwistSimulationConfig,
+    _validate_reference_bank_clip_bounds,
     teacher_observation_from_student_critic,
 )
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
@@ -610,6 +611,22 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
     np.testing.assert_array_equal(bank.lengths, lengths)
     np.testing.assert_array_equal(bank.qpos, qpos)
     np.testing.assert_allclose(bank.sampling_probabilities, (0.5, 0.5))
+
+
+def test_reference_bank_bounds_allow_zero_probability_padding() -> None:
+    offsets = np.asarray((0, 100, 0), dtype=np.int32)
+    lengths = np.asarray((100, 137, 1), dtype=np.int32)
+    probabilities = np.asarray((0.5, 0.5, 0.0), dtype=np.float32)
+
+    _validate_reference_bank_clip_bounds(offsets, lengths, probabilities, 237)
+
+    with pytest.raises(ValueError, match="clip offsets exceed"):
+        _validate_reference_bank_clip_bounds(
+            np.asarray((0, 237)),
+            np.asarray((100, 1)),
+            np.asarray((1.0, 0.0)),
+            237,
+        )
 
 
 def test_reference_bank_shard_choice_is_resume_stable() -> None:

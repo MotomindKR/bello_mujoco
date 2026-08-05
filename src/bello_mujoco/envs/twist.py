@@ -375,10 +375,13 @@ class BelloTwistEnv:
                 self.reference_bank.offsets.shape != (clip_count,)
             ):
                 raise ValueError("TWIST reference bank clip metadata has drifted")
-            used_frames = int(np.sum(self.reference_bank.lengths, dtype=np.int64))
             total_frames = int(self.reference_bank.qpos.shape[0])
-            if used_frames > total_frames:
-                raise ValueError("TWIST reference bank clip offsets exceed its arrays")
+            _validate_reference_bank_clip_bounds(
+                self.reference_bank.offsets,
+                self.reference_bank.lengths,
+                self.reference_bank.sampling_probabilities,
+                total_frames,
+            )
             if any(
                 value.shape[0] != total_frames
                 for value in (
@@ -1475,6 +1478,31 @@ def teacher_observation_from_student_critic(
     """Return the exact teacher actor input stored in a student critic input."""
 
     return critic_observation[..., : contract.teacher_observation_size]
+
+
+def _validate_reference_bank_clip_bounds(
+    offsets: np.ndarray,
+    lengths: np.ndarray,
+    probabilities: np.ndarray,
+    total_frames: int,
+) -> None:
+    offsets = np.asarray(offsets, dtype=np.int64)
+    lengths = np.asarray(lengths, dtype=np.int64)
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    if total_frames <= 0:
+        raise ValueError("TWIST reference bank must contain frames")
+    if probabilities.shape != offsets.shape:
+        raise ValueError("TWIST reference bank sampling metadata has drifted")
+    if np.any(offsets < 0) or np.any(lengths <= 0):
+        raise ValueError("TWIST reference bank clip metadata must be positive")
+    if np.any(offsets + lengths > total_frames):
+        raise ValueError("TWIST reference bank clip offsets exceed its arrays")
+    if (
+        np.any(~np.isfinite(probabilities))
+        or np.any(probabilities < 0.0)
+        or not np.isclose(probabilities.sum(), 1.0)
+    ):
+        raise ValueError("TWIST reference bank sampling probabilities are invalid")
 
 
 def _roll_pitch(quaternion: jax.Array) -> jax.Array:
