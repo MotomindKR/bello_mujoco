@@ -210,10 +210,12 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
             current_env = _bind_reference_bank(static_env, bank_arrays)
             return _reset_runner_environment(state, current_env, run_config.config)
 
-        update_fn = jax.jit(update_fn)
-        reset_fn = jax.jit(reset_fn)
+        update_fn = jax.jit(update_fn, donate_argnums=(0,))
+        reset_fn = jax.jit(reset_fn, donate_argnums=(0,))
         if reset_resumed_environment:
-            runner = reset_fn(runner, reference_bank_arrays)
+            runner = jax.block_until_ready(
+                reset_fn(runner, reference_bank_arrays)
+            )
         for update in range(first_update, run_config.config.num_updates):
             if (
                 update > first_update
@@ -226,7 +228,9 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
                     next_reference_bank
                 )
                 del next_reference_bank
-                runner = reset_fn(runner, reference_bank_arrays)
+                runner = jax.block_until_ready(
+                    reset_fn(runner, reference_bank_arrays)
+                )
             runner, last_metrics = update_fn(runner, reference_bank_arrays)
             last_metrics = jax.tree_util.tree_map(
                 lambda value: value.block_until_ready(), last_metrics
@@ -336,13 +340,15 @@ _REFERENCE_BANK_ARRAY_FIELDS = (
 def _device_reference_bank_arrays(
     reference_bank: PackedReferenceBank,
 ) -> tuple[jax.Array, ...]:
-    return tuple(
+    arrays = tuple(
         jax.device_put(getattr(reference_bank, name))
         for name in _REFERENCE_BANK_ARRAY_FIELDS
     )
+    return jax.block_until_ready(arrays)
 
 
 def _delete_device_arrays(arrays: tuple[jax.Array, ...]) -> None:
+    jax.block_until_ready(arrays)
     for value in arrays:
         value.delete()
 
