@@ -1,5 +1,6 @@
 stage: student
 config:
+  total_timesteps: 19660800000
   policy:
     architecture: twist_student
 checkpoint_config:

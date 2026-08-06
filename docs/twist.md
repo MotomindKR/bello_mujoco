@@ -16,6 +16,12 @@ uv run bello-eval task=twist_student \
   checkpoint_path=checkpoints/<student>/final
 ```
 
+The default training horizons match the paper: 100,000 PPO updates for the
+teacher and 200,000 updates for the student. With 4,096 environments and 24
+rollout steps, these correspond to 9,830,400,000 and 19,660,800,000 simulated
+policy steps respectively. `total_timesteps` remains an explicit override for
+short smoke and capacity runs.
+
 There is no automatic teacher selection. Teacher checkpoints cannot resume a
 student run, student checkpoints cannot resume a teacher run, and public TWIST
 evaluation rejects teacher and legacy motion checkpoints. TWIST hardware and

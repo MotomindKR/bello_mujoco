@@ -196,9 +196,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert locomotion.checkpoint_config.every_updates == 512
     assert hardware.checkpoint_config.every_updates == 512
     assert motion.checkpoint_config.every_updates == 500
-    assert twist_teacher.config.num_updates == 30_002
+    assert twist_teacher.config.num_updates == 100_000
     assert twist_teacher.config.policy.architecture == "twist_teacher"
     assert twist_teacher.warp.contact_budget_per_env == 32
+    assert twist_student.config.num_updates == 200_000
     assert twist_student.config.policy.architecture == "twist_student"
 
 

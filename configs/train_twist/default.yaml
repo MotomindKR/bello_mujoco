@@ -4,7 +4,7 @@ teacher_checkpoint_path: null
 
 config:
   seed: 1
-  total_timesteps: 2949316608
+  total_timesteps: 9830400000
   num_envs: 4096
   num_steps: 24
   update_epochs: 5
