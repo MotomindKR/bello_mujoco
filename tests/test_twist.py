@@ -439,6 +439,29 @@ def test_twist_runtime_does_not_depend_on_motion_tracking_pipeline() -> None:
         assert "motion_env" not in source
 
 
+def test_twist_initial_step_counters_do_not_alias_donated_buffers() -> None:
+    class Replaceable(SimpleNamespace):
+        def replace(self, **changes):
+            return Replaceable(**{**vars(self), **changes})
+
+    step_count = jnp.arange(4, dtype=jnp.int32)
+    state = Replaceable(
+        motion_state=Replaceable(step_count=None, episode_length=None),
+        total_step=None,
+    )
+
+    initialized = BelloTwistEnv.with_initial_step_counts(None, state, step_count)
+    counters = (
+        initialized.motion_state.step_count,
+        initialized.motion_state.episode_length,
+        initialized.total_step,
+    )
+
+    assert len({counter.unsafe_buffer_pointer() for counter in counters}) == 3
+    for counter in counters:
+        np.testing.assert_array_equal(counter, np.arange(4, dtype=np.int32))
+
+
 @pytest.mark.parametrize(
     ("stage", "observation_size"),
     (("teacher", 1368), ("student", 1243)),

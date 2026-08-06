@@ -597,11 +597,13 @@ class BelloTwistEnv:
     def with_initial_step_counts(
         self, state: TwistState, step_count: jax.Array
     ) -> TwistState:
+        episode_length = jnp.copy(step_count)
+        total_step = jnp.copy(step_count)
         return state.replace(
             motion_state=state.motion_state.replace(
-                step_count=step_count, episode_length=step_count
+                step_count=step_count, episode_length=episode_length
             ),
-            total_step=step_count,
+            total_step=total_step,
         )
 
     def step(
