@@ -144,6 +144,7 @@ asset that deviates from this contract.
 | `random_push` | Periodic base linear-velocity perturbations. |
 | `numerical_safety` | Broad finite-state and solver-force bounds that terminate invalid rollouts. |
 | `observation` | Deployable actor observation scaling and noise. |
+| `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
 
 ### Simulation physics
@@ -212,6 +213,17 @@ are ordered uniform ranges applied before stacking.
 Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
 enter the deployed policy.
+
+The `observation_latency` section contains `enabled` and `delay_steps`, an
+inclusive integer lower/upper range. The maintained locomotion and
+hardware-locomotion profiles sample a fixed delay of 0, 1, or 2 policy steps
+per episode, corresponding to 0--40 ms at 50 Hz. The delayed terms are IMU
+linear acceleration, angular velocity, projected gravity, and joint
+position/velocity. Command and previous action remain current, and the
+privileged critic remains undelayed. Native evaluation and physical deployment
+do not inject synthetic delay. Older locomotion checkpoints load with latency
+disabled; resuming their rollout continuation still requires the original
+source revision because its environment state predates the feedback history.
 
 ## Locomotion commands: `command_config`
 
@@ -308,6 +320,7 @@ content hash are stored in checkpoints.
 | `terrain` | Native/MJX terrain contract. Maintained motion uses a plane. |
 | `reset` | Start-time, XY/yaw, joint, root pose/velocity, and default-offset randomization. |
 | `observation_noise` | Independent magnitudes for anchor pose, base velocity, and joint observation noise. |
+| `observation_latency` | Per-episode actor-feedback delay range in policy steps. |
 | `adaptive_sampling` | Failure-EMA binning, smoothing kernel, and uniform-sampling mixture. |
 | `push` | Random interval and root linear/angular velocity perturbation magnitudes. |
 | `reward` | Tracking term weights, Gaussian sigmas, action/joint/torque penalties, and undesired-contact threshold. |
@@ -319,9 +332,16 @@ Nested motion fields are:
 | --- | --- |
 | `reset` | `random_start`, `initial_xy_range`, `initial_yaw_range`, `joint_pos_noise`, `joint_vel_noise`, `root_position_noise`, `root_rotation_noise`, `root_linear_velocity_noise`, `root_angular_velocity_noise`, `joint_default_offset_noise` |
 | `observation_noise` | `enabled`, `anchor_position`, `anchor_orientation`, `base_linear_velocity`, `base_angular_velocity`, `joint_position`, `joint_velocity` |
+| `observation_latency` | `enabled`, `delay_steps` (inclusive integer lower/upper bounds) |
 | `adaptive_sampling` | `enabled`, `bin_seconds`, `ema_alpha`, `kernel_size`, `kernel_decay`, `uniform_ratio` |
 | `push` | `enabled`, `interval_seconds`, `linear_velocity`, `angular_velocity` |
 | `done` | `root_height_error`, `root_orientation_error`, `end_effector_position_error` |
+
+Observation latency applies only to measured actor feedback. Reference terms
+and the previous action use the current policy step, while the privileged
+critic remains undelayed. The maintained range `[0, 2]` corresponds to 0, 20,
+or 40 ms at 50 Hz. The sampled delay remains fixed for an episode. Synthetic
+delay is disabled in native evaluation and hardware deployment.
 
 ### Motion reward
 
@@ -459,7 +479,7 @@ TWIST uses 32 contacts per environment and logs
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
+| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise and latency, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |

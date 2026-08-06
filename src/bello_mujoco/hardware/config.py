@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -25,9 +26,10 @@ class HardwareControlConfig:
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
     max_group_age_ms: int = 100
-    max_state_sample_span_ms: float = 20.0
+    max_state_sample_span_ms: float = 40.0
     max_tilt_radians: float = 0.70
     max_angular_velocity: float = 20.0
     max_linear_acceleration: float = 100.0
     max_loop_lag_seconds: float = 0.10
     status_interval_seconds: float | None = None
+    policy_log_path: Path | None = None

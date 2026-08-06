@@ -47,6 +47,7 @@ hardware gyro use the root-local free-joint convention. Training can:
 
 - randomize reference start time and initial root/joint state;
 - perturb observations;
+- delay measured actor feedback by a per-episode randomized number of policy steps;
 - apply random base velocity pushes;
 - bias future resets toward time bins with higher failure EMA;
 - terminate on root height/orientation or end-effector tracking error.
@@ -55,6 +56,17 @@ The reward combines Gaussian root, joint, tracked-body pose, and velocity terms
 with action-rate, joint-limit, and undesired-contact penalties. Exact fields,
 weights, sigmas, and profile values are in the
 [training configuration reference](training_configuration.md#motion-selection-and-environment).
+
+The maintained profile samples actor-feedback latency uniformly from zero to
+two policy steps, or 0--40 ms at the 50 Hz control rate. The delayed terms are
+measured anchor pose, base velocity, and joint position/velocity. Reference
+commands and the previous action remain current, and the asymmetric critic
+continues to receive current feedback. Native evaluation and physical
+deployment do not inject synthetic delay. Existing checkpoints that predate
+this field remain usable for evaluation and deployment with latency
+randomization disabled. Resuming their saved rollout continuation requires the
+original source revision because the older state does not contain feedback
+history.
 
 ## Checkpoint binding
 

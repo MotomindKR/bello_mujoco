@@ -112,6 +112,7 @@ class VastTrainCommandConfig:
 @dataclass(frozen=True)
 class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...]
+    command_latency_seconds: float
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,7 @@ class HardwareCommandConfig:
     policy_transition_seconds: float | None
     max_motion_tilt_radians: float | None
     status_interval_seconds: float | None
+    policy_log_path: Path | None
     gamepad_enabled: bool
     arm: bool
 
@@ -665,6 +667,7 @@ def _emulator_hydra(config: DictConfig) -> None:
     emulator.run_emulator(
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
+            command_latency_seconds=command.command_latency_seconds,
         )
     )
 
@@ -673,7 +676,12 @@ def hardware_entrypoint() -> None:
     os.environ["JAX_PLATFORMS"] = "cpu"
     os.environ["JAX_PLATFORM_NAME"] = "cpu"
     _expand_path_overrides(
-        ("checkpoint_path=", "standing_checkpoint_path=", "motion_path=")
+        (
+            "checkpoint_path=",
+            "standing_checkpoint_path=",
+            "motion_path=",
+            "policy_log_path=",
+        )
     )
     _hardware_hydra()
 
@@ -686,6 +694,7 @@ def hardware_entrypoint() -> None:
 def _hardware_hydra(config: DictConfig) -> None:
     command = command_config(HardwareCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
+    policy_log_path = _hardware_policy_log_path(command.policy_log_path)
     if command.task == "motion":
         _reject_explicit_fields(("command", "gamepad_enabled"), context="task=motion")
         standing_checkpoint = _required_path(
@@ -716,6 +725,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                     base.max_motion_tilt_radians,
                 ),
                 status_interval_seconds=command.status_interval_seconds,
+                policy_log_path=policy_log_path,
                 arm=command.arm,
                 allow_git_commit_mismatch=command.allow_git_commit_mismatch,
             ),
@@ -751,11 +761,20 @@ def _hardware_hydra(config: DictConfig) -> None:
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
             status_interval_seconds=command.status_interval_seconds,
+            policy_log_path=policy_log_path,
             gamepad=replace(base.gamepad, enabled=command.gamepad_enabled),
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         ),
     )
+
+
+def _hardware_policy_log_path(configured: Path | None) -> Path:
+    if configured is not None:
+        return configured.expanduser()
+    from hydra.core.hydra_config import HydraConfig
+
+    return Path(HydraConfig.get().runtime.output_dir) / "policy_steps.jsonl"
 
 
 def _ppo_overrides(config, command: TrainCommandConfig):

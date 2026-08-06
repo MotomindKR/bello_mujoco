@@ -52,6 +52,8 @@ from bello_mujoco.terrain import (
 class BelloState:
     data: mjx.Data
     last_action: jax.Array
+    actor_feedback_history: jax.Array
+    actor_feedback_delay_steps: jax.Array
     foot_air_time: jax.Array
     foot_contact_time: jax.Array
     foot_contact_debounce_time: jax.Array
@@ -145,6 +147,12 @@ class ObservationNoiseConfig:
 
 
 @dataclass(frozen=True)
+class ObservationLatencyConfig:
+    enabled: bool = False
+    delay_steps: tuple[int, int] = (0, 0)
+
+
+@dataclass(frozen=True)
 class ObservationConfig:
     """Fixed deployable observation, optionally extended for the critic."""
 
@@ -210,6 +218,7 @@ class BelloEnvConfig:
     random_push: RandomPushConfig = RandomPushConfig()
     numerical_safety: NumericalSafetyConfig = NumericalSafetyConfig()
     observation: ObservationConfig = ObservationConfig()
+    observation_latency: ObservationLatencyConfig = ObservationLatencyConfig()
     critic_observation: ObservationConfig = ObservationConfig(privileged=True)
 
 
@@ -271,6 +280,7 @@ class BelloLocomotionEnv:
                 "valid for critic_observation"
             )
         self._validate_observation_config("observation", self.config.observation)
+        self._validate_observation_latency()
         self._validate_observation_config(
             "critic_observation", self.config.critic_observation
         )
@@ -367,6 +377,19 @@ class BelloLocomotionEnv:
             if name == "enabled":
                 continue
             validate_range(f"{config_name}.noise.{name}", bounds)
+
+    def _validate_observation_latency(self) -> None:
+        delay_steps = self.config.observation_latency.delay_steps
+        if len(delay_steps) != 2 or any(
+            type(value) is not int or value < 0 for value in delay_steps
+        ):
+            raise ValueError(
+                "observation_latency.delay_steps must contain two nonnegative integers"
+            )
+        if delay_steps[0] > delay_steps[1]:
+            raise ValueError(
+                "observation_latency.delay_steps lower bound exceeds upper bound"
+            )
 
     @classmethod
     def load(
@@ -486,6 +509,16 @@ class BelloLocomotionEnv:
     @property
     def critic_observation_size(self) -> int:
         return self.critic_observation_layout.size
+
+    @property
+    def maximum_observation_delay_steps(self) -> int:
+        if not self.config.observation_latency.enabled:
+            return 0
+        return self.config.observation_latency.delay_steps[1]
+
+    @property
+    def actor_feedback_size(self) -> int:
+        return 9 + 2 * self.action_size
 
     def _observation_layout(self, observation: ObservationConfig) -> ObservationLayout:
         components: list[tuple[str, int]] = [
@@ -653,9 +686,9 @@ class BelloLocomotionEnv:
         forward: bool = True,
         align_clearance: bool = True,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = reset_rng = obs_rng = rng
+        command_rng = reset_rng = obs_rng = latency_rng = rng
         if rng is not None:
-            command_rng, reset_rng, obs_rng = jax.random.split(rng, 3)
+            command_rng, reset_rng, obs_rng, latency_rng = jax.random.split(rng, 4)
         command = self._resolve_command(command, command_rng)
         data = self.model.make_data()
         data = data.replace(
@@ -668,6 +701,14 @@ class BelloLocomotionEnv:
         state = BelloState(
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
+            actor_feedback_history=jnp.zeros(
+                (
+                    self.maximum_observation_delay_steps + 1,
+                    self.actor_feedback_size,
+                ),
+                dtype=jnp.float32,
+            ),
+            actor_feedback_delay_steps=self._sample_observation_delay(latency_rng),
             foot_air_time=jnp.zeros(self.model.foot_body_ids.size, dtype=jnp.float32),
             foot_contact_time=jnp.zeros(
                 self.model.foot_body_ids.size, dtype=jnp.float32
@@ -693,6 +734,14 @@ class BelloLocomotionEnv:
                 else mjx.kinematics(self.model.mjx_model, state.data)
             )
             state = state.replace(data=data)
+        actor_feedback = self._actor_feedback(state)
+        state = state.replace(
+            actor_feedback_history=jnp.repeat(
+                actor_feedback[None, :],
+                self.maximum_observation_delay_steps + 1,
+                axis=0,
+            )
+        )
         return state, self.observation(state, obs_rng)
 
     def reset_batch(
@@ -745,6 +794,14 @@ class BelloLocomotionEnv:
         )
         data = mjx.forward(self.model.mjx_model, data)
         state = state.replace(data=data)
+        actor_feedback = jax.vmap(self._actor_feedback)(state)
+        state = state.replace(
+            actor_feedback_history=jnp.repeat(
+                actor_feedback[:, None, :],
+                self.maximum_observation_delay_steps + 1,
+                axis=1,
+            )
+        )
         return state, self.observation_batch(state, obs_rng)
 
     def _reset_foot_clearance_adjustment(
@@ -881,6 +938,10 @@ class BelloLocomotionEnv:
         next_state = BelloState(
             data=data,
             last_action=action,
+            actor_feedback_history=self._advance_actor_feedback_history(
+                state.actor_feedback_history, state.replace(data=data)
+            ),
+            actor_feedback_delay_steps=state.actor_feedback_delay_steps,
             foot_air_time=state.foot_air_time,
             foot_contact_time=state.foot_contact_time,
             foot_contact_debounce_time=state.foot_contact_debounce_time,
@@ -933,6 +994,8 @@ class BelloLocomotionEnv:
         next_state = BelloState(
             data=next_state.data,
             last_action=next_state.last_action,
+            actor_feedback_history=next_state.actor_feedback_history,
+            actor_feedback_delay_steps=next_state.actor_feedback_delay_steps,
             foot_air_time=foot_air_time,
             foot_contact_time=foot_contact_time,
             foot_contact_debounce_time=foot_contact_debounce_time,
@@ -966,6 +1029,9 @@ class BelloLocomotionEnv:
             "foot_contact/debounce_time": foot_contact_debounce_time,
             "target/joint_saturation_fraction": joint_saturation,
             "target/motor_saturation_fraction": motor_saturation,
+            "latency/observation_steps": (
+                next_state.actor_feedback_delay_steps.astype(jnp.float32)
+            ),
             **self._command_diagnostics(state.command),
             **self._gait_diagnostics(state, next_state, foot_contact),
             "returned_episode": done,
@@ -1009,6 +1075,10 @@ class BelloLocomotionEnv:
         stepped_state = BelloState(
             data=data,
             last_action=action,
+            actor_feedback_history=jax.vmap(self._advance_actor_feedback_history)(
+                state.actor_feedback_history, state.replace(data=data)
+            ),
+            actor_feedback_delay_steps=state.actor_feedback_delay_steps,
             foot_air_time=state.foot_air_time,
             foot_contact_time=state.foot_contact_time,
             foot_contact_debounce_time=state.foot_contact_debounce_time,
@@ -1064,6 +1134,8 @@ class BelloLocomotionEnv:
         stepped_state = BelloState(
             data=stepped_state.data,
             last_action=stepped_state.last_action,
+            actor_feedback_history=stepped_state.actor_feedback_history,
+            actor_feedback_delay_steps=stepped_state.actor_feedback_delay_steps,
             foot_air_time=foot_air_time,
             foot_contact_time=foot_contact_time,
             foot_contact_debounce_time=foot_contact_debounce_time,
@@ -1101,6 +1173,9 @@ class BelloLocomotionEnv:
             "foot_contact/debounce_time": foot_contact_debounce_time,
             "target/joint_saturation_fraction": joint_saturation,
             "target/motor_saturation_fraction": motor_saturation,
+            "latency/observation_steps": (
+                stepped_state.actor_feedback_delay_steps.astype(jnp.float32)
+            ),
             **jax.vmap(self._gait_diagnostics)(state, stepped_state, foot_contact),
             "random_push/applied": push_applied,
             "random_push/lin_vel_x": push_velocity[:, 0],
@@ -1166,7 +1241,13 @@ class BelloLocomotionEnv:
         rng: jax.Array | None = None,
         world_id: jax.Array | int = 0,
     ) -> jax.Array:
-        return self._observation(state, self.config.observation, rng, world_id)
+        return self._observation(
+            state,
+            self.config.observation,
+            rng,
+            world_id,
+            _feedback=self._delayed_actor_feedback(state),
+        )
 
     def critic_observation(
         self,
@@ -1182,6 +1263,8 @@ class BelloLocomotionEnv:
         observation: ObservationConfig,
         rng: jax.Array | None = None,
         world_id: jax.Array | int = 0,
+        *,
+        _feedback: jax.Array | None = None,
     ) -> jax.Array:
         (
             base_lin_vel,
@@ -1195,6 +1278,14 @@ class BelloLocomotionEnv:
             actuator_force,
             last_action,
         ) = self._frame_terms(state, world_id)
+        if _feedback is not None:
+            (
+                base_lin_acc,
+                base_ang_vel,
+                projected_gravity,
+                joint_pos,
+                joint_vel,
+            ) = self._unpack_actor_feedback(_feedback)
         scale = observation.scale
         noise = observation.noise
         keys = (
@@ -1256,6 +1347,61 @@ class BelloLocomotionEnv:
                 )
             )
         return jnp.concatenate(parts)
+
+    def _actor_feedback(self, state: BelloState) -> jax.Array:
+        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
+        qpos_indices = jnp.asarray(self.model.actuator_qpos_indices)[policy_indices]
+        qvel_indices = jnp.asarray(self.model.actuator_qvel_indices)[policy_indices]
+        joint_position = (
+            state.data.qpos[qpos_indices]
+            - jnp.asarray(self.model.default_joint_target)[policy_indices]
+        )
+        return jnp.concatenate(
+            (
+                self._imu_linear_acceleration(state),
+                self._imu_angular_velocity(state),
+                self._link_projected_gravity(state, self.model.imu_body_name),
+                joint_position,
+                state.data.qvel[qvel_indices],
+            )
+        )
+
+    def _unpack_actor_feedback(
+        self, feedback: jax.Array
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        joint_start = 9
+        joint_end = joint_start + self.action_size
+        return (
+            feedback[0:3],
+            feedback[3:6],
+            feedback[6:9],
+            feedback[joint_start:joint_end],
+            feedback[joint_end : joint_end + self.action_size],
+        )
+
+    def _delayed_actor_feedback(self, state: BelloState) -> jax.Array:
+        return jnp.where(
+            state.actor_feedback_delay_steps == 0,
+            self._actor_feedback(state),
+            state.actor_feedback_history[state.actor_feedback_delay_steps],
+        )
+
+    def _advance_actor_feedback_history(
+        self, history: jax.Array, state: BelloState
+    ) -> jax.Array:
+        return jnp.concatenate((self._actor_feedback(state)[None, :], history[:-1]))
+
+    def _sample_observation_delay(self, rng: jax.Array | None) -> jax.Array:
+        config = self.config.observation_latency
+        if not config.enabled or rng is None:
+            return jnp.asarray(0, dtype=jnp.int32)
+        return jax.random.randint(
+            rng,
+            (),
+            minval=config.delay_steps[0],
+            maxval=config.delay_steps[1] + 1,
+            dtype=jnp.int32,
+        )
 
     def _observation_component(
         self,

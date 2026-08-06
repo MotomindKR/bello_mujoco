@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
@@ -31,9 +32,12 @@ from bello_mujoco.imu import (
 )
 from bello_mujoco.hardware.pose import PoseServiceConfig, PoseServiceServer
 from bello_mujoco.robstride.can import (
+    CanFrame,
+    CommType,
     MotorSpec,
     RobstrideBusEmulator,
     SocketCanEndpoint,
+    comm_type,
     load_robstride_description,
 )
 from bello_mujoco.robstride.sim import (
@@ -70,6 +74,7 @@ class EmulatorConfig:
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(
         timestep=0.0025
     )
+    command_latency_seconds: float = 0.01
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
     imu_serial_rate_hz: float = 250.0
@@ -125,6 +130,37 @@ class TorsoHold:
             return False
         data.eq_active[self.equality_id] = False
         return True
+
+
+@dataclass
+class _CommandLatencyQueue:
+    delay_seconds: float
+    pending: deque[tuple[float, str, CanFrame]] = field(default_factory=deque)
+
+    def enqueue(
+        self,
+        bus_name: str,
+        frame: CanFrame,
+        *,
+        received_at: float,
+    ) -> bool:
+        if (
+            self.delay_seconds == 0.0
+            or comm_type(frame.can_id) != CommType.MOTOR_CONTROL
+        ):
+            return False
+        self.pending.append((received_at + self.delay_seconds, bus_name, frame))
+        return True
+
+    def pop_ready(self, now: float) -> list[tuple[str, CanFrame]]:
+        ready = []
+        while self.pending and self.pending[0][0] <= now:
+            _, bus_name, frame = self.pending.popleft()
+            ready.append((bus_name, frame))
+        return ready
+
+    def clear(self) -> None:
+        self.pending.clear()
 
 
 @dataclass(frozen=True)
@@ -292,6 +328,7 @@ def run_simulation(
         imu_sensor,
     ) as resources:
         print_emulator_summary(model, emulators)
+        print(f"  command latency: {config.command_latency_seconds * 1000:g} ms")
         fixed_joints = sorted(
             config.asset_config.joint_availability.disabled_joint_names
         )
@@ -370,6 +407,7 @@ def _simulation_loop(
         else math.inf
     )
     next_pose_sim = start_sim + pose_period
+    delayed_commands = _CommandLatencyQueue(config.command_latency_seconds)
     torso_released = False
     while True:
         if terminal_enter.poll():
@@ -384,6 +422,7 @@ def _simulation_loop(
                 continue
             for emulator in emulators.values():
                 emulator.reset_control_state()
+            delayed_commands.clear()
             transmission.update_motor_states(data)
             start_wall = time.monotonic()
             start_sim = float(data.time)
@@ -401,8 +440,18 @@ def _simulation_loop(
         for bus_name, endpoint in endpoints.items():
             emulator = emulators[bus_name]
             while (frame := endpoint.receive()) is not None:
+                if delayed_commands.enqueue(
+                    bus_name,
+                    frame,
+                    received_at=time.monotonic(),
+                ):
+                    continue
                 for response in emulator.handle_frame(frame):
                     endpoint.send(response)
+
+        for bus_name, frame in delayed_commands.pop_ready(time.monotonic()):
+            for response in emulators[bus_name].handle_frame(frame):
+                endpoints[bus_name].send(response)
 
         transmission.apply_motor_controls(data)
         mujoco.mj_step(model.mj_model, data)
@@ -595,6 +644,11 @@ def validate_config(config: EmulatorConfig) -> None:
     parse_bus_interfaces(config.bus_interfaces)
     if not math.isfinite(config.feedback_rate_hz) or config.feedback_rate_hz <= 0.0:
         raise ValueError("feedback_rate_hz must be positive")
+    if (
+        not math.isfinite(config.command_latency_seconds)
+        or config.command_latency_seconds < 0.0
+    ):
+        raise ValueError("command_latency_seconds must be finite and nonnegative")
     if not math.isfinite(config.temperature_c) or config.temperature_c < 0.0:
         raise ValueError("temperature_c must be nonnegative")
     if not math.isfinite(config.imu_serial_rate_hz) or config.imu_serial_rate_hz <= 0.0:

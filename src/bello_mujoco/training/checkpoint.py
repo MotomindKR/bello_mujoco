@@ -28,8 +28,12 @@ from bello_mujoco.configuration import dataclass_from_dict
 from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
     DoneConfig,
+    ObservationLatencyConfig,
 )
-from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
+from bello_mujoco.envs.motion_tracking import (
+    MotionObservationLatencyConfig,
+    MotionTrackingEnvConfig,
+)
 from bello_mujoco.envs.twist import (
     TwistEnvConfig,
     TwistObservationContract,
@@ -625,24 +629,50 @@ def _load_checkpoint_document(
         document["continuation_layout_sha256"],
         "continuation_layout_sha256",
     )
+    metadata_payload = document["metadata"]
+    if _fingerprint(metadata_payload) != metadata_sha256:
+        raise ValueError(
+            "checkpoint metadata fingerprint does not match its contents; "
+            "the checkpoint is corrupt or has been modified"
+        )
     metadata = _metadata_from_dict(
-        document["metadata"],
+        _with_checkpoint_metadata_defaults(metadata_payload),
         strict=True,
         require_all_fields=True,
         path="metadata",
     )
     _validate_metadata_layouts(metadata)
-    canonical_payload = to_builtin(metadata)
-    if _fingerprint(canonical_payload) != metadata_sha256:
-        raise ValueError(
-            "checkpoint metadata fingerprint does not match its contents; "
-            "the checkpoint is corrupt or has been modified"
-        )
     update = document["update"]
     if type(update) is not int:
         raise ValueError("checkpoint update must be an integer")
     _validate_update(update, metadata.ppo)
     return metadata, update, train_fingerprint, continuation_fingerprint
+
+
+def _with_checkpoint_metadata_defaults(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    if value.get("task") == "locomotion":
+        env = value.get("env")
+        if not isinstance(env, dict) or "observation_latency" in env:
+            return value
+        normalized = dict(value)
+        normalized_env = dict(env)
+        normalized_env["observation_latency"] = to_builtin(ObservationLatencyConfig())
+        normalized["env"] = normalized_env
+        return normalized
+    if value.get("task") != "motion_tracking":
+        return value
+    motion_env = value.get("motion_env")
+    if not isinstance(motion_env, dict) or "observation_latency" in motion_env:
+        return value
+    normalized = dict(value)
+    normalized_motion_env = dict(motion_env)
+    normalized_motion_env["observation_latency"] = to_builtin(
+        MotionObservationLatencyConfig()
+    )
+    normalized["motion_env"] = normalized_motion_env
+    return normalized
 
 
 def _metadata_from_dict(

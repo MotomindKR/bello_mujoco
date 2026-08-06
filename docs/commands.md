@@ -263,6 +263,7 @@ Configuration source: `configs/commands/emulator.yaml`.
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
+| `command_latency_seconds` | nonnegative float; `0.01` | Delay MIT motor-control frames before applying them to MuJoCo. Lifecycle, parameter, and stop traffic remains immediate; use `0` to disable the delay. |
 
 The emulator is checkout-only. It selects the canonical `lower_body` and
 `upper_body` groups from `deps/bello-stack/descriptions/bello/hardware.yaml`,
@@ -308,6 +309,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `policy_transition_seconds` | positive float or `null`; `null` | motion | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 0.2 seconds. |
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion | Maximum robot tilt during transitions into and out of motion tracking and while motion tracking is active. `null` uses 70 degrees (approximately 1.222 radians); standing locomotion keeps its 0.70-radian limit. |
 | `status_interval_seconds` | positive float or `null`; `null` | both | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
+| `policy_log_path` | path or `null`; `null` | both | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
 | `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |
 
@@ -338,6 +340,19 @@ ankle motor coordinates.
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
+Armed runs print the resolved policy-log path before acquiring control. The
+first JSONL record describes checkpoint paths, observation layouts, stack
+sizes, action names, and physical target names. Every following record contains
+one executed policy step with wall and monotonic timestamps, phase, step,
+unstacked observation, normalized stacked policy observation, raw and applied
+action, and physical target. Locomotion
+records include the velocity command. Motion records cover the standing
+policy, both policy transitions, and motion tracking; transition records contain
+both the policy target and the blended target actually sent. File encoding and
+flushing run on a dedicated background thread so normal disk I/O does not block
+the control loop. These complete 50 Hz logs can grow by hundreds of megabytes
+per hour, depending on the checkpoint observation-stack size.
+
 Hardware targets use the proportional and derivative gains stored in checkpoint
 metadata.
 
@@ -346,7 +361,8 @@ policy layouts, generated transmission, motor inventory, IMU presence,
 complete state-frame freshness, and initial state. Armed loops consume the latest
 complete daemon state frame through one client-paced RPC per policy step.
 The complete RPC round-trip counts toward motor, IMU, and group-state age.
-Samples outside the configured freshness or coherence limits fail closed.
+Samples outside the configured freshness limits or spanning more than 40 ms fail
+closed.
 Armed loops continue checking group state, sample age, tilt, acceleration,
 angular velocity, loop lag, policy target bounds, and asynchronous command
 receipts. The runner does not clip per-step targets; the pinned hardware daemon

@@ -195,6 +195,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.video_config.enabled is False
     assert locomotion.checkpoint_config.every_updates == 512
     assert hardware.checkpoint_config.every_updates == 512
+    assert locomotion.env_config.observation_latency.enabled
+    assert locomotion.env_config.observation_latency.delay_steps == (0, 2)
+    assert hardware.env_config.observation_latency.enabled
+    assert hardware.env_config.observation_latency.delay_steps == (0, 2)
     assert motion.checkpoint_config.every_updates == 500
     assert twist_teacher.config.num_updates == 100_000
     assert twist_teacher.config.policy.architecture == "twist_teacher"

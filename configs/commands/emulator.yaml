@@ -1,4 +1,5 @@
 bus_interfaces: [can0=vcan0, can1=vcan1]
+command_latency_seconds: 0.01
 hydra:
   job:
     chdir: false

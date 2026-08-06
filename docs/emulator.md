@@ -12,7 +12,7 @@ Public controls are documented under
 | Concern | Behavior |
 | --- | --- |
 | Dynamics | Native MuJoCo at a 0.0025-second timestep, paced against wall-clock time. |
-| Control | MIT impedance commands received through RobStride SocketCAN and applied through the physical transmission model. |
+| Control | MIT impedance commands received through RobStride SocketCAN, delayed by 10 ms by default, and applied through the physical transmission model. |
 | Published state | Active motor feedback, EBIMU serial samples, and pelvis PoseService updates. |
 | Process interface | Headless. No MuJoCo viewer or torso-control window is opened. |
 | Limits | Motor-catalog torque limits and transmission ownership are always enforced. |
@@ -43,6 +43,11 @@ topology and model catalogs.
 The command always uses the canonical physical asset with a generated pelvis
 IMU. It publishes 100 Hz motor feedback, a 250 Hz EBIMU stream at
 `/dev/ttyIMU-mujoco`, and PoseService on port 50052.
+
+The public `command_latency_seconds` option delays only MIT motor-control
+frames before they affect MuJoCo. Motor enable/stop, parameter access, and
+other lifecycle traffic remains immediate. Set it to `0` to disable synthetic
+command latency.
 
 ## Linux interfaces
 
