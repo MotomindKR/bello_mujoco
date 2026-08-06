@@ -25,9 +25,10 @@ Start documentation changes from [docs/index.md](docs/index.md). Public command
 fields belong in [docs/commands.md](docs/commands.md); training settings belong
 in [docs/training_configuration.md](docs/training_configuration.md).
 
-The pose-service Python module is generated from
-`src/bello_mujoco/hardware/_pose.proto`. Regenerate it after changing the
-protocol:
+The pose-service Python module is generated from the authoritative schema at
+`deps/bello-stack/components/bello-pose-api/proto/bello/pose/v1/pose.proto`.
+Treat the submodule as read-only here and regenerate the binding after advancing
+the pinned revision to a version that changes the protocol:
 
 ```bash
 uv run bash scripts/protobuf.sh generate
