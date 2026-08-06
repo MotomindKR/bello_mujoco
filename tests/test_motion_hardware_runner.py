@@ -177,6 +177,7 @@ def test_pose_and_imu_orientation_must_agree() -> None:
 
 def test_motion_config_rejects_unsafe_ranges() -> None:
     assert motion_hardware.HardwareMotionConfig().max_duration_seconds is None
+    assert motion_hardware.HardwareMotionConfig().max_state_sample_span_ms == 40.0
     motion_hardware.validate_hardware_motion_config(
         motion_hardware.HardwareMotionConfig(max_duration_seconds=None)
     )

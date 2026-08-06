@@ -327,7 +327,8 @@ policy layouts, generated transmission, motor inventory, IMU presence,
 complete state-frame freshness, and initial state. Armed loops consume the latest
 complete daemon state frame through one client-paced RPC per policy step.
 The complete RPC round-trip counts toward motor, IMU, and group-state age.
-Samples outside the configured freshness or coherence limits fail closed.
+Samples outside the configured freshness limits or spanning more than 40 ms fail
+closed.
 Armed loops continue checking group state, sample age, tilt, acceleration,
 angular velocity, loop lag, policy target bounds, and asynchronous command
 receipts. The runner does not clip per-step targets; the pinned hardware daemon

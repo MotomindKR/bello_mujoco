@@ -26,7 +26,7 @@ class HardwareControlConfig:
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100
     max_group_age_ms: int = 100
-    max_state_sample_span_ms: float = 20.0
+    max_state_sample_span_ms: float = 40.0
     max_tilt_radians: float = 0.70
     max_angular_velocity: float = 20.0
     max_linear_acceleration: float = 100.0
