@@ -117,6 +117,9 @@ class VastTrainCommandConfig:
     duration_hours: float
     skip_confirmation: bool
     dry_run: bool
+    preferred_countries: list[str]
+    min_upload_mib_per_second: float
+    route_probe_mib: int
 
 
 @dataclass(frozen=True)
@@ -677,6 +680,9 @@ def _vast_train_hydra(config: DictConfig) -> None:
         run_name=command.run_name,
         skip_confirmation=command.skip_confirmation,
         dry_run=command.dry_run,
+        preferred_countries=tuple(command.preferred_countries),
+        min_upload_mib_per_second=command.min_upload_mib_per_second,
+        route_probe_mib=command.route_probe_mib,
         job_timeout_seconds=round(command.duration_hours * 3600),
         progress_timeout_seconds=min(
             1800, max(60, round(command.duration_hours * 3600))

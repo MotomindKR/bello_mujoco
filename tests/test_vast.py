@@ -367,7 +367,7 @@ def test_offer_query_contains_hardware_and_price_constraints() -> None:
     assert "dph_total<=1.25" in query
 
 
-def test_find_offers_orders_global_results_by_value() -> None:
+def test_find_offers_prefers_nearby_regions_before_global_value() -> None:
     api = SearchApi(
         [
             [
@@ -379,7 +379,7 @@ def test_find_offers_orders_global_results_by_value() -> None:
 
     offers = find_offers(api, valid_config())
 
-    assert [offer.id for offer in offers] == [2, 1]
+    assert [offer.id for offer in offers] == [1, 2]
     assert len(api.queries) == 1
     assert api.queries[0][3] == 80.0
 
@@ -524,6 +524,42 @@ def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch) -> None:
 
     assert target == ("root", "192.0.2.10", 22022)
     assert commands == [vast_remote.ssh_command(target, "true")]
+
+
+def test_upload_route_probe_measures_payload_throughput(monkeypatch) -> None:
+    moments = iter((10.0, 12.0))
+    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: next(moments))
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    speed = vast_remote.measure_upload_mib_per_second(
+        ("root", "example.com", 22001),
+        size_mib=8,
+        timeout_seconds=30,
+        runner=runner,
+    )
+
+    assert speed == 4.0
+    assert len(calls[0][1]["input"]) == 8 * 1024 * 1024
+    assert calls[0][1]["timeout"] == 30
+
+
+def test_upload_route_probe_treats_timeout_as_zero_speed() -> None:
+    def runner(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    assert (
+        vast_remote.measure_upload_mib_per_second(
+            ("root", "example.com", 22001),
+            size_mib=1,
+            timeout_seconds=30,
+            runner=runner,
+        )
+        == 0.0
+    )
 
 
 def test_destroy_treats_not_found_after_api_error_as_success() -> None:
@@ -1140,6 +1176,67 @@ def test_pipeline_always_destroys_created_instance(
     assert "ssh" not in api.created[0][1]
     assert "direct" not in api.created[0][1]
     assert not (tmp_path / ".vast" / "active_instance.json").exists()
+
+
+def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
+    monkeypatch, tmp_path
+) -> None:
+    class Api(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            return offer_id
+
+    api = Api()
+    config = valid_config(
+        experiment="twist_teacher",
+        dataset_path=tmp_path / "index.json",
+    )
+    twist_selection = GitSelection(
+        branch="main",
+        commit="a" * 40,
+        config_path=PurePosixPath("configs/profiles/train/twist_teacher.yaml"),
+        repo_url="https://github.com/MotomindKR/bello_mujoco.git",
+        dataset_files=(tmp_path / "index.json",),
+    )
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: [
+            VastOffer.from_mapping(make_offer(1, location="Seoul, KR")),
+            VastOffer.from_mapping(make_offer(2, location="Tokyo, JP")),
+        ],
+    )
+    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        vast,
+        "wait_for_ssh",
+        lambda api, instance_id, timeout: ("root", f"host-{instance_id}", 22),
+    )
+    speeds = iter((0.3, 20.0))
+    monkeypatch.setattr(
+        vast, "measure_upload_mib_per_second", lambda *args, **kwargs: next(speeds)
+    )
+    remote_targets = []
+
+    def remote_runner(target, *args, **kwargs):
+        remote_targets.append(target)
+
+    VastLifecycle(
+        api,
+        config,
+        tmp_path / ".vast" / "active_instance.json",
+        "route-test",
+    ).run(
+        twist_selection,
+        "route-test",
+        remote_runner,
+        wandb_key="secret",
+        github_token="",
+    )
+
+    assert [offer_id for offer_id, _ in api.created] == [1, 2]
+    assert api.destroyed == [1, 2]
+    assert remote_targets == [("root", "host-2", 22)]
 
 
 def test_motion_dry_run_never_reads_credentials_or_rents(

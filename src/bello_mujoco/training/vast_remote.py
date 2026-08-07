@@ -163,6 +163,34 @@ def wait_for_ssh(
     raise TimeoutError(f"direct SSH did not become ready: {last_error}")
 
 
+def measure_upload_mib_per_second(
+    target: tuple[str, str, int],
+    *,
+    size_mib: int,
+    timeout_seconds: int,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> float:
+    """Measure the direct-SSH upload route before staging large inputs."""
+
+    payload = bytes(size_mib * 1024 * 1024)
+    started_at = time.monotonic()
+    try:
+        result = runner(
+            ssh_command(target, "cat >/dev/null"),
+            input=payload,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=min(timeout_seconds, 60),
+        )
+    except subprocess.TimeoutExpired:
+        return 0.0
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace") if result.stderr else ""
+        raise RuntimeError(f"Vast upload route probe failed: {stderr.strip()}")
+    elapsed = max(time.monotonic() - started_at, 1e-6)
+    return size_mib / elapsed
+
+
 REMOTE_TRAIN_SCRIPT = r"""set -Eeuo pipefail
 
 branch="$1"

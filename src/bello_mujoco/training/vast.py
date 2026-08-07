@@ -33,6 +33,7 @@ from bello_mujoco.training.vast_provider import (
     exception_http_status,
 )
 from bello_mujoco.training.vast_remote import (
+    measure_upload_mib_per_second,
     run_remote_training,
     wait_for_ssh,
 )
@@ -58,7 +59,7 @@ class VastOfferConfig:
     min_reliability: float = 0.98
     min_cuda: float = 13.0
     image: str = "vastai/base-image:cuda-13.0.3-auto"
-    search_limit: int = 10
+    search_limit: int = 50
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,9 @@ class VastTrainConfig:
     ssh_timeout_seconds: int = 900
     transfer_timeout_seconds: int = 3_600
     transfer_retries: int = 3
+    preferred_countries: tuple[str, ...] = ("KR", "JP", "TW", "HK", "SG")
+    min_upload_mib_per_second: float = 5.0
+    route_probe_mib: int = 16
     job_timeout_seconds: int = 43_200
     progress_timeout_seconds: int = 1_800
     reconcile_retries: int = 3
@@ -177,6 +181,17 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError("readiness timeouts must be positive")
     if config.transfer_timeout_seconds <= 0 or config.transfer_retries <= 0:
         raise ValueError("transfer timeout and retries must be positive")
+    if (
+        not math.isfinite(config.min_upload_mib_per_second)
+        or config.min_upload_mib_per_second <= 0
+        or config.route_probe_mib <= 0
+    ):
+        raise ValueError("route probe size and minimum upload speed must be positive")
+    if not config.preferred_countries or any(
+        re.fullmatch(r"[A-Z]{2}", country) is None
+        for country in config.preferred_countries
+    ):
+        raise ValueError("preferred countries must be non-empty ISO alpha-2 codes")
     if config.job_timeout_seconds <= 0 or config.progress_timeout_seconds <= 0:
         raise ValueError("job and progress timeouts must be positive")
     if config.progress_timeout_seconds > config.job_timeout_seconds:
@@ -450,12 +465,23 @@ def find_offers(api: VastApi, config: VastTrainConfig) -> list[VastOffer]:
     )
     offers = [VastOffer.from_mapping(item) for item in raw_offers]
     offers = [offer for offer in offers if offer_matches(offer, config)]
-    offers.sort(key=lambda offer: (-offer.dlperf_per_dphtotal, offer.dph_total))
+    offers.sort(key=lambda offer: _offer_sort_key(offer, config))
     if offers:
         return offers
     raise RuntimeError(
         "no Vast offers matched the configured hardware and price limits"
     )
+
+
+def _offer_sort_key(
+    offer: VastOffer, config: VastTrainConfig
+) -> tuple[int, float, float]:
+    country = offer.geolocation.rsplit(",", 1)[-1].strip().upper()
+    try:
+        location_rank = config.preferred_countries.index(country)
+    except ValueError:
+        location_rank = len(config.preferred_countries)
+    return location_rank, -offer.dlperf_per_dphtotal, offer.dph_total
 
 
 def offer_matches(offer: VastOffer, config: VastTrainConfig) -> bool:
@@ -794,7 +820,9 @@ def create_available_instance(
                 f"Vast offer {offer.id} could not be rented "
                 f"({type(exc).__name__}); trying the next match."
             )
-    raise RuntimeError("all matching Vast offers became unavailable during rental")
+    raise OffersUnavailableError(
+        "all matching Vast offers became unavailable during rental"
+    )
 
 
 def _is_explicit_offer_unavailable(exc: BaseException) -> bool:
@@ -882,6 +910,10 @@ class PipelineInterrupted(RuntimeError):
     pass
 
 
+class OffersUnavailableError(RuntimeError):
+    pass
+
+
 @contextmanager
 def termination_handler():
     handled_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
@@ -926,48 +958,73 @@ class VastLifecycle:
         )
         offers = find_offers(self.api, self.config)
         print_offers(offers)
-        instance_id: int | None = None
-        failure: BaseException | None = None
-        try:
-            instance_id = create_available_instance(
-                self.api,
-                offers,
-                self.config,
-                self.label,
-                on_before_create=lambda: write_creating_state(
-                    self.state_path, self.label
-                ),
-                on_offer_unavailable=lambda: self.state_path.unlink(missing_ok=True),
-            )
-            write_active_state(self.state_path, instance_id, self.label)
-            print(f"Created Vast instance {instance_id}; teardown is armed.")
-            wait_for_instance(
-                self.api,
-                instance_id,
-                self.config.ready_timeout_seconds,
-            )
-            ssh_target = wait_for_ssh(
-                self.api,
-                instance_id,
-                self.config.ssh_timeout_seconds,
-            )
-            remote_runner(
-                ssh_target,
-                selection,
-                self.config,
-                run_name,
-                wandb_key=wandb_key,
-                github_token=github_token,
-            )
-        except BaseException as exc:
-            failure = exc
-        finally:
-            if instance_id is not None:
-                teardown_failure = self._destroy(instance_id)
-                if teardown_failure is not None:
-                    failure = teardown_failure
-        if failure is not None:
+        for offer_number, offer in enumerate(offers, start=1):
+            instance_id: int | None = None
+            failure: BaseException | None = None
+            retry_offer = False
+            try:
+                instance_id = create_available_instance(
+                    self.api,
+                    [offer],
+                    self.config,
+                    self.label,
+                    on_before_create=lambda: write_creating_state(
+                        self.state_path, self.label
+                    ),
+                    on_offer_unavailable=lambda: self.state_path.unlink(
+                        missing_ok=True
+                    ),
+                )
+                write_active_state(self.state_path, instance_id, self.label)
+                print(f"Created Vast instance {instance_id}; teardown is armed.")
+                wait_for_instance(
+                    self.api,
+                    instance_id,
+                    self.config.ready_timeout_seconds,
+                )
+                ssh_target = wait_for_ssh(
+                    self.api,
+                    instance_id,
+                    self.config.ssh_timeout_seconds,
+                )
+                if selection.dataset_files:
+                    speed = measure_upload_mib_per_second(
+                        ssh_target,
+                        size_mib=self.config.route_probe_mib,
+                        timeout_seconds=self.config.ssh_timeout_seconds,
+                    )
+                    print(f"Measured direct SSH upload: {speed:.1f} MiB/s.")
+                    if speed < self.config.min_upload_mib_per_second:
+                        retry_offer = True
+                        raise RuntimeError(
+                            f"offer {offer.id} upload route is too slow: "
+                            f"{speed:.1f} MiB/s < "
+                            f"{self.config.min_upload_mib_per_second:.1f} MiB/s"
+                        )
+                remote_runner(
+                    ssh_target,
+                    selection,
+                    self.config,
+                    run_name,
+                    wandb_key=wandb_key,
+                    github_token=github_token,
+                )
+            except BaseException as exc:
+                failure = exc
+                retry_offer = retry_offer or isinstance(exc, OffersUnavailableError)
+            finally:
+                if instance_id is not None:
+                    teardown_failure = self._destroy(instance_id)
+                    if teardown_failure is not None:
+                        failure = teardown_failure
+                        retry_offer = False
+            if failure is None:
+                return
+            if retry_offer and offer_number < len(offers):
+                print(f"Rejected offer {offer.id}; trying the next nearby offer.")
+                continue
             raise failure
+        raise RuntimeError("all matching Vast offers were exhausted")
 
     def _destroy(self, instance_id: int) -> RuntimeError | None:
         print(f"Destroying Vast instance {instance_id}.")

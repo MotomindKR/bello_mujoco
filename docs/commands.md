@@ -238,6 +238,9 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | `duration_hours` | positive float; `6.0` | Hard job timeout. The progress timeout is capped at 30 minutes and never exceeds this duration. |
 | `skip_confirmation` | boolean; `false` | Skip the final rental confirmation for unattended operation. |
 | `dry_run` | boolean; `false` | Resolve Git state and print the offer query without reading credentials or renting. |
+| `preferred_countries` | ISO country-code list; `[KR, JP, TW, HK, SG]` | Rank nearby offers ahead of globally better marketplace value. |
+| `min_upload_mib_per_second` | positive float; `5.0` | Reject and destroy a TWIST instance whose direct-SSH upload probe falls below this rate. |
+| `route_probe_mib` | positive integer; `16` | Payload size for the pre-transfer direct-SSH upload probe. |
 
 The selected profile, `pyproject.toml`, `uv.lock`, and any motion clip are
 verified in the exact `origin/<branch>` commit before rental. Ignored local

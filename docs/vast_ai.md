@@ -62,6 +62,13 @@ contents remain outside Git and are copied only to dedicated paths under
 `/workspace`. Interrupted transfers retry with partial-file continuation. A
 remote SHA-256 mismatch prevents training and triggers normal teardown.
 
+TWIST offers are ranked by proximity to Korea (`KR`, `JP`, `TW`, `HK`, then
+`SG`) before marketplace value. After SSH becomes ready, the launcher uploads a
+16 MiB probe and requires at least 5 MiB/s. A slower instance is destroyed and
+the next nearby offer is tried before the multi-gigabyte dataset is transferred.
+These controls can be overridden with `preferred_countries`,
+`min_upload_mib_per_second`, and `route_probe_mib`.
+
 Teacher example:
 
 ```bash
