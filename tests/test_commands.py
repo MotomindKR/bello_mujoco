@@ -183,6 +183,7 @@ def test_public_command_configs_are_strict() -> None:
     for config_type, raw in (
         (HardwareCommandConfig, {"arm": 1}),
         (HardwareCommandConfig, {"duration_seconds": True}),
+        (HardwareCommandConfig, {"remote_staleness_ms": True}),
         (EvalCommandConfig, {"allow_git_commit_mismatch": 1}),
         (TrainCommandConfig, {"allow_git_commit_mismatch": 1}),
     ):

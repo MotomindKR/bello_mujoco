@@ -100,7 +100,8 @@ class HardwareCommandConfig:
     standing_checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
     endpoint: str
-    command: tuple[float, float, float]
+    remote_endpoint: str | None
+    remote_staleness_ms: int
     motion_path: Path | None
     duration_seconds: float | None
     ramp_seconds: float | None
@@ -108,7 +109,6 @@ class HardwareCommandConfig:
     max_motion_tilt_radians: float | None
     status_interval_seconds: float | None
     policy_log_path: Path | None
-    gamepad_enabled: bool
     arm: bool
 
 
@@ -473,7 +473,9 @@ def _hardware_hydra(config: DictConfig) -> None:
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     policy_log_path = _hardware_policy_log_path(command.policy_log_path)
     if command.task == "motion":
-        _reject_explicit_fields(("command", "gamepad_enabled"), context="task=motion")
+        _reject_explicit_fields(
+            ("remote_endpoint", "remote_staleness_ms"), context="task=motion"
+        )
         standing_checkpoint = _required_path(
             command.standing_checkpoint_path,
             "standing_checkpoint_path",
@@ -521,8 +523,8 @@ def _hardware_hydra(config: DictConfig) -> None:
         ),
         context="task=locomotion",
     )
-    if command.gamepad_enabled:
-        _reject_explicit_fields(("command",), context="gamepad_enabled=true")
+    if command.remote_endpoint is None or not command.remote_endpoint.strip():
+        raise ValueError("remote_endpoint is required for task=locomotion")
     from bello_mujoco.hardware.locomotion import (
         HardwareLocomotionConfig,
         run_hardware_locomotion,
@@ -534,12 +536,15 @@ def _hardware_hydra(config: DictConfig) -> None:
         replace(
             base,
             endpoint=command.endpoint,
-            command=command.command,
+            remote=replace(
+                base.remote,
+                endpoint=command.remote_endpoint,
+                staleness_ms=command.remote_staleness_ms,
+            ),
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
             status_interval_seconds=command.status_interval_seconds,
             policy_log_path=policy_log_path,
-            gamepad=replace(base.gamepad, enabled=command.gamepad_enabled),
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         ),

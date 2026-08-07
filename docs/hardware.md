@@ -8,7 +8,7 @@ The runner has two task modes:
 
 | Task | Policy input | External services |
 | --- | --- | --- |
-| Locomotion | Motor state, pelvis IMU, previous action, and fixed or gamepad velocity command | `bello-hardwared` |
+| Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent | `bello-hardwared` plus the visualizer's RemoteCommandService |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
 
 Both modes run policy inference on JAX's CPU backend. The command overrides
@@ -45,7 +45,9 @@ safety fix is not inherited automatically by a historical checkpoint.
 3. prepares the robot asset described by checkpoint metadata;
 4. reconstructs observation, action, and physical-coordinate layouts;
 5. compiles policy inference;
-6. connects to the hardware daemon without acquiring a control lease;
+6. requires a fresh sample from the visualizer's remote-command service for
+   locomotion, then connects to the hardware daemon without acquiring a control
+   lease;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite complete state frames;
 8. evaluates one preview policy step and reports the resolved configuration.
@@ -64,7 +66,8 @@ block the policy-rate loop.
 
 After preflight, both task modes begin with the same interactive sequence:
 
-1. The operator supports the robot and types the exact word `HOLD`.
+1. The operator supports the robot and types the exact word `HOLD`. The remote
+   abort remains active while the runner waits and prevents control acquisition.
 2. The runner acquires control and ramps to the checkpoint nominal pose over
    ten seconds by default.
 3. The runner continuously refreshes the nominal target and checks telemetry
@@ -89,7 +92,7 @@ any group is `DAMPED`, it remains damped until the operator supports the robot
 and types the exact word `IDLE`; only those damped groups are then explicitly
 disabled. Lease release preserves `DAMPED` and `FAULT` states, so an exception
 or failed confirmation does not automatically undamp the robot. Explicit
-completion, gamepad abort, and keyboard interruption use the same
+completion, remote-controller abort, and keyboard interruption use the same
 stop-confirm-disable sequence. A hard fault or lost daemon connection can
 prevent part of this handshake. The external hardware daemon remains the final
 authority for command validity, leases, damping, and device faults.
@@ -101,13 +104,22 @@ waist yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy.
 The runner controls the 13 policy coordinates and supplies nominal targets for
 the remaining physical coordinates.
 
-After the shared `HOLD`, ramp, and `RUN` sequence, left-stick
-vertical/horizontal commands forward/lateral velocity, right-stick horizontal
-commands yaw, and Start/Options aborts. Controller disconnection commands zero.
-The abort is level-sensitive, including when Start/Options is already held
-during startup.
+The physical controller is attached to the host running `bello-visualizer`.
+Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
+the hardware runner scales that intent through the checkpoint's command bounds
+and minimum speeds. Configure the visualizer to listen on port 50054 and supply
+its plaintext URL as `remote_endpoint`, for example
+`remote_endpoint=http://visualizer-host:50054`.
 
-A fixed command is active only when gamepad input is disabled.
+Left-stick vertical/horizontal controls forward/lateral velocity, right-stick
+horizontal controls yaw, and Start/Options aborts. The controller must be
+physically neutral before nonzero intent is accepted after controller or gRPC
+reconnection. Controller disconnection or a stale service stream commands
+zero; the runner reconnects automatically and requires neutral again. A fresh
+service sample is required before the runner connects to hardware. Start/Options
+is level-sensitive and latched by the client, including when it is held during
+startup. Ctrl-C remains the terminal fallback. Hardware locomotion has no
+native-controller or fixed-command mode.
 
 ## Motion mode
 
@@ -136,8 +148,8 @@ Ctrl-C while motion tracking is active performs the same transition back to
 standing; pressing Ctrl-C again while standing enters damped shutdown. Each
 transition takes 0.2 seconds by default; it does not force the unsupported
 robot through either checkpoint's static nominal pose. Pose/IMU orientation
-agreement, reference bounds, and initial policy output remain checked. Gamepad
-and velocity-command fields are locomotion-only.
+agreement, reference bounds, and initial policy output remain checked. Remote
+command fields are locomotion-only.
 
 Motion inference fuses observation construction, stacking, normalization, actor
 execution, bounded action mapping, and diagnostics into one JIT call. Periodic

@@ -249,7 +249,8 @@ installed from the pinned `deps/bello-stack` uv workspace member:
 ```text
 git submodule update --init --recursive
 uv sync --frozen
-uv run bello-run-hardware checkpoint_path=...
+uv run bello-run-hardware checkpoint_path=... \
+  remote_endpoint=http://visualizer-host:50054
 ```
 
 Physical hardware execution is checkout-only. A wheel installation does not
@@ -268,7 +269,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
 | `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout. This does not disable task, shape, asset, motion-content, or hardware preflight checks. |
 | `endpoint` | string; `http://127.0.0.1:50051` | both | `bello-hardwared` endpoint. |
-| `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
+| `remote_endpoint` | string or `null`; `null` | locomotion | Required plaintext URL of the visualizer's RemoteCommandService, for example `http://visualizer-host:50054`. |
+| `remote_staleness_ms` | positive integer; `200` | locomotion | Maximum age of the latest remote-command sample before the command becomes zero and the stream reconnects. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `duration_seconds` | positive float or `null`; `null` | both | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
 | `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for both tasks. |
@@ -276,16 +278,18 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion | Maximum robot tilt during transitions into and out of motion tracking and while motion tracking is active. `null` uses 70 degrees (approximately 1.222 radians); standing locomotion keeps its 0.70-radian limit. |
 | `status_interval_seconds` | positive float or `null`; `null` | both | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | both | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
-| `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
 | `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |
 
 Fields that apply to only one task must not be explicitly supplied when the
 other task is selected, even if the supplied value equals the documented
 default.
-For locomotion, supplying `command` requires `gamepad_enabled=false`; an
-enabled gamepad is the sole command source.
+Locomotion requires `remote_endpoint`. Its visualizer-hosted physical controller
+uses the same stick mapping as `bello-eval`; Start/Options aborts. Controller or
+service loss commands zero, reconnects automatically, and requires a neutral
+controller before accepting nonzero intent again. The visualizer service must
+produce a fresh sample before the hardware daemon is contacted. Hardware
+locomotion has no native-controller or fixed-command mode.
 
-Locomotion uses the same stick mapping as `bello-eval`; Start/Options aborts.
 Motion additionally requires a locomotion checkpoint selected by
 `standing_checkpoint_path` and absolute pelvis pose from
 `bello-state-estimatord` PoseService at `127.0.0.1:50053`. The standing and
