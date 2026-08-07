@@ -618,6 +618,22 @@ def test_vast_error_classification_prefers_structured_http_status() -> None:
     assert vast._is_explicit_offer_unavailable(error)
 
 
+@pytest.mark.parametrize("status", [400, 409, 422])
+def test_vast_definite_create_rejections_are_not_ambiguous(status) -> None:
+    error = RuntimeError("request rejected")
+    error.response = type("Response", (), {"status_code": status})()
+
+    assert vast._is_explicit_offer_unavailable(error)
+
+
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+def test_vast_auth_rate_and_server_errors_remain_ambiguous(status) -> None:
+    error = RuntimeError("uncertain create result")
+    error.response = type("Response", (), {"status_code": status})()
+
+    assert not vast._is_explicit_offer_unavailable(error)
+
+
 def test_destroy_does_not_treat_transient_api_errors_as_success() -> None:
     class UnreachableApi:
         def destroy_instance(self, instance_id):

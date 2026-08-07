@@ -837,7 +837,8 @@ def create_available_instance(
                 raise RuntimeError(
                     f"Vast rental result for offer {offer.id} is ambiguous; "
                     f"no instance with label {label!r} was visible after "
-                    "reconciliation, so another offer will not be rented"
+                    "reconciliation, so another offer will not be rented. "
+                    f"Vast cause: {safe_exception_message(exc)}"
                 ) from exc
             on_offer_unavailable()
             print(
@@ -850,7 +851,7 @@ def create_available_instance(
 
 
 def _is_explicit_offer_unavailable(exc: BaseException) -> bool:
-    return exception_http_status(exc) in {404, 410}
+    return exception_http_status(exc) in {400, 404, 409, 410, 422}
 
 
 def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> int:
