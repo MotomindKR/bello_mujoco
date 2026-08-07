@@ -128,6 +128,39 @@ def motion_selection() -> GitSelection:
     )
 
 
+def twist_dataset(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "train.npz",
+        "evaluation.npz",
+        "heldout_manifest.json",
+        "conversion_report.json",
+    ):
+        (tmp_path / name).write_bytes(name.encode())
+    index = {
+        "schema_version": 3,
+        "dataset_fingerprint": "sha256:" + "c" * 64,
+        "train_sampling": "frame_count_times_manifest_weight",
+        "split_files": {
+            "train": "train.npz",
+            "evaluation": "evaluation.npz",
+        },
+    }
+    path = tmp_path / "index.json"
+    path.write_text(json.dumps(index), encoding="utf-8")
+    return path
+
+
+def twist_config(tmp_path: Path, *, stage: str = "teacher", **kwargs):
+    dataset_path = twist_dataset(tmp_path / "dataset")
+    values = {
+        "experiment": f"twist_{stage}",
+        "dataset_path": dataset_path,
+    }
+    values.update(kwargs)
+    return valid_config(**values)
+
+
 @pytest.mark.parametrize("max_price", [None, 0.0, float("nan"), float("inf")])
 def test_validate_config_requires_finite_positive_price(max_price) -> None:
     with pytest.raises(ValueError, match="max-price"):
@@ -138,6 +171,62 @@ def test_vast_experiment_rejects_unknown_values() -> None:
     with pytest.raises(ValueError, match="--experiment"):
         validate_config(
             valid_config(experiment="unsupported")  # type: ignore[arg-type]
+        )
+
+
+def test_twist_vast_config_requires_explicit_stage_inputs(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="dataset-path is required"):
+        validate_config(valid_config(experiment="twist_teacher"))
+    with pytest.raises(ValueError, match="teacher-checkpoint-path is required"):
+        validate_config(twist_config(tmp_path, stage="student"))
+    with pytest.raises(ValueError, match="only valid for TWIST"):
+        validate_config(valid_config(dataset_path=Path("dataset/index.json")))
+
+
+def test_twist_dataset_selection_is_strict_and_portable(tmp_path: Path) -> None:
+    index_path = twist_dataset(tmp_path)
+
+    fingerprint, paths = vast._twist_dataset_files(index_path)
+
+    assert fingerprint == "sha256:" + "c" * 64
+    assert {path.name for path in paths} == {
+        "index.json",
+        "train.npz",
+        "evaluation.npz",
+        "heldout_manifest.json",
+        "conversion_report.json",
+    }
+    (tmp_path / "train.npz").unlink()
+    with pytest.raises(ValueError, match="files are missing"):
+        vast._twist_dataset_files(index_path)
+
+
+def test_twist_teacher_selection_binds_dataset_fingerprint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "teacher"
+    checkpoint.mkdir()
+    (checkpoint / "state").mkdir()
+    (checkpoint / "continuation").mkdir()
+    (checkpoint / "metadata.json").write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "task": "twist_teacher",
+                    "dataset": {"dataset_fingerprint": "sha256:" + "c" * 64},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        vast._twist_teacher_checkpoint(
+            checkpoint, dataset_fingerprint="sha256:" + "c" * 64
+        )
+        == checkpoint.resolve()
+    )
+    with pytest.raises(ValueError, match="dataset fingerprint differs"):
+        vast._twist_teacher_checkpoint(
+            checkpoint, dataset_fingerprint="sha256:" + "d" * 64
         )
 
 
@@ -609,7 +698,14 @@ def test_watchdog_uses_restricted_container_credentials_and_absolute_deadline(
     )
 
     script = vast.watchdog_onstart_script(config)
-    expected_deadline = 1_000 + 10 + 20 + 30 + vast.WATCHDOG_TEARDOWN_GRACE_SECONDS
+    expected_deadline = (
+        1_000
+        + 10
+        + 20
+        + config.transfer_timeout_seconds
+        + 30
+        + vast.WATCHDOG_TEARDOWN_GRACE_SECONDS
+    )
 
     assert f"deadline = {expected_deadline}" in script
     assert "CONTAINER_ID" in script
@@ -690,7 +786,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     command = vast_remote.remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
-    assert shlex.split(command)[-1] == "test-run"
+    assert shlex.split(command)[-4] == "test-run"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
@@ -724,7 +820,7 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
         "motion-test",
     )
 
-    assert shlex.split(command)[-1] == "motion-test"
+    assert shlex.split(command)[-4] == "motion-test"
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
     assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
@@ -739,6 +835,140 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     )
     assert overrides_index < validation_index
     assert user_index < forced_index < checkpoint_index
+
+
+def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
+    command = vast_remote.remote_start_command(
+        "/workspace/.bello-vast-jobs/twist",
+        selection(),
+        valid_config(experiment="twist_student", allow_git_commit_mismatch=True),
+        "twist-test",
+        dataset_path="/workspace/datasets/twist/index.json",
+        teacher_checkpoint_path="/workspace/checkpoints/twist_teacher",
+    )
+    arguments = shlex.split(command)
+
+    assert arguments[-3:] == [
+        "/workspace/datasets/twist/index.json",
+        "/workspace/checkpoints/twist_teacher",
+        "true",
+    ]
+    assert "TF_GPU_ALLOCATOR=cuda_malloc_async" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert 'if [[ "$experiment" != twist_* ]]' in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert 'training_overrides+=("dataset_path=$dataset_path")' in (
+        vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+
+
+def test_rsync_transfer_is_resumable_and_retried(monkeypatch) -> None:
+    attempts = []
+    sleeps = []
+
+    class Executor:
+        def run(self, command, *, timeout_seconds):
+            attempts.append((command, timeout_seconds))
+            if len(attempts) == 1:
+                raise subprocess.CalledProcessError(12, command)
+
+    moments = iter((0.0, 1.0, 1.0, 2.0))
+    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: next(moments))
+    command = vast_remote._rsync_command(
+        ("root", "example.com", 22001),
+        ["/data/index.json", "/data/train.npz"],
+        "/workspace/datasets/twist",
+    )
+
+    vast_remote._run_rsync_with_retries(
+        command,
+        timeout_seconds=30,
+        retries=3,
+        executor=Executor(),
+        sleep=sleeps.append,
+    )
+
+    assert len(attempts) == 2
+    assert sleeps == [5]
+    assert "--partial" in command
+    assert "--append-verify" in command
+    assert command[-1] == "root@example.com:/workspace/datasets/twist/"
+
+
+def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None:
+    dataset_path = twist_dataset(tmp_path)
+    fingerprint, paths = vast._twist_dataset_files(dataset_path)
+    selected = GitSelection(
+        branch="main",
+        commit="a" * 40,
+        config_path=PurePosixPath("configs/profiles/train/twist_teacher.yaml"),
+        repo_url="https://github.com/MotomindKR/bello_mujoco.git",
+        dataset_fingerprint=fingerprint,
+        dataset_files=paths,
+    )
+    remote_commands = []
+    rsync_commands = []
+
+    class Executor:
+        def run(self, target, remote_command, *, timeout_seconds, input_text=None):
+            remote_commands.append(remote_command)
+            return subprocess.CompletedProcess(
+                remote_command, 0, stdout="verified\n", stderr=""
+            )
+
+    class Transfer:
+        def run(self, command, *, timeout_seconds):
+            rsync_commands.append(command)
+
+    dataset_index, teacher = vast_remote.stage_twist_inputs(
+        ("root", "example.com", 22001),
+        selected,
+        valid_config(experiment="twist_teacher", dataset_path=dataset_path),
+        executor=Executor(),
+        rsync_executor=Transfer(),
+        sleep=lambda _: None,
+    )
+
+    assert dataset_index == "/workspace/datasets/twist/index.json"
+    assert teacher == ""
+    assert len(rsync_commands) == 1
+    assert {Path(path).name for path in rsync_commands[0] if path.startswith("/")} >= {
+        "index.json",
+        "train.npz",
+        "evaluation.npz",
+    }
+    assert fingerprint in remote_commands[-1]
+
+
+def test_remote_checksum_verifier_detects_corruption(tmp_path: Path) -> None:
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"expected")
+    expected = vast_remote._sha256(payload)
+
+    class LocalExecutor:
+        def run(self, target, remote_command, *, timeout_seconds, input_text=None):
+            return subprocess.run(
+                remote_command,
+                shell=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+    vast_remote._verify_remote_files(
+        ("root", "localhost", 22),
+        str(tmp_path),
+        {"payload.bin": expected},
+        executor=LocalExecutor(),
+        timeout_seconds=30,
+    )
+    payload.write_bytes(b"corrupted")
+    with pytest.raises(subprocess.CalledProcessError):
+        vast_remote._verify_remote_files(
+            ("root", "localhost", 22),
+            str(tmp_path),
+            {"payload.bin": expected},
+            executor=LocalExecutor(),
+            timeout_seconds=30,
+        )
 
 
 def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> None:

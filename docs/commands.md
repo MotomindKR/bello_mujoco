@@ -227,8 +227,11 @@ Configuration source: `configs/commands/vast_train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, or `motion`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
+| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, or `twist_student`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
+| `dataset_path` | path or `null`; `null` | Required local schema-3 `index.json` for either TWIST stage. Its five portable dataset files are transferred with resumable `rsync` and verified remotely. |
+| `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |
+| `allow_git_commit_mismatch` | boolean; `false` | Permit a staged student teacher checkpoint from a different clean source commit. Dataset, robot, observation, and layout checks remain enforced. |
 | `max_price` | positive float or `null`; `null` | Maximum total hourly rental price. A positive value is required, including for dry-run offer queries. |
 | `branch` | string or `null`; `null` | Required remote `origin` branch. A null value is rejected before rental. |
 | `run_name` | string or `null`; `null` | Explicit lifecycle/W&B run label. Otherwise a unique name is generated from the profile, branch, commit, and current UTC timestamp. |
@@ -238,7 +241,9 @@ Configuration source: `configs/commands/vast_train.yaml`.
 
 The selected profile, `pyproject.toml`, `uv.lock`, and any motion clip are
 verified in the exact `origin/<branch>` commit before rental. Ignored local
-motions are never uploaded implicitly. Credentials come from `VAST_API_KEY` or
+motions are never uploaded implicitly. TWIST transfers only the five files
+named by its validated dataset contract and, for a student, the selected
+checkpoint directory. Credentials come from `VAST_API_KEY` or
 keyring `vast/api_key`, `WANDB_API_KEY` or keyring `wandb/api_key`, and
 optionally `GITHUB_TOKEN` or keyring `github/bello_mujoco_read_token`.
 

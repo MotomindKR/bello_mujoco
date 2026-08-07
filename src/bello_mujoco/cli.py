@@ -99,8 +99,18 @@ class TwistDataCommandConfig:
 
 @dataclass(frozen=True)
 class VastTrainCommandConfig:
-    experiment: Literal["smoke", "locomotion", "hardware_locomotion", "motion"]
+    experiment: Literal[
+        "smoke",
+        "locomotion",
+        "hardware_locomotion",
+        "motion",
+        "twist_teacher",
+        "twist_student",
+    ]
     motion_path: Path | None
+    dataset_path: Path | None
+    teacher_checkpoint_path: Path | None
+    allow_git_commit_mismatch: bool
     max_price: float | None
     branch: str | None
     run_name: str | None
@@ -594,6 +604,9 @@ def _motion_hydra(config: DictConfig) -> None:
 
 
 def vast_train_entrypoint() -> None:
+    _expand_path_overrides(
+        ("motion_path=", "dataset_path=", "teacher_checkpoint_path=")
+    )
     _vast_train_hydra()
 
 
@@ -619,6 +632,32 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("motion_path",),
             context=f"experiment={command.experiment}",
         )
+    if command.experiment in {"twist_teacher", "twist_student"}:
+        if command.dataset_path is None:
+            raise ValueError("dataset_path is required for Vast TWIST training")
+    else:
+        if command.dataset_path is not None:
+            raise ValueError("dataset_path is only valid for a TWIST experiment")
+        _reject_explicit_fields(
+            ("dataset_path",), context=f"experiment={command.experiment}"
+        )
+    if command.experiment == "twist_student":
+        if command.teacher_checkpoint_path is None:
+            raise ValueError(
+                "teacher_checkpoint_path is required for Vast TWIST student training"
+            )
+    else:
+        if command.teacher_checkpoint_path is not None:
+            raise ValueError(
+                "teacher_checkpoint_path is only valid for experiment=twist_student"
+            )
+        _reject_explicit_fields(
+            ("teacher_checkpoint_path",), context=f"experiment={command.experiment}"
+        )
+        _reject_explicit_fields(
+            ("allow_git_commit_mismatch",),
+            context=f"experiment={command.experiment}",
+        )
     from bello_mujoco.assets_pipeline import repo_root
     from bello_mujoco.training.vast import (
         VastTrainConfig,
@@ -630,6 +669,9 @@ def _vast_train_hydra(config: DictConfig) -> None:
     internal = VastTrainConfig(
         experiment=command.experiment,
         motion_path=command.motion_path,
+        dataset_path=command.dataset_path,
+        teacher_checkpoint_path=command.teacher_checkpoint_path,
+        allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         max_price=command.max_price,
         branch=command.branch,
         run_name=command.run_name,

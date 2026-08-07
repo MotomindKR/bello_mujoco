@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import shlex
 import signal
 import subprocess
@@ -66,15 +67,22 @@ class VastTrainConfig:
 
     experiment: ExperimentName = "hardware_locomotion"
     motion_path: Path | None = None
+    dataset_path: Path | None = None
+    teacher_checkpoint_path: Path | None = None
+    allow_git_commit_mismatch: bool = False
     max_price: float | None = None
     branch: str | None = None
     run_name: str | None = None
     skip_confirmation: bool = False
     dry_run: bool = False
     remote_dir: str = "/workspace/bello_mujoco"
+    remote_dataset_dir: str = "/workspace/datasets/twist"
+    remote_teacher_checkpoint_dir: str = "/workspace/checkpoints/twist_teacher"
     lifecycle_state_dir: Path = Path(".vast")
     ready_timeout_seconds: int = 900
     ssh_timeout_seconds: int = 900
+    transfer_timeout_seconds: int = 3_600
+    transfer_retries: int = 3
     job_timeout_seconds: int = 43_200
     progress_timeout_seconds: int = 1_800
     reconcile_retries: int = 3
@@ -89,6 +97,9 @@ class GitSelection:
     config_path: PurePosixPath
     repo_url: str
     motion_path: PurePosixPath | None = None
+    dataset_fingerprint: str | None = None
+    dataset_files: tuple[Path, ...] = ()
+    teacher_checkpoint_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +137,8 @@ def validate_config(config: VastTrainConfig) -> None:
         "locomotion",
         "hardware_locomotion",
         "motion",
+        "twist_teacher",
+        "twist_student",
     }:
         raise ValueError("--experiment is invalid")
     if config.experiment == "motion":
@@ -134,6 +147,24 @@ def validate_config(config: VastTrainConfig) -> None:
         _repository_motion_path(config.motion_path)
     elif config.motion_path is not None:
         raise ValueError("--motion-path is only valid for the motion experiment")
+    if config.experiment in {"twist_teacher", "twist_student"}:
+        if config.dataset_path is None:
+            raise ValueError("--dataset-path is required for TWIST Vast training")
+    elif config.dataset_path is not None:
+        raise ValueError("--dataset-path is only valid for TWIST Vast training")
+    if config.experiment == "twist_student":
+        if config.teacher_checkpoint_path is None:
+            raise ValueError(
+                "--teacher-checkpoint-path is required for TWIST student Vast training"
+            )
+    elif config.teacher_checkpoint_path is not None:
+        raise ValueError(
+            "--teacher-checkpoint-path is only valid for TWIST student Vast training"
+        )
+    if config.allow_git_commit_mismatch and config.experiment != "twist_student":
+        raise ValueError(
+            "--allow-git-commit-mismatch is only valid for TWIST student Vast training"
+        )
     if (
         config.max_price is None
         or not math.isfinite(config.max_price)
@@ -144,22 +175,39 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError("--branch is required")
     if config.ready_timeout_seconds <= 0 or config.ssh_timeout_seconds <= 0:
         raise ValueError("readiness timeouts must be positive")
+    if config.transfer_timeout_seconds <= 0 or config.transfer_retries <= 0:
+        raise ValueError("transfer timeout and retries must be positive")
     if config.job_timeout_seconds <= 0 or config.progress_timeout_seconds <= 0:
         raise ValueError("job and progress timeouts must be positive")
     if config.progress_timeout_seconds > config.job_timeout_seconds:
         raise ValueError("progress-timeout-seconds must not exceed job-timeout-seconds")
     if config.reconcile_retries <= 0 or config.destroy_retries <= 0:
         raise ValueError("reconcile-retries and destroy-retries must be positive")
-    remote_dir = PurePosixPath(config.remote_dir)
+    remote_paths = {
+        "--remote-dir": PurePosixPath(config.remote_dir),
+        "--remote-dataset-dir": PurePosixPath(config.remote_dataset_dir),
+        "--remote-teacher-checkpoint-dir": PurePosixPath(
+            config.remote_teacher_checkpoint_dir
+        ),
+    }
     workspace = PurePosixPath("/workspace")
-    if (
-        not remote_dir.is_absolute()
-        or remote_dir.anchor != "/"
-        or workspace not in remote_dir.parents
-        or ".." in remote_dir.parts
-        or str(remote_dir) != config.remote_dir
-    ):
-        raise ValueError("--remote-dir must be a normalized strict child of /workspace")
+    for label, remote_path in remote_paths.items():
+        raw = {
+            "--remote-dir": config.remote_dir,
+            "--remote-dataset-dir": config.remote_dataset_dir,
+            "--remote-teacher-checkpoint-dir": config.remote_teacher_checkpoint_dir,
+        }[label]
+        if (
+            not remote_path.is_absolute()
+            or remote_path.anchor != "/"
+            or workspace not in remote_path.parents
+            or ".." in remote_path.parts
+            or str(remote_path) != raw
+            or re.fullmatch(r"/[A-Za-z0-9._/-]+", raw) is None
+        ):
+            raise ValueError(f"{label} must be a normalized strict child of /workspace")
+    if len(set(remote_paths.values())) != len(remote_paths):
+        raise ValueError("remote repository, dataset, and checkpoint paths must differ")
     state_dir = config.lifecycle_state_dir
     if (
         state_dir.is_absolute()
@@ -250,6 +298,16 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
                 f"{motion_path!s} is absent from origin/{branch}. Ignored local "
                 "datasets are never uploaded implicitly."
             ) from exc
+    dataset_fingerprint = None
+    dataset_files: tuple[Path, ...] = ()
+    if config.dataset_path is not None:
+        dataset_fingerprint, dataset_files = _twist_dataset_files(config.dataset_path)
+    teacher_checkpoint_path = None
+    if config.teacher_checkpoint_path is not None:
+        teacher_checkpoint_path = _twist_teacher_checkpoint(
+            config.teacher_checkpoint_path,
+            dataset_fingerprint=dataset_fingerprint,
+        )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -257,7 +315,79 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         config_path=config_path,
         repo_url=repo_url,
         motion_path=motion_path,
+        dataset_fingerprint=dataset_fingerprint,
+        dataset_files=dataset_files,
+        teacher_checkpoint_path=teacher_checkpoint_path,
     )
+
+
+def _twist_dataset_files(index_path: Path) -> tuple[str, tuple[Path, ...]]:
+    from bello_mujoco.motion.twist_dataset import (
+        TWIST_DATASET_SCHEMA_VERSION,
+        TWIST_TRAIN_SAMPLING,
+    )
+
+    index_path = Path(index_path).expanduser().resolve()
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"TWIST dataset index does not exist: {index_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"TWIST dataset index is invalid JSON: {index_path}") from exc
+    if index.get("schema_version") != TWIST_DATASET_SCHEMA_VERSION:
+        raise ValueError("Vast TWIST training requires the current dataset schema")
+    if index.get("train_sampling") != TWIST_TRAIN_SAMPLING:
+        raise ValueError("Vast TWIST dataset has an unsupported sampling contract")
+    split_files = index.get("split_files")
+    if split_files != {"train": "train.npz", "evaluation": "evaluation.npz"}:
+        raise ValueError("Vast TWIST dataset has an unsupported split file contract")
+    fingerprint = index.get("dataset_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None
+    ):
+        raise ValueError("Vast TWIST dataset fingerprint is invalid")
+    root = index_path.parent
+    paths = (
+        index_path,
+        root / "train.npz",
+        root / "evaluation.npz",
+        root / "heldout_manifest.json",
+        root / "conversion_report.json",
+    )
+    missing = [str(path) for path in paths if not path.is_file() or path.is_symlink()]
+    if missing:
+        raise ValueError("Vast TWIST dataset files are missing: " + ", ".join(missing))
+    return fingerprint, paths
+
+
+def _twist_teacher_checkpoint(
+    checkpoint_path: Path, *, dataset_fingerprint: str | None
+) -> Path:
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    if any(path.is_symlink() for path in checkpoint_path.rglob("*")):
+        raise ValueError("TWIST teacher checkpoint must not contain symbolic links")
+    metadata_path = checkpoint_path / "metadata.json"
+    try:
+        envelope = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"TWIST teacher checkpoint metadata does not exist: {metadata_path}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("TWIST teacher checkpoint metadata is invalid JSON") from exc
+    metadata = envelope.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("task") != "twist_teacher":
+        raise ValueError("Vast TWIST student requires a typed teacher checkpoint")
+    dataset = metadata.get("dataset")
+    if not isinstance(dataset, dict) or (
+        dataset.get("dataset_fingerprint") != dataset_fingerprint
+    ):
+        raise ValueError("TWIST teacher checkpoint dataset fingerprint differs")
+    for name in ("state", "continuation"):
+        if not (checkpoint_path / name).is_dir():
+            raise ValueError(f"TWIST teacher checkpoint is missing {name}/")
+    return checkpoint_path
 
 
 def _repository_motion_path(value: Path) -> PurePosixPath:
@@ -275,7 +405,11 @@ def _repository_motion_path(value: Path) -> PurePosixPath:
 
 
 def _task_name(config: VastTrainConfig) -> str:
-    return "motion-tracking" if config.experiment == "motion" else "locomotion"
+    if config.experiment == "motion":
+        return "motion-tracking"
+    if config.experiment in {"twist_teacher", "twist_student"}:
+        return config.experiment.replace("_", "-")
+    return "locomotion"
 
 
 def normalized_repo_url(repo_url: str) -> str:
@@ -672,6 +806,7 @@ def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> i
     return int(created_at) + (
         config.ready_timeout_seconds
         + config.ssh_timeout_seconds
+        + config.transfer_timeout_seconds
         + config.job_timeout_seconds
         + WATCHDOG_TEARDOWN_GRACE_SECONDS
     )
@@ -873,6 +1008,9 @@ def launch_pipeline(
         print(f"Offer query: {offer_query(config)}")
         print("Dry run: no credentials were read and no instance was rented.")
         return 0
+
+    if selection.dataset_files and shutil.which("rsync") is None:
+        raise RuntimeError("TWIST Vast training requires rsync on the launch machine")
 
     vast_key = credential(
         "VAST_API_KEY", VAST_KEYRING_SERVICE, VAST_KEYRING_USERNAME, required=True

@@ -1,8 +1,8 @@
 # TWIST teacher and student
 
 TWIST is an isolated whole-body tracking path. It does not change locomotion,
-single-motion training, evaluation, Vast, or hardware behavior. The public
-stages are deliberately typed:
+single-motion training, evaluation, or hardware behavior. The public stages are
+deliberately typed:
 
 ```bash
 uv run bello-train experiment=twist_teacher \
@@ -24,8 +24,9 @@ short smoke and capacity runs.
 
 There is no automatic teacher selection. Teacher checkpoints cannot resume a
 student run, student checkpoints cannot resume a teacher run, and public TWIST
-evaluation rejects teacher and legacy motion checkpoints. TWIST hardware and
-Vast execution are intentionally not exposed.
+evaluation rejects teacher and legacy motion checkpoints. TWIST hardware is not
+exposed. Vast training stages the explicit packed dataset, and the explicit
+teacher checkpoint for a student, from the launch machine over direct SSH.
 
 ## Licensed source boundary
 
