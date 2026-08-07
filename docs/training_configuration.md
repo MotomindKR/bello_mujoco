@@ -226,8 +226,8 @@ source revision because its environment state predates the feedback history.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Disable to train only on zero command. |
-| `lin_vel_x` | `[-0.5,0.5]` | Forward velocity sampling range. |
-| `lin_vel_y` | `[-0.5,0.5]` | Lateral velocity sampling range. |
+| `lin_vel_x` | `[-0.5,0.5]` | Lateral/right velocity sampling range. |
+| `lin_vel_y` | `[-0.5,0.5]` | Forward velocity sampling range. |
 | `ang_vel_yaw` | `[-0.5,0.5]` | Yaw-rate sampling range. |
 | `standing_probability` | `0.1` | Probability of an exact all-zero command. |
 | `linear_deadband` | `0.1` | Actor/reward standing threshold for XY command. |

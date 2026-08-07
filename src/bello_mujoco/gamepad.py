@@ -39,6 +39,21 @@ def apply_deadzone(value: float, deadzone: float) -> float:
     return math.copysign((magnitude - deadzone) / (1.0 - deadzone), value)
 
 
+def gamepad_axes_to_command_axes(
+    left_x: float,
+    left_y: float,
+    right_x: float,
+    deadzone: float,
+) -> tuple[float, float, float]:
+    """Map SDL axes to Bello's +X lateral, +Y forward, +Z yaw command frame."""
+
+    return (
+        apply_deadzone(left_x, deadzone),
+        apply_deadzone(-left_y, deadzone),
+        apply_deadzone(-right_x, deadzone),
+    )
+
+
 def axis_to_range(
     value: float,
     bounds: tuple[float, float],
@@ -148,10 +163,11 @@ class GamepadCommandSource:
             left_x = self._axis(module.CONTROLLER_AXIS_LEFTX)
             left_y = self._axis(module.CONTROLLER_AXIS_LEFTY)
             right_x = self._axis(module.CONTROLLER_AXIS_RIGHTX)
-            normalized = (
-                apply_deadzone(-left_y, self.config.deadzone),
-                apply_deadzone(left_x, self.config.deadzone),
-                apply_deadzone(-right_x, self.config.deadzone),
+            normalized = gamepad_axes_to_command_axes(
+                left_x,
+                left_y,
+                right_x,
+                self.config.deadzone,
             )
             command = np.asarray(
                 [

@@ -105,7 +105,7 @@ Configuration source: `configs/commands/eval.yaml`.
 | `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. `~` is expanded. |
 | `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout than the checkpoint's recorded commit. Other checkpoint checks still apply. |
 | `output_path` | path; `outputs/evaluation/motion.mp4` | motion | Video destination. Parent directories are created by the renderer. |
-| `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw velocity command. |
+| `command` | three floats; `[0,0,0]` | locomotion | Fixed `+X` lateral/right, `+Y` forward, and `+Z` yaw velocity command. |
 | `steps` | positive integer or `null`; `null` | both | Bound rollout steps. `null` is unbounded for locomotion and uses the motion episode length for motion. |
 | `stop_on_done` | boolean; `false` | both | Stop at the first done/terminal state. Otherwise locomotion resets and continues. Motion may continue after task termination, but timeout and nonfinite state always stop. |
 | `stochastic_actions` | boolean; `false` | locomotion | Sample from the checkpoint policy instead of using its deterministic mean. |
@@ -125,8 +125,9 @@ A/Cross requests an episode reset and Start/Options exits. Stick values are
 dead-zoned at the fixed value 0.1. Neutral remains the exact standing command;
 each supported nonzero direction starts at the checkpoint's minimum moving
 speed and scales to its command bound. The controller index is fixed at zero. A
-fixed `command` is passed through without clipping or range validation, so it
-should remain within the checkpoint's trained bounds.
+fixed `command` uses `[lin_vel_x, lin_vel_y, ang_vel_yaw]`, with `+X`
+lateral/right and `+Y` forward. It is passed through without clipping or range
+validation, so it should remain within the checkpoint's trained bounds.
 
 Evaluation validates the checkpoint task, policy and critic observation
 sizes/layouts, action size/layout, asset configuration, and environment

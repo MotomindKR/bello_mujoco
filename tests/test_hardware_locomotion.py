@@ -703,7 +703,7 @@ def test_hardware_remote_commands_fail_closed_and_use_checkpoint_bounds() -> Non
     assert hardware_command(
         metadata,
         remote_input((0.8, -0.1, 0.4)),
-    ) == pytest.approx((0.84, -0.2, 0.36))
+    ) == pytest.approx((-0.23, 0.28, 0.36))
 
 
 def test_normalized_axis_mapping_preserves_standing_and_conditioned_ranges() -> None:

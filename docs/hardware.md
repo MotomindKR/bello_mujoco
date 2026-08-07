@@ -107,16 +107,18 @@ the remaining physical coordinates.
 The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
 the hardware runner scales that intent through the checkpoint's command bounds
-and minimum speeds. Configure the visualizer to listen on port 50054 and supply
-its plaintext URL as `remote_endpoint`, for example
+and minimum speeds, mapping lateral to `lin_vel_x` and forward to `lin_vel_y`.
+In Bello's locomotion frame, `+X` is lateral/right and `+Y` is forward.
+Configure the visualizer to listen on port 50054 and supply its plaintext URL
+as `remote_endpoint`, for example
 `remote_endpoint=http://visualizer-host:50054`.
 
 Left-stick vertical/horizontal controls forward/lateral velocity, right-stick
-horizontal controls yaw, and Start/Options aborts. The controller must be
+horizontal controls yaw, and R1 aborts. The controller must be
 physically neutral before nonzero intent is accepted after controller or gRPC
 reconnection. Controller disconnection or a stale service stream commands
 zero; the runner reconnects automatically and requires neutral again. A fresh
-service sample is required before the runner connects to hardware. Start/Options
+service sample is required before the runner connects to hardware. R1
 is level-sensitive and latched by the client, including when it is held during
 startup. Ctrl-C remains the terminal fallback. Hardware locomotion has no
 native-controller or fixed-command mode.

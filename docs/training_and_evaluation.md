@@ -30,7 +30,8 @@ public command.
 ## Locomotion baseline
 
 The physical profile is a 60 kg sphere-hand robot with 13 policy joints and 12
-held arm joints. Commands contain forward, lateral, and yaw velocity. Ten
+held arm joints. Commands contain `+X` lateral/right, `+Y` forward, and `+Z`
+yaw velocity. Ten
 percent of sampled commands are exactly zero; moving samples are conditioned
 outside the shared standing deadbands.
 

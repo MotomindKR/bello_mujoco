@@ -373,14 +373,16 @@ def hardware_command(
     metadata: LocomotionCheckpointMetadata,
     remote_input: RemoteCommandInput,
 ) -> np.ndarray:
-    normalized = np.asarray(remote_input.normalized_command, dtype=np.float64)
+    remote_axes = np.asarray(remote_input.normalized_command, dtype=np.float64)
     if (
-        normalized.shape != (3,)
-        or not np.all(np.isfinite(normalized))
-        or np.any(normalized < -1.0)
-        or np.any(normalized > 1.0)
+        remote_axes.shape != (3,)
+        or not np.all(np.isfinite(remote_axes))
+        or np.any(remote_axes < -1.0)
+        or np.any(remote_axes > 1.0)
     ):
         raise RuntimeError("remote service produced an invalid normalized command")
+    forward, lateral, yaw = remote_axes
+    normalized = np.asarray((lateral, forward, yaw), dtype=np.float64)
     command = np.asarray(
         [
             axis_to_range(value, bounds, minimum)
