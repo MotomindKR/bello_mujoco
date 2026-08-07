@@ -284,7 +284,7 @@ Fields that apply to only one task must not be explicitly supplied when the
 other task is selected, even if the supplied value equals the documented
 default.
 Locomotion requires `remote_endpoint`. Its visualizer-hosted physical controller
-uses the same stick mapping as `bello-eval`; Start/Options aborts. Controller or
+uses the same stick mapping as `bello-eval`; R1 aborts. Controller or
 service loss commands zero, reconnects automatically, and requires a neutral
 controller before accepting nonzero intent again. The visualizer service must
 produce a fresh sample before the hardware daemon is contacted. Hardware
