@@ -255,8 +255,32 @@ def run_git(repo_root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def fetch_origin(
+    repo_root: Path,
+    *,
+    retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            run_git(repo_root, "fetch", "--prune", "origin")
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if attempt < retries:
+                print(f"git fetch origin attempt {attempt} failed; retrying.")
+                sleep(float(2**attempt))
+    assert last_error is not None
+    detail = (last_error.stderr or "").strip() or str(last_error)
+    raise RuntimeError(
+        f"git fetch origin failed after {retries} attempts: "
+        f"{safe_exception_message(detail)}"
+    ) from last_error
+
+
 def remote_branches(repo_root: Path) -> list[str]:
-    run_git(repo_root, "fetch", "--prune", "origin")
+    fetch_origin(repo_root)
     output = run_git(
         repo_root,
         "for-each-ref",

@@ -91,6 +91,38 @@ def valid_config(**kwargs) -> VastTrainConfig:
     )
 
 
+def test_fetch_origin_retries_transient_git_failure(monkeypatch, tmp_path) -> None:
+    attempts = []
+    sleeps = []
+
+    def fake_run_git(repo_root, *args):
+        attempts.append((repo_root, args))
+        if len(attempts) < 3:
+            raise subprocess.CalledProcessError(
+                128, ["git", *args], stderr="temporary network failure"
+            )
+        return ""
+
+    monkeypatch.setattr(vast, "run_git", fake_run_git)
+
+    vast.fetch_origin(tmp_path, sleep=sleeps.append)
+
+    assert len(attempts) == 3
+    assert sleeps == [2.0, 4.0]
+
+
+def test_fetch_origin_reports_git_stderr_after_retries(monkeypatch, tmp_path) -> None:
+    def fake_run_git(repo_root, *args):
+        raise subprocess.CalledProcessError(
+            128, ["git", *args], stderr="could not resolve host: github.com"
+        )
+
+    monkeypatch.setattr(vast, "run_git", fake_run_git)
+
+    with pytest.raises(RuntimeError, match="could not resolve host: github.com"):
+        vast.fetch_origin(tmp_path, retries=2, sleep=lambda _: None)
+
+
 def selection() -> GitSelection:
     return GitSelection(
         branch="main",
