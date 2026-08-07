@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import Any, Callable, Literal
 
 import numpy as np
@@ -22,10 +23,9 @@ from omegaconf import OmegaConf
 from bello_mujoco.configuration import dataclass_from_dict
 
 TWIST_SOURCE_MANIFEST_SCHEMA_VERSION = 1
-TWIST_DATASET_SCHEMA_VERSION = 2
+TWIST_DATASET_SCHEMA_VERSION = 3
 TWIST_RETARGET_FORMAT_VERSION = 6
 TWIST_POLICY_FPS = 50.0
-TWIST_PACKING_ALGORITHM = "balanced_mixed_shards_v1"
 TWIST_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
 TWIST_FUTURE_OFFSETS = (
     1,
@@ -107,7 +107,6 @@ class QualityConfig:
     min_root_height: float = 0.25
     max_root_height: float = 2.0
     max_floor_penetration: float = 0.01
-    max_frames_per_shard: int = 250_000
 
 
 @dataclass(frozen=True)
@@ -634,7 +633,7 @@ def build_packed_dataset(
     robot_model_path: Path,
     gmr_root: Path,
 ) -> dict[str, Any]:
-    """Validate, normalize, and pack retargeted clips into NPZ shards."""
+    """Validate, normalize, and pack retargeted clips by split."""
 
     manifest = load_source_manifest(
         manifest_path, body_model_root=body_model_root, verify_files=True
@@ -732,11 +731,9 @@ def build_packed_dataset(
         tuple(item for item in assignments if item.split == "evaluation")
     )
     _write_immutable_json(output_root / "heldout_manifest.json", heldout)
-    shard_entries, joint_names, body_names = _write_shards(
+    clip_entries, joint_names, body_names = _write_split_files(
         output_root,
         accepted,
-        quality.max_frames_per_shard,
-        split_seed=manifest.split_seed,
         retargeted_root=retargeted_root,
         quality=quality,
     )
@@ -751,11 +748,7 @@ def build_packed_dataset(
             }.items()
         ),
         "quality": asdict(quality),
-        "packing": {
-            "algorithm": TWIST_PACKING_ALGORITHM,
-            "split_seed": manifest.split_seed,
-            "train_sampling": TWIST_TRAIN_SAMPLING,
-        },
+        "train_sampling": TWIST_TRAIN_SAMPLING,
         "robot_fingerprint": robot_fingerprint,
         "gmr_revision": gmr_revision,
         "gmr_config_fingerprint": gmr_config_fingerprint,
@@ -773,14 +766,14 @@ def build_packed_dataset(
         "gmr_config_fingerprint": gmr_config_fingerprint,
         "policy_fps": quality.policy_fps,
         "future_offsets": list(TWIST_FUTURE_OFFSETS),
-        "packing": {
-            "algorithm": TWIST_PACKING_ALGORITHM,
-            "split_seed": manifest.split_seed,
-            "train_sampling": TWIST_TRAIN_SAMPLING,
+        "train_sampling": TWIST_TRAIN_SAMPLING,
+        "split_files": {
+            "train": "train.npz",
+            "evaluation": "evaluation.npz",
         },
         "joint_names": list(joint_names),
         "body_names": list(body_names),
-        "clips": shard_entries,
+        "clips": clip_entries,
     }
     _write_json(output_root / "index.json", index)
     _write_report(output_root / "conversion_report.json", decisions)
@@ -821,11 +814,14 @@ def materialize_packed_clip(
     clip = sorted(
         candidates, key=lambda value: (value["source_id"], value["sequence_id"])
     )[0]
-    shard_path = index_path.parent / clip["shard"]
+    split_files = index.get("split_files")
+    if not isinstance(split_files, dict) or split not in split_files:
+        raise ValueError("TWIST packed dataset is missing its split file contract")
+    split_path = index_path.parent / split_files[split]
     start = int(clip["offset"])
     stop = start + int(clip["frames"])
-    with np.load(shard_path, allow_pickle=False) as shard:
-        arrays = {name: np.asarray(shard[name][start:stop]) for name in shard.files}
+    with np.load(split_path, allow_pickle=False) as packed:
+        arrays = {name: np.asarray(packed[name][start:stop]) for name in packed.files}
     output_path = Path(output_path).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -870,20 +866,12 @@ def load_packed_reference_bank(
     index_path: Path,
     *,
     split: AssignedSplit,
-    shard_name: str | None = None,
-    pad_frames: int | None = None,
-    pad_clips: int | None = None,
 ) -> PackedReferenceBank:
-    """Load one bounded shard into arrays suitable for one device transfer."""
+    """Load an entire split into arrays suitable for one device transfer."""
 
     index_path = Path(index_path).expanduser().resolve()
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    clips = [
-        clip
-        for clip in index["clips"]
-        if clip["split"] == split
-        and (shard_name is None or clip["shard"] == shard_name)
-    ]
+    clips = [clip for clip in index["clips"] if clip["split"] == split]
     if not clips:
         raise ValueError(f"TWIST packed dataset has no {split} clips")
     array_names = (
@@ -896,49 +884,28 @@ def load_packed_reference_bank(
         "foot_contacts",
     )
     lengths = np.asarray([int(clip["frames"]) for clip in clips], dtype=np.int32)
-    selected_frames = int(lengths.sum(dtype=np.int64))
-    total_frames = selected_frames if pad_frames is None else pad_frames
-    if total_frames < selected_frames:
-        raise ValueError(
-            f"pad_frames={total_frames} is smaller than {selected_frames} selected frames"
-        )
+    total_frames = int(lengths.sum(dtype=np.int64))
     if total_frames > np.iinfo(np.int32).max:
         raise ValueError("TWIST reference bank exceeds the JAX int32 index range")
-    offsets = np.zeros(len(clips), dtype=np.int32)
+    offsets = np.asarray([int(clip["offset"]) for clip in clips], dtype=np.int32)
+    expected_offsets = np.zeros(len(clips), dtype=np.int32)
     if len(clips) > 1:
-        offsets[1:] = np.cumsum(lengths[:-1], dtype=np.int64).astype(np.int32)
-
-    first = clips[0]
-    with np.load(index_path.parent / first["shard"], allow_pickle=False) as shard:
+        expected_offsets[1:] = np.cumsum(lengths[:-1], dtype=np.int64).astype(np.int32)
+    if not np.array_equal(offsets, expected_offsets):
+        raise ValueError(f"TWIST {split} clip offsets are not contiguous")
+    split_files = index.get("split_files")
+    if not isinstance(split_files, dict) or split not in split_files:
+        raise ValueError("TWIST packed dataset is missing its split file contract")
+    with np.load(index_path.parent / split_files[split], allow_pickle=False) as source:
         packed = {
-            name: np.zeros(
-                (total_frames,) + shard[name].shape[1:], dtype=shard[name].dtype
-            )
-            for name in array_names
+            name: np.asarray(source[name], dtype=np.float32) for name in array_names
         }
-
-    clips_by_shard: dict[str, list[tuple[int, dict[str, Any]]]] = {}
-    for clip_index, clip in enumerate(clips):
-        clips_by_shard.setdefault(clip["shard"], []).append((clip_index, clip))
-    for shard_name, shard_clips in clips_by_shard.items():
-        with np.load(index_path.parent / shard_name, allow_pickle=False) as shard:
-            source_arrays = {name: np.asarray(shard[name]) for name in array_names}
-            for clip_index, clip in shard_clips:
-                source_start = int(clip["offset"])
-                frames = int(lengths[clip_index])
-                source_stop = source_start + frames
-                target_start = int(offsets[clip_index])
-                target_stop = target_start + frames
-                for name in array_names:
-                    value = source_arrays[name][source_start:source_stop]
-                    expected_shape = (frames,) + packed[name].shape[1:]
-                    if value.shape != expected_shape:
-                        raise ValueError(
-                            f"TWIST clip {clip['source_id']}/{clip['sequence_id']} "
-                            f"has invalid {name} shape {value.shape}; expected "
-                            f"{expected_shape}"
-                        )
-                    packed[name][target_start:target_stop] = value
+    for name, value in packed.items():
+        if value.shape[0] != total_frames:
+            raise ValueError(
+                f"TWIST {split} {name} has {value.shape[0]} frames; "
+                f"expected {total_frames}"
+            )
     weights = (
         np.ones((len(clips),), dtype=np.float64)
         if split == "evaluation"
@@ -948,56 +915,14 @@ def load_packed_reference_bank(
         )
     )
     probabilities = weights / weights.sum()
-    clip_count = len(clips)
-    padded_clip_count = clip_count if pad_clips is None else pad_clips
-    if padded_clip_count < clip_count:
-        raise ValueError(
-            f"pad_clips={padded_clip_count} is smaller than {clip_count} selected clips"
-        )
-    if padded_clip_count > clip_count:
-        padding = padded_clip_count - clip_count
-        offsets = np.pad(offsets, (0, padding), constant_values=0)
-        lengths = np.pad(lengths, (0, padding), constant_values=1)
-        probabilities = np.pad(probabilities, (0, padding), constant_values=0.0)
     return PackedReferenceBank(
         **packed,
         offsets=offsets,
         lengths=lengths,
         sampling_probabilities=probabilities.astype(np.float32),
-        source_ids=tuple(clip["source_id"] for clip in clips)
-        + ("",) * (padded_clip_count - clip_count),
-        sequence_ids=tuple(clip["sequence_id"] for clip in clips)
-        + ("",) * (padded_clip_count - clip_count),
+        source_ids=tuple(clip["source_id"] for clip in clips),
+        sequence_ids=tuple(clip["sequence_id"] for clip in clips),
     )
-
-
-def packed_reference_bank_shards(
-    index_path: Path, *, split: AssignedSplit
-) -> tuple[tuple[str, ...], np.ndarray, int, int]:
-    """Return shard names, sampling masses, and fixed padded bank dimensions."""
-
-    index_path = Path(index_path).expanduser().resolve()
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for clip in index["clips"]:
-        if clip["split"] == split:
-            grouped.setdefault(clip["shard"], []).append(clip)
-    if not grouped:
-        raise ValueError(f"TWIST packed dataset has no {split} clips")
-    names = tuple(sorted(grouped))
-    masses = np.asarray(
-        [
-            sum(float(clip["sampling_probability_numerator"]) for clip in grouped[name])
-            for name in names
-        ],
-        dtype=np.float64,
-    )
-    masses /= masses.sum()
-    max_frames = max(
-        sum(int(clip["frames"]) for clip in grouped[name]) for name in names
-    )
-    max_clips = max(len(grouped[name]) for name in names)
-    return names, masses.astype(np.float32), max_frames, max_clips
 
 
 def sample_packed_start_frames(
@@ -1189,43 +1114,109 @@ def _validate_retargeted_provenance(
         raise ValueError("retargeted provenance mismatch for " + ", ".join(mismatches))
 
 
-def _write_shards(
+_PACKED_ARRAY_NAMES = (
+    "timestamp_seconds",
+    "source_timestamp_seconds",
+    "qpos",
+    "qvel",
+    "body_pos",
+    "body_quat_wxyz",
+    "body_lin_vel",
+    "body_ang_vel",
+    "foot_contacts",
+    "foot_sole_z",
+)
+
+
+def _write_split_files(
     output_root: Path,
     clips: list[tuple[AssignedSequence, str, int]],
-    max_frames: int,
     *,
-    split_seed: int,
     retargeted_root: Path,
     quality: QualityConfig,
 ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...]]:
-    if max_frames <= 0:
-        raise ValueError("max_frames_per_shard must be positive")
     entries: list[dict[str, Any]] = []
     joint_names: tuple[str, ...] | None = None
     body_names: tuple[str, ...] | None = None
-    groups = _balanced_mixed_shard_groups(clips, max_frames, split_seed)
-    for shard_index, group in enumerate(groups):
-        shard_clips: list[tuple[AssignedSequence, dict[str, np.ndarray], str]] = []
-        for assigned, expected_digest, expected_frames in group:
-            sequence = assigned.sequence
-            path = retargeted_root / f"{sequence.source_id}__{sequence.sequence_id}.npz"
-            arrays = load_and_normalize_retargeted_clip(path, quality)
-            digest = _arrays_fingerprint(arrays)
-            if digest != expected_digest:
-                raise ValueError(f"retargeted clip changed during build: {path}")
-            frames = int(arrays["qpos"].shape[0])
-            if frames != expected_frames:
-                raise ValueError(
-                    f"retargeted clip frame count changed during build: {path}"
+    for split in ("train", "evaluation"):
+        selected = [clip for clip in clips if clip[0].split == split]
+        if not selected:
+            raise ValueError(f"packed dataset contains no {split} clips")
+        total_frames = sum(item[2] for item in selected)
+        first_assigned = selected[0][0]
+        first_path = retargeted_root / (
+            f"{first_assigned.sequence.source_id}__"
+            f"{first_assigned.sequence.sequence_id}.npz"
+        )
+        first_arrays = load_and_normalize_retargeted_clip(first_path, quality)
+        with tempfile.TemporaryDirectory(prefix=f".{split}-", dir=output_root) as raw:
+            temporary_root = Path(raw)
+            packed = {
+                name: np.lib.format.open_memmap(
+                    temporary_root / f"{name}.npy",
+                    mode="w+",
+                    dtype=(
+                        np.float64
+                        if name in {"timestamp_seconds", "source_timestamp_seconds"}
+                        else np.float32
+                    ),
+                    shape=(total_frames,) + first_arrays[name].shape[1:],
                 )
-            names = tuple(str(value) for value in arrays["joint_names"].tolist())
-            bodies = tuple(str(value) for value in arrays["body_names"].tolist())
-            if joint_names is None:
-                joint_names, body_names = names, bodies
-            elif names != joint_names or bodies != body_names:
-                raise ValueError("accepted clips do not share one joint/body ordering")
-            shard_clips.append((assigned, arrays, digest))
-        entries.extend(_flush_shard(output_root, shard_index, shard_clips))
+                for name in _PACKED_ARRAY_NAMES
+            }
+            offset = 0
+            for clip_index, (assigned, expected_digest, expected_frames) in enumerate(
+                selected
+            ):
+                arrays = first_arrays if clip_index == 0 else None
+                if arrays is None:
+                    sequence = assigned.sequence
+                    path = retargeted_root / (
+                        f"{sequence.source_id}__{sequence.sequence_id}.npz"
+                    )
+                    arrays = load_and_normalize_retargeted_clip(path, quality)
+                digest = _arrays_fingerprint(arrays)
+                sequence = assigned.sequence
+                path = (
+                    retargeted_root
+                    / f"{sequence.source_id}__{sequence.sequence_id}.npz"
+                )
+                if digest != expected_digest:
+                    raise ValueError(f"retargeted clip changed during build: {path}")
+                frames = int(arrays["qpos"].shape[0])
+                if frames != expected_frames:
+                    raise ValueError(
+                        f"retargeted clip frame count changed during build: {path}"
+                    )
+                names = tuple(str(value) for value in arrays["joint_names"].tolist())
+                bodies = tuple(str(value) for value in arrays["body_names"].tolist())
+                if joint_names is None:
+                    joint_names, body_names = names, bodies
+                elif names != joint_names or bodies != body_names:
+                    raise ValueError(
+                        "accepted clips do not share one joint/body ordering"
+                    )
+                stop = offset + frames
+                for name, destination in packed.items():
+                    value = np.asarray(arrays[name], dtype=destination.dtype)
+                    expected_shape = (frames,) + destination.shape[1:]
+                    if value.shape != expected_shape:
+                        raise ValueError(
+                            f"TWIST clip {sequence.source_id}/{sequence.sequence_id} "
+                            f"has invalid {name} shape {value.shape}; expected "
+                            f"{expected_shape}"
+                        )
+                    destination[offset:stop] = value
+                entries.append(
+                    _packed_clip_entry(assigned, arrays, digest, offset=offset)
+                )
+                offset = stop
+            if offset != total_frames:
+                raise ValueError(f"TWIST {split} packed frame count drifted")
+            for value in packed.values():
+                value.flush()
+            np.savez_compressed(output_root / f"{split}.npz", **packed)
+            del packed
     assert joint_names is not None and body_names is not None
     total_train_frames = sum(
         entry["frames"] for entry in entries if entry["split"] == "train"
@@ -1258,100 +1249,31 @@ def _write_shards(
     return entries, joint_names, body_names
 
 
-def _balanced_mixed_shard_groups(
-    clips: list[tuple[AssignedSequence, str, int]],
-    max_frames: int,
-    split_seed: int,
-) -> list[list[tuple[AssignedSequence, str, int]]]:
-    """Mix each split deterministically while balancing resident frame counts."""
-
-    groups: list[list[tuple[AssignedSequence, str, int]]] = []
-    for split in ("train", "evaluation"):
-        selected = [clip for clip in clips if clip[0].split == split]
-        if not selected:
-            continue
-        frame_limit = max(max_frames, max(clip[2] for clip in selected))
-        shard_count = max(1, math.ceil(sum(clip[2] for clip in selected) / frame_limit))
-        ordered = sorted(
-            selected,
-            key=lambda clip: (
-                -clip[2],
-                hashlib.sha256(
-                    (
-                        f"{split_seed}\0{split}\0{clip[0].sequence.source_id}\0"
-                        f"{clip[0].sequence.sequence_id}"
-                    ).encode("utf-8")
-                ).digest(),
-            ),
-        )
-        while True:
-            split_groups: list[list[tuple[AssignedSequence, str, int]]] = [
-                [] for _ in range(shard_count)
-            ]
-            frame_counts = [0] * shard_count
-            for clip in ordered:
-                shard_index = min(
-                    range(shard_count), key=lambda index: (frame_counts[index], index)
-                )
-                split_groups[shard_index].append(clip)
-                frame_counts[shard_index] += clip[2]
-            if max(frame_counts) <= frame_limit:
-                groups.extend(split_groups)
-                break
-            shard_count += 1
-    return groups
-
-
-def _flush_shard(
-    output_root: Path,
-    shard_index: int,
-    clips: list[tuple[AssignedSequence, dict[str, np.ndarray], str]],
-) -> list[dict[str, Any]]:
-    shard_name = f"shard_{shard_index:05d}.npz"
-    pack_names = (
-        "timestamp_seconds",
-        "source_timestamp_seconds",
-        "qpos",
-        "qvel",
-        "body_pos",
-        "body_quat_wxyz",
-        "body_lin_vel",
-        "body_ang_vel",
-        "foot_contacts",
-        "foot_sole_z",
-    )
-    packed = {
-        name: np.concatenate([clip[1][name] for clip in clips], axis=0)
-        for name in pack_names
+def _packed_clip_entry(
+    assigned: AssignedSequence,
+    arrays: dict[str, np.ndarray],
+    digest: str,
+    *,
+    offset: int,
+) -> dict[str, Any]:
+    sequence = assigned.sequence
+    return {
+        "source_kind": sequence.source_kind,
+        "source_id": sequence.source_id,
+        "sequence_id": sequence.sequence_id,
+        "subject_id": sequence.subject_id,
+        "split": assigned.split,
+        "sampling_weight": sequence.sampling_weight,
+        "offset": offset,
+        "frames": int(arrays["qpos"].shape[0]),
+        "duration_seconds": float(arrays["timestamp_seconds"][-1]),
+        "source_sha256": "sha256:"
+        + _normalize_sha256(sequence.source_sha256, "source_sha256"),
+        "retargeted_sha256": digest,
+        "object_metadata": (
+            sequence.metadata if sequence.source_kind == "omomo" else {}
+        ),
     }
-    np.savez_compressed(output_root / shard_name, **packed)
-    offset = 0
-    entries = []
-    for assigned, arrays, digest in clips:
-        frames = int(arrays["qpos"].shape[0])
-        sequence = assigned.sequence
-        entries.append(
-            {
-                "source_kind": sequence.source_kind,
-                "source_id": sequence.source_id,
-                "sequence_id": sequence.sequence_id,
-                "subject_id": sequence.subject_id,
-                "split": assigned.split,
-                "sampling_weight": sequence.sampling_weight,
-                "shard": shard_name,
-                "offset": offset,
-                "frames": frames,
-                "duration_seconds": float(arrays["timestamp_seconds"][-1]),
-                "source_sha256": "sha256:"
-                + _normalize_sha256(sequence.source_sha256, "source_sha256"),
-                "retargeted_sha256": digest,
-                "object_metadata": (
-                    sequence.metadata if sequence.source_kind == "omomo" else {}
-                ),
-            }
-        )
-        offset += frames
-    return entries
 
 
 def _resample_clip(

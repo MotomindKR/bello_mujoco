@@ -92,4 +92,3 @@ warp:
   njmax: 2048
 
 runtime_clip_directory: outputs/twist_runtime_clips
-reference_bank_refresh_updates: 500

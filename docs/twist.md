@@ -193,23 +193,19 @@ root height, or more than 1 cm of sole collision-geometry penetration.
 `conversion_report.json` gives accepted, quarantined, and rejected counts and
 reasons.
 
-Accepted clips are packed into pickle-free NPZ shards plus `index.json`.
-The builder validates the corpus without retaining decoded motion arrays, then
-reloads only enough accepted clips to fill one shard. Peak host memory therefore
-depends on `max_frames_per_shard`, not total corpus size. Dataset schema 2 uses a
-split-seeded, frame-balanced packing pass so that every training shard is a
-representative mixture rather than a contiguous source-directory slice. Train
-and evaluation clips never share a shard.
+Accepted clips are packed into pickle-free `train.npz` and `evaluation.npz`
+files plus `index.json`. Dataset schema 3 stores all motion tensors as float32
+and keeps source timestamps as float64. The builder uses temporary memory-mapped
+arrays while producing each split file, so it does not retain the decoded
+corpus in RAM. Train and evaluation data remain physically separate.
 
 By default, clip sampling is proportional to accepted frame count and then
 uniform over valid start frames. An explicit manifest `sampling_weight`
-multiplies that frame mass. The trainer transfers one shard at a time and walks
-a deterministic shuffled permutation without replacement before beginning the
-next shard cycle. It therefore covers every training shard while keeping the
-full corpus out of host and device memory. Evaluation visits every held-out clip
-in stable source/sequence order. The fingerprint covers the portable manifest,
-accepted hashes, quality and packing configuration, Bello model, and GMR
-revision.
+multiplies that frame mass. The trainer loads the complete training split once
+and samples all accepted clips continuously for the entire run. Evaluation
+visits every held-out clip in stable source/sequence order. The fingerprint
+covers the portable manifest, accepted hashes, quality configuration, Bello
+model, and GMR revision.
 
 ## Observation and optimization contracts
 
@@ -242,9 +238,8 @@ The maintained profile uses 4,096 environments, 24 rollout steps, five epochs,
 four minibatches, learning rate `2e-4`, desired KL `0.008`, entropy `0.005`,
 gamma `0.99`, lambda `0.95`, and clip ratio `0.2`. Command-level
 `total_timesteps` and `num_envs` overrides remain available for bounded smoke
-runs. Packed shards have one fixed padded shape and are passed to a single
-compiled PPO update as dynamic device buffers. Shard rotation therefore does
-not accumulate one executable and embedded reference bank per shard.
+runs. The full reference bank is passed to the compiled PPO update as dynamic
+device buffers, so it is not embedded as an executable constant.
 
 The 4,096-environment Warp profile reserves 32 active contacts per environment.
 Training reports the peak active-contact capacity fraction and the fraction of

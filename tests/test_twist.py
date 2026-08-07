@@ -39,11 +39,9 @@ from bello_mujoco.motion.twist_dataset import (
     SourceManifest,
     SourceSequence,
     TWIST_DATASET_SCHEMA_VERSION,
-    TWIST_PACKING_ALGORITHM,
     TWIST_TRAIN_SAMPLING,
     _align_floor_and_heading,
     _arrays_fingerprint,
-    _balanced_mixed_shard_groups,
     assign_splits,
     build_packed_dataset,
     clip_quality_reasons,
@@ -76,9 +74,7 @@ from bello_mujoco.training.ppo import (
 )
 from bello_mujoco.training.twist import (
     _bind_reference_bank,
-    _delete_device_arrays,
     _device_reference_bank_arrays,
-    _reference_bank_shard_index,
 )
 
 JOINT_NAMES = tuple(
@@ -656,13 +652,12 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
         "body_ang_vel": np.zeros((total_frames, 2, 3), dtype=np.float32),
         "foot_contacts": np.zeros((total_frames, 2), dtype=np.float32),
     }
-    np.savez(tmp_path / "shard_00000.npz", **arrays)
+    np.savez(tmp_path / "train.npz", **arrays)
     clips = [
         {
             "source_id": "amass",
             "sequence_id": f"clip_{index}",
             "split": "train",
-            "shard": "shard_00000.npz",
             "offset": sum(lengths[:index]),
             "frames": frames,
             "sampling_weight": 1.0,
@@ -671,7 +666,10 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
         for index, frames in enumerate(lengths)
     ]
     index_path = tmp_path / "index.json"
-    index_path.write_text(json.dumps({"clips": clips}), encoding="utf-8")
+    index_path.write_text(
+        json.dumps({"clips": clips, "split_files": {"train": "train.npz"}}),
+        encoding="utf-8",
+    )
 
     bank = load_packed_reference_bank(index_path, split="train")
 
@@ -685,56 +683,23 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
     )
 
 
-def test_reference_bank_bounds_allow_zero_probability_padding() -> None:
-    offsets = np.asarray((0, 100, 0), dtype=np.int32)
-    lengths = np.asarray((100, 137, 1), dtype=np.int32)
-    probabilities = np.asarray((0.5, 0.5, 0.0), dtype=np.float32)
+def test_reference_bank_bounds_require_contiguous_positive_clips() -> None:
+    offsets = np.asarray((0, 100), dtype=np.int32)
+    lengths = np.asarray((100, 137), dtype=np.int32)
+    probabilities = np.asarray((0.5, 0.5), dtype=np.float32)
 
     _validate_reference_bank_clip_bounds(offsets, lengths, probabilities, 237)
 
-    with pytest.raises(ValueError, match="clip offsets exceed"):
+    with pytest.raises(ValueError, match="do not cover"):
         _validate_reference_bank_clip_bounds(
-            np.asarray((0, 237)),
-            np.asarray((100, 1)),
-            np.asarray((1.0, 0.0)),
+            np.asarray((0, 101)),
+            lengths,
+            probabilities,
             237,
         )
 
 
-def test_reference_bank_shard_choice_is_resume_stable() -> None:
-    probabilities = np.asarray((0.2, 0.3, 0.5))
-    before_checkpoint = _reference_bank_shard_index(
-        probabilities, seed=11, update=499, refresh_updates=500
-    )
-    resumed = _reference_bank_shard_index(
-        probabilities, seed=11, update=500, refresh_updates=500
-    )
-
-    assert before_checkpoint == _reference_bank_shard_index(
-        probabilities, seed=11, update=0, refresh_updates=500
-    )
-    assert resumed == _reference_bank_shard_index(
-        probabilities, seed=11, update=999, refresh_updates=500
-    )
-    first_cycle = [
-        _reference_bank_shard_index(
-            probabilities, seed=11, update=500 * index, refresh_updates=500
-        )
-        for index in range(len(probabilities))
-    ]
-    second_cycle = [
-        _reference_bank_shard_index(
-            probabilities,
-            seed=11,
-            update=500 * (len(probabilities) + index),
-            refresh_updates=500,
-        )
-        for index in range(len(probabilities))
-    ]
-    assert sorted(first_cycle) == sorted(second_cycle) == [0, 1, 2]
-
-
-def test_reference_bank_arrays_remain_dynamic_across_shard_swaps() -> None:
+def test_reference_bank_arrays_remain_dynamic_jit_inputs() -> None:
     def bank(value: float) -> PackedReferenceBank:
         scalar = np.full((4, 1), value, dtype=np.float32)
         return PackedReferenceBank(
@@ -766,13 +731,9 @@ def test_reference_bank_arrays_remain_dynamic_across_shard_swaps() -> None:
 
     first = _device_reference_bank_arrays(bank(1.0))
     second = _device_reference_bank_arrays(bank(2.0))
-    try:
-        assert float(bank_sum(first)) == pytest.approx(4.0)
-        assert float(bank_sum(second)) == pytest.approx(8.0)
-        assert bank_sum._cache_size() == 1
-    finally:
-        _delete_device_arrays(first)
-        _delete_device_arrays(second)
+    assert float(bank_sum(first)) == pytest.approx(4.0)
+    assert float(bank_sum(second)) == pytest.approx(8.0)
+    assert bank_sum._cache_size() == 1
 
 
 def test_physics_diagnostics_report_peak_capacity_and_overflow_fraction() -> None:
@@ -790,29 +751,6 @@ def test_physics_diagnostics_report_peak_capacity_and_overflow_fraction() -> Non
     }
     assert diagnostics["max_physics/contact_capacity_fraction"] == pytest.approx(0.75)
     assert diagnostics["mean_physics/contact_capacity_overflow"] == pytest.approx(0.5)
-
-
-def test_balanced_mixed_shards_are_deterministic_and_split_isolated() -> None:
-    clips = []
-    for index in range(12):
-        split = "train" if index < 9 else "evaluation"
-        assigned = AssignedSequence(source_sequence(index), split)
-        clips.append((assigned, f"sha256:{index:064x}", 90 + index))
-
-    first = _balanced_mixed_shard_groups(clips, max_frames=350, split_seed=17)
-    second = _balanced_mixed_shard_groups(
-        list(reversed(clips)), max_frames=350, split_seed=17
-    )
-
-    def identities(groups):
-        return [[clip[0].sequence.sequence_id for clip in group] for group in groups]
-
-    assert identities(first) == identities(second)
-    assert {sequence for group in identities(first) for sequence in group} == {
-        f"sequence_{index}" for index in range(12)
-    }
-    assert all(len({clip[0].split for clip in group}) == 1 for group in first)
-    assert all(sum(clip[2] for clip in group) <= 350 for group in first)
 
 
 def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
@@ -937,15 +875,17 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
 
     assert first["dataset_fingerprint"] == second["dataset_fingerprint"]
     assert first["schema_version"] == TWIST_DATASET_SCHEMA_VERSION
-    assert first["packing"] == {
-        "algorithm": TWIST_PACKING_ALGORITHM,
-        "split_seed": 7,
-        "train_sampling": TWIST_TRAIN_SAMPLING,
+    assert first["train_sampling"] == TWIST_TRAIN_SAMPLING
+    assert first["split_files"] == {
+        "train": "train.npz",
+        "evaluation": "evaluation.npz",
     }
     assert {clip["split"] for clip in first["clips"]} == {
         "train",
         "evaluation",
     }
+    with np.load(tmp_path / "packed_first/train.npz", allow_pickle=False) as packed:
+        assert packed["qpos"].dtype == np.float32
     assert (tmp_path / "packed_first/heldout_manifest.json").read_bytes() == (
         tmp_path / "packed_second/heldout_manifest.json"
     ).read_bytes()

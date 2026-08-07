@@ -1601,11 +1601,16 @@ def _validate_reference_bank_clip_bounds(
         raise ValueError("TWIST reference bank sampling metadata has drifted")
     if np.any(offsets < 0) or np.any(lengths <= 0):
         raise ValueError("TWIST reference bank clip metadata must be positive")
-    if np.any(offsets + lengths > total_frames):
-        raise ValueError("TWIST reference bank clip offsets exceed its arrays")
+    expected_offsets = np.zeros_like(offsets)
+    if len(offsets) > 1:
+        expected_offsets[1:] = np.cumsum(lengths[:-1], dtype=np.int64)
+    if not np.array_equal(offsets, expected_offsets) or (
+        int(lengths.sum()) != total_frames
+    ):
+        raise ValueError("TWIST reference bank clip offsets do not cover its arrays")
     if (
         np.any(~np.isfinite(probabilities))
-        or np.any(probabilities < 0.0)
+        or np.any(probabilities <= 0.0)
         or not np.isclose(probabilities.sum(), 1.0)
     ):
         raise ValueError("TWIST reference bank sampling probabilities are invalid")

@@ -12,4 +12,3 @@ max_body_angular_velocity: 30.0
 min_root_height: 0.25
 max_root_height: 2.0
 max_floor_penetration: 0.01
-max_frames_per_shard: 250000

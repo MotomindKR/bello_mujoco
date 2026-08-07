@@ -197,7 +197,7 @@ It never downloads datasets or body models. Configuration source:
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `operation` | `scan_amass`, `validate`, or `build`; `validate` | Generate an AMASS manifest, validate the source boundary, or build shards and an index. |
+| `operation` | `scan_amass`, `validate`, or `build`; `validate` | Generate an AMASS manifest, validate the source boundary, or build split files and an index. |
 | `manifest` | path or `null`; `null` | Output path for `scan_amass`; required input manifest otherwise. |
 | `source_root` | path or `null`; `null` | Aggregated AMASS root for `scan_amass`; only `*_stageii.npz` motion archives are included. |
 | `dataset_release` | string or `null`; `null` | Required operator-supplied AMASS release identifier for `scan_amass`. |
@@ -210,7 +210,7 @@ It never downloads datasets or body models. Configuration source:
 | `output_root` | path or `null`; `null` | Required only for build and must be empty. |
 | `robot_model_path` | canonical Bello URDF path | Robot content used in provenance validation and the dataset fingerprint. |
 | `gmr_root` | `deps/GMR` | Clean pinned GMR checkout whose exact commit enters the fingerprint. |
-| `quality_config` | `configs/twist/quality.yaml` | Versioned rejection/quarantine and shard thresholds. |
+| `quality_config` | `configs/twist/quality.yaml` | Versioned rejection and quarantine thresholds. |
 
 See [TWIST teacher and student](twist.md) for acquisition, conversion,
 splitting, licensing, provenance, and output contracts.
