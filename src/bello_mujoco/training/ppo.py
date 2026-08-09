@@ -271,6 +271,7 @@ class RunnerState(NamedTuple):
     value_norm_state: ValueNormState
     observation_norm_state: ObservationNormState
     critic_observation_norm_state: ObservationNormState
+    task_state: Any
 
 
 def init_train_state(
@@ -1119,6 +1120,7 @@ def collect_rollout(
     observation_norm_state: ObservationNormState | None = None,
     critic_observation_norm_state: ObservationNormState | None = None,
     distillation: DistillationContext | None = None,
+    task_state: Any = None,
 ) -> tuple[
     tuple[
         Any,
@@ -1127,6 +1129,7 @@ def collect_rollout(
         jax.Array,
         ObservationNormState,
         ObservationNormState,
+        Any,
     ],
     Transition,
 ]:
@@ -1140,6 +1143,8 @@ def collect_rollout(
         critic_observation_norm_state = init_observation_norm_state(
             int(critic_obs_stack.shape[-2] * critic_obs_stack.shape[-1])
         )
+    if task_state is None:
+        task_state = jnp.zeros((0,), dtype=jnp.float32)
 
     def env_step(
         carry: tuple[
@@ -1149,6 +1154,7 @@ def collect_rollout(
             jax.Array,
             ObservationNormState,
             ObservationNormState,
+            Any,
         ],
         _: None,
     ):
@@ -1159,6 +1165,7 @@ def collect_rollout(
             key,
             actor_norm,
             critic_norm,
+            current_task_state,
         ) = carry
         key, action_key, env_key = jax.random.split(key, 3)
         raw_policy_obs = stacked_observation(last_obs_stack)
@@ -1179,12 +1186,22 @@ def collect_rollout(
                 critic_obs=critic_policy_obs,
             )
         )
-        env_action = jnp.clip(action, -env.action_clip, env.action_clip)
+        current_env = (
+            env.with_task_state(current_task_state)
+            if hasattr(env, "with_task_state")
+            else env
+        )
+        env_action = jnp.clip(action, -current_env.action_clip, current_env.action_clip)
         value = denormalize_value(value, value_norm_state, config)
-        next_state, next_obs, reward, done, info = env.step_batch(
+        next_state, next_obs, reward, done, info = current_env.step_batch(
             state, action, rng=env_key
         )
-        next_critic_obs = env.critic_observation_batch(next_state)
+        next_task_state = (
+            current_env.update_task_state(current_task_state, info)
+            if hasattr(current_env, "update_task_state")
+            else current_task_state
+        )
+        next_critic_obs = current_env.critic_observation_batch(next_state)
         next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
         next_critic_obs_stack = update_observation_stack(
             last_critic_obs_stack, next_critic_obs, done
@@ -1250,6 +1267,7 @@ def collect_rollout(
             key,
             actor_norm,
             critic_norm,
+            next_task_state,
         ), transition
 
     return jax.lax.scan(
@@ -1261,6 +1279,7 @@ def collect_rollout(
             rng,
             observation_norm_state,
             critic_observation_norm_state,
+            task_state,
         ),
         None,
         config.num_steps,
@@ -1294,6 +1313,11 @@ def init_runner_state(
         rng, staggered_obs_key = jax.random.split(rng)
         obs = env.observation_batch(env_state, staggered_obs_key)
     critic_obs = env.critic_observation_batch(env_state)
+    task_state = (
+        env.initial_task_state()
+        if hasattr(env, "initial_task_state")
+        else jnp.zeros((0,), dtype=jnp.float32)
+    )
     obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
     critic_obs_stack = init_observation_stack(critic_obs, config.policy.obs_stack_size)
     return (
@@ -1313,6 +1337,7 @@ def init_runner_state(
             critic_observation_norm_state=init_observation_norm_state(
                 policy_observation_size(critic_observation_size(env), config.policy)
             ),
+            task_state=task_state,
         ),
         static_policy,
         optimizer,
@@ -1354,6 +1379,7 @@ def update_runner_state(
             _,
             observation_norm_state,
             critic_observation_norm_state,
+            task_state,
         ),
         transitions,
     ) = collect_rollout(
@@ -1368,6 +1394,7 @@ def update_runner_state(
         runner_state.observation_norm_state,
         runner_state.critic_observation_norm_state,
         distillation,
+        runner_state.task_state,
     )
     _, _, last_value = apply_policy(
         policy,
@@ -1419,6 +1446,9 @@ def update_runner_state(
     )
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
     reward_means = reward_component_means(transitions.info)
+    task_metrics = (
+        env.task_state_metrics(task_state) if hasattr(env, "task_state_metrics") else {}
+    )
     metrics = {
         **metrics,
         "learning_rate": learning_rate,
@@ -1458,6 +1488,7 @@ def update_runner_state(
         **physics_diagnostics(transitions.info),
         **gait_diagnostics(transitions.info, env.control_timestep),
         **reward_means,
+        **task_metrics,
     }
     return (
         RunnerState(
@@ -1472,6 +1503,7 @@ def update_runner_state(
             value_norm_state=value_norm_state,
             observation_norm_state=observation_norm_state,
             critic_observation_norm_state=critic_observation_norm_state,
+            task_state=task_state,
         ),
         metrics,
     )

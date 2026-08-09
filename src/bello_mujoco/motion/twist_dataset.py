@@ -866,6 +866,9 @@ def load_packed_reference_bank(
     index_path: Path,
     *,
     split: AssignedSplit,
+    sampling_mode: Literal[
+        "manifest_weight", "frame_count_times_manifest_weight"
+    ] = "frame_count_times_manifest_weight",
 ) -> PackedReferenceBank:
     """Load an entire split into arrays suitable for one device transfer."""
 
@@ -909,10 +912,7 @@ def load_packed_reference_bank(
     weights = (
         np.ones((len(clips),), dtype=np.float64)
         if split == "evaluation"
-        else np.asarray(
-            [clip["sampling_probability_numerator"] for clip in clips],
-            dtype=np.float64,
-        )
+        else _packed_sampling_weights(clips, sampling_mode)
     )
     probabilities = weights / weights.sum()
     return PackedReferenceBank(
@@ -923,6 +923,20 @@ def load_packed_reference_bank(
         source_ids=tuple(clip["source_id"] for clip in clips),
         sequence_ids=tuple(clip["sequence_id"] for clip in clips),
     )
+
+
+def _packed_sampling_weights(
+    clips: list[dict],
+    sampling_mode: Literal["manifest_weight", "frame_count_times_manifest_weight"],
+) -> np.ndarray:
+    if sampling_mode == "frame_count_times_manifest_weight":
+        return np.asarray(
+            [clip["sampling_probability_numerator"] for clip in clips],
+            dtype=np.float64,
+        )
+    if sampling_mode == "manifest_weight":
+        return np.asarray([clip["sampling_weight"] for clip in clips], dtype=np.float64)
+    raise ValueError(f"unsupported TWIST sampling mode: {sampling_mode}")
 
 
 def sample_packed_start_frames(

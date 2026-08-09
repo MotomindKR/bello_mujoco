@@ -37,6 +37,7 @@ from bello_mujoco.envs.motion_tracking import (
 from bello_mujoco.envs.twist import (
     TwistEnvConfig,
     TwistObservationContract,
+    TwistSamplingConfig,
     TwistSimulationConfig,
 )
 from bello_mujoco.motion.clip import MOTION_FORMAT_VERSION, MotionClip
@@ -179,6 +180,7 @@ class TwistKLSchedule:
 class TwistTeacherCheckpointMetadata(_CheckpointMetadataBase):
     simulation: TwistSimulationConfig
     twist_env: TwistEnvConfig
+    sampling: TwistSamplingConfig
     observation_contract: TwistObservationContract
     dataset: TwistDatasetContract
     robot_fingerprint: str
@@ -194,6 +196,7 @@ class TwistTeacherCheckpointMetadata(_CheckpointMetadataBase):
 class TwistStudentCheckpointMetadata(_CheckpointMetadataBase):
     simulation: TwistSimulationConfig
     twist_env: TwistEnvConfig
+    sampling: TwistSamplingConfig
     observation_contract: TwistObservationContract
     dataset: TwistDatasetContract
     robot_fingerprint: str
@@ -416,6 +419,7 @@ def restore_runner_checkpoint(
         value_norm_state=train_item["value_norm_state"],
         observation_norm_state=train_item["observation_norm_state"],
         critic_observation_norm_state=train_item["critic_observation_norm_state"],
+        task_state=continuation_item.get("task_state", template.task_state),
     )
     _validate_restored_motion_runner_state(runner_state, recorded_metadata)
     return runner_state, static_policy, optimizer, effective_metadata
@@ -510,13 +514,16 @@ def _train_checkpoint_item(runner_state: RunnerState) -> dict[str, Any]:
 
 
 def _continuation_checkpoint_item(runner_state: RunnerState) -> dict[str, Any]:
-    return {
+    item = {
         "env_state": runner_state.env_state,
         "obs_stack": runner_state.obs_stack,
         "critic_obs_stack": runner_state.critic_obs_stack,
         "rng": runner_state.rng,
         "learning_rate": runner_state.learning_rate,
     }
+    if getattr(runner_state.task_state, "size", 0) > 0:
+        item["task_state"] = runner_state.task_state
+    return item
 
 
 def _checkpoint_document(

@@ -43,6 +43,21 @@ from bello_mujoco.sim import (
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 
 TwistStage = Literal["teacher", "student"]
+
+
+@dataclass(frozen=True)
+class TwistSamplingConfig:
+    """Released per-clip sampling with adaptive hard-motion emphasis."""
+
+    base_distribution: Literal[
+        "manifest_weight", "frame_count_times_manifest_weight"
+    ] = "manifest_weight"
+    curriculum_enabled: bool = True
+    curriculum_gamma: float = 0.01
+    curriculum_min_difficulty: float = 1.0
+    curriculum_max_difficulty: float = 9.0
+
+
 TWIST_SIMULATION_HZ = 500
 TWIST_POLICY_HZ = 50
 TWIST_DECIMATION = TWIST_SIMULATION_HZ // TWIST_POLICY_HZ
@@ -239,7 +254,7 @@ class TwistSimulationConfig:
 @dataclass(frozen=True)
 class TwistEnvConfig:
     max_episode_steps: int = TWIST_EPISODE_STEPS
-    action_clip: float = 10.0
+    action_clip: float = 5.0
     action_delay_steps: tuple[int, int] = (0, 1)
     action_history_steps: int = 8
     observation_noise: TwistObservationNoiseConfig = TwistObservationNoiseConfig()
@@ -340,6 +355,7 @@ class BelloTwistEnv:
     stage: TwistStage
     config: TwistEnvConfig = TwistEnvConfig()
     reference_bank: PackedReferenceBank | None = None
+    sampling: TwistSamplingConfig = TwistSamplingConfig()
 
     def __post_init__(self) -> None:
         if self.stage not in {"teacher", "student"}:
@@ -410,6 +426,7 @@ class BelloTwistEnv:
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         reference_bank: PackedReferenceBank | None = None,
+        sampling: TwistSamplingConfig = TwistSamplingConfig(),
     ) -> "BelloTwistEnv":
         domain = config.domain_randomization
         model = load_bello_model(
@@ -429,7 +446,7 @@ class BelloTwistEnv:
             ),
         )
         motion = load_motion_clip(motion_path, model)
-        return cls(model, motion, stage, config, reference_bank)
+        return cls(model, motion, stage, config, reference_bank, sampling)
 
     @property
     def contract(self) -> TwistObservationContract:
@@ -483,6 +500,88 @@ class BelloTwistEnv:
     @property
     def ppo_stagger_initial_step_count(self) -> bool:
         return False
+
+    def initial_task_state(self) -> jax.Array:
+        """Return released TWIST's checkpointed per-motion difficulty state."""
+
+        clip_count = (
+            len(self.reference_bank.sampling_probabilities)
+            if self.reference_bank is not None
+            else 0
+        )
+        return jnp.full(
+            (clip_count,),
+            self.sampling.curriculum_max_difficulty,
+            dtype=jnp.float32,
+        )
+
+    def with_task_state(self, difficulty: jax.Array) -> "BelloTwistEnv":
+        """Bind curriculum sampling probabilities without host copies."""
+
+        if self.reference_bank is None or not self.sampling.curriculum_enabled:
+            return self
+        if difficulty.shape != self.reference_bank.sampling_probabilities.shape:
+            raise ValueError("TWIST motion difficulty shape differs from clip index")
+        weighted = jnp.asarray(self.reference_bank.sampling_probabilities) * difficulty
+        probabilities = weighted / jnp.sum(weighted)
+        reference_bank = replace(
+            self.reference_bank, sampling_probabilities=probabilities
+        )
+        return self._unchecked_runtime_copy(reference_bank=reference_bank)
+
+    def update_task_state(
+        self, difficulty: jax.Array, info: dict[str, jax.Array]
+    ) -> jax.Array:
+        """Apply the released completion-rate curriculum after one policy step."""
+
+        if self.reference_bank is None or not self.sampling.curriculum_enabled:
+            return difficulty
+        clip_indices = info["reference/clip_index"].astype(jnp.int32)
+        returned = info["returned_episode"].astype(jnp.float32)
+        clip_lengths = jnp.asarray(self.reference_bank.lengths)[clip_indices]
+        completion = info["episode_length"].astype(jnp.float32) / jnp.maximum(
+            clip_lengths.astype(jnp.float32), 1.0
+        )
+        completion_sum = (
+            jnp.zeros_like(difficulty).at[clip_indices].add(completion * returned)
+        )
+        completion_count = jnp.zeros_like(difficulty).at[clip_indices].add(returned)
+        completion_rate = completion_sum / jnp.maximum(completion_count, 1.0)
+        completion_rate = jnp.where(completion_count > 0.0, completion_rate, 0.7)
+        factor = jnp.where(
+            completion_rate <= 0.5,
+            1.0 + self.sampling.curriculum_gamma,
+            jnp.where(
+                completion_rate >= 0.95,
+                1.0 - self.sampling.curriculum_gamma,
+                1.0,
+            ),
+        )
+        return jnp.clip(
+            difficulty * factor,
+            self.sampling.curriculum_min_difficulty,
+            self.sampling.curriculum_max_difficulty,
+        )
+
+    def task_state_metrics(self, difficulty: jax.Array) -> dict[str, jax.Array]:
+        if difficulty.size == 0:
+            return {}
+        return {
+            "curriculum/mean_difficulty": jnp.mean(difficulty),
+            "curriculum/min_difficulty": jnp.min(difficulty),
+            "curriculum/max_difficulty": jnp.max(difficulty),
+        }
+
+    def _unchecked_runtime_copy(
+        self,
+        *,
+        reference_bank: PackedReferenceBank | None,
+    ) -> "BelloTwistEnv":
+        bound = object.__new__(BelloTwistEnv)
+        for name in ("model", "motion", "stage", "config", "sampling"):
+            object.__setattr__(bound, name, getattr(self, name))
+        object.__setattr__(bound, "reference_bank", reference_bank)
+        return bound
 
     @property
     def key_body_ids(self) -> np.ndarray:
@@ -1239,11 +1338,15 @@ class BelloTwistEnv:
         key_indices = jnp.asarray(
             [self.motion.body_names.index(name) for name in self.config.key_body_names]
         )
-        key_error = (
-            state.data.xpos[jnp.asarray(self.key_body_ids)]
-            - reference.body_pos[key_indices]
+        pose = _key_body_pose_error_exceeds(
+            state.data.xpos[jnp.asarray(self.key_body_ids)],
+            state.data.qpos[:3],
+            state.data.qpos[3:7],
+            reference.body_pos[key_indices],
+            reference.qpos[:3],
+            reference.qpos[3:7],
+            cfg.key_body_position_error,
         )
-        pose = jnp.sum(key_error**2) > cfg.key_body_position_error**2
         root_velocity = jnp.linalg.norm(state.data.qvel[:3]) > cfg.root_velocity_limit
         if torso_contact is None:
             torso_contact = self._body_has_forceful_contact(
@@ -1623,6 +1726,27 @@ def _batched_contact_max(
 
     output_shape = (batch_size, *values.shape[1:])
     return jnp.zeros(output_shape, dtype=values.dtype).at[world_ids].max(values)
+
+
+def _key_body_pose_error_exceeds(
+    current_positions: jax.Array,
+    current_root_position: jax.Array,
+    current_root_quaternion: jax.Array,
+    reference_positions: jax.Array,
+    reference_root_position: jax.Array,
+    reference_root_quaternion: jax.Array,
+    threshold: jax.Array | float,
+) -> jax.Array:
+    """Released TWIST termination: maximum root-local error of any key body."""
+
+    current_local = jax.vmap(
+        lambda position: quat_rotate_inverse(current_root_quaternion, position)
+    )(current_positions - current_root_position)
+    reference_local = jax.vmap(
+        lambda position: quat_rotate_inverse(reference_root_quaternion, position)
+    )(reference_positions - reference_root_position)
+    per_body_squared_error = jnp.sum((current_local - reference_local) ** 2, axis=-1)
+    return jnp.max(per_body_squared_error) > jnp.asarray(threshold) ** 2
 
 
 def _roll_pitch(quaternion: jax.Array) -> jax.Array:

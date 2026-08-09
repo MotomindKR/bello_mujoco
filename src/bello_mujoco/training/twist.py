@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 import json
+import math
 from pathlib import Path
 import jax
 
@@ -11,6 +12,7 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.twist import (
     BelloTwistEnv,
     TwistEnvConfig,
+    TwistSamplingConfig,
     TwistSimulationConfig,
     TwistStage,
     default_twist_asset_config,
@@ -68,6 +70,7 @@ class TwistTrainingRunConfig:
     asset_config: AssetPrepConfig = field(default_factory=default_twist_asset_config)
     simulation: TwistSimulationConfig = TwistSimulationConfig()
     twist_env: TwistEnvConfig = TwistEnvConfig()
+    sampling: TwistSamplingConfig = TwistSamplingConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
@@ -83,7 +86,12 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
         / "train.npz"
     )
     materialize_packed_clip(dataset_index, runtime_clip, split="train")
-    reference_bank = load_packed_reference_bank(dataset_index, split="train")
+    reference_bank = load_packed_reference_bank(
+        dataset_index,
+        split="train",
+        sampling_mode=run_config.sampling.base_distribution,
+    )
+    source_sampling_mass = _source_sampling_mass(reference_bank)
     simulation = run_config.simulation
     env = BelloTwistEnv.load(
         run_config.stage,
@@ -94,6 +102,7 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
         warp=run_config.warp,
         batch_size=run_config.config.num_envs,
         reference_bank=reference_bank,
+        sampling=run_config.sampling,
     )
     if env.action_layout.names != dataset.joint_names:
         raise ValueError("TWIST dataset joint order differs from the Bello model")
@@ -145,6 +154,8 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
                 "dataset": dataset,
                 "simulation": simulation,
                 "twist_env": run_config.twist_env,
+                "sampling": run_config.sampling,
+                "source_sampling_mass": source_sampling_mass,
                 "reference_bank_frames": int(reference_bank_arrays[0].shape[0]),
                 "reference_bank_clips": int(reference_bank_arrays[-1].shape[0]),
                 "checkpoint": checkpoint_config,
@@ -219,6 +230,21 @@ def validate_twist_training_config(config: TwistTrainingRunConfig) -> None:
         raise ValueError("TWIST teacher does not accept teacher_checkpoint_path")
     if config.stage == "student" and config.teacher_checkpoint_path is None:
         raise ValueError("TWIST student requires teacher_checkpoint_path")
+    sampling = config.sampling
+    if sampling.base_distribution not in {
+        "manifest_weight",
+        "frame_count_times_manifest_weight",
+    }:
+        raise ValueError("unsupported TWIST base sampling distribution")
+    if (
+        not math.isfinite(sampling.curriculum_gamma)
+        or sampling.curriculum_gamma <= 0.0
+        or not math.isfinite(sampling.curriculum_min_difficulty)
+        or not math.isfinite(sampling.curriculum_max_difficulty)
+        or sampling.curriculum_min_difficulty <= 0.0
+        or sampling.curriculum_max_difficulty <= sampling.curriculum_min_difficulty
+    ):
+        raise ValueError("TWIST curriculum bounds and gamma must be positive")
 
 
 _REFERENCE_BANK_ARRAY_FIELDS = (
@@ -245,6 +271,17 @@ def _device_reference_bank_arrays(
     return jax.block_until_ready(arrays)
 
 
+def _source_sampling_mass(reference_bank: PackedReferenceBank) -> dict[str, float]:
+    mass: dict[str, float] = {}
+    for source_id, probability in zip(
+        reference_bank.source_ids,
+        reference_bank.sampling_probabilities,
+        strict=True,
+    ):
+        mass[source_id] = mass.get(source_id, 0.0) + float(probability)
+    return dict(sorted(mass.items()))
+
+
 def _bind_reference_bank(
     env: BelloTwistEnv, arrays: tuple[jax.Array, ...]
 ) -> BelloTwistEnv:
@@ -268,6 +305,7 @@ def _replace_reference_bank_unchecked(
     object.__setattr__(bound, "stage", env.stage)
     object.__setattr__(bound, "config", env.config)
     object.__setattr__(bound, "reference_bank", reference_bank)
+    object.__setattr__(bound, "sampling", env.sampling)
     return bound
 
 
@@ -304,6 +342,7 @@ def _checkpoint_metadata(
         "action_layout": env.action_layout,
         "simulation": simulation,
         "twist_env": run_config.twist_env,
+        "sampling": run_config.sampling,
         "observation_contract": env.contract,
         "dataset": dataset,
         "robot_fingerprint": dataset.robot_fingerprint,

@@ -140,6 +140,11 @@ class FakeEnv:
         return jnp.zeros((batch_size,), dtype=jnp.int32)
 
 
+class FakeTaskStateEnv(FakeEnv):
+    def initial_task_state(self) -> jax.Array:
+        return jnp.asarray((9.0, 9.0, 9.0), dtype=jnp.float32)
+
+
 class FakeMotionEnv(FakeEnv):
     task = "motion_tracking"
 
@@ -397,6 +402,21 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     assert document["metadata_sha256"].startswith("sha256:")
     assert document["train_layout_sha256"].startswith("sha256:")
     assert document["continuation_layout_sha256"].startswith("sha256:")
+
+
+def test_checkpoint_round_trips_nonempty_task_state(tmp_path: Path) -> None:
+    env = FakeTaskStateEnv()
+    config = ppo_config()
+    state = runner_state(config, env)._replace(
+        task_state=jnp.asarray((8.5, 7.0, 3.0), dtype=jnp.float32)
+    )
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "task_state_checkpoint"
+
+    save_checkpoint(path, state, checkpoint_metadata)
+    restored, _, _, _ = restore_runner_checkpoint(path, env, checkpoint_metadata)
+
+    np.testing.assert_array_equal(restored.task_state, state.task_state)
 
 
 def test_motion_checkpoint_rejects_locomotion_environment_task(

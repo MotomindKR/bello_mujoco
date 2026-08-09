@@ -21,13 +21,16 @@ from bello_mujoco.envs.twist import (
     TWIST_HISTORY_FRAMES,
     TwistEnvConfig,
     TwistObservationContract,
+    TwistSamplingConfig,
     TwistSimulationConfig,
     _batched_contact_max,
+    _key_body_pose_error_exceeds,
     _validate_reference_bank_clip_bounds,
     teacher_observation_from_student_critic,
 )
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import ActionLayout
+from bello_mujoco.configuration import twist_training_profile
 from bello_mujoco.motion.clip import (
     FIXED_TRACKING_JOINT_NAMES,
     GMR_BELLO_JOINT_NAMES,
@@ -91,6 +94,62 @@ def test_batched_contact_reduction_is_linear_in_flattened_contacts() -> None:
     np.testing.assert_array_equal(
         reduced,
         np.asarray([[4.0, 8.0], [7.0, 9.0], [5.0, 6.0], [0.0, 0.0]]),
+    )
+
+
+def test_released_teacher_training_defaults_are_locked() -> None:
+    config = twist_training_profile("teacher")
+
+    assert config.config.num_updates == 30_002
+    assert config.twist_env.action_clip == 5.0
+    assert config.sampling == TwistSamplingConfig()
+
+
+def test_released_pose_termination_is_root_local_and_per_body() -> None:
+    identity = jnp.asarray((1.0, 0.0, 0.0, 0.0), dtype=jnp.float32)
+    reference_root = jnp.asarray((0.0, 0.0, 1.0), dtype=jnp.float32)
+    reference = (
+        jnp.tile(reference_root, (9, 1))
+        .at[:, 0]
+        .set(jnp.arange(9, dtype=jnp.float32) * 0.1)
+    )
+    translated_root = reference_root + jnp.asarray((3.0, -2.0, 0.5))
+    translated = reference + (translated_root - reference_root)
+
+    assert not bool(
+        _key_body_pose_error_exceeds(
+            translated,
+            translated_root,
+            identity,
+            reference,
+            reference_root,
+            identity,
+            0.7,
+        )
+    )
+    coherent_error = reference + jnp.asarray((0.3, 0.0, 0.0))
+    assert not bool(
+        _key_body_pose_error_exceeds(
+            coherent_error,
+            reference_root,
+            identity,
+            reference,
+            reference_root,
+            identity,
+            0.7,
+        )
+    )
+    one_bad_body = reference.at[4, 0].add(0.71)
+    assert bool(
+        _key_body_pose_error_exceeds(
+            one_bad_body,
+            reference_root,
+            identity,
+            reference,
+            reference_root,
+            identity,
+            0.7,
+        )
     )
 
 
@@ -681,6 +740,49 @@ def test_reference_bank_concatenates_unequal_clips_without_padding(
         bank.sampling_probabilities,
         np.asarray(lengths, dtype=np.float64) / sum(lengths),
     )
+    release_style = load_packed_reference_bank(
+        index_path, split="train", sampling_mode="manifest_weight"
+    )
+    np.testing.assert_allclose(release_style.sampling_probabilities, (0.5, 0.5))
+
+
+def test_released_motion_curriculum_updates_weights_and_completion() -> None:
+    bank = PackedReferenceBank(
+        qpos=np.zeros((300, 1), dtype=np.float32),
+        qvel=np.zeros((300, 1), dtype=np.float32),
+        body_pos=np.zeros((300, 1, 3), dtype=np.float32),
+        body_quat_wxyz=np.zeros((300, 1, 4), dtype=np.float32),
+        body_lin_vel=np.zeros((300, 1, 3), dtype=np.float32),
+        body_ang_vel=np.zeros((300, 1, 3), dtype=np.float32),
+        foot_contacts=np.zeros((300, 2), dtype=np.float32),
+        offsets=np.asarray((0, 100, 200), dtype=np.int32),
+        lengths=np.asarray((100, 100, 100), dtype=np.int32),
+        sampling_probabilities=np.asarray((0.8, 0.1, 0.1), dtype=np.float32),
+        source_ids=("a", "b", "c"),
+        sequence_ids=("a", "b", "c"),
+    )
+    env = object.__new__(BelloTwistEnv)
+    object.__setattr__(env, "reference_bank", bank)
+    object.__setattr__(env, "sampling", TwistSamplingConfig())
+    for name in ("model", "motion", "stage", "config"):
+        object.__setattr__(env, name, None)
+    difficulty = jnp.asarray((5.0, 5.0, 5.0), dtype=jnp.float32)
+    np.testing.assert_array_equal(env.initial_task_state(), (9.0, 9.0, 9.0))
+    info = {
+        "reference/clip_index": jnp.asarray((0.0, 1.0, 1.0)),
+        "returned_episode": jnp.asarray((True, True, True)),
+        "episode_length": jnp.asarray((40, 100, 90)),
+    }
+    updated = jax.jit(lambda value: env.update_task_state(value, info))(difficulty)
+
+    np.testing.assert_allclose(updated, (5.05, 4.95, 5.0), rtol=1.0e-6)
+    probabilities = jax.jit(
+        lambda value: env.with_task_state(value).reference_bank.sampling_probabilities
+    )(jnp.asarray((1.0, 8.0, 8.0)))
+    np.testing.assert_allclose(
+        probabilities,
+        np.asarray((0.8, 0.8, 0.8)) / 2.4,
+    )
 
 
 def test_reference_bank_bounds_require_contiguous_positive_clips() -> None:
@@ -723,6 +825,7 @@ def test_reference_bank_arrays_remain_dynamic_jit_inputs() -> None:
     object.__setattr__(static_env, "stage", "teacher")
     object.__setattr__(static_env, "config", TwistEnvConfig())
     object.__setattr__(static_env, "reference_bank", None)
+    object.__setattr__(static_env, "sampling", TwistSamplingConfig())
 
     @jax.jit
     def bank_sum(arrays):
@@ -944,6 +1047,7 @@ def test_typed_twist_checkpoints_validate_and_reject_cross_stage_resume() -> Non
         "action_layout": action_layout,
         "simulation": TwistSimulationConfig(),
         "twist_env": TwistEnvConfig(),
+        "sampling": TwistSamplingConfig(),
         "observation_contract": contract,
         "dataset": dataset,
         "robot_fingerprint": fingerprint,

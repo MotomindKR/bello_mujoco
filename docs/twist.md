@@ -16,11 +16,11 @@ uv run bello-eval task=twist_student \
   checkpoint_path=checkpoints/<student>/final
 ```
 
-The default training horizons match the paper: 100,000 PPO updates for the
-teacher and 200,000 updates for the student. With 4,096 environments and 24
-rollout steps, these correspond to 9,830,400,000 and 19,660,800,000 simulated
-policy steps respectively. `total_timesteps` remains an explicit override for
-short smoke and capacity runs.
+The teacher default is the released 30,002 PPO updates. With 4,096 environments
+and 24 rollout steps, that is 2,949,316,608 simulated policy steps. The student
+profile remains an extended 200,000-update run so the corrected 60,000-update KL
+schedule reaches its endpoint. `total_timesteps` remains an explicit override
+for short smoke and capacity runs.
 
 There is no automatic teacher selection. Teacher checkpoints cannot resume a
 student run, student checkpoints cannot resume a teacher run, and public TWIST
@@ -200,13 +200,25 @@ and keeps source timestamps as float64. The builder uses temporary memory-mapped
 arrays while producing each split file, so it does not retain the decoded
 corpus in RAM. Train and evaluation data remain physically separate.
 
-By default, clip sampling is proportional to accepted frame count and then
-uniform over valid start frames. An explicit manifest `sampling_weight`
-multiplies that frame mass. The trainer loads the complete training split once
-and samples all accepted clips continuously for the entire run. Evaluation
-visits every held-out clip in stable source/sequence order. The fingerprint
-covers the portable manifest, accepted hashes, quality configuration, Bello
-model, and GMR revision.
+The packed index retains frame-count-weighted probabilities for provenance and
+older explicit experiments. Released-parity training instead samples clips from
+their manifest `sampling_weight`, independent of clip duration, and then samples
+a start time uniformly. Set larger weights explicitly for curated anchor clips;
+the released mix used weights of 50 or 100 for 142 mocap anchors and weight 1
+for ordinary AMASS/OMOMO clips. An all-AMASS index whose weights are all 1 has
+no such curated anchors and cannot reproduce that source mix until the operator
+adds them.
+
+Both teacher and student enable the released motion curriculum. Every clip
+starts at difficulty 9. Terminations with at most 50% completion increase its
+sampling multiplier by 1%, while at least 95% completion decreases it by 1%,
+clamped to `[1, 9]`. The released active termination path keeps the root-local
+per-key-body threshold fixed at 0.7 m; its dynamic-threshold line is commented
+out in the release. Difficulty is updated inside the compiled rollout and
+stored in continuation checkpoints. The trainer loads the complete training
+split once and continuously samples it for the
+entire run. Evaluation visits every held-out clip in stable source/sequence
+order. Dataset and runtime sampling contracts are both checkpointed.
 
 ## Observation and optimization contracts
 
@@ -232,8 +244,9 @@ Both stages use `[512, 512, 256, 128]` SiLU actor/critic backbones with
 LayerNorm on the final hidden layer. Teacher training is PPO. Student training
 uses PPO plus `KL(student || teacher)` with frozen teacher parameters. Its
 weight follows the corrected cosine schedule from `0.1` to `0.01` over 60,000
-updates. The maintained release-length run is 30,002 updates; continuing to
-60,000 reaches the configured KL endpoint.
+updates. The released teacher and student configs each specify 30,002 updates;
+the maintained extended student profile continues beyond 60,000 so the
+corrected schedule reaches its configured endpoint.
 
 The maintained profile uses 4,096 environments, 24 rollout steps, five epochs,
 four minibatches, learning rate `2e-4`, desired KL `0.008`, entropy `0.005`,
@@ -241,6 +254,12 @@ gamma `0.99`, lambda `0.95`, and clip ratio `0.2`. Command-level
 `total_timesteps` and `num_envs` overrides remain available for bounded smoke
 runs. The full reference bank is passed to the compiled PPO update as dynamic
 device buffers, so it is not embedded as an executable constant.
+
+The released Gaussian action is clipped to `[-5, 5]` immediately before the
+environment maps it to Bello PD targets. Pose termination compares the maximum
+error of any of the nine key bodies after expressing current and reference
+positions in their respective root frames. It does not sum errors across bodies
+and does not terminate solely because the tracked root translated globally.
 
 The 4,096-environment Warp profile reserves 32 active contacts per environment.
 Training reports the peak active-contact capacity fraction and the fraction of
@@ -254,8 +273,10 @@ the BeyondMimic training pipeline.
 
 ## Checkpoints and evaluation
 
-TWIST checkpoint metadata records stage, full configuration, source revision,
-observation layouts, dataset and robot fingerprints, and joint/body ordering.
+TWIST checkpoint metadata records stage, full configuration, sampling and
+curriculum contract, source revision, observation layouts, dataset and robot
+fingerprints, and joint/body ordering. Continuation state includes every clip's
+current curriculum difficulty.
 Student metadata additionally binds the exact teacher metadata fingerprint and
 KL schedule. Resume and evaluation reject incompatible stages, datasets,
 robots, layouts, or ordering.
