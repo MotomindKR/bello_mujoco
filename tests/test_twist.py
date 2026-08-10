@@ -61,6 +61,7 @@ from bello_mujoco.motion.twist_retarget import batch_retarget_manifest
 from bello_mujoco.policy import ActorCriticConfig, init_actor_critic
 from bello_mujoco.sim import WarpConfig, logical_actuator_joint_names
 from bello_mujoco.training.checkpoint import (
+    CheckpointConfig,
     ObservationNormMetadata,
     TwistDatasetContract,
     TwistStudentCheckpointMetadata,
@@ -78,6 +79,7 @@ from bello_mujoco.training.ppo import (
 from bello_mujoco.training.twist import (
     _bind_reference_bank,
     _device_reference_bank_arrays,
+    upload_twist_checkpoint,
 )
 
 JOINT_NAMES = tuple(
@@ -103,6 +105,49 @@ def test_released_teacher_training_defaults_are_locked() -> None:
     assert config.config.num_updates == 30_002
     assert config.twist_env.action_clip == 5.0
     assert config.sampling == TwistSamplingConfig()
+
+
+def test_twist_checkpoint_upload_honors_checkpoint_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "bello_mujoco.training.twist.track_checkpoint_artifact",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    checkpoint = tmp_path / "run" / "final"
+    root = checkpoint.parent
+    run = object()
+
+    upload_twist_checkpoint(
+        run,
+        checkpoint,
+        root,
+        CheckpointConfig(
+            upload_wandb_artifact=True,
+            wandb_artifact_name="teacher",
+            wandb_artifact_type="checkpoint",
+        ),
+    )
+    upload_twist_checkpoint(
+        run,
+        checkpoint,
+        root,
+        CheckpointConfig(upload_wandb_artifact=False),
+    )
+    upload_twist_checkpoint(
+        None,
+        checkpoint,
+        root,
+        CheckpointConfig(upload_wandb_artifact=True),
+    )
+
+    assert calls == [
+        (
+            (run, checkpoint),
+            {"name": "teacher", "artifact_type": "checkpoint"},
+        )
+    ]
 
 
 def test_released_pose_termination_is_root_local_and_per_body() -> None:

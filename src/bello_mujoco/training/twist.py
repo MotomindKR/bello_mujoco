@@ -57,6 +57,7 @@ from bello_mujoco.training.tracking import (
     close_run,
     create_wandb_run,
     log_config,
+    track_checkpoint_artifact,
     track_metric_snapshot,
 )
 
@@ -196,16 +197,29 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
                 and checkpoint_config.every_updates is not None
                 and (update + 1) % checkpoint_config.every_updates == 0
             ):
+                checkpoint_path_at_update = root / f"update_{update + 1:06d}"
                 save_twist_checkpoint(
-                    root / f"update_{update + 1:06d}",
+                    checkpoint_path_at_update,
                     runner,
                     metadata,
                     git_commit,
+                )
+                upload_twist_checkpoint(
+                    run,
+                    checkpoint_path_at_update,
+                    root,
+                    checkpoint_config,
                 )
         final_checkpoint = None
         if root is not None:
             final_checkpoint = root / "final"
             save_twist_checkpoint(final_checkpoint, runner, metadata, git_commit)
+            upload_twist_checkpoint(
+                run,
+                final_checkpoint,
+                root,
+                checkpoint_config,
+            )
         print(last_metrics)
         if final_checkpoint is not None:
             print({"checkpoint_path": str(final_checkpoint)})
@@ -320,6 +334,22 @@ def save_twist_checkpoint(
         runner,
         twist_metadata_with_runner_state(metadata, runner),
         git_commit,
+    )
+
+
+def upload_twist_checkpoint(
+    run,
+    path: Path,
+    checkpoint_root: Path,
+    config: CheckpointConfig,
+) -> None:
+    if not config.upload_wandb_artifact or run is None:
+        return
+    track_checkpoint_artifact(
+        run,
+        path,
+        name=config.wandb_artifact_name or checkpoint_root.name,
+        artifact_type=config.wandb_artifact_type,
     )
 
 
