@@ -28,6 +28,7 @@ from bello_mujoco.configuration import (
     locomotion_training_profile,
     motion_training_profile,
     structured_config,
+    twist2_training_profile,
     twist_training_profile,
 )
 
@@ -175,6 +176,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     motion = motion_training_profile()
     twist_teacher = twist_training_profile("teacher")
     twist_student = twist_training_profile("student")
+    twist2 = twist2_training_profile()
 
     assert all(
         profile.config.num_updates > 0
@@ -185,6 +187,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
             motion,
             twist_teacher,
             twist_student,
+            twist2,
         )
     )
     assert smoke.config.num_envs == 2
@@ -205,6 +208,15 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert twist_teacher.warp.contact_budget_per_env == 32
     assert twist_student.config.num_updates == 200_000
     assert twist_student.config.policy.architecture == "twist_student"
+    assert twist2.config.num_updates == 30_001
+    assert twist2.config.policy.architecture == "twist2"
+    assert twist2.config.normalize_observations
+    assert not twist2.config.normalize_critic_observations
+    assert twist2.config.observation_norm_update_mode == "rollout"
+    assert twist2.config.observation_norm_update_updates == 3_000
+    assert twist2.config.observation_norm_epsilon_mode == "std_offset"
+    assert twist2.sampling.base_distribution == "manifest_weight"
+    assert twist2.sampling.curriculum_max_difficulty == 10.0
 
 
 def test_contact_budget_command_override_is_explicit_and_positive() -> None:

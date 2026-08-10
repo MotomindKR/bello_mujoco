@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from bello_mujoco.training.locomotion import TrainingRunConfig
     from bello_mujoco.training.motion import MotionTrainingRunConfig
     from bello_mujoco.training.twist import TwistTrainingRunConfig
+    from bello_mujoco.training.twist2 import Twist2TrainingRunConfig
 
 T = TypeVar("T")
 ExperimentName = Literal[
@@ -31,6 +32,7 @@ ExperimentName = Literal[
     "motion",
     "twist_teacher",
     "twist_student",
+    "twist2",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -40,6 +42,7 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "motion": Path("profiles/train/motion.yaml"),
     "twist_teacher": Path("profiles/train/twist_teacher.yaml"),
     "twist_student": Path("profiles/train/twist_student.yaml"),
+    "twist2": Path("profiles/train/twist2.yaml"),
 }
 
 
@@ -292,6 +295,25 @@ def twist_training_profile(
             teacher_checkpoint_path.expanduser().resolve()
         )
     return replace(config, **overrides)
+
+
+def twist2_training_profile(
+    *, dataset_index: Path | None = None
+) -> Twist2TrainingRunConfig:
+    from bello_mujoco.training.twist2 import Twist2TrainingRunConfig
+
+    config = structured_config(
+        Twist2TrainingRunConfig,
+        _merged_profile(
+            (
+                _config("train_twist2/default.yaml"),
+                _config("profiles/train/twist2.yaml"),
+            )
+        ),
+    )
+    if dataset_index is None:
+        return config
+    return replace(config, dataset_index=dataset_index.expanduser().resolve())
 
 
 def profile_config_relative_path(name: ExperimentName) -> Path:

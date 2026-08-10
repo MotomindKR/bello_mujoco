@@ -26,8 +26,8 @@ Invoke commands as `uv run <command> field=value`.
 | Command | Purpose |
 | --- | --- |
 | `bello-prepare-assets` | Generate the Bello URDF and MuJoCo models. |
-| `bello-train` | Train smoke, locomotion, hardware-locomotion, motion, or TWIST policies. |
-| `bello-eval` | Evaluate locomotion, render motion tracking, or score a TWIST student. |
+| `bello-train` | Train smoke, locomotion, hardware-locomotion, motion, TWIST, or one-stage TWIST2 policies. |
+| `bello-eval` | Evaluate locomotion, render motion tracking, or score and render TWIST/TWIST2 policies. |
 | `bello-motion` | Import, inspect, validate, and render motion data. |
 | `bello-twist-data` | Validate licensed manifests and build packed TWIST datasets. |
 | `bello-vast-train` | Run a bounded Vast.ai training job. |
@@ -36,7 +36,8 @@ Invoke commands as `uv run <command> field=value`.
 
 Training profiles live under `configs/profiles/train/`; shared task settings
 live under `configs/train/`, `configs/train_motion/`, and
-`configs/train_twist/`. Read the [TWIST guide](docs/twist.md) before supplying
+`configs/train_twist/` or `configs/train_twist2/`. Read the
+[TWIST guide](docs/twist.md) and [TWIST2 guide](docs/twist2.md) before supplying
 licensed datasets.
 
 ## Documentation
@@ -47,6 +48,7 @@ licensed datasets.
 - [Training and evaluation](docs/training_and_evaluation.md)
 - [Motion tracking](docs/motion_tracking.md)
 - [TWIST teacher and student](docs/twist.md)
+- [One-stage TWIST2](docs/twist2.md)
 - [Hardware runner](docs/hardware.md)
 - [Emulator](docs/emulator.md)
 - [Vast.ai training](docs/vast_ai.md)

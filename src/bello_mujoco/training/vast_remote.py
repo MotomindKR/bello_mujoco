@@ -273,7 +273,7 @@ preflight_overrides=(
   num_envs=32
   wandb_enabled=false
 )
-if [[ "$experiment" != twist_* ]]; then
+if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]; then
   preflight_overrides+=(video_enabled=false)
 fi
 

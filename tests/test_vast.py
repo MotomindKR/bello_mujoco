@@ -213,6 +213,12 @@ def test_twist_vast_config_requires_explicit_stage_inputs(tmp_path: Path) -> Non
         validate_config(twist_config(tmp_path, stage="student"))
     with pytest.raises(ValueError, match="only valid for TWIST"):
         validate_config(valid_config(dataset_path=Path("dataset/index.json")))
+    validate_config(
+        valid_config(
+            experiment="twist2",
+            dataset_path=twist_dataset(tmp_path / "twist2_dataset"),
+        )
+    )
 
 
 def test_twist_dataset_selection_is_strict_and_portable(tmp_path: Path) -> None:
@@ -938,7 +944,10 @@ def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
         "true",
     ]
     assert "TF_GPU_ALLOCATOR=cuda_malloc_async" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert 'if [[ "$experiment" != twist_* ]]' in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert (
+        'if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]'
+        in vast_remote.REMOTE_TRAIN_SCRIPT
+    )
     assert 'training_overrides+=("dataset_path=$dataset_path")' in (
         vast_remote.REMOTE_TRAIN_SCRIPT
     )

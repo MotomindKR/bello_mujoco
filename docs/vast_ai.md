@@ -13,12 +13,12 @@ Before rental, the launcher:
 3. verifies the selected profile, `.gitmodules`, pinned `deps/bello-stack`
    gitlink, `.python-version`, `pyproject.toml`, and `uv.lock` in that commit;
 4. verifies any motion archive is repository-tracked in that commit;
-5. validates any local TWIST dataset and typed teacher checkpoint;
+5. validates any local TWIST/TWIST2 dataset and typed teacher checkpoint;
 6. generates a unique timestamped run/lifecycle label;
 7. builds offer queries from the maintained hardware policy.
 
-Motion jobs require an explicit tracked clip. TWIST jobs instead require an
-explicit local schema-3 dataset. A student additionally requires one explicit
+Motion jobs require an explicit tracked clip. TWIST and TWIST2 jobs instead
+require an explicit local schema-3 dataset. A student additionally requires one explicit
 typed teacher checkpoint. No dataset or teacher is selected implicitly.
 
 The default offer policy performs one global search for an RTX 5090 with at
@@ -62,8 +62,8 @@ contents remain outside Git and are copied only to dedicated paths under
 `/workspace`. Interrupted transfers retry with partial-file continuation. A
 remote SHA-256 mismatch prevents training and triggers normal teardown.
 
-TWIST offers are ranked by proximity to Korea (`KR`, `JP`, `TW`, `HK`, then
-`SG`) before marketplace value. After SSH becomes ready, the launcher uploads a
+TWIST and TWIST2 offers are ranked by proximity to Korea (`KR`, `JP`, `TW`,
+`HK`, then `SG`) before marketplace value. After SSH becomes ready, the launcher uploads a
 16 MiB probe and requires at least 5 MiB/s. A slower instance is destroyed and
 the next nearby offer is tried before the multi-gigabyte dataset is transferred.
 These controls can be overridden with `preferred_countries`,
@@ -87,6 +87,17 @@ uv run bello-vast-train \
   experiment=twist_student \
   dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
   teacher_checkpoint_path=/path/to/teacher/final \
+  branch=feature/twist-teacher-student \
+  max_price=1.25 \
+  duration_hours=60
+```
+
+One-stage TWIST2 example:
+
+```bash
+uv run bello-vast-train \
+  experiment=twist2 \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
   branch=feature/twist-teacher-student \
   max_price=1.25 \
   duration_hours=60

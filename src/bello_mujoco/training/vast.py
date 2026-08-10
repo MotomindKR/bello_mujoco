@@ -143,6 +143,7 @@ def validate_config(config: VastTrainConfig) -> None:
         "motion",
         "twist_teacher",
         "twist_student",
+        "twist2",
     }:
         raise ValueError("--experiment is invalid")
     if config.experiment == "motion":
@@ -151,7 +152,7 @@ def validate_config(config: VastTrainConfig) -> None:
         _repository_motion_path(config.motion_path)
     elif config.motion_path is not None:
         raise ValueError("--motion-path is only valid for the motion experiment")
-    if config.experiment in {"twist_teacher", "twist_student"}:
+    if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
         if config.dataset_path is None:
             raise ValueError("--dataset-path is required for TWIST Vast training")
     elif config.dataset_path is not None:
@@ -446,7 +447,7 @@ def _repository_motion_path(value: Path) -> PurePosixPath:
 def _task_name(config: VastTrainConfig) -> str:
     if config.experiment == "motion":
         return "motion-tracking"
-    if config.experiment in {"twist_teacher", "twist_student"}:
+    if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
         return config.experiment.replace("_", "-")
     return "locomotion"
 

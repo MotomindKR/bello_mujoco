@@ -35,6 +35,8 @@ from bello_mujoco.policy import (
 
 LearningRateSchedule = Literal["constant", "linear", "adaptive"]
 AdaptiveKLStatistic = Literal["mean", "max"]
+ObservationNormUpdateMode = Literal["online", "rollout"]
+ObservationNormEpsilonMode = Literal["variance_floor", "std_offset"]
 LOG_RATIO_CLIP = 20.0
 _VALIDATOR_METADATA_KEY = "validator"
 
@@ -66,6 +68,11 @@ def _positive_finite(name: str, value: float) -> None:
 def _optional_positive_finite(name: str, value: float | None) -> None:
     if value is not None:
         _positive_finite(name, value)
+
+
+def _optional_positive_integer(name: str, value: int | None) -> None:
+    if value is not None:
+        _positive_integer(name, value)
 
 
 def _nonnegative_finite(name: str, value: float) -> None:
@@ -171,6 +178,16 @@ class PPOConfig:
     normalize_value: bool = _validated(False, _no_scalar_constraint)
     value_norm_eps: float = _validated(1.0e-8, _positive_finite)
     normalize_observations: bool = _validated(False, _no_scalar_constraint)
+    normalize_critic_observations: bool = _validated(True, _no_scalar_constraint)
+    observation_norm_update_mode: ObservationNormUpdateMode = _validated(
+        "online", _one_of("online", "rollout")
+    )
+    observation_norm_update_updates: int | None = _validated(
+        None, _optional_positive_integer
+    )
+    observation_norm_epsilon_mode: ObservationNormEpsilonMode = _validated(
+        "variance_floor", _one_of("variance_floor", "std_offset")
+    )
     observation_norm_eps: float = _validated(1.0e-5, _positive_finite)
     observation_norm_clip: float = _validated(10.0, _positive_finite)
     rollout_observation_max_abs: float = _validated(1.0e4, _positive_finite)
@@ -377,9 +394,12 @@ def normalize_observation(
 ) -> jax.Array:
     if not config.normalize_observations:
         return observation
-    normalized = (observation - state.mean) / jnp.sqrt(
-        jnp.maximum(state.var, config.observation_norm_eps)
-    )
+    if config.observation_norm_epsilon_mode == "std_offset":
+        denominator = jnp.sqrt(jnp.maximum(state.var, 1.0e-8))
+        denominator = denominator + config.observation_norm_eps
+    else:
+        denominator = jnp.sqrt(jnp.maximum(state.var, config.observation_norm_eps))
+    normalized = (observation - state.mean) / denominator
     clipped = jnp.clip(
         normalized,
         -config.observation_norm_clip,
@@ -389,10 +409,22 @@ def normalize_observation(
     return jnp.where(valid, clipped, observation)
 
 
+def normalize_critic_observation(
+    observation: jax.Array,
+    state: ObservationNormState,
+    config: PPOConfig,
+) -> jax.Array:
+    if not config.normalize_critic_observations:
+        return observation
+    return normalize_observation(observation, state, config)
+
+
 def update_observation_norm_state(
     state: ObservationNormState,
     observation: jax.Array,
     config: PPOConfig,
+    *,
+    max_count: float | None = None,
 ) -> ObservationNormState:
     if not config.normalize_observations:
         return state
@@ -409,11 +441,27 @@ def update_observation_norm_state(
     batch_m2 = batch_var * batch_count
     correction = delta**2 * state.count * batch_count / total_count
     var = (state_m2 + batch_m2 + correction) / total_count
-    return ObservationNormState(
+    updated = ObservationNormState(
         mean=jnp.where(valid, mean, state.mean),
         var=jnp.where(valid, var, state.var),
         count=jnp.where(valid, total_count, state.count),
     )
+    if max_count is None:
+        return updated
+    should_update = state.count < jnp.asarray(max_count, dtype=state.count.dtype)
+    return jax.tree.map(
+        lambda new, old: jnp.where(should_update, new, old), updated, state
+    )
+
+
+def update_critic_observation_norm_state(
+    state: ObservationNormState,
+    observation: jax.Array,
+    config: PPOConfig,
+) -> ObservationNormState:
+    if not config.normalize_critic_observations:
+        return state
+    return update_observation_norm_state(state, observation, config)
 
 
 def value_norm_std(state: ValueNormState, config: PPOConfig) -> jax.Array:
@@ -569,6 +617,7 @@ def ppo_loss(
     distillation: DistillationContext | None = None,
     distillation_weight: jax.Array | float = 0.0,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
+    network_rng = entropy_rng if model.stochastic_actor else None
     log_prob, entropy, value = evaluate_actions(
         model,
         transitions.obs,
@@ -576,6 +625,7 @@ def ppo_loss(
         transitions.critic_obs,
         latent_action=transitions.latent_action,
         entropy_rng=entropy_rng,
+        network_rng=network_rng,
     )
 
     log_ratio = log_prob - transitions.log_prob
@@ -1145,6 +1195,14 @@ def collect_rollout(
         )
     if task_state is None:
         task_state = jnp.zeros((0,), dtype=jnp.float32)
+    observation_norm_max_count = (
+        None
+        if config.observation_norm_update_updates is None
+        else float(
+            config.observation_norm_update_updates * config.num_envs * config.num_steps
+        )
+    )
+    rollout_normalization = config.observation_norm_update_mode == "rollout"
 
     def env_step(
         carry: tuple[
@@ -1170,12 +1228,21 @@ def collect_rollout(
         key, action_key, env_key = jax.random.split(key, 3)
         raw_policy_obs = stacked_observation(last_obs_stack)
         raw_critic_policy_obs = stacked_observation(last_critic_obs_stack)
-        actor_norm = update_observation_norm_state(actor_norm, raw_policy_obs, config)
-        critic_norm = update_observation_norm_state(
+        if rollout_normalization:
+            policy_actor_norm = observation_norm_state
+        else:
+            actor_norm = update_observation_norm_state(
+                actor_norm,
+                raw_policy_obs,
+                config,
+                max_count=observation_norm_max_count,
+            )
+            policy_actor_norm = actor_norm
+        critic_norm = update_critic_observation_norm_state(
             critic_norm, raw_critic_policy_obs, config
         )
-        policy_obs = normalize_observation(raw_policy_obs, actor_norm, config)
-        critic_policy_obs = normalize_observation(
+        policy_obs = normalize_observation(raw_policy_obs, policy_actor_norm, config)
+        critic_policy_obs = normalize_critic_observation(
             raw_critic_policy_obs, critic_norm, config
         )
         action, latent_action, log_prob, value, action_mean = (
@@ -1206,6 +1273,13 @@ def collect_rollout(
         next_critic_obs_stack = update_observation_stack(
             last_critic_obs_stack, next_critic_obs, done
         )
+        if rollout_normalization:
+            actor_norm = update_observation_norm_state(
+                actor_norm,
+                stacked_observation(next_obs_stack),
+                config,
+                max_count=observation_norm_max_count,
+            )
         terminal = info.get("done/terminal", done)
         bootstrap_obs = info.get("bootstrap_observation", next_obs)
         bootstrap_obs = jnp.where(terminal[:, None], next_obs, bootstrap_obs)
@@ -1222,9 +1296,9 @@ def collect_rollout(
         _, _, bootstrap_value = apply_policy(
             policy,
             normalize_observation(
-                stacked_observation(bootstrap_obs_stack), actor_norm, config
+                stacked_observation(bootstrap_obs_stack), policy_actor_norm, config
             ),
-            normalize_observation(
+            normalize_critic_observation(
                 stacked_observation(bootstrap_critic_obs_stack), critic_norm, config
             ),
         )
@@ -1401,7 +1475,7 @@ def update_runner_state(
         normalize_observation(
             stacked_observation(obs_stack), observation_norm_state, config
         ),
-        normalize_observation(
+        normalize_critic_observation(
             stacked_observation(critic_obs_stack),
             critic_observation_norm_state,
             config,
@@ -1586,12 +1660,13 @@ def validate_ppo_config(config: PPOConfig) -> None:
         "mlp",
         "twist_teacher",
         "twist_student",
+        "twist2",
     }:
         raise ValueError(
-            "policy.architecture must be 'mlp', 'twist_teacher', or "
-            f"'twist_student', got {config.policy.architecture!r}"
+            "policy.architecture must be 'mlp', 'twist_teacher', "
+            f"'twist_student', or 'twist2', got {config.policy.architecture!r}"
         )
-    if config.policy.architecture.startswith("twist_"):
+    if config.policy.architecture != "mlp":
         if config.policy.hidden_dims != (512, 512, 256, 128):
             raise ValueError("TWIST policy.hidden_dims must be [512, 512, 256, 128]")
         if config.policy.activation != "swish":

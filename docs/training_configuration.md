@@ -12,12 +12,14 @@ the source of maintained experiment overrides:
 - [Locomotion defaults](../configs/train/default.yaml)
 - [Motion defaults](../configs/train_motion/default.yaml)
 - [TWIST defaults](../configs/train_twist/default.yaml)
+- [TWIST2 defaults](../configs/train_twist2/default.yaml)
 - [Smoke profile](../configs/profiles/train/smoke.yaml)
 - [Locomotion profile](../configs/profiles/train/locomotion.yaml)
 - [Hardware-locomotion profile](../configs/profiles/train/hardware_locomotion.yaml)
 - [Motion profile](../configs/profiles/train/motion.yaml)
 - [TWIST teacher profile](../configs/profiles/train/twist_teacher.yaml)
 - [TWIST student profile](../configs/profiles/train/twist_student.yaml)
+- [TWIST2 profile](../configs/profiles/train/twist2.yaml)
 
 ## Resolution and ownership
 
@@ -31,6 +33,7 @@ Do not add a second recipe in a script or command wrapper. Change:
 - `configs/train/default.yaml` for shared locomotion contracts;
 - `configs/train_motion/default.yaml` for shared motion contracts;
 - `configs/train_twist/default.yaml` for shared TWIST contracts;
+- `configs/train_twist2/default.yaml` for the one-stage TWIST2 contract;
 - `configs/profiles/train/*.yaml` for maintained experiment numerics;
 - Python dataclasses only when the configuration schema or validation changes.
 
@@ -62,8 +65,12 @@ The `config` section is shared by locomotion and motion tracking.
 | `max_grad_norm` | `1.0` | Positive optimizer gradient clipping norm. |
 | `normalize_value` | `false` | Track return moments and train the critic in normalized value space. |
 | `value_norm_eps` | `1e-8` | Positive numerical floor for value normalization. |
-| `normalize_observations` | `false` | Track and apply observation moments before the actor and critic. |
-| `observation_norm_eps` | `1e-5` | Positive observation-normalization variance floor. |
+| `normalize_observations` | `false` | Track and apply actor observation moments; critic behavior is controlled separately. |
+| `normalize_critic_observations` | `true` | Apply and update a separate critic observation normalizer when observation normalization is enabled. |
+| `observation_norm_update_mode` | `online` | `online` applies newly accumulated moments immediately; `rollout` holds them fixed until the next rollout. |
+| `observation_norm_update_updates` | `null` | Optional positive update count after which actor observation moments freeze. |
+| `observation_norm_epsilon_mode` | `variance_floor` | `variance_floor` uses `sqrt(max(var, eps))`; `std_offset` uses `sqrt(max(var, 1e-8)) + eps`. |
+| `observation_norm_eps` | `1e-5` | Positive epsilon interpreted by `observation_norm_epsilon_mode`. |
 | `observation_norm_clip` | `10` | Positive absolute clip after observation normalization. |
 | `rollout_observation_max_abs` | `10,000` | Fail an update when rollout observations exceed this finite bound. |
 | `rollout_reward_max_abs` | `1,000` | Fail an update when rewards exceed this bound. |
@@ -402,6 +409,30 @@ reference plus privileged physical and randomization state. Student PPO adds
 the frozen-teacher `KL(student || teacher)` schedule defined in the [TWIST
 guide](twist.md).
 
+## TWIST2: `configs/train_twist2`
+
+TWIST2 is a separate one-stage PPO task, not a teacher/student mode and not a
+fallback to either TWIST environment. Its policy architecture is exactly
+`twist2`, it accepts no teacher checkpoint, and its typed checkpoints cannot be
+resumed or evaluated through another task. The maintained profile follows the
+pinned public release for 4,096 environments, 24 rollout steps, five epochs,
+four minibatches, learning rate `2e-4`, desired KL `0.008`, entropy `0.005`,
+gamma `0.99`, GAE lambda `0.95`, clip ratio `0.2`, 30,001 updates, a Gaussian
+policy, actor observation moments collected between rollouts for the first
+3,000 updates, and an explicitly raw privileged critic input.
+
+`twist2_env` owns its 500 Hz simulation, 50 Hz policy, ten-second episodes,
+current-command/history actor observation, future-reference privileged critic,
+reward, termination, noise, action delay, four-second root-velocity pushes,
+and fixed per-world model randomization. The public release declares but does
+not execute gravity randomization, so the maintained environment leaves it
+inactive. `sampling` uses unit manifest weights plus the released
+per-clip difficulty curriculum. `require_released_dataset=false` accepts another
+compatible packed corpus while recording its composition audit in W&B and the
+checkpoint; setting it to `true` requires the training split to contain the
+exact released 19,426-clip source composition with unit weights. See the
+[TWIST2 guide](twist2.md) for the observation, data-split, and parity contracts.
+
 ## Checkpoints: `checkpoint_config`
 
 | Field | Meaning |
@@ -484,6 +515,7 @@ TWIST uses 32 contacts per environment and logs
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |
+| `twist2` | Pinned one-stage TWIST2 PPO with current command, ten-frame history, privileged future-reference critic, and released clip curriculum. |
 
 Headline resolved PPO values are:
 
@@ -495,6 +527,7 @@ Headline resolved PPO values are:
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
+| `twist2` | 2,949,218,304 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | three released actor encoders + 512-512-256-128 SiLU + LN |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included

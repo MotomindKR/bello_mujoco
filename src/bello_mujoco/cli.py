@@ -19,6 +19,7 @@ from bello_mujoco.configuration import (
     config_path,
     locomotion_training_profile,
     motion_training_profile,
+    twist2_training_profile,
     twist_training_profile,
 )
 
@@ -53,10 +54,11 @@ class TrainCommandConfig:
 
 @dataclass(frozen=True)
 class EvalCommandConfig:
-    task: Literal["locomotion", "motion", "twist_student"]
+    task: Literal["locomotion", "motion", "twist_student", "twist2"]
     checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
     output_path: Path
+    video_path: Path | None
     command: tuple[float, float, float]
     steps: int | None
     stop_on_done: bool
@@ -106,6 +108,7 @@ class VastTrainCommandConfig:
         "motion",
         "twist_teacher",
         "twist_student",
+        "twist2",
     ]
     motion_path: Path | None
     dataset_path: Path | None
@@ -193,6 +196,25 @@ def train_entrypoint() -> None:
 )
 def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
+    if command.experiment == "twist2":
+        _reject_explicit_fields(
+            ("motion_path", "teacher_checkpoint_path", "video_enabled"),
+            context="experiment=twist2",
+        )
+        from bello_mujoco.training.twist2 import run_training as run_twist2_training
+
+        run_config = twist2_training_profile(dataset_index=command.dataset_path)
+        run_config = replace(
+            run_config,
+            config=_ppo_overrides(run_config.config, command),
+            warp=_warp_overrides(run_config.warp, command),
+            checkpoint_config=_checkpoint_overrides(
+                run_config.checkpoint_config, command
+            ),
+            wandb_config=_wandb_overrides(run_config.wandb_config, command),
+        )
+        run_twist2_training(run_config)
+        return
     if command.experiment in {"twist_teacher", "twist_student"}:
         _reject_explicit_fields(
             ("motion_path", "video_enabled"),
@@ -275,7 +297,7 @@ def _train_hydra(config: DictConfig) -> None:
 
 
 def eval_entrypoint() -> None:
-    _expand_path_overrides(("checkpoint_path=", "output_path="))
+    _expand_path_overrides(("checkpoint_path=", "output_path=", "video_path="))
     _eval_hydra()
 
 
@@ -287,6 +309,42 @@ def eval_entrypoint() -> None:
 def _eval_hydra(config: DictConfig) -> None:
     command = command_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
+    if command.task == "twist2":
+        _reject_explicit_fields(
+            (
+                "command",
+                "stochastic_actions",
+                "action_seed",
+                "gamepad_enabled",
+                "stop_on_done",
+            ),
+            context="task=twist2",
+        )
+        from bello_mujoco.evaluation.twist2 import (
+            Twist2EvaluationConfig,
+            evaluate_twist2_checkpoint,
+        )
+
+        report = evaluate_twist2_checkpoint(
+            checkpoint,
+            Twist2EvaluationConfig(
+                output_path=(
+                    command.output_path
+                    if "output_path" in _explicit_override_fields()
+                    else Path("outputs/evaluation/twist2.json")
+                ),
+                video_path=(
+                    command.video_path
+                    if "video_path" in _explicit_override_fields()
+                    else Path("outputs/evaluation/twist2.mp4")
+                ),
+                stop_on_terminal=True,
+                video_max_steps=_coalesce(command.steps, 500),
+            ),
+            allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
     if command.task == "twist_student":
         _reject_explicit_fields(
             (
@@ -295,6 +353,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 "stochastic_actions",
                 "action_seed",
                 "gamepad_enabled",
+                "video_path",
             ),
             context="task=twist_student",
         )
@@ -319,7 +378,13 @@ def _eval_hydra(config: DictConfig) -> None:
         return
     if command.task == "motion":
         _reject_explicit_fields(
-            ("command", "stochastic_actions", "action_seed", "gamepad_enabled"),
+            (
+                "command",
+                "stochastic_actions",
+                "action_seed",
+                "gamepad_enabled",
+                "video_path",
+            ),
             context="task=motion",
         )
         from bello_mujoco.evaluation.motion import render_checkpoint_with_stats
@@ -333,7 +398,7 @@ def _eval_hydra(config: DictConfig) -> None:
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
-    _reject_explicit_fields(("output_path",), context="task=locomotion")
+    _reject_explicit_fields(("output_path", "video_path"), context="task=locomotion")
     if command.gamepad_enabled:
         _reject_explicit_fields(("command",), context="gamepad_enabled=true")
     if not command.stochastic_actions:
@@ -635,7 +700,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("motion_path",),
             context=f"experiment={command.experiment}",
         )
-    if command.experiment in {"twist_teacher", "twist_student"}:
+    if command.experiment in {"twist_teacher", "twist_student", "twist2"}:
         if command.dataset_path is None:
             raise ValueError("dataset_path is required for Vast TWIST training")
     else:

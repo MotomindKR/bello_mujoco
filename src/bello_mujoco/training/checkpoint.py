@@ -40,7 +40,13 @@ from bello_mujoco.envs.twist import (
     TwistSamplingConfig,
     TwistSimulationConfig,
 )
+from bello_mujoco.envs.twist2 import (
+    Twist2EnvConfig,
+    Twist2ObservationContract,
+    Twist2ParityContract,
+)
 from bello_mujoco.motion.clip import MOTION_FORMAT_VERSION, MotionClip
+from bello_mujoco.motion.twist2_dataset import Twist2DatasetAudit
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.training.ppo import (
@@ -210,6 +216,23 @@ class TwistStudentCheckpointMetadata(_CheckpointMetadataBase):
     critic_observation_norm: ObservationNormMetadata | None = None
 
 
+@dataclass(frozen=True)
+class Twist2CheckpointMetadata(_CheckpointMetadataBase):
+    simulation: TwistSimulationConfig
+    twist2_env: Twist2EnvConfig
+    sampling: TwistSamplingConfig
+    observation_contract: Twist2ObservationContract
+    parity_contract: Twist2ParityContract
+    dataset: TwistDatasetContract
+    dataset_audit: Twist2DatasetAudit
+    robot_fingerprint: str
+    source_revision: str
+    task: Literal["twist2"] = "twist2"
+    value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
+
+
 TwistCheckpointMetadata: TypeAlias = (
     TwistTeacherCheckpointMetadata | TwistStudentCheckpointMetadata
 )
@@ -218,6 +241,7 @@ CheckpointMetadata: TypeAlias = (
     | MotionCheckpointMetadata
     | TwistTeacherCheckpointMetadata
     | TwistStudentCheckpointMetadata
+    | Twist2CheckpointMetadata
 )
 
 
@@ -700,10 +724,12 @@ def _metadata_from_dict(
         metadata_type = TwistTeacherCheckpointMetadata
     elif task == "twist_student":
         metadata_type = TwistStudentCheckpointMetadata
+    elif task == "twist2":
+        metadata_type = Twist2CheckpointMetadata
     else:
         raise ValueError(
             f"{path}.task must be 'locomotion', 'motion_tracking', "
-            f"'twist_teacher', or 'twist_student', got {task!r}"
+            f"'twist_teacher', 'twist_student', or 'twist2', got {task!r}"
         )
     return dataclass_from_dict(
         metadata_type,
@@ -790,6 +816,8 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
         metadata, (TwistTeacherCheckpointMetadata, TwistStudentCheckpointMetadata)
     ):
         _validate_twist_metadata(metadata)
+    elif isinstance(metadata, Twist2CheckpointMetadata):
+        _validate_twist2_metadata(metadata)
     elif not isinstance(metadata, LocomotionCheckpointMetadata):
         raise TypeError(f"unsupported checkpoint metadata type {type(metadata)!r}")
     stack_size = metadata.ppo.policy.obs_stack_size
@@ -933,6 +961,73 @@ def _validate_twist_metadata(metadata: TwistCheckpointMetadata) -> None:
     )
 
 
+def _validate_twist2_metadata(metadata: Twist2CheckpointMetadata) -> None:
+    for name, value in (
+        ("dataset_fingerprint", metadata.dataset.dataset_fingerprint),
+        ("dataset.robot_fingerprint", metadata.dataset.robot_fingerprint),
+        ("robot_fingerprint", metadata.robot_fingerprint),
+    ):
+        _validated_fingerprint(value, f"metadata.{name}")
+    if metadata.dataset.robot_fingerprint != metadata.robot_fingerprint:
+        raise ValueError("TWIST2 dataset and checkpoint robot fingerprints differ")
+    if not re.fullmatch(r"[0-9a-f]{40}", metadata.dataset.gmr_revision):
+        raise ValueError("TWIST2 dataset GMR revision must be a 40-character commit")
+    if not re.fullmatch(r"[0-9a-f]{40}", metadata.source_revision):
+        raise ValueError("TWIST2 source revision must be a 40-character commit")
+    if metadata.dataset.schema_version <= 0:
+        raise ValueError("TWIST2 dataset schema version must be positive")
+    if metadata.dataset.joint_names != metadata.action_layout.names:
+        raise ValueError("TWIST2 dataset joint order does not match checkpoint actions")
+    if metadata.observation_contract.joint_names != metadata.action_layout.names:
+        raise ValueError("TWIST2 observation joint order does not match actions")
+    missing = set(metadata.observation_contract.key_body_names) - set(
+        metadata.dataset.body_names
+    )
+    if missing:
+        raise ValueError(f"TWIST2 dataset is missing key bodies: {sorted(missing)}")
+    if metadata.ppo.policy.architecture != "twist2":
+        raise ValueError("TWIST2 checkpoint requires policy architecture 'twist2'")
+    if metadata.actor_observation_layout != metadata.observation_contract.actor_layout:
+        raise ValueError("TWIST2 actor observation layout differs from its contract")
+    if (
+        metadata.critic_observation_layout
+        != metadata.observation_contract.critic_layout
+    ):
+        raise ValueError("TWIST2 critic observation layout differs from its contract")
+    if metadata.parity_contract != Twist2ParityContract():
+        raise ValueError("TWIST2 parity contract differs from the pinned release")
+    normalization = (
+        metadata.value_norm,
+        metadata.observation_norm,
+        metadata.critic_observation_norm,
+    )
+    if any(value is None for value in normalization):
+        raise ValueError("TWIST2 checkpoint normalization snapshots are required")
+    assert metadata.value_norm is not None
+    assert metadata.observation_norm is not None
+    assert metadata.critic_observation_norm is not None
+    _validate_running_moments(
+        (metadata.value_norm.mean,),
+        (metadata.value_norm.var,),
+        metadata.value_norm.count,
+        name="TWIST2 value normalization",
+    )
+    _validate_running_moments(
+        metadata.observation_norm.mean,
+        metadata.observation_norm.var,
+        metadata.observation_norm.count,
+        name="TWIST2 actor observation normalization",
+        expected_size=metadata.obs_size,
+    )
+    _validate_running_moments(
+        metadata.critic_observation_norm.mean,
+        metadata.critic_observation_norm.var,
+        metadata.critic_observation_norm.count,
+        name="TWIST2 critic observation normalization",
+        expected_size=metadata.critic_obs_size,
+    )
+
+
 def _validate_running_moments(
     mean: tuple[float, ...],
     var: tuple[float, ...],
@@ -962,6 +1057,7 @@ def _validate_restored_normalization_state(
             MotionCheckpointMetadata,
             TwistTeacherCheckpointMetadata,
             TwistStudentCheckpointMetadata,
+            Twist2CheckpointMetadata,
         ),
     ):
         return
@@ -1191,8 +1287,9 @@ def observation_norm_metadata(state: ObservationNormState) -> ObservationNormMet
 
 
 def twist_metadata_with_runner_state(
-    metadata: TwistCheckpointMetadata, runner_state: RunnerState
-) -> TwistCheckpointMetadata:
+    metadata: TwistCheckpointMetadata | Twist2CheckpointMetadata,
+    runner_state: RunnerState,
+) -> TwistCheckpointMetadata | Twist2CheckpointMetadata:
     """Attach normalization state to a typed TWIST checkpoint."""
 
     return replace(

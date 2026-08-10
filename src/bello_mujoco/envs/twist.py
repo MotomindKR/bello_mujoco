@@ -934,12 +934,15 @@ class BelloTwistEnv:
         )
         if self.stage == "student":
             frame = self._student_frame(stepped, rng)
-            stepped = stepped.replace(
-                observation_history=jnp.concatenate(
-                    (state.observation_history[1:], frame[None, :]), axis=0
-                )
+            stored_history, observation_history = self._student_history_transition(
+                state, stepped, frame
             )
-        observation = self.observation(stepped, rng)
+            stepped = stepped.replace(observation_history=stored_history)
+        else:
+            observation_history = stepped.observation_history
+        observation = self.observation(
+            stepped.replace(observation_history=observation_history), rng
+        )
         info = self._bank_info(stepped, observation, reward_info, done_flags)
         return (
             stepped,
@@ -957,7 +960,7 @@ class BelloTwistEnv:
         delay_key = push_key = reset_key = obs_key = rng
         if rng is not None:
             delay_key, push_key, reset_key, obs_key = jax.random.split(rng, 4)
-        delay = self._sample_action_delay(delay_key)
+        delay = self._sample_action_delay_batch(state, delay_key)
         action_history = jnp.concatenate(
             (state.action_history[:, 1:], action[:, None, :]), axis=1
         )
@@ -984,6 +987,7 @@ class BelloTwistEnv:
             lambda _, value: mjx.step(self.model.mjx_model, value),
             data,
         )
+        data = self._apply_post_step_disturbances_batch(data, state, push_key)
         motion_state = state.motion_state.replace(
             data=data,
             last_action=applied,
@@ -1032,11 +1036,8 @@ class BelloTwistEnv:
         references = jax.vmap(
             lambda current, clip: self._aligned_reference(current, clip, 0)
         )(motion_state, state.clip_index)
-        torso_contacts = self._body_has_forceful_contact_batch(
-            motion_state,
-            self._body_id("torso_link"),
-            self.config.done.torso_contact_force,
-            batch_size,
+        torso_contacts = self._termination_torso_contacts_batch(
+            motion_state, batch_size
         )
         done_flags = jax.vmap(
             lambda current, clip, reference, torso_contact: (
@@ -1086,12 +1087,15 @@ class BelloTwistEnv:
             else:
                 keys = jax.random.split(obs_key, batch_size)
                 frames = jax.vmap(self._student_frame)(stepped, keys)
-            stepped = stepped.replace(
-                observation_history=jnp.concatenate(
-                    (state.observation_history[:, 1:], frames[:, None, :]), axis=1
-                )
+            stored_history, observation_history = (
+                self._student_history_transition_batch(state, stepped, frames)
             )
-        stepped_observation = self.observation_batch(stepped, obs_key)
+            stepped = stepped.replace(observation_history=stored_history)
+        else:
+            observation_history = stepped.observation_history
+        stepped_observation = self.observation_batch(
+            stepped.replace(observation_history=observation_history), obs_key
+        )
         info = self._bank_info(stepped, stepped_observation, reward_info, done_flags)
         info["push/applied"] = push_applied.astype(jnp.float32)
         reset_state, reset_observation = self.reset_batch(batch_size, reset_key)
@@ -1533,6 +1537,36 @@ class BelloTwistEnv:
             return jnp.asarray(low, dtype=jnp.int32)
         return jax.random.randint(rng, (), low, high + 1, dtype=jnp.int32)
 
+    def _sample_action_delay_batch(
+        self, state: TwistState, rng: jax.Array | None
+    ) -> jax.Array:
+        del state
+        return self._sample_action_delay(rng)
+
+    def _student_history_transition(
+        self,
+        previous: TwistState,
+        current: TwistState,
+        frame: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        del current
+        history = jnp.concatenate(
+            (previous.observation_history[1:], frame[None, :]), axis=0
+        )
+        return history, history
+
+    def _student_history_transition_batch(
+        self,
+        previous: TwistState,
+        current: TwistState,
+        frames: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        del current
+        history = jnp.concatenate(
+            (previous.observation_history[:, 1:], frames[:, None, :]), axis=1
+        )
+        return history, history
+
     def _sample_domain_randomization(self) -> jax.Array:
         return jnp.asarray(self.model.physical_randomization[0])
 
@@ -1621,6 +1655,8 @@ class BelloTwistEnv:
         contact_world = jnp.asarray(impl.contact__worldid, dtype=jnp.int32)
         address = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)[:, 0]
         forces = jnp.asarray(impl.efc__force, dtype=jnp.float32)
+        if forces.ndim == 1:
+            forces = forces[None, :]
         force_world = jnp.clip(contact_world, 0, forces.shape[0] - 1)
         force_address = jnp.clip(address, 0, forces.shape[1] - 1)
         normal = jnp.where(
@@ -1662,6 +1698,18 @@ class BelloTwistEnv:
         )
         maximum = _batched_contact_max(safe_world, values, batch_size)
         return maximum > threshold
+
+    def _termination_torso_contacts_batch(self, state, batch_size: int) -> jax.Array:
+        return self._body_has_forceful_contact_batch(
+            state,
+            self._body_id("torso_link"),
+            self.config.done.torso_contact_force,
+            batch_size,
+        )
+
+    def _apply_post_step_disturbances_batch(self, data, state, rng):
+        del state, rng
+        return data
 
     def _body_linear_velocity(self, state, body_ids):
         cvel = state.data.cvel[body_ids]
