@@ -50,7 +50,10 @@ safety fix is not inherited automatically by a historical checkpoint.
    lease;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite complete state frames;
-8. evaluates one preview policy step and reports the resolved configuration.
+8. evaluates a live preview step for locomotion, or a standing-policy preview
+   for motion, and reports the resolved configuration. Motion-reference
+   alignment and termination checks begin only when transitioning from the
+   active standing policy into motion tracking.
 
 No motor target is sent in this mode.
 

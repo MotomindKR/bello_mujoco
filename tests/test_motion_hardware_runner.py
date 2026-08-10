@@ -334,17 +334,6 @@ def test_read_only_preflight_never_acquires_control(
 ) -> None:
     coordinates = ("left", "right")
     hardware = hardware_preflight_factory(coordinates, (2.0, 2.0))
-    preview = motion_hardware.HardwareMotionStep(
-        action=np.zeros(2),
-        raw_action=np.zeros(2),
-        physical_target=np.zeros(2),
-        observation=np.zeros(4),
-        policy_observation=np.zeros(4),
-        reference_time=0.0,
-        anchor_position_error=0.0,
-        anchor_orientation_error=0.0,
-        action_clipped=False,
-    )
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
         coordinate_index={"left": 0, "right": 1},
@@ -355,8 +344,12 @@ def test_read_only_preflight_never_acquires_control(
         control_timestep=0.02,
         start_time=0.0,
         precompile=lambda: None,
-        initialize_alignment=lambda _pose: None,
-        step=lambda _frame, _pose, reference_time: preview,
+        initialize_alignment=lambda _pose: pytest.fail(
+            "motion alignment must wait until after standing"
+        ),
+        step=lambda *_args, **_kwargs: pytest.fail(
+            "motion termination must wait until after standing"
+        ),
         reset=lambda: None,
     )
     standing_preview = SimpleNamespace(action=np.zeros(2))
