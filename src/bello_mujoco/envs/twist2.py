@@ -809,8 +809,9 @@ class BelloTwist2Env(BelloTwistEnv):
         world_id: jax.Array | int,
         *,
         torso_contact: jax.Array | None = None,
+        tracking_state: TwistState | None = None,
     ) -> dict[str, jax.Array]:
-        del world_id, torso_contact
+        del world_id, torso_contact, tracking_state
         cfg = self.config.done
         height = jnp.abs(state.data.qpos[2] - reference.qpos[2]) > cfg.root_height_error
         orientation = jnp.any(

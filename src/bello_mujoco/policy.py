@@ -4,15 +4,27 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
 import math
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 if TYPE_CHECKING:
     from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
+
+from bello_mujoco.sonic_policy import (
+    SONIC_ACTOR_OBSERVATION_SIZE,
+    SONIC_BELLO_PROPRIO_SIZE,
+    SONIC_SMPL_INPUT_SIZE,
+    SONIC_TOKEN_FLAT_SIZE,
+    SonicDecoderInitialization,
+    SonicReleaseWeights,
+    sonic_fsq,
+)
 
 LOG_2PI = math.log(2.0 * math.pi)
 
@@ -31,7 +43,9 @@ class ActorCriticConfig:
     obs_stack_size: int = 10
     action_distribution: Literal["gaussian", "tanh_gaussian"] = "tanh_gaussian"
     action_limit: float = 1.0
-    architecture: Literal["mlp", "twist_teacher", "twist_student", "twist2"] = "mlp"
+    architecture: Literal[
+        "mlp", "twist_teacher", "twist_student", "twist2", "sonic"
+    ] = "mlp"
     layer_norm_final_hidden: bool = False
 
 
@@ -84,6 +98,8 @@ class ActorCritic(eqx.Module):
         config: ActorCriticConfig = ActorCriticConfig(),
         *,
         critic_obs_size: int | None = None,
+        sonic_release: SonicReleaseWeights | None = None,
+        sonic_initialization: SonicDecoderInitialization | None = None,
         key: jax.Array,
     ):
         if config.action_distribution not in {"gaussian", "tanh_gaussian"}:
@@ -136,9 +152,42 @@ class ActorCritic(eqx.Module):
                 config.hidden_dims,
                 key=critic_key,
             )
+        elif config.architecture == "sonic":
+            if sonic_release is None or sonic_initialization is None:
+                raise ValueError(
+                    "SONIC policy construction requires exported release weights "
+                    "and a Bello decoder initialization"
+                )
+            if obs_size != SONIC_ACTOR_OBSERVATION_SIZE:
+                raise ValueError(
+                    f"SONIC actor expected {SONIC_ACTOR_OBSERVATION_SIZE} "
+                    f"observations, got {obs_size}"
+                )
+            if action_size != 25:
+                raise ValueError(
+                    f"SONIC Bello actor requires 25 actions, got {action_size}"
+                )
+            self.actor = SonicActor(sonic_release, sonic_initialization)
+            self.critic = make_mlp(
+                obs_size=critic_obs_size,
+                output_size=1,
+                config=config,
+                activation=activation_fn,
+                key=critic_key,
+            )
         else:
             raise ValueError(f"unsupported policy architecture {config.architecture!r}")
-        self.log_std = jnp.full((action_size,), config.init_log_std, dtype=jnp.float32)
+        if config.architecture == "sonic":
+            assert sonic_initialization is not None
+            self.log_std = jnp.clip(
+                jnp.log(jnp.asarray(sonic_initialization.output_std)),
+                config.min_log_std,
+                config.max_log_std,
+            )
+        else:
+            self.log_std = jnp.full(
+                (action_size,), config.init_log_std, dtype=jnp.float32
+            )
         self.min_log_std = config.min_log_std
         self.max_log_std = config.max_log_std
         self.action_distribution = config.action_distribution
@@ -168,10 +217,92 @@ def init_actor_critic(
     config: ActorCriticConfig = ActorCriticConfig(),
     *,
     critic_obs_size: int | None = None,
+    sonic_release: SonicReleaseWeights | None = None,
+    sonic_initialization: SonicDecoderInitialization | None = None,
 ) -> ActorCritic:
     return ActorCritic(
-        obs_size, action_size, config, critic_obs_size=critic_obs_size, key=rng
+        obs_size,
+        action_size,
+        config,
+        critic_obs_size=critic_obs_size,
+        sonic_release=sonic_release,
+        sonic_initialization=sonic_initialization,
+        key=rng,
     )
+
+
+def sonic_frozen_parameter_hashes(policy: ActorCritic) -> dict[str, str]:
+    """Return content hashes for every array outside SONIC's trainable edges."""
+
+    if not isinstance(policy.actor, SonicActor):
+        raise TypeError("frozen SONIC hashes require a SONIC actor")
+    arrays = {
+        **{
+            f"smpl_encoder_weight_{index}": value
+            for index, value in enumerate(policy.actor.smpl_encoder.weights)
+        },
+        **{
+            f"smpl_encoder_bias_{index}": value
+            for index, value in enumerate(policy.actor.smpl_encoder.biases)
+        },
+        "decoder_token_projection": policy.actor.decoder.token_projection_weight,
+        **{
+            f"decoder_middle_weight_{index}": value
+            for index, value in enumerate(policy.actor.decoder.middle_weights)
+        },
+        **{
+            f"decoder_middle_bias_{index}": value
+            for index, value in enumerate(policy.actor.decoder.middle_biases)
+        },
+    }
+    result = {}
+    for name, array in arrays.items():
+        value = np.ascontiguousarray(jax.device_get(array))
+        digest = hashlib.sha256()
+        digest.update(str(value.dtype).encode("ascii") + b"\0")
+        digest.update(np.asarray(value.shape, dtype=np.int64).tobytes())
+        digest.update(value.tobytes())
+        result[name] = digest.hexdigest()
+    return result
+
+
+def policy_trainable_filter(policy: ActorCritic):
+    """Return the optimizer filter, structurally excluding SONIC's frozen core."""
+
+    specification = jax.tree_util.tree_map(eqx.is_array, policy)
+    if not isinstance(policy.actor, SonicActor):
+        return specification
+    specification = eqx.tree_at(
+        lambda value: value.actor.smpl_encoder.weights,
+        specification,
+        tuple(False for _ in policy.actor.smpl_encoder.weights),
+    )
+    specification = eqx.tree_at(
+        lambda value: value.actor.smpl_encoder.biases,
+        specification,
+        tuple(False for _ in policy.actor.smpl_encoder.biases),
+    )
+    specification = eqx.tree_at(
+        lambda value: value.actor.decoder.token_projection_weight,
+        specification,
+        False,
+    )
+    specification = eqx.tree_at(
+        lambda value: value.actor.decoder.middle_weights,
+        specification,
+        tuple(False for _ in policy.actor.decoder.middle_weights),
+    )
+    return eqx.tree_at(
+        lambda value: value.actor.decoder.middle_biases,
+        specification,
+        tuple(False for _ in policy.actor.decoder.middle_biases),
+    )
+
+
+def partition_policy_parameters(policy: ActorCritic):
+    """Partition an actor-critic using its architecture-specific freeze contract."""
+
+    return eqx.partition(policy, policy_trainable_filter(policy))
 
 
 def make_mlp(
@@ -212,6 +343,123 @@ def _xavier_linear(
     if layer.bias is not None:
         layer = eqx.tree_at(lambda value: value.bias, layer, jnp.zeros_like(layer.bias))
     return layer
+
+
+class SonicFrozenSmplEncoder(eqx.Module):
+    """The released SMPL encoder; all arrays are explicit stop-gradient leaves."""
+
+    weights: tuple[jax.Array, ...]
+    biases: tuple[jax.Array, ...]
+
+    def __init__(self, release: SonicReleaseWeights):
+        self.weights = tuple(
+            jnp.asarray(value) for value in release.smpl_encoder_weights
+        )
+        self.biases = tuple(jnp.asarray(value) for value in release.smpl_encoder_biases)
+
+    def __call__(self, value: jax.Array) -> jax.Array:
+        for index, (weight, bias) in enumerate(
+            zip(self.weights, self.biases, strict=True)
+        ):
+            value = jnp.matmul(
+                value,
+                jax.lax.stop_gradient(weight).T,
+                precision=jax.lax.Precision.HIGHEST,
+            ) + jax.lax.stop_gradient(bias)
+            if index != len(self.weights) - 1:
+                value = jax.nn.silu(value)
+        return value
+
+
+class SonicEdgeDecoder(eqx.Module):
+    """Frozen SONIC core with trainable Bello input/output edge projections."""
+
+    token_projection_weight: jax.Array
+    proprioception_projection_weight: jax.Array
+    first_bias: jax.Array
+    middle_weights: tuple[jax.Array, ...]
+    middle_biases: tuple[jax.Array, ...]
+    output_weight: jax.Array
+    output_bias: jax.Array
+
+    def __init__(self, initialization: SonicDecoderInitialization):
+        self.token_projection_weight = jnp.asarray(
+            initialization.token_projection_weight
+        )
+        self.proprioception_projection_weight = jnp.asarray(
+            initialization.proprioception_projection_weight
+        )
+        self.first_bias = jnp.asarray(initialization.first_bias)
+        self.middle_weights = tuple(
+            jnp.asarray(value) for value in initialization.middle_weights
+        )
+        self.middle_biases = tuple(
+            jnp.asarray(value) for value in initialization.middle_biases
+        )
+        self.output_weight = jnp.asarray(initialization.output_weight)
+        self.output_bias = jnp.asarray(initialization.output_bias)
+
+    def __call__(self, tokens: jax.Array, proprioception: jax.Array) -> jax.Array:
+        value = (
+            jnp.matmul(
+                tokens,
+                jax.lax.stop_gradient(self.token_projection_weight).T,
+                precision=jax.lax.Precision.HIGHEST,
+            )
+            + jnp.matmul(
+                proprioception,
+                self.proprioception_projection_weight.T,
+                precision=jax.lax.Precision.HIGHEST,
+            )
+            + self.first_bias
+        )
+        value = jax.nn.silu(value)
+        for weight, bias in zip(self.middle_weights, self.middle_biases, strict=True):
+            value = jax.nn.silu(
+                jnp.matmul(
+                    value,
+                    jax.lax.stop_gradient(weight).T,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                + jax.lax.stop_gradient(bias)
+            )
+        return (
+            jnp.matmul(
+                value,
+                self.output_weight.T,
+                precision=jax.lax.Precision.HIGHEST,
+            )
+            + self.output_bias
+        )
+
+
+class SonicActor(eqx.Module):
+    """Online SMPL encoder and strict edge-only Bello SONIC controller."""
+
+    smpl_encoder: SonicFrozenSmplEncoder
+    decoder: SonicEdgeDecoder
+
+    def __init__(
+        self,
+        release: SonicReleaseWeights,
+        initialization: SonicDecoderInitialization,
+    ):
+        self.smpl_encoder = SonicFrozenSmplEncoder(release)
+        self.decoder = SonicEdgeDecoder(initialization)
+
+    def __call__(self, observation: jax.Array) -> jax.Array:
+        if observation.shape[-1] != SONIC_ACTOR_OBSERVATION_SIZE:
+            raise ValueError(
+                f"SONIC observation must have {SONIC_ACTOR_OBSERVATION_SIZE} "
+                f"features, got {observation.shape[-1]}"
+            )
+        smpl_input = observation[:SONIC_SMPL_INPUT_SIZE]
+        proprioception = observation[SONIC_SMPL_INPUT_SIZE:]
+        if proprioception.shape[-1] != SONIC_BELLO_PROPRIO_SIZE:
+            raise RuntimeError("SONIC Bello proprioception slice has drifted")
+        latent = self.smpl_encoder(smpl_input)
+        tokens = sonic_fsq(latent.reshape((2, 32))).reshape((SONIC_TOKEN_FLAT_SIZE,))
+        return self.decoder(tokens, proprioception)
 
 
 class TwistBackbone(eqx.Module):

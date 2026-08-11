@@ -15,6 +15,7 @@ from bello_mujoco.cli import (
     HardwareCommandConfig,
     MotionCommandConfig,
     PrepareAssetsCommandConfig,
+    SonicDataCommandConfig,
     TrainCommandConfig,
     TwistDataCommandConfig,
     VastTrainCommandConfig,
@@ -27,6 +28,7 @@ from bello_mujoco.configuration import (
     coerce_value,
     locomotion_training_profile,
     motion_training_profile,
+    sonic_training_profile,
     structured_config,
     twist2_training_profile,
     twist_training_profile,
@@ -38,6 +40,7 @@ COMMAND_SCHEMAS = {
     "eval": EvalCommandConfig,
     "motion": MotionCommandConfig,
     "twist_data": TwistDataCommandConfig,
+    "sonic_data": SonicDataCommandConfig,
     "vast_train": VastTrainCommandConfig,
     "emulator": EmulatorCommandConfig,
     "hardware": HardwareCommandConfig,
@@ -177,6 +180,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     twist_teacher = twist_training_profile("teacher")
     twist_student = twist_training_profile("student")
     twist2 = twist2_training_profile()
+    sonic = sonic_training_profile()
 
     assert all(
         profile.config.num_updates > 0
@@ -188,6 +192,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
             twist_teacher,
             twist_student,
             twist2,
+            sonic,
         )
     )
     assert smoke.config.num_envs == 2
@@ -196,6 +201,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.checkpoint_config.allow_git_commit_mismatch is False
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
+    assert not smoke.config.normalize_critic_observations
     assert locomotion.checkpoint_config.every_updates == 512
     assert hardware.checkpoint_config.every_updates == 512
     assert locomotion.env_config.observation_latency.enabled
@@ -203,6 +209,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.env_config.observation_latency.enabled
     assert hardware.env_config.observation_latency.delay_steps == (0, 2)
     assert motion.checkpoint_config.every_updates == 500
+    assert not motion.config.normalize_critic_observations
     assert twist_teacher.config.num_updates == 30_002
     assert twist_teacher.config.policy.architecture == "twist_teacher"
     assert twist_teacher.warp.contact_budget_per_env == 32
@@ -217,6 +224,12 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert twist2.config.observation_norm_epsilon_mode == "std_offset"
     assert twist2.sampling.base_distribution == "manifest_weight"
     assert twist2.sampling.curriculum_max_difficulty == 10.0
+    assert sonic.config.num_updates == 30_001
+    assert sonic.config.policy.architecture == "sonic"
+    assert sonic.config.learning_rate == pytest.approx(2.0e-5)
+    assert sonic.config.critic_learning_rate == pytest.approx(1.0e-3)
+    assert not sonic.config.normalize_observations
+    assert sonic.config.normalize_critic_observations
 
 
 def test_contact_budget_command_override_is_explicit_and_positive() -> None:

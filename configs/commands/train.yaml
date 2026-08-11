@@ -6,6 +6,7 @@ contact_budget_per_env: null
 motion_path: null
 dataset_path: null
 teacher_checkpoint_path: null
+sonic_artifact_path: null
 resume_path: null
 allow_git_commit_mismatch: false
 checkpoint_directory: null

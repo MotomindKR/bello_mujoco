@@ -13,5 +13,5 @@ fi
 
 for test_file in "${test_files[@]}"; do
   echo "pytest $test_file"
-  uv run pytest "$test_file"
+  uv run python -m pytest "$test_file"
 done

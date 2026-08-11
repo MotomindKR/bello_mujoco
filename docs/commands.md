@@ -1,6 +1,6 @@
 # Command reference
 
-The repository exposes eight public commands. Each command has a strict Hydra
+The repository exposes nine public commands. Each command has a strict Hydra
 key set: keys not declared by that command fail during decoding, and the
 resulting mapping is loaded into an immutable dataclass before the workflow
 starts. The command YAML is the sole owner of defaults; every schema field must
@@ -65,14 +65,15 @@ Configuration source: `configs/commands/train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `smoke` | Select the maintained profile stack. |
+| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, `twist2`, or `sonic`; `smoke` | Select the maintained profile stack. |
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
 | `contact_budget_per_env` | integer or `null`; `null` | Override the profile's positive Warp active-contact capacity per environment. Use the recorded value when resuming a checkpoint and raise it only when capacity telemetry reports overflow. |
 | `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. Do not supply this field for locomotion profiles. |
-| `dataset_path` | path or `null`; `null` | Override the packed `index.json` for a TWIST or TWIST2 run. Other experiments reject it. |
+| `dataset_path` | path or `null`; `null` | Override the packed `index.json` for a TWIST, TWIST2, or SONIC run. Other experiments reject it. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required for `twist_student` and rejected by every other experiment, including `twist_teacher`. |
+| `sonic_artifact_path` | path or `null`; `null` | Override the safe exported SONIC release directory for `experiment=sonic`. Other experiments reject it. The default is `artifacts/sonic/default_release`. |
 | `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and normally match its recorded Git commit; resume then validates the full training and environment state. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; it waives source-revision identity while metadata semantics, layouts, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
@@ -92,6 +93,7 @@ Profile composition is deterministic:
 | `twist_teacher` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_teacher.yaml` |
 | `twist_student` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_student.yaml` |
 | `twist2` | `configs/train_twist2/default.yaml`, then `configs/profiles/train/twist2.yaml` |
+| `sonic` | `configs/train_sonic/default.yaml`, then `configs/profiles/train/sonic.yaml` |
 
 The public fields above are applied after profile composition. See
 [Training configuration](training_configuration.md) for every nested section
@@ -107,13 +109,14 @@ Configuration source: `configs/commands/eval.yaml`.
 
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
-| `task` | `locomotion`, `motion`, `twist_student`, or `twist2`; `locomotion` | all | Select checkpoint validation and evaluation mode. |
+| `task` | `locomotion`, `motion`, `twist_student`, `twist2`, or `sonic`; `locomotion` | all | Select checkpoint validation and evaluation mode. |
 | `checkpoint_path` | path or `null`; `null` | all | Required checkpoint directory. `~` is expanded. |
+| `sonic_artifact_path` | path or `null`; `null` | sonic | Safe exported SONIC release directory. It must match the artifact recorded by the checkpoint. |
 | `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout than the checkpoint's recorded commit. Other checkpoint checks still apply. |
-| `output_path` | path; `outputs/evaluation/motion.mp4` | motion, twist_student, twist2 | Video destination for motion. TWIST and TWIST2 write JSON and select task-specific `.json` defaults when this field was not explicitly overridden. |
-| `video_path` | path or `null`; `null` | twist2 | TWIST2 representative-video destination. When omitted, TWIST2 writes `outputs/evaluation/twist2.mp4`; explicitly set `video_path=null` to score without rendering. |
+| `output_path` | path; `outputs/evaluation/motion.mp4` | motion, twist_student, twist2, sonic | Video destination for motion. TWIST, TWIST2, and SONIC write JSON and select task-specific `.json` defaults when this field was not explicitly overridden. |
+| `video_path` | path or `null`; `null` | twist2, sonic | Representative-video destination. TWIST2 supplies its task default when omitted; SONIC renders only when a path is supplied. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed `+X` lateral/right, `+Y` forward, and `+Z` yaw velocity command. |
-| `steps` | positive integer or `null`; `null` | locomotion, motion, twist2 | Bound rollout steps. It limits only the representative video for TWIST2 and is rejected for `twist_student`. |
+| `steps` | positive integer or `null`; `null` | locomotion, motion, twist2, sonic | Bound rollout steps. It limits only the representative video for TWIST2/SONIC and is rejected for `twist_student`. |
 | `stop_on_done` | boolean; `false` | locomotion, motion, twist_student | Stop at the first done/terminal state. TWIST2 always stops terminal clips so its held-out metrics cannot cross an automatic reset, and rejects this override. |
 | `stochastic_actions` | boolean; `false` | locomotion | Sample from the checkpoint policy instead of using its deterministic mean. |
 | `action_seed` | nonnegative integer; `0` | locomotion | PRNG seed used only for stochastic actions. |
@@ -148,7 +151,9 @@ every held-out clip. TWIST2 likewise requires its own typed one-stage checkpoint
 scores every held-out clip, and renders the first held-out clip by default;
 `steps` bounds only that representative video. Both tasks reject locomotion
 commands, stochastic actions, and gamepad fields. TWIST2 also rejects
-`stop_on_done` because terminal stopping is mandatory.
+`stop_on_done` because terminal stopping is mandatory. SONIC likewise scores
+all held-out clips deterministically, rejects locomotion-only controls, and
+uses `steps` only to bound an explicitly requested representative video.
 
 ## `bello-motion`
 
@@ -221,6 +226,38 @@ It never downloads datasets or body models. Configuration source:
 
 See [TWIST teacher and student](twist.md) for acquisition, conversion,
 splitting, licensing, provenance, and output contracts.
+
+## `bello-sonic-data`
+
+Create the synchronized motion views required by SONIC transfer. It never
+downloads AMASS, SMPL-X body models, GMR assets, or NVIDIA weights.
+Configuration source: `configs/commands/sonic_data.yaml`.
+
+| Field | Type and default | Meaning |
+| --- | --- | --- |
+| `operation` | `retarget_g1` or `build`; `build` | Generate the G1/SMPL sidecar view or assemble a fingerprinted synchronized dataset. |
+| `manifest` | path or `null`; `null` | Required licensed AMASS manifest. Use the same manifest that selected the Bello retargets. |
+| `body_model_root` | path or `null`; `null` | Required for `retarget_g1`; contains the licensed SMPL-X model NPZ files. |
+| `bello_retargeted_root` | path or `null`; `null` | Required for `build`; Bello clips use `<source_id>__<sequence_id>.npz`. |
+| `g1_retargeted_root` | path or `null`; `null` | Required for `build`; synchronized G1/SMPL sidecars use the same filenames. |
+| `normalized_root` | path or `null`; `null` | Required scratch directory for normalized SMPL sources during `retarget_g1`; it must differ from `output_root`. |
+| `output_root` | path or `null`; `null` | Required operation output. Build requires an empty destination and writes fixed-capacity files below `shards/train/` and `shards/evaluation/`, plus `index.json`, `heldout_manifest.json`, and `conversion_report.json`. |
+| `gmr_python` | path or `null`; `null` | Required for `retarget_g1`; Python interpreter from the pinned `deps/GMR` environment. |
+| `jobs` | positive integer; `1` | Concurrent retarget subprocesses. Each worker loads GMR and body models, so increase cautiously. |
+| `overwrite` | boolean; `false` | Recompute a sidecar whose source/provenance otherwise matches. |
+| `keep_normalized` | boolean; `false` | Retain normalized intermediate motion archives after successful G1 retargeting. |
+| `limit` | positive integer or `null`; `null` | Deterministically process only the first sorted manifest entries for a smoke run. |
+| `quality_config` | `configs/twist/quality.yaml` | Bello feasibility and kinematic quality thresholds used by `build`. |
+| `shard_frame_capacity` | positive integer; `65536` | Fixed leading frame dimension of every train/evaluation shard. A single accepted clip must fit. |
+| `shard_clip_capacity` | positive integer; `256` | Maximum clips in each fixed-capacity shard. |
+
+The build enforces exact source timestamps between the Bello and G1/SMPL
+views, 50 Hz frames, immutable joint/body ordering, clean pinned GMR
+provenance, train/evaluation separation, and per-shard hashes. It fits the
+default-anchored bidirectional dense ridge maps only on accepted training
+frames. The two-pass stream never materializes the corpus as monolithic
+train/evaluation arrays.
+See the [SONIC transfer guide](sonic.md) for the end-to-end workflow.
 
 ## `bello-vast-train`
 

@@ -21,6 +21,7 @@ from bello_mujoco.assets_pipeline import project_data_path
 if TYPE_CHECKING:
     from bello_mujoco.training.locomotion import TrainingRunConfig
     from bello_mujoco.training.motion import MotionTrainingRunConfig
+    from bello_mujoco.training.sonic import SonicTrainingRunConfig
     from bello_mujoco.training.twist import TwistTrainingRunConfig
     from bello_mujoco.training.twist2 import Twist2TrainingRunConfig
 
@@ -33,6 +34,7 @@ ExperimentName = Literal[
     "twist_teacher",
     "twist_student",
     "twist2",
+    "sonic",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -43,6 +45,7 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "twist_teacher": Path("profiles/train/twist_teacher.yaml"),
     "twist_student": Path("profiles/train/twist_student.yaml"),
     "twist2": Path("profiles/train/twist2.yaml"),
+    "sonic": Path("profiles/train/sonic.yaml"),
 }
 
 
@@ -314,6 +317,32 @@ def twist2_training_profile(
     if dataset_index is None:
         return config
     return replace(config, dataset_index=dataset_index.expanduser().resolve())
+
+
+def sonic_training_profile(
+    *,
+    dataset_index: Path | None = None,
+    release_artifact_directory: Path | None = None,
+) -> SonicTrainingRunConfig:
+    from bello_mujoco.training.sonic import SonicTrainingRunConfig
+
+    config = structured_config(
+        SonicTrainingRunConfig,
+        _merged_profile(
+            (
+                _config("train_sonic/default.yaml"),
+                _config("profiles/train/sonic.yaml"),
+            )
+        ),
+    )
+    overrides = {}
+    if dataset_index is not None:
+        overrides["dataset_index"] = dataset_index.expanduser().resolve()
+    if release_artifact_directory is not None:
+        overrides["release_artifact_directory"] = (
+            release_artifact_directory.expanduser().resolve()
+        )
+    return replace(config, **overrides)
 
 
 def profile_config_relative_path(name: ExperimentName) -> Path:

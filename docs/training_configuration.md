@@ -13,6 +13,7 @@ the source of maintained experiment overrides:
 - [Motion defaults](../configs/train_motion/default.yaml)
 - [TWIST defaults](../configs/train_twist/default.yaml)
 - [TWIST2 defaults](../configs/train_twist2/default.yaml)
+- [SONIC defaults](../configs/train_sonic/default.yaml)
 - [Smoke profile](../configs/profiles/train/smoke.yaml)
 - [Locomotion profile](../configs/profiles/train/locomotion.yaml)
 - [Hardware-locomotion profile](../configs/profiles/train/hardware_locomotion.yaml)
@@ -20,6 +21,7 @@ the source of maintained experiment overrides:
 - [TWIST teacher profile](../configs/profiles/train/twist_teacher.yaml)
 - [TWIST student profile](../configs/profiles/train/twist_student.yaml)
 - [TWIST2 profile](../configs/profiles/train/twist2.yaml)
+- [SONIC profile](../configs/profiles/train/sonic.yaml)
 
 ## Resolution and ownership
 
@@ -34,6 +36,7 @@ Do not add a second recipe in a script or command wrapper. Change:
 - `configs/train_motion/default.yaml` for shared motion contracts;
 - `configs/train_twist/default.yaml` for shared TWIST contracts;
 - `configs/train_twist2/default.yaml` for the one-stage TWIST2 contract;
+- `configs/train_sonic/default.yaml` for the strict SONIC transfer contract;
 - `configs/profiles/train/*.yaml` for maintained experiment numerics;
 - Python dataclasses only when the configuration schema or validation changes.
 
@@ -50,6 +53,7 @@ The `config` section is shared by locomotion and motion tracking.
 | `update_epochs` | `5` | Optimizer passes over each rollout batch. |
 | `num_minibatches` | `4` | Minibatches per epoch. `num_envs * num_steps` must be divisible by this value. |
 | `learning_rate` | `0.001` | Initial Adam learning rate; positive and finite. |
+| `critic_learning_rate` | `null` | Optional independent critic rate. SONIC requires `0.001` while its actor edges use `learning_rate=0.00002`. |
 | `schedule` | `adaptive` | `constant`, `linear`, or KL-adaptive scheduling. |
 | `desired_kl` | `0.01` | KL target used by the adaptive scheduler. |
 | `target_kl` | `null` | Optional hard early-stop threshold for an update epoch. |
@@ -63,10 +67,12 @@ The `config` section is shared by locomotion and motion tracking.
 | `ent_coef` | `0.01` | Nonnegative entropy coefficient. |
 | `vf_coef` | `1.0` | Nonnegative value-loss coefficient. |
 | `max_grad_norm` | `1.0` | Positive optimizer gradient clipping norm. |
+| `adam_epsilon` | `0.00001` | Positive Adam denominator epsilon. |
+| `value_loss_scale` | `0.5` | Positive multiplier applied to the critic mean-squared error before `vf_coef`. |
 | `normalize_value` | `false` | Track return moments and train the critic in normalized value space. |
 | `value_norm_eps` | `1e-8` | Positive numerical floor for value normalization. |
 | `normalize_observations` | `false` | Track and apply actor observation moments; critic behavior is controlled separately. |
-| `normalize_critic_observations` | `true` | Apply and update a separate critic observation normalizer when observation normalization is enabled. |
+| `normalize_critic_observations` | `true` | Apply and update a separate critic observation normalizer independently of the actor setting. |
 | `observation_norm_update_mode` | `online` | `online` applies newly accumulated moments immediately; `rollout` holds them fixed until the next rollout. |
 | `observation_norm_update_updates` | `null` | Optional positive update count after which actor observation moments freeze. |
 | `observation_norm_epsilon_mode` | `variance_floor` | `variance_floor` uses `sqrt(max(var, eps))`; `std_offset` uses `sqrt(max(var, 1e-8)) + eps`. |
@@ -94,6 +100,8 @@ rollout batch are not sampled.
 | `obs_stack_size` | `10` | Number of consecutive observations flattened into policy input. |
 | `action_distribution` | `tanh_gaussian` | Bounded `tanh_gaussian` or unbounded `gaussian`. Deployment profiles use the bounded form. |
 | `action_limit` | `1` | Squashed action magnitude. For bounded policies it must equal the environment `action_clip`. |
+| `architecture` | `mlp` | Task-owned actor implementation: `mlp`, `twist_teacher`, `twist_student`, `twist2`, or `sonic`. |
+| `layer_norm_final_hidden` | `false` | Enable the final-hidden normalization required by TWIST-family networks. SONIC leaves it disabled. |
 
 ## Assets: `asset_config`
 
@@ -432,6 +440,45 @@ compatible packed corpus while recording its composition audit in W&B and the
 checkpoint; setting it to `true` requires the training split to contain the
 exact released 19,426-clip source composition with unit weights. See the
 [TWIST2 guide](twist2.md) for the observation, data-split, and parity contracts.
+
+## SONIC transfer: `configs/train_sonic`
+
+SONIC is an isolated 200 Hz simulation/50 Hz control task with ten-second
+episodes and a 25-joint Bello action. Its actor consumes 1,650 raw values: ten
+84-value SMPL command frames for the frozen encoder and ten Bello history
+frames containing projected gravity, base angular velocity, joint position,
+joint velocity, and previous action. The new privileged critic consumes 1,445
+values. The actor remains raw, while the critic has an independent running
+mean/std normalizer.
+
+The exported release supplies a frozen five-layer SMPL encoder, 32-level FSQ,
+the token branch of decoder layer zero, and five interior decoder linears. Only
+the Bello proprioceptive projection and first-layer bias, the 25-output
+projection/bias, actor log standard deviation, and new critic are optimizer
+leaves. Frozen arrays are structurally absent from optimizer state and are
+content-hashed before periodic and final checkpoints.
+
+The maintained PPO profile uses 4,096 environments, 24 steps, five epochs,
+four minibatches, actor-edge learning rate `2e-5`, critic learning rate
+`1e-3`, desired KL `0.01`, entropy `0.01`, maximum gradient norm `0.1`, gamma
+`0.99`, GAE lambda `0.95`, and clip ratio `0.2`. It uses an unsquashed Gaussian
+initialized by propagating the release-checkpoint variance through the dense
+Bello-from-G1 output map, with a `0.05` floor; all values are clamped to
+`[0.001,0.5]`. Raw actions are clipped to `[-20,20]` and scaled by `0.5`
+before becoming joint-target offsets.
+
+`sonic_env` owns released-style tracking rewards, failure termination,
+observation noise, per-world morphology/dynamics randomization, root pushes,
+and failure-bin adaptive start sampling. `dataset_index` identifies the
+synchronized Bello/SMPL/G1 dataset. `release_artifact_directory` identifies
+the safe NPZ/JSON export of the exact pinned NVIDIA checkpoint, while
+`runtime_clip_directory` is ignored scratch space for native motion loading.
+The dataset uses fixed capacities of 65,536 frames and 256 clips per shard by
+default. `reference_shard_updates=32` controls deterministic,
+sampling-mass-weighted shard rotation; switching shards resets vectorized
+worlds so one compiled rollout shape remains valid.
+All data, release, robot, layout, and calibration identities enter typed
+checkpoint validation. See the [SONIC transfer guide](sonic.md).
 
 ## Checkpoints: `checkpoint_config`
 

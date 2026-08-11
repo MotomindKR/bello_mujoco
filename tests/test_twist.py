@@ -291,6 +291,27 @@ def test_manifest_duplicate_and_split_leakage_are_rejected() -> None:
         )
 
 
+def test_manifest_can_verify_sources_without_requiring_body_models(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "sequence.npz"
+    source_path.write_bytes(b"licensed source fixture")
+    sequence = replace(
+        source_sequence(0),
+        local_path=source_path,
+        source_sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    )
+    manifest = SourceManifest(1, 17, (sequence,))
+
+    validate_source_manifest(
+        manifest,
+        verify_files=True,
+        verify_body_models=False,
+    )
+    with pytest.raises(ValueError, match="body_model_root is required"):
+        validate_source_manifest(manifest, verify_files=True)
+
+
 def test_amass_scanner_generates_reviewable_stageii_manifest(tmp_path: Path) -> None:
     source_root = tmp_path / "amass"
     for index, subject in enumerate(("Subject 01", "Subject 02")):

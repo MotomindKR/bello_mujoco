@@ -24,6 +24,7 @@ config:
   normalize_value: false
   value_norm_eps: 1.0e-08
   normalize_observations: false
+  normalize_critic_observations: false
   observation_norm_eps: 1.0e-05
   observation_norm_clip: 10.0
   rollout_observation_max_abs: 10000.0

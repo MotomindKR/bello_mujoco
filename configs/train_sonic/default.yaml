@@ -1,0 +1,85 @@
+dataset_index: datasets/sonic/index.json
+release_artifact_directory: artifacts/sonic/default_release
+
+config:
+  seed: 1
+  total_timesteps: 2949218304
+  num_envs: 4096
+  num_steps: 24
+  update_epochs: 5
+  num_minibatches: 4
+  learning_rate: 0.00002
+  critic_learning_rate: 0.001
+  schedule: adaptive
+  desired_kl: 0.01
+  target_kl: null
+  min_learning_rate: 0.00001
+  max_learning_rate: 0.0002
+  adaptive_lr_factor: 1.5
+  adaptive_kl_statistic: mean
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  ent_coef: 0.01
+  vf_coef: 1.0
+  max_grad_norm: 0.1
+  adam_epsilon: 0.00001
+  value_loss_scale: 1.0
+  normalize_value: false
+  normalize_observations: false
+  normalize_critic_observations: true
+  observation_norm_update_mode: rollout
+  observation_norm_update_updates: null
+  observation_norm_epsilon_mode: variance_floor
+  observation_norm_eps: 0.00001
+  observation_norm_clip: 10.0
+  rollout_observation_max_abs: 10000.0
+  rollout_reward_max_abs: 1000.0
+  rollout_value_max_abs: 10000.0
+  target_max_abs: 10000.0
+  gradient_norm_max: 10000.0
+  policy:
+    hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
+    activation: swish
+    init_log_std: -2.995732273553991
+    min_log_std: -6.907755278982137
+    max_log_std: -0.6931471805599453
+    obs_stack_size: 1
+    action_distribution: gaussian
+    action_limit: 20.0
+    architecture: sonic
+    layer_norm_final_hidden: false
+
+simulation: {}
+sonic_env: {}
+
+checkpoint_config:
+  enabled: true
+  directory: checkpoints
+  name: sonic_seed1
+  every_updates: 500
+  resume_path: null
+  allow_git_commit_mismatch: false
+  upload_wandb_artifact: true
+  wandb_artifact_name: sonic_seed1
+  wandb_artifact_type: checkpoint
+
+wandb_config:
+  enabled: true
+  project: bello-mujoco
+  entity: null
+  group: sonic
+  job_type: train
+  run_name: sonic_seed1
+  mode: online
+  dir: .wandb
+  tags: [sonic, transfer, edge-only, whole-body]
+
+warp:
+  contact_budget_per_env: 32
+  naconmax: null
+  naccdmax: null
+  njmax: 2048
+
+runtime_clip_directory: outputs/sonic_runtime_clips
+reference_shard_updates: 32

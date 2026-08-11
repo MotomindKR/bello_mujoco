@@ -19,6 +19,7 @@ from bello_mujoco.configuration import (
     config_path,
     locomotion_training_profile,
     motion_training_profile,
+    sonic_training_profile,
     twist2_training_profile,
     twist_training_profile,
 )
@@ -43,6 +44,7 @@ class TrainCommandConfig:
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
+    sonic_artifact_path: Path | None
     resume_path: Path | None
     allow_git_commit_mismatch: bool
     checkpoint_directory: Path | None
@@ -54,8 +56,9 @@ class TrainCommandConfig:
 
 @dataclass(frozen=True)
 class EvalCommandConfig:
-    task: Literal["locomotion", "motion", "twist_student", "twist2"]
+    task: Literal["locomotion", "motion", "twist_student", "twist2", "sonic"]
     checkpoint_path: Path | None
+    sonic_artifact_path: Path | None
     allow_git_commit_mismatch: bool
     output_path: Path
     video_path: Path | None
@@ -98,6 +101,50 @@ class TwistDataCommandConfig:
     gmr_root: Path
     quality_config: Path
     curation_config: Path
+
+
+@dataclass(frozen=True)
+class SonicDataCommandConfig:
+    operation: Literal["retarget_g1", "build"]
+    manifest: Path | None
+    body_model_root: Path | None
+    bello_retargeted_root: Path | None
+    g1_retargeted_root: Path | None
+    normalized_root: Path | None
+    output_root: Path | None
+    gmr_python: Path | None
+    jobs: int
+    overwrite: bool
+    keep_normalized: bool
+    limit: int | None
+    quality_config: Path
+    shard_frame_capacity: int
+    shard_clip_capacity: int
+
+    def __post_init__(self) -> None:
+        if self.operation not in {"retarget_g1", "build"}:
+            raise ValueError("SONIC data operation must be retarget_g1 or build")
+        if (
+            isinstance(self.jobs, bool)
+            or not isinstance(self.jobs, int)
+            or self.jobs < 1
+        ):
+            raise ValueError("SONIC data jobs must be a positive integer")
+        if self.limit is not None and (
+            isinstance(self.limit, bool)
+            or not isinstance(self.limit, int)
+            or self.limit < 1
+        ):
+            raise ValueError("SONIC data limit must be positive when provided")
+        if (
+            isinstance(self.shard_frame_capacity, bool)
+            or not isinstance(self.shard_frame_capacity, int)
+            or self.shard_frame_capacity < 1
+            or isinstance(self.shard_clip_capacity, bool)
+            or not isinstance(self.shard_clip_capacity, int)
+            or self.shard_clip_capacity < 1
+        ):
+            raise ValueError("SONIC shard capacities must be positive integers")
 
 
 @dataclass(frozen=True)
@@ -187,6 +234,16 @@ def _prepare_assets_hydra(config: DictConfig) -> None:
 def train_entrypoint() -> None:
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     os.environ.setdefault("TF_GPU_ALLOCATOR", "cuda_malloc_async")
+    _expand_path_overrides(
+        (
+            "motion_path=",
+            "dataset_path=",
+            "teacher_checkpoint_path=",
+            "sonic_artifact_path=",
+            "resume_path=",
+            "checkpoint_directory=",
+        )
+    )
     _train_hydra()
 
 
@@ -197,9 +254,36 @@ def train_entrypoint() -> None:
 )
 def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
-    if command.experiment == "twist2":
+    if command.experiment == "sonic":
         _reject_explicit_fields(
             ("motion_path", "teacher_checkpoint_path", "video_enabled"),
+            context="experiment=sonic",
+        )
+        from bello_mujoco.training.sonic import run_training as run_sonic_training
+
+        run_config = sonic_training_profile(
+            dataset_index=command.dataset_path,
+            release_artifact_directory=command.sonic_artifact_path,
+        )
+        run_config = replace(
+            run_config,
+            config=_ppo_overrides(run_config.config, command),
+            warp=_warp_overrides(run_config.warp, command),
+            checkpoint_config=_checkpoint_overrides(
+                run_config.checkpoint_config, command
+            ),
+            wandb_config=_wandb_overrides(run_config.wandb_config, command),
+        )
+        run_sonic_training(run_config)
+        return
+    if command.experiment == "twist2":
+        _reject_explicit_fields(
+            (
+                "motion_path",
+                "teacher_checkpoint_path",
+                "sonic_artifact_path",
+                "video_enabled",
+            ),
             context="experiment=twist2",
         )
         from bello_mujoco.training.twist2 import run_training as run_twist2_training
@@ -218,7 +302,7 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment in {"twist_teacher", "twist_student"}:
         _reject_explicit_fields(
-            ("motion_path", "video_enabled"),
+            ("motion_path", "sonic_artifact_path", "video_enabled"),
             context=f"experiment={command.experiment}",
         )
         stage = command.experiment.removeprefix("twist_")
@@ -247,7 +331,7 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment == "motion":
         _reject_explicit_fields(
-            ("dataset_path", "teacher_checkpoint_path"),
+            ("dataset_path", "teacher_checkpoint_path", "sonic_artifact_path"),
             context="experiment=motion",
         )
         from bello_mujoco.training.motion import (
@@ -275,7 +359,12 @@ def _train_hydra(config: DictConfig) -> None:
     if command.motion_path is not None:
         raise ValueError("motion_path is only valid for the motion experiment")
     _reject_explicit_fields(
-        ("motion_path", "dataset_path", "teacher_checkpoint_path"),
+        (
+            "motion_path",
+            "dataset_path",
+            "teacher_checkpoint_path",
+            "sonic_artifact_path",
+        ),
         context=f"experiment={command.experiment}",
     )
     from bello_mujoco.training.locomotion import (
@@ -298,7 +387,14 @@ def _train_hydra(config: DictConfig) -> None:
 
 
 def eval_entrypoint() -> None:
-    _expand_path_overrides(("checkpoint_path=", "output_path=", "video_path="))
+    _expand_path_overrides(
+        (
+            "checkpoint_path=",
+            "sonic_artifact_path=",
+            "output_path=",
+            "video_path=",
+        )
+    )
     _eval_hydra()
 
 
@@ -310,6 +406,43 @@ def eval_entrypoint() -> None:
 def _eval_hydra(config: DictConfig) -> None:
     command = command_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
+    if command.task == "sonic":
+        _reject_explicit_fields(
+            (
+                "command",
+                "stochastic_actions",
+                "action_seed",
+                "gamepad_enabled",
+                "stop_on_done",
+            ),
+            context="task=sonic",
+        )
+        from bello_mujoco.evaluation.sonic import (
+            SonicEvaluationConfig,
+            evaluate_sonic_checkpoint,
+        )
+
+        base = SonicEvaluationConfig()
+        report = evaluate_sonic_checkpoint(
+            checkpoint,
+            replace(
+                base,
+                release_artifact_directory=_coalesce(
+                    command.sonic_artifact_path,
+                    base.release_artifact_directory,
+                ),
+                output_path=(
+                    command.output_path
+                    if "output_path" in _explicit_override_fields()
+                    else base.output_path
+                ),
+                video_path=command.video_path,
+                video_max_steps=_coalesce(command.steps, base.video_max_steps),
+            ),
+            allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
     if command.task == "twist2":
         _reject_explicit_fields(
             (
@@ -318,6 +451,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 "action_seed",
                 "gamepad_enabled",
                 "stop_on_done",
+                "sonic_artifact_path",
             ),
             context="task=twist2",
         )
@@ -355,6 +489,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 "action_seed",
                 "gamepad_enabled",
                 "video_path",
+                "sonic_artifact_path",
             ),
             context="task=twist_student",
         )
@@ -385,6 +520,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 "action_seed",
                 "gamepad_enabled",
                 "video_path",
+                "sonic_artifact_path",
             ),
             context="task=motion",
         )
@@ -399,7 +535,10 @@ def _eval_hydra(config: DictConfig) -> None:
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
-    _reject_explicit_fields(("output_path", "video_path"), context="task=locomotion")
+    _reject_explicit_fields(
+        ("output_path", "video_path", "sonic_artifact_path"),
+        context="task=locomotion",
+    )
     if command.gamepad_enabled:
         _reject_explicit_fields(("command",), context="gamepad_enabled=true")
     if not command.stochastic_actions:
@@ -449,6 +588,103 @@ def twist_data_entrypoint() -> None:
         )
     )
     _twist_data_hydra()
+
+
+def sonic_data_entrypoint() -> None:
+    _expand_path_overrides(
+        (
+            "manifest=",
+            "body_model_root=",
+            "bello_retargeted_root=",
+            "g1_retargeted_root=",
+            "normalized_root=",
+            "output_root=",
+            "gmr_python=",
+            "quality_config=",
+        )
+    )
+    _sonic_data_hydra()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("commands"),
+    config_name="sonic_data",
+)
+def _sonic_data_hydra(config: DictConfig) -> None:
+    command = command_config(SonicDataCommandConfig, config)
+    manifest = _required_path(command.manifest, "manifest")
+    output_root = _required_path(command.output_root, "output_root")
+    if command.operation == "retarget_g1":
+        _reject_explicit_fields(
+            (
+                "bello_retargeted_root",
+                "g1_retargeted_root",
+                "quality_config",
+                "shard_frame_capacity",
+                "shard_clip_capacity",
+            ),
+            context="operation=retarget_g1",
+        )
+        body_model_root = _required_path(command.body_model_root, "body_model_root")
+        normalized_root = _required_path(command.normalized_root, "normalized_root")
+        gmr_python = _required_path(command.gmr_python, "gmr_python")
+        from bello_mujoco.motion.sonic_retarget import (
+            batch_retarget_sonic_manifest,
+        )
+
+        def progress(current, total, decision) -> None:
+            print(
+                f"retargeted {current}/{total}: {decision.source_id}/"
+                f"{decision.sequence_id} [{decision.status}]",
+                file=sys.stderr,
+            )
+
+        report = batch_retarget_sonic_manifest(
+            manifest,
+            body_model_root=body_model_root,
+            output_root=output_root,
+            normalized_root=normalized_root,
+            gmr_python=gmr_python,
+            jobs=command.jobs,
+            overwrite=command.overwrite,
+            keep_normalized=command.keep_normalized,
+            limit=command.limit,
+            progress=progress,
+        )
+        print(json.dumps(asdict(report), indent=2, sort_keys=True))
+        if report.failed:
+            raise RuntimeError(f"{report.failed} SONIC G1 retarget(s) failed")
+        return
+    _reject_explicit_fields(
+        (
+            "body_model_root",
+            "normalized_root",
+            "gmr_python",
+            "jobs",
+            "overwrite",
+            "keep_normalized",
+            "limit",
+        ),
+        context="operation=build",
+    )
+    bello_root = _required_path(command.bello_retargeted_root, "bello_retargeted_root")
+    g1_root = _required_path(command.g1_retargeted_root, "g1_retargeted_root")
+    from bello_mujoco.motion.sonic_dataset import SonicShardConfig, build_sonic_dataset
+    from bello_mujoco.motion.twist_dataset import load_quality_config
+
+    index = build_sonic_dataset(
+        manifest,
+        bello_root,
+        g1_root,
+        output_root,
+        quality=load_quality_config(command.quality_config),
+        sharding=SonicShardConfig(
+            frame_capacity=command.shard_frame_capacity,
+            clip_capacity=command.shard_clip_capacity,
+        ),
+    )
+    print(json.dumps(index, indent=2, sort_keys=True))
 
 
 @hydra.main(

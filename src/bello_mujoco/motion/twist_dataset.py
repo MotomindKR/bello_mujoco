@@ -200,6 +200,7 @@ def load_source_manifest(
     *,
     body_model_root: Path | None = None,
     verify_files: bool = True,
+    verify_body_models: bool = True,
 ) -> SourceManifest:
     """Load a strict human-authored YAML/JSON manifest.
 
@@ -232,6 +233,7 @@ def load_source_manifest(
         manifest,
         body_model_root=body_model_root,
         verify_files=verify_files,
+        verify_body_models=verify_body_models,
     )
     return manifest
 
@@ -521,6 +523,7 @@ def validate_source_manifest(
     *,
     body_model_root: Path | None = None,
     verify_files: bool = True,
+    verify_body_models: bool = True,
 ) -> None:
     if manifest.schema_version != TWIST_SOURCE_MANIFEST_SCHEMA_VERSION:
         raise ValueError(
@@ -612,7 +615,7 @@ def validate_source_manifest(
                     f"{key}: source checksum mismatch; expected sha256:{checksum}, "
                     f"got sha256:{actual}"
                 )
-    if verify_files and needs_smpl_models:
+    if verify_files and verify_body_models and needs_smpl_models:
         _validate_body_model_root(body_model_root)
 
 

@@ -39,7 +39,7 @@ uv run bash scripts/protobuf.sh generate
 Run focused tests while iterating:
 
 ```bash
-uv run pytest -q tests/<relevant_test>.py
+uv run python -m pytest -q tests/<relevant_test>.py
 ```
 
 Run the full gate before merging:
