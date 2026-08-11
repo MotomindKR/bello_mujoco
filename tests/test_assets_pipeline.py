@@ -258,6 +258,68 @@ def test_urdf_mass_scaling_preserves_mass_distribution_and_inertia_ratio(
     assert float(first_inertia.attrib["ixy"]) == pytest.approx(1.2)
 
 
+def test_canonical_bilateral_link_inertias_are_symmetric(
+    full_body_asset: PreparedAsset,
+) -> None:
+    root = ET.parse(full_body_asset.urdf_path).getroot()
+    pairs = {
+        ("left_hip_pitch_link", "right_hip_pitch_link"): (-1, -1, 1),
+        ("left_hip_roll_link", "right_hip_roll_link"): (-1, -1, 1),
+        ("left_hip_yaw_link", "right_hip_yaw_link"): (-1, -1, 1),
+        ("left_knee_link", "right_knee_link"): (1, 1, 1),
+        ("left_ankle_pitch_link", "right_ankle_pitch_link"): (1, 1, 1),
+        ("left_ankle_roll_link", "right_ankle_roll_link"): (1, -1, 1),
+        ("l_shoulder_pitch_link", "r_shoulder_pitch_link"): (-1, -1, 1),
+        ("l_shoulder_roll_link", "r_shoulder_roll_link"): (-1, -1, 1),
+        ("l_upper_arm_link", "r_upper_arm_link"): (-1, 1, 1),
+        ("l_elbow_link", "r_elbow_link"): (-1, -1, 1),
+        ("l_lower_arm_link", "r_lower_arm_link"): (1, -1, 1),
+        ("l_wrist_link", "r_wrist_link"): (-1, -1, 1),
+        ("l_eef_link", "r_eef_link"): (-1, 1, 1),
+        ("l_wrist_camera_link", "r_wrist_camera_link"): (-1, -1, 1),
+        ("l_finger_right_link", "r_finger_right_link"): (-1, -1, 1),
+        ("l_finger_left_link", "r_finger_left_link"): (-1, -1, 1),
+        ("l_gripper_link", "r_gripper_link"): (-1, -1, 1),
+        ("l_wrist_camera_frame_link", "r_wrist_camera_frame_link"): (-1, 1, 1),
+        ("head_left_camera_frame_link", "head_right_camera_frame_link"): (
+            -1,
+            1,
+            1,
+        ),
+    }
+
+    def inertial_properties(name: str) -> tuple[float, np.ndarray, np.ndarray]:
+        inertial = root.find(f"./link[@name='{name}']/inertial")
+        assert inertial is not None
+        origin = inertial.find("origin")
+        mass = inertial.find("mass")
+        inertia = inertial.find("inertia")
+        assert origin is not None and mass is not None and inertia is not None
+        center = np.fromstring(origin.attrib["xyz"], sep=" ")
+        values = inertia.attrib
+        tensor = np.asarray(
+            (
+                (float(values["ixx"]), float(values["ixy"]), float(values["ixz"])),
+                (float(values["ixy"]), float(values["iyy"]), float(values["iyz"])),
+                (float(values["ixz"]), float(values["iyz"]), float(values["izz"])),
+            )
+        )
+        return float(mass.attrib["value"]), center, tensor
+
+    for (left_name, right_name), signs in pairs.items():
+        left_mass, left_center, left_inertia = inertial_properties(left_name)
+        right_mass, right_center, right_inertia = inertial_properties(right_name)
+        transform = np.diag(signs)
+
+        assert left_mass == pytest.approx(right_mass, rel=0.0, abs=1.0e-15)
+        np.testing.assert_allclose(left_center, transform @ right_center, atol=1.0e-15)
+        np.testing.assert_allclose(
+            left_inertia,
+            transform @ right_inertia @ transform,
+            atol=1.0e-15,
+        )
+
+
 def test_default_output_root_is_deterministic_bounded_user_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
