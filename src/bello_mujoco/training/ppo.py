@@ -35,6 +35,8 @@ from bello_mujoco.policy import (
 
 LearningRateSchedule = Literal["constant", "linear", "adaptive"]
 AdaptiveKLStatistic = Literal["mean", "max"]
+ObservationNormUpdateMode = Literal["online", "rollout"]
+ObservationNormEpsilonMode = Literal["variance_floor", "std_offset"]
 LOG_RATIO_CLIP = 20.0
 _VALIDATOR_METADATA_KEY = "validator"
 
@@ -66,6 +68,11 @@ def _positive_finite(name: str, value: float) -> None:
 def _optional_positive_finite(name: str, value: float | None) -> None:
     if value is not None:
         _positive_finite(name, value)
+
+
+def _optional_positive_integer(name: str, value: int | None) -> None:
+    if value is not None:
+        _positive_integer(name, value)
 
 
 def _nonnegative_finite(name: str, value: float) -> None:
@@ -166,9 +173,21 @@ class PPOConfig:
     ent_coef: float = _validated(0.01, _nonnegative_finite)
     vf_coef: float = _validated(1.0, _nonnegative_finite)
     max_grad_norm: float = _validated(1.0, _positive_finite)
+    adam_epsilon: float = _validated(1.0e-5, _positive_finite)
+    value_loss_scale: float = _validated(0.5, _positive_finite)
     normalize_value: bool = _validated(False, _no_scalar_constraint)
     value_norm_eps: float = _validated(1.0e-8, _positive_finite)
     normalize_observations: bool = _validated(False, _no_scalar_constraint)
+    normalize_critic_observations: bool = _validated(True, _no_scalar_constraint)
+    observation_norm_update_mode: ObservationNormUpdateMode = _validated(
+        "online", _one_of("online", "rollout")
+    )
+    observation_norm_update_updates: int | None = _validated(
+        None, _optional_positive_integer
+    )
+    observation_norm_epsilon_mode: ObservationNormEpsilonMode = _validated(
+        "variance_floor", _one_of("variance_floor", "std_offset")
+    )
     observation_norm_eps: float = _validated(1.0e-5, _positive_finite)
     observation_norm_clip: float = _validated(10.0, _positive_finite)
     rollout_observation_max_abs: float = _validated(1.0e4, _positive_finite)
@@ -192,6 +211,31 @@ class PPOConfig:
     @property
     def minibatch_size(self) -> int:
         return self.batch_size // self.num_minibatches
+
+
+@dataclass(frozen=True)
+class DistillationContext:
+    """Frozen teacher and schedule for a TWIST student PPO update."""
+
+    teacher_policy: ActorCritic
+    teacher_observation_size: int
+    teacher_observation_norm_state: ObservationNormState
+    teacher_config: PPOConfig
+    start_weight: float = 0.1
+    end_weight: float = 0.01
+    anneal_updates: int = 60_000
+
+    def __post_init__(self) -> None:
+        if self.teacher_policy.action_distribution != "gaussian":
+            raise ValueError("TWIST teacher must use an unsquashed Gaussian policy")
+        if self.teacher_observation_size <= 0:
+            raise ValueError("teacher_observation_size must be positive")
+        if self.start_weight < self.end_weight or self.end_weight < 0.0:
+            raise ValueError(
+                "distillation weights must be nonnegative and decrease over time"
+            )
+        if self.anneal_updates <= 0:
+            raise ValueError("distillation anneal_updates must be positive")
 
 
 @chex.dataclass(frozen=True)
@@ -244,6 +288,7 @@ class RunnerState(NamedTuple):
     value_norm_state: ValueNormState
     observation_norm_state: ObservationNormState
     critic_observation_norm_state: ObservationNormState
+    task_state: Any
 
 
 def init_train_state(
@@ -268,7 +313,7 @@ def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
     return optax.apply_if_finite(
         optax.chain(
             optax.clip_by_global_norm(config.max_grad_norm),
-            optax.scale_by_adam(eps=1.0e-5),
+            optax.scale_by_adam(eps=config.adam_epsilon),
         ),
         max_consecutive_errors=1,
     )
@@ -349,9 +394,12 @@ def normalize_observation(
 ) -> jax.Array:
     if not config.normalize_observations:
         return observation
-    normalized = (observation - state.mean) / jnp.sqrt(
-        jnp.maximum(state.var, config.observation_norm_eps)
-    )
+    if config.observation_norm_epsilon_mode == "std_offset":
+        denominator = jnp.sqrt(jnp.maximum(state.var, 1.0e-8))
+        denominator = denominator + config.observation_norm_eps
+    else:
+        denominator = jnp.sqrt(jnp.maximum(state.var, config.observation_norm_eps))
+    normalized = (observation - state.mean) / denominator
     clipped = jnp.clip(
         normalized,
         -config.observation_norm_clip,
@@ -361,10 +409,22 @@ def normalize_observation(
     return jnp.where(valid, clipped, observation)
 
 
+def normalize_critic_observation(
+    observation: jax.Array,
+    state: ObservationNormState,
+    config: PPOConfig,
+) -> jax.Array:
+    if not config.normalize_critic_observations:
+        return observation
+    return normalize_observation(observation, state, config)
+
+
 def update_observation_norm_state(
     state: ObservationNormState,
     observation: jax.Array,
     config: PPOConfig,
+    *,
+    max_count: float | None = None,
 ) -> ObservationNormState:
     if not config.normalize_observations:
         return state
@@ -381,11 +441,27 @@ def update_observation_norm_state(
     batch_m2 = batch_var * batch_count
     correction = delta**2 * state.count * batch_count / total_count
     var = (state_m2 + batch_m2 + correction) / total_count
-    return ObservationNormState(
+    updated = ObservationNormState(
         mean=jnp.where(valid, mean, state.mean),
         var=jnp.where(valid, var, state.var),
         count=jnp.where(valid, total_count, state.count),
     )
+    if max_count is None:
+        return updated
+    should_update = state.count < jnp.asarray(max_count, dtype=state.count.dtype)
+    return jax.tree.map(
+        lambda new, old: jnp.where(should_update, new, old), updated, state
+    )
+
+
+def update_critic_observation_norm_state(
+    state: ObservationNormState,
+    observation: jax.Array,
+    config: PPOConfig,
+) -> ObservationNormState:
+    if not config.normalize_critic_observations:
+        return state
+    return update_observation_norm_state(state, observation, config)
 
 
 def value_norm_std(state: ValueNormState, config: PPOConfig) -> jax.Array:
@@ -475,6 +551,61 @@ def normalize_advantages(advantages: jax.Array) -> jax.Array:
     return (advantages - advantages.mean()) / (advantages.std() + 1.0e-8)
 
 
+def cosine_distillation_weight(
+    update: jax.Array | int,
+    *,
+    start: float = 0.1,
+    end: float = 0.01,
+    anneal_updates: int = 60_000,
+) -> jax.Array:
+    """Correct decreasing cosine schedule, including both endpoints."""
+
+    if start < end or end < 0.0:
+        raise ValueError("cosine distillation weights must satisfy start >= end >= 0")
+    if anneal_updates <= 0:
+        raise ValueError("anneal_updates must be positive")
+    progress = jnp.clip(
+        jnp.asarray(update, dtype=jnp.float32) / float(anneal_updates), 0.0, 1.0
+    )
+    return end + (start - end) * 0.5 * (1.0 + jnp.cos(jnp.pi * progress))
+
+
+def gaussian_policy_kl_student_teacher(
+    student: ActorCritic,
+    teacher: ActorCritic,
+    student_observation: jax.Array,
+    teacher_observation: jax.Array,
+) -> jax.Array:
+    """KL(student || teacher) in latent Gaussian space.
+
+    The released TWIST actor uses an ordinary diagonal Gaussian.
+    """
+
+    student_mean = (
+        student.actor(student_observation)
+        if student_observation.ndim == 1
+        else jax.vmap(student.actor)(student_observation)
+    )
+    teacher_mean = (
+        teacher.actor(teacher_observation)
+        if teacher_observation.ndim == 1
+        else jax.vmap(teacher.actor)(teacher_observation)
+    )
+    teacher_mean = jax.lax.stop_gradient(teacher_mean)
+    student_log_std = policy_log_std(student)
+    teacher_log_std = jax.lax.stop_gradient(policy_log_std(teacher))
+    student_variance = jnp.exp(2.0 * student_log_std)
+    teacher_variance = jnp.exp(2.0 * teacher_log_std)
+    elementwise = (
+        teacher_log_std
+        - student_log_std
+        + (student_variance + jnp.square(student_mean - teacher_mean))
+        / (2.0 * teacher_variance)
+        - 0.5
+    )
+    return jnp.mean(elementwise, axis=-1)
+
+
 def ppo_loss(
     model: ActorCritic,
     transitions: Transition,
@@ -483,7 +614,10 @@ def ppo_loss(
     config: PPOConfig,
     entropy_rng: jax.Array | None = None,
     value_norm_state: ValueNormState | None = None,
+    distillation: DistillationContext | None = None,
+    distillation_weight: jax.Array | float = 0.0,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
+    network_rng = entropy_rng if model.stochastic_actor else None
     log_prob, entropy, value = evaluate_actions(
         model,
         transitions.obs,
@@ -491,6 +625,7 @@ def ppo_loss(
         transitions.critic_obs,
         latent_action=transitions.latent_action,
         entropy_rng=entropy_rng,
+        network_rng=network_rng,
     )
 
     log_ratio = log_prob - transitions.log_prob
@@ -512,17 +647,29 @@ def ppo_loss(
     value_clipped = old_value_for_loss + jnp.clip(
         value - old_value_for_loss, -config.clip_eps, config.clip_eps
     )
-    value_loss = (
-        0.5
-        * jnp.maximum(
+    value_loss = config.value_loss_scale * (
+        jnp.maximum(
             (value - targets_for_loss) ** 2,
             (value_clipped - targets_for_loss) ** 2,
         ).mean()
     )
-    value_loss_raw = 0.5 * ((raw_value - targets) ** 2).mean()
+    value_loss_raw = config.value_loss_scale * ((raw_value - targets) ** 2).mean()
     entropy_loss = entropy.mean()
+    distillation_kl = jnp.asarray(0.0, dtype=jnp.float32)
+    if distillation is not None:
+        teacher_observation = transitions.info["_distillation_teacher_observation"]
+        distillation_kl = gaussian_policy_kl_student_teacher(
+            model,
+            distillation.teacher_policy,
+            transitions.obs,
+            teacher_observation,
+        ).mean()
+    distillation_weight = jnp.asarray(distillation_weight, dtype=jnp.float32)
     total_loss = (
-        actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy_loss
+        actor_loss
+        + config.vf_coef * value_loss
+        - config.ent_coef * entropy_loss
+        + distillation_weight * distillation_kl
     )
     metrics = {
         "loss": total_loss,
@@ -530,6 +677,8 @@ def ppo_loss(
         "value_loss": value_loss,
         "value_loss_raw": value_loss_raw,
         "entropy": entropy_loss,
+        "distillation/kl_student_teacher": distillation_kl,
+        "distillation/weight": distillation_weight,
         "approx_kl": ((ratio - 1.0) - safe_log_ratio).mean(),
         "nonfinite/current_log_probability": (~current_log_prob_finite).astype(
             jnp.float32
@@ -549,6 +698,8 @@ def update_ppo(
     config: PPOConfig,
     learning_rate: jax.Array | float | None = None,
     value_norm_state: ValueNormState | None = None,
+    distillation: DistillationContext | None = None,
+    distillation_weight: jax.Array | float = 0.0,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
     bounded_policy = config.policy.action_distribution == "tanh_gaussian"
     policy_action_max_abs = (
@@ -654,6 +805,8 @@ def update_ppo(
                     config,
                     entropy_rng=entropy_key,
                     value_norm_state=value_norm_state,
+                    distillation=distillation,
+                    distillation_weight=distillation_weight,
                 )
 
             (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
@@ -904,6 +1057,19 @@ def target_saturation_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     }
 
 
+def physics_diagnostics(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
+    diagnostics = {}
+    for name, value in info.items():
+        if not name.startswith("physics/"):
+            continue
+        value = value.astype(jnp.float32)
+        if name.endswith("_overflow"):
+            diagnostics[f"mean_{name}"] = value.mean()
+        else:
+            diagnostics[f"max_{name}"] = value.max()
+    return diagnostics
+
+
 def gait_diagnostics(
     info: dict[str, jax.Array], control_timestep: float
 ) -> dict[str, jax.Array]:
@@ -1003,6 +1169,8 @@ def collect_rollout(
     value_norm_state: ValueNormState | None = None,
     observation_norm_state: ObservationNormState | None = None,
     critic_observation_norm_state: ObservationNormState | None = None,
+    distillation: DistillationContext | None = None,
+    task_state: Any = None,
 ) -> tuple[
     tuple[
         Any,
@@ -1011,6 +1179,7 @@ def collect_rollout(
         jax.Array,
         ObservationNormState,
         ObservationNormState,
+        Any,
     ],
     Transition,
 ]:
@@ -1024,6 +1193,16 @@ def collect_rollout(
         critic_observation_norm_state = init_observation_norm_state(
             int(critic_obs_stack.shape[-2] * critic_obs_stack.shape[-1])
         )
+    if task_state is None:
+        task_state = jnp.zeros((0,), dtype=jnp.float32)
+    observation_norm_max_count = (
+        None
+        if config.observation_norm_update_updates is None
+        else float(
+            config.observation_norm_update_updates * config.num_envs * config.num_steps
+        )
+    )
+    rollout_normalization = config.observation_norm_update_mode == "rollout"
 
     def env_step(
         carry: tuple[
@@ -1033,6 +1212,7 @@ def collect_rollout(
             jax.Array,
             ObservationNormState,
             ObservationNormState,
+            Any,
         ],
         _: None,
     ):
@@ -1043,16 +1223,26 @@ def collect_rollout(
             key,
             actor_norm,
             critic_norm,
+            current_task_state,
         ) = carry
         key, action_key, env_key = jax.random.split(key, 3)
         raw_policy_obs = stacked_observation(last_obs_stack)
         raw_critic_policy_obs = stacked_observation(last_critic_obs_stack)
-        actor_norm = update_observation_norm_state(actor_norm, raw_policy_obs, config)
-        critic_norm = update_observation_norm_state(
+        if rollout_normalization:
+            policy_actor_norm = observation_norm_state
+        else:
+            actor_norm = update_observation_norm_state(
+                actor_norm,
+                raw_policy_obs,
+                config,
+                max_count=observation_norm_max_count,
+            )
+            policy_actor_norm = actor_norm
+        critic_norm = update_critic_observation_norm_state(
             critic_norm, raw_critic_policy_obs, config
         )
-        policy_obs = normalize_observation(raw_policy_obs, actor_norm, config)
-        critic_policy_obs = normalize_observation(
+        policy_obs = normalize_observation(raw_policy_obs, policy_actor_norm, config)
+        critic_policy_obs = normalize_critic_observation(
             raw_critic_policy_obs, critic_norm, config
         )
         action, latent_action, log_prob, value, action_mean = (
@@ -1063,16 +1253,33 @@ def collect_rollout(
                 critic_obs=critic_policy_obs,
             )
         )
-        env_action = jnp.clip(action, -env.action_clip, env.action_clip)
+        current_env = (
+            env.with_task_state(current_task_state)
+            if hasattr(env, "with_task_state")
+            else env
+        )
+        env_action = jnp.clip(action, -current_env.action_clip, current_env.action_clip)
         value = denormalize_value(value, value_norm_state, config)
-        next_state, next_obs, reward, done, info = env.step_batch(
+        next_state, next_obs, reward, done, info = current_env.step_batch(
             state, action, rng=env_key
         )
-        next_critic_obs = env.critic_observation_batch(next_state)
+        next_task_state = (
+            current_env.update_task_state(current_task_state, info)
+            if hasattr(current_env, "update_task_state")
+            else current_task_state
+        )
+        next_critic_obs = current_env.critic_observation_batch(next_state)
         next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
         next_critic_obs_stack = update_observation_stack(
             last_critic_obs_stack, next_critic_obs, done
         )
+        if rollout_normalization:
+            actor_norm = update_observation_norm_state(
+                actor_norm,
+                stacked_observation(next_obs_stack),
+                config,
+                max_count=observation_norm_max_count,
+            )
         terminal = info.get("done/terminal", done)
         bootstrap_obs = info.get("bootstrap_observation", next_obs)
         bootstrap_obs = jnp.where(terminal[:, None], next_obs, bootstrap_obs)
@@ -1089,9 +1296,9 @@ def collect_rollout(
         _, _, bootstrap_value = apply_policy(
             policy,
             normalize_observation(
-                stacked_observation(bootstrap_obs_stack), actor_norm, config
+                stacked_observation(bootstrap_obs_stack), policy_actor_norm, config
             ),
-            normalize_observation(
+            normalize_critic_observation(
                 stacked_observation(bootstrap_critic_obs_stack), critic_norm, config
             ),
         )
@@ -1101,6 +1308,17 @@ def collect_rollout(
             for name, value in info.items()
             if name not in {"bootstrap_observation", "bootstrap_critic_observation"}
         }
+        if distillation is not None:
+            raw_teacher_observation = raw_critic_policy_obs[
+                ..., : distillation.teacher_observation_size
+            ]
+            transition_info["_distillation_teacher_observation"] = (
+                normalize_observation(
+                    raw_teacher_observation,
+                    distillation.teacher_observation_norm_state,
+                    distillation.teacher_config,
+                )
+            )
         transition = Transition(
             done,
             terminal,
@@ -1123,6 +1341,7 @@ def collect_rollout(
             key,
             actor_norm,
             critic_norm,
+            next_task_state,
         ), transition
 
     return jax.lax.scan(
@@ -1134,6 +1353,7 @@ def collect_rollout(
             rng,
             observation_norm_state,
             critic_observation_norm_state,
+            task_state,
         ),
         None,
         config.num_steps,
@@ -1159,11 +1379,19 @@ def init_runner_state(
     params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
     env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
     step_count = env.initial_step_counts(config.num_envs, step_count_key)
-    env_state = env_state.replace(step_count=step_count, episode_length=step_count)
+    if hasattr(env, "with_initial_step_counts"):
+        env_state = env.with_initial_step_counts(env_state, step_count)
+    else:
+        env_state = env_state.replace(step_count=step_count, episode_length=step_count)
     if env.ppo_stagger_initial_step_count:
         rng, staggered_obs_key = jax.random.split(rng)
         obs = env.observation_batch(env_state, staggered_obs_key)
     critic_obs = env.critic_observation_batch(env_state)
+    task_state = (
+        env.initial_task_state()
+        if hasattr(env, "initial_task_state")
+        else jnp.zeros((0,), dtype=jnp.float32)
+    )
     obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
     critic_obs_stack = init_observation_stack(critic_obs, config.policy.obs_stack_size)
     return (
@@ -1183,6 +1411,7 @@ def init_runner_state(
             critic_observation_norm_state=init_observation_norm_state(
                 policy_observation_size(critic_observation_size(env), config.policy)
             ),
+            task_state=task_state,
         ),
         static_policy,
         optimizer,
@@ -1206,6 +1435,7 @@ def update_runner_state(
     optimizer: optax.GradientTransformation,
     env: PPOEnvironment,
     config: PPOConfig,
+    distillation: DistillationContext | None = None,
 ) -> tuple[RunnerState, dict[str, jax.Array]]:
     validate_action_limit_contract(config, env.action_clip)
     key, rollout_key, update_key = jax.random.split(runner_state.rng, 3)
@@ -1223,6 +1453,7 @@ def update_runner_state(
             _,
             observation_norm_state,
             critic_observation_norm_state,
+            task_state,
         ),
         transitions,
     ) = collect_rollout(
@@ -1236,13 +1467,15 @@ def update_runner_state(
         runner_state.value_norm_state,
         runner_state.observation_norm_state,
         runner_state.critic_observation_norm_state,
+        distillation,
+        runner_state.task_state,
     )
     _, _, last_value = apply_policy(
         policy,
         normalize_observation(
             stacked_observation(obs_stack), observation_norm_state, config
         ),
-        normalize_observation(
+        normalize_critic_observation(
             stacked_observation(critic_obs_stack),
             critic_observation_norm_state,
             config,
@@ -1256,6 +1489,16 @@ def update_runner_state(
     learning_rate = learning_rate_for_update(
         config, runner_state.update, runner_state.learning_rate
     )
+    distillation_weight = (
+        cosine_distillation_weight(
+            runner_state.update,
+            start=distillation.start_weight,
+            end=distillation.end_weight,
+            anneal_updates=distillation.anneal_updates,
+        )
+        if distillation is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
     train_state, metrics = update_ppo(
         train_state,
         optimizer,
@@ -1266,6 +1509,8 @@ def update_runner_state(
         config,
         learning_rate=learning_rate,
         value_norm_state=value_norm_state,
+        distillation=distillation,
+        distillation_weight=distillation_weight,
     )
     next_learning_rate = adapt_learning_rate(
         learning_rate,
@@ -1275,6 +1520,9 @@ def update_runner_state(
     )
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
     reward_means = reward_component_means(transitions.info)
+    task_metrics = (
+        env.task_state_metrics(task_state) if hasattr(env, "task_state_metrics") else {}
+    )
     metrics = {
         **metrics,
         "learning_rate": learning_rate,
@@ -1311,8 +1559,10 @@ def update_runner_state(
         **command_diagnostic_means(transitions.info),
         **foot_contact_means(transitions.info),
         **target_saturation_means(transitions.info),
+        **physics_diagnostics(transitions.info),
         **gait_diagnostics(transitions.info, env.control_timestep),
         **reward_means,
+        **task_metrics,
     }
     return (
         RunnerState(
@@ -1327,6 +1577,7 @@ def update_runner_state(
             value_norm_state=value_norm_state,
             observation_norm_state=observation_norm_state,
             critic_observation_norm_state=critic_observation_norm_state,
+            task_state=task_state,
         ),
         metrics,
     )
@@ -1405,6 +1656,27 @@ def validate_ppo_config(config: PPOConfig) -> None:
             "policy.action_distribution must be 'gaussian' or 'tanh_gaussian', got "
             f"{config.policy.action_distribution!r}"
         )
+    if config.policy.architecture not in {
+        "mlp",
+        "twist_teacher",
+        "twist_student",
+        "twist2",
+    }:
+        raise ValueError(
+            "policy.architecture must be 'mlp', 'twist_teacher', "
+            f"'twist_student', or 'twist2', got {config.policy.architecture!r}"
+        )
+    if config.policy.architecture != "mlp":
+        if config.policy.hidden_dims != (512, 512, 256, 128):
+            raise ValueError("TWIST policy.hidden_dims must be [512, 512, 256, 128]")
+        if config.policy.activation != "swish":
+            raise ValueError("TWIST policy.activation must be swish")
+        if config.policy.obs_stack_size != 1:
+            raise ValueError(
+                "TWIST histories are explicit; policy.obs_stack_size must be 1"
+            )
+        if not config.policy.layer_norm_final_hidden:
+            raise ValueError("TWIST requires final-hidden LayerNorm")
     if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
         raise ValueError(
             "policy.action_limit must be positive and finite, got "

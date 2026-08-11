@@ -1,0 +1,10 @@
+stage: teacher
+config:
+  policy:
+    architecture: twist_teacher
+checkpoint_config:
+  name: twist_teacher_seed1
+  wandb_artifact_name: twist_teacher_seed1
+wandb_config:
+  run_name: twist_teacher_seed1
+  tags: [twist, teacher, whole-body]

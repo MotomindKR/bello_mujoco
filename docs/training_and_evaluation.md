@@ -81,9 +81,10 @@ must be initialized, clean, and at their recorded commits. Fetch or push before
 a local run so that tracking state is current. Evaluation, resume, and hardware
 execution reject a dirty root or submodule worktree. They also reject a
 different `HEAD` unless `allow_git_commit_mismatch=true` is explicitly set. That
-override bypasses only root-commit equality; metadata, state layout, task,
-motion content, submodule integrity, and runtime validation remain active. It
-cannot load older checkpoint envelopes that do not contain `git_commit`.
+override bypasses root-commit equality and provenance-only source-revision
+identity; metadata semantics, state layout, task, motion content, submodule
+integrity, and runtime validation remain active. It cannot load older
+checkpoint envelopes that do not contain `git_commit`.
 
 Checkpoint output must be outside the source repository or covered by a Git
 ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name
@@ -111,6 +112,12 @@ update; output destinations may change.
 
 Locomotion final checkpoints are timestamped checkpoint roots. Motion runs also
 maintain a `final` child below their timestamped root.
+TWIST teacher and student runs likewise write `final` children, but their stage
+types are not interchangeable. TWIST metadata additionally binds the packed
+dataset, Bello model, joint/body order, observation contract, and source
+revision. Student metadata binds the exact teacher metadata fingerprint and
+corrected KL schedule. Public TWIST evaluation accepts only the student and
+reports deterministic global, per-source, and per-clip held-out metrics.
 
 Read the recorded revision without loading policy state:
 
@@ -145,3 +152,10 @@ Checkpoints created before embedded Git provenance remain tied to their
 historical source and must be run from the revision identified by their
 training run or artifact name; they are not converted or stamped
 retroactively.
+
+`bello-train` disables JAX GPU-memory preallocation and selects JAX's
+`cuda_malloc_async` allocator unless the operator has explicitly configured
+`XLA_PYTHON_CLIENT_PREALLOCATE` or `TF_GPU_ALLOCATOR`. MJX-Warp and JAX allocate
+device memory independently; the async allocator lets unused JAX allocations
+be reclaimed instead of leaving Warp's transient collision workspace starved
+even when monitoring still reports apparent free memory.

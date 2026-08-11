@@ -1,3 +1,6 @@
 [submodule "deps/bello-stack"]
 	path = deps/bello-stack
 	url = https://github.com/MotomindKR/bello-stack.git
+[submodule "deps/GMR"]
+	path = deps/GMR
+	url = https://github.com/MotomindKR/GMR.git

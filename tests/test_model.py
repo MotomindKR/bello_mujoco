@@ -350,7 +350,17 @@ def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
     mjx_model = randomized.mjx_model
     assert mjx_model.jnt_pos.shape == (4, randomized.mj_model.njnt, 3)
     assert mjx_model.body_inertia.shape == (4, randomized.mj_model.nbody, 3)
+    assert mjx_model.body_mass.shape == (4, randomized.mj_model.nbody)
+    assert mjx_model.geom_friction.shape == (4, randomized.mj_model.ngeom, 3)
     assert randomized.joint_angle_offset.shape == (4, randomized.mj_model.nu)
+    assert randomized.physical_randomization.shape == (
+        4,
+        5 + 2 * randomized.mj_model.nu,
+    )
+    assert not np.any(randomized.physical_randomization[:, :4])
+    assert np.all(randomized.physical_randomization[:, 4] == 1.0)
+    assert not np.any(randomized.physical_randomization[:, 5:])
+    assert not np.any(randomized.gravity_fraction)
 
     joint_ids = np.unique(randomized.mj_model.actuator_trnid[:, 0]).astype(np.int32)
     body_ids = np.unique(randomized.mj_model.jnt_bodyid[joint_ids]).astype(np.int32)
@@ -368,6 +378,14 @@ def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
     np.testing.assert_allclose(randomized.mj_model.jnt_pos, jnt_pos[0], atol=1.0e-7)
     np.testing.assert_allclose(
         randomized.mj_model.body_inertia, body_inertia[0], atol=1.0e-7
+    )
+    np.testing.assert_allclose(
+        mjx_model.body_mass,
+        np.broadcast_to(nominal.mj_model.body_mass, mjx_model.body_mass.shape),
+    )
+    np.testing.assert_allclose(
+        mjx_model.geom_friction,
+        np.broadcast_to(nominal.mj_model.geom_friction, mjx_model.geom_friction.shape),
     )
 
     nominal_inertia = nominal.mj_model.body_inertia[body_ids]
@@ -405,6 +423,41 @@ def test_model_randomization_is_prefix_invariant_across_batch_sizes(
         one.mjx_model.body_inertia[0], four.mjx_model.body_inertia[0]
     )
     np.testing.assert_array_equal(one.joint_angle_offset[0], four.joint_angle_offset[0])
+
+
+def test_model_randomization_applies_twist_physical_ranges(
+    full_body_asset: PreparedAsset,
+) -> None:
+    nominal = load_prepared_bello_model(
+        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+    )
+    randomized = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        batch_size=4,
+        model_randomization=ModelRandomizationConfig(
+            enabled=True,
+            seed=23,
+            added_base_mass_range=(-1.0, 1.0),
+            base_com_offset_range=(-0.02, 0.02),
+            friction_range=(0.2, 1.5),
+            actuator_strength_range=(0.8, 1.2),
+            gravity_fraction_range=(-0.1, 0.1),
+        ),
+    )
+    assert randomized.mjx_model is not None
+    physical = randomized.physical_randomization
+    np.testing.assert_allclose(
+        np.asarray(randomized.mjx_model.body_mass).sum(axis=1)
+        - nominal.mj_model.body_mass.sum(),
+        physical[:, 0],
+        atol=1.0e-5,
+    )
+    assert np.max(np.abs(physical[:, 1:4])) <= 0.02 + 1.0e-7
+    assert np.min(physical[:, 4]) >= 0.2 - 1.0e-7
+    assert np.max(physical[:, 4]) <= 1.5 + 1.0e-7
+    assert np.max(np.abs(physical[:, 5:])) <= 0.2 + 1.0e-7
+    assert np.max(np.abs(randomized.gravity_fraction)) <= 0.1 + 1.0e-7
 
 
 def test_native_episode_reset_clears_all_mujoco_solver_state(
@@ -467,6 +520,11 @@ def test_plane_slope_stays_static_in_batched_warp_model(
         ({"joint_angle_offset_range": (0.1, -0.1)}, "joint_angle_offset_range"),
         ({"joint_angle_offset_scope": "bad"}, "joint_angle_offset_scope"),
         ({"joint_inertia_scale_range": (0.0, 1.0)}, "positive values"),
+        ({"added_base_mass_range": (1.0, -1.0)}, "added_base_mass_range"),
+        ({"base_com_offset_range": (float("nan"), 0.0)}, "base_com_offset_range"),
+        ({"friction_range": (0.0, 1.0)}, "positive values"),
+        ({"actuator_strength_range": (-0.1, 1.0)}, "positive values"),
+        ({"gravity_fraction_range": (0.1, -0.1)}, "gravity_fraction_range"),
     ],
 )
 def test_model_randomization_config_rejects_invalid_ranges(

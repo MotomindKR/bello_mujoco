@@ -140,6 +140,11 @@ class FakeEnv:
         return jnp.zeros((batch_size,), dtype=jnp.int32)
 
 
+class FakeTaskStateEnv(FakeEnv):
+    def initial_task_state(self) -> jax.Array:
+        return jnp.asarray((9.0, 9.0, 9.0), dtype=jnp.float32)
+
+
 class FakeMotionEnv(FakeEnv):
     task = "motion_tracking"
 
@@ -397,6 +402,21 @@ def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> N
     assert document["metadata_sha256"].startswith("sha256:")
     assert document["train_layout_sha256"].startswith("sha256:")
     assert document["continuation_layout_sha256"].startswith("sha256:")
+
+
+def test_checkpoint_round_trips_nonempty_task_state(tmp_path: Path) -> None:
+    env = FakeTaskStateEnv()
+    config = ppo_config()
+    state = runner_state(config, env)._replace(
+        task_state=jnp.asarray((8.5, 7.0, 3.0), dtype=jnp.float32)
+    )
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "task_state_checkpoint"
+
+    save_checkpoint(path, state, checkpoint_metadata)
+    restored, _, _, _ = restore_runner_checkpoint(path, env, checkpoint_metadata)
+
+    np.testing.assert_array_equal(restored.task_state, state.task_state)
 
 
 def test_motion_checkpoint_rejects_locomotion_environment_task(
@@ -726,6 +746,7 @@ def test_checkpoint_failure_never_publishes_partial_directory(
     config = ppo_config()
     final_path = tmp_path / "failed"
     save_calls = 0
+    closed = False
 
     class FailingCheckpointer:
         def save(self, path: Path, item: Any, *, force: bool) -> None:
@@ -737,6 +758,10 @@ def test_checkpoint_failure_never_publishes_partial_directory(
                 (path / "partial").write_text("partial", encoding="utf-8")
                 raise RuntimeError("simulated continuation failure")
 
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
     monkeypatch.setattr(
         checkpoint.ocp, "PyTreeCheckpointer", lambda: FailingCheckpointer()
     )
@@ -747,6 +772,7 @@ def test_checkpoint_failure_never_publishes_partial_directory(
         )
 
     assert save_calls == 2
+    assert closed
     assert not final_path.exists()
     assert list(tmp_path.glob(".failed.tmp-*")) == []
 
@@ -932,6 +958,7 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
     path = tmp_path / "layout_mismatch"
     write_checkpoint_document(path, document)
     restore_calls = 0
+    closed = False
 
     class FakeCheckpointer:
         def restore(self, path: Path, *, item: Any, restore_args: Any) -> Any:
@@ -939,6 +966,10 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
             del path, restore_args
             restore_calls += 1
             return item
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
 
     monkeypatch.setattr(
         checkpoint.ocp, "PyTreeCheckpointer", lambda: FakeCheckpointer()
@@ -956,6 +987,7 @@ def test_restore_rejects_layout_fingerprint_before_affected_orbax_restore(
             restore_evaluation_checkpoint(path)
 
     assert restore_calls == (1 if restore_runner else 0)
+    assert closed == restore_runner
 
 
 def test_save_and_load_reject_updates_outside_training_range(

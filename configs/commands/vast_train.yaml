@@ -1,11 +1,17 @@
 experiment: hardware_locomotion
 motion_path: null
+dataset_path: null
+teacher_checkpoint_path: null
+allow_git_commit_mismatch: false
 max_price: null
 branch: null  # Required: exact branch to fetch and pin.
 run_name: null
 duration_hours: 6.0
 skip_confirmation: false
 dry_run: false
+preferred_countries: [KR, JP, TW, HK, SG]
+min_upload_mib_per_second: 5.0
+route_probe_mib: 16
 hydra:
   job:
     chdir: false

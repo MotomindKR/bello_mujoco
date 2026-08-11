@@ -26,6 +26,7 @@ MUJOCO_LOG.TXT
 
 assets/generated/
 motions/local/
+datasets/
 
 *.egg-info/
 dist/

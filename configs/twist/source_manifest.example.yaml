@@ -1,0 +1,39 @@
+schema_version: 1
+split_seed: 20251009
+sequences:
+  - source_kind: amass
+    source_id: amass
+    sequence_id: cmu_001_01
+    dataset_release: AMASS-2024
+    license_id: AMASS-terms
+    local_path: /operator/data/amass/CMU/001/01_poses.npz
+    subject_id: "001"
+    session_id: CMU
+    original_sequence_id: "01"
+    pose_representation: smpl-h
+    frame_rate: 120.0
+    requested_split: auto
+    sampling_weight: 1.0
+    source_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    subdataset: CMU
+    near_duplicate_fingerprint: null
+    metadata: {}
+  - source_kind: omomo
+    source_id: omomo
+    sequence_id: subject01_pick_001
+    dataset_release: OMOMO-v1
+    license_id: OMOMO-research-license
+    local_path: /operator/data/omomo/smplx/subject01_pick_001.npz
+    subject_id: subject01
+    session_id: pick
+    original_sequence_id: "001"
+    pose_representation: smpl-x
+    frame_rate: 30.0
+    requested_split: evaluation
+    sampling_weight: 1.0
+    source_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    subdataset: null
+    near_duplicate_fingerprint: null
+    metadata:
+      object_id: box_01
+      interaction: pick

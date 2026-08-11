@@ -1,0 +1,6 @@
+checkpoint_config:
+  name: twist2_seed1
+  wandb_artifact_name: twist2_seed1
+wandb_config:
+  run_name: twist2_seed1
+  tags: [twist2, one-stage, whole-body]

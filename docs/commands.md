@@ -1,6 +1,6 @@
 # Command reference
 
-The repository exposes seven public commands. Each command has a strict Hydra
+The repository exposes eight public commands. Each command has a strict Hydra
 key set: keys not declared by that command fail during decoding, and the
 resulting mapping is loaded into an immutable dataclass before the workflow
 starts. The command YAML is the sole owner of defaults; every schema field must
@@ -65,13 +65,16 @@ Configuration source: `configs/commands/train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, or `motion`; `smoke` | Select the maintained profile stack. |
+| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `smoke` | Select the maintained profile stack. |
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
+| `contact_budget_per_env` | integer or `null`; `null` | Override the profile's positive Warp active-contact capacity per environment. Use the recorded value when resuming a checkpoint and raise it only when capacity telemetry reports overflow. |
 | `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. Do not supply this field for locomotion profiles. |
+| `dataset_path` | path or `null`; `null` | Override the packed `index.json` for a TWIST or TWIST2 run. Other experiments reject it. |
+| `teacher_checkpoint_path` | path or `null`; `null` | Required for `twist_student` and rejected by every other experiment, including `twist_teacher`. |
 | `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and normally match its recorded Git commit; resume then validates the full training and environment state. |
-| `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; all metadata, layout, state, and content checks still apply. |
+| `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; it waives source-revision identity while metadata semantics, layouts, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
 | `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. It must be one path component. |
 | `wandb_enabled` | boolean or `null`; `null` | Enable or disable W&B independently of the profile default. |
@@ -86,6 +89,9 @@ Profile composition is deterministic:
 | `locomotion` | `configs/train/default.yaml`, then `configs/profiles/train/locomotion.yaml` |
 | `hardware_locomotion` | locomotion layers, then `configs/profiles/train/hardware_locomotion.yaml` |
 | `motion` | `configs/train_motion/default.yaml`, then `configs/profiles/train/motion.yaml` |
+| `twist_teacher` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_teacher.yaml` |
+| `twist_student` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_student.yaml` |
+| `twist2` | `configs/train_twist2/default.yaml`, then `configs/profiles/train/twist2.yaml` |
 
 The public fields above are applied after profile composition. See
 [Training configuration](training_configuration.md) for every nested section
@@ -101,13 +107,14 @@ Configuration source: `configs/commands/eval.yaml`.
 
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
-| `task` | `locomotion` or `motion`; `locomotion` | both | Select checkpoint validation and evaluation mode. |
-| `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. `~` is expanded. |
-| `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout than the checkpoint's recorded commit. Other checkpoint checks still apply. |
-| `output_path` | path; `outputs/evaluation/motion.mp4` | motion | Video destination. Parent directories are created by the renderer. |
+| `task` | `locomotion`, `motion`, `twist_student`, or `twist2`; `locomotion` | all | Select checkpoint validation and evaluation mode. |
+| `checkpoint_path` | path or `null`; `null` | all | Required checkpoint directory. `~` is expanded. |
+| `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout than the checkpoint's recorded commit. Other checkpoint checks still apply. |
+| `output_path` | path; `outputs/evaluation/motion.mp4` | motion, twist_student, twist2 | Video destination for motion. TWIST and TWIST2 write JSON and select task-specific `.json` defaults when this field was not explicitly overridden. |
+| `video_path` | path or `null`; `null` | twist2 | TWIST2 representative-video destination. When omitted, TWIST2 writes `outputs/evaluation/twist2.mp4`; explicitly set `video_path=null` to score without rendering. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed `+X` lateral/right, `+Y` forward, and `+Z` yaw velocity command. |
-| `steps` | positive integer or `null`; `null` | both | Bound rollout steps. `null` is unbounded for locomotion and uses the motion episode length for motion. |
-| `stop_on_done` | boolean; `false` | both | Stop at the first done/terminal state. Otherwise locomotion resets and continues. Motion may continue after task termination, but timeout and nonfinite state always stop. |
+| `steps` | positive integer or `null`; `null` | locomotion, motion, twist2 | Bound rollout steps. It limits only the representative video for TWIST2 and is rejected for `twist_student`. |
+| `stop_on_done` | boolean; `false` | locomotion, motion, twist_student | Stop at the first done/terminal state. TWIST2 always stops terminal clips so its held-out metrics cannot cross an automatic reset, and rejects this override. |
 | `stochastic_actions` | boolean; `false` | locomotion | Sample from the checkpoint policy instead of using its deterministic mean. |
 | `action_seed` | nonnegative integer; `0` | locomotion | PRNG seed used only for stochastic actions. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Read commands from controller zero. When disconnected, the command is zero. When false, `command` is used continuously. |
@@ -136,6 +143,12 @@ formulation.
 
 Motion-policy evaluation renders at 640 by 480 pixels and 50 fps. The `width`,
 `height`, and `fps` fields under `bello-motion` configure reference rendering.
+TWIST evaluation accepts only student checkpoints and deterministically scores
+every held-out clip. TWIST2 likewise requires its own typed one-stage checkpoint,
+scores every held-out clip, and renders the first held-out clip by default;
+`steps` bounds only that representative video. Both tasks reject locomotion
+commands, stochastic actions, and gamepad fields. TWIST2 also rejects
+`stop_on_done` because terminal stopping is mandatory.
 
 ## `bello-motion`
 
@@ -182,6 +195,33 @@ failure: root-height error above 0.35 m, root-orientation error above 1.2 rad, o
 end-effector position error above 0.65 m. `require_complete=true` turns that
 report outcome into command failure.
 
+## `bello-twist-data`
+
+Validate operator-supplied licensed sources or pack already-retargeted clips.
+It never downloads datasets or body models. Configuration source:
+`configs/commands/twist_data.yaml`.
+
+| Field | Type and default | Meaning |
+| --- | --- | --- |
+| `operation` | `scan_amass`, `validate`, or `build`; `validate` | Generate an AMASS manifest, validate the source boundary, or build split files and an index. |
+| `manifest` | path or `null`; `null` | Output path for `scan_amass`; required input manifest otherwise. |
+| `source_root` | path or `null`; `null` | Aggregated AMASS root for `scan_amass`; only `*_stageii.npz` motion archives are included. |
+| `dataset_release` | string or `null`; `null` | Required operator-supplied AMASS release identifier for `scan_amass`. |
+| `license_id` | string or `null`; `null` | Required operator-supplied license identifier for `scan_amass`. |
+| `split_seed` | integer; `20251009` | Fixed seed recorded in a generated manifest. |
+| `sampling_weight` | positive float; `1.0` | Explicit weight assigned to every scanned sequence. |
+| `overwrite` | boolean; `false` | Permit replacement of an existing generated manifest. |
+| `body_model_root` | path or `null`; `null` | Required for SMPL-H/SMPL-X and checked for the three SMPL-X NPZ model files. |
+| `retargeted_root` | path or `null`; `null` | Required only for build; clips use `<source_id>__<sequence_id>.npz`. |
+| `output_root` | path or `null`; `null` | Required only for build and must be empty. |
+| `robot_model_path` | canonical Bello URDF path | Robot content used in provenance validation and the dataset fingerprint. |
+| `gmr_root` | `deps/GMR` | Clean pinned GMR checkout whose exact commit enters the fingerprint. |
+| `quality_config` | `configs/twist/quality.yaml` | Versioned rejection and quarantine thresholds. |
+| `curation_config` | `configs/twist/amass_flat_ground.yaml` | Versioned pre-split exclusions for generated outputs and motions requiring unsupported terrain; used only by `scan_amass`. |
+
+See [TWIST teacher and student](twist.md) for acquisition, conversion,
+splitting, licensing, provenance, and output contracts.
+
 ## `bello-vast-train`
 
 Launch one branch-pinned Vast.ai lifecycle. The launcher selects an offer,
@@ -194,18 +234,26 @@ Configuration source: `configs/commands/vast_train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, or `motion`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
+| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
+| `dataset_path` | path or `null`; `null` | Required local schema-3 `index.json` for TWIST or TWIST2. Its five portable dataset files are transferred with resumable `rsync` and verified remotely. |
+| `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |
+| `allow_git_commit_mismatch` | boolean; `false` | Permit a staged student teacher checkpoint from a different clean source commit. Dataset, robot, observation, and layout checks remain enforced. |
 | `max_price` | positive float or `null`; `null` | Maximum total hourly rental price. A positive value is required, including for dry-run offer queries. |
 | `branch` | string or `null`; `null` | Required remote `origin` branch. A null value is rejected before rental. |
 | `run_name` | string or `null`; `null` | Explicit lifecycle/W&B run label. Otherwise a unique name is generated from the profile, branch, commit, and current UTC timestamp. |
 | `duration_hours` | positive float; `6.0` | Hard job timeout. The progress timeout is capped at 30 minutes and never exceeds this duration. |
 | `skip_confirmation` | boolean; `false` | Skip the final rental confirmation for unattended operation. |
 | `dry_run` | boolean; `false` | Resolve Git state and print the offer query without reading credentials or renting. |
+| `preferred_countries` | ISO country-code list; `[KR, JP, TW, HK, SG]` | Rank nearby offers ahead of globally better marketplace value. |
+| `min_upload_mib_per_second` | positive float; `5.0` | Reject and destroy a TWIST instance whose direct-SSH upload probe falls below this rate. |
+| `route_probe_mib` | positive integer; `16` | Payload size for the pre-transfer direct-SSH upload probe. |
 
 The selected profile, `pyproject.toml`, `uv.lock`, and any motion clip are
 verified in the exact `origin/<branch>` commit before rental. Ignored local
-motions are never uploaded implicitly. Credentials come from `VAST_API_KEY` or
+motions are never uploaded implicitly. TWIST transfers only the five files
+named by its validated dataset contract and, for a student, the selected
+checkpoint directory. Credentials come from `VAST_API_KEY` or
 keyring `vast/api_key`, `WANDB_API_KEY` or keyring `wandb/api_key`, and
 optionally `GITHUB_TOKEN` or keyring `github/bello_mujoco_read_token`.
 
