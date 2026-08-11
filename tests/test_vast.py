@@ -1043,8 +1043,8 @@ def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
     ]
     assert "TF_GPU_ALLOCATOR=cuda_malloc_async" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
-        'if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]'
-        in vast_remote.REMOTE_TRAIN_SCRIPT
+        'if [[ "$experiment" != twist_* && "$experiment" != twist2 '
+        '&& "$experiment" != sonic ]]' in vast_remote.REMOTE_TRAIN_SCRIPT
     )
     assert 'training_overrides+=("dataset_path=$dataset_path")' in (
         vast_remote.REMOTE_TRAIN_SCRIPT
@@ -1087,6 +1087,10 @@ def test_sonic_remote_command_runs_bounded_baseline_and_evaluation() -> None:
     )
     assert "uv run bello-eval" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "task=sonic" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert (
+        '"$experiment" != twist2 && "$experiment" != sonic'
+        in vast_remote.REMOTE_TRAIN_SCRIPT
+    )
     assert 'output_path="$result_dir/sonic_evaluation.json"' in (
         vast_remote.REMOTE_TRAIN_SCRIPT
     )

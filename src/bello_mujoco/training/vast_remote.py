@@ -297,7 +297,7 @@ preflight_overrides=(
   wandb_enabled=false
   checkpoint_name="preflight-$run_name"
 )
-if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]; then
+if [[ "$experiment" != twist_* && "$experiment" != twist2 && "$experiment" != sonic ]]; then
   preflight_overrides+=(video_enabled=false)
 fi
 
