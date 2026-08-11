@@ -216,6 +216,7 @@ It never downloads datasets or body models. Configuration source:
 | `robot_model_path` | canonical Bello URDF path | Robot content used in provenance validation and the dataset fingerprint. |
 | `gmr_root` | `deps/GMR` | Clean pinned GMR checkout whose exact commit enters the fingerprint. |
 | `quality_config` | `configs/twist/quality.yaml` | Versioned rejection and quarantine thresholds. |
+| `curation_config` | `configs/twist/amass_flat_ground.yaml` | Versioned pre-split exclusions for generated outputs and motions requiring unsupported terrain; used only by `scan_amass`. |
 
 See [TWIST teacher and student](twist.md) for acquisition, conversion,
 splitting, licensing, provenance, and output contracts.

@@ -24,7 +24,8 @@ from bello_mujoco.configuration import dataclass_from_dict
 
 TWIST_SOURCE_MANIFEST_SCHEMA_VERSION = 1
 TWIST_DATASET_SCHEMA_VERSION = 3
-TWIST_RETARGET_FORMAT_VERSION = 6
+TWIST_RETARGET_FORMAT_VERSION = 9
+TWIST_SOURCE_CURATION_SCHEMA_VERSION = 1
 TWIST_POLICY_FPS = 50.0
 TWIST_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
 TWIST_FUTURE_OFFSETS = (
@@ -55,6 +56,7 @@ _SHA256_PATTERN = re.compile(r"(?:sha256:)?([0-9a-f]{64})\Z")
 SourceKind = Literal["amass", "omomo", "in_house"]
 RequestedSplit = Literal["auto", "train", "evaluation"]
 AssignedSplit = Literal["train", "evaluation"]
+SourceCurationTarget = Literal["relative_path", "sequence_id"]
 
 
 @dataclass(frozen=True)
@@ -92,14 +94,45 @@ class AssignedSequence:
 
 
 @dataclass(frozen=True)
+class SourceExclusionRule:
+    target: SourceCurationTarget
+    pattern: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class SourceCurationConfig:
+    schema_version: int = TWIST_SOURCE_CURATION_SCHEMA_VERSION
+    exclusion_rules: tuple[SourceExclusionRule, ...] = ()
+
+
+@dataclass(frozen=True)
 class QualityConfig:
     policy_fps: float = TWIST_POLICY_FPS
     future_horizon_steps: int = max(TWIST_FUTURE_OFFSETS)
     quaternion_norm_tolerance: float = 0.05
     max_quaternion_step_radians: float = 2.8
     max_timestamp_gap_factor: float = 2.0
+    max_joint_step_radians: float = 0.2
+    max_joint_velocity_radians_per_second: float = 10.0
+    max_joint_acceleration_radians_per_second_squared: float = 220.0
+    minimum_knee_flexion_radians: float = 0.17453292519943295
+    max_knee_pole_p95_degrees: float = 80.0
+    max_knee_pole_opposite_fraction: float = 0.01
     max_joint_limit_violation_radians: float = 0.02
     max_joint_limit_violation_fraction: float = 0.02
+    persistent_limit_margin_radians: float = 1.0e-5
+    persistent_limit_fraction: float = 0.95
+    max_persistent_hip_waist_joints: int = 2
+    persistent_limit_joint_names: tuple[str, ...] = (
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "waist_yaw_joint",
+    )
     max_root_linear_velocity: float = 12.0
     max_root_angular_velocity: float = 20.0
     max_body_linear_velocity: float = 20.0
@@ -130,6 +163,36 @@ def load_quality_config(path: Path) -> QualityConfig:
         require_all_fields=True,
         path="quality",
     )
+
+
+def load_source_curation_config(path: Path) -> SourceCurationConfig:
+    path = Path(path).expanduser().resolve()
+    raw = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    config = dataclass_from_dict(
+        SourceCurationConfig,
+        raw,
+        strict=True,
+        require_all_fields=True,
+        path="curation",
+    )
+    if config.schema_version != TWIST_SOURCE_CURATION_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported TWIST source curation schema version {config.schema_version}"
+        )
+    for index, rule in enumerate(config.exclusion_rules):
+        if rule.target not in {"relative_path", "sequence_id"}:
+            raise ValueError(f"curation.exclusion_rules[{index}].target is invalid")
+        if not rule.reason.strip():
+            raise ValueError(
+                f"curation.exclusion_rules[{index}].reason must be nonempty"
+            )
+        try:
+            re.compile(rule.pattern)
+        except re.error as error:
+            raise ValueError(
+                f"curation.exclusion_rules[{index}].pattern is invalid: {error}"
+            ) from error
+    return config
 
 
 def load_source_manifest(
@@ -181,6 +244,7 @@ def scan_amass_manifest(
     license_id: str,
     split_seed: int,
     sampling_weight: float = 1.0,
+    curation: SourceCurationConfig = SourceCurationConfig(),
     overwrite: bool = False,
     progress: Callable[[int, int, Path], None] | None = None,
 ) -> SourceManifest:
@@ -206,6 +270,7 @@ def scan_amass_manifest(
     if not paths:
         raise ValueError(f"no AMASS Stage II NPZ archives found below {source_root}")
     sequences = []
+    excluded: list[dict[str, str]] = []
     rejected: list[dict[str, str]] = []
     quarantined: list[dict[str, str]] = []
     source_checksums: dict[str, str] = {}
@@ -217,6 +282,21 @@ def scan_amass_manifest(
                 {
                     "relative_path": relative.as_posix(),
                     "reason": "archive must be nested as subdataset/subject/file",
+                }
+            )
+            if progress is not None:
+                progress(index, len(paths), path)
+            continue
+        sequence_id = _portable_identifier(relative.with_suffix("").parts)
+        exclusion_reason = _source_exclusion_reason(
+            relative.as_posix(), sequence_id, curation
+        )
+        if exclusion_reason is not None:
+            excluded.append(
+                {
+                    "relative_path": relative.as_posix(),
+                    "sequence_id": sequence_id,
+                    "reason": exclusion_reason,
                 }
             )
             if progress is not None:
@@ -261,7 +341,6 @@ def scan_amass_manifest(
         subject_id = relative.parts[1]
         original_sequence_id = path.stem.removesuffix("_stageii")
         session_id = "__".join(relative.parts[1:-1])
-        sequence_id = _portable_identifier(relative.with_suffix("").parts)
         sequences.append(
             SourceSequence(
                 source_kind="amass",
@@ -309,6 +388,8 @@ def scan_amass_manifest(
                 "source_root": str(source_root),
                 "discovered": len(paths),
                 "accepted": len(sequences),
+                "curation": asdict(curation),
+                "excluded": excluded,
                 "rejected": rejected,
                 "quarantined": quarantined,
             },
@@ -319,6 +400,18 @@ def scan_amass_manifest(
         encoding="utf-8",
     )
     return manifest
+
+
+def _source_exclusion_reason(
+    relative_path: str,
+    sequence_id: str,
+    curation: SourceCurationConfig,
+) -> str | None:
+    values = {"relative_path": relative_path, "sequence_id": sequence_id}
+    for rule in curation.exclusion_rules:
+        if re.search(rule.pattern, values[rule.target]) is not None:
+            return rule.reason
+    return None
 
 
 def _inspect_amass_archive(path: Path) -> dict[str, str | float | int]:
@@ -978,8 +1071,14 @@ def load_and_normalize_retargeted_clip(
         "body_ang_vel",
         "foot_contacts",
         "foot_sole_z",
+        "knee_pole_local_axis",
+        "knee_pole_world_direction",
+        "knee_pole_sides",
         "joint_names",
+        "qpos_joint_names",
         "body_names",
+        "joint_lower",
+        "joint_upper",
         "source_timestamp_seconds",
         "source_sha256",
         "retarget_format_version",
@@ -1015,6 +1114,55 @@ def load_and_normalize_retargeted_clip(
             )
     if frames < 2:
         raise ValueError(f"{path.name}: retargeted clip has fewer than two frames")
+    knee_pole_sides = tuple(
+        str(side) for side in np.asarray(arrays["knee_pole_sides"]).tolist()
+    )
+    knee_pole_axes = np.asarray(arrays["knee_pole_local_axis"], dtype=np.float64)
+    knee_pole_world = np.asarray(arrays["knee_pole_world_direction"], dtype=np.float64)
+    expected_pole_shape = (frames, 2, 3)
+    if (
+        knee_pole_sides != ("left", "right")
+        or knee_pole_axes.shape != expected_pole_shape
+        or knee_pole_world.shape != expected_pole_shape
+    ):
+        raise ValueError(f"{path.name}: invalid knee-pole metadata")
+    pole_vectors = np.concatenate((knee_pole_axes, knee_pole_world), axis=1)
+    if not np.all(np.isfinite(pole_vectors)) or not np.allclose(
+        np.linalg.norm(pole_vectors, axis=2), 1.0, atol=1.0e-4
+    ):
+        raise ValueError(f"{path.name}: knee-pole axes must be finite unit vectors")
+    qpos_joint_names = tuple(
+        str(name) for name in np.asarray(arrays["qpos_joint_names"]).tolist()
+    )
+    actuator_joint_names = tuple(
+        str(name) for name in np.asarray(arrays["joint_names"]).tolist()
+    )
+    expected_joints = arrays["qpos"].shape[1] - 7
+    if len(qpos_joint_names) != expected_joints:
+        raise ValueError(
+            f"{path.name}: qpos_joint_names has {len(qpos_joint_names)} entries, "
+            f"expected {expected_joints}"
+        )
+    if len(set(qpos_joint_names)) != len(qpos_joint_names):
+        raise ValueError(f"{path.name}: qpos_joint_names contains duplicates")
+    if set(qpos_joint_names) != set(actuator_joint_names):
+        raise ValueError(
+            f"{path.name}: qpos and actuator joint metadata describe different joints"
+        )
+    for name in ("joint_lower", "joint_upper"):
+        if np.asarray(arrays[name]).shape != (expected_joints,):
+            raise ValueError(
+                f"{path.name}: {name} has shape {arrays[name].shape}, "
+                f"expected {(expected_joints,)}"
+            )
+    missing_quality_joints = sorted(
+        set(quality.persistent_limit_joint_names) - set(qpos_joint_names)
+    )
+    if missing_quality_joints:
+        raise ValueError(
+            f"{path.name}: persistent-limit QC joints are absent from qpos metadata: "
+            + ", ".join(missing_quality_joints)
+        )
     timestamps = np.asarray(arrays["timestamp_seconds"], dtype=np.float64)
     if not np.all(np.isfinite(timestamps)) or np.any(np.diff(timestamps) <= 0.0):
         raise ValueError(f"{path.name}: timestamps must be finite and increasing")
@@ -1038,6 +1186,11 @@ def clip_quality_reasons(
         "foot_contacts",
         "foot_sole_z",
     )
+    numeric_names += tuple(
+        name
+        for name in ("knee_pole_local_axis", "knee_pole_world_direction")
+        if name in arrays
+    )
     for name in numeric_names:
         if not np.all(np.isfinite(arrays[name])):
             return [f"{name} contains non-finite values"]
@@ -1051,6 +1204,21 @@ def clip_quality_reasons(
     expected_dt = 1.0 / quality.policy_fps
     if np.max(dt) > quality.max_timestamp_gap_factor * expected_dt:
         reasons.append("timestamp gap exceeds configured limit")
+    joint_steps = np.diff(arrays["qpos"][:, 7:], axis=0)
+    if np.max(np.abs(joint_steps)) > quality.max_joint_step_radians:
+        reasons.append("joint trajectory contains a discontinuous frame step")
+    joint_velocities = joint_steps / dt[:, None]
+    if np.max(np.abs(joint_velocities)) > (
+        quality.max_joint_velocity_radians_per_second
+    ):
+        reasons.append("joint velocity exceeds configured limit")
+    if len(joint_velocities) > 1:
+        velocity_dt = 0.5 * (dt[:-1] + dt[1:])
+        joint_accelerations = np.diff(joint_velocities, axis=0) / velocity_dt[:, None]
+        if np.max(np.abs(joint_accelerations)) > (
+            quality.max_joint_acceleration_radians_per_second_squared
+        ):
+            reasons.append("joint acceleration exceeds configured limit")
     quaternions = np.concatenate(
         (
             arrays["qpos"][:, 3:7, None],
@@ -1089,6 +1257,7 @@ def clip_quality_reasons(
         reasons.append("root height exceeds configured limit")
     if arrays["foot_sole_z"].min() < -quality.max_floor_penetration:
         reasons.append("foot sole penetration exceeds configured limit")
+    reasons.extend(_knee_pole_quality_reasons(arrays, quality))
     if {"joint_lower", "joint_upper"} <= arrays.keys():
         joint = arrays["qpos"][:, 7:]
         lower = np.asarray(arrays["joint_lower"])
@@ -1098,6 +1267,88 @@ def clip_quality_reasons(
         )
         if np.mean(violations) > quality.max_joint_limit_violation_fraction:
             reasons.append("persistent joint-limit violations")
+        qpos_joint_names = tuple(
+            str(name) for name in np.asarray(arrays["qpos_joint_names"]).tolist()
+        )
+        joint_index = {name: index for index, name in enumerate(qpos_joint_names)}
+        saturated = []
+        for name in quality.persistent_limit_joint_names:
+            index = joint_index[name]
+            lower_fraction = np.mean(
+                np.abs(joint[:, index] - lower[index])
+                <= quality.persistent_limit_margin_radians
+            )
+            upper_fraction = np.mean(
+                np.abs(joint[:, index] - upper[index])
+                <= quality.persistent_limit_margin_radians
+            )
+            if max(lower_fraction, upper_fraction) >= quality.persistent_limit_fraction:
+                saturated.append(name)
+        if len(saturated) > quality.max_persistent_hip_waist_joints:
+            reasons.append(
+                "persistent hip/waist joint-limit saturation: " + ", ".join(saturated)
+            )
+    return reasons
+
+
+def _knee_pole_quality_reasons(
+    arrays: dict[str, np.ndarray], quality: QualityConfig
+) -> list[str]:
+    if "knee_pole_world_direction" not in arrays:
+        return []
+    body_names = tuple(str(name) for name in np.asarray(arrays["body_names"]).tolist())
+    body_index = {name: index for index, name in enumerate(body_names)}
+    positions = np.asarray(arrays["body_pos"], dtype=np.float64)
+    desired_directions = np.asarray(
+        arrays["knee_pole_world_direction"], dtype=np.float64
+    )
+    qpos_joint_names = tuple(
+        str(name) for name in np.asarray(arrays["qpos_joint_names"]).tolist()
+    )
+    qpos_joint_index = {name: index for index, name in enumerate(qpos_joint_names)}
+    reasons = []
+    for side_index, side in enumerate(("left", "right")):
+        required = (
+            f"{side}_hip_roll_link",
+            f"{side}_knee_link",
+            f"{side}_ankle_roll_link",
+        )
+        missing = [name for name in required if name not in body_index]
+        if missing:
+            return ["knee-pole QC bodies are missing: " + ", ".join(missing)]
+        knee_joint_name = f"{side}_knee_joint"
+        if knee_joint_name not in qpos_joint_index:
+            return [f"knee-pole QC joint is missing: {knee_joint_name}"]
+        hip, knee, foot = (positions[:, body_index[name]] for name in required)
+        chord = foot - hip
+        chord_norm = np.linalg.norm(chord, axis=1)
+        chord_axis = chord / np.maximum(chord_norm[:, None], 1.0e-12)
+        robot_pole = knee - hip
+        robot_pole -= np.sum(robot_pole * chord_axis, axis=1)[:, None] * chord_axis
+        desired_pole = desired_directions[:, side_index].copy()
+        desired_pole -= np.sum(desired_pole * chord_axis, axis=1)[:, None] * chord_axis
+        robot_norm = np.linalg.norm(robot_pole, axis=1)
+        desired_norm = np.linalg.norm(desired_pole, axis=1)
+        valid = (
+            np.isfinite(robot_norm)
+            & np.isfinite(desired_norm)
+            & (robot_norm >= 1.0e-8)
+            & (desired_norm >= 1.0e-8)
+            & (
+                arrays["qpos"][:, 7 + qpos_joint_index[knee_joint_name]]
+                >= quality.minimum_knee_flexion_radians
+            )
+        )
+        if not np.any(valid):
+            continue
+        dots = np.sum(robot_pole[valid] * desired_pole[valid], axis=1) / (
+            robot_norm[valid] * desired_norm[valid]
+        )
+        angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
+        if np.percentile(angles, 95) > quality.max_knee_pole_p95_degrees:
+            reasons.append(f"{side} knee bend-plane error exceeds configured limit")
+        if np.mean(angles > 90.0) > quality.max_knee_pole_opposite_fraction:
+            reasons.append(f"{side} knee follows the opposite bend branch")
     return reasons
 
 
@@ -1307,7 +1558,9 @@ def _resample_clip(
             "source_timestamp_seconds",
             "source_sha256",
             "retarget_format_version",
+            "knee_pole_sides",
             "joint_names",
+            "qpos_joint_names",
             "body_names",
             "gmr_revision",
             "gmr_config_sha256",
@@ -1345,7 +1598,9 @@ def _resample_clip(
     result["source_timestamp_seconds"] = absolute_target.astype(np.float64)
     for name in (
         "joint_names",
+        "qpos_joint_names",
         "body_names",
+        "knee_pole_sides",
         "source_sha256",
         "retarget_format_version",
         "gmr_revision",
@@ -1356,6 +1611,10 @@ def _resample_clip(
     ):
         if name in arrays:
             result[name] = arrays[name]
+    for name in ("knee_pole_local_axis", "knee_pole_world_direction"):
+        if name in result:
+            norm = np.linalg.norm(result[name], axis=2, keepdims=True)
+            result[name] /= np.maximum(norm, 1.0e-12)
     return result
 
 
@@ -1380,6 +1639,10 @@ def _align_floor_and_heading(
     result["qpos"][:, :3] = result["qpos"][:, :3] @ rotation.T
     result["body_pos"][..., :2] -= initial_xy
     result["body_pos"] = result["body_pos"] @ rotation.T
+    if "knee_pole_world_direction" in result:
+        result["knee_pole_world_direction"] = (
+            result["knee_pole_world_direction"] @ rotation.T
+        )
     result["qvel"][:, :3] = result["qvel"][:, :3] @ rotation.T
     result["body_lin_vel"] = result["body_lin_vel"] @ rotation.T
     yaw_quat = np.asarray([math.cos(-yaw / 2.0), 0.0, 0.0, math.sin(-yaw / 2.0)])

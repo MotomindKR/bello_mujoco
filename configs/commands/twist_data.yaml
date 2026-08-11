@@ -12,6 +12,7 @@ output_root: null
 robot_model_path: deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf
 gmr_root: deps/GMR
 quality_config: configs/twist/quality.yaml
+curation_config: configs/twist/amass_flat_ground.yaml
 hydra:
   job:
     chdir: false

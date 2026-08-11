@@ -97,6 +97,7 @@ class TwistDataCommandConfig:
     robot_model_path: Path
     gmr_root: Path
     quality_config: Path
+    curation_config: Path
 
 
 @dataclass(frozen=True)
@@ -444,6 +445,7 @@ def twist_data_entrypoint() -> None:
             "robot_model_path=",
             "gmr_root=",
             "quality_config=",
+            "curation_config=",
         )
     )
     _twist_data_hydra()
@@ -461,6 +463,7 @@ def _twist_data_hydra(config: DictConfig) -> None:
         assign_splits,
         build_packed_dataset,
         load_quality_config,
+        load_source_curation_config,
         load_source_manifest,
         portable_manifest_fingerprint,
         scan_amass_manifest,
@@ -495,6 +498,7 @@ def _twist_data_hydra(config: DictConfig) -> None:
             license_id=command.license_id,
             split_seed=command.split_seed,
             sampling_weight=command.sampling_weight,
+            curation=load_source_curation_config(command.curation_config),
             overwrite=command.overwrite,
             progress=progress,
         )
@@ -521,6 +525,7 @@ def _twist_data_hydra(config: DictConfig) -> None:
             "split_seed",
             "sampling_weight",
             "overwrite",
+            "curation_config",
         ),
         context=f"operation={command.operation}",
     )

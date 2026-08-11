@@ -69,6 +69,14 @@ to produce trustworthy checksums. Malformed and duplicate clips are excluded
 and recorded beside the manifest in `source_manifest.scan_report.json`. Review
 both files before validation and preserve them with reported runs.
 
+The default versioned curation rules in
+`configs/twist/amass_flat_ground.yaml` also exclude generated pipeline outputs
+and motions explicitly labeled as stairs, slopes, or ladders. TWIST trains in a
+flat-ground environment, so motions requiring unsupported terrain are removed
+before split assignment and retargeting. Every exclusion and its reason is
+recorded in the scan report. Pass `curation_config=<path>` to use another
+reviewed rule set.
+
 Validate before doing any conversion:
 
 ```bash
@@ -169,10 +177,33 @@ interaction labels stay in the source manifest.
 
 Each retargeted clip records source timestamps, root/joint state, body
 transforms and velocities, geometry-derived sole heights, contact hints,
-joint/body ordering, source checksum, GMR revision and configuration, and the
-Bello fingerprint. Conversion uses source foot motion to ground stance soles
-against the canonical collision geometry while preserving airborne phases,
-aligns initial heading deterministically, and resamples to 50 Hz.
+actuator/qpos/body ordering, source checksum, GMR revision and configuration,
+and the Bello fingerprint. Conversion uses source foot motion to ground stance
+soles against the canonical collision geometry while preserving airborne
+phases, aligns initial heading deterministically, and samples at exactly 50 Hz.
+The pinned Bello mapping also versions the offline solver contract. The wrapper
+runs a fixed number of IK passes per source frame, enables GMR's native joint
+velocity limit, and applies a predictive 50 Hz velocity/acceleration bound
+before emitting each pose. This keeps convergence work deterministic and
+prevents a solver catch-up or joint-limit stop from becoming a one-frame pose
+jump. Knee-plane tracking is position based; Bello does not use the mismatched
+SMPL-X knee-link orientation as a full orientation constraint. Instead, the
+offline wrapper samples positive-flex poles from clearly bent SMPL-X frames,
+rejects the hyperextension hemisphere, and interpolates and smooths a
+hip-local pole trajectory through near-straight poses. Motions without a usable
+bent frame fall back to a subject-specific positive-flex pole derived from the
+SMPL-X rest-bone geometry. If a hip-to-foot target exceeds Bello's reachable
+envelope, the wrapper locally clamps only that frame's span while preserving
+the source direction and original landmark scale. Symmetric knee-position
+tasks participate in both IK stages so the anatomical branch is selected
+before the final foot/hip fit. Retargeted files record the local and world pole
+trajectories for review. Arm orientation costs are symmetric and expressed in
+each Bello link's local frame. During the final position-weighted fit, the wrist
+link's longitudinal local-Z component is left unconstrained so palm and forearm
+twist does not force a discontinuous axial-twist solution. The fully constrained
+first stage, upper-arm and elbow orientation, the two transverse wrist
+orientation components, elbow and wrist positions, joint limits, and temporal
+bounds remain active.
 
 ## Quality control and packing
 
@@ -189,7 +220,8 @@ uv run bello-twist-data operation=build \
 
 The build rejects missing/non-finite state and provenance mismatches. It
 quarantines short clips, quaternion discontinuities, timestamp gaps,
-persistent joint-limit violations, conversion-scale velocities, implausible
+persistent joint-limit violations or hip/waist saturation, conversion-scale
+velocities, one-frame joint steps, excessive joint acceleration, implausible
 root height, or more than 1 cm of sole collision-geometry penetration.
 `conversion_report.json` gives accepted, quarantined, and rejected counts and
 reasons.

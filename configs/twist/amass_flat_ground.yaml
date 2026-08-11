@@ -1,0 +1,8 @@
+schema_version: 1
+exclusion_rules:
+  - target: relative_path
+    pattern: '^twist_[^/]*(?:/|$)'
+    reason: generated TWIST pipeline artifact
+  - target: sequence_id
+    pattern: '(?i)(?:upstairs|downstairs|stair(?:s|case)?|slope_(?:up|down)|ladder)'
+    reason: motion requires non-flat terrain
