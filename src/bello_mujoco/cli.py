@@ -40,6 +40,7 @@ class TrainCommandConfig:
     seed: int | None
     total_timesteps: int | None
     num_envs: int | None
+    reference_shard_updates: int | None
     contact_budget_per_env: int | None
     motion_path: Path | None
     dataset_path: Path | None
@@ -49,6 +50,7 @@ class TrainCommandConfig:
     allow_git_commit_mismatch: bool
     checkpoint_directory: Path | None
     checkpoint_name: str | None
+    checkpoint_every_updates: int | None
     wandb_enabled: bool | None
     run_name: str | None
     video_enabled: bool | None
@@ -157,11 +159,17 @@ class VastTrainCommandConfig:
         "twist_teacher",
         "twist_student",
         "twist2",
+        "sonic",
     ]
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
+    sonic_artifact_path: Path | None
     allow_git_commit_mismatch: bool
+    total_timesteps: int | None
+    num_envs: int | None
+    reference_shard_updates: int | None
+    checkpoint_every_updates: int | None
     max_price: float | None
     branch: str | None
     run_name: str | None
@@ -254,6 +262,11 @@ def train_entrypoint() -> None:
 )
 def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
+    if command.experiment != "sonic":
+        _reject_explicit_fields(
+            ("reference_shard_updates",),
+            context=f"experiment={command.experiment}",
+        )
     if command.experiment == "sonic":
         _reject_explicit_fields(
             ("motion_path", "teacher_checkpoint_path", "video_enabled"),
@@ -268,6 +281,10 @@ def _train_hydra(config: DictConfig) -> None:
         run_config = replace(
             run_config,
             config=_ppo_overrides(run_config.config, command),
+            reference_shard_updates=_coalesce(
+                command.reference_shard_updates,
+                run_config.reference_shard_updates,
+            ),
             warp=_warp_overrides(run_config.warp, command),
             checkpoint_config=_checkpoint_overrides(
                 run_config.checkpoint_config, command
@@ -914,7 +931,12 @@ def _motion_hydra(config: DictConfig) -> None:
 
 def vast_train_entrypoint() -> None:
     _expand_path_overrides(
-        ("motion_path=", "dataset_path=", "teacher_checkpoint_path=")
+        (
+            "motion_path=",
+            "dataset_path=",
+            "teacher_checkpoint_path=",
+            "sonic_artifact_path=",
+        )
     )
     _vast_train_hydra()
 
@@ -941,12 +963,14 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("motion_path",),
             context=f"experiment={command.experiment}",
         )
-    if command.experiment in {"twist_teacher", "twist_student", "twist2"}:
+    if command.experiment in {"twist_teacher", "twist_student", "twist2", "sonic"}:
         if command.dataset_path is None:
-            raise ValueError("dataset_path is required for Vast TWIST training")
+            raise ValueError("dataset_path is required for Vast dataset training")
     else:
         if command.dataset_path is not None:
-            raise ValueError("dataset_path is only valid for a TWIST experiment")
+            raise ValueError(
+                "dataset_path is only valid for a TWIST, TWIST2, or SONIC experiment"
+            )
         _reject_explicit_fields(
             ("dataset_path",), context=f"experiment={command.experiment}"
         )
@@ -967,6 +991,16 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("allow_git_commit_mismatch",),
             context=f"experiment={command.experiment}",
         )
+    if command.experiment == "sonic":
+        if command.sonic_artifact_path is None:
+            raise ValueError("sonic_artifact_path is required for Vast SONIC training")
+    else:
+        if command.sonic_artifact_path is not None:
+            raise ValueError("sonic_artifact_path is only valid for experiment=sonic")
+        _reject_explicit_fields(
+            ("sonic_artifact_path", "reference_shard_updates"),
+            context=f"experiment={command.experiment}",
+        )
     from bello_mujoco.assets_pipeline import repo_root
     from bello_mujoco.training.vast import (
         VastTrainConfig,
@@ -980,7 +1014,12 @@ def _vast_train_hydra(config: DictConfig) -> None:
         motion_path=command.motion_path,
         dataset_path=command.dataset_path,
         teacher_checkpoint_path=command.teacher_checkpoint_path,
+        sonic_artifact_path=command.sonic_artifact_path,
         allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+        total_timesteps=command.total_timesteps,
+        num_envs=command.num_envs,
+        reference_shard_updates=command.reference_shard_updates,
+        checkpoint_every_updates=command.checkpoint_every_updates,
         max_price=command.max_price,
         branch=command.branch,
         run_name=command.run_name,
@@ -1155,6 +1194,8 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
         values["directory"] = command.checkpoint_directory.expanduser()
     if command.checkpoint_name is not None:
         values["name"] = command.checkpoint_name
+    if command.checkpoint_every_updates is not None:
+        values["every_updates"] = command.checkpoint_every_updates
     return replace(config, **values)
 
 

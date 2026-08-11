@@ -2,6 +2,7 @@ experiment: smoke
 seed: null
 total_timesteps: null
 num_envs: null
+reference_shard_updates: null
 contact_budget_per_env: null
 motion_path: null
 dataset_path: null
@@ -11,6 +12,7 @@ resume_path: null
 allow_git_commit_mismatch: false
 checkpoint_directory: null
 checkpoint_name: null
+checkpoint_every_updates: null
 wandb_enabled: null
 run_name: null
 video_enabled: null

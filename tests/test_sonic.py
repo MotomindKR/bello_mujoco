@@ -57,7 +57,10 @@ from bello_mujoco.sonic_policy import (
     load_sonic_release_artifact,
     sonic_fsq,
 )
-from bello_mujoco.training.sonic import sonic_reference_shard_for_update
+from bello_mujoco.training.sonic import (
+    _tracking_dataset_summary,
+    sonic_reference_shard_for_update,
+)
 from tools.sonic_gmr_retarget import (
     G1_QPOS_JOINT_NAMES,
     G1_RETARGET_FORMAT_VERSION,
@@ -367,6 +370,51 @@ def test_reference_shard_schedule_is_mass_weighted_and_sweeps_every_shard() -> N
     assert schedule.count(1) == 4
     assert schedule.count(2) == 2
     assert set(schedule) == {0, 1, 2}
+
+
+def test_tracking_dataset_summary_excludes_clip_and_fingerprint_payloads() -> None:
+    index = {
+        "schema_version": 3,
+        "dataset_fingerprint": "sha256:" + "a" * 64,
+        "portable_manifest_fingerprint": "sha256:" + "b" * 64,
+        "policy_fps": 50.0,
+        "train_sampling": "frame_count_times_manifest_weight",
+        "shard_frame_capacity": 65536,
+        "shard_clip_capacity": 256,
+        "joint_names": list(BELLO_JOINT_NAMES),
+        "body_names": ["pelvis_link"],
+        "g1_joint_names": list(G1_ISAACLAB_JOINT_NAMES),
+        "robot_fingerprint": "sha256:" + "c" * 64,
+        "gmr_revision": "d" * 40,
+        "bello_gmr_config_sha256": "sha256:" + "e" * 64,
+        "g1_gmr_revision": "f" * 40,
+        "g1_gmr_config_sha256": "sha256:" + "1" * 64,
+        "g1_robot_sha256": "sha256:" + "2" * 64,
+        "joint_calibration": {"sample_count": 30},
+        "shards": {
+            "train": [{"sampling_mass": 20.0}],
+            "evaluation": [{"sampling_mass": 10.0}],
+        },
+        "clips": [
+            {"split": "train", "frames": 20},
+            {"split": "evaluation", "frames": 10},
+        ],
+        "fingerprint_payload": {"portable_manifest": "large"},
+    }
+
+    summary = _tracking_dataset_summary(index)
+
+    assert "clips" not in summary
+    assert "fingerprint_payload" not in summary
+    assert summary["splits"] == {
+        "train": {"shards": 1, "clips": 1, "frames": 20, "sampling_mass": 20.0},
+        "evaluation": {
+            "shards": 1,
+            "clips": 1,
+            "frames": 10,
+            "sampling_mass": 10.0,
+        },
+    }
 
 
 def test_reference_clip_selection_rebases_packed_offsets() -> None:

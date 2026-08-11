@@ -70,7 +70,12 @@ class VastTrainConfig:
     motion_path: Path | None = None
     dataset_path: Path | None = None
     teacher_checkpoint_path: Path | None = None
+    sonic_artifact_path: Path | None = None
     allow_git_commit_mismatch: bool = False
+    total_timesteps: int | None = None
+    num_envs: int | None = None
+    reference_shard_updates: int | None = None
+    checkpoint_every_updates: int | None = None
     max_price: float | None = None
     branch: str | None = None
     run_name: str | None = None
@@ -78,7 +83,10 @@ class VastTrainConfig:
     dry_run: bool = False
     remote_dir: str = "/workspace/bello_mujoco"
     remote_dataset_dir: str = "/workspace/datasets/twist"
+    remote_sonic_dataset_dir: str = "/workspace/datasets/sonic"
     remote_teacher_checkpoint_dir: str = "/workspace/checkpoints/twist_teacher"
+    remote_sonic_artifact_dir: str = "/workspace/artifacts/sonic/default_release"
+    local_result_dir: Path = Path("outputs/vast")
     lifecycle_state_dir: Path = Path(".vast")
     ready_timeout_seconds: int = 900
     ssh_timeout_seconds: int = 900
@@ -103,7 +111,9 @@ class GitSelection:
     motion_path: PurePosixPath | None = None
     dataset_fingerprint: str | None = None
     dataset_files: tuple[Path, ...] = ()
+    dataset_root: Path | None = None
     teacher_checkpoint_path: Path | None = None
+    sonic_artifact_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +154,7 @@ def validate_config(config: VastTrainConfig) -> None:
         "twist_teacher",
         "twist_student",
         "twist2",
+        "sonic",
     }:
         raise ValueError("--experiment is invalid")
     if config.experiment == "motion":
@@ -152,11 +163,14 @@ def validate_config(config: VastTrainConfig) -> None:
         _repository_motion_path(config.motion_path)
     elif config.motion_path is not None:
         raise ValueError("--motion-path is only valid for the motion experiment")
-    if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
+    dataset_experiments = {"twist_teacher", "twist_student", "twist2", "sonic"}
+    if config.experiment in dataset_experiments:
         if config.dataset_path is None:
-            raise ValueError("--dataset-path is required for TWIST Vast training")
+            raise ValueError("--dataset-path is required for dataset-backed training")
     elif config.dataset_path is not None:
-        raise ValueError("--dataset-path is only valid for TWIST Vast training")
+        raise ValueError(
+            "--dataset-path is only valid for TWIST, TWIST2, or SONIC Vast training"
+        )
     if config.experiment == "twist_student":
         if config.teacher_checkpoint_path is None:
             raise ValueError(
@@ -170,6 +184,34 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError(
             "--allow-git-commit-mismatch is only valid for TWIST student Vast training"
         )
+    if config.experiment == "sonic":
+        if config.sonic_artifact_path is None:
+            raise ValueError(
+                "--sonic-artifact-path is required for SONIC Vast training"
+            )
+    elif config.sonic_artifact_path is not None:
+        raise ValueError("--sonic-artifact-path is only valid for SONIC Vast training")
+    for name in (
+        "total_timesteps",
+        "num_envs",
+        "checkpoint_every_updates",
+    ):
+        value = getattr(config, name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise ValueError(f"--{name.replace('_', '-')} must be a positive integer")
+    if config.reference_shard_updates is not None:
+        if config.experiment != "sonic":
+            raise ValueError(
+                "--reference-shard-updates is only valid for SONIC Vast training"
+            )
+        if (
+            isinstance(config.reference_shard_updates, bool)
+            or not isinstance(config.reference_shard_updates, int)
+            or config.reference_shard_updates <= 0
+        ):
+            raise ValueError("--reference-shard-updates must be a positive integer")
     if (
         config.max_price is None
         or not math.isfinite(config.max_price)
@@ -202,16 +244,20 @@ def validate_config(config: VastTrainConfig) -> None:
     remote_paths = {
         "--remote-dir": PurePosixPath(config.remote_dir),
         "--remote-dataset-dir": PurePosixPath(config.remote_dataset_dir),
+        "--remote-sonic-dataset-dir": PurePosixPath(config.remote_sonic_dataset_dir),
         "--remote-teacher-checkpoint-dir": PurePosixPath(
             config.remote_teacher_checkpoint_dir
         ),
+        "--remote-sonic-artifact-dir": PurePosixPath(config.remote_sonic_artifact_dir),
     }
     workspace = PurePosixPath("/workspace")
     for label, remote_path in remote_paths.items():
         raw = {
             "--remote-dir": config.remote_dir,
             "--remote-dataset-dir": config.remote_dataset_dir,
+            "--remote-sonic-dataset-dir": config.remote_sonic_dataset_dir,
             "--remote-teacher-checkpoint-dir": config.remote_teacher_checkpoint_dir,
+            "--remote-sonic-artifact-dir": config.remote_sonic_artifact_dir,
         }[label]
         if (
             not remote_path.is_absolute()
@@ -223,7 +269,17 @@ def validate_config(config: VastTrainConfig) -> None:
         ):
             raise ValueError(f"{label} must be a normalized strict child of /workspace")
     if len(set(remote_paths.values())) != len(remote_paths):
-        raise ValueError("remote repository, dataset, and checkpoint paths must differ")
+        raise ValueError(
+            "remote repository, dataset, checkpoint, and artifact paths must differ"
+        )
+    local_result_dir = config.local_result_dir
+    if (
+        local_result_dir.is_absolute()
+        or not local_result_dir.parts
+        or local_result_dir.parts[0] != "outputs"
+        or ".." in local_result_dir.parts
+    ):
+        raise ValueError("--local-result-dir must be a relative path inside outputs")
     state_dir = config.lifecycle_state_dir
     if (
         state_dir.is_absolute()
@@ -340,14 +396,25 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             ) from exc
     dataset_fingerprint = None
     dataset_files: tuple[Path, ...] = ()
+    dataset_root = None
     if config.dataset_path is not None:
-        dataset_fingerprint, dataset_files = _twist_dataset_files(config.dataset_path)
+        if config.experiment == "sonic":
+            dataset_fingerprint, dataset_files, dataset_root = _sonic_dataset_files(
+                config.dataset_path
+            )
+        else:
+            dataset_fingerprint, dataset_files = _twist_dataset_files(
+                config.dataset_path
+            )
     teacher_checkpoint_path = None
     if config.teacher_checkpoint_path is not None:
         teacher_checkpoint_path = _twist_teacher_checkpoint(
             config.teacher_checkpoint_path,
             dataset_fingerprint=dataset_fingerprint,
         )
+    sonic_artifact_path = None
+    if config.sonic_artifact_path is not None:
+        sonic_artifact_path = _sonic_release_artifact(config.sonic_artifact_path)
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -357,7 +424,9 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         motion_path=motion_path,
         dataset_fingerprint=dataset_fingerprint,
         dataset_files=dataset_files,
+        dataset_root=dataset_root,
         teacher_checkpoint_path=teacher_checkpoint_path,
+        sonic_artifact_path=sonic_artifact_path,
     )
 
 
@@ -399,6 +468,77 @@ def _twist_dataset_files(index_path: Path) -> tuple[str, tuple[Path, ...]]:
     if missing:
         raise ValueError("Vast TWIST dataset files are missing: " + ", ".join(missing))
     return fingerprint, paths
+
+
+def _sonic_dataset_files(
+    index_path: Path,
+) -> tuple[str, tuple[Path, ...], Path]:
+    from bello_mujoco.motion.sonic_dataset import load_sonic_dataset_index
+
+    index_path = Path(index_path).expanduser().resolve()
+    if index_path.name != "index.json":
+        raise ValueError("Vast SONIC dataset path must name index.json")
+    try:
+        index = load_sonic_dataset_index(index_path)
+    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"Vast SONIC dataset is invalid: {exc}") from exc
+    root = index_path.parent
+    relative_paths = {
+        PurePosixPath("index.json"),
+        PurePosixPath("heldout_manifest.json"),
+        PurePosixPath("conversion_report.json"),
+    }
+    relative_paths.update(
+        PurePosixPath(descriptor["file"])
+        for split in ("train", "evaluation")
+        for descriptor in index["shards"][split]
+    )
+    paths = tuple(root / Path(relative) for relative in sorted(relative_paths))
+    missing = [str(path) for path in paths if not path.is_file() or path.is_symlink()]
+    if missing:
+        raise ValueError("Vast SONIC dataset files are missing: " + ", ".join(missing))
+    symlinks = [str(path) for path in root.rglob("*") if path.is_symlink()]
+    if symlinks:
+        raise ValueError(
+            "Vast SONIC dataset must not contain symbolic links: " + ", ".join(symlinks)
+        )
+    actual = {
+        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
+    }
+    expected = {relative.as_posix() for relative in relative_paths}
+    if actual != expected:
+        raise ValueError(
+            "Vast SONIC dataset tree differs from its canonical files: "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+    return index["dataset_fingerprint"], paths, root
+
+
+def _sonic_release_artifact(path: Path) -> Path:
+    from bello_mujoco.sonic_policy import load_sonic_release_artifact
+
+    root = Path(path).expanduser().resolve()
+    expected = {"manifest.json", "weights.npz", "golden.npz"}
+    if not root.is_dir() or any(
+        candidate.is_symlink() for candidate in root.rglob("*")
+    ):
+        raise ValueError(
+            "Vast SONIC release artifact must be a directory without symbolic links"
+        )
+    actual = {
+        candidate.relative_to(root).as_posix()
+        for candidate in root.rglob("*")
+        if candidate.is_file()
+    }
+    if actual != expected:
+        raise ValueError(
+            "Vast SONIC release artifact files differ from the pinned export"
+        )
+    try:
+        load_sonic_release_artifact(root)
+    except (FileNotFoundError, TypeError, ValueError) as exc:
+        raise ValueError(f"Vast SONIC release artifact is invalid: {exc}") from exc
+    return root
 
 
 def _twist_teacher_checkpoint(
@@ -449,6 +589,8 @@ def _task_name(config: VastTrainConfig) -> str:
         return "motion-tracking"
     if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
         return config.experiment.replace("_", "-")
+    if config.experiment == "sonic":
+        return "sonic-transfer"
     return "locomotion"
 
 
@@ -1093,7 +1235,9 @@ def launch_pipeline(
         return 0
 
     if selection.dataset_files and shutil.which("rsync") is None:
-        raise RuntimeError("TWIST Vast training requires rsync on the launch machine")
+        raise RuntimeError(
+            "dataset-backed Vast training requires rsync on the launch machine"
+        )
 
     vast_key = credential(
         "VAST_API_KEY", VAST_KEYRING_SERVICE, VAST_KEYRING_USERNAME, required=True

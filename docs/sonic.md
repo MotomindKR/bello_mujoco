@@ -231,6 +231,32 @@ does not reproduce G1 wrist/torso bodies one-for-one.
 
 ## Evaluate the transfer
 
+For a branch-pinned Vast.ai smoke run, short edge baseline, and complete
+held-out evaluation in one billed lifecycle, use:
+
+```bash
+uv run bello-vast-train \
+  experiment=sonic \
+  dataset_path=/data/sonic/packed/index.json \
+  sonic_artifact_path=artifacts/sonic/default_release \
+  total_timesteps=1425408 \
+  num_envs=512 \
+  reference_shard_updates=1 \
+  checkpoint_every_updates=29 \
+  branch=feature/sonic-transfer \
+  max_price=1.25 \
+  duration_hours=6 \
+  skip_confirmation=true
+```
+
+This budget is one update per training shard for the current 116-shard
+production corpus. The launcher verifies every nested dataset and release
+artifact file before training. W&B retains checkpoints; the full evaluation,
+compact summary, and checksum manifest are retrieved under
+`outputs/vast/<run-name>/` before the instance is destroyed.
+
+The same evaluation can be run locally with:
+
 ```bash
 uv run bello-eval \
   task=sonic \

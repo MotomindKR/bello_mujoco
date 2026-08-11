@@ -203,6 +203,12 @@ run_name="$7"
 dataset_path="$8"
 teacher_checkpoint_path="$9"
 allow_git_commit_mismatch="${10}"
+sonic_artifact_path="${11}"
+total_timesteps="${12}"
+num_envs="${13}"
+reference_shard_updates="${14}"
+checkpoint_every_updates="${15}"
+result_dir="${16}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -263,8 +269,25 @@ fi
 if [ -n "$teacher_checkpoint_path" ]; then
   training_overrides+=("teacher_checkpoint_path=$teacher_checkpoint_path")
 fi
+if [ -n "$sonic_artifact_path" ]; then
+  training_overrides+=("sonic_artifact_path=$sonic_artifact_path")
+fi
 if [ "$allow_git_commit_mismatch" = "true" ]; then
   training_overrides+=("allow_git_commit_mismatch=true")
+fi
+
+actual_overrides=("${training_overrides[@]}")
+if [ -n "$total_timesteps" ]; then
+  actual_overrides+=("total_timesteps=$total_timesteps")
+fi
+if [ -n "$num_envs" ]; then
+  actual_overrides+=("num_envs=$num_envs")
+fi
+if [ -n "$reference_shard_updates" ]; then
+  actual_overrides+=("reference_shard_updates=$reference_shard_updates")
+fi
+if [ -n "$checkpoint_every_updates" ]; then
+  actual_overrides+=("checkpoint_every_updates=$checkpoint_every_updates")
 fi
 
 preflight_overrides=(
@@ -272,6 +295,7 @@ preflight_overrides=(
   total_timesteps=768
   num_envs=32
   wandb_enabled=false
+  checkpoint_name="preflight-$run_name"
 )
 if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]; then
   preflight_overrides+=(video_enabled=false)
@@ -281,10 +305,65 @@ uv run bello-train \
   "${preflight_overrides[@]}"
 
 uv run bello-train \
-  "${training_overrides[@]}" \
+  "${actual_overrides[@]}" \
   wandb_enabled=true \
   run_name="$run_name" \
   checkpoint_name="$run_name"
+
+if [ "$experiment" = "sonic" ]; then
+  mkdir -p "$result_dir"
+  shopt -s nullglob
+  checkpoint_roots=(checkpoints/"${run_name}"_*)
+  shopt -u nullglob
+  if [ "${#checkpoint_roots[@]}" -ne 1 ] || [ ! -d "${checkpoint_roots[0]}/final" ]; then
+    echo "SONIC final checkpoint could not be resolved uniquely" >&2
+    exit 1
+  fi
+  final_checkpoint="${checkpoint_roots[0]}/final"
+  printf '%s\n' "$final_checkpoint" > "$result_dir/checkpoint_path.txt"
+  uv run bello-eval \
+    task=sonic \
+    checkpoint_path="$final_checkpoint" \
+    sonic_artifact_path="$sonic_artifact_path" \
+    output_path="$result_dir/sonic_evaluation.json" \
+    > /dev/null &
+  evaluation_pid=$!
+  while kill -0 "$evaluation_pid" 2>/dev/null; do
+    echo "SONIC held-out evaluation is running (PID $evaluation_pid)."
+    sleep 60
+  done
+  wait "$evaluation_pid"
+  uv run python - "$result_dir" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+report = json.loads((root / "sonic_evaluation.json").read_text())
+summary = {
+    "task": report["task"],
+    "dataset_fingerprint": report["dataset_fingerprint"],
+    "robot_fingerprint": report["robot_fingerprint"],
+    "release_checkpoint_sha256": report["release_checkpoint_sha256"],
+    "release_artifact_sha256": report["release_artifact_sha256"],
+    "evaluated_clips": len(report["per_clip"]),
+    "global": report["global"],
+    "acceptance": report["acceptance"],
+}
+(root / "summary.json").write_text(
+    json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n"
+)
+files = {}
+for name in ("checkpoint_path.txt", "sonic_evaluation.json", "summary.json"):
+    files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
+(root / "manifest.json").write_text(
+    json.dumps({"schema_version": 1, "files": files}, indent=2, sort_keys=True)
+    + "\n"
+)
+print(json.dumps(summary, indent=2, sort_keys=True))
+PY
+fi
 """
 
 
@@ -299,19 +378,55 @@ def stage_twist_inputs(
 ) -> tuple[str, str]:
     """Transfer and verify explicit TWIST inputs before remote training starts."""
 
-    if not selection.dataset_files:
-        return "", ""
-    dataset_path = _stage_files(
+    dataset_path, teacher_checkpoint_path, _ = stage_training_inputs(
         target,
-        selection.dataset_files,
-        remote_root=config.remote_dataset_dir,
-        timeout_seconds=config.transfer_timeout_seconds,
-        retries=config.transfer_retries,
+        selection,
+        config,
         executor=executor,
         rsync_executor=rsync_executor,
         sleep=sleep,
-        expected_dataset_fingerprint=selection.dataset_fingerprint,
     )
+    return dataset_path, teacher_checkpoint_path
+
+
+def stage_training_inputs(
+    target: tuple[str, str, int],
+    selection: GitSelection,
+    config: VastTrainConfig,
+    *,
+    executor: SshExecutor,
+    rsync_executor: RsyncExecutor,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[str, str, str]:
+    """Transfer and verify explicit dataset, teacher, and release inputs."""
+
+    if not selection.dataset_files:
+        return "", "", ""
+    if selection.dataset_root is None:
+        dataset_path = _stage_files(
+            target,
+            selection.dataset_files,
+            remote_root=config.remote_dataset_dir,
+            timeout_seconds=config.transfer_timeout_seconds,
+            retries=config.transfer_retries,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+            expected_dataset_fingerprint=selection.dataset_fingerprint,
+        )
+    else:
+        dataset_path = _stage_tree_files(
+            target,
+            selection.dataset_files,
+            local_root=selection.dataset_root,
+            remote_root=config.remote_sonic_dataset_dir,
+            timeout_seconds=config.transfer_timeout_seconds,
+            retries=config.transfer_retries,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+            expected_dataset_fingerprint=selection.dataset_fingerprint,
+        )
     teacher_checkpoint_path = ""
     if selection.teacher_checkpoint_path is not None:
         teacher_checkpoint_path = _stage_directory(
@@ -324,7 +439,23 @@ def stage_twist_inputs(
             rsync_executor=rsync_executor,
             sleep=sleep,
         )
-    return f"{dataset_path}/index.json", teacher_checkpoint_path
+    sonic_artifact_path = ""
+    if selection.sonic_artifact_path is not None:
+        sonic_artifact_path = _stage_directory(
+            target,
+            selection.sonic_artifact_path,
+            remote_root=config.remote_sonic_artifact_dir,
+            timeout_seconds=config.transfer_timeout_seconds,
+            retries=config.transfer_retries,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+        )
+    return (
+        f"{dataset_path}/index.json",
+        teacher_checkpoint_path,
+        sonic_artifact_path,
+    )
 
 
 def _stage_files(
@@ -342,6 +473,50 @@ def _stage_files(
     manifests = {path.name: _sha256(path) for path in paths}
     _prepare_remote_directory(target, remote_root, executor, timeout_seconds)
     command = _rsync_command(target, [str(path) for path in paths], remote_root)
+    _run_rsync_with_retries(
+        command,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        executor=rsync_executor,
+        sleep=sleep,
+    )
+    _verify_remote_files(
+        target,
+        remote_root,
+        manifests,
+        executor=executor,
+        timeout_seconds=timeout_seconds,
+        expected_dataset_fingerprint=expected_dataset_fingerprint,
+    )
+    return remote_root
+
+
+def _stage_tree_files(
+    target: tuple[str, str, int],
+    paths: tuple[Path, ...],
+    *,
+    local_root: Path,
+    remote_root: str,
+    timeout_seconds: int,
+    retries: int,
+    executor: SshExecutor,
+    rsync_executor: RsyncExecutor,
+    sleep: Callable[[float], None],
+    expected_dataset_fingerprint: str | None = None,
+) -> str:
+    local_root = local_root.resolve()
+    relative_paths = []
+    manifests = {}
+    for path in paths:
+        resolved = path.resolve()
+        if local_root not in resolved.parents or not resolved.is_file():
+            raise ValueError(f"transfer file escapes its dataset root: {path}")
+        relative = resolved.relative_to(local_root).as_posix()
+        relative_paths.append(relative)
+        manifests[relative] = _sha256(resolved)
+    _prepare_remote_directory(target, remote_root, executor, timeout_seconds)
+    sources = [f"{local_root}/./{relative}" for relative in relative_paths]
+    command = _rsync_command(target, sources, remote_root, relative=True)
     _run_rsync_with_retries(
         command,
         timeout_seconds=timeout_seconds,
@@ -416,7 +591,11 @@ def _prepare_remote_directory(
 
 
 def _rsync_command(
-    target: tuple[str, str, int], sources: list[str], remote_root: str
+    target: tuple[str, str, int],
+    sources: list[str],
+    remote_root: str,
+    *,
+    relative: bool = False,
 ) -> list[str]:
     user, host, port = target
     transport = shlex.join(
@@ -434,18 +613,25 @@ def _rsync_command(
             str(port),
         ]
     )
-    return [
+    command = [
         "rsync",
         "--archive",
         "--partial",
         "--append-verify",
         "--human-readable",
         "--info=progress2",
-        "--rsh",
-        transport,
-        *sources,
-        f"{user}@{host}:{remote_root}/",
     ]
+    if relative:
+        command.append("--relative")
+    command.extend(
+        [
+            "--rsh",
+            transport,
+            *sources,
+            f"{user}@{host}:{remote_root}/",
+        ]
+    )
+    return command
 
 
 def _run_rsync_with_retries(
@@ -472,9 +658,9 @@ def _run_rsync_with_retries(
         ) as exc:
             last_error = exc
             if attempt < retries and time.monotonic() < deadline:
-                print(f"TWIST input transfer attempt {attempt} failed; resuming.")
+                print(f"training input transfer attempt {attempt} failed; resuming.")
                 sleep(5)
-    raise RuntimeError(f"TWIST input transfer failed: {last_error}") from last_error
+    raise RuntimeError(f"training input transfer failed: {last_error}") from last_error
 
 
 def _verify_remote_files(
@@ -503,7 +689,7 @@ fingerprint = sys.argv[3]
 if fingerprint:
     index = json.loads((root / "index.json").read_text())
     if index.get("dataset_fingerprint") != fingerprint:
-        raise RuntimeError("staged TWIST dataset fingerprint mismatch")
+        raise RuntimeError("staged training dataset fingerprint mismatch")
 print(f"Verified {len(manifest)} staged files under {root}.")
 """
     command = shlex.join(
@@ -534,6 +720,103 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _rsync_download_command(
+    target: tuple[str, str, int], remote_root: str, local_root: Path
+) -> list[str]:
+    user, host, port = target
+    transport = shlex.join(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-p",
+            str(port),
+        ]
+    )
+    return [
+        "rsync",
+        "--archive",
+        "--partial",
+        "--append-verify",
+        "--human-readable",
+        "--info=progress2",
+        "--rsh",
+        transport,
+        f"{user}@{host}:{remote_root}/",
+        f"{local_root}/",
+    ]
+
+
+def _download_sonic_results(
+    target: tuple[str, str, int],
+    remote_root: str,
+    local_root: Path,
+    *,
+    expected_dataset_fingerprint: str,
+    timeout_seconds: int,
+    retries: int,
+    executor: RsyncExecutor,
+    sleep: Callable[[float], None],
+) -> Path:
+    local_root.mkdir(parents=True, exist_ok=True)
+    command = _rsync_download_command(target, remote_root, local_root)
+    _run_rsync_with_retries(
+        command,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        executor=executor,
+        sleep=sleep,
+    )
+    _validate_local_sonic_results(
+        local_root,
+        expected_dataset_fingerprint=expected_dataset_fingerprint,
+    )
+    return local_root
+
+
+def _validate_local_sonic_results(
+    root: Path, *, expected_dataset_fingerprint: str
+) -> None:
+    manifest_path = root / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        raise ValueError(f"downloaded SONIC result manifest is invalid: {exc}") from exc
+    expected_names = {
+        "checkpoint_path.txt",
+        "sonic_evaluation.json",
+        "summary.json",
+    }
+    if (
+        manifest.get("schema_version") != 1
+        or not isinstance(manifest.get("files"), dict)
+        or set(manifest["files"]) != expected_names
+    ):
+        raise ValueError("downloaded SONIC result manifest differs from its schema")
+    for name, expected in manifest["files"].items():
+        path = root / name
+        if not path.is_file() or _sha256(path) != expected:
+            raise ValueError(f"downloaded SONIC result checksum mismatch: {name}")
+    report = json.loads((root / "sonic_evaluation.json").read_text(encoding="utf-8"))
+    summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+    if (
+        report.get("task") != "sonic"
+        or report.get("dataset_fingerprint") != expected_dataset_fingerprint
+        or summary.get("task") != "sonic"
+        or summary.get("dataset_fingerprint") != expected_dataset_fingerprint
+        or summary.get("evaluated_clips") != len(report.get("per_clip", ()))
+        or summary.get("global") != report.get("global")
+        or summary.get("acceptance") != report.get("acceptance")
+    ):
+        raise ValueError("downloaded SONIC evaluation summary differs from its report")
+
+
 def run_remote_training(
     target: tuple[str, str, int],
     selection: GitSelection,
@@ -550,7 +833,7 @@ def run_remote_training(
         executor = SshExecutor()
     if rsync_executor is None:
         rsync_executor = RsyncExecutor()
-    dataset_path, teacher_checkpoint_path = stage_twist_inputs(
+    dataset_path, teacher_checkpoint_path, sonic_artifact_path = stage_training_inputs(
         target,
         selection,
         config,
@@ -575,6 +858,7 @@ def run_remote_training(
         run_name,
         dataset_path=dataset_path,
         teacher_checkpoint_path=teacher_checkpoint_path,
+        sonic_artifact_path=sonic_artifact_path,
     )
     started_at = time.monotonic()
     ssh_start_deadline = started_at + config.ssh_timeout_seconds
@@ -697,7 +981,22 @@ def run_remote_training(
                 update.returncode,
                 ["detached remote training", run_name],
             )
-        return
+        break
+    if config.experiment == "sonic":
+        if selection.dataset_fingerprint is None:
+            raise RuntimeError("SONIC remote results require a dataset fingerprint")
+        local_root = Path(config.local_result_dir).expanduser().resolve() / run_name
+        downloaded = _download_sonic_results(
+            target,
+            f"{job_dir}/results",
+            local_root,
+            expected_dataset_fingerprint=selection.dataset_fingerprint,
+            timeout_seconds=config.transfer_timeout_seconds,
+            retries=config.transfer_retries,
+            executor=rsync_executor,
+            sleep=sleep,
+        )
+        print(f"Downloaded verified SONIC evaluation results to {downloaded}.")
 
 
 def _print_remote_output(result: subprocess.CompletedProcess[str]) -> None:
@@ -725,6 +1024,7 @@ def remote_start_command(
     *,
     dataset_path: str = "",
     teacher_checkpoint_path: str = "",
+    sonic_artifact_path: str = "",
 ) -> str:
     bootstrap = r"""import json, os, pathlib, subprocess, sys
 payload = json.load(sys.stdin)
@@ -788,6 +1088,12 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             dataset_path,
             teacher_checkpoint_path,
             str(config.allow_git_commit_mismatch).lower(),
+            sonic_artifact_path,
+            str(config.total_timesteps or ""),
+            str(config.num_envs or ""),
+            str(config.reference_shard_updates or ""),
+            str(config.checkpoint_every_updates or ""),
+            f"{job_dir}/results",
         ]
     )
 

@@ -238,7 +238,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
             {
                 "task": "sonic",
                 "ppo": run_config.config,
-                "dataset": index,
+                "dataset": _tracking_dataset_summary(index),
                 "simulation": run_config.simulation,
                 "sonic_env": run_config.sonic_env,
                 "reference_shard_updates": run_config.reference_shard_updates,
@@ -360,6 +360,43 @@ def validate_sonic_training_config(config: SonicTrainingRunConfig) -> None:
         or config.reference_shard_updates <= 0
     ):
         raise ValueError("SONIC reference_shard_updates must be a positive integer")
+
+
+def _tracking_dataset_summary(index: dict) -> dict:
+    """Return the immutable dataset contract without multi-megabyte clip metadata."""
+
+    split_summary = {}
+    for split in ("train", "evaluation"):
+        clips = [clip for clip in index["clips"] if clip["split"] == split]
+        split_summary[split] = {
+            "shards": len(index["shards"][split]),
+            "clips": len(clips),
+            "frames": sum(int(clip["frames"]) for clip in clips),
+            "sampling_mass": sum(
+                float(descriptor["sampling_mass"])
+                for descriptor in index["shards"][split]
+            ),
+        }
+    return {
+        "schema_version": index["schema_version"],
+        "dataset_fingerprint": index["dataset_fingerprint"],
+        "portable_manifest_fingerprint": index["portable_manifest_fingerprint"],
+        "policy_fps": index["policy_fps"],
+        "train_sampling": index["train_sampling"],
+        "shard_frame_capacity": index["shard_frame_capacity"],
+        "shard_clip_capacity": index["shard_clip_capacity"],
+        "joint_names": index["joint_names"],
+        "body_names": index["body_names"],
+        "g1_joint_names": index["g1_joint_names"],
+        "robot_fingerprint": index["robot_fingerprint"],
+        "gmr_revision": index["gmr_revision"],
+        "bello_gmr_config_sha256": index["bello_gmr_config_sha256"],
+        "g1_gmr_revision": index["g1_gmr_revision"],
+        "g1_gmr_config_sha256": index["g1_gmr_config_sha256"],
+        "g1_robot_sha256": index["g1_robot_sha256"],
+        "joint_calibration": index["joint_calibration"],
+        "splits": split_summary,
+    }
 
 
 def sonic_reference_shard_for_update(

@@ -69,6 +69,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
+| `reference_shard_updates` | positive integer or `null`; `null` | For `experiment=sonic`, override how many updates each full reference shard receives before rotation. Other experiments reject it. |
 | `contact_budget_per_env` | integer or `null`; `null` | Override the profile's positive Warp active-contact capacity per environment. Use the recorded value when resuming a checkpoint and raise it only when capacity telemetry reports overflow. |
 | `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. Do not supply this field for locomotion profiles. |
 | `dataset_path` | path or `null`; `null` | Override the packed `index.json` for a TWIST, TWIST2, or SONIC run. Other experiments reject it. |
@@ -78,6 +79,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; it waives source-revision identity while metadata semantics, layouts, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
 | `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. It must be one path component. |
+| `checkpoint_every_updates` | positive integer or `null`; `null` | Override the periodic checkpoint interval. The final checkpoint is still written when the profile enables checkpointing. |
 | `wandb_enabled` | boolean or `null`; `null` | Enable or disable W&B independently of the profile default. |
 | `run_name` | string or `null`; `null` | Override the W&B run name. |
 | `video_enabled` | boolean or `null`; `null` | Enable or disable scheduled native-MuJoCo evaluation videos. |
@@ -271,11 +273,16 @@ Configuration source: `configs/commands/vast_train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
+| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, `twist2`, or `sonic`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
-| `dataset_path` | path or `null`; `null` | Required local schema-3 `index.json` for TWIST or TWIST2. Its five portable dataset files are transferred with resumable `rsync` and verified remotely. |
+| `dataset_path` | path or `null`; `null` | Required local `index.json` for TWIST, TWIST2, or SONIC. TWIST transfers its five portable files; SONIC transfers the exact nested shard tree. Every file is checksummed locally and remotely. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |
+| `sonic_artifact_path` | path or `null`; `null` | Required pinned NPZ/JSON release artifact directory for `sonic`; rejected by other experiments. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit a staged student teacher checkpoint from a different clean source commit. Dataset, robot, observation, and layout checks remain enforced. |
+| `total_timesteps` | positive integer or `null`; `null` | Optional transition-budget override for the real remote run. The fixed GPU smoke preflight remains one 768-transition update. |
+| `num_envs` | positive integer or `null`; `null` | Optional remote training batch-size override. |
+| `reference_shard_updates` | positive integer or `null`; `null` | SONIC-only shard-rotation override. A value of `1` lets a short run visit a new fixed-capacity shard every update. |
+| `checkpoint_every_updates` | positive integer or `null`; `null` | Optional periodic checkpoint override for the real remote run. |
 | `max_price` | positive float or `null`; `null` | Maximum total hourly rental price. A positive value is required, including for dry-run offer queries. |
 | `branch` | string or `null`; `null` | Required remote `origin` branch. A null value is rejected before rental. |
 | `run_name` | string or `null`; `null` | Explicit lifecycle/W&B run label. Otherwise a unique name is generated from the profile, branch, commit, and current UTC timestamp. |
@@ -283,16 +290,20 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | `skip_confirmation` | boolean; `false` | Skip the final rental confirmation for unattended operation. |
 | `dry_run` | boolean; `false` | Resolve Git state and print the offer query without reading credentials or renting. |
 | `preferred_countries` | ISO country-code list; `[KR, JP, TW, HK, SG]` | Rank nearby offers ahead of globally better marketplace value. |
-| `min_upload_mib_per_second` | positive float; `5.0` | Reject and destroy a TWIST instance whose direct-SSH upload probe falls below this rate. |
+| `min_upload_mib_per_second` | positive float; `5.0` | Reject and destroy a dataset-backed instance whose direct-SSH upload probe falls below this rate. |
 | `route_probe_mib` | positive integer; `16` | Payload size for the pre-transfer direct-SSH upload probe. |
 
 The selected profile, `pyproject.toml`, `uv.lock`, and any motion clip are
 verified in the exact `origin/<branch>` commit before rental. Ignored local
 motions are never uploaded implicitly. TWIST transfers only the five files
 named by its validated dataset contract and, for a student, the selected
-checkpoint directory. Credentials come from `VAST_API_KEY` or
-keyring `vast/api_key`, `WANDB_API_KEY` or keyring `wandb/api_key`, and
-optionally `GITHUB_TOKEN` or keyring `github/bello_mujoco_read_token`.
+checkpoint directory. SONIC validates and transfers its canonical shard tree
+and exact pinned release artifact. After the real SONIC run, Vast evaluates
+every accepted held-out clip and downloads a hash-verified full report and
+compact summary below `outputs/vast/<run-name>/` before teardown. Credentials
+come from `VAST_API_KEY` or keyring `vast/api_key`, `WANDB_API_KEY` or keyring
+`wandb/api_key`, and optionally `GITHUB_TOKEN` or keyring
+`github/bello_mujoco_read_token`.
 
 The maintained offer policy requests one RTX 5090, at least 64 GB CPU RAM and
 80 GB disk, reliability of at least 0.98, CUDA 13 compatibility, verification,

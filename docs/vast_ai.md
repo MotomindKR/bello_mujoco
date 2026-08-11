@@ -13,13 +13,15 @@ Before rental, the launcher:
 3. verifies the selected profile, `.gitmodules`, pinned `deps/bello-stack`
    gitlink, `.python-version`, `pyproject.toml`, and `uv.lock` in that commit;
 4. verifies any motion archive is repository-tracked in that commit;
-5. validates any local TWIST/TWIST2 dataset and typed teacher checkpoint;
+5. validates any local TWIST/TWIST2 dataset and typed teacher checkpoint, or
+   the canonical SONIC shard tree and pinned release artifact;
 6. generates a unique timestamped run/lifecycle label;
 7. builds offer queries from the maintained hardware policy.
 
-Motion jobs require an explicit tracked clip. TWIST and TWIST2 jobs instead
-require an explicit local schema-3 dataset. A student additionally requires one explicit
-typed teacher checkpoint. No dataset or teacher is selected implicitly.
+Motion jobs require an explicit tracked clip. TWIST, TWIST2, and SONIC jobs
+instead require an explicit local dataset. A student additionally requires one
+explicit typed teacher checkpoint; SONIC requires the exact exported NVIDIA
+release artifact. No dataset, checkpoint, or artifact is selected implicitly.
 
 The default offer policy performs one global search for an RTX 5090 with at
 least 64 GB CPU RAM, 80 GB disk, 0.98 reliability, CUDA 13, verification,
@@ -35,8 +37,8 @@ Non-dry execution:
 3. records a creating state before requesting the instance;
 4. records the active instance ID as soon as it is known;
 5. waits for instance readiness and its required direct SSH mapping;
-6. transfers explicit TWIST inputs with resumable `rsync --append-verify` and
-   verifies every file's SHA-256 on the instance;
+6. transfers explicit dataset/checkpoint/artifact inputs with resumable
+   `rsync --append-verify` and verifies every file's SHA-256 on the instance;
 7. recursively clones the exact root commit and pinned submodules, then performs
    a frozen workspace dependency sync;
 8. verifies the JAX GPU backend;
@@ -44,7 +46,9 @@ Non-dry execution:
 10. starts the real job in a detached process, records PID/status/log files, and
    streams bounded log/status updates;
 11. relies on the configured W&B run for checkpoint artifacts;
-12. attempts and verifies instance teardown after success, error, timeout, or
+12. for SONIC, evaluates every held-out clip and retrieves a hash-verified
+    report and compact summary before teardown;
+13. attempts and verifies instance teardown after success, error, timeout, or
     handled interruption; unconfirmed destruction retains durable state and
     fails closed.
 
@@ -54,7 +58,7 @@ on and assigns the resolved run/checkpoint names. Every produced
 checkpoint records the same full commit selected by the launcher, and W&B logs
 that commit with the run configuration.
 
-## TWIST transfer
+## Dataset transfer
 
 The launch machine must provide `rsync` and direct outbound SSH. The remote
 bootstrap installs its own `rsync` before transfer. Dataset files and checkpoint
@@ -62,12 +66,12 @@ contents remain outside Git and are copied only to dedicated paths under
 `/workspace`. Interrupted transfers retry with partial-file continuation. A
 remote SHA-256 mismatch prevents training and triggers normal teardown.
 
-TWIST and TWIST2 offers are ranked by proximity to Korea (`KR`, `JP`, `TW`,
-`HK`, then `SG`) before marketplace value. After SSH becomes ready, the launcher uploads a
-16 MiB probe and requires at least 5 MiB/s. A slower instance is destroyed and
-the next nearby offer is tried before the multi-gigabyte dataset is transferred.
-These controls can be overridden with `preferred_countries`,
-`min_upload_mib_per_second`, and `route_probe_mib`.
+Dataset-backed offers are ranked by proximity to Korea (`KR`, `JP`, `TW`,
+`HK`, then `SG`) before marketplace value. After SSH becomes ready, the
+launcher uploads a 16 MiB probe and requires at least 5 MiB/s. A slower
+instance is destroyed and the next nearby offer is tried before the
+multi-gigabyte dataset is transferred. These controls can be overridden with
+`preferred_countries`, `min_upload_mib_per_second`, and `route_probe_mib`.
 
 Teacher example:
 
@@ -102,6 +106,32 @@ uv run bello-vast-train \
   max_price=1.25 \
   duration_hours=60
 ```
+
+SONIC short-baseline example. With 512 environments and 24 rollout steps,
+`1,425,408` transitions are exactly 116 updates. Combined with
+`reference_shard_updates=1`, this visits each of the current 116 training
+shards once before strict held-out evaluation:
+
+```bash
+uv run bello-vast-train \
+  experiment=sonic \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v1/index.json \
+  sonic_artifact_path=artifacts/sonic/default_release \
+  total_timesteps=1425408 \
+  num_envs=512 \
+  reference_shard_updates=1 \
+  checkpoint_every_updates=29 \
+  branch=feature/sonic-transfer \
+  max_price=1.25 \
+  duration_hours=6 \
+  skip_confirmation=true
+```
+
+The remote job first runs the fixed 32-environment, 768-transition GPU
+preflight. The real run then uses the explicit overrides, uploads periodic and
+final checkpoints through W&B, evaluates all accepted held-out clips, and
+downloads `sonic_evaluation.json`, `summary.json`, and their checksum manifest
+to `outputs/vast/<run-name>/` before destroying the instance.
 
 ## Time bounds
 
