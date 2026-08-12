@@ -466,6 +466,7 @@ def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
     live = replace(standing, sequence=1)
     seen_sequences: list[int] = []
     resets: list[None] = []
+    motion_confirmed = False
 
     class FakeAdapter:
         env = SimpleNamespace()
@@ -478,6 +479,9 @@ def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
 
         def reset(self):
             resets.append(None)
+
+        def reference_physical_target(self, _reference):
+            return np.zeros(2)
 
         def step(self, _frame, reference):
             seen_sequences.append(reference.sequence)
@@ -498,6 +502,7 @@ def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
         calls = 0
 
         def latest(self):
+            assert motion_confirmed
             self.calls += 1
             if self.calls == 1:
                 return live
@@ -506,7 +511,8 @@ def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
     class FakeControl:
         previous_target = np.zeros(2)
 
-        def ramp_to_nominal(self, _positions):
+        def ramp_to_target(self, _positions, target):
+            self.previous_target = np.asarray(target)
             return frame
 
         def wait_for_run(self, _prompt, *, operator_input, validate_hold):
@@ -538,8 +544,10 @@ def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
     )
 
     def confirm_motion(expected, _prompt, hold_step, _operator_input):
+        nonlocal motion_confirmed
         assert expected == "MOTION"
         assert hold_step()
+        motion_confirmed = True
         return True
 
     monkeypatch.setattr(
@@ -567,9 +575,97 @@ def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
         ),
     )
 
-    assert seen_sequences[:2] == [0, 1]
+    assert seen_sequences[:2] == [0, 0]
+    assert 1 in seen_sequences
     assert seen_sequences[-1] == 0
     assert len(resets) >= 3
     output = capsys.readouterr().out
     assert "reference became unavailable" in output
     assert "neutral standing resumed" in output
+
+
+def test_twist2_reference_transition_blends_from_previous_target() -> None:
+    from bello_mujoco.hardware.twist2 import _transition_twist2_reference
+
+    frame = SimpleNamespace()
+    standing = Twist2ReferenceFrame(
+        qpos=np.zeros(1),
+        qvel=np.zeros(1),
+        sequence=0,
+        source_age_ms=None,
+        received_at=0.0,
+    )
+
+    class FakeAdapter:
+        control_timestep = 0.02
+
+        def reset(self):
+            return None
+
+        def step(self, _frame, _reference):
+            values = np.asarray((4.0, -4.0))
+            return SimpleNamespace(
+                physical_target=values,
+                observation=values,
+                policy_observation=values,
+                raw_action=values,
+                action=values,
+                command=values,
+            )
+
+    class FakeControl:
+        previous_target = np.zeros(2)
+
+        def __init__(self):
+            self.sent_targets: list[np.ndarray] = []
+            self.max_tilts: list[float | None] = []
+
+        def read_frame(self, *, max_tilt_radians=None):
+            self.max_tilts.append(max_tilt_radians)
+            return frame
+
+        def send_target(self, target):
+            self.previous_target = np.asarray(target)
+            self.sent_targets.append(self.previous_target.copy())
+
+        def pace(self):
+            return None
+
+        def reset_deadline(self):
+            return None
+
+        def drain(self):
+            return None
+
+    control = FakeControl()
+    _transition_twist2_reference(
+        control,
+        FakeAdapter(),
+        lambda: standing,
+        HardwareTwist2Config(policy_transition_seconds=0.08),
+        phase="transition_to_standing",
+        policy_log=None,
+        run_started=0.0,
+        max_tilt_radians=0.7,
+    )
+
+    expected = np.asarray(((1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)))
+    np.testing.assert_allclose(control.sent_targets, expected)
+    assert control.max_tilts == [0.7] * 4
+
+
+def test_twist2_neutral_reference_maps_to_physical_hold_target(
+    twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    adapter = twist2_hardware_adapter
+    reference = reference_frame(adapter, first_joint_offset=0.1)
+    logical = adapter.default_joint_target.copy()
+    logical[adapter.policy_indices] = reference.qpos[adapter.policy_qpos_indices]
+    limits = np.asarray(adapter.env.model.mj_model.actuator_ctrlrange)
+    expected = np.clip(
+        adapter.transform @ logical,
+        limits[:, 0],
+        limits[:, 1],
+    )
+
+    np.testing.assert_allclose(adapter.reference_physical_target(reference), expected)

@@ -567,21 +567,38 @@ def require_nominal_pose(
 ) -> None:
     """Require measured coordinates to remain near the checkpoint nominal pose."""
 
+    require_target_pose(
+        frame,
+        adapter,
+        adapter.nominal_physical_target,
+        pose_name="the checkpoint nominal pose",
+    )
+
+
+def require_target_pose(
+    frame: HardwareFrame,
+    adapter: HardwarePolicyAdapter,
+    target: np.ndarray,
+    *,
+    pose_name: str,
+) -> None:
+    """Require measured coordinates to remain near an explicit target pose."""
+
     measured = np.asarray(frame.positions, dtype=np.float64)
-    nominal = np.asarray(adapter.nominal_physical_target, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
     coordinate_count = len(adapter.physical_coordinate_names)
     if coordinate_count == 0:
-        raise RuntimeError("nominal-pose validation requires physical coordinates")
+        raise RuntimeError("target-pose validation requires physical coordinates")
     expected_shape = (coordinate_count,)
-    if measured.shape != expected_shape or nominal.shape != expected_shape:
+    if measured.shape != expected_shape or target.shape != expected_shape:
         raise RuntimeError(
-            "nominal-pose validation requires one measured and target value per "
+            "target-pose validation requires one measured and target value per "
             "physical coordinate"
         )
     if not np.all(np.isfinite(measured)):
-        raise RuntimeError("measured nominal-pose coordinates are non-finite")
-    if not np.all(np.isfinite(nominal)):
-        raise RuntimeError("checkpoint nominal-pose target is non-finite")
+        raise RuntimeError("measured target-pose coordinates are non-finite")
+    if not np.all(np.isfinite(target)):
+        raise RuntimeError(f"{pose_name} target is non-finite")
     limits = np.asarray(
         [
             (
@@ -593,15 +610,15 @@ def require_nominal_pose(
         ],
         dtype=np.float64,
     )
-    error = np.abs(measured - nominal)
+    error = np.abs(measured - target)
     excess = error - limits
     index = int(np.argmax(excess))
     if excess[index] > 0.0:
         name = adapter.physical_coordinate_names[index]
         raise RuntimeError(
-            "robot is too far from the checkpoint nominal pose: "
+            f"robot is too far from {pose_name}: "
             f"{name} is {error[index]:.3f} rad away "
-            f"(measured={measured[index]:.3f}, nominal={nominal[index]:.3f}); "
+            f"(measured={measured[index]:.3f}, target={target[index]:.3f}); "
             f"maximum allowed error is {limits[index]:.3f} rad"
         )
 
@@ -915,6 +932,32 @@ class ArmedControlSession:
         *,
         before_step: Callable[[], bool] | None = None,
     ) -> HardwareFrame | None:
+        return self.ramp_to_target(
+            initial_positions,
+            self.adapter.nominal_physical_target,
+            before_step=before_step,
+        )
+
+    def ramp_to_target(
+        self,
+        initial_positions: np.ndarray,
+        target_positions: np.ndarray,
+        *,
+        before_step: Callable[[], bool] | None = None,
+    ) -> HardwareFrame | None:
+        initial_positions = np.asarray(initial_positions, dtype=np.float64)
+        target_positions = np.asarray(target_positions, dtype=np.float64)
+        expected_shape = (len(self.adapter.physical_coordinate_names),)
+        if (
+            initial_positions.shape != expected_shape
+            or target_positions.shape != expected_shape
+            or not np.all(np.isfinite(initial_positions))
+            or not np.all(np.isfinite(target_positions))
+        ):
+            raise ValueError(
+                "hardware ramp requires one finite initial and target value per "
+                "physical coordinate"
+            )
         ramp_steps = max(
             1, math.ceil(self.config.ramp_seconds / self.adapter.control_timestep)
         )
@@ -924,7 +967,7 @@ class ArmedControlSession:
                 return None
             fraction = step / ramp_steps
             target = initial_positions + fraction * (
-                self.adapter.nominal_physical_target - initial_positions
+                target_positions - initial_positions
             )
             self.send_target(target)
             self.pace()

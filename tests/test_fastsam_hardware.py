@@ -13,6 +13,7 @@ from bello_mujoco.hardware.fastsam import (
     FastSamSmplxStream,
     _validate_service_status,
     _validate_stream_info,
+    fastsam_reference_source,
     import_pinned_fastsam_proto,
 )
 from bello_mujoco.hardware.smplx_retarget import (
@@ -181,6 +182,57 @@ def test_service_status_must_enable_tracking() -> None:
                 terminal_failure="",
             )
         )
+
+
+def test_reference_factory_defers_live_target_check_until_motion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bello_mujoco.hardware import fastsam
+    from bello_mujoco.hardware.twist2 import HardwareTwist2Config
+
+    grpc_config = SimpleNamespace(endpoint="127.0.0.1:50055")
+
+    class FakeStream:
+        stream_instance_id = "stream-1"
+        stream_config_sha256 = "a" * 64
+        inference_profile = "large"
+        inference_mode = "body"
+        neutral_model_sha256 = "b" * 64
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exception):
+            return False
+
+    class FakeSource:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exception):
+            return False
+
+        def wait_until_ready(self, _timeout_seconds):
+            raise AssertionError("live target was checked before MOTION")
+
+    stream = FakeStream()
+    source = FakeSource()
+    monkeypatch.setattr(
+        fastsam.FastSamGrpcConfig,
+        "from_hardware",
+        classmethod(lambda _cls, _config: grpc_config),
+    )
+    monkeypatch.setattr(fastsam, "FastSamSmplxStream", lambda _config: stream)
+    monkeypatch.setattr(fastsam, "GmrBelloRetargeter", lambda *_args: object())
+    monkeypatch.setattr(
+        fastsam,
+        "LiveGmrReferenceSource",
+        lambda _stream, _retargeter: source,
+    )
+
+    adapter = SimpleNamespace(env=SimpleNamespace(), metadata=SimpleNamespace())
+    with fastsam_reference_source(adapter, HardwareTwist2Config()) as result:
+        assert result is source
 
 
 def test_camera_adapter_preserves_live_translation_after_initial_alignment(

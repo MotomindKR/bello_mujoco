@@ -192,17 +192,24 @@ translation and vertical motion are preserved. A differently mounted camera
 must supply a calibrated `fastsam_camera_to_world_quaternion_xyzw`; disabling
 initial heading or floor alignment is explicit.
 
-Preflight connects to Fast-SAM, validates server readiness and tracking mode,
-waits for one confidence- and latency-qualified pose, retargets it through GMR,
-and compiles the policy before connecting to the robot. The live gRPC consumer
-and GMR solver run in background threads with capacity-one/latest-only
-semantics; the 50 Hz control loop never blocks on either service. Frame age is
-the server's complete pipeline latency plus the configured transport budget and
-local time since receipt.
+Preflight connects to Fast-SAM, validates server readiness, tracking mode, and
+the stream schema, derives the neutral reference through GMR, and compiles the
+policy before connecting to the robot. It does not require Fast-SAM to be
+transmitting a qualified person target. The live gRPC consumer and GMR solver
+run in background threads with capacity-one/latest-only semantics; the 50 Hz
+control loop never blocks on either service. Frame age is the server's complete
+pipeline latency plus the configured transport budget and local time since
+receipt.
 
-Armed operation follows `HOLD`, the nominal ramp, and `RUN`. `RUN` starts the
-policy on the neutral SMPL-X standing reference while commands continue at 50
-Hz. Exact `MOTION` confirmation transitions to the current live GMR reference.
+Armed operation follows `HOLD`, a ten-second ramp to the GMR-retargeted SMPL-X
+neutral joint pose, and `RUN`; the same neutral target is held while waiting for
+`RUN`. `RUN` starts the policy with a 0.2-second blend from that pose to the
+neutral SMPL-X standing policy output, then continues commands at 50 Hz. Only
+after exact `MOTION` confirmation does the runner require a confidence- and
+latency-qualified person target. It keeps sending neutral-standing commands
+while waiting up to `fastsam_reference_ready_timeout_seconds`, then transitions
+to the current live GMR reference. If that timeout expires, neutral standing
+continues and the operator can type `MOTION` to retry.
 Occlusion, ambiguity, low confidence, excessive latency, invalid retargeted
 motion, or stream failure returns the robot to neutral standing or initiates a
 damped shutdown according to severity. Fast-SAM `LOST` remains terminal for

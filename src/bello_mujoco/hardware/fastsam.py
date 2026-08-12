@@ -527,12 +527,9 @@ def fastsam_reference_source(
             GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),
         )
         with LiveGmrReferenceSource(stream, retargeter) as source:
-            reference = source.wait_until_ready(
-                config.fastsam_reference_ready_timeout_seconds
-            )
             print(
                 {
-                    "fastsam_preflight": "passed",
+                    "fastsam_connection_preflight": "passed",
                     "endpoint": grpc_config.endpoint,
                     "stream_instance_id": stream.stream_instance_id,
                     "stream_config_sha256": stream.stream_config_sha256,
@@ -540,7 +537,7 @@ def fastsam_reference_source(
                     "inference_mode": stream.inference_mode,
                     "body_representation": "smplx_body_22",
                     "neutral_model_sha256": stream.neutral_model_sha256,
-                    "first_reference_sequence": reference.sequence,
+                    "live_target_check": "deferred_until_MOTION",
                 }
             )
             yield source

@@ -34,9 +34,9 @@ from bello_mujoco.hardware.runtime import (
     import_hardware_binding,
     normalized_quaternion_xyzw,
     require_async_hardware_binding,
-    require_nominal_pose,
     require_operator_confirmation,
     require_state_frame_binding,
+    require_target_pose,
     validate_hardware_control_config,
     validate_hardware_frame,
     validate_hardware_inventory,
@@ -263,6 +263,17 @@ class HardwareTwist2PolicyAdapter:
         target = self.transform @ self.default_joint_target
         return np.clip(target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1])
 
+    def reference_physical_target(self, reference: Twist2ReferenceFrame) -> np.ndarray:
+        """Map a retargeted reference pose into physical motor coordinates."""
+
+        validate_twist2_reference(reference, self.env, self.config)
+        logical_target = self.default_joint_target.copy()
+        logical_target[self.policy_indices] = np.asarray(reference.qpos)[
+            self.policy_qpos_indices
+        ]
+        target = self.transform @ logical_target
+        return np.clip(target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1])
+
     def reset(self) -> None:
         self._past_frames = None
         self._reset_frame = None
@@ -270,7 +281,7 @@ class HardwareTwist2PolicyAdapter:
         self._last_raw_action = np.zeros(self.env.action_size, dtype=np.float32)
 
     def precompile(self, standing: Twist2ReferenceFrame) -> None:
-        nominal = self.nominal_physical_target
+        nominal = self.reference_physical_target(standing)
         frame = HardwareFrame(
             positions=nominal,
             velocities=np.zeros_like(nominal),
@@ -679,6 +690,7 @@ def run_hardware_twist2(
     ):
         standing = references.standing()
         validate_twist2_reference(standing, adapter.env, config)
+        standing_target = adapter.reference_physical_target(standing)
         adapter.precompile(standing)
         groups = validate_hardware_inventory(robot, adapter, config, binding)
         state_reader = robot.states(groups=config.groups, imus=(config.imu_name,))
@@ -690,9 +702,7 @@ def run_hardware_twist2(
             config.telemetry_timeout_seconds,
         )
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
-        initial_error = float(
-            np.max(np.abs(frame.positions - adapter.nominal_physical_target))
-        )
+        initial_error = float(np.max(np.abs(frame.positions - standing_target)))
         preview = adapter.step(frame, standing)
         adapter.reset()
         print(
@@ -706,7 +716,7 @@ def run_hardware_twist2(
                 "actor_observation_size": adapter.env.observation_size,
                 "control_rate_hz": 1.0 / adapter.control_timestep,
                 "jax_backend": jax.default_backend(),
-                "nominal_ramp_distance_max": initial_error,
+                "smplx_neutral_ramp_distance_max": initial_error,
                 "standing_preview_action_abs_max": float(
                     np.max(np.abs(preview.raw_action))
                 ),
@@ -722,8 +732,8 @@ def run_hardware_twist2(
             return
         require_operator_confirmation(
             HOLD_CONFIRMATION,
-            "Support the robot, then type HOLD to acquire control and begin "
-            "the nominal-pose ramp: ",
+            "Support the robot, then type HOLD to acquire control and begin the "
+            "SMPL-X neutral-pose ramp: ",
             operator_input,
         )
         frame = wait_for_hardware_frame(
@@ -788,21 +798,37 @@ def control_physical_twist2(
         thread_name="bello-twist2-control",
         operator_input=operator_input,
     ) as control:
-        frame = control.ramp_to_nominal(initial_frame.positions)
+        standing_target = adapter.reference_physical_target(standing)
+        frame = control.ramp_to_target(initial_frame.positions, standing_target)
         if frame is None:
-            raise RuntimeError("TWIST2 nominal-pose ramp ended unexpectedly")
-        require_nominal_pose(frame, adapter)
+            raise RuntimeError("TWIST2 SMPL-X neutral-pose ramp ended unexpectedly")
+        require_target_pose(
+            frame,
+            adapter,
+            standing_target,
+            pose_name="the SMPL-X neutral pose",
+        )
 
         def validate_hold(held_frame: HardwareFrame) -> None:
-            require_nominal_pose(held_frame, adapter)
+            require_target_pose(
+                held_frame,
+                adapter,
+                standing_target,
+                pose_name="the SMPL-X neutral pose",
+            )
 
         control.wait_for_run(
-            "Nominal-pose ramp complete. Release external support, let the robot "
-            "settle, then type RUN to start TWIST2 neutral standing: ",
+            "SMPL-X neutral-pose ramp complete. Release external support, let "
+            "the robot settle, then type RUN to start TWIST2 neutral standing: ",
             operator_input=operator_input,
             validate_hold=validate_hold,
         )
-        require_nominal_pose(control.read_frame(), adapter)
+        require_target_pose(
+            control.read_frame(),
+            adapter,
+            standing_target,
+            pose_name="the SMPL-X neutral pose",
+        )
         adapter.reset()
         run_started = time.monotonic()
         control.reset_deadline()
@@ -851,23 +877,57 @@ def control_physical_twist2(
             return True
 
         print(
+            "Transitioning from the SMPL-X neutral hold to neutral TWIST2 "
+            "policy standing."
+        )
+        _transition_twist2_reference(
+            control,
+            adapter,
+            lambda: standing,
+            config,
+            phase="transition_to_standing",
+            policy_log=policy_log,
+            run_started=run_started,
+            max_tilt_radians=config.max_tilt_radians,
+        )
+        control.reset_deadline()
+        print(
             "TWIST2 neutral SMPL-X standing is active. "
             "Type MOTION to begin live whole-body tracking."
         )
-        requested_motion = wait_for_operator_confirmation_while_holding(
-            MOTION_CONFIRMATION,
-            "Type MOTION to transition from neutral standing to live tracking: ",
-            standing_step,
-            operator_input,
-        )
-        if not requested_motion:
-            control.drain()
-            print("Hardware run duration completed before live tracking.")
-            return
+        first_live = None
+        while first_live is None:
+            requested_motion = wait_for_operator_confirmation_while_holding(
+                MOTION_CONFIRMATION,
+                "Type MOTION to transition from neutral standing to live tracking: ",
+                standing_step,
+                operator_input,
+            )
+            if not requested_motion:
+                control.drain()
+                print("Hardware run duration completed before live tracking.")
+                return
+            print(
+                "MOTION confirmed. Waiting for a qualified live SMPL-X target "
+                "while neutral standing remains active."
+            )
+            first_live = _wait_for_live_twist2_reference(
+                references,
+                adapter,
+                config,
+                standing_step,
+            )
+            if first_live is None:
+                if not duration_available():
+                    control.drain()
+                    print("Hardware run duration completed before live tracking.")
+                    return
+                print(
+                    "No qualified live SMPL-X target arrived; neutral standing "
+                    "remains active. Type MOTION to retry."
+                )
 
         try:
-            first_live = references.latest()
-            validate_twist2_reference(first_live, adapter.env, config)
             print("Transitioning from neutral standing to live TWIST2 tracking.")
             _transition_twist2_reference(
                 control,
@@ -960,6 +1020,7 @@ def _transition_twist2_reference(
     policy_log: PolicyStepLogger | None,
     run_started: float,
     first_reference: Twist2ReferenceFrame | None = None,
+    max_tilt_radians: float | None = None,
 ) -> None:
     control.drain()
     initial_target = control.previous_target.copy()
@@ -969,7 +1030,13 @@ def _transition_twist2_reference(
         1, math.ceil(config.policy_transition_seconds / adapter.control_timestep)
     )
     for step_number in range(1, steps + 1):
-        frame = control.read_frame(max_tilt_radians=config.max_motion_tilt_radians)
+        frame = control.read_frame(
+            max_tilt_radians=(
+                config.max_motion_tilt_radians
+                if max_tilt_radians is None
+                else max_tilt_radians
+            )
+        )
         current_reference = (
             first_reference
             if step_number == 1 and first_reference is not None
@@ -996,6 +1063,28 @@ def _transition_twist2_reference(
             )
         control.pace()
     control.drain()
+
+
+def _wait_for_live_twist2_reference(
+    references: Twist2ReferenceSource,
+    adapter: HardwareTwist2PolicyAdapter,
+    config: HardwareTwist2Config,
+    standing_step: Callable[[], bool],
+) -> Twist2ReferenceFrame | None:
+    deadline = time.monotonic() + config.fastsam_reference_ready_timeout_seconds
+    last_error: ReferenceUnavailable | None = None
+    while time.monotonic() < deadline:
+        try:
+            reference = references.latest()
+            validate_twist2_reference(reference, adapter.env, config)
+            return reference
+        except ReferenceUnavailable as error:
+            last_error = error
+        if not standing_step():
+            return None
+    if last_error is not None:
+        print(f"Live SMPL-X target is still unavailable: {last_error}")
+    return None
 
 
 def _log_twist2_step(

@@ -319,8 +319,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
-| `ramp_seconds` | positive float or `null`; `null` | all | Override nominal-pose ramp time. `null` uses 10 seconds. |
-| `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 0.2 seconds. |
+| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. TWIST2 ramps to the retargeted SMPL-X neutral pose; other tasks use their checkpoint nominal pose. |
+| `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 neutral-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion, twist2 | Maximum robot tilt during transitions and active motion. `null` uses 70 degrees (approximately 1.222 radians); standing keeps its 0.70-radian limit. |
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
@@ -331,7 +331,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |
 | `fastsam_connect_timeout_seconds` | positive float; `5.0` | twist2 | Deadline for establishing the gRPC channel. |
 | `fastsam_rpc_timeout_seconds` | positive float; `2.0` | twist2 | Deadline for stream-info and status RPCs. |
-| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | twist2 | Time allowed for the first valid tracked pose and GMR result during preflight. |
+| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | twist2 | Time allowed for a valid tracked pose and GMR result after each `MOTION` confirmation. Neutral-standing commands continue during the wait. |
 | `fastsam_min_tracking_confidence` | float in `[0,1]`; `0.5` | twist2 | Minimum whole-person confidence. |
 | `fastsam_min_joint_confidence` | float in `[0,1]`; `0.25` | twist2 | Minimum confidence for every GMR target joint. |
 | `fastsam_max_pipeline_latency_ms` | positive float; `120.0` | twist2 | Maximum server-reported submission-to-output latency. |
