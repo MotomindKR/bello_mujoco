@@ -43,6 +43,21 @@ from bello_mujoco.training.checkpoint import (
 from bello_mujoco.training.ppo import normalize_observation
 
 
+_REFERENCE_FRAME_ARRAY_FIELDS = (
+    "qpos",
+    "qvel",
+    "body_pos",
+    "body_quat_wxyz",
+    "body_lin_vel",
+    "body_ang_vel",
+    "foot_contacts",
+    "smpl_joint_pos",
+    "smpl_root_quat_wxyz",
+    "smpl_root_translation",
+    "g1_joint_pos",
+)
+
+
 @dataclass(frozen=True)
 class SonicAcceptanceThresholds:
     minimum_completion_rate: float = 0.90
@@ -135,6 +150,9 @@ def evaluate_sonic_checkpoint(
         heldout[0],
         _bank_clip_index(current_bank, heldout[0]),
     )
+    current_bank = _reference_bank_with_frame_arrays(
+        current_bank, first_env.reference_bank
+    )
     policy_template = _policy_template(metadata, first_env, release)
     expected_frozen_hashes = sonic_frozen_parameter_hashes(policy_template)
     train_state, restored_metadata, normalization = restore_evaluation_checkpoint(
@@ -161,11 +179,13 @@ def evaluate_sonic_checkpoint(
     for clip_index, clip in enumerate(heldout):
         shard_index = int(clip["shard_index"])
         if shard_index != current_shard_index:
-            current_bank = load_sonic_reference_bank(
-                index_path,
-                split="evaluation",
-                shard_index=shard_index,
-                sampling_bin_size=metadata.sonic_env.sampling.bin_size,
+            current_bank = _device_reference_bank(
+                load_sonic_reference_bank(
+                    index_path,
+                    split="evaluation",
+                    shard_index=shard_index,
+                    sampling_bin_size=metadata.sonic_env.sampling.bin_size,
+                )
             )
             current_shard_index = shard_index
         env = (
@@ -256,10 +276,35 @@ def _load_clip_env(
         metadata.asset,
         metadata.simulation,
         motion_path=runtime_path,
-        reference_bank=select_padded_sonic_reference_clip(bank, clip_index),
+        reference_bank=_device_reference_bank(
+            select_padded_sonic_reference_clip(bank, clip_index)
+        ),
         config=evaluation_env,
         warp=metadata.warp,
         batch_size=1,
+    )
+
+
+def _device_reference_bank(bank: SonicReferenceBank) -> SonicReferenceBank:
+    return _reference_bank_with_frame_arrays(bank, bank, device_put=True)
+
+
+def _reference_bank_with_frame_arrays(
+    bank: SonicReferenceBank,
+    source: SonicReferenceBank,
+    *,
+    device_put: bool = False,
+) -> SonicReferenceBank:
+    return replace(
+        bank,
+        **{
+            name: (
+                jax.device_put(getattr(source, name))
+                if device_put
+                else getattr(source, name)
+            )
+            for name in _REFERENCE_FRAME_ARRAY_FIELDS
+        },
     )
 
 

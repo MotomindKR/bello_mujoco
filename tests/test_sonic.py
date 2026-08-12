@@ -15,6 +15,7 @@ from bello_mujoco.envs.sonic import (
     SonicObservationContract,
     _build_sampling_bins,
 )
+from bello_mujoco.evaluation.sonic import _device_reference_bank
 from bello_mujoco.motion.sonic_dataset import (
     G1_ISAACLAB_JOINT_NAMES,
     G1_MUJOCO_JOINT_NAMES,
@@ -459,6 +460,9 @@ def test_padded_reference_clip_selection_preserves_fixed_array_shapes() -> None:
         0,
     )
     assert int(absolute) == 51
+    device_bank = _device_reference_bank(bank)
+    device_selected = select_padded_sonic_reference_clip(device_bank, 1)
+    assert device_selected.qpos is device_bank.qpos
 
 
 def test_dataset_index_and_split_hashes_are_enforced(tmp_path: Path) -> None:
