@@ -55,6 +55,8 @@ from bello_mujoco.training.ppo import normalize_observation
 
 
 _HARDWARE_LIMIT_ROUNDING_TOLERANCE_RADIANS = 1.0e-5
+_ANKLE_HARD_LIMIT_INSET_RADIANS = 1.0e-9
+_ANKLE_PROJECTION_TOLERANCE = 1.0e-12
 
 
 @dataclass(frozen=True)
@@ -179,6 +181,142 @@ class HardwareTwist2Step:
     reference_age_ms: float | None
 
 
+@dataclass(frozen=True)
+class _AnkleTargetEnvelope:
+    side: str
+    motor_indices: tuple[int, int]
+    logical_indices: tuple[int, int]
+    motor_to_joint: np.ndarray
+    joint_low: np.ndarray
+    joint_high: np.ndarray
+
+
+def _clip_polygon_to_halfspace(
+    polygon: np.ndarray,
+    normal: np.ndarray,
+    upper: float,
+) -> np.ndarray:
+    """Clip a two-dimensional convex polygon to ``normal @ point <= upper``."""
+
+    if polygon.size == 0:
+        return polygon.reshape(0, 2)
+    clipped: list[np.ndarray] = []
+    previous = polygon[-1]
+    previous_value = float(normal @ previous - upper)
+    previous_inside = previous_value <= _ANKLE_PROJECTION_TOLERANCE
+    for current in polygon:
+        current_value = float(normal @ current - upper)
+        current_inside = current_value <= _ANKLE_PROJECTION_TOLERANCE
+        if current_inside != previous_inside:
+            denominator = previous_value - current_value
+            if abs(denominator) <= _ANKLE_PROJECTION_TOLERANCE:
+                raise RuntimeError("ankle envelope clipping encountered a flat edge")
+            fraction = float(np.clip(previous_value / denominator, 0.0, 1.0))
+            clipped.append(previous + fraction * (current - previous))
+        if current_inside:
+            clipped.append(current)
+        previous = current
+        previous_value = current_value
+        previous_inside = current_inside
+    if not clipped:
+        return np.empty((0, 2), dtype=np.float64)
+    return np.asarray(clipped, dtype=np.float64)
+
+
+def _ankle_feasible_polygon(
+    envelope: _AnkleTargetEnvelope,
+    control_limits: np.ndarray,
+) -> np.ndarray:
+    motor_indices = np.asarray(envelope.motor_indices, dtype=np.int32)
+    limits = np.asarray(control_limits, dtype=np.float64)[motor_indices]
+    if limits.shape != (2, 2) or not np.all(np.isfinite(limits)):
+        raise ValueError(f"{envelope.side} ankle motor limits are invalid")
+    low = limits[:, 0]
+    high = limits[:, 1]
+    if np.any(low >= high):
+        raise ValueError(f"{envelope.side} ankle motor limits do not overlap")
+    polygon = np.asarray(
+        (
+            (low[0], low[1]),
+            (high[0], low[1]),
+            (high[0], high[1]),
+            (low[0], high[1]),
+        ),
+        dtype=np.float64,
+    )
+    safe_low = envelope.joint_low + _ANKLE_HARD_LIMIT_INSET_RADIANS
+    safe_high = envelope.joint_high - _ANKLE_HARD_LIMIT_INSET_RADIANS
+    if np.any(safe_low >= safe_high):
+        raise ValueError(f"{envelope.side} ankle hard joint limits are invalid")
+    for row, joint_low, joint_high in zip(
+        envelope.motor_to_joint, safe_low, safe_high, strict=True
+    ):
+        polygon = _clip_polygon_to_halfspace(polygon, row, float(joint_high))
+        polygon = _clip_polygon_to_halfspace(polygon, -row, float(-joint_low))
+    if polygon.size == 0:
+        raise ValueError(
+            f"{envelope.side} ankle motor and hard joint envelopes do not overlap"
+        )
+    return polygon
+
+
+def _project_point_to_polygon(point: np.ndarray, polygon: np.ndarray) -> np.ndarray:
+    if polygon.shape == (1, 2):
+        return polygon[0].copy()
+    best: np.ndarray | None = None
+    best_distance = math.inf
+    for start, end in zip(polygon, np.roll(polygon, -1, axis=0), strict=True):
+        edge = end - start
+        denominator = float(edge @ edge)
+        if denominator <= _ANKLE_PROJECTION_TOLERANCE:
+            candidate = start
+        else:
+            fraction = float(np.clip((point - start) @ edge / denominator, 0.0, 1.0))
+            candidate = start + fraction * edge
+        distance = float((candidate - point) @ (candidate - point))
+        if distance < best_distance:
+            best = candidate
+            best_distance = distance
+    if best is None:
+        raise RuntimeError("ankle envelope projection has no boundary")
+    return best.copy()
+
+
+def _project_ankle_motor_target(
+    point: np.ndarray,
+    envelope: _AnkleTargetEnvelope,
+    control_limits: np.ndarray,
+) -> np.ndarray:
+    """Return the closest feasible pair of differential-ankle motor targets."""
+
+    point = np.asarray(point, dtype=np.float64)
+    polygon = _ankle_feasible_polygon(envelope, control_limits)
+    safe_low = envelope.joint_low + _ANKLE_HARD_LIMIT_INSET_RADIANS
+    safe_high = envelope.joint_high - _ANKLE_HARD_LIMIT_INSET_RADIANS
+    resolved = envelope.motor_to_joint @ point
+    motor_limits = np.asarray(control_limits, dtype=np.float64)[
+        np.asarray(envelope.motor_indices, dtype=np.int32)
+    ]
+    if (
+        np.all(point >= motor_limits[:, 0])
+        and np.all(point <= motor_limits[:, 1])
+        and np.all(resolved >= safe_low)
+        and np.all(resolved <= safe_high)
+    ):
+        return point.copy()
+    projected = _project_point_to_polygon(point, polygon)
+    projected_resolved = envelope.motor_to_joint @ projected
+    violation = np.maximum(
+        safe_low - projected_resolved,
+        projected_resolved - safe_high,
+    )
+    if float(np.max(violation)) > _ANKLE_PROJECTION_TOLERANCE:
+        raise RuntimeError(
+            f"{envelope.side} ankle projection remains outside its hard envelope"
+        )
+    return projected
+
+
 class HardwareTwist2PolicyAdapter:
     """Reconstruct TWIST2 actor inputs and bounded physical motor targets."""
 
@@ -226,12 +364,6 @@ class HardwareTwist2PolicyAdapter:
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
         )
-        self._joint_target_low = np.asarray(
-            env.model.joint_target_low, dtype=np.float64
-        )
-        self._joint_target_high = np.asarray(
-            env.model.joint_target_high, dtype=np.float64
-        )
         self.kp, self.kd = actuator_impedance_gains(env)
         self._model_ctrl_limits = np.asarray(
             env.model.mj_model.actuator_ctrlrange, dtype=np.float64
@@ -254,6 +386,9 @@ class HardwareTwist2PolicyAdapter:
             raise ValueError(
                 "TWIST2 hardware requires the four configured ankle policy joints"
             )
+        self._ankle_target_envelopes = self._build_ankle_target_envelopes()
+        for envelope in self._ankle_target_envelopes:
+            _ankle_feasible_polygon(envelope, self._model_ctrl_limits)
         observation_norm = normalization.observation
 
         @eqx.filter_jit
@@ -273,10 +408,88 @@ class HardwareTwist2PolicyAdapter:
     def control_timestep(self) -> float:
         return self.env.control_timestep
 
+    def _build_ankle_target_envelopes(self) -> tuple[_AnkleTargetEnvelope, ...]:
+        logical_names = self.env.model.actuator_joint_names
+        logical_index = {name: index for index, name in enumerate(logical_names)}
+        envelopes = []
+        for side in ("left", "right"):
+            motor_indices = tuple(
+                self.coordinate_index[f"{side}_ankle_motor_{motor}"] for motor in (1, 2)
+            )
+            logical_indices = tuple(
+                logical_index[f"{side}_ankle_{axis}_joint"]
+                for axis in ("pitch", "roll")
+            )
+            motor_to_joint = self.inverse_transform[
+                np.ix_(logical_indices, motor_indices)
+            ].copy()
+            unrelated = self.inverse_transform[np.asarray(logical_indices)].copy()
+            unrelated[:, np.asarray(motor_indices)] = 0.0
+            if np.max(np.abs(unrelated)) > 1.0e-10:
+                raise ValueError(
+                    f"{side} ankle joint coordinates depend on unrelated motors"
+                )
+            condition = float(np.linalg.cond(motor_to_joint))
+            if not math.isfinite(condition) or condition > 1.0e6:
+                raise ValueError(f"{side} ankle differential is not invertible")
+            joint_ids = self.env.model.actuator_joint_ids[
+                np.asarray(logical_indices, dtype=np.int32)
+            ]
+            if not np.all(self.env.model.mj_model.jnt_limited[joint_ids]):
+                raise ValueError(f"{side} ankle joints require hard URDF limits")
+            joint_range = np.asarray(
+                self.env.model.mj_model.jnt_range[joint_ids], dtype=np.float64
+            )
+            if (
+                joint_range.shape != (2, 2)
+                or not np.all(np.isfinite(joint_range))
+                or np.any(joint_range[:, 0] >= joint_range[:, 1])
+            ):
+                raise ValueError(f"{side} ankle hard URDF limits are invalid")
+            envelopes.append(
+                _AnkleTargetEnvelope(
+                    side=side,
+                    motor_indices=motor_indices,
+                    logical_indices=logical_indices,
+                    motor_to_joint=motor_to_joint,
+                    joint_low=joint_range[:, 0].copy(),
+                    joint_high=joint_range[:, 1].copy(),
+                )
+            )
+        return tuple(envelopes)
+
+    def _bounded_physical_target(self, requested_target: np.ndarray) -> np.ndarray:
+        target = np.clip(
+            requested_target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1]
+        )
+        for envelope in self._ankle_target_envelopes:
+            indices = np.asarray(envelope.motor_indices, dtype=np.int32)
+            target[indices] = _project_ankle_motor_target(
+                target[indices], envelope, self._ctrl_limits
+            )
+        return target
+
+    def _validate_ankle_target(self, physical_target: np.ndarray) -> None:
+        for envelope in self._ankle_target_envelopes:
+            indices = np.asarray(envelope.motor_indices, dtype=np.int32)
+            resolved = envelope.motor_to_joint @ physical_target[indices]
+            violation = np.maximum(
+                envelope.joint_low - resolved,
+                resolved - envelope.joint_high,
+            )
+            index = int(np.argmax(violation))
+            if violation[index] > _ANKLE_PROJECTION_TOLERANCE:
+                logical_index = envelope.logical_indices[index]
+                name = self.env.model.actuator_joint_names[logical_index]
+                raise RuntimeError(
+                    f"projected TWIST2 hardware target for {name!r} remains "
+                    f"outside its hard URDF envelope by {violation[index]:.9f} rad"
+                )
+
     @property
     def nominal_physical_target(self) -> np.ndarray:
         target = self.transform @ self.default_joint_target
-        return np.clip(target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1])
+        return self._bounded_physical_target(target)
 
     def reference_physical_target(self, reference: Twist2ReferenceFrame) -> np.ndarray:
         """Map a retargeted reference pose into physical motor coordinates."""
@@ -287,7 +500,7 @@ class HardwareTwist2PolicyAdapter:
             self.policy_qpos_indices
         ]
         target = self.transform @ logical_target
-        return np.clip(target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1])
+        return self._bounded_physical_target(target)
 
     def reset(self) -> None:
         self._past_frames = None
@@ -425,33 +638,13 @@ class HardwareTwist2PolicyAdapter:
         action = np.clip(raw_action, -self.env.action_clip, self.env.action_clip)
         requested_logical_target = self.default_joint_target.copy()
         requested_logical_target[self.policy_indices] += 0.5 * action
-        logical_target = np.clip(
-            requested_logical_target,
-            self._joint_target_low,
-            self._joint_target_high,
-        )
-        requested_target = self.transform @ logical_target
-        physical_target = np.clip(
-            requested_target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1]
-        )
+        requested_target = self.transform @ requested_logical_target
+        physical_target = self._bounded_physical_target(requested_target)
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("TWIST2 policy produced non-finite physical targets")
-        resolved_logical_target = self.inverse_transform @ physical_target
-        violation = np.maximum(
-            self._joint_target_low - resolved_logical_target,
-            resolved_logical_target - self._joint_target_high,
-        )
-        index = int(np.argmax(violation))
-        if violation[index] > 1.0e-9:
-            name = self.env.model.actuator_joint_names[index]
-            raise RuntimeError(
-                f"projected TWIST2 hardware target for {name!r} remains outside "
-                f"its logical envelope by {violation[index]:.9f} rad"
-            )
-        action_clipped = (
-            not np.array_equal(action, raw_action)
-            or not np.array_equal(logical_target, requested_logical_target)
-            or not np.array_equal(physical_target, requested_target)
+        self._validate_ankle_target(physical_target)
+        action_clipped = not np.array_equal(action, raw_action) or not np.array_equal(
+            physical_target, requested_target
         )
         if self._step_count == 0:
             self._reset_frame = current.copy()
@@ -696,6 +889,8 @@ def bind_twist2_hardware_coordinate_limits(
             raise ValueError(
                 f"TWIST2 model and hardware ranges for {coordinate!r} do not overlap"
             )
+    for envelope in adapter._ankle_target_envelopes:
+        _ankle_feasible_polygon(envelope, effective_limits)
     adapter._ctrl_limits = effective_limits
 
 

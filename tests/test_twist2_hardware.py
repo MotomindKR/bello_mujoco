@@ -17,7 +17,6 @@ import pytest
 
 from bello_mujoco.contracts import ActionLayout
 from bello_mujoco.envs.twist import (
-    BelloTwistEnv,
     TwistSamplingConfig,
     TwistSimulationConfig,
 )
@@ -310,37 +309,113 @@ def test_twist2_hardware_reconstructs_exact_actor_history_contract(
     assert third.physical_target.shape == (25,)
 
 
-def test_twist2_hardware_projects_actions_into_coupled_joint_envelope(
+def test_twist2_hardware_only_projects_unsafe_coupled_ankle_targets(
     twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
 ) -> None:
     adapter = twist2_hardware_adapter
     frame = hardware_frame(adapter)
     raw_action = np.zeros(25, dtype=np.float32)
-    raw_action[0] = 11.0
-    raw_action[3] = -10.0
+    direct_action_index = next(
+        index
+        for index, name in enumerate(adapter.env.action_layout.names)
+        if "ankle" not in name
+    )
+    left_pitch_action_index = adapter.env.action_layout.names.index(
+        "left_ankle_pitch_joint"
+    )
+    raw_action[direct_action_index] = 11.0
+    raw_action[left_pitch_action_index] = -10.0
     adapter._infer = lambda observation: (observation, jnp.asarray(raw_action))
     adapter.reset()
 
     step = adapter.step(frame, reference_frame(adapter))
     proprioception = adapter.proprioception(frame)
 
-    assert step.raw_action[0] == pytest.approx(11.0)
-    assert step.action[0] == pytest.approx(10.0)
+    assert step.raw_action[direct_action_index] == pytest.approx(11.0)
+    assert step.action[direct_action_index] == pytest.approx(10.0)
     assert step.action_clipped
     np.testing.assert_array_equal(proprioception[-25:], raw_action)
-    limits = np.asarray(adapter.env.model.mj_model.actuator_ctrlrange)
+    limits = adapter._ctrl_limits
     assert np.all(step.physical_target >= limits[:, 0])
     assert np.all(step.physical_target <= limits[:, 1])
-    resolved_logical_target = adapter.inverse_transform @ step.physical_target
-    assert np.all(resolved_logical_target >= adapter._joint_target_low - 1.0e-9)
-    assert np.all(resolved_logical_target <= adapter._joint_target_high + 1.0e-9)
-    unprojected_simulator_target = BelloTwistEnv._action_target(
-        SimpleNamespace(model=adapter.env.model), jnp.asarray(step.action)
+
+    requested_logical_target = adapter.default_joint_target.copy()
+    requested_logical_target[adapter.policy_indices] += 0.5 * step.action
+    requested_physical_target = adapter.transform @ requested_logical_target
+    old_runner_target = np.clip(
+        requested_physical_target,
+        limits[:, 0],
+        limits[:, 1],
     )
-    unprojected_logical_target = adapter.inverse_transform @ np.clip(
-        np.asarray(unprojected_simulator_target), limits[:, 0], limits[:, 1]
+    ankle_motor_indices = {
+        index
+        for envelope in adapter._ankle_target_envelopes
+        for index in envelope.motor_indices
+    }
+    direct_motor_indices = np.asarray(
+        [
+            index
+            for index in range(len(adapter.physical_coordinate_names))
+            if index not in ankle_motor_indices
+        ]
     )
-    assert np.any(unprojected_logical_target < adapter._joint_target_low)
+    np.testing.assert_array_equal(
+        step.physical_target[direct_motor_indices],
+        old_runner_target[direct_motor_indices],
+    )
+
+    left = next(
+        envelope
+        for envelope in adapter._ankle_target_envelopes
+        if envelope.side == "left"
+    )
+    motor_indices = np.asarray(left.motor_indices)
+    old_resolved = left.motor_to_joint @ old_runner_target[motor_indices]
+    resolved = left.motor_to_joint @ step.physical_target[motor_indices]
+    assert old_resolved[0] < left.joint_low[0]
+    assert resolved[0] == pytest.approx(left.joint_low[0], abs=2.0e-9)
+    assert resolved[1] == pytest.approx(old_resolved[1], abs=2.0e-9)
+    assert resolved[0] < adapter.env.model.joint_target_low[left.logical_indices[0]]
+
+    pitch_row = left.motor_to_joint[0]
+    correction = step.physical_target[motor_indices] - old_runner_target[motor_indices]
+    expected_correction = (
+        (resolved[0] - old_resolved[0]) * pitch_row / float(pitch_row @ pitch_row)
+    )
+    np.testing.assert_allclose(correction, expected_correction, atol=1.0e-12)
+
+
+def test_twist2_hardware_ankle_projection_handles_all_action_corners(
+    twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    adapter = twist2_hardware_adapter
+    frame = hardware_frame(adapter)
+    ankle_action_indices = np.asarray(
+        [
+            adapter.env.action_layout.names.index(f"{side}_ankle_{axis}_joint")
+            for side in ("left", "right")
+            for axis in ("pitch", "roll")
+        ]
+    )
+    for signs in (
+        (-1.0, -1.0, -1.0, -1.0),
+        (-1.0, 1.0, -1.0, 1.0),
+        (1.0, -1.0, 1.0, -1.0),
+        (1.0, 1.0, 1.0, 1.0),
+    ):
+        raw_action = np.zeros(25, dtype=np.float32)
+        raw_action[ankle_action_indices] = 10.0 * np.asarray(signs)
+        adapter._infer = lambda observation, action=raw_action: (
+            observation,
+            jnp.asarray(action),
+        )
+        adapter.reset()
+        step = adapter.step(frame, reference_frame(adapter))
+        for envelope in adapter._ankle_target_envelopes:
+            indices = np.asarray(envelope.motor_indices)
+            resolved = envelope.motor_to_joint @ step.physical_target[indices]
+            assert np.all(resolved >= envelope.joint_low - 1.0e-12)
+            assert np.all(resolved <= envelope.joint_high + 1.0e-12)
 
 
 def test_twist2_reference_validation_is_fail_closed(
@@ -394,6 +469,7 @@ def test_twist2_hardware_ranges_must_cover_model_targets(
         physical_coordinate_names=adapter.physical_coordinate_names,
         _model_ctrl_limits=adapter._model_ctrl_limits.copy(),
         _ctrl_limits=adapter._model_ctrl_limits.copy(),
+        _ankle_target_envelopes=adapter._ankle_target_envelopes,
     )
     motors = tuple(
         SimpleNamespace(
