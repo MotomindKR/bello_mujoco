@@ -35,10 +35,10 @@ from bello_mujoco.hardware.twist2 import (
     ReferenceDiscontinuity,
     ReferenceUnavailable,
     Twist2ReferenceFrame,
+    bind_twist2_hardware_coordinate_limits,
     control_physical_twist2,
     _wait_for_live_twist2_reference,
     validate_hardware_twist2_config,
-    validate_twist2_hardware_coordinate_limits,
     validate_twist2_reference,
 )
 from bello_mujoco.hardware.smplx_retarget import (
@@ -389,18 +389,40 @@ def test_twist2_hardware_ranges_must_cover_model_targets(
     twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
 ) -> None:
     adapter = twist2_hardware_adapter
+    test_adapter = SimpleNamespace(
+        physical_coordinate_names=adapter.physical_coordinate_names,
+        _model_ctrl_limits=adapter._model_ctrl_limits.copy(),
+        _ctrl_limits=adapter._model_ctrl_limits.copy(),
+    )
     motors = tuple(
         SimpleNamespace(
             coordinate=name,
             limits=SimpleNamespace(
-                position_min=float(adapter._ctrl_limits[index, 0]),
-                position_max=float(adapter._ctrl_limits[index, 1]),
+                position_min=float(test_adapter._model_ctrl_limits[index, 0]),
+                position_max=float(test_adapter._model_ctrl_limits[index, 1]),
             ),
         )
-        for index, name in enumerate(adapter.physical_coordinate_names)
+        for index, name in enumerate(test_adapter.physical_coordinate_names)
     )
-    validate_twist2_hardware_coordinate_limits(
-        {"all": SimpleNamespace(motors=motors)}, adapter
+    bind_twist2_hardware_coordinate_limits(
+        {"all": SimpleNamespace(motors=motors)}, test_adapter
+    )
+
+    elbow_index = test_adapter.physical_coordinate_names.index("right_elbow_yaw_joint")
+    rounded_elbow = SimpleNamespace(
+        coordinate="right_elbow_yaw_joint",
+        limits=SimpleNamespace(
+            position_min=-2.0943951,
+            position_max=0.523598776,
+        ),
+    )
+    rounded_motors = (*motors[:elbow_index], rounded_elbow, *motors[elbow_index + 1 :])
+    bind_twist2_hardware_coordinate_limits(
+        {"all": SimpleNamespace(motors=rounded_motors)}, test_adapter
+    )
+    np.testing.assert_array_equal(
+        test_adapter._ctrl_limits[elbow_index],
+        (rounded_elbow.limits.position_min, rounded_elbow.limits.position_max),
     )
 
     first = motors[0]
@@ -412,9 +434,8 @@ def test_twist2_hardware_ranges_must_cover_model_targets(
         ),
     )
     with pytest.raises(ValueError, match="exceeds the hardware range"):
-        validate_twist2_hardware_coordinate_limits(
-            {"all": SimpleNamespace(motors=(incompatible, *motors[1:]))},
-            adapter,
+        bind_twist2_hardware_coordinate_limits(
+            {"all": SimpleNamespace(motors=(incompatible, *motors[1:]))}, test_adapter
         )
 
 

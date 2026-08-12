@@ -204,9 +204,11 @@ initial heading or floor alignment is explicit.
 Preflight connects to Fast-SAM, validates server readiness, tracking mode, and
 the stream schema, retargets the canonical SMPL-X standing sample, and compiles
 the policy before connecting to the robot. After connection, it also requires
-every model actuator range to fit inside the live daemon inventory range; a
-model/daemon limit mismatch fails before a control lease is acquired. It does
-not require Fast-SAM to be
+every model actuator range to fit inside the live daemon inventory range. Tiny
+text-serialization differences of at most `1e-5` radians are accepted, then the
+effective command range is tightened to the exact model/daemon intersection; a
+larger model/daemon limit mismatch fails before a control lease is acquired. It
+does not require Fast-SAM to be
 transmitting a qualified person target. The live gRPC consumer and GMR solver
 run in background threads with capacity-one/latest-only semantics; the 50 Hz
 control loop never blocks on either service. Frame age is the server's complete

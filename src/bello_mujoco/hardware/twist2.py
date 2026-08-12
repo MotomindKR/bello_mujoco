@@ -54,6 +54,9 @@ from bello_mujoco.training.checkpoint import (
 from bello_mujoco.training.ppo import normalize_observation
 
 
+_HARDWARE_LIMIT_ROUNDING_TOLERANCE_RADIANS = 1.0e-5
+
+
 @dataclass(frozen=True)
 class HardwareTwist2Config(HardwareControlConfig):
     """Physical TWIST2 deployment and fail-closed reference limits."""
@@ -224,11 +227,12 @@ class HardwareTwist2PolicyAdapter:
             env.model.default_joint_target, dtype=np.float64
         )
         self.kp, self.kd = actuator_impedance_gains(env)
-        self._ctrl_limits = np.asarray(
+        self._model_ctrl_limits = np.asarray(
             env.model.mj_model.actuator_ctrlrange, dtype=np.float64
-        )
-        if self._ctrl_limits.shape != (coordinate_count, 2):
+        ).copy()
+        if self._model_ctrl_limits.shape != (coordinate_count, 2):
             raise ValueError("TWIST2 actuator control ranges have an invalid shape")
+        self._ctrl_limits = self._model_ctrl_limits.copy()
         ankle_names = {
             "left_ankle_pitch_joint",
             "left_ankle_roll_joint",
@@ -632,26 +636,42 @@ def validate_twist2_reference(
         )
 
 
-def validate_twist2_hardware_coordinate_limits(
+def bind_twist2_hardware_coordinate_limits(
     groups: dict[str, Any],
     adapter: HardwareTwist2PolicyAdapter,
 ) -> None:
-    """Require every simulated physical range to fit the daemon's live range."""
+    """Validate live ranges and bind commands to their exact intersection."""
 
     motors = {
         motor.coordinate: motor for group in groups.values() for motor in group.motors
     }
+    effective_limits = adapter._model_ctrl_limits.copy()
     for index, coordinate in enumerate(adapter.physical_coordinate_names):
         motor = motors[coordinate]
-        model_low, model_high = adapter._ctrl_limits[index]
+        model_low, model_high = adapter._model_ctrl_limits[index]
         hardware_low = float(motor.limits.position_min)
         hardware_high = float(motor.limits.position_max)
-        if model_low < hardware_low - 1.0e-9 or model_high > hardware_high + 1.0e-9:
+        low_excess = hardware_low - model_low
+        high_excess = model_high - hardware_high
+        if (
+            low_excess > _HARDWARE_LIMIT_ROUNDING_TOLERANCE_RADIANS
+            or high_excess > _HARDWARE_LIMIT_ROUNDING_TOLERANCE_RADIANS
+        ):
             raise ValueError(
                 f"TWIST2 model range for {coordinate!r} "
-                f"[{model_low:.5f}, {model_high:.5f}] exceeds the hardware "
-                f"range [{hardware_low:.5f}, {hardware_high:.5f}]"
+                f"[{model_low:.9f}, {model_high:.9f}] exceeds the hardware "
+                f"range [{hardware_low:.9f}, {hardware_high:.9f}] by more than "
+                f"{_HARDWARE_LIMIT_ROUNDING_TOLERANCE_RADIANS:.1e} rad"
             )
+        effective_limits[index] = (
+            max(model_low, hardware_low),
+            min(model_high, hardware_high),
+        )
+        if effective_limits[index, 0] >= effective_limits[index, 1]:
+            raise ValueError(
+                f"TWIST2 model and hardware ranges for {coordinate!r} do not overlap"
+            )
+    adapter._ctrl_limits = effective_limits
 
 
 def load_hardware_twist2_policy(
@@ -728,10 +748,10 @@ def run_hardware_twist2(
     ):
         standing = references.standing()
         validate_twist2_reference(standing, adapter.env, config)
+        groups = validate_hardware_inventory(robot, adapter, config, binding)
+        bind_twist2_hardware_coordinate_limits(groups, adapter)
         standing_target = adapter.reference_physical_target(standing)
         adapter.precompile(standing)
-        groups = validate_hardware_inventory(robot, adapter, config, binding)
-        validate_twist2_hardware_coordinate_limits(groups, adapter)
         state_reader = robot.states(groups=config.groups, imus=(config.imu_name,))
         frame = wait_for_hardware_frame(
             state_reader,
