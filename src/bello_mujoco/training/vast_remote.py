@@ -1171,8 +1171,17 @@ wrapper = r'''set +e
 script_path="$1"
 status_path="$2"
 shift 2
+heartbeat() {
+  while sleep 300; do
+    printf 'remote job heartbeat %s\n' "$(date -u +%FT%TZ)"
+  done
+}
+heartbeat &
+heartbeat_pid=$!
 bash "$script_path" "$@"
 status=$?
+kill "$heartbeat_pid" 2>/dev/null || true
+wait "$heartbeat_pid" 2>/dev/null || true
 status_tmp="$status_path.$$"
 printf '%s\n' "$status" > "$status_tmp"
 mv "$status_tmp" "$status_path"

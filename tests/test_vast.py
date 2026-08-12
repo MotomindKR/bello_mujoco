@@ -1223,6 +1223,7 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     assert 'preflight_overrides=("${training_overrides[@]}"' in script
     assert "checkpoint_enabled=false" in script
     assert "checkpoint_config.enabled=false" not in script
+    assert "remote job heartbeat" in command
 
 
 def test_rsync_transfer_is_resumable_and_retried(monkeypatch) -> None:
