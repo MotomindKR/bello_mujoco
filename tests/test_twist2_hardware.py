@@ -310,7 +310,7 @@ def test_twist2_hardware_reconstructs_exact_actor_history_contract(
     assert third.physical_target.shape == (25,)
 
 
-def test_twist2_hardware_keeps_raw_previous_action_and_clips_motor_command(
+def test_twist2_hardware_projects_actions_into_coupled_joint_envelope(
     twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
 ) -> None:
     adapter = twist2_hardware_adapter
@@ -318,7 +318,6 @@ def test_twist2_hardware_keeps_raw_previous_action_and_clips_motor_command(
     raw_action = np.zeros(25, dtype=np.float32)
     raw_action[0] = 11.0
     raw_action[3] = -10.0
-    raw_action[4] = 10.0
     adapter._infer = lambda observation: (observation, jnp.asarray(raw_action))
     adapter.reset()
 
@@ -332,14 +331,16 @@ def test_twist2_hardware_keeps_raw_previous_action_and_clips_motor_command(
     limits = np.asarray(adapter.env.model.mj_model.actuator_ctrlrange)
     assert np.all(step.physical_target >= limits[:, 0])
     assert np.all(step.physical_target <= limits[:, 1])
-    simulated_target = BelloTwistEnv._action_target(
+    resolved_logical_target = adapter.inverse_transform @ step.physical_target
+    assert np.all(resolved_logical_target >= adapter._joint_target_low - 1.0e-9)
+    assert np.all(resolved_logical_target <= adapter._joint_target_high + 1.0e-9)
+    unprojected_simulator_target = BelloTwistEnv._action_target(
         SimpleNamespace(model=adapter.env.model), jnp.asarray(step.action)
     )
-    np.testing.assert_allclose(
-        step.physical_target,
-        np.clip(np.asarray(simulated_target), limits[:, 0], limits[:, 1]),
-        atol=5.0e-7,
+    unprojected_logical_target = adapter.inverse_transform @ np.clip(
+        np.asarray(unprojected_simulator_target), limits[:, 0], limits[:, 1]
     )
+    assert np.any(unprojected_logical_target < adapter._joint_target_low)
 
 
 def test_twist2_reference_validation_is_fail_closed(

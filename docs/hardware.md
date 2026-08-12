@@ -260,11 +260,15 @@ confidence, pipeline/reference age, source sequence and timestamp monotonicity,
 SMPL-X quaternion validity, GMR joint velocity/acceleration and joint limits,
 retargeted root/body velocity, and raw Gaussian action bounds. Retargeted hold
 references are validated in logical joint coordinates before conversion.
-Policy actions intentionally follow the training environment's exact mapping:
-clip the released raw action, add `0.5 * action` to the model default, transform
-once into physical coordinates, and finally enforce the actuator control
-ranges. There is no extra logical pre-transform clip, which would change the
-differential-ankle policy learned in simulation.
+Policy observations retain the raw previous action used during training. Motor
+commands add `0.5 * action` to the model default, then apply a hardware-only
+projection into the conservative logical joint-target envelope before the
+differential transform and final actuator-range clip. The runner resolves the
+final physical command back into joint space and fails closed if any target is
+still outside that envelope. This projection prevents independently legal ankle
+motor targets from resolving to an illegal ankle pitch or roll. It is an
+intentional deployment-only safety deviation for existing checkpoints; future
+training should use the same projection to restore exact train/deploy parity.
 
 `duration_seconds` covers the complete post-`RUN` policy flow. Ramp time and the
 `HOLD`/`RUN` confirmation waits are not included. A `null` duration runs until

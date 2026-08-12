@@ -226,6 +226,12 @@ class HardwareTwist2PolicyAdapter:
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
         )
+        self._joint_target_low = np.asarray(
+            env.model.joint_target_low, dtype=np.float64
+        )
+        self._joint_target_high = np.asarray(
+            env.model.joint_target_high, dtype=np.float64
+        )
         self.kp, self.kd = actuator_impedance_gains(env)
         self._model_ctrl_limits = np.asarray(
             env.model.mj_model.actuator_ctrlrange, dtype=np.float64
@@ -419,14 +425,33 @@ class HardwareTwist2PolicyAdapter:
         action = np.clip(raw_action, -self.env.action_clip, self.env.action_clip)
         requested_logical_target = self.default_joint_target.copy()
         requested_logical_target[self.policy_indices] += 0.5 * action
-        requested_target = self.transform @ requested_logical_target
+        logical_target = np.clip(
+            requested_logical_target,
+            self._joint_target_low,
+            self._joint_target_high,
+        )
+        requested_target = self.transform @ logical_target
         physical_target = np.clip(
             requested_target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1]
         )
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("TWIST2 policy produced non-finite physical targets")
-        action_clipped = not np.array_equal(action, raw_action) or not np.array_equal(
-            physical_target, requested_target
+        resolved_logical_target = self.inverse_transform @ physical_target
+        violation = np.maximum(
+            self._joint_target_low - resolved_logical_target,
+            resolved_logical_target - self._joint_target_high,
+        )
+        index = int(np.argmax(violation))
+        if violation[index] > 1.0e-9:
+            name = self.env.model.actuator_joint_names[index]
+            raise RuntimeError(
+                f"projected TWIST2 hardware target for {name!r} remains outside "
+                f"its logical envelope by {violation[index]:.9f} rad"
+            )
+        action_clipped = (
+            not np.array_equal(action, raw_action)
+            or not np.array_equal(logical_target, requested_logical_target)
+            or not np.array_equal(physical_target, requested_target)
         )
         if self._step_count == 0:
             self._reset_frame = current.copy()
