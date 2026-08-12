@@ -986,6 +986,9 @@ def test_watchdog_uses_restricted_container_credentials_and_absolute_deadline(
     assert "CONTAINER_API_KEY" in script
     assert "Authorization" in script
     assert "VAST_API_KEY" not in script
+    assert "install -d -m 0700 -o root -g root /root/.ssh" in script
+    assert "chown root:root /root/.ssh/authorized_keys" in script
+    assert "chmod 0600 /root/.ssh/authorized_keys" in script
     assert "nohup" in script
     assert script.rstrip().endswith("&")
 

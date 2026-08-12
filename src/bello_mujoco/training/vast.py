@@ -1117,7 +1117,13 @@ def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> i
 def watchdog_onstart_script(config: VastTrainConfig) -> str:
     program = _watchdog_program(watchdog_deadline(config))
     return (
-        f"set +x\nnohup python3 -c {shlex.quote(program)} </dev/null >/dev/null 2>&1 &"
+        "set +x\n"
+        "install -d -m 0700 -o root -g root /root/.ssh\n"
+        "if [ -f /root/.ssh/authorized_keys ]; then\n"
+        "  chown root:root /root/.ssh/authorized_keys\n"
+        "  chmod 0600 /root/.ssh/authorized_keys\n"
+        "fi\n"
+        f"nohup python3 -c {shlex.quote(program)} </dev/null >/dev/null 2>&1 &"
     )
 
 
