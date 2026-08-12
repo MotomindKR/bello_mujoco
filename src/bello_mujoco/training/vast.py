@@ -75,7 +75,6 @@ class VastTrainConfig:
     allow_git_commit_mismatch: bool = False
     total_timesteps: int | None = None
     num_envs: int | None = None
-    reference_shard_updates: int | None = None
     checkpoint_every_updates: int | None = None
     max_price: float | None = None
     branch: str | None = None
@@ -194,7 +193,6 @@ def validate_config(config: VastTrainConfig) -> None:
                 for name in (
                     "total_timesteps",
                     "num_envs",
-                    "reference_shard_updates",
                 )
                 if getattr(config, name) is None
             ]
@@ -230,17 +228,6 @@ def validate_config(config: VastTrainConfig) -> None:
             isinstance(value, bool) or not isinstance(value, int) or value <= 0
         ):
             raise ValueError(f"--{name.replace('_', '-')} must be a positive integer")
-    if config.reference_shard_updates is not None:
-        if config.experiment != "sonic":
-            raise ValueError(
-                "--reference-shard-updates is only valid for SONIC Vast training"
-            )
-        if (
-            isinstance(config.reference_shard_updates, bool)
-            or not isinstance(config.reference_shard_updates, int)
-            or config.reference_shard_updates <= 0
-        ):
-            raise ValueError("--reference-shard-updates must be a positive integer")
     if (
         config.max_price is None
         or not math.isfinite(config.max_price)
@@ -457,7 +444,6 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             allow_git_commit_mismatch=config.allow_git_commit_mismatch,
             total_timesteps=config.total_timesteps,
             num_envs=config.num_envs,
-            reference_shard_updates=config.reference_shard_updates,
         )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
@@ -534,9 +520,8 @@ def _sonic_dataset_files(
         PurePosixPath("conversion_report.json"),
     }
     relative_paths.update(
-        PurePosixPath(descriptor["file"])
+        PurePosixPath(index["split_files"][split]["file"])
         for split in ("train", "evaluation")
-        for descriptor in index["shards"][split]
     )
     paths = tuple(root / Path(relative) for relative in sorted(relative_paths))
     missing = [str(path) for path in paths if not path.is_file() or path.is_symlink()]
@@ -595,7 +580,6 @@ def _sonic_resume_checkpoint(
     allow_git_commit_mismatch: bool,
     total_timesteps: int | None,
     num_envs: int | None,
-    reference_shard_updates: int | None,
 ) -> Path:
     from bello_mujoco.sonic_policy import load_sonic_release_artifact
     from bello_mujoco.training.checkpoint import (
@@ -650,11 +634,6 @@ def _sonic_resume_checkpoint(
         raise ValueError(
             "SONIC resume num environments differs from the checkpoint: "
             f"{num_envs} != {metadata.ppo.num_envs}"
-        )
-    if reference_shard_updates != metadata.reference_shard_updates:
-        raise ValueError(
-            "SONIC resume shard schedule differs from the checkpoint: "
-            f"{reference_shard_updates} != {metadata.reference_shard_updates}"
         )
     assert total_timesteps is not None
     requested_updates = total_timesteps // (

@@ -197,21 +197,20 @@ def twist_config(tmp_path: Path, *, stage: str = "teacher", **kwargs):
 
 def sonic_dataset(tmp_path: Path, monkeypatch) -> tuple[Path, dict]:
     root = tmp_path / "sonic_dataset"
-    (root / "shards/train").mkdir(parents=True)
-    (root / "shards/evaluation").mkdir(parents=True)
+    root.mkdir(parents=True)
     for relative in (
         "heldout_manifest.json",
         "conversion_report.json",
-        "shards/train/00000.npz",
-        "shards/evaluation/00000.npz",
+        "train.npz",
+        "evaluation.npz",
     ):
         path = root / relative
         path.write_bytes(relative.encode())
     index = {
         "dataset_fingerprint": "sha256:" + "d" * 64,
-        "shards": {
-            "train": [{"file": "shards/train/00000.npz"}],
-            "evaluation": [{"file": "shards/evaluation/00000.npz"}],
+        "split_files": {
+            "train": {"file": "train.npz"},
+            "evaluation": {"file": "evaluation.npz"},
         },
     }
     index_path = root / "index.json"
@@ -281,8 +280,7 @@ def test_sonic_vast_config_requires_dataset_and_release_artifact() -> None:
             dataset_path=Path("dataset/index.json"),
             sonic_artifact_path=Path("artifact"),
             total_timesteps=1_425_408,
-            num_envs=512,
-            reference_shard_updates=1,
+            num_envs=4096,
             checkpoint_every_updates=29,
         )
     )
@@ -302,15 +300,14 @@ def test_sonic_vast_resume_requires_explicit_continuation_contract() -> None:
             **base,
             allow_git_commit_mismatch=True,
             total_timesteps=71_270_400,
-            num_envs=512,
-            reference_shard_updates=1,
+            num_envs=4096,
         )
     )
     with pytest.raises(ValueError, match="only valid for SONIC"):
         validate_config(valid_config(resume_path=Path("checkpoint/final")))
 
 
-def test_sonic_dataset_selection_preserves_canonical_shard_tree(
+def test_sonic_dataset_selection_preserves_canonical_split_files(
     tmp_path: Path, monkeypatch
 ) -> None:
     index_path, index = sonic_dataset(tmp_path, monkeypatch)
@@ -323,8 +320,8 @@ def test_sonic_dataset_selection_preserves_canonical_shard_tree(
         "index.json",
         "heldout_manifest.json",
         "conversion_report.json",
-        "shards/train/00000.npz",
-        "shards/evaluation/00000.npz",
+        "train.npz",
+        "evaluation.npz",
     }
     (root / "unexpected.bin").write_bytes(b"unexpected")
     with pytest.raises(ValueError, match="canonical files"):
@@ -359,8 +356,7 @@ def test_sonic_resume_selection_binds_dataset_release_and_budget(
         source_revision = "b" * 40
         release_checkpoint_sha256 = "sha256:" + "c" * 64
         release_artifact_sha256 = "sha256:" + "e" * 64
-        ppo = SimpleNamespace(num_envs=512, num_steps=24)
-        reference_shard_updates = 1
+        ppo = SimpleNamespace(num_envs=4096, num_steps=24)
 
     import bello_mujoco.sonic_policy as sonic_policy
     import bello_mujoco.training.checkpoint as checkpoint_module
@@ -393,8 +389,7 @@ def test_sonic_resume_selection_binds_dataset_release_and_budget(
             selected_commit=commit,
             allow_git_commit_mismatch=True,
             total_timesteps=71_270_400,
-            num_envs=512,
-            reference_shard_updates=1,
+            num_envs=4096,
         )
         == checkpoint.resolve()
     )
@@ -405,9 +400,8 @@ def test_sonic_resume_selection_binds_dataset_release_and_budget(
             release_artifact_path=tmp_path / "release",
             selected_commit=commit,
             allow_git_commit_mismatch=True,
-            total_timesteps=115 * 512 * 24,
-            num_envs=512,
-            reference_shard_updates=1,
+            total_timesteps=115 * 4096 * 24,
+            num_envs=4096,
         )
 
 
@@ -1066,7 +1060,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     command = vast_remote.remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
-    assert shlex.split(command)[-11] == "test-run"
+    assert shlex.split(command)[-10] == "test-run"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
@@ -1100,8 +1094,8 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
         "motion-test",
     )
 
-    assert shlex.split(command)[-11] == "motion-test"
-    assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
+    assert shlex.split(command)[-10] == "motion-test"
+    assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 3
     assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
     overrides_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
@@ -1128,7 +1122,7 @@ def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-10:-7] == [
+    assert arguments[-9:-6] == [
         "/workspace/datasets/twist/index.json",
         "/workspace/checkpoints/twist_teacher",
         "true",
@@ -1149,8 +1143,7 @@ def test_sonic_remote_command_runs_bounded_baseline_and_evaluation() -> None:
         dataset_path=Path("/data/sonic/index.json"),
         sonic_artifact_path=Path("/data/artifact"),
         total_timesteps=1_425_408,
-        num_envs=512,
-        reference_shard_updates=1,
+        num_envs=4096,
         checkpoint_every_updates=29,
     )
     command = vast_remote.remote_start_command(
@@ -1163,15 +1156,14 @@ def test_sonic_remote_command_runs_bounded_baseline_and_evaluation() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-10:] == [
+    assert arguments[-9:] == [
         "/workspace/datasets/sonic/index.json",
         "",
         "false",
         "/workspace/artifacts/sonic/default_release",
         "",
         "1425408",
-        "512",
-        "1",
+        "4096",
         "29",
         "/workspace/.bello-vast-jobs/sonic/results",
     ]
@@ -1197,8 +1189,7 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
         resume_path=Path("/data/checkpoint"),
         allow_git_commit_mismatch=True,
         total_timesteps=71_270_400,
-        num_envs=512,
-        reference_shard_updates=1,
+        num_envs=4096,
         checkpoint_every_updates=580,
     )
     command = vast_remote.remote_start_command(
@@ -1212,15 +1203,14 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-10:] == [
+    assert arguments[-9:] == [
         "/workspace/datasets/sonic/index.json",
         "",
         "true",
         "/workspace/artifacts/sonic/default_release",
         "/workspace/checkpoints/sonic_resume",
         "71270400",
-        "512",
-        "1",
+        "4096",
         "580",
         "/workspace/.bello-vast-jobs/sonic-long/results",
     ]
@@ -1230,7 +1220,9 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     )
     preflight_index = script.index("preflight_overrides=(")
     assert resume_index < preflight_index
-    assert 'preflight_overrides=(\n  "${training_overrides[@]}"' in script
+    assert 'preflight_overrides=("${training_overrides[@]}"' in script
+    assert "checkpoint_enabled=false" in script
+    assert "checkpoint_config.enabled=false" not in script
 
 
 def test_rsync_transfer_is_resumable_and_retried(monkeypatch) -> None:
@@ -1311,7 +1303,7 @@ def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None
     assert fingerprint in remote_commands[-1]
 
 
-def test_sonic_staging_preserves_shards_and_verifies_release(
+def test_sonic_staging_preserves_split_files_and_verifies_release(
     tmp_path: Path, monkeypatch
 ) -> None:
     index_path, index = sonic_dataset(tmp_path, monkeypatch)
@@ -1358,8 +1350,7 @@ def test_sonic_staging_preserves_shards_and_verifies_release(
             sonic_artifact_path=artifact,
             resume_path=resume,
             total_timesteps=71_270_400,
-            num_envs=512,
-            reference_shard_updates=1,
+            num_envs=4096,
         ),
         executor=Executor(),
         rsync_executor=Transfer(),
@@ -1372,7 +1363,7 @@ def test_sonic_staging_preserves_shards_and_verifies_release(
     assert staged_resume == "/workspace/checkpoints/sonic_resume"
     assert len(rsync_commands) == 3
     assert "--relative" in rsync_commands[0]
-    assert any("/./shards/train/00000.npz" in value for value in rsync_commands[0])
+    assert any("/./train.npz" in value for value in rsync_commands[0])
     assert fingerprint in remote_commands[1]
     assert any("weights.npz" in command for command in remote_commands)
     assert "metadata.json" in remote_commands[-1]
@@ -1394,12 +1385,21 @@ def test_downloaded_sonic_results_are_hash_and_dataset_bound(tmp_path: Path) -> 
         "global": report["global"],
         "acceptance": report["acceptance"],
     }
+    benchmark = {
+        "sonic_benchmark": {
+            "num_envs": 4096,
+            "updates": 3,
+            "exit_status": 0,
+        }
+    }
+    (tmp_path / "benchmark.json").write_text(json.dumps(benchmark))
     (tmp_path / "checkpoint_path.txt").write_text("checkpoints/run/final\n")
     (tmp_path / "sonic_evaluation.json").write_text(json.dumps(report))
     (tmp_path / "summary.json").write_text(json.dumps(summary))
     files = {
         name: vast_remote._sha256(tmp_path / name)
         for name in (
+            "benchmark.json",
             "checkpoint_path.txt",
             "sonic_evaluation.json",
             "summary.json",

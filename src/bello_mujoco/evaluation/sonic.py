@@ -24,7 +24,7 @@ from bello_mujoco.motion.sonic_dataset import (
     load_sonic_dataset_index,
     load_sonic_reference_bank,
     materialize_sonic_reference_clip,
-    select_padded_sonic_reference_clip,
+    select_sonic_reference_clip_in_bank,
 )
 from bello_mujoco.policy import (
     apply_actor,
@@ -165,15 +165,13 @@ def evaluate_sonic_checkpoint(
 
     heldout = sorted(
         (clip for clip in index["clips"] if clip["split"] == "evaluation"),
-        key=lambda clip: (clip["shard_index"], clip["offset"]),
+        key=lambda clip: int(clip["evaluation_order"]),
     )
     if not heldout:
         raise ValueError("SONIC evaluation dataset contains no held-out clips")
-    current_shard_index = int(heldout[0]["shard_index"])
     current_bank = load_sonic_reference_bank(
         index_path,
         split="evaluation",
-        shard_index=current_shard_index,
         sampling_bin_size=metadata.sonic_env.sampling.bin_size,
     )
     if current_bank.calibration != metadata.dataset.calibration:
@@ -220,18 +218,7 @@ def evaluate_sonic_checkpoint(
     clip_results = []
     video_env = first_env if config.video_path is not None else None
     for clip_index, clip in enumerate(heldout):
-        shard_index = int(clip["shard_index"])
-        if shard_index != current_shard_index:
-            current_bank = _device_reference_bank(
-                load_sonic_reference_bank(
-                    index_path,
-                    split="evaluation",
-                    shard_index=shard_index,
-                    sampling_bin_size=metadata.sonic_env.sampling.bin_size,
-                )
-            )
-            current_shard_index = shard_index
-        selected_bank = select_padded_sonic_reference_clip(
+        selected_bank = select_sonic_reference_clip_in_bank(
             current_bank,
             _bank_clip_index(current_bank, clip),
         )
@@ -258,7 +245,12 @@ def evaluate_sonic_checkpoint(
         steps = min(
             config.video_max_steps,
             video_env.config.max_episode_steps,
-            int(video_env.reference_bank.lengths[0]) - 1,
+            int(
+                video_env.reference_bank.lengths[
+                    _bank_clip_index(current_bank, heldout[0])
+                ]
+            )
+            - 1,
         )
         _render_rollout(
             video_env,
@@ -311,7 +303,7 @@ def _load_clip_env(
         metadata.simulation,
         motion_path=runtime_path,
         reference_bank=_device_reference_bank(
-            select_padded_sonic_reference_clip(bank, clip_index)
+            select_sonic_reference_clip_in_bank(bank, clip_index)
         ),
         config=evaluation_env,
         warp=metadata.warp,
@@ -400,9 +392,10 @@ def _build_compiled_clip_evaluator(
     def evaluate(arrays):
         current_env = _bind_reference_bank(static_env, arrays, bank_metadata)
         state, observation = current_env.reset()
+        clip_index = getattr(state, "clip_index", jnp.asarray(0, dtype=jnp.int32))
         expected_steps = jnp.minimum(
             jnp.asarray(maximum_steps, dtype=jnp.int32),
-            jnp.asarray(current_env.reference_bank.lengths)[0] - 1,
+            jnp.asarray(current_env.reference_bank.lengths)[clip_index] - 1,
         )
         totals = {
             "steps": jnp.asarray(0, dtype=jnp.int32),
@@ -670,8 +663,6 @@ def _validate_dataset_contract(index: dict[str, Any], metadata) -> None:
         "g1_robot_sha256": metadata.dataset.g1_robot_sha256,
         "joint_names": list(metadata.dataset.joint_names),
         "body_names": list(metadata.dataset.body_names),
-        "shard_frame_capacity": metadata.dataset.shard_frame_capacity,
-        "shard_clip_capacity": metadata.dataset.shard_clip_capacity,
         "joint_calibration": json.loads(
             json.dumps(metadata.dataset.calibration.to_document())
         ),

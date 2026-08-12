@@ -13,7 +13,7 @@ outside Git; only deterministic manifests and code are repository content.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import math
@@ -40,7 +40,7 @@ from bello_mujoco.motion.twist_dataset import (
     portable_manifest,
 )
 
-SONIC_DATASET_SCHEMA_VERSION = 3
+SONIC_DATASET_SCHEMA_VERSION = 4
 SONIC_G1_RETARGET_FORMAT_VERSION = 2
 SONIC_SMPL_COORDINATE_CONVENTION = "sonic_g1_root_local_z_up"
 SONIC_POLICY_FPS = 50.0
@@ -50,8 +50,6 @@ SONIC_REQUIRED_FUTURE_HORIZON = max(
     max(SONIC_SMPL_FUTURE_OFFSETS), max(SONIC_CRITIC_FUTURE_OFFSETS)
 )
 SONIC_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
-SONIC_DEFAULT_SHARD_FRAME_CAPACITY = 65_536
-SONIC_DEFAULT_SHARD_CLIP_CAPACITY = 256
 SONIC_SMPL_JOINT_NAMES = (
     "pelvis",
     "left_hip",
@@ -175,25 +173,6 @@ class SonicCalibrationConfig:
 
 
 @dataclass(frozen=True)
-class SonicShardConfig:
-    """Fixed training-shard dimensions shared by every split archive."""
-
-    frame_capacity: int = SONIC_DEFAULT_SHARD_FRAME_CAPACITY
-    clip_capacity: int = SONIC_DEFAULT_SHARD_CLIP_CAPACITY
-
-    def __post_init__(self) -> None:
-        if any(
-            isinstance(value, bool) or not isinstance(value, int)
-            for value in (self.frame_capacity, self.clip_capacity)
-        ):
-            raise TypeError("SONIC shard capacities must be integers")
-        if self.frame_capacity <= SONIC_REQUIRED_FUTURE_HORIZON:
-            raise ValueError("SONIC shard frame capacity is too small")
-        if self.clip_capacity <= 0:
-            raise ValueError("SONIC shard clip capacity must be positive")
-
-
-@dataclass(frozen=True)
 class SonicJointCalibration:
     """Bidirectional coupled joint maps fitted on the training split only."""
 
@@ -296,7 +275,7 @@ class SonicJointCalibration:
 
 @dataclass(frozen=True)
 class SonicReferenceBank:
-    """One fixed-capacity synchronized shard at the JAX device boundary."""
+    """One complete synchronized split at the JAX device boundary."""
 
     qpos: np.ndarray
     qvel: np.ndarray
@@ -358,9 +337,7 @@ _SONIC_INDEX_FIELDS = {
     "smpl_future_offsets",
     "critic_future_offsets",
     "train_sampling",
-    "shard_frame_capacity",
-    "shard_clip_capacity",
-    "shards",
+    "split_files",
     "joint_names",
     "body_names",
     "g1_joint_names",
@@ -376,11 +353,11 @@ _SONIC_INDEX_FIELDS = {
     "fingerprint_payload",
 }
 
-_SONIC_SHARD_FIELDS = {
+_SONIC_SPLIT_FILE_FIELDS = {
     "file",
     "sha256",
     "clip_count",
-    "data_frames",
+    "frames",
     "sampling_mass",
 }
 _SONIC_CLIP_FIELDS = {
@@ -390,7 +367,6 @@ _SONIC_CLIP_FIELDS = {
     "subject_id",
     "split",
     "sampling_weight",
-    "shard_index",
     "offset",
     "frames",
     "duration_seconds",
@@ -868,9 +844,8 @@ def build_sonic_dataset(
         future_horizon_steps=SONIC_REQUIRED_FUTURE_HORIZON
     ),
     calibration: SonicCalibrationConfig = SonicCalibrationConfig(),
-    sharding: SonicShardConfig = SonicShardConfig(),
 ) -> dict[str, Any]:
-    """Build immutable, fixed-capacity synchronized shards and an index."""
+    """Build immutable, split-wide synchronized banks and an index."""
 
     if quality.policy_fps != SONIC_POLICY_FPS:
         raise ValueError("SONIC synchronized data must use 50 Hz policy frames")
@@ -1026,9 +1001,9 @@ def build_sonic_dataset(
         tuple(item.content_sha256 for item in train), calibration
     )
     clip_entries: list[dict[str, Any]] = []
-    shard_entries: dict[str, list[dict[str, Any]]] = {}
+    split_files: dict[str, dict[str, Any]] = {}
     for split, items in (("train", train), ("evaluation", evaluation)):
-        descriptors, split_entries = _write_shards(
+        descriptor, split_entries = _write_split_file(
             output_root,
             split,
             items,
@@ -1036,9 +1011,8 @@ def build_sonic_dataset(
             joint_names=joint_names,
             body_names=body_names,
             provenance=provenance,
-            sharding=sharding,
         )
-        shard_entries[split] = descriptors
+        split_files[split] = descriptor
         clip_entries.extend(split_entries)
     _assign_sampling_metadata(clip_entries)
     portable = portable_manifest(assignments)
@@ -1059,12 +1033,11 @@ def build_sonic_dataset(
         ),
         "quality": asdict(quality),
         "calibration_config": asdict(calibration),
-        "sharding": asdict(sharding),
         "joint_calibration": joint_calibration.to_document(),
         "smpl_future_offsets": SONIC_SMPL_FUTURE_OFFSETS,
         "critic_future_offsets": SONIC_CRITIC_FUTURE_OFFSETS,
         "train_sampling": SONIC_TRAIN_SAMPLING,
-        "shards": shard_entries,
+        "split_files": split_files,
         "joint_names": joint_names,
         "body_names": body_names,
         "g1_joint_names": G1_ISAACLAB_JOINT_NAMES,
@@ -1080,9 +1053,7 @@ def build_sonic_dataset(
         "smpl_future_offsets": list(SONIC_SMPL_FUTURE_OFFSETS),
         "critic_future_offsets": list(SONIC_CRITIC_FUTURE_OFFSETS),
         "train_sampling": SONIC_TRAIN_SAMPLING,
-        "shard_frame_capacity": sharding.frame_capacity,
-        "shard_clip_capacity": sharding.clip_capacity,
-        "shards": shard_entries,
+        "split_files": split_files,
         "joint_names": list(joint_names),
         "body_names": list(body_names),
         "g1_joint_names": list(G1_ISAACLAB_JOINT_NAMES),
@@ -1125,25 +1096,13 @@ def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
         raise ValueError("SONIC G1 joint order differs from the release")
     if index["g1_wrist_joint_names"] != list(G1_WRIST_JOINT_NAMES):
         raise ValueError("SONIC G1 wrist order differs from the release")
-    sharding = SonicShardConfig(
-        frame_capacity=index["shard_frame_capacity"],
-        clip_capacity=index["shard_clip_capacity"],
-    )
-    if not isinstance(index["shards"], dict) or set(index["shards"]) != {
+    if not isinstance(index["split_files"], dict) or set(index["split_files"]) != {
         "train",
         "evaluation",
     }:
-        raise ValueError("SONIC dataset must define train and evaluation shards")
-    for split, descriptors in index["shards"].items():
-        if not isinstance(descriptors, list) or not descriptors:
-            raise ValueError(f"SONIC dataset has no {split} shards")
-        for shard_index, descriptor in enumerate(descriptors):
-            _validate_shard_descriptor(
-                descriptor,
-                split=split,
-                shard_index=shard_index,
-                sharding=sharding,
-            )
+        raise ValueError("SONIC dataset must define train and evaluation files")
+    for split, descriptor in index["split_files"].items():
+        _validate_split_file_descriptor(descriptor, split=split)
     for name in (
         "dataset_fingerprint",
         "portable_manifest_fingerprint",
@@ -1176,11 +1135,7 @@ def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
         "smpl_future_offsets": index["smpl_future_offsets"],
         "critic_future_offsets": index["critic_future_offsets"],
         "train_sampling": index["train_sampling"],
-        "sharding": {
-            "frame_capacity": index["shard_frame_capacity"],
-            "clip_capacity": index["shard_clip_capacity"],
-        },
-        "shards": index["shards"],
+        "split_files": index["split_files"],
         "joint_names": index["joint_names"],
         "body_names": index["body_names"],
         "g1_joint_names": index["g1_joint_names"],
@@ -1222,7 +1177,7 @@ def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
     ):
         raise ValueError("SONIC dataset body names must be nonempty and unique")
     SonicJointCalibration.from_document(index["joint_calibration"])
-    _validate_index_clip_bounds(index, sharding)
+    _validate_index_clip_bounds(index)
     return index
 
 
@@ -1230,56 +1185,36 @@ def load_sonic_reference_bank(
     index_path: Path,
     *,
     split: AssignedSplit,
-    shard_index: int,
     sampling_bin_size: int = 50,
 ) -> SonicReferenceBank:
-    """Load one verified shard without materializing the rest of the corpus."""
+    """Load one complete verified split for a single device transfer."""
 
     index_path = Path(index_path).expanduser().resolve()
     index = load_sonic_dataset_index(index_path)
     if split not in {"train", "evaluation"}:
         raise ValueError(f"invalid SONIC dataset split {split!r}")
-    if isinstance(shard_index, bool) or not isinstance(shard_index, int):
-        raise TypeError("SONIC shard index must be an integer")
-    descriptors = index["shards"][split]
-    if not 0 <= shard_index < len(descriptors):
-        raise IndexError(f"SONIC {split} shard index is out of range: {shard_index}")
-    descriptor = descriptors[shard_index]
-    clips = [
-        clip
-        for clip in index["clips"]
-        if clip["split"] == split and clip["shard_index"] == shard_index
-    ]
+    descriptor = index["split_files"][split]
+    clips = [clip for clip in index["clips"] if clip["split"] == split]
     if not clips:
-        raise ValueError(f"SONIC {split} shard contains no clips")
-    frame_capacity = int(index["shard_frame_capacity"])
-    clip_capacity = int(index["shard_clip_capacity"])
+        raise ValueError(f"SONIC {split} split contains no clips")
     actual_lengths = np.asarray([int(clip["frames"]) for clip in clips], dtype=np.int32)
     actual_offsets = np.asarray([int(clip["offset"]) for clip in clips], dtype=np.int32)
-    lengths = np.full(
-        (clip_capacity,), SONIC_REQUIRED_FUTURE_HORIZON + 1, dtype=np.int32
-    )
-    offsets = np.zeros((clip_capacity,), dtype=np.int32)
-    lengths[: len(clips)] = actual_lengths
-    offsets[: len(clips)] = actual_offsets
-    shard_path = _shard_path(index_path, descriptor)
-    _validate_shard_file(descriptor, shard_path, split=split, shard_index=shard_index)
-    with np.load(shard_path, allow_pickle=False) as archive:
+    split_path = _split_file_path(index_path, descriptor)
+    _validate_split_file(descriptor, split_path, split=split)
+    with np.load(split_path, allow_pickle=False) as archive:
         missing = sorted(set(_PACKED_ARRAY_NAMES) - set(archive.files))
         extra = sorted(set(archive.files) - set(_PACKED_ARRAY_NAMES))
         if missing or extra:
             raise ValueError(
-                "SONIC shard fields differ from the schema: "
+                "SONIC split fields differ from the schema: "
                 f"missing={missing}, extra={extra}"
             )
         arrays = {name: np.asarray(archive[name]) for name in _PACKED_ARRAY_NAMES}
-    _validate_loaded_shard_arrays(
+    _validate_loaded_split_arrays(
         arrays,
-        frame_capacity=frame_capacity,
-        data_frames=int(descriptor["data_frames"]),
+        frames=int(descriptor["frames"]),
         body_count=len(index["body_names"]),
         split=split,
-        shard_index=shard_index,
     )
     actual_weights = (
         np.ones(len(clips), dtype=np.float64)
@@ -1289,21 +1224,15 @@ def load_sonic_reference_bank(
             dtype=np.float64,
         )
     )
-    probabilities = np.zeros((clip_capacity,), dtype=np.float32)
-    probabilities[: len(clips)] = (actual_weights / actual_weights.sum()).astype(
-        np.float32
-    )
-    bins = build_padded_sonic_sampling_bins(
+    probabilities = (actual_weights / actual_weights.sum()).astype(np.float32)
+    bins = build_sonic_sampling_bins(
         actual_lengths,
         bin_size=sampling_bin_size,
-        frame_capacity=frame_capacity,
-        clip_capacity=clip_capacity,
     )
-    padding = ("",) * (clip_capacity - len(clips))
     return SonicReferenceBank(
         **arrays,
-        offsets=offsets,
-        lengths=lengths,
+        offsets=actual_offsets,
+        lengths=actual_lengths,
         sampling_probabilities=probabilities,
         sampling_bin_clip_indices=bins[0],
         sampling_bin_starts=bins[1],
@@ -1312,8 +1241,8 @@ def load_sonic_reference_bank(
         sampling_clip_bin_offsets=bins[4],
         sampling_bin_size=sampling_bin_size,
         valid_clip_count=len(clips),
-        source_ids=tuple(clip["source_id"] for clip in clips) + padding,
-        sequence_ids=tuple(clip["sequence_id"] for clip in clips) + padding,
+        source_ids=tuple(clip["source_id"] for clip in clips),
+        sequence_ids=tuple(clip["sequence_id"] for clip in clips),
         joint_names=tuple(index["joint_names"]),
         body_names=tuple(index["body_names"]),
         calibration=SonicJointCalibration.from_document(index["joint_calibration"]),
@@ -1346,13 +1275,12 @@ def materialize_sonic_clip(
     clip = sorted(
         candidates, key=lambda value: (value["source_id"], value["sequence_id"])
     )[0]
-    shard_index = int(clip["shard_index"])
-    descriptor = index["shards"][split][shard_index]
-    shard_path = _shard_path(index_path, descriptor)
-    _validate_shard_file(descriptor, shard_path, split=split, shard_index=shard_index)
+    descriptor = index["split_files"][split]
+    split_path = _split_file_path(index_path, descriptor)
+    _validate_split_file(descriptor, split_path, split=split)
     start = int(clip["offset"])
     stop = start + int(clip["frames"])
-    with np.load(shard_path, allow_pickle=False) as packed:
+    with np.load(split_path, allow_pickle=False) as packed:
         arrays = {
             name: np.asarray(packed[name][start:stop])
             for name in _PACKED_ARRAY_NAMES[:7]
@@ -1415,11 +1343,9 @@ def select_sonic_reference_clip(
         name: np.asarray(getattr(bank, name))[start:stop].copy()
         for name in _PACKED_ARRAY_NAMES
     }
-    bins = build_padded_sonic_sampling_bins(
+    bins = build_sonic_sampling_bins(
         np.asarray((length,), dtype=np.int32),
         bin_size=bank.sampling_bin_size,
-        frame_capacity=length,
-        clip_capacity=1,
     )
     return SonicReferenceBank(
         **arrays,
@@ -1441,49 +1367,16 @@ def select_sonic_reference_clip(
     )
 
 
-def select_padded_sonic_reference_clip(
+def select_sonic_reference_clip_in_bank(
     bank: SonicReferenceBank, clip_index: int
 ) -> SonicReferenceBank:
-    """Select one clip without changing fixed shard-array capacities."""
+    """Select one clip while preserving full-bank array shapes for compilation."""
 
     if clip_index < 0 or clip_index >= bank.valid_clip_count:
         raise IndexError(f"SONIC clip index is out of range: {clip_index}")
-    frame_capacity = int(bank.qpos.shape[0])
-    clip_capacity = int(len(bank.lengths))
-    length = int(bank.lengths[clip_index])
-    lengths = np.full(
-        (clip_capacity,), SONIC_REQUIRED_FUTURE_HORIZON + 1, dtype=np.int32
-    )
-    offsets = np.zeros((clip_capacity,), dtype=np.int32)
-    probabilities = np.zeros((clip_capacity,), dtype=np.float32)
-    lengths[0] = length
-    offsets[0] = int(bank.offsets[clip_index])
-    probabilities[0] = 1.0
-    bins = build_padded_sonic_sampling_bins(
-        np.asarray((length,), dtype=np.int32),
-        bin_size=bank.sampling_bin_size,
-        frame_capacity=frame_capacity,
-        clip_capacity=clip_capacity,
-    )
-    padding = ("",) * (clip_capacity - 1)
-    return SonicReferenceBank(
-        **{name: getattr(bank, name) for name in _PACKED_ARRAY_NAMES},
-        offsets=offsets,
-        lengths=lengths,
-        sampling_probabilities=probabilities,
-        sampling_bin_clip_indices=bins[0],
-        sampling_bin_starts=bins[1],
-        sampling_bin_widths=bins[2],
-        sampling_bin_valid=bins[3],
-        sampling_clip_bin_offsets=bins[4],
-        sampling_bin_size=bank.sampling_bin_size,
-        valid_clip_count=1,
-        source_ids=(bank.source_ids[clip_index],) + padding,
-        sequence_ids=(bank.sequence_ids[clip_index],) + padding,
-        joint_names=bank.joint_names,
-        body_names=bank.body_names,
-        calibration=bank.calibration,
-    )
+    probabilities = np.zeros_like(bank.sampling_probabilities, dtype=np.float32)
+    probabilities[clip_index] = 1.0
+    return replace(bank, sampling_probabilities=probabilities)
 
 
 def sample_sonic_start_frames(rng, lengths, probabilities, *, batch_size: int):
@@ -1505,7 +1398,7 @@ def sample_sonic_start_frames(rng, lengths, probabilities, *, batch_size: int):
     return clip_indices, start_frames
 
 
-def _write_shards(
+def _write_split_file(
     output_root: Path,
     split: AssignedSplit,
     items: tuple[_AcceptedSonicClip, ...],
@@ -1514,86 +1407,11 @@ def _write_shards(
     joint_names: tuple[str, ...],
     body_names: tuple[str, ...],
     provenance: dict[str, str],
-    sharding: SonicShardConfig,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    groups = _partition_shards(items, sharding)
-    shard_root = output_root / "shards" / split
-    shard_root.mkdir(parents=True, exist_ok=False)
-    descriptors: list[dict[str, Any]] = []
-    entries: list[dict[str, Any]] = []
-    for shard_index, group in enumerate(groups):
-        relative_path = Path("shards") / split / f"{shard_index:05d}.npz"
-        path = output_root / relative_path
-        shard_entries = _write_shard(
-            path,
-            group,
-            shard_index=shard_index,
-            quality=quality,
-            joint_names=joint_names,
-            body_names=body_names,
-            provenance=provenance,
-            frame_capacity=sharding.frame_capacity,
-        )
-        data_frames = sum(item.frames for item in group)
-        sampling_mass = sum(
-            item.frames * item.assigned.sequence.sampling_weight for item in group
-        )
-        descriptors.append(
-            {
-                "file": relative_path.as_posix(),
-                "sha256": "sha256:" + _file_sha256(path),
-                "clip_count": len(group),
-                "data_frames": data_frames,
-                "sampling_mass": sampling_mass,
-            }
-        )
-        entries.extend(shard_entries)
-    return descriptors, entries
-
-
-def _partition_shards(
-    items: tuple[_AcceptedSonicClip, ...], sharding: SonicShardConfig
-) -> tuple[tuple[_AcceptedSonicClip, ...], ...]:
-    groups: list[tuple[_AcceptedSonicClip, ...]] = []
-    current: list[_AcceptedSonicClip] = []
-    current_frames = 0
-    for item in items:
-        identity = (
-            f"{item.assigned.sequence.source_id}/{item.assigned.sequence.sequence_id}"
-        )
-        if item.frames > sharding.frame_capacity:
-            raise ValueError(
-                f"SONIC clip {identity} has {item.frames} frames, exceeding shard "
-                f"capacity {sharding.frame_capacity}"
-            )
-        full = current and (
-            current_frames + item.frames > sharding.frame_capacity
-            or len(current) == sharding.clip_capacity
-        )
-        if full:
-            groups.append(tuple(current))
-            current = []
-            current_frames = 0
-        current.append(item)
-        current_frames += item.frames
-    if current:
-        groups.append(tuple(current))
-    if not groups:
-        raise ValueError("SONIC shard partition contains no clips")
-    return tuple(groups)
-
-
-def _write_shard(
-    path: Path,
-    items: tuple[_AcceptedSonicClip, ...],
-    *,
-    shard_index: int,
-    quality: QualityConfig,
-    joint_names: tuple[str, ...],
-    body_names: tuple[str, ...],
-    provenance: dict[str, str],
-    frame_capacity: int,
-) -> list[dict[str, Any]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not items:
+        raise ValueError(f"SONIC dataset contains no {split} clips")
+    path = output_root / f"{split}.npz"
+    total_frames = sum(item.frames for item in items)
     first = _reload_accepted_clip(
         items[0],
         quality=quality,
@@ -1603,7 +1421,7 @@ def _write_shard(
     )
     entries: list[dict[str, Any]] = []
     archive_descriptor, archive_name = tempfile.mkstemp(
-        prefix=f".{path.stem}-", suffix=".npz", dir=path.parent
+        prefix=f".{split}-", suffix=".npz", dir=output_root
     )
     os.close(archive_descriptor)
     temporary_archive = Path(archive_name)
@@ -1615,7 +1433,7 @@ def _write_shard(
                     temporary_root / f"{name}.npy",
                     mode="w+",
                     dtype=np.float32,
-                    shape=(frame_capacity,) + np.asarray(first[name]).shape[1:],
+                    shape=(total_frames,) + np.asarray(first[name]).shape[1:],
                 )
                 for name in _PACKED_ARRAY_NAMES
             }
@@ -1639,23 +1457,37 @@ def _write_shard(
                     if value.shape != (frames,) + destination.shape[1:]:
                         raise ValueError(
                             f"{item.assigned.sequence.sequence_id}: {name} shape "
-                            f"{value.shape} differs from the shard contract"
+                            f"{value.shape} differs from the split contract"
                         )
                     destination[offset:stop] = value
-                entries.append(_clip_entry(item, offset, shard_index))
+                entries.append(_clip_entry(item, offset))
                 offset = stop
                 if item_index != 0:
                     del arrays
             del first
             for destination in packed.values():
                 destination.flush()
+            if offset != total_frames:
+                raise ValueError(f"SONIC {split} packed frame count drifted")
             np.savez_compressed(temporary_archive, **packed)
             del packed
             os.replace(temporary_archive, path)
         except BaseException:
             temporary_archive.unlink(missing_ok=True)
             raise
-    return entries
+    sampling_mass = sum(
+        item.frames * item.assigned.sequence.sampling_weight for item in items
+    )
+    return (
+        {
+            "file": path.name,
+            "sha256": "sha256:" + _file_sha256(path),
+            "clip_count": len(items),
+            "frames": total_frames,
+            "sampling_mass": sampling_mass,
+        },
+        entries,
+    )
 
 
 def _reload_accepted_clip(
@@ -1708,9 +1540,7 @@ def _reload_accepted_clip(
     return arrays
 
 
-def _clip_entry(
-    item: _AcceptedSonicClip, offset: int, shard_index: int
-) -> dict[str, Any]:
+def _clip_entry(item: _AcceptedSonicClip, offset: int) -> dict[str, Any]:
     assigned = item.assigned
     sequence = assigned.sequence
     return {
@@ -1720,7 +1550,6 @@ def _clip_entry(
         "subject_id": sequence.subject_id,
         "split": assigned.split,
         "sampling_weight": sequence.sampling_weight,
-        "shard_index": shard_index,
         "offset": offset,
         "frames": item.frames,
         "duration_seconds": item.duration_seconds,
@@ -1853,49 +1682,29 @@ def _git_revision(root: Path) -> str:
     return revision
 
 
-def _validate_shard_descriptor(
-    descriptor: Any,
-    *,
-    split: str,
-    shard_index: int,
-    sharding: SonicShardConfig,
-) -> None:
-    if not isinstance(descriptor, dict) or set(descriptor) != _SONIC_SHARD_FIELDS:
-        raise ValueError(
-            f"SONIC {split} shard {shard_index} descriptor differs from the schema"
-        )
-    expected_file = f"shards/{split}/{shard_index:05d}.npz"
+def _validate_split_file_descriptor(descriptor: Any, *, split: str) -> None:
+    if not isinstance(descriptor, dict) or set(descriptor) != _SONIC_SPLIT_FILE_FIELDS:
+        raise ValueError(f"SONIC {split} file descriptor differs from the schema")
+    expected_file = f"{split}.npz"
     if descriptor["file"] != expected_file:
         raise ValueError(
-            f"SONIC {split} shard {shard_index} path is not canonical: "
-            f"{descriptor['file']!r}"
+            f"SONIC {split} file path is not canonical: {descriptor['file']!r}"
         )
-    _require_sha256(descriptor["sha256"], f"{split} shard {shard_index} sha256")
-    for name, capacity in (
-        ("clip_count", sharding.clip_capacity),
-        ("data_frames", sharding.frame_capacity),
-    ):
+    _require_sha256(descriptor["sha256"], f"{split} file sha256")
+    for name in ("clip_count", "frames"):
         value = descriptor[name]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not 0 < value <= capacity
-        ):
-            raise ValueError(
-                f"SONIC {split} shard {shard_index} {name} is out of range"
-            )
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"SONIC {split} file {name} must be positive")
+    if descriptor["frames"] <= SONIC_REQUIRED_FUTURE_HORIZON:
+        raise ValueError(f"SONIC {split} file does not cover the future horizon")
     mass = descriptor["sampling_mass"]
     if isinstance(mass, bool) or not isinstance(mass, (int, float)):
-        raise ValueError(f"SONIC {split} shard {shard_index} sampling mass is invalid")
+        raise ValueError(f"SONIC {split} file sampling mass is invalid")
     if not math.isfinite(float(mass)) or float(mass) <= 0.0:
-        raise ValueError(
-            f"SONIC {split} shard {shard_index} sampling mass must be positive"
-        )
+        raise ValueError(f"SONIC {split} file sampling mass must be positive")
 
 
-def _validate_index_clip_bounds(
-    index: dict[str, Any], sharding: SonicShardConfig
-) -> None:
+def _validate_index_clip_bounds(index: dict[str, Any]) -> None:
     clips = index["clips"]
     if not isinstance(clips, list) or not clips:
         raise ValueError("SONIC dataset clips must be a nonempty list")
@@ -1923,7 +1732,6 @@ def _validate_index_clip_bounds(
                 raise ValueError(f"SONIC clip {name} must be a nonempty string")
         frames = clip["frames"]
         offset = clip["offset"]
-        shard_index = clip["shard_index"]
         if (
             isinstance(frames, bool)
             or not isinstance(frames, int)
@@ -1931,9 +1739,6 @@ def _validate_index_clip_bounds(
             or isinstance(offset, bool)
             or not isinstance(offset, int)
             or offset < 0
-            or isinstance(shard_index, bool)
-            or not isinstance(shard_index, int)
-            or not 0 <= shard_index < len(index["shards"][split])
         ):
             raise ValueError("SONIC clip bounds are invalid")
         duration = clip["duration_seconds"]
@@ -1973,169 +1778,135 @@ def _validate_index_clip_bounds(
         raise ValueError("SONIC dataset has invalid training sampling mass")
     evaluation_orders: list[int] = []
     for split in ("train", "evaluation"):
-        for shard_index, descriptor in enumerate(index["shards"][split]):
-            clips = [
-                clip
-                for clip in index["clips"]
-                if clip["split"] == split and clip["shard_index"] == shard_index
-            ]
-            if len(clips) != descriptor["clip_count"]:
-                raise ValueError(
-                    f"SONIC {split} shard {shard_index} clip count has drifted"
-                )
-            offset = 0
-            shard_mass = 0.0
-            for clip in clips:
-                frames = clip.get("frames")
-                clip_offset = clip.get("offset")
-                weight = clip.get("sampling_weight")
-                if clip_offset != offset:
-                    raise ValueError(
-                        f"SONIC {split} shard {shard_index} clip bounds are invalid"
+        descriptor = index["split_files"][split]
+        split_clips = [clip for clip in index["clips"] if clip["split"] == split]
+        if len(split_clips) != descriptor["clip_count"]:
+            raise ValueError(f"SONIC {split} file clip count has drifted")
+        offset = 0
+        split_mass = 0.0
+        for clip in split_clips:
+            frames = clip.get("frames")
+            clip_offset = clip.get("offset")
+            weight = clip.get("sampling_weight")
+            if clip_offset != offset:
+                raise ValueError(f"SONIC {split} clip bounds are not contiguous")
+            offset += frames
+            split_mass += frames * float(weight)
+            if split == "train":
+                expected_numerator = frames * float(weight)
+                numerator = clip["sampling_probability_numerator"]
+                denominator = clip["sampling_probability_denominator"]
+                if (
+                    isinstance(numerator, bool)
+                    or not isinstance(numerator, (int, float))
+                    or isinstance(denominator, bool)
+                    or not isinstance(denominator, (int, float))
+                    or not math.isclose(
+                        float(numerator),
+                        expected_numerator,
+                        rel_tol=1.0e-12,
+                        abs_tol=0.0,
                     )
-                offset += frames
-                shard_mass += frames * float(weight)
-                if split == "train":
-                    expected_numerator = frames * float(weight)
-                    numerator = clip["sampling_probability_numerator"]
-                    denominator = clip["sampling_probability_denominator"]
-                    if (
-                        isinstance(numerator, bool)
-                        or not isinstance(numerator, (int, float))
-                        or isinstance(denominator, bool)
-                        or not isinstance(denominator, (int, float))
-                        or not math.isclose(
-                            float(numerator),
-                            expected_numerator,
-                            rel_tol=1.0e-12,
-                            abs_tol=0.0,
-                        )
-                        or not math.isclose(
-                            float(denominator),
-                            train_mass,
-                            rel_tol=1.0e-12,
-                            abs_tol=0.0,
-                        )
-                    ):
-                        raise ValueError("SONIC training sampling metadata has drifted")
-                else:
-                    order = clip.get("evaluation_order")
-                    if (
-                        isinstance(order, bool)
-                        or not isinstance(order, int)
-                        or order < 0
-                    ):
-                        raise ValueError("SONIC evaluation order is invalid")
-                    evaluation_orders.append(order)
-            if offset != descriptor["data_frames"] or offset > sharding.frame_capacity:
-                raise ValueError(
-                    f"SONIC {split} shard {shard_index} frame count has drifted"
-                )
-            if not math.isclose(
-                shard_mass,
-                float(descriptor["sampling_mass"]),
-                rel_tol=1.0e-12,
-                abs_tol=0.0,
-            ):
-                raise ValueError(
-                    f"SONIC {split} shard {shard_index} sampling mass has drifted"
-                )
+                    or not math.isclose(
+                        float(denominator),
+                        train_mass,
+                        rel_tol=1.0e-12,
+                        abs_tol=0.0,
+                    )
+                ):
+                    raise ValueError("SONIC training sampling metadata has drifted")
+            else:
+                order = clip.get("evaluation_order")
+                if isinstance(order, bool) or not isinstance(order, int) or order < 0:
+                    raise ValueError("SONIC evaluation order is invalid")
+                evaluation_orders.append(order)
+        if offset != descriptor["frames"]:
+            raise ValueError(f"SONIC {split} file frame count has drifted")
+        if not math.isclose(
+            split_mass,
+            float(descriptor["sampling_mass"]),
+            rel_tol=1.0e-12,
+            abs_tol=0.0,
+        ):
+            raise ValueError(f"SONIC {split} file sampling mass has drifted")
     if sorted(evaluation_orders) != list(range(len(evaluation_orders))):
         raise ValueError("SONIC evaluation ordering is not contiguous")
 
 
-def _shard_path(index_path: Path, descriptor: dict[str, Any]) -> Path:
+def _split_file_path(index_path: Path, descriptor: dict[str, Any]) -> Path:
     root = index_path.parent.resolve()
     path = (root / descriptor["file"]).resolve()
-    if path.parent.parent.parent != root:
-        raise ValueError("SONIC shard path escapes the dataset root")
+    if path.parent != root:
+        raise ValueError("SONIC split file path escapes the dataset root")
     return path
 
 
-def _validate_shard_file(
-    descriptor: dict[str, Any], path: Path, *, split: str, shard_index: int
-) -> None:
+def _validate_split_file(descriptor: dict[str, Any], path: Path, *, split: str) -> None:
     if not path.is_file():
-        raise FileNotFoundError(
-            f"SONIC {split} shard {shard_index} file not found: {path}"
-        )
+        raise FileNotFoundError(f"SONIC {split} file not found: {path}")
     actual = "sha256:" + _file_sha256(path)
     if actual != descriptor["sha256"]:
-        raise ValueError(
-            f"SONIC {split} shard {shard_index} file differs from its index digest"
-        )
+        raise ValueError(f"SONIC {split} file differs from its index digest")
 
 
-def _validate_loaded_shard_arrays(
+def _validate_loaded_split_arrays(
     arrays: dict[str, np.ndarray],
     *,
-    frame_capacity: int,
-    data_frames: int,
+    frames: int,
     body_count: int,
     split: str,
-    shard_index: int,
 ) -> None:
     expected_shapes = {
-        "qpos": (frame_capacity, 32),
-        "qvel": (frame_capacity, 31),
-        "body_pos": (frame_capacity, body_count, 3),
-        "body_quat_wxyz": (frame_capacity, body_count, 4),
-        "body_lin_vel": (frame_capacity, body_count, 3),
-        "body_ang_vel": (frame_capacity, body_count, 3),
-        "foot_contacts": (frame_capacity, 2),
-        "smpl_joint_pos": (frame_capacity, len(SONIC_SMPL_JOINT_NAMES), 3),
-        "smpl_root_quat_wxyz": (frame_capacity, 4),
-        "smpl_root_translation": (frame_capacity, 3),
-        "g1_joint_pos": (frame_capacity, len(G1_ISAACLAB_JOINT_NAMES)),
+        "qpos": (frames, 32),
+        "qvel": (frames, 31),
+        "body_pos": (frames, body_count, 3),
+        "body_quat_wxyz": (frames, body_count, 4),
+        "body_lin_vel": (frames, body_count, 3),
+        "body_ang_vel": (frames, body_count, 3),
+        "foot_contacts": (frames, 2),
+        "smpl_joint_pos": (frames, len(SONIC_SMPL_JOINT_NAMES), 3),
+        "smpl_root_quat_wxyz": (frames, 4),
+        "smpl_root_translation": (frames, 3),
+        "g1_joint_pos": (frames, len(G1_ISAACLAB_JOINT_NAMES)),
     }
     for name, expected_shape in expected_shapes.items():
         value = arrays[name]
         if value.dtype != np.float32 or value.shape != expected_shape:
             raise ValueError(
-                f"SONIC {split} shard {shard_index} {name} must be float32 with "
+                f"SONIC {split} {name} must be float32 with "
                 f"shape {expected_shape}; got {value.dtype} {value.shape}"
             )
-        if not np.all(np.isfinite(value[:data_frames])):
-            raise ValueError(
-                f"SONIC {split} shard {shard_index} {name} contains non-finite data"
-            )
+        if not np.all(np.isfinite(value)):
+            raise ValueError(f"SONIC {split} {name} contains non-finite data")
     for name, quaternions in (
-        ("qpos", arrays["qpos"][:data_frames, 3:7]),
-        ("body_quat_wxyz", arrays["body_quat_wxyz"][:data_frames]),
+        ("qpos", arrays["qpos"][:, 3:7]),
+        ("body_quat_wxyz", arrays["body_quat_wxyz"]),
         (
             "smpl_root_quat_wxyz",
-            arrays["smpl_root_quat_wxyz"][:data_frames],
+            arrays["smpl_root_quat_wxyz"],
         ),
     ):
         if not np.allclose(
             np.linalg.norm(quaternions, axis=-1), 1.0, atol=1.0e-4, rtol=0.0
         ):
-            raise ValueError(
-                f"SONIC {split} shard {shard_index} {name} has non-unit quaternions"
-            )
-    contacts = arrays["foot_contacts"][:data_frames]
+            raise ValueError(f"SONIC {split} {name} has non-unit quaternions")
+    contacts = arrays["foot_contacts"]
     if np.any((contacts < 0.0) | (contacts > 1.0)):
-        raise ValueError(
-            f"SONIC {split} shard {shard_index} foot contacts are outside [0, 1]"
-        )
+        raise ValueError(f"SONIC {split} foot contacts are outside [0, 1]")
 
 
-def build_padded_sonic_sampling_bins(
+def build_sonic_sampling_bins(
     lengths: np.ndarray,
     *,
     bin_size: int,
-    frame_capacity: int,
-    clip_capacity: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     lengths = np.asarray(lengths, dtype=np.int32)
     if bin_size <= 0:
         raise ValueError("SONIC sampling bin size must be positive")
-    if lengths.ndim != 1 or not 0 < len(lengths) <= clip_capacity:
-        raise ValueError("SONIC shard clip count is incompatible with its capacity")
+    if lengths.ndim != 1 or len(lengths) == 0:
+        raise ValueError("SONIC split must contain at least one clip")
     if np.any(lengths <= SONIC_REQUIRED_FUTURE_HORIZON):
-        raise ValueError("SONIC shard clips do not cover the future-frame horizon")
-    if int(lengths.sum(dtype=np.int64)) > frame_capacity:
-        raise ValueError("SONIC shard frame count exceeds its capacity")
+        raise ValueError("SONIC clips do not cover the future-frame horizon")
     clip_indices: list[int] = []
     starts: list[int] = []
     widths: list[int] = []
@@ -2147,24 +1918,11 @@ def build_padded_sonic_sampling_bins(
             starts.append(start)
             widths.append(min(bin_size, valid_frames - start))
         clip_bin_offsets.append(len(starts))
-    clip_bin_offsets.extend([len(starts)] * (clip_capacity + 1 - len(clip_bin_offsets)))
-    bin_capacity = frame_capacity // bin_size + clip_capacity
-    if len(starts) > bin_capacity:
-        raise RuntimeError("SONIC sampling-bin capacity calculation is inconsistent")
-    padded_clips = np.zeros((bin_capacity,), dtype=np.int32)
-    padded_starts = np.zeros((bin_capacity,), dtype=np.int32)
-    padded_widths = np.ones((bin_capacity,), dtype=np.int32)
-    valid = np.zeros((bin_capacity,), dtype=bool)
-    count = len(starts)
-    padded_clips[:count] = clip_indices
-    padded_starts[:count] = starts
-    padded_widths[:count] = widths
-    valid[:count] = True
     return (
-        padded_clips,
-        padded_starts,
-        padded_widths,
-        valid,
+        np.asarray(clip_indices, dtype=np.int32),
+        np.asarray(starts, dtype=np.int32),
+        np.asarray(widths, dtype=np.int32),
+        np.ones((len(starts),), dtype=bool),
         np.asarray(clip_bin_offsets, dtype=np.int32),
     )
 

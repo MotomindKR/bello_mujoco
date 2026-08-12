@@ -14,7 +14,7 @@ Before rental, the launcher:
    gitlink, `.python-version`, `pyproject.toml`, and `uv.lock` in that commit;
 4. verifies any motion archive is repository-tracked in that commit;
 5. validates any local TWIST/TWIST2 dataset and typed teacher checkpoint, or
-   the canonical SONIC shard tree and pinned release artifact;
+   the canonical SONIC split files and pinned release artifact;
 6. generates a unique timestamped run/lifecycle label;
 7. builds offer queries from the maintained hardware policy.
 
@@ -107,57 +107,56 @@ uv run bello-vast-train \
   duration_hours=60
 ```
 
-SONIC short-baseline example. With 512 environments and 24 rollout steps,
-`1,425,408` transitions are exactly 116 updates. Combined with
-`reference_shard_updates=1`, this visits each of the current 116 training
-shards once before strict held-out evaluation:
+SONIC production-scale transfer example. With 4,096 environments and 24 rollout
+steps, `71,270,400` transitions are 725 PPO updates:
 
 ```bash
 uv run bello-vast-train \
   experiment=sonic \
-  dataset_path=/home/gmmyung/amass/sonic_dataset_v1/index.json \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v2/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
-  total_timesteps=1425408 \
-  num_envs=512 \
-  reference_shard_updates=1 \
-  checkpoint_every_updates=29 \
+  total_timesteps=71270400 \
+  num_envs=4096 \
+  checkpoint_every_updates=145 \
   branch=feature/sonic-transfer \
   max_price=1.25 \
   duration_hours=6 \
   skip_confirmation=true
 ```
 
-The remote job first runs the fixed 32-environment, 768-transition GPU
-preflight. The real run then uses the explicit overrides, uploads periodic and
-final checkpoints through W&B, evaluates all accepted held-out clips, and
-downloads `sonic_evaluation.json`, `summary.json`, and their checksum manifest
-to `outputs/vast/<run-name>/` before destroying the instance.
+The remote job first benchmarks three complete PPO updates at the requested
+SONIC environment count while sampling GPU utilization, peak VRAM, power, and
+elapsed time. The real run starts only when that production-scale benchmark
+succeeds. It uploads periodic and final checkpoints through W&B, evaluates all
+accepted held-out clips, and downloads `benchmark.json`,
+`sonic_evaluation.json`, `summary.json`, and their checksum manifest to
+`outputs/vast/<run-name>/` before destroying the instance. Other experiment
+types retain the fixed 32-environment,
+768-transition preflight.
 
-To continue that checkpoint for 50 total corpus sweeps, download its final W&B
-checkpoint artifact and pass the artifact directory as `resume_path`. The
-budget is absolute: `71,270,400` transitions are 5,800 total updates, so a
-checkpoint at update 116 performs 5,684 additional updates. Continuation keeps
-the original 512-environment batch and one-update shard rotation contract:
+To continue a checkpoint produced by this configuration, download its final
+W&B artifact and pass the artifact directory as `resume_path`. The budget is
+absolute. This example extends the run to the maintained 2,949,218,304-transition
+budget while retaining the exact 4,096-environment batch contract:
 
 ```bash
 uv run bello-vast-train \
   experiment=sonic \
-  dataset_path=/home/gmmyung/amass/sonic_dataset_v1/index.json \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v2/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
-  resume_path=outputs/wandb_artifacts/sonic_seed1_v14 \
+  resume_path=outputs/wandb_artifacts/sonic_edge_4096 \
   allow_git_commit_mismatch=true \
-  total_timesteps=71270400 \
-  num_envs=512 \
-  reference_shard_updates=1 \
-  checkpoint_every_updates=580 \
+  total_timesteps=2949218304 \
+  num_envs=4096 \
+  checkpoint_every_updates=500 \
   branch=feature/sonic-transfer \
   max_price=1.25 \
-  duration_hours=6 \
+  duration_hours=36 \
   skip_confirmation=true
 ```
 
 The launcher rejects the resume before rental if its dataset fingerprint,
-release hashes, environment count, shard schedule, or absolute budget is
+release hashes, environment count, or absolute budget is
 incompatible. The remote trainer then enforces the complete observation,
 action, robot, PPO, and simulator contract while restoring the array state.
 

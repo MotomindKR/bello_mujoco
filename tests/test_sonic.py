@@ -30,7 +30,6 @@ from bello_mujoco.motion.sonic_dataset import (
     SONIC_CRITIC_FUTURE_OFFSETS,
     SONIC_DATASET_SCHEMA_VERSION,
     SONIC_G1_RETARGET_FORMAT_VERSION,
-    SONIC_REQUIRED_FUTURE_HORIZON,
     SONIC_SMPL_COORDINATE_CONVENTION,
     SONIC_SMPL_FUTURE_OFFSETS,
     SONIC_SMPL_JOINT_NAMES,
@@ -41,13 +40,13 @@ from bello_mujoco.motion.sonic_dataset import (
     _JointCalibrationMoments,
     _align_smpl_root_to_bello_world,
     _json_sha256,
-    build_padded_sonic_sampling_bins,
+    build_sonic_sampling_bins,
     fit_joint_calibration,
     load_sonic_g1_retarget,
     load_sonic_dataset_index,
     load_sonic_reference_bank,
-    select_padded_sonic_reference_clip,
     select_sonic_reference_clip,
+    select_sonic_reference_clip_in_bank,
 )
 from bello_mujoco.policy import (
     ActorCritic,
@@ -70,7 +69,6 @@ from bello_mujoco.sonic_policy import (
 from bello_mujoco.training.sonic import (
     _device_reference_bank_arrays,
     _tracking_dataset_summary,
-    sonic_reference_shard_for_update,
 )
 from tools.sonic_gmr_retarget import (
     G1_QPOS_JOINT_NAMES,
@@ -379,55 +377,27 @@ def test_sampling_bins_are_host_materialized_and_clip_local() -> None:
     np.testing.assert_array_equal(offsets, np.asarray((0, 3, 5)))
 
 
-def test_padded_sampling_bins_have_one_fixed_jit_shape() -> None:
-    clips, starts, widths, valid, offsets = build_padded_sonic_sampling_bins(
+def test_split_sampling_bins_cover_every_valid_start() -> None:
+    clips, starts, widths, valid, offsets = build_sonic_sampling_bins(
         np.asarray((50, 100), dtype=np.int32),
         bin_size=50,
-        frame_capacity=256,
-        clip_capacity=4,
     )
 
-    assert clips.shape == starts.shape == widths.shape == valid.shape == (9,)
-    np.testing.assert_array_equal(clips[:3], np.asarray((0, 1, 1)))
-    np.testing.assert_array_equal(starts[:3], np.asarray((0, 0, 50)))
-    np.testing.assert_array_equal(widths[:3], np.asarray((5, 50, 5)))
-    np.testing.assert_array_equal(valid[:3], np.ones(3, dtype=bool))
-    assert not np.any(valid[3:])
-    np.testing.assert_array_equal(offsets, np.asarray((0, 1, 3, 3, 3)))
-
-
-def test_reference_shard_schedule_is_mass_weighted_and_sweeps_every_shard() -> None:
-    index = {
-        "shards": {
-            "train": [
-                {"sampling_mass": 4.0},
-                {"sampling_mass": 2.0},
-                {"sampling_mass": 1.0},
-            ]
-        }
-    }
-    schedule = [
-        sonic_reference_shard_for_update(
-            index, update=update, seed=0, full_shard_updates=8
-        )
-        for update in range(14)
-    ]
-
-    assert schedule.count(0) == 8
-    assert schedule.count(1) == 4
-    assert schedule.count(2) == 2
-    assert set(schedule) == {0, 1, 2}
+    assert clips.shape == starts.shape == widths.shape == valid.shape == (3,)
+    np.testing.assert_array_equal(clips, np.asarray((0, 1, 1)))
+    np.testing.assert_array_equal(starts, np.asarray((0, 0, 50)))
+    np.testing.assert_array_equal(widths, np.asarray((5, 50, 5)))
+    np.testing.assert_array_equal(valid, np.ones(3, dtype=bool))
+    np.testing.assert_array_equal(offsets, np.asarray((0, 1, 3)))
 
 
 def test_tracking_dataset_summary_excludes_clip_and_fingerprint_payloads() -> None:
     index = {
-        "schema_version": 3,
+        "schema_version": SONIC_DATASET_SCHEMA_VERSION,
         "dataset_fingerprint": "sha256:" + "a" * 64,
         "portable_manifest_fingerprint": "sha256:" + "b" * 64,
         "policy_fps": 50.0,
         "train_sampling": "frame_count_times_manifest_weight",
-        "shard_frame_capacity": 65536,
-        "shard_clip_capacity": 256,
         "joint_names": list(BELLO_JOINT_NAMES),
         "body_names": ["pelvis_link"],
         "g1_joint_names": list(G1_ISAACLAB_JOINT_NAMES),
@@ -438,9 +408,12 @@ def test_tracking_dataset_summary_excludes_clip_and_fingerprint_payloads() -> No
         "g1_gmr_config_sha256": "sha256:" + "1" * 64,
         "g1_robot_sha256": "sha256:" + "2" * 64,
         "joint_calibration": {"sample_count": 30},
-        "shards": {
-            "train": [{"sampling_mass": 20.0}],
-            "evaluation": [{"sampling_mass": 10.0}],
+        "split_files": {
+            "train": {"file": "train.npz", "sampling_mass": 20.0},
+            "evaluation": {
+                "file": "evaluation.npz",
+                "sampling_mass": 10.0,
+            },
         },
         "clips": [
             {"split": "train", "frames": 20},
@@ -454,9 +427,14 @@ def test_tracking_dataset_summary_excludes_clip_and_fingerprint_payloads() -> No
     assert "clips" not in summary
     assert "fingerprint_payload" not in summary
     assert summary["splits"] == {
-        "train": {"shards": 1, "clips": 1, "frames": 20, "sampling_mass": 20.0},
+        "train": {
+            "file": "train.npz",
+            "clips": 1,
+            "frames": 20,
+            "sampling_mass": 20.0,
+        },
         "evaluation": {
-            "shards": 1,
+            "file": "evaluation.npz",
             "clips": 1,
             "frames": 10,
             "sampling_mass": 10.0,
@@ -478,35 +456,56 @@ def test_reference_clip_selection_rebases_packed_offsets() -> None:
     np.testing.assert_array_equal(selected.qpos, bank.qpos[50:])
 
 
-def test_padded_reference_clip_selection_preserves_fixed_array_shapes() -> None:
+def test_in_bank_reference_clip_selection_preserves_full_array_shapes() -> None:
     lengths = np.asarray((50, 60), dtype=np.int32)
     bank = _reference_bank(int(lengths.sum()), lengths=lengths)
 
-    selected = select_padded_sonic_reference_clip(bank, 1)
+    selected = select_sonic_reference_clip_in_bank(bank, 1)
 
     assert selected.qpos is bank.qpos
     assert selected.qpos.shape == bank.qpos.shape
     assert selected.lengths.shape == bank.lengths.shape
-    np.testing.assert_array_equal(selected.offsets, np.asarray((50, 0)))
+    np.testing.assert_array_equal(selected.offsets, np.asarray((0, 50)))
+    np.testing.assert_array_equal(selected.lengths, np.asarray((50, 60)))
     np.testing.assert_array_equal(
-        selected.lengths,
-        np.asarray((60, SONIC_REQUIRED_FUTURE_HORIZON + 1)),
+        selected.sampling_probabilities, np.asarray((0.0, 1.0))
     )
-    np.testing.assert_array_equal(
-        selected.sampling_probabilities, np.asarray((1.0, 0.0))
-    )
-    assert selected.valid_clip_count == 1
-    assert selected.source_ids == ("source_1", "")
+    assert selected.valid_clip_count == 2
+    assert selected.source_ids == ("source_0", "source_1")
     absolute = BelloSonicEnv._absolute_reference_frame(
         SimpleNamespace(reference_bank=selected),
         SimpleNamespace(reference_time=jnp.asarray(0.02, dtype=jnp.float32)),
-        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(1, dtype=jnp.int32),
         0,
     )
     assert int(absolute) == 51
     device_bank = _device_reference_bank(bank)
-    device_selected = select_padded_sonic_reference_clip(device_bank, 1)
+    device_selected = select_sonic_reference_clip_in_bank(device_bank, 1)
     assert device_selected.qpos is device_bank.qpos
+
+
+def test_full_bank_sampler_selects_from_a_cdf_without_reindexing_clips() -> None:
+    lengths = np.asarray((50, 60), dtype=np.int32)
+    selected = select_sonic_reference_clip_in_bank(
+        _reference_bank(int(lengths.sum()), lengths=lengths), 1
+    )
+    fake = SimpleNamespace(
+        _sampling_bins=(
+            selected.sampling_bin_clip_indices,
+            selected.sampling_bin_starts,
+            selected.sampling_bin_widths,
+            selected.sampling_bin_valid,
+            selected.sampling_clip_bin_offsets,
+        ),
+        sampling_bin_cdf=None,
+        reference_bank=selected,
+        sampling=SimpleNamespace(enabled=False, pre_failure_window=0),
+    )
+
+    clip_index, reference_time = BelloSonicEnv._sample_clip_start(fake, None)
+
+    assert int(clip_index) == 1
+    assert float(reference_time) == 0.0
 
 
 def test_compiled_evaluation_stops_at_terminal_and_aggregates_metrics(
@@ -558,15 +557,15 @@ def test_dataset_index_and_split_hashes_are_enforced(tmp_path: Path) -> None:
     index_path = _write_dataset_fixture(tmp_path)
 
     index = load_sonic_dataset_index(index_path)
-    bank = load_sonic_reference_bank(index_path, split="train", shard_index=0)
+    bank = load_sonic_reference_bank(index_path, split="train")
 
     assert index["dataset_fingerprint"].startswith("sha256:")
     assert bank.valid_clip_count == 1
     assert bank.lengths[: bank.valid_clip_count].tolist() == [50]
-    shard_path = tmp_path / "shards" / "train" / "00000.npz"
-    shard_path.write_bytes(shard_path.read_bytes() + b"tampered")
-    with pytest.raises(ValueError, match="shard 0 file differs"):
-        load_sonic_reference_bank(index_path, split="train", shard_index=0)
+    split_path = tmp_path / "train.npz"
+    split_path.write_bytes(split_path.read_bytes() + b"tampered")
+    with pytest.raises(ValueError, match="train file differs"):
+        load_sonic_reference_bank(index_path, split="train")
 
 
 def test_dataset_index_rejects_contract_tampering(tmp_path: Path) -> None:
@@ -716,11 +715,9 @@ def _reference_bank(frames: int, *, lengths: np.ndarray) -> SonicReferenceBank:
     qpos = np.zeros((frames, 32), dtype=np.float32)
     qpos[:, 0] = np.arange(frames, dtype=np.float32)
     qpos[:, 3] = 1.0
-    bins = build_padded_sonic_sampling_bins(
+    bins = build_sonic_sampling_bins(
         lengths,
         bin_size=50,
-        frame_capacity=frames,
-        clip_capacity=len(lengths),
     )
     return SonicReferenceBank(
         qpos=qpos,
@@ -799,11 +796,7 @@ def _write_g1_sidecar_fixture(
 
 def _write_dataset_fixture(root: Path) -> Path:
     frames = 50
-    frame_capacity = 64
-    clip_capacity = 2
-    bank = _reference_bank(
-        frame_capacity, lengths=np.asarray((frames,), dtype=np.int32)
-    )
+    bank = _reference_bank(frames, lengths=np.asarray((frames,), dtype=np.int32))
     packed = {
         name: getattr(bank, name)
         for name in (
@@ -820,21 +813,17 @@ def _write_dataset_fixture(root: Path) -> Path:
             "g1_joint_pos",
         )
     }
-    shards = {}
+    split_files = {}
     for split in ("train", "evaluation"):
-        directory = root / "shards" / split
-        directory.mkdir(parents=True)
-        path = directory / "00000.npz"
+        path = root / f"{split}.npz"
         np.savez_compressed(path, **packed)
-        shards[split] = [
-            {
-                "file": f"shards/{split}/00000.npz",
-                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-                "clip_count": 1,
-                "data_frames": frames,
-                "sampling_mass": float(frames),
-            }
-        ]
+        split_files[split] = {
+            "file": path.name,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            "clip_count": 1,
+            "frames": frames,
+            "sampling_mass": float(frames),
+        }
     clips = [
         {
             "source_id": f"source_{index}",
@@ -843,7 +832,6 @@ def _write_dataset_fixture(root: Path) -> Path:
             "source_kind": "amass",
             "subject_id": f"subject_{index}",
             "sampling_weight": 1.0,
-            "shard_index": 0,
             "offset": 0,
             "frames": frames,
             "duration_seconds": 0.98,
@@ -875,15 +863,11 @@ def _write_dataset_fixture(root: Path) -> Path:
         "accepted_clip_hashes": [],
         "quality": {},
         "calibration_config": {},
-        "sharding": {
-            "frame_capacity": frame_capacity,
-            "clip_capacity": clip_capacity,
-        },
         "joint_calibration": _calibration().to_document(),
         "smpl_future_offsets": SONIC_SMPL_FUTURE_OFFSETS,
         "critic_future_offsets": SONIC_CRITIC_FUTURE_OFFSETS,
         "train_sampling": SONIC_TRAIN_SAMPLING,
-        "shards": shards,
+        "split_files": split_files,
         "joint_names": BELLO_JOINT_NAMES,
         "body_names": SONIC_TRACKED_BODY_NAMES,
         "g1_joint_names": G1_ISAACLAB_JOINT_NAMES,
@@ -899,9 +883,7 @@ def _write_dataset_fixture(root: Path) -> Path:
         "smpl_future_offsets": list(SONIC_SMPL_FUTURE_OFFSETS),
         "critic_future_offsets": list(SONIC_CRITIC_FUTURE_OFFSETS),
         "train_sampling": SONIC_TRAIN_SAMPLING,
-        "shard_frame_capacity": frame_capacity,
-        "shard_clip_capacity": clip_capacity,
-        "shards": shards,
+        "split_files": split_files,
         "joint_names": list(BELLO_JOINT_NAMES),
         "body_names": list(SONIC_TRACKED_BODY_NAMES),
         "g1_joint_names": list(G1_ISAACLAB_JOINT_NAMES),

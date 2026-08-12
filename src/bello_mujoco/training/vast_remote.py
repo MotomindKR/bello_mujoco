@@ -207,9 +207,8 @@ sonic_artifact_path="${11}"
 resume_checkpoint_path="${12}"
 total_timesteps="${13}"
 num_envs="${14}"
-reference_shard_updates="${15}"
-checkpoint_every_updates="${16}"
-result_dir="${17}"
+checkpoint_every_updates="${15}"
+result_dir="${16}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -290,26 +289,107 @@ fi
 if [ -n "$num_envs" ]; then
   actual_overrides+=("num_envs=$num_envs")
 fi
-if [ -n "$reference_shard_updates" ]; then
-  actual_overrides+=("reference_shard_updates=$reference_shard_updates")
-fi
 if [ -n "$checkpoint_every_updates" ]; then
   actual_overrides+=("checkpoint_every_updates=$checkpoint_every_updates")
 fi
 
-preflight_overrides=(
-  "${training_overrides[@]}"
-  total_timesteps=768
-  num_envs=32
-  wandb_enabled=false
-  checkpoint_name="preflight-$run_name"
-)
+preflight_overrides=("${training_overrides[@]}" wandb_enabled=false)
+if [ "$experiment" = "sonic" ]; then
+  benchmark_envs="${num_envs:-4096}"
+  benchmark_updates=3
+  benchmark_timesteps=$((benchmark_envs * 24 * benchmark_updates))
+  preflight_overrides+=(
+    "total_timesteps=$benchmark_timesteps"
+    "num_envs=$benchmark_envs"
+    checkpoint_enabled=false
+  )
+else
+  preflight_overrides+=(
+    total_timesteps=768
+    num_envs=32
+    "checkpoint_name=preflight-$run_name"
+  )
+fi
 if [[ "$experiment" != twist_* && "$experiment" != twist2 && "$experiment" != sonic ]]; then
   preflight_overrides+=(video_enabled=false)
 fi
 
-uv run bello-train \
-  "${preflight_overrides[@]}"
+if [ "$experiment" = "sonic" ]; then
+  benchmark_gpu_log="$(mktemp /tmp/bello-sonic-gpu.XXXXXX.csv)"
+  nvidia-smi \
+    --query-gpu=timestamp,utilization.gpu,memory.used,memory.total,power.draw \
+    --format=csv,noheader,nounits \
+    --loop-ms=250 > "$benchmark_gpu_log" &
+  benchmark_monitor_pid=$!
+  benchmark_started_at=$SECONDS
+  set +e
+  uv run bello-train "${preflight_overrides[@]}"
+  benchmark_status=$?
+  set -e
+  kill "$benchmark_monitor_pid" 2>/dev/null || true
+  wait "$benchmark_monitor_pid" 2>/dev/null || true
+  benchmark_elapsed=$((SECONDS - benchmark_started_at))
+  mkdir -p "$result_dir"
+  uv run python - "$benchmark_gpu_log" "$benchmark_envs" \
+    "$benchmark_updates" "$benchmark_elapsed" "$benchmark_status" \
+    "$result_dir" <<'PY'
+import csv
+import json
+import pathlib
+import statistics
+import sys
+
+path = pathlib.Path(sys.argv[1])
+rows = []
+with path.open(newline="") as source:
+    for row in csv.reader(source):
+        if len(row) != 5:
+            continue
+        try:
+            rows.append(tuple(float(value.strip()) for value in row[1:]))
+        except ValueError:
+            continue
+utilization = [row[0] for row in rows]
+memory_used = [row[1] for row in rows]
+memory_total = [row[2] for row in rows]
+power = [row[3] for row in rows]
+if not rows:
+    raise RuntimeError("SONIC benchmark collected no GPU telemetry")
+elapsed = max(int(sys.argv[4]), 1)
+num_envs = int(sys.argv[2])
+updates = int(sys.argv[3])
+active_utilization = [value for value in utilization if value > 0.0]
+report = {
+    "sonic_benchmark": {
+        "num_envs": num_envs,
+        "updates": updates,
+        "elapsed_seconds": elapsed,
+        "exit_status": int(sys.argv[5]),
+        "samples": len(rows),
+        "updates_per_second_including_startup": updates / elapsed,
+        "transitions_per_second_including_startup": num_envs * 24 * updates / elapsed,
+        "gpu_utilization_mean_percent": statistics.fmean(utilization),
+        "gpu_utilization_active_mean_percent": (
+            statistics.fmean(active_utilization) if active_utilization else 0.0
+        ),
+        "gpu_active_sample_fraction": len(active_utilization) / len(utilization),
+        "gpu_utilization_peak_percent": max(utilization, default=None),
+        "gpu_memory_peak_mib": max(memory_used, default=None),
+        "gpu_memory_total_mib": max(memory_total, default=None),
+        "gpu_power_mean_watts": statistics.fmean(power) if power else None,
+    }
+}
+payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
+(pathlib.Path(sys.argv[6]) / "benchmark.json").write_text(payload)
+print(payload, end="")
+PY
+  rm -f "$benchmark_gpu_log"
+  if [ "$benchmark_status" -ne 0 ]; then
+    exit "$benchmark_status"
+  fi
+else
+  uv run bello-train "${preflight_overrides[@]}"
+fi
 
 uv run bello-train \
   "${actual_overrides[@]}" \
@@ -362,7 +442,12 @@ summary = {
     json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n"
 )
 files = {}
-for name in ("checkpoint_path.txt", "sonic_evaluation.json", "summary.json"):
+for name in (
+    "benchmark.json",
+    "checkpoint_path.txt",
+    "sonic_evaluation.json",
+    "summary.json",
+):
     files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
 (root / "manifest.json").write_text(
     json.dumps({"schema_version": 1, "files": files}, indent=2, sort_keys=True)
@@ -809,6 +894,7 @@ def _validate_local_sonic_results(
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         raise ValueError(f"downloaded SONIC result manifest is invalid: {exc}") from exc
     expected_names = {
+        "benchmark.json",
         "checkpoint_path.txt",
         "sonic_evaluation.json",
         "summary.json",
@@ -825,8 +911,14 @@ def _validate_local_sonic_results(
             raise ValueError(f"downloaded SONIC result checksum mismatch: {name}")
     report = json.loads((root / "sonic_evaluation.json").read_text(encoding="utf-8"))
     summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+    benchmark = json.loads((root / "benchmark.json").read_text(encoding="utf-8"))
+    benchmark_result = benchmark.get("sonic_benchmark")
     if (
-        report.get("task") != "sonic"
+        not isinstance(benchmark_result, dict)
+        or benchmark_result.get("exit_status") != 0
+        or benchmark_result.get("num_envs", 0) <= 0
+        or benchmark_result.get("updates") != 3
+        or report.get("task") != "sonic"
         or report.get("dataset_fingerprint") != expected_dataset_fingerprint
         or summary.get("task") != "sonic"
         or summary.get("dataset_fingerprint") != expected_dataset_fingerprint
@@ -1119,7 +1211,6 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             resume_checkpoint_path,
             str(config.total_timesteps or ""),
             str(config.num_envs or ""),
-            str(config.reference_shard_updates or ""),
             str(config.checkpoint_every_updates or ""),
             f"{job_dir}/results",
         ]

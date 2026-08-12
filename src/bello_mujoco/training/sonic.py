@@ -6,14 +6,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.envs.sonic import (
     BelloSonicEnv,
     SonicEnvConfig,
-    SonicSamplingState,
     default_sonic_asset_config,
 )
 from bello_mujoco.envs.twist import TwistSimulationConfig
@@ -50,7 +48,6 @@ from bello_mujoco.training.checkpoint import (
 from bello_mujoco.training.ppo import (
     PPOConfig,
     init_runner_state,
-    reset_runner_environment,
     runner_train_state,
     update_runner_state,
     validate_action_limit_contract,
@@ -101,23 +98,15 @@ class SonicTrainingRunConfig:
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
     runtime_clip_directory: Path = Path("outputs/sonic_runtime_clips")
-    reference_shard_updates: int = 32
 
 
 def run_training(run_config: SonicTrainingRunConfig) -> None:
     validate_sonic_training_config(run_config)
     index_path = run_config.dataset_index.expanduser().resolve()
     index = load_sonic_dataset_index(index_path)
-    initial_shard_index = sonic_reference_shard_for_update(
-        index,
-        update=0,
-        seed=run_config.config.seed,
-        full_shard_updates=run_config.reference_shard_updates,
-    )
     reference_bank = load_sonic_reference_bank(
         index_path,
         split="train",
-        shard_index=initial_shard_index,
         sampling_bin_size=run_config.sonic_env.sampling.bin_size,
     )
     runtime_clip = (
@@ -125,11 +114,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         / index["dataset_fingerprint"].removeprefix("sha256:")
         / "train.npz"
     )
-    train_clips = [
-        clip
-        for clip in index["clips"]
-        if clip["split"] == "train" and clip["shard_index"] == initial_shard_index
-    ]
+    train_clips = [clip for clip in index["clips"] if clip["split"] == "train"]
     if not train_clips:
         raise ValueError("SONIC packed dataset has no training clips")
     materialize_sonic_reference_clip(
@@ -197,23 +182,6 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         )
     _require_frozen_hashes(runner, static_policy, frozen_hashes)
     first_update = int(jax.device_get(runner.update))
-    current_shard_index = (
-        initial_shard_index
-        if first_update == 0
-        else sonic_reference_shard_for_update(
-            index,
-            update=first_update - 1,
-            seed=run_config.config.seed,
-            full_shard_updates=run_config.reference_shard_updates,
-        )
-    )
-    if current_shard_index != initial_shard_index:
-        reference_bank = load_sonic_reference_bank(
-            index_path,
-            split="train",
-            shard_index=current_shard_index,
-            sampling_bin_size=run_config.sonic_env.sampling.bin_size,
-        )
     static_env = env._unchecked_runtime_copy(reference_bank=None)
     bank_arrays = _device_reference_bank_arrays(reference_bank)
     bank_metadata = (
@@ -224,9 +192,6 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         reference_bank.calibration,
         reference_bank.sampling_bin_size,
     )
-    sampling_states = {
-        current_shard_index: jax.device_get(runner.task_state),
-    }
     del env, reference_bank, policy_template
     jax.clear_caches()
     run = None
@@ -241,7 +206,8 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
                 "dataset": _tracking_dataset_summary(index),
                 "simulation": run_config.simulation,
                 "sonic_env": run_config.sonic_env,
-                "reference_shard_updates": run_config.reference_shard_updates,
+                "reference_bank_frames": int(bank_arrays[0].shape[0]),
+                "reference_bank_clips": int(bank_arrays[11].shape[0]),
                 "release_checkpoint_sha256": release.checkpoint_sha256,
                 "release_artifact_sha256": release.artifact_sha256,
                 "frozen_parameter_sha256": frozen_hashes,
@@ -261,49 +227,9 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
                 run_config.config,
             )
 
-        def reset_fn(state, arrays, task_state):
-            current_env = _bind_reference_bank(
-                static_env, arrays, bank_metadata
-            ).with_task_state(task_state)
-            reset = reset_runner_environment(state, current_env, run_config.config)
-            return reset._replace(task_state=task_state)
-
         update_fn = jax.jit(update_fn, donate_argnums=(0,))
-        reset_fn = jax.jit(reset_fn, donate_argnums=(0,))
         for update in range(first_update, run_config.config.num_updates):
-            desired_shard_index = sonic_reference_shard_for_update(
-                index,
-                update=update,
-                seed=run_config.config.seed,
-                full_shard_updates=run_config.reference_shard_updates,
-            )
-            if desired_shard_index != current_shard_index:
-                sampling_states[current_shard_index] = jax.device_get(runner.task_state)
-                del bank_arrays
-                reference_bank = load_sonic_reference_bank(
-                    index_path,
-                    split="train",
-                    shard_index=desired_shard_index,
-                    sampling_bin_size=run_config.sonic_env.sampling.bin_size,
-                )
-                task_state = sampling_states.get(desired_shard_index)
-                if task_state is None:
-                    task_state = _initial_sampling_state(reference_bank, run_config)
-                    sampling_states[desired_shard_index] = task_state
-                bank_arrays = _device_reference_bank_arrays(reference_bank)
-                del reference_bank
-                runner = reset_fn(runner, bank_arrays, task_state)
-                current_shard_index = desired_shard_index
             runner, last_metrics = update_fn(runner, bank_arrays)
-            last_metrics = {
-                **last_metrics,
-                "dataset/reference_shard": jnp.asarray(
-                    current_shard_index, dtype=jnp.float32
-                ),
-                "dataset/reference_shard_count": jnp.asarray(
-                    len(index["shards"]["train"]), dtype=jnp.float32
-                ),
-            }
             last_metrics = jax.tree_util.tree_map(
                 lambda value: value.block_until_ready(), last_metrics
             )
@@ -355,11 +281,6 @@ def validate_sonic_training_config(config: SonicTrainingRunConfig) -> None:
         raise ValueError("SONIC requires the release-style critic normalizer")
     if ppo.critic_learning_rate is None:
         raise ValueError("SONIC requires an explicit independent critic learning rate")
-    if (
-        isinstance(config.reference_shard_updates, bool)
-        or config.reference_shard_updates <= 0
-    ):
-        raise ValueError("SONIC reference_shard_updates must be a positive integer")
 
 
 def _tracking_dataset_summary(index: dict) -> dict:
@@ -368,14 +289,12 @@ def _tracking_dataset_summary(index: dict) -> dict:
     split_summary = {}
     for split in ("train", "evaluation"):
         clips = [clip for clip in index["clips"] if clip["split"] == split]
+        descriptor = index["split_files"][split]
         split_summary[split] = {
-            "shards": len(index["shards"][split]),
+            "file": descriptor["file"],
             "clips": len(clips),
             "frames": sum(int(clip["frames"]) for clip in clips),
-            "sampling_mass": sum(
-                float(descriptor["sampling_mass"])
-                for descriptor in index["shards"][split]
-            ),
+            "sampling_mass": float(descriptor["sampling_mass"]),
         }
     return {
         "schema_version": index["schema_version"],
@@ -383,8 +302,7 @@ def _tracking_dataset_summary(index: dict) -> dict:
         "portable_manifest_fingerprint": index["portable_manifest_fingerprint"],
         "policy_fps": index["policy_fps"],
         "train_sampling": index["train_sampling"],
-        "shard_frame_capacity": index["shard_frame_capacity"],
-        "shard_clip_capacity": index["shard_clip_capacity"],
+        "split_files": index["split_files"],
         "joint_names": index["joint_names"],
         "body_names": index["body_names"],
         "g1_joint_names": index["g1_joint_names"],
@@ -397,45 +315,6 @@ def _tracking_dataset_summary(index: dict) -> dict:
         "joint_calibration": index["joint_calibration"],
         "splits": split_summary,
     }
-
-
-def sonic_reference_shard_for_update(
-    index: dict,
-    *,
-    update: int,
-    seed: int,
-    full_shard_updates: int,
-) -> int:
-    """Return a deterministic, sampling-mass-weighted shard sweep position."""
-
-    if update < 0:
-        raise ValueError("SONIC shard schedule update must be nonnegative")
-    if isinstance(full_shard_updates, bool) or full_shard_updates <= 0:
-        raise ValueError("SONIC full-shard update count must be positive")
-    descriptors = index.get("shards", {}).get("train")
-    if not isinstance(descriptors, list) or not descriptors:
-        raise ValueError("SONIC index has no training shards")
-    masses = np.asarray(
-        [float(descriptor["sampling_mass"]) for descriptor in descriptors],
-        dtype=np.float64,
-    )
-    if np.any(~np.isfinite(masses)) or np.any(masses <= 0.0):
-        raise ValueError("SONIC training shard masses are invalid")
-    block_updates = np.maximum(
-        1,
-        np.floor(full_shard_updates * masses / np.max(masses) + 0.5).astype(np.int64),
-    )
-    order = np.roll(
-        np.arange(len(descriptors), dtype=np.int32), -(seed % len(descriptors))
-    )
-    cycle_updates = int(np.sum(block_updates, dtype=np.int64))
-    position = update % cycle_updates
-    for shard_index in order.tolist():
-        count = int(block_updates[shard_index])
-        if position < count:
-            return shard_index
-        position -= count
-    raise RuntimeError("SONIC shard schedule failed to select a shard")
 
 
 def _checkpoint_metadata(
@@ -472,30 +351,18 @@ def _checkpoint_metadata(
             joint_names=tuple(index["joint_names"]),
             body_names=tuple(index["body_names"]),
             calibration=calibration,
-            shard_frame_capacity=index["shard_frame_capacity"],
-            shard_clip_capacity=index["shard_clip_capacity"],
         ),
         release_checkpoint_sha256=_prefixed_sha256(release.checkpoint_sha256),
         release_artifact_sha256=_prefixed_sha256(release.artifact_sha256),
         source_revision=source_revision,
-        reference_shard_updates=run_config.reference_shard_updates,
     )
 
 
 def _device_reference_bank_arrays(bank: SonicReferenceBank) -> tuple[jax.Array, ...]:
-    return tuple(jnp.asarray(getattr(bank, name)) for name in _SONIC_BANK_ARRAY_FIELDS)
-
-
-def _initial_sampling_state(
-    bank: SonicReferenceBank, run_config: SonicTrainingRunConfig
-) -> SonicSamplingState:
-    bins = len(bank.sampling_bin_clip_indices)
-    failures = np.full(
-        (bins,),
-        run_config.sonic_env.sampling.initial_failures,
-        dtype=np.float32,
+    arrays = tuple(
+        jax.device_put(getattr(bank, name)) for name in _SONIC_BANK_ARRAY_FIELDS
     )
-    return SonicSamplingState(failures=failures, attempts=np.ones_like(failures))
+    return jax.block_until_ready(arrays)
 
 
 def _bind_reference_bank(

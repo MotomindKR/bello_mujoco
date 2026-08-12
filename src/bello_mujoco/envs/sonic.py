@@ -42,7 +42,7 @@ from bello_mujoco.motion.sonic_dataset import (
     SONIC_REQUIRED_FUTURE_HORIZON,
     SONIC_SMPL_FUTURE_OFFSETS,
     SonicReferenceBank,
-    build_padded_sonic_sampling_bins,
+    build_sonic_sampling_bins,
 )
 from bello_mujoco.sim import ModelRandomizationConfig, WarpConfig, load_bello_model
 from bello_mujoco.sonic_policy import (
@@ -398,7 +398,7 @@ class BelloSonicEnv(BelloTwistEnv):
     config: SonicEnvConfig = SonicEnvConfig()
     reference_bank: SonicReferenceBank | None = None
     sampling: SonicSamplingConfig = SonicSamplingConfig()
-    sampling_bin_probabilities: jax.Array | None = None
+    sampling_bin_cdf: jax.Array | None = None
 
     def __post_init__(self) -> None:
         if self.stage != "student":
@@ -461,23 +461,17 @@ class BelloSonicEnv(BelloTwistEnv):
             raise ValueError("SONIC SMPL joint array must have shape (frames, 24, 3)")
         if self.reference_bank.g1_joint_pos.shape[1:] != (29,):
             raise ValueError("SONIC G1 joint array must have shape (frames, 29)")
-        if (
-            not 0
-            < self.reference_bank.valid_clip_count
-            <= len(self.reference_bank.lengths)
-        ):
+        if self.reference_bank.valid_clip_count != len(self.reference_bank.lengths):
             raise ValueError("SONIC reference-bank valid clip count is invalid")
-        valid_lengths = np.asarray(self.reference_bank.lengths)[
-            : self.reference_bank.valid_clip_count
-        ]
+        valid_lengths = np.asarray(self.reference_bank.lengths)
         if np.any(valid_lengths <= SONIC_REQUIRED_FUTURE_HORIZON):
             raise ValueError("SONIC clips do not cover the required future horizon")
         probabilities = np.asarray(self.reference_bank.sampling_probabilities)
         if probabilities.shape != np.asarray(self.reference_bank.lengths).shape:
             raise ValueError("SONIC clip sampling-probability shape has drifted")
         if (
-            np.any(probabilities[: self.reference_bank.valid_clip_count] <= 0.0)
-            or np.any(probabilities[self.reference_bank.valid_clip_count :] != 0.0)
+            np.any(probabilities < 0.0)
+            or not np.any(probabilities > 0.0)
             or not np.isclose(np.sum(probabilities), 1.0)
         ):
             raise ValueError("SONIC clip sampling probabilities are invalid")
@@ -487,11 +481,9 @@ class BelloSonicEnv(BelloTwistEnv):
             raise ValueError("SONIC policy timestep must be 0.02 seconds")
         if self.reference_bank.sampling_bin_size != self.sampling.bin_size:
             raise ValueError("SONIC sampling-bin size differs from the environment")
-        bins = build_padded_sonic_sampling_bins(
+        bins = build_sonic_sampling_bins(
             valid_lengths,
             bin_size=self.sampling.bin_size,
-            frame_capacity=frames,
-            clip_capacity=len(self.reference_bank.lengths),
         )
         for name, value in zip(
             (
@@ -539,13 +531,18 @@ class BelloSonicEnv(BelloTwistEnv):
             ),
         )
         motion = load_motion_clip(motion_path, model)
-        return cls(
+        env = cls(
             model,
             motion,
             "student",
             config,
             reference_bank,
             config.sampling,
+        )
+        return (
+            env.with_task_state(env.initial_task_state())
+            if config.sampling.enabled
+            else env
         )
 
     @property
@@ -576,7 +573,7 @@ class BelloSonicEnv(BelloTwistEnv):
         self,
         *,
         reference_bank: SonicReferenceBank | None,
-        sampling_bin_probabilities: jax.Array | None = None,
+        sampling_bin_cdf: jax.Array | None = None,
     ) -> "BelloSonicEnv":
         bound = object.__new__(BelloSonicEnv)
         for name in (
@@ -588,9 +585,7 @@ class BelloSonicEnv(BelloTwistEnv):
         ):
             object.__setattr__(bound, name, getattr(self, name))
         object.__setattr__(bound, "reference_bank", reference_bank)
-        object.__setattr__(
-            bound, "sampling_bin_probabilities", sampling_bin_probabilities
-        )
+        object.__setattr__(bound, "sampling_bin_cdf", sampling_bin_cdf)
         return bound
 
     @property
@@ -641,9 +636,11 @@ class BelloSonicEnv(BelloTwistEnv):
             + base * self.sampling.uniform_sampling_rate * uniform
         )
         mixture /= jnp.sum(mixture)
+        cdf = jnp.cumsum(mixture)
+        cdf = cdf.at[-1].set(1.0)
         return self._unchecked_runtime_copy(
             reference_bank=self.reference_bank,
-            sampling_bin_probabilities=mixture,
+            sampling_bin_cdf=cdf,
         )
 
     def update_task_state(
@@ -693,8 +690,8 @@ class BelloSonicEnv(BelloTwistEnv):
 
     def _sample_clip_start(self, rng: jax.Array | None) -> tuple[jax.Array, jax.Array]:
         bin_clips, starts, widths, bin_valid, _ = self._sampling_bins
-        probabilities = self.sampling_bin_probabilities
-        if probabilities is None:
+        cdf = self.sampling_bin_cdf
+        if cdf is None:
             assert self.reference_bank is not None
             clip_mass = jnp.asarray(self.reference_bank.sampling_probabilities)[
                 jnp.asarray(bin_clips)
@@ -710,16 +707,18 @@ class BelloSonicEnv(BelloTwistEnv):
                 * jnp.asarray(bin_valid, dtype=jnp.float32)
             )
             probabilities /= jnp.sum(probabilities)
+            cdf = jnp.cumsum(probabilities)
+            cdf = cdf.at[-1].set(1.0)
         bin_key = frame_key = offset_key = rng
         if rng is not None:
             bin_key, frame_key, offset_key = jax.random.split(rng, 3)
         if bin_key is None:
-            bin_index = jnp.asarray(0, dtype=jnp.int32)
+            bin_index = jnp.searchsorted(cdf, 0.0, side="right").astype(jnp.int32)
             in_bin = jnp.asarray(0, dtype=jnp.int32)
         else:
-            bin_index = jax.random.categorical(bin_key, jnp.log(probabilities)).astype(
-                jnp.int32
-            )
+            uniform = jax.random.uniform(bin_key)
+            bin_index = jnp.searchsorted(cdf, uniform, side="right").astype(jnp.int32)
+            bin_index = jnp.minimum(bin_index, len(bin_clips) - 1)
             in_bin = jnp.floor(
                 jax.random.uniform(frame_key) * jnp.asarray(widths)[bin_index]
             ).astype(jnp.int32)

@@ -126,12 +126,11 @@ corrected KL schedule. Public TWIST evaluation accepts only the student and
 reports deterministic global, per-source, and per-clip held-out metrics.
 SONIC checkpoints contain only trainable actor edges, log standard deviation,
 and the critic; reconstruction therefore also requires the exact recorded safe
-release artifact. SONIC metadata binds its synchronized dataset and
-training-only G1/Bello calibration, shard capacities, and shard-rotation
-contract. The active shard's adaptive failure/attempt state is restored with
-the runner continuation. Evaluation verifies the frozen release hashes, loads
-one held-out shard at a time, and reports deterministic per-clip and aggregate
-acceptance metrics.
+release artifact. SONIC metadata binds its synchronized split-wide dataset and
+training-only G1/Bello calibration. The global adaptive failure/attempt state
+is restored with the runner continuation. Evaluation verifies the frozen
+release hashes, loads the complete held-out bank once, and reports deterministic
+per-clip and aggregate acceptance metrics.
 
 Read the recorded revision without loading policy state:
 

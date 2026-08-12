@@ -69,7 +69,6 @@ Configuration source: `configs/commands/train.yaml`.
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
-| `reference_shard_updates` | positive integer or `null`; `null` | For `experiment=sonic`, override how many updates each full reference shard receives before rotation. Other experiments reject it. |
 | `contact_budget_per_env` | integer or `null`; `null` | Override the profile's positive Warp active-contact capacity per environment. Use the recorded value when resuming a checkpoint and raise it only when capacity telemetry reports overflow. |
 | `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. Do not supply this field for locomotion profiles. |
 | `dataset_path` | path or `null`; `null` | Override the packed `index.json` for a TWIST, TWIST2, or SONIC run. Other experiments reject it. |
@@ -79,6 +78,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; it waives source-revision identity while metadata semantics, layouts, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
 | `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. It must be one path component. |
+| `checkpoint_enabled` | boolean or `null`; `null` | Enable or disable checkpoint writes independently of the profile default. |
 | `checkpoint_every_updates` | positive integer or `null`; `null` | Override the periodic checkpoint interval. The final checkpoint is still written when the profile enables checkpointing. |
 | `wandb_enabled` | boolean or `null`; `null` | Enable or disable W&B independently of the profile default. |
 | `run_name` | string or `null`; `null` | Override the W&B run name. |
@@ -243,22 +243,19 @@ Configuration source: `configs/commands/sonic_data.yaml`.
 | `bello_retargeted_root` | path or `null`; `null` | Required for `build`; Bello clips use `<source_id>__<sequence_id>.npz`. |
 | `g1_retargeted_root` | path or `null`; `null` | Required for `build`; synchronized G1/SMPL sidecars use the same filenames. |
 | `normalized_root` | path or `null`; `null` | Required scratch directory for normalized SMPL sources during `retarget_g1`; it must differ from `output_root`. |
-| `output_root` | path or `null`; `null` | Required operation output. Build requires an empty destination and writes fixed-capacity files below `shards/train/` and `shards/evaluation/`, plus `index.json`, `heldout_manifest.json`, and `conversion_report.json`. |
+| `output_root` | path or `null`; `null` | Required operation output. Build requires an empty destination and writes `train.npz`, `evaluation.npz`, `index.json`, `heldout_manifest.json`, and `conversion_report.json`. |
 | `gmr_python` | path or `null`; `null` | Required for `retarget_g1`; Python interpreter from the pinned `deps/GMR` environment. |
 | `jobs` | positive integer; `1` | Concurrent retarget subprocesses. Each worker loads GMR and body models, so increase cautiously. |
 | `overwrite` | boolean; `false` | Recompute a sidecar whose source/provenance otherwise matches. |
 | `keep_normalized` | boolean; `false` | Retain normalized intermediate motion archives after successful G1 retargeting. |
 | `limit` | positive integer or `null`; `null` | Deterministically process only the first sorted manifest entries for a smoke run. |
 | `quality_config` | `configs/twist/quality.yaml` | Bello feasibility and kinematic quality thresholds used by `build`. |
-| `shard_frame_capacity` | positive integer; `65536` | Fixed leading frame dimension of every train/evaluation shard. A single accepted clip must fit. |
-| `shard_clip_capacity` | positive integer; `256` | Maximum clips in each fixed-capacity shard. |
-
 The build enforces exact source timestamps between the Bello and G1/SMPL
 views, 50 Hz frames, immutable joint/body ordering, clean pinned GMR
-provenance, train/evaluation separation, and per-shard hashes. It fits the
+provenance, train/evaluation separation, and split-file hashes. It fits the
 default-anchored bidirectional dense ridge maps only on accepted training
-frames. The two-pass stream never materializes the corpus as monolithic
-train/evaluation arrays.
+frames. The two-pass writer uses temporary memory-mapped arrays, so it creates
+the complete split files without retaining the entire corpus in process RAM.
 See the [SONIC transfer guide](sonic.md) for the end-to-end workflow.
 
 ## `bello-vast-train`
@@ -275,14 +272,13 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | --- | --- | --- |
 | `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, `twist2`, or `sonic`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
-| `dataset_path` | path or `null`; `null` | Required local `index.json` for TWIST, TWIST2, or SONIC. TWIST transfers its five portable files; SONIC transfers the exact nested shard tree. Every file is checksummed locally and remotely. |
+| `dataset_path` | path or `null`; `null` | Required local `index.json` for TWIST, TWIST2, or SONIC. The exact portable split files are checksummed locally and remotely. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |
 | `sonic_artifact_path` | path or `null`; `null` | Required pinned NPZ/JSON release artifact directory for `sonic`; rejected by other experiments. |
-| `resume_path` | path or `null`; `null` | Optional typed SONIC checkpoint directory to continue. The launcher hash-verifies the staged tree and requires explicit `total_timesteps`, `num_envs`, and `reference_shard_updates`. Other experiments reject it. |
+| `resume_path` | path or `null`; `null` | Optional typed SONIC checkpoint directory to continue. The launcher hash-verifies the staged tree and requires explicit `total_timesteps` and `num_envs`. Other experiments reject it. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit a staged TWIST student teacher or SONIC resume checkpoint from a different clean source commit. Dataset, release, robot, observation, and layout checks remain enforced. |
-| `total_timesteps` | positive integer or `null`; `null` | Optional transition-budget override for the real remote run. The fixed GPU smoke preflight remains one 768-transition update. |
+| `total_timesteps` | positive integer or `null`; `null` | Optional transition-budget override for the real remote run. SONIC first benchmarks three updates at the requested environment count; other tasks retain the 768-transition smoke preflight. |
 | `num_envs` | positive integer or `null`; `null` | Optional remote training batch-size override. |
-| `reference_shard_updates` | positive integer or `null`; `null` | SONIC-only shard-rotation override. A value of `1` lets a short run visit a new fixed-capacity shard every update. |
 | `checkpoint_every_updates` | positive integer or `null`; `null` | Optional periodic checkpoint override for the real remote run. |
 | `max_price` | positive float or `null`; `null` | Maximum total hourly rental price. A positive value is required, including for dry-run offer queries. |
 | `branch` | string or `null`; `null` | Required remote `origin` branch. A null value is rejected before rental. |
@@ -298,10 +294,11 @@ The selected profile, `pyproject.toml`, `uv.lock`, and any motion clip are
 verified in the exact `origin/<branch>` commit before rental. Ignored local
 motions are never uploaded implicitly. TWIST transfers only the five files
 named by its validated dataset contract and, for a student, the selected
-checkpoint directory. SONIC validates and transfers its canonical shard tree,
+checkpoint directory. SONIC validates and transfers its canonical split files,
 exact pinned release artifact, and optional typed resume checkpoint. The fixed
-GPU preflight always starts fresh; only the real run restores the controller,
-optimizer, normalization, sampler, RNG, and active environment state. After the
+GPU preflight always starts fresh; SONIC runs it at production scale and records
+GPU telemetry. Only the real run restores the controller, optimizer,
+normalization, sampler, RNG, and active environment state. After the
 real SONIC run, Vast evaluates every accepted held-out clip and downloads a
 hash-verified full report and compact summary below `outputs/vast/<run-name>/`
 before teardown. Credentials

@@ -71,14 +71,15 @@ window. Train/evaluation assignment comes from the licensed manifest. Dense
 edge calibration is fitted only on accepted training frames, and duration times
 manifest weight determines initial training clip probability. The index binds
 the portable manifest, Bello robot, both GMR revisions/configs, calibration,
-ordered layouts, clip content, shard capacities, descriptors, and shard hashes.
+ordered layouts, clip content, split descriptors, and split-file hashes.
 
 The builder is deliberately bounded-memory. Its first pass validates one
 synchronized clip at a time and accumulates only calibration moments. Its
-second pass reloads accepted clips into fixed-capacity shards. The defaults are
-65,536 frames and 256 clips per shard; both values are part of the dataset and
-checkpoint contracts. Padding gives every shard the same JAX shape without
-putting the entire AMASS corpus on the host or accelerator.
+second pass reloads accepted clips into temporary memory-mapped arrays and
+writes one compressed file per split. This keeps the build bounded in process
+RAM. Training follows the TWIST implementation: the complete training bank is
+loaded and transferred once, allowing the sampler to see the whole corpus
+without host-side rotation.
 
 ## Export the release weights
 
@@ -144,15 +145,14 @@ packed/
   index.json
   heldout_manifest.json
   conversion_report.json
-  shards/train/00000.npz
-  shards/train/...
-  shards/evaluation/00000.npz
-  shards/evaluation/...
+  train.npz
+  evaluation.npz
 ```
 
 The destination must be empty. Quality failures are reported rather than
-silently admitted, and both splits must contain accepted clips. Every shard is
-pickle-free, float32, fixed-shape, and hash-checked before it is loaded.
+silently admitted, and both splits must contain accepted clips. Each split file
+is pickle-free, float32, contiguous by clip, and hash-checked before it is
+loaded.
 Before packing, the builder also requires every sidecar to match the canonical
 Bello URDF, the pinned GMR commit, the exact Bello and G1 IK config files, and
 the G1 retarget XML in the current checkout. Stale outputs must be regenerated;
@@ -189,13 +189,14 @@ orientation, 42 body-position values, 84 body-orientation values, and 810 clean
 history values. The frozen actor stays raw; the new critic uses its own running
 mean/std, matching the released critic configuration.
 
-Training loads one fixed-capacity reference shard at a time. A deterministic
-sampling-mass-weighted schedule holds a full shard for 32 updates by default,
-then resets the vectorized worlds at the update boundary before binding the
-next shard. Per-shard failure/attempt bins are cached on the host while the run
-is alive; the active shard state is part of checkpoint continuation. Within a
-shard, starts use the manifest frame-count-times-weight prior mixed with the
-released failure/uniform curriculum and pre-failure offset.
+Training transfers the complete training bank to the accelerator once. Starts
+use the manifest frame-count-times-weight prior mixed with the released
+failure/uniform curriculum and pre-failure offset. Failure/attempt bins cover
+the whole corpus and remain in the runner continuation, so PPO updates do not
+pause for host data loads and vectorized worlds are not reset at data-boundary
+transitions. Sampling uses one uniform draw against the global cumulative
+distribution rather than materializing per-environment categorical noise over
+every bin.
 
 The maintained PPO values are 4,096 worlds, 24 rollout steps, five epochs, four
 minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`,
@@ -239,40 +240,41 @@ uv run bello-vast-train \
   experiment=sonic \
   dataset_path=/data/sonic/packed/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
-  total_timesteps=1425408 \
-  num_envs=512 \
-  reference_shard_updates=1 \
-  checkpoint_every_updates=29 \
+  total_timesteps=71270400 \
+  num_envs=4096 \
+  checkpoint_every_updates=145 \
   branch=feature/sonic-transfer \
   max_price=1.25 \
   duration_hours=6 \
   skip_confirmation=true
 ```
 
-This budget is one update per training shard for the current 116-shard
-production corpus. The launcher verifies every nested dataset and release
-artifact file before training. W&B retains checkpoints; the full evaluation,
-compact summary, and checksum manifest are retrieved under
-`outputs/vast/<run-name>/` before the instance is destroyed.
+This budget is 725 PPO updates at the maintained 4,096-world, 24-step batch.
+Before the real job, the launcher runs three updates at the same environment
+count and records GPU utilization, peak memory, power, elapsed time, and exit
+status. A failed production-scale benchmark prevents the longer run. The
+launcher verifies every dataset and release-artifact file before training. W&B
+retains checkpoints; `benchmark.json`, the full evaluation, compact summary,
+and checksum manifest are retrieved under `outputs/vast/<run-name>/` before
+teardown.
 
-For a longer continuation, download the final W&B checkpoint artifact and
-stage it explicitly. For example, 50 total corpus sweeps are 5,800 updates or
-71,270,400 transitions with the same 512 environments and 24-step rollout:
+For a longer exact continuation, download a checkpoint produced by this
+split-wide 4,096-environment configuration and stage it explicitly. The
+maintained full budget is 30,001 updates or 2,949,218,304 transitions:
 
 ```bash
 uv run bello-vast-train \
   experiment=sonic \
   dataset_path=/data/sonic/packed/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
-  resume_path=outputs/wandb_artifacts/sonic_seed1_v14 \
+  resume_path=outputs/wandb_artifacts/sonic_edge_4096 \
   allow_git_commit_mismatch=true \
-  total_timesteps=71270400 \
-  num_envs=512 \
-  reference_shard_updates=1 \
-  checkpoint_every_updates=580 \
+  total_timesteps=2949218304 \
+  num_envs=4096 \
+  checkpoint_every_updates=500 \
   branch=feature/sonic-transfer \
   max_price=1.25 \
-  duration_hours=6 \
+  duration_hours=36 \
   skip_confirmation=true
 ```
 
@@ -294,8 +296,8 @@ uv run bello-eval \
 Evaluation disables training noise, randomization, adaptive sampling, and
 stochastic action sampling. It visits every held-out clip in stable order and
 never carries state across a terminal reset. The 500-step rollout is compiled
-once against the fixed-capacity bank contract; clip offsets and shard arrays
-remain dynamic inputs, and terminal clips stop inside the compiled loop. Supply
+once against the complete evaluation-bank contract; clip selection remains a
+dynamic input, and terminal clips stop inside the compiled loop. Supply
 `video_path=outputs/evaluation/sonic.mp4` for one representative video; `steps`
 bounds only that video.
 

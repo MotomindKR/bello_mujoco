@@ -250,8 +250,6 @@ class SonicDatasetContract:
     joint_names: tuple[str, ...]
     body_names: tuple[str, ...]
     calibration: SonicJointCalibration
-    shard_frame_capacity: int
-    shard_clip_capacity: int
 
 
 @dataclass(frozen=True)
@@ -263,7 +261,6 @@ class SonicCheckpointMetadata(_CheckpointMetadataBase):
     release_checkpoint_sha256: str
     release_artifact_sha256: str
     source_revision: str
-    reference_shard_updates: int
     task: Literal["sonic"] = "sonic"
     value_norm: ValueNormMetadata | None = None
     observation_norm: ObservationNormMetadata | None = None
@@ -1103,13 +1100,6 @@ def _validate_sonic_metadata(metadata: SonicCheckpointMetadata) -> None:
             raise ValueError(f"SONIC {name} must be a 40-character Git revision")
     if metadata.dataset.schema_version <= 0:
         raise ValueError("SONIC dataset schema version must be positive")
-    for name, value in (
-        ("shard_frame_capacity", metadata.dataset.shard_frame_capacity),
-        ("shard_clip_capacity", metadata.dataset.shard_clip_capacity),
-        ("reference_shard_updates", metadata.reference_shard_updates),
-    ):
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(f"SONIC {name} must be a positive integer")
     if metadata.dataset.joint_names != metadata.action_layout.names:
         raise ValueError("SONIC dataset joint order does not match actions")
     if metadata.dataset.calibration.bello_joint_names != metadata.action_layout.names:

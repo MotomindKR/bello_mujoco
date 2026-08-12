@@ -19,6 +19,7 @@ from bello_mujoco.cli import (
     TrainCommandConfig,
     TwistDataCommandConfig,
     VastTrainCommandConfig,
+    _checkpoint_overrides,
     _reject_explicit_fields,
     _warp_overrides,
 )
@@ -244,6 +245,18 @@ def test_contact_budget_command_override_is_explicit_and_positive() -> None:
     assert _warp_overrides(warp, command).contact_budget_per_env == 64
     with pytest.raises(ValueError, match="must be positive"):
         _warp_overrides(warp, replace(command, contact_budget_per_env=0))
+
+
+def test_checkpoint_enabled_command_override_is_explicit() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        raw = compose(config_name="train", overrides=["checkpoint_enabled=false"])
+    command = command_config(TrainCommandConfig, raw)
+    checkpoint = sonic_training_profile().checkpoint_config
+
+    assert not _checkpoint_overrides(checkpoint, command).enabled
 
 
 def test_motion_path_override_is_explicit(tmp_path: Path) -> None:

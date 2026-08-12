@@ -82,4 +82,3 @@ warp:
   njmax: 2048
 
 runtime_clip_directory: outputs/sonic_runtime_clips
-reference_shard_updates: 32

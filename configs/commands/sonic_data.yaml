@@ -11,8 +11,6 @@ overwrite: false
 keep_normalized: false
 limit: null
 quality_config: configs/twist/quality.yaml
-shard_frame_capacity: 65536
-shard_clip_capacity: 256
 hydra:
   job:
     chdir: false

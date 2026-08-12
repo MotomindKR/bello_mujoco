@@ -40,7 +40,6 @@ class TrainCommandConfig:
     seed: int | None
     total_timesteps: int | None
     num_envs: int | None
-    reference_shard_updates: int | None
     contact_budget_per_env: int | None
     motion_path: Path | None
     dataset_path: Path | None
@@ -50,6 +49,7 @@ class TrainCommandConfig:
     allow_git_commit_mismatch: bool
     checkpoint_directory: Path | None
     checkpoint_name: str | None
+    checkpoint_enabled: bool | None
     checkpoint_every_updates: int | None
     wandb_enabled: bool | None
     run_name: str | None
@@ -120,8 +120,6 @@ class SonicDataCommandConfig:
     keep_normalized: bool
     limit: int | None
     quality_config: Path
-    shard_frame_capacity: int
-    shard_clip_capacity: int
 
     def __post_init__(self) -> None:
         if self.operation not in {"retarget_g1", "build"}:
@@ -138,15 +136,6 @@ class SonicDataCommandConfig:
             or self.limit < 1
         ):
             raise ValueError("SONIC data limit must be positive when provided")
-        if (
-            isinstance(self.shard_frame_capacity, bool)
-            or not isinstance(self.shard_frame_capacity, int)
-            or self.shard_frame_capacity < 1
-            or isinstance(self.shard_clip_capacity, bool)
-            or not isinstance(self.shard_clip_capacity, int)
-            or self.shard_clip_capacity < 1
-        ):
-            raise ValueError("SONIC shard capacities must be positive integers")
 
 
 @dataclass(frozen=True)
@@ -169,7 +158,6 @@ class VastTrainCommandConfig:
     allow_git_commit_mismatch: bool
     total_timesteps: int | None
     num_envs: int | None
-    reference_shard_updates: int | None
     checkpoint_every_updates: int | None
     max_price: float | None
     branch: str | None
@@ -263,11 +251,6 @@ def train_entrypoint() -> None:
 )
 def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
-    if command.experiment != "sonic":
-        _reject_explicit_fields(
-            ("reference_shard_updates",),
-            context=f"experiment={command.experiment}",
-        )
     if command.experiment == "sonic":
         _reject_explicit_fields(
             ("motion_path", "teacher_checkpoint_path", "video_enabled"),
@@ -282,10 +265,6 @@ def _train_hydra(config: DictConfig) -> None:
         run_config = replace(
             run_config,
             config=_ppo_overrides(run_config.config, command),
-            reference_shard_updates=_coalesce(
-                command.reference_shard_updates,
-                run_config.reference_shard_updates,
-            ),
             warp=_warp_overrides(run_config.warp, command),
             checkpoint_config=_checkpoint_overrides(
                 run_config.checkpoint_config, command
@@ -639,8 +618,6 @@ def _sonic_data_hydra(config: DictConfig) -> None:
                 "bello_retargeted_root",
                 "g1_retargeted_root",
                 "quality_config",
-                "shard_frame_capacity",
-                "shard_clip_capacity",
             ),
             context="operation=retarget_g1",
         )
@@ -688,7 +665,7 @@ def _sonic_data_hydra(config: DictConfig) -> None:
     )
     bello_root = _required_path(command.bello_retargeted_root, "bello_retargeted_root")
     g1_root = _required_path(command.g1_retargeted_root, "g1_retargeted_root")
-    from bello_mujoco.motion.sonic_dataset import SonicShardConfig, build_sonic_dataset
+    from bello_mujoco.motion.sonic_dataset import build_sonic_dataset
     from bello_mujoco.motion.twist_dataset import load_quality_config
 
     index = build_sonic_dataset(
@@ -697,10 +674,6 @@ def _sonic_data_hydra(config: DictConfig) -> None:
         g1_root,
         output_root,
         quality=load_quality_config(command.quality_config),
-        sharding=SonicShardConfig(
-            frame_capacity=command.shard_frame_capacity,
-            clip_capacity=command.shard_clip_capacity,
-        ),
     )
     print(json.dumps(index, indent=2, sort_keys=True))
 
@@ -1002,7 +975,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
         if command.resume_path is not None:
             raise ValueError("resume_path is only valid for experiment=sonic")
         _reject_explicit_fields(
-            ("sonic_artifact_path", "resume_path", "reference_shard_updates"),
+            ("sonic_artifact_path", "resume_path"),
             context=f"experiment={command.experiment}",
         )
         if command.experiment != "twist_student":
@@ -1028,7 +1001,6 @@ def _vast_train_hydra(config: DictConfig) -> None:
         allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         total_timesteps=command.total_timesteps,
         num_envs=command.num_envs,
-        reference_shard_updates=command.reference_shard_updates,
         checkpoint_every_updates=command.checkpoint_every_updates,
         max_price=command.max_price,
         branch=command.branch,
@@ -1198,6 +1170,8 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
     values = {
         "allow_git_commit_mismatch": command.allow_git_commit_mismatch,
     }
+    if command.checkpoint_enabled is not None:
+        values["enabled"] = command.checkpoint_enabled
     if command.resume_path is not None:
         values["resume_path"] = command.resume_path.expanduser()
     if command.checkpoint_directory is not None:

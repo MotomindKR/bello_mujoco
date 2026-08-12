@@ -473,10 +473,10 @@ and failure-bin adaptive start sampling. `dataset_index` identifies the
 synchronized Bello/SMPL/G1 dataset. `release_artifact_directory` identifies
 the safe NPZ/JSON export of the exact pinned NVIDIA checkpoint, while
 `runtime_clip_directory` is ignored scratch space for native motion loading.
-The dataset uses fixed capacities of 65,536 frames and 256 clips per shard by
-default. `reference_shard_updates=32` controls deterministic,
-sampling-mass-weighted shard rotation; switching shards resets vectorized
-worlds so one compiled rollout shape remains valid.
+The packed dataset contains one complete training bank and one complete
+evaluation bank. Training transfers the full training bank to the accelerator
+once, so all clips participate in the frame-count-times-manifest-weight sampler
+without host-side data rotation or update-boundary environment resets.
 All data, release, robot, layout, and calibration identities enter typed
 checkpoint validation. See the [SONIC transfer guide](sonic.md).
 
