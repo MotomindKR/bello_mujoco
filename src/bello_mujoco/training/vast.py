@@ -1069,7 +1069,7 @@ def create_available_instance(
                 image=config.offer.image,
                 disk=float(config.offer.disk_gb),
                 label=label,
-                runtype="ssh_direc",
+                runtype="ssh_direct",
                 cancel_unavail=True,
                 onstart_cmd=watchdog_onstart_script(config),
             )
@@ -1256,11 +1256,15 @@ class VastLifecycle:
                     instance_id,
                     self.config.ready_timeout_seconds,
                 )
-                ssh_target = wait_for_ssh(
-                    self.api,
-                    instance_id,
-                    self.config.ssh_timeout_seconds,
-                )
+                try:
+                    ssh_target = wait_for_ssh(
+                        self.api,
+                        instance_id,
+                        self.config.ssh_timeout_seconds,
+                    )
+                except TimeoutError:
+                    retry_offer = True
+                    raise
                 if selection.dataset_files:
                     speed = measure_upload_mib_per_second(
                         ssh_target,

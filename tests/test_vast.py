@@ -1623,7 +1623,7 @@ def test_pipeline_always_destroys_created_instance(
 
     assert api.destroyed == [456]
     assert api.created[0][1]["label"].startswith("bello-")
-    assert api.created[0][1]["runtype"] == "ssh_direc"
+    assert api.created[0][1]["runtype"] == "ssh_direct"
     assert "CONTAINER_ID" in api.created[0][1]["onstart_cmd"]
     assert "CONTAINER_API_KEY" in api.created[0][1]["onstart_cmd"]
     assert "ssh" not in api.created[0][1]
@@ -1683,6 +1683,53 @@ def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
         twist_selection,
         "route-test",
         remote_runner,
+        wandb_key="secret",
+        github_token="",
+    )
+
+    assert [offer_id for offer_id, _ in api.created] == [1, 2]
+    assert api.destroyed == [1, 2]
+    assert remote_targets == [("root", "host-2", 22)]
+
+
+def test_lifecycle_retries_next_offer_when_direct_ssh_times_out(
+    monkeypatch, tmp_path
+) -> None:
+    class Api(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            return offer_id
+
+    api = Api()
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: [
+            VastOffer.from_mapping(make_offer(1, location="Seoul, KR")),
+            VastOffer.from_mapping(make_offer(2, location="Tokyo, JP")),
+        ],
+    )
+    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
+    ssh_attempts = iter((TimeoutError("direct SSH unavailable"), None))
+
+    def wait_for_ssh(api, instance_id, timeout):
+        failure = next(ssh_attempts)
+        if failure is not None:
+            raise failure
+        return "root", f"host-{instance_id}", 22
+
+    monkeypatch.setattr(vast, "wait_for_ssh", wait_for_ssh)
+    remote_targets = []
+
+    VastLifecycle(
+        api,
+        valid_config(),
+        tmp_path / ".vast" / "active_instance.json",
+        "ssh-test",
+    ).run(
+        selection(),
+        "ssh-test",
+        lambda target, *args, **kwargs: remote_targets.append(target),
         wandb_key="secret",
         github_token="",
     )
