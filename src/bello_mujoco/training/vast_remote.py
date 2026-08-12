@@ -317,7 +317,7 @@ fi
 if [ "$experiment" = "sonic" ]; then
   benchmark_gpu_log="$(mktemp /tmp/bello-sonic-gpu.XXXXXX.csv)"
   nvidia-smi \
-    --query-gpu=timestamp,utilization.gpu,memory.used,memory.total,power.draw \
+    --query-gpu=utilization.gpu,memory.used,memory.total,power.draw \
     --format=csv,noheader,nounits \
     --loop-ms=250 > "$benchmark_gpu_log" &
   benchmark_monitor_pid=$!
@@ -328,6 +328,10 @@ if [ "$experiment" = "sonic" ]; then
   set -e
   kill "$benchmark_monitor_pid" 2>/dev/null || true
   wait "$benchmark_monitor_pid" 2>/dev/null || true
+  nvidia-smi \
+    --query-gpu=utilization.gpu,memory.used,memory.total,power.draw \
+    --format=csv,noheader,nounits \
+    >> "$benchmark_gpu_log" 2>/dev/null || true
   benchmark_elapsed=$((SECONDS - benchmark_started_at))
   mkdir -p "$result_dir"
   uv run python - "$benchmark_gpu_log" "$benchmark_envs" \
@@ -343,16 +347,23 @@ path = pathlib.Path(sys.argv[1])
 rows = []
 with path.open(newline="") as source:
     for row in csv.reader(source):
-        if len(row) != 5:
+        if len(row) != 4:
             continue
         try:
-            rows.append(tuple(float(value.strip()) for value in row[1:]))
+            utilization = float(row[0].strip())
+            memory_used = float(row[1].strip())
+            memory_total = float(row[2].strip())
         except ValueError:
             continue
+        try:
+            power = float(row[3].strip())
+        except ValueError:
+            power = None
+        rows.append((utilization, memory_used, memory_total, power))
 utilization = [row[0] for row in rows]
 memory_used = [row[1] for row in rows]
 memory_total = [row[2] for row in rows]
-power = [row[3] for row in rows]
+power = [row[3] for row in rows if row[3] is not None]
 if not rows:
     raise RuntimeError("SONIC benchmark collected no GPU telemetry")
 elapsed = max(int(sys.argv[4]), 1)

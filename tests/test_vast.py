@@ -2,6 +2,7 @@ import base64
 import json
 import shlex
 import subprocess
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -1226,7 +1227,41 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     assert 'preflight_overrides=("${training_overrides[@]}"' in script
     assert "checkpoint_enabled=false" in script
     assert "checkpoint_config.enabled=false" not in script
+    gpu_query = "--query-gpu=utilization.gpu,memory.used,memory.total,power.draw"
+    assert script.count(gpu_query) == 2
+    assert '>> "$benchmark_gpu_log" 2>/dev/null || true' in script
+    assert "power = None" in script
     assert "remote job heartbeat" in command
+
+
+def test_sonic_benchmark_accepts_unavailable_power_telemetry(tmp_path) -> None:
+    telemetry_path = tmp_path / "gpu.csv"
+    telemetry_path.write_text("95,25899,32607,N/A\n", encoding="utf-8")
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    program_start = script.index("import csv\n", script.index("benchmark_gpu_log"))
+    program_end = script.index("\nPY\n  rm -f", program_start)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-",
+            str(telemetry_path),
+            "4096",
+            "3",
+            "240",
+            "0",
+            str(tmp_path),
+        ],
+        input=script[program_start:program_end],
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+    report = json.loads(result.stdout)["sonic_benchmark"]
+    assert report["gpu_utilization_peak_percent"] == 95
+    assert report["gpu_memory_peak_mib"] == 25899
+    assert report["gpu_power_mean_watts"] is None
 
 
 def test_rsync_transfer_is_resumable_and_retried(monkeypatch) -> None:
