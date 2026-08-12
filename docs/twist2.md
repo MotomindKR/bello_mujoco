@@ -161,6 +161,7 @@ Resume uses the same training command plus
 contracts, incompatible datasets or robots, and altered parity revisions are
 rejected.
 
-TWIST2 hardware deployment, high-level vision/language planning, and the
-paper's diffusion motion generator are outside this environment. This task
-implements only the released low-level one-stage motion-tracking policy.
+TWIST2 hardware deployment of the low-level policy is documented in
+[Physical hardware](hardware.md#twist2-mode). High-level vision/language
+planning and the paper's diffusion motion generator remain outside this
+environment.

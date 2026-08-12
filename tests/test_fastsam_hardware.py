@@ -22,7 +22,10 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_GMR_BODY_NAMES,
     load_smplx_standing_sample,
 )
-from bello_mujoco.hardware.twist2 import ReferenceUnavailable
+from bello_mujoco.hardware.twist2 import (
+    ReferenceDiscontinuity,
+    ReferenceUnavailable,
+)
 
 
 def neutral_model(tmp_path: Path) -> Path:
@@ -255,11 +258,13 @@ def test_reference_factory_defers_live_target_check_until_motion(
         classmethod(lambda _cls, _config: grpc_config),
     )
     monkeypatch.setattr(fastsam, "FastSamSmplxStream", lambda _config: stream)
-    monkeypatch.setattr(fastsam, "GmrBelloRetargeter", lambda *_args: object())
+    monkeypatch.setattr(
+        fastsam, "GmrBelloRetargeter", lambda *_args, **_kwargs: object()
+    )
     monkeypatch.setattr(
         fastsam,
         "LiveGmrReferenceSource",
-        lambda _stream, _retargeter: source,
+        lambda _stream, _retargeter, **_kwargs: source,
     )
 
     adapter = SimpleNamespace(env=SimpleNamespace(), metadata=SimpleNamespace())
@@ -298,14 +303,29 @@ def test_frame_validation_maps_camera_pose_and_accounts_for_latency(
 
     low_confidence = np.ones(len(SMPLX_BODY_JOINT_NAMES))
     low_confidence[SMPLX_BODY_JOINT_NAMES.index("left_wrist")] = 0.1
-    with pytest.raises(ReferenceUnavailable, match="left_wrist"):
+    with pytest.raises(ReferenceUnavailable, match="left_wrist") as low_error:
         FastSamSmplxStream(grpc_config(tmp_path))._parse_frame(
             frame_message(joint_confidence=low_confidence)
         )
+    assert not isinstance(low_error.value, ReferenceDiscontinuity)
     with pytest.raises(ReferenceUnavailable, match="latency is too high"):
         FastSamSmplxStream(grpc_config(tmp_path))._parse_frame(
             frame_message(
                 output_monotonic_ns=2_030_000_000,
                 pipeline_latency_ms=30.0,
+            )
+        )
+
+
+def test_track_identity_change_is_a_retargeting_discontinuity(tmp_path: Path) -> None:
+    stream = FastSamSmplxStream(grpc_config(tmp_path))
+    stream._parse_frame(frame_message())
+
+    with pytest.raises(ReferenceDiscontinuity, match="track changed"):
+        stream._parse_frame(
+            frame_message(
+                frame_id=2,
+                source_timestamp_ns=1_033_333_333,
+                track_id=8,
             )
         )

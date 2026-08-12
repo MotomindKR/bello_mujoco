@@ -19,6 +19,7 @@ fastsam_tls_server_name_override: null
 fastsam_connect_timeout_seconds: 5.0
 fastsam_rpc_timeout_seconds: 2.0
 fastsam_reference_ready_timeout_seconds: 15.0
+fastsam_reference_qualification_frames: 5
 fastsam_min_tracking_confidence: 0.5
 fastsam_min_joint_confidence: 0.25
 fastsam_max_pipeline_latency_ms: 120.0

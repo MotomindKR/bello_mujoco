@@ -6,6 +6,7 @@ from pathlib import Path
 import hashlib
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -15,7 +16,11 @@ import numpy as np
 import pytest
 
 from bello_mujoco.contracts import ActionLayout
-from bello_mujoco.envs.twist import TwistSamplingConfig, TwistSimulationConfig
+from bello_mujoco.envs.twist import (
+    BelloTwistEnv,
+    TwistSamplingConfig,
+    TwistSimulationConfig,
+)
 from bello_mujoco.envs.twist2 import (
     Twist2EnvConfig,
     Twist2ObservationContract,
@@ -27,10 +32,13 @@ from bello_mujoco.hardware.twist2 import (
     HardwareTwist2Config,
     HardwareTwist2Environment,
     HardwareTwist2PolicyAdapter,
+    ReferenceDiscontinuity,
     ReferenceUnavailable,
     Twist2ReferenceFrame,
     control_physical_twist2,
+    _wait_for_live_twist2_reference,
     validate_hardware_twist2_config,
+    validate_twist2_hardware_coordinate_limits,
     validate_twist2_reference,
 )
 from bello_mujoco.hardware.smplx_retarget import (
@@ -324,13 +332,13 @@ def test_twist2_hardware_keeps_raw_previous_action_and_clips_motor_command(
     limits = np.asarray(adapter.env.model.mj_model.actuator_ctrlrange)
     assert np.all(step.physical_target >= limits[:, 0])
     assert np.all(step.physical_target <= limits[:, 1])
-    logical_target = adapter.inverse_transform @ step.physical_target
-    assert np.all(logical_target >= adapter._joint_target_low - 1.0e-9)
-    assert np.all(logical_target <= adapter._joint_target_high + 1.0e-9)
+    simulated_target = BelloTwistEnv._action_target(
+        SimpleNamespace(model=adapter.env.model), jnp.asarray(step.action)
+    )
     np.testing.assert_allclose(
-        logical_target[[3, 4]],
-        (adapter._joint_target_low[3], adapter._joint_target_high[4]),
-        atol=1.0e-9,
+        step.physical_target,
+        np.clip(np.asarray(simulated_target), limits[:, 0], limits[:, 1]),
+        atol=5.0e-7,
     )
 
 
@@ -368,6 +376,45 @@ def test_twist2_hardware_config_rejects_unsafe_ranges() -> None:
                 min_reference_root_height_m=1.0,
                 max_reference_root_height_m=1.0,
             )
+        )
+    with pytest.raises(ValueError, match="qualification_frames"):
+        validate_hardware_twist2_config(
+            HardwareTwist2Config(fastsam_reference_qualification_frames=0)
+        )
+    with pytest.raises(ValueError, match="latency budget"):
+        validate_hardware_twist2_config(HardwareTwist2Config(max_reference_age_ms=130))
+
+
+def test_twist2_hardware_ranges_must_cover_model_targets(
+    twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    adapter = twist2_hardware_adapter
+    motors = tuple(
+        SimpleNamespace(
+            coordinate=name,
+            limits=SimpleNamespace(
+                position_min=float(adapter._ctrl_limits[index, 0]),
+                position_max=float(adapter._ctrl_limits[index, 1]),
+            ),
+        )
+        for index, name in enumerate(adapter.physical_coordinate_names)
+    )
+    validate_twist2_hardware_coordinate_limits(
+        {"all": SimpleNamespace(motors=motors)}, adapter
+    )
+
+    first = motors[0]
+    incompatible = SimpleNamespace(
+        coordinate=first.coordinate,
+        limits=SimpleNamespace(
+            position_min=first.limits.position_min + 0.01,
+            position_max=first.limits.position_max,
+        ),
+    )
+    with pytest.raises(ValueError, match="exceeds the hardware range"):
+        validate_twist2_hardware_coordinate_limits(
+            {"all": SimpleNamespace(motors=(incompatible, *motors[1:]))},
+            adapter,
         )
 
 
@@ -435,7 +482,42 @@ def test_pinned_gmr_produces_finite_standing_reference(
     assert np.all(standing.qvel == 0.0)
     assert standing.source_age_ms is None
     assert not np.allclose(standing.qpos, adapter.env.model.default_qpos)
+    root = adapter.env.model.root_qpos_adr
+    assert standing.qpos[root + 4] == pytest.approx(0.0, abs=1.0e-10)
+    assert standing.qpos[root + 5] == pytest.approx(0.0, abs=1.0e-10)
+    sole_z = retargeter._foot_sole_z(standing.qpos)
+    assert np.min(sole_z) == pytest.approx(0.0, abs=1.0e-9)
+    assert np.ptp(sole_z) < 0.005
+    for name in (
+        "left_hip_pitch_joint",
+        "right_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "right_hip_roll_joint",
+        "left_knee_joint",
+        "right_knee_joint",
+        "left_ankle_pitch_joint",
+        "right_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_ankle_roll_joint",
+        "left_hip_yaw_joint",
+        "right_hip_yaw_joint",
+    ):
+        address = adapter.env.model.mj_model.joint(name).qposadr[0]
+        assert standing.qpos[address] == pytest.approx(
+            adapter.env.model.default_qpos[address], abs=1.0e-10
+        )
     validate_twist2_reference(standing, adapter.env, HardwareTwist2Config())
+
+    solver_qpos = retargeter.retargeter.configuration.data.qpos.copy()
+    retargeter.validate_reference = lambda _reference: (_ for _ in ()).throw(
+        ReferenceUnavailable("unsafe live candidate")
+    )
+    with pytest.raises(ReferenceUnavailable, match="unsafe live candidate"):
+        retargeter.retarget(standing_smplx_frame(sequence=1))
+    np.testing.assert_array_equal(
+        retargeter.retargeter.configuration.data.qpos, solver_qpos
+    )
+    assert retargeter._last_sequence is None
 
 
 def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
@@ -490,6 +572,161 @@ def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
         assert source.latest().sequence == result.sequence == 1
 
     assert calls == ["bello-live-gmr"]
+
+
+def test_live_gmr_source_keeps_last_valid_frame_during_transient_rejection() -> None:
+    source_frame = standing_smplx_frame(sequence=1)
+    standing = Twist2ReferenceFrame(
+        qpos=np.zeros(1),
+        qvel=np.zeros(1),
+        sequence=0,
+        source_age_ms=None,
+        received_at=0.0,
+    )
+    rejected = threading.Event()
+    reset_calls: list[None] = []
+
+    class FakeStream:
+        calls = 0
+
+        def standing_sample(self):
+            return standing_smplx_frame()
+
+        def wait_next(self, *, after_sequence, timeout_seconds):
+            del after_sequence
+            self.calls += 1
+            if self.calls == 1:
+                return source_frame
+            if self.calls == 2:
+                rejected.set()
+                raise ReferenceUnavailable("one low-confidence wrist frame")
+            time.sleep(min(timeout_seconds, 0.001))
+            return None
+
+    class FakeRetargeter:
+        def standing(self, _frame):
+            return standing
+
+        def retarget(self, frame):
+            return replace(
+                standing,
+                sequence=frame.sequence,
+                source_age_ms=0,
+                received_at=time.monotonic(),
+            )
+
+        def reset_live(self):
+            reset_calls.append(None)
+
+    with LiveGmrReferenceSource(
+        FakeStream(), FakeRetargeter(), poll_timeout_seconds=0.01
+    ) as source:
+        accepted = source.wait_until_ready(1.0)
+        assert rejected.wait(1.0)
+        assert source.latest() is accepted
+
+    assert reset_calls == []
+
+
+def test_live_gmr_source_clears_reference_on_tracking_discontinuity() -> None:
+    source_frame = standing_smplx_frame(sequence=1)
+    standing = Twist2ReferenceFrame(
+        qpos=np.zeros(1),
+        qvel=np.zeros(1),
+        sequence=0,
+        source_age_ms=None,
+        received_at=0.0,
+    )
+    release_discontinuity = threading.Event()
+    reset_complete = threading.Event()
+
+    class FakeStream:
+        delivered = False
+        discontinued = False
+
+        def standing_sample(self):
+            return standing_smplx_frame()
+
+        def wait_next(self, *, after_sequence, timeout_seconds):
+            del after_sequence
+            if not self.delivered:
+                self.delivered = True
+                return source_frame
+            if not self.discontinued and release_discontinuity.wait(timeout_seconds):
+                self.discontinued = True
+                raise ReferenceDiscontinuity("tracked identity changed")
+            time.sleep(min(timeout_seconds, 0.001))
+            return None
+
+    class FakeRetargeter:
+        def standing(self, _frame):
+            return standing
+
+        def retarget(self, frame):
+            return replace(
+                standing,
+                sequence=frame.sequence,
+                source_age_ms=0,
+                received_at=time.monotonic(),
+            )
+
+        def reset_live(self):
+            reset_complete.set()
+
+    with LiveGmrReferenceSource(
+        FakeStream(), FakeRetargeter(), poll_timeout_seconds=0.01
+    ) as source:
+        source.wait_until_ready(1.0)
+        release_discontinuity.set()
+        assert reset_complete.wait(1.0)
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                source.latest()
+            except ReferenceDiscontinuity as error:
+                assert "identity changed" in str(error)
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+
+
+def test_live_reference_gate_requires_distinct_qualified_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bello_mujoco.hardware import twist2 as twist2_hardware
+
+    references = iter((1, 1, 2, 2, 3))
+
+    class FakeReferences:
+        def latest(self):
+            return Twist2ReferenceFrame(
+                qpos=np.zeros(1),
+                qvel=np.zeros(1),
+                sequence=next(references),
+                source_age_ms=0,
+                received_at=time.monotonic(),
+            )
+
+    standing_steps: list[None] = []
+    monkeypatch.setattr(
+        twist2_hardware,
+        "validate_twist2_reference",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = _wait_for_live_twist2_reference(
+        FakeReferences(),
+        SimpleNamespace(env=SimpleNamespace()),
+        HardwareTwist2Config(
+            fastsam_reference_qualification_frames=3,
+            fastsam_reference_ready_timeout_seconds=1.0,
+        ),
+        lambda: standing_steps.append(None) is None,
+    )
+
+    assert result is not None
+    assert result.sequence == 3
+    assert len(standing_steps) == 4
 
 
 def test_twist2_control_uses_normal_standing_and_returns_on_source_loss(
@@ -630,6 +867,7 @@ def test_twist2_control_uses_normal_standing_and_returns_on_source_loss(
         HardwareTwist2Config(
             max_duration_seconds=0.05,
             policy_transition_seconds=0.001,
+            fastsam_reference_qualification_frames=1,
         ),
     )
 
@@ -710,6 +948,71 @@ def test_twist2_reference_transition_blends_from_previous_target() -> None:
     expected = np.asarray(((1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)))
     np.testing.assert_allclose(control.sent_targets, expected)
     assert control.max_tilts == [0.7] * 4
+
+
+def test_twist2_motion_transition_refreshes_after_qualified_snapshot() -> None:
+    from bello_mujoco.hardware.twist2 import _transition_twist2_reference
+
+    frame = SimpleNamespace()
+    first = Twist2ReferenceFrame(
+        qpos=np.zeros(1),
+        qvel=np.zeros(1),
+        sequence=7,
+        source_age_ms=0,
+        received_at=time.monotonic(),
+    )
+    live = replace(first, sequence=8)
+    seen: list[int] = []
+
+    class FakeAdapter:
+        control_timestep = 0.02
+
+        def reset(self):
+            return None
+
+        def step(self, _frame, reference):
+            seen.append(reference.sequence)
+            values = np.zeros(2)
+            return SimpleNamespace(
+                physical_target=values,
+                observation=values,
+                policy_observation=values,
+                raw_action=values,
+                action=values,
+                command=values,
+            )
+
+    class FakeControl:
+        previous_target = np.zeros(2)
+
+        def read_frame(self, *, max_tilt_radians=None):
+            del max_tilt_radians
+            return frame
+
+        def send_target(self, target):
+            self.previous_target = np.asarray(target)
+
+        def pace(self):
+            return None
+
+        def reset_deadline(self):
+            return None
+
+        def drain(self):
+            return None
+
+    _transition_twist2_reference(
+        FakeControl(),
+        FakeAdapter(),
+        lambda: live,
+        HardwareTwist2Config(policy_transition_seconds=0.08),
+        phase="transition_to_motion",
+        policy_log=None,
+        run_started=0.0,
+        first_reference=first,
+    )
+
+    assert seen == [7, 8, 8, 8]
 
 
 def test_twist2_reference_maps_to_physical_hold_target(

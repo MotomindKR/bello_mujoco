@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import math
 import time
@@ -59,7 +59,7 @@ class HardwareTwist2Config(HardwareControlConfig):
     """Physical TWIST2 deployment and fail-closed reference limits."""
 
     client_name: str = "bello-twist2-policy"
-    max_reference_age_ms: int = 150
+    max_reference_age_ms: int = 250
     max_reference_root_height_m: float = 1.5
     min_reference_root_height_m: float = 0.35
     max_reference_root_speed_mps: float = 5.0
@@ -75,6 +75,7 @@ class HardwareTwist2Config(HardwareControlConfig):
     fastsam_connect_timeout_seconds: float = 5.0
     fastsam_rpc_timeout_seconds: float = 2.0
     fastsam_reference_ready_timeout_seconds: float = 15.0
+    fastsam_reference_qualification_frames: int = 5
     fastsam_min_tracking_confidence: float = 0.5
     fastsam_min_joint_confidence: float = 0.25
     fastsam_max_pipeline_latency_ms: float = 120.0
@@ -110,6 +111,10 @@ class Twist2ReferenceFrame:
 
 class ReferenceUnavailable(RuntimeError):
     """The live reference is temporarily unsafe or unavailable."""
+
+
+class ReferenceDiscontinuity(ReferenceUnavailable):
+    """The tracked subject or source timeline changed and must be re-anchored."""
 
 
 class Twist2ReferenceSource(Protocol):
@@ -218,12 +223,6 @@ class HardwareTwist2PolicyAdapter:
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
         )
-        self._joint_target_low = np.asarray(
-            env.model.joint_target_low, dtype=np.float64
-        )
-        self._joint_target_high = np.asarray(
-            env.model.joint_target_high, dtype=np.float64
-        )
         self.kp, self.kd = actuator_impedance_gains(env)
         self._ctrl_limits = np.asarray(
             env.model.mj_model.actuator_ctrlrange, dtype=np.float64
@@ -277,11 +276,6 @@ class HardwareTwist2PolicyAdapter:
         logical_target[self.policy_indices] = np.asarray(reference.qpos)[
             self.policy_qpos_indices
         ]
-        logical_target = np.clip(
-            logical_target,
-            self._joint_target_low,
-            self._joint_target_high,
-        )
         target = self.transform @ logical_target
         return np.clip(target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1])
 
@@ -421,21 +415,14 @@ class HardwareTwist2PolicyAdapter:
         action = np.clip(raw_action, -self.env.action_clip, self.env.action_clip)
         requested_logical_target = self.default_joint_target.copy()
         requested_logical_target[self.policy_indices] += 0.5 * action
-        logical_target = np.clip(
-            requested_logical_target,
-            self._joint_target_low,
-            self._joint_target_high,
-        )
-        requested_target = self.transform @ logical_target
+        requested_target = self.transform @ requested_logical_target
         physical_target = np.clip(
             requested_target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1]
         )
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("TWIST2 policy produced non-finite physical targets")
-        action_clipped = (
-            not np.array_equal(action, raw_action)
-            or not np.array_equal(logical_target, requested_logical_target)
-            or not np.array_equal(physical_target, requested_target)
+        action_clipped = not np.array_equal(action, raw_action) or not np.array_equal(
+            physical_target, requested_target
         )
         if self._step_count == 0:
             self._reset_frame = current.copy()
@@ -523,6 +510,17 @@ def validate_hardware_twist2_config(config: HardwareTwist2Config) -> None:
             raise ValueError(f"{name} must be positive and finite")
     if config.max_reference_age_ms <= 0:
         raise ValueError("max_reference_age_ms must be positive")
+    if config.fastsam_reference_qualification_frames < 1:
+        raise ValueError("fastsam_reference_qualification_frames must be positive")
+    minimum_age_budget = (
+        config.fastsam_max_pipeline_latency_ms
+        + config.fastsam_transport_latency_budget_ms
+    )
+    if config.max_reference_age_ms <= minimum_age_budget:
+        raise ValueError(
+            "max_reference_age_ms must exceed the configured Fast-SAM pipeline "
+            "and transport latency budget"
+        )
     if (
         not math.isfinite(config.max_reference_joint_limit_violation_radians)
         or config.max_reference_joint_limit_violation_radians < 0.0
@@ -634,6 +632,28 @@ def validate_twist2_reference(
         )
 
 
+def validate_twist2_hardware_coordinate_limits(
+    groups: dict[str, Any],
+    adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    """Require every simulated physical range to fit the daemon's live range."""
+
+    motors = {
+        motor.coordinate: motor for group in groups.values() for motor in group.motors
+    }
+    for index, coordinate in enumerate(adapter.physical_coordinate_names):
+        motor = motors[coordinate]
+        model_low, model_high = adapter._ctrl_limits[index]
+        hardware_low = float(motor.limits.position_min)
+        hardware_high = float(motor.limits.position_max)
+        if model_low < hardware_low - 1.0e-9 or model_high > hardware_high + 1.0e-9:
+            raise ValueError(
+                f"TWIST2 model range for {coordinate!r} "
+                f"[{model_low:.5f}, {model_high:.5f}] exceeds the hardware "
+                f"range [{hardware_low:.5f}, {hardware_high:.5f}]"
+            )
+
+
 def load_hardware_twist2_policy(
     checkpoint_path: Path,
     config: HardwareTwist2Config,
@@ -711,6 +731,7 @@ def run_hardware_twist2(
         standing_target = adapter.reference_physical_target(standing)
         adapter.precompile(standing)
         groups = validate_hardware_inventory(robot, adapter, config, binding)
+        validate_twist2_hardware_coordinate_limits(groups, adapter)
         state_reader = robot.states(groups=config.groups, imus=(config.imu_name,))
         frame = wait_for_hardware_frame(
             state_reader,
@@ -721,7 +742,20 @@ def run_hardware_twist2(
         )
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
         initial_error = float(np.max(np.abs(frame.positions - standing_target)))
-        preview = adapter.step(frame, standing)
+        initial_preview = adapter.step(frame, standing)
+        adapter.reset()
+        root = adapter.env.model.root_qpos_adr
+        standing_orientation_wxyz = np.asarray(standing.qpos)[root + 3 : root + 7]
+        settled_preview = adapter.step(
+            replace(
+                frame,
+                positions=standing_target,
+                velocities=np.zeros_like(standing_target),
+                orientation_xyzw=standing_orientation_wxyz[[1, 2, 3, 0]],
+                angular_velocity=np.zeros(3, dtype=np.float64),
+            ),
+            standing,
+        )
         adapter.reset()
         print(
             {
@@ -735,10 +769,18 @@ def run_hardware_twist2(
                 "control_rate_hz": 1.0 / adapter.control_timestep,
                 "jax_backend": jax.default_backend(),
                 "normal_standing_ramp_distance_max": initial_error,
-                "standing_preview_action_abs_max": float(
-                    np.max(np.abs(preview.raw_action))
+                "initial_state_preview_action_abs_max": float(
+                    np.max(np.abs(initial_preview.raw_action))
                 ),
-                "standing_preview_action_clipped": preview.action_clipped,
+                "initial_state_preview_action_clipped": (
+                    initial_preview.action_clipped
+                ),
+                "settled_standing_preview_action_abs_max": float(
+                    np.max(np.abs(settled_preview.raw_action))
+                ),
+                "settled_standing_preview_action_clipped": (
+                    settled_preview.action_clipped
+                ),
                 "armed": config.arm,
             }
         )
@@ -910,50 +952,81 @@ def control_physical_twist2(
             "TWIST2 normal standing is active. "
             "Type MOTION to begin live whole-body tracking."
         )
-        first_live = None
-        while first_live is None:
-            requested_motion = wait_for_operator_confirmation_while_holding(
-                MOTION_CONFIRMATION,
-                "Type MOTION to transition from normal standing to live tracking: ",
-                standing_step,
-                operator_input,
-            )
-            if not requested_motion:
-                control.drain()
-                print("Hardware run duration completed before live tracking.")
-                return
-            print(
-                "MOTION confirmed. Waiting for a qualified live SMPL-X target "
-                "while normal standing remains active."
-            )
-            first_live = _wait_for_live_twist2_reference(
-                references,
-                adapter,
-                config,
-                standing_step,
-            )
-            if first_live is None:
-                if not duration_available():
-                    control.drain()
-                    print("Hardware run duration completed before live tracking.")
-                    return
-                print(
-                    "No qualified live SMPL-X target arrived; normal standing "
-                    "remains active. Type MOTION to retry."
-                )
-
         try:
-            print("Transitioning from normal standing to live TWIST2 tracking.")
-            _transition_twist2_reference(
-                control,
-                adapter,
-                lambda: references.latest(),
-                config,
-                phase="transition_to_motion",
-                policy_log=policy_log,
-                run_started=run_started,
-                first_reference=first_live,
-            )
+            while True:
+                first_live = None
+                while first_live is None:
+                    requested_motion = wait_for_operator_confirmation_while_holding(
+                        MOTION_CONFIRMATION,
+                        "Type MOTION to transition from normal standing to live "
+                        "tracking: ",
+                        standing_step,
+                        operator_input,
+                    )
+                    if not requested_motion:
+                        control.drain()
+                        print("Hardware run duration completed before live tracking.")
+                        return
+                    print(
+                        "MOTION confirmed. Waiting for a qualified live SMPL-X "
+                        "target while normal standing remains active."
+                    )
+                    first_live = _wait_for_live_twist2_reference(
+                        references,
+                        adapter,
+                        config,
+                        standing_step,
+                    )
+                    if first_live is None:
+                        if not duration_available():
+                            control.drain()
+                            print(
+                                "Hardware run duration completed before live tracking."
+                            )
+                            return
+                        print(
+                            "No qualified live SMPL-X target arrived; normal standing "
+                            "remains active. Type MOTION to retry."
+                        )
+
+                print("Transitioning from normal standing to live TWIST2 tracking.")
+                try:
+                    _transition_twist2_reference(
+                        control,
+                        adapter,
+                        lambda: references.latest(),
+                        config,
+                        phase="transition_to_motion",
+                        policy_log=policy_log,
+                        run_started=run_started,
+                        first_reference=first_live,
+                    )
+                except ReferenceUnavailable as error:
+                    print(
+                        "Live TWIST2 reference became unavailable during the "
+                        f"transition; returning to normal standing: {error}"
+                    )
+                    _transition_twist2_reference(
+                        control,
+                        adapter,
+                        lambda: standing,
+                        config,
+                        phase="transition_to_standing",
+                        policy_log=policy_log,
+                        run_started=run_started,
+                    )
+                    control.reset_deadline()
+                    next_standing_status = (
+                        time.monotonic()
+                        if config.status_interval_seconds is not None
+                        else None
+                    )
+                    print(
+                        "TWIST2 normal standing resumed. Type MOTION to retry live "
+                        "tracking."
+                    )
+                    continue
+                break
             motion_started = time.monotonic()
             control.reset_deadline()
             motion_steps = 0
@@ -1088,13 +1161,24 @@ def _wait_for_live_twist2_reference(
 ) -> Twist2ReferenceFrame | None:
     deadline = time.monotonic() + config.fastsam_reference_ready_timeout_seconds
     last_error: ReferenceUnavailable | None = None
+    last_sequence: int | None = None
+    qualified_frames = 0
     while time.monotonic() < deadline:
         try:
             reference = references.latest()
             validate_twist2_reference(reference, adapter.env, config)
-            return reference
+            if last_sequence is None or reference.sequence > last_sequence:
+                qualified_frames += 1
+                last_sequence = reference.sequence
+            elif reference.sequence < last_sequence:
+                qualified_frames = 0
+                last_sequence = None
+            if qualified_frames >= config.fastsam_reference_qualification_frames:
+                return reference
         except ReferenceUnavailable as error:
             last_error = error
+            last_sequence = None
+            qualified_frames = 0
         if not standing_step():
             return None
     if last_error is not None:

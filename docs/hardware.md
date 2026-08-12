@@ -154,8 +154,14 @@ licensed `SMPLX_NEUTRAL.npz`. The neutral model is read locally only to derive
 and validate the server's exact SMPL-X body-joint contract; it is never copied
 into a checkpoint or Git. Normal standing applies a small repository-owned,
 hand-authored relaxed-standing pose to that skeleton and retargets it through
-the same pinned GMR solver as live motion. It does not use SMPL-X's mathematical
-zero pose, whose arms extend sideways. The live server must advertise schema 1,
+the same pinned GMR solver as live motion. The result uses the dataset builder's
+positive-flex knee treatment to solve the whole body, then retains the relaxed
+GMR upper body while replacing the legs with the policy checkpoint's canonical
+Bello stance, levels the root, and places the lower sole on the floor. This
+keeps normal standing inside the stance distribution learned by the policy and
+avoids persistent stepping. It does not use SMPL-X's mathematical zero pose,
+whose arms extend sideways.
+The live server must advertise schema 1,
 `smplx_body_22`, the exact standard 22-joint order and hierarchy, OpenCV camera
 coordinates, `xyzw` quaternions, and the reviewed learned converter. A legacy
 native-MHR stream is rejected.
@@ -197,27 +203,39 @@ initial heading or floor alignment is explicit.
 
 Preflight connects to Fast-SAM, validates server readiness, tracking mode, and
 the stream schema, retargets the canonical SMPL-X standing sample, and compiles
-the policy before connecting to the robot. It does not require Fast-SAM to be
+the policy before connecting to the robot. After connection, it also requires
+every model actuator range to fit inside the live daemon inventory range; a
+model/daemon limit mismatch fails before a control lease is acquired. It does
+not require Fast-SAM to be
 transmitting a qualified person target. The live gRPC consumer and GMR solver
 run in background threads with capacity-one/latest-only semantics; the 50 Hz
 control loop never blocks on either service. Frame age is the server's complete
 pipeline latency plus the configured transport budget and local time since
-receipt.
+receipt. Live targets use the same pinned knee-pole thresholds, reachability
+constraint, joint velocity/acceleration bounds, and foot-clearance geometry as
+offline retargeting. A causal contact estimate grounds supporting feet while
+preserving airborne vertical motion.
 
-Armed operation follows `HOLD`, a ten-second ramp to the GMR-retargeted SMPL-X
-standing sample, and `RUN`; that target is held while waiting for `RUN`. `RUN`
-starts the policy with a 0.2-second blend from that pose to its normal-standing
-policy output, then continues commands at 50 Hz. Only
-after exact `MOTION` confirmation does the runner require a confidence- and
-latency-qualified person target. It keeps sending normal-standing commands
-while waiting up to `fastsam_reference_ready_timeout_seconds`, then transitions
-to the current live GMR reference. If that timeout expires, normal standing
-continues and the operator can type `MOTION` to retry.
-Occlusion, ambiguity, low confidence, excessive latency, invalid retargeted
-motion, or stream failure returns the robot to normal standing or initiates a
-damped shutdown according to severity. Fast-SAM `LOST` remains terminal for
-that target until its `ResetTarget` RPC is invoked; target reacquisition is not
-performed silently by the Bello runner.
+Armed operation follows `HOLD`, a ten-second ramp to the hybrid normal-standing
+target described above, and `RUN`; that target is held while waiting for `RUN`.
+`RUN` starts the policy with a 0.2-second blend from that pose to its
+normal-standing policy output, then continues commands at 50 Hz. Only
+after exact `MOTION` confirmation does the runner require five distinct
+confidence-, latency-, and robot-limit-qualified person targets by default. It
+keeps sending normal-standing commands while waiting up to
+`fastsam_reference_ready_timeout_seconds`, then transitions to the current live
+GMR reference. If that timeout expires, normal standing continues and the
+operator can type `MOTION` to retry.
+
+A rejected frame caused by brief occlusion, ambiguity, low confidence,
+excessive latency, or an invalid retargeted pose does not replace the last safe
+reference or reset GMR. The last safe reference remains usable only until its
+total age reaches the fixed 250 ms fail-closed bound; persistent loss then
+returns the robot to normal standing. A changed tracking identity, backwards or
+reset source timeline, Fast-SAM `LOST`, or `UNLOCKED` state clears the cached
+reference and re-anchors both coordinates and GMR immediately. `LOST` remains
+terminal for that server target until its `ResetTarget` RPC is invoked; target
+reacquisition is not performed silently by the Bello runner.
 
 ## Runtime safety checks
 
@@ -238,11 +256,13 @@ reference completion, and raw-versus-applied action bounds.
 TWIST2 adds exact Fast-SAM stream semantics, tracking and required-joint
 confidence, pipeline/reference age, source sequence and timestamp monotonicity,
 SMPL-X quaternion validity, GMR joint velocity/acceleration and joint limits,
-retargeted root/body velocity, and raw Gaussian action bounds. Before conversion
-to physical differential coordinates, references and hardware actions are
-projected into the model's safe logical joint-target envelope; this prevents
-independently clipped ankle-motor targets from resolving to an illegal ankle
-pitch or roll.
+retargeted root/body velocity, and raw Gaussian action bounds. Retargeted hold
+references are validated in logical joint coordinates before conversion.
+Policy actions intentionally follow the training environment's exact mapping:
+clip the released raw action, add `0.5 * action` to the model default, transform
+once into physical coordinates, and finally enforce the actuator control
+ranges. There is no extra logical pre-transform clip, which would change the
+differential-ankle policy learned in simulation.
 
 `duration_seconds` covers the complete post-`RUN` policy flow. Ramp time and the
 `HOLD`/`RUN` confirmation waits are not included. A `null` duration runs until

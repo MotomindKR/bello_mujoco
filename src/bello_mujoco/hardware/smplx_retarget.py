@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 import hashlib
 import importlib.util
 import io
+import json
 import math
 from pathlib import Path
 import subprocess
@@ -22,6 +23,7 @@ import numpy as np
 
 from bello_mujoco.hardware.twist2 import (
     HardwareTwist2Environment,
+    ReferenceDiscontinuity,
     ReferenceUnavailable,
     Twist2ReferenceFrame,
 )
@@ -249,29 +251,396 @@ def _quaternion_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True)
 class GmrLiveRetargetConfig:
-    """Versioned real-time subset of the offline Bello GMR solver settings."""
+    """Real-time settings layered on the pinned Bello GMR solver contract."""
 
     human_height_m: float = 1.66
-    passes_per_frame: int = 5
     settling_rounds: int = 10
     convergence_tolerance: float = 1.0e-4
     max_source_interval_seconds: float = 0.2
-    max_joint_velocity_rps: float = 3.0 * math.pi
-    max_joint_acceleration_rps2: float = 200.0
+    contact_max_speed_mps: float = 0.2
+    contact_height_margin_m: float = 0.03
 
     def __post_init__(self) -> None:
         positive = {
             "human_height_m": self.human_height_m,
             "convergence_tolerance": self.convergence_tolerance,
             "max_source_interval_seconds": self.max_source_interval_seconds,
-            "max_joint_velocity_rps": self.max_joint_velocity_rps,
-            "max_joint_acceleration_rps2": self.max_joint_acceleration_rps2,
+            "contact_max_speed_mps": self.contact_max_speed_mps,
+            "contact_height_margin_m": self.contact_height_margin_m,
         }
         for name, value in positive.items():
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
-        if self.passes_per_frame < 1 or self.settling_rounds < 1:
-            raise ValueError("GMR pass and settling counts must be positive")
+        if self.settling_rounds < 1:
+            raise ValueError("GMR settling_rounds must be positive")
+
+
+@dataclass(frozen=True)
+class _GmrSolverSettings:
+    passes_per_frame: int
+    max_joint_velocity_rps: float
+    max_joint_acceleration_rps2: float
+    knee_pole_reference_flexion_radians: float
+    knee_target_minimum_flexion_radians: float
+    knee_pole_sample_minimum_flexion_radians: float
+    knee_pole_sample_minimum_distance_meters: float
+    knee_pole_smoothing_frames: int
+    ground_clearance_geoms: tuple[str, str]
+
+
+def _load_gmr_solver_settings(path: Path) -> _GmrSolverSettings:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        solver = document["offline_solver"]
+        ground_geoms = tuple(document["ground_clearance_geoms"])
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"invalid pinned Bello GMR configuration {path}: {error}"
+        ) from error
+    expected = {
+        "passes_per_frame",
+        "max_joint_velocity_radians_per_second",
+        "max_joint_acceleration_radians_per_second_squared",
+        "knee_pole_reference_flexion_radians",
+        "knee_target_minimum_flexion_radians",
+        "knee_pole_sample_minimum_flexion_radians",
+        "knee_pole_sample_minimum_distance_meters",
+        "knee_pole_smoothing_frames",
+    }
+    if not isinstance(solver, dict) or set(solver) != expected:
+        raise ValueError("pinned Bello GMR offline_solver fields are incompatible")
+    if len(ground_geoms) != 2 or not all(
+        isinstance(name, str) and name for name in ground_geoms
+    ):
+        raise ValueError("pinned Bello GMR must configure two foot clearance geoms")
+    settings = _GmrSolverSettings(
+        passes_per_frame=solver["passes_per_frame"],
+        max_joint_velocity_rps=solver["max_joint_velocity_radians_per_second"],
+        max_joint_acceleration_rps2=solver[
+            "max_joint_acceleration_radians_per_second_squared"
+        ],
+        knee_pole_reference_flexion_radians=solver[
+            "knee_pole_reference_flexion_radians"
+        ],
+        knee_target_minimum_flexion_radians=solver[
+            "knee_target_minimum_flexion_radians"
+        ],
+        knee_pole_sample_minimum_flexion_radians=solver[
+            "knee_pole_sample_minimum_flexion_radians"
+        ],
+        knee_pole_sample_minimum_distance_meters=solver[
+            "knee_pole_sample_minimum_distance_meters"
+        ],
+        knee_pole_smoothing_frames=solver["knee_pole_smoothing_frames"],
+        ground_clearance_geoms=ground_geoms,
+    )
+    if not isinstance(settings.passes_per_frame, int) or settings.passes_per_frame < 1:
+        raise ValueError("pinned Bello GMR passes_per_frame must be positive")
+    numeric = (
+        settings.max_joint_velocity_rps,
+        settings.max_joint_acceleration_rps2,
+        settings.knee_pole_reference_flexion_radians,
+        settings.knee_target_minimum_flexion_radians,
+        settings.knee_pole_sample_minimum_flexion_radians,
+        settings.knee_pole_sample_minimum_distance_meters,
+    )
+    if not all(math.isfinite(value) and value > 0.0 for value in numeric):
+        raise ValueError("pinned Bello GMR solver values must be positive and finite")
+    if (
+        not isinstance(settings.knee_pole_smoothing_frames, int)
+        or settings.knee_pole_smoothing_frames < 1
+        or settings.knee_pole_smoothing_frames % 2 == 0
+    ):
+        raise ValueError(
+            "pinned Bello GMR knee smoothing window must be positive and odd"
+        )
+    return settings
+
+
+class _CausalKneeTargetConditioner:
+    """Causal form of the offline positive-flex knee target conditioning."""
+
+    def __init__(self, retargeter: Any, settings: _GmrSolverSettings) -> None:
+        self.retargeter = retargeter
+        self.settings = settings
+        self._segment_lengths = _robot_leg_segment_lengths(retargeter)
+        self._reference_axes: dict[str, np.ndarray] = {}
+        self._local_axes: dict[str, np.ndarray] = {}
+
+    def reset(self, axes: Mapping[str, np.ndarray] | None = None) -> None:
+        copied = (
+            {}
+            if axes is None
+            else {side: np.asarray(axis).copy() for side, axis in axes.items()}
+        )
+        self._reference_axes = {side: axis.copy() for side, axis in copied.items()}
+        self._local_axes = copied
+
+    def restore(self, axes: Mapping[str, np.ndarray]) -> None:
+        self._local_axes = {
+            side: np.asarray(axis).copy() for side, axis in axes.items()
+        }
+
+    def axes(self) -> dict[str, np.ndarray]:
+        return {side: axis.copy() for side, axis in self._local_axes.items()}
+
+    def condition(
+        self,
+        targets: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        source = {
+            name: [np.asarray(position).copy(), np.asarray(quaternion).copy()]
+            for name, (position, quaternion) in targets.items()
+        }
+        scaled = self.retargeter.scale_human_data(
+            _copy_mutable_targets(source),
+            self.retargeter.human_root_name,
+            self.retargeter.human_scale_table,
+        )
+        scaled = self.retargeter.offset_human_data(
+            scaled,
+            self.retargeter.pos_offsets1,
+            self.retargeter.rot_offsets1,
+        )
+        scaled = self.retargeter.align_human_data_to_ground(scaled)
+        scaled = self.retargeter.apply_ground_offset(scaled)
+        root_position = source[self.retargeter.human_root_name][0]
+        scaled_root_position = (
+            self.retargeter.human_scale_table[self.retargeter.human_root_name]
+            * root_position
+        )
+        for side in ("left", "right"):
+            hip_name = f"{side}_hip"
+            knee_name = f"{side}_knee"
+            foot_name = f"{side}_foot"
+            hip_position, hip_quaternion = source[hip_name]
+            knee_position, knee_quaternion = source[knee_name]
+            foot_position = source[foot_name][0]
+            inferred_reference_axis = _positive_knee_reference_axis(
+                hip_position,
+                hip_quaternion,
+                knee_position,
+                knee_quaternion,
+                foot_position,
+                self.settings.knee_pole_reference_flexion_radians,
+            )
+            reference_axis = self._reference_axes.setdefault(
+                side, inferred_reference_axis
+            )
+            observed_pole = _knee_pole_vector(
+                hip_position, knee_position, foot_position
+            )
+            observed_distance = float(np.linalg.norm(observed_pole))
+            local_knee_quaternion = _quaternion_multiply(
+                _quaternion_conjugate(hip_quaternion), knee_quaternion
+            )
+            flexion = float(_rotation_vector(local_knee_quaternion)[0])
+            candidate_axis = reference_axis
+            if (
+                observed_distance
+                >= self.settings.knee_pole_sample_minimum_distance_meters
+                and flexion >= self.settings.knee_pole_sample_minimum_flexion_radians
+            ):
+                observed_axis = _quaternion_rotate(
+                    _quaternion_conjugate(hip_quaternion),
+                    observed_pole / observed_distance,
+                )
+                if float(np.dot(observed_axis, reference_axis)) > 0.0:
+                    candidate_axis = observed_axis
+            previous_axis = self._local_axes.get(side, reference_axis)
+            if float(np.dot(candidate_axis, previous_axis)) < 0.0:
+                candidate_axis = -candidate_axis
+            alpha = 2.0 / (self.settings.knee_pole_smoothing_frames + 1.0)
+            local_axis = _normalized_vector(
+                (1.0 - alpha) * previous_axis + alpha * candidate_axis,
+                fallback=reference_axis,
+            )
+            self._local_axes[side] = local_axis
+            pole_direction = _quaternion_rotate(hip_quaternion, local_axis)
+            pole_direction = _normalized_vector(
+                pole_direction,
+                fallback=np.asarray((1.0, 0.0, 0.0)),
+            )
+            knee_target, foot_target = _reachable_leg_targets(
+                np.asarray(scaled[hip_name][0]),
+                np.asarray(scaled[foot_name][0]),
+                pole_direction,
+                *self._segment_lengths[side],
+                self.settings.knee_target_minimum_flexion_radians,
+            )
+            for body_name, target_position in (
+                (knee_name, knee_target),
+                (foot_name, foot_target),
+            ):
+                offset_quaternion = self.retargeter.rot_offsets1[body_name].as_quat(
+                    scalar_first=True
+                )
+                body_quaternion = _quaternion_multiply(
+                    source[body_name][1], offset_quaternion
+                )
+                position_offset = _quaternion_rotate(
+                    body_quaternion, self.retargeter.pos_offsets1[body_name]
+                )
+                body_scale = self.retargeter.human_scale_table[body_name]
+                if not math.isfinite(body_scale) or body_scale <= 0.0:
+                    raise ReferenceDiscontinuity(
+                        f"invalid pinned GMR scale for {body_name}"
+                    )
+                source[body_name][0] = (
+                    root_position
+                    + (target_position - position_offset - scaled_root_position)
+                    / body_scale
+                )
+        return {
+            name: (np.asarray(position).copy(), np.asarray(quaternion).copy())
+            for name, (position, quaternion) in source.items()
+        }
+
+
+def _copy_mutable_targets(
+    targets: Mapping[str, list[np.ndarray]],
+) -> dict[str, list[np.ndarray]]:
+    return {
+        name: [np.asarray(position).copy(), np.asarray(quaternion).copy()]
+        for name, (position, quaternion) in targets.items()
+    }
+
+
+def _robot_leg_segment_lengths(retargeter: Any) -> dict[str, tuple[float, float]]:
+    mujoco.mj_forward(retargeter.model, retargeter.configuration.data)
+    positions = retargeter.configuration.data.xpos
+    lengths = {}
+    for side in ("left", "right"):
+        hip = retargeter.model.body(f"{side}_hip_roll_link").id
+        knee = retargeter.model.body(f"{side}_knee_link").id
+        foot = retargeter.model.body(f"{side}_ankle_roll_link").id
+        thigh = float(np.linalg.norm(positions[knee] - positions[hip]))
+        shin = float(np.linalg.norm(positions[foot] - positions[knee]))
+        if not np.all(np.isfinite((thigh, shin))) or min(thigh, shin) <= 0.0:
+            raise ValueError(f"invalid Bello leg segment lengths for {side}")
+        lengths[side] = (thigh, shin)
+    return lengths
+
+
+def _positive_knee_reference_axis(
+    hip_position: np.ndarray,
+    hip_quaternion: np.ndarray,
+    knee_position: np.ndarray,
+    knee_quaternion: np.ndarray,
+    foot_position: np.ndarray,
+    reference_flexion: float,
+) -> np.ndarray:
+    inverse_hip = _quaternion_conjugate(hip_quaternion)
+    inverse_knee = _quaternion_conjugate(knee_quaternion)
+    thigh_offset = _quaternion_rotate(
+        inverse_hip, np.asarray(knee_position) - np.asarray(hip_position)
+    )
+    shin_offset = _quaternion_rotate(
+        inverse_knee, np.asarray(foot_position) - np.asarray(knee_position)
+    )
+    reference_foot = thigh_offset + _quaternion_rotate(
+        _quaternion_from_rotvec(np.asarray((reference_flexion, 0.0, 0.0))),
+        shin_offset,
+    )
+    return _normalized_knee_pole(np.zeros(3), thigh_offset, reference_foot)
+
+
+def _reachable_leg_targets(
+    hip_position: np.ndarray,
+    foot_position: np.ndarray,
+    pole_direction: np.ndarray,
+    thigh_length: float,
+    shin_length: float,
+    minimum_flexion_radians: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    chord = np.asarray(foot_position) - np.asarray(hip_position)
+    distance = float(np.linalg.norm(chord))
+    if not math.isfinite(distance) or distance < 1.0e-8:
+        raise ReferenceUnavailable("SMPL-X hip and foot targets overlap")
+    chord_axis = chord / distance
+    pole = np.asarray(pole_direction) - np.dot(pole_direction, chord_axis) * chord_axis
+    pole_norm = float(np.linalg.norm(pole))
+    if not math.isfinite(pole_norm) or pole_norm < 1.0e-8:
+        basis = np.eye(3)[int(np.argmin(np.abs(chord_axis)))]
+        pole = basis - np.dot(basis, chord_axis) * chord_axis
+        pole_norm = float(np.linalg.norm(pole))
+    pole /= pole_norm
+    minimum_reach = abs(thigh_length - shin_length) + 1.0e-6
+    maximum_reach = math.sqrt(
+        thigh_length**2
+        + shin_length**2
+        + 2.0 * thigh_length * shin_length * math.cos(minimum_flexion_radians)
+    )
+    effective_distance = float(np.clip(distance, minimum_reach, maximum_reach))
+    along = (thigh_length**2 - shin_length**2 + effective_distance**2) / (
+        2.0 * effective_distance
+    )
+    radial = math.sqrt(max(thigh_length**2 - along**2, 0.0))
+    hip_position = np.asarray(hip_position)
+    return (
+        hip_position + along * chord_axis + radial * pole,
+        hip_position + effective_distance * chord_axis,
+    )
+
+
+def _knee_pole_vector(
+    hip_position: np.ndarray,
+    knee_position: np.ndarray,
+    foot_position: np.ndarray,
+) -> np.ndarray:
+    chord = np.asarray(foot_position) - np.asarray(hip_position)
+    chord_norm = float(np.linalg.norm(chord))
+    if not math.isfinite(chord_norm) or chord_norm < 1.0e-8:
+        return np.zeros(3, dtype=np.float64)
+    chord_axis = chord / chord_norm
+    thigh = np.asarray(knee_position) - np.asarray(hip_position)
+    return thigh - np.dot(thigh, chord_axis) * chord_axis
+
+
+def _normalized_knee_pole(
+    hip_position: np.ndarray,
+    knee_position: np.ndarray,
+    foot_position: np.ndarray,
+) -> np.ndarray:
+    pole = _knee_pole_vector(hip_position, knee_position, foot_position)
+    norm = float(np.linalg.norm(pole))
+    if not math.isfinite(norm) or norm < 1.0e-8:
+        raise ReferenceUnavailable("positive-flex knee reference has no bend plane")
+    return pole / norm
+
+
+def _normalized_vector(vector: np.ndarray, *, fallback: np.ndarray) -> np.ndarray:
+    vector = np.asarray(vector, dtype=np.float64)
+    norm = float(np.linalg.norm(vector))
+    if not math.isfinite(norm) or norm < 1.0e-8:
+        vector = np.asarray(fallback, dtype=np.float64)
+        norm = float(np.linalg.norm(vector))
+    return vector / norm
+
+
+def _quaternion_conjugate(quaternion: np.ndarray) -> np.ndarray:
+    result = np.asarray(quaternion, dtype=np.float64).copy()
+    result[1:] *= -1.0
+    return result / np.linalg.norm(result)
+
+
+def _quaternion_rotate(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    quaternion = np.asarray(quaternion, dtype=np.float64)
+    vector = np.asarray(vector, dtype=np.float64)
+    cross = np.cross(quaternion[1:], vector)
+    return vector + 2.0 * (quaternion[0] * cross + np.cross(quaternion[1:], cross))
+
+
+def _rotation_vector(quaternion: np.ndarray) -> np.ndarray:
+    quaternion = np.asarray(quaternion, dtype=np.float64)
+    quaternion = quaternion / np.linalg.norm(quaternion)
+    if quaternion[0] < 0.0:
+        quaternion = -quaternion
+    vector_norm = float(np.linalg.norm(quaternion[1:]))
+    if vector_norm < 1.0e-12:
+        return np.zeros(3, dtype=np.float64)
+    angle = 2.0 * math.atan2(vector_norm, float(quaternion[0]))
+    return angle * quaternion[1:] / vector_norm
 
 
 class GmrBelloRetargeter:
@@ -282,9 +651,17 @@ class GmrBelloRetargeter:
         env: HardwareTwist2Environment,
         metadata: Twist2CheckpointMetadata,
         config: GmrLiveRetargetConfig = GmrLiveRetargetConfig(),
+        validate_reference: Callable[[Twist2ReferenceFrame], None] | None = None,
     ) -> None:
-        require_pinned_gmr_revision(metadata.dataset.gmr_revision)
+        gmr_root = require_pinned_gmr_revision(metadata.dataset.gmr_revision)
         require_robot_fingerprint(metadata.robot_fingerprint)
+        solver_path = (
+            gmr_root
+            / "general_motion_retargeting"
+            / "ik_configs"
+            / "smplx_to_bello.json"
+        )
+        solver_settings = _load_gmr_solver_settings(solver_path)
         retargeter_type = import_pinned_gmr_retargeter()
         with redirect_stdout(io.StringIO()):
             retargeter = retargeter_type(
@@ -301,13 +678,29 @@ class GmrBelloRetargeter:
         self.env = env
         self.metadata = metadata
         self.config = config
+        self.validate_reference = validate_reference
+        self.solver_settings = solver_settings
         self.retargeter = retargeter
         self.model = retargeter.model
         _validate_model_identity(self.model, env.model.mj_model)
         self._joint_ranges = _scalar_joint_ranges(self.model)
+        self._knee_conditioner = _CausalKneeTargetConditioner(
+            retargeter, solver_settings
+        )
+        self._standing_knee_axes: dict[str, np.ndarray] | None = None
+        self._foot_geom_ids = tuple(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            for name in solver_settings.ground_clearance_geoms
+        )
+        if any(geom_id < 0 for geom_id in self._foot_geom_ids):
+            raise ValueError("pinned Bello GMR foot clearance geom is missing")
+        self._ground_data = mujoco.MjData(self.model)
         self._previous_qpos: np.ndarray | None = None
         self._previous_joint_velocity: np.ndarray | None = None
         self._previous_timestamp_ns: int | None = None
+        self._previous_source_feet: np.ndarray | None = None
+        self._source_floor_height: float | None = None
+        self._live_ground_offset: float | None = None
         self._last_sequence: int | None = None
         self._cached: Twist2ReferenceFrame | None = None
         self._standing_qpos: np.ndarray | None = None
@@ -316,6 +709,8 @@ class GmrBelloRetargeter:
         """Settle the canonical SMPL-X standing sample through pinned GMR."""
 
         targets = validate_smplx_target_frame(frame, live=False)
+        self._knee_conditioner.reset()
+        targets = self._knee_conditioner.condition(targets)
         previous = self._solve(targets)
         for _ in range(self.config.settling_rounds - 1):
             current = self._solve(targets)
@@ -323,8 +718,11 @@ class GmrBelloRetargeter:
                 previous = current
                 break
             previous = current
+        previous = self._normalize_standing(previous)
+        previous = self._ground_standing(previous)
         self.retargeter.configuration.update(previous)
         self._standing_qpos = previous.copy()
+        self._standing_knee_axes = self._knee_conditioner.axes()
         self._reset_live_state()
         return Twist2ReferenceFrame(
             qpos=previous,
@@ -337,13 +735,13 @@ class GmrBelloRetargeter:
     def retarget(self, frame: SmplxTargetFrame) -> Twist2ReferenceFrame:
         """Retarget one new live source frame, caching repeated source frames."""
 
-        targets = validate_smplx_target_frame(frame, live=True)
+        source_targets = validate_smplx_target_frame(frame, live=True)
         if self._last_sequence is not None:
             if frame.sequence == self._last_sequence:
                 assert self._cached is not None
                 return self._cached
             if frame.sequence < self._last_sequence:
-                raise ReferenceUnavailable(
+                raise ReferenceDiscontinuity(
                     "SMPL-X source sequence moved backwards: "
                     f"{frame.sequence} < {self._last_sequence}"
                 )
@@ -351,45 +749,72 @@ class GmrBelloRetargeter:
             self._previous_timestamp_ns is not None
             and frame.source_timestamp_ns <= self._previous_timestamp_ns
         ):
-            raise ReferenceUnavailable("SMPL-X source timestamp did not advance")
+            raise ReferenceDiscontinuity("SMPL-X source timestamp did not advance")
         dt = None
         if self._previous_timestamp_ns is not None:
             dt = (frame.source_timestamp_ns - self._previous_timestamp_ns) / 1.0e9
             if not math.isfinite(dt) or not (
                 0.0 < dt <= self.config.max_source_interval_seconds
             ):
-                raise ReferenceUnavailable(
+                raise ReferenceDiscontinuity(
                     f"SMPL-X source interval is invalid: {dt:.6f} seconds"
                 )
-        candidate = self._solve(targets)
-        if self._previous_qpos is None:
-            qpos = candidate
-            joint_velocity = np.zeros(self.model.nq - 7, dtype=np.float64)
-            qvel = np.zeros(self.model.nv, dtype=np.float64)
-        else:
-            assert self._previous_joint_velocity is not None
-            assert dt is not None
-            qpos, joint_velocity = _limit_scalar_joint_candidate(
-                candidate,
-                self._previous_qpos,
-                self._previous_joint_velocity,
-                dt=dt,
-                joint_ranges=self._joint_ranges,
-                maximum_velocity=self.config.max_joint_velocity_rps,
-                maximum_acceleration=self.config.max_joint_acceleration_rps2,
-            )
-            qvel = np.empty(self.model.nv, dtype=np.float64)
-            mujoco.mj_differentiatePos(self.model, qvel, dt, self._previous_qpos, qpos)
-        if not np.all(np.isfinite(qpos)) or not np.all(np.isfinite(qvel)):
-            raise ReferenceUnavailable("GMR produced a non-finite Bello reference")
-        self.retargeter.configuration.update(qpos)
-        result = Twist2ReferenceFrame(
-            qpos=qpos,
-            qvel=qvel,
-            sequence=frame.sequence,
-            source_age_ms=frame.source_age_ms,
-            received_at=frame.received_at,
+        solver_qpos = self.retargeter.configuration.data.qpos.copy()
+        knee_axes = self._knee_conditioner.axes()
+        previous_source_feet = (
+            None
+            if self._previous_source_feet is None
+            else self._previous_source_feet.copy()
         )
+        source_floor_height = self._source_floor_height
+        live_ground_offset = self._live_ground_offset
+        try:
+            targets = self._knee_conditioner.condition(source_targets)
+            candidate = self._solve(targets)
+            candidate = self._ground_live(candidate, source_targets, dt=dt)
+            if self._previous_qpos is None:
+                qpos = candidate
+                joint_velocity = np.zeros(self.model.nq - 7, dtype=np.float64)
+                qvel = np.zeros(self.model.nv, dtype=np.float64)
+            else:
+                assert self._previous_joint_velocity is not None
+                assert dt is not None
+                qpos, joint_velocity = _limit_scalar_joint_candidate(
+                    candidate,
+                    self._previous_qpos,
+                    self._previous_joint_velocity,
+                    dt=dt,
+                    joint_ranges=self._joint_ranges,
+                    maximum_velocity=self.solver_settings.max_joint_velocity_rps,
+                    maximum_acceleration=(
+                        self.solver_settings.max_joint_acceleration_rps2
+                    ),
+                )
+                qvel = np.empty(self.model.nv, dtype=np.float64)
+                mujoco.mj_differentiatePos(
+                    self.model, qvel, dt, self._previous_qpos, qpos
+                )
+            if not np.all(np.isfinite(qpos)) or not np.all(np.isfinite(qvel)):
+                raise ReferenceDiscontinuity(
+                    "GMR produced a non-finite Bello reference"
+                )
+            result = Twist2ReferenceFrame(
+                qpos=qpos,
+                qvel=qvel,
+                sequence=frame.sequence,
+                source_age_ms=frame.source_age_ms,
+                received_at=frame.received_at,
+            )
+            if self.validate_reference is not None:
+                self.validate_reference(result)
+        except BaseException:
+            self.retargeter.configuration.update(solver_qpos)
+            self._knee_conditioner.restore(knee_axes)
+            self._previous_source_feet = previous_source_feet
+            self._source_floor_height = source_floor_height
+            self._live_ground_offset = live_ground_offset
+            raise
+        self.retargeter.configuration.update(qpos)
         self._previous_qpos = qpos
         self._previous_joint_velocity = joint_velocity
         self._previous_timestamp_ns = frame.source_timestamp_ns
@@ -407,20 +832,110 @@ class GmrBelloRetargeter:
 
     def _solve(self, targets: dict[str, tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
         qpos = None
-        for _ in range(self.config.passes_per_frame):
+        for _ in range(self.solver_settings.passes_per_frame):
             qpos = self.retargeter.retarget(_copy_targets(targets))
         assert qpos is not None
         result = np.asarray(qpos, dtype=np.float64)
         if result.shape != (self.model.nq,):
-            raise ReferenceUnavailable(
+            raise ReferenceDiscontinuity(
                 f"GMR returned qpos shape {result.shape}; expected {(self.model.nq,)}"
             )
+        if not np.all(np.isfinite(result)):
+            raise ReferenceDiscontinuity("GMR returned non-finite Bello qpos")
         return result
 
+    def _ground_standing(self, qpos: np.ndarray) -> np.ndarray:
+        sole_z = self._foot_sole_z(qpos)
+        grounded = np.asarray(qpos, dtype=np.float64).copy()
+        grounded[self.env.model.root_qpos_adr + 2] -= float(np.min(sole_z))
+        return grounded
+
+    def _normalize_standing(self, qpos: np.ndarray) -> np.ndarray:
+        """Use GMR arms with the policy's canonical, symmetric Bello leg stance."""
+
+        normalized = np.asarray(qpos, dtype=np.float64).copy()
+        leg_joint_names = (
+            "left_hip_pitch_joint",
+            "left_hip_roll_joint",
+            "left_knee_joint",
+            "left_ankle_pitch_joint",
+            "left_ankle_roll_joint",
+            "right_hip_pitch_joint",
+            "right_hip_roll_joint",
+            "right_hip_yaw_joint",
+            "right_knee_joint",
+            "right_ankle_pitch_joint",
+            "right_ankle_roll_joint",
+            "left_hip_yaw_joint",
+        )
+        for joint_name in leg_joint_names:
+            address = int(self.model.jnt_qposadr[self.model.joint(joint_name).id])
+            normalized[address] = self.env.model.default_qpos[address]
+        root = self.env.model.root_qpos_adr
+        w, x, y, z = normalized[root + 3 : root + 7]
+        yaw = math.atan2(
+            2.0 * (w * z + x * y),
+            1.0 - 2.0 * (y * y + z * z),
+        )
+        normalized[root + 3 : root + 7] = (
+            math.cos(0.5 * yaw),
+            0.0,
+            0.0,
+            math.sin(0.5 * yaw),
+        )
+        return normalized
+
+    def _ground_live(
+        self,
+        qpos: np.ndarray,
+        targets: Mapping[str, tuple[np.ndarray, np.ndarray]],
+        *,
+        dt: float | None,
+    ) -> np.ndarray:
+        source_feet = np.stack(
+            [np.asarray(targets[f"{side}_foot"][0]) for side in ("left", "right")]
+        )
+        if self._source_floor_height is None:
+            self._source_floor_height = float(np.min(source_feet[:, 2]))
+        if self._previous_source_feet is None or dt is None:
+            source_speed = np.zeros(2, dtype=np.float64)
+        else:
+            source_speed = (
+                np.linalg.norm(source_feet - self._previous_source_feet, axis=1) / dt
+            )
+        contacts = (source_speed < self.config.contact_max_speed_mps) & (
+            source_feet[:, 2]
+            <= self._source_floor_height + self.config.contact_height_margin_m
+        )
+        self._previous_source_feet = source_feet
+        sole_z = self._foot_sole_z(qpos)
+        if np.any(contacts):
+            self._live_ground_offset = float(np.min(sole_z[contacts]))
+        elif self._live_ground_offset is None:
+            self._live_ground_offset = float(np.min(sole_z))
+        ground_offset = min(self._live_ground_offset, float(np.min(sole_z)))
+        grounded = np.asarray(qpos, dtype=np.float64).copy()
+        grounded[self.env.model.root_qpos_adr + 2] -= ground_offset
+        return grounded
+
+    def _foot_sole_z(self, qpos: np.ndarray) -> np.ndarray:
+        self._ground_data.qpos[:] = qpos
+        mujoco.mj_forward(self.model, self._ground_data)
+        heights = np.empty(2, dtype=np.float64)
+        for output, geom_id in enumerate(self._foot_geom_ids):
+            rotation = self._ground_data.geom_xmat[geom_id].reshape(3, 3)
+            vertical_extent = np.abs(rotation[2]) @ self.model.geom_size[geom_id]
+            heights[output] = self._ground_data.geom_xpos[geom_id, 2] - vertical_extent
+        return heights
+
     def _reset_live_state(self) -> None:
+        self._knee_conditioner.reset(self._standing_knee_axes)
         self._previous_qpos = None
         self._previous_joint_velocity = None
         self._previous_timestamp_ns = None
+        self._previous_source_feet = None
+        self._source_floor_height = None
+        self._live_ground_offset = None
         self._last_sequence = None
         self._cached = None
 
@@ -480,11 +995,11 @@ class LiveGmrReferenceSource:
         with self._condition:
             if self._terminal_error is not None:
                 raise RuntimeError("live GMR worker failed") from self._terminal_error
+            if self._latest is not None:
+                return self._latest
             if self._unavailable is not None:
                 raise self._unavailable
-            if self._latest is None:
-                raise ReferenceUnavailable("no live SMPL-X frame has been retargeted")
-            return self._latest
+            raise ReferenceUnavailable("no live SMPL-X frame has been retargeted")
 
     def wait_until_ready(self, timeout_seconds: float) -> Twist2ReferenceFrame:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
@@ -498,8 +1013,6 @@ class LiveGmrReferenceSource:
                 self._condition.wait(remaining)
             if self._terminal_error is not None:
                 raise RuntimeError("live GMR worker failed") from self._terminal_error
-            if self._unavailable is not None:
-                raise self._unavailable
             assert self._latest is not None
             return self._latest
 
@@ -514,13 +1027,19 @@ class LiveGmrReferenceSource:
                 if frame is None:
                     continue
                 reference = self.retargeter.retarget(frame)
-            except ReferenceUnavailable as error:
+            except ReferenceDiscontinuity as error:
                 try:
                     self.retargeter.reset_live()
                 except BaseException as reset_error:
                     self._set_terminal(reset_error)
                     return
                 after_sequence = None
+                with self._condition:
+                    self._latest = None
+                    self._unavailable = error
+                    self._condition.notify_all()
+                continue
+            except ReferenceUnavailable as error:
                 with self._condition:
                     self._unavailable = error
                     self._condition.notify_all()

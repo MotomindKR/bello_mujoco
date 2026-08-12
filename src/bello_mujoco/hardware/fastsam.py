@@ -32,7 +32,9 @@ from bello_mujoco.hardware.smplx_retarget import (
 from bello_mujoco.hardware.twist2 import (
     HardwareTwist2Config,
     HardwareTwist2PolicyAdapter,
+    ReferenceDiscontinuity,
     ReferenceUnavailable,
+    validate_twist2_reference,
 )
 from bello_mujoco.repository import repository_root
 
@@ -285,7 +287,7 @@ class FastSamSmplxStream:
         if payload is None:
             raise RuntimeError("Fast-SAM stream published an empty event")
         if after_sequence is not None and payload.sequence <= after_sequence:
-            raise ReferenceUnavailable(
+            raise ReferenceDiscontinuity(
                 "Fast-SAM frame sequence did not advance: "
                 f"{payload.sequence} <= {after_sequence}"
             )
@@ -351,19 +353,36 @@ class FastSamSmplxStream:
         state = message.state
         if state not in _ALL_TRACKING_STATES:
             raise ValueError(f"Fast-SAM emitted unknown tracking state {state!r}")
-        if state in ("ACQUIRED", "REACQUIRED"):
-            self._coordinates.reset()
-            self._active_track_id = (
-                int(message.track_id) if message.HasField("track_id") else None
-            )
+        if state == "ACQUIRED":
+            track_id = int(message.track_id) if message.HasField("track_id") else None
+            self._reset_tracking_epoch(track_id)
             self._publish(
-                ReferenceUnavailable(
+                ReferenceDiscontinuity(
                     f"Fast-SAM tracking state is {state}; awaiting its first pose"
                 )
             )
-        elif state not in _ACTIVE_TRACKING_STATES:
-            self._coordinates.reset()
-            self._active_track_id = None
+        elif state == "REACQUIRED":
+            track_id = int(message.track_id) if message.HasField("track_id") else None
+            if self._active_track_id is not None and track_id == self._active_track_id:
+                self._publish(
+                    ReferenceUnavailable(
+                        "Fast-SAM reacquired the same track; awaiting its next pose"
+                    )
+                )
+            else:
+                self._reset_tracking_epoch(track_id)
+                self._publish(
+                    ReferenceDiscontinuity(
+                        "Fast-SAM reacquired a different track; awaiting its first pose"
+                    )
+                )
+        elif state in ("UNLOCKED", "LOST"):
+            self._reset_tracking_epoch(None)
+            reason = message.reason or "no reason supplied"
+            self._publish(
+                ReferenceDiscontinuity(f"Fast-SAM tracking state is {state}: {reason}")
+            )
+        elif state in ("OCCLUDED", "AMBIGUOUS"):
             reason = message.reason or "no reason supplied"
             self._publish(
                 ReferenceUnavailable(f"Fast-SAM tracking state is {state}: {reason}")
@@ -376,14 +395,14 @@ class FastSamSmplxStream:
         submit_ns = int(message.submit_monotonic_ns)
         output_ns = int(message.output_monotonic_ns)
         if source_timestamp_ns <= 0 or submit_ns <= 0 or output_ns < submit_ns:
-            raise ReferenceUnavailable("Fast-SAM frame timestamps are invalid")
+            raise ReferenceDiscontinuity("Fast-SAM frame timestamps are invalid")
         if self._last_frame_id is not None and frame_id <= self._last_frame_id:
-            raise ReferenceUnavailable("Fast-SAM frame id did not advance")
+            raise ReferenceDiscontinuity("Fast-SAM frame id did not advance")
         if (
             self._last_source_timestamp_ns is not None
             and source_timestamp_ns <= self._last_source_timestamp_ns
         ):
-            raise ReferenceUnavailable("Fast-SAM source timestamp did not advance")
+            raise ReferenceDiscontinuity("Fast-SAM source timestamp did not advance")
         state = message.tracking_state
         if state not in _ACTIVE_TRACKING_STATES:
             raise ReferenceUnavailable(
@@ -393,7 +412,11 @@ class FastSamSmplxStream:
             raise ReferenceUnavailable("Fast-SAM active skeleton has no track id")
         track_id = int(message.track_id)
         if self._active_track_id is not None and track_id != self._active_track_id:
-            self._coordinates.reset()
+            previous_track = self._active_track_id
+            self._reset_tracking_epoch(track_id)
+            raise ReferenceDiscontinuity(
+                f"Fast-SAM track changed from {previous_track} to {track_id}"
+            )
         self._active_track_id = track_id
         positions = _finite_array(
             message.joint_positions, (len(SMPLX_BODY_JOINT_NAMES), 3), "positions"
@@ -489,6 +512,12 @@ class FastSamSmplxStream:
             received_at=received_at,
         )
 
+    def _reset_tracking_epoch(self, track_id: int | None) -> None:
+        self._coordinates.reset()
+        self._active_track_id = track_id
+        self._last_frame_id = None
+        self._last_source_timestamp_ns = None
+
     def _publish(self, payload: SmplxTargetFrame | BaseException) -> None:
         with self._condition:
             self._payload = payload
@@ -525,6 +554,9 @@ def fastsam_reference_source(
             adapter.env,
             adapter.metadata,
             GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),
+            validate_reference=lambda reference: validate_twist2_reference(
+                reference, adapter.env, config
+            ),
         )
         with LiveGmrReferenceSource(stream, retargeter) as source:
             print(

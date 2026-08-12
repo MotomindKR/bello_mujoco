@@ -155,6 +155,7 @@ class HardwareCommandConfig:
     fastsam_connect_timeout_seconds: float
     fastsam_rpc_timeout_seconds: float
     fastsam_reference_ready_timeout_seconds: float
+    fastsam_reference_qualification_frames: int
     fastsam_min_tracking_confidence: float
     fastsam_min_joint_confidence: float
     fastsam_max_pipeline_latency_ms: float
@@ -837,6 +838,7 @@ def _hardware_hydra(config: DictConfig) -> None:
         "fastsam_connect_timeout_seconds",
         "fastsam_rpc_timeout_seconds",
         "fastsam_reference_ready_timeout_seconds",
+        "fastsam_reference_qualification_frames",
         "fastsam_min_tracking_confidence",
         "fastsam_min_joint_confidence",
         "fastsam_max_pipeline_latency_ms",
@@ -897,6 +899,9 @@ def _hardware_hydra(config: DictConfig) -> None:
                 fastsam_rpc_timeout_seconds=command.fastsam_rpc_timeout_seconds,
                 fastsam_reference_ready_timeout_seconds=(
                     command.fastsam_reference_ready_timeout_seconds
+                ),
+                fastsam_reference_qualification_frames=(
+                    command.fastsam_reference_qualification_frames
                 ),
                 fastsam_min_tracking_confidence=(
                     command.fastsam_min_tracking_confidence
