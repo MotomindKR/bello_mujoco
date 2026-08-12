@@ -134,7 +134,7 @@ class EmulatorCommandConfig:
 
 @dataclass(frozen=True)
 class HardwareCommandConfig:
-    task: Literal["locomotion", "motion"]
+    task: Literal["locomotion", "motion", "twist2"]
     checkpoint_path: Path | None
     standing_checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
@@ -149,6 +149,21 @@ class HardwareCommandConfig:
     policy_log_path: Path | None
     gamepad_enabled: bool
     arm: bool
+    fastsam_endpoint: str
+    fastsam_tls_root_certificate_path: Path | None
+    fastsam_tls_server_name_override: str | None
+    fastsam_connect_timeout_seconds: float
+    fastsam_rpc_timeout_seconds: float
+    fastsam_reference_ready_timeout_seconds: float
+    fastsam_min_tracking_confidence: float
+    fastsam_min_joint_confidence: float
+    fastsam_max_pipeline_latency_ms: float
+    fastsam_transport_latency_budget_ms: float
+    fastsam_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
+    fastsam_align_initial_heading: bool
+    fastsam_align_initial_floor: bool
+    smplx_neutral_model_path: Path | None
+    smplx_human_height_m: float
 
 
 def prepare_assets_entrypoint() -> None:
@@ -799,6 +814,8 @@ def hardware_entrypoint() -> None:
             "standing_checkpoint_path=",
             "motion_path=",
             "policy_log_path=",
+            "fastsam_tls_root_certificate_path=",
+            "smplx_neutral_model_path=",
         )
     )
     _hardware_hydra()
@@ -813,8 +830,101 @@ def _hardware_hydra(config: DictConfig) -> None:
     command = command_config(HardwareCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     policy_log_path = _hardware_policy_log_path(command.policy_log_path)
+    fastsam_fields = (
+        "fastsam_endpoint",
+        "fastsam_tls_root_certificate_path",
+        "fastsam_tls_server_name_override",
+        "fastsam_connect_timeout_seconds",
+        "fastsam_rpc_timeout_seconds",
+        "fastsam_reference_ready_timeout_seconds",
+        "fastsam_min_tracking_confidence",
+        "fastsam_min_joint_confidence",
+        "fastsam_max_pipeline_latency_ms",
+        "fastsam_transport_latency_budget_ms",
+        "fastsam_camera_to_world_quaternion_xyzw",
+        "fastsam_align_initial_heading",
+        "fastsam_align_initial_floor",
+        "smplx_neutral_model_path",
+        "smplx_human_height_m",
+    )
+    if command.task == "twist2":
+        _reject_explicit_fields(
+            ("command", "gamepad_enabled", "motion_path", "standing_checkpoint_path"),
+            context="task=twist2",
+        )
+        if (
+            command.motion_path is not None
+            or command.standing_checkpoint_path is not None
+        ):
+            raise ValueError(
+                "motion_path and standing_checkpoint_path are not valid for task=twist2"
+            )
+        from bello_mujoco.hardware.twist2 import (
+            HardwareTwist2Config,
+            run_hardware_twist2,
+        )
+
+        base = HardwareTwist2Config()
+        run_hardware_twist2(
+            checkpoint,
+            replace(
+                base,
+                endpoint=command.endpoint,
+                max_duration_seconds=command.duration_seconds,
+                ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
+                policy_transition_seconds=_coalesce(
+                    command.policy_transition_seconds,
+                    base.policy_transition_seconds,
+                ),
+                max_motion_tilt_radians=_coalesce(
+                    command.max_motion_tilt_radians,
+                    base.max_motion_tilt_radians,
+                ),
+                status_interval_seconds=command.status_interval_seconds,
+                policy_log_path=policy_log_path,
+                arm=command.arm,
+                allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+                fastsam_endpoint=command.fastsam_endpoint,
+                fastsam_tls_root_certificate_path=(
+                    command.fastsam_tls_root_certificate_path
+                ),
+                fastsam_tls_server_name_override=(
+                    command.fastsam_tls_server_name_override
+                ),
+                fastsam_connect_timeout_seconds=(
+                    command.fastsam_connect_timeout_seconds
+                ),
+                fastsam_rpc_timeout_seconds=command.fastsam_rpc_timeout_seconds,
+                fastsam_reference_ready_timeout_seconds=(
+                    command.fastsam_reference_ready_timeout_seconds
+                ),
+                fastsam_min_tracking_confidence=(
+                    command.fastsam_min_tracking_confidence
+                ),
+                fastsam_min_joint_confidence=command.fastsam_min_joint_confidence,
+                fastsam_max_pipeline_latency_ms=(
+                    command.fastsam_max_pipeline_latency_ms
+                ),
+                fastsam_transport_latency_budget_ms=(
+                    command.fastsam_transport_latency_budget_ms
+                ),
+                fastsam_camera_to_world_quaternion_xyzw=(
+                    command.fastsam_camera_to_world_quaternion_xyzw
+                ),
+                fastsam_align_initial_heading=command.fastsam_align_initial_heading,
+                fastsam_align_initial_floor=command.fastsam_align_initial_floor,
+                smplx_neutral_model_path=_required_path(
+                    command.smplx_neutral_model_path,
+                    "smplx_neutral_model_path",
+                ),
+                smplx_human_height_m=command.smplx_human_height_m,
+            ),
+        )
+        return
     if command.task == "motion":
-        _reject_explicit_fields(("command", "gamepad_enabled"), context="task=motion")
+        _reject_explicit_fields(
+            ("command", "gamepad_enabled", *fastsam_fields), context="task=motion"
+        )
         standing_checkpoint = _required_path(
             command.standing_checkpoint_path,
             "standing_checkpoint_path",
@@ -859,6 +969,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             "standing_checkpoint_path",
             "policy_transition_seconds",
             "max_motion_tilt_radians",
+            *fastsam_fields,
         ),
         context="task=locomotion",
     )

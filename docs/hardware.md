@@ -4,14 +4,15 @@
 complete public fields and defaults are in the
 [command reference](commands.md#bello-run-hardware).
 
-The runner has two task modes:
+The runner has three task modes:
 
 | Task | Policy input | External services |
 | --- | --- | --- |
 | Locomotion | Motor state, pelvis IMU, previous action, and fixed or gamepad velocity command | `bello-hardwared` |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
+| TWIST2 | Motor state, pelvis IMU, current and historical proprioception, and a live retargeted pose | `bello-hardwared` plus `fastsam3dbody-serve` |
 
-Both modes run policy inference on JAX's CPU backend. The command overrides
+All modes run policy inference on JAX's CPU backend. The command overrides
 inherited JAX platform selectors before importing either runner, and exposes no
 hardware backend option.
 
@@ -62,7 +63,7 @@ Arming requires a spotter, a working E-stop, and `arm=true`. Armed control
 requires the asynchronous hardware binding so target acknowledgements do not
 block the policy-rate loop.
 
-After preflight, both task modes begin with the same interactive sequence:
+After preflight, all task modes begin with the same interactive sequence:
 
 1. The operator supports the robot and types the exact word `HOLD`.
 2. The runner acquires control and ramps to the checkpoint nominal pose over
@@ -145,9 +146,72 @@ state/timing output is disabled by default; set `status_interval_seconds` to a
 positive interval to enable it. Phase transitions and a final motion timing
 summary are always reported.
 
+## TWIST2 mode
+
+TWIST2 deployment requires a typed `twist2` checkpoint, the pinned
+`deps/Fast-SAM-3D-Body` and `deps/GMR` revisions, and an operator-supplied
+licensed `SMPLX_NEUTRAL.npz`. The neutral model is read locally only to derive
+the exact zero-pose SMPL-X body joints used in normal standing; it is never
+copied into a checkpoint or Git. The live server must advertise schema 1,
+`smplx_body_22`, the exact standard 22-joint order and hierarchy, OpenCV camera
+coordinates, `xyzw` quaternions, and the reviewed learned converter. A legacy
+native-MHR stream is rejected.
+
+Run the pinned server from its own environment. Copy and calibrate one of its
+service examples, retain `output_representation: smplx_body_22` and
+`person_selection: track`, and use the reserved local port 50055 when it shares
+a host with the other Bello services:
+
+```text
+cd deps/Fast-SAM-3D-Body
+nix develop
+mkdir -p ~/.config/fastsam3dbody
+cp examples/service.pinhole.yaml ~/.config/fastsam3dbody/service.yaml
+# Set grpc.listen to 127.0.0.1:50055 and replace camera calibration values.
+fastsam3dbody-serve --config ~/.config/fastsam3dbody/service.yaml --check-config
+fastsam3dbody-serve --config ~/.config/fastsam3dbody/service.yaml
+```
+
+Keep that local service YAML outside the submodule so the deployment checkout
+remains clean for exact-source hardware validation.
+
+Then perform read-only Bello preflight from the repository root:
+
+```text
+uv run bello-run-hardware \
+  task=twist2 \
+  checkpoint_path=checkpoints/twist2_hardware \
+  smplx_neutral_model_path=/absolute/path/to/SMPLX_NEUTRAL.npz
+```
+
+The default camera rotation assumes a level, forward-looking camera: camera
+forward becomes world forward, camera right becomes world right, and camera
+down becomes world down. On each target acquisition the adapter captures the
+initial pelvis horizontal origin, standing foot height, and heading. Subsequent
+translation and vertical motion are preserved. A differently mounted camera
+must supply a calibrated `fastsam_camera_to_world_quaternion_xyzw`; disabling
+initial heading or floor alignment is explicit.
+
+Preflight connects to Fast-SAM, validates server readiness and tracking mode,
+waits for one confidence- and latency-qualified pose, retargets it through GMR,
+and compiles the policy before connecting to the robot. The live gRPC consumer
+and GMR solver run in background threads with capacity-one/latest-only
+semantics; the 50 Hz control loop never blocks on either service. Frame age is
+the server's complete pipeline latency plus the configured transport budget and
+local time since receipt.
+
+Armed operation follows `HOLD`, the nominal ramp, and `RUN`. `RUN` starts the
+policy on the neutral SMPL-X standing reference while commands continue at 50
+Hz. Exact `MOTION` confirmation transitions to the current live GMR reference.
+Occlusion, ambiguity, low confidence, excessive latency, invalid retargeted
+motion, or stream failure returns the robot to neutral standing or initiates a
+damped shutdown according to severity. Fast-SAM `LOST` remains terminal for
+that target until its `ResetTarget` RPC is invoked; target reacquisition is not
+performed silently by the Bello runner.
+
 ## Runtime safety checks
 
-Both armed modes continuously check:
+All armed modes continuously check:
 
 - expected control-group state and hardware receipt errors;
 - motor and IMU sample freshness;
@@ -160,6 +224,11 @@ Both armed modes continuously check:
 Motion adds pose age/frame/source-time validation, pose/IMU agreement,
 estimator-provided base-velocity bounds,
 reference completion, and raw-versus-applied action bounds.
+
+TWIST2 adds exact Fast-SAM stream semantics, tracking and required-joint
+confidence, pipeline/reference age, source sequence and timestamp monotonicity,
+SMPL-X quaternion validity, GMR joint velocity/acceleration and joint limits,
+retargeted root/body velocity, and raw Gaussian action bounds.
 
 `duration_seconds` covers the complete post-`RUN` policy flow. Ramp time and the
 `HOLD`/`RUN` confirmation waits are not included. A `null` duration runs until

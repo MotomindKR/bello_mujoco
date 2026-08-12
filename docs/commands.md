@@ -303,7 +303,7 @@ uv run bello-run-hardware checkpoint_path=...
 Physical hardware execution is checkout-only. A wheel installation does not
 contain the binding or hardware description.
 
-The command always selects JAX's CPU backend before loading either hardware
+The command always selects JAX's CPU backend before loading a hardware
 runner. Inherited `JAX_PLATFORMS` and `JAX_PLATFORM_NAME` values are ignored;
 there is no hardware backend configuration field.
 
@@ -311,21 +311,36 @@ Configuration source: `configs/commands/hardware.yaml`.
 
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
-| `task` | `locomotion` or `motion`; `locomotion` | both | Select the checkpoint and observation contract. |
-| `checkpoint_path` | path or `null`; `null` | both | Required locomotion or motion checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
+| `task` | `locomotion`, `motion`, or `twist2`; `locomotion` | all | Select the checkpoint and observation contract. |
+| `checkpoint_path` | path or `null`; `null` | all | Required checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
 | `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
-| `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout. This does not disable task, shape, asset, motion-content, or hardware preflight checks. |
-| `endpoint` | string; `http://127.0.0.1:50051` | both | `bello-hardwared` endpoint. |
+| `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout. This does not disable task, shape, asset, motion-content, source-service, or hardware preflight checks. |
+| `endpoint` | string; `http://127.0.0.1:50051` | all | `bello-hardwared` endpoint. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
-| `duration_seconds` | positive float or `null`; `null` | both | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
-| `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for both tasks. |
-| `policy_transition_seconds` | positive float or `null`; `null` | motion | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 0.2 seconds. |
-| `max_motion_tilt_radians` | positive float or `null`; `null` | motion | Maximum robot tilt during transitions into and out of motion tracking and while motion tracking is active. `null` uses 70 degrees (approximately 1.222 radians); standing locomotion keeps its 0.70-radian limit. |
-| `status_interval_seconds` | positive float or `null`; `null` | both | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
-| `policy_log_path` | path or `null`; `null` | both | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
+| `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
+| `ramp_seconds` | positive float or `null`; `null` | all | Override nominal-pose ramp time. `null` uses 10 seconds. |
+| `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 0.2 seconds. |
+| `max_motion_tilt_radians` | positive float or `null`; `null` | motion, twist2 | Maximum robot tilt during transitions and active motion. `null` uses 70 degrees (approximately 1.222 radians); standing keeps its 0.70-radian limit. |
+| `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
+| `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
-| `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |
+| `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
+| `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
+| `fastsam_tls_root_certificate_path` | path or `null`; `null` | twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
+| `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |
+| `fastsam_connect_timeout_seconds` | positive float; `5.0` | twist2 | Deadline for establishing the gRPC channel. |
+| `fastsam_rpc_timeout_seconds` | positive float; `2.0` | twist2 | Deadline for stream-info and status RPCs. |
+| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | twist2 | Time allowed for the first valid tracked pose and GMR result during preflight. |
+| `fastsam_min_tracking_confidence` | float in `[0,1]`; `0.5` | twist2 | Minimum whole-person confidence. |
+| `fastsam_min_joint_confidence` | float in `[0,1]`; `0.25` | twist2 | Minimum confidence for every GMR target joint. |
+| `fastsam_max_pipeline_latency_ms` | positive float; `120.0` | twist2 | Maximum server-reported submission-to-output latency. |
+| `fastsam_transport_latency_budget_ms` | nonnegative float; `10.0` | twist2 | Conservative transport contribution added to every reference age because server and robot hosts need not share a monotonic clock. |
+| `fastsam_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | twist2 | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
+| `fastsam_align_initial_heading` | boolean; `true` | twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
+| `fastsam_align_initial_floor` | boolean; `true` | twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
+| `smplx_neutral_model_path` | path or `null`; `null` | twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to construct exact normal-standing joints. |
+| `smplx_human_height_m` | positive float; `1.66` | twist2 | Human height supplied to the pinned GMR scale table. |
 
 Fields that apply to only one task must not be explicitly supplied when the
 other task is selected, even if the supplied value equals the documented
@@ -340,7 +355,7 @@ Motion additionally requires a locomotion checkpoint selected by
 motion checkpoints must resolve to the same ordered physical-coordinate
 mapping.
 
-Both armed tasks require the operator to type exact interactive confirmations:
+All armed tasks require the operator to type exact interactive confirmations:
 `HOLD` before the nominal-pose ramp and `RUN` before policy control. Motion mode
 ramps to the standing checkpoint, starts its zero-command locomotion policy
 after `RUN`, and requires exact `MOTION` confirmation while that policy remains
@@ -351,6 +366,10 @@ damped shutdown. While waiting for `RUN`, the runner continues refreshing the
 hold target and checking telemetry and measured nominal-pose error bounds:
 0.25 rad for direct coordinates and 1.00 rad for the load-bearing differential
 ankle motor coordinates.
+TWIST2 uses the same standing-to-motion routine, but normal standing is the
+local neutral SMPL-X zero pose retargeted through GMR and live `MOTION` input is
+the latest valid Fast-SAM SMPL-X frame. Its complete setup and loss behavior are
+documented in [Physical hardware](hardware.md#twist2-mode).
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
