@@ -267,7 +267,9 @@ uv run bello-eval \
 
 Evaluation disables training noise, randomization, adaptive sampling, and
 stochastic action sampling. It visits every held-out clip in stable order and
-never carries state across a terminal reset. Supply
+never carries state across a terminal reset. The 500-step rollout is compiled
+once against the fixed-capacity bank contract; clip offsets and shard arrays
+remain dynamic inputs, and terminal clips stop inside the compiled loop. Supply
 `video_path=outputs/evaluation/sonic.mp4` for one representative video; `steps`
 bounds only that video.
 

@@ -15,7 +15,14 @@ from bello_mujoco.envs.sonic import (
     SonicObservationContract,
     _build_sampling_bins,
 )
-from bello_mujoco.evaluation.sonic import _device_reference_bank
+import bello_mujoco.evaluation.sonic as sonic_evaluation
+from bello_mujoco.evaluation.sonic import (
+    _REWARD_TERM_NAMES,
+    _TERMINATION_NAMES,
+    _build_compiled_clip_evaluator,
+    _compiled_clip_result,
+    _device_reference_bank,
+)
 from bello_mujoco.motion.sonic_dataset import (
     G1_ISAACLAB_JOINT_NAMES,
     G1_MUJOCO_JOINT_NAMES,
@@ -61,6 +68,7 @@ from bello_mujoco.sonic_policy import (
     sonic_fsq,
 )
 from bello_mujoco.training.sonic import (
+    _device_reference_bank_arrays,
     _tracking_dataset_summary,
     sonic_reference_shard_for_update,
 )
@@ -112,6 +120,42 @@ TEST_EDGE_PAIRS = tuple(
     ("right_wrist_yaw_joint", "right_elbow_yaw_joint"),
     ("left_wrist_yaw_joint", "left_elbow_yaw_joint"),
 )
+
+
+class _FakeEvaluationEnv:
+    def __init__(self, reference_bank: SonicReferenceBank) -> None:
+        self.reference_bank = reference_bank
+        self.config = SimpleNamespace(max_episode_steps=5)
+
+    def _unchecked_runtime_copy(
+        self, *, reference_bank: SonicReferenceBank | None
+    ) -> _FakeEvaluationEnv:
+        copied = object.__new__(_FakeEvaluationEnv)
+        copied.reference_bank = reference_bank
+        copied.config = self.config
+        return copied
+
+    def reset(self):
+        return jnp.asarray(0, dtype=jnp.int32), jnp.asarray(0.0, dtype=jnp.float32)
+
+    def step(self, state, action):
+        del action
+        next_state = state + 1
+        value = next_state.astype(jnp.float32)
+        done = next_state >= 3
+        info = {name: jnp.asarray(False) for name in _TERMINATION_NAMES}
+        info.update(
+            {
+                "done/terminal": done,
+                "done/any": done,
+                "tracking/root_position_error_m": value,
+                "tracking/root_orientation_error_rad": value * 0.1,
+                "tracking/joint_position_rms_rad": value * 0.2,
+                "tracking/foot_slip_mean_mps": jnp.asarray(0.3),
+                **{name: jnp.asarray(2.0) for name in _REWARD_TERM_NAMES},
+            }
+        )
+        return next_state, value, jnp.asarray(1.0), done, info
 
 
 def test_sidecar_tool_and_runtime_schema_constants_match() -> None:
@@ -463,6 +507,51 @@ def test_padded_reference_clip_selection_preserves_fixed_array_shapes() -> None:
     device_bank = _device_reference_bank(bank)
     device_selected = select_padded_sonic_reference_clip(device_bank, 1)
     assert device_selected.qpos is device_bank.qpos
+
+
+def test_compiled_evaluation_stops_at_terminal_and_aggregates_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bank = _reference_bank(50, lengths=np.asarray((50,), dtype=np.int32))
+    env = _FakeEvaluationEnv(bank)
+    monkeypatch.setattr(
+        sonic_evaluation,
+        "normalize_observation",
+        lambda observation, state, config: observation,
+    )
+    monkeypatch.setattr(
+        sonic_evaluation,
+        "apply_actor",
+        lambda policy, observation: observation,
+    )
+    evaluate = _build_compiled_clip_evaluator(
+        env,
+        policy=None,
+        observation_norm_state=None,
+        metadata=SimpleNamespace(ppo=None),
+    )
+
+    result = _compiled_clip_result(evaluate(_device_reference_bank_arrays(bank)))
+
+    assert result["steps"] == 3
+    assert result["expected_steps"] == 5
+    assert result["completion_fraction"] == pytest.approx(0.6)
+    assert result["completed"] is False
+    assert result["episode_return"] == pytest.approx(3.0)
+    assert result["root_position_rms_m"] == pytest.approx(np.sqrt(14.0 / 3.0))
+    assert result["root_orientation_rms_deg"] == pytest.approx(
+        np.degrees(np.sqrt(0.14 / 3.0))
+    )
+    assert result["joint_position_rms_rad"] == pytest.approx(np.sqrt(0.56 / 3.0))
+    assert result["foot_slip_mean_mps"] == pytest.approx(0.3)
+    assert result["terminal"] is True
+    assert result["timeout"] is False
+    assert result["termination_counts"] == {
+        "done/any": 1,
+        "done/terminal": 1,
+    }
+    assert set(result["reward_terms"]) == set(_REWARD_TERM_NAMES)
+    assert set(result["reward_terms"].values()) == {2.0}
 
 
 def test_dataset_index_and_split_hashes_are_enforced(tmp_path: Path) -> None:

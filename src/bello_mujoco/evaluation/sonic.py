@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import mujoco
 import numpy as np
 
@@ -41,6 +42,10 @@ from bello_mujoco.training.checkpoint import (
     restore_evaluation_checkpoint,
 )
 from bello_mujoco.training.ppo import normalize_observation
+from bello_mujoco.training.sonic import (
+    _bind_reference_bank,
+    _device_reference_bank_arrays,
+)
 
 
 _REFERENCE_FRAME_ARRAY_FIELDS = (
@@ -55,6 +60,37 @@ _REFERENCE_FRAME_ARRAY_FIELDS = (
     "smpl_root_quat_wxyz",
     "smpl_root_translation",
     "g1_joint_pos",
+)
+
+_REWARD_TERM_NAMES = (
+    "reward/tracking_anchor_position",
+    "reward/tracking_anchor_orientation",
+    "reward/tracking_relative_body_position",
+    "reward/tracking_relative_body_orientation",
+    "reward/tracking_body_linear_velocity",
+    "reward/tracking_body_angular_velocity",
+    "reward/action_rate",
+    "reward/joint_limit",
+    "reward/undesired_contacts",
+    "reward/anti_shake_angular_velocity",
+    "reward/tracking_five_point_local",
+    "reward/feet_acceleration",
+)
+
+_TERMINATION_NAMES = (
+    "done/root_height",
+    "done/orientation",
+    "done/end_effector_height",
+    "done/foot_position",
+    "done/nonfinite",
+    "done/timeout",
+    "done/sonic_timeout",
+    "done/terminal",
+    "done/any",
+    "done/height",
+    "done/pose",
+    "done/root_velocity",
+    "done/torso_contact",
 )
 
 
@@ -174,8 +210,15 @@ def evaluate_sonic_checkpoint(
         )
     del policy_template, release
 
+    evaluate_clip = _build_compiled_clip_evaluator(
+        first_env,
+        train_state.policy,
+        normalization.observation,
+        metadata,
+    )
+
     clip_results = []
-    video_env = None
+    video_env = first_env if config.video_path is not None else None
     for clip_index, clip in enumerate(heldout):
         shard_index = int(clip["shard_index"])
         if shard_index != current_shard_index:
@@ -188,26 +231,17 @@ def evaluate_sonic_checkpoint(
                 )
             )
             current_shard_index = shard_index
-        env = (
-            first_env
-            if clip_index == 0
-            else first_env._unchecked_runtime_copy(
-                reference_bank=select_padded_sonic_reference_clip(
-                    current_bank,
-                    _bank_clip_index(current_bank, clip),
-                ),
-                sampling_bin_probabilities=None,
-            )
+        selected_bank = select_padded_sonic_reference_clip(
+            current_bank,
+            _bank_clip_index(current_bank, clip),
         )
-        result = _evaluate_clip(
-            env,
-            train_state.policy,
-            normalization.observation,
-            metadata,
+        accumulators = evaluate_clip(_device_reference_bank_arrays(selected_bank))
+        clip_results.append(
+            {
+                **clip,
+                **_compiled_clip_result(accumulators),
+            }
         )
-        clip_results.append({**clip, **result})
-        if video_env is None and config.video_path is not None:
-            video_env = env
         completed = clip_index + 1
         if completed % 100 == 0 or completed == len(heldout):
             print(
@@ -343,59 +377,165 @@ def _bank_clip_index(bank: SonicReferenceBank, clip: dict[str, Any]) -> int:
     return matches[0]
 
 
-def _evaluate_clip(env, policy, observation_norm_state, metadata) -> dict[str, Any]:
-    state, observation = env.reset()
-    root_errors = []
-    orientation_errors = []
-    joint_errors = []
-    foot_slips = []
-    rewards = []
-    reward_terms: dict[str, list[float]] = {}
-    termination_counts: dict[str, int] = {}
-    terminal = False
-    timeout = False
-    expected_steps = min(
-        env.config.max_episode_steps,
-        int(env.reference_bank.lengths[0]) - 1,
+def _build_compiled_clip_evaluator(
+    env: BelloSonicEnv,
+    policy,
+    observation_norm_state,
+    metadata: SonicCheckpointMetadata,
+):
+    reference_bank = env.reference_bank
+    if reference_bank is None:
+        raise ValueError("SONIC compiled evaluation requires a reference bank")
+    static_env = env._unchecked_runtime_copy(reference_bank=None)
+    bank_metadata = (
+        reference_bank.source_ids,
+        reference_bank.sequence_ids,
+        reference_bank.joint_names,
+        reference_bank.body_names,
+        reference_bank.calibration,
+        reference_bank.sampling_bin_size,
     )
-    for _ in range(expected_steps):
-        policy_observation = normalize_observation(
-            observation, observation_norm_state, metadata.ppo
+    maximum_steps = env.config.max_episode_steps
+
+    def evaluate(arrays):
+        current_env = _bind_reference_bank(static_env, arrays, bank_metadata)
+        state, observation = current_env.reset()
+        expected_steps = jnp.minimum(
+            jnp.asarray(maximum_steps, dtype=jnp.int32),
+            jnp.asarray(current_env.reference_bank.lengths)[0] - 1,
         )
-        action = apply_actor(policy, policy_observation)
-        state, observation, reward, done, info = env.step(state, action)
-        rewards.append(float(reward))
-        root_errors.append(float(info["tracking/root_position_error_m"]))
-        orientation_errors.append(float(info["tracking/root_orientation_error_rad"]))
-        joint_errors.append(float(info["tracking/joint_position_rms_rad"]))
-        foot_slips.append(float(info["tracking/foot_slip_mean_mps"]))
-        for name, value in info.items():
-            if name.startswith("reward/"):
-                reward_terms.setdefault(name, []).append(float(value))
-            if name.startswith("done/") and bool(value):
-                termination_counts[name] = termination_counts.get(name, 0) + 1
-        if bool(done):
-            terminal = bool(info["done/terminal"])
-            timeout = bool(info["done/timeout"])
-            break
-    completed = len(rewards) >= expected_steps and not terminal
+        totals = {
+            "steps": jnp.asarray(0, dtype=jnp.int32),
+            "episode_return": jnp.asarray(0.0, dtype=jnp.float32),
+            "root_position_square_sum": jnp.asarray(0.0, dtype=jnp.float32),
+            "root_orientation_square_sum": jnp.asarray(0.0, dtype=jnp.float32),
+            "joint_position_square_sum": jnp.asarray(0.0, dtype=jnp.float32),
+            "foot_slip_sum": jnp.asarray(0.0, dtype=jnp.float32),
+            "terminal": jnp.asarray(False),
+            "timeout": jnp.asarray(False),
+            "termination_counts": {
+                name: jnp.asarray(0, dtype=jnp.int32) for name in _TERMINATION_NAMES
+            },
+            "reward_sums": {
+                name: jnp.asarray(0.0, dtype=jnp.float32) for name in _REWARD_TERM_NAMES
+            },
+        }
+
+        def loop_body(_, carry):
+            current_state, current_observation, active, current_totals = carry
+            should_step = active & (current_totals["steps"] < expected_steps)
+
+            def take_step(operand):
+                step_state, step_observation, step_totals = operand
+                policy_observation = normalize_observation(
+                    step_observation,
+                    observation_norm_state,
+                    metadata.ppo,
+                )
+                action = apply_actor(policy, policy_observation)
+                next_state, next_observation, reward, done, info = current_env.step(
+                    step_state, action
+                )
+                updated = {
+                    **step_totals,
+                    "steps": step_totals["steps"] + 1,
+                    "episode_return": step_totals["episode_return"] + reward,
+                    "root_position_square_sum": (
+                        step_totals["root_position_square_sum"]
+                        + info["tracking/root_position_error_m"] ** 2
+                    ),
+                    "root_orientation_square_sum": (
+                        step_totals["root_orientation_square_sum"]
+                        + info["tracking/root_orientation_error_rad"] ** 2
+                    ),
+                    "joint_position_square_sum": (
+                        step_totals["joint_position_square_sum"]
+                        + info["tracking/joint_position_rms_rad"] ** 2
+                    ),
+                    "foot_slip_sum": (
+                        step_totals["foot_slip_sum"]
+                        + info["tracking/foot_slip_mean_mps"]
+                    ),
+                    "terminal": (
+                        step_totals["terminal"] | info["done/terminal"].astype(bool)
+                    ),
+                    "timeout": (
+                        step_totals["timeout"] | info["done/timeout"].astype(bool)
+                    ),
+                    "termination_counts": {
+                        name: step_totals["termination_counts"][name]
+                        + info[name].astype(jnp.int32)
+                        for name in _TERMINATION_NAMES
+                    },
+                    "reward_sums": {
+                        name: step_totals["reward_sums"][name] + info[name]
+                        for name in _REWARD_TERM_NAMES
+                    },
+                }
+                return next_state, next_observation, ~done.astype(bool), updated
+
+            def stop(operand):
+                stopped_state, stopped_observation, stopped_totals = operand
+                return (
+                    stopped_state,
+                    stopped_observation,
+                    jnp.asarray(False),
+                    stopped_totals,
+                )
+
+            return jax.lax.cond(
+                should_step,
+                take_step,
+                stop,
+                (current_state, current_observation, current_totals),
+            )
+
+        _, _, _, totals = jax.lax.fori_loop(
+            0,
+            maximum_steps,
+            loop_body,
+            (state, observation, jnp.asarray(True), totals),
+        )
+        return {**totals, "expected_steps": expected_steps}
+
+    return jax.jit(evaluate)
+
+
+def _compiled_clip_result(accumulators) -> dict[str, Any]:
+    values = jax.device_get(accumulators)
+    steps = int(values["steps"])
+    expected_steps = int(values["expected_steps"])
+    terminal = bool(values["terminal"])
+    denominator = max(steps, 1)
+
+    def rms(name: str) -> float:
+        return float(np.sqrt(float(values[name]) / denominator))
+
+    termination_counts = {
+        name: int(value)
+        for name, value in values["termination_counts"].items()
+        if int(value)
+    }
     return {
-        "steps": len(rewards),
+        "steps": steps,
         "expected_steps": expected_steps,
         "completion_fraction": (
-            float(len(rewards) / expected_steps) if expected_steps else 1.0
+            float(steps / expected_steps) if expected_steps else 1.0
         ),
-        "completed": completed,
-        "episode_return": float(sum(rewards)),
-        "root_position_rms_m": _rms(root_errors),
-        "root_orientation_rms_deg": float(np.degrees(_rms(orientation_errors))),
-        "joint_position_rms_rad": _rms(joint_errors),
-        "foot_slip_mean_mps": float(np.mean(foot_slips)) if foot_slips else 0.0,
+        "completed": steps >= expected_steps and not terminal,
+        "episode_return": float(values["episode_return"]),
+        "root_position_rms_m": rms("root_position_square_sum"),
+        "root_orientation_rms_deg": float(
+            np.degrees(rms("root_orientation_square_sum"))
+        ),
+        "joint_position_rms_rad": rms("joint_position_square_sum"),
+        "foot_slip_mean_mps": float(values["foot_slip_sum"]) / denominator,
         "terminal": terminal,
-        "timeout": timeout,
+        "timeout": bool(values["timeout"]),
         "termination_counts": termination_counts,
         "reward_terms": {
-            name: float(np.mean(values)) for name, values in reward_terms.items()
+            name: float(value) / denominator
+            for name, value in values["reward_sums"].items()
         },
     }
 
@@ -561,8 +701,3 @@ def _normalized_contract_value(name: str, value: Any) -> Any:
 
 def _prefixed_sha256(value: str) -> str:
     return "sha256:" + value.removeprefix("sha256:")
-
-
-def _rms(values) -> float:
-    array = np.asarray(values, dtype=np.float64)
-    return float(np.sqrt(np.mean(np.square(array)))) if array.size else 0.0
