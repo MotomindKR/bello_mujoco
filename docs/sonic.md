@@ -255,6 +255,32 @@ artifact file before training. W&B retains checkpoints; the full evaluation,
 compact summary, and checksum manifest are retrieved under
 `outputs/vast/<run-name>/` before the instance is destroyed.
 
+For a longer continuation, download the final W&B checkpoint artifact and
+stage it explicitly. For example, 50 total corpus sweeps are 5,800 updates or
+71,270,400 transitions with the same 512 environments and 24-step rollout:
+
+```bash
+uv run bello-vast-train \
+  experiment=sonic \
+  dataset_path=/data/sonic/packed/index.json \
+  sonic_artifact_path=artifacts/sonic/default_release \
+  resume_path=outputs/wandb_artifacts/sonic_seed1_v14 \
+  allow_git_commit_mismatch=true \
+  total_timesteps=71270400 \
+  num_envs=512 \
+  reference_shard_updates=1 \
+  checkpoint_every_updates=580 \
+  branch=feature/sonic-transfer \
+  max_price=1.25 \
+  duration_hours=6 \
+  skip_confirmation=true
+```
+
+`total_timesteps` is the final absolute budget, not an additional budget. The
+GPU preflight starts fresh; the real run restores the controller and optimizer
+state only after the dataset, frozen release, and resume checkpoint have each
+passed local and remote hash verification.
+
 The same evaluation can be run locally with:
 
 ```bash

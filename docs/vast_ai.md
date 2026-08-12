@@ -133,6 +133,34 @@ final checkpoints through W&B, evaluates all accepted held-out clips, and
 downloads `sonic_evaluation.json`, `summary.json`, and their checksum manifest
 to `outputs/vast/<run-name>/` before destroying the instance.
 
+To continue that checkpoint for 50 total corpus sweeps, download its final W&B
+checkpoint artifact and pass the artifact directory as `resume_path`. The
+budget is absolute: `71,270,400` transitions are 5,800 total updates, so a
+checkpoint at update 116 performs 5,684 additional updates. Continuation keeps
+the original 512-environment batch and one-update shard rotation contract:
+
+```bash
+uv run bello-vast-train \
+  experiment=sonic \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v1/index.json \
+  sonic_artifact_path=artifacts/sonic/default_release \
+  resume_path=outputs/wandb_artifacts/sonic_seed1_v14 \
+  allow_git_commit_mismatch=true \
+  total_timesteps=71270400 \
+  num_envs=512 \
+  reference_shard_updates=1 \
+  checkpoint_every_updates=580 \
+  branch=feature/sonic-transfer \
+  max_price=1.25 \
+  duration_hours=6 \
+  skip_confirmation=true
+```
+
+The launcher rejects the resume before rental if its dataset fingerprint,
+release hashes, environment count, shard schedule, or absolute budget is
+incompatible. The remote trainer then enforces the complete observation,
+action, robot, PPO, and simulator contract while restoring the array state.
+
 ## Time bounds
 
 `duration_hours` is the remote-job timeout, not a request to train for exactly

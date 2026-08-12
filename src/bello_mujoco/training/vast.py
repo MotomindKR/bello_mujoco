@@ -71,6 +71,7 @@ class VastTrainConfig:
     dataset_path: Path | None = None
     teacher_checkpoint_path: Path | None = None
     sonic_artifact_path: Path | None = None
+    resume_path: Path | None = None
     allow_git_commit_mismatch: bool = False
     total_timesteps: int | None = None
     num_envs: int | None = None
@@ -86,6 +87,7 @@ class VastTrainConfig:
     remote_sonic_dataset_dir: str = "/workspace/datasets/sonic"
     remote_teacher_checkpoint_dir: str = "/workspace/checkpoints/twist_teacher"
     remote_sonic_artifact_dir: str = "/workspace/artifacts/sonic/default_release"
+    remote_sonic_resume_dir: str = "/workspace/checkpoints/sonic_resume"
     local_result_dir: Path = Path("outputs/vast")
     lifecycle_state_dir: Path = Path(".vast")
     ready_timeout_seconds: int = 900
@@ -114,6 +116,7 @@ class GitSelection:
     dataset_root: Path | None = None
     teacher_checkpoint_path: Path | None = None
     sonic_artifact_path: Path | None = None
+    resume_checkpoint_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -180,17 +183,43 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError(
             "--teacher-checkpoint-path is only valid for TWIST student Vast training"
         )
-    if config.allow_git_commit_mismatch and config.experiment != "twist_student":
-        raise ValueError(
-            "--allow-git-commit-mismatch is only valid for TWIST student Vast training"
-        )
     if config.experiment == "sonic":
         if config.sonic_artifact_path is None:
             raise ValueError(
                 "--sonic-artifact-path is required for SONIC Vast training"
             )
-    elif config.sonic_artifact_path is not None:
-        raise ValueError("--sonic-artifact-path is only valid for SONIC Vast training")
+        if config.resume_path is not None:
+            missing = [
+                name
+                for name in (
+                    "total_timesteps",
+                    "num_envs",
+                    "reference_shard_updates",
+                )
+                if getattr(config, name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "resumed SONIC Vast training requires explicit "
+                    + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+                )
+        elif config.allow_git_commit_mismatch:
+            raise ValueError(
+                "--allow-git-commit-mismatch requires --resume-path for SONIC "
+                "Vast training"
+            )
+    else:
+        if config.sonic_artifact_path is not None:
+            raise ValueError(
+                "--sonic-artifact-path is only valid for SONIC Vast training"
+            )
+        if config.resume_path is not None:
+            raise ValueError("--resume-path is only valid for SONIC Vast training")
+        if config.allow_git_commit_mismatch and config.experiment != "twist_student":
+            raise ValueError(
+                "--allow-git-commit-mismatch is only valid for TWIST student or "
+                "resumed SONIC Vast training"
+            )
     for name in (
         "total_timesteps",
         "num_envs",
@@ -249,6 +278,7 @@ def validate_config(config: VastTrainConfig) -> None:
             config.remote_teacher_checkpoint_dir
         ),
         "--remote-sonic-artifact-dir": PurePosixPath(config.remote_sonic_artifact_dir),
+        "--remote-sonic-resume-dir": PurePosixPath(config.remote_sonic_resume_dir),
     }
     workspace = PurePosixPath("/workspace")
     for label, remote_path in remote_paths.items():
@@ -258,6 +288,7 @@ def validate_config(config: VastTrainConfig) -> None:
             "--remote-sonic-dataset-dir": config.remote_sonic_dataset_dir,
             "--remote-teacher-checkpoint-dir": config.remote_teacher_checkpoint_dir,
             "--remote-sonic-artifact-dir": config.remote_sonic_artifact_dir,
+            "--remote-sonic-resume-dir": config.remote_sonic_resume_dir,
         }[label]
         if (
             not remote_path.is_absolute()
@@ -415,6 +446,19 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
     sonic_artifact_path = None
     if config.sonic_artifact_path is not None:
         sonic_artifact_path = _sonic_release_artifact(config.sonic_artifact_path)
+    resume_checkpoint_path = None
+    if config.resume_path is not None:
+        assert sonic_artifact_path is not None
+        resume_checkpoint_path = _sonic_resume_checkpoint(
+            config.resume_path,
+            dataset_fingerprint=dataset_fingerprint,
+            release_artifact_path=sonic_artifact_path,
+            selected_commit=commit,
+            allow_git_commit_mismatch=config.allow_git_commit_mismatch,
+            total_timesteps=config.total_timesteps,
+            num_envs=config.num_envs,
+            reference_shard_updates=config.reference_shard_updates,
+        )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -427,6 +471,7 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         dataset_root=dataset_root,
         teacher_checkpoint_path=teacher_checkpoint_path,
         sonic_artifact_path=sonic_artifact_path,
+        resume_checkpoint_path=resume_checkpoint_path,
     )
 
 
@@ -538,6 +583,88 @@ def _sonic_release_artifact(path: Path) -> Path:
         load_sonic_release_artifact(root)
     except (FileNotFoundError, TypeError, ValueError) as exc:
         raise ValueError(f"Vast SONIC release artifact is invalid: {exc}") from exc
+    return root
+
+
+def _sonic_resume_checkpoint(
+    checkpoint_path: Path,
+    *,
+    dataset_fingerprint: str | None,
+    release_artifact_path: Path,
+    selected_commit: str,
+    allow_git_commit_mismatch: bool,
+    total_timesteps: int | None,
+    num_envs: int | None,
+    reference_shard_updates: int | None,
+) -> Path:
+    from bello_mujoco.sonic_policy import load_sonic_release_artifact
+    from bello_mujoco.training.checkpoint import (
+        SonicCheckpointMetadata,
+        load_checkpoint_metadata,
+        load_checkpoint_update,
+    )
+
+    unresolved = Path(checkpoint_path).expanduser()
+    if unresolved.is_symlink():
+        raise ValueError("SONIC resume checkpoint must not be a symbolic link")
+    root = unresolved.resolve()
+    if not root.is_dir() or any(path.is_symlink() for path in root.rglob("*")):
+        raise ValueError(
+            "SONIC resume checkpoint must be a directory without symbolic links"
+        )
+    for name in ("metadata.json", "state", "continuation"):
+        candidate = root / name
+        expected = (
+            candidate.is_file() if name == "metadata.json" else candidate.is_dir()
+        )
+        if not expected:
+            raise ValueError(f"SONIC resume checkpoint is missing {name}")
+    try:
+        metadata = load_checkpoint_metadata(
+            root,
+            allow_git_commit_mismatch=allow_git_commit_mismatch,
+        )
+        saved_update = load_checkpoint_update(
+            root,
+            allow_git_commit_mismatch=allow_git_commit_mismatch,
+        )
+    except (FileNotFoundError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(f"Vast SONIC resume checkpoint is invalid: {exc}") from exc
+    if not isinstance(metadata, SonicCheckpointMetadata):
+        raise ValueError("Vast SONIC resume requires a typed SONIC checkpoint")
+    if metadata.dataset.dataset_fingerprint != dataset_fingerprint:
+        raise ValueError("SONIC resume checkpoint dataset fingerprint differs")
+    if metadata.source_revision != selected_commit and not allow_git_commit_mismatch:
+        raise ValueError("SONIC resume checkpoint source revision differs")
+
+    release = load_sonic_release_artifact(release_artifact_path)
+    if metadata.release_checkpoint_sha256.removeprefix(
+        "sha256:"
+    ) != release.checkpoint_sha256.removeprefix(
+        "sha256:"
+    ) or metadata.release_artifact_sha256.removeprefix(
+        "sha256:"
+    ) != release.artifact_sha256.removeprefix("sha256:"):
+        raise ValueError("SONIC resume checkpoint release artifact differs")
+    if num_envs != metadata.ppo.num_envs:
+        raise ValueError(
+            "SONIC resume num environments differs from the checkpoint: "
+            f"{num_envs} != {metadata.ppo.num_envs}"
+        )
+    if reference_shard_updates != metadata.reference_shard_updates:
+        raise ValueError(
+            "SONIC resume shard schedule differs from the checkpoint: "
+            f"{reference_shard_updates} != {metadata.reference_shard_updates}"
+        )
+    assert total_timesteps is not None
+    requested_updates = total_timesteps // (
+        metadata.ppo.num_envs * metadata.ppo.num_steps
+    )
+    if requested_updates < saved_update:
+        raise ValueError(
+            "SONIC resume budget ends before the saved checkpoint update: "
+            f"{requested_updates} < {saved_update}"
+        )
     return root
 
 

@@ -165,6 +165,7 @@ class VastTrainCommandConfig:
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
     sonic_artifact_path: Path | None
+    resume_path: Path | None
     allow_git_commit_mismatch: bool
     total_timesteps: int | None
     num_envs: int | None
@@ -936,6 +937,7 @@ def vast_train_entrypoint() -> None:
             "dataset_path=",
             "teacher_checkpoint_path=",
             "sonic_artifact_path=",
+            "resume_path=",
         )
     )
     _vast_train_hydra()
@@ -987,20 +989,27 @@ def _vast_train_hydra(config: DictConfig) -> None:
         _reject_explicit_fields(
             ("teacher_checkpoint_path",), context=f"experiment={command.experiment}"
         )
-        _reject_explicit_fields(
-            ("allow_git_commit_mismatch",),
-            context=f"experiment={command.experiment}",
-        )
     if command.experiment == "sonic":
         if command.sonic_artifact_path is None:
             raise ValueError("sonic_artifact_path is required for Vast SONIC training")
+        if command.resume_path is None and command.allow_git_commit_mismatch:
+            raise ValueError(
+                "allow_git_commit_mismatch requires resume_path for Vast SONIC training"
+            )
     else:
         if command.sonic_artifact_path is not None:
             raise ValueError("sonic_artifact_path is only valid for experiment=sonic")
+        if command.resume_path is not None:
+            raise ValueError("resume_path is only valid for experiment=sonic")
         _reject_explicit_fields(
-            ("sonic_artifact_path", "reference_shard_updates"),
+            ("sonic_artifact_path", "resume_path", "reference_shard_updates"),
             context=f"experiment={command.experiment}",
         )
+        if command.experiment != "twist_student":
+            _reject_explicit_fields(
+                ("allow_git_commit_mismatch",),
+                context=f"experiment={command.experiment}",
+            )
     from bello_mujoco.assets_pipeline import repo_root
     from bello_mujoco.training.vast import (
         VastTrainConfig,
@@ -1015,6 +1024,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
         dataset_path=command.dataset_path,
         teacher_checkpoint_path=command.teacher_checkpoint_path,
         sonic_artifact_path=command.sonic_artifact_path,
+        resume_path=command.resume_path,
         allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         total_timesteps=command.total_timesteps,
         num_envs=command.num_envs,

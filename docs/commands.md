@@ -278,7 +278,8 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | `dataset_path` | path or `null`; `null` | Required local `index.json` for TWIST, TWIST2, or SONIC. TWIST transfers its five portable files; SONIC transfers the exact nested shard tree. Every file is checksummed locally and remotely. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |
 | `sonic_artifact_path` | path or `null`; `null` | Required pinned NPZ/JSON release artifact directory for `sonic`; rejected by other experiments. |
-| `allow_git_commit_mismatch` | boolean; `false` | Permit a staged student teacher checkpoint from a different clean source commit. Dataset, robot, observation, and layout checks remain enforced. |
+| `resume_path` | path or `null`; `null` | Optional typed SONIC checkpoint directory to continue. The launcher hash-verifies the staged tree and requires explicit `total_timesteps`, `num_envs`, and `reference_shard_updates`. Other experiments reject it. |
+| `allow_git_commit_mismatch` | boolean; `false` | Permit a staged TWIST student teacher or SONIC resume checkpoint from a different clean source commit. Dataset, release, robot, observation, and layout checks remain enforced. |
 | `total_timesteps` | positive integer or `null`; `null` | Optional transition-budget override for the real remote run. The fixed GPU smoke preflight remains one 768-transition update. |
 | `num_envs` | positive integer or `null`; `null` | Optional remote training batch-size override. |
 | `reference_shard_updates` | positive integer or `null`; `null` | SONIC-only shard-rotation override. A value of `1` lets a short run visit a new fixed-capacity shard every update. |
@@ -297,10 +298,13 @@ The selected profile, `pyproject.toml`, `uv.lock`, and any motion clip are
 verified in the exact `origin/<branch>` commit before rental. Ignored local
 motions are never uploaded implicitly. TWIST transfers only the five files
 named by its validated dataset contract and, for a student, the selected
-checkpoint directory. SONIC validates and transfers its canonical shard tree
-and exact pinned release artifact. After the real SONIC run, Vast evaluates
-every accepted held-out clip and downloads a hash-verified full report and
-compact summary below `outputs/vast/<run-name>/` before teardown. Credentials
+checkpoint directory. SONIC validates and transfers its canonical shard tree,
+exact pinned release artifact, and optional typed resume checkpoint. The fixed
+GPU preflight always starts fresh; only the real run restores the controller,
+optimizer, normalization, sampler, RNG, and active environment state. After the
+real SONIC run, Vast evaluates every accepted held-out clip and downloads a
+hash-verified full report and compact summary below `outputs/vast/<run-name>/`
+before teardown. Credentials
 come from `VAST_API_KEY` or keyring `vast/api_key`, `WANDB_API_KEY` or keyring
 `wandb/api_key`, and optionally `GITHUB_TOKEN` or keyring
 `github/bello_mujoco_read_token`.

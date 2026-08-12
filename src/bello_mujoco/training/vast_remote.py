@@ -204,11 +204,12 @@ dataset_path="$8"
 teacher_checkpoint_path="$9"
 allow_git_commit_mismatch="${10}"
 sonic_artifact_path="${11}"
-total_timesteps="${12}"
-num_envs="${13}"
-reference_shard_updates="${14}"
-checkpoint_every_updates="${15}"
-result_dir="${16}"
+resume_checkpoint_path="${12}"
+total_timesteps="${13}"
+num_envs="${14}"
+reference_shard_updates="${15}"
+checkpoint_every_updates="${16}"
+result_dir="${17}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -272,11 +273,17 @@ fi
 if [ -n "$sonic_artifact_path" ]; then
   training_overrides+=("sonic_artifact_path=$sonic_artifact_path")
 fi
-if [ "$allow_git_commit_mismatch" = "true" ]; then
+if [ "$allow_git_commit_mismatch" = "true" ] && [ "$experiment" = "twist_student" ]; then
   training_overrides+=("allow_git_commit_mismatch=true")
 fi
 
 actual_overrides=("${training_overrides[@]}")
+if [ -n "$resume_checkpoint_path" ]; then
+  actual_overrides+=("resume_path=$resume_checkpoint_path")
+  if [ "$allow_git_commit_mismatch" = "true" ]; then
+    actual_overrides+=("allow_git_commit_mismatch=true")
+  fi
+fi
 if [ -n "$total_timesteps" ]; then
   actual_overrides+=("total_timesteps=$total_timesteps")
 fi
@@ -378,7 +385,7 @@ def stage_twist_inputs(
 ) -> tuple[str, str]:
     """Transfer and verify explicit TWIST inputs before remote training starts."""
 
-    dataset_path, teacher_checkpoint_path, _ = stage_training_inputs(
+    dataset_path, teacher_checkpoint_path, _, _ = stage_training_inputs(
         target,
         selection,
         config,
@@ -397,11 +404,11 @@ def stage_training_inputs(
     executor: SshExecutor,
     rsync_executor: RsyncExecutor,
     sleep: Callable[[float], None] = time.sleep,
-) -> tuple[str, str, str]:
-    """Transfer and verify explicit dataset, teacher, and release inputs."""
+) -> tuple[str, str, str, str]:
+    """Transfer and verify explicit dataset, teacher, release, and resume inputs."""
 
     if not selection.dataset_files:
-        return "", "", ""
+        return "", "", "", ""
     if selection.dataset_root is None:
         dataset_path = _stage_files(
             target,
@@ -451,10 +458,23 @@ def stage_training_inputs(
             rsync_executor=rsync_executor,
             sleep=sleep,
         )
+    resume_checkpoint_path = ""
+    if selection.resume_checkpoint_path is not None:
+        resume_checkpoint_path = _stage_directory(
+            target,
+            selection.resume_checkpoint_path,
+            remote_root=config.remote_sonic_resume_dir,
+            timeout_seconds=config.transfer_timeout_seconds,
+            retries=config.transfer_retries,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+        )
     return (
         f"{dataset_path}/index.json",
         teacher_checkpoint_path,
         sonic_artifact_path,
+        resume_checkpoint_path,
     )
 
 
@@ -833,7 +853,12 @@ def run_remote_training(
         executor = SshExecutor()
     if rsync_executor is None:
         rsync_executor = RsyncExecutor()
-    dataset_path, teacher_checkpoint_path, sonic_artifact_path = stage_training_inputs(
+    (
+        dataset_path,
+        teacher_checkpoint_path,
+        sonic_artifact_path,
+        resume_checkpoint_path,
+    ) = stage_training_inputs(
         target,
         selection,
         config,
@@ -859,6 +884,7 @@ def run_remote_training(
         dataset_path=dataset_path,
         teacher_checkpoint_path=teacher_checkpoint_path,
         sonic_artifact_path=sonic_artifact_path,
+        resume_checkpoint_path=resume_checkpoint_path,
     )
     started_at = time.monotonic()
     ssh_start_deadline = started_at + config.ssh_timeout_seconds
@@ -1025,6 +1051,7 @@ def remote_start_command(
     dataset_path: str = "",
     teacher_checkpoint_path: str = "",
     sonic_artifact_path: str = "",
+    resume_checkpoint_path: str = "",
 ) -> str:
     bootstrap = r"""import json, os, pathlib, subprocess, sys
 payload = json.load(sys.stdin)
@@ -1089,6 +1116,7 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             teacher_checkpoint_path,
             str(config.allow_git_commit_mismatch).lower(),
             sonic_artifact_path,
+            resume_checkpoint_path,
             str(config.total_timesteps or ""),
             str(config.num_envs or ""),
             str(config.reference_shard_updates or ""),
