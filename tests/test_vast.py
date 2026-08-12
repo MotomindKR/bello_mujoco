@@ -1635,8 +1635,12 @@ def test_pipeline_always_destroys_created_instance(
     assert not (tmp_path / ".vast" / "active_instance.json").exists()
 
 
-def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "first_probe",
+    [0.3, RuntimeError("route connection reset")],
+)
+def test_twist_lifecycle_rejects_unusable_route_and_tries_next_offer(
+    monkeypatch, tmp_path, first_probe
 ) -> None:
     class Api(LifecycleApi):
         def create_instance(self, offer_id, **kwargs):
@@ -1669,10 +1673,15 @@ def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
         "wait_for_ssh",
         lambda api, instance_id, timeout: ("root", f"host-{instance_id}", 22),
     )
-    speeds = iter((0.3, 20.0))
-    monkeypatch.setattr(
-        vast, "measure_upload_mib_per_second", lambda *args, **kwargs: next(speeds)
-    )
+    probe_results = iter((first_probe, 20.0))
+
+    def measure_upload(*args, **kwargs):
+        result = next(probe_results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(vast, "measure_upload_mib_per_second", measure_upload)
     remote_targets = []
 
     def remote_runner(target, *args, **kwargs):

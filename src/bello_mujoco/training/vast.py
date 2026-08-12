@@ -1272,11 +1272,15 @@ class VastLifecycle:
                     retry_offer = True
                     raise
                 if selection.dataset_files:
-                    speed = measure_upload_mib_per_second(
-                        ssh_target,
-                        size_mib=self.config.route_probe_mib,
-                        timeout_seconds=self.config.ssh_timeout_seconds,
-                    )
+                    try:
+                        speed = measure_upload_mib_per_second(
+                            ssh_target,
+                            size_mib=self.config.route_probe_mib,
+                            timeout_seconds=self.config.ssh_timeout_seconds,
+                        )
+                    except (OSError, RuntimeError, subprocess.SubprocessError):
+                        retry_offer = True
+                        raise
                     print(f"Measured direct SSH upload: {speed:.1f} MiB/s.")
                     if speed < self.config.min_upload_mib_per_second:
                         retry_offer = True
