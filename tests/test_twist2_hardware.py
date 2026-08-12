@@ -37,9 +37,12 @@ from bello_mujoco.hardware.smplx_retarget import (
     GmrBelloRetargeter,
     GmrLiveRetargetConfig,
     LiveGmrReferenceSource,
+    SMPLX_BODY_JOINT_NAMES,
+    SMPLX_BODY_JOINT_PARENTS,
     SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
     import_pinned_gmr_retargeter,
+    load_smplx_standing_sample,
     validate_smplx_target_frame,
 )
 from bello_mujoco.repository import repository_root
@@ -187,7 +190,7 @@ def reference_frame(
     )
 
 
-def neutral_smplx_frame(*, sequence: int = 0) -> SmplxTargetFrame:
+def standing_smplx_frame(*, sequence: int = 0) -> SmplxTargetFrame:
     positions = {
         "pelvis": (0.0, 0.0, 0.94),
         "spine3": (0.0, 0.0, 1.30),
@@ -198,11 +201,11 @@ def neutral_smplx_frame(*, sequence: int = 0) -> SmplxTargetFrame:
         "right_knee": (0.0, -0.10, 0.50),
         "right_foot": (0.08, -0.10, 0.06),
         "left_shoulder": (0.0, 0.22, 1.42),
-        "left_elbow": (0.0, 0.47, 1.42),
-        "left_wrist": (0.0, 0.72, 1.42),
+        "left_elbow": (0.0, 0.24, 1.17),
+        "left_wrist": (0.05, 0.22, 0.93),
         "right_shoulder": (0.0, -0.22, 1.42),
-        "right_elbow": (0.0, -0.47, 1.42),
-        "right_wrist": (0.0, -0.72, 1.42),
+        "right_elbow": (0.0, -0.24, 1.17),
+        "right_wrist": (0.05, -0.22, 0.93),
     }
     identity = np.asarray((1.0, 0.0, 0.0, 0.0))
     return SmplxTargetFrame(
@@ -215,6 +218,47 @@ def neutral_smplx_frame(*, sequence: int = 0) -> SmplxTargetFrame:
         source_age_ms=0,
         received_at=time.monotonic(),
     )
+
+
+def synthetic_smplx_model(tmp_path: Path) -> Path:
+    template = np.asarray(
+        (
+            (0.00, 1.00, 0.00),
+            (0.10, 0.92, 0.00),
+            (-0.10, 0.92, 0.00),
+            (0.00, 1.12, 0.00),
+            (0.10, 0.52, 0.00),
+            (-0.10, 0.52, 0.00),
+            (0.00, 1.25, 0.00),
+            (0.10, 0.12, 0.00),
+            (-0.10, 0.12, 0.00),
+            (0.00, 1.38, 0.00),
+            (0.10, 0.04, 0.12),
+            (-0.10, 0.04, 0.12),
+            (0.00, 1.55, 0.00),
+            (0.10, 1.46, 0.00),
+            (-0.10, 1.46, 0.00),
+            (0.00, 1.70, 0.00),
+            (0.22, 1.48, 0.00),
+            (-0.22, 1.48, 0.00),
+            (0.48, 1.48, 0.00),
+            (-0.48, 1.48, 0.00),
+            (0.72, 1.48, 0.00),
+            (-0.72, 1.48, 0.00),
+        ),
+        dtype=np.float64,
+    )
+    joint_count = len(SMPLX_BODY_JOINT_NAMES)
+    parents = SMPLX_BODY_JOINT_PARENTS.astype(np.int64).copy()
+    parents[0] = 0
+    path = tmp_path / "SMPLX_NEUTRAL.npz"
+    np.savez(
+        path,
+        v_template=template,
+        J_regressor=np.eye(joint_count, dtype=np.float64),
+        kintree_table=np.stack((parents, np.arange(joint_count))),
+    )
+    return path
 
 
 def test_twist2_hardware_reconstructs_exact_actor_history_contract(
@@ -265,6 +309,8 @@ def test_twist2_hardware_keeps_raw_previous_action_and_clips_motor_command(
     frame = hardware_frame(adapter)
     raw_action = np.zeros(25, dtype=np.float32)
     raw_action[0] = 11.0
+    raw_action[3] = -10.0
+    raw_action[4] = 10.0
     adapter._infer = lambda observation: (observation, jnp.asarray(raw_action))
     adapter.reset()
 
@@ -278,6 +324,14 @@ def test_twist2_hardware_keeps_raw_previous_action_and_clips_motor_command(
     limits = np.asarray(adapter.env.model.mj_model.actuator_ctrlrange)
     assert np.all(step.physical_target >= limits[:, 0])
     assert np.all(step.physical_target <= limits[:, 1])
+    logical_target = adapter.inverse_transform @ step.physical_target
+    assert np.all(logical_target >= adapter._joint_target_low - 1.0e-9)
+    assert np.all(logical_target <= adapter._joint_target_high + 1.0e-9)
+    np.testing.assert_allclose(
+        logical_target[[3, 4]],
+        (adapter._joint_target_low[3], adapter._joint_target_high[4]),
+        atol=1.0e-9,
+    )
 
 
 def test_twist2_reference_validation_is_fail_closed(
@@ -326,7 +380,7 @@ def test_pinned_gmr_import_avoids_optional_ui_and_torch_dependencies() -> None:
 
 
 def test_smplx_target_contract_requires_complete_global_transforms() -> None:
-    frame = neutral_smplx_frame()
+    frame = standing_smplx_frame()
     validated = validate_smplx_target_frame(frame, live=False)
     assert tuple(validated) == SMPLX_GMR_BODY_NAMES
 
@@ -342,6 +396,7 @@ def test_smplx_target_contract_requires_complete_global_transforms() -> None:
 
 def test_pinned_gmr_produces_finite_standing_reference(
     twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+    tmp_path: Path,
 ) -> None:
     adapter = twist2_hardware_adapter
     root = repository_root()
@@ -367,21 +422,24 @@ def test_pinned_gmr_produces_finite_standing_reference(
     retargeter = GmrBelloRetargeter(
         adapter.env,
         metadata,
-        GmrLiveRetargetConfig(passes_per_frame=1, settling_rounds=1),
+        GmrLiveRetargetConfig(),
     )
 
-    standing = retargeter.standing(neutral_smplx_frame())
+    standing = retargeter.standing(
+        load_smplx_standing_sample(synthetic_smplx_model(tmp_path))
+    )
 
     assert standing.qpos.shape == (adapter.env.model.mj_model.nq,)
     assert standing.qvel.shape == (adapter.env.model.mj_model.nv,)
     assert np.all(np.isfinite(standing.qpos))
     assert np.all(standing.qvel == 0.0)
     assert standing.source_age_ms is None
+    assert not np.allclose(standing.qpos, adapter.env.model.default_qpos)
     validate_twist2_reference(standing, adapter.env, HardwareTwist2Config())
 
 
 def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
-    source_frame = neutral_smplx_frame(sequence=1)
+    source_frame = standing_smplx_frame(sequence=1)
     standing = Twist2ReferenceFrame(
         qpos=np.zeros(1),
         qvel=np.zeros(1),
@@ -394,8 +452,8 @@ def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
     class FakeStream:
         delivered = False
 
-        def neutral(self):
-            return neutral_smplx_frame()
+        def standing_sample(self):
+            return standing_smplx_frame()
 
         def wait_next(self, *, after_sequence, timeout_seconds):
             del after_sequence
@@ -434,7 +492,7 @@ def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
     assert calls == ["bello-live-gmr"]
 
 
-def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
+def test_twist2_control_uses_normal_standing_and_returns_on_source_loss(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -581,7 +639,7 @@ def test_twist2_control_uses_neutral_standing_and_returns_on_source_loss(
     assert len(resets) >= 3
     output = capsys.readouterr().out
     assert "reference became unavailable" in output
-    assert "neutral standing resumed" in output
+    assert "normal standing resumed" in output
 
 
 def test_twist2_reference_transition_blends_from_previous_target() -> None:
@@ -654,7 +712,7 @@ def test_twist2_reference_transition_blends_from_previous_target() -> None:
     assert control.max_tilts == [0.7] * 4
 
 
-def test_twist2_neutral_reference_maps_to_physical_hold_target(
+def test_twist2_reference_maps_to_physical_hold_target(
     twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
 ) -> None:
     adapter = twist2_hardware_adapter
@@ -669,3 +727,21 @@ def test_twist2_neutral_reference_maps_to_physical_hold_target(
     )
 
     np.testing.assert_allclose(adapter.reference_physical_target(reference), expected)
+
+
+def test_twist2_checkpoint_nominal_reference_maps_to_nominal_target(
+    twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    adapter = twist2_hardware_adapter
+    standing = Twist2ReferenceFrame(
+        qpos=np.asarray(adapter.env.model.default_qpos, dtype=np.float64).copy(),
+        qvel=np.zeros(adapter.env.model.mj_model.nv),
+        sequence=0,
+        source_age_ms=None,
+        received_at=time.monotonic(),
+    )
+
+    np.testing.assert_allclose(
+        adapter.reference_physical_target(standing),
+        adapter.nominal_physical_target,
+    )

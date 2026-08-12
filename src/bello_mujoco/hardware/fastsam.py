@@ -27,7 +27,7 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_BODY_JOINT_PARENTS,
     SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
-    load_default_smplx_standing,
+    load_smplx_standing_sample,
 )
 from bello_mujoco.hardware.twist2 import (
     HardwareTwist2Config,
@@ -181,7 +181,7 @@ class FastSamSmplxStream:
 
     def __init__(self, config: FastSamGrpcConfig) -> None:
         self.config = config
-        self._neutral = load_default_smplx_standing(config.neutral_model_path)
+        self._standing_sample = load_smplx_standing_sample(config.neutral_model_path)
         self.neutral_model_sha256 = _file_sha256(config.neutral_model_path)
         self._coordinates = FastSamCoordinateAdapter(config)
         self._condition = threading.Condition()
@@ -254,8 +254,8 @@ class FastSamSmplxStream:
         self._close_transport()
         return False
 
-    def neutral(self) -> SmplxTargetFrame:
-        return self._neutral
+    def standing_sample(self) -> SmplxTargetFrame:
+        return self._standing_sample
 
     def wait_next(
         self,

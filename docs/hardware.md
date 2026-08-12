@@ -151,8 +151,11 @@ summary are always reported.
 TWIST2 deployment requires a typed `twist2` checkpoint, the pinned
 `deps/Fast-SAM-3D-Body` and `deps/GMR` revisions, and an operator-supplied
 licensed `SMPLX_NEUTRAL.npz`. The neutral model is read locally only to derive
-the exact zero-pose SMPL-X body joints used in normal standing; it is never
-copied into a checkpoint or Git. The live server must advertise schema 1,
+and validate the server's exact SMPL-X body-joint contract; it is never copied
+into a checkpoint or Git. Normal standing applies a small repository-owned,
+hand-authored relaxed-standing pose to that skeleton and retargets it through
+the same pinned GMR solver as live motion. It does not use SMPL-X's mathematical
+zero pose, whose arms extend sideways. The live server must advertise schema 1,
 `smplx_body_22`, the exact standard 22-joint order and hierarchy, OpenCV camera
 coordinates, `xyzw` quaternions, and the reviewed learned converter. A legacy
 native-MHR stream is rejected.
@@ -193,8 +196,8 @@ must supply a calibrated `fastsam_camera_to_world_quaternion_xyzw`; disabling
 initial heading or floor alignment is explicit.
 
 Preflight connects to Fast-SAM, validates server readiness, tracking mode, and
-the stream schema, derives the neutral reference through GMR, and compiles the
-policy before connecting to the robot. It does not require Fast-SAM to be
+the stream schema, retargets the canonical SMPL-X standing sample, and compiles
+the policy before connecting to the robot. It does not require Fast-SAM to be
 transmitting a qualified person target. The live gRPC consumer and GMR solver
 run in background threads with capacity-one/latest-only semantics; the 50 Hz
 control loop never blocks on either service. Frame age is the server's complete
@@ -202,16 +205,16 @@ pipeline latency plus the configured transport budget and local time since
 receipt.
 
 Armed operation follows `HOLD`, a ten-second ramp to the GMR-retargeted SMPL-X
-neutral joint pose, and `RUN`; the same neutral target is held while waiting for
-`RUN`. `RUN` starts the policy with a 0.2-second blend from that pose to the
-neutral SMPL-X standing policy output, then continues commands at 50 Hz. Only
+standing sample, and `RUN`; that target is held while waiting for `RUN`. `RUN`
+starts the policy with a 0.2-second blend from that pose to its normal-standing
+policy output, then continues commands at 50 Hz. Only
 after exact `MOTION` confirmation does the runner require a confidence- and
-latency-qualified person target. It keeps sending neutral-standing commands
+latency-qualified person target. It keeps sending normal-standing commands
 while waiting up to `fastsam_reference_ready_timeout_seconds`, then transitions
-to the current live GMR reference. If that timeout expires, neutral standing
+to the current live GMR reference. If that timeout expires, normal standing
 continues and the operator can type `MOTION` to retry.
 Occlusion, ambiguity, low confidence, excessive latency, invalid retargeted
-motion, or stream failure returns the robot to neutral standing or initiates a
+motion, or stream failure returns the robot to normal standing or initiates a
 damped shutdown according to severity. Fast-SAM `LOST` remains terminal for
 that target until its `ResetTarget` RPC is invoked; target reacquisition is not
 performed silently by the Bello runner.
@@ -235,7 +238,11 @@ reference completion, and raw-versus-applied action bounds.
 TWIST2 adds exact Fast-SAM stream semantics, tracking and required-joint
 confidence, pipeline/reference age, source sequence and timestamp monotonicity,
 SMPL-X quaternion validity, GMR joint velocity/acceleration and joint limits,
-retargeted root/body velocity, and raw Gaussian action bounds.
+retargeted root/body velocity, and raw Gaussian action bounds. Before conversion
+to physical differential coordinates, references and hardware actions are
+projected into the model's safe logical joint-target envelope; this prevents
+independently clipped ankle-motor targets from resolving to an illegal ankle
+pitch or roll.
 
 `duration_seconds` covers the complete post-`RUN` policy flow. Ramp time and the
 `HOLD`/`RUN` confirmation waits are not included. A `null` duration runs until

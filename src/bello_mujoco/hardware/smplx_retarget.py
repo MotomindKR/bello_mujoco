@@ -84,6 +84,35 @@ _SMPLX_MODEL_TO_WORLD = np.asarray(
 )
 _SMPLX_MODEL_TO_WORLD_WXYZ = np.asarray((0.5, 0.5, -0.5, -0.5))
 
+# Repository-owned, hand-authored relaxed stand in SMPL-X body-pose order.
+# This is deliberately independent of licensed motion datasets.
+_SMPLX_RELAXED_STANDING_BODY_POSE = np.asarray(
+    (
+        (-0.255, 0.04, 0.00),  # left_hip
+        (-0.255, -0.04, 0.00),  # right_hip
+        (0.06, 0.00, 0.00),  # spine1
+        (0.71, -0.04, 0.00),  # left_knee
+        (0.71, 0.04, 0.00),  # right_knee
+        (0.04, 0.00, 0.00),  # spine2
+        (-0.435, 0.08, 0.00),  # left_ankle
+        (-0.435, -0.08, 0.00),  # right_ankle
+        (0.02, 0.00, 0.00),  # spine3
+        (0.00, 0.00, 0.00),  # left_foot
+        (0.00, 0.00, 0.00),  # right_foot
+        (0.00, 0.00, 0.00),  # neck
+        (0.02, 0.06, -0.30),  # left_collar
+        (0.02, -0.06, 0.30),  # right_collar
+        (0.00, 0.00, 0.00),  # head
+        (0.10, -0.18, -0.95),  # left_shoulder
+        (0.10, 0.18, 0.95),  # right_shoulder
+        (0.12, -0.30, 0.08),  # left_elbow
+        (0.12, 0.30, -0.08),  # right_elbow
+        (-0.10, -0.06, -0.10),  # left_wrist
+        (-0.10, 0.06, 0.10),  # right_wrist
+    ),
+    dtype=np.float64,
+)
+
 
 @dataclass(frozen=True)
 class SmplxTargetFrame:
@@ -99,7 +128,7 @@ class SmplxTargetFrame:
 class SmplxTargetStream(Protocol):
     """Blocking source boundary implemented by the corrected gRPC adapter."""
 
-    def neutral(self) -> SmplxTargetFrame: ...
+    def standing_sample(self) -> SmplxTargetFrame: ...
 
     def wait_next(
         self,
@@ -109,8 +138,8 @@ class SmplxTargetStream(Protocol):
     ) -> SmplxTargetFrame | None: ...
 
 
-def load_default_smplx_standing(model_path: Path) -> SmplxTargetFrame:
-    """Build the exact neutral SMPL-X T-pose used for normal standing."""
+def load_smplx_standing_sample(model_path: Path) -> SmplxTargetFrame:
+    """Pose the supplied neutral SMPL-X skeleton in a relaxed normal stand."""
 
     path = model_path.expanduser().resolve()
     if not path.is_file():
@@ -133,21 +162,47 @@ def load_default_smplx_standing(model_path: Path) -> SmplxTargetFrame:
     body_parents[0] = -1
     if not np.array_equal(body_parents, SMPLX_BODY_JOINT_PARENTS):
         raise ValueError("neutral SMPL-X model has an unexpected body hierarchy")
-    positions = regressor[:joint_count] @ template
-    positions = positions - positions[0]
+    rest_positions = regressor[:joint_count] @ template
+    local_rotvecs = np.concatenate(
+        (np.zeros((1, 3), dtype=np.float64), _SMPLX_RELAXED_STANDING_BODY_POSE),
+        axis=0,
+    )
+    positions = np.empty((joint_count, 3), dtype=np.float64)
+    rotations = np.empty((joint_count, 3, 3), dtype=np.float64)
+    quaternions = np.empty((joint_count, 4), dtype=np.float64)
+    for index, parent in enumerate(body_parents):
+        local_rotation = _rotation_matrix_from_rotvec(local_rotvecs[index])
+        local_quaternion = _quaternion_from_rotvec(local_rotvecs[index])
+        if parent < 0:
+            positions[index] = 0.0
+            rotations[index] = local_rotation
+            quaternions[index] = local_quaternion
+            continue
+        positions[index] = positions[parent] + rotations[parent] @ (
+            rest_positions[index] - rest_positions[parent]
+        )
+        rotations[index] = rotations[parent] @ local_rotation
+        quaternions[index] = _quaternion_multiply(quaternions[parent], local_quaternion)
     positions = positions @ _SMPLX_MODEL_TO_WORLD.T
+    quaternions = np.stack(
+        [
+            _quaternion_multiply(_SMPLX_MODEL_TO_WORLD_WXYZ, quaternion)
+            for quaternion in quaternions
+        ]
+    )
     foot_indices = tuple(
         SMPLX_BODY_JOINT_NAMES.index(name) for name in ("left_foot", "right_foot")
     )
     positions[:, 2] -= float(np.min(positions[foot_indices, 2]))
     if not np.all(np.isfinite(positions)):
         raise ValueError("neutral SMPL-X model produced non-finite body joints")
-    lookup = dict(zip(SMPLX_BODY_JOINT_NAMES, positions, strict=True))
+    position_lookup = dict(zip(SMPLX_BODY_JOINT_NAMES, positions, strict=True))
+    quaternion_lookup = dict(zip(SMPLX_BODY_JOINT_NAMES, quaternions, strict=True))
     return SmplxTargetFrame(
         transforms={
             name: (
-                lookup[name].copy(),
-                _SMPLX_MODEL_TO_WORLD_WXYZ.copy(),
+                position_lookup[name].copy(),
+                quaternion_lookup[name].copy(),
             )
             for name in SMPLX_GMR_BODY_NAMES
         },
@@ -156,6 +211,40 @@ def load_default_smplx_standing(model_path: Path) -> SmplxTargetFrame:
         source_age_ms=0,
         received_at=time.monotonic(),
     )
+
+
+def _rotation_matrix_from_rotvec(rotvec: np.ndarray) -> np.ndarray:
+    vector = np.asarray(rotvec, dtype=np.float64)
+    angle = float(np.linalg.norm(vector))
+    if angle < 1.0e-12:
+        return np.eye(3, dtype=np.float64)
+    axis = vector / angle
+    x, y, z = axis
+    skew = np.asarray(((0.0, -z, y), (z, 0.0, -x), (-y, x, 0.0)))
+    return np.eye(3) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
+
+
+def _quaternion_from_rotvec(rotvec: np.ndarray) -> np.ndarray:
+    vector = np.asarray(rotvec, dtype=np.float64)
+    angle = float(np.linalg.norm(vector))
+    if angle < 1.0e-12:
+        return np.asarray((1.0, 0.0, 0.0, 0.0))
+    scale = math.sin(0.5 * angle) / angle
+    return np.concatenate((np.asarray((math.cos(0.5 * angle),)), scale * vector))
+
+
+def _quaternion_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    lw, lx, ly, lz = np.asarray(left, dtype=np.float64)
+    rw, rx, ry, rz = np.asarray(right, dtype=np.float64)
+    result = np.asarray(
+        (
+            lw * rw - lx * rx - ly * ry - lz * rz,
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+        )
+    )
+    return result / np.linalg.norm(result)
 
 
 @dataclass(frozen=True)
@@ -224,7 +313,7 @@ class GmrBelloRetargeter:
         self._standing_qpos: np.ndarray | None = None
 
     def standing(self, frame: SmplxTargetFrame) -> Twist2ReferenceFrame:
-        """Settle the neutral SMPL-X pose and return a timeless reference."""
+        """Settle the canonical SMPL-X standing sample through pinned GMR."""
 
         targets = validate_smplx_target_frame(frame, live=False)
         previous = self._solve(targets)
@@ -362,7 +451,7 @@ class LiveGmrReferenceSource:
     def __enter__(self) -> LiveGmrReferenceSource:
         if self._thread is not None:
             raise RuntimeError("GMR reference source is already running")
-        self._standing = self.retargeter.standing(self.stream.neutral())
+        self._standing = self.retargeter.standing(self.stream.standing_sample())
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,

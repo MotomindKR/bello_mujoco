@@ -20,17 +20,41 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     SMPLX_GMR_BODY_NAMES,
-    load_default_smplx_standing,
+    load_smplx_standing_sample,
 )
 from bello_mujoco.hardware.twist2 import ReferenceUnavailable
 
 
 def neutral_model(tmp_path: Path) -> Path:
     joint_count = len(SMPLX_BODY_JOINT_NAMES)
-    template = np.zeros((joint_count, 3), dtype=np.float64)
-    template[:, 1] = np.linspace(0.9, 1.5, joint_count)
-    template[SMPLX_BODY_JOINT_NAMES.index("left_foot"), 1] = 0.05
-    template[SMPLX_BODY_JOINT_NAMES.index("right_foot"), 1] = 0.04
+    template = np.asarray(
+        (
+            (0.00, 1.00, 0.00),
+            (0.10, 0.92, 0.00),
+            (-0.10, 0.92, 0.00),
+            (0.00, 1.12, 0.00),
+            (0.10, 0.52, 0.00),
+            (-0.10, 0.52, 0.00),
+            (0.00, 1.25, 0.00),
+            (0.10, 0.12, 0.00),
+            (-0.10, 0.12, 0.00),
+            (0.00, 1.38, 0.00),
+            (0.10, 0.04, 0.12),
+            (-0.10, 0.04, 0.12),
+            (0.00, 1.55, 0.00),
+            (0.10, 1.46, 0.00),
+            (-0.10, 1.46, 0.00),
+            (0.00, 1.70, 0.00),
+            (0.22, 1.48, 0.00),
+            (-0.22, 1.48, 0.00),
+            (0.48, 1.48, 0.00),
+            (-0.48, 1.48, 0.00),
+            (0.72, 1.48, 0.00),
+            (-0.72, 1.48, 0.00),
+        ),
+        dtype=np.float64,
+    )
+    assert template.shape == (joint_count, 3)
     regressor = np.eye(joint_count, dtype=np.float64)
     parents = SMPLX_BODY_JOINT_PARENTS.astype(np.int64).copy()
     parents[0] = 0
@@ -119,8 +143,8 @@ def frame_message(**overrides: object) -> FrameMessage:
     return FrameMessage(**values)
 
 
-def test_neutral_standing_is_derived_from_smplx_model(tmp_path: Path) -> None:
-    frame = load_default_smplx_standing(neutral_model(tmp_path))
+def test_smplx_standing_sample_is_derived_from_model(tmp_path: Path) -> None:
+    frame = load_smplx_standing_sample(neutral_model(tmp_path))
 
     assert tuple(frame.transforms) == SMPLX_GMR_BODY_NAMES
     assert frame.source_timestamp_ns == 0
@@ -129,7 +153,15 @@ def test_neutral_standing_is_derived_from_smplx_model(tmp_path: Path) -> None:
     assert min(feet) == pytest.approx(0.0)
     for position, quaternion in frame.transforms.values():
         assert position.shape == (3,)
-        np.testing.assert_allclose(quaternion, (0.5, 0.5, -0.5, -0.5))
+        assert np.linalg.norm(quaternion) == pytest.approx(1.0)
+    for side in ("left", "right"):
+        shoulder = frame.transforms[f"{side}_shoulder"][0]
+        elbow = frame.transforms[f"{side}_elbow"][0]
+        wrist = frame.transforms[f"{side}_wrist"][0]
+        assert shoulder[2] > elbow[2] > wrist[2]
+    assert not np.allclose(
+        frame.transforms["left_wrist"][1], frame.transforms["pelvis"][1]
+    )
 
 
 def test_stream_info_requires_corrected_smplx_contract() -> None:

@@ -218,6 +218,12 @@ class HardwareTwist2PolicyAdapter:
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
         )
+        self._joint_target_low = np.asarray(
+            env.model.joint_target_low, dtype=np.float64
+        )
+        self._joint_target_high = np.asarray(
+            env.model.joint_target_high, dtype=np.float64
+        )
         self.kp, self.kd = actuator_impedance_gains(env)
         self._ctrl_limits = np.asarray(
             env.model.mj_model.actuator_ctrlrange, dtype=np.float64
@@ -271,6 +277,11 @@ class HardwareTwist2PolicyAdapter:
         logical_target[self.policy_indices] = np.asarray(reference.qpos)[
             self.policy_qpos_indices
         ]
+        logical_target = np.clip(
+            logical_target,
+            self._joint_target_low,
+            self._joint_target_high,
+        )
         target = self.transform @ logical_target
         return np.clip(target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1])
 
@@ -408,16 +419,23 @@ class HardwareTwist2PolicyAdapter:
                 f"{self.config.max_raw_action_abs:.3f}"
             )
         action = np.clip(raw_action, -self.env.action_clip, self.env.action_clip)
-        logical_target = self.default_joint_target.copy()
-        logical_target[self.policy_indices] += 0.5 * action
+        requested_logical_target = self.default_joint_target.copy()
+        requested_logical_target[self.policy_indices] += 0.5 * action
+        logical_target = np.clip(
+            requested_logical_target,
+            self._joint_target_low,
+            self._joint_target_high,
+        )
         requested_target = self.transform @ logical_target
         physical_target = np.clip(
             requested_target, self._ctrl_limits[:, 0], self._ctrl_limits[:, 1]
         )
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("TWIST2 policy produced non-finite physical targets")
-        action_clipped = not np.array_equal(action, raw_action) or not np.array_equal(
-            physical_target, requested_target
+        action_clipped = (
+            not np.array_equal(action, raw_action)
+            or not np.array_equal(logical_target, requested_logical_target)
+            or not np.array_equal(physical_target, requested_target)
         )
         if self._step_count == 0:
             self._reset_frame = current.copy()
@@ -716,7 +734,7 @@ def run_hardware_twist2(
                 "actor_observation_size": adapter.env.observation_size,
                 "control_rate_hz": 1.0 / adapter.control_timestep,
                 "jax_backend": jax.default_backend(),
-                "smplx_neutral_ramp_distance_max": initial_error,
+                "normal_standing_ramp_distance_max": initial_error,
                 "standing_preview_action_abs_max": float(
                     np.max(np.abs(preview.raw_action))
                 ),
@@ -733,7 +751,7 @@ def run_hardware_twist2(
         require_operator_confirmation(
             HOLD_CONFIRMATION,
             "Support the robot, then type HOLD to acquire control and begin the "
-            "SMPL-X neutral-pose ramp: ",
+            "normal-standing ramp: ",
             operator_input,
         )
         frame = wait_for_hardware_frame(
@@ -801,12 +819,12 @@ def control_physical_twist2(
         standing_target = adapter.reference_physical_target(standing)
         frame = control.ramp_to_target(initial_frame.positions, standing_target)
         if frame is None:
-            raise RuntimeError("TWIST2 SMPL-X neutral-pose ramp ended unexpectedly")
+            raise RuntimeError("TWIST2 normal-standing ramp ended unexpectedly")
         require_target_pose(
             frame,
             adapter,
             standing_target,
-            pose_name="the SMPL-X neutral pose",
+            pose_name="the normal standing pose",
         )
 
         def validate_hold(held_frame: HardwareFrame) -> None:
@@ -814,12 +832,12 @@ def control_physical_twist2(
                 held_frame,
                 adapter,
                 standing_target,
-                pose_name="the SMPL-X neutral pose",
+                pose_name="the normal standing pose",
             )
 
         control.wait_for_run(
-            "SMPL-X neutral-pose ramp complete. Release external support, let "
-            "the robot settle, then type RUN to start TWIST2 neutral standing: ",
+            "Normal-standing ramp complete. Release external support, let "
+            "the robot settle, then type RUN to start TWIST2 normal standing: ",
             operator_input=operator_input,
             validate_hold=validate_hold,
         )
@@ -827,7 +845,7 @@ def control_physical_twist2(
             control.read_frame(),
             adapter,
             standing_target,
-            pose_name="the SMPL-X neutral pose",
+            pose_name="the normal standing pose",
         )
         adapter.reset()
         run_started = time.monotonic()
@@ -876,10 +894,7 @@ def control_physical_twist2(
                 next_standing_status = now + config.status_interval_seconds
             return True
 
-        print(
-            "Transitioning from the SMPL-X neutral hold to neutral TWIST2 "
-            "policy standing."
-        )
+        print("Transitioning from the normal-standing hold to TWIST2 policy standing.")
         _transition_twist2_reference(
             control,
             adapter,
@@ -892,14 +907,14 @@ def control_physical_twist2(
         )
         control.reset_deadline()
         print(
-            "TWIST2 neutral SMPL-X standing is active. "
+            "TWIST2 normal standing is active. "
             "Type MOTION to begin live whole-body tracking."
         )
         first_live = None
         while first_live is None:
             requested_motion = wait_for_operator_confirmation_while_holding(
                 MOTION_CONFIRMATION,
-                "Type MOTION to transition from neutral standing to live tracking: ",
+                "Type MOTION to transition from normal standing to live tracking: ",
                 standing_step,
                 operator_input,
             )
@@ -909,7 +924,7 @@ def control_physical_twist2(
                 return
             print(
                 "MOTION confirmed. Waiting for a qualified live SMPL-X target "
-                "while neutral standing remains active."
+                "while normal standing remains active."
             )
             first_live = _wait_for_live_twist2_reference(
                 references,
@@ -923,12 +938,12 @@ def control_physical_twist2(
                     print("Hardware run duration completed before live tracking.")
                     return
                 print(
-                    "No qualified live SMPL-X target arrived; neutral standing "
+                    "No qualified live SMPL-X target arrived; normal standing "
                     "remains active. Type MOTION to retry."
                 )
 
         try:
-            print("Transitioning from neutral standing to live TWIST2 tracking.")
+            print("Transitioning from normal standing to live TWIST2 tracking.")
             _transition_twist2_reference(
                 control,
                 adapter,
@@ -987,7 +1002,7 @@ def control_physical_twist2(
             if source_lost is not None:
                 print(
                     "Live TWIST2 reference became unavailable; returning to "
-                    f"neutral standing: {source_lost}"
+                    f"normal standing: {source_lost}"
                 )
             _transition_twist2_reference(
                 control,
@@ -1002,7 +1017,7 @@ def control_physical_twist2(
             next_standing_status = (
                 time.monotonic() if config.status_interval_seconds is not None else None
             )
-            print("TWIST2 neutral standing resumed; Ctrl-C enters damped shutdown.")
+            print("TWIST2 normal standing resumed; Ctrl-C enters damped shutdown.")
             while duration_available():
                 standing_step()
             control.drain()

@@ -319,8 +319,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
-| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. TWIST2 ramps to the retargeted SMPL-X neutral pose; other tasks use their checkpoint nominal pose. |
-| `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 neutral-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
+| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. TWIST2 retargets the repository-owned relaxed-standing SMPL-X sample through pinned GMR; other tasks use their checkpoint nominal pose. |
+| `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 normal-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion, twist2 | Maximum robot tilt during transitions and active motion. `null` uses 70 degrees (approximately 1.222 radians); standing keeps its 0.70-radian limit. |
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
@@ -331,7 +331,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |
 | `fastsam_connect_timeout_seconds` | positive float; `5.0` | twist2 | Deadline for establishing the gRPC channel. |
 | `fastsam_rpc_timeout_seconds` | positive float; `2.0` | twist2 | Deadline for stream-info and status RPCs. |
-| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | twist2 | Time allowed for a valid tracked pose and GMR result after each `MOTION` confirmation. Neutral-standing commands continue during the wait. |
+| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | twist2 | Time allowed for a valid tracked pose and GMR result after each `MOTION` confirmation. Normal-standing commands continue during the wait. |
 | `fastsam_min_tracking_confidence` | float in `[0,1]`; `0.5` | twist2 | Minimum whole-person confidence. |
 | `fastsam_min_joint_confidence` | float in `[0,1]`; `0.25` | twist2 | Minimum confidence for every GMR target joint. |
 | `fastsam_max_pipeline_latency_ms` | positive float; `120.0` | twist2 | Maximum server-reported submission-to-output latency. |
@@ -339,7 +339,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `fastsam_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | twist2 | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
 | `fastsam_align_initial_heading` | boolean; `true` | twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
 | `fastsam_align_initial_floor` | boolean; `true` | twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
-| `smplx_neutral_model_path` | path or `null`; `null` | twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to construct exact normal-standing joints. |
+| `smplx_neutral_model_path` | path or `null`; `null` | twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
 | `smplx_human_height_m` | positive float; `1.66` | twist2 | Human height supplied to the pinned GMR scale table. |
 
 Fields that apply to only one task must not be explicitly supplied when the
@@ -366,10 +366,10 @@ damped shutdown. While waiting for `RUN`, the runner continues refreshing the
 hold target and checking telemetry and measured nominal-pose error bounds:
 0.25 rad for direct coordinates and 1.00 rad for the load-bearing differential
 ankle motor coordinates.
-TWIST2 uses the same standing-to-motion routine, but normal standing is the
-local neutral SMPL-X zero pose retargeted through GMR and live `MOTION` input is
-the latest valid Fast-SAM SMPL-X frame. Its complete setup and loss behavior are
-documented in [Physical hardware](hardware.md#twist2-mode).
+TWIST2 uses the same standing-to-motion routine, but normal standing is a
+repository-owned relaxed SMPL-X sample retargeted through pinned GMR and live
+`MOTION` input is the latest valid Fast-SAM SMPL-X frame. Its complete setup
+and loss behavior are documented in [Physical hardware](hardware.md#twist2-mode).
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
