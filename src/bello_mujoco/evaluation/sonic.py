@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import jax
@@ -22,7 +23,7 @@ from bello_mujoco.motion.sonic_dataset import (
     load_sonic_dataset_index,
     load_sonic_reference_bank,
     materialize_sonic_reference_clip,
-    select_sonic_reference_clip,
+    select_padded_sonic_reference_clip,
 )
 from bello_mujoco.policy import (
     apply_actor,
@@ -171,7 +172,7 @@ def evaluate_sonic_checkpoint(
             first_env
             if clip_index == 0
             else first_env._unchecked_runtime_copy(
-                reference_bank=select_sonic_reference_clip(
+                reference_bank=select_padded_sonic_reference_clip(
                     current_bank,
                     _bank_clip_index(current_bank, clip),
                 ),
@@ -187,6 +188,13 @@ def evaluate_sonic_checkpoint(
         clip_results.append({**clip, **result})
         if video_env is None and config.video_path is not None:
             video_env = env
+        completed = clip_index + 1
+        if completed % 100 == 0 or completed == len(heldout):
+            print(
+                f"SONIC held-out evaluation: {completed}/{len(heldout)} clips",
+                file=sys.stderr,
+                flush=True,
+            )
 
     clip_results.sort(key=lambda clip: int(clip["evaluation_order"]))
 
@@ -248,7 +256,7 @@ def _load_clip_env(
         metadata.asset,
         metadata.simulation,
         motion_path=runtime_path,
-        reference_bank=select_sonic_reference_clip(bank, clip_index),
+        reference_bank=select_padded_sonic_reference_clip(bank, clip_index),
         config=evaluation_env,
         warp=metadata.warp,
         batch_size=1,

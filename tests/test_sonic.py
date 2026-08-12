@@ -22,6 +22,7 @@ from bello_mujoco.motion.sonic_dataset import (
     SONIC_CRITIC_FUTURE_OFFSETS,
     SONIC_DATASET_SCHEMA_VERSION,
     SONIC_G1_RETARGET_FORMAT_VERSION,
+    SONIC_REQUIRED_FUTURE_HORIZON,
     SONIC_SMPL_COORDINATE_CONVENTION,
     SONIC_SMPL_FUTURE_OFFSETS,
     SONIC_SMPL_JOINT_NAMES,
@@ -37,6 +38,7 @@ from bello_mujoco.motion.sonic_dataset import (
     load_sonic_g1_retarget,
     load_sonic_dataset_index,
     load_sonic_reference_bank,
+    select_padded_sonic_reference_clip,
     select_sonic_reference_clip,
 )
 from bello_mujoco.policy import (
@@ -429,6 +431,34 @@ def test_reference_clip_selection_rebases_packed_offsets() -> None:
     assert selected.source_ids == ("source_1",)
     assert selected.qpos.shape[0] == 60
     np.testing.assert_array_equal(selected.qpos, bank.qpos[50:])
+
+
+def test_padded_reference_clip_selection_preserves_fixed_array_shapes() -> None:
+    lengths = np.asarray((50, 60), dtype=np.int32)
+    bank = _reference_bank(int(lengths.sum()), lengths=lengths)
+
+    selected = select_padded_sonic_reference_clip(bank, 1)
+
+    assert selected.qpos is bank.qpos
+    assert selected.qpos.shape == bank.qpos.shape
+    assert selected.lengths.shape == bank.lengths.shape
+    np.testing.assert_array_equal(selected.offsets, np.asarray((50, 0)))
+    np.testing.assert_array_equal(
+        selected.lengths,
+        np.asarray((60, SONIC_REQUIRED_FUTURE_HORIZON + 1)),
+    )
+    np.testing.assert_array_equal(
+        selected.sampling_probabilities, np.asarray((1.0, 0.0))
+    )
+    assert selected.valid_clip_count == 1
+    assert selected.source_ids == ("source_1", "")
+    absolute = BelloSonicEnv._absolute_reference_frame(
+        SimpleNamespace(reference_bank=selected),
+        SimpleNamespace(reference_time=jnp.asarray(0.02, dtype=jnp.float32)),
+        jnp.asarray(0, dtype=jnp.int32),
+        0,
+    )
+    assert int(absolute) == 51
 
 
 def test_dataset_index_and_split_hashes_are_enforced(tmp_path: Path) -> None:

@@ -1441,6 +1441,51 @@ def select_sonic_reference_clip(
     )
 
 
+def select_padded_sonic_reference_clip(
+    bank: SonicReferenceBank, clip_index: int
+) -> SonicReferenceBank:
+    """Select one clip without changing fixed shard-array capacities."""
+
+    if clip_index < 0 or clip_index >= bank.valid_clip_count:
+        raise IndexError(f"SONIC clip index is out of range: {clip_index}")
+    frame_capacity = int(bank.qpos.shape[0])
+    clip_capacity = int(len(bank.lengths))
+    length = int(bank.lengths[clip_index])
+    lengths = np.full(
+        (clip_capacity,), SONIC_REQUIRED_FUTURE_HORIZON + 1, dtype=np.int32
+    )
+    offsets = np.zeros((clip_capacity,), dtype=np.int32)
+    probabilities = np.zeros((clip_capacity,), dtype=np.float32)
+    lengths[0] = length
+    offsets[0] = int(bank.offsets[clip_index])
+    probabilities[0] = 1.0
+    bins = build_padded_sonic_sampling_bins(
+        np.asarray((length,), dtype=np.int32),
+        bin_size=bank.sampling_bin_size,
+        frame_capacity=frame_capacity,
+        clip_capacity=clip_capacity,
+    )
+    padding = ("",) * (clip_capacity - 1)
+    return SonicReferenceBank(
+        **{name: getattr(bank, name) for name in _PACKED_ARRAY_NAMES},
+        offsets=offsets,
+        lengths=lengths,
+        sampling_probabilities=probabilities,
+        sampling_bin_clip_indices=bins[0],
+        sampling_bin_starts=bins[1],
+        sampling_bin_widths=bins[2],
+        sampling_bin_valid=bins[3],
+        sampling_clip_bin_offsets=bins[4],
+        sampling_bin_size=bank.sampling_bin_size,
+        valid_clip_count=1,
+        source_ids=(bank.source_ids[clip_index],) + padding,
+        sequence_ids=(bank.sequence_ids[clip_index],) + padding,
+        joint_names=bank.joint_names,
+        body_names=bank.body_names,
+        calibration=bank.calibration,
+    )
+
+
 def sample_sonic_start_frames(rng, lengths, probabilities, *, batch_size: int):
     """JAX-compatible clip/start sampling that preserves every future window."""
 
