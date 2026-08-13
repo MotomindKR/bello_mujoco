@@ -15,6 +15,26 @@ dependency on the legacy motion/BeyondMimic environment. Training uses the
 dedicated `BelloTwist2Env`, `twist2` actor/critic architecture, configuration,
 typed checkpoint, and evaluation path.
 
+A completed TWIST2 policy can initialize a new run on a deliberately changed
+dataset without disguising the operation as resume:
+
+```bash
+uv run bello-train \
+  experiment=twist2 \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
+  warm_start_path=/path/to/previous/final \
+  allow_git_commit_mismatch=true \
+  total_timesteps=491520000 \
+  learning_rate=0.00005 \
+  checkpoint_name=twist2_finetune_seed1
+```
+
+Warm start restores actor/critic parameters, learned action distribution, and
+normalization snapshots. It resets the optimizer, update counter, learning
+rate, RNG, rollout/environment state, and per-clip curriculum. Dataset identity
+may change; task, robot, GMR revision, environment and parity contracts,
+network architecture, and ordered observation/action layouts may not.
+
 ## Reproducibility target
 
 The executable contract is derived from the public

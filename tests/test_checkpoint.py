@@ -658,6 +658,19 @@ def test_checkpoint_config_and_timestamped_name() -> None:
         validate_checkpoint_options(CheckpointConfig(name="../run"))
     with pytest.raises(ValueError, match="requires resume_path"):
         validate_checkpoint_options(CheckpointConfig(allow_git_commit_mismatch=True))
+    validate_checkpoint_options(
+        CheckpointConfig(
+            warm_start_path=Path("previous/final"),
+            allow_git_commit_mismatch=True,
+        )
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        validate_checkpoint_options(
+            CheckpointConfig(
+                resume_path=Path("previous/update_000025"),
+                warm_start_path=Path("previous/final"),
+            )
+        )
 
 
 def test_repository_commit_requires_origin_tracked_clean_source(

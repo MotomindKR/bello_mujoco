@@ -876,7 +876,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     command = vast_remote.remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
-    assert shlex.split(command)[-4] == "test-run"
+    assert shlex.split(command)[-7] == "test-run"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
@@ -910,7 +910,7 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
         "motion-test",
     )
 
-    assert shlex.split(command)[-4] == "motion-test"
+    assert shlex.split(command)[-7] == "motion-test"
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
     assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
@@ -938,10 +938,13 @@ def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-3:] == [
+    assert arguments[-6:] == [
         "/workspace/datasets/twist/index.json",
         "/workspace/checkpoints/twist_teacher",
+        "",
         "true",
+        "",
+        "",
     ]
     assert "TF_GPU_ALLOCATOR=cuda_malloc_async" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
@@ -1011,7 +1014,7 @@ def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None
         def run(self, command, *, timeout_seconds):
             rsync_commands.append(command)
 
-    dataset_index, teacher = vast_remote.stage_twist_inputs(
+    dataset_index, teacher, warm_start = vast_remote.stage_twist_inputs(
         ("root", "example.com", 22001),
         selected,
         valid_config(experiment="twist_teacher", dataset_path=dataset_path),
@@ -1022,6 +1025,7 @@ def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None
 
     assert dataset_index == "/workspace/datasets/twist/index.json"
     assert teacher == ""
+    assert warm_start == ""
     assert len(rsync_commands) == 1
     assert {Path(path).name for path in rsync_commands[0] if path.startswith("/")} >= {
         "index.json",

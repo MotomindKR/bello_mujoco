@@ -39,11 +39,13 @@ class TrainCommandConfig:
     seed: int | None
     total_timesteps: int | None
     num_envs: int | None
+    learning_rate: float | None
     contact_budget_per_env: int | None
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
     resume_path: Path | None
+    warm_start_path: Path | None
     allow_git_commit_mismatch: bool
     checkpoint_directory: Path | None
     checkpoint_name: str | None
@@ -114,7 +116,10 @@ class VastTrainCommandConfig:
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
+    warm_start_checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
+    total_timesteps: int | None
+    learning_rate: float | None
     max_price: float | None
     branch: str | None
     run_name: str | None
@@ -234,7 +239,7 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment in {"twist_teacher", "twist_student"}:
         _reject_explicit_fields(
-            ("motion_path", "video_enabled"),
+            ("motion_path", "video_enabled", "warm_start_path"),
             context=f"experiment={command.experiment}",
         )
         stage = command.experiment.removeprefix("twist_")
@@ -263,7 +268,7 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment == "motion":
         _reject_explicit_fields(
-            ("dataset_path", "teacher_checkpoint_path"),
+            ("dataset_path", "teacher_checkpoint_path", "warm_start_path"),
             context="experiment=motion",
         )
         from bello_mujoco.training.motion import (
@@ -291,7 +296,12 @@ def _train_hydra(config: DictConfig) -> None:
     if command.motion_path is not None:
         raise ValueError("motion_path is only valid for the motion experiment")
     _reject_explicit_fields(
-        ("motion_path", "dataset_path", "teacher_checkpoint_path"),
+        (
+            "motion_path",
+            "dataset_path",
+            "teacher_checkpoint_path",
+            "warm_start_path",
+        ),
         context=f"experiment={command.experiment}",
     )
     from bello_mujoco.training.locomotion import (
@@ -694,7 +704,12 @@ def _motion_hydra(config: DictConfig) -> None:
 
 def vast_train_entrypoint() -> None:
     _expand_path_overrides(
-        ("motion_path=", "dataset_path=", "teacher_checkpoint_path=")
+        (
+            "motion_path=",
+            "dataset_path=",
+            "teacher_checkpoint_path=",
+            "warm_start_checkpoint_path=",
+        )
     )
     _vast_train_hydra()
 
@@ -743,6 +758,16 @@ def _vast_train_hydra(config: DictConfig) -> None:
         _reject_explicit_fields(
             ("teacher_checkpoint_path",), context=f"experiment={command.experiment}"
         )
+    if command.experiment != "twist2":
+        if command.warm_start_checkpoint_path is not None:
+            raise ValueError(
+                "warm_start_checkpoint_path is only valid for experiment=twist2"
+            )
+        _reject_explicit_fields(
+            ("warm_start_checkpoint_path",),
+            context=f"experiment={command.experiment}",
+        )
+    if command.experiment not in {"twist_student", "twist2"}:
         _reject_explicit_fields(
             ("allow_git_commit_mismatch",),
             context=f"experiment={command.experiment}",
@@ -760,7 +785,10 @@ def _vast_train_hydra(config: DictConfig) -> None:
         motion_path=command.motion_path,
         dataset_path=command.dataset_path,
         teacher_checkpoint_path=command.teacher_checkpoint_path,
+        warm_start_checkpoint_path=command.warm_start_checkpoint_path,
         allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+        total_timesteps=command.total_timesteps,
+        learning_rate=command.learning_rate,
         max_price=command.max_price,
         branch=command.branch,
         run_name=command.run_name,
@@ -1013,7 +1041,7 @@ def _hardware_policy_log_path(configured: Path | None) -> Path:
 
 def _ppo_overrides(config, command: TrainCommandConfig):
     values = {}
-    for name in ("seed", "total_timesteps", "num_envs"):
+    for name in ("seed", "total_timesteps", "num_envs", "learning_rate"):
         value = getattr(command, name)
         if value is not None:
             values[name] = value
@@ -1026,6 +1054,8 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
     }
     if command.resume_path is not None:
         values["resume_path"] = command.resume_path.expanduser()
+    if command.warm_start_path is not None:
+        values["warm_start_path"] = command.warm_start_path.expanduser()
     if command.checkpoint_directory is not None:
         values["directory"] = command.checkpoint_directory.expanduser()
     if command.checkpoint_name is not None:

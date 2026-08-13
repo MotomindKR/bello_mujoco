@@ -40,6 +40,7 @@ from bello_mujoco.training.checkpoint import (
     save_training_checkpoint,
     twist_metadata_with_runner_state,
     validate_checkpoint_options,
+    warm_start_runner_checkpoint,
 )
 from bello_mujoco.training.ppo import (
     PPOConfig,
@@ -135,17 +136,34 @@ def run_training(run_config: Twist2TrainingRunConfig) -> None:
         else None
     )
     rng = jax.random.PRNGKey(run_config.config.seed)
-    if checkpoint_config.resume_path is None:
-        runner, static_policy, optimizer = init_runner_state(
-            rng, env, run_config.config
-        )
-    else:
+    if checkpoint_config.resume_path is not None:
         runner, static_policy, optimizer, _ = restore_runner_checkpoint(
             checkpoint_config.resume_path,
             env,
             metadata,
             allow_git_commit_mismatch=checkpoint_config.allow_git_commit_mismatch,
         )
+    else:
+        runner, static_policy, optimizer = init_runner_state(
+            rng, env, run_config.config
+        )
+        if checkpoint_config.warm_start_path is not None:
+            runner, source_metadata = warm_start_runner_checkpoint(
+                checkpoint_config.warm_start_path,
+                env,
+                runner,
+                metadata,
+                allow_git_commit_mismatch=(checkpoint_config.allow_git_commit_mismatch),
+            )
+            print(
+                {
+                    "twist2_warm_start": str(checkpoint_config.warm_start_path),
+                    "source_dataset_fingerprint": (
+                        source_metadata.dataset.dataset_fingerprint
+                    ),
+                    "target_dataset_fingerprint": dataset.dataset_fingerprint,
+                }
+            )
     static_env = env._unchecked_runtime_copy(reference_bank=None)
     reference_bank_arrays = _device_reference_bank_arrays(reference_bank)
     del env, reference_bank

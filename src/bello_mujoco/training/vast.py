@@ -70,7 +70,10 @@ class VastTrainConfig:
     motion_path: Path | None = None
     dataset_path: Path | None = None
     teacher_checkpoint_path: Path | None = None
+    warm_start_checkpoint_path: Path | None = None
     allow_git_commit_mismatch: bool = False
+    total_timesteps: int | None = None
+    learning_rate: float | None = None
     max_price: float | None = None
     branch: str | None = None
     run_name: str | None = None
@@ -79,6 +82,7 @@ class VastTrainConfig:
     remote_dir: str = "/workspace/bello_mujoco"
     remote_dataset_dir: str = "/workspace/datasets/twist"
     remote_teacher_checkpoint_dir: str = "/workspace/checkpoints/twist_teacher"
+    remote_warm_start_checkpoint_dir: str = "/workspace/checkpoints/twist2_warm_start"
     lifecycle_state_dir: Path = Path(".vast")
     ready_timeout_seconds: int = 900
     ssh_timeout_seconds: int = 900
@@ -104,6 +108,7 @@ class GitSelection:
     dataset_fingerprint: str | None = None
     dataset_files: tuple[Path, ...] = ()
     teacher_checkpoint_path: Path | None = None
+    warm_start_checkpoint_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -166,10 +171,28 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError(
             "--teacher-checkpoint-path is only valid for TWIST student Vast training"
         )
-    if config.allow_git_commit_mismatch and config.experiment != "twist_student":
+    if config.experiment != "twist2" and config.warm_start_checkpoint_path is not None:
         raise ValueError(
-            "--allow-git-commit-mismatch is only valid for TWIST student Vast training"
+            "--warm-start-checkpoint-path is only valid for TWIST2 Vast training"
         )
+    if (
+        config.allow_git_commit_mismatch
+        and config.experiment != "twist_student"
+        and not (
+            config.experiment == "twist2"
+            and config.warm_start_checkpoint_path is not None
+        )
+    ):
+        raise ValueError(
+            "--allow-git-commit-mismatch requires a TWIST student teacher or "
+            "TWIST2 warm-start checkpoint"
+        )
+    if config.total_timesteps is not None and config.total_timesteps <= 0:
+        raise ValueError("--total-timesteps must be positive")
+    if config.learning_rate is not None and (
+        not math.isfinite(config.learning_rate) or config.learning_rate <= 0.0
+    ):
+        raise ValueError("--learning-rate must be finite and positive")
     if (
         config.max_price is None
         or not math.isfinite(config.max_price)
@@ -205,6 +228,9 @@ def validate_config(config: VastTrainConfig) -> None:
         "--remote-teacher-checkpoint-dir": PurePosixPath(
             config.remote_teacher_checkpoint_dir
         ),
+        "--remote-warm-start-checkpoint-dir": PurePosixPath(
+            config.remote_warm_start_checkpoint_dir
+        ),
     }
     workspace = PurePosixPath("/workspace")
     for label, remote_path in remote_paths.items():
@@ -212,6 +238,9 @@ def validate_config(config: VastTrainConfig) -> None:
             "--remote-dir": config.remote_dir,
             "--remote-dataset-dir": config.remote_dataset_dir,
             "--remote-teacher-checkpoint-dir": config.remote_teacher_checkpoint_dir,
+            "--remote-warm-start-checkpoint-dir": (
+                config.remote_warm_start_checkpoint_dir
+            ),
         }[label]
         if (
             not remote_path.is_absolute()
@@ -348,6 +377,13 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             config.teacher_checkpoint_path,
             dataset_fingerprint=dataset_fingerprint,
         )
+    warm_start_checkpoint_path = None
+    if config.warm_start_checkpoint_path is not None:
+        assert config.dataset_path is not None
+        warm_start_checkpoint_path = _twist2_warm_start_checkpoint(
+            config.warm_start_checkpoint_path,
+            dataset_path=config.dataset_path,
+        )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -358,6 +394,7 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         dataset_fingerprint=dataset_fingerprint,
         dataset_files=dataset_files,
         teacher_checkpoint_path=teacher_checkpoint_path,
+        warm_start_checkpoint_path=warm_start_checkpoint_path,
     )
 
 
@@ -427,6 +464,47 @@ def _twist_teacher_checkpoint(
     for name in ("state", "continuation"):
         if not (checkpoint_path / name).is_dir():
             raise ValueError(f"TWIST teacher checkpoint is missing {name}/")
+    return checkpoint_path
+
+
+def _twist2_warm_start_checkpoint(checkpoint_path: Path, *, dataset_path: Path) -> Path:
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    if any(path.is_symlink() for path in checkpoint_path.rglob("*")):
+        raise ValueError("TWIST2 warm-start checkpoint must not contain symbolic links")
+    metadata_path = checkpoint_path / "metadata.json"
+    try:
+        envelope = json.loads(metadata_path.read_text(encoding="utf-8"))
+        index = json.loads(
+            Path(dataset_path).expanduser().resolve().read_text(encoding="utf-8")
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"TWIST2 warm-start input does not exist: {exc.filename}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "TWIST2 warm-start metadata or dataset is invalid JSON"
+        ) from exc
+    metadata = envelope.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("task") != "twist2":
+        raise ValueError("Vast TWIST2 warm start requires a typed TWIST2 checkpoint")
+    recorded_dataset = metadata.get("dataset")
+    if not isinstance(recorded_dataset, dict):
+        raise ValueError("TWIST2 warm-start checkpoint has no dataset contract")
+    for key in (
+        "schema_version",
+        "robot_fingerprint",
+        "gmr_revision",
+        "joint_names",
+        "body_names",
+    ):
+        if recorded_dataset.get(key) != index.get(key):
+            raise ValueError(f"TWIST2 warm-start dataset differs for {key}")
+    if recorded_dataset.get("dataset_fingerprint") == index.get("dataset_fingerprint"):
+        raise ValueError("TWIST2 warm start requires a different dataset fingerprint")
+    for name in ("state", "continuation"):
+        if not (checkpoint_path / name).is_dir():
+            raise ValueError(f"TWIST2 warm-start checkpoint is missing {name}/")
     return checkpoint_path
 
 

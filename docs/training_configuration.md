@@ -442,7 +442,8 @@ exact released 19,426-clip source composition with unit weights. See the
 | `name` | Stable, single-component run label. Locomotion final checkpoints are timestamped roots; motion also maintains a `final` child. |
 | `every_updates` | Periodic save interval, or `null` for final-only behavior. |
 | `resume_path` | Checkpoint to continue, normally from its exact clean Git revision. |
-| `allow_git_commit_mismatch` | Permit resume from a different clean commit. It requires `resume_path` and bypasses checkout/source-revision identity only. |
+| `warm_start_path` | TWIST2-only transfer source. It restores policy and normalization but resets optimizer and runtime state; it is mutually exclusive with `resume_path`. |
+| `allow_git_commit_mismatch` | Permit resume or warm start from a different clean commit. It requires one of those paths and bypasses checkout/source-revision identity only. |
 | `upload_wandb_artifact` | Upload saved checkpoints when a W&B run exists. |
 | `wandb_artifact_name` | Explicit artifact name or profile-derived default. |
 | `wandb_artifact_type` | W&B artifact type, normally `checkpoint`. |
@@ -457,6 +458,9 @@ Resume additionally validates and restores environment continuation,
 observation stacks, RNG, current learning rate, sampler state, environment
 layout, and the full resume contract. A changed `total_timesteps` is allowed
 only when the resulting update budget still covers the saved update.
+TWIST2 warm start instead allows a new dataset fingerprint and optimization
+budget while requiring the same task, robot, GMR revision, policy architecture,
+environment semantics, and observation/action layouts.
 
 ## W&B: `wandb_config`
 

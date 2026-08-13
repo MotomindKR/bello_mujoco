@@ -94,6 +94,7 @@ class CheckpointConfig:
     name: str | None = None
     every_updates: int | None = None
     resume_path: Path | None = None
+    warm_start_path: Path | None = None
     allow_git_commit_mismatch: bool = False
     upload_wandb_artifact: bool = True
     wandb_artifact_name: str | None = None
@@ -281,9 +282,16 @@ def validate_checkpoint_name(name: str | None) -> None:
 
 def validate_checkpoint_options(config: CheckpointConfig) -> None:
     validate_checkpoint_name(config.name)
-    if config.allow_git_commit_mismatch and config.resume_path is None:
+    if config.resume_path is not None and config.warm_start_path is not None:
+        raise ValueError("resume_path and warm_start_path are mutually exclusive")
+    if (
+        config.allow_git_commit_mismatch
+        and config.resume_path is None
+        and config.warm_start_path is None
+    ):
         raise ValueError(
-            "checkpoint_config.allow_git_commit_mismatch requires resume_path"
+            "checkpoint_config.allow_git_commit_mismatch requires resume_path or "
+            "warm_start_path"
         )
 
 
@@ -449,6 +457,53 @@ def restore_runner_checkpoint(
     return runner_state, static_policy, optimizer, effective_metadata
 
 
+def warm_start_runner_checkpoint(
+    path: Path,
+    env: PPOEnvironment,
+    fresh_runner: RunnerState,
+    expected_metadata: CheckpointMetadata,
+    *,
+    allow_git_commit_mismatch: bool = False,
+) -> tuple[RunnerState, CheckpointMetadata]:
+    """Initialize policy and normalization from a compatible prior run.
+
+    Unlike resume, warm start intentionally keeps the newly initialized optimizer,
+    update counter, environment state, sampler state, RNG, and learning rate. The
+    source checkpoint may use a different dataset fingerprint, but its robot,
+    retargeter, observation/action layouts, environment semantics, and policy
+    architecture must remain identical.
+    """
+
+    path = Path(path).resolve()
+    recorded_metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
+        path,
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
+    )
+    validate_warm_start_metadata(
+        recorded_metadata,
+        expected_metadata,
+        allow_source_revision_mismatch=allow_git_commit_mismatch,
+    )
+    _validate_environment_layouts(env, expected_metadata)
+    restored = _restore_checkpoint_item(
+        path / STATE_DIR,
+        _train_checkpoint_item(fresh_runner),
+        train_fingerprint,
+        label="warm-start state",
+    )
+    _validate_restored_normalization_state(restored, recorded_metadata)
+    _validate_restored_update(restored["update"], saved_update, recorded_metadata.ppo)
+    return (
+        fresh_runner._replace(
+            params=restored["policy"],
+            value_norm_state=restored["value_norm_state"],
+            observation_norm_state=restored["observation_norm_state"],
+            critic_observation_norm_state=(restored["critic_observation_norm_state"]),
+        ),
+        recorded_metadata,
+    )
+
+
 def load_checkpoint_metadata(
     path: Path,
     *,
@@ -508,6 +563,34 @@ def resumed_checkpoint_metadata(
             f"{requested.ppo.num_updates} < {saved_update}"
         )
     return requested
+
+
+def validate_warm_start_metadata(
+    recorded: CheckpointMetadata,
+    requested: CheckpointMetadata,
+    *,
+    allow_source_revision_mismatch: bool = False,
+) -> None:
+    """Require transfer-compatible task semantics while allowing new data."""
+
+    recorded_payload = _warm_start_contract_payload(
+        recorded,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    requested_payload = _warm_start_contract_payload(
+        requested,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    if recorded_payload != requested_payload:
+        mismatches = sorted(
+            key
+            for key in set(recorded_payload) | set(requested_payload)
+            if recorded_payload.get(key) != requested_payload.get(key)
+        )
+        raise ValueError(
+            "warm-start checkpoint contract differs from the requested run for "
+            + ", ".join(mismatches)
+        )
 
 
 def _train_state_checkpoint_item(
@@ -616,6 +699,21 @@ def _resume_contract_payload(
     dataset = payload.get("dataset")
     if dataset is not None:
         dataset.pop("index_path")
+    return payload
+
+
+def _warm_start_contract_payload(
+    metadata: CheckpointMetadata, *, omit_source_revision: bool
+) -> dict[str, Any]:
+    payload = _resume_contract_payload(
+        metadata,
+        omit_source_revision=omit_source_revision,
+    )
+    payload["ppo"] = {"policy": payload["ppo"]["policy"]}
+    dataset = payload.get("dataset")
+    if dataset is not None:
+        dataset.pop("dataset_fingerprint", None)
+    payload.pop("dataset_audit", None)
     return payload
 
 

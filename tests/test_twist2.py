@@ -32,6 +32,7 @@ from bello_mujoco.training.checkpoint import (
     ValueNormMetadata,
     _metadata_from_dict,
     _validate_metadata_layouts,
+    validate_warm_start_metadata,
 )
 from bello_mujoco.training.ppo import PPOConfig
 from bello_mujoco.training.ppo import (
@@ -267,6 +268,41 @@ def test_typed_twist2_checkpoint_round_trips_strict_metadata() -> None:
         require_all_fields=True,
         path="metadata",
     )
+
+    transferred = replace(
+        metadata,
+        ppo=replace(metadata.ppo, total_timesteps=2 * 4096 * 24, learning_rate=5e-5),
+        dataset=replace(
+            metadata.dataset,
+            index_path=Path("new-dataset/index.json"),
+            dataset_fingerprint="sha256:" + "d" * 64,
+        ),
+        dataset_audit=replace(
+            metadata.dataset_audit,
+            clip_count=2,
+            train_clip_count=2,
+            source_counts=(("amass", 2),),
+            train_source_counts=(("amass", 2),),
+        ),
+        source_revision="d" * 40,
+    )
+    validate_warm_start_metadata(
+        metadata,
+        transferred,
+        allow_source_revision_mismatch=True,
+    )
+    with pytest.raises(ValueError, match="dataset"):
+        validate_warm_start_metadata(
+            metadata,
+            replace(
+                transferred,
+                dataset=replace(
+                    transferred.dataset,
+                    robot_fingerprint="sha256:" + "e" * 64,
+                ),
+            ),
+            allow_source_revision_mismatch=True,
+        )
 
     assert restored == metadata
     assert isinstance(restored, Twist2CheckpointMetadata)

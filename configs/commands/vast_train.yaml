@@ -2,7 +2,10 @@ experiment: hardware_locomotion
 motion_path: null
 dataset_path: null
 teacher_checkpoint_path: null
+warm_start_checkpoint_path: null
 allow_git_commit_mismatch: false
+total_timesteps: null
+learning_rate: null
 max_price: null
 branch: null  # Required: exact branch to fetch and pin.
 run_name: null

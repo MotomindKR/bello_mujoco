@@ -61,6 +61,9 @@ bootstrap installs its own `rsync` before transfer. Dataset files and checkpoint
 contents remain outside Git and are copied only to dedicated paths under
 `/workspace`. Interrupted transfers retry with partial-file continuation. A
 remote SHA-256 mismatch prevents training and triggers normal teardown.
+TWIST2 warm starts transfer an explicitly selected typed checkpoint directory;
+the remote trainer restores policy and normalization only and records the new
+dataset fingerprint in every output checkpoint.
 
 TWIST and TWIST2 offers are ranked by proximity to Korea (`KR`, `JP`, `TW`,
 `HK`, then `SG`) before marketplace value. After SSH becomes ready, the launcher uploads a
@@ -101,6 +104,22 @@ uv run bello-vast-train \
   branch=feature/twist-teacher-student \
   max_price=1.25 \
   duration_hours=60
+```
+
+TWIST2 transfer example:
+
+```bash
+uv run bello-vast-train \
+  experiment=twist2 \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
+  warm_start_checkpoint_path=/path/to/previous/final \
+  allow_git_commit_mismatch=true \
+  total_timesteps=491520000 \
+  learning_rate=0.00005 \
+  branch=feature/twist-teacher-student \
+  run_name=twist2_fastsam_finetune_seed1 \
+  max_price=1.25 \
+  duration_hours=24
 ```
 
 ## Time bounds

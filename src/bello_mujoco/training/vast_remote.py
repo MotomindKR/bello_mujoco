@@ -202,7 +202,10 @@ motion_path="$6"
 run_name="$7"
 dataset_path="$8"
 teacher_checkpoint_path="$9"
-allow_git_commit_mismatch="${10}"
+warm_start_checkpoint_path="${10}"
+allow_git_commit_mismatch="${11}"
+total_timesteps="${12}"
+learning_rate="${13}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -263,8 +266,17 @@ fi
 if [ -n "$teacher_checkpoint_path" ]; then
   training_overrides+=("teacher_checkpoint_path=$teacher_checkpoint_path")
 fi
+if [ -n "$warm_start_checkpoint_path" ]; then
+  training_overrides+=("warm_start_path=$warm_start_checkpoint_path")
+fi
 if [ "$allow_git_commit_mismatch" = "true" ]; then
   training_overrides+=("allow_git_commit_mismatch=true")
+fi
+if [ -n "$total_timesteps" ]; then
+  training_overrides+=("total_timesteps=$total_timesteps")
+fi
+if [ -n "$learning_rate" ]; then
+  training_overrides+=("learning_rate=$learning_rate")
 fi
 
 preflight_overrides=(
@@ -296,11 +308,11 @@ def stage_twist_inputs(
     executor: SshExecutor,
     rsync_executor: RsyncExecutor,
     sleep: Callable[[float], None] = time.sleep,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Transfer and verify explicit TWIST inputs before remote training starts."""
 
     if not selection.dataset_files:
-        return "", ""
+        return "", "", ""
     dataset_path = _stage_files(
         target,
         selection.dataset_files,
@@ -324,7 +336,23 @@ def stage_twist_inputs(
             rsync_executor=rsync_executor,
             sleep=sleep,
         )
-    return f"{dataset_path}/index.json", teacher_checkpoint_path
+    warm_start_checkpoint_path = ""
+    if selection.warm_start_checkpoint_path is not None:
+        warm_start_checkpoint_path = _stage_directory(
+            target,
+            selection.warm_start_checkpoint_path,
+            remote_root=config.remote_warm_start_checkpoint_dir,
+            timeout_seconds=config.transfer_timeout_seconds,
+            retries=config.transfer_retries,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+        )
+    return (
+        f"{dataset_path}/index.json",
+        teacher_checkpoint_path,
+        warm_start_checkpoint_path,
+    )
 
 
 def _stage_files(
@@ -550,13 +578,15 @@ def run_remote_training(
         executor = SshExecutor()
     if rsync_executor is None:
         rsync_executor = RsyncExecutor()
-    dataset_path, teacher_checkpoint_path = stage_twist_inputs(
-        target,
-        selection,
-        config,
-        executor=executor,
-        rsync_executor=rsync_executor,
-        sleep=sleep,
+    dataset_path, teacher_checkpoint_path, warm_start_checkpoint_path = (
+        stage_twist_inputs(
+            target,
+            selection,
+            config,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+        )
     )
     payload = json.dumps(
         {
@@ -575,6 +605,7 @@ def run_remote_training(
         run_name,
         dataset_path=dataset_path,
         teacher_checkpoint_path=teacher_checkpoint_path,
+        warm_start_checkpoint_path=warm_start_checkpoint_path,
     )
     started_at = time.monotonic()
     ssh_start_deadline = started_at + config.ssh_timeout_seconds
@@ -725,6 +756,7 @@ def remote_start_command(
     *,
     dataset_path: str = "",
     teacher_checkpoint_path: str = "",
+    warm_start_checkpoint_path: str = "",
 ) -> str:
     bootstrap = r"""import json, os, pathlib, subprocess, sys
 payload = json.load(sys.stdin)
@@ -787,7 +819,10 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             run_name,
             dataset_path,
             teacher_checkpoint_path,
+            warm_start_checkpoint_path,
             str(config.allow_git_commit_mismatch).lower(),
+            str(config.total_timesteps or ""),
+            str(config.learning_rate or ""),
         ]
     )
 
