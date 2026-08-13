@@ -49,6 +49,7 @@ from bello_mujoco.motion.sonic_dataset import (
     load_sonic_g1_retarget,
     load_sonic_dataset_index,
     load_sonic_reference_bank,
+    materialize_sonic_reference_clip,
     select_sonic_reference_clip,
     select_sonic_reference_clip_in_bank,
     sonic_semantic_quality,
@@ -658,6 +659,23 @@ def test_reference_clip_selection_rebases_packed_offsets() -> None:
     assert selected.source_ids == ("source_1",)
     assert selected.qpos.shape[0] == 60
     np.testing.assert_array_equal(selected.qpos, bank.qpos[50:])
+
+
+def test_materialized_runtime_clip_keeps_actuator_joint_contract(
+    tmp_path: Path,
+) -> None:
+    bank = _reference_bank(50, lengths=np.asarray((50,), dtype=np.int32))
+    path = materialize_sonic_reference_clip(
+        bank,
+        tmp_path / "runtime.npz",
+        clip_index=0,
+        source_sha256="sha256:" + "a" * 64,
+    )
+
+    with np.load(path, allow_pickle=False) as archive:
+        assert tuple(archive["joint_names"].tolist()) == bank.joint_names
+        assert "qpos_joint_names" not in archive.files
+        np.testing.assert_array_equal(archive["qpos"], bank.qpos)
 
 
 def test_offline_pretraining_batch_uses_synchronized_history_and_future() -> None:

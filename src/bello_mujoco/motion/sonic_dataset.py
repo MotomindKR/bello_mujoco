@@ -2001,7 +2001,6 @@ def materialize_sonic_reference_clip(
         output_path,
         policy_fps=policy_fps,
         joint_names=bank.joint_names,
-        qpos_joint_names=bank.qpos_joint_names,
         body_names=bank.body_names,
         source_sha256=source_sha256,
         arrays=arrays,
