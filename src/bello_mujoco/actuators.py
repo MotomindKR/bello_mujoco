@@ -265,3 +265,28 @@ class ActuatorConfig:
     @property
     def hold_joint_names(self) -> set[str]:
         return {name for name, config in self.joints.items() if config.mode == "hold"}
+
+
+def joint_position_action_scales(
+    config: ActuatorConfig,
+    joint_names: tuple[str, ...],
+) -> tuple[float, ...]:
+    """Return BeyondMimic/SONIC joint-position scales in policy order."""
+
+    scales: list[float] = []
+    for name in joint_names:
+        try:
+            joint = config.joints[name]
+        except KeyError as error:
+            raise ValueError(
+                f"action scaling has no actuator configuration for {name!r}"
+            ) from error
+        stiffness = joint.gains[0]
+        if joint.effort_limit is None:
+            raise ValueError(f"action scaling requires an effort limit for {name!r}")
+        if not math.isfinite(stiffness) or stiffness <= 0.0:
+            raise ValueError(
+                f"action scaling requires positive finite stiffness for {name!r}"
+            )
+        scales.append(0.25 * joint.effort_limit / stiffness)
+    return tuple(scales)

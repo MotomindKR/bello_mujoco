@@ -16,6 +16,7 @@ from bello_mujoco.envs.sonic import (
     _build_sampling_bins,
 )
 import bello_mujoco.evaluation.sonic as sonic_evaluation
+import bello_mujoco.motion.sonic_dataset as sonic_dataset
 from bello_mujoco.evaluation.sonic import (
     _REWARD_TERM_NAMES,
     _TERMINATION_NAMES,
@@ -37,7 +38,9 @@ from bello_mujoco.motion.sonic_dataset import (
     SonicCalibrationConfig,
     SonicJointCalibration,
     SonicReferenceBank,
+    SonicSanitationConfig,
     _JointCalibrationMoments,
+    _anatomy_prior_map,
     _align_smpl_root_to_bello_world,
     _json_sha256,
     build_sonic_sampling_bins,
@@ -47,6 +50,7 @@ from bello_mujoco.motion.sonic_dataset import (
     load_sonic_reference_bank,
     select_sonic_reference_clip,
     select_sonic_reference_clip_in_bank,
+    sonic_semantic_quality,
 )
 from bello_mujoco.policy import (
     ActorCritic,
@@ -58,7 +62,9 @@ from bello_mujoco.policy import (
 from bello_mujoco.sonic_policy import (
     BELLO_TO_G1_VECTOR_BASIS,
     SONIC_BELLO_PROPRIO_SIZE,
+    SONIC_G1_ACTION_SCALE,
     SONIC_G1_PROPRIO_SIZE,
+    SONIC_ROOT_MOTION_COMMAND_SIZE,
     apply_frozen_mlp,
     bello_action_std_from_g1,
     g1_from_bello_proprio_affine,
@@ -115,9 +121,10 @@ TEST_EDGE_PAIRS = tuple(
     for name in BELLO_JOINT_NAMES
     if not name.endswith("_elbow_yaw_joint")
 ) + (
-    ("right_wrist_yaw_joint", "right_elbow_yaw_joint"),
-    ("left_wrist_yaw_joint", "left_elbow_yaw_joint"),
+    ("right_wrist_roll_joint", "right_elbow_yaw_joint"),
+    ("left_wrist_roll_joint", "left_elbow_yaw_joint"),
 )
+BELLO_ACTION_SCALE = np.linspace(0.1, 0.34, 25, dtype=np.float32)
 
 
 class _FakeEvaluationEnv:
@@ -196,11 +203,37 @@ def test_sonic_observation_contract_matches_bello_edge_dimensions() -> None:
 
     assert contract.action_size == 25
     assert contract.history_frame_size == 84
-    assert contract.actor_observation_size == 1650
+    assert contract.actor_observation_size == 1670
     assert contract.critic_command_frame_size == 50
     assert contract.critic_observation_size == 1445
-    assert contract.actor_layout.size == 1650
+    assert contract.actor_layout.size == 1670
+    assert dict(contract.actor_layout.components)["desired_root_xy_trajectory"] == 20
     assert contract.critic_layout.size == 1445
+
+
+def test_g1_action_scales_match_the_pinned_release_actuator_groups() -> None:
+    natural_frequency = 10.0 * 2.0 * 3.1415926535
+    expected = {
+        "left_hip_pitch_joint": 0.25
+        * 139.0
+        / (0.025101925 * natural_frequency**2),
+        "waist_yaw_joint": 0.25
+        * 88.0
+        / (0.010177520 * natural_frequency**2),
+        "left_ankle_pitch_joint": 0.25
+        * 50.0
+        / (2.0 * 0.003609725 * natural_frequency**2),
+        "left_wrist_roll_joint": 0.25
+        * 25.0
+        / (0.003609725 * natural_frequency**2),
+        "left_wrist_pitch_joint": 0.25
+        * 5.0
+        / (0.00425 * natural_frequency**2),
+    }
+
+    for name, value in expected.items():
+        index = G1_ISAACLAB_JOINT_NAMES.index(name)
+        assert SONIC_G1_ACTION_SCALE[index] == pytest.approx(value)
 
 
 def _coupled_calibration_fixture(
@@ -289,10 +322,45 @@ def test_joint_calibration_streaming_matches_one_combined_update() -> None:
     assert actual.sample_count == frames
 
 
+def test_anatomy_prior_maps_forearm_twist_to_g1_wrist_roll() -> None:
+    source_names = (
+        "right_elbow_yaw_joint",
+        "right_wrist_pitch_joint",
+        "waist_yaw_joint",
+    )
+    target_names = (
+        "right_wrist_roll_joint",
+        "right_wrist_yaw_joint",
+        "right_wrist_pitch_joint",
+        "waist_yaw_joint",
+    )
+    source_covariance = np.diag((4.0, 9.0, 16.0))
+    cross_covariance = np.zeros((3, 4), dtype=np.float64)
+    cross_covariance[0, 0] = 8.0
+    cross_covariance[0, 1] = 20.0
+    cross_covariance[1, 2] = -4.5
+    cross_covariance[2, 3] = 4.0
+
+    prior = _anatomy_prior_map(
+        source_covariance,
+        cross_covariance,
+        source_joint_names=source_names,
+        target_joint_names=target_names,
+    )
+
+    assert prior[0, 0] == 2.0
+    assert np.all(prior[1] == 0.0)
+    assert prior[2, 1] == -0.5
+    assert prior[3, 2] == 0.25
+
+
 def test_proprio_affine_maps_positions_velocities_actions_and_vector_basis() -> None:
     scales = tuple(0.8 + 0.01 * index for index in range(len(TEST_EDGE_PAIRS)))
     calibration = _calibration(scales=scales)
-    matrix, bias = g1_from_bello_proprio_affine(calibration)
+    matrix, bias = g1_from_bello_proprio_affine(
+        calibration,
+        bello_action_scale=BELLO_ACTION_SCALE,
+    )
 
     np.testing.assert_array_equal(matrix[:3, :3], BELLO_TO_G1_VECTOR_BASIS)
     pair = 7
@@ -312,13 +380,18 @@ def test_proprio_affine_maps_positions_velocities_actions_and_vector_basis() -> 
     assert bias[g1_q] == 0.0
     assert matrix[g1_qvel, bello_qvel] == pytest.approx(scale)
     assert bias[g1_qvel] == 0.0
-    assert matrix[g1_action, bello_action] == pytest.approx(scale)
+    assert matrix[g1_action, bello_action] == pytest.approx(
+        scale * BELLO_ACTION_SCALE[bello_index] / SONIC_G1_ACTION_SCALE[g1_index]
+    )
     assert bias[g1_action] == 0.0
     assert matrix.shape == (SONIC_G1_PROPRIO_SIZE, SONIC_BELLO_PROPRIO_SIZE)
 
 
 def test_coupled_calibration_routes_complete_joint_blocks_to_the_edge() -> None:
-    matrix, _ = g1_from_bello_proprio_affine(_calibration())
+    matrix, _ = g1_from_bello_proprio_affine(
+        _calibration(),
+        bello_action_scale=BELLO_ACTION_SCALE,
+    )
     expected = np.asarray(_calibration().g1_from_bello_matrix)
 
     for history in range(10):
@@ -339,9 +412,18 @@ def test_released_action_std_is_propagated_through_dense_output_map() -> None:
     calibration = _calibration(scales=scales)
     released = np.linspace(0.25, 0.50, len(G1_ISAACLAB_JOINT_NAMES), dtype=np.float32)
 
-    result = bello_action_std_from_g1(released, calibration, minimum_action_std=0.05)
+    result = bello_action_std_from_g1(
+        released,
+        calibration,
+        bello_action_scale=BELLO_ACTION_SCALE,
+        minimum_action_std=0.05,
+    )
 
-    dense = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
+    dense = (
+        np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
+        * SONIC_G1_ACTION_SCALE[None, :]
+        / BELLO_ACTION_SCALE[:, None]
+    )
     expected = np.sqrt((dense * dense) @ (released * released))
     np.testing.assert_allclose(result, np.maximum(expected, 0.05), atol=1.0e-7)
 
@@ -349,12 +431,18 @@ def test_released_action_std_is_propagated_through_dense_output_map() -> None:
 def test_sonic_action_target_applies_randomized_default_and_release_scale() -> None:
     fake = SimpleNamespace(
         action_size=2,
+        action_scale=(0.25, 0.1),
         model=SimpleNamespace(
             policy_ctrl_indices=np.asarray((0, 1), dtype=np.int32),
             default_joint_target=np.asarray((0.1, -0.2), dtype=np.float32),
             joint_angle_offset=np.asarray(((0.01, -0.02),), dtype=np.float32),
+            joint_target_low=np.asarray((-0.5, -0.5), dtype=np.float32),
+            joint_target_high=np.asarray((0.5, 0.5), dtype=np.float32),
             actuator_coordinate_transform=np.eye(2, dtype=np.float32),
         ),
+    )
+    fake._unbounded_policy_target = MethodType(
+        BelloSonicEnv._unbounded_policy_target, fake
     )
     fake._action_target = MethodType(BelloSonicEnv._action_target, fake)
 
@@ -363,7 +451,69 @@ def test_sonic_action_target_applies_randomized_default_and_release_scale() -> N
         randomization=jnp.asarray((0.03, 0.04)),
     )
 
-    np.testing.assert_allclose(target, np.asarray((1.13, -2.16)), atol=1.0e-6)
+    np.testing.assert_allclose(target, np.asarray((0.5, -0.5)), atol=1.0e-6)
+
+
+def test_sonic_semantic_sanitation_quarantines_treadmill_motion() -> None:
+    frames = 100
+    phase = np.arange(frames, dtype=np.float64) * 0.2
+    qpos = np.zeros((frames, 7 + len(BELLO_JOINT_NAMES)), dtype=np.float64)
+    qpos[:, 7:] = np.sin(phase)[:, None]
+    contacts = np.stack(
+        ((np.arange(frames) // 5) % 2 == 0, (np.arange(frames) // 5) % 2 == 1),
+        axis=-1,
+    )
+    arrays = {
+        "qpos": qpos,
+        "qpos_joint_names": np.asarray(BELLO_JOINT_NAMES),
+        "timestamp_seconds": np.arange(frames, dtype=np.float64) / 50.0,
+        "foot_contacts": contacts,
+        "body_names": np.asarray(
+            ("left_ankle_roll_link", "right_ankle_roll_link")
+        ),
+        "body_lin_vel": np.zeros((frames, 2, 3), dtype=np.float64),
+    }
+    sequence = SimpleNamespace(
+        source_id="amass",
+        sequence_id="subject_treadmill_walk",
+        original_sequence_id="treadmill_walk",
+    )
+
+    labels, reasons = sonic_semantic_quality(
+        arrays,
+        sequence,
+        SonicSanitationConfig(),
+    )
+
+    assert labels == ("stationary_root", "gait_contact_cycles")
+    assert any("quarantine pattern" in reason for reason in reasons)
+    assert any("treadmill candidate" in reason for reason in reasons)
+
+
+def test_root_motion_command_exposes_desired_travel_in_robot_frame() -> None:
+    fake = SimpleNamespace()
+
+    def aligned_reference(state, clip_index, offset):
+        del state, clip_index
+        return SimpleNamespace(
+            qpos=jnp.asarray((0.1 * offset, 0.02 * offset, 0.0, 1.0, 0.0, 0.0, 0.0))
+        )
+
+    fake._aligned_reference = aligned_reference
+    fake._root_motion_command = MethodType(BelloSonicEnv._root_motion_command, fake)
+    state = SimpleNamespace(
+        clip_index=jnp.asarray(0),
+        motion_state=SimpleNamespace(
+            data=SimpleNamespace(
+                qpos=jnp.asarray((0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+            )
+        ),
+    )
+
+    command = np.asarray(fake._root_motion_command(state)).reshape((-1, 2))
+
+    assert command.shape == (SONIC_ROOT_MOTION_COMMAND_SIZE // 2, 2)
+    np.testing.assert_allclose(command[-1], np.asarray((0.9, 0.18)), atol=1.0e-6)
 
 
 def test_sampling_bins_are_host_materialized_and_clip_local() -> None:
@@ -408,6 +558,8 @@ def test_tracking_dataset_summary_excludes_clip_and_fingerprint_payloads() -> No
         "g1_gmr_config_sha256": "sha256:" + "1" * 64,
         "g1_robot_sha256": "sha256:" + "2" * 64,
         "joint_calibration": {"sample_count": 30},
+        "heldout_calibration": {"sample_count": 10},
+        "sanitation_config": {"maximum_fast_contact_fraction": 0.15},
         "split_files": {
             "train": {"file": "train.npz", "sampling_mass": 20.0},
             "evaluation": {
@@ -568,6 +720,17 @@ def test_dataset_index_and_split_hashes_are_enforced(tmp_path: Path) -> None:
         load_sonic_reference_bank(index_path, split="train")
 
 
+def test_reference_bank_memory_preflight_fails_before_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_path = tmp_path / "train.npz"
+    np.savez_compressed(archive_path, qpos=np.zeros((100, 32), dtype=np.float32))
+    monkeypatch.setattr(sonic_dataset, "_available_memory_bytes", lambda: 1)
+
+    with pytest.raises(MemoryError, match="available host memory"):
+        sonic_dataset._require_reference_bank_memory(archive_path, split="train")
+
+
 def test_dataset_index_rejects_contract_tampering(tmp_path: Path) -> None:
     index_path = _write_dataset_fixture(tmp_path)
     index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -607,12 +770,18 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
     object.__setattr__(encoder, "biases", (jnp.ones((1,)),))
     decoder = object.__new__(SonicEdgeDecoder)
     object.__setattr__(decoder, "token_projection_weight", jnp.ones((1, 1)))
+    object.__setattr__(decoder, "root_motion_projection_weight", jnp.ones((1, 1)))
     object.__setattr__(decoder, "proprioception_projection_weight", jnp.ones((1, 1)))
     object.__setattr__(decoder, "first_bias", jnp.ones((1,)))
-    object.__setattr__(decoder, "middle_weights", (jnp.ones((1, 1)),))
-    object.__setattr__(decoder, "middle_biases", (jnp.ones((1,)),))
+    object.__setattr__(
+        decoder, "middle_weights", (jnp.ones((1, 1)), jnp.ones((1, 1)))
+    )
+    object.__setattr__(
+        decoder, "middle_biases", (jnp.ones((1,)), jnp.ones((1,)))
+    )
     object.__setattr__(decoder, "output_weight", jnp.ones((1, 1)))
     object.__setattr__(decoder, "output_bias", jnp.ones((1,)))
+    object.__setattr__(decoder, "trainable_middle_layers", (False, True))
     actor = object.__new__(SonicActor)
     object.__setattr__(actor, "smpl_encoder", encoder)
     object.__setattr__(actor, "decoder", decoder)
@@ -629,7 +798,9 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
 
     assert all(value is None for value in trainable.actor.smpl_encoder.weights)
     assert trainable.actor.decoder.token_projection_weight is None
-    assert all(value is None for value in trainable.actor.decoder.middle_weights)
+    assert trainable.actor.decoder.middle_weights[0] is None
+    assert trainable.actor.decoder.middle_weights[1] is not None
+    assert trainable.actor.decoder.root_motion_projection_weight is not None
     assert trainable.actor.decoder.proprioception_projection_weight is not None
     assert trainable.actor.decoder.first_bias is not None
     assert trainable.actor.decoder.output_weight is not None
@@ -837,6 +1008,7 @@ def _write_dataset_fixture(root: Path) -> Path:
             "duration_seconds": 0.98,
             "source_sha256": "sha256:" + "2" * 64,
             "synchronized_sha256": "sha256:" + "3" * 64,
+            "semantic_labels": ["traveling_root", "gait_contact_cycles"],
             **(
                 {
                     "sampling_probability_numerator": float(frames),
@@ -857,6 +1029,19 @@ def _write_dataset_fixture(root: Path) -> Path:
         "g1_robot_sha256": "1" * 64,
     }
     portable = {"schema_version": 1, "sequences": []}
+    sanitation = {
+        **SonicSanitationConfig().__dict__,
+        "quarantine_name_patterns": list(
+            SonicSanitationConfig().quarantine_name_patterns
+        ),
+    }
+    heldout_calibration = {
+        "sample_count": frames,
+        "g1_explained_variance": [1.0] * 29,
+        "g1_rms_residual_radians": [0.0] * 29,
+        "bello_explained_variance": [1.0] * 25,
+        "bello_rms_residual_radians": [0.0] * 25,
+    }
     payload = {
         "schema_version": SONIC_DATASET_SCHEMA_VERSION,
         "portable_manifest": portable,
@@ -864,6 +1049,8 @@ def _write_dataset_fixture(root: Path) -> Path:
         "quality": {},
         "calibration_config": {},
         "joint_calibration": _calibration().to_document(),
+        "heldout_calibration": heldout_calibration,
+        "sanitation_config": sanitation,
         "smpl_future_offsets": SONIC_SMPL_FUTURE_OFFSETS,
         "critic_future_offsets": SONIC_CRITIC_FUTURE_OFFSETS,
         "train_sampling": SONIC_TRAIN_SAMPLING,
@@ -890,6 +1077,8 @@ def _write_dataset_fixture(root: Path) -> Path:
         "g1_wrist_joint_names": list(G1_WRIST_JOINT_NAMES),
         **provenance,
         "joint_calibration": _calibration().to_document(),
+        "heldout_calibration": heldout_calibration,
+        "sanitation_config": sanitation,
         "clips": clips,
         "fingerprint_payload": payload,
     }

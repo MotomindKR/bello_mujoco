@@ -49,6 +49,8 @@ config:
     action_limit: 20.0
     architecture: sonic
     layer_norm_final_hidden: false
+    sonic_trainable_middle_prefix_layers: 0
+    sonic_trainable_middle_suffix_layers: 1
 
 simulation: {}
 sonic_env: {}
@@ -73,7 +75,7 @@ wandb_config:
   run_name: sonic_seed1
   mode: online
   dir: .wandb
-  tags: [sonic, transfer, edge-only, whole-body]
+  tags: [sonic, transfer, decoder-adaptation, whole-body]
 
 warp:
   contact_budget_per_env: 32

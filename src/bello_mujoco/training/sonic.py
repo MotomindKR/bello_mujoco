@@ -1,4 +1,4 @@
-"""Strict edge-only SONIC transfer learning on synchronized Bello AMASS data."""
+"""SONIC transfer learning on synchronized Bello AMASS data."""
 
 from __future__ import annotations
 
@@ -141,6 +141,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         release,
         reference_bank.calibration,
         bello_joint_names=env.action_layout.names,
+        bello_action_scale=env.action_scale,
         minimum_action_std=float(np.exp(run_config.config.policy.init_log_std)),
     )
     rng = jax.random.PRNGKey(run_config.config.seed)
@@ -313,6 +314,8 @@ def _tracking_dataset_summary(index: dict) -> dict:
         "g1_gmr_config_sha256": index["g1_gmr_config_sha256"],
         "g1_robot_sha256": index["g1_robot_sha256"],
         "joint_calibration": index["joint_calibration"],
+        "heldout_calibration": index["heldout_calibration"],
+        "sanitation_config": index["sanitation_config"],
         "splits": split_summary,
     }
 

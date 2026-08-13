@@ -250,12 +250,19 @@ Configuration source: `configs/commands/sonic_data.yaml`.
 | `keep_normalized` | boolean; `false` | Retain normalized intermediate motion archives after successful G1 retargeting. |
 | `limit` | positive integer or `null`; `null` | Deterministically process only the first sorted manifest entries for a smoke run. |
 | `quality_config` | `configs/twist/quality.yaml` | Bello feasibility and kinematic quality thresholds used by `build`. |
+| `calibration_config` | `configs/sonic/calibration.yaml` | Training and held-out morphology-map variance, residual, and conditioning gates. |
+| `sanitation_config` | `configs/sonic/sanitation.yaml` | Treadmill/stationary-gait and contact-slip quarantine thresholds. |
+
 The build enforces exact source timestamps between the Bello and G1/SMPL
 views, 50 Hz frames, immutable joint/body ordering, clean pinned GMR
-provenance, train/evaluation separation, and split-file hashes. It fits the
-default-anchored bidirectional dense ridge maps only on accepted training
-frames. The two-pass writer uses temporary memory-mapped arrays, so it creates
-the complete split files without retaining the entire corpus in process RAM.
+provenance, train/evaluation separation, semantic sanitation, held-out
+calibration validation, and split-file hashes. It fits the default-anchored
+bidirectional dense ridge maps only on accepted training frames. The two-pass
+writer uses temporary memory-mapped arrays, so it creates the complete split
+files without retaining the entire corpus in process RAM.
+The command reports validation and per-split packing progress every 100 clips;
+its conversion report is written before calibration and packing so failed
+builds retain their sanitation decisions.
 See the [SONIC transfer guide](sonic.md) for the end-to-end workflow.
 
 ## `bello-vast-train`

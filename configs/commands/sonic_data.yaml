@@ -11,6 +11,8 @@ overwrite: false
 keep_normalized: false
 limit: null
 quality_config: configs/twist/quality.yaml
+calibration_config: configs/sonic/calibration.yaml
+sanitation_config: configs/sonic/sanitation.yaml
 hydra:
   job:
     chdir: false

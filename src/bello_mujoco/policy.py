@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from bello_mujoco.sonic_policy import (
     SONIC_ACTOR_OBSERVATION_SIZE,
     SONIC_BELLO_PROPRIO_SIZE,
+    SONIC_ROOT_MOTION_COMMAND_SIZE,
     SONIC_SMPL_INPUT_SIZE,
     SONIC_TOKEN_FLAT_SIZE,
     SonicDecoderInitialization,
@@ -47,6 +48,8 @@ class ActorCriticConfig:
         "mlp", "twist_teacher", "twist_student", "twist2", "sonic"
     ] = "mlp"
     layer_norm_final_hidden: bool = False
+    sonic_trainable_middle_prefix_layers: int = 0
+    sonic_trainable_middle_suffix_layers: int = 0
 
 
 class LayeredMLP(eqx.Module):
@@ -167,7 +170,16 @@ class ActorCritic(eqx.Module):
                 raise ValueError(
                     f"SONIC Bello actor requires 25 actions, got {action_size}"
                 )
-            self.actor = SonicActor(sonic_release, sonic_initialization)
+            self.actor = SonicActor(
+                sonic_release,
+                sonic_initialization,
+                trainable_middle_prefix_layers=(
+                    config.sonic_trainable_middle_prefix_layers
+                ),
+                trainable_middle_suffix_layers=(
+                    config.sonic_trainable_middle_suffix_layers
+                ),
+            )
             self.critic = make_mlp(
                 obs_size=critic_obs_size,
                 output_size=1,
@@ -249,10 +261,12 @@ def sonic_frozen_parameter_hashes(policy: ActorCritic) -> dict[str, str]:
         **{
             f"decoder_middle_weight_{index}": value
             for index, value in enumerate(policy.actor.decoder.middle_weights)
+            if not policy.actor.decoder.trainable_middle_layers[index]
         },
         **{
             f"decoder_middle_bias_{index}": value
             for index, value in enumerate(policy.actor.decoder.middle_biases)
+            if not policy.actor.decoder.trainable_middle_layers[index]
         },
     }
     result = {}
@@ -290,12 +304,12 @@ def policy_trainable_filter(policy: ActorCritic):
     specification = eqx.tree_at(
         lambda value: value.actor.decoder.middle_weights,
         specification,
-        tuple(False for _ in policy.actor.decoder.middle_weights),
+        policy.actor.decoder.trainable_middle_layers,
     )
     return eqx.tree_at(
         lambda value: value.actor.decoder.middle_biases,
         specification,
-        tuple(False for _ in policy.actor.decoder.middle_biases),
+        policy.actor.decoder.trainable_middle_layers,
     )
 
 
@@ -375,16 +389,27 @@ class SonicEdgeDecoder(eqx.Module):
     """Frozen SONIC core with trainable Bello input/output edge projections."""
 
     token_projection_weight: jax.Array
+    root_motion_projection_weight: jax.Array
     proprioception_projection_weight: jax.Array
     first_bias: jax.Array
     middle_weights: tuple[jax.Array, ...]
     middle_biases: tuple[jax.Array, ...]
     output_weight: jax.Array
     output_bias: jax.Array
+    trainable_middle_layers: tuple[bool, ...] = eqx.field(static=True)
 
-    def __init__(self, initialization: SonicDecoderInitialization):
+    def __init__(
+        self,
+        initialization: SonicDecoderInitialization,
+        *,
+        trainable_middle_prefix_layers: int,
+        trainable_middle_suffix_layers: int,
+    ):
         self.token_projection_weight = jnp.asarray(
             initialization.token_projection_weight
+        )
+        self.root_motion_projection_weight = jnp.asarray(
+            initialization.root_motion_projection_weight
         )
         self.proprioception_projection_weight = jnp.asarray(
             initialization.proprioception_projection_weight
@@ -398,12 +423,38 @@ class SonicEdgeDecoder(eqx.Module):
         )
         self.output_weight = jnp.asarray(initialization.output_weight)
         self.output_bias = jnp.asarray(initialization.output_bias)
+        count = len(self.middle_weights)
+        for name, value in (
+            ("sonic_trainable_middle_prefix_layers", trainable_middle_prefix_layers),
+            ("sonic_trainable_middle_suffix_layers", trainable_middle_suffix_layers),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
+        if trainable_middle_prefix_layers + trainable_middle_suffix_layers > count:
+            raise ValueError(
+                "SONIC trainable middle-layer prefix and suffix overlap"
+            )
+        self.trainable_middle_layers = tuple(
+            index < trainable_middle_prefix_layers
+            or index >= count - trainable_middle_suffix_layers
+            for index in range(count)
+        )
 
-    def __call__(self, tokens: jax.Array, proprioception: jax.Array) -> jax.Array:
+    def __call__(
+        self,
+        tokens: jax.Array,
+        root_motion: jax.Array,
+        proprioception: jax.Array,
+    ) -> jax.Array:
         value = (
             jnp.matmul(
                 tokens,
                 jax.lax.stop_gradient(self.token_projection_weight).T,
+                precision=jax.lax.Precision.HIGHEST,
+            )
+            + jnp.matmul(
+                root_motion,
+                self.root_motion_projection_weight.T,
                 precision=jax.lax.Precision.HIGHEST,
             )
             + jnp.matmul(
@@ -414,14 +465,21 @@ class SonicEdgeDecoder(eqx.Module):
             + self.first_bias
         )
         value = jax.nn.silu(value)
-        for weight, bias in zip(self.middle_weights, self.middle_biases, strict=True):
+        for weight, bias, trainable in zip(
+            self.middle_weights,
+            self.middle_biases,
+            self.trainable_middle_layers,
+            strict=True,
+        ):
+            applied_weight = weight if trainable else jax.lax.stop_gradient(weight)
+            applied_bias = bias if trainable else jax.lax.stop_gradient(bias)
             value = jax.nn.silu(
                 jnp.matmul(
                     value,
-                    jax.lax.stop_gradient(weight).T,
+                    applied_weight.T,
                     precision=jax.lax.Precision.HIGHEST,
                 )
-                + jax.lax.stop_gradient(bias)
+                + applied_bias
             )
         return (
             jnp.matmul(
@@ -434,7 +492,7 @@ class SonicEdgeDecoder(eqx.Module):
 
 
 class SonicActor(eqx.Module):
-    """Online SMPL encoder and strict edge-only Bello SONIC controller."""
+    """Online frozen SMPL encoder and adaptable Bello SONIC decoder."""
 
     smpl_encoder: SonicFrozenSmplEncoder
     decoder: SonicEdgeDecoder
@@ -443,9 +501,16 @@ class SonicActor(eqx.Module):
         self,
         release: SonicReleaseWeights,
         initialization: SonicDecoderInitialization,
+        *,
+        trainable_middle_prefix_layers: int,
+        trainable_middle_suffix_layers: int,
     ):
         self.smpl_encoder = SonicFrozenSmplEncoder(release)
-        self.decoder = SonicEdgeDecoder(initialization)
+        self.decoder = SonicEdgeDecoder(
+            initialization,
+            trainable_middle_prefix_layers=trainable_middle_prefix_layers,
+            trainable_middle_suffix_layers=trainable_middle_suffix_layers,
+        )
 
     def __call__(self, observation: jax.Array) -> jax.Array:
         if observation.shape[-1] != SONIC_ACTOR_OBSERVATION_SIZE:
@@ -454,12 +519,17 @@ class SonicActor(eqx.Module):
                 f"features, got {observation.shape[-1]}"
             )
         smpl_input = observation[:SONIC_SMPL_INPUT_SIZE]
-        proprioception = observation[SONIC_SMPL_INPUT_SIZE:]
+        root_motion_start = SONIC_SMPL_INPUT_SIZE
+        proprioception_start = root_motion_start + SONIC_ROOT_MOTION_COMMAND_SIZE
+        root_motion = observation[root_motion_start:proprioception_start]
+        proprioception = observation[proprioception_start:]
+        if root_motion.shape[-1] != SONIC_ROOT_MOTION_COMMAND_SIZE:
+            raise RuntimeError("SONIC root-motion command slice has drifted")
         if proprioception.shape[-1] != SONIC_BELLO_PROPRIO_SIZE:
             raise RuntimeError("SONIC Bello proprioception slice has drifted")
         latent = self.smpl_encoder(smpl_input)
         tokens = sonic_fsq(latent.reshape((2, 32))).reshape((SONIC_TOKEN_FLAT_SIZE,))
-        return self.decoder(tokens, proprioception)
+        return self.decoder(tokens, root_motion, proprioception)
 
 
 class TwistBackbone(eqx.Module):

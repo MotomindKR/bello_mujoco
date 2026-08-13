@@ -28,7 +28,12 @@ SONIC_G1_ACTION_SIZE = 29
 SONIC_BELLO_ACTION_SIZE = 25
 SONIC_G1_PROPRIO_SIZE = 930
 SONIC_BELLO_PROPRIO_SIZE = 810
-SONIC_ACTOR_OBSERVATION_SIZE = SONIC_SMPL_INPUT_SIZE + SONIC_BELLO_PROPRIO_SIZE
+SONIC_ROOT_MOTION_COMMAND_SIZE = 2 * SONIC_SMPL_FRAME_COUNT
+SONIC_ACTOR_OBSERVATION_SIZE = (
+    SONIC_SMPL_INPUT_SIZE
+    + SONIC_ROOT_MOTION_COMMAND_SIZE
+    + SONIC_BELLO_PROPRIO_SIZE
+)
 SONIC_ENCODER_DIMS = (840, 2048, 1024, 512, 512, 64)
 SONIC_DECODER_DIMS = (994, 2048, 2048, 1024, 1024, 512, 512, 29)
 SONIC_OFFICIAL_CHECKPOINT_SHA256 = (
@@ -47,6 +52,37 @@ BELLO_TO_G1_VECTOR_BASIS = np.asarray(
         (-1.0, 0.0, 0.0),
         (0.0, 0.0, 1.0),
     ),
+    dtype=np.float32,
+)
+
+_G1_NATURAL_FREQUENCY = 10.0 * 2.0 * 3.1415926535
+_G1_STIFFNESS_5020 = 0.003609725 * _G1_NATURAL_FREQUENCY**2
+_G1_STIFFNESS_7520_14 = 0.010177520 * _G1_NATURAL_FREQUENCY**2
+_G1_STIFFNESS_7520_22 = 0.025101925 * _G1_NATURAL_FREQUENCY**2
+_G1_STIFFNESS_4010 = 0.00425 * _G1_NATURAL_FREQUENCY**2
+
+
+def _g1_action_scale(joint_name: str) -> float:
+    """Mirror NVIDIA's pinned ``0.25 * effort / stiffness`` G1 contract."""
+
+    if "hip_yaw" in joint_name or joint_name == "waist_yaw_joint":
+        effort, stiffness = 88.0, _G1_STIFFNESS_7520_14
+    elif any(part in joint_name for part in ("hip_pitch", "hip_roll", "knee")):
+        effort, stiffness = 139.0, _G1_STIFFNESS_7520_22
+    elif "ankle" in joint_name or joint_name in {
+        "waist_roll_joint",
+        "waist_pitch_joint",
+    }:
+        effort, stiffness = 50.0, 2.0 * _G1_STIFFNESS_5020
+    elif "wrist_pitch" in joint_name or "wrist_yaw" in joint_name:
+        effort, stiffness = 5.0, _G1_STIFFNESS_4010
+    else:
+        effort, stiffness = 25.0, _G1_STIFFNESS_5020
+    return 0.25 * effort / stiffness
+
+
+SONIC_G1_ACTION_SCALE = np.asarray(
+    tuple(_g1_action_scale(name) for name in G1_ISAACLAB_JOINT_NAMES),
     dtype=np.float32,
 )
 
@@ -92,6 +128,7 @@ class SonicReleaseWeights:
 @dataclass(frozen=True)
 class SonicDecoderInitialization:
     token_projection_weight: np.ndarray
+    root_motion_projection_weight: np.ndarray
     proprioception_projection_weight: np.ndarray
     first_bias: np.ndarray
     middle_weights: tuple[np.ndarray, ...]
@@ -105,6 +142,11 @@ class SonicDecoderInitialization:
     def __post_init__(self) -> None:
         if self.token_projection_weight.shape != (2048, SONIC_TOKEN_FLAT_SIZE):
             raise ValueError("SONIC token projection shape is invalid")
+        if self.root_motion_projection_weight.shape != (
+            2048,
+            SONIC_ROOT_MOTION_COMMAND_SIZE,
+        ):
+            raise ValueError("SONIC root-motion projection shape is invalid")
         if self.proprioception_projection_weight.shape != (
             2048,
             SONIC_BELLO_PROPRIO_SIZE,
@@ -259,6 +301,7 @@ def build_bello_decoder_initialization(
     calibration: SonicJointCalibration,
     *,
     bello_joint_names: tuple[str, ...],
+    bello_action_scale: tuple[float, ...] | np.ndarray,
     minimum_action_std: float,
 ) -> SonicDecoderInitialization:
     """Compose the original G1 edge linears with coupled morphology maps."""
@@ -269,7 +312,11 @@ def build_bello_decoder_initialization(
         raise ValueError("joint calibration and Bello model joint orders differ")
     if len(bello_joint_names) != SONIC_BELLO_ACTION_SIZE:
         raise ValueError("SONIC Bello embodiment must expose exactly 25 actions")
-    affine, affine_offset = g1_from_bello_proprio_affine(calibration)
+    bello_action_scale = _validated_bello_action_scale(bello_action_scale)
+    affine, affine_offset = g1_from_bello_proprio_affine(
+        calibration,
+        bello_action_scale=bello_action_scale,
+    )
     first_weight = release.decoder_weights[0]
     token_weight = first_weight[:, :SONIC_TOKEN_FLAT_SIZE].copy()
     original_prop_weight = first_weight[:, SONIC_TOKEN_FLAT_SIZE:]
@@ -281,13 +328,20 @@ def build_bello_decoder_initialization(
     output_std = bello_action_std_from_g1(
         release.released_std,
         calibration,
+        bello_action_scale=bello_action_scale,
         minimum_action_std=minimum_action_std,
     )
-    bello_from_g1 = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
+    bello_from_g1 = _normalized_bello_from_g1(
+        calibration,
+        bello_action_scale,
+    )
     output_weight[:] = bello_from_g1 @ release.decoder_weights[-1]
     output_bias[:] = bello_from_g1 @ release.decoder_biases[-1]
     return SonicDecoderInitialization(
         token_projection_weight=token_weight.astype(np.float32),
+        root_motion_projection_weight=np.zeros(
+            (2048, SONIC_ROOT_MOTION_COMMAND_SIZE), dtype=np.float32
+        ),
         proprioception_projection_weight=proprio_weight.astype(np.float32),
         first_bias=first_bias.astype(np.float32),
         middle_weights=tuple(weight.copy() for weight in release.decoder_weights[1:-1]),
@@ -304,6 +358,7 @@ def bello_action_std_from_g1(
     released_std: np.ndarray,
     calibration: SonicJointCalibration,
     *,
+    bello_action_scale: tuple[float, ...] | np.ndarray,
     minimum_action_std: float,
 ) -> np.ndarray:
     """Propagate diagonal G1 exploration variance through the dense edge map."""
@@ -315,13 +370,18 @@ def bello_action_std_from_g1(
         raise ValueError("released SONIC standard deviation is invalid")
     if not np.isfinite(minimum_action_std) or minimum_action_std <= 0.0:
         raise ValueError("minimum Bello action standard deviation is invalid")
-    bello_from_g1 = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
+    bello_from_g1 = _normalized_bello_from_g1(
+        calibration,
+        _validated_bello_action_scale(bello_action_scale),
+    )
     variance = (bello_from_g1 * bello_from_g1) @ (released_std * released_std)
     return np.maximum(np.sqrt(variance), minimum_action_std).astype(np.float32)
 
 
 def g1_from_bello_proprio_affine(
     calibration: SonicJointCalibration,
+    *,
+    bello_action_scale: tuple[float, ...] | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return the default-anchored Bello-to-G1 proprioception edge map."""
     matrix = np.zeros(
@@ -329,6 +389,10 @@ def g1_from_bello_proprio_affine(
     )
     offset = np.zeros((SONIC_G1_PROPRIO_SIZE,), dtype=np.float32)
     joint_matrix = np.asarray(calibration.g1_from_bello_matrix, dtype=np.float32)
+    bello_action_scale = _validated_bello_action_scale(bello_action_scale)
+    normalized_action_matrix = (
+        joint_matrix * bello_action_scale[None, :] / SONIC_G1_ACTION_SCALE[:, None]
+    )
     # Term-major history: gravity, angular velocity, q, qdot, previous action.
     _repeat_vector_basis(matrix, 0, 0, 10)
     _repeat_vector_basis(matrix, 30, 30, 10)
@@ -365,8 +429,31 @@ def g1_from_bello_proprio_affine(
         )
         matrix[g1_joint_slice, bello_joint_slice] = joint_matrix
         matrix[g1_velocity_slice, bello_velocity_slice] = joint_matrix
-        matrix[g1_action_slice, bello_action_slice] = joint_matrix
+        matrix[g1_action_slice, bello_action_slice] = normalized_action_matrix
     return matrix, offset
+
+
+def _validated_bello_action_scale(
+    value: tuple[float, ...] | np.ndarray,
+) -> np.ndarray:
+    scale = np.asarray(value, dtype=np.float32)
+    if scale.shape != (SONIC_BELLO_ACTION_SIZE,) or not np.all(
+        np.isfinite(scale) & (scale > 0.0)
+    ):
+        raise ValueError("Bello SONIC action scale must contain 25 positive values")
+    return scale
+
+
+def _normalized_bello_from_g1(
+    calibration: SonicJointCalibration,
+    bello_action_scale: np.ndarray,
+) -> np.ndarray:
+    joint_matrix = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
+    return (
+        joint_matrix
+        * SONIC_G1_ACTION_SCALE[None, :]
+        / bello_action_scale[:, None]
+    ).astype(np.float32)
 
 
 def sonic_fsq(value: jax.Array) -> jax.Array:

@@ -102,6 +102,8 @@ rollout batch are not sampled.
 | `action_limit` | `1` | Squashed action magnitude. For bounded policies it must equal the environment `action_clip`. |
 | `architecture` | `mlp` | Task-owned actor implementation: `mlp`, `twist_teacher`, `twist_student`, `twist2`, or `sonic`. |
 | `layer_norm_final_hidden` | `false` | Enable the final-hidden normalization required by TWIST-family networks. SONIC leaves it disabled. |
+| `sonic_trainable_middle_prefix_layers` | `0` | Number of SONIC interior decoder linears to unfreeze from the input side. SONIC-only; prefix plus suffix cannot exceed five. |
+| `sonic_trainable_middle_suffix_layers` | `1` in the SONIC profile | Number of SONIC interior decoder linears to unfreeze from the output side. |
 
 ## Assets: `asset_config`
 
@@ -444,19 +446,22 @@ exact released 19,426-clip source composition with unit weights. See the
 ## SONIC transfer: `configs/train_sonic`
 
 SONIC is an isolated 200 Hz simulation/50 Hz control task with ten-second
-episodes and a 25-joint Bello action. Its actor consumes 1,650 raw values: ten
-84-value SMPL command frames for the frozen encoder and ten Bello history
+episodes and a 25-joint Bello action. Its actor consumes 1,670 raw values: ten
+84-value SMPL command frames for the frozen encoder, a 20-value desired root
+XY path, and ten Bello history
 frames containing projected gravity, base angular velocity, joint position,
 joint velocity, and previous action. The new privileged critic consumes 1,445
 values. The actor remains raw, while the critic has an independent running
 mean/std normalizer.
 
 The exported release supplies a frozen five-layer SMPL encoder, 32-level FSQ,
-the token branch of decoder layer zero, and five interior decoder linears. Only
-the Bello proprioceptive projection and first-layer bias, the 25-output
-projection/bias, actor log standard deviation, and new critic are optimizer
-leaves. Frozen arrays are structurally absent from optimizer state and are
-content-hashed before periodic and final checkpoints.
+the token branch of decoder layer zero, and five initialized interior decoder
+linears. The Bello proprioceptive and zero-initialized root-path projections,
+first-layer bias, configured interior prefix/suffix, 25-output projection/bias,
+actor log standard deviation, and new critic are optimizer leaves. Frozen
+arrays are structurally absent from optimizer state and are content-hashed
+before periodic and final checkpoints. The maintained profile trains the final
+interior linear while keeping the prefix frozen.
 
 The maintained PPO profile uses 4,096 environments, 24 steps, five epochs,
 four minibatches, actor-edge learning rate `2e-5`, critic learning rate
@@ -464,8 +469,9 @@ four minibatches, actor-edge learning rate `2e-5`, critic learning rate
 `0.99`, GAE lambda `0.95`, and clip ratio `0.2`. It uses an unsquashed Gaussian
 initialized by propagating the release-checkpoint variance through the dense
 Bello-from-G1 output map, with a `0.05` floor; all values are clamped to
-`[0.001,0.5]`. Raw actions are clipped to `[-20,20]` and scaled by `0.5`
-before becoming joint-target offsets.
+`[0.001,0.5]`. Raw actions are clipped to `[-20,20]`, multiplied by Bello's
+per-joint `0.25 * effort_limit / stiffness` action scale, and clipped again to
+the generated model's feasible joint-target interval.
 
 `sonic_env` owns released-style tracking rewards, failure termination,
 observation noise, per-world morphology/dynamics randomization, root pushes,

@@ -339,6 +339,7 @@ def _policy_template(metadata, env, release):
         release,
         metadata.dataset.calibration,
         bello_joint_names=env.action_layout.names,
+        bello_action_scale=env.action_scale,
         minimum_action_std=float(np.exp(metadata.ppo.policy.init_log_std)),
     )
     _, policy_key = jax.random.split(jax.random.PRNGKey(metadata.ppo.seed))
@@ -591,6 +592,7 @@ def _aggregate_results(metadata, clips, thresholds, video) -> dict[str, Any]:
     global_metrics["completion_rate"] = float(
         np.mean([clip["completed"] for clip in clips])
     )
+    frame_weighted = _frame_weighted_metrics(clips)
     checks = {
         "completion_rate": (
             global_metrics["completion_rate"] >= thresholds.minimum_completion_rate
@@ -623,6 +625,25 @@ def _aggregate_results(metadata, clips, thresholds, video) -> dict[str, Any]:
                 for name in metric_names
             },
         }
+    semantic_labels = sorted(
+        {label for clip in clips for label in clip.get("semantic_labels", ())}
+    )
+    semantic_strata = {}
+    for label in semantic_labels:
+        selected = [clip for clip in clips if label in clip["semantic_labels"]]
+        semantic_strata[label] = {
+            "clips": len(selected),
+            "clip_weighted": {
+                "completion_rate": float(
+                    np.mean([clip["completed"] for clip in selected])
+                ),
+                **{
+                    name: float(np.mean([clip[name] for clip in selected]))
+                    for name in metric_names
+                },
+            },
+            "frame_weighted": _frame_weighted_metrics(selected),
+        }
     return {
         "task": "sonic",
         "dataset_fingerprint": metadata.dataset.dataset_fingerprint,
@@ -630,6 +651,7 @@ def _aggregate_results(metadata, clips, thresholds, video) -> dict[str, Any]:
         "release_checkpoint_sha256": metadata.release_checkpoint_sha256,
         "release_artifact_sha256": metadata.release_artifact_sha256,
         "global": global_metrics,
+        "frame_weighted": frame_weighted,
         "acceptance": {
             "passed": all(checks.values()),
             "checks": checks,
@@ -646,8 +668,34 @@ def _aggregate_results(metadata, clips, thresholds, video) -> dict[str, Any]:
             },
         },
         "per_source": sources,
+        "per_semantic_label": semantic_strata,
         "per_clip": clips,
         "video": video,
+    }
+
+
+def _frame_weighted_metrics(clips: list[dict[str, Any]]) -> dict[str, float]:
+    steps = np.asarray([clip["steps"] for clip in clips], dtype=np.float64)
+    expected = np.asarray([clip["expected_steps"] for clip in clips], dtype=np.float64)
+    total_steps = max(float(np.sum(steps)), 1.0)
+
+    def weighted_rms(name: str) -> float:
+        values = np.asarray([clip[name] for clip in clips], dtype=np.float64)
+        return float(np.sqrt(np.sum(values * values * steps) / total_steps))
+
+    foot_slip = np.asarray(
+        [clip["foot_slip_mean_mps"] for clip in clips], dtype=np.float64
+    )
+    returns = np.asarray([clip["episode_return"] for clip in clips], dtype=np.float64)
+    return {
+        "completion_fraction": float(
+            np.sum(steps) / max(float(np.sum(expected)), 1.0)
+        ),
+        "episode_return_per_step": float(np.sum(returns) / total_steps),
+        "root_position_rms_m": weighted_rms("root_position_rms_m"),
+        "root_orientation_rms_deg": weighted_rms("root_orientation_rms_deg"),
+        "joint_position_rms_rad": weighted_rms("joint_position_rms_rad"),
+        "foot_slip_mean_mps": float(np.sum(foot_slip * steps) / total_steps),
     }
 
 

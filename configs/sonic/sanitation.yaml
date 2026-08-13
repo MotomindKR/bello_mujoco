@@ -1,0 +1,7 @@
+quarantine_name_patterns:
+  - treadmill
+stationary_root_extent_meters: 0.35
+minimum_leg_rms_velocity_radians_per_second: 0.35
+minimum_contact_transitions: 4
+maximum_contact_foot_speed_meters_per_second: 0.6
+maximum_fast_contact_fraction: 0.15

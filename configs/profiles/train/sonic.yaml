@@ -3,4 +3,4 @@ checkpoint_config:
   wandb_artifact_name: sonic_seed1
 wandb_config:
   run_name: sonic_seed1
-  tags: [sonic, transfer, edge-only, whole-body]
+  tags: [sonic, transfer, decoder-adaptation, whole-body]

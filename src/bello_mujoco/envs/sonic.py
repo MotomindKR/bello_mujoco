@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 from mujoco import mjx
 
+from bello_mujoco.actuators import joint_position_action_scales
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import ObservationLayout
 from bello_mujoco.envs.locomotion import (
@@ -50,6 +51,7 @@ from bello_mujoco.sonic_policy import (
     SONIC_ACTOR_OBSERVATION_SIZE,
     SONIC_BELLO_ACTION_SIZE,
     SONIC_BELLO_PROPRIO_SIZE,
+    SONIC_ROOT_MOTION_COMMAND_SIZE,
     SONIC_SMPL_INPUT_SIZE,
 )
 
@@ -58,7 +60,6 @@ SONIC_POLICY_HZ = 50
 SONIC_DECIMATION = SONIC_SIMULATION_HZ // SONIC_POLICY_HZ
 SONIC_HISTORY_FRAMES = 10
 SONIC_EPISODE_STEPS = 10 * SONIC_POLICY_HZ
-SONIC_ACTION_SCALE = 0.5
 SONIC_ACTION_CLIP = 20.0
 
 SONIC_TRACKED_BODY_NAMES = (
@@ -153,7 +154,7 @@ class SonicObservationContract:
 
     @property
     def actor_observation_size(self) -> int:
-        return SONIC_SMPL_INPUT_SIZE + SONIC_BELLO_PROPRIO_SIZE
+        return SONIC_ACTOR_OBSERVATION_SIZE
 
     @property
     def critic_command_frame_size(self) -> int:
@@ -177,6 +178,7 @@ class SonicObservationContract:
         return ObservationLayout(
             (
                 ("smpl_future_encoder_input", SONIC_SMPL_INPUT_SIZE),
+                ("desired_root_xy_trajectory", SONIC_ROOT_MOTION_COMMAND_SIZE),
                 ("projected_gravity_history", 30),
                 ("base_angular_velocity_history", 30),
                 ("joint_position_history", 250),
@@ -393,12 +395,13 @@ class SonicState:
 
 @dataclass(frozen=True)
 class BelloSonicEnv(BelloTwistEnv):
-    """Strict edge-only transfer environment for the released SONIC actor."""
+    """Morphology-adapted transfer environment for the released SONIC actor."""
 
     config: SonicEnvConfig = SonicEnvConfig()
     reference_bank: SonicReferenceBank | None = None
     sampling: SonicSamplingConfig = SonicSamplingConfig()
     sampling_bin_cdf: jax.Array | None = None
+    action_scale: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if self.stage != "student":
@@ -418,6 +421,11 @@ class BelloSonicEnv(BelloTwistEnv):
             raise ValueError("SONIC requires every generated actuator as an action")
         if self.action_size != SONIC_BELLO_ACTION_SIZE:
             raise ValueError("SONIC transfer requires Bello's 25-action embodiment")
+        action_scale = np.asarray(self.action_scale)
+        if action_scale.shape != (self.action_size,) or not np.all(
+            np.isfinite(action_scale) & (action_scale > 0.0)
+        ):
+            raise ValueError("SONIC requires one positive action scale per Bello joint")
         if self.reference_bank.joint_names != self.action_layout.names:
             raise ValueError("SONIC dataset action order differs from the Bello model")
         if (
@@ -538,6 +546,13 @@ class BelloSonicEnv(BelloTwistEnv):
             config,
             reference_bank,
             config.sampling,
+            action_scale=joint_position_action_scales(
+                asset_config.actuator_config,
+                tuple(
+                    model.actuator_joint_names[index]
+                    for index in model.policy_ctrl_indices
+                ),
+            ),
         )
         return (
             env.with_task_state(env.initial_task_state())
@@ -582,6 +597,7 @@ class BelloSonicEnv(BelloTwistEnv):
             "stage",
             "config",
             "sampling",
+            "action_scale",
         ):
             object.__setattr__(bound, name, getattr(self, name))
         object.__setattr__(bound, "reference_bank", reference_bank)
@@ -910,8 +926,9 @@ class BelloSonicEnv(BelloTwistEnv):
 
     def observation(self, state: SonicState, rng: jax.Array | None = None) -> jax.Array:
         smpl = self._smpl_encoder_input(state, rng)
+        root_motion = self._root_motion_command(state)
         proprioception = self._actor_proprioception(state.observation_history, rng)
-        observation = jnp.concatenate((smpl, proprioception))
+        observation = jnp.concatenate((smpl, root_motion, proprioception))
         if observation.shape != (SONIC_ACTOR_OBSERVATION_SIZE,):
             raise RuntimeError("SONIC actor observation shape has drifted")
         return observation
@@ -944,6 +961,33 @@ class BelloSonicEnv(BelloTwistEnv):
         )
         if value.shape != (SONIC_BELLO_PROPRIO_SIZE,):
             raise RuntimeError("SONIC Bello proprioception shape has drifted")
+        return value
+
+    def _root_motion_command(self, state: SonicState) -> jax.Array:
+        """Encode the short desired XY path in the current robot root frame."""
+
+        current_reference = self._aligned_reference(
+            state.motion_state,
+            state.clip_index,
+            SONIC_SMPL_FUTURE_OFFSETS[0],
+        )
+        current_root_quat = state.motion_state.data.qpos[3:7]
+        value = jnp.concatenate(
+            tuple(
+                quat_rotate_inverse(
+                    current_root_quat,
+                    self._aligned_reference(
+                        state.motion_state,
+                        state.clip_index,
+                        offset,
+                    ).qpos[:3]
+                    - current_reference.qpos[:3],
+                )[:2]
+                for offset in SONIC_SMPL_FUTURE_OFFSETS
+            )
+        )
+        if value.shape != (SONIC_ROOT_MOTION_COMMAND_SIZE,):
+            raise RuntimeError("SONIC root-motion command shape has drifted")
         return value
 
     def _smpl_encoder_input(
@@ -1465,17 +1509,34 @@ class BelloSonicEnv(BelloTwistEnv):
         observation = self.observation_batch(state, rng)
         return state, observation
 
-    def _action_target(
+    def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]:
+        flat_action = env_action.reshape((-1, self.action_size))
+        requested = jax.vmap(self._unbounded_policy_target)(flat_action)
+        policy = jnp.asarray(self.model.policy_ctrl_indices)
+        low = jnp.asarray(self.model.joint_target_low)[policy]
+        high = jnp.asarray(self.model.joint_target_high)[policy]
+        outside = (requested < low) | (requested > high)
+        diagnostics = {
+            "target/outside_joint_limit_fraction": jnp.mean(
+                outside.astype(jnp.float32)
+            )
+        }
+        diagnostics.update(
+            {
+                f"target/outside_joint_limit/{name}_fraction": jnp.mean(
+                    outside[:, index].astype(jnp.float32)
+                )
+                for index, name in enumerate(self.action_layout.names)
+            }
+        )
+        return diagnostics
+
+    def _unbounded_policy_target(
         self,
         action: jax.Array,
-        motion_state=None,
         randomization: jax.Array | None = None,
     ) -> jax.Array:
-        """Apply SONIC's 0.5 action scale around each randomized default pose."""
-
-        del motion_state
         policy = jnp.asarray(self.model.policy_ctrl_indices)
-        logical = jnp.asarray(self.model.default_joint_target)
         offset = (
             jnp.asarray(self.model.joint_angle_offset[0], dtype=jnp.float32)
             if randomization is None
@@ -1483,10 +1544,28 @@ class BelloSonicEnv(BelloTwistEnv):
         )
         if offset.shape != (self.action_size,):
             raise ValueError("SONIC default-joint offset shape has drifted")
-        target = (
-            logical[policy]
+        return (
+            jnp.asarray(self.model.default_joint_target)[policy]
             + offset
-            + SONIC_ACTION_SCALE * jnp.asarray(action, dtype=jnp.float32)
+            + jnp.asarray(self.action_scale, dtype=jnp.float32)
+            * jnp.asarray(action, dtype=jnp.float32)
+        )
+
+    def _action_target(
+        self,
+        action: jax.Array,
+        motion_state=None,
+        randomization: jax.Array | None = None,
+    ) -> jax.Array:
+        """Apply scale-aware SONIC actions and bound every requested joint target."""
+
+        del motion_state
+        policy = jnp.asarray(self.model.policy_ctrl_indices)
+        logical = jnp.asarray(self.model.default_joint_target)
+        target = jnp.clip(
+            self._unbounded_policy_target(action, randomization),
+            jnp.asarray(self.model.joint_target_low)[policy],
+            jnp.asarray(self.model.joint_target_high)[policy],
         )
         logical = logical.at[policy].set(target)
         return jnp.matmul(

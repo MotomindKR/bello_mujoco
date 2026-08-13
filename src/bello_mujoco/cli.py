@@ -120,6 +120,8 @@ class SonicDataCommandConfig:
     keep_normalized: bool
     limit: int | None
     quality_config: Path
+    calibration_config: Path
+    sanitation_config: Path
 
     def __post_init__(self) -> None:
         if self.operation not in {"retarget_g1", "build"}:
@@ -598,6 +600,8 @@ def sonic_data_entrypoint() -> None:
             "output_root=",
             "gmr_python=",
             "quality_config=",
+            "calibration_config=",
+            "sanitation_config=",
         )
     )
     _sonic_data_hydra()
@@ -618,6 +622,8 @@ def _sonic_data_hydra(config: DictConfig) -> None:
                 "bello_retargeted_root",
                 "g1_retargeted_root",
                 "quality_config",
+                "calibration_config",
+                "sanitation_config",
             ),
             context="operation=retarget_g1",
         )
@@ -665,8 +671,15 @@ def _sonic_data_hydra(config: DictConfig) -> None:
     )
     bello_root = _required_path(command.bello_retargeted_root, "bello_retargeted_root")
     g1_root = _required_path(command.g1_retargeted_root, "g1_retargeted_root")
-    from bello_mujoco.motion.sonic_dataset import build_sonic_dataset
+    from bello_mujoco.motion.sonic_dataset import (
+        build_sonic_dataset,
+        load_sonic_calibration_config,
+        load_sonic_sanitation_config,
+    )
     from bello_mujoco.motion.twist_dataset import load_quality_config
+
+    def progress(stage: str, current: int, total: int) -> None:
+        print(f"SONIC dataset {stage}: {current}/{total}", file=sys.stderr)
 
     index = build_sonic_dataset(
         manifest,
@@ -674,6 +687,9 @@ def _sonic_data_hydra(config: DictConfig) -> None:
         g1_root,
         output_root,
         quality=load_quality_config(command.quality_config),
+        calibration=load_sonic_calibration_config(command.calibration_config),
+        sanitation=load_sonic_sanitation_config(command.sanitation_config),
+        progress=progress,
     )
     print(json.dumps(index, indent=2, sort_keys=True))
 

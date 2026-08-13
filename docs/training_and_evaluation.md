@@ -24,7 +24,8 @@ sonic
 gait baseline. `hardware_locomotion` uses the same reward and policy contract
 with the longer credit horizon used by the physical policy. `motion` is bounded
 BeyondMimic tracking. TWIST and TWIST2 are dedicated whole-body motion tasks;
-SONIC is strict edge-only transfer of NVIDIA's released G1 controller to Bello.
+SONIC freezes NVIDIA's released encoder and semantic decoder core while
+training morphology edges and a configurable decoder prefix/suffix on Bello.
 
 The public command can override seed, total timesteps, environment count,
 motion path, resume path, checkpoint destination/name, W&B enablement/run name,
