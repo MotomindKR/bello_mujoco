@@ -81,6 +81,30 @@ def test_twist2_observation_contract_matches_bello_release_dimensions() -> None:
     assert not Twist2ParityContract().gravity_randomization_executed
 
 
+def test_twist2_reset_randomizes_reference_joint_positions_like_release() -> None:
+    env = object.__new__(BelloTwist2Env)
+    object.__setattr__(
+        env,
+        "model",
+        SimpleNamespace(
+            policy_qpos_indices=jnp.arange(7, 32, dtype=jnp.int32),
+            policy_ctrl_indices=jnp.arange(25, dtype=jnp.int32),
+        ),
+    )
+    reference = jnp.concatenate(
+        (jnp.asarray((0.0, 0.0, 0.8, 1.0, 0.0, 0.0, 0.0)), jnp.ones(25))
+    )
+
+    randomized = jax.jit(env._reset_qpos)(reference, jax.random.PRNGKey(7))
+    deterministic = env._reset_qpos(reference, None)
+
+    assert randomized[2] == pytest.approx(0.85)
+    assert jnp.all(randomized[7:] >= 0.8)
+    assert jnp.all(randomized[7:] < 1.2)
+    assert not jnp.array_equal(randomized[7:], reference[7:])
+    assert jnp.array_equal(deterministic[7:], reference[7:])
+
+
 def test_twist2_actor_and_critic_shapes_and_training_dropout() -> None:
     policy = init_actor_critic(
         jax.random.PRNGKey(0),

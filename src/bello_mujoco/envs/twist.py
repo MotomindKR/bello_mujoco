@@ -620,7 +620,7 @@ class BelloTwistEnv:
         alignment_xy = desired_xy - source.qpos[:2]
         motion_state = motion_state.replace(alignment_xy=alignment_xy)
         reference = self._aligned_reference(motion_state, clip_index, 0)
-        qpos = reference.qpos.at[2].add(0.05)
+        qpos = self._reset_qpos(reference.qpos, pose_key)
         qvel = 0.8 * reference.qvel
         data = motion_state.data.replace(
             qpos=qpos,
@@ -663,6 +663,12 @@ class BelloTwistEnv:
                 )
             )
         return state
+
+    def _reset_qpos(
+        self, reference_qpos: jax.Array, rng: jax.Array | None
+    ) -> jax.Array:
+        del rng
+        return reference_qpos.at[2].add(0.05)
 
     def reset_batch(
         self, batch_size: int, rng: jax.Array | None = None

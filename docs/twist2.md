@@ -127,6 +127,10 @@ Per-world randomization covers added base mass and center of mass, friction,
 and independent proportional/derivative motor strength. Root XY velocity
 pushes occur after simulation every 200 policy steps (four seconds), as in the
 release, with magnitude up to 1 m/s.
+At each stochastic training reset, active joint positions are initialized at an
+independent `0.8` to `1.2` multiple of the sampled reference pose, matching the
+release's recovery-state distribution. Deterministic evaluation resets retain
+the exact reference joint pose.
 The release declares gravity randomization but never calls the corresponding
 method, so this implementation does not invent an active gravity perturbation.
 Actor observation noise ramps over 1,200,000 policy steps: the configured

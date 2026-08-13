@@ -420,6 +420,21 @@ class BelloTwist2Env(BelloTwistEnv):
             (clip_count,), self.sampling.curriculum_max_difficulty, dtype=jnp.float32
         )
 
+    def _reset_qpos(
+        self, reference_qpos: jax.Array, rng: jax.Array | None
+    ) -> jax.Array:
+        qpos = super()._reset_qpos(reference_qpos, rng)
+        if rng is None:
+            return qpos
+        indices = jnp.asarray(self.model.policy_qpos_indices)
+        scale = jax.random.uniform(
+            jax.random.fold_in(rng, 1),
+            (self.action_size,),
+            minval=0.8,
+            maxval=1.2,
+        )
+        return qpos.at[indices].multiply(scale)
+
     def update_task_state(
         self, difficulty: jax.Array, info: dict[str, jax.Array]
     ) -> jax.Array:
