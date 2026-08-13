@@ -725,7 +725,7 @@ def test_credential_reads_python_keyring(monkeypatch) -> None:
     )
 
 
-def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch) -> None:
+def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch, tmp_path: Path) -> None:
     class Api:
         def show_instance(self, instance_id):
             assert instance_id == 123
@@ -742,11 +742,16 @@ def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch) -> None:
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(vast_remote.subprocess, "run", fake_run)
+    known_hosts = tmp_path / "vast_known_hosts"
+    known_hosts.write_text("stale recycled endpoint\n", encoding="utf-8")
+    monkeypatch.setattr(vast_remote, "EPHEMERAL_KNOWN_HOSTS_PATH", known_hosts)
 
     target = vast.wait_for_ssh(Api(), 123, 30, sleep=lambda _: None)
 
     assert target == ("root", "192.0.2.10", 22022)
     assert commands == [vast_remote.ssh_command(target, "true")]
+    assert not known_hosts.exists()
+    assert f"UserKnownHostsFile={known_hosts}" in commands[0]
 
 
 def test_upload_route_probe_measures_payload_throughput(monkeypatch) -> None:

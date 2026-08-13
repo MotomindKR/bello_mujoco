@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import atexit
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -21,6 +24,16 @@ if TYPE_CHECKING:
 
 
 SSH_SUBPROCESS_TIMEOUT_SECONDS = 60.0
+EPHEMERAL_KNOWN_HOSTS_PATH = (
+    Path(tempfile.gettempdir()) / f"bello-mujoco-vast-{os.getpid()}.known_hosts"
+)
+
+
+def _remove_ephemeral_known_hosts() -> None:
+    EPHEMERAL_KNOWN_HOSTS_PATH.unlink(missing_ok=True)
+
+
+atexit.register(_remove_ephemeral_known_hosts)
 
 
 @dataclass(frozen=True)
@@ -63,6 +76,8 @@ def ssh_command(target: tuple[str, str, int], remote_command: str) -> list[str]:
         "ssh",
         "-o",
         "BatchMode=yes",
+        "-o",
+        f"UserKnownHostsFile={EPHEMERAL_KNOWN_HOSTS_PATH}",
         "-o",
         "StrictHostKeyChecking=accept-new",
         "-o",
@@ -129,6 +144,10 @@ def wait_for_ssh(
 ) -> tuple[str, str, int]:
     if executor is None:
         executor = SshExecutor()
+    # Vast frequently reuses public IP/port pairs for unrelated machines. Keep
+    # TOFU host-key verification within one rental instead of conflicting with
+    # the user's durable SSH trust store or a previous offer in this process.
+    _remove_ephemeral_known_hosts()
     deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
     while time.monotonic() < deadline:
@@ -738,6 +757,8 @@ def _rsync_command(
             "-o",
             "BatchMode=yes",
             "-o",
+            f"UserKnownHostsFile={EPHEMERAL_KNOWN_HOSTS_PATH}",
+            "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
             "ServerAliveInterval=30",
@@ -863,6 +884,8 @@ def _rsync_download_command(
             "ssh",
             "-o",
             "BatchMode=yes",
+            "-o",
+            f"UserKnownHostsFile={EPHEMERAL_KNOWN_HOSTS_PATH}",
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
