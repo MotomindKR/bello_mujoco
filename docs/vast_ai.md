@@ -39,8 +39,8 @@ Non-dry execution:
 5. waits for instance readiness and its required direct SSH mapping;
 6. transfers explicit dataset/checkpoint/artifact inputs with resumable
    `rsync --append-verify` and verifies every file's SHA-256 on the instance;
-7. recursively clones the exact root commit and pinned submodules, then performs
-   a frozen workspace dependency sync;
+7. clones the exact root commit, initializes the runtime-required pinned
+   `bello-stack` submodule, then performs a frozen workspace dependency sync;
 8. verifies the JAX GPU backend;
 9. runs a bounded training preflight;
 10. starts the real job in a detached process, records PID/status/log files, and
@@ -68,7 +68,7 @@ remote SHA-256 mismatch prevents training and triggers normal teardown.
 
 Dataset-backed offers are ranked by proximity to Korea (`KR`, `JP`, `TW`,
 `HK`, then `SG`) before marketplace value. After SSH becomes ready, the
-launcher uploads a 16 MiB probe and requires at least 5 MiB/s. A slower
+launcher uploads a 256 MiB sustained-route probe and requires at least 5 MiB/s. A slower
 instance is destroyed and the next nearby offer is tried before the
 multi-gigabyte dataset is transferred. These controls can be overridden with
 `preferred_countries`, `min_upload_mib_per_second`, and `route_probe_mib`.

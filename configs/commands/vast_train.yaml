@@ -16,7 +16,7 @@ skip_confirmation: false
 dry_run: false
 preferred_countries: [KR, JP, TW, HK, SG]
 min_upload_mib_per_second: 5.0
-route_probe_mib: 16
+route_probe_mib: 256
 hydra:
   job:
     chdir: false

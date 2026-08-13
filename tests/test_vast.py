@@ -1105,8 +1105,13 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
 
     assert shlex.split(command)[-10] == "motion-test"
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 3
-    assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "git clone --single-branch" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule update --init deps/bello-stack" in (
+        vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+    assert "submodule status deps/bello-stack" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "--recurse-submodules" not in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule update --init deps/GMR" not in vast_remote.REMOTE_TRAIN_SCRIPT
     overrides_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
         'training_overrides=("experiment=$experiment")'
     )

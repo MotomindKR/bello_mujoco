@@ -95,7 +95,7 @@ class VastTrainConfig:
     transfer_retries: int = 3
     preferred_countries: tuple[str, ...] = ("KR", "JP", "TW", "HK", "SG")
     min_upload_mib_per_second: float = 5.0
-    route_probe_mib: int = 16
+    route_probe_mib: int = 256
     job_timeout_seconds: int = 43_200
     progress_timeout_seconds: int = 1_800
     reconcile_retries: int = 3
