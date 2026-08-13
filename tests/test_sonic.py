@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -63,10 +64,11 @@ from bello_mujoco.sonic_policy import (
     BELLO_TO_G1_VECTOR_BASIS,
     SONIC_BELLO_PROPRIO_SIZE,
     SONIC_G1_ACTION_SCALE,
+    SONIC_G1_DEFAULT_JOINT_POSITION,
     SONIC_G1_PROPRIO_SIZE,
     SONIC_ROOT_MOTION_COMMAND_SIZE,
+    SONIC_SMPL_INPUT_SIZE,
     apply_frozen_mlp,
-    bello_action_std_from_g1,
     g1_from_bello_proprio_affine,
     load_sonic_golden,
     load_sonic_release_artifact,
@@ -76,6 +78,7 @@ from bello_mujoco.training.sonic import (
     _device_reference_bank_arrays,
     _tracking_dataset_summary,
 )
+from bello_mujoco.training.sonic_pretraining import SonicOfflineBatchBuilder
 from tools.sonic_gmr_retarget import (
     G1_QPOS_JOINT_NAMES,
     G1_RETARGET_FORMAT_VERSION,
@@ -125,6 +128,33 @@ TEST_EDGE_PAIRS = tuple(
     ("left_wrist_roll_joint", "left_elbow_yaw_joint"),
 )
 BELLO_ACTION_SCALE = np.linspace(0.1, 0.34, 25, dtype=np.float32)
+BELLO_QPOS_JOINT_NAMES = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_pitch_joint",
+    "right_elbow_yaw_joint",
+    "right_wrist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_pitch_joint",
+    "left_elbow_yaw_joint",
+    "left_wrist_pitch_joint",
+)
 
 
 class _FakeEvaluationEnv:
@@ -189,6 +219,8 @@ def _calibration(*, scales: tuple[float, ...] | None = None) -> SonicJointCalibr
         bello_joint_names=BELLO_JOINT_NAMES,
         g1_from_bello_matrix=tuple(tuple(row) for row in g1_from_bello),
         bello_from_g1_matrix=tuple(tuple(row) for row in bello_from_g1),
+        g1_joint_mean=(0.0,) * 29,
+        bello_joint_mean=(0.0,) * 25,
         g1_explained_variance=(1.0,) * 29,
         g1_rms_residual_radians=(0.0,) * 29,
         bello_explained_variance=(1.0,) * 25,
@@ -214,21 +246,13 @@ def test_sonic_observation_contract_matches_bello_edge_dimensions() -> None:
 def test_g1_action_scales_match_the_pinned_release_actuator_groups() -> None:
     natural_frequency = 10.0 * 2.0 * 3.1415926535
     expected = {
-        "left_hip_pitch_joint": 0.25
-        * 139.0
-        / (0.025101925 * natural_frequency**2),
-        "waist_yaw_joint": 0.25
-        * 88.0
-        / (0.010177520 * natural_frequency**2),
+        "left_hip_pitch_joint": 0.25 * 139.0 / (0.025101925 * natural_frequency**2),
+        "waist_yaw_joint": 0.25 * 88.0 / (0.010177520 * natural_frequency**2),
         "left_ankle_pitch_joint": 0.25
         * 50.0
         / (2.0 * 0.003609725 * natural_frequency**2),
-        "left_wrist_roll_joint": 0.25
-        * 25.0
-        / (0.003609725 * natural_frequency**2),
-        "left_wrist_pitch_joint": 0.25
-        * 5.0
-        / (0.00425 * natural_frequency**2),
+        "left_wrist_roll_joint": 0.25 * 25.0 / (0.003609725 * natural_frequency**2),
+        "left_wrist_pitch_joint": 0.25 * 5.0 / (0.00425 * natural_frequency**2),
     }
 
     for name, value in expected.items():
@@ -272,6 +296,12 @@ def test_joint_calibration_recovers_coupled_edge_maps() -> None:
     )
 
     np.testing.assert_allclose(fitted.g1_from_bello_matrix, matrix, atol=1.0e-8)
+    np.testing.assert_allclose(
+        fitted.g1_joint_mean, np.mean(clip["g1_joint_pos"], axis=0)
+    )
+    np.testing.assert_allclose(
+        fitted.bello_joint_mean, np.mean(clip["qpos"][:, 7:], axis=0)
+    )
     g1 = np.asarray(clip["g1_joint_pos"])
     bello = np.asarray(clip["qpos"][:, 7:])
     predicted_bello = (g1 - np.mean(g1, axis=0)) @ np.asarray(
@@ -322,6 +352,22 @@ def test_joint_calibration_streaming_matches_one_combined_update() -> None:
     assert actual.sample_count == frames
 
 
+def test_calibration_mean_shift_changes_rms_not_explained_variance() -> None:
+    matrix = np.eye(2, dtype=np.float64)
+    covariance = np.eye(2, dtype=np.float64)
+
+    rms, explained = sonic_dataset._regression_metrics(
+        matrix,
+        source_covariance=covariance,
+        target_covariance=covariance,
+        cross_covariance=covariance,
+        residual_mean=np.asarray((0.3, -0.4)),
+    )
+
+    np.testing.assert_allclose(rms, (0.3, 0.4))
+    np.testing.assert_allclose(explained, (1.0, 1.0))
+
+
 def test_anatomy_prior_maps_forearm_twist_to_g1_wrist_roll() -> None:
     source_names = (
         "right_elbow_yaw_joint",
@@ -360,6 +406,7 @@ def test_proprio_affine_maps_positions_velocities_actions_and_vector_basis() -> 
     matrix, bias = g1_from_bello_proprio_affine(
         calibration,
         bello_action_scale=BELLO_ACTION_SCALE,
+        bello_default_joint_position=np.zeros(25, dtype=np.float32),
     )
 
     np.testing.assert_array_equal(matrix[:3, :3], BELLO_TO_G1_VECTOR_BASIS)
@@ -387,10 +434,42 @@ def test_proprio_affine_maps_positions_velocities_actions_and_vector_basis() -> 
     assert matrix.shape == (SONIC_G1_PROPRIO_SIZE, SONIC_BELLO_PROPRIO_SIZE)
 
 
+def test_proprio_affine_preserves_centered_fit_in_default_relative_coordinates() -> (
+    None
+):
+    calibration = replace(
+        _calibration(),
+        g1_joint_mean=tuple(np.linspace(-0.4, 0.4, 29)),
+        bello_joint_mean=tuple(np.linspace(0.3, -0.3, 25)),
+    )
+    bello_default = np.linspace(-0.1, 0.1, 25, dtype=np.float32)
+    matrix, offset = g1_from_bello_proprio_affine(
+        calibration,
+        bello_action_scale=BELLO_ACTION_SCALE,
+        bello_default_joint_position=bello_default,
+    )
+    joint_matrix = np.asarray(calibration.g1_from_bello_matrix)
+    expected = (
+        np.asarray(calibration.g1_joint_mean)
+        - SONIC_G1_DEFAULT_JOINT_POSITION
+        - joint_matrix @ (np.asarray(calibration.bello_joint_mean) - bello_default)
+    )
+
+    for history in range(10):
+        np.testing.assert_allclose(
+            offset[60 + history * 29 : 60 + (history + 1) * 29],
+            expected,
+            atol=1.0e-7,
+        )
+    np.testing.assert_array_equal(offset[:60], np.zeros(60, dtype=np.float32))
+    np.testing.assert_array_equal(offset[350:], np.zeros(580, dtype=np.float32))
+
+
 def test_coupled_calibration_routes_complete_joint_blocks_to_the_edge() -> None:
     matrix, _ = g1_from_bello_proprio_affine(
         _calibration(),
         bello_action_scale=BELLO_ACTION_SCALE,
+        bello_default_joint_position=np.zeros(25, dtype=np.float32),
     )
     expected = np.asarray(_calibration().g1_from_bello_matrix)
 
@@ -402,30 +481,6 @@ def test_coupled_calibration_routes_complete_joint_blocks_to_the_edge() -> None:
             ],
             expected,
         )
-
-
-def test_released_action_std_is_propagated_through_dense_output_map() -> None:
-    scales = tuple(
-        (-1.0 if index % 2 else 1.0) * (0.5 + index / 20.0)
-        for index in range(len(TEST_EDGE_PAIRS))
-    )
-    calibration = _calibration(scales=scales)
-    released = np.linspace(0.25, 0.50, len(G1_ISAACLAB_JOINT_NAMES), dtype=np.float32)
-
-    result = bello_action_std_from_g1(
-        released,
-        calibration,
-        bello_action_scale=BELLO_ACTION_SCALE,
-        minimum_action_std=0.05,
-    )
-
-    dense = (
-        np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
-        * SONIC_G1_ACTION_SCALE[None, :]
-        / BELLO_ACTION_SCALE[:, None]
-    )
-    expected = np.sqrt((dense * dense) @ (released * released))
-    np.testing.assert_allclose(result, np.maximum(expected, 0.05), atol=1.0e-7)
 
 
 def test_sonic_action_target_applies_randomized_default_and_release_scale() -> None:
@@ -468,9 +523,7 @@ def test_sonic_semantic_sanitation_quarantines_treadmill_motion() -> None:
         "qpos_joint_names": np.asarray(BELLO_JOINT_NAMES),
         "timestamp_seconds": np.arange(frames, dtype=np.float64) / 50.0,
         "foot_contacts": contacts,
-        "body_names": np.asarray(
-            ("left_ankle_roll_link", "right_ankle_roll_link")
-        ),
+        "body_names": np.asarray(("left_ankle_roll_link", "right_ankle_roll_link")),
         "body_lin_vel": np.zeros((frames, 2, 3), dtype=np.float64),
     }
     sequence = SimpleNamespace(
@@ -504,9 +557,7 @@ def test_root_motion_command_exposes_desired_travel_in_robot_frame() -> None:
     state = SimpleNamespace(
         clip_index=jnp.asarray(0),
         motion_state=SimpleNamespace(
-            data=SimpleNamespace(
-                qpos=jnp.asarray((0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-            )
+            data=SimpleNamespace(qpos=jnp.asarray((0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)))
         ),
     )
 
@@ -549,6 +600,7 @@ def test_tracking_dataset_summary_excludes_clip_and_fingerprint_payloads() -> No
         "policy_fps": 50.0,
         "train_sampling": "frame_count_times_manifest_weight",
         "joint_names": list(BELLO_JOINT_NAMES),
+        "qpos_joint_names": list(BELLO_QPOS_JOINT_NAMES),
         "body_names": ["pelvis_link"],
         "g1_joint_names": list(G1_ISAACLAB_JOINT_NAMES),
         "robot_fingerprint": "sha256:" + "c" * 64,
@@ -606,6 +658,46 @@ def test_reference_clip_selection_rebases_packed_offsets() -> None:
     assert selected.source_ids == ("source_1",)
     assert selected.qpos.shape[0] == 60
     np.testing.assert_array_equal(selected.qpos, bank.qpos[50:])
+
+
+def test_offline_pretraining_batch_uses_synchronized_history_and_future() -> None:
+    lengths = np.asarray((60, 60, 60), dtype=np.int32)
+    bank = _reference_bank(int(np.sum(lengths)), lengths=lengths)
+    frame = np.arange(len(bank.qpos), dtype=np.float32)
+    bank.qpos[:, 3] = 1.0
+    bank.qpos[:, 7:] = frame[:, None] * 0.001
+    bank.qvel[:, 6:] = 0.05
+    bank.g1_joint_pos[:] = frame[:, None] * 0.002
+    bank.smpl_root_quat_wxyz[:, 0] = 1.0
+    builder = SonicOfflineBatchBuilder(
+        bank,
+        bello_default_joint_position=np.zeros(25, dtype=np.float32),
+        bello_action_scale=np.ones(25, dtype=np.float32),
+        validation_clip_fraction=0.34,
+        seed=7,
+    )
+
+    batch = builder.batch("train", 8)
+
+    assert batch.observation.shape == (8, 1670)
+    assert batch.next_observation.shape == (8, 1670)
+    assert batch.g1_proprioception.shape == (8, 930)
+    assert batch.action_target.shape == (8, 25)
+    assert batch.next_action_target.shape == (8, 25)
+    current_qpos_start = (
+        SONIC_SMPL_INPUT_SIZE + SONIC_ROOT_MOTION_COMMAND_SIZE + 60 + 9 * 25
+    )
+    np.testing.assert_allclose(
+        batch.action_target,
+        batch.observation[:, current_qpos_start : current_qpos_start + 25] + 0.001,
+        atol=1.0e-7,
+    )
+    np.testing.assert_allclose(
+        batch.next_action_target - batch.action_target,
+        np.full((8, 25), 0.001, dtype=np.float32),
+        atol=1.0e-7,
+    )
+    assert np.all(np.isfinite(batch.observation))
 
 
 def test_in_bank_reference_clip_selection_preserves_full_array_shapes() -> None:
@@ -773,12 +865,8 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
     object.__setattr__(decoder, "root_motion_projection_weight", jnp.ones((1, 1)))
     object.__setattr__(decoder, "proprioception_projection_weight", jnp.ones((1, 1)))
     object.__setattr__(decoder, "first_bias", jnp.ones((1,)))
-    object.__setattr__(
-        decoder, "middle_weights", (jnp.ones((1, 1)), jnp.ones((1, 1)))
-    )
-    object.__setattr__(
-        decoder, "middle_biases", (jnp.ones((1,)), jnp.ones((1,)))
-    )
+    object.__setattr__(decoder, "middle_weights", (jnp.ones((1, 1)), jnp.ones((1, 1))))
+    object.__setattr__(decoder, "middle_biases", (jnp.ones((1,)), jnp.ones((1,))))
     object.__setattr__(decoder, "output_weight", jnp.ones((1, 1)))
     object.__setattr__(decoder, "output_bias", jnp.ones((1,)))
     object.__setattr__(decoder, "trainable_middle_layers", (False, True))
@@ -794,6 +882,7 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
     object.__setattr__(policy, "action_distribution", "gaussian")
     object.__setattr__(policy, "action_limit", 20.0)
     object.__setattr__(policy, "stochastic_actor", False)
+    object.__setattr__(policy, "train_log_std", False)
     trainable, frozen = partition_policy_parameters(policy)
 
     assert all(value is None for value in trainable.actor.smpl_encoder.weights)
@@ -806,7 +895,8 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
     assert trainable.actor.decoder.output_weight is not None
     assert all(value is not None for value in frozen.actor.smpl_encoder.weights)
     assert trainable.critic.weights[0] is not None
-    assert trainable.log_std is not None
+    assert trainable.log_std is None
+    assert frozen.log_std is not None
 
 
 def test_smpl_translation_resampling_matches_gmr_frame_coordinates() -> None:
@@ -924,6 +1014,7 @@ def _reference_bank(frames: int, *, lengths: np.ndarray) -> SonicReferenceBank:
         source_ids=tuple(f"source_{index}" for index in range(len(lengths))),
         sequence_ids=tuple(f"sequence_{index}" for index in range(len(lengths))),
         joint_names=BELLO_JOINT_NAMES,
+        qpos_joint_names=BELLO_QPOS_JOINT_NAMES,
         body_names=SONIC_TRACKED_BODY_NAMES,
         calibration=_calibration(),
     )
@@ -1056,6 +1147,7 @@ def _write_dataset_fixture(root: Path) -> Path:
         "train_sampling": SONIC_TRAIN_SAMPLING,
         "split_files": split_files,
         "joint_names": BELLO_JOINT_NAMES,
+        "qpos_joint_names": BELLO_QPOS_JOINT_NAMES,
         "body_names": SONIC_TRACKED_BODY_NAMES,
         "g1_joint_names": G1_ISAACLAB_JOINT_NAMES,
         "g1_wrist_joint_names": G1_WRIST_JOINT_NAMES,
@@ -1072,6 +1164,7 @@ def _write_dataset_fixture(root: Path) -> Path:
         "train_sampling": SONIC_TRAIN_SAMPLING,
         "split_files": split_files,
         "joint_names": list(BELLO_JOINT_NAMES),
+        "qpos_joint_names": list(BELLO_QPOS_JOINT_NAMES),
         "body_names": list(SONIC_TRACKED_BODY_NAMES),
         "g1_joint_names": list(G1_ISAACLAB_JOINT_NAMES),
         "g1_wrist_joint_names": list(G1_WRIST_JOINT_NAMES),

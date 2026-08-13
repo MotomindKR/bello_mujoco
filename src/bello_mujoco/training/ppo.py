@@ -1776,6 +1776,8 @@ def validate_ppo_config(config: PPOConfig) -> None:
             raise ValueError("SONIC owns its history; policy.obs_stack_size must be 1")
         if config.policy.layer_norm_final_hidden:
             raise ValueError("SONIC does not use final-hidden LayerNorm")
+    elif not config.policy.sonic_train_log_std:
+        raise ValueError("sonic_train_log_std=false is only valid for SONIC")
     if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
         raise ValueError(
             "policy.action_limit must be positive and finite, got "

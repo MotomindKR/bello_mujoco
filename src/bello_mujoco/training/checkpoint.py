@@ -64,6 +64,7 @@ from bello_mujoco.training.ppo import (
     init_train_state,
     init_value_norm_state,
 )
+from bello_mujoco.training.sonic_pretraining import SonicPretrainingConfig
 from bello_mujoco.repository import (
     capture_repository_commit,
     require_repository_commit,
@@ -248,6 +249,7 @@ class SonicDatasetContract:
     g1_config_sha256: str
     g1_robot_sha256: str
     joint_names: tuple[str, ...]
+    qpos_joint_names: tuple[str, ...]
     body_names: tuple[str, ...]
     calibration: SonicJointCalibration
 
@@ -258,6 +260,7 @@ class SonicCheckpointMetadata(_CheckpointMetadataBase):
     sonic_env: SonicEnvConfig
     observation_contract: SonicObservationContract
     dataset: SonicDatasetContract
+    pretraining: SonicPretrainingConfig
     release_checkpoint_sha256: str
     release_artifact_sha256: str
     source_revision: str
@@ -1102,6 +1105,13 @@ def _validate_sonic_metadata(metadata: SonicCheckpointMetadata) -> None:
         raise ValueError("SONIC dataset schema version must be positive")
     if metadata.dataset.joint_names != metadata.action_layout.names:
         raise ValueError("SONIC dataset joint order does not match actions")
+    if (
+        len(metadata.dataset.qpos_joint_names) != len(metadata.dataset.joint_names)
+        or len(set(metadata.dataset.qpos_joint_names))
+        != len(metadata.dataset.qpos_joint_names)
+        or set(metadata.dataset.qpos_joint_names) != set(metadata.dataset.joint_names)
+    ):
+        raise ValueError("SONIC dataset qpos joint order is not a joint permutation")
     if metadata.dataset.calibration.bello_joint_names != metadata.action_layout.names:
         raise ValueError("SONIC calibration joint order does not match actions")
     if metadata.observation_contract.joint_names != metadata.action_layout.names:

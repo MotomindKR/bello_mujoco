@@ -104,6 +104,7 @@ rollout batch are not sampled.
 | `layer_norm_final_hidden` | `false` | Enable the final-hidden normalization required by TWIST-family networks. SONIC leaves it disabled. |
 | `sonic_trainable_middle_prefix_layers` | `0` | Number of SONIC interior decoder linears to unfreeze from the input side. SONIC-only; prefix plus suffix cannot exceed five. |
 | `sonic_trainable_middle_suffix_layers` | `1` in the SONIC profile | Number of SONIC interior decoder linears to unfreeze from the output side. |
+| `sonic_train_log_std` | `true`; `false` in the SONIC profile | Include SONIC Gaussian log standard deviation in the actor optimizer. Other architectures require `true`. |
 
 ## Assets: `asset_config`
 
@@ -458,20 +459,33 @@ The exported release supplies a frozen five-layer SMPL encoder, 32-level FSQ,
 the token branch of decoder layer zero, and five initialized interior decoder
 linears. The Bello proprioceptive and zero-initialized root-path projections,
 first-layer bias, configured interior prefix/suffix, 25-output projection/bias,
-actor log standard deviation, and new critic are optimizer leaves. Frozen
+and new critic are optimizer leaves. The maintained profile freezes the actor
+log standard deviation at `0.05`. Frozen
 arrays are structurally absent from optimizer state and are content-hashed
 before periodic and final checkpoints. The maintained profile trains the final
 interior linear while keeping the prefix frozen.
 
+Fresh runs first perform 2,000 offline adapter updates on a hash-separated
+training subset. Direct Bello targets, target deltas, feasible action bounds,
+and released first-layer activations supervise only the morphology-dependent
+input/output edges. Resume runs skip this stage. The complete `pretraining`
+config is stored in checkpoint metadata.
+
 The maintained PPO profile uses 4,096 environments, 24 steps, five epochs,
 four minibatches, actor-edge learning rate `2e-5`, critic learning rate
-`1e-3`, desired KL `0.01`, entropy `0.01`, maximum gradient norm `0.1`, gamma
+`1e-3`, desired KL `0.01`, zero entropy bonus, maximum gradient norm `0.1`, gamma
 `0.99`, GAE lambda `0.95`, and clip ratio `0.2`. It uses an unsquashed Gaussian
-initialized by propagating the release-checkpoint variance through the dense
-Bello-from-G1 output map, with a `0.05` floor; all values are clamped to
-`[0.001,0.5]`. Raw actions are clipped to `[-20,20]`, multiplied by Bello's
+fixed at `0.05`. Raw actions are clipped to `[-20,20]`, multiplied by Bello's
 per-joint `0.25 * effort_limit / stiffness` action scale, and clipped again to
 the generated model's feasible joint-target interval.
+
+The `pretraining` section contains `enabled`, `updates`, `batch_size`,
+`validation_batch_size`, `learning_rate`, `max_gradient_norm`,
+`validation_clip_fraction`, `action_huber_delta`,
+`activation_consistency_weight`, `temporal_consistency_weight`,
+`target_limit_weight`, `parameter_anchor_weight`, `log_every_updates`, and
+`seed`. All loss weights are nonnegative; sizes, update counts, and learning
+settings are validated before the policy is initialized.
 
 `sonic_env` owns released-style tracking rewards, failure termination,
 observation noise, per-world morphology/dynamics randomization, root pushes,

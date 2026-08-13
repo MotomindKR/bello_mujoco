@@ -20,7 +20,7 @@ config:
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.01
+  ent_coef: 0.0
   vf_coef: 1.0
   max_grad_norm: 0.1
   adam_epsilon: 0.00001
@@ -42,8 +42,8 @@ config:
     hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
     activation: swish
     init_log_std: -2.995732273553991
-    min_log_std: -6.907755278982137
-    max_log_std: -0.6931471805599453
+    min_log_std: -3.912023005428146
+    max_log_std: -1.8971199848858813
     obs_stack_size: 1
     action_distribution: gaussian
     action_limit: 20.0
@@ -51,9 +51,26 @@ config:
     layer_norm_final_hidden: false
     sonic_trainable_middle_prefix_layers: 0
     sonic_trainable_middle_suffix_layers: 1
+    sonic_train_log_std: false
 
 simulation: {}
 sonic_env: {}
+
+pretraining:
+  enabled: true
+  updates: 2000
+  batch_size: 512
+  validation_batch_size: 2048
+  learning_rate: 0.0001
+  max_gradient_norm: 1.0
+  validation_clip_fraction: 0.05
+  action_huber_delta: 0.5
+  activation_consistency_weight: 0.05
+  temporal_consistency_weight: 0.1
+  target_limit_weight: 0.05
+  parameter_anchor_weight: 0.000001
+  log_every_updates: 100
+  seed: 17
 
 checkpoint_config:
   enabled: true

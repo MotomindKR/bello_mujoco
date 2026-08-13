@@ -69,8 +69,11 @@ _REWARD_TERM_NAMES = (
     "reward/tracking_relative_body_orientation",
     "reward/tracking_body_linear_velocity",
     "reward/tracking_body_angular_velocity",
+    "reward/tracking_joint_position",
+    "reward/tracking_foot_contact",
     "reward/action_rate",
     "reward/joint_limit",
+    "reward/target_joint_limit",
     "reward/undesired_contacts",
     "reward/anti_shake_angular_velocity",
     "reward/tracking_five_point_local",
@@ -340,7 +343,10 @@ def _policy_template(metadata, env, release):
         metadata.dataset.calibration,
         bello_joint_names=env.action_layout.names,
         bello_action_scale=env.action_scale,
-        minimum_action_std=float(np.exp(metadata.ppo.policy.init_log_std)),
+        bello_default_joint_position=np.asarray(env.model.default_joint_target)[
+            np.asarray(env.model.policy_ctrl_indices)
+        ],
+        initial_action_std=float(np.exp(metadata.ppo.policy.init_log_std)),
     )
     _, policy_key = jax.random.split(jax.random.PRNGKey(metadata.ppo.seed))
     return init_actor_critic(
@@ -384,6 +390,7 @@ def _build_compiled_clip_evaluator(
         reference_bank.source_ids,
         reference_bank.sequence_ids,
         reference_bank.joint_names,
+        reference_bank.qpos_joint_names,
         reference_bank.body_names,
         reference_bank.calibration,
         reference_bank.sampling_bin_size,
@@ -688,9 +695,7 @@ def _frame_weighted_metrics(clips: list[dict[str, Any]]) -> dict[str, float]:
     )
     returns = np.asarray([clip["episode_return"] for clip in clips], dtype=np.float64)
     return {
-        "completion_fraction": float(
-            np.sum(steps) / max(float(np.sum(expected)), 1.0)
-        ),
+        "completion_fraction": float(np.sum(steps) / max(float(np.sum(expected)), 1.0)),
         "episode_return_per_step": float(np.sum(returns) / total_steps),
         "root_position_rms_m": weighted_rms("root_position_rms_m"),
         "root_orientation_rms_deg": weighted_rms("root_orientation_rms_deg"),

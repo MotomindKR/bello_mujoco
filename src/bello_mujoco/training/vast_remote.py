@@ -302,6 +302,7 @@ if [ "$experiment" = "sonic" ]; then
     "total_timesteps=$benchmark_timesteps"
     "num_envs=$benchmark_envs"
     checkpoint_enabled=false
+    sonic_pretraining_enabled=false
   )
 else
   preflight_overrides+=(

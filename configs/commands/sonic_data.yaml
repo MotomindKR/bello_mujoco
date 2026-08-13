@@ -1,5 +1,6 @@
 operation: build
 manifest: null
+input_index: null
 body_model_root: null
 bello_retargeted_root: null
 g1_retargeted_root: null

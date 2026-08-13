@@ -16,6 +16,7 @@ checkpoint_every_updates: null
 wandb_enabled: null
 run_name: null
 video_enabled: null
+sonic_pretraining_enabled: null
 hydra:
   job:
     chdir: false

@@ -18,10 +18,10 @@ only the morphology-dependent edges:
 | Two 32-value, 32-level FSQ tokens | Exact release operation | Frozen |
 | Decoder token projection | Exact release columns | Frozen |
 | Decoder root-path projection | Zero, preserving the release initialization | Trainable |
-| Decoder proprioceptive projection and first bias | Default-anchored dense G1-from-Bello ridge transport | Trainable |
+| Decoder proprioceptive projection and first bias | Mean-aware affine G1-from-Bello ridge transport | Trainable |
 | Five interior decoder linears | Exact release arrays | Configurable frozen core; the final one is trainable in the maintained profile |
-| Bello 25-joint output projection and bias | Default-anchored dense Bello-from-G1 ridge transport across all release rows | Trainable |
-| Gaussian log standard deviation | Release variance propagated through the dense output map, with a `0.05` floor | Trainable |
+| Bello 25-joint output projection and bias | Mean-aware affine Bello-from-G1 ridge transport across all release rows | Trainable |
+| Gaussian log standard deviation | Fixed low-noise Bello profile (`0.05`) | Frozen |
 | Privileged Bello critic | New initialization | Trainable at its own learning rate |
 
 Frozen parameters are excluded structurally from the optimizer and checkpoint
@@ -57,18 +57,20 @@ size, and per-joint RMS residual gates reject degenerate fits. The same fitted
 maps must pass those gates on the held-out split. Sufficient covariance
 moments, not motion arrays, are retained during this first pass.
 
-Both maps act on positions relative to each robot's configured default.
+Both maps are fitted around the paired training-set means. Position transport
+stores the resulting affine intercept relative to each robot's configured
+default, rather than silently discarding the corpus mean.
 Velocities use the same raw-radian linear blocks without an intercept. Actions
 are normalized differently on the two robots, so action-history and decoder
 output transport also includes each robot's per-joint action scale. The G1
 vector is pinned from NVIDIA's `0.25 * effort_limit / stiffness` definition;
 the Bello vector is derived from the selected actuator configuration by the
-same rule. Thus zero Bello action maps to zero G1 action and back without
-confusing normalized actions with radians. This default anchoring avoids
-injecting corpus-pose bias at reset while allowing every Bello joint, including
-both elbow-yaw joints, to enter the trainable edge. Released diagonal action
-variance is propagated through the complete scale-aware output matrix and then
-clamped by the PPO standard-deviation limits. Requested Bello targets are
+same rule. Thus normalized action transport does not confuse actions with
+radians. The affine map is only a bootstrap initializer: supervised edge
+pretraining and PPO can replace it while every Bello joint, including both
+elbow-yaw joints, enters the trainable edge. Exploration is initialized and
+held at `0.05` rather than amplifying the released diagonal variance through a
+dense, cross-morphology map. Requested Bello targets are
 clipped per joint to the generated model's feasible target interval, while PPO
 logs aggregate and per-joint pre-clipping violation fractions. Vector inputs
 use the explicit Bello `+Y`-forward to G1 `+X`-forward basis change.
@@ -98,7 +100,8 @@ window. Train/evaluation assignment comes from the licensed manifest. Dense
 edge calibration is fitted only on accepted training frames, and duration times
 manifest weight determines initial training clip probability. The index binds
 the portable manifest, Bello robot, both GMR revisions/configs, calibration,
-ordered layouts, clip content, split descriptors, and split-file hashes.
+separate policy/action and MuJoCo-qpos joint orders, clip content, split
+descriptors, and split-file hashes.
 
 Before a clip can enter either split, SONIC-specific sanitation labels its root
 motion and contact behavior. Name-pattern treadmill clips, stationary-root
@@ -243,11 +246,19 @@ transitions. Sampling uses one uniform draw against the global cumulative
 distribution rather than materializing per-environment categorical noise over
 every bin.
 
+Fresh training first runs 2,000 deterministic offline adapter updates from the
+packed training bank. Only the root-path projection, Bello proprioceptive
+projection, first bias, and Bello output projection/bias are optimized. The
+loss combines next-control-frame Bello action targets, action deltas, teacher
+first-layer activation consistency, feasible-target limits, and a weak anchor
+to the affine bootstrap. Clips are hash-partitioned so validation clips never
+enter those updates. Resume skips this stage because its result is already in
+the checkpoint.
+
 The maintained PPO values are 4,096 worlds, 24 rollout steps, five epochs, four
-minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`,
-mapped checkpoint exploration standard deviations (clamped to `[0.001, 0.5]`),
-desired KL `0.01`, entropy `0.01`, gamma `0.99`, lambda `0.95`, clip ratio
-`0.2`, and maximum gradient norm `0.1`.
+minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`, fixed
+`0.05` exploration standard deviation, desired KL `0.01`, zero entropy bonus,
+gamma `0.99`, lambda `0.95`, clip ratio `0.2`, and maximum gradient norm `0.1`.
 
 Evaluation reports the original clip-weighted acceptance metrics as well as
 frame-weighted tracking metrics and strata for stationary/traveling root motion
@@ -267,7 +278,9 @@ contacts, wrist/head angular shake, the release-named local `5point` term, and
 ankle-joint acceleration. Despite its upstream name, the pinned release
 configures only a torso-plus-head-offset proxy and two wrists. Bello uses its
 actual head body plus its two wrists. Feet remain separate termination and
-acceleration terms.
+acceleration terms. Bello adds direct joint-position and foot-contact tracking,
+plus a penalty on the requested target's normalized joint-limit excess before
+the simulator clips it; this prevents clipping from hiding unsafe commands.
 
 Termination retains the release overrides: `0.15 m` adaptive root-height and
 end-effector-height errors, `0.2` squared root-orientation error, and `0.2 m`
@@ -277,7 +290,9 @@ offsets, 4–6 second velocity pushes, friction, mass/COM variation, and actuato
 strength are expressed through Bello's MuJoCo model randomizer. These are
 semantic simulator adaptations rather than bitwise Isaac Lab event parity:
 MuJoCo has one sliding-friction coefficient here, and Bello's mass topology
-does not reproduce G1 wrist/torso bodies one-for-one.
+does not reproduce G1 wrist/torso bodies one-for-one. Observation noise ramps
+from zero over the first 48,000 world steps, and root pushes remain disabled
+for that same warmup so the edge first learns nominal tracking.
 
 ## Evaluate the transfer
 

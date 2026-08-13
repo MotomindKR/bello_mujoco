@@ -54,6 +54,7 @@ class TrainCommandConfig:
     wandb_enabled: bool | None
     run_name: str | None
     video_enabled: bool | None
+    sonic_pretraining_enabled: bool | None
 
 
 @dataclass(frozen=True)
@@ -107,8 +108,9 @@ class TwistDataCommandConfig:
 
 @dataclass(frozen=True)
 class SonicDataCommandConfig:
-    operation: Literal["retarget_g1", "build"]
+    operation: Literal["retarget_g1", "build", "upgrade_v5"]
     manifest: Path | None
+    input_index: Path | None
     body_model_root: Path | None
     bello_retargeted_root: Path | None
     g1_retargeted_root: Path | None
@@ -124,8 +126,10 @@ class SonicDataCommandConfig:
     sanitation_config: Path
 
     def __post_init__(self) -> None:
-        if self.operation not in {"retarget_g1", "build"}:
-            raise ValueError("SONIC data operation must be retarget_g1 or build")
+        if self.operation not in {"retarget_g1", "build", "upgrade_v5"}:
+            raise ValueError(
+                "SONIC data operation must be retarget_g1, build, or upgrade_v5"
+            )
         if (
             isinstance(self.jobs, bool)
             or not isinstance(self.jobs, int)
@@ -272,9 +276,20 @@ def _train_hydra(config: DictConfig) -> None:
                 run_config.checkpoint_config, command
             ),
             wandb_config=_wandb_overrides(run_config.wandb_config, command),
+            pretraining=replace(
+                run_config.pretraining,
+                enabled=_coalesce(
+                    command.sonic_pretraining_enabled,
+                    run_config.pretraining.enabled,
+                ),
+            ),
         )
         run_sonic_training(run_config)
         return
+    _reject_explicit_fields(
+        ("sonic_pretraining_enabled",),
+        context=f"experiment={command.experiment}",
+    )
     if command.experiment == "twist2":
         _reject_explicit_fields(
             (
@@ -598,6 +613,7 @@ def sonic_data_entrypoint() -> None:
             "g1_retargeted_root=",
             "normalized_root=",
             "output_root=",
+            "input_index=",
             "gmr_python=",
             "quality_config=",
             "calibration_config=",
@@ -614,8 +630,44 @@ def sonic_data_entrypoint() -> None:
 )
 def _sonic_data_hydra(config: DictConfig) -> None:
     command = command_config(SonicDataCommandConfig, config)
-    manifest = _required_path(command.manifest, "manifest")
     output_root = _required_path(command.output_root, "output_root")
+    if command.operation == "upgrade_v5":
+        _reject_explicit_fields(
+            (
+                "manifest",
+                "body_model_root",
+                "g1_retargeted_root",
+                "normalized_root",
+                "gmr_python",
+                "jobs",
+                "overwrite",
+                "keep_normalized",
+                "limit",
+                "quality_config",
+                "calibration_config",
+                "sanitation_config",
+            ),
+            context="operation=upgrade_v5",
+        )
+        input_index = _required_path(command.input_index, "input_index")
+        bello_root = _required_path(
+            command.bello_retargeted_root, "bello_retargeted_root"
+        )
+        from bello_mujoco.motion.sonic_dataset import upgrade_sonic_dataset_v5
+
+        def progress(stage: str, current: int, total: int) -> None:
+            print(f"SONIC dataset {stage}: {current}/{total}", file=sys.stderr)
+
+        upgraded = upgrade_sonic_dataset_v5(
+            input_index,
+            bello_root,
+            output_root,
+            progress=progress,
+        )
+        print(json.dumps(upgraded, indent=2, sort_keys=True))
+        return
+    _reject_explicit_fields(("input_index",), context=f"operation={command.operation}")
+    manifest = _required_path(command.manifest, "manifest")
     if command.operation == "retarget_g1":
         _reject_explicit_fields(
             (

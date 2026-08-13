@@ -215,6 +215,7 @@ class SonicObservationContract:
 @dataclass(frozen=True)
 class SonicObservationNoiseConfig:
     enabled: bool = True
+    ramp_steps: int = 48_000
     smpl_joint_position: float = 0.05
     smpl_root_orientation_6d: float = 0.05
     projected_gravity: float = 0.05
@@ -233,6 +234,7 @@ class SonicDomainRandomizationConfig:
     friction: tuple[float, float] = (0.3, 1.6)
     motor_strength: tuple[float, float] = (0.9, 1.1)
     push_interval_steps: tuple[int, int] = (4 * SONIC_POLICY_HZ, 6 * SONIC_POLICY_HZ)
+    push_warmup_steps: int = 48_000
     push_linear_velocity_xy: float = 0.5
     push_linear_velocity_z: float = 0.2
     push_angular_velocity_roll_pitch: float = 0.52
@@ -247,8 +249,11 @@ class SonicRewardConfig:
     tracking_relative_body_orientation: float = 1.0
     tracking_body_linear_velocity: float = 1.0
     tracking_body_angular_velocity: float = 1.0
+    tracking_joint_position: float = 1.0
+    tracking_foot_contact: float = 0.25
     action_rate: float = -0.1
     joint_limit: float = -10.0
+    target_joint_limit: float = -1.0
     undesired_contacts: float = -0.1
     anti_shake_angular_velocity: float = -0.005
     tracking_five_point_local: float = 2.0
@@ -259,6 +264,7 @@ class SonicRewardConfig:
     relative_body_orientation_std: float = 0.4
     body_linear_velocity_std: float = 1.0
     body_angular_velocity_std: float = 3.14
+    joint_position_std: float = 0.35
     five_point_std: float = 0.1
     undesired_contact_threshold: float = 1.0
     anti_shake_threshold: float = 1.5
@@ -310,8 +316,10 @@ class SonicEnvConfig:
         if self.key_body_names != SONIC_TRACKED_BODY_NAMES:
             raise ValueError("SONIC key-body order differs from the port contract")
         noise = self.observation_noise
+        if isinstance(noise.ramp_steps, bool) or noise.ramp_steps < 0:
+            raise ValueError("observation_noise.ramp_steps must be nonnegative")
         for name in noise.__dataclass_fields__:
-            if name == "enabled":
+            if name in {"enabled", "ramp_steps"}:
                 continue
             value = getattr(noise, name)
             if not math.isfinite(value) or value < 0.0:
@@ -330,6 +338,8 @@ class SonicEnvConfig:
         push_low, push_high = domain.push_interval_steps
         if push_low <= 0 or push_high < push_low:
             raise ValueError("SONIC push interval must be positive and ordered")
+        if isinstance(domain.push_warmup_steps, bool) or domain.push_warmup_steps < 0:
+            raise ValueError("SONIC push warmup must be nonnegative")
         for name in (
             "push_linear_velocity_xy",
             "push_linear_velocity_z",
@@ -350,6 +360,7 @@ class SonicEnvConfig:
             "relative_body_orientation_std",
             "body_linear_velocity_std",
             "body_angular_velocity_std",
+            "joint_position_std",
             "five_point_std",
             "undesired_contact_threshold",
             "anti_shake_threshold",
@@ -878,14 +889,20 @@ class BelloSonicEnv(BelloTwistEnv):
             return frame
         keys = jax.random.split(jax.random.fold_in(rng, 0x50524F50), 4)
         cfg = self.config.observation_noise
-        gravity = _uniform_noise(frame[:3], cfg.projected_gravity, keys[0])
-        angular = _uniform_noise(frame[6:9], cfg.base_angular_velocity, keys[1])
+        ramp = jnp.minimum(
+            state.total_step.astype(jnp.float32) / max(cfg.ramp_steps, 1),
+            1.0,
+        )
+        gravity = _uniform_noise(frame[:3], ramp * cfg.projected_gravity, keys[0])
+        angular = _uniform_noise(frame[6:9], ramp * cfg.base_angular_velocity, keys[1])
         qpos_start = 9
         qvel_start = qpos_start + self.action_size
         action_start = qvel_start + self.action_size
-        qpos = _uniform_noise(frame[qpos_start:qvel_start], cfg.joint_position, keys[2])
+        qpos = _uniform_noise(
+            frame[qpos_start:qvel_start], ramp * cfg.joint_position, keys[2]
+        )
         qvel = _uniform_noise(
-            frame[qvel_start:action_start], cfg.joint_velocity, keys[3]
+            frame[qvel_start:action_start], ramp * cfg.joint_velocity, keys[3]
         )
         return (
             frame.at[:3]
@@ -1003,14 +1020,19 @@ class BelloSonicEnv(BelloTwistEnv):
         if rng is not None and self.config.observation_noise.enabled:
             noise_key = jax.random.fold_in(rng, 0x534D504C)
             joint_key, orientation_key = jax.random.split(noise_key)
+            ramp = jnp.minimum(
+                state.total_step.astype(jnp.float32)
+                / max(self.config.observation_noise.ramp_steps, 1),
+                1.0,
+            )
             joint_noise = _uniform_noise(
                 jnp.zeros((len(SONIC_SMPL_FUTURE_OFFSETS), 24, 3)),
-                self.config.observation_noise.smpl_joint_position,
+                ramp * self.config.observation_noise.smpl_joint_position,
                 joint_key,
             )
             orientation_noise = _uniform_noise(
                 jnp.zeros((len(SONIC_SMPL_FUTURE_OFFSETS), 6)),
-                self.config.observation_noise.smpl_root_orientation_6d,
+                ramp * self.config.observation_noise.smpl_root_orientation_6d,
                 orientation_key,
             )
 
@@ -1198,6 +1220,14 @@ class BelloSonicEnv(BelloTwistEnv):
             jnp.linalg.norm(foot_velocity[:, :2], axis=-1)
             * foot_contact.astype(jnp.float32)
         )
+        requested_target = self._unbounded_policy_target(
+            current.last_action,
+            previous.domain_randomization,
+        )
+        target_limit_excess = (
+            jax.nn.relu(lower - requested_target)
+            + jax.nn.relu(requested_target - upper)
+        ) / jnp.asarray(self.action_scale, dtype=jnp.float32)
         raw = {
             "tracking_anchor_position": jnp.exp(
                 -jnp.sum((reference.qpos[:3] - current.data.qpos[:3]) ** 2)
@@ -1246,12 +1276,24 @@ class BelloSonicEnv(BelloTwistEnv):
                 )
                 / cfg.body_angular_velocity_std**2
             ),
+            "tracking_joint_position": jnp.exp(
+                -jnp.mean((reference.qpos[policy_qpos] - positions) ** 2)
+                / cfg.joint_position_std**2
+            ),
+            "tracking_foot_contact": 1.0
+            - jnp.mean(
+                jnp.abs(
+                    foot_contact.astype(jnp.float32)
+                    - reference.foot_contacts.astype(jnp.float32)
+                )
+            ),
             "action_rate": jnp.sum(
                 (current.last_action - previous.motion_state.last_action) ** 2
             ),
             "joint_limit": jnp.sum(
                 jax.nn.relu(lower - positions) + jax.nn.relu(positions - upper)
             ),
+            "target_joint_limit": jnp.mean(target_limit_excess**2),
             "undesired_contacts": self._undesired_contact(current, world_id).astype(
                 jnp.float32
             ),
@@ -1279,6 +1321,9 @@ class BelloSonicEnv(BelloTwistEnv):
                 jnp.mean((reference.qpos[policy_qpos] - positions) ** 2)
             ),
             "tracking/foot_slip_mean_mps": foot_slip,
+            "target/joint_limit_excess_rms_action": jnp.sqrt(
+                jnp.mean(target_limit_excess**2)
+            ),
         }
         return (
             sum(components.values(), jnp.asarray(0.0, dtype=jnp.float32)),
@@ -1517,9 +1562,7 @@ class BelloSonicEnv(BelloTwistEnv):
         high = jnp.asarray(self.model.joint_target_high)[policy]
         outside = (requested < low) | (requested > high)
         diagnostics = {
-            "target/outside_joint_limit_fraction": jnp.mean(
-                outside.astype(jnp.float32)
-            )
+            "target/outside_joint_limit_fraction": jnp.mean(outside.astype(jnp.float32))
         }
         diagnostics.update(
             {
@@ -1585,7 +1628,9 @@ class BelloSonicEnv(BelloTwistEnv):
             return data.replace(
                 xfrc_applied=jnp.zeros_like(data.xfrc_applied)
             ), jnp.zeros((batch_size,), dtype=bool)
-        due = state.total_step + 1 >= state.next_push_step
+        due = (state.total_step + 1 >= state.next_push_step) & (
+            state.total_step + 1 >= cfg.push_warmup_steps
+        )
         linear_key, angular_key = jax.random.split(rng)
         linear = jax.random.uniform(
             linear_key,

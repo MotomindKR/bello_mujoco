@@ -50,6 +50,7 @@ class ActorCriticConfig:
     layer_norm_final_hidden: bool = False
     sonic_trainable_middle_prefix_layers: int = 0
     sonic_trainable_middle_suffix_layers: int = 0
+    sonic_train_log_std: bool = True
 
 
 class LayeredMLP(eqx.Module):
@@ -93,6 +94,7 @@ class ActorCritic(eqx.Module):
     action_distribution: str = eqx.field(static=True)
     action_limit: float = eqx.field(static=True)
     stochastic_actor: bool = eqx.field(static=True)
+    train_log_std: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -205,6 +207,9 @@ class ActorCritic(eqx.Module):
         self.action_distribution = config.action_distribution
         self.action_limit = config.action_limit
         self.stochastic_actor = config.architecture == "twist2"
+        self.train_log_std = (
+            config.architecture != "sonic" or config.sonic_train_log_std
+        )
 
     def __call__(
         self,
@@ -269,6 +274,8 @@ def sonic_frozen_parameter_hashes(policy: ActorCritic) -> dict[str, str]:
             if not policy.actor.decoder.trainable_middle_layers[index]
         },
     }
+    if not policy.train_log_std:
+        arrays["log_std"] = policy.log_std
     result = {}
     for name, array in arrays.items():
         value = np.ascontiguousarray(jax.device_get(array))
@@ -306,11 +313,18 @@ def policy_trainable_filter(policy: ActorCritic):
         specification,
         policy.actor.decoder.trainable_middle_layers,
     )
-    return eqx.tree_at(
+    specification = eqx.tree_at(
         lambda value: value.actor.decoder.middle_biases,
         specification,
         policy.actor.decoder.trainable_middle_layers,
     )
+    if not policy.train_log_std:
+        specification = eqx.tree_at(
+            lambda value: value.log_std,
+            specification,
+            False,
+        )
+    return specification
 
 
 def partition_policy_parameters(policy: ActorCritic):
@@ -431,9 +445,7 @@ class SonicEdgeDecoder(eqx.Module):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a nonnegative integer")
         if trainable_middle_prefix_layers + trainable_middle_suffix_layers > count:
-            raise ValueError(
-                "SONIC trainable middle-layer prefix and suffix overlap"
-            )
+            raise ValueError("SONIC trainable middle-layer prefix and suffix overlap")
         self.trainable_middle_layers = tuple(
             index < trainable_middle_prefix_layers
             or index >= count - trainable_middle_suffix_layers

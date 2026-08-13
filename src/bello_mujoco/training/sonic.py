@@ -53,6 +53,11 @@ from bello_mujoco.training.ppo import (
     validate_action_limit_contract,
     validate_ppo_config,
 )
+from bello_mujoco.training.sonic_pretraining import (
+    SonicOfflineBatchBuilder,
+    SonicPretrainingConfig,
+    pretrain_sonic_adapters,
+)
 from bello_mujoco.training.tracking import (
     WandbConfig,
     close_run,
@@ -94,6 +99,7 @@ class SonicTrainingRunConfig:
     asset_config: AssetPrepConfig = field(default_factory=default_sonic_asset_config)
     simulation: TwistSimulationConfig = TwistSimulationConfig()
     sonic_env: SonicEnvConfig = SonicEnvConfig()
+    pretraining: SonicPretrainingConfig = SonicPretrainingConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
@@ -142,7 +148,10 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         reference_bank.calibration,
         bello_joint_names=env.action_layout.names,
         bello_action_scale=env.action_scale,
-        minimum_action_std=float(np.exp(run_config.config.policy.init_log_std)),
+        bello_default_joint_position=np.asarray(env.model.default_joint_target)[
+            np.asarray(env.model.policy_ctrl_indices)
+        ],
+        initial_action_std=float(np.exp(run_config.config.policy.init_log_std)),
     )
     rng = jax.random.PRNGKey(run_config.config.seed)
     rng, policy_key = jax.random.split(rng)
@@ -155,6 +164,40 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         sonic_release=release,
         sonic_initialization=initialization,
     )
+    pretraining_records: tuple[tuple[int, dict[str, float]], ...] = ()
+    if (
+        run_config.pretraining.enabled
+        and run_config.checkpoint_config.resume_path is None
+    ):
+        policy_indices = np.asarray(env.model.policy_ctrl_indices)
+        default = np.asarray(env.model.default_joint_target)[policy_indices]
+        scale = np.asarray(env.action_scale, dtype=np.float32)
+        builder = SonicOfflineBatchBuilder(
+            reference_bank,
+            bello_default_joint_position=default,
+            bello_action_scale=scale,
+            validation_clip_fraction=(run_config.pretraining.validation_clip_fraction),
+            seed=run_config.pretraining.seed,
+        )
+
+        def report_pretraining(update: int, metrics: dict[str, float]) -> None:
+            print({"pretraining_update": update, **metrics})
+
+        policy_template, pretraining_records = pretrain_sonic_adapters(
+            policy_template,
+            release,
+            builder,
+            run_config.pretraining,
+            action_low=(
+                np.asarray(env.model.joint_target_low)[policy_indices] - default
+            )
+            / scale,
+            action_high=(
+                np.asarray(env.model.joint_target_high)[policy_indices] - default
+            )
+            / scale,
+            progress=report_pretraining,
+        )
     frozen_hashes = sonic_frozen_parameter_hashes(policy_template)
     git_commit = capture_repository_commit()
     metadata = _checkpoint_metadata(run_config, env, index, release, git_commit)
@@ -189,6 +232,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         reference_bank.source_ids,
         reference_bank.sequence_ids,
         reference_bank.joint_names,
+        reference_bank.qpos_joint_names,
         reference_bank.body_names,
         reference_bank.calibration,
         reference_bank.sampling_bin_size,
@@ -207,6 +251,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
                 "dataset": _tracking_dataset_summary(index),
                 "simulation": run_config.simulation,
                 "sonic_env": run_config.sonic_env,
+                "pretraining": run_config.pretraining,
                 "reference_bank_frames": int(bank_arrays[0].shape[0]),
                 "reference_bank_clips": int(bank_arrays[11].shape[0]),
                 "release_checkpoint_sha256": release.checkpoint_sha256,
@@ -216,6 +261,14 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
                 "git_commit": git_commit,
             },
         )
+        for pretraining_update, metrics in pretraining_records:
+            track_metric_snapshot(
+                run,
+                metrics,
+                env_steps=pretraining_update,
+                update=pretraining_update,
+                context={"phase": "pretrain", "stage": "sonic_adapter"},
+            )
         last_metrics = {}
 
         def update_fn(state, arrays):
@@ -305,6 +358,7 @@ def _tracking_dataset_summary(index: dict) -> dict:
         "train_sampling": index["train_sampling"],
         "split_files": index["split_files"],
         "joint_names": index["joint_names"],
+        "qpos_joint_names": index["qpos_joint_names"],
         "body_names": index["body_names"],
         "g1_joint_names": index["g1_joint_names"],
         "robot_fingerprint": index["robot_fingerprint"],
@@ -352,9 +406,11 @@ def _checkpoint_metadata(
             g1_config_sha256=_prefixed_sha256(index["g1_gmr_config_sha256"]),
             g1_robot_sha256=_prefixed_sha256(index["g1_robot_sha256"]),
             joint_names=tuple(index["joint_names"]),
+            qpos_joint_names=tuple(index["qpos_joint_names"]),
             body_names=tuple(index["body_names"]),
             calibration=calibration,
         ),
+        pretraining=run_config.pretraining,
         release_checkpoint_sha256=_prefixed_sha256(release.checkpoint_sha256),
         release_artifact_sha256=_prefixed_sha256(release.artifact_sha256),
         source_revision=source_revision,
@@ -379,6 +435,7 @@ def _bind_reference_bank(
         source_ids,
         sequence_ids,
         joint_names,
+        qpos_joint_names,
         body_names,
         calibration,
         sampling_bin_size,
@@ -388,6 +445,7 @@ def _bind_reference_bank(
         source_ids=source_ids,
         sequence_ids=sequence_ids,
         joint_names=joint_names,
+        qpos_joint_names=qpos_joint_names,
         body_names=body_names,
         calibration=calibration,
         sampling_bin_size=sampling_bin_size,

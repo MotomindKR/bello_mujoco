@@ -21,6 +21,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from typing import Any
@@ -44,7 +45,7 @@ from bello_mujoco.motion.twist_dataset import (
     portable_manifest,
 )
 
-SONIC_DATASET_SCHEMA_VERSION = 5
+SONIC_DATASET_SCHEMA_VERSION = 6
 SONIC_G1_RETARGET_FORMAT_VERSION = 2
 SONIC_SMPL_COORDINATE_CONVENTION = "sonic_g1_root_local_z_up"
 SONIC_POLICY_FPS = 50.0
@@ -250,6 +251,8 @@ class SonicJointCalibration:
     bello_joint_names: tuple[str, ...]
     g1_from_bello_matrix: tuple[tuple[float, ...], ...]
     bello_from_g1_matrix: tuple[tuple[float, ...], ...]
+    g1_joint_mean: tuple[float, ...]
+    bello_joint_mean: tuple[float, ...]
     g1_explained_variance: tuple[float, ...]
     g1_rms_residual_radians: tuple[float, ...]
     bello_explained_variance: tuple[float, ...]
@@ -277,6 +280,8 @@ class SonicJointCalibration:
         if bello_from_g1.shape != (bello_count, g1_count):
             raise ValueError("SONIC Bello-from-G1 calibration matrix has invalid shape")
         vector_shapes = {
+            "g1_joint_mean": (self.g1_joint_mean, g1_count),
+            "bello_joint_mean": (self.bello_joint_mean, bello_count),
             "g1_explained_variance": (self.g1_explained_variance, g1_count),
             "g1_rms_residual_radians": (
                 self.g1_rms_residual_radians,
@@ -297,6 +302,8 @@ class SonicJointCalibration:
         numeric = (
             g1_from_bello,
             bello_from_g1,
+            np.asarray(self.g1_joint_mean),
+            np.asarray(self.bello_joint_mean),
             np.asarray(self.g1_explained_variance),
             np.asarray(self.g1_rms_residual_radians),
             np.asarray(self.bello_explained_variance),
@@ -371,6 +378,7 @@ class SonicReferenceBank:
     source_ids: tuple[str, ...]
     sequence_ids: tuple[str, ...]
     joint_names: tuple[str, ...]
+    qpos_joint_names: tuple[str, ...]
     body_names: tuple[str, ...]
     calibration: SonicJointCalibration
 
@@ -410,6 +418,7 @@ _SONIC_INDEX_FIELDS = {
     "train_sampling",
     "split_files",
     "joint_names",
+    "qpos_joint_names",
     "body_names",
     "g1_joint_names",
     "g1_wrist_joint_names",
@@ -858,6 +867,8 @@ class _JointCalibrationMoments:
             bello_joint_names=self.bello_joint_names,
             g1_from_bello_matrix=_matrix_tuple(g1_from_bello),
             bello_from_g1_matrix=_matrix_tuple(bello_from_g1),
+            g1_joint_mean=tuple(float(value) for value in self.g1_mean),
+            bello_joint_mean=tuple(float(value) for value in self.bello_mean),
             g1_explained_variance=tuple(float(value) for value in g1_explained),
             g1_rms_residual_radians=tuple(float(value) for value in g1_rms),
             bello_explained_variance=tuple(float(value) for value in bello_explained),
@@ -896,17 +907,32 @@ class _JointCalibrationMoments:
                 f"{label} joint calibration lacks motion variance: "
                 f"Bello={insufficient_bello}, G1={insufficient_g1}"
             )
+        g1_mean_error = self.g1_mean - (
+            np.asarray(calibration.g1_joint_mean, dtype=np.float64)
+            + np.asarray(calibration.g1_from_bello_matrix, dtype=np.float64)
+            @ (
+                self.bello_mean
+                - np.asarray(calibration.bello_joint_mean, dtype=np.float64)
+            )
+        )
+        bello_mean_error = self.bello_mean - (
+            np.asarray(calibration.bello_joint_mean, dtype=np.float64)
+            + np.asarray(calibration.bello_from_g1_matrix, dtype=np.float64)
+            @ (self.g1_mean - np.asarray(calibration.g1_joint_mean, dtype=np.float64))
+        )
         g1_rms, g1_explained = _regression_metrics(
             np.asarray(calibration.g1_from_bello_matrix, dtype=np.float64),
             source_covariance=bello_covariance,
             target_covariance=g1_covariance,
             cross_covariance=cross_covariance,
+            residual_mean=g1_mean_error,
         )
         bello_rms, bello_explained = _regression_metrics(
             np.asarray(calibration.bello_from_g1_matrix, dtype=np.float64),
             source_covariance=g1_covariance,
             target_covariance=bello_covariance,
             cross_covariance=cross_covariance.T,
+            residual_mean=bello_mean_error,
         )
         _validate_calibration_metrics(
             f"{label} G1-from-Bello",
@@ -926,9 +952,7 @@ class _JointCalibrationMoments:
             "sample_count": self.sample_count,
             "g1_explained_variance": [float(value) for value in g1_explained],
             "g1_rms_residual_radians": [float(value) for value in g1_rms],
-            "bello_explained_variance": [
-                float(value) for value in bello_explained
-            ],
+            "bello_explained_variance": [float(value) for value in bello_explained],
             "bello_rms_residual_radians": [float(value) for value in bello_rms],
         }
 
@@ -1042,7 +1066,9 @@ def _anatomy_prior_map(
             continue
         source = source_index[source_name]
         if source_variance[source] <= 0.0:
-            raise ValueError(f"anatomy prior source joint has no variance: {source_name}")
+            raise ValueError(
+                f"anatomy prior source joint has no variance: {source_name}"
+            )
         prior[target, source] = (
             cross_covariance[source, target] / source_variance[source]
         )
@@ -1058,9 +1084,13 @@ def _corresponding_joint_name(
     elif target_name.endswith("_elbow_pitch_joint"):
         candidates.insert(0, target_name.replace("_elbow_pitch_joint", "_elbow_joint"))
     elif target_name.endswith("_wrist_roll_joint"):
-        candidates.insert(0, target_name.replace("_wrist_roll_joint", "_elbow_yaw_joint"))
+        candidates.insert(
+            0, target_name.replace("_wrist_roll_joint", "_elbow_yaw_joint")
+        )
     elif target_name.endswith("_elbow_yaw_joint"):
-        candidates.insert(0, target_name.replace("_elbow_yaw_joint", "_wrist_roll_joint"))
+        candidates.insert(
+            0, target_name.replace("_elbow_yaw_joint", "_wrist_roll_joint")
+        )
     return next((name for name in candidates if name in source_index), None)
 
 
@@ -1070,6 +1100,7 @@ def _regression_metrics(
     source_covariance: np.ndarray,
     target_covariance: np.ndarray,
     cross_covariance: np.ndarray,
+    residual_mean: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     residual_variance = (
         np.diag(target_covariance)
@@ -1077,12 +1108,18 @@ def _regression_metrics(
         + np.diag(matrix @ source_covariance @ matrix.T)
     )
     residual_variance = np.maximum(residual_variance, 0.0)
+    residual_mse = residual_variance
+    if residual_mean is not None:
+        residual_mean = np.asarray(residual_mean, dtype=np.float64)
+        if residual_mean.shape != residual_variance.shape:
+            raise ValueError("calibration residual mean has invalid shape")
+        residual_mse = residual_variance + residual_mean * residual_mean
     target_variance = np.diag(target_covariance)
     explained_variance = np.minimum(
         1.0,
         1.0 - residual_variance / target_variance,
     )
-    return np.sqrt(residual_variance), explained_variance
+    return np.sqrt(residual_mse), explained_variance
 
 
 def _matrix_tuple(value: np.ndarray) -> tuple[tuple[float, ...], ...]:
@@ -1120,8 +1157,7 @@ def sonic_semantic_quality(
     leg_velocity = np.diff(leg_position, axis=0) / dt[:, None]
     leg_rms_velocity = float(np.sqrt(np.mean(leg_velocity * leg_velocity)))
     gait_like = (
-        leg_rms_velocity
-        >= config.minimum_leg_rms_velocity_radians_per_second
+        leg_rms_velocity >= config.minimum_leg_rms_velocity_radians_per_second
         and contact_transitions >= config.minimum_contact_transitions
     )
 
@@ -1137,15 +1173,15 @@ def sonic_semantic_quality(
         if pattern.lower() in identity
     )
     if matched:
-        reasons.append("sequence name matches quarantine pattern: " + ", ".join(matched))
+        reasons.append(
+            "sequence name matches quarantine pattern: " + ", ".join(matched)
+        )
     if stationary and gait_like:
         reasons.append(
             "stationary root with gait-like leg/contact motion (treadmill candidate)"
         )
 
-    body_names = tuple(
-        str(name) for name in np.asarray(arrays["body_names"]).tolist()
-    )
+    body_names = tuple(str(name) for name in np.asarray(arrays["body_names"]).tolist())
     body_index = {name: index for index, name in enumerate(body_names)}
     foot_names = ("left_ankle_roll_link", "right_ankle_roll_link")
     missing_feet = tuple(name for name in foot_names if name not in body_index)
@@ -1221,6 +1257,7 @@ def build_sonic_dataset(
     decisions: list[ClipDecision] = []
     accepted: list[_AcceptedSonicClip] = []
     joint_names: tuple[str, ...] | None = None
+    qpos_joint_names: tuple[str, ...] | None = None
     body_names: tuple[str, ...] | None = None
     provenance: dict[str, str] | None = None
     calibration_moments: _JointCalibrationMoments | None = None
@@ -1319,6 +1356,7 @@ def build_sonic_dataset(
             raise ValueError("SONIC Bello action and qpos joint sets differ")
         if joint_names is None:
             joint_names = clip_joint_names
+            qpos_joint_names = qpos_names
             body_names = clip_body_names
             provenance = clip_provenance
             calibration_moments = _JointCalibrationMoments(joint_names)
@@ -1328,6 +1366,8 @@ def build_sonic_dataset(
                 raise ValueError(
                     "SONIC clips do not share one Bello action joint order"
                 )
+            if qpos_names != qpos_joint_names:
+                raise ValueError("SONIC clips do not share one Bello qpos joint order")
             if clip_body_names != body_names:
                 raise ValueError("SONIC clips do not share one Bello body order")
             for name, expected in provenance.items():
@@ -1360,6 +1400,7 @@ def build_sonic_dataset(
         raise ValueError("SONIC dataset requires both training and evaluation clips")
     if (
         joint_names is None
+        or qpos_joint_names is None
         or body_names is None
         or provenance is None
         or calibration_moments is None
@@ -1418,6 +1459,7 @@ def build_sonic_dataset(
         "train_sampling": SONIC_TRAIN_SAMPLING,
         "split_files": split_files,
         "joint_names": joint_names,
+        "qpos_joint_names": qpos_joint_names,
         "body_names": body_names,
         "g1_joint_names": G1_ISAACLAB_JOINT_NAMES,
         "g1_wrist_joint_names": G1_WRIST_JOINT_NAMES,
@@ -1434,6 +1476,7 @@ def build_sonic_dataset(
         "train_sampling": SONIC_TRAIN_SAMPLING,
         "split_files": split_files,
         "joint_names": list(joint_names),
+        "qpos_joint_names": list(qpos_joint_names),
         "body_names": list(body_names),
         "g1_joint_names": list(G1_ISAACLAB_JOINT_NAMES),
         "g1_wrist_joint_names": list(G1_WRIST_JOINT_NAMES),
@@ -1446,6 +1489,171 @@ def build_sonic_dataset(
     }
     _write_json_once(output_root / "index.json", index)
     return index
+
+
+def upgrade_sonic_dataset_v5(
+    input_index_path: Path,
+    bello_retargeted_root: Path,
+    output_root: Path,
+    *,
+    progress: Callable[[str, int, int], None] | None = None,
+) -> dict[str, Any]:
+    """Upgrade a verified schema-v5 bank without repacking its large arrays."""
+
+    input_index_path = Path(input_index_path).expanduser().resolve()
+    bello_root = Path(bello_retargeted_root).expanduser().resolve()
+    output_root = Path(output_root).expanduser().resolve()
+    if output_root.exists() and any(output_root.iterdir()):
+        raise FileExistsError(
+            f"SONIC dataset output is not empty: {output_root}; upgrades never overwrite"
+        )
+    old = json.loads(input_index_path.read_text(encoding="utf-8"))
+    old_fields = _SONIC_INDEX_FIELDS - {"qpos_joint_names"}
+    if not isinstance(old, dict) or set(old) != old_fields:
+        raise ValueError(
+            "SONIC schema-v5 index fields differ from the upgrade contract"
+        )
+    if old.get("schema_version") != 5:
+        raise ValueError("SONIC calibration upgrade requires schema version 5")
+    payload = old.get("fingerprint_payload")
+    if not isinstance(payload, dict) or _json_sha256(payload) != old.get(
+        "dataset_fingerprint"
+    ):
+        raise ValueError("SONIC schema-v5 dataset fingerprint is invalid")
+    for split, descriptor in old["split_files"].items():
+        _validate_split_file_descriptor(descriptor, split=split)
+        _validate_split_file(
+            descriptor,
+            _split_file_path(input_index_path, descriptor),
+            split=split,
+        )
+    _validate_index_clip_bounds(old)
+    qpos_joint_names = _verify_upgrade_qpos_order(
+        old,
+        bello_root,
+        progress=progress,
+    )
+    calibration_document = payload.get("calibration_config")
+    if not isinstance(calibration_document, dict) or set(calibration_document) != set(
+        asdict(SonicCalibrationConfig())
+    ):
+        raise ValueError("SONIC schema-v5 calibration config is invalid")
+    calibration_config = SonicCalibrationConfig(**calibration_document)
+    moments = {
+        split: _packed_calibration_moments(
+            input_index_path,
+            old,
+            split=split,
+            qpos_joint_names=qpos_joint_names,
+            progress=progress,
+        )
+        for split in ("train", "evaluation")
+    }
+    train_clips = tuple(clip for clip in old["clips"] if clip["split"] == "train")
+    calibration = moments["train"].finalize(
+        tuple(clip["synchronized_sha256"] for clip in train_clips),
+        calibration_config,
+    )
+    heldout = moments["evaluation"].evaluate(
+        calibration,
+        calibration_config,
+        label="heldout",
+    )
+    upgraded_payload = {
+        **payload,
+        "schema_version": SONIC_DATASET_SCHEMA_VERSION,
+        "qpos_joint_names": qpos_joint_names,
+        "joint_calibration": calibration.to_document(),
+        "heldout_calibration": heldout,
+    }
+    upgraded = {
+        **old,
+        "schema_version": SONIC_DATASET_SCHEMA_VERSION,
+        "dataset_fingerprint": _json_sha256(upgraded_payload),
+        "qpos_joint_names": list(qpos_joint_names),
+        "joint_calibration": calibration.to_document(),
+        "heldout_calibration": heldout,
+        "fingerprint_payload": upgraded_payload,
+    }
+    output_root.mkdir(parents=True, exist_ok=True)
+    for descriptor in old["split_files"].values():
+        source = _split_file_path(input_index_path, descriptor)
+        try:
+            os.link(source, output_root / descriptor["file"])
+        except OSError as error:
+            raise OSError(
+                "SONIC schema upgrade requires hard-linkable input/output paths; "
+                "run a full build when crossing filesystems"
+            ) from error
+    for name in ("conversion_report.json", "heldout_manifest.json"):
+        source = input_index_path.parent / name
+        if not source.is_file():
+            raise FileNotFoundError(f"SONIC schema-v5 metadata is missing: {source}")
+        shutil.copy2(source, output_root / name)
+    _write_json_once(output_root / "index.json", upgraded)
+    return load_sonic_dataset_index(output_root / "index.json")
+
+
+def _verify_upgrade_qpos_order(
+    index: dict[str, Any],
+    bello_root: Path,
+    *,
+    progress: Callable[[str, int, int], None] | None,
+) -> tuple[str, ...]:
+    expected: tuple[str, ...] | None = None
+    clips = index["clips"]
+    for clip_index, clip in enumerate(clips, start=1):
+        if progress is not None and (
+            clip_index == 1 or clip_index % 500 == 0 or clip_index == len(clips)
+        ):
+            progress("verify_qpos_order", clip_index, len(clips))
+        path = bello_root / f"{clip['source_id']}__{clip['sequence_id']}.npz"
+        if not path.is_file():
+            raise FileNotFoundError(f"SONIC Bello retarget is missing: {path}")
+        with np.load(path, allow_pickle=False) as archive:
+            if "qpos_joint_names" not in archive.files:
+                raise ValueError(f"{path.name}: qpos_joint_names is missing")
+            actual = tuple(str(name) for name in archive["qpos_joint_names"].tolist())
+        if expected is None:
+            expected = actual
+        elif actual != expected:
+            raise ValueError("SONIC schema-v5 clips do not share one qpos joint order")
+    if expected is None or set(expected) != set(index["joint_names"]):
+        raise ValueError("SONIC schema-v5 qpos joint order is invalid")
+    return expected
+
+
+def _packed_calibration_moments(
+    index_path: Path,
+    index: dict[str, Any],
+    *,
+    split: AssignedSplit,
+    qpos_joint_names: tuple[str, ...],
+    progress: Callable[[str, int, int], None] | None,
+) -> _JointCalibrationMoments:
+    descriptor = index["split_files"][split]
+    clips = tuple(clip for clip in index["clips"] if clip["split"] == split)
+    moments = _JointCalibrationMoments(tuple(index["joint_names"]))
+    with np.load(
+        _split_file_path(index_path, descriptor), allow_pickle=False
+    ) as archive:
+        qpos = np.asarray(archive["qpos"])
+        g1_joint_pos = np.asarray(archive["g1_joint_pos"])
+        for clip_index, clip in enumerate(clips, start=1):
+            if progress is not None and (
+                clip_index == 1 or clip_index % 500 == 0 or clip_index == len(clips)
+            ):
+                progress(f"calibrate_{split}", clip_index, len(clips))
+            start = int(clip["offset"])
+            stop = start + int(clip["frames"])
+            moments.update(
+                {
+                    "qpos": qpos[start:stop],
+                    "qpos_joint_names": np.asarray(qpos_joint_names),
+                    "g1_joint_pos": g1_joint_pos[start:stop],
+                }
+            )
+    return moments
 
 
 def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
@@ -1517,6 +1725,7 @@ def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
         "train_sampling": index["train_sampling"],
         "split_files": index["split_files"],
         "joint_names": index["joint_names"],
+        "qpos_joint_names": index["qpos_joint_names"],
         "body_names": index["body_names"],
         "g1_joint_names": index["g1_joint_names"],
         "g1_wrist_joint_names": index["g1_wrist_joint_names"],
@@ -1552,6 +1761,16 @@ def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
     ):
         raise ValueError("SONIC dataset requires 25 unique Bello action joints")
     if (
+        not isinstance(index["qpos_joint_names"], list)
+        or len(index["qpos_joint_names"]) != 25
+        or any(
+            not isinstance(name, str) or not name for name in index["qpos_joint_names"]
+        )
+        or len(set(index["qpos_joint_names"])) != 25
+        or set(index["qpos_joint_names"]) != set(index["joint_names"])
+    ):
+        raise ValueError("SONIC dataset Bello qpos joint order is invalid")
+    if (
         not isinstance(index["body_names"], list)
         or not index["body_names"]
         or any(not isinstance(name, str) or not name for name in index["body_names"])
@@ -1560,9 +1779,10 @@ def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
         raise ValueError("SONIC dataset body names must be nonempty and unique")
     sanitation_document = index["sanitation_config"]
     expected_sanitation_fields = set(asdict(SonicSanitationConfig()))
-    if not isinstance(sanitation_document, dict) or set(
-        sanitation_document
-    ) != expected_sanitation_fields:
+    if (
+        not isinstance(sanitation_document, dict)
+        or set(sanitation_document) != expected_sanitation_fields
+    ):
         raise ValueError("SONIC sanitation config fields differ from the schema")
     SonicSanitationConfig(
         **{
@@ -1580,9 +1800,10 @@ def load_sonic_dataset_index(index_path: Path) -> dict[str, Any]:
         "bello_explained_variance",
         "bello_rms_residual_radians",
     }
-    if not isinstance(heldout_calibration, dict) or set(
-        heldout_calibration
-    ) != expected_heldout_fields:
+    if (
+        not isinstance(heldout_calibration, dict)
+        or set(heldout_calibration) != expected_heldout_fields
+    ):
         raise ValueError("SONIC heldout calibration fields differ from the schema")
     if (
         isinstance(heldout_calibration["sample_count"], bool)
@@ -1668,6 +1889,7 @@ def load_sonic_reference_bank(
         source_ids=tuple(clip["source_id"] for clip in clips),
         sequence_ids=tuple(clip["sequence_id"] for clip in clips),
         joint_names=tuple(index["joint_names"]),
+        qpos_joint_names=tuple(index["qpos_joint_names"]),
         body_names=tuple(index["body_names"]),
         calibration=SonicJointCalibration.from_document(index["joint_calibration"]),
     )
@@ -1779,6 +2001,7 @@ def materialize_sonic_reference_clip(
         output_path,
         policy_fps=policy_fps,
         joint_names=bank.joint_names,
+        qpos_joint_names=bank.qpos_joint_names,
         body_names=bank.body_names,
         source_sha256=source_sha256,
         arrays=arrays,
@@ -1818,6 +2041,7 @@ def select_sonic_reference_clip(
         source_ids=(bank.source_ids[clip_index],),
         sequence_ids=(bank.sequence_ids[clip_index],),
         joint_names=bank.joint_names,
+        qpos_joint_names=bank.qpos_joint_names,
         body_names=bank.body_names,
         calibration=bank.calibration,
     )

@@ -74,6 +74,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `dataset_path` | path or `null`; `null` | Override the packed `index.json` for a TWIST, TWIST2, or SONIC run. Other experiments reject it. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required for `twist_student` and rejected by every other experiment, including `twist_teacher`. |
 | `sonic_artifact_path` | path or `null`; `null` | Override the safe exported SONIC release directory for `experiment=sonic`. Other experiments reject it. The default is `artifacts/sonic/default_release`. |
+| `sonic_pretraining_enabled` | boolean or `null`; `null` | Enable or disable the offline SONIC edge warm-start. The SONIC profile defaults to enabled; other experiments reject this field. |
 | `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and normally match its recorded Git commit; resume then validates the full training and environment state. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; it waives source-revision identity while metadata semantics, layouts, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
@@ -237,13 +238,14 @@ Configuration source: `configs/commands/sonic_data.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `operation` | `retarget_g1` or `build`; `build` | Generate the G1/SMPL sidecar view or assemble a fingerprinted synchronized dataset. |
+| `operation` | `retarget_g1`, `build`, or `upgrade_v5`; `build` | Generate the G1/SMPL sidecar view, assemble a fingerprinted synchronized dataset, or audit and upgrade an existing schema-v5 packed dataset. |
+| `input_index` | path or `null`; `null` | Required only for `upgrade_v5`; schema-v5 `index.json` to verify and migrate. |
 | `manifest` | path or `null`; `null` | Required licensed AMASS manifest. Use the same manifest that selected the Bello retargets. |
 | `body_model_root` | path or `null`; `null` | Required for `retarget_g1`; contains the licensed SMPL-X model NPZ files. |
-| `bello_retargeted_root` | path or `null`; `null` | Required for `build`; Bello clips use `<source_id>__<sequence_id>.npz`. |
+| `bello_retargeted_root` | path or `null`; `null` | Required for `build` and `upgrade_v5`; Bello clips use `<source_id>__<sequence_id>.npz`. |
 | `g1_retargeted_root` | path or `null`; `null` | Required for `build`; synchronized G1/SMPL sidecars use the same filenames. |
 | `normalized_root` | path or `null`; `null` | Required scratch directory for normalized SMPL sources during `retarget_g1`; it must differ from `output_root`. |
-| `output_root` | path or `null`; `null` | Required operation output. Build requires an empty destination and writes `train.npz`, `evaluation.npz`, `index.json`, `heldout_manifest.json`, and `conversion_report.json`. |
+| `output_root` | path or `null`; `null` | Required operation output. Build and upgrade require an empty destination and write `train.npz`, `evaluation.npz`, `index.json`, `heldout_manifest.json`, and `conversion_report.json`. The upgrade hard-links verified split files and therefore requires the same filesystem. |
 | `gmr_python` | path or `null`; `null` | Required for `retarget_g1`; Python interpreter from the pinned `deps/GMR` environment. |
 | `jobs` | positive integer; `1` | Concurrent retarget subprocesses. Each worker loads GMR and body models, so increase cautiously. |
 | `overwrite` | boolean; `false` | Recompute a sidecar whose source/provenance otherwise matches. |
@@ -264,6 +266,12 @@ The command reports validation and per-split packing progress every 100 clips;
 its conversion report is written before calibration and packing so failed
 builds retain their sanitation decisions.
 See the [SONIC transfer guide](sonic.md) for the end-to-end workflow.
+
+`upgrade_v5` re-verifies every source clip's MuJoCo qpos joint order,
+recomputes train-only affine calibration means and held-out diagnostics from the
+packed arrays, hashes the new schema-v6 contract, and hard-links the already
+verified split payloads. It does not silently copy a multi-gigabyte dataset
+across filesystems.
 
 ## `bello-vast-train`
 

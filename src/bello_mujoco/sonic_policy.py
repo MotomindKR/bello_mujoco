@@ -30,9 +30,7 @@ SONIC_G1_PROPRIO_SIZE = 930
 SONIC_BELLO_PROPRIO_SIZE = 810
 SONIC_ROOT_MOTION_COMMAND_SIZE = 2 * SONIC_SMPL_FRAME_COUNT
 SONIC_ACTOR_OBSERVATION_SIZE = (
-    SONIC_SMPL_INPUT_SIZE
-    + SONIC_ROOT_MOTION_COMMAND_SIZE
-    + SONIC_BELLO_PROPRIO_SIZE
+    SONIC_SMPL_INPUT_SIZE + SONIC_ROOT_MOTION_COMMAND_SIZE + SONIC_BELLO_PROPRIO_SIZE
 )
 SONIC_ENCODER_DIMS = (840, 2048, 1024, 512, 512, 64)
 SONIC_DECODER_DIMS = (994, 2048, 2048, 1024, 1024, 512, 512, 29)
@@ -83,6 +81,31 @@ def _g1_action_scale(joint_name: str) -> float:
 
 SONIC_G1_ACTION_SCALE = np.asarray(
     tuple(_g1_action_scale(name) for name in G1_ISAACLAB_JOINT_NAMES),
+    dtype=np.float32,
+)
+
+SONIC_G1_DEFAULT_JOINT_POSITION = np.asarray(
+    tuple(
+        -0.312
+        if "hip_pitch" in name
+        else 0.669
+        if "knee" in name
+        else -0.363
+        if "ankle_pitch" in name
+        else 0.6
+        if name.endswith("_elbow_joint")
+        else 0.2
+        if name
+        in {
+            "left_shoulder_pitch_joint",
+            "right_shoulder_pitch_joint",
+            "left_shoulder_roll_joint",
+        }
+        else -0.2
+        if name == "right_shoulder_roll_joint"
+        else 0.0
+        for name in G1_ISAACLAB_JOINT_NAMES
+    ),
     dtype=np.float32,
 )
 
@@ -302,7 +325,8 @@ def build_bello_decoder_initialization(
     *,
     bello_joint_names: tuple[str, ...],
     bello_action_scale: tuple[float, ...] | np.ndarray,
-    minimum_action_std: float,
+    bello_default_joint_position: tuple[float, ...] | np.ndarray,
+    initial_action_std: float,
 ) -> SonicDecoderInitialization:
     """Compose the original G1 edge linears with coupled morphology maps."""
 
@@ -313,9 +337,13 @@ def build_bello_decoder_initialization(
     if len(bello_joint_names) != SONIC_BELLO_ACTION_SIZE:
         raise ValueError("SONIC Bello embodiment must expose exactly 25 actions")
     bello_action_scale = _validated_bello_action_scale(bello_action_scale)
+    bello_default_joint_position = _validated_bello_default_joint_position(
+        bello_default_joint_position
+    )
     affine, affine_offset = g1_from_bello_proprio_affine(
         calibration,
         bello_action_scale=bello_action_scale,
+        bello_default_joint_position=bello_default_joint_position,
     )
     first_weight = release.decoder_weights[0]
     token_weight = first_weight[:, :SONIC_TOKEN_FLAT_SIZE].copy()
@@ -325,18 +353,23 @@ def build_bello_decoder_initialization(
 
     output_weight = np.zeros((SONIC_BELLO_ACTION_SIZE, 512), dtype=np.float32)
     output_bias = np.zeros((SONIC_BELLO_ACTION_SIZE,), dtype=np.float32)
-    output_std = bello_action_std_from_g1(
-        release.released_std,
-        calibration,
-        bello_action_scale=bello_action_scale,
-        minimum_action_std=minimum_action_std,
+    if not np.isfinite(initial_action_std) or initial_action_std <= 0.0:
+        raise ValueError("initial Bello action standard deviation is invalid")
+    output_std = np.full(
+        (SONIC_BELLO_ACTION_SIZE,), initial_action_std, dtype=np.float32
     )
     bello_from_g1 = _normalized_bello_from_g1(
         calibration,
         bello_action_scale,
     )
     output_weight[:] = bello_from_g1 @ release.decoder_weights[-1]
-    output_bias[:] = bello_from_g1 @ release.decoder_biases[-1]
+    output_bias[:] = bello_from_g1 @ release.decoder_biases[
+        -1
+    ] + _normalized_bello_from_g1_offset(
+        calibration,
+        bello_action_scale=bello_action_scale,
+        bello_default_joint_position=bello_default_joint_position,
+    )
     return SonicDecoderInitialization(
         token_projection_weight=token_weight.astype(np.float32),
         root_motion_projection_weight=np.zeros(
@@ -354,42 +387,28 @@ def build_bello_decoder_initialization(
     )
 
 
-def bello_action_std_from_g1(
-    released_std: np.ndarray,
-    calibration: SonicJointCalibration,
-    *,
-    bello_action_scale: tuple[float, ...] | np.ndarray,
-    minimum_action_std: float,
-) -> np.ndarray:
-    """Propagate diagonal G1 exploration variance through the dense edge map."""
-
-    released_std = np.asarray(released_std, dtype=np.float32)
-    if released_std.shape != (SONIC_G1_ACTION_SIZE,) or not np.all(
-        np.isfinite(released_std) & (released_std > 0.0)
-    ):
-        raise ValueError("released SONIC standard deviation is invalid")
-    if not np.isfinite(minimum_action_std) or minimum_action_std <= 0.0:
-        raise ValueError("minimum Bello action standard deviation is invalid")
-    bello_from_g1 = _normalized_bello_from_g1(
-        calibration,
-        _validated_bello_action_scale(bello_action_scale),
-    )
-    variance = (bello_from_g1 * bello_from_g1) @ (released_std * released_std)
-    return np.maximum(np.sqrt(variance), minimum_action_std).astype(np.float32)
-
-
 def g1_from_bello_proprio_affine(
     calibration: SonicJointCalibration,
     *,
     bello_action_scale: tuple[float, ...] | np.ndarray,
+    bello_default_joint_position: tuple[float, ...] | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the default-anchored Bello-to-G1 proprioception edge map."""
+    """Return the corpus-centered affine map in relative proprio coordinates."""
     matrix = np.zeros(
         (SONIC_G1_PROPRIO_SIZE, SONIC_BELLO_PROPRIO_SIZE), dtype=np.float32
     )
     offset = np.zeros((SONIC_G1_PROPRIO_SIZE,), dtype=np.float32)
     joint_matrix = np.asarray(calibration.g1_from_bello_matrix, dtype=np.float32)
     bello_action_scale = _validated_bello_action_scale(bello_action_scale)
+    bello_default = _validated_bello_default_joint_position(
+        bello_default_joint_position
+    )
+    position_offset = (
+        np.asarray(calibration.g1_joint_mean, dtype=np.float32)
+        - SONIC_G1_DEFAULT_JOINT_POSITION
+        - joint_matrix
+        @ (np.asarray(calibration.bello_joint_mean, dtype=np.float32) - bello_default)
+    )
     normalized_action_matrix = (
         joint_matrix * bello_action_scale[None, :] / SONIC_G1_ACTION_SCALE[:, None]
     )
@@ -428,9 +447,39 @@ def g1_from_bello_proprio_affine(
             bello_action_start + (history + 1) * SONIC_BELLO_ACTION_SIZE,
         )
         matrix[g1_joint_slice, bello_joint_slice] = joint_matrix
+        offset[g1_joint_slice] = position_offset
         matrix[g1_velocity_slice, bello_velocity_slice] = joint_matrix
         matrix[g1_action_slice, bello_action_slice] = normalized_action_matrix
     return matrix, offset
+
+
+def _validated_bello_default_joint_position(
+    value: tuple[float, ...] | np.ndarray,
+) -> np.ndarray:
+    position = np.asarray(value, dtype=np.float32)
+    if position.shape != (SONIC_BELLO_ACTION_SIZE,) or not np.all(
+        np.isfinite(position)
+    ):
+        raise ValueError("Bello SONIC default joint position must contain 25 values")
+    return position
+
+
+def _normalized_bello_from_g1_offset(
+    calibration: SonicJointCalibration,
+    *,
+    bello_action_scale: np.ndarray,
+    bello_default_joint_position: np.ndarray,
+) -> np.ndarray:
+    joint_matrix = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
+    return (
+        np.asarray(calibration.bello_joint_mean, dtype=np.float32)
+        - bello_default_joint_position
+        - joint_matrix
+        @ (
+            np.asarray(calibration.g1_joint_mean, dtype=np.float32)
+            - SONIC_G1_DEFAULT_JOINT_POSITION
+        )
+    ) / bello_action_scale
 
 
 def _validated_bello_action_scale(
@@ -450,9 +499,7 @@ def _normalized_bello_from_g1(
 ) -> np.ndarray:
     joint_matrix = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
     return (
-        joint_matrix
-        * SONIC_G1_ACTION_SCALE[None, :]
-        / bello_action_scale[:, None]
+        joint_matrix * SONIC_G1_ACTION_SCALE[None, :] / bello_action_scale[:, None]
     ).astype(np.float32)
 
 
