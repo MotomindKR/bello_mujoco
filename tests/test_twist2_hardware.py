@@ -309,6 +309,52 @@ def test_twist2_hardware_reconstructs_exact_actor_history_contract(
     assert third.physical_target.shape == (25,)
 
 
+def test_twist2_hardware_preserves_body_local_gyro_at_nonzero_yaw(
+    twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    adapter = twist2_hardware_adapter
+    frame = hardware_frame(adapter)
+    half_sqrt_two = np.sqrt(0.5)
+    angular_velocity = np.asarray((0.4, -0.2, 0.1))
+    frame = replace(
+        frame,
+        orientation_xyzw=np.asarray((0.0, 0.0, half_sqrt_two, half_sqrt_two)),
+        angular_velocity=angular_velocity,
+    )
+
+    proprioception = adapter.proprioception(frame)
+
+    np.testing.assert_allclose(
+        proprioception[:3],
+        0.25 * angular_velocity,
+        atol=1.0e-7,
+    )
+
+
+def test_twist2_reference_accepts_training_pose_inside_hard_joint_limit(
+    twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    adapter = twist2_hardware_adapter
+    config = HardwareTwist2Config()
+    action_index = adapter.env.action_layout.names.index("left_ankle_pitch_joint")
+    control_index = int(adapter.policy_indices[action_index])
+    joint_id = int(adapter.env.model.actuator_joint_ids[control_index])
+    hard_upper = float(adapter.env.model.mj_model.jnt_range[joint_id, 1])
+    soft_upper = float(adapter.env.model.joint_target_high[control_index])
+    assert soft_upper < hard_upper
+    reference = reference_frame(adapter)
+    qpos = reference.qpos.copy()
+    qpos[adapter.policy_qpos_indices[action_index]] = 0.5 * (soft_upper + hard_upper)
+
+    validate_twist2_reference(replace(reference, qpos=qpos), adapter.env, config)
+
+    qpos[adapter.policy_qpos_indices[action_index]] = (
+        hard_upper + config.max_reference_joint_limit_violation_radians + 0.001
+    )
+    with pytest.raises(ReferenceUnavailable, match="left_ankle_pitch_joint"):
+        validate_twist2_reference(replace(reference, qpos=qpos), adapter.env, config)
+
+
 def test_twist2_hardware_only_projects_unsafe_coupled_ankle_targets(
     twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
 ) -> None:

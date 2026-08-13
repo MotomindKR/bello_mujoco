@@ -559,10 +559,10 @@ class HardwareTwist2PolicyAdapter:
         logical_velocity = self.inverse_transform @ frame.velocities
         orientation_xyzw = normalized_quaternion_xyzw(frame.orientation_xyzw)
         orientation_wxyz = orientation_xyzw[[3, 0, 1, 2]]
-        # Match the executed TWIST2 environment exactly: its free-joint angular
-        # velocity is inverse-rotated by the root orientation before scaling.
-        base_angular_velocity = 0.25 * quat_rotate_inverse_wxyz(
-            orientation_wxyz, np.asarray(frame.angular_velocity, dtype=np.float64)
+        # The hardware IMU gyro is already expressed in the pelvis frame. The
+        # training environment performs its world-to-body conversion upstream.
+        base_angular_velocity = 0.25 * np.asarray(
+            frame.angular_velocity, dtype=np.float64
         )
         joint_position = (
             logical_position[self.policy_indices]
@@ -841,8 +841,12 @@ def validate_twist2_reference(
         )
     policy = np.asarray(env.model.policy_ctrl_indices)
     positions = qpos[np.asarray(env.model.policy_qpos_indices)]
-    lower = np.asarray(env.model.joint_target_low)[policy]
-    upper = np.asarray(env.model.joint_target_high)[policy]
+    joint_ids = np.asarray(env.model.actuator_joint_ids)[policy]
+    if not np.all(env.model.mj_model.jnt_limited[joint_ids]):
+        raise RuntimeError("TWIST2 policy reference joints require hard limits")
+    ranges = np.asarray(env.model.mj_model.jnt_range)[joint_ids]
+    lower = ranges[:, 0]
+    upper = ranges[:, 1]
     tolerance = config.max_reference_joint_limit_violation_radians
     violation = np.maximum(lower - positions, positions - upper)
     index = int(np.argmax(violation))

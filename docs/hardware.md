@@ -257,9 +257,12 @@ reference completion, and raw-versus-applied action bounds.
 
 TWIST2 adds exact Fast-SAM stream semantics, tracking and required-joint
 confidence, pipeline/reference age, source sequence and timestamp monotonicity,
-SMPL-X quaternion validity, GMR joint velocity/acceleration and joint limits,
-retargeted root/body velocity, and raw Gaussian action bounds. Retargeted hold
-references are validated in logical joint coordinates before conversion.
+SMPL-X quaternion validity, GMR joint velocity/acceleration and hard URDF joint
+limits, retargeted root/body velocity, and raw Gaussian action bounds. Reference
+poses are observations and may use the full hard joint range seen in the packed
+training data; outgoing policy targets remain bounded by the narrower actuator
+and live-daemon command ranges. The body-frame IMU gyro is passed directly into
+proprioception without a second orientation transform.
 Policy observations retain the raw previous action used during training. Motor
 commands preserve the training mapping: they add `0.5 * action` to the model
 default, apply the actuator-coordinate transform, and clip each physical motor
