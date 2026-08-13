@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import importlib
 import math
@@ -19,6 +19,11 @@ import grpc
 from google.protobuf import empty_pb2
 import numpy as np
 
+from bello_mujoco.fastsam_conditioning import (
+    FASTSAM_ROOT_CONDITIONING_VERSION,
+    CausalFootConditionedRoot,
+    FootConditionedRootConfig,
+)
 from bello_mujoco.hardware.smplx_retarget import (
     GmrBelloRetargeter,
     GmrLiveRetargetConfig,
@@ -66,6 +71,9 @@ class FastSamGrpcConfig:
     camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
     align_initial_heading: bool
     align_initial_floor: bool
+    root_conditioning: FootConditionedRootConfig = field(
+        default_factory=FootConditionedRootConfig
+    )
 
     @classmethod
     def from_hardware(cls, config: HardwareTwist2Config) -> FastSamGrpcConfig:
@@ -186,6 +194,9 @@ class FastSamSmplxStream:
         self._standing_sample = load_smplx_standing_sample(config.neutral_model_path)
         self.neutral_model_sha256 = _file_sha256(config.neutral_model_path)
         self._coordinates = FastSamCoordinateAdapter(config)
+        self._root_conditioner = CausalFootConditionedRoot(
+            SMPLX_BODY_JOINT_NAMES, config.root_conditioning
+        )
         self._condition = threading.Condition()
         self._stop = threading.Event()
         self._generation = 0
@@ -494,6 +505,11 @@ class FastSamSmplxStream:
         positions, quaternions = self._coordinates.transform(
             positions, global_quaternions, track_id=track_id
         )
+        positions, foot_contacts = self._root_conditioner.condition(
+            positions,
+            confidence,
+            timestamp_ns=source_timestamp_ns,
+        )
         lookup = dict(zip(SMPLX_BODY_JOINT_NAMES, positions, strict=True))
         quaternion_lookup = dict(zip(SMPLX_BODY_JOINT_NAMES, quaternions, strict=True))
         self._last_frame_id = frame_id
@@ -510,10 +526,12 @@ class FastSamSmplxStream:
             source_timestamp_ns=source_timestamp_ns,
             source_age_ms=source_age_ms,
             received_at=received_at,
+            foot_contacts=foot_contacts,
         )
 
     def _reset_tracking_epoch(self, track_id: int | None) -> None:
         self._coordinates.reset()
+        self._root_conditioner.reset()
         self._active_track_id = track_id
         self._last_frame_id = None
         self._last_source_timestamp_ns = None
@@ -569,6 +587,7 @@ def fastsam_reference_source(
                     "inference_mode": stream.inference_mode,
                     "body_representation": "smplx_body_22",
                     "neutral_model_sha256": stream.neutral_model_sha256,
+                    "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
                     "live_target_check": "deferred_until_MOTION",
                 }
             )

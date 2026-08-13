@@ -197,9 +197,15 @@ The default camera rotation assumes a level, forward-looking camera: camera
 forward becomes world forward, camera right becomes world right, and camera
 down becomes world down. On each target acquisition the adapter captures the
 initial pelvis horizontal origin, standing foot height, and heading. Subsequent
-translation and vertical motion are preserved. A differently mounted camera
-must supply a calibrated `fastsam_camera_to_world_quaternion_xyzw`; disabling
-initial heading or floor alignment is explicit.
+translation is passed through the shared causal support-foot estimator before
+GMR: confident planted feet anchor root XY, support changes use speed/height
+hysteresis and blending, and unsupported phases preserve filtered source
+translation. This is the exact estimator replayed by the Fast-SAM recording
+importer, so the policy does not train on a cleaner root contract than it sees
+live. Vertical motion is preserved separately by GMR's contact-aware grounding.
+A differently mounted camera must supply a calibrated
+`fastsam_camera_to_world_quaternion_xyzw`; disabling initial heading or floor
+alignment is explicit.
 
 Preflight connects to Fast-SAM, validates server readiness, tracking mode, and
 the stream schema, retargets the canonical SMPL-X standing sample, and compiles
@@ -215,8 +221,8 @@ control loop never blocks on either service. Frame age is the server's complete
 pipeline latency plus the configured transport budget and local time since
 receipt. Live targets use the same pinned knee-pole thresholds, reachability
 constraint, joint velocity/acceleration bounds, and foot-clearance geometry as
-offline retargeting. A causal contact estimate grounds supporting feet while
-preserving airborne vertical motion.
+offline retargeting. The shared root estimator's causal contact state grounds
+supporting feet while preserving airborne vertical motion.
 
 Armed operation follows `HOLD`, a ten-second ramp to the hybrid normal-standing
 target described above, and `RUN`; that target is held while waiting for `RUN`.

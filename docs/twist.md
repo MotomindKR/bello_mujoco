@@ -175,6 +175,31 @@ python tools/twist_gmr_retarget.py \
 OMOMO human trajectories use the same SMPL-X retargeter. Object identifiers and
 interaction labels stay in the source manifest.
 
+Complete `fastsam3dbody-serve` recordings can be imported as explicitly owned
+in-house SMPL-X sources. The importer validates the recorded stream contract,
+splits tracking epochs into bounded train-only clips, resamples them to 50 Hz,
+and removes monocular horizontal root drift with the same causal support-foot
+estimator used by live hardware before GMR. The estimator uses confidence,
+speed/height hysteresis, fixed support anchors, and blended support changes; its
+version and complete parameters are recorded in every source clip and manifest.
+It retains the original recording and writes only local generated source clips
+and manifests:
+
+```bash
+uv run python tools/twist_import_fastsam_recording.py \
+  --recording-root /operator/recordings/<session> \
+  --source-root /operator/work/in_house/<session> \
+  --source-manifest /operator/manifests/<session>.yaml \
+  --base-manifest /operator/manifests/amass.yaml \
+  --combined-manifest /operator/manifests/amass-plus-in-house.yaml \
+  --owner <owner> \
+  --subject-id <subject>
+```
+
+The emitted source manifest can be passed to `twist_batch_retarget.py`; the
+combined manifest is used only for final packing. Do not commit the recording,
+generated source clips, manifests, or retargeted outputs.
+
 Each retargeted clip records source timestamps, root/joint state, body
 transforms and velocities, geometry-derived sole heights, contact hints,
 actuator/qpos/body ordering, source checksum, GMR revision and configuration,

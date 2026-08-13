@@ -75,9 +75,6 @@ def main() -> None:
     sys.path.insert(0, str(GMR_ROOT))
     from general_motion_retargeting import params as gmr_params
     from general_motion_retargeting.motion_retarget import GeneralMotionRetargeting
-    from general_motion_retargeting.utils.smpl import get_smplx_data_offline_fast
-    import smplx
-    import torch
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
@@ -109,21 +106,32 @@ def main() -> None:
     solver_config = _load_offline_solver_config(config_path)
     gmr_params.ROBOT_XML_DICT["bello"] = args.robot_xml.expanduser().resolve()
     gmr_params.IK_CONFIG_DICT.setdefault("smplx", {})["bello"] = config_path
-    with torch.inference_mode():
-        smplx_data, body_model, smplx_output, human_height = _load_smplx_bounded(
-            args.source.expanduser().resolve(),
-            args.body_model_root.expanduser().resolve(),
-            smplx_module=smplx,
-            torch_module=torch,
+    source_path = args.source.expanduser().resolve()
+    if _is_fastsam_source(source_path):
+        frames, fps, human_height, source_contacts, source_timestamps = (
+            _load_fastsam_source(source_path)
         )
-        frames, fps = get_smplx_data_offline_fast(
-            smplx_data,
-            body_model,
-            smplx_output,
-            tgt_fps=args.target_fps,
-        )
-    del body_model, smplx_output
-    source_contacts = _human_foot_contacts(frames, float(fps))
+    else:
+        from general_motion_retargeting.utils.smpl import get_smplx_data_offline_fast
+        import smplx
+        import torch
+
+        with torch.inference_mode():
+            smplx_data, body_model, smplx_output, human_height = _load_smplx_bounded(
+                source_path,
+                args.body_model_root.expanduser().resolve(),
+                smplx_module=smplx,
+                torch_module=torch,
+            )
+            frames, fps = get_smplx_data_offline_fast(
+                smplx_data,
+                body_model,
+                smplx_output,
+                tgt_fps=args.target_fps,
+            )
+        del body_model, smplx_output
+        source_contacts = _human_foot_contacts(frames, float(fps))
+        source_timestamps = np.arange(len(frames), dtype=np.float64) / float(fps)
     retargeter = GeneralMotionRetargeting(
         src_human="smplx",
         tgt_robot="bello",
@@ -174,7 +182,7 @@ def main() -> None:
     np.savez_compressed(
         args.output.expanduser().resolve(),
         timestamp_seconds=timestamps,
-        source_timestamp_seconds=timestamps,
+        source_timestamp_seconds=source_timestamps,
         qpos=qpos.astype(np.float32),
         qvel=qvel.astype(np.float32),
         body_pos=body_pos.astype(np.float32),
@@ -215,6 +223,126 @@ def main() -> None:
             )
         ),
     )
+
+
+def _is_fastsam_source(path: Path) -> bool:
+    with np.load(path, allow_pickle=False) as archive:
+        return (
+            "source_format" in archive.files
+            and str(np.asarray(archive["source_format"]).item())
+            == "fastsam-smplx-body-22-v1"
+        )
+
+
+def _load_fastsam_source(path: Path):
+    required = {
+        "format_version",
+        "source_format",
+        "timestamp_seconds",
+        "source_timestamp_seconds",
+        "joint_names",
+        "joint_parents",
+        "joint_positions",
+        "global_joint_quaternions_wxyz",
+        "foot_contacts",
+        "human_height_m",
+        "root_conditioning_version",
+        "root_conditioning_config",
+    }
+    with np.load(path, allow_pickle=False) as archive:
+        missing = sorted(required - set(archive.files))
+        if missing:
+            raise ValueError(f"Fast-SAM source is missing fields: {missing}")
+        if int(np.asarray(archive["format_version"]).item()) != 1:
+            raise ValueError("unsupported Fast-SAM source format version")
+        names = tuple(str(name) for name in np.asarray(archive["joint_names"]))
+        parents = np.asarray(archive["joint_parents"], dtype=np.int32)
+        positions = np.asarray(archive["joint_positions"], dtype=np.float64)
+        quaternions = np.asarray(
+            archive["global_joint_quaternions_wxyz"], dtype=np.float64
+        )
+        timestamps = np.asarray(archive["timestamp_seconds"], dtype=np.float64)
+        source_timestamps = np.asarray(
+            archive["source_timestamp_seconds"], dtype=np.float64
+        )
+        contacts = np.asarray(archive["foot_contacts"], dtype=bool)
+        human_height = float(np.asarray(archive["human_height_m"]).item())
+        conditioning_version = str(
+            np.asarray(archive["root_conditioning_version"]).item()
+        )
+        conditioning_config = str(
+            np.asarray(archive["root_conditioning_config"]).item()
+        )
+    if conditioning_version != "causal-support-foot-xy-v2":
+        raise ValueError(
+            "Fast-SAM source does not use the live-compatible root conditioner"
+        )
+    try:
+        conditioning_document = json.loads(conditioning_config)
+    except json.JSONDecodeError as error:
+        raise ValueError("Fast-SAM root-conditioning config is invalid") from error
+    if not isinstance(conditioning_document, dict) or not conditioning_document:
+        raise ValueError("Fast-SAM root-conditioning config must be a mapping")
+    expected_names = (
+        "pelvis",
+        "left_hip",
+        "right_hip",
+        "spine1",
+        "left_knee",
+        "right_knee",
+        "spine2",
+        "left_ankle",
+        "right_ankle",
+        "spine3",
+        "left_foot",
+        "right_foot",
+        "neck",
+        "left_collar",
+        "right_collar",
+        "head",
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_wrist",
+        "right_wrist",
+    )
+    expected_parents = np.asarray(
+        (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19),
+        dtype=np.int32,
+    )
+    frames = len(timestamps)
+    if names != expected_names or not np.array_equal(parents, expected_parents):
+        raise ValueError("Fast-SAM source has an incompatible SMPL-X body contract")
+    if positions.shape != (frames, len(names), 3) or quaternions.shape != (
+        frames,
+        len(names),
+        4,
+    ):
+        raise ValueError("Fast-SAM source joint arrays have invalid shapes")
+    if contacts.shape != (frames, 2):
+        raise ValueError("Fast-SAM source foot contacts have an invalid shape")
+    if source_timestamps.shape != (frames,) or np.any(np.diff(timestamps) <= 0.0):
+        raise ValueError("Fast-SAM source timestamps are invalid")
+    if not all(
+        np.all(np.isfinite(value))
+        for value in (positions, quaternions, timestamps, source_timestamps)
+    ):
+        raise ValueError("Fast-SAM source contains non-finite values")
+    dt = np.diff(timestamps)
+    fps = 1.0 / float(np.median(dt))
+    targets = []
+    for frame_index in range(frames):
+        targets.append(
+            {
+                name: [
+                    positions[frame_index, joint_index].copy(),
+                    quaternions[frame_index, joint_index].copy(),
+                ]
+                for joint_index, name in enumerate(names)
+            }
+        )
+    return targets, fps, human_height, contacts, source_timestamps
 
 
 def _load_smplx_bounded(

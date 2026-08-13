@@ -125,6 +125,7 @@ class SmplxTargetFrame:
     source_timestamp_ns: int
     source_age_ms: int
     received_at: float
+    foot_contacts: np.ndarray | None = None
 
 
 class SmplxTargetStream(Protocol):
@@ -771,7 +772,12 @@ class GmrBelloRetargeter:
         try:
             targets = self._knee_conditioner.condition(source_targets)
             candidate = self._solve(targets)
-            candidate = self._ground_live(candidate, source_targets, dt=dt)
+            candidate = self._ground_live(
+                candidate,
+                source_targets,
+                dt=dt,
+                source_contacts=frame.foot_contacts,
+            )
             if self._previous_qpos is None:
                 qpos = candidate
                 joint_velocity = np.zeros(self.model.nq - 7, dtype=np.float64)
@@ -891,6 +897,7 @@ class GmrBelloRetargeter:
         targets: Mapping[str, tuple[np.ndarray, np.ndarray]],
         *,
         dt: float | None,
+        source_contacts: np.ndarray | None,
     ) -> np.ndarray:
         source_feet = np.stack(
             [np.asarray(targets[f"{side}_foot"][0]) for side in ("left", "right")]
@@ -903,10 +910,17 @@ class GmrBelloRetargeter:
             source_speed = (
                 np.linalg.norm(source_feet - self._previous_source_feet, axis=1) / dt
             )
-        contacts = (source_speed < self.config.contact_max_speed_mps) & (
-            source_feet[:, 2]
-            <= self._source_floor_height + self.config.contact_height_margin_m
-        )
+        if source_contacts is None:
+            contacts = (source_speed < self.config.contact_max_speed_mps) & (
+                source_feet[:, 2]
+                <= self._source_floor_height + self.config.contact_height_margin_m
+            )
+        else:
+            contacts = np.asarray(source_contacts, dtype=bool)
+            if contacts.shape != (2,):
+                raise ReferenceDiscontinuity(
+                    "SMPL-X source foot contacts must have shape (2,)"
+                )
         self._previous_source_feet = source_feet
         sole_z = self._foot_sole_z(qpos)
         if np.any(contacts):
