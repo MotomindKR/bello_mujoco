@@ -1086,11 +1086,17 @@ class VastLifecycle:
                     instance_id,
                     self.config.ready_timeout_seconds,
                 )
-                ssh_target = wait_for_ssh(
-                    self.api,
-                    instance_id,
-                    self.config.ssh_timeout_seconds,
-                )
+                try:
+                    ssh_target = wait_for_ssh(
+                        self.api,
+                        instance_id,
+                        self.config.ssh_timeout_seconds,
+                    )
+                except TimeoutError as exc:
+                    retry_offer = True
+                    raise RuntimeError(
+                        f"offer {offer.id} did not become reachable over SSH"
+                    ) from exc
                 if selection.dataset_files:
                     speed = measure_upload_mib_per_second(
                         ssh_target,
