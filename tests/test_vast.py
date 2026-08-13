@@ -1227,16 +1227,20 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     assert 'preflight_overrides=("${training_overrides[@]}"' in script
     assert "checkpoint_enabled=false" in script
     assert "checkpoint_config.enabled=false" not in script
-    gpu_query = "--query-gpu=utilization.gpu,memory.used,memory.total,power.draw"
+    gpu_query = "--query-gpu=utilization.gpu,memory.used,memory.total"
+    power_query = "--query-gpu=power.draw"
     assert script.count(gpu_query) == 2
+    assert script.count(power_query) == 2
     assert '>> "$benchmark_gpu_log" 2>/dev/null || true' in script
-    assert "power = None" in script
+    assert '>> "$benchmark_power_log" 2>/dev/null || true' in script
     assert "remote job heartbeat" in command
 
 
 def test_sonic_benchmark_accepts_unavailable_power_telemetry(tmp_path) -> None:
     telemetry_path = tmp_path / "gpu.csv"
-    telemetry_path.write_text("95,25899,32607,N/A\n", encoding="utf-8")
+    power_path = tmp_path / "power.csv"
+    telemetry_path.write_text("95,25899,32607\n", encoding="utf-8")
+    power_path.write_text("N/A\n", encoding="utf-8")
     script = vast_remote.REMOTE_TRAIN_SCRIPT
     program_start = script.index("import csv\n", script.index("benchmark_gpu_log"))
     program_end = script.index("\nPY\n  rm -f", program_start)
@@ -1246,6 +1250,7 @@ def test_sonic_benchmark_accepts_unavailable_power_telemetry(tmp_path) -> None:
             sys.executable,
             "-",
             str(telemetry_path),
+            str(power_path),
             "4096",
             "3",
             "240",

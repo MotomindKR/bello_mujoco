@@ -316,11 +316,17 @@ fi
 
 if [ "$experiment" = "sonic" ]; then
   benchmark_gpu_log="$(mktemp /tmp/bello-sonic-gpu.XXXXXX.csv)"
+  benchmark_power_log="$(mktemp /tmp/bello-sonic-power.XXXXXX.csv)"
   nvidia-smi \
-    --query-gpu=utilization.gpu,memory.used,memory.total,power.draw \
+    --query-gpu=utilization.gpu,memory.used,memory.total \
     --format=csv,noheader,nounits \
-    --loop-ms=250 > "$benchmark_gpu_log" &
+    --loop-ms=250 > "$benchmark_gpu_log" 2>/dev/null &
   benchmark_monitor_pid=$!
+  nvidia-smi \
+    --query-gpu=power.draw \
+    --format=csv,noheader,nounits \
+    --loop-ms=250 > "$benchmark_power_log" 2>/dev/null &
+  benchmark_power_monitor_pid=$!
   benchmark_started_at=$SECONDS
   set +e
   uv run bello-train "${preflight_overrides[@]}"
@@ -328,13 +334,20 @@ if [ "$experiment" = "sonic" ]; then
   set -e
   kill "$benchmark_monitor_pid" 2>/dev/null || true
   wait "$benchmark_monitor_pid" 2>/dev/null || true
+  kill "$benchmark_power_monitor_pid" 2>/dev/null || true
+  wait "$benchmark_power_monitor_pid" 2>/dev/null || true
   nvidia-smi \
-    --query-gpu=utilization.gpu,memory.used,memory.total,power.draw \
+    --query-gpu=utilization.gpu,memory.used,memory.total \
     --format=csv,noheader,nounits \
     >> "$benchmark_gpu_log" 2>/dev/null || true
+  nvidia-smi \
+    --query-gpu=power.draw \
+    --format=csv,noheader,nounits \
+    >> "$benchmark_power_log" 2>/dev/null || true
   benchmark_elapsed=$((SECONDS - benchmark_started_at))
   mkdir -p "$result_dir"
-  uv run python - "$benchmark_gpu_log" "$benchmark_envs" \
+  uv run python - "$benchmark_gpu_log" "$benchmark_power_log" \
+    "$benchmark_envs" \
     "$benchmark_updates" "$benchmark_elapsed" "$benchmark_status" \
     "$result_dir" <<'PY'
 import csv
@@ -347,7 +360,7 @@ path = pathlib.Path(sys.argv[1])
 rows = []
 with path.open(newline="") as source:
     for row in csv.reader(source):
-        if len(row) != 4:
+        if len(row) != 3:
             continue
         try:
             utilization = float(row[0].strip())
@@ -355,27 +368,31 @@ with path.open(newline="") as source:
             memory_total = float(row[2].strip())
         except ValueError:
             continue
-        try:
-            power = float(row[3].strip())
-        except ValueError:
-            power = None
-        rows.append((utilization, memory_used, memory_total, power))
+        rows.append((utilization, memory_used, memory_total))
 utilization = [row[0] for row in rows]
 memory_used = [row[1] for row in rows]
 memory_total = [row[2] for row in rows]
-power = [row[3] for row in rows if row[3] is not None]
+power = []
+with pathlib.Path(sys.argv[2]).open(newline="") as source:
+    for row in csv.reader(source):
+        if not row:
+            continue
+        try:
+            power.append(float(row[0].strip()))
+        except ValueError:
+            continue
 if not rows:
     raise RuntimeError("SONIC benchmark collected no GPU telemetry")
-elapsed = max(int(sys.argv[4]), 1)
-num_envs = int(sys.argv[2])
-updates = int(sys.argv[3])
+elapsed = max(int(sys.argv[5]), 1)
+num_envs = int(sys.argv[3])
+updates = int(sys.argv[4])
 active_utilization = [value for value in utilization if value > 0.0]
 report = {
     "sonic_benchmark": {
         "num_envs": num_envs,
         "updates": updates,
         "elapsed_seconds": elapsed,
-        "exit_status": int(sys.argv[5]),
+        "exit_status": int(sys.argv[6]),
         "samples": len(rows),
         "updates_per_second_including_startup": updates / elapsed,
         "transitions_per_second_including_startup": num_envs * 24 * updates / elapsed,
@@ -391,10 +408,10 @@ report = {
     }
 }
 payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
-(pathlib.Path(sys.argv[6]) / "benchmark.json").write_text(payload)
+(pathlib.Path(sys.argv[7]) / "benchmark.json").write_text(payload)
 print(payload, end="")
 PY
-  rm -f "$benchmark_gpu_log"
+  rm -f "$benchmark_gpu_log" "$benchmark_power_log"
   if [ "$benchmark_status" -ne 0 ]; then
     exit "$benchmark_status"
   fi
