@@ -18,7 +18,8 @@ motion
 
 `smoke` runs a real, minimal MJX-Warp PPO update. `locomotion` is the canonical
 gait baseline. `hardware_locomotion` uses the same reward and policy contract
-with the longer credit horizon used by the physical policy. `motion` is bounded
+with the longer credit horizon used by the physical policy. Its periodic and
+final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
 BeyondMimic tracking.
 
 The public command can override seed, total timesteps, environment count,

@@ -10,5 +10,5 @@ wandb_config:
   tags: [locomotion, hardware, sphere-hands, fixed-waist, fixed-head]
 video_config:
   filename_prefix: hardware_locomotion
-  command: [0.0, 0.0, 0.0]
+  command: [0.0, 0.5, 0.0]
   steps: 500
