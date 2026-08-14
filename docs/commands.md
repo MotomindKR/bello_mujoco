@@ -276,6 +276,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `duration_seconds` | positive float or `null`; `null` | both | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
 | `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for both tasks. |
 | `gain_scale` | float in `(0, 1]`; `1.0` | both | Multiply every commanded motor `kp` and `kd` by this value during start, ramp, and policy control. Fault damping is unchanged. |
+| `max_linear_acceleration` | positive float or `null`; `null` | both | Override the IMU acceleration-norm safety limit in m/s². `null` uses 100 m/s². Exceeding the limit immediately enters damped shutdown. |
 | `policy_transition_seconds` | positive float or `null`; `null` | motion | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 0.2 seconds. |
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion | Maximum robot tilt during transitions into and out of motion tracking and while motion tracking is active. `null` uses 70 degrees (approximately 1.222 radians); standing locomotion keeps its 0.70-radian limit. |
 | `status_interval_seconds` | positive float or `null`; `null` | both | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
@@ -327,6 +328,14 @@ per hour, depending on the checkpoint observation-stack size.
 
 Hardware targets use the proportional and derivative gains stored in checkpoint
 metadata.
+
+Motor velocity observations come from `bello-hardwared`, whose deployment YAML
+sets `runtime.motor_velocity_filter.cutoff_hz` (15 Hz by default). This filter
+cannot be changed by `bello-run-hardware`; `null` and zero are invalid daemon
+settings. For experiments that need effectively unfiltered observations, use a
+high positive cutoff such as 1000 Hz and restart `bello-hardwared`. This only
+changes published motor velocity telemetry; daemon health and safety checks
+continue to use raw protocol feedback.
 
 Preflight validates the checkpoint task, sphere-hand/fixed-joint morphology,
 policy layouts, generated transmission, motor inventory, IMU presence,

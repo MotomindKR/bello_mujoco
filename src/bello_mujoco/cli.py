@@ -106,6 +106,7 @@ class HardwareCommandConfig:
     duration_seconds: float | None
     ramp_seconds: float | None
     gain_scale: float
+    max_linear_acceleration: float | None
     policy_transition_seconds: float | None
     max_motion_tilt_radians: float | None
     status_interval_seconds: float | None
@@ -497,6 +498,10 @@ def _hardware_hydra(config: DictConfig) -> None:
                 max_duration_seconds=command.duration_seconds,
                 ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
                 gain_scale=command.gain_scale,
+                max_linear_acceleration=_coalesce(
+                    command.max_linear_acceleration,
+                    base.max_linear_acceleration,
+                ),
                 policy_transition_seconds=_coalesce(
                     command.policy_transition_seconds,
                     base.policy_transition_seconds,
@@ -546,6 +551,10 @@ def _hardware_hydra(config: DictConfig) -> None:
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
             gain_scale=command.gain_scale,
+            max_linear_acceleration=_coalesce(
+                command.max_linear_acceleration,
+                base.max_linear_acceleration,
+            ),
             status_interval_seconds=command.status_interval_seconds,
             policy_log_path=policy_log_path,
             arm=command.arm,

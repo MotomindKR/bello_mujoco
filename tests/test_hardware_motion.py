@@ -250,6 +250,7 @@ def test_motion_runner_defaults_to_read_only() -> None:
     assert config.task == "motion"
     assert not config.arm
     assert config.motion_path is None
+    assert config.max_linear_acceleration is None
     assert HardwareMotionConfig().policy_transition_seconds == 0.2
     assert HardwareMotionConfig().max_motion_tilt_radians == pytest.approx(
         math.radians(70.0)
