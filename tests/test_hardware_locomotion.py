@@ -394,6 +394,10 @@ def test_hardware_runner_defaults_to_read_only() -> None:
                 remote=replace(RemoteCommandConfig(), staleness_ms=0)
             )
         )
+    with pytest.raises(ValueError, match="gain_scale"):
+        validate_hardware_config(HardwareLocomotionConfig(gain_scale=0.0))
+    with pytest.raises(ValueError, match="gain_scale"):
+        validate_hardware_config(HardwareLocomotionConfig(gain_scale=1.01))
 
 
 def test_coordinate_targets_use_policy_gains() -> None:
@@ -417,6 +421,17 @@ def test_coordinate_targets_use_policy_gains() -> None:
         "left": (0.2, 12.0, 0.5),
         "right": (-0.4, 34.0, 0.75),
     }
+
+    scaled_targets = coordinate_targets(
+        binding,
+        ("left", "right"),
+        np.asarray((0.2, -0.4)),
+        adapter,
+        gain_scale=5.0 / 6.0,
+    )
+
+    assert scaled_targets["left"] == pytest.approx((0.2, 10.0, 5.0 / 12.0))
+    assert scaled_targets["right"] == pytest.approx((-0.4, 85.0 / 3.0, 0.625))
 
 
 def test_hardware_requires_exact_hold_and_run_confirmations() -> None:

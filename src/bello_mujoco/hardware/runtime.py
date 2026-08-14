@@ -87,6 +87,7 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
         "acknowledgement_timeout_seconds": config.acknowledgement_timeout_seconds,
         "rpc_timeout_seconds": config.rpc_timeout_seconds,
         "ramp_seconds": config.ramp_seconds,
+        "gain_scale": config.gain_scale,
         "max_tilt_radians": config.max_tilt_radians,
         "max_angular_velocity": config.max_angular_velocity,
         "max_linear_acceleration": config.max_linear_acceleration,
@@ -96,6 +97,8 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be positive and finite")
+    if config.gain_scale > 1.0:
+        raise ValueError("gain_scale must be at most 1.0")
     if config.max_duration_seconds is not None and (
         not math.isfinite(config.max_duration_seconds)
         or config.max_duration_seconds <= 0.0
@@ -611,12 +614,14 @@ def coordinate_targets(
     coordinate_names: tuple[str, ...],
     physical_target: np.ndarray,
     adapter: HardwarePolicyAdapter,
+    *,
+    gain_scale: float = 1.0,
 ) -> dict[str, Any]:
     return {
         name: binding.CoordinateTarget.position(
             float(physical_target[adapter.coordinate_index[name]]),
-            kp=float(adapter.kp[adapter.coordinate_index[name]]),
-            kd=float(adapter.kd[adapter.coordinate_index[name]]),
+            kp=float(adapter.kp[adapter.coordinate_index[name]] * gain_scale),
+            kd=float(adapter.kd[adapter.coordinate_index[name]] * gain_scale),
         )
         for name in coordinate_names
     }
@@ -639,6 +644,7 @@ def start_hardware_controls(
                 groups[name].coordinates,
                 physical_target,
                 adapter,
+                gain_scale=config.gain_scale,
             ),
         )
         for name in config.groups
@@ -773,6 +779,7 @@ def send_targets(
                 groups[name].coordinates,
                 physical_target,
                 adapter,
+                gain_scale=config.gain_scale,
             ),
         )
         for name in config.groups
