@@ -112,6 +112,10 @@ Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
 the hardware runner scales that intent through the checkpoint's command bounds
 and minimum speeds, mapping lateral to `lin_vel_x` and forward to `lin_vel_y`.
 In Bello's locomotion frame, `+X` is lateral/right and `+Y` is forward.
+The runner advances the same checkpointed gait clock used by training and
+native evaluation. A standing command resets it and supplies a zero-valued
+three-component gait observation in the current actor frame; older moving
+frames age out of the configured observation stack normally.
 Configure the visualizer to listen on port 50054 and supply its plaintext URL
 as `remote_endpoint`, for example
 `remote_endpoint=http://visualizer-host:50054`.

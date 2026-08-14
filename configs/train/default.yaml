@@ -110,6 +110,7 @@ env_config:
       projected_gravity: 1.0
       base_height: 1.0
       command: 1.0
+      gait_phase: 1.0
       joint_pos: 1.0
       joint_vel: 0.05
       actuator_force: 1.0
@@ -119,6 +120,9 @@ env_config:
   observation_latency:
     enabled: false
     delay_steps: [0, 0]
+  gait:
+    frequency_hz: 0.9
+    stance_fraction: 0.6
   critic_observation:
     privileged: true
     scale:
@@ -128,6 +132,7 @@ env_config:
       projected_gravity: 1.0
       base_height: 1.0
       command: 1.0
+      gait_phase: 1.0
       joint_pos: 1.0
       joint_vel: 0.05
       actuator_force: 0.01
@@ -146,16 +151,16 @@ reward_config:
     action_limit: -1.0
     torque_l1: -1.2
     torque_peak: -12.0
+    joint_force_peak: -4.0
     joint_pose: -0.1
     stand_foot_motion: -1.0
     hip_deviation: -0.25
     knee_deviation: -0.1
     joint_limit: -1.0
     invalid_action: 0.0
-    foot_slip: -0.25
-    flight: -2.0
-    contact_timing: -5.0
-    touchdown_air_time: 0.5
+    gait_contact: -1.0
+    gait_stance_slip: -0.25
+    gait_swing_clearance: -0.5
     undesired_contact: 0.0
     self_collision: 0.0
     termination: -100.0
@@ -177,13 +182,9 @@ reward_config:
     foot_angular_speed_scale: 1.0
     foot_angular_weight: 0.25
   gait:
-    foot_slip_angular_speed_scale: 0.0
-    flight_body_speed_threshold: 0.1
-    flight_yaw_speed_threshold: 0.1
-    contact_min_air_time: 0.2
-    contact_min_contact_time: 0.3
-    touchdown_min_air_time: 0.2
-    touchdown_max_air_time: 0.5
+    stance_slip_angular_speed_scale: 0.0
+    swing_clearance_target: 0.08
+    joint_force_soft_limit_body_weights: 1.0
   limits_pose:
     base_height_target: 0.86
     action_soft_limit_ratio: 0.8

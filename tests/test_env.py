@@ -16,11 +16,15 @@ from bello_mujoco.envs.locomotion import (
     BelloLocomotionEnv,
     ContactConfig,
     DoneConfig,
+    GaitConfig,
     ObservationConfig,
     ObservationLatencyConfig,
     ObservationNoiseConfig,
     RandomPushConfig,
     SpawnConfig,
+    advance_gait_phase,
+    desired_gait_foot_contact,
+    gait_phase_features,
 )
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig, RewardLinks
 from bello_mujoco.evaluation.render import (
@@ -76,6 +80,7 @@ def test_reset_exposes_explicit_actor_critic_and_action_contracts(
         ("imu_angular_velocity", 3),
         ("projected_gravity", 3),
         ("command", 3),
+        ("gait_phase", 3),
         ("joint_position", 13),
         ("joint_velocity", 13),
         ("last_action", 13),
@@ -88,6 +93,34 @@ def test_reset_exposes_explicit_actor_critic_and_action_contracts(
     assert observation.shape == (env.observation_size,)
     assert env.critic_observation(state).shape == (env.critic_observation_size,)
     assert state.last_action.shape == (env.action_size,)
+
+
+def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> None:
+    command_config = CommandConfig()
+    gait_config = GaitConfig(frequency_hz=0.9, stance_fraction=0.6)
+    moving = jnp.asarray([0.5, 0.0, 0.0], dtype=jnp.float32)
+    standing = jnp.zeros(3, dtype=jnp.float32)
+
+    phase = advance_gait_phase(
+        jnp.asarray(0.0), moving, command_config, gait_config, 0.02
+    )
+
+    assert phase == pytest.approx(0.018)
+    assert gait_phase_features(
+        jnp.asarray(0.0), moving, command_config
+    ) == pytest.approx(jnp.asarray([0.0, 1.0, 1.0]))
+    assert gait_phase_features(phase, standing, command_config) == pytest.approx(
+        jnp.zeros(3)
+    )
+    assert advance_gait_phase(
+        phase, standing, command_config, gait_config, 0.02
+    ) == pytest.approx(0.0)
+    assert desired_gait_foot_contact(jnp.asarray(0.2), gait_config) == pytest.approx(
+        jnp.asarray([1.0, 0.0])
+    )
+    assert desired_gait_foot_contact(jnp.asarray(0.6), gait_config) == pytest.approx(
+        jnp.asarray([0.0, 1.0])
+    )
 
 
 def test_native_data_adapter_uses_shared_observation_function(
@@ -106,8 +139,6 @@ def test_native_data_adapter_uses_shared_observation_function(
         mj_data,
         command=command,
         last_action=last_action,
-        foot_air_time=zeros,
-        foot_contact_time=zeros,
         foot_contact_debounce_time=zeros,
         last_foot_contact=zeros,
         step_count=7,
@@ -143,8 +174,6 @@ def test_native_data_adapter_preserves_constraint_forces(
         mj_data,
         command=np.zeros(3, dtype=np.float32),
         last_action=np.zeros(env.action_size, dtype=np.float32),
-        foot_air_time=jnp.zeros(2, dtype=jnp.float32),
-        foot_contact_time=jnp.zeros(2, dtype=jnp.float32),
         foot_contact_debounce_time=jnp.zeros(2, dtype=jnp.float32),
         last_foot_contact=jnp.zeros(2, dtype=jnp.float32),
         step_count=0,
@@ -308,7 +337,7 @@ def test_action_target_reports_joint_and_motor_saturation_separately(
     assert 0.0 <= motor_saturation <= 1.0
 
 
-def test_contact_debounce_and_memory_have_explicit_transitions(
+def test_contact_debounce_has_explicit_transitions(
     full_body_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(
@@ -326,17 +355,8 @@ def test_contact_debounce_and_memory_have_explicit_transitions(
     second, _ = env.debounce_foot_contact(
         state.replace(foot_contact_debounce_time=elapsed), raw, jnp.asarray(False)
     )
-    air, contact, previous = env.next_foot_memory(
-        state,
-        jnp.asarray([False, True]),
-        jnp.asarray(False),
-    )
-
     assert jnp.array_equal(first.astype(bool), jnp.asarray([False, False]))
     assert jnp.array_equal(second.astype(bool), jnp.asarray([True, False]))
-    assert air == pytest.approx(jnp.asarray([env.control_timestep, 0.0]))
-    assert contact == pytest.approx(jnp.asarray([0.0, env.control_timestep]))
-    assert previous.tolist() == [False, True]
 
 
 def test_observation_noise_changes_only_noisy_evaluation(

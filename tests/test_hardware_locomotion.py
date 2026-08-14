@@ -342,11 +342,12 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
 
     result = adapter.step(frame, command)
 
-    assert result.observation.shape == (51,)
+    assert result.observation.shape == (54,)
     assert result.observation[:3] == pytest.approx((0.0, 0.0, 0.980665))
     assert result.observation[3:6] == pytest.approx(np.zeros(3))
     assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
     assert result.observation[9:12] == pytest.approx(command)
+    assert result.observation[12:15] == pytest.approx((0.0, 1.0, 1.0))
     assert result.action.shape == (13,)
     assert result.physical_target.shape == (25,)
     assert np.all(np.isfinite(result.physical_target))

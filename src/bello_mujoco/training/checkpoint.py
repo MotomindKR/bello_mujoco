@@ -558,13 +558,36 @@ def _with_checkpoint_metadata_defaults(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     if value.get("task") == "locomotion":
-        env = value.get("env")
-        if not isinstance(env, dict) or "observation_latency" in env:
-            return value
         normalized = dict(value)
-        normalized_env = dict(env)
-        normalized_env["observation_latency"] = to_builtin(ObservationLatencyConfig())
-        normalized["env"] = normalized_env
+        env = value.get("env")
+        if isinstance(env, dict) and "gait" not in env:
+            raise ValueError(
+                "locomotion checkpoint predates the gait-phase observation contract; "
+                "use the archived source revision or train a new policy"
+            )
+        if isinstance(env, dict) and "observation_latency" not in env:
+            normalized_env = dict(env)
+            normalized_env["observation_latency"] = to_builtin(
+                ObservationLatencyConfig()
+            )
+            normalized["env"] = normalized_env
+        reward = value.get("reward")
+        if isinstance(reward, dict):
+            normalized_reward = dict(reward)
+            weights = reward.get("weights")
+            if isinstance(weights, dict) and "joint_force_peak" not in weights:
+                normalized_weights = dict(weights)
+                normalized_weights["joint_force_peak"] = 0.0
+                normalized_reward["weights"] = normalized_weights
+            gait = reward.get("gait")
+            if (
+                isinstance(gait, dict)
+                and "joint_force_soft_limit_body_weights" not in gait
+            ):
+                normalized_gait = dict(gait)
+                normalized_gait["joint_force_soft_limit_body_weights"] = 1.0
+                normalized_reward["gait"] = normalized_gait
+            normalized["reward"] = normalized_reward
         return normalized
     if value.get("task") != "motion_tracking":
         return value

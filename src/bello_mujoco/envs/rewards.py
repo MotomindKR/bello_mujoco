@@ -177,16 +177,16 @@ class RewardWeights:
     action_limit: float = -1.0
     torque_l1: float = -1.2
     torque_peak: float = -12.0
+    joint_force_peak: float = -4.0
     joint_pose: float = -0.1
     stand_foot_motion: float = -1.0
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
     joint_limit: float = -1.0
     invalid_action: float = 0.0
-    foot_slip: float = -0.25
-    flight: float = -2.0
-    contact_timing: float = -5.0
-    touchdown_air_time: float = 0.5
+    gait_contact: float = -1.0
+    gait_stance_slip: float = -0.25
+    gait_swing_clearance: float = -0.5
     undesired_contact: float = 0.0
     self_collision: float = 0.0
     termination: float = -100.0
@@ -222,13 +222,9 @@ class StandingRewardConfig:
 
 @dataclass(frozen=True)
 class GaitRewardConfig:
-    foot_slip_angular_speed_scale: float = 0.0
-    flight_body_speed_threshold: float = 0.10
-    flight_yaw_speed_threshold: float = 0.10
-    contact_min_air_time: float = 0.20
-    contact_min_contact_time: float = 0.30
-    touchdown_min_air_time: float = 0.20
-    touchdown_max_air_time: float = 0.50
+    stance_slip_angular_speed_scale: float = 0.0
+    swing_clearance_target: float = 0.08
+    joint_force_soft_limit_body_weights: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -262,16 +258,18 @@ class RewardConfig:
         return any(
             self.enabled(name)
             for name in (
-                "foot_slip",
-                "flight",
-                "contact_timing",
-                "touchdown_air_time",
+                "gait_contact",
+                "gait_stance_slip",
             )
         )
 
     @property
     def uses_foot_metadata(self) -> bool:
-        return self.uses_foot_contact_metadata or self.enabled("stand_foot_motion")
+        return (
+            self.uses_foot_contact_metadata
+            or self.enabled("gait_swing_clearance")
+            or self.enabled("stand_foot_motion")
+        )
 
     @property
     def enabled_link_names(self) -> tuple[str, ...]:
@@ -311,6 +309,8 @@ class RewardInputs:
     last_action: jax.Array
     actuator_force: jax.Array
     actuator_peak_force: jax.Array
+    joint_force: jax.Array
+    robot_weight: jax.Array
     joint_limit_low: jax.Array
     joint_limit_high: jax.Array
     policy_joint_indices: jax.Array
@@ -320,9 +320,9 @@ class RewardInputs:
     foot_contact: jax.Array
     foot_linear_velocity: jax.Array
     foot_angular_speed: jax.Array
-    foot_air_time: jax.Array
-    foot_contact_time: jax.Array
-    last_foot_contact: jax.Array
+    foot_height: jax.Array
+    gait_active: jax.Array
+    desired_foot_contact: jax.Array
     joint_pose_weights: jax.Array
     hip_joint_indices: jax.Array
     knee_joint_indices: jax.Array
@@ -383,10 +383,24 @@ def compute_locomotion_reward(
     normalized_torque = policy_force / policy_peak_force
     torque_l1 = jnp.mean(normalized_torque)
     torque_peak = jnp.mean(jnp.maximum(normalized_torque - 1.0, 0.0) ** 2)
+    normalized_joint_force = inputs.joint_force / jnp.maximum(
+        inputs.robot_weight, 1.0e-6
+    )
+    gait_active = inputs.gait_active.astype(jnp.float32)
+    joint_force_peak = jnp.where(
+        inputs.gait_active,
+        jnp.mean(
+            jnp.maximum(
+                normalized_joint_force
+                - config.gait.joint_force_soft_limit_body_weights,
+                0.0,
+            )
+            ** 2
+        ),
+        0.0,
+    )
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
     standing_command = command_is_standing(inputs.command, command_config)
-    moving_command = ~standing_command
-    body_speed = jnp.linalg.norm(inputs.lin_vel_xy)
     foot_linear_speed_sq = jnp.sum(inputs.foot_linear_velocity**2, axis=1)
     stand_foot_linear_motion = jnp.tanh(
         foot_linear_speed_sq / config.standing.foot_linear_speed_scale**2
@@ -443,62 +457,27 @@ def compute_locomotion_reward(
     )
     invalid_action = jnp.sum(unit_violation**2 + clip_violation**2)
 
+    desired_contact = inputs.desired_foot_contact.astype(jnp.float32)
+    actual_contact = inputs.foot_contact.astype(jnp.float32)
+    gait_contact = gait_active * jnp.mean(jnp.abs(actual_contact - desired_contact))
     foot_speed = jnp.linalg.norm(inputs.foot_linear_velocity[:, :2], axis=1)
-    foot_slip = jnp.sum(
-        inputs.foot_contact
+    gait_stance_slip = gait_active * jnp.sum(
+        desired_contact
         * (
             foot_speed
-            + config.gait.foot_slip_angular_speed_scale * inputs.foot_angular_speed
+            + config.gait.stance_slip_angular_speed_scale * inputs.foot_angular_speed
         )
     )
-    contact = inputs.foot_contact.astype(bool)
-    previous_contact = inputs.last_foot_contact.astype(bool)
-    filtered_contact = contact | previous_contact
-    flight_motion_active = motion_active(
-        moving_command,
-        body_speed,
-        jnp.abs(inputs.yaw_vel_z),
-        body_speed_threshold=config.gait.flight_body_speed_threshold,
-        yaw_speed_threshold=config.gait.flight_yaw_speed_threshold,
-    )
-    flight = jnp.where(
-        flight_motion_active,
-        ~jnp.any(filtered_contact),
-        False,
-    ).astype(jnp.float32)
-    touchdown = contact & ~previous_contact
-    liftoff = ~contact & previous_contact
-    short_air = (
-        jnp.maximum(config.gait.contact_min_air_time - inputs.foot_air_time, 0.0)
-        / config.gait.contact_min_air_time
-    )
-    short_contact = (
+    desired_swing = 1.0 - desired_contact
+    normalized_clearance_shortfall = (
         jnp.maximum(
-            config.gait.contact_min_contact_time - inputs.foot_contact_time, 0.0
+            config.gait.swing_clearance_target - inputs.foot_height,
+            0.0,
         )
-        / config.gait.contact_min_contact_time
+        / config.gait.swing_clearance_target
     )
-    contact_timing = jnp.where(
-        moving_command,
-        jnp.sum(
-            touchdown.astype(jnp.float32) * short_air**2
-            + liftoff.astype(jnp.float32) * short_contact**2
-        ),
-        0.0,
-    )
-
-    first_contact = (inputs.foot_air_time > 0.0) & filtered_contact
-    touchdown_air_time = jnp.sum(
-        jnp.minimum(
-            (inputs.foot_air_time - config.gait.touchdown_min_air_time)
-            * first_contact.astype(jnp.float32),
-            config.gait.touchdown_max_air_time - config.gait.touchdown_min_air_time,
-        )
-    )
-    touchdown_air_time = jnp.where(
-        moving_command,
-        touchdown_air_time,
-        0.0,
+    gait_swing_clearance = gait_active * jnp.mean(
+        desired_swing * normalized_clearance_shortfall**2
     )
 
     values = {
@@ -512,16 +491,16 @@ def compute_locomotion_reward(
         "action_limit": action_limit,
         "torque_l1": torque_l1,
         "torque_peak": torque_peak,
+        "joint_force_peak": joint_force_peak,
         "joint_pose": joint_pose,
         "stand_foot_motion": stand_foot_motion,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
         "invalid_action": invalid_action,
-        "foot_slip": foot_slip,
-        "flight": flight,
-        "contact_timing": contact_timing,
-        "touchdown_air_time": touchdown_air_time,
+        "gait_contact": gait_contact,
+        "gait_stance_slip": gait_stance_slip,
+        "gait_swing_clearance": gait_swing_clearance,
         "undesired_contact": inputs.undesired_contact,
         "self_collision": inputs.self_collision,
         "termination": inputs.done.astype(jnp.float32),
@@ -541,21 +520,6 @@ def reward_terms(config: RewardConfig) -> dict[str, float]:
         field.name: getattr(config.weights, field.name)
         for field in fields(config.weights)
     }
-
-
-def motion_active(
-    moving_command: jax.Array,
-    body_speed: jax.Array,
-    yaw_speed: jax.Array,
-    *,
-    body_speed_threshold: float,
-    yaw_speed_threshold: float,
-) -> jax.Array:
-    return (
-        moving_command
-        | (body_speed > body_speed_threshold)
-        | (yaw_speed > yaw_speed_threshold)
-    )
 
 
 def validate_reward_config(config: RewardConfig) -> None:
@@ -587,6 +551,14 @@ def validate_reward_config(config: RewardConfig) -> None:
             "standing.foot_angular_speed_scale",
             config.standing.foot_angular_speed_scale,
         ),
+        (
+            "gait.swing_clearance_target",
+            config.gait.swing_clearance_target,
+        ),
+        (
+            "gait.joint_force_soft_limit_body_weights",
+            config.gait.joint_force_soft_limit_body_weights,
+        ),
     ):
         if not math.isfinite(sigma) or sigma <= 0:
             raise ValueError(f"{name} must be positive and finite, got {sigma}")
@@ -597,15 +569,13 @@ def validate_reward_config(config: RewardConfig) -> None:
     if config.limits_pose.hip_lateral_command_index not in {0, 1}:
         raise ValueError("limits_pose.hip_lateral_command_index must be 0 or 1")
     nonnegative = {
-        "gait.foot_slip_angular_speed_scale": (
-            config.gait.foot_slip_angular_speed_scale
+        "gait.stance_slip_angular_speed_scale": (
+            config.gait.stance_slip_angular_speed_scale
         ),
         "standing.foot_angular_weight": config.standing.foot_angular_weight,
         "limits_pose.hip_lateral_command_threshold": (
             config.limits_pose.hip_lateral_command_threshold
         ),
-        "gait.flight_body_speed_threshold": (config.gait.flight_body_speed_threshold),
-        "gait.flight_yaw_speed_threshold": config.gait.flight_yaw_speed_threshold,
     }
     for name, value in nonnegative.items():
         if not math.isfinite(value) or value < 0:
@@ -615,26 +585,6 @@ def validate_reward_config(config: RewardConfig) -> None:
         or config.limits_pose.base_height_target <= 0
     ):
         raise ValueError("limits_pose.base_height_target must be positive and finite")
-    if (
-        not math.isfinite(config.gait.contact_min_air_time)
-        or config.gait.contact_min_air_time <= 0
-    ):
-        raise ValueError("gait.contact_min_air_time must be positive and finite")
-    if (
-        not math.isfinite(config.gait.contact_min_contact_time)
-        or config.gait.contact_min_contact_time <= 0
-    ):
-        raise ValueError("gait.contact_min_contact_time must be positive and finite")
-    if (
-        not math.isfinite(config.gait.touchdown_min_air_time)
-        or not math.isfinite(config.gait.touchdown_max_air_time)
-        or config.gait.touchdown_min_air_time < 0
-        or config.gait.touchdown_max_air_time <= config.gait.touchdown_min_air_time
-    ):
-        raise ValueError(
-            "gait touchdown bounds must be finite and require "
-            "0 <= min_air_time < max_air_time"
-        )
 
 
 def validate_range(name: str, bounds: tuple[float, float]) -> None:

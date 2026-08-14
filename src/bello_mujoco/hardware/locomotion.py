@@ -134,6 +134,7 @@ class HardwarePolicyAdapter:
         )
         self._obs_stack: np.ndarray | None = None
         self._last_action = np.zeros(env.action_size, dtype=np.float32)
+        self._gait_phase = 0.0
 
     @property
     def control_timestep(self) -> float:
@@ -151,6 +152,7 @@ class HardwarePolicyAdapter:
     def reset(self) -> None:
         self._obs_stack = None
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
+        self._gait_phase = 0.0
 
     def precompile(self) -> None:
         nominal = self.nominal_physical_target
@@ -180,11 +182,19 @@ class HardwarePolicyAdapter:
             frame.linear_acceleration, projected_gravity
         )
         scale = self.env.config.observation.scale
+        gait_active = self._command_is_moving(command)
+        gait_angle = 2.0 * np.pi * self._gait_phase
+        gait_phase = (
+            np.asarray((np.sin(gait_angle), np.cos(gait_angle), 1.0), dtype=np.float32)
+            if gait_active
+            else np.zeros(3, dtype=np.float32)
+        )
         components = {
             "imu_linear_acceleration": specific_force * scale.base_lin_acc,
             "imu_angular_velocity": frame.angular_velocity * scale.base_ang_vel,
             "projected_gravity": projected_gravity * scale.projected_gravity,
             "command": command * scale.command,
+            "gait_phase": gait_phase * scale.gait_phase,
             "joint_position": (
                 logical_position[self.policy_indices]
                 - self.default_joint_target[self.policy_indices]
@@ -245,6 +255,13 @@ class HardwarePolicyAdapter:
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("policy produced non-finite physical motor targets")
         self._last_action = action
+        if self._command_is_moving(command):
+            self._gait_phase = (
+                self._gait_phase
+                + self.env.config.gait.frequency_hz * self.control_timestep
+            ) % 1.0
+        else:
+            self._gait_phase = 0.0
         return HardwarePolicyStep(
             action=action,
             raw_action=raw_action,
@@ -252,6 +269,13 @@ class HardwarePolicyAdapter:
             observation=observation,
             policy_observation=policy_observation,
             tilt_radians=tilt_from_xyzw(frame.orientation_xyzw),
+        )
+
+    def _command_is_moving(self, command: np.ndarray) -> bool:
+        command = np.asarray(command, dtype=np.float32)
+        return bool(
+            np.any(np.abs(command[:2]) >= self.env.command_config.linear_deadband)
+            or abs(float(command[2])) >= self.env.command_config.yaw_deadband
         )
 
 

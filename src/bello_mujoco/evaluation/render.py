@@ -15,6 +15,7 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv, BelloState
+from bello_mujoco.envs.rewards import command_is_moving
 from bello_mujoco.policy import (
     apply_actor,
     init_observation_stack,
@@ -52,6 +53,7 @@ class CameraConfig:
 @dataclass(frozen=True)
 class NativeDataImplementation:
     cacc: jax.Array
+    cfrc_int: jax.Array
     actuator_velocity: jax.Array
     efc__force: jax.Array
 
@@ -433,14 +435,13 @@ def mujoco_policy_observation(
     command: np.ndarray,
     last_action: np.ndarray,
     step_count: int,
+    gait_phase: float | jax.Array | None = None,
 ) -> jax.Array:
     state = mujoco_eval_state(
         env,
         mj_data,
         command=command,
         last_action=last_action,
-        foot_air_time=jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32),
-        foot_contact_time=jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32),
         foot_contact_debounce_time=jnp.zeros(
             env.model.foot_body_ids.size, dtype=jnp.float32
         ),
@@ -449,6 +450,7 @@ def mujoco_policy_observation(
         episode_return=jnp.asarray(0.0, dtype=jnp.float32),
         episode_track_lin_vel_xy=jnp.asarray(0.0, dtype=jnp.float32),
         episode_length=jnp.asarray(0, dtype=jnp.int32),
+        gait_phase=gait_phase,
     )
     return env.observation(state)
 
@@ -485,8 +487,6 @@ def mujoco_done_flags(
         mj_data,
         command=np.zeros(3, dtype=np.float32),
         last_action=np.zeros(env.action_size, dtype=np.float32),
-        foot_air_time=zeros,
-        foot_contact_time=zeros,
         foot_contact_debounce_time=zeros,
         last_foot_contact=zeros,
         step_count=step_count,
@@ -589,15 +589,26 @@ def mujoco_eval_state(
     *,
     command: np.ndarray,
     last_action: np.ndarray,
-    foot_air_time: jax.Array,
-    foot_contact_time: jax.Array,
     foot_contact_debounce_time: jax.Array,
     last_foot_contact: jax.Array,
     step_count: int,
     episode_return: jax.Array,
     episode_track_lin_vel_xy: jax.Array,
     episode_length: jax.Array,
+    gait_phase: float | jax.Array | None = None,
 ) -> BelloState:
+    if gait_phase is None:
+        moving = command_is_moving(
+            jnp.asarray(command, dtype=jnp.float32), env.command_config
+        )
+        gait_phase = jnp.where(
+            moving,
+            jnp.mod(
+                step_count * env.config.gait.frequency_hz * env.control_timestep,
+                1.0,
+            ),
+            0.0,
+        )
     data = NativeDataView(
         qpos=jnp.asarray(np.asarray(mj_data.qpos, dtype=np.float32).copy()),
         qvel=jnp.asarray(np.asarray(mj_data.qvel, dtype=np.float32).copy()),
@@ -621,6 +632,7 @@ def mujoco_eval_state(
         ),
         _impl=NativeDataImplementation(
             cacc=jnp.asarray(np.asarray(mj_data.cacc, dtype=np.float32).copy()),
+            cfrc_int=jnp.asarray(np.asarray(mj_data.cfrc_int, dtype=np.float32).copy()),
             actuator_velocity=jnp.asarray(
                 np.asarray(mj_data.actuator_velocity, dtype=np.float32).copy()
             ),
@@ -640,11 +652,10 @@ def mujoco_eval_state(
             dtype=jnp.float32,
         ),
         actor_feedback_delay_steps=jnp.asarray(0, dtype=jnp.int32),
-        foot_air_time=foot_air_time,
-        foot_contact_time=foot_contact_time,
         foot_contact_debounce_time=foot_contact_debounce_time,
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
+        gait_phase=jnp.asarray(gait_phase, dtype=jnp.float32),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,

@@ -35,9 +35,17 @@ yaw velocity. Ten
 percent of sampled commands are exactly zero; moving samples are conditioned
 outside the shared standing deadbands.
 
+Moving commands activate a fixed 0.9 Hz per-leg gait clock, producing 1.8
+alternating footfalls per second. The legs are offset by half a cycle and use a
+60% stance fraction, which provides short double-support intervals. The actor
+receives sine/cosine phase and a gait-active bit. An exact standing command
+resets the clock, supplies three zero gait inputs, and makes every moving-gait
+reward exactly zero.
+
 The canonical reward combines command tracking, base stability, normalized
-torque costs, standing foot motion, contact timing, touchdown air time, and
-termination cost. Exact terms and weights are defined in
+torque costs, moving-only body-weight-normalized lower-body joint reaction-force
+peaks, standing foot motion, phase contact matching, stance-foot slip, swing
+clearance, and termination cost. Exact terms and weights are defined in
 [`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
 Training leaves policy effort unclipped so the over-peak torque penalty observes
@@ -84,6 +92,10 @@ different `HEAD` unless `allow_git_commit_mismatch=true` is explicitly set. That
 override bypasses only root-commit equality; metadata, state layout, task,
 motion content, submodule integrity, and runtime validation remain active. It
 cannot load older checkpoint envelopes that do not contain `git_commit`.
+
+Locomotion checkpoints created before the gait-phase observation contract are
+also rejected explicitly. Their 51-value actor frame cannot be adapted to the
+new 54-value frame without retraining.
 
 Checkpoint output must be outside the source repository or covered by a Git
 ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name

@@ -17,7 +17,7 @@ import rerun as rr
 import rerun.blueprint as rrb
 from rerun.urdf import UrdfTree
 
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv, advance_gait_phase
 from bello_mujoco.gamepad import GamepadCommandSource, GamepadConfig
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.policy import (
@@ -483,8 +483,6 @@ def run_rerun_evaluation(
     current_command = np.zeros(3, dtype=np.float32)
 
     last_action = np.zeros(env.action_size, dtype=np.float32)
-    foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
-    foot_contact_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
     foot_contact_debounce_time = jnp.zeros(
         env.model.foot_body_ids.size, dtype=jnp.float32
     )
@@ -493,19 +491,17 @@ def run_rerun_evaluation(
     episode_track_lin_vel_xy = jnp.asarray(0.0, dtype=jnp.float32)
     episode_length = jnp.asarray(0, dtype=jnp.int32)
     episode_step_count = 0
+    gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
     obs_stack = init_observation_stack(
         jnp.zeros(env.observation_size, dtype=jnp.float32), obs_stack_size
     )
 
     def reset_episode() -> None:
-        nonlocal last_action, foot_air_time, foot_contact_time
-        nonlocal foot_contact_debounce_time
+        nonlocal last_action, foot_contact_debounce_time
         nonlocal last_foot_contact, episode_return, episode_track_lin_vel_xy
-        nonlocal episode_length, episode_step_count, obs_stack
+        nonlocal episode_length, episode_step_count, gait_phase, obs_stack
         reset_mujoco_data(env, mj_data)
         last_action = np.zeros(env.action_size, dtype=np.float32)
-        foot_air_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
-        foot_contact_time = jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32)
         foot_contact_debounce_time = jnp.zeros(
             env.model.foot_body_ids.size, dtype=jnp.float32
         )
@@ -514,12 +510,14 @@ def run_rerun_evaluation(
         episode_track_lin_vel_xy = jnp.asarray(0.0, dtype=jnp.float32)
         episode_length = jnp.asarray(0, dtype=jnp.int32)
         episode_step_count = 0
+        gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
         obs = mujoco_policy_observation(
             env,
             mj_data,
             command=current_command,
             last_action=last_action,
             step_count=episode_step_count,
+            gait_phase=gait_phase,
         )
         obs_stack = init_observation_stack(obs, obs_stack_size)
 
@@ -584,6 +582,7 @@ def run_rerun_evaluation(
                 command=current_command,
                 last_action=last_action,
                 step_count=episode_step_count,
+                gait_phase=gait_phase,
             )
             obs_stack = obs_stack.at[-1].set(current_observation)
             action_rng = None
@@ -606,20 +605,26 @@ def run_rerun_evaluation(
                 mj_data,
                 command=current_command,
                 last_action=last_action,
-                foot_air_time=foot_air_time,
-                foot_contact_time=foot_contact_time,
                 foot_contact_debounce_time=foot_contact_debounce_time,
                 last_foot_contact=last_foot_contact,
                 step_count=episode_step_count,
                 episode_return=episode_return,
                 episode_track_lin_vel_xy=episode_track_lin_vel_xy,
                 episode_length=episode_length,
+                gait_phase=gait_phase,
             )
             mj_data.ctrl[:] = ctrl
             for _ in range(env.decimation):
                 mujoco.mj_step(mj_model, mj_data)
             last_action = action_np
             episode_step_count += 1
+            gait_phase = advance_gait_phase(
+                gait_phase,
+                jnp.asarray(current_command, dtype=jnp.float32),
+                env.command_config,
+                env.config.gait,
+                env.control_timestep,
+            )
             done_flags = mujoco_done_flags(env, mj_data, episode_step_count)
             done = jnp.asarray(done_flags["done/any"])
             next_state = mujoco_eval_state(
@@ -627,14 +632,13 @@ def run_rerun_evaluation(
                 mj_data,
                 command=current_command,
                 last_action=last_action,
-                foot_air_time=foot_air_time,
-                foot_contact_time=foot_contact_time,
                 foot_contact_debounce_time=foot_contact_debounce_time,
                 last_foot_contact=last_foot_contact,
                 step_count=episode_step_count,
                 episode_return=episode_return,
                 episode_track_lin_vel_xy=episode_track_lin_vel_xy,
                 episode_length=episode_length,
+                gait_phase=gait_phase,
             )
             (
                 raw_foot_contact,
@@ -667,11 +671,7 @@ def run_rerun_evaluation(
                 episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
             )
             episode_length = episode_length + 1
-            (
-                foot_air_time,
-                foot_contact_time,
-                last_foot_contact,
-            ) = env.next_foot_memory(next_state, foot_contact, done)
+            last_foot_contact = foot_contact.astype(bool)
             info = {
                 **mujoco_eval_info(env, mj_data, command=current_command),
                 **done_info,
@@ -712,6 +712,7 @@ def run_rerun_evaluation(
                     command=current_command,
                     last_action=last_action,
                     step_count=episode_step_count,
+                    gait_phase=gait_phase,
                 )
                 obs_stack = update_observation_stack(obs_stack, obs, done)
             elapsed = time.perf_counter() - started

@@ -141,6 +141,7 @@ asset that deviates from this contract.
 | `numerical_safety` | Broad finite-state and solver-force bounds that terminate invalid rollouts. |
 | `observation` | Deployable actor observation scaling and noise. |
 | `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
+| `gait` | Fixed gait frequency and stance fraction shared by simulation, native evaluation, and hardware. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
 
 ### Simulation physics
@@ -202,9 +203,18 @@ Both `observation` and `critic_observation` contain `privileged`, `scale`, and
 `noise`. The `noise` section also has an `enabled` switch.
 
 Scale and noise fields are `base_lin_vel`, `base_lin_acc`, `base_ang_vel`,
-`projected_gravity`, `base_height`, `command`, `joint_pos`, `joint_vel`,
-`actuator_force`, and `last_action`. Scales multiply observations; noise values
-are ordered uniform ranges applied before stacking.
+`projected_gravity`, `base_height`, `command`, `gait_phase`, `joint_pos`,
+`joint_vel`, `actuator_force`, and `last_action`. Scales multiply observations;
+noise values are ordered uniform ranges applied before stacking.
+
+With commands enabled, the actor and critic both receive a three-value gait
+component: sine phase, cosine phase, and a gait-active bit. The default 0.9 Hz
+per-leg clock has a 60% stance fraction and a half-cycle offset between the two
+feet. Standing resets its phase and makes the complete component exactly zero.
+`frequency_hz` is the complete cycle frequency of each leg, so the default
+repeats each leg about every 1.11 seconds and offsets nominal left/right
+footfalls by about 0.56 seconds: 1.8 total footfalls per second, or 108 steps
+per minute. `stance_fraction` must be in `[0.5, 1.0)`.
 
 Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
@@ -257,16 +267,16 @@ computation where possible.
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize absolute requested torque normalized by each joint's peak torque. |
 | `torque_peak` | `-12.0` | Quadratically penalize normalized torque above peak. |
+| `joint_force_peak` | `-4.0` | While the gait clock is active, quadratically penalize hip, knee, and ankle reaction-force magnitude above the configured body-weight threshold. The mean across 12 lower-body joints keeps normal load sharing mild while making isolated extreme peaks consequential. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize foot linear and angular motion. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation, gated by lateral command. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
 | `invalid_action` | `0.0` | Optional penalty for invalid/nonfinite requested action. |
-| `foot_slip` | `-0.25` | Penalize contacting-foot motion. |
-| `flight` | `-2.0` | Penalize no-foot-contact flight while locomotion is requested. |
-| `contact_timing` | `-5.0` | Penalize premature liftoff and touchdown. |
-| `touchdown_air_time` | `0.5` | Reward touchdown after a bounded swing duration. |
+| `gait_contact` | `-1.0` | Penalize disagreement between measured foot contact and the phase-conditioned stance schedule. |
+| `gait_stance_slip` | `-0.25` | Penalize planar foot motion during the phase-conditioned stance interval. |
+| `gait_swing_clearance` | `-0.5` | Penalize swing-foot clearance below the configured target. |
 | `undesired_contact` | `0.0` | Optional non-foot terrain-contact penalty. |
 | `self_collision` | `0.0` | Optional self-collision penalty. |
 | `termination` | `-100.0` | Penalize non-timeout terminal failure. |
@@ -283,7 +293,7 @@ Supporting fields are:
 | --- | --- |
 | `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std` |
 | `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight` |
-| `gait` | `foot_slip_angular_speed_scale`, `flight_body_speed_threshold`, `flight_yaw_speed_threshold`, `contact_min_air_time`, `contact_min_contact_time`, `touchdown_min_air_time`, `touchdown_max_air_time` |
+| `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights` |
 | `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_lateral_command_index`, `hip_lateral_command_threshold` |
 
 ## Locomotion termination: `done_config`
