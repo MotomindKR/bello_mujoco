@@ -888,6 +888,38 @@ def command_diagnostic_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]
     }
 
 
+def command_conditioned_metrics(
+    info: dict[str, jax.Array], reward: jax.Array
+) -> dict[str, jax.Array]:
+    """Report reward and completed-episode outcomes for each command mode."""
+
+    standing = info.get("command/standing")
+    moving = info.get("command/moving")
+    if standing is None or moving is None:
+        return {}
+
+    metrics = {
+        "command/standing_mean_reward": masked_mean_or_zero(reward, standing),
+        "command/moving_mean_reward": masked_mean_or_zero(reward, moving),
+    }
+    returned = info.get("returned_episode")
+    episode_return = info.get("episode_return")
+    episode_length = info.get("episode_length")
+    if returned is None or episode_return is None or episode_length is None:
+        return metrics
+
+    for name, mode in (("standing", standing), ("moving", moving)):
+        completed = returned.astype(bool) & mode.astype(bool)
+        metrics[f"episode/{name}_count"] = jnp.sum(completed.astype(jnp.float32))
+        metrics[f"episode/{name}_return"] = masked_mean_or_zero(
+            episode_return, completed
+        )
+        metrics[f"episode/{name}_length"] = masked_mean_or_zero(
+            episode_length, completed
+        )
+    return metrics
+
+
 def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     return {
         f"mean_{name}": value.astype(jnp.float32).mean()
@@ -947,6 +979,12 @@ def masked_mean(value: jax.Array, mask: jax.Array) -> jax.Array:
     mask = mask.astype(jnp.float32)
     count = jnp.sum(mask)
     return jnp.where(count > 0, jnp.sum(value * mask) / count, jnp.nan)
+
+
+def masked_mean_or_zero(value: jax.Array, mask: jax.Array) -> jax.Array:
+    value = value.astype(jnp.float32)
+    mask = mask.astype(jnp.float32)
+    return jnp.sum(value * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
 
 def action_diagnostics(
@@ -1299,6 +1337,7 @@ def update_runner_state(
         **random_push_means(transitions.info),
         **sampling_diagnostic_means(transitions.info),
         **command_diagnostic_means(transitions.info),
+        **command_conditioned_metrics(transitions.info, transitions.reward),
         **foot_contact_means(transitions.info),
         **target_saturation_means(transitions.info),
         **gait_diagnostics(transitions.info, env.control_timestep),

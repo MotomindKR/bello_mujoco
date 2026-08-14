@@ -1641,7 +1641,7 @@ class BelloLocomotionEnv:
             return jnp.zeros((batch_size, 3), dtype=jnp.float32)
         if command is None:
             if rng is not None:
-                return self.command_config.sample(rng, (batch_size,))
+                return self.command_config.sample_stratified_batch(rng, batch_size)
             return jnp.zeros((batch_size, 3), dtype=jnp.float32)
         command = jnp.asarray(command, dtype=jnp.float32)
         if command.shape == (3,):
@@ -1665,7 +1665,9 @@ class BelloLocomotionEnv:
             1, int(round(self.command_config.resample_seconds / self.control_timestep))
         )
         resample = (state.step_count % resample_steps == 0) & ~done
-        sampled = self.command_config.sample(rng, (int(state.command.shape[0]),))
+        sampled = self._reset_batch_command(
+            state.command, int(state.command.shape[0]), rng
+        )
         command = jnp.where(resample[:, None], sampled, state.command)
         old_standing = command_is_standing(state.command, self.command_config)
         new_standing = command_is_standing(command, self.command_config)
@@ -1681,7 +1683,11 @@ class BelloLocomotionEnv:
     ) -> jax.Array:
         if rng is None:
             return command
-        return self.command_config.sample(rng, (batch_size,))
+        if not self.command_config.enabled:
+            return jnp.zeros_like(command)
+        standing = command_is_standing(command, self.command_config)
+        moving = self.command_config.sample_moving(rng, (batch_size,))
+        return jnp.where(standing[:, None], jnp.zeros_like(moving), moving)
 
     def _maybe_apply_random_push_batch(
         self,

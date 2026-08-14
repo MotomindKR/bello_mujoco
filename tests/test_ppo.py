@@ -29,6 +29,7 @@ from bello_mujoco.training.ppo import (
     adapt_learning_rate,
     adaptive_learning_rate_kl,
     aggregate_ppo_metrics,
+    command_conditioned_metrics,
     command_diagnostic_means,
     compute_gae,
     denormalize_value,
@@ -84,15 +85,27 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     info = {
         "command/standing": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
         "command/moving": jnp.asarray([[0.0, 1.0, 0.0, 1.0]]),
+        "returned_episode": jnp.asarray([[1.0, 1.0, 0.0, 1.0]]),
+        "episode_return": jnp.asarray([[10.0, 20.0, 0.0, 40.0]]),
+        "episode_length": jnp.asarray([[5.0, 6.0, 0.0, 8.0]]),
         "gait/touchdown": jnp.asarray([[2.0, 1.0, 0.0, 1.0]]),
         "gait/double_support": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
     }
 
     command_metrics = command_diagnostic_means(info)
+    conditioned = command_conditioned_metrics(info, jnp.asarray([[1.0, 2.0, 3.0, 4.0]]))
     gait_metrics = gait_diagnostics(info, control_timestep=0.02)
 
     assert command_metrics["command/standing_fraction"] == pytest.approx(0.5)
     assert command_metrics["command/moving_fraction"] == pytest.approx(0.5)
+    assert conditioned["command/standing_mean_reward"] == pytest.approx(2.0)
+    assert conditioned["command/moving_mean_reward"] == pytest.approx(3.0)
+    assert conditioned["episode/standing_count"] == pytest.approx(1.0)
+    assert conditioned["episode/standing_return"] == pytest.approx(10.0)
+    assert conditioned["episode/standing_length"] == pytest.approx(5.0)
+    assert conditioned["episode/moving_count"] == pytest.approx(2.0)
+    assert conditioned["episode/moving_return"] == pytest.approx(30.0)
+    assert conditioned["episode/moving_length"] == pytest.approx(7.0)
     assert gait_metrics["gait/standing_touchdown"] == pytest.approx(1.0)
     assert gait_metrics["gait/moving_touchdown"] == pytest.approx(1.0)
     assert gait_metrics["gait/standing_double_support"] == pytest.approx(1.0)

@@ -143,6 +143,7 @@ reward_config:
   weights:
     track_lin_vel_xy: 1.0
     track_ang_vel_z: 1.0
+    healthy_survival: 1.5
     lin_vel_z: -2.0
     ang_vel_xy: -0.15
     flat_orientation: -2.0

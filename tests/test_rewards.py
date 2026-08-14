@@ -114,6 +114,17 @@ def test_command_sampler_produces_only_explicit_standing_commands() -> None:
     assert jnp.all(command_is_moving(commands[~standing], config))
 
 
+def test_stratified_command_batch_has_exact_standing_cohort() -> None:
+    config = CommandConfig(standing_probability=0.10)
+    sample = jax.jit(config.sample_stratified_batch, static_argnums=1)
+    commands = sample(jax.random.PRNGKey(3), 100)
+    standing = command_is_standing(commands, config)
+
+    assert jnp.sum(standing) == 10
+    assert jnp.all(commands[standing] == 0.0)
+    assert jnp.all(command_is_moving(commands[~standing], config))
+
+
 def test_command_semantics_use_per_axis_deadbands() -> None:
     config = CommandConfig()
 
@@ -230,6 +241,20 @@ def test_termination_penalty_scales_with_timestep() -> None:
     assert first_terms["reward/termination"] == pytest.approx(-0.04)
     assert second_terms["reward/termination"] == pytest.approx(-0.01)
     assert first == pytest.approx(4.0 * second)
+
+
+def test_healthy_survival_reward_excludes_terminal_step() -> None:
+    config = reward_config(healthy_survival=1.5)
+
+    healthy, healthy_terms = compute_locomotion_reward(config, reward_inputs())
+    terminal, terminal_terms = compute_locomotion_reward(
+        config, reward_inputs(done=jnp.asarray(True))
+    )
+
+    assert healthy_terms["reward/healthy_survival"] == pytest.approx(0.03)
+    assert terminal_terms["reward/healthy_survival"] == pytest.approx(0.0)
+    assert healthy == pytest.approx(0.03)
+    assert terminal == pytest.approx(0.0)
 
 
 def test_hip_deviation_uses_lateral_command_axis() -> None:
@@ -485,6 +510,14 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
             control_timestep=jnp.asarray(0.005),
         ),
     )
+    _, healthy_terms = compute(config, moving_inputs.replace(done=jnp.asarray(False)))
+    _, healthy_fine = compute(
+        config,
+        moving_inputs.replace(
+            done=jnp.asarray(False),
+            control_timestep=jnp.asarray(0.005),
+        ),
+    )
 
     assert jnp.isfinite(reward)
     assert all(bool(jnp.isfinite(term)) for term in moving_terms.values())
@@ -500,6 +533,9 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         if coarse == 0.0:
             coarse = airborne_terms[name]
             fine = airborne_fine[name]
+        if coarse == 0.0:
+            coarse = healthy_terms[name]
+            fine = healthy_fine[name]
         assert coarse != 0.0, name
         assert coarse == pytest.approx(4.0 * fine), name
 

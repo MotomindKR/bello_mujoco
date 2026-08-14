@@ -239,7 +239,7 @@ source revision because its environment state predates the feedback history.
 | `lin_vel_x` | `[-0.5,0.5]` | Lateral/right velocity sampling range. |
 | `lin_vel_y` | `[-0.5,0.5]` | Forward velocity sampling range. |
 | `ang_vel_yaw` | `[-0.5,0.5]` | Yaw-rate sampling range. |
-| `standing_probability` | `0.1` | Probability of an exact all-zero command. |
+| `standing_probability` | `0.1` | Fraction of batched training environments assigned an exact all-zero command cohort; scalar sampling uses this as a probability. |
 | `linear_deadband` | `0.1` | Actor/reward standing threshold for XY command. |
 | `yaw_deadband` | `0.1` | Standing threshold for yaw command. |
 | `minimum_moving_linear_speed` | `0.2` | A selected moving linear axis is sampled outside this magnitude. |
@@ -248,6 +248,13 @@ source revision because its environment state predates the feedback history.
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
+Training assigns the standing cohort once at batch reset and preserves each
+environment's standing or moving mode across failures and periodic command
+resampling. This prevents short standing episodes from reducing standing's
+share of rollout frames. Training telemetry reports mode-specific mean reward,
+completed-episode return and length, and completed-episode count under the
+`command/standing_*`, `command/moving_*`, and `episode/{standing,moving}_*`
+names.
 
 ## Locomotion reward: `reward_config`
 
@@ -259,6 +266,7 @@ computation where possible.
 | --- | ---: | --- |
 | `track_lin_vel_xy` | `1.0` | Gaussian command tracking for planar velocity. |
 | `track_ang_vel_z` | `1.0` | Gaussian yaw-rate command tracking. |
+| `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
 | `flat_orientation` | `-2.0` | Penalize gravity-vector tilt. |

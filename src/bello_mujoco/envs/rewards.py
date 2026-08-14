@@ -96,6 +96,23 @@ class CommandConfig:
         if self.standing_probability == 1.0:
             return jnp.zeros(shape + (3,), dtype=jnp.float32)
 
+        moving_key, stand_key = jax.random.split(rng)
+        moving_command = self.sample_moving(moving_key, shape)
+        standing = jax.random.bernoulli(stand_key, self.standing_probability, shape)
+        return jnp.where(
+            standing[..., None], jnp.zeros_like(moving_command), moving_command
+        )
+
+    def sample_moving(
+        self,
+        rng: jax.Array,
+        shape: tuple[int, ...] = (),
+    ) -> jax.Array:
+        """Sample commands that are guaranteed to be outside the deadbands."""
+
+        if not self.enabled or self.standing_probability == 1.0:
+            return jnp.zeros(shape + (3,), dtype=jnp.float32)
+
         bounds = self.range_array()
         minimums = jnp.asarray(self._minimum_moving_speeds(), dtype=jnp.float32)
         negative_available = bounds[:, 0] <= -minimums
@@ -104,9 +121,7 @@ class CommandConfig:
         axis_probability = axis_available.astype(jnp.float32)
         axis_probability /= jnp.sum(axis_probability)
 
-        command_key, stand_key, axis_key, sign_key, magnitude_key = jax.random.split(
-            rng, 5
-        )
+        command_key, axis_key, sign_key, magnitude_key = jax.random.split(rng, 4)
         command_uniform = jax.random.uniform(
             command_key, shape + (3,), dtype=jnp.float32
         )
@@ -139,14 +154,24 @@ class CommandConfig:
         )
         active_value = active_low + magnitude_uniform * (active_high - active_low)
         active_mask = jax.nn.one_hot(active_axis, 3, dtype=jnp.float32)
-        moving_command = (
-            command * (1.0 - active_mask) + active_value[..., None] * active_mask
-        )
+        return command * (1.0 - active_mask) + active_value[..., None] * active_mask
 
-        standing = jax.random.bernoulli(stand_key, self.standing_probability, shape)
-        return jnp.where(
-            standing[..., None], jnp.zeros_like(moving_command), moving_command
-        )
+    def sample_stratified_batch(self, rng: jax.Array, batch_size: int) -> jax.Array:
+        """Sample a batch with a fixed, randomly assigned standing cohort."""
+
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        if not self.enabled or self.standing_probability == 1.0:
+            return jnp.zeros((batch_size, 3), dtype=jnp.float32)
+
+        moving_key, cohort_key = jax.random.split(rng)
+        command = self.sample_moving(moving_key, (batch_size,))
+        standing_count = int(math.floor(self.standing_probability * batch_size + 0.5))
+        if standing_count == 0:
+            return command
+        cohort = jax.random.permutation(cohort_key, batch_size)[:standing_count]
+        standing = jnp.zeros(batch_size, dtype=bool).at[cohort].set(True)
+        return jnp.where(standing[:, None], jnp.zeros_like(command), command)
 
 
 def command_is_standing(command: jax.Array, config: CommandConfig) -> jax.Array:
@@ -169,6 +194,7 @@ class RewardWeights:
 
     track_lin_vel_xy: float = 1.0
     track_ang_vel_z: float = 1.0
+    healthy_survival: float = 1.5
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.15
     flat_orientation: float = -2.0
@@ -483,6 +509,7 @@ def compute_locomotion_reward(
     values = {
         "track_lin_vel_xy": track_lin_vel_xy,
         "track_ang_vel_z": track_ang_vel_z,
+        "healthy_survival": (~inputs.done).astype(jnp.float32),
         "lin_vel_z": lin_vel_z,
         "ang_vel_xy": ang_vel_xy,
         "flat_orientation": flat_orientation,

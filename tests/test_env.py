@@ -26,7 +26,13 @@ from bello_mujoco.envs.locomotion import (
     desired_gait_foot_contact,
     gait_phase_features,
 )
-from bello_mujoco.envs.rewards import CommandConfig, RewardConfig, RewardLinks
+from bello_mujoco.envs.rewards import (
+    CommandConfig,
+    RewardConfig,
+    RewardLinks,
+    command_is_moving,
+    command_is_standing,
+)
 from bello_mujoco.evaluation.render import (
     mujoco_done_flags,
     mujoco_eval_info,
@@ -473,6 +479,33 @@ def test_command_sampling_and_periodic_resampling_are_bounded(
     assert info["command/standing"] == pytest.approx(jnp.zeros(4))
     assert info["command/moving"] == pytest.approx(jnp.ones(4))
     assert not jnp.allclose(next_state.command, state.command)
+
+
+def test_batch_command_mode_cohort_survives_resampling(
+    full_body_asset: PreparedAsset,
+) -> None:
+    command_config = CommandConfig(
+        standing_probability=0.25,
+        resample_seconds=0.02,
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset, batch_size=8, command_config=command_config
+    )
+    state, _ = env.reset_batch(8, rng=jax.random.PRNGKey(10))
+    standing = command_is_standing(state.command, command_config)
+    reset_command = env._reset_batch_command(state.command, 8, jax.random.PRNGKey(12))
+    next_state, _, _, _, _ = env.step_batch(
+        state,
+        jnp.zeros((8, env.action_size)),
+        rng=jax.random.PRNGKey(11),
+    )
+
+    assert jnp.sum(standing) == 2
+    assert jnp.array_equal(command_is_standing(reset_command, command_config), standing)
+    assert jnp.array_equal(
+        command_is_standing(next_state.command, command_config), standing
+    )
+    assert jnp.all(command_is_moving(next_state.command[~standing], command_config))
 
 
 def test_random_push_overwrites_root_xy_velocity_on_interval(
