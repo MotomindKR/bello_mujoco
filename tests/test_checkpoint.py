@@ -551,15 +551,27 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     save_checkpoint(path, state, checkpoint_metadata)
     metadata_path = path / checkpoint.METADATA_FILE
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
-    document["metadata"]["reward"]["weights"].pop("joint_force_peak")
-    document["metadata"]["reward"]["gait"].pop("joint_force_soft_limit_body_weights")
+    for name in ("joint_force_peak", "touchdown_impact", "stand_contact"):
+        document["metadata"]["reward"]["weights"].pop(name)
+    for name in (
+        "joint_force_soft_limit_body_weights",
+        "joint_force_top_k",
+        "joint_force_apply_while_standing",
+        "touchdown_force_soft_limit_body_weights",
+        "touchdown_vertical_speed_scale",
+    ):
+        document["metadata"]["reward"]["gait"].pop(name)
     document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
     metadata_path.write_text(json.dumps(document), encoding="utf-8")
 
     _, restored, _ = restore_evaluation_checkpoint(path)
 
     assert restored.reward.weights.joint_force_peak == 0.0
+    assert restored.reward.weights.touchdown_impact == 0.0
+    assert restored.reward.weights.stand_contact == 0.0
     assert restored.reward.gait.joint_force_soft_limit_body_weights == 1.0
+    assert restored.reward.gait.joint_force_top_k == 12
+    assert not restored.reward.gait.joint_force_apply_while_standing
 
 
 def test_locomotion_checkpoint_without_gait_phase_contract_is_rejected(

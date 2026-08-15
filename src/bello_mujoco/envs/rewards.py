@@ -204,8 +204,10 @@ class RewardWeights:
     torque_l1: float = -1.2
     torque_peak: float = -12.0
     joint_force_peak: float = -4.0
+    touchdown_impact: float = -1.0
     joint_pose: float = -0.1
-    stand_foot_motion: float = -1.0
+    stand_foot_motion: float = -2.0
+    stand_contact: float = -1.0
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
     joint_limit: float = -1.0
@@ -250,7 +252,11 @@ class StandingRewardConfig:
 class GaitRewardConfig:
     stance_slip_angular_speed_scale: float = 0.0
     swing_clearance_target: float = 0.08
-    joint_force_soft_limit_body_weights: float = 1.0
+    joint_force_soft_limit_body_weights: float = 0.8
+    joint_force_top_k: int = 2
+    joint_force_apply_while_standing: bool = True
+    touchdown_force_soft_limit_body_weights: float = 1.0
+    touchdown_vertical_speed_scale: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -286,6 +292,8 @@ class RewardConfig:
             for name in (
                 "gait_contact",
                 "gait_stance_slip",
+                "touchdown_impact",
+                "stand_contact",
             )
         )
 
@@ -344,6 +352,9 @@ class RewardInputs:
     action_target_low: jax.Array
     action_target_high: jax.Array
     foot_contact: jax.Array
+    foot_touchdown: jax.Array
+    foot_normal_force: jax.Array
+    previous_foot_linear_velocity: jax.Array
     foot_linear_velocity: jax.Array
     foot_angular_speed: jax.Array
     foot_height: jax.Array
@@ -413,17 +424,33 @@ def compute_locomotion_reward(
         inputs.robot_weight, 1.0e-6
     )
     gait_active = inputs.gait_active.astype(jnp.float32)
-    joint_force_peak = jnp.where(
-        inputs.gait_active,
-        jnp.mean(
-            jnp.maximum(
-                normalized_joint_force
-                - config.gait.joint_force_soft_limit_body_weights,
-                0.0,
-            )
-            ** 2
-        ),
+    joint_force_excess = jnp.maximum(
+        normalized_joint_force - config.gait.joint_force_soft_limit_body_weights,
         0.0,
+    )
+    joint_force_peak = jnp.mean(
+        jnp.sort(joint_force_excess)[-config.gait.joint_force_top_k :] ** 2
+    )
+    joint_force_peak = jnp.where(
+        inputs.gait_active | config.gait.joint_force_apply_while_standing,
+        joint_force_peak,
+        0.0,
+    )
+    foot_normal_impulse = inputs.foot_normal_force * inputs.control_timestep
+    normalized_foot_impulse = foot_normal_impulse / jnp.maximum(
+        inputs.robot_weight * inputs.control_timestep, 1.0e-6
+    )
+    touchdown_force_excess = jnp.maximum(
+        normalized_foot_impulse - config.gait.touchdown_force_soft_limit_body_weights,
+        0.0,
+    )
+    touchdown_speed_ratio = (
+        jnp.maximum(-inputs.previous_foot_linear_velocity[:, 2], 0.0)
+        / config.gait.touchdown_vertical_speed_scale
+    )
+    touchdown_impact = jnp.mean(
+        inputs.foot_touchdown.astype(jnp.float32)
+        * (jnp.tanh(touchdown_force_excess**2) + jnp.tanh(touchdown_speed_ratio**2))
     )
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
     standing_command = command_is_standing(inputs.command, command_config)
@@ -440,6 +467,11 @@ def compute_locomotion_reward(
             stand_foot_linear_motion
             + config.standing.foot_angular_weight * stand_foot_angular_motion
         ),
+        0.0,
+    )
+    stand_contact = jnp.where(
+        standing_command,
+        jnp.mean(1.0 - inputs.foot_contact.astype(jnp.float32)),
         0.0,
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
@@ -519,8 +551,10 @@ def compute_locomotion_reward(
         "torque_l1": torque_l1,
         "torque_peak": torque_peak,
         "joint_force_peak": joint_force_peak,
+        "touchdown_impact": touchdown_impact,
         "joint_pose": joint_pose,
         "stand_foot_motion": stand_foot_motion,
+        "stand_contact": stand_contact,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
@@ -586,6 +620,14 @@ def validate_reward_config(config: RewardConfig) -> None:
             "gait.joint_force_soft_limit_body_weights",
             config.gait.joint_force_soft_limit_body_weights,
         ),
+        (
+            "gait.touchdown_force_soft_limit_body_weights",
+            config.gait.touchdown_force_soft_limit_body_weights,
+        ),
+        (
+            "gait.touchdown_vertical_speed_scale",
+            config.gait.touchdown_vertical_speed_scale,
+        ),
     ):
         if not math.isfinite(sigma) or sigma <= 0:
             raise ValueError(f"{name} must be positive and finite, got {sigma}")
@@ -607,6 +649,13 @@ def validate_reward_config(config: RewardConfig) -> None:
     for name, value in nonnegative.items():
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"{name} must be nonnegative and finite, got {value}")
+    if (
+        type(config.gait.joint_force_top_k) is not int
+        or config.gait.joint_force_top_k <= 0
+    ):
+        raise ValueError("gait.joint_force_top_k must be a positive integer")
+    if type(config.gait.joint_force_apply_while_standing) is not bool:
+        raise TypeError("gait.joint_force_apply_while_standing must be a boolean")
     if (
         not math.isfinite(config.limits_pose.base_height_target)
         or config.limits_pose.base_height_target <= 0

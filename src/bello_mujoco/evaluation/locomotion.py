@@ -642,11 +642,13 @@ def run_rerun_evaluation(
             )
             (
                 raw_foot_contact,
-                lateral_speed,
+                foot_normal_force,
+                foot_linear_velocity,
                 angular_speed,
                 undesired,
                 self_collision,
             ) = mujoco_contact_terms(env, mj_data)
+            foot_touchdown = env._foot_touchdown(state, raw_foot_contact)
             foot_contact, foot_contact_debounce_time = env.debounce_foot_contact(
                 next_state, raw_foot_contact, done
             )
@@ -657,7 +659,9 @@ def run_rerun_evaluation(
                 jnp.asarray(requested_action_np),
                 jnp.asarray(done_flags["done/terminal"]),
                 foot_contact,
-                lateral_speed,
+                foot_touchdown,
+                foot_normal_force,
+                foot_linear_velocity,
                 angular_speed,
                 undesired,
                 self_collision,

@@ -90,6 +90,8 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
         "episode_length": jnp.asarray([[5.0, 6.0, 0.0, 8.0]]),
         "gait/touchdown": jnp.asarray([[2.0, 1.0, 0.0, 1.0]]),
         "gait/double_support": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
+        "gait/joint_force_max_body_weight": jnp.asarray([[0.5, 1.0, 1.5, 2.0]]),
+        "gait/contact_force_max_body_weight": jnp.asarray([[0.4, 0.8, 1.2, 1.6]]),
     }
 
     command_metrics = command_diagnostic_means(info)
@@ -112,6 +114,12 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     assert gait_metrics["gait/moving_double_support"] == pytest.approx(0.0)
     assert gait_metrics["gait/standing_footfalls_per_second"] == pytest.approx(50.0)
     assert gait_metrics["gait/moving_footfalls_per_second"] == pytest.approx(50.0)
+    assert gait_metrics["gait/joint_force_p95_body_weight"] == pytest.approx(1.925)
+    assert gait_metrics["gait/joint_force_p99_body_weight"] == pytest.approx(1.985)
+    assert gait_metrics["gait/joint_force_worst_body_weight"] == pytest.approx(2.0)
+    assert gait_metrics["gait/contact_force_p95_body_weight"] == pytest.approx(1.54)
+    assert gait_metrics["gait/contact_force_p99_body_weight"] == pytest.approx(1.588)
+    assert gait_metrics["gait/contact_force_worst_body_weight"] == pytest.approx(1.6)
 
 
 def test_action_limit_contract_rejects_environment_mismatch() -> None:

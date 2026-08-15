@@ -971,6 +971,14 @@ def gait_diagnostics(
         metrics["gait/liftoffs_per_second"] = (
             liftoff.astype(jnp.float32).mean() / control_timestep
         )
+    for force_name in ("joint_force", "contact_force"):
+        rollout_max = info.get(f"gait/{force_name}_max_body_weight")
+        if rollout_max is None:
+            continue
+        rollout_max = rollout_max.astype(jnp.float32).reshape(-1)
+        metrics[f"gait/{force_name}_p95_body_weight"] = jnp.quantile(rollout_max, 0.95)
+        metrics[f"gait/{force_name}_p99_body_weight"] = jnp.quantile(rollout_max, 0.99)
+        metrics[f"gait/{force_name}_worst_body_weight"] = jnp.max(rollout_max)
     return metrics
 
 

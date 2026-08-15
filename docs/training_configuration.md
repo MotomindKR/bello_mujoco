@@ -275,9 +275,11 @@ computation where possible.
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize absolute requested torque normalized by each joint's peak torque. |
 | `torque_peak` | `-12.0` | Quadratically penalize normalized torque above peak. |
-| `joint_force_peak` | `-4.0` | While the gait clock is active, quadratically penalize hip, knee, and ankle reaction-force magnitude above the configured body-weight threshold. The mean across 12 lower-body joints keeps normal load sharing mild while making isolated extreme peaks consequential. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
+| `joint_force_peak` | `-4.0` | Quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight, including during standing. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
+| `touchdown_impact` | `-1.0` | At the first raw foot-contact sample, penalize both measured normal contact impulse above one body-weight control impulse and pre-impact downward foot speed. Each component is bounded before weighting so isolated solver spikes cannot dominate PPO. |
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
-| `stand_foot_motion` | `-1.0` | At standing command, penalize foot linear and angular motion. |
+| `stand_foot_motion` | `-2.0` | At standing command, penalize foot linear and angular motion strongly enough that repeated stepping cannot earn a positive return from survival alone. |
+| `stand_contact` | `-1.0` | At standing command, penalize each foot that is not in filtered terrain contact, encouraging quiet double support. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation, gated by lateral command. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
@@ -301,8 +303,14 @@ Supporting fields are:
 | --- | --- |
 | `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std` |
 | `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight` |
-| `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights` |
+| `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_lateral_command_index`, `hip_lateral_command_threshold` |
+
+Rollout telemetry reports the mean, p95, p99, and worst instantaneous normalized
+joint and foot-contact force maxima. The tail metrics are named
+`gait/{joint_force,contact_force}_{p95,p99,worst}_body_weight`; unlike the mean
+reward terms, they expose short impacts that would otherwise be diluted across
+joints and rollout frames.
 
 ## Locomotion termination: `done_config`
 

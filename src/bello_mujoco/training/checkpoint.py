@@ -575,17 +575,25 @@ def _with_checkpoint_metadata_defaults(value: Any) -> Any:
         if isinstance(reward, dict):
             normalized_reward = dict(reward)
             weights = reward.get("weights")
-            if isinstance(weights, dict) and "joint_force_peak" not in weights:
+            if isinstance(weights, dict):
                 normalized_weights = dict(weights)
-                normalized_weights["joint_force_peak"] = 0.0
+                for name in ("joint_force_peak", "touchdown_impact", "stand_contact"):
+                    if name not in normalized_weights:
+                        normalized_weights[name] = 0.0
                 normalized_reward["weights"] = normalized_weights
             gait = reward.get("gait")
-            if (
-                isinstance(gait, dict)
-                and "joint_force_soft_limit_body_weights" not in gait
-            ):
+            if isinstance(gait, dict):
                 normalized_gait = dict(gait)
-                normalized_gait["joint_force_soft_limit_body_weights"] = 1.0
+                legacy_gait_defaults = {
+                    "joint_force_soft_limit_body_weights": 1.0,
+                    "joint_force_top_k": 12,
+                    "joint_force_apply_while_standing": False,
+                    "touchdown_force_soft_limit_body_weights": 1.0,
+                    "touchdown_vertical_speed_scale": 0.3,
+                }
+                for name, default in legacy_gait_defaults.items():
+                    if name not in normalized_gait:
+                        normalized_gait[name] = default
                 normalized_reward["gait"] = normalized_gait
             normalized["reward"] = normalized_reward
         return normalized

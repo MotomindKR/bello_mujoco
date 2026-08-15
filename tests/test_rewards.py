@@ -63,6 +63,9 @@ def reward_inputs(**updates) -> RewardInputs:
         action_target_low=jnp.asarray([-1.0, -1.0], dtype=jnp.float32),
         action_target_high=jnp.asarray([1.0, 1.0], dtype=jnp.float32),
         foot_contact=jnp.ones(2, dtype=jnp.float32),
+        foot_touchdown=jnp.zeros(2, dtype=bool),
+        foot_normal_force=jnp.zeros(2, dtype=jnp.float32),
+        previous_foot_linear_velocity=jnp.zeros((2, 3), dtype=jnp.float32),
         foot_linear_velocity=jnp.zeros((2, 3), dtype=jnp.float32),
         foot_angular_speed=jnp.zeros(2, dtype=jnp.float32),
         foot_height=jnp.zeros(2, dtype=jnp.float32),
@@ -311,7 +314,7 @@ def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> N
     assert over_peak["reward/torque_peak"] == pytest.approx(-0.1)
 
 
-def test_joint_force_peak_penalizes_linear_reaction_load_not_actuator_torque() -> None:
+def test_joint_force_peak_uses_top_loads_in_both_command_modes() -> None:
     config = reward_config(
         joint_force_peak=-2.0,
         gait=GaitRewardConfig(joint_force_soft_limit_body_weights=1.0),
@@ -320,25 +323,48 @@ def test_joint_force_peak_penalizes_linear_reaction_load_not_actuator_torque() -
         command=jnp.asarray([0.5, 0.0, 0.0]),
         gait_active=jnp.asarray(True),
         actuator_force=jnp.asarray([100.0, 100.0]),
-        joint_force=jnp.asarray([500.0, 1_000.0]),
+        joint_force=jnp.asarray([0.0, 500.0, 1_000.0, 1_500.0]),
         robot_weight=jnp.asarray(500.0),
     )
 
     _, terms = compute_locomotion_reward(config, inputs)
     _, below_limit = compute_locomotion_reward(
         config,
-        inputs.replace(joint_force=jnp.asarray([250.0, 500.0])),
+        inputs.replace(joint_force=jnp.asarray([250.0, 500.0, 250.0, 500.0])),
     )
     _, standing = compute_locomotion_reward(
         config,
         inputs.replace(command=jnp.zeros(3), gait_active=jnp.asarray(False)),
     )
 
-    assert terms["reward/joint_force_peak"] == pytest.approx(-0.02)
+    assert terms["reward/joint_force_peak"] == pytest.approx(-0.1)
     assert terms["reward/torque_l1"] == pytest.approx(0.0)
     assert terms["reward/torque_peak"] == pytest.approx(0.0)
     assert below_limit["reward/joint_force_peak"] == pytest.approx(0.0)
-    assert standing["reward/joint_force_peak"] == pytest.approx(0.0)
+    assert standing["reward/joint_force_peak"] == pytest.approx(-0.1)
+
+
+def test_touchdown_impact_uses_normal_impulse_and_preimpact_vertical_speed() -> None:
+    config = reward_config(
+        touchdown_impact=-1.0,
+        gait=GaitRewardConfig(
+            touchdown_force_soft_limit_body_weights=1.0,
+            touchdown_vertical_speed_scale=0.3,
+        ),
+    )
+    inputs = reward_inputs(
+        foot_touchdown=jnp.asarray([True, False]),
+        foot_normal_force=jnp.asarray([2.0, 0.0]),
+        previous_foot_linear_velocity=jnp.asarray([[0.0, 0.0, -0.3], [0.0, 0.0, 0.0]]),
+    )
+
+    _, terms = compute_locomotion_reward(config, inputs)
+    _, no_touchdown = compute_locomotion_reward(
+        config, inputs.replace(foot_touchdown=jnp.zeros(2, dtype=bool))
+    )
+
+    assert terms["reward/touchdown_impact"] == pytest.approx(-0.02 * jnp.tanh(1.0))
+    assert no_touchdown["reward/touchdown_impact"] == pytest.approx(0.0)
 
 
 def test_invalid_action_checks_requested_target_and_policy_clip() -> None:
@@ -457,6 +483,23 @@ def test_stand_foot_motion_is_bounded_command_gated_and_contact_free() -> None:
     assert saturated["reward/stand_foot_motion"] == pytest.approx(-0.00625)
 
 
+def test_stand_contact_penalizes_missing_double_support_only_while_standing() -> None:
+    config = reward_config(stand_contact=-1.0)
+    inputs = reward_inputs(foot_contact=jnp.asarray([1.0, 0.0]))
+
+    _, standing = compute_locomotion_reward(config, inputs)
+    _, supported = compute_locomotion_reward(
+        config, inputs.replace(foot_contact=jnp.ones(2))
+    )
+    _, moving = compute_locomotion_reward(
+        config, inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0]))
+    )
+
+    assert standing["reward/stand_contact"] == pytest.approx(-0.01)
+    assert supported["reward/stand_contact"] == pytest.approx(0.0)
+    assert moving["reward/stand_contact"] == pytest.approx(0.0)
+
+
 def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
     config = RewardConfig(
         weights=RewardWeights(**{field.name: 1.0 for field in fields(RewardWeights)})
@@ -474,6 +517,9 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         actuator_force=jnp.asarray([1.0, 2.0]),
         joint_force=jnp.asarray([1.0, 2.0]),
         foot_contact=jnp.asarray([1.0, 0.0]),
+        foot_touchdown=jnp.asarray([True, False]),
+        foot_normal_force=jnp.asarray([2.0, 0.0]),
+        previous_foot_linear_velocity=jnp.asarray([[0.0, 0.0, -0.3], [0.0, 0.0, 0.0]]),
         gait_active=jnp.asarray(True),
         desired_foot_contact=jnp.asarray([0.0, 1.0]),
         foot_height=jnp.asarray([0.0, 0.0]),
@@ -486,7 +532,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
     standing_inputs = moving_inputs.replace(
         command=jnp.zeros(3),
         gait_active=jnp.asarray(False),
-        foot_contact=jnp.ones(2),
+        foot_contact=jnp.asarray([1.0, 0.0]),
     )
     compute = jax.jit(compute_locomotion_reward, static_argnums=0)
     reward, moving_terms = compute(config, moving_inputs)
@@ -557,6 +603,12 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
         RewardConfig(standing=StandingRewardConfig(foot_angular_weight=-1.0))
     with pytest.raises(ValueError, match="joint_force_soft_limit_body_weights"):
         RewardConfig(gait=GaitRewardConfig(joint_force_soft_limit_body_weights=0.0))
+    with pytest.raises(ValueError, match="joint_force_top_k"):
+        RewardConfig(gait=GaitRewardConfig(joint_force_top_k=0))
+    with pytest.raises(ValueError, match="touchdown_force_soft_limit_body_weights"):
+        RewardConfig(gait=GaitRewardConfig(touchdown_force_soft_limit_body_weights=0.0))
+    with pytest.raises(ValueError, match="touchdown_vertical_speed_scale"):
+        RewardConfig(gait=GaitRewardConfig(touchdown_vertical_speed_scale=0.0))
     with pytest.raises(ValueError, match="swing_clearance_target"):
         RewardConfig(gait=GaitRewardConfig(swing_clearance_target=0.0))
     with pytest.raises(ValueError, match="stance_slip_angular_speed_scale"):

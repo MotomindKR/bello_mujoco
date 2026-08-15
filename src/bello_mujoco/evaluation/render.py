@@ -693,9 +693,18 @@ def mujoco_eval_info(
 
 def mujoco_contact_terms(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+) -> tuple[
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+]:
+    foot_contact, foot_normal_force = mujoco_foot_contact_and_normal_force(env, mj_data)
     return (
-        jnp.asarray(mujoco_foot_contact(env, mj_data), dtype=jnp.float32),
+        jnp.asarray(foot_contact, dtype=jnp.float32),
+        jnp.asarray(foot_normal_force, dtype=jnp.float32),
         jnp.asarray(mujoco_foot_linear_velocity(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_foot_angular_speed(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_undesired_contact(env, mj_data), dtype=jnp.float32),
@@ -704,9 +713,17 @@ def mujoco_contact_terms(
 
 
 def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:
+    foot_contact, _ = mujoco_foot_contact_and_normal_force(env, mj_data)
+    return foot_contact
+
+
+def mujoco_foot_contact_and_normal_force(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData
+) -> tuple[np.ndarray, np.ndarray]:
     foot_contact = np.zeros(env.model.foot_body_ids.size, dtype=np.float32)
+    foot_normal_force = np.zeros_like(foot_contact)
     if env.model.terrain_geom_ids.size == 0:
-        return foot_contact
+        return foot_contact, foot_normal_force
     force_threshold = float(env.config.contact.foot_contact_force_threshold)
     terrain_geom_ids = set(int(geom_id) for geom_id in env.model.terrain_geom_ids)
     foot_body_ids = np.asarray(env.model.foot_body_ids, dtype=np.int32)
@@ -729,12 +746,12 @@ def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.n
         normal_force = mujoco_contact_normal_force(
             env.model.mj_model, mj_data, contact_index
         )
-        if normal_force <= force_threshold:
-            continue
         foot_index = foot_body_index.get(int(geom_body_ids[other_geom]))
         if foot_index is not None:
-            foot_contact[foot_index] = 1.0
-    return foot_contact
+            foot_normal_force[foot_index] += normal_force
+            if normal_force > force_threshold:
+                foot_contact[foot_index] = 1.0
+    return foot_contact, foot_normal_force
 
 
 def mujoco_foot_height(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:
