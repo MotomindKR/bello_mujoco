@@ -154,6 +154,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.checkpoint_config.every_updates == 512
     assert hardware.config.total_timesteps == 8_000_000_000
     assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
+    assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
+    assert hardware.reward_config.weights.stand_foot_motion == pytest.approx(-1.0)
+    assert hardware.reward_config.weights.stand_contact == pytest.approx(-0.5)
+    assert not hardware.reward_config.gait.joint_force_apply_while_standing
     assert hardware.video_config.command == (0.0, 0.5, 0.0)
     assert locomotion.env_config.observation_latency.enabled
     assert locomotion.env_config.observation_latency.delay_steps == (0, 2)

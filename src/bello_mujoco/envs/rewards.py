@@ -206,8 +206,9 @@ class RewardWeights:
     joint_force_peak: float = -4.0
     touchdown_impact: float = -1.0
     joint_pose: float = -0.1
-    stand_foot_motion: float = -2.0
-    stand_contact: float = -1.0
+    stand_still: float = 1.0
+    stand_foot_motion: float = -1.0
+    stand_contact: float = -0.5
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
     joint_limit: float = -1.0
@@ -254,7 +255,7 @@ class GaitRewardConfig:
     swing_clearance_target: float = 0.08
     joint_force_soft_limit_body_weights: float = 0.8
     joint_force_top_k: int = 2
-    joint_force_apply_while_standing: bool = True
+    joint_force_apply_while_standing: bool = False
     touchdown_force_soft_limit_body_weights: float = 1.0
     touchdown_vertical_speed_scale: float = 0.3
 
@@ -294,6 +295,7 @@ class RewardConfig:
                 "gait_stance_slip",
                 "touchdown_impact",
                 "stand_contact",
+                "stand_still",
             )
         )
 
@@ -461,17 +463,26 @@ def compute_locomotion_reward(
     stand_foot_angular_motion = jnp.tanh(
         (inputs.foot_angular_speed / config.standing.foot_angular_speed_scale) ** 2
     )
-    stand_foot_motion = jnp.where(
-        standing_command,
-        jnp.mean(
-            stand_foot_linear_motion
-            + config.standing.foot_angular_weight * stand_foot_angular_motion
-        ),
-        0.0,
+    foot_motion = jnp.mean(
+        stand_foot_linear_motion
+        + config.standing.foot_angular_weight * stand_foot_angular_motion
     )
+    stand_foot_motion = jnp.where(standing_command, foot_motion, 0.0)
+    actual_contact = inputs.foot_contact.astype(jnp.float32)
+    support_fraction = jnp.mean(actual_contact)
     stand_contact = jnp.where(
         standing_command,
-        jnp.mean(1.0 - inputs.foot_contact.astype(jnp.float32)),
+        1.0 - support_fraction,
+        0.0,
+    )
+    standing_stillness = jnp.clip(
+        1.0 - foot_motion / (1.0 + config.standing.foot_angular_weight),
+        0.0,
+        1.0,
+    )
+    stand_still = jnp.where(
+        standing_command & ~inputs.done,
+        support_fraction * standing_stillness,
         0.0,
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
@@ -516,7 +527,6 @@ def compute_locomotion_reward(
     invalid_action = jnp.sum(unit_violation**2 + clip_violation**2)
 
     desired_contact = inputs.desired_foot_contact.astype(jnp.float32)
-    actual_contact = inputs.foot_contact.astype(jnp.float32)
     gait_contact = gait_active * jnp.mean(jnp.abs(actual_contact - desired_contact))
     foot_speed = jnp.linalg.norm(inputs.foot_linear_velocity[:, :2], axis=1)
     gait_stance_slip = gait_active * jnp.sum(
@@ -553,6 +563,7 @@ def compute_locomotion_reward(
         "joint_force_peak": joint_force_peak,
         "touchdown_impact": touchdown_impact,
         "joint_pose": joint_pose,
+        "stand_still": stand_still,
         "stand_foot_motion": stand_foot_motion,
         "stand_contact": stand_contact,
         "hip_deviation": hip_deviation,

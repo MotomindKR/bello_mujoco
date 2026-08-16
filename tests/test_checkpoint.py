@@ -551,7 +551,12 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     save_checkpoint(path, state, checkpoint_metadata)
     metadata_path = path / checkpoint.METADATA_FILE
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
-    for name in ("joint_force_peak", "touchdown_impact", "stand_contact"):
+    for name in (
+        "joint_force_peak",
+        "touchdown_impact",
+        "stand_still",
+        "stand_contact",
+    ):
         document["metadata"]["reward"]["weights"].pop(name)
     for name in (
         "joint_force_soft_limit_body_weights",
@@ -568,6 +573,7 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
 
     assert restored.reward.weights.joint_force_peak == 0.0
     assert restored.reward.weights.touchdown_impact == 0.0
+    assert restored.reward.weights.stand_still == 0.0
     assert restored.reward.weights.stand_contact == 0.0
     assert restored.reward.gait.joint_force_soft_limit_body_weights == 1.0
     assert restored.reward.gait.joint_force_top_k == 12

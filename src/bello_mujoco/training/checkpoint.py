@@ -577,7 +577,12 @@ def _with_checkpoint_metadata_defaults(value: Any) -> Any:
             weights = reward.get("weights")
             if isinstance(weights, dict):
                 normalized_weights = dict(weights)
-                for name in ("joint_force_peak", "touchdown_impact", "stand_contact"):
+                for name in (
+                    "joint_force_peak",
+                    "touchdown_impact",
+                    "stand_still",
+                    "stand_contact",
+                ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
                 normalized_reward["weights"] = normalized_weights

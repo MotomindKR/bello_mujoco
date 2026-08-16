@@ -155,8 +155,9 @@ reward_config:
     joint_force_peak: -4.0
     touchdown_impact: -1.0
     joint_pose: -0.1
-    stand_foot_motion: -2.0
-    stand_contact: -1.0
+    stand_still: 1.0
+    stand_foot_motion: -1.0
+    stand_contact: -0.5
     hip_deviation: -0.25
     knee_deviation: -0.1
     joint_limit: -1.0
@@ -189,7 +190,7 @@ reward_config:
     swing_clearance_target: 0.08
     joint_force_soft_limit_body_weights: 0.8
     joint_force_top_k: 2
-    joint_force_apply_while_standing: true
+    joint_force_apply_while_standing: false
     touchdown_force_soft_limit_body_weights: 1.0
     touchdown_vertical_speed_scale: 0.3
   limits_pose:

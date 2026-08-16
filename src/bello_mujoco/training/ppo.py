@@ -900,6 +900,9 @@ def command_conditioned_metrics(
 
     metrics = {
         "command/standing_mean_reward": masked_mean_or_zero(reward, standing),
+        "command/standing_positive_reward_fraction": masked_mean_or_zero(
+            (reward > 0.0).astype(jnp.float32), standing
+        ),
         "command/moving_mean_reward": masked_mean_or_zero(reward, moving),
     }
     returned = info.get("returned_episode")

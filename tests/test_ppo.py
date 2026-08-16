@@ -101,6 +101,9 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     assert command_metrics["command/standing_fraction"] == pytest.approx(0.5)
     assert command_metrics["command/moving_fraction"] == pytest.approx(0.5)
     assert conditioned["command/standing_mean_reward"] == pytest.approx(2.0)
+    assert conditioned["command/standing_positive_reward_fraction"] == pytest.approx(
+        1.0
+    )
     assert conditioned["command/moving_mean_reward"] == pytest.approx(3.0)
     assert conditioned["episode/standing_count"] == pytest.approx(1.0)
     assert conditioned["episode/standing_return"] == pytest.approx(10.0)
