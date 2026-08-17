@@ -275,7 +275,7 @@ computation where possible.
 | `torque_l1` | `-1.2` | Penalize absolute requested torque normalized by each joint's peak torque. |
 | `torque_peak` | `-12.0` | Quadratically penalize normalized torque above peak. |
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
-| `touchdown_impact` | `-1.0` | At the first raw foot-contact sample, penalize both measured normal contact impulse above one body-weight control impulse and pre-impact downward foot speed. Each component is bounded before weighting so isolated solver spikes cannot dominate PPO. |
+| `touchdown_impact` | `-4.0` | At the first raw foot-contact sample, penalize both measured normal contact impulse above one body-weight control impulse and pre-impact downward foot speed. Each component is bounded before weighting so isolated solver spikes cannot dominate PPO. |
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |

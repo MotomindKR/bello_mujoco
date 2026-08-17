@@ -346,7 +346,7 @@ def test_joint_force_peak_uses_top_loads_only_during_commanded_gait() -> None:
 
 def test_touchdown_impact_uses_normal_impulse_and_preimpact_vertical_speed() -> None:
     config = reward_config(
-        touchdown_impact=-1.0,
+        touchdown_impact=-4.0,
         gait=GaitRewardConfig(
             touchdown_force_soft_limit_body_weights=1.0,
             touchdown_vertical_speed_scale=0.3,
@@ -363,7 +363,7 @@ def test_touchdown_impact_uses_normal_impulse_and_preimpact_vertical_speed() -> 
         config, inputs.replace(foot_touchdown=jnp.zeros(2, dtype=bool))
     )
 
-    assert terms["reward/touchdown_impact"] == pytest.approx(-0.02 * jnp.tanh(1.0))
+    assert terms["reward/touchdown_impact"] == pytest.approx(-0.08 * jnp.tanh(1.0))
     assert no_touchdown["reward/touchdown_impact"] == pytest.approx(0.0)
 
 
@@ -537,7 +537,9 @@ def test_stand_still_rewards_healthy_quiet_double_support() -> None:
     assert terminal_reward == pytest.approx(0.0)
 
 
-def test_default_healthy_standing_return_is_positive_despite_joint_support_load() -> None:
+def test_default_healthy_standing_return_is_positive_despite_joint_support_load() -> (
+    None
+):
     config = RewardConfig()
     healthy_reward, healthy = compute_locomotion_reward(
         config,

@@ -204,7 +204,7 @@ class RewardWeights:
     torque_l1: float = -1.2
     torque_peak: float = -12.0
     joint_force_peak: float = -4.0
-    touchdown_impact: float = -1.0
+    touchdown_impact: float = -4.0
     joint_pose: float = -0.1
     stand_still: float = 1.0
     stand_foot_motion: float = -1.0
