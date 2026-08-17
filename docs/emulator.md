@@ -1,6 +1,6 @@
 # RobStride emulator
 
-The RobStride emulator presents the canonical 60 kg sphere-hand Bello
+The RobStride emulator presents the canonical 55.068 kg sphere-hand Bello
 morphology through the same motor, IMU, and pose interfaces used around
 physical hardware, while native MuJoCo supplies real-time dynamics.
 
@@ -33,8 +33,8 @@ The emulated motor contract is:
   differential-transmission ownership.
 
 The sphere-hand emulator selects the canonical `lower_body` and `upper_body`
-groups and leaves the physical `wrist_yaw` group inactive. Differential ankles
-remain two coupled tendon motors per side. Initialization validates unique
+groups. Differential ankles remain two coupled tendon motors per side.
+Initialization validates unique
 bus/CAN identities, model ranges, optional-joint coverage, complete coupling
 groups, URDF transmission ownership, and torque enforcement. The command
 requires a source checkout because the wheel intentionally omits hardware

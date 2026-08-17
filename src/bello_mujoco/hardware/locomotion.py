@@ -302,24 +302,7 @@ def validate_hardware_checkpoint(
 ) -> None:
     if metadata.task != "locomotion":
         raise ValueError("hardware locomotion requires a locomotion checkpoint")
-    if metadata.asset.end_effector_sphere_mode != "both":
-        raise ValueError("hardware locomotion requires sphere hands")
     availability = metadata.asset.joint_availability
-    unexpected = sorted(
-        availability.enabled_joint_names
-        & {
-            "waist_roll_joint",
-            "waist_pitch_joint",
-            "neck_yaw_joint",
-            "head_pitch_joint",
-        }
-    )
-    if unexpected:
-        raise ValueError(
-            "checkpoint morphology contains joints absent from bello-stack hardware: "
-            + ", ".join(unexpected)
-            + "; train with `bello-train experiment=hardware_locomotion`"
-        )
     if not availability.waist_yaw:
         raise ValueError("hardware locomotion requires waist_yaw_joint")
     if env.config.observation.privileged:

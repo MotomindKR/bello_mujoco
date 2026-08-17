@@ -733,8 +733,6 @@ def validate_hardware_motion_checkpoint(
             "bounded BeyondMimic hardware deployment requires "
             "'tanh_gaussian' policy actions"
         )
-    if metadata.asset.end_effector_sphere_mode != "both":
-        raise ValueError("motion hardware runner requires sphere hands")
     availability = metadata.asset.joint_availability
     if availability.enabled_joint_names != {"waist_yaw_joint"}:
         raise ValueError(

@@ -8,6 +8,7 @@ guides define the supported interfaces and contracts:
 - [Training and evaluation contracts](training_and_evaluation.md)
 - [Motion data and tracking](motion_tracking.md)
 - [Physical hardware](hardware.md)
+- [URDF inertial overhaul](urdf_inertial_overhaul.md)
 - [RobStride emulator](emulator.md)
 - [Vast.ai lifecycle](vast_ai.md)
 

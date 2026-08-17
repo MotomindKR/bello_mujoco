@@ -227,7 +227,6 @@ def test_default_motion_profile_uses_tracked_fixed_joint_clip() -> None:
     config = motion_training_profile()
 
     assert config.asset_config.joint_availability == FIXED_TRACKING_JOINT_AVAILABILITY
-    assert config.asset_config.end_effector_sphere_mode == "both"
     assert not config.asset_config.enforce_policy_effort_limits
     assert config.env_config.reward.torque_l1_weight == -1.2
     assert config.env_config.reward.torque_peak_weight == -12.0

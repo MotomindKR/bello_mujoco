@@ -50,11 +50,11 @@ def test_full_body_model_uses_canonical_policy_partition_by_default(
 ) -> None:
     model = load_prepared_bello_model(full_body_asset)
 
-    assert model.mj_model.nq == 42
-    assert model.mj_model.nv == 41
-    assert model.mj_model.nu == 35
+    assert model.mj_model.nq == 32
+    assert model.mj_model.nv == 31
+    assert model.mj_model.nu == 25
     assert model.policy_ctrl_indices.tolist() == list(range(13))
-    assert model.hold_ctrl_indices.tolist() == list(range(13, 35))
+    assert model.hold_ctrl_indices.tolist() == list(range(13, 25))
     expected_range = []
     for joint_name in model.actuator_joint_names:
         low, high = configured_actuator_joint_range(
@@ -489,9 +489,9 @@ def test_joint_actuator_mode_controls_policy_action_partition(
         actuator_config=ActuatorConfig(joints=joints),
     )
 
-    assert model.mj_model.nu == 35
+    assert model.mj_model.nu == 25
     assert len(model.policy_ctrl_indices) == 12
-    assert len(model.hold_ctrl_indices) == 23
+    assert len(model.hold_ctrl_indices) == 13
 
 
 def test_policy_joint_angle_offsets_leave_hold_targets_unchanged(
@@ -585,7 +585,7 @@ def test_model_partitions_actuators_by_joint_not_actuator_name(
     )
 
     assert len(model.policy_ctrl_indices) == 13
-    assert len(model.hold_ctrl_indices) == 22
+    assert len(model.hold_ctrl_indices) == 12
 
 
 def test_training_model_uses_simplified_mesh_collision_profile(
@@ -622,15 +622,15 @@ def test_training_model_uses_simplified_mesh_collision_profile(
         1 for geom_type in model.geom_type if geom_type == mujoco.mjtGeom.mjGEOM_PLANE
     )
 
-    assert model.ngeom == 48
-    assert len(collision_mesh_geoms) == 38
+    assert model.ngeom == 40
+    assert len(collision_mesh_geoms) == 28
     assert 100_000 < sum(collision_mesh_faces) < 150_000
     assert min(collision_mesh_faces) >= 1_000
     assert max(collision_mesh_faces) > 20_000
     assert box_collision_count == 6
     assert cylinder_collision_count == 4
     assert plane_count == 0
-    assert model.nexclude == 104
+    assert model.nexclude == 78
 
 
 def test_viewer_model_adds_non_colliding_visual_meshes(
@@ -645,8 +645,8 @@ def test_viewer_model_adds_non_colliding_visual_meshes(
         and model.geom_conaffinity[geom_id] == 0
     ]
 
-    assert model.ngeom == 88
-    assert len(visual_mesh_geoms) == 40
+    assert model.ngeom == 70
+    assert len(visual_mesh_geoms) == 30
 
 
 def test_loading_viewer_model_preserves_policy_contract(
@@ -656,7 +656,7 @@ def test_loading_viewer_model_preserves_policy_contract(
     viewer_model = load_prepared_bello_model(full_body_asset, use_viewer_model=True)
 
     assert viewer_model.xml_path == full_body_asset.viewer_mjcf_path
-    assert viewer_model.mj_model.ngeom == sim_model.mj_model.ngeom + 40
+    assert viewer_model.mj_model.ngeom == sim_model.mj_model.ngeom + 30
     assert viewer_model.mj_model.nq == sim_model.mj_model.nq
     assert viewer_model.mj_model.nv == sim_model.mj_model.nv
     assert viewer_model.mj_model.nu == sim_model.mj_model.nu

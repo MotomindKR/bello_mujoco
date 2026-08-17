@@ -27,10 +27,6 @@ FIXED_TRACKING_JOINT_NAMES = (
 
 FIXED_TRACKING_JOINT_AVAILABILITY = JointAvailabilityConfig(
     waist_yaw=True,
-    waist_roll=False,
-    waist_pitch=False,
-    neck_yaw=False,
-    head_pitch=False,
 )
 
 GMR_BELLO_JOINT_NAMES = (
@@ -117,8 +113,7 @@ def motion_tracking_asset_config(
         asset="full_body",
         output_root=output_root,
         collision_mode=collision_mode,
-        end_effector_sphere_mode="both",
-        target_total_mass_kg=60.0,
+        target_total_mass_kg=None,
         enforce_policy_effort_limits=False,
         joint_availability=FIXED_TRACKING_JOINT_AVAILABILITY,
         actuator_config=motion_tracking_actuator_config(),

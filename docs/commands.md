@@ -47,7 +47,7 @@ Configuration source: `configs/commands/prepare_assets.yaml`.
 | `profile` | `physical` or `visualizer`; `physical` | Select the canonical physical recipe or the lower-resolution persistent viewer recipe. |
 | `output_root` | path or `null`; `null` | Override the generated-asset root. `~` is expanded. With the physical profile, `null` uses the content-addressed user cache at `$XDG_CACHE_HOME/bello-mujoco/assets` (or `~/.cache/bello-mujoco/assets`) and retains the eight most recently used variants. The visualizer profile defaults to `assets/generated/visualizer`. |
 
-Both profiles use the 60 kg, box-collision, sphere-hand morphology with active
+Both profiles use the 55.068 kg, box-collision, sphere-hand morphology with active
 waist yaw and fixed waist roll/pitch, neck yaw, and head pitch. The physical
 profile keeps a 200,000-face visual budget; the visualizer profile uses 20,000.
 The collision budget remains 1,000 faces. Both standalone profiles omit

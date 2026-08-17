@@ -95,19 +95,18 @@ The asset section selects a deterministic prepared morphology.
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
 | `visual_mesh_face_budget` | `200000` | Per-mesh viewer simplification budget. |
-| `end_effector_sphere_mode` | `both` | Replace both wrist/gripper subtrees with fixed sphere hands. |
-| `target_total_mass_kg` | `60` | Uniformly rescale all link masses and inertias to the target total. |
+| `target_total_mass_kg` | `null` | Optional experimental uniform rescaling. Maintained policies use the canonical 55.068 kg physical inertials without rescaling. |
 | `neighbor_exclusion_depth` | `2` | Exclude nearby kinematic neighbors from generated self-collision pairs. |
 | `enforce_policy_effort_limits` | `false` | When false, training can observe and penalize over-peak requested force. The native emulator and hardware still enforce physical limits. |
 | `imu_config` | disabled | Optional generated IMU site/sensors. Its `enabled` field controls generation and `body_name` selects the instrumented body. Training observations derive simulated IMU features without requiring this native sensor block. |
 | `ankle_differential_config.motor_gain_scale` | `0.5` | Gain multiplier applied to each differential-ankle motor. |
 | `ankle_differential_config.motor_effort_limit_scale` | `1` | Motor effort-limit multiplier. |
-| `joint_availability.*` | waist yaw on; waist roll/pitch and neck/head off | Fix optional joints at asset-generation time. |
+| `joint_availability.waist_yaw` | `true` | Optionally fix the physical waist-yaw joint at asset-generation time. Waist roll/pitch and neck/head joints are fixed in the canonical URDF. |
 | `actuator_config` | canonical Bello map | Its `joints` mapping assigns a `JointActuatorConfig` to each joint. |
 
 The `ankle_differential_config` fields are `motor_gain_scale` and
-`motor_effort_limit_scale`. `joint_availability` has the boolean fields
-`waist_yaw`, `waist_roll`, `waist_pitch`, `neck_yaw`, and `head_pitch`.
+`motor_effort_limit_scale`. `joint_availability` has only the `waist_yaw`
+boolean field.
 Each `actuator_config.joints` entry has a `mode` (`policy` or `hold`),
 `default_pos`, optional `soft_limit`, `[kp, kd]` `gains`, and optional
 `effort_limit`.
@@ -119,7 +118,7 @@ a custom `output_root`.
 
 Motion training supplies its `asset_config` from the
 `MotionTrainingRunConfig` default factory rather than its YAML. The fixed
-tracking contract is the canonical 60 kg, box-collision, sphere-hand asset with
+tracking contract is the canonical 55.068 kg, box-collision, sphere-hand asset with
 waist yaw enabled; waist roll/pitch and neck/head joints are fixed, and all 25
 remaining coordinates are policy-controlled. Motion initialization rejects an
 asset that deviates from this contract.
