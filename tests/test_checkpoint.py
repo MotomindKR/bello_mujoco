@@ -885,6 +885,12 @@ def test_evaluation_mismatch_override_migrates_retired_sphere_asset_field(
     )
     document["git_commit"] = "2" * 40
     document["metadata"]["asset"]["end_effector_sphere_mode"] = "both"
+    document["metadata"]["asset"]["joint_availability"].update(
+        waist_roll=False,
+        waist_pitch=False,
+        neck_yaw=False,
+        head_pitch=False,
+    )
     document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
     path = tmp_path / "retired_sphere_asset_field"
     write_checkpoint_document(path, document)
@@ -918,6 +924,23 @@ def test_evaluation_mismatch_override_validates_retired_sphere_asset_field(
     write_checkpoint_document(path, document)
 
     with pytest.raises(ValueError, match="end_effector_sphere_mode must be"):
+        load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
+
+
+def test_evaluation_mismatch_override_rejects_enabled_retired_joint(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    document = checkpoint_document(
+        metadata(config, tmp_path), runner_state(config, FakeEnv())
+    )
+    document["git_commit"] = "2" * 40
+    document["metadata"]["asset"]["joint_availability"]["waist_roll"] = True
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    path = tmp_path / "enabled_retired_joint"
+    write_checkpoint_document(path, document)
+
+    with pytest.raises(ValueError, match="waist_roll must be false"):
         load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
 
 

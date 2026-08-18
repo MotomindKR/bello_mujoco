@@ -568,19 +568,7 @@ def _with_checkpoint_metadata_defaults(
     if not isinstance(value, dict):
         return value
     if allow_retired_asset_schema:
-        asset = value.get("asset")
-        if isinstance(asset, dict) and "end_effector_sphere_mode" in asset:
-            legacy_mode = asset["end_effector_sphere_mode"]
-            if legacy_mode not in {"none", "both"}:
-                raise ValueError(
-                    "metadata.asset.end_effector_sphere_mode must be 'none' or "
-                    f"'both', got {legacy_mode!r}"
-                )
-            normalized = dict(value)
-            normalized_asset = dict(asset)
-            normalized_asset.pop("end_effector_sphere_mode")
-            normalized["asset"] = normalized_asset
-            value = normalized
+        value = _without_retired_asset_schema(value)
     if value.get("task") == "locomotion":
         normalized = dict(value)
         env = value.get("env")
@@ -637,6 +625,41 @@ def _with_checkpoint_metadata_defaults(
         MotionObservationLatencyConfig()
     )
     normalized["motion_env"] = normalized_motion_env
+    return normalized
+
+
+def _without_retired_asset_schema(value: dict[str, Any]) -> dict[str, Any]:
+    asset = value.get("asset")
+    if not isinstance(asset, dict):
+        return value
+    normalized_asset = dict(asset)
+    changed = False
+    if "end_effector_sphere_mode" in normalized_asset:
+        legacy_mode = normalized_asset.pop("end_effector_sphere_mode")
+        if legacy_mode not in {"none", "both"}:
+            raise ValueError(
+                "metadata.asset.end_effector_sphere_mode must be 'none' or "
+                f"'both', got {legacy_mode!r}"
+            )
+        changed = True
+    availability = normalized_asset.get("joint_availability")
+    if isinstance(availability, dict):
+        normalized_availability = dict(availability)
+        for name in ("waist_roll", "waist_pitch", "neck_yaw", "head_pitch"):
+            if name not in normalized_availability:
+                continue
+            legacy_enabled = normalized_availability.pop(name)
+            if legacy_enabled is not False:
+                raise ValueError(
+                    f"metadata.asset.joint_availability.{name} must be false "
+                    "for the canonical fixed joint"
+                )
+            changed = True
+        normalized_asset["joint_availability"] = normalized_availability
+    if not changed:
+        return value
+    normalized = dict(value)
+    normalized["asset"] = normalized_asset
     return normalized
 
 

@@ -268,7 +268,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `task` | `locomotion` or `motion`; `locomotion` | both | Select the checkpoint and observation contract. |
 | `checkpoint_path` | path or `null`; `null` | both | Required locomotion or motion checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
 | `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
-| `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout. Evaluation/hardware loading also removes the retired `end_effector_sphere_mode` metadata field; all other task, shape, asset, motion-content, and hardware preflight checks remain active. |
+| `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout. Evaluation/hardware loading also removes retired generated-asset fields that the canonical URDF replaces, but rejects retired joint selectors that were enabled; all other task, shape, asset, motion-content, and hardware preflight checks remain active. |
 | `endpoint` | string; `http://127.0.0.1:50051` | both | `bello-hardwared` endpoint. |
 | `remote_endpoint` | string or `null`; `null` | locomotion | Required plaintext URL of the visualizer's RemoteCommandService, for example `http://visualizer-host:50054`. |
 | `remote_staleness_ms` | positive integer; `200` | locomotion | Maximum age of the latest remote-command sample before the command becomes zero and the stream reconnects. |

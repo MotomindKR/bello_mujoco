@@ -86,9 +86,10 @@ Checkpoints store:
 
 There is no general automatic cross-revision adaptation. With an explicit
 commit-mismatch override, evaluation and hardware loading remove the retired
-`end_effector_sphere_mode` asset field because it no longer affects the runtime
-contract; resume remains strict. Checkpoint-producing training requires a clean
-`HEAD` contained by a local `origin/*` tracking
+generated-hand field and disabled selectors for joints now fixed by the
+canonical URDF. Enabled retired selectors are rejected, and resume remains
+strict. Checkpoint-producing training requires a clean `HEAD` contained by a
+local `origin/*` tracking
 branch and rechecks that revision immediately before every checkpoint is
 published. The root commit pins `deps/bello-stack`; its recursive submodules
 must be initialized, clean, and at their recorded commits. Fetch or push before
