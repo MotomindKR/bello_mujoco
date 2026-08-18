@@ -875,6 +875,52 @@ def test_metadata_rejects_unknown_resolved_config_key(tmp_path: Path) -> None:
         load_checkpoint_metadata(path)
 
 
+def test_evaluation_mismatch_override_migrates_retired_sphere_asset_field(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    expected_metadata = metadata(config, tmp_path)
+    document = checkpoint_document(
+        expected_metadata, runner_state(config, FakeEnv())
+    )
+    document["git_commit"] = "2" * 40
+    document["metadata"]["asset"]["end_effector_sphere_mode"] = "both"
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    path = tmp_path / "retired_sphere_asset_field"
+    write_checkpoint_document(path, document)
+
+    with pytest.raises(ValueError, match="source commit does not match"):
+        load_checkpoint_metadata(path)
+
+    restored = load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
+
+    assert restored.asset == AssetPrepConfig()
+    with pytest.raises(ValueError, match=r"unknown config key.*metadata\.asset"):
+        restore_runner_checkpoint(
+            path,
+            FakeEnv(),
+            expected_metadata,
+            allow_git_commit_mismatch=True,
+        )
+
+
+def test_evaluation_mismatch_override_validates_retired_sphere_asset_field(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    document = checkpoint_document(
+        metadata(config, tmp_path), runner_state(config, FakeEnv())
+    )
+    document["git_commit"] = "2" * 40
+    document["metadata"]["asset"]["end_effector_sphere_mode"] = "left"
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    path = tmp_path / "invalid_retired_sphere_asset_field"
+    write_checkpoint_document(path, document)
+
+    with pytest.raises(ValueError, match="end_effector_sphere_mode must be"):
+        load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
+
+
 def test_checkpoint_checks_git_commit_before_revision_private_fields(
     tmp_path: Path,
     exact_source_checkout,

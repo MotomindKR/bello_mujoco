@@ -261,6 +261,7 @@ def restore_evaluation_checkpoint(
     metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
         path,
         allow_git_commit_mismatch=allow_git_commit_mismatch,
+        allow_retired_asset_schema=allow_git_commit_mismatch,
     )
     template_state, _ = init_train_state(
         jax.random.PRNGKey(metadata.ppo.seed),
@@ -362,6 +363,7 @@ def load_checkpoint_metadata(
     metadata, _, _, _ = _load_checkpoint_document(
         Path(path).resolve(),
         allow_git_commit_mismatch=allow_git_commit_mismatch,
+        allow_retired_asset_schema=allow_git_commit_mismatch,
     )
     return metadata
 
@@ -497,6 +499,7 @@ def _load_checkpoint_document(
     path: Path,
     *,
     allow_git_commit_mismatch: bool = False,
+    allow_retired_asset_schema: bool = False,
 ) -> tuple[CheckpointMetadata, int, str, str]:
     metadata_path = Path(path).resolve() / METADATA_FILE
     try:
@@ -541,7 +544,10 @@ def _load_checkpoint_document(
             "the checkpoint is corrupt or has been modified"
         )
     metadata = _metadata_from_dict(
-        _with_checkpoint_metadata_defaults(metadata_payload),
+        _with_checkpoint_metadata_defaults(
+            metadata_payload,
+            allow_retired_asset_schema=allow_retired_asset_schema,
+        ),
         strict=True,
         require_all_fields=True,
         path="metadata",
@@ -554,9 +560,27 @@ def _load_checkpoint_document(
     return metadata, update, train_fingerprint, continuation_fingerprint
 
 
-def _with_checkpoint_metadata_defaults(value: Any) -> Any:
+def _with_checkpoint_metadata_defaults(
+    value: Any,
+    *,
+    allow_retired_asset_schema: bool = False,
+) -> Any:
     if not isinstance(value, dict):
         return value
+    if allow_retired_asset_schema:
+        asset = value.get("asset")
+        if isinstance(asset, dict) and "end_effector_sphere_mode" in asset:
+            legacy_mode = asset["end_effector_sphere_mode"]
+            if legacy_mode not in {"none", "both"}:
+                raise ValueError(
+                    "metadata.asset.end_effector_sphere_mode must be 'none' or "
+                    f"'both', got {legacy_mode!r}"
+                )
+            normalized = dict(value)
+            normalized_asset = dict(asset)
+            normalized_asset.pop("end_effector_sphere_mode")
+            normalized["asset"] = normalized_asset
+            value = normalized
     if value.get("task") == "locomotion":
         normalized = dict(value)
         env = value.get("env")

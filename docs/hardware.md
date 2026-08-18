@@ -58,8 +58,11 @@ safety fix is not inherited automatically by a historical checkpoint.
 No motor target is sent in this mode.
 
 With `allow_git_commit_mismatch=true`, the current checkout's runner and
-generated assets are used without adaptation. Run an unarmed preflight and
-review the source differences before arming.
+generated assets are used. Evaluation and hardware loading may discard the
+retired `end_effector_sphere_mode` metadata field because the canonical URDF
+now supplies the complete end effectors and the field no longer affects the
+runtime tensor contract. No other checkpoint metadata is adapted. Run an
+unarmed preflight and review the source differences before arming.
 
 ## Arming contract
 
