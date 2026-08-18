@@ -127,7 +127,8 @@ Left-stick vertical/horizontal controls forward/lateral velocity, right-stick
 horizontal controls yaw, and R1 aborts. The controller must be
 physically neutral before nonzero intent is accepted after controller or gRPC
 reconnection. Controller disconnection or a stale service stream commands
-zero; the runner reconnects automatically and requires neutral again. A fresh
+zero. A stale stream remains subscribed and requires neutral again when fresh
+samples resume; an ended RPC reconnects on the existing channel. A fresh
 service sample is required before the runner connects to hardware. R1
 is level-sensitive and latched by the client, including when it is held during
 startup. Ctrl-C remains the terminal fallback. Hardware locomotion has no

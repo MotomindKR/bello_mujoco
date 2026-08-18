@@ -123,7 +123,7 @@ def test_remote_requires_neutral_and_latches_abort() -> None:
             source.close()
 
 
-def test_stale_stream_commands_zero_and_reconnect_requires_neutral() -> None:
+def test_stale_stream_commands_zero_and_recovers_in_place_requires_neutral() -> None:
     with RemoteService() as service:
         source = RemoteCommandSource(
             RemoteCommandConfig(endpoint=service.endpoint, staleness_ms=30)
@@ -150,10 +150,10 @@ def test_stale_stream_commands_zero_and_reconnect_requires_neutral() -> None:
                 )
             )
             assert stale.normalized_command == (0.0, 0.0, 0.0)
-            wait_for(lambda: service.calls >= 2)
+            assert service.calls == 1
 
             service.send(
-                1,
+                3,
                 (0.5, 0.0, 0.0),
                 controller_connected=True,
                 controller_name="controller",
@@ -163,12 +163,52 @@ def test_stale_stream_commands_zero_and_reconnect_requires_neutral() -> None:
             assert held.normalized_command == (0.0, 0.0, 0.0)
             assert not held.intent_armed
             service.send(
-                2,
+                4,
                 controller_connected=True,
                 controller_name="controller",
                 intent_armed=True,
             )
             wait_for(lambda: source.poll().intent_armed)
+            assert service.calls == 1
+        finally:
+            source.close()
+
+
+def test_rpc_termination_reconnects_on_existing_channel(monkeypatch) -> None:
+    created_channels = 0
+    original_insecure_channel = grpc.insecure_channel
+
+    def counted_channel(target):
+        nonlocal created_channels
+        created_channels += 1
+        return original_insecure_channel(target)
+
+    monkeypatch.setattr(remote_module.grpc, "insecure_channel", counted_channel)
+    with RemoteService() as service:
+        source = RemoteCommandSource(RemoteCommandConfig(endpoint=service.endpoint))
+        try:
+            service.send(
+                1,
+                controller_connected=True,
+                controller_name="controller",
+                intent_armed=True,
+            )
+            source.wait_until_ready(1.0)
+            service.end_stream()
+            wait_for(lambda: service.calls >= 2)
+            service.send(
+                1,
+                controller_connected=True,
+                controller_name="controller",
+                intent_armed=True,
+            )
+
+            reconnected = source.wait_until_ready(1.0)
+
+            assert reconnected.service_connected
+            assert reconnected.controller_connected
+            assert reconnected.intent_armed
+            assert created_channels == 1
         finally:
             source.close()
 
