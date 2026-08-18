@@ -217,19 +217,35 @@ def evaluate_sonic_checkpoint(
         normalization.observation,
         metadata,
     )
+    evaluate_reference_oracle = _build_compiled_clip_evaluator(
+        first_env,
+        train_state.policy,
+        normalization.observation,
+        metadata,
+        reference_action_oracle=True,
+    )
 
     clip_results = []
+    oracle_clip_results = []
     video_env = first_env if config.video_path is not None else None
     for clip_index, clip in enumerate(heldout):
         selected_bank = select_sonic_reference_clip_in_bank(
             current_bank,
             _bank_clip_index(current_bank, clip),
         )
-        accumulators = evaluate_clip(_device_reference_bank_arrays(selected_bank))
+        arrays = _device_reference_bank_arrays(selected_bank)
+        accumulators = evaluate_clip(arrays)
+        oracle_accumulators = evaluate_reference_oracle(arrays)
         clip_results.append(
             {
                 **clip,
                 **_compiled_clip_result(accumulators),
+            }
+        )
+        oracle_clip_results.append(
+            {
+                **clip,
+                **_compiled_clip_result(oracle_accumulators),
             }
         )
         completed = clip_index + 1
@@ -241,6 +257,7 @@ def evaluate_sonic_checkpoint(
             )
 
     clip_results.sort(key=lambda clip: int(clip["evaluation_order"]))
+    oracle_clip_results.sort(key=lambda clip: int(clip["evaluation_order"]))
 
     video = None
     if video_env is not None and config.video_path is not None:
@@ -266,6 +283,20 @@ def evaluate_sonic_checkpoint(
         )
         video = {"path": str(video_path), "steps": max(1, steps)}
     report = _aggregate_results(metadata, clip_results, config.thresholds, video)
+    oracle_report = _aggregate_results(
+        metadata, oracle_clip_results, config.thresholds, None
+    )
+    report["reference_action_oracle"] = {
+        name: oracle_report[name]
+        for name in (
+            "global",
+            "frame_weighted",
+            "acceptance",
+            "per_source",
+            "per_semantic_label",
+            "per_clip",
+        )
+    }
     output_path = config.output_path.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -346,7 +377,6 @@ def _policy_template(metadata, env, release):
         bello_default_joint_position=np.asarray(env.model.default_joint_target)[
             np.asarray(env.model.policy_ctrl_indices)
         ],
-        initial_action_std=float(np.exp(metadata.ppo.policy.init_log_std)),
     )
     _, policy_key = jax.random.split(jax.random.PRNGKey(metadata.ppo.seed))
     return init_actor_critic(
@@ -381,6 +411,8 @@ def _build_compiled_clip_evaluator(
     policy,
     observation_norm_state,
     metadata: SonicCheckpointMetadata,
+    *,
+    reference_action_oracle: bool = False,
 ):
     reference_bank = env.reference_bank
     if reference_bank is None:
@@ -428,12 +460,15 @@ def _build_compiled_clip_evaluator(
 
             def take_step(operand):
                 step_state, step_observation, step_totals = operand
-                policy_observation = normalize_observation(
-                    step_observation,
-                    observation_norm_state,
-                    metadata.ppo,
-                )
-                action = apply_actor(policy, policy_observation)
+                if reference_action_oracle:
+                    action = current_env.reference_action(step_state)
+                else:
+                    policy_observation = normalize_observation(
+                        step_observation,
+                        observation_norm_state,
+                        metadata.ppo,
+                    )
+                    action = apply_actor(policy, policy_observation)
                 next_state, next_observation, reward, done, info = current_env.step(
                     step_state, action
                 )

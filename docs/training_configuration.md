@@ -102,9 +102,9 @@ rollout batch are not sampled.
 | `action_limit` | `1` | Squashed action magnitude. For bounded policies it must equal the environment `action_clip`. |
 | `architecture` | `mlp` | Task-owned actor implementation: `mlp`, `twist_teacher`, `twist_student`, `twist2`, or `sonic`. |
 | `layer_norm_final_hidden` | `false` | Enable the final-hidden normalization required by TWIST-family networks. SONIC leaves it disabled. |
-| `sonic_trainable_middle_prefix_layers` | `0` | Number of SONIC interior decoder linears to unfreeze from the input side. SONIC-only; prefix plus suffix cannot exceed five. |
-| `sonic_trainable_middle_suffix_layers` | `1` in the SONIC profile | Number of SONIC interior decoder linears to unfreeze from the output side. |
-| `sonic_train_log_std` | `true`; `false` in the SONIC profile | Include SONIC Gaussian log standard deviation in the actor optimizer. Other architectures require `true`. |
+| `sonic_lora_rank` | `32` | Rank of SONIC's trainable actor/critic low-rank residuals. The released base arrays remain frozen. |
+| `sonic_lora_alpha` | `32.0` | LoRA multiplier numerator; effective residual scale is alpha divided by rank. |
+| `sonic_train_log_std` | `true` | Include SONIC Gaussian log standard deviation in the actor optimizer. Other architectures require `true`. |
 
 ## Assets: `asset_config`
 
@@ -447,41 +447,38 @@ exact released 19,426-clip source composition with unit weights. See the
 ## SONIC transfer: `configs/train_sonic`
 
 SONIC is an isolated 200 Hz simulation/50 Hz control task with ten-second
-episodes and a 25-joint Bello action. Its actor consumes 1,670 raw values: ten
-84-value SMPL command frames for the frozen encoder, a 20-value desired root
-XY path, and ten Bello history
+episodes and a 25-joint Bello action. Its actor consumes 1,650 raw values: ten
+84-value SMPL command frames for the frozen encoder and ten Bello history
 frames containing projected gravity, base angular velocity, joint position,
-joint velocity, and previous action. The new privileged critic consumes 1,445
-values. The actor remains raw, while the critic has an independent running
-mean/std normalizer.
+joint velocity, and previous action. The privileged critic consumes the
+released 1,645-value G1-semantic layout. Both actor and critic align Bello
+joints/vectors into the source spaces; the exact released critic running
+mean/variance is applied inside the policy.
 
-The exported release supplies a frozen five-layer SMPL encoder, 32-level FSQ,
-the token branch of decoder layer zero, and five initialized interior decoder
-linears. The Bello proprioceptive and zero-initialized root-path projections,
-first-layer bias, configured interior prefix/suffix, 25-output projection/bias,
-and new critic are optimizer leaves. The maintained profile freezes the actor
-log standard deviation at `0.05`. Frozen
-arrays are structurally absent from optimizer state and are content-hashed
-before periodic and final checkpoints. The maintained profile trains the final
-interior linear while keeping the prefix frozen.
+The exported release supplies the frozen five-layer SMPL encoder, 32-level FSQ,
+complete 29-output dynamics decoder, critic, and critic observation moments.
+A fixed block-sparse 29-to-25 semantic transform wraps the source policy.
+Rank-32 LoRA residuals on actor proprioception, actor backbone/output, and all
+critic linears are optimizer leaves; the source arrays and semantic maps are
+not. The mapped Bello log standard deviation remains trainable. Frozen arrays
+are content-hashed before periodic and final checkpoints.
 
-Fresh runs first perform 2,000 offline adapter updates on a hash-separated
-training subset. Direct Bello targets, target deltas, feasible action bounds,
-and released first-layer activations supervise only the morphology-dependent
-input/output edges. Resume runs skip this stage. The complete `pretraining`
-config is stored in checkpoint metadata.
+Fresh maintained runs start PPO with zero-output LoRA residuals. The offline
+adapter warm-start remains available as an explicit experiment but defaults to
+disabled because its one-step pose targets do not capture target dynamics.
 
 The maintained PPO profile uses 4,096 environments, 24 steps, five epochs,
 four minibatches, actor-edge learning rate `2e-5`, critic learning rate
-`1e-3`, desired KL `0.01`, zero entropy bonus, maximum gradient norm `0.1`, gamma
-`0.99`, GAE lambda `0.95`, and clip ratio `0.2`. It uses an unsquashed Gaussian
-fixed at `0.05`. Raw actions are clipped to `[-20,20]`, multiplied by Bello's
+`1e-3`, desired KL `0.01`, entropy coefficient `0.01`, maximum gradient norm
+`0.1`, gamma `0.99`, GAE lambda `0.95`, and clip ratio `0.2`. It uses an
+unsquashed Gaussian with trainable mapped variance. Raw actions are clipped to
+`[-20,20]`, multiplied by Bello's
 per-joint `0.25 * effort_limit / stiffness` action scale, and clipped again to
 the generated model's feasible joint-target interval.
 
 The `pretraining` section contains `enabled`, `updates`, `batch_size`,
 `validation_batch_size`, `learning_rate`, `max_gradient_norm`,
-`validation_clip_fraction`, `action_huber_delta`,
+`validation_clip_fraction`, `startup_history_fraction`, `action_huber_delta`,
 `activation_consistency_weight`, `temporal_consistency_weight`,
 `target_limit_weight`, `parameter_anchor_weight`, `log_every_updates`, and
 `seed`. All loss weights are nonnegative; sizes, update counts, and learning
@@ -595,6 +592,7 @@ Headline resolved PPO values are:
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist2` | 2,949,218,304 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | three released actor encoders + 512-512-256-128 SiLU + LN |
+| `sonic` | 2,949,120,000 | 4,096 × 24 | 5 × 4 | 0.00002 adaptive | 0.99 / 0.95 | frozen SONIC actor/critic + rank-32 LoRA |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included

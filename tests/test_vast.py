@@ -1431,6 +1431,11 @@ def test_downloaded_sonic_results_are_hash_and_dataset_bound(tmp_path: Path) -> 
         "global": {"completion_rate": 0.5},
         "acceptance": {"passed": False},
         "per_clip": [{"completed": True}, {"completed": False}],
+        "reference_action_oracle": {
+            "global": {"completion_rate": 0.75},
+            "acceptance": {"passed": False},
+            "per_clip": [{"completed": True}, {"completed": False}],
+        },
     }
     summary = {
         "task": "sonic",
@@ -1438,6 +1443,11 @@ def test_downloaded_sonic_results_are_hash_and_dataset_bound(tmp_path: Path) -> 
         "evaluated_clips": 2,
         "global": report["global"],
         "acceptance": report["acceptance"],
+        "reference_action_oracle": {
+            "evaluated_clips": 2,
+            "global": report["reference_action_oracle"]["global"],
+            "acceptance": report["reference_action_oracle"]["acceptance"],
+        },
     }
     benchmark = {
         "sonic_benchmark": {

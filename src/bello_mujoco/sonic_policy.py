@@ -17,7 +17,7 @@ from bello_mujoco.motion.sonic_dataset import (
     SonicJointCalibration,
 )
 
-SONIC_ARTIFACT_SCHEMA_VERSION = 1
+SONIC_ARTIFACT_SCHEMA_VERSION = 2
 SONIC_SMPL_FRAME_COUNT = 10
 SONIC_SMPL_FRAME_SIZE = 84
 SONIC_SMPL_INPUT_SIZE = SONIC_SMPL_FRAME_COUNT * SONIC_SMPL_FRAME_SIZE
@@ -28,12 +28,12 @@ SONIC_G1_ACTION_SIZE = 29
 SONIC_BELLO_ACTION_SIZE = 25
 SONIC_G1_PROPRIO_SIZE = 930
 SONIC_BELLO_PROPRIO_SIZE = 810
-SONIC_ROOT_MOTION_COMMAND_SIZE = 2 * SONIC_SMPL_FRAME_COUNT
-SONIC_ACTOR_OBSERVATION_SIZE = (
-    SONIC_SMPL_INPUT_SIZE + SONIC_ROOT_MOTION_COMMAND_SIZE + SONIC_BELLO_PROPRIO_SIZE
-)
+SONIC_PROPRIO_HISTORY_FRAMES = 10
+SONIC_ACTOR_OBSERVATION_SIZE = SONIC_SMPL_INPUT_SIZE + SONIC_BELLO_PROPRIO_SIZE
+SONIC_G1_CRITIC_OBSERVATION_SIZE = 1645
 SONIC_ENCODER_DIMS = (840, 2048, 1024, 512, 512, 64)
 SONIC_DECODER_DIMS = (994, 2048, 2048, 1024, 1024, 512, 512, 29)
+SONIC_CRITIC_DIMS = (1645, 2048, 2048, 1024, 1024, 512, 512, 1)
 SONIC_OFFICIAL_CHECKPOINT_SHA256 = (
     "e6bdab3f64a39336b3d41877d4f497d05f58af275f288ec0e6746c283ded8909"
 )
@@ -41,7 +41,7 @@ SONIC_OFFICIAL_CONFIG_SHA256 = (
     "f08187795fa16a839a28bc1c18e0555d38d9420e03733744341cdcb56ab629c7"
 )
 SONIC_OFFICIAL_ARTIFACT_SHA256 = (
-    "bd8251d1c6c2dea85c67f27e22485bdd2b6872298373913626f8314ad748381d"
+    "899100beaafbfc376d18fc12af9e670479b1dff194f246af2ae380d3dfb5eeec"
 )
 
 BELLO_TO_G1_VECTOR_BASIS = np.asarray(
@@ -52,6 +52,13 @@ BELLO_TO_G1_VECTOR_BASIS = np.asarray(
     ),
     dtype=np.float32,
 )
+
+# The pinned G1 model tilts its roll/yaw hip pair by 0.1749 rad.  Bello's
+# canonical URDF has a mirrored hip-pitch axis 30 degrees from the sagittal
+# pitch axis.  These small deterministic blocks are the joint-level
+# decouplings from Any2Any, expressed in G1's pitch/roll/yaw semantic order.
+_G1_HIP_ROLL_INCLINATION_RADIANS = 0.1749
+_BELLO_HIP_PITCH_INCLINATION_RADIANS = np.pi / 6.0
 
 _G1_NATURAL_FREQUENCY = 10.0 * 2.0 * 3.1415926535
 _G1_STIFFNESS_5020 = 0.003609725 * _G1_NATURAL_FREQUENCY**2
@@ -116,6 +123,10 @@ class SonicReleaseWeights:
     smpl_encoder_biases: tuple[np.ndarray, ...]
     decoder_weights: tuple[np.ndarray, ...]
     decoder_biases: tuple[np.ndarray, ...]
+    critic_weights: tuple[np.ndarray, ...]
+    critic_biases: tuple[np.ndarray, ...]
+    critic_observation_mean: np.ndarray
+    critic_observation_variance: np.ndarray
     released_std: np.ndarray
     checkpoint_sha256: str
     artifact_sha256: str
@@ -133,6 +144,22 @@ class SonicReleaseWeights:
             SONIC_DECODER_DIMS,
             "dynamic decoder",
         )
+        _validate_linear_stack(
+            self.critic_weights,
+            self.critic_biases,
+            SONIC_CRITIC_DIMS,
+            "critic",
+        )
+        for name, value in (
+            ("mean", self.critic_observation_mean),
+            ("variance", self.critic_observation_variance),
+        ):
+            if value.shape != (SONIC_G1_CRITIC_OBSERVATION_SIZE,) or not np.all(
+                np.isfinite(value)
+            ):
+                raise ValueError(f"released SONIC critic observation {name} is invalid")
+        if np.any(self.critic_observation_variance < 0.0):
+            raise ValueError("released SONIC critic observation variance is negative")
         if self.released_std.shape != (SONIC_G1_ACTION_SIZE,):
             raise ValueError("released SONIC standard deviation must have shape (29,)")
         if not np.all(np.isfinite(self.released_std)) or np.any(
@@ -150,39 +177,12 @@ class SonicReleaseWeights:
 
 @dataclass(frozen=True)
 class SonicDecoderInitialization:
-    token_projection_weight: np.ndarray
-    root_motion_projection_weight: np.ndarray
-    proprioception_projection_weight: np.ndarray
-    first_bias: np.ndarray
-    middle_weights: tuple[np.ndarray, ...]
-    middle_biases: tuple[np.ndarray, ...]
-    output_weight: np.ndarray
-    output_bias: np.ndarray
     output_std: np.ndarray
     g1_from_bello_proprio: np.ndarray
     g1_from_bello_proprio_offset: np.ndarray
+    bello_from_g1_action: np.ndarray
 
     def __post_init__(self) -> None:
-        if self.token_projection_weight.shape != (2048, SONIC_TOKEN_FLAT_SIZE):
-            raise ValueError("SONIC token projection shape is invalid")
-        if self.root_motion_projection_weight.shape != (
-            2048,
-            SONIC_ROOT_MOTION_COMMAND_SIZE,
-        ):
-            raise ValueError("SONIC root-motion projection shape is invalid")
-        if self.proprioception_projection_weight.shape != (
-            2048,
-            SONIC_BELLO_PROPRIO_SIZE,
-        ):
-            raise ValueError("SONIC Bello proprioception projection shape is invalid")
-        if self.first_bias.shape != (2048,):
-            raise ValueError("SONIC first-layer bias shape is invalid")
-        if len(self.middle_weights) != 5 or len(self.middle_biases) != 5:
-            raise ValueError("SONIC must retain exactly five frozen middle linears")
-        if self.output_weight.shape != (SONIC_BELLO_ACTION_SIZE, 512):
-            raise ValueError("SONIC Bello output projection shape is invalid")
-        if self.output_bias.shape != (SONIC_BELLO_ACTION_SIZE,):
-            raise ValueError("SONIC Bello output bias shape is invalid")
         if self.output_std.shape != (SONIC_BELLO_ACTION_SIZE,) or not np.all(
             np.isfinite(self.output_std) & (self.output_std > 0.0)
         ):
@@ -192,6 +192,11 @@ class SonicDecoderInitialization:
             SONIC_BELLO_PROPRIO_SIZE,
         ) or self.g1_from_bello_proprio_offset.shape != (SONIC_G1_PROPRIO_SIZE,):
             raise ValueError("SONIC proprioception affine shape is invalid")
+        if self.bello_from_g1_action.shape != (
+            SONIC_BELLO_ACTION_SIZE,
+            SONIC_G1_ACTION_SIZE,
+        ):
+            raise ValueError("SONIC Bello-from-G1 action map shape is invalid")
 
 
 def load_sonic_release_artifact(directory: Path) -> SonicReleaseWeights:
@@ -219,7 +224,9 @@ def load_sonic_release_artifact(directory: Path) -> SonicReleaseWeights:
         "architecture",
     }
     if set(manifest) != expected_fields:
-        raise ValueError("SONIC artifact manifest fields differ from schema version 1")
+        raise ValueError(
+            "SONIC artifact manifest fields differ from the supported schema"
+        )
     if manifest["schema_version"] != SONIC_ARTIFACT_SCHEMA_VERSION:
         raise ValueError("unsupported SONIC artifact schema version")
     for name in (
@@ -274,6 +281,10 @@ def load_sonic_release_artifact(directory: Path) -> SonicReleaseWeights:
         ),
         decoder_weights=tuple(arrays[f"decoder_weight_{index}"] for index in range(7)),
         decoder_biases=tuple(arrays[f"decoder_bias_{index}"] for index in range(7)),
+        critic_weights=tuple(arrays[f"critic_weight_{index}"] for index in range(7)),
+        critic_biases=tuple(arrays[f"critic_bias_{index}"] for index in range(7)),
+        critic_observation_mean=arrays["critic_observation_mean"],
+        critic_observation_variance=arrays["critic_observation_variance"],
         released_std=arrays["released_std"],
         checkpoint_sha256=manifest["source_checkpoint_sha256"],
         artifact_sha256=artifact_hash,
@@ -297,6 +308,9 @@ def load_sonic_golden(
         "encoder_latent": (8, SONIC_TOKEN_FLAT_SIZE),
         "quantized_tokens": (8, SONIC_TOKEN_COUNT, SONIC_TOKEN_SIZE),
         "g1_action": (8, SONIC_G1_ACTION_SIZE),
+        "critic_input": (8, SONIC_G1_CRITIC_OBSERVATION_SIZE),
+        "critic_normalized_input": (8, SONIC_G1_CRITIC_OBSERVATION_SIZE),
+        "critic_value": (8, 1),
     }
     with np.load(path, allow_pickle=False) as archive:
         if set(archive.files) != set(expected_shapes):
@@ -326,9 +340,8 @@ def build_bello_decoder_initialization(
     bello_joint_names: tuple[str, ...],
     bello_action_scale: tuple[float, ...] | np.ndarray,
     bello_default_joint_position: tuple[float, ...] | np.ndarray,
-    initial_action_std: float,
 ) -> SonicDecoderInitialization:
-    """Compose the original G1 edge linears with coupled morphology maps."""
+    """Build fixed source-semantic alignment around the released G1 policy."""
 
     if calibration.g1_joint_names != G1_ISAACLAB_JOINT_NAMES:
         raise ValueError("joint calibration does not use released SONIC G1 order")
@@ -345,46 +358,123 @@ def build_bello_decoder_initialization(
         bello_action_scale=bello_action_scale,
         bello_default_joint_position=bello_default_joint_position,
     )
-    first_weight = release.decoder_weights[0]
-    token_weight = first_weight[:, :SONIC_TOKEN_FLAT_SIZE].copy()
-    original_prop_weight = first_weight[:, SONIC_TOKEN_FLAT_SIZE:]
-    proprio_weight = original_prop_weight @ affine
-    first_bias = release.decoder_biases[0] + original_prop_weight @ affine_offset
-
-    output_weight = np.zeros((SONIC_BELLO_ACTION_SIZE, 512), dtype=np.float32)
-    output_bias = np.zeros((SONIC_BELLO_ACTION_SIZE,), dtype=np.float32)
-    if not np.isfinite(initial_action_std) or initial_action_std <= 0.0:
-        raise ValueError("initial Bello action standard deviation is invalid")
-    output_std = np.full(
-        (SONIC_BELLO_ACTION_SIZE,), initial_action_std, dtype=np.float32
-    )
     bello_from_g1 = _normalized_bello_from_g1(
-        calibration,
-        bello_action_scale,
+        semantic_bello_from_g1_joint_map(calibration), bello_action_scale
     )
-    output_weight[:] = bello_from_g1 @ release.decoder_weights[-1]
-    output_bias[:] = bello_from_g1 @ release.decoder_biases[
-        -1
-    ] + _normalized_bello_from_g1_offset(
-        calibration,
-        bello_action_scale=bello_action_scale,
-        bello_default_joint_position=bello_default_joint_position,
-    )
+    output_std = np.sqrt(
+        (bello_from_g1 * bello_from_g1) @ (release.released_std**2)
+    ).astype(np.float32)
+    if not np.all(np.isfinite(output_std) & (output_std > 0.0)):
+        raise ValueError("mapped Bello action standard deviation is invalid")
     return SonicDecoderInitialization(
-        token_projection_weight=token_weight.astype(np.float32),
-        root_motion_projection_weight=np.zeros(
-            (2048, SONIC_ROOT_MOTION_COMMAND_SIZE), dtype=np.float32
-        ),
-        proprioception_projection_weight=proprio_weight.astype(np.float32),
-        first_bias=first_bias.astype(np.float32),
-        middle_weights=tuple(weight.copy() for weight in release.decoder_weights[1:-1]),
-        middle_biases=tuple(bias.copy() for bias in release.decoder_biases[1:-1]),
-        output_weight=output_weight,
-        output_bias=output_bias,
         output_std=output_std,
         g1_from_bello_proprio=affine,
         g1_from_bello_proprio_offset=affine_offset,
+        bello_from_g1_action=bello_from_g1,
     )
+
+
+def semantic_g1_from_bello_joint_map(
+    calibration: SonicJointCalibration,
+) -> np.ndarray:
+    """Return Any2Any-style sparse source semantics for Bello's 25 joints.
+
+    Corresponding scalar axes are signed scatters.  The hip blocks compose the
+    fixed G1 and Bello inclination decouplings.  No cross-side, cross-limb, or
+    motion-correlation coefficients can enter the policy interface.
+    """
+
+    return _semantic_joint_maps(calibration)[0]
+
+
+def semantic_bello_from_g1_joint_map(
+    calibration: SonicJointCalibration,
+) -> np.ndarray:
+    """Return the paired G1-to-Bello action map for matched joints."""
+
+    return _semantic_joint_maps(calibration)[1]
+
+
+def _semantic_joint_maps(
+    calibration: SonicJointCalibration,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build paired Any2Any maps through a common canonical hip basis."""
+
+    if calibration.g1_joint_names != G1_ISAACLAB_JOINT_NAMES:
+        raise ValueError("joint calibration does not use released SONIC G1 order")
+    g1_index = {name: index for index, name in enumerate(calibration.g1_joint_names)}
+    bello_index = {
+        name: index for index, name in enumerate(calibration.bello_joint_names)
+    }
+    dense = np.asarray(calibration.g1_from_bello_matrix, dtype=np.float64)
+    scatter = np.zeros_like(dense)
+    for g1_name in calibration.g1_joint_names:
+        bello_name = _corresponding_bello_joint_name(g1_name, bello_index)
+        if bello_name is None:
+            continue
+        coefficient = dense[g1_index[g1_name], bello_index[bello_name]]
+        if abs(coefficient) <= 1.0e-8:
+            raise ValueError(
+                f"SONIC semantic alignment has no axis evidence for {g1_name}"
+            )
+        scatter[g1_index[g1_name], bello_index[bello_name]] = np.copysign(
+            1.0, coefficient
+        )
+    if not np.allclose(
+        scatter.T @ scatter,
+        np.eye(SONIC_BELLO_ACTION_SIZE),
+        atol=1.0e-6,
+        rtol=0.0,
+    ):
+        raise ValueError("SONIC semantic alignment does not cover every Bello joint")
+
+    source_decoupling = np.eye(SONIC_G1_ACTION_SIZE, dtype=np.float64)
+    target_decoupling = np.eye(SONIC_G1_ACTION_SIZE, dtype=np.float64)
+    source_cos = np.cos(_G1_HIP_ROLL_INCLINATION_RADIANS)
+    source_sin = np.sin(_G1_HIP_ROLL_INCLINATION_RADIANS)
+    target_cos = np.cos(_BELLO_HIP_PITCH_INCLINATION_RADIANS)
+    target_sin = np.sin(_BELLO_HIP_PITCH_INCLINATION_RADIANS)
+    source_block = np.asarray(
+        (
+            (1.0, 0.0, 0.0),
+            (0.0, source_cos, -source_sin),
+            (0.0, source_sin, source_cos),
+        )
+    )
+    for side, mirrored_sine in (("left", -target_sin), ("right", target_sin)):
+        names = tuple(f"{side}_hip_{axis}_joint" for axis in ("pitch", "roll", "yaw"))
+        rows = [g1_index[name] for name in names]
+        target_block = np.asarray(
+            (
+                (target_cos, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (mirrored_sine, 0.0, 1.0),
+            )
+        )
+        source_decoupling[np.ix_(rows, rows)] = source_block
+        target_decoupling[np.ix_(rows, rows)] = target_block
+
+    g1_from_bello = np.linalg.solve(source_decoupling, target_decoupling @ scatter)
+    bello_from_g1 = scatter.T @ np.linalg.solve(target_decoupling, source_decoupling)
+    if not np.allclose(
+        bello_from_g1 @ g1_from_bello,
+        np.eye(SONIC_BELLO_ACTION_SIZE),
+        atol=1.0e-6,
+        rtol=0.0,
+    ):
+        raise ValueError("SONIC paired semantic joint maps are not inverse on Bello")
+    return g1_from_bello.astype(np.float32), bello_from_g1.astype(np.float32)
+
+
+def _corresponding_bello_joint_name(
+    g1_name: str, bello_index: dict[str, int]
+) -> str | None:
+    candidates = [g1_name]
+    if g1_name.endswith("_elbow_joint"):
+        candidates.insert(0, g1_name.replace("_elbow_joint", "_elbow_pitch_joint"))
+    elif g1_name.endswith("_wrist_roll_joint"):
+        candidates.insert(0, g1_name.replace("_wrist_roll_joint", "_elbow_yaw_joint"))
+    return next((name for name in candidates if name in bello_index), None)
 
 
 def g1_from_bello_proprio_affine(
@@ -393,22 +483,15 @@ def g1_from_bello_proprio_affine(
     bello_action_scale: tuple[float, ...] | np.ndarray,
     bello_default_joint_position: tuple[float, ...] | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the corpus-centered affine map in relative proprio coordinates."""
+    """Return the fixed source-semantic map in relative proprio coordinates."""
     matrix = np.zeros(
         (SONIC_G1_PROPRIO_SIZE, SONIC_BELLO_PROPRIO_SIZE), dtype=np.float32
     )
     offset = np.zeros((SONIC_G1_PROPRIO_SIZE,), dtype=np.float32)
-    joint_matrix = np.asarray(calibration.g1_from_bello_matrix, dtype=np.float32)
+    joint_matrix = semantic_g1_from_bello_joint_map(calibration)
     bello_action_scale = _validated_bello_action_scale(bello_action_scale)
-    bello_default = _validated_bello_default_joint_position(
-        bello_default_joint_position
-    )
-    position_offset = (
-        np.asarray(calibration.g1_joint_mean, dtype=np.float32)
-        - SONIC_G1_DEFAULT_JOINT_POSITION
-        - joint_matrix
-        @ (np.asarray(calibration.bello_joint_mean, dtype=np.float32) - bello_default)
-    )
+    _validated_bello_default_joint_position(bello_default_joint_position)
+    position_offset = np.zeros((SONIC_G1_ACTION_SIZE,), dtype=np.float32)
     normalized_action_matrix = (
         joint_matrix * bello_action_scale[None, :] / SONIC_G1_ACTION_SCALE[:, None]
     )
@@ -464,24 +547,6 @@ def _validated_bello_default_joint_position(
     return position
 
 
-def _normalized_bello_from_g1_offset(
-    calibration: SonicJointCalibration,
-    *,
-    bello_action_scale: np.ndarray,
-    bello_default_joint_position: np.ndarray,
-) -> np.ndarray:
-    joint_matrix = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
-    return (
-        np.asarray(calibration.bello_joint_mean, dtype=np.float32)
-        - bello_default_joint_position
-        - joint_matrix
-        @ (
-            np.asarray(calibration.g1_joint_mean, dtype=np.float32)
-            - SONIC_G1_DEFAULT_JOINT_POSITION
-        )
-    ) / bello_action_scale
-
-
 def _validated_bello_action_scale(
     value: tuple[float, ...] | np.ndarray,
 ) -> np.ndarray:
@@ -494,10 +559,10 @@ def _validated_bello_action_scale(
 
 
 def _normalized_bello_from_g1(
-    calibration: SonicJointCalibration,
+    joint_matrix: np.ndarray,
     bello_action_scale: np.ndarray,
 ) -> np.ndarray:
-    joint_matrix = np.asarray(calibration.bello_from_g1_matrix, dtype=np.float32)
+    joint_matrix = np.asarray(joint_matrix, dtype=np.float32)
     return (
         joint_matrix * SONIC_G1_ACTION_SCALE[None, :] / bello_action_scale[:, None]
     ).astype(np.float32)
@@ -564,6 +629,10 @@ def _artifact_array_names() -> set[str]:
         *(f"smpl_encoder_bias_{index}" for index in range(5)),
         *(f"decoder_weight_{index}" for index in range(7)),
         *(f"decoder_bias_{index}" for index in range(7)),
+        *(f"critic_weight_{index}" for index in range(7)),
+        *(f"critic_bias_{index}" for index in range(7)),
+        "critic_observation_mean",
+        "critic_observation_variance",
         "released_std",
     }
 
@@ -576,6 +645,11 @@ def _architecture_document() -> dict[str, Any]:
         "fsq_levels": [32] * SONIC_TOKEN_SIZE,
         "token_count": SONIC_TOKEN_COUNT,
         "decoder_dims": list(SONIC_DECODER_DIMS),
+        "critic_dims": list(SONIC_CRITIC_DIMS),
+        "critic_observation_normalization": {
+            "epsilon": 1.0e-5,
+            "clip": 5.0,
+        },
         "activation": "SiLU",
     }
 

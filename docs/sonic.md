@@ -9,71 +9,54 @@ not a mode of the legacy motion, TWIST, or TWIST2 environment.
 
 The release controls 29 Unitree G1 joints; Bello exposes 25 policy joints and
 uses a different simulator, body topology, actuator model, coordinate basis,
-and training stack. The port therefore freezes the semantic core and replaces
-only the morphology-dependent edges:
+and training stack. The port follows the
+[Any2Any](https://arxiv.org/abs/2605.23733) boundary: first align Bello into
+the source robot's semantic spaces, then add low-rank residuals only to
+dynamics-sensitive modules.
 
 | Block | Initialization | Training status |
 | --- | --- | --- |
 | Five-layer SMPL encoder, `840 -> 64` | Exact release arrays | Frozen |
 | Two 32-value, 32-level FSQ tokens | Exact release operation | Frozen |
-| Decoder token projection | Exact release columns | Frozen |
-| Decoder root-path projection | Zero, preserving the release initialization | Trainable |
-| Decoder proprioceptive projection and first bias | Mean-aware affine G1-from-Bello ridge transport | Trainable |
-| Five interior decoder linears | Exact release arrays | Configurable frozen core; the final one is trainable in the maintained profile |
-| Bello 25-joint output projection and bias | Mean-aware affine Bello-from-G1 ridge transport across all release rows | Trainable |
-| Gaussian log standard deviation | Fixed low-noise Bello profile (`0.05`) | Frozen |
-| Privileged Bello critic | New initialization | Trainable at its own learning rate |
+| Bello-to-G1 proprioception alignment | Signed semantic scatter plus paired inclined-hip decoupling | Fixed |
+| Seven-layer G1 dynamics decoder, `994 -> 29` | Exact release arrays | Frozen base with rank-32 LoRA on proprioception, backbone, and output paths |
+| G1-to-Bello action alignment | Explicit inverse semantic transform with action-scale conversion | Fixed |
+| Gaussian log standard deviation | Released covariance mapped into Bello action units | Trainable |
+| Privileged G1 critic and observation normalizer | Exact release arrays/statistics | Frozen base with rank-32 LoRA on every critic linear |
 
-Frozen parameters are excluded structurally from the optimizer and checkpoint
-state, not merely assigned a zero gradient. Their content hashes are checked
-before every checkpoint and again after reconstruction for evaluation. The
-explicit `sonic_trainable_middle_prefix_layers` and
-`sonic_trainable_middle_suffix_layers` policy fields control interior decoder
-adaptation. Their ranges cannot overlap. The maintained profile uses prefix
-`0`, suffix `1`; the encoder and token projection always remain frozen.
+Frozen parameters are excluded structurally from the optimizer, not merely
+assigned zero gradients. Their content hashes are checked before every
+checkpoint and after evaluation reconstruction. `sonic_lora_rank` and
+`sonic_lora_alpha` configure the residuals. The paper does not publish an exact
+LoRA rank for the external SONIC transfer; `32` for both is the maintained
+Bello hypothesis and gives unit LoRA scaling.
 
-Independent GMR solves do not produce a reliable joint-by-joint affine map:
-different morphology and redundant IK can couple several coordinates even when
-joint names match. The builder therefore fits two standardized multivariate
-ridge maps on accepted training frames only: `29 x 25` for G1-from-Bello input
-state and `25 x 29` for Bello-from-G1 output action.
+The joint interface is a `29 x 25` block-sparse matrix. Same-name scalar axes
+scatter directly with the axis sign measured from paired GMR retargets. Each
+hip is transported through a common pitch/roll/yaw basis: Bello's mirrored
+30-degree pitch/yaw block is composed with G1's `0.1749`-radian roll/yaw
+block. These constants come from the pinned robot descriptions, not motion
+regression. Bello elbow pitch maps to G1 elbow, Bello elbow yaw maps to G1
+wrist roll, and Bello wrist pitch maps to G1 wrist pitch. G1 waist roll/pitch
+and wrist yaw are zero-padded. The reverse action map is constructed as the
+paired inverse, so Bello-to-G1-to-Bello is identity on all 25 matched joints;
+cross-body and opposite-limb correlations cannot enter the controller.
 
-The ridge penalty is anchored to a sparse anatomy prior rather than to an
-all-zero matrix. Matching joint axes start with their one-joint regression
-slope; Bello elbow pitch maps to G1 elbow, Bello elbow yaw maps to G1 wrist
-roll, and Bello wrist pitch maps to G1 wrist pitch. G1 waist roll/pitch and
-wrist yaw have no invented Bello counterpart. The dense fit may learn
-cross-joint corrections, but the `1.0` penalty pulls spurious corpus-wide
-correlations back toward this bootstrap map. In plain matrix notation, the
-standardized coefficient solve is:
+The released G1 standard-deviation clamp is applied conceptually before the
+output alignment. Bello's per-joint action scales differ enough that the same
+physical covariance spans roughly `0.0002` to `3.0` in Bello-normalized action
+units. The maintained global log-standard-deviation envelope covers that
+mapped range; clipping it back to G1's `0.001` to `0.5` range would silently
+discard most of the transferred exploration covariance.
 
-```text
-(source correlation + 1.0 * identity) * fitted map
-    = source/target cross-correlation + 1.0 * anatomy prior
-```
-
-Minimum motion variance, mean and per-joint explained variance, coefficient
-size, and per-joint RMS residual gates reject degenerate fits. The same fitted
-maps must pass those gates on the held-out split. Sufficient covariance
-moments, not motion arrays, are retained during this first pass.
-
-Both maps are fitted around the paired training-set means. Position transport
-stores the resulting affine intercept relative to each robot's configured
-default, rather than silently discarding the corpus mean.
-Velocities use the same raw-radian linear blocks without an intercept. Actions
-are normalized differently on the two robots, so action-history and decoder
-output transport also includes each robot's per-joint action scale. The G1
-vector is pinned from NVIDIA's `0.25 * effort_limit / stiffness` definition;
-the Bello vector is derived from the selected actuator configuration by the
-same rule. Thus normalized action transport does not confuse actions with
-radians. The affine map is only a bootstrap initializer: supervised edge
-pretraining and PPO can replace it while every Bello joint, including both
-elbow-yaw joints, enters the trainable edge. Exploration is initialized and
-held at `0.05` rather than amplifying the released diagonal variance through a
-dense, cross-morphology map. Requested Bello targets are
-clipped per joint to the generated model's feasible target interval, while PPO
-logs aggregate and per-joint pre-clipping violation fractions. Vector inputs
-use the explicit Bello `+Y`-forward to G1 `+X`-forward basis change.
+The corpus-wide anchored ridge fit is retained only as a calibration audit and
+as axis/basis evidence. It is not a learned policy parameter and is not used as
+a dense runtime adapter. Joint positions are transported relative to each
+robot's configured default, velocities use the same signed basis, and action
+history/output also converts the two robots' per-joint action scales. Vector
+inputs use the explicit Bello `+Y`-forward to G1 `+X`-forward basis change.
+Requested Bello targets remain clipped to the generated model's feasible
+interval, with pre-clipping limit diagnostics logged by PPO.
 
 ## Why the motion data needs three views
 
@@ -97,15 +80,19 @@ pipeline adds only the paired G1/SMPL sidecar.
 The packed dataset is 50 Hz. The actor uses offsets `[0..9]`; the privileged
 critic uses `[0,5,...,45]`, so every sampled start preserves the full future
 window. Train/evaluation assignment comes from the licensed manifest. Dense
-edge calibration is fitted only on accepted training frames, and duration times
+Calibration is fitted only on accepted training frames, and duration times
 manifest weight determines initial training clip probability. The index binds
 the portable manifest, Bello robot, both GMR revisions/configs, calibration,
 separate policy/action and MuJoCo-qpos joint orders, clip content, split
 descriptors, and split-file hashes.
 
 Before a clip can enter either split, SONIC-specific sanitation labels its root
-motion and contact behavior. Name-pattern treadmill clips, stationary-root
-gait cycles, and excessive contact-foot slip are quarantined. Calibration
+motion, root height, and contact behavior. Name-pattern treadmill/crawl clips,
+stationary-root gait cycles, clips that remain near the ground for most of
+their duration, and excessive contact-foot slip are quarantined. The shared
+quality gate also rejects discontinuities, excessive joint velocity or
+acceleration, joint-limit corruption, non-finite values, and floor
+penetration. Calibration
 checks mean and per-joint explained variance plus per-joint RMS residuals, then
 applies the fitted training maps to the held-out split and records those
 metrics in the dataset index. A build fails rather than publishing a dataset
@@ -143,9 +130,10 @@ official SHA-256
 `e6bdab3f64a39336b3d41877d4f497d05f58af275f288ec0e6746c283ded8909`.
 The release configuration is independently pinned by SHA-256
 `f08187795fa16a839a28bc1c18e0555d38d9420e03733744341cdcb56ab629c7`.
-It writes only plain `weights.npz`, `golden.npz`, and `manifest.json`; the
-loader verifies file, array, architecture, source, golden-vector, and exact
-deterministic export hashes.
+It writes only plain `weights.npz`, `golden.npz`, and `manifest.json`. Schema
+version 2 includes the released critic weights and its 1,645-value running
+mean/variance in addition to the actor. The loader verifies file, array,
+architecture, source, golden-vector, and exact deterministic export hashes.
 `artifacts/` is ignored and must not be committed.
 
 ## Build the synchronized dataset
@@ -220,22 +208,20 @@ uv run bello-train \
 
 The environment runs at 200 Hz with 50 Hz control and ten-second episodes. It
 retains the released action clip `20` but uses the per-joint G1 and Bello scales
-described above. The actor receives 1,670 raw values. Its first 840 values are
+described above. The actor receives 1,650 raw values. Its first 840 values are
 ten frame-major encoder records containing 24 root-local SMPL joints, root
-orientation relative to the current robot, and six G1 wrist joints. The next
-20 values are the desired ten-frame XY root path in the current robot frame.
-Its projection begins at zero and learns how Bello should realize traveling
-motion that the translation-invariant SMPL encoder cannot distinguish from
-treadmill motion. The remaining 810 values are term-major ten-frame histories
+orientation relative to the current robot, and six G1 wrist joints. The
+remaining 810 values are term-major ten-frame histories
 of gravity, base angular velocity, Bello joint position, Bello joint velocity,
 and previous action. Observation corruption is applied once when a history
 frame is recorded; the critic retains a separate clean history.
 
-The new critic receives 1,445 raw privileged values: 250 future joint
-positions, 250 future joint velocities, a 3-value anchor delta, a 6D anchor
-orientation, 42 body-position values, 84 body-orientation values, and 810 clean
-history values. The frozen actor stays raw; the new critic uses its own running
-mean/std, matching the released critic configuration.
+The critic receives the released 1,645-value G1-semantic layout: 290 future
+joint positions, 290 future joint velocities, a 3-value anchor delta, a 6D
+anchor orientation, 42 body-position values, 84 body-orientation values, and
+930 clean history values. Bello vectors, joints, and actions are aligned before
+this boundary. The exact released running mean/variance then normalizes and
+clips the input before the frozen critic plus LoRA residuals.
 
 Training transfers the complete training bank to the accelerator once. Starts
 use the manifest frame-count-times-weight prior mixed with the released
@@ -246,23 +232,30 @@ transitions. Sampling uses one uniform draw against the global cumulative
 distribution rather than materializing per-environment categorical noise over
 every bin.
 
-Fresh training first runs 2,000 deterministic offline adapter updates from the
-packed training bank. Only the root-path projection, Bello proprioceptive
-projection, first bias, and Bello output projection/bias are optimized. The
-loss combines next-control-frame Bello action targets, action deltas, teacher
-first-layer activation consistency, feasible-target limits, and a weak anchor
-to the affine bootstrap. Clips are hash-partitioned so validation clips never
-enter those updates. Resume skips this stage because its result is already in
-the checkpoint.
+The maintained profile starts PPO directly from zero-output LoRA residuals, as
+in Any2Any. The older one-step supervised pose-copy warm-start remains an
+explicit opt-in experiment but is disabled by default because it does not
+model target dynamics and can move the policy away from the source behavior
+before PPO receives survival feedback.
 
 The maintained PPO values are 4,096 worlds, 24 rollout steps, five epochs, four
-minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`, fixed
-`0.05` exploration standard deviation, desired KL `0.01`, zero entropy bonus,
-gamma `0.99`, lambda `0.95`, clip ratio `0.2`, and maximum gradient norm `0.1`.
+minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`,
+desired KL `0.01`, entropy coefficient `0.01`, gamma `0.99`, lambda `0.95`, clip
+ratio `0.2`, and maximum gradient norm `0.1`. Initial Bello action variance is
+the released G1 diagonal covariance projected through the normalized
+G1-to-Bello map; it remains trainable instead of being replaced by a uniform
+`0.05` standard deviation. The maintained budget is 30,000 updates
+(`2,949,120,000` transitions). Update 8,000 matches the iteration scale used
+in Any2Any's compute comparison; the remaining updates provide the longer
+Bello convergence tail requested after the earlier learning curves.
 
 Evaluation reports the original clip-weighted acceptance metrics as well as
 frame-weighted tracking metrics and strata for stationary/traveling root motion
-and gait/non-gait contact behavior.
+and gait/non-gait contact behavior. It also evaluates a next-reference-pose
+action oracle under the same strict simulator termination rules. The oracle
+separates policy-transfer errors from retargeted clips that Bello's actuators
+cannot dynamically replay and supplies per-clip evidence for the next dataset
+sanitation pass.
 
 Resume by adding `resume_path=/path/to/checkpoint`. The typed checkpoint
 requires the same dataset, calibration, release artifact, robot/layout,
@@ -282,10 +275,12 @@ acceleration terms. Bello adds direct joint-position and foot-contact tracking,
 plus a penalty on the requested target's normalized joint-limit excess before
 the simulator clips it; this prevents clipping from hiding unsafe commands.
 
-Termination retains the release overrides: `0.15 m` adaptive root-height and
-end-effector-height errors, `0.2` squared root-orientation error, and `0.2 m`
-foot position error. Root-height adaptation uses the same `0.1` exponential
-moving average. Reset perturbations, ten-frame sensor noise, joint-default
+Termination uses the target-transfer limits reported by Any2Any: `0.25 m`
+root-height error, `0.8` squared root-orientation error, and `0.30 m` tracked
+end-effector-height error; the Bello foot-position limit is also `0.30 m`.
+Low-reference motions retain the existing adaptive height allowance.
+Root-height adaptation uses the same `0.1` exponential moving average. Reset
+perturbations, ten-frame sensor noise, joint-default
 offsets, 4–6 second velocity pushes, friction, mass/COM variation, and actuator
 strength are expressed through Bello's MuJoCo model randomizer. These are
 semantic simulator adaptations rather than bitwise Isaac Lab event parity:
@@ -296,7 +291,7 @@ for that same warmup so the edge first learns nominal tracking.
 
 ## Evaluate the transfer
 
-For a branch-pinned Vast.ai smoke run, short edge baseline, and complete
+For a branch-pinned Vast.ai benchmark, 30,000-update run, and complete
 held-out evaluation in one billed lifecycle, use:
 
 ```bash
@@ -304,16 +299,18 @@ uv run bello-vast-train \
   experiment=sonic \
   dataset_path=/data/sonic/packed/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
-  total_timesteps=71270400 \
+  total_timesteps=2949120000 \
   num_envs=4096 \
-  checkpoint_every_updates=145 \
+  checkpoint_every_updates=500 \
   branch=feature/sonic-transfer \
   max_price=1.25 \
-  duration_hours=6 \
+  duration_hours=24 \
   skip_confirmation=true
 ```
 
-This budget is 725 PPO updates at the maintained 4,096-world, 24-step batch.
+This budget is 30,000 PPO updates at the maintained 4,096-world, 24-step batch.
+Update 8,000 remains the paper-comparable Any2Any milestone; the longer tail is
+intentional because Bello's learning curves were still improving there.
 Before the real job, the launcher runs three updates at the same environment
 count and records GPU utilization, peak memory, power, elapsed time, and exit
 status. A failed production-scale benchmark prevents the longer run. The
@@ -322,24 +319,8 @@ retains checkpoints; `benchmark.json`, the full evaluation, compact summary,
 and checksum manifest are retrieved under `outputs/vast/<run-name>/` before
 teardown.
 
-For a full from-scratch run, omit `resume_path`. The maintained full budget is
-30,001 updates or 2,949,218,304 transitions:
-
-```bash
-uv run bello-vast-train \
-  experiment=sonic \
-  dataset_path=/data/sonic/packed/index.json \
-  sonic_artifact_path=artifacts/sonic/default_release \
-  total_timesteps=2949218304 \
-  num_envs=4096 \
-  checkpoint_every_updates=500 \
-  branch=feature/sonic-transfer \
-  max_price=1.25 \
-  duration_hours=36 \
-  skip_confirmation=true
-```
-
-`total_timesteps` is the final absolute budget, not an additional budget. To
+For a full from-scratch run, omit `resume_path`. `total_timesteps` is the final
+absolute budget, not an additional budget. To
 continue an exact 4,096-environment run, add
 `resume_path=/path/to/checkpoint`; use `allow_git_commit_mismatch=true` only for
 an intentionally reviewed cross-commit resume. The GPU preflight always starts

@@ -225,12 +225,15 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert twist2.config.observation_norm_epsilon_mode == "std_offset"
     assert twist2.sampling.base_distribution == "manifest_weight"
     assert twist2.sampling.curriculum_max_difficulty == 10.0
-    assert sonic.config.num_updates == 30_001
+    assert sonic.config.num_updates == 8_000
     assert sonic.config.policy.architecture == "sonic"
     assert sonic.config.learning_rate == pytest.approx(2.0e-5)
     assert sonic.config.critic_learning_rate == pytest.approx(1.0e-3)
     assert not sonic.config.normalize_observations
-    assert sonic.config.normalize_critic_observations
+    assert not sonic.config.normalize_critic_observations
+    assert sonic.config.policy.sonic_lora_rank == 32
+    assert sonic.config.policy.sonic_lora_alpha == 32.0
+    assert not sonic.pretraining.enabled
 
 
 def test_contact_budget_command_override_is_explicit_and_positive() -> None:

@@ -27,7 +27,7 @@ from bello_mujoco.envs.locomotion import (
     yaw_quat,
     yaw_quat_from_angle,
 )
-from bello_mujoco.envs.motion_tracking import quat_from_euler_xyz, rotation_6d
+from bello_mujoco.envs.motion_tracking import quat_from_euler_xyz
 from bello_mujoco.envs.twist import (
     BelloTwistEnv,
     TwistMotionState,
@@ -51,8 +51,12 @@ from bello_mujoco.sonic_policy import (
     SONIC_ACTOR_OBSERVATION_SIZE,
     SONIC_BELLO_ACTION_SIZE,
     SONIC_BELLO_PROPRIO_SIZE,
-    SONIC_ROOT_MOTION_COMMAND_SIZE,
+    SONIC_G1_ACTION_SCALE,
+    SONIC_G1_ACTION_SIZE,
+    SONIC_G1_CRITIC_OBSERVATION_SIZE,
+    SONIC_G1_DEFAULT_JOINT_POSITION,
     SONIC_SMPL_INPUT_SIZE,
+    semantic_g1_from_bello_joint_map,
 )
 
 SONIC_SIMULATION_HZ = 200
@@ -158,27 +162,19 @@ class SonicObservationContract:
 
     @property
     def critic_command_frame_size(self) -> int:
-        return 2 * self.action_size
+        return 2 * SONIC_G1_ACTION_SIZE
 
     @property
     def critic_observation_size(self) -> int:
         # Ten future joint-position/velocity frames, anchor delta, current body
         # transforms, and raw ten-frame proprioception without gravity.
-        return (
-            len(self.critic_future_offsets) * self.critic_command_frame_size
-            + 3
-            + 6
-            + 3 * len(self.body_names)
-            + 6 * len(self.body_names)
-            + SONIC_BELLO_PROPRIO_SIZE
-        )
+        return SONIC_G1_CRITIC_OBSERVATION_SIZE
 
     @property
     def actor_layout(self) -> ObservationLayout:
         return ObservationLayout(
             (
                 ("smpl_future_encoder_input", SONIC_SMPL_INPUT_SIZE),
-                ("desired_root_xy_trajectory", SONIC_ROOT_MOTION_COMMAND_SIZE),
                 ("projected_gravity_history", 30),
                 ("base_angular_velocity_history", 30),
                 ("joint_position_history", 250),
@@ -193,11 +189,11 @@ class SonicObservationContract:
             (
                 (
                     "future_joint_positions",
-                    len(self.critic_future_offsets) * self.action_size,
+                    len(self.critic_future_offsets) * SONIC_G1_ACTION_SIZE,
                 ),
                 (
                     "future_joint_velocities",
-                    len(self.critic_future_offsets) * self.action_size,
+                    len(self.critic_future_offsets) * SONIC_G1_ACTION_SIZE,
                 ),
                 ("motion_anchor_position_in_robot", 3),
                 ("motion_anchor_orientation_in_robot", 6),
@@ -205,9 +201,9 @@ class SonicObservationContract:
                 ("robot_body_orientations", 6 * len(self.body_names)),
                 ("base_linear_velocity_history", 30),
                 ("base_angular_velocity_history", 30),
-                ("joint_position_history", 250),
-                ("joint_velocity_history", 250),
-                ("action_history", 250),
+                ("joint_position_history", 290),
+                ("joint_velocity_history", 290),
+                ("action_history", 290),
             )
         )
 
@@ -272,13 +268,13 @@ class SonicRewardConfig:
 
 @dataclass(frozen=True)
 class SonicDoneConfig:
-    root_height_error: float = 0.15
+    root_height_error: float = 0.25
     root_height_error_when_low: float = 0.75
     low_reference_root_height: float = 0.5
-    root_orientation_squared_error: float = 0.2
-    end_effector_height_error: float = 0.15
+    root_orientation_squared_error: float = 0.8
+    end_effector_height_error: float = 0.3
     end_effector_height_error_when_low: float = 0.75
-    foot_position_error: float = 0.2
+    foot_position_error: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -413,6 +409,7 @@ class BelloSonicEnv(BelloTwistEnv):
     sampling: SonicSamplingConfig = SonicSamplingConfig()
     sampling_bin_cdf: jax.Array | None = None
     action_scale: tuple[float, ...] = ()
+    g1_from_bello_joint: tuple[tuple[float, ...], ...] = ()
 
     def __post_init__(self) -> None:
         if self.stage != "student":
@@ -437,6 +434,9 @@ class BelloSonicEnv(BelloTwistEnv):
             np.isfinite(action_scale) & (action_scale > 0.0)
         ):
             raise ValueError("SONIC requires one positive action scale per Bello joint")
+        joint_map = np.asarray(self.g1_from_bello_joint)
+        if joint_map.shape != (SONIC_G1_ACTION_SIZE, SONIC_BELLO_ACTION_SIZE):
+            raise ValueError("SONIC requires a fixed G1-from-Bello semantic map")
         if self.reference_bank.joint_names != self.action_layout.names:
             raise ValueError("SONIC dataset action order differs from the Bello model")
         if (
@@ -550,6 +550,12 @@ class BelloSonicEnv(BelloTwistEnv):
             ),
         )
         motion = load_motion_clip(motion_path, model)
+        action_scale = joint_position_action_scales(
+            asset_config.actuator_config,
+            tuple(
+                model.actuator_joint_names[index] for index in model.policy_ctrl_indices
+            ),
+        )
         env = cls(
             model,
             motion,
@@ -557,12 +563,10 @@ class BelloSonicEnv(BelloTwistEnv):
             config,
             reference_bank,
             config.sampling,
-            action_scale=joint_position_action_scales(
-                asset_config.actuator_config,
-                tuple(
-                    model.actuator_joint_names[index]
-                    for index in model.policy_ctrl_indices
-                ),
+            action_scale=action_scale,
+            g1_from_bello_joint=tuple(
+                tuple(float(value) for value in row)
+                for row in semantic_g1_from_bello_joint_map(reference_bank.calibration)
             ),
         )
         return (
@@ -609,6 +613,7 @@ class BelloSonicEnv(BelloTwistEnv):
             "config",
             "sampling",
             "action_scale",
+            "g1_from_bello_joint",
         ):
             object.__setattr__(bound, name, getattr(self, name))
         object.__setattr__(bound, "reference_bank", reference_bank)
@@ -943,9 +948,8 @@ class BelloSonicEnv(BelloTwistEnv):
 
     def observation(self, state: SonicState, rng: jax.Array | None = None) -> jax.Array:
         smpl = self._smpl_encoder_input(state, rng)
-        root_motion = self._root_motion_command(state)
         proprioception = self._actor_proprioception(state.observation_history, rng)
-        observation = jnp.concatenate((smpl, root_motion, proprioception))
+        observation = jnp.concatenate((smpl, proprioception))
         if observation.shape != (SONIC_ACTOR_OBSERVATION_SIZE,):
             raise RuntimeError("SONIC actor observation shape has drifted")
         return observation
@@ -978,33 +982,6 @@ class BelloSonicEnv(BelloTwistEnv):
         )
         if value.shape != (SONIC_BELLO_PROPRIO_SIZE,):
             raise RuntimeError("SONIC Bello proprioception shape has drifted")
-        return value
-
-    def _root_motion_command(self, state: SonicState) -> jax.Array:
-        """Encode the short desired XY path in the current robot root frame."""
-
-        current_reference = self._aligned_reference(
-            state.motion_state,
-            state.clip_index,
-            SONIC_SMPL_FUTURE_OFFSETS[0],
-        )
-        current_root_quat = state.motion_state.data.qpos[3:7]
-        value = jnp.concatenate(
-            tuple(
-                quat_rotate_inverse(
-                    current_root_quat,
-                    self._aligned_reference(
-                        state.motion_state,
-                        state.clip_index,
-                        offset,
-                    ).qpos[:3]
-                    - current_reference.qpos[:3],
-                )[:2]
-                for offset in SONIC_SMPL_FUTURE_OFFSETS
-            )
-        )
-        if value.shape != (SONIC_ROOT_MOTION_COMMAND_SIZE,):
-            raise RuntimeError("SONIC root-motion command shape has drifted")
         return value
 
     def _smpl_encoder_input(
@@ -1067,6 +1044,16 @@ class BelloSonicEnv(BelloTwistEnv):
 
     def critic_observation(self, state: SonicState) -> jax.Array:
         current = state.motion_state
+        basis = jnp.asarray(BELLO_TO_G1_VECTOR_BASIS)
+        joint_map = jnp.asarray(self.g1_from_bello_joint)
+        policy_control = jnp.asarray(self.model.policy_ctrl_indices)
+        bello_default = jnp.asarray(self.model.default_joint_target)[policy_control]
+        g1_default = jnp.asarray(SONIC_G1_DEFAULT_JOINT_POSITION)
+        normalized_action_map = (
+            joint_map
+            * jnp.asarray(self.action_scale)[None, :]
+            / jnp.asarray(SONIC_G1_ACTION_SCALE)[:, None]
+        )
         future_references = tuple(
             self._aligned_reference(current, state.clip_index, offset)
             for offset in SONIC_CRITIC_FUTURE_OFFSETS
@@ -1074,34 +1061,69 @@ class BelloSonicEnv(BelloTwistEnv):
         policy_qpos = jnp.asarray(self.model.policy_qpos_indices)
         policy_qvel = jnp.asarray(self.model.policy_qvel_indices)
         future_joint_positions = jnp.concatenate(
-            tuple(reference.qpos[policy_qpos] for reference in future_references)
+            tuple(
+                g1_default + joint_map @ (reference.qpos[policy_qpos] - bello_default)
+                for reference in future_references
+            )
         )
         future_joint_velocities = jnp.concatenate(
-            tuple(reference.qvel[policy_qvel] for reference in future_references)
+            tuple(
+                joint_map @ reference.qvel[policy_qvel]
+                for reference in future_references
+            )
         )
         reference = self._aligned_reference(current, state.clip_index, 0)
         root_quat = current.data.qpos[3:7]
-        anchor_position = quat_rotate_inverse(
-            root_quat, reference.qpos[:3] - current.data.qpos[:3]
+        anchor_position = basis @ quat_rotate_inverse(
+            root_quat,
+            reference.qpos[:3] - current.data.qpos[:3],
         )
-        anchor_orientation = rotation_6d(
-            _quat_multiply(_quat_conjugate(root_quat), reference.qpos[3:7])
+        anchor_relative_quat = _quat_multiply(
+            _quat_conjugate(root_quat), reference.qpos[3:7]
         )
+        anchor_orientation = (
+            basis @ _quat_rotation_matrix(anchor_relative_quat) @ basis.T
+        )[:, :2].reshape(-1)
         body_ids = jnp.asarray(self.key_body_ids)
         body_positions = jax.vmap(
-            lambda value: quat_rotate_inverse(root_quat, value - current.data.qpos[:3])
+            lambda value: (
+                basis @ quat_rotate_inverse(root_quat, value - current.data.qpos[:3])
+            )
         )(current.data.xpos[body_ids]).reshape(-1)
         body_orientations = jax.vmap(
-            lambda value: rotation_6d(_quat_multiply(_quat_conjugate(root_quat), value))
+            lambda value: (
+                basis
+                @ _quat_rotation_matrix(
+                    _quat_multiply(_quat_conjugate(root_quat), value)
+                )
+                @ basis.T
+            )[:, :2].reshape(-1)
         )(current.data.xquat[body_ids]).reshape(-1)
         history = state.critic_history
+        base_linear_velocity = jnp.einsum("ij,hj->hi", basis, history[:, 3:6])
+        base_angular_velocity = jnp.einsum("ij,hj->hi", basis, history[:, 6:9])
+        joint_position = jnp.einsum(
+            "ij,hj->hi",
+            joint_map,
+            history[:, 9 : 9 + self.action_size],
+        )
+        joint_velocity = jnp.einsum(
+            "ij,hj->hi",
+            joint_map,
+            history[:, 9 + self.action_size : 9 + 2 * self.action_size],
+        )
+        action = jnp.einsum(
+            "ij,hj->hi",
+            normalized_action_map,
+            history[:, 9 + 2 * self.action_size :],
+        )
         raw_history = jnp.concatenate(
             (
-                history[:, 3:6].reshape(-1),
-                history[:, 6:9].reshape(-1),
-                history[:, 9 : 9 + self.action_size].reshape(-1),
-                history[:, 9 + self.action_size : 9 + 2 * self.action_size].reshape(-1),
-                history[:, 9 + 2 * self.action_size :].reshape(-1),
+                base_linear_velocity.reshape(-1),
+                base_angular_velocity.reshape(-1),
+                joint_position.reshape(-1),
+                joint_velocity.reshape(-1),
+                action.reshape(-1),
             )
         )
         value = jnp.concatenate(
@@ -1573,6 +1595,23 @@ class BelloSonicEnv(BelloTwistEnv):
             }
         )
         return diagnostics
+
+    def reference_action(self, state: SonicState, offset: int = 1) -> jax.Array:
+        """Return the normalized action that requests the next reference pose."""
+
+        reference = self._aligned_reference(
+            state.motion_state, state.clip_index, offset
+        )
+        policy = jnp.asarray(self.model.policy_qpos_indices)
+        control = jnp.asarray(self.model.policy_ctrl_indices)
+        return (
+            reference.qpos[policy]
+            - jnp.asarray(self.model.default_joint_target)[control]
+            - state.domain_randomization
+        ) / jnp.asarray(self.action_scale, dtype=jnp.float32)
+
+    def reference_action_batch(self, state: SonicState, offset: int = 1) -> jax.Array:
+        return jax.vmap(lambda item: self.reference_action(item, offset))(state)
 
     def _unbounded_policy_target(
         self,

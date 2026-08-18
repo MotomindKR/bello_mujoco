@@ -1,4 +1,4 @@
-"""Offline supervised warm-start for the morphology-dependent SONIC edges."""
+"""Optional offline warm-start for SONIC's low-rank dynamics adapters."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from bello_mujoco.sonic_policy import (
     SONIC_BELLO_ACTION_SIZE,
     SONIC_G1_ACTION_SCALE,
     SONIC_G1_DEFAULT_JOINT_POSITION,
-    SONIC_ROOT_MOTION_COMMAND_SIZE,
+    SONIC_PROPRIO_HISTORY_FRAMES,
     SONIC_SMPL_INPUT_SIZE,
     SONIC_TOKEN_FLAT_SIZE,
     SonicReleaseWeights,
@@ -40,6 +40,7 @@ class SonicPretrainingConfig:
     learning_rate: float = 1.0e-4
     max_gradient_norm: float = 1.0
     validation_clip_fraction: float = 0.05
+    startup_history_fraction: float = 0.5
     action_huber_delta: float = 0.5
     activation_consistency_weight: float = 0.05
     temporal_consistency_weight: float = 0.1
@@ -68,6 +69,8 @@ class SonicPretrainingConfig:
                 raise ValueError(f"pretraining.{name} must be positive and finite")
         if not 0.0 < self.validation_clip_fraction < 1.0:
             raise ValueError("pretraining.validation_clip_fraction must be in (0, 1)")
+        if not 0.0 <= self.startup_history_fraction <= 1.0:
+            raise ValueError("pretraining.startup_history_fraction must be in [0, 1]")
         for name in (
             "activation_consistency_weight",
             "temporal_consistency_weight",
@@ -103,6 +106,7 @@ class SonicOfflineBatchBuilder:
         bello_default_joint_position: np.ndarray,
         bello_action_scale: np.ndarray,
         validation_clip_fraction: float,
+        startup_history_fraction: float,
         seed: int,
     ) -> None:
         self.bank = bank
@@ -116,6 +120,9 @@ class SonicOfflineBatchBuilder:
             SONIC_BELLO_ACTION_SIZE,
             "Bello action scale",
         )
+        if not 0.0 <= startup_history_fraction <= 1.0:
+            raise ValueError("startup history fraction must be in [0, 1]")
+        self.startup_history_fraction = float(startup_history_fraction)
         if bank.qpos.shape[1:] != (7 + SONIC_BELLO_ACTION_SIZE,):
             raise ValueError(
                 "SONIC pretraining requires packed Bello policy qpos order"
@@ -166,17 +173,26 @@ class SonicOfflineBatchBuilder:
             self._rng.random(batch_size) * (maximum_frame - minimum_frame + 1)
         ).astype(np.int32)
         absolute = np.asarray(self.bank.offsets)[clip_indices] + frames
+        startup = self._rng.random(batch_size) < self.startup_history_fraction
+        startup_age = np.where(
+            startup,
+            self._rng.integers(0, SONIC_PROPRIO_HISTORY_FRAMES, size=batch_size),
+            SONIC_PROPRIO_HISTORY_FRAMES,
+        ).astype(np.int32)
         return SonicPretrainingBatch(
-            observation=self._observation(absolute),
-            next_observation=self._observation(absolute + 1),
-            g1_proprioception=self._g1_proprioception(absolute),
+            observation=self._observation(absolute, startup_age),
+            next_observation=self._observation(
+                absolute + 1,
+                np.minimum(startup_age + 1, SONIC_PROPRIO_HISTORY_FRAMES),
+            ),
+            g1_proprioception=self._g1_proprioception(absolute, startup_age),
             action_target=self._action_target(absolute + 1),
             next_action_target=self._action_target(absolute + 2),
         )
 
-    def _observation(self, absolute: np.ndarray) -> np.ndarray:
+    def _observation(self, absolute: np.ndarray, startup_age: np.ndarray) -> np.ndarray:
         future = absolute[:, None] + np.asarray(SONIC_SMPL_FUTURE_OFFSETS)[None, :]
-        history = absolute[:, None] + np.arange(-9, 1, dtype=np.int32)[None, :]
+        history, reset_slots = _startup_history(absolute, startup_age)
         current_quaternion = np.asarray(self.bank.qpos)[absolute, 3:7]
         current_rotation = _quaternion_rotation_matrix(current_quaternion)
         smpl_rotation = _quaternion_rotation_matrix(
@@ -201,21 +217,12 @@ class SonicOfflineBatchBuilder:
             ),
             axis=-1,
         ).reshape(len(absolute), -1)
-        root_delta = (
-            np.asarray(self.bank.qpos)[future, :3]
-            - np.asarray(self.bank.qpos)[absolute, None, :3]
-        )
-        root_motion = np.einsum(
-            "bij,bfj->bfi",
-            np.swapaxes(current_rotation, -1, -2),
-            root_delta,
-        )[..., :2].reshape(len(absolute), -1)
-        proprioception = self._bello_proprioception(history)
-        return np.concatenate(
-            (smpl_frames, root_motion, proprioception), axis=-1
-        ).astype(np.float32)
+        proprioception = self._bello_proprioception(history, reset_slots)
+        return np.concatenate((smpl_frames, proprioception), axis=-1).astype(np.float32)
 
-    def _bello_proprioception(self, history: np.ndarray) -> np.ndarray:
+    def _bello_proprioception(
+        self, history: np.ndarray, reset_slots: np.ndarray
+    ) -> np.ndarray:
         qpos = np.asarray(self.bank.qpos)[history]
         qvel = np.asarray(self.bank.qvel)[history]
         rotation = _quaternion_rotation_matrix(qpos[..., 3:7])
@@ -231,11 +238,13 @@ class SonicOfflineBatchBuilder:
         )
         joint_position = qpos[..., 7 + self._policy_qpos_index] - self.bello_default
         joint_velocity = qvel[..., 6 + self._policy_qpos_index]
-        previous_qpos = np.asarray(self.bank.qpos)[
-            history[:, :, None] - 1,
+        current_qpos = np.asarray(self.bank.qpos)[
+            history[:, :, None],
             7 + self._policy_qpos_index[None, None, :],
         ]
-        previous_action = (previous_qpos - self.bello_default) / self.bello_action_scale
+        previous_action = (current_qpos - self.bello_default) / self.bello_action_scale
+        joint_velocity = np.where(reset_slots[:, :, None], 0.0, joint_velocity)
+        previous_action = np.where(reset_slots[:, :, None], 0.0, previous_action)
         return _term_major_history(
             gravity,
             angular,
@@ -244,8 +253,10 @@ class SonicOfflineBatchBuilder:
             previous_action,
         )
 
-    def _g1_proprioception(self, absolute: np.ndarray) -> np.ndarray:
-        history = absolute[:, None] + np.arange(-9, 1, dtype=np.int32)[None, :]
+    def _g1_proprioception(
+        self, absolute: np.ndarray, startup_age: np.ndarray
+    ) -> np.ndarray:
+        history, reset_slots = _startup_history(absolute, startup_age)
         qpos = np.asarray(self.bank.qpos)[history]
         qvel = np.asarray(self.bank.qvel)[history]
         rotation = _quaternion_rotation_matrix(qpos[..., 3:7])
@@ -266,8 +277,10 @@ class SonicOfflineBatchBuilder:
         joint_position = g1_position - SONIC_G1_DEFAULT_JOINT_POSITION
         joint_velocity = (g1_position - previous_g1) * 50.0
         previous_action = (
-            previous_g1 - SONIC_G1_DEFAULT_JOINT_POSITION
+            g1_position - SONIC_G1_DEFAULT_JOINT_POSITION
         ) / SONIC_G1_ACTION_SCALE
+        joint_velocity = np.where(reset_slots[:, :, None], 0.0, joint_velocity)
+        previous_action = np.where(reset_slots[:, :, None], 0.0, previous_action)
         return _term_major_history(
             gravity,
             angular,
@@ -296,7 +309,7 @@ def pretrain_sonic_adapters(
     action_high: np.ndarray,
     progress: Callable[[int, dict[str, float]], None] | None = None,
 ) -> tuple[ActorCritic, tuple[tuple[int, dict[str, float]], ...]]:
-    """Fit only the Bello input/output edges before constructing PPO state."""
+    """Fit only actor LoRA residuals before constructing PPO state."""
 
     if not isinstance(policy.actor, SonicActor):
         raise TypeError("SONIC pretraining requires a SONIC actor")
@@ -340,16 +353,19 @@ def pretrain_sonic_adapters(
                 actor.smpl_encoder(observation[:SONIC_SMPL_INPUT_SIZE]).reshape((2, 32))
             ).reshape((SONIC_TOKEN_FLAT_SIZE,))
         )(batch.observation)
-        root_start = SONIC_SMPL_INPUT_SIZE
-        proprio_start = root_start + SONIC_ROOT_MOTION_COMMAND_SIZE
-        root_motion = batch.observation[:, root_start:proprio_start]
-        bello_proprioception = batch.observation[:, proprio_start:]
+        bello_proprioception = batch.observation[:, SONIC_SMPL_INPUT_SIZE:]
         decoder = actor.decoder
+        aligned_proprioception = bello_proprioception @ jax.lax.stop_gradient(
+            decoder.g1_from_bello_proprio
+        ).T + jax.lax.stop_gradient(decoder.g1_from_bello_proprio_offset)
+        first_weight = jax.lax.stop_gradient(decoder.base_weights[0])
         student_first = (
-            tokens @ jax.lax.stop_gradient(decoder.token_projection_weight).T
-            + root_motion @ decoder.root_motion_projection_weight.T
-            + bello_proprioception @ decoder.proprioception_projection_weight.T
-            + decoder.first_bias
+            tokens @ first_weight[:, :SONIC_TOKEN_FLAT_SIZE].T
+            + aligned_proprioception @ first_weight[:, SONIC_TOKEN_FLAT_SIZE:].T
+            + decoder.lora_scale
+            * (aligned_proprioception @ decoder.lora_a[0].T)
+            @ decoder.lora_b[0].T
+            + jax.lax.stop_gradient(decoder.base_biases[0])
         )
         teacher_first = (
             tokens @ release_first_weight[:, :SONIC_TOKEN_FLAT_SIZE].T
@@ -371,7 +387,11 @@ def pretrain_sonic_adapters(
         metrics = {
             "loss": loss,
             "action_huber": action_loss,
-            "action_rms": jnp.sqrt(jnp.mean((prediction - batch.action_target) ** 2)),
+            "action_prediction_rms": jnp.sqrt(jnp.mean(prediction**2)),
+            "action_target_rms": jnp.sqrt(jnp.mean(batch.action_target**2)),
+            "action_error_rms": jnp.sqrt(
+                jnp.mean((prediction - batch.action_target) ** 2)
+            ),
             "activation_rms": jnp.sqrt(activation_loss),
             "temporal_huber": temporal_loss,
             "target_limit_loss": target_limit_loss,
@@ -420,13 +440,14 @@ def pretrain_sonic_adapters(
 def _adapter_pretraining_filter(actor: SonicActor):
     specification = jax.tree_util.tree_map(lambda _: False, actor)
     for selector in (
-        lambda value: value.decoder.root_motion_projection_weight,
-        lambda value: value.decoder.proprioception_projection_weight,
-        lambda value: value.decoder.first_bias,
-        lambda value: value.decoder.output_weight,
-        lambda value: value.decoder.output_bias,
+        lambda value: value.decoder.lora_a,
+        lambda value: value.decoder.lora_b,
     ):
-        specification = eqx.tree_at(selector, specification, True)
+        specification = eqx.tree_at(
+            selector,
+            specification,
+            tuple(True for _ in selector(actor)),
+        )
     return specification
 
 
@@ -492,6 +513,33 @@ def _restricted_clip_probabilities(
     if not math.isfinite(total) or total <= 0.0:
         raise ValueError("SONIC pretraining clip probability is invalid")
     return probability / total
+
+
+def _startup_history(
+    absolute: np.ndarray, startup_age: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the history buffer seen during the first ten rollout frames."""
+
+    absolute = np.asarray(absolute, dtype=np.int32)
+    startup_age = np.asarray(startup_age, dtype=np.int32)
+    if absolute.ndim != 1 or startup_age.shape != absolute.shape:
+        raise ValueError("SONIC startup history indices must be equal-length vectors")
+    if np.any((startup_age < 0) | (startup_age > SONIC_PROPRIO_HISTORY_FRAMES)):
+        raise ValueError("SONIC startup history age must be in [0, 10]")
+    nominal = (
+        absolute[:, None]
+        + np.arange(
+            -SONIC_PROPRIO_HISTORY_FRAMES + 1,
+            1,
+            dtype=np.int32,
+        )[None, :]
+    )
+    startup_frame = absolute - startup_age
+    history = np.maximum(nominal, startup_frame[:, None])
+    reset_slots = (startup_age < SONIC_PROPRIO_HISTORY_FRAMES)[:, None] & (
+        history == startup_frame[:, None]
+    )
+    return history, reset_slots
 
 
 def _term_major_history(

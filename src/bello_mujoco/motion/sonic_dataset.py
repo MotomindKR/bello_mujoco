@@ -191,12 +191,14 @@ class SonicCalibrationConfig:
 
 @dataclass(frozen=True)
 class SonicSanitationConfig:
-    quarantine_name_patterns: tuple[str, ...] = ("treadmill",)
+    quarantine_name_patterns: tuple[str, ...] = ("treadmill", "crawl")
     stationary_root_extent_meters: float = 0.35
     minimum_leg_rms_velocity_radians_per_second: float = 0.35
     minimum_contact_transitions: int = 4
     maximum_contact_foot_speed_meters_per_second: float = 0.6
     maximum_fast_contact_fraction: float = 0.15
+    low_root_height_meters: float = 0.45
+    maximum_low_root_fraction: float = 0.8
 
     def __post_init__(self) -> None:
         if any(not pattern.strip() for pattern in self.quarantine_name_patterns):
@@ -205,6 +207,7 @@ class SonicSanitationConfig:
             "stationary_root_extent_meters",
             "minimum_leg_rms_velocity_radians_per_second",
             "maximum_contact_foot_speed_meters_per_second",
+            "low_root_height_meters",
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0.0:
@@ -213,6 +216,8 @@ class SonicSanitationConfig:
             raise ValueError("minimum_contact_transitions must be positive")
         if not 0.0 <= self.maximum_fast_contact_fraction <= 1.0:
             raise ValueError("maximum_fast_contact_fraction must be in [0, 1]")
+        if not 0.0 <= self.maximum_low_root_fraction <= 1.0:
+            raise ValueError("maximum_low_root_fraction must be in [0, 1]")
 
 
 def load_sonic_sanitation_config(path: Path) -> SonicSanitationConfig:
@@ -1161,8 +1166,16 @@ def sonic_semantic_quality(
         and contact_transitions >= config.minimum_contact_transitions
     )
 
+    low_root_fraction = float(
+        np.mean(np.asarray(arrays["qpos"])[:, 2] < config.low_root_height_meters)
+    )
     labels = ["stationary_root" if stationary else "traveling_root"]
     labels.append("gait_contact_cycles" if gait_like else "non_gait_motion")
+    labels.append(
+        "near_ground_motion"
+        if low_root_fraction > config.maximum_low_root_fraction
+        else "supported_root_height"
+    )
     reasons: list[str] = []
     identity = " ".join(
         (sequence.source_id, sequence.sequence_id, sequence.original_sequence_id)
@@ -1179,6 +1192,11 @@ def sonic_semantic_quality(
     if stationary and gait_like:
         reasons.append(
             "stationary root with gait-like leg/contact motion (treadmill candidate)"
+        )
+    if low_root_fraction > config.maximum_low_root_fraction:
+        reasons.append(
+            "root remains near the ground beyond configured fraction "
+            f"({low_root_fraction:.3f})"
         )
 
     body_names = tuple(str(name) for name in np.asarray(arrays["body_names"]).tolist())

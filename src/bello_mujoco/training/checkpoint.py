@@ -1442,7 +1442,7 @@ def twist_metadata_with_runner_state(
 def sonic_metadata_with_runner_state(
     metadata: SonicCheckpointMetadata, runner_state: RunnerState
 ) -> SonicCheckpointMetadata:
-    """Attach the new critic/value normalization state to a SONIC checkpoint."""
+    """Attach PPO normalization state to a typed SONIC checkpoint."""
 
     return replace(
         metadata,

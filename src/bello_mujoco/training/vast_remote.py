@@ -486,6 +486,11 @@ summary = {
     "evaluated_clips": len(report["per_clip"]),
     "global": report["global"],
     "acceptance": report["acceptance"],
+    "reference_action_oracle": {
+        "evaluated_clips": len(report["reference_action_oracle"]["per_clip"]),
+        "global": report["reference_action_oracle"]["global"],
+        "acceptance": report["reference_action_oracle"]["acceptance"],
+    },
 }
 (root / "summary.json").write_text(
     json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n"
@@ -978,6 +983,14 @@ def _validate_local_sonic_results(
         or summary.get("evaluated_clips") != len(report.get("per_clip", ()))
         or summary.get("global") != report.get("global")
         or summary.get("acceptance") != report.get("acceptance")
+        or summary.get("reference_action_oracle")
+        != {
+            "evaluated_clips": len(
+                report.get("reference_action_oracle", {}).get("per_clip", ())
+            ),
+            "global": report.get("reference_action_oracle", {}).get("global"),
+            "acceptance": report.get("reference_action_oracle", {}).get("acceptance"),
+        }
     ):
         raise ValueError("downloaded SONIC evaluation summary differs from its report")
 

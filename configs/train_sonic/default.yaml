@@ -3,7 +3,7 @@ release_artifact_directory: artifacts/sonic/default_release
 
 config:
   seed: 1
-  total_timesteps: 2949218304
+  total_timesteps: 2949120000
   num_envs: 4096
   num_steps: 24
   update_epochs: 5
@@ -20,14 +20,14 @@ config:
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
-  ent_coef: 0.0
+  ent_coef: 0.01
   vf_coef: 1.0
   max_grad_norm: 0.1
   adam_epsilon: 0.00001
   value_loss_scale: 1.0
   normalize_value: false
   normalize_observations: false
-  normalize_critic_observations: true
+  normalize_critic_observations: false
   observation_norm_update_mode: rollout
   observation_norm_update_updates: null
   observation_norm_epsilon_mode: variance_floor
@@ -42,28 +42,29 @@ config:
     hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
     activation: swish
     init_log_std: -2.995732273553991
-    min_log_std: -3.912023005428146
-    max_log_std: -1.8971199848858813
+    min_log_std: -8.517193191416238
+    max_log_std: 1.0986122886681098
     obs_stack_size: 1
     action_distribution: gaussian
     action_limit: 20.0
     architecture: sonic
     layer_norm_final_hidden: false
-    sonic_trainable_middle_prefix_layers: 0
-    sonic_trainable_middle_suffix_layers: 1
-    sonic_train_log_std: false
+    sonic_lora_rank: 32
+    sonic_lora_alpha: 32.0
+    sonic_train_log_std: true
 
 simulation: {}
 sonic_env: {}
 
 pretraining:
-  enabled: true
+  enabled: false
   updates: 2000
   batch_size: 512
   validation_batch_size: 2048
   learning_rate: 0.0001
   max_gradient_norm: 1.0
   validation_clip_fraction: 0.05
+  startup_history_fraction: 0.5
   action_huber_delta: 0.5
   activation_consistency_weight: 0.05
   temporal_consistency_weight: 0.1

@@ -24,8 +24,8 @@ sonic
 gait baseline. `hardware_locomotion` uses the same reward and policy contract
 with the longer credit horizon used by the physical policy. `motion` is bounded
 BeyondMimic tracking. TWIST and TWIST2 are dedicated whole-body motion tasks;
-SONIC freezes NVIDIA's released encoder and semantic decoder core while
-training morphology edges and a configurable decoder prefix/suffix on Bello.
+SONIC wraps NVIDIA's released actor/critic with fixed Bello↔G1 semantic maps
+and trains rank-32 LoRA dynamics residuals.
 
 The public command can override seed, total timesteps, environment count,
 motion path, resume path, checkpoint destination/name, W&B enablement/run name,
@@ -125,9 +125,9 @@ dataset, Bello model, joint/body order, observation contract, and source
 revision. Student metadata binds the exact teacher metadata fingerprint and
 corrected KL schedule. Public TWIST evaluation accepts only the student and
 reports deterministic global, per-source, and per-clip held-out metrics.
-SONIC checkpoints contain only trainable actor edges, log standard deviation,
-and the critic; reconstruction therefore also requires the exact recorded safe
-release artifact. SONIC metadata binds its synchronized split-wide dataset and
+SONIC checkpoints contain only the trainable actor/critic LoRA adapters and log
+standard deviation; reconstruction therefore also requires the exact recorded
+safe release artifact. SONIC metadata binds its synchronized split-wide dataset and
 training-only G1/Bello calibration. The global adaptive failure/attempt state
 is restored with the runner continuation. Evaluation verifies the frozen
 release hashes, loads the complete held-out bank once, and reports deterministic

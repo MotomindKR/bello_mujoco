@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 from bello_mujoco.sonic_policy import (
     SONIC_ACTOR_OBSERVATION_SIZE,
     SONIC_BELLO_PROPRIO_SIZE,
-    SONIC_ROOT_MOTION_COMMAND_SIZE,
+    SONIC_G1_CRITIC_OBSERVATION_SIZE,
     SONIC_SMPL_INPUT_SIZE,
     SONIC_TOKEN_FLAT_SIZE,
     SonicDecoderInitialization,
@@ -48,8 +48,8 @@ class ActorCriticConfig:
         "mlp", "twist_teacher", "twist_student", "twist2", "sonic"
     ] = "mlp"
     layer_norm_final_hidden: bool = False
-    sonic_trainable_middle_prefix_layers: int = 0
-    sonic_trainable_middle_suffix_layers: int = 0
+    sonic_lora_rank: int = 32
+    sonic_lora_alpha: float = 32.0
     sonic_train_log_std: bool = True
 
 
@@ -175,18 +175,19 @@ class ActorCritic(eqx.Module):
             self.actor = SonicActor(
                 sonic_release,
                 sonic_initialization,
-                trainable_middle_prefix_layers=(
-                    config.sonic_trainable_middle_prefix_layers
-                ),
-                trainable_middle_suffix_layers=(
-                    config.sonic_trainable_middle_suffix_layers
-                ),
+                lora_rank=config.sonic_lora_rank,
+                lora_alpha=config.sonic_lora_alpha,
+                key=actor_key,
             )
-            self.critic = make_mlp(
-                obs_size=critic_obs_size,
-                output_size=1,
-                config=config,
-                activation=activation_fn,
+            if critic_obs_size != SONIC_G1_CRITIC_OBSERVATION_SIZE:
+                raise ValueError(
+                    "SONIC critic requires source-semantic observations of size "
+                    f"{SONIC_G1_CRITIC_OBSERVATION_SIZE}, got {critic_obs_size}"
+                )
+            self.critic = SonicLoRACritic(
+                sonic_release,
+                lora_rank=config.sonic_lora_rank,
+                lora_alpha=config.sonic_lora_alpha,
                 key=critic_key,
             )
         else:
@@ -249,7 +250,7 @@ def init_actor_critic(
 
 
 def sonic_frozen_parameter_hashes(policy: ActorCritic) -> dict[str, str]:
-    """Return content hashes for every array outside SONIC's trainable edges."""
+    """Return content hashes for every frozen SONIC source-policy array."""
 
     if not isinstance(policy.actor, SonicActor):
         raise TypeError("frozen SONIC hashes require a SONIC actor")
@@ -262,17 +263,29 @@ def sonic_frozen_parameter_hashes(policy: ActorCritic) -> dict[str, str]:
             f"smpl_encoder_bias_{index}": value
             for index, value in enumerate(policy.actor.smpl_encoder.biases)
         },
-        "decoder_token_projection": policy.actor.decoder.token_projection_weight,
         **{
-            f"decoder_middle_weight_{index}": value
-            for index, value in enumerate(policy.actor.decoder.middle_weights)
-            if not policy.actor.decoder.trainable_middle_layers[index]
+            f"decoder_weight_{index}": value
+            for index, value in enumerate(policy.actor.decoder.base_weights)
         },
         **{
-            f"decoder_middle_bias_{index}": value
-            for index, value in enumerate(policy.actor.decoder.middle_biases)
-            if not policy.actor.decoder.trainable_middle_layers[index]
+            f"decoder_bias_{index}": value
+            for index, value in enumerate(policy.actor.decoder.base_biases)
         },
+        **{
+            f"critic_weight_{index}": value
+            for index, value in enumerate(policy.critic.base_weights)
+        },
+        **{
+            f"critic_bias_{index}": value
+            for index, value in enumerate(policy.critic.base_biases)
+        },
+        "critic_observation_mean": policy.critic.observation_mean,
+        "critic_observation_variance": policy.critic.observation_variance,
+        "g1_from_bello_proprio": policy.actor.decoder.g1_from_bello_proprio,
+        "g1_from_bello_proprio_offset": (
+            policy.actor.decoder.g1_from_bello_proprio_offset
+        ),
+        "bello_from_g1_action": policy.actor.decoder.bello_from_g1_action,
     }
     if not policy.train_log_std:
         arrays["log_std"] = policy.log_std
@@ -293,37 +306,20 @@ def policy_trainable_filter(policy: ActorCritic):
     specification = jax.tree_util.tree_map(eqx.is_array, policy)
     if not isinstance(policy.actor, SonicActor):
         return specification
-    specification = eqx.tree_at(
-        lambda value: value.actor.smpl_encoder.weights,
-        specification,
-        tuple(False for _ in policy.actor.smpl_encoder.weights),
-    )
-    specification = eqx.tree_at(
-        lambda value: value.actor.smpl_encoder.biases,
-        specification,
-        tuple(False for _ in policy.actor.smpl_encoder.biases),
-    )
-    specification = eqx.tree_at(
-        lambda value: value.actor.decoder.token_projection_weight,
-        specification,
-        False,
-    )
-    specification = eqx.tree_at(
-        lambda value: value.actor.decoder.middle_weights,
-        specification,
-        policy.actor.decoder.trainable_middle_layers,
-    )
-    specification = eqx.tree_at(
-        lambda value: value.actor.decoder.middle_biases,
-        specification,
-        policy.actor.decoder.trainable_middle_layers,
-    )
-    if not policy.train_log_std:
+    specification = jax.tree_util.tree_map(lambda _: False, policy)
+    for selector in (
+        lambda value: value.actor.decoder.lora_a,
+        lambda value: value.actor.decoder.lora_b,
+        lambda value: value.critic.lora_a,
+        lambda value: value.critic.lora_b,
+    ):
         specification = eqx.tree_at(
-            lambda value: value.log_std,
+            selector,
             specification,
-            False,
+            tuple(True for _ in selector(policy)),
         )
+    if policy.train_log_std:
+        specification = eqx.tree_at(lambda value: value.log_std, specification, True)
     return specification
 
 
@@ -400,107 +396,205 @@ class SonicFrozenSmplEncoder(eqx.Module):
 
 
 class SonicEdgeDecoder(eqx.Module):
-    """Frozen SONIC core with trainable Bello input/output edge projections."""
+    """Released G1 decoder with fixed Bello alignment and trainable LoRA."""
 
-    token_projection_weight: jax.Array
-    root_motion_projection_weight: jax.Array
-    proprioception_projection_weight: jax.Array
-    first_bias: jax.Array
-    middle_weights: tuple[jax.Array, ...]
-    middle_biases: tuple[jax.Array, ...]
-    output_weight: jax.Array
-    output_bias: jax.Array
-    trainable_middle_layers: tuple[bool, ...] = eqx.field(static=True)
+    base_weights: tuple[jax.Array, ...]
+    base_biases: tuple[jax.Array, ...]
+    lora_a: tuple[jax.Array, ...]
+    lora_b: tuple[jax.Array, ...]
+    g1_from_bello_proprio: jax.Array
+    g1_from_bello_proprio_offset: jax.Array
+    bello_from_g1_action: jax.Array
+    lora_scale: float = eqx.field(static=True)
 
     def __init__(
         self,
+        release: SonicReleaseWeights,
         initialization: SonicDecoderInitialization,
         *,
-        trainable_middle_prefix_layers: int,
-        trainable_middle_suffix_layers: int,
+        lora_rank: int,
+        lora_alpha: float,
+        key: jax.Array,
     ):
-        self.token_projection_weight = jnp.asarray(
-            initialization.token_projection_weight
+        self.base_weights = tuple(
+            jnp.asarray(value) for value in release.decoder_weights
         )
-        self.root_motion_projection_weight = jnp.asarray(
-            initialization.root_motion_projection_weight
+        self.base_biases = tuple(jnp.asarray(value) for value in release.decoder_biases)
+        input_sizes = (930, 2048, 2048, 1024, 1024, 512, 512)
+        output_sizes = (2048, 2048, 1024, 1024, 512, 512, 29)
+        self.lora_a, self.lora_b, self.lora_scale = _initialize_lora(
+            input_sizes,
+            output_sizes,
+            rank=lora_rank,
+            alpha=lora_alpha,
+            key=key,
         )
-        self.proprioception_projection_weight = jnp.asarray(
-            initialization.proprioception_projection_weight
+        self.g1_from_bello_proprio = jnp.asarray(initialization.g1_from_bello_proprio)
+        self.g1_from_bello_proprio_offset = jnp.asarray(
+            initialization.g1_from_bello_proprio_offset
         )
-        self.first_bias = jnp.asarray(initialization.first_bias)
-        self.middle_weights = tuple(
-            jnp.asarray(value) for value in initialization.middle_weights
-        )
-        self.middle_biases = tuple(
-            jnp.asarray(value) for value in initialization.middle_biases
-        )
-        self.output_weight = jnp.asarray(initialization.output_weight)
-        self.output_bias = jnp.asarray(initialization.output_bias)
-        count = len(self.middle_weights)
-        for name, value in (
-            ("sonic_trainable_middle_prefix_layers", trainable_middle_prefix_layers),
-            ("sonic_trainable_middle_suffix_layers", trainable_middle_suffix_layers),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(f"{name} must be a nonnegative integer")
-        if trainable_middle_prefix_layers + trainable_middle_suffix_layers > count:
-            raise ValueError("SONIC trainable middle-layer prefix and suffix overlap")
-        self.trainable_middle_layers = tuple(
-            index < trainable_middle_prefix_layers
-            or index >= count - trainable_middle_suffix_layers
-            for index in range(count)
-        )
+        self.bello_from_g1_action = jnp.asarray(initialization.bello_from_g1_action)
 
     def __call__(
         self,
         tokens: jax.Array,
-        root_motion: jax.Array,
         proprioception: jax.Array,
     ) -> jax.Array:
-        value = (
-            jnp.matmul(
-                tokens,
-                jax.lax.stop_gradient(self.token_projection_weight).T,
-                precision=jax.lax.Precision.HIGHEST,
-            )
-            + jnp.matmul(
-                root_motion,
-                self.root_motion_projection_weight.T,
-                precision=jax.lax.Precision.HIGHEST,
-            )
-            + jnp.matmul(
-                proprioception,
-                self.proprioception_projection_weight.T,
-                precision=jax.lax.Precision.HIGHEST,
-            )
-            + self.first_bias
+        g1_proprioception = jnp.matmul(
+            proprioception,
+            jax.lax.stop_gradient(self.g1_from_bello_proprio).T,
+            precision=jax.lax.Precision.HIGHEST,
+        ) + jax.lax.stop_gradient(self.g1_from_bello_proprio_offset)
+        first_weight = jax.lax.stop_gradient(self.base_weights[0])
+        value = jnp.matmul(
+            tokens,
+            first_weight[:, :SONIC_TOKEN_FLAT_SIZE].T,
+            precision=jax.lax.Precision.HIGHEST,
+        ) + _lora_linear(
+            g1_proprioception,
+            first_weight[:, SONIC_TOKEN_FLAT_SIZE:],
+            jax.lax.stop_gradient(self.base_biases[0]),
+            self.lora_a[0],
+            self.lora_b[0],
+            self.lora_scale,
         )
         value = jax.nn.silu(value)
-        for weight, bias, trainable in zip(
-            self.middle_weights,
-            self.middle_biases,
-            self.trainable_middle_layers,
+        for weight, bias, lora_a, lora_b in zip(
+            self.base_weights[1:-1],
+            self.base_biases[1:-1],
+            self.lora_a[1:-1],
+            self.lora_b[1:-1],
             strict=True,
         ):
-            applied_weight = weight if trainable else jax.lax.stop_gradient(weight)
-            applied_bias = bias if trainable else jax.lax.stop_gradient(bias)
             value = jax.nn.silu(
-                jnp.matmul(
+                _lora_linear(
                     value,
-                    applied_weight.T,
-                    precision=jax.lax.Precision.HIGHEST,
+                    jax.lax.stop_gradient(weight),
+                    jax.lax.stop_gradient(bias),
+                    lora_a,
+                    lora_b,
+                    self.lora_scale,
                 )
-                + applied_bias
             )
-        return (
-            jnp.matmul(
-                value,
-                self.output_weight.T,
-                precision=jax.lax.Precision.HIGHEST,
-            )
-            + self.output_bias
+        g1_action = _lora_linear(
+            value,
+            jax.lax.stop_gradient(self.base_weights[-1]),
+            jax.lax.stop_gradient(self.base_biases[-1]),
+            self.lora_a[-1],
+            self.lora_b[-1],
+            self.lora_scale,
         )
+        return jnp.matmul(
+            g1_action,
+            jax.lax.stop_gradient(self.bello_from_g1_action).T,
+            precision=jax.lax.Precision.HIGHEST,
+        )
+
+
+class SonicLoRACritic(eqx.Module):
+    """Released normalized SONIC critic with low-rank dynamics adaptation."""
+
+    base_weights: tuple[jax.Array, ...]
+    base_biases: tuple[jax.Array, ...]
+    lora_a: tuple[jax.Array, ...]
+    lora_b: tuple[jax.Array, ...]
+    observation_mean: jax.Array
+    observation_variance: jax.Array
+    lora_scale: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        release: SonicReleaseWeights,
+        *,
+        lora_rank: int,
+        lora_alpha: float,
+        key: jax.Array,
+    ):
+        self.base_weights = tuple(
+            jnp.asarray(value) for value in release.critic_weights
+        )
+        self.base_biases = tuple(jnp.asarray(value) for value in release.critic_biases)
+        self.observation_mean = jnp.asarray(release.critic_observation_mean)
+        self.observation_variance = jnp.asarray(release.critic_observation_variance)
+        self.lora_a, self.lora_b, self.lora_scale = _initialize_lora(
+            (1645, 2048, 2048, 1024, 1024, 512, 512),
+            (2048, 2048, 1024, 1024, 512, 512, 1),
+            rank=lora_rank,
+            alpha=lora_alpha,
+            key=key,
+        )
+
+    def __call__(self, observation: jax.Array) -> jax.Array:
+        value = jnp.clip(
+            (observation - jax.lax.stop_gradient(self.observation_mean))
+            / jnp.sqrt(jax.lax.stop_gradient(self.observation_variance) + 1.0e-5),
+            -5.0,
+            5.0,
+        )
+        for index, (weight, bias, lora_a, lora_b) in enumerate(
+            zip(
+                self.base_weights,
+                self.base_biases,
+                self.lora_a,
+                self.lora_b,
+                strict=True,
+            )
+        ):
+            value = _lora_linear(
+                value,
+                jax.lax.stop_gradient(weight),
+                jax.lax.stop_gradient(bias),
+                lora_a,
+                lora_b,
+                self.lora_scale,
+            )
+            if index != len(self.base_weights) - 1:
+                value = jax.nn.silu(value)
+        return value
+
+
+def _initialize_lora(
+    input_sizes: tuple[int, ...],
+    output_sizes: tuple[int, ...],
+    *,
+    rank: int,
+    alpha: float,
+    key: jax.Array,
+) -> tuple[tuple[jax.Array, ...], tuple[jax.Array, ...], float]:
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank <= 0:
+        raise ValueError("sonic_lora_rank must be a positive integer")
+    if not math.isfinite(alpha) or alpha <= 0.0:
+        raise ValueError("sonic_lora_alpha must be positive and finite")
+    if len(input_sizes) != len(output_sizes):
+        raise ValueError("SONIC LoRA layer dimensions are inconsistent")
+    keys = jax.random.split(key, len(input_sizes))
+    lora_a = tuple(
+        jax.random.normal(layer_key, (rank, input_size), dtype=jnp.float32)
+        / math.sqrt(input_size)
+        for input_size, layer_key in zip(input_sizes, keys, strict=True)
+    )
+    lora_b = tuple(
+        jnp.zeros((output_size, rank), dtype=jnp.float32)
+        for output_size in output_sizes
+    )
+    return lora_a, lora_b, float(alpha / rank)
+
+
+def _lora_linear(
+    value: jax.Array,
+    weight: jax.Array,
+    bias: jax.Array,
+    lora_a: jax.Array,
+    lora_b: jax.Array,
+    scale: float,
+) -> jax.Array:
+    base = jnp.matmul(value, weight.T, precision=jax.lax.Precision.HIGHEST) + bias
+    low_rank = jnp.matmul(
+        jnp.matmul(value, lora_a.T, precision=jax.lax.Precision.HIGHEST),
+        lora_b.T,
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    return base + scale * low_rank
 
 
 class SonicActor(eqx.Module):
@@ -514,14 +608,17 @@ class SonicActor(eqx.Module):
         release: SonicReleaseWeights,
         initialization: SonicDecoderInitialization,
         *,
-        trainable_middle_prefix_layers: int,
-        trainable_middle_suffix_layers: int,
+        lora_rank: int,
+        lora_alpha: float,
+        key: jax.Array,
     ):
         self.smpl_encoder = SonicFrozenSmplEncoder(release)
         self.decoder = SonicEdgeDecoder(
+            release,
             initialization,
-            trainable_middle_prefix_layers=trainable_middle_prefix_layers,
-            trainable_middle_suffix_layers=trainable_middle_suffix_layers,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            key=key,
         )
 
     def __call__(self, observation: jax.Array) -> jax.Array:
@@ -531,17 +628,12 @@ class SonicActor(eqx.Module):
                 f"features, got {observation.shape[-1]}"
             )
         smpl_input = observation[:SONIC_SMPL_INPUT_SIZE]
-        root_motion_start = SONIC_SMPL_INPUT_SIZE
-        proprioception_start = root_motion_start + SONIC_ROOT_MOTION_COMMAND_SIZE
-        root_motion = observation[root_motion_start:proprioception_start]
-        proprioception = observation[proprioception_start:]
-        if root_motion.shape[-1] != SONIC_ROOT_MOTION_COMMAND_SIZE:
-            raise RuntimeError("SONIC root-motion command slice has drifted")
+        proprioception = observation[SONIC_SMPL_INPUT_SIZE:]
         if proprioception.shape[-1] != SONIC_BELLO_PROPRIO_SIZE:
             raise RuntimeError("SONIC Bello proprioception slice has drifted")
         latent = self.smpl_encoder(smpl_input)
         tokens = sonic_fsq(latent.reshape((2, 32))).reshape((SONIC_TOKEN_FLAT_SIZE,))
-        return self.decoder(tokens, root_motion, proprioception)
+        return self.decoder(tokens, proprioception)
 
 
 class TwistBackbone(eqx.Module):

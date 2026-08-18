@@ -26,9 +26,10 @@ OFFICIAL_CHECKPOINT_SHA256 = (
 OFFICIAL_CONFIG_SHA256 = (
     "f08187795fa16a839a28bc1c18e0555d38d9420e03733744341cdcb56ab629c7"
 )
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ENCODER_DIMS = (840, 2048, 1024, 512, 512, 64)
 DECODER_DIMS = (994, 2048, 2048, 1024, 1024, 512, 512, 29)
+CRITIC_DIMS = (1645, 2048, 2048, 1024, 1024, 512, 512, 1)
 
 
 def main() -> None:
@@ -81,7 +82,10 @@ def main() -> None:
     policy = checkpoint_document.get("policy_state_dict")
     if not isinstance(policy, dict):
         raise ValueError("SONIC checkpoint has no policy_state_dict")
-    arrays = _extract_arrays(policy)
+    value = checkpoint_document.get("value_state_dict")
+    if not isinstance(value, dict):
+        raise ValueError("SONIC checkpoint has no value_state_dict")
+    arrays = _extract_arrays(policy, value)
     _validate_arrays(arrays)
     golden = _golden_vectors(torch, arrays)
     staging = Path(
@@ -163,7 +167,7 @@ def _load_trusted_checkpoint(torch, path: Path):
     return torch.load(path, map_location="cpu", weights_only=False)
 
 
-def _extract_arrays(policy: dict) -> dict[str, np.ndarray]:
+def _extract_arrays(policy: dict, value: dict) -> dict[str, np.ndarray]:
     arrays = {}
     encoder_prefix = "actor_module.encoders.smpl.module"
     decoder_prefix = "actor_module.decoders.g1_dyn.module"
@@ -181,6 +185,18 @@ def _extract_arrays(policy: dict) -> dict[str, np.ndarray]:
         arrays[f"decoder_bias_{output_index}"] = _tensor_array(
             policy[f"{decoder_prefix}.{module_index}.bias"]
         )
+        arrays[f"critic_weight_{output_index}"] = _tensor_array(
+            value[f"critic_module.module.{module_index}.weight"]
+        )
+        arrays[f"critic_bias_{output_index}"] = _tensor_array(
+            value[f"critic_module.module.{module_index}.bias"]
+        )
+    arrays["critic_observation_mean"] = _tensor_array(
+        value["running_mean_std.running_mean"]
+    )
+    arrays["critic_observation_variance"] = _tensor_array(
+        value["running_mean_std.running_var"]
+    )
     arrays["released_std"] = _tensor_array(policy["std"])
     return arrays
 
@@ -197,6 +213,10 @@ def _validate_arrays(arrays: dict[str, np.ndarray]) -> None:
         *(f"smpl_encoder_bias_{index}" for index in range(5)),
         *(f"decoder_weight_{index}" for index in range(7)),
         *(f"decoder_bias_{index}" for index in range(7)),
+        *(f"critic_weight_{index}" for index in range(7)),
+        *(f"critic_bias_{index}" for index in range(7)),
+        "critic_observation_mean",
+        "critic_observation_variance",
         "released_std",
     }
     if set(arrays) != expected_names:
@@ -213,6 +233,18 @@ def _validate_arrays(arrays: dict[str, np.ndarray]) -> None:
                 raise ValueError(f"{prefix} layer {index} shape differs from release")
             if weight.dtype != np.float32 or bias.dtype != np.float32:
                 raise ValueError(f"{prefix} layer {index} is not float32")
+    for index, (input_size, output_size) in enumerate(
+        zip(CRITIC_DIMS[:-1], CRITIC_DIMS[1:], strict=True)
+    ):
+        weight = arrays[f"critic_weight_{index}"]
+        bias = arrays[f"critic_bias_{index}"]
+        if weight.shape != (output_size, input_size) or bias.shape != (output_size,):
+            raise ValueError(f"critic layer {index} shape differs from release")
+        if weight.dtype != np.float32 or bias.dtype != np.float32:
+            raise ValueError(f"critic layer {index} is not float32")
+    for name in ("critic_observation_mean", "critic_observation_variance"):
+        if arrays[name].shape != (CRITIC_DIMS[0],):
+            raise ValueError(f"{name} shape differs from release")
     if arrays["released_std"].shape != (29,):
         raise ValueError("released SONIC standard deviation shape differs from release")
 
@@ -222,6 +254,9 @@ def _golden_vectors(torch, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarra
     generator.manual_seed(20251107)
     smpl_input = torch.randn((8, 840), generator=generator, dtype=torch.float32) * 0.25
     g1_proprio = torch.randn((8, 930), generator=generator, dtype=torch.float32) * 0.2
+    critic_input = torch.randn(
+        (8, CRITIC_DIMS[0]), generator=generator, dtype=torch.float32
+    )
     with torch.inference_mode():
         latent = smpl_input
         for index in range(5):
@@ -246,12 +281,32 @@ def _golden_vectors(torch, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarra
             )
             if index != 6:
                 decoder = torch.nn.functional.silu(decoder)
+        critic = torch.clamp(
+            (critic_input - torch.from_numpy(arrays["critic_observation_mean"]))
+            / torch.sqrt(
+                torch.from_numpy(arrays["critic_observation_variance"]) + 1.0e-5
+            ),
+            min=-5.0,
+            max=5.0,
+        )
+        critic_normalized = critic
+        for index in range(7):
+            critic = torch.nn.functional.linear(
+                critic,
+                torch.from_numpy(arrays[f"critic_weight_{index}"]),
+                torch.from_numpy(arrays[f"critic_bias_{index}"]),
+            )
+            if index != 6:
+                critic = torch.nn.functional.silu(critic)
     return {
         "smpl_input": smpl_input.numpy(),
         "g1_proprio": g1_proprio.numpy(),
         "encoder_latent": latent.numpy(),
         "quantized_tokens": tokens.numpy(),
         "g1_action": decoder.numpy(),
+        "critic_input": critic_input.numpy(),
+        "critic_normalized_input": critic_normalized.numpy(),
+        "critic_value": critic.numpy(),
     }
 
 
@@ -263,6 +318,11 @@ def _architecture_document() -> dict:
         "fsq_levels": [32] * 32,
         "token_count": 2,
         "decoder_dims": list(DECODER_DIMS),
+        "critic_dims": list(CRITIC_DIMS),
+        "critic_observation_normalization": {
+            "epsilon": 1.0e-5,
+            "clip": 5.0,
+        },
         "activation": "SiLU",
     }
 

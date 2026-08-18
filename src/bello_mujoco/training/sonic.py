@@ -151,7 +151,6 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         bello_default_joint_position=np.asarray(env.model.default_joint_target)[
             np.asarray(env.model.policy_ctrl_indices)
         ],
-        initial_action_std=float(np.exp(run_config.config.policy.init_log_std)),
     )
     rng = jax.random.PRNGKey(run_config.config.seed)
     rng, policy_key = jax.random.split(rng)
@@ -177,6 +176,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
             bello_default_joint_position=default,
             bello_action_scale=scale,
             validation_clip_fraction=(run_config.pretraining.validation_clip_fraction),
+            startup_history_fraction=(run_config.pretraining.startup_history_fraction),
             seed=run_config.pretraining.seed,
         )
 
@@ -331,8 +331,10 @@ def validate_sonic_training_config(config: SonicTrainingRunConfig) -> None:
         raise ValueError("SONIC owns its ten-frame observation history")
     if ppo.normalize_observations:
         raise ValueError("released SONIC actor inputs must remain raw")
-    if not ppo.normalize_critic_observations:
-        raise ValueError("SONIC requires the release-style critic normalizer")
+    if ppo.normalize_critic_observations:
+        raise ValueError(
+            "SONIC applies the released critic normalizer inside its frozen policy"
+        )
     if ppo.critic_learning_rate is None:
         raise ValueError("SONIC requires an explicit independent critic learning rate")
 

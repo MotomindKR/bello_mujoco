@@ -107,20 +107,20 @@ uv run bello-vast-train \
   duration_hours=60
 ```
 
-SONIC production-scale transfer example. With 4,096 environments and 24 rollout
-steps, `71,270,400` transitions are 725 PPO updates:
+SONIC Any2Any comparison-milestone example. With 4,096 environments and 24
+rollout steps, `786,432,000` transitions are 8,000 PPO updates:
 
 ```bash
 uv run bello-vast-train \
   experiment=sonic \
-  dataset_path=/home/gmmyung/amass/sonic_dataset_v2/index.json \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v5/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
-  total_timesteps=71270400 \
+  total_timesteps=786432000 \
   num_envs=4096 \
-  checkpoint_every_updates=145 \
+  checkpoint_every_updates=500 \
   branch=feature/sonic-transfer \
   max_price=1.25 \
-  duration_hours=6 \
+  duration_hours=12 \
   skip_confirmation=true
 ```
 
@@ -134,24 +134,24 @@ accepted held-out clips, and downloads `benchmark.json`,
 types retain the fixed 32-environment,
 768-transition preflight.
 
-To continue a checkpoint produced by this configuration, download its final
-W&B artifact and pass the artifact directory as `resume_path`. The budget is
-absolute. This example extends the run to the maintained 2,949,218,304-transition
-budget while retaining the exact 4,096-environment batch contract:
+To continue an 8,000-update checkpoint, download its W&B artifact and pass the
+artifact directory as `resume_path`. The budget is absolute. This example
+extends the run to the maintained 30,000-update budget while retaining the
+exact 4,096-environment batch contract:
 
 ```bash
 uv run bello-vast-train \
   experiment=sonic \
-  dataset_path=/home/gmmyung/amass/sonic_dataset_v2/index.json \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v5/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
   resume_path=outputs/wandb_artifacts/sonic_edge_4096 \
   allow_git_commit_mismatch=true \
-  total_timesteps=2949218304 \
+  total_timesteps=2949120000 \
   num_envs=4096 \
   checkpoint_every_updates=500 \
   branch=feature/sonic-transfer \
   max_price=1.25 \
-  duration_hours=36 \
+  duration_hours=24 \
   skip_confirmation=true
 ```
 

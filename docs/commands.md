@@ -74,7 +74,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `dataset_path` | path or `null`; `null` | Override the packed `index.json` for a TWIST, TWIST2, or SONIC run. Other experiments reject it. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required for `twist_student` and rejected by every other experiment, including `twist_teacher`. |
 | `sonic_artifact_path` | path or `null`; `null` | Override the safe exported SONIC release directory for `experiment=sonic`. Other experiments reject it. The default is `artifacts/sonic/default_release`. |
-| `sonic_pretraining_enabled` | boolean or `null`; `null` | Enable or disable the offline SONIC edge warm-start. The SONIC profile defaults to enabled; other experiments reject this field. |
+| `sonic_pretraining_enabled` | boolean or `null`; `null` | Enable or disable the experimental offline SONIC LoRA warm-start. The maintained SONIC profile defaults to disabled; other experiments reject this field. |
 | `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and normally match its recorded Git commit; resume then validates the full training and environment state. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; it waives source-revision identity while metadata semantics, layouts, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
