@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import jax
-import jax.numpy as jnp
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.training.checkpoint import CheckpointNormalizationState
@@ -351,14 +350,7 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
     assert result.observation[9:12] == pytest.approx(command)
     assert result.observation[12:15] == pytest.approx((0.0, 1.0, 1.0))
     assert result.action.shape == (13,)
-    assert result.action == pytest.approx(
-        np.asarray(
-            hardware_env.filter_action(
-                jnp.zeros(hardware_env.action_size),
-                jnp.clip(jnp.asarray(result.raw_action), -1.0, 1.0),
-            )
-        )
-    )
+    assert result.action == pytest.approx(np.clip(result.raw_action, -1.0, 1.0))
     assert result.physical_target.shape == (25,)
     assert np.all(np.isfinite(result.physical_target))
     assert result.physical_target == pytest.approx(

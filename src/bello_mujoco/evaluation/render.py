@@ -295,12 +295,6 @@ def render_policy_rollout_mujoco(
                 observation_norm_state=observation_norm_state,
             )
             action = np.asarray(jax.device_get(action), dtype=np.float32)
-            action = np.asarray(
-                jax.device_get(
-                    env.filter_action(jnp.asarray(last_action), jnp.asarray(action))
-                ),
-                dtype=np.float32,
-            )
             mj_data.ctrl[:] = mujoco_action_to_ctrl(env, action)
             for _ in range(env.decimation):
                 mujoco.mj_step(mj_model, mj_data)

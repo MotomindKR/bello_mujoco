@@ -75,6 +75,7 @@ def reward_inputs(**updates) -> RewardInputs:
         touchdown_foot_linear_velocity=jnp.zeros((2, 3), dtype=jnp.float32),
         foot_linear_velocity=jnp.zeros((2, 3), dtype=jnp.float32),
         foot_angular_speed=jnp.zeros(2, dtype=jnp.float32),
+        foot_heading_error=jnp.zeros(2, dtype=jnp.float32),
         foot_height=jnp.zeros(2, dtype=jnp.float32),
         gait_active=jnp.asarray(False),
         desired_foot_contact=jnp.ones(2, dtype=jnp.float32),
@@ -511,6 +512,22 @@ def test_stand_foot_motion_is_bounded_command_gated_and_contact_free() -> None:
     assert saturated["reward/stand_foot_motion"] == pytest.approx(-0.00625)
 
 
+def test_stand_foot_heading_penalizes_squared_error_only_while_standing() -> None:
+    config = reward_config(stand_foot_heading=-5.0)
+    inputs = reward_inputs(
+        foot_heading_error=jnp.asarray([0.2, -0.1], dtype=jnp.float32)
+    )
+
+    _, standing = compute_locomotion_reward(config, inputs)
+    _, moving = compute_locomotion_reward(
+        config,
+        inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0])),
+    )
+
+    assert standing["reward/stand_foot_heading"] == pytest.approx(-0.0025)
+    assert moving["reward/stand_foot_heading"] == pytest.approx(0.0)
+
+
 def test_stand_contact_penalizes_missing_double_support_only_while_standing() -> None:
     config = reward_config(stand_contact=-1.0)
     inputs = reward_inputs(foot_contact=jnp.asarray([1.0, 0.0]))
@@ -627,6 +644,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         command=jnp.zeros(3),
         gait_active=jnp.asarray(False),
         foot_contact=jnp.asarray([1.0, 0.0]),
+        foot_heading_error=jnp.asarray([0.2, -0.1]),
         done=jnp.asarray(False),
     )
     compute = jax.jit(compute_locomotion_reward, static_argnums=0)

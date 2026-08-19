@@ -48,6 +48,12 @@ from bello_mujoco.terrain import (
 )
 
 
+_FOOT_FORWARD_AXES = (
+    ("left_ankle_roll_link", (0.0, 1.0, 0.0)),
+    ("right_ankle_roll_link", (0.0, -1.0, 0.0)),
+)
+
+
 @chex.dataclass(frozen=True)
 class BelloState:
     data: mjx.Data
@@ -152,14 +158,6 @@ class ObservationNoiseConfig:
 class ObservationLatencyConfig:
     enabled: bool = False
     delay_steps: tuple[int, int] = (0, 0)
-
-
-@dataclass(frozen=True)
-class ActionFilterConfig:
-    """First-order low-pass filter applied to every deployed policy action."""
-
-    enabled: bool = False
-    cutoff_hz: float = 5.5
 
 
 @dataclass(frozen=True)
@@ -288,7 +286,6 @@ class BelloEnvConfig:
     numerical_safety: NumericalSafetyConfig = NumericalSafetyConfig()
     observation: ObservationConfig = ObservationConfig()
     observation_latency: ObservationLatencyConfig = ObservationLatencyConfig()
-    action_filter: ActionFilterConfig = ActionFilterConfig()
     gait: GaitConfig = GaitConfig()
     critic_observation: ObservationConfig = ObservationConfig(privileged=True)
 
@@ -352,13 +349,6 @@ class BelloLocomotionEnv:
             )
         self._validate_observation_config("observation", self.config.observation)
         self._validate_observation_latency()
-        if not math.isfinite(self.config.action_filter.cutoff_hz) or (
-            self.config.action_filter.cutoff_hz <= 0.0
-        ):
-            raise ValueError(
-                "action_filter.cutoff_hz must be positive and finite, got "
-                f"{self.config.action_filter.cutoff_hz}"
-            )
         self._validate_observation_config(
             "critic_observation", self.config.critic_observation
         )
@@ -689,12 +679,15 @@ class BelloLocomotionEnv:
             "nonfoot_robot_body_ids", model.nonfoot_robot_body_ids, mj_model.nbody
         )
         if isinstance(mj_model, mujoco.MjModel):
-            for link_name in {
+            required_link_names = {
                 self.config.root_link,
                 model.imu_body_name,
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
-            }:
+            }
+            if self.reward_config.enabled("stand_foot_heading"):
+                required_link_names.update(name for name, _ in _FOOT_FORWARD_AXES)
+            for link_name in required_link_names:
                 if self._link_body_id(link_name) < 0:
                     raise ValueError(f"configured link/body not found: {link_name!r}")
         if model.actuator_coordinate_transform.shape != (mj_model.nu, mj_model.nu):
@@ -1136,12 +1129,11 @@ class BelloLocomotionEnv:
         self, state: BelloState, action: jax.Array
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
         requested_action = jnp.asarray(action, dtype=jnp.float32)
-        policy_action = jnp.clip(
+        action = jnp.clip(
             requested_action,
             -self.action_clip,
             self.action_clip,
         )
-        action = self.filter_action(state.last_action, policy_action)
         action_delta = action - state.last_action
         ctrl, joint_saturation, motor_saturation = self._action_target_details(action)
         data = state.data.replace(ctrl=ctrl)
@@ -1287,12 +1279,11 @@ class BelloLocomotionEnv:
                 jax.random.split(rng, 5)
             )
         requested_action = jnp.asarray(action, dtype=jnp.float32)
-        policy_action = jnp.clip(
+        action = jnp.clip(
             requested_action,
             -self.action_clip,
             self.action_clip,
         )
-        action = jax.vmap(self.filter_action)(state.last_action, policy_action)
         action_delta = action - state.last_action
         joint_angle_offset = self._joint_angle_offset_batch(batch_size)
         ctrl, joint_saturation, motor_saturation = jax.vmap(
@@ -1693,26 +1684,6 @@ class BelloLocomotionEnv:
     ) -> jax.Array:
         ctrl, _, _ = self._action_target_details(action, joint_angle_offset)
         return ctrl
-
-    def filter_action(
-        self, previous_action: jax.Array, policy_action: jax.Array
-    ) -> jax.Array:
-        """Apply the checkpointed action filter used in sim and deployment."""
-
-        policy_action = jnp.clip(
-            jnp.asarray(policy_action, dtype=jnp.float32),
-            -self.action_clip,
-            self.action_clip,
-        )
-        if not self.config.action_filter.enabled:
-            return policy_action
-        alpha = 1.0 - jnp.exp(
-            -2.0
-            * jnp.pi
-            * jnp.asarray(self.config.action_filter.cutoff_hz, dtype=jnp.float32)
-            * jnp.asarray(self.control_timestep, dtype=jnp.float32)
-        )
-        return previous_action + alpha * (policy_action - previous_action)
 
     def mirror_action(self, action: jax.Array) -> jax.Array:
         """Reflect logical policy actions across Bello's sagittal plane."""
@@ -2438,6 +2409,7 @@ class BelloLocomotionEnv:
                 touchdown_foot_linear_velocity=touchdown_foot_linear_velocity,
                 foot_linear_velocity=foot_linear_velocity,
                 foot_angular_speed=foot_angular_speed,
+                foot_heading_error=self._foot_heading_error(next_state),
                 foot_height=self._foot_height(next_state, world_id),
                 gait_active=command_is_moving(command, self.command_config),
                 desired_foot_contact=desired_gait_foot_contact(
@@ -2803,6 +2775,27 @@ class BelloLocomotionEnv:
         foot_ang_vel = state.data.cvel[foot_body_ids, :3]
         return jnp.linalg.norm(foot_ang_vel, axis=1)
 
+    def _foot_heading_error(self, state: BelloState) -> jax.Array:
+        pelvis_forward = quat_rotate(
+            self._link_quat(state, self.config.root_link),
+            jnp.asarray((0.0, 1.0, 0.0), dtype=jnp.float32),
+        )[:2]
+        pelvis_forward /= jnp.maximum(jnp.linalg.norm(pelvis_forward), 1.0e-6)
+        errors = []
+        for link_name, local_forward in _FOOT_FORWARD_AXES:
+            foot_forward = quat_rotate(
+                self._link_quat(state, link_name),
+                jnp.asarray(local_forward, dtype=jnp.float32),
+            )[:2]
+            foot_forward /= jnp.maximum(jnp.linalg.norm(foot_forward), 1.0e-6)
+            cross_z = (
+                pelvis_forward[0] * foot_forward[1]
+                - pelvis_forward[1] * (foot_forward[0])
+            )
+            dot = jnp.dot(pelvis_forward, foot_forward)
+            errors.append(jnp.arctan2(cross_z, dot))
+        return jnp.stack(errors)
+
     def _stance_width(self, state: BelloState, frame_link_name: str) -> jax.Array:
         if self.model.foot_body_ids.size != 2:
             return jnp.asarray(0.0, dtype=jnp.float32)
@@ -2845,8 +2838,13 @@ class BelloLocomotionEnv:
             - self.reward_config.gait.joint_force_soft_limit_body_weights,
             0.0,
         )
+        foot_heading_error_deg = (
+            jnp.abs(self._foot_heading_error(next_state)) * 180.0 / jnp.pi
+        )
         return {
             "gait/stance_width": self._stance_width(next_state, self.config.root_link),
+            "gait/foot_heading_error_mean_deg": jnp.mean(foot_heading_error_deg),
+            "gait/foot_heading_error_max_deg": jnp.max(foot_heading_error_deg),
             "gait/active": moving.astype(jnp.float32),
             "gait/phase": jnp.where(moving, next_state.gait_phase, 0.0),
             "gait/desired_left_contact": jnp.where(

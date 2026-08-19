@@ -11,7 +11,6 @@ from bello_mujoco.assets_pipeline.prepare import PreparedAsset
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
     BadOrientationDoneConfig,
-    ActionFilterConfig,
     BaseHeightDoneConfig,
     BelloEnvConfig,
     BelloLocomotionEnv,
@@ -130,22 +129,10 @@ def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> No
     )
 
 
-def test_action_filter_and_bilateral_mirrors_are_explicit_and_involutive(
+def test_bilateral_mirrors_are_explicit_and_involutive(
     full_body_asset: PreparedAsset,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
-        full_body_asset,
-        env_config=replace(
-            BelloEnvConfig(),
-            action_filter=ActionFilterConfig(enabled=True, cutoff_hz=5.5),
-        ),
-    )
-    previous = jnp.zeros(env.action_size, dtype=jnp.float32)
-    requested = jnp.ones(env.action_size, dtype=jnp.float32)
-    filtered = env.filter_action(previous, requested)
-    expected_alpha = 1.0 - np.exp(-2.0 * np.pi * 5.5 * env.control_timestep)
-
-    assert filtered == pytest.approx(np.full(env.action_size, expected_alpha))
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
 
     action = jnp.linspace(-0.9, 0.9, env.action_size)
     assert env.mirror_action(env.mirror_action(action)) == pytest.approx(action)
@@ -160,6 +147,24 @@ def test_action_filter_and_bilateral_mirrors_are_explicit_and_involutive(
     observation = jnp.linspace(-1.0, 1.0, 2 * env.observation_size)
     mirrored = env.mirror_actor_observation(observation)
     assert env.mirror_actor_observation(mirrored) == pytest.approx(observation)
+
+
+def test_foot_heading_uses_each_mirrored_foot_forward_axis(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env._reset(
+        jnp.zeros(3),
+        None,
+        0,
+        forward=False,
+        align_clearance=False,
+    )
+
+    heading_error_degrees = np.degrees(np.asarray(env._foot_heading_error(state)))
+
+    assert np.all(np.abs(heading_error_degrees) < 5.0)
+    assert heading_error_degrees[0] == pytest.approx(-heading_error_degrees[1], abs=0.1)
 
 
 def test_native_data_adapter_uses_shared_observation_function(
@@ -275,6 +280,8 @@ def test_reset_batch_and_step_have_finite_fixed_shapes(
     assert jnp.all(jnp.isfinite(reward))
     assert next_state.data.ctrl.shape == (2, env.model.mj_model.nu)
     assert "reward/track_lin_vel_xy" in info
+    assert jnp.all(jnp.isfinite(info["gait/foot_heading_error_mean_deg"]))
+    assert jnp.all(jnp.isfinite(info["gait/foot_heading_error_max_deg"]))
     assert "done/nonfinite" in info
     assert "done/unstable" in info
 

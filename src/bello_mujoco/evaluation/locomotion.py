@@ -603,12 +603,6 @@ def run_rerun_evaluation(
             action_np = np.asarray(
                 jax.device_get(policy_step.applied_action), dtype=np.float32
             )
-            action_np = np.asarray(
-                jax.device_get(
-                    env.filter_action(jnp.asarray(last_action), jnp.asarray(action_np))
-                ),
-                dtype=np.float32,
-            )
             action_delta = action_np - last_action
             ctrl = mujoco_action_to_ctrl(env, action_np)
             state = mujoco_eval_state(

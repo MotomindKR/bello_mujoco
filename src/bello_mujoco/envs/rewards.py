@@ -209,6 +209,7 @@ class RewardWeights:
     joint_pose: float = -0.1
     stand_still: float = 1.0
     stand_foot_motion: float = -1.0
+    stand_foot_heading: float = -5.0
     stand_contact: float = -0.5
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
@@ -313,6 +314,7 @@ class RewardConfig:
             self.uses_foot_contact_metadata
             or self.enabled("gait_swing_clearance")
             or self.enabled("stand_foot_motion")
+            or self.enabled("stand_foot_heading")
         )
 
     @property
@@ -371,6 +373,7 @@ class RewardInputs:
     touchdown_foot_linear_velocity: jax.Array
     foot_linear_velocity: jax.Array
     foot_angular_speed: jax.Array
+    foot_heading_error: jax.Array
     foot_height: jax.Array
     gait_active: jax.Array
     desired_foot_contact: jax.Array
@@ -495,6 +498,11 @@ def compute_locomotion_reward(
         + config.standing.foot_angular_weight * stand_foot_angular_motion
     )
     stand_foot_motion = jnp.where(standing_command, foot_motion, 0.0)
+    stand_foot_heading = jnp.where(
+        standing_command,
+        jnp.mean(inputs.foot_heading_error**2),
+        0.0,
+    )
     actual_contact = inputs.foot_contact.astype(jnp.float32)
     support_fraction = jnp.mean(actual_contact)
     stand_contact = jnp.where(
@@ -593,6 +601,7 @@ def compute_locomotion_reward(
         "joint_pose": joint_pose,
         "stand_still": stand_still,
         "stand_foot_motion": stand_foot_motion,
+        "stand_foot_heading": stand_foot_heading,
         "stand_contact": stand_contact,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,

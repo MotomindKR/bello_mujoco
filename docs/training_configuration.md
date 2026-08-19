@@ -141,7 +141,6 @@ asset that deviates from this contract.
 | `numerical_safety` | Broad finite-state and solver-force bounds that terminate invalid rollouts. |
 | `observation` | Deployable actor observation scaling and noise. |
 | `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
-| `action_filter` | First-order action low-pass enable and cutoff shared by training, native evaluation, and hardware. |
 | `gait` | Fixed gait frequency and stance fraction shared by simulation, native evaluation, and hardware. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
 
@@ -232,11 +231,9 @@ do not inject synthetic delay. Older locomotion checkpoints load with latency
 disabled; resuming their rollout continuation still requires the original
 source revision because its environment state predates the feedback history.
 
-The `action_filter` section contains `enabled` and positive `cutoff_hz`. The
-maintained locomotion profiles use a 5.5 Hz first-order filter at the 50 Hz
-policy rate. `last_action` is the filtered command actually sent to the
-position servos, so observation history, reward math, native evaluation, and
-the hardware runner all use the same stateful filter.
+`last_action` is the clipped policy action sent to the position servos. Action
+rate and acceleration rewards teach smooth commands without adding a stateful
+filter to training, native evaluation, or the hardware runner.
 
 ## Locomotion commands: `command_config`
 
@@ -278,8 +275,8 @@ computation where possible.
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
 | `flat_orientation` | `-2.0` | Penalize gravity-vector tilt. |
 | `base_height` | `-10.0` | Penalize error from `limits_pose.base_height_target`. |
-| `action_rate` | `-0.05` | Penalize change from the previous filtered action, with extra ankle and waist weighting. |
-| `action_acceleration` | `-0.02` | Penalize change in filtered action delta, using the same joint weighting. |
+| `action_rate` | `-0.05` | Penalize change from the previous applied action, with extra ankle and waist weighting. |
+| `action_acceleration` | `-0.02` | Penalize change in applied action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
 | `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
@@ -288,6 +285,7 @@ computation where possible.
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
+| `stand_foot_heading` | `-5.0` | At standing command, penalize mean squared left/right foot heading error relative to pelvis forward. It is inactive for moving commands so turning remains unconstrained. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation, gated by lateral command. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |

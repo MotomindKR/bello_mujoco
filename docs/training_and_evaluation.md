@@ -48,9 +48,12 @@ The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body
 joint reaction-force peaks, standing foot motion, phase contact matching,
 stance-foot slip, swing clearance, substep-integrated touchdown impact, and
-termination cost. A left/right actor-consistency loss augments PPO, and a 5.5 Hz
-first-order action filter is part of the checkpointed simulation/evaluation/
-hardware contract. Exact terms and weights are defined in
+termination cost. Standing frames also penalize the squared physical heading
+error of each foot relative to the pelvis, discouraging learned toe-in without
+constraining turns during commanded locomotion. A left/right actor-consistency
+loss augments PPO; action smoothness is learned through the rate and
+acceleration costs rather than imposed by a stateful command filter. Exact terms
+and weights are defined in
 [`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
 Training dynamics enforce the same motor effort limits as the emulator and
@@ -60,8 +63,9 @@ servo demand, so saturation cannot hide an infeasible policy request.
 ## Evaluation
 
 `bello-eval` always uses native MuJoCo. Locomotion streams the scene, commands,
-actions, rewards, and termination diagnostics to Rerun. Motion evaluation
-renders a deterministic video and reports completion and RMS tracking errors.
+actions, rewards, foot-heading error, and termination diagnostics to Rerun.
+Motion evaluation renders a deterministic video and reports completion and RMS
+tracking errors.
 
 Locomotion gamepad input is enabled by default. With a connected controller it
 replaces the configured fixed command; with a disconnected controller the

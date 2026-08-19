@@ -116,9 +116,6 @@ env_config:
   observation_latency:
     enabled: false
     delay_steps: [0, 0]
-  action_filter:
-    enabled: true
-    cutoff_hz: 5.5
   gait:
     frequency_hz: 0.9
     stance_fraction: 0.6
@@ -157,6 +154,7 @@ reward_config:
     joint_pose: -0.1
     stand_still: 1.0
     stand_foot_motion: -1.0
+    stand_foot_heading: -5.0
     stand_contact: -0.5
     hip_deviation: -0.25
     knee_deviation: -0.1
