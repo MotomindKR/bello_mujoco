@@ -11,6 +11,7 @@ from bello_mujoco.envs.rewards import (
     RewardConfig,
     RewardInputs,
     RewardWeights,
+    SmoothnessRewardConfig,
     StandingRewardConfig,
     TrackingRewardConfig,
     command_is_moving,
@@ -24,6 +25,7 @@ def reward_config(
     tracking: TrackingRewardConfig = TrackingRewardConfig(),
     standing: StandingRewardConfig = StandingRewardConfig(),
     gait: GaitRewardConfig = GaitRewardConfig(),
+    smoothness: SmoothnessRewardConfig = SmoothnessRewardConfig(),
     limits_pose: LimitsPoseRewardConfig = LimitsPoseRewardConfig(),
     **weights: float,
 ) -> RewardConfig:
@@ -34,6 +36,7 @@ def reward_config(
         tracking=tracking,
         standing=standing,
         gait=gait,
+        smoothness=smoothness,
         limits_pose=limits_pose,
     )
 
@@ -52,7 +55,10 @@ def reward_inputs(**updates) -> RewardInputs:
         action=jnp.zeros(2, dtype=jnp.float32),
         requested_action=jnp.zeros(2, dtype=jnp.float32),
         last_action=jnp.zeros(2, dtype=jnp.float32),
+        last_action_delta=jnp.zeros(2, dtype=jnp.float32),
+        action_smoothness_weights=jnp.ones(2, dtype=jnp.float32),
         actuator_force=jnp.zeros(2, dtype=jnp.float32),
+        requested_actuator_force=jnp.zeros(2, dtype=jnp.float32),
         actuator_peak_force=jnp.ones(2, dtype=jnp.float32),
         joint_force=jnp.zeros(2, dtype=jnp.float32),
         robot_weight=jnp.asarray(1.0, dtype=jnp.float32),
@@ -64,8 +70,9 @@ def reward_inputs(**updates) -> RewardInputs:
         action_target_high=jnp.asarray([1.0, 1.0], dtype=jnp.float32),
         foot_contact=jnp.ones(2, dtype=jnp.float32),
         foot_touchdown=jnp.zeros(2, dtype=bool),
-        foot_normal_force=jnp.zeros(2, dtype=jnp.float32),
-        previous_foot_linear_velocity=jnp.zeros((2, 3), dtype=jnp.float32),
+        foot_normal_impulse=jnp.zeros(2, dtype=jnp.float32),
+        foot_peak_normal_force=jnp.zeros(2, dtype=jnp.float32),
+        touchdown_foot_linear_velocity=jnp.zeros((2, 3), dtype=jnp.float32),
         foot_linear_velocity=jnp.zeros((2, 3), dtype=jnp.float32),
         foot_angular_speed=jnp.zeros(2, dtype=jnp.float32),
         foot_height=jnp.zeros(2, dtype=jnp.float32),
@@ -267,10 +274,10 @@ def test_hip_deviation_uses_lateral_command_axis() -> None:
     )
     inputs = reward_inputs(joint_pos_rel=jnp.asarray([0.5, 0.0]))
 
-    _, forward = compute_locomotion_reward(
+    _, lateral = compute_locomotion_reward(
         config, inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0]))
     )
-    _, lateral = compute_locomotion_reward(
+    _, forward = compute_locomotion_reward(
         config, inputs.replace(command=jnp.asarray([0.0, 0.5, 0.0]))
     )
 
@@ -293,6 +300,22 @@ def test_action_limit_penalty_is_quadratic_outside_soft_band() -> None:
     assert outside["reward/action_limit"] == pytest.approx(-0.0025)
 
 
+def test_action_smoothness_uses_joint_weights_and_previous_delta() -> None:
+    config = reward_config(action_rate=-1.0, action_acceleration=-1.0)
+    _, terms = compute_locomotion_reward(
+        config,
+        reward_inputs(
+            action=jnp.asarray([1.0, 1.0]),
+            last_action=jnp.zeros(2),
+            last_action_delta=jnp.asarray([0.5, 0.0]),
+            action_smoothness_weights=jnp.asarray([2.0, 1.0]),
+        ),
+    )
+
+    assert terms["reward/action_rate"] == pytest.approx(-0.06)
+    assert terms["reward/action_acceleration"] == pytest.approx(-0.03)
+
+
 def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> None:
     config = reward_config(
         torque_l1=-1.0,
@@ -300,17 +323,21 @@ def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> N
     )
     inputs = reward_inputs(
         actuator_force=jnp.asarray([1.0, 4.0]),
+        requested_actuator_force=jnp.asarray([1.0, 4.0]),
         actuator_peak_force=jnp.asarray([2.0, 4.0]),
     )
     _, at_or_below_peak = compute_locomotion_reward(config, inputs)
     _, over_peak = compute_locomotion_reward(
         config,
-        inputs.replace(actuator_force=jnp.asarray([4.0, 4.0])),
+        inputs.replace(
+            actuator_force=jnp.asarray([2.0, 4.0]),
+            requested_actuator_force=jnp.asarray([4.0, 4.0]),
+        ),
     )
 
     assert at_or_below_peak["reward/torque_l1"] == pytest.approx(-0.015)
     assert at_or_below_peak["reward/torque_peak"] == pytest.approx(0.0)
-    assert over_peak["reward/torque_l1"] == pytest.approx(-0.03)
+    assert over_peak["reward/torque_l1"] == pytest.approx(-0.02)
     assert over_peak["reward/torque_peak"] == pytest.approx(-0.1)
 
 
@@ -354,8 +381,9 @@ def test_touchdown_impact_uses_normal_impulse_and_preimpact_vertical_speed() -> 
     )
     inputs = reward_inputs(
         foot_touchdown=jnp.asarray([True, False]),
-        foot_normal_force=jnp.asarray([2.0, 0.0]),
-        previous_foot_linear_velocity=jnp.asarray([[0.0, 0.0, -0.3], [0.0, 0.0, 0.0]]),
+        foot_normal_impulse=jnp.asarray([0.04, 0.0]),
+        foot_peak_normal_force=jnp.asarray([1.2, 0.0]),
+        touchdown_foot_linear_velocity=jnp.asarray([[0.0, 0.0, -0.3], [0.0, 0.0, 0.0]]),
     )
 
     _, terms = compute_locomotion_reward(config, inputs)
@@ -363,7 +391,7 @@ def test_touchdown_impact_uses_normal_impulse_and_preimpact_vertical_speed() -> 
         config, inputs.replace(foot_touchdown=jnp.zeros(2, dtype=bool))
     )
 
-    assert terms["reward/touchdown_impact"] == pytest.approx(-0.08 * jnp.tanh(1.0))
+    assert terms["reward/touchdown_impact"] == pytest.approx(-0.08)
     assert no_touchdown["reward/touchdown_impact"] == pytest.approx(0.0)
 
 
@@ -579,11 +607,13 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         action=jnp.asarray([0.9, 0.5]),
         requested_action=jnp.asarray([1.5, 0.0]),
         actuator_force=jnp.asarray([1.0, 2.0]),
+        requested_actuator_force=jnp.asarray([1.0, 2.0]),
         joint_force=jnp.asarray([1.0, 2.0]),
         foot_contact=jnp.asarray([1.0, 0.0]),
         foot_touchdown=jnp.asarray([True, False]),
-        foot_normal_force=jnp.asarray([2.0, 0.0]),
-        previous_foot_linear_velocity=jnp.asarray([[0.0, 0.0, -0.3], [0.0, 0.0, 0.0]]),
+        foot_normal_impulse=jnp.asarray([0.04, 0.0]),
+        foot_peak_normal_force=jnp.asarray([2.0, 0.0]),
+        touchdown_foot_linear_velocity=jnp.asarray([[0.0, 0.0, -0.3], [0.0, 0.0, 0.0]]),
         gait_active=jnp.asarray(True),
         desired_foot_contact=jnp.asarray([0.0, 1.0]),
         foot_height=jnp.asarray([0.0, 0.0]),
@@ -602,11 +632,19 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
     compute = jax.jit(compute_locomotion_reward, static_argnums=0)
     reward, moving_terms = compute(config, moving_inputs)
     _, moving_fine = compute(
-        config, moving_inputs.replace(control_timestep=jnp.asarray(0.005))
+        config,
+        moving_inputs.replace(
+            foot_normal_impulse=jnp.asarray([0.01, 0.0]),
+            control_timestep=jnp.asarray(0.005),
+        ),
     )
     _, standing_terms = compute(config, standing_inputs)
     _, standing_fine = compute(
-        config, standing_inputs.replace(control_timestep=jnp.asarray(0.005))
+        config,
+        standing_inputs.replace(
+            foot_normal_impulse=jnp.asarray([0.01, 0.0]),
+            control_timestep=jnp.asarray(0.005),
+        ),
     )
     _, airborne_terms = compute(
         config,
@@ -618,6 +656,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         config,
         moving_inputs.replace(
             foot_contact=jnp.zeros(2),
+            foot_normal_impulse=jnp.asarray([0.01, 0.0]),
             control_timestep=jnp.asarray(0.005),
         ),
     )
@@ -626,6 +665,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         config,
         moving_inputs.replace(
             done=jnp.asarray(False),
+            foot_normal_impulse=jnp.asarray([0.01, 0.0]),
             control_timestep=jnp.asarray(0.005),
         ),
     )

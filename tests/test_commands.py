@@ -151,10 +151,15 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
     assert locomotion.checkpoint_config.every_updates == 512
+    assert locomotion.config.total_timesteps == 8_000_000_000
+    assert locomotion.config.symmetry_loss_coef == pytest.approx(0.1)
     assert hardware.checkpoint_config.every_updates == 512
     assert hardware.config.total_timesteps == 8_000_000_000
+    assert hardware.asset_config.enforce_policy_effort_limits
     assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
     assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-4.0)
+    assert hardware.reward_config.weights.action_rate == pytest.approx(-0.05)
+    assert hardware.reward_config.weights.action_acceleration == pytest.approx(-0.02)
     assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
     assert hardware.reward_config.weights.stand_foot_motion == pytest.approx(-1.0)
     assert hardware.reward_config.weights.stand_contact == pytest.approx(-0.5)
@@ -163,6 +168,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert locomotion.env_config.observation_latency.enabled
     assert locomotion.env_config.observation_latency.delay_steps == (0, 2)
     assert hardware.env_config.observation_latency.enabled
+    assert hardware.env_config.action_filter.enabled
+    assert hardware.env_config.action_filter.cutoff_hz == pytest.approx(5.5)
     assert hardware.env_config.observation_latency.delay_steps == (0, 2)
     assert motion.checkpoint_config.every_updates == 500
 

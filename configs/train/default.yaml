@@ -31,6 +31,7 @@ config:
   rollout_value_max_abs: 10000.0
   target_max_abs: 10000.0
   gradient_norm_max: 10000.0
+  symmetry_loss_coef: 0.0
   policy:
     hidden_dims: [256, 256]
     activation: tanh
@@ -47,9 +48,9 @@ asset_config:
   visual_mesh_face_budget: 200000
   target_total_mass_kg: null
   neighbor_exclusion_depth: 2
-  # Preserve effort limits as reward normalization metadata without clipping
-  # policy-actuator force before the over-peak penalty can observe it.
-  enforce_policy_effort_limits: false
+  # Match hardware saturation in dynamics. The reward separately measures the
+  # unclipped servo demand before this physical limit is applied.
+  enforce_policy_effort_limits: true
   ankle_differential_config:
     motor_gain_scale: 0.5
     motor_effort_limit_scale: 1.0
@@ -115,6 +116,9 @@ env_config:
   observation_latency:
     enabled: false
     delay_steps: [0, 0]
+  action_filter:
+    enabled: true
+    cutoff_hz: 5.5
   gait:
     frequency_hz: 0.9
     stance_fraction: 0.6
@@ -143,7 +147,8 @@ reward_config:
     ang_vel_xy: -0.15
     flat_orientation: -2.0
     base_height: -10.0
-    action_rate: -0.01
+    action_rate: -0.05
+    action_acceleration: -0.02
     action_limit: -1.0
     torque_l1: -1.2
     torque_peak: -12.0
@@ -172,9 +177,9 @@ reward_config:
     flat_orientation: null
     base_height: null
   tracking:
-    lin_vel_xy_moving_std: 0.75
+    lin_vel_xy_moving_std: 0.45
     lin_vel_xy_still_std: 0.25
-    ang_vel_z_moving_std: 0.5
+    ang_vel_z_moving_std: 0.35
     ang_vel_z_still_std: 0.2
   standing:
     foot_linear_speed_scale: 0.15
@@ -186,13 +191,16 @@ reward_config:
     joint_force_soft_limit_body_weights: 0.8
     joint_force_top_k: 2
     joint_force_apply_while_standing: false
-    touchdown_force_soft_limit_body_weights: 1.0
+    touchdown_force_soft_limit_body_weights: 0.6
     touchdown_vertical_speed_scale: 0.3
+  smoothness:
+    ankle_action_weight: 2.0
+    waist_action_weight: 2.0
   limits_pose:
     base_height_target: 0.86
     action_soft_limit_ratio: 0.8
     joint_soft_limit_factor: 0.9
-    hip_lateral_command_index: 1
+    hip_lateral_command_index: 0
     hip_lateral_command_threshold: 0.1
 command_config:
   enabled: true

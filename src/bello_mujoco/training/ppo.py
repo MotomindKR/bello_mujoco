@@ -21,6 +21,7 @@ import optax
 from bello_mujoco.policy import (
     ActorCritic,
     ActorCriticConfig,
+    apply_actor,
     apply_policy,
     clamp_policy_log_std,
     evaluate_actions,
@@ -137,6 +138,10 @@ class PPOEnvironment(Protocol):
 
     def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]: ...
 
+    def mirror_actor_observation(self, observation: jax.Array) -> jax.Array: ...
+
+    def mirror_action(self, action: jax.Array) -> jax.Array: ...
+
 
 @dataclass(frozen=True)
 class PPOConfig:
@@ -176,6 +181,7 @@ class PPOConfig:
     rollout_value_max_abs: float = _validated(1.0e4, _positive_finite)
     target_max_abs: float = _validated(1.0e4, _positive_finite)
     gradient_norm_max: float = _validated(1.0e4, _positive_finite)
+    symmetry_loss_coef: float = _validated(0.0, _nonnegative_finite)
     policy: ActorCriticConfig = _validated(
         ActorCriticConfig(),
         _no_scalar_constraint,
@@ -483,6 +489,8 @@ def ppo_loss(
     config: PPOConfig,
     entropy_rng: jax.Array | None = None,
     value_norm_state: ValueNormState | None = None,
+    mirror_observation: Callable[[jax.Array], jax.Array] | None = None,
+    mirror_action: Callable[[jax.Array], jax.Array] | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     log_prob, entropy, value = evaluate_actions(
         model,
@@ -521,8 +529,21 @@ def ppo_loss(
     )
     value_loss_raw = 0.5 * ((raw_value - targets) ** 2).mean()
     entropy_loss = entropy.mean()
+    symmetry_loss = jnp.asarray(0.0, dtype=actor_loss.dtype)
+    if config.symmetry_loss_coef > 0.0:
+        if mirror_observation is None or mirror_action is None:
+            raise ValueError(
+                "symmetry_loss_coef requires observation and action mirror functions"
+            )
+        current_action_mean = apply_actor(model, transitions.obs)
+        mirrored_action_mean = apply_actor(model, mirror_observation(transitions.obs))
+        symmetry_target = mirror_action(current_action_mean)
+        symmetry_loss = jnp.mean((mirrored_action_mean - symmetry_target) ** 2)
     total_loss = (
-        actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy_loss
+        actor_loss
+        + config.vf_coef * value_loss
+        - config.ent_coef * entropy_loss
+        + config.symmetry_loss_coef * symmetry_loss
     )
     metrics = {
         "loss": total_loss,
@@ -530,6 +551,7 @@ def ppo_loss(
         "value_loss": value_loss,
         "value_loss_raw": value_loss_raw,
         "entropy": entropy_loss,
+        "symmetry_loss": symmetry_loss,
         "approx_kl": ((ratio - 1.0) - safe_log_ratio).mean(),
         "nonfinite/current_log_probability": (~current_log_prob_finite).astype(
             jnp.float32
@@ -549,6 +571,8 @@ def update_ppo(
     config: PPOConfig,
     learning_rate: jax.Array | float | None = None,
     value_norm_state: ValueNormState | None = None,
+    mirror_observation: Callable[[jax.Array], jax.Array] | None = None,
+    mirror_action: Callable[[jax.Array], jax.Array] | None = None,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
     bounded_policy = config.policy.action_distribution == "tanh_gaussian"
     policy_action_max_abs = (
@@ -654,6 +678,8 @@ def update_ppo(
                     config,
                     entropy_rng=entropy_key,
                     value_norm_state=value_norm_state,
+                    mirror_observation=mirror_observation,
+                    mirror_action=mirror_action,
                 )
 
             (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
@@ -974,7 +1000,7 @@ def gait_diagnostics(
         metrics["gait/liftoffs_per_second"] = (
             liftoff.astype(jnp.float32).mean() / control_timestep
         )
-    for force_name in ("joint_force", "contact_force"):
+    for force_name in ("joint_force", "contact_force", "contact_impulse"):
         rollout_max = info.get(f"gait/{force_name}_max_body_weight")
         if rollout_max is None:
             continue
@@ -1305,6 +1331,10 @@ def update_runner_state(
         config,
         learning_rate=learning_rate,
         value_norm_state=value_norm_state,
+        mirror_observation=(
+            env.mirror_actor_observation if config.symmetry_loss_coef > 0.0 else None
+        ),
+        mirror_action=env.mirror_action if config.symmetry_loss_coef > 0.0 else None,
     )
     next_learning_rate = adapt_learning_rate(
         learning_rate,
@@ -1403,6 +1433,11 @@ def _validate_declared_fields(config: PPOConfig) -> None:
 
 def validate_ppo_config(config: PPOConfig) -> None:
     _validate_declared_fields(config)
+    if config.symmetry_loss_coef > 0.0 and config.normalize_observations:
+        raise ValueError(
+            "symmetry_loss_coef requires normalize_observations=false so reflection "
+            "is applied in the physical observation coordinates"
+        )
     if config.num_updates <= 0:
         raise ValueError(
             "total_timesteps must cover at least one rollout batch, got "

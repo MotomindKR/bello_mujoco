@@ -118,7 +118,10 @@ In Bello's locomotion frame, `+X` is lateral/right and `+Y` is forward.
 The runner advances the same checkpointed gait clock used by training and
 native evaluation. A standing command resets it and supplies a zero-valued
 three-component gait observation in the current actor frame; older moving
-frames age out of the configured observation stack normally.
+frames age out of the configured observation stack normally. Each policy
+sample passes through the checkpointed first-order action filter before target
+conversion, and that filtered action is fed back as `last_action`, matching
+training and native evaluation exactly.
 Configure the visualizer to listen on port 50054 and supply its plaintext URL
 as `remote_endpoint`, for example
 `remote_endpoint=http://visualizer-host:50054`.

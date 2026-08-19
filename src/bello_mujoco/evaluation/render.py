@@ -72,6 +72,7 @@ class NativeDataView:
     subtree_com: jax.Array
     geom_xpos: jax.Array
     geom_xmat: jax.Array
+    actuator_length: jax.Array
     actuator_force: jax.Array
     qfrc_constraint: jax.Array
     _impl: NativeDataImplementation
@@ -294,6 +295,12 @@ def render_policy_rollout_mujoco(
                 observation_norm_state=observation_norm_state,
             )
             action = np.asarray(jax.device_get(action), dtype=np.float32)
+            action = np.asarray(
+                jax.device_get(
+                    env.filter_action(jnp.asarray(last_action), jnp.asarray(action))
+                ),
+                dtype=np.float32,
+            )
             mj_data.ctrl[:] = mujoco_action_to_ctrl(env, action)
             for _ in range(env.decimation):
                 mujoco.mj_step(mj_model, mj_data)
@@ -435,6 +442,7 @@ def mujoco_policy_observation(
     command: np.ndarray,
     last_action: np.ndarray,
     step_count: int,
+    last_action_delta: np.ndarray | None = None,
     gait_phase: float | jax.Array | None = None,
 ) -> jax.Array:
     state = mujoco_eval_state(
@@ -442,6 +450,7 @@ def mujoco_policy_observation(
         mj_data,
         command=command,
         last_action=last_action,
+        last_action_delta=last_action_delta,
         foot_contact_debounce_time=jnp.zeros(
             env.model.foot_body_ids.size, dtype=jnp.float32
         ),
@@ -476,6 +485,19 @@ def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.nda
         jax.device_get(env.action_to_ctrl(jnp.asarray(action, dtype=jnp.float32))),
         dtype=np.float32,
     )
+
+
+def mujoco_requested_actuator_force(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData
+) -> np.ndarray:
+    """Return native MuJoCo's unclipped position-servo force request."""
+
+    model = env.model.mj_model
+    return (
+        model.actuator_gainprm[:, 0] * mj_data.ctrl
+        + model.actuator_biasprm[:, 1] * mj_data.actuator_length
+        + model.actuator_biasprm[:, 2] * mj_data.actuator_velocity
+    ).astype(np.float32)
 
 
 def mujoco_done_flags(
@@ -596,6 +618,7 @@ def mujoco_eval_state(
     episode_track_lin_vel_xy: jax.Array,
     episode_length: jax.Array,
     gait_phase: float | jax.Array | None = None,
+    last_action_delta: np.ndarray | None = None,
 ) -> BelloState:
     if gait_phase is None:
         moving = command_is_moving(
@@ -609,6 +632,8 @@ def mujoco_eval_state(
             ),
             0.0,
         )
+    if last_action_delta is None:
+        last_action_delta = np.zeros(env.action_size, dtype=np.float32)
     data = NativeDataView(
         qpos=jnp.asarray(np.asarray(mj_data.qpos, dtype=np.float32).copy()),
         qvel=jnp.asarray(np.asarray(mj_data.qvel, dtype=np.float32).copy()),
@@ -623,6 +648,9 @@ def mujoco_eval_state(
         geom_xpos=jnp.asarray(np.asarray(mj_data.geom_xpos, dtype=np.float32).copy()),
         geom_xmat=jnp.asarray(
             np.asarray(mj_data.geom_xmat, dtype=np.float32).reshape((-1, 3, 3)).copy()
+        ),
+        actuator_length=jnp.asarray(
+            np.asarray(mj_data.actuator_length, dtype=np.float32).copy()
         ),
         actuator_force=jnp.asarray(
             np.asarray(mj_data.actuator_force, dtype=np.float32).copy()
@@ -644,6 +672,7 @@ def mujoco_eval_state(
     state = BelloState(
         data=data,
         last_action=jnp.asarray(last_action, dtype=jnp.float32),
+        last_action_delta=jnp.asarray(last_action_delta, dtype=jnp.float32),
         actor_feedback_history=jnp.zeros(
             (
                 env.maximum_observation_delay_steps + 1,

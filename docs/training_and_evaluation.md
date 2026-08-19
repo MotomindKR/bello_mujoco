@@ -47,12 +47,15 @@ reward exactly zero.
 The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body
 joint reaction-force peaks, standing foot motion, phase contact matching,
-stance-foot slip, swing clearance, and termination cost. Exact terms and weights
-are defined in
+stance-foot slip, swing clearance, substep-integrated touchdown impact, and
+termination cost. A left/right actor-consistency loss augments PPO, and a 5.5 Hz
+first-order action filter is part of the checkpointed simulation/evaluation/
+hardware contract. Exact terms and weights are defined in
 [`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
-Training leaves policy effort unclipped so the over-peak torque penalty observes
-excess demand; the emulator and hardware enforce physical limits.
+Training dynamics enforce the same motor effort limits as the emulator and
+hardware. The over-peak torque term uses separately reconstructed unclipped
+servo demand, so saturation cannot hide an infeasible policy request.
 
 ## Evaluation
 

@@ -36,6 +36,8 @@ from bello_mujoco.evaluation.render import (
     mujoco_link_lin_vel,
     mujoco_link_quat,
     mujoco_policy_observation,
+    mujoco_requested_actuator_force,
+    mujoco_foot_linear_velocity,
     reset_mujoco_data,
 )
 from bello_mujoco.spatial import quat_rotate_inverse_wxyz, quat_rotate_wxyz
@@ -483,6 +485,7 @@ def run_rerun_evaluation(
     current_command = np.zeros(3, dtype=np.float32)
 
     last_action = np.zeros(env.action_size, dtype=np.float32)
+    last_action_delta = np.zeros(env.action_size, dtype=np.float32)
     foot_contact_debounce_time = jnp.zeros(
         env.model.foot_body_ids.size, dtype=jnp.float32
     )
@@ -497,11 +500,12 @@ def run_rerun_evaluation(
     )
 
     def reset_episode() -> None:
-        nonlocal last_action, foot_contact_debounce_time
+        nonlocal last_action, last_action_delta, foot_contact_debounce_time
         nonlocal last_foot_contact, episode_return, episode_track_lin_vel_xy
         nonlocal episode_length, episode_step_count, gait_phase, obs_stack
         reset_mujoco_data(env, mj_data)
         last_action = np.zeros(env.action_size, dtype=np.float32)
+        last_action_delta = np.zeros(env.action_size, dtype=np.float32)
         foot_contact_debounce_time = jnp.zeros(
             env.model.foot_body_ids.size, dtype=jnp.float32
         )
@@ -599,12 +603,20 @@ def run_rerun_evaluation(
             action_np = np.asarray(
                 jax.device_get(policy_step.applied_action), dtype=np.float32
             )
+            action_np = np.asarray(
+                jax.device_get(
+                    env.filter_action(jnp.asarray(last_action), jnp.asarray(action_np))
+                ),
+                dtype=np.float32,
+            )
+            action_delta = action_np - last_action
             ctrl = mujoco_action_to_ctrl(env, action_np)
             state = mujoco_eval_state(
                 env,
                 mj_data,
                 command=current_command,
                 last_action=last_action,
+                last_action_delta=last_action_delta,
                 foot_contact_debounce_time=foot_contact_debounce_time,
                 last_foot_contact=last_foot_contact,
                 step_count=episode_step_count,
@@ -614,9 +626,45 @@ def run_rerun_evaluation(
                 gait_phase=gait_phase,
             )
             mj_data.ctrl[:] = ctrl
+            touchdown_eligible = (
+                (episode_step_count > 0)
+                & ~np.asarray(last_foot_contact, dtype=bool)
+                & (np.asarray(foot_contact_debounce_time) <= 0.0)
+            )
+            foot_touchdown_np = np.zeros(env.model.foot_body_ids.size, dtype=bool)
+            foot_normal_impulse_np = np.zeros(
+                env.model.foot_body_ids.size, dtype=np.float32
+            )
+            foot_peak_normal_force_np = np.zeros_like(foot_normal_impulse_np)
+            touchdown_velocity_np = np.zeros(
+                (env.model.foot_body_ids.size, 3), dtype=np.float32
+            )
+            requested_actuator_force_np = np.zeros(
+                env.model.mj_model.nu, dtype=np.float32
+            )
             for _ in range(env.decimation):
+                preimpact_velocity = mujoco_foot_linear_velocity(env, mj_data)
                 mujoco.mj_step(mj_model, mj_data)
+                substep_contact, substep_force = mujoco_contact_terms(env, mj_data)[:2]
+                substep_contact_np = np.asarray(substep_contact, dtype=bool)
+                substep_force_np = np.asarray(substep_force, dtype=np.float32)
+                new_touchdown = (
+                    touchdown_eligible & ~foot_touchdown_np & substep_contact_np
+                )
+                touchdown_velocity_np[new_touchdown] = preimpact_velocity[new_touchdown]
+                foot_touchdown_np |= new_touchdown
+                foot_normal_impulse_np += substep_force_np * float(
+                    mj_model.opt.timestep
+                )
+                foot_peak_normal_force_np = np.maximum(
+                    foot_peak_normal_force_np, substep_force_np
+                )
+                requested_actuator_force_np = np.maximum(
+                    requested_actuator_force_np,
+                    np.abs(mujoco_requested_actuator_force(env, mj_data)),
+                )
             last_action = action_np
+            last_action_delta = action_delta
             episode_step_count += 1
             gait_phase = advance_gait_phase(
                 gait_phase,
@@ -632,6 +680,7 @@ def run_rerun_evaluation(
                 mj_data,
                 command=current_command,
                 last_action=last_action,
+                last_action_delta=last_action_delta,
                 foot_contact_debounce_time=foot_contact_debounce_time,
                 last_foot_contact=last_foot_contact,
                 step_count=episode_step_count,
@@ -648,7 +697,7 @@ def run_rerun_evaluation(
                 undesired,
                 self_collision,
             ) = mujoco_contact_terms(env, mj_data)
-            foot_touchdown = env._foot_touchdown(state, raw_foot_contact)
+            foot_touchdown = jnp.asarray(foot_touchdown_np)
             foot_contact, foot_contact_debounce_time = env.debounce_foot_contact(
                 next_state, raw_foot_contact, done
             )
@@ -660,7 +709,10 @@ def run_rerun_evaluation(
                 jnp.asarray(done_flags["done/terminal"]),
                 foot_contact,
                 foot_touchdown,
-                foot_normal_force,
+                jnp.asarray(foot_normal_impulse_np),
+                jnp.asarray(foot_peak_normal_force_np),
+                jnp.asarray(touchdown_velocity_np),
+                jnp.asarray(requested_actuator_force_np),
                 foot_linear_velocity,
                 angular_speed,
                 undesired,

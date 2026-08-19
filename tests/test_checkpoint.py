@@ -110,6 +110,9 @@ class FakeEnv:
                 "position": jnp.zeros((batch_size, 3), dtype=jnp.float32),
             },
             last_action=jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
+            last_action_delta=jnp.zeros(
+                (batch_size, self.action_size), dtype=jnp.float32
+            ),
             actor_feedback_history=jnp.zeros((batch_size, 1, 0), dtype=jnp.float32),
             actor_feedback_delay_steps=jnp.zeros((batch_size,), dtype=jnp.int32),
             foot_contact_debounce_time=foot_zeros,
@@ -880,9 +883,7 @@ def test_evaluation_mismatch_override_migrates_retired_sphere_asset_field(
 ) -> None:
     config = ppo_config()
     expected_metadata = metadata(config, tmp_path)
-    document = checkpoint_document(
-        expected_metadata, runner_state(config, FakeEnv())
-    )
+    document = checkpoint_document(expected_metadata, runner_state(config, FakeEnv()))
     document["git_commit"] = "2" * 40
     document["metadata"]["asset"]["end_effector_sphere_mode"] = "both"
     document["metadata"]["asset"]["joint_availability"].update(

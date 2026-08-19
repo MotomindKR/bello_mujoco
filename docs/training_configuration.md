@@ -66,6 +66,7 @@ The `config` section is shared by locomotion and motion tracking.
 | `rollout_value_max_abs` | `10,000` | Fail an update when critic outputs exceed this bound. |
 | `target_max_abs` | `10,000` | Fail an update when value targets exceed this bound. |
 | `gradient_norm_max` | `10,000` | Independent nonfinite/explosion guard beyond optimizer clipping. |
+| `symmetry_loss_coef` | `0` | Nonnegative actor left/right consistency coefficient. The locomotion profile sets `0.1`; it requires unnormalized physical observation coordinates. |
 
 The effective update count is
 `total_timesteps // (num_envs * num_steps)`. Extra transitions below one full
@@ -97,7 +98,7 @@ The asset section selects a deterministic prepared morphology.
 | `visual_mesh_face_budget` | `200000` | Per-mesh viewer simplification budget. |
 | `target_total_mass_kg` | `null` | Optional experimental uniform rescaling. Maintained policies use the canonical 55.068 kg physical inertials without rescaling. |
 | `neighbor_exclusion_depth` | `2` | Exclude nearby kinematic neighbors from generated self-collision pairs. |
-| `enforce_policy_effort_limits` | `false` | When false, training can observe and penalize over-peak requested force. The native emulator and hardware still enforce physical limits. |
+| `enforce_policy_effort_limits` | `true` | Enforce the same physical actuator-force saturation used by hardware. Locomotion separately reconstructs the unclipped servo demand for the over-peak reward. |
 | `imu_config` | disabled | Optional generated IMU site/sensors. Its `enabled` field controls generation and `body_name` selects the instrumented body. Training observations derive simulated IMU features without requiring this native sensor block. |
 | `ankle_differential_config.motor_gain_scale` | `0.5` | Gain multiplier applied to each differential-ankle motor. |
 | `ankle_differential_config.motor_effort_limit_scale` | `1` | Motor effort-limit multiplier. |
@@ -140,6 +141,7 @@ asset that deviates from this contract.
 | `numerical_safety` | Broad finite-state and solver-force bounds that terminate invalid rollouts. |
 | `observation` | Deployable actor observation scaling and noise. |
 | `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
+| `action_filter` | First-order action low-pass enable and cutoff shared by training, native evaluation, and hardware. |
 | `gait` | Fixed gait frequency and stance fraction shared by simulation, native evaluation, and hardware. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
 
@@ -230,6 +232,12 @@ do not inject synthetic delay. Older locomotion checkpoints load with latency
 disabled; resuming their rollout continuation still requires the original
 source revision because its environment state predates the feedback history.
 
+The `action_filter` section contains `enabled` and positive `cutoff_hz`. The
+maintained locomotion profiles use a 5.5 Hz first-order filter at the 50 Hz
+policy rate. `last_action` is the filtered command actually sent to the
+position servos, so observation history, reward math, native evaluation, and
+the hardware runner all use the same stateful filter.
+
 ## Locomotion commands: `command_config`
 
 | Field | Default | Meaning |
@@ -270,12 +278,13 @@ computation where possible.
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
 | `flat_orientation` | `-2.0` | Penalize gravity-vector tilt. |
 | `base_height` | `-10.0` | Penalize error from `limits_pose.base_height_target`. |
-| `action_rate` | `-0.01` | Penalize change from the previous action. |
+| `action_rate` | `-0.05` | Penalize change from the previous filtered action, with extra ankle and waist weighting. |
+| `action_acceleration` | `-0.02` | Penalize change in filtered action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
-| `torque_l1` | `-1.2` | Penalize absolute requested torque normalized by each joint's peak torque. |
-| `torque_peak` | `-12.0` | Quadratically penalize normalized torque above peak. |
+| `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
+| `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
-| `touchdown_impact` | `-4.0` | At the first raw foot-contact sample, penalize both measured normal contact impulse above one body-weight control impulse and pre-impact downward foot speed. Each component is bounded before weighting so isolated solver spikes cannot dominate PPO. |
+| `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Squared-Huber shaping stays quadratic near the target and linear for large impacts instead of saturating. |
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
@@ -304,11 +313,12 @@ Supporting fields are:
 | `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std` |
 | `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
+| `smoothness` | `ankle_action_weight`, `waist_action_weight` |
 | `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_lateral_command_index`, `hip_lateral_command_threshold` |
 
-Rollout telemetry reports the mean, p95, p99, and worst instantaneous normalized
-joint and foot-contact force maxima. The tail metrics are named
-`gait/{joint_force,contact_force}_{p95,p99,worst}_body_weight`; unlike the mean
+Rollout telemetry reports the mean, p95, p99, and worst normalized joint-force,
+foot-contact peak, and control-interval impulse maxima. The tail metrics are named
+`gait/{joint_force,contact_force,contact_impulse}_{p95,p99,worst}_body_weight`; unlike the mean
 reward terms, they expose short impacts that would otherwise be diluted across
 joints and rollout frames. `command/standing_positive_reward_fraction` reports
 the fraction of standing transitions whose total reward is positive; it should
@@ -474,7 +484,7 @@ Headline resolved PPO values are:
 | Profile | Timesteps | Envs × steps | Epochs × minibatches | Learning rate | Gamma / GAE | Policy |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | `smoke` | 4 | 2 × 2 | 1 × 1 | 0.001 | 0.99 / 0.95 | 256-256 tanh |
-| `locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
+| `locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
 | `hardware_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.995 / 0.98 | 512-256-128 swish |
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 

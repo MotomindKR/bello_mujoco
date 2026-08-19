@@ -52,6 +52,7 @@ from bello_mujoco.terrain import (
 class BelloState:
     data: mjx.Data
     last_action: jax.Array
+    last_action_delta: jax.Array
     actor_feedback_history: jax.Array
     actor_feedback_delay_steps: jax.Array
     foot_contact_debounce_time: jax.Array
@@ -151,6 +152,14 @@ class ObservationNoiseConfig:
 class ObservationLatencyConfig:
     enabled: bool = False
     delay_steps: tuple[int, int] = (0, 0)
+
+
+@dataclass(frozen=True)
+class ActionFilterConfig:
+    """First-order low-pass filter applied to every deployed policy action."""
+
+    enabled: bool = False
+    cutoff_hz: float = 5.5
 
 
 @dataclass(frozen=True)
@@ -279,6 +288,7 @@ class BelloEnvConfig:
     numerical_safety: NumericalSafetyConfig = NumericalSafetyConfig()
     observation: ObservationConfig = ObservationConfig()
     observation_latency: ObservationLatencyConfig = ObservationLatencyConfig()
+    action_filter: ActionFilterConfig = ActionFilterConfig()
     gait: GaitConfig = GaitConfig()
     critic_observation: ObservationConfig = ObservationConfig(privileged=True)
 
@@ -342,6 +352,13 @@ class BelloLocomotionEnv:
             )
         self._validate_observation_config("observation", self.config.observation)
         self._validate_observation_latency()
+        if not math.isfinite(self.config.action_filter.cutoff_hz) or (
+            self.config.action_filter.cutoff_hz <= 0.0
+        ):
+            raise ValueError(
+                "action_filter.cutoff_hz must be positive and finite, got "
+                f"{self.config.action_filter.cutoff_hz}"
+            )
         self._validate_observation_config(
             "critic_observation", self.config.critic_observation
         )
@@ -633,6 +650,15 @@ class BelloLocomotionEnv:
             raise ValueError(
                 "policy actuators require positive finite peak-force metadata"
             )
+        if self.reward_config.enabled("torque_peak") and (
+            np.any(mj_model.actuator_gaintype != mujoco.mjtGain.mjGAIN_FIXED)
+            or np.any(mj_model.actuator_biastype != mujoco.mjtBias.mjBIAS_AFFINE)
+            or np.any(mj_model.actuator_dyntype != mujoco.mjtDyn.mjDYN_NONE)
+        ):
+            raise ValueError(
+                "torque_peak demand reconstruction requires stateless position "
+                "actuators with fixed gain and affine bias"
+            )
         require_index_range(
             "actuator_qpos_indices", model.actuator_qpos_indices, mj_model.nq
         )
@@ -775,6 +801,7 @@ class BelloLocomotionEnv:
         state = BelloState(
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
+            last_action_delta=jnp.zeros(self.action_size, dtype=jnp.float32),
             actor_feedback_history=jnp.zeros(
                 (
                     self.maximum_observation_delay_steps + 1,
@@ -992,23 +1019,144 @@ class BelloLocomotionEnv:
         qvel = qvel.at[root_qvel : root_qvel + 6].set(root_velocity)
         return data.replace(qpos=qpos, qvel=qvel)
 
+    def _step_physics_with_impacts(
+        self, state: BelloState, data: mjx.Data
+    ) -> tuple[mjx.Data, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        foot_count = int(self.model.foot_body_ids.size)
+        touchdown_eligible = (
+            (state.step_count > 0)
+            & ~state.last_foot_contact.astype(bool)
+            & (state.foot_contact_debounce_time <= 0.0)
+        )
+        zeros = jnp.zeros(foot_count, dtype=jnp.float32)
+        initial = (
+            data,
+            jnp.zeros(foot_count, dtype=bool),
+            zeros,
+            zeros,
+            jnp.zeros((foot_count, 3), dtype=jnp.float32),
+            jnp.zeros(self.model.mj_model.nu, dtype=jnp.float32),
+        )
+        physics_timestep = jnp.asarray(
+            self.model.mj_model.opt.timestep, dtype=jnp.float32
+        )
+
+        def substep(_, carry):
+            (
+                current_data,
+                touchdown,
+                normal_impulse,
+                peak_normal_force,
+                touchdown_velocity,
+                requested_force_peak,
+            ) = carry
+            current_state = state.replace(data=current_data)
+            preimpact_velocity = self._foot_world_linear_velocity(current_state)
+            next_data = mjx.step(self.model.mjx_model, current_data)
+            next_state = state.replace(data=next_data)
+            raw_contact, normal_force, *_ = self._contact_terms(next_state, 0)
+            new_touchdown = touchdown_eligible & ~touchdown & raw_contact.astype(bool)
+            touchdown_velocity = jnp.where(
+                new_touchdown[:, None], preimpact_velocity, touchdown_velocity
+            )
+            return (
+                next_data,
+                touchdown | new_touchdown,
+                normal_impulse + normal_force * physics_timestep,
+                jnp.maximum(peak_normal_force, normal_force),
+                touchdown_velocity,
+                jnp.maximum(
+                    requested_force_peak,
+                    jnp.abs(self.requested_actuator_force(next_data)),
+                ),
+            )
+
+        return jax.lax.fori_loop(0, self.decimation, substep, initial)
+
+    def _step_physics_with_impacts_batch(
+        self, state: BelloState, data: mjx.Data, batch_size: int
+    ) -> tuple[mjx.Data, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        foot_count = int(self.model.foot_body_ids.size)
+        world_ids = jnp.arange(batch_size, dtype=jnp.int32)
+        touchdown_eligible = (
+            (state.step_count > 0)[:, None]
+            & ~state.last_foot_contact.astype(bool)
+            & (state.foot_contact_debounce_time <= 0.0)
+        )
+        zeros = jnp.zeros((batch_size, foot_count), dtype=jnp.float32)
+        initial = (
+            data,
+            jnp.zeros((batch_size, foot_count), dtype=bool),
+            zeros,
+            zeros,
+            jnp.zeros((batch_size, foot_count, 3), dtype=jnp.float32),
+            jnp.zeros((batch_size, self.model.mj_model.nu), dtype=jnp.float32),
+        )
+        physics_timestep = jnp.asarray(
+            self.model.mj_model.opt.timestep, dtype=jnp.float32
+        )
+
+        def substep(_, carry):
+            (
+                current_data,
+                touchdown,
+                normal_impulse,
+                peak_normal_force,
+                touchdown_velocity,
+                requested_force_peak,
+            ) = carry
+            current_state = state.replace(data=current_data)
+            preimpact_velocity = jax.vmap(self._foot_world_linear_velocity)(
+                current_state
+            )
+            next_data = mjx.step(self.model.mjx_model, current_data)
+            next_state = state.replace(data=next_data)
+            raw_contact, normal_force, *_ = jax.vmap(self._contact_terms)(
+                next_state, world_ids
+            )
+            new_touchdown = touchdown_eligible & ~touchdown & raw_contact.astype(bool)
+            touchdown_velocity = jnp.where(
+                new_touchdown[:, :, None], preimpact_velocity, touchdown_velocity
+            )
+            return (
+                next_data,
+                touchdown | new_touchdown,
+                normal_impulse + normal_force * physics_timestep,
+                jnp.maximum(peak_normal_force, normal_force),
+                touchdown_velocity,
+                jnp.maximum(
+                    requested_force_peak,
+                    jnp.abs(self.requested_actuator_force(next_data)),
+                ),
+            )
+
+        return jax.lax.fori_loop(0, self.decimation, substep, initial)
+
     def step(
         self, state: BelloState, action: jax.Array
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
         requested_action = jnp.asarray(action, dtype=jnp.float32)
-        action = jnp.clip(
+        policy_action = jnp.clip(
             requested_action,
             -self.action_clip,
             self.action_clip,
         )
+        action = self.filter_action(state.last_action, policy_action)
+        action_delta = action - state.last_action
         ctrl, joint_saturation, motor_saturation = self._action_target_details(action)
         data = state.data.replace(ctrl=ctrl)
-        data = jax.lax.fori_loop(
-            0, self.decimation, lambda _, d: mjx.step(self.model.mjx_model, d), data
-        )
+        (
+            data,
+            foot_touchdown,
+            foot_normal_impulse,
+            foot_peak_normal_force,
+            touchdown_foot_linear_velocity,
+            requested_actuator_force,
+        ) = self._step_physics_with_impacts(state, data)
         next_state = BelloState(
             data=data,
             last_action=action,
+            last_action_delta=action_delta,
             actor_feedback_history=self._advance_actor_feedback_history(
                 state.actor_feedback_history, state.replace(data=data)
             ),
@@ -1042,7 +1190,6 @@ class BelloLocomotionEnv:
             undesired_contact,
             self_collision,
         ) = self._contact_terms(next_state, 0)
-        foot_touchdown = self._foot_touchdown(state, raw_foot_contact)
         foot_contact, foot_contact_debounce_time = self.debounce_foot_contact(
             next_state, raw_foot_contact, done
         )
@@ -1054,7 +1201,10 @@ class BelloLocomotionEnv:
             terminal,
             foot_contact,
             foot_touchdown,
-            foot_normal_force,
+            foot_normal_impulse,
+            foot_peak_normal_force,
+            touchdown_foot_linear_velocity,
+            requested_actuator_force,
             foot_linear_velocity,
             foot_angular_speed,
             undesired_contact,
@@ -1071,6 +1221,7 @@ class BelloLocomotionEnv:
         next_state = BelloState(
             data=next_state.data,
             last_action=next_state.last_action,
+            last_action_delta=next_state.last_action_delta,
             actor_feedback_history=next_state.actor_feedback_history,
             actor_feedback_delay_steps=next_state.actor_feedback_delay_steps,
             foot_contact_debounce_time=foot_contact_debounce_time,
@@ -1114,7 +1265,8 @@ class BelloLocomotionEnv:
                 next_state,
                 foot_contact,
                 foot_touchdown,
-                foot_normal_force,
+                foot_normal_impulse,
+                foot_peak_normal_force,
             ),
             "returned_episode": done,
             **done_flags,
@@ -1135,11 +1287,13 @@ class BelloLocomotionEnv:
                 jax.random.split(rng, 5)
             )
         requested_action = jnp.asarray(action, dtype=jnp.float32)
-        action = jnp.clip(
+        policy_action = jnp.clip(
             requested_action,
             -self.action_clip,
             self.action_clip,
         )
+        action = jax.vmap(self.filter_action)(state.last_action, policy_action)
+        action_delta = action - state.last_action
         joint_angle_offset = self._joint_angle_offset_batch(batch_size)
         ctrl, joint_saturation, motor_saturation = jax.vmap(
             self._action_target_details
@@ -1151,12 +1305,18 @@ class BelloLocomotionEnv:
         data, push_applied, push_velocity = self._maybe_apply_random_push_batch(
             data, state.step_count, push_rng
         )
-        data = jax.lax.fori_loop(
-            0, self.decimation, lambda _, d: mjx.step(self.model.mjx_model, d), data
-        )
+        (
+            data,
+            foot_touchdown,
+            foot_normal_impulse,
+            foot_peak_normal_force,
+            touchdown_foot_linear_velocity,
+            requested_actuator_force,
+        ) = self._step_physics_with_impacts_batch(state, data, batch_size)
         stepped_state = BelloState(
             data=data,
             last_action=action,
+            last_action_delta=action_delta,
             actor_feedback_history=jax.vmap(self._advance_actor_feedback_history)(
                 state.actor_feedback_history, state.replace(data=data)
             ),
@@ -1191,7 +1351,6 @@ class BelloLocomotionEnv:
             undesired_contact,
             self_collision,
         ) = jax.vmap(self._contact_terms)(stepped_state, world_ids)
-        foot_touchdown = jax.vmap(self._foot_touchdown)(state, raw_foot_contact)
         foot_contact, foot_contact_debounce_time = jax.vmap(self.debounce_foot_contact)(
             stepped_state, raw_foot_contact, done
         )
@@ -1203,7 +1362,10 @@ class BelloLocomotionEnv:
             terminal,
             foot_contact,
             foot_touchdown,
-            foot_normal_force,
+            foot_normal_impulse,
+            foot_peak_normal_force,
+            touchdown_foot_linear_velocity,
+            requested_actuator_force,
             foot_linear_velocity,
             foot_angular_speed,
             undesired_contact,
@@ -1225,6 +1387,7 @@ class BelloLocomotionEnv:
         stepped_state = BelloState(
             data=stepped_state.data,
             last_action=stepped_state.last_action,
+            last_action_delta=stepped_state.last_action_delta,
             actor_feedback_history=stepped_state.actor_feedback_history,
             actor_feedback_delay_steps=stepped_state.actor_feedback_delay_steps,
             foot_contact_debounce_time=foot_contact_debounce_time,
@@ -1269,7 +1432,8 @@ class BelloLocomotionEnv:
                 stepped_state,
                 foot_contact,
                 foot_touchdown,
-                foot_normal_force,
+                foot_normal_impulse,
+                foot_peak_normal_force,
             ),
             "random_push/applied": push_applied,
             "random_push/lin_vel_x": push_velocity[:, 0],
@@ -1529,6 +1693,94 @@ class BelloLocomotionEnv:
     ) -> jax.Array:
         ctrl, _, _ = self._action_target_details(action, joint_angle_offset)
         return ctrl
+
+    def filter_action(
+        self, previous_action: jax.Array, policy_action: jax.Array
+    ) -> jax.Array:
+        """Apply the checkpointed action filter used in sim and deployment."""
+
+        policy_action = jnp.clip(
+            jnp.asarray(policy_action, dtype=jnp.float32),
+            -self.action_clip,
+            self.action_clip,
+        )
+        if not self.config.action_filter.enabled:
+            return policy_action
+        alpha = 1.0 - jnp.exp(
+            -2.0
+            * jnp.pi
+            * jnp.asarray(self.config.action_filter.cutoff_hz, dtype=jnp.float32)
+            * jnp.asarray(self.control_timestep, dtype=jnp.float32)
+        )
+        return previous_action + alpha * (policy_action - previous_action)
+
+    def mirror_action(self, action: jax.Array) -> jax.Array:
+        """Reflect logical policy actions across Bello's sagittal plane."""
+
+        index_by_name = {
+            name: index for index, name in enumerate(self.action_layout.names)
+        }
+        source_indices = []
+        signs = []
+        for name in self.action_layout.names:
+            if name.startswith("left_"):
+                counterpart = f"right_{name.removeprefix('left_')}"
+            elif name.startswith("right_"):
+                counterpart = f"left_{name.removeprefix('right_')}"
+            elif name == "waist_yaw_joint":
+                counterpart = name
+            else:
+                raise ValueError(f"unsupported locomotion symmetry action: {name!r}")
+            source_indices.append(index_by_name[counterpart])
+            signs.append(
+                -1.0
+                if name.endswith(
+                    (
+                        "hip_pitch_joint",
+                        "hip_yaw_joint",
+                        "ankle_roll_joint",
+                        "waist_yaw_joint",
+                    )
+                )
+                else 1.0
+            )
+        return action[..., jnp.asarray(source_indices, dtype=jnp.int32)] * jnp.asarray(
+            signs, dtype=action.dtype
+        )
+
+    def mirror_actor_observation(self, observation: jax.Array) -> jax.Array:
+        """Reflect one or more stacked deployable actor observations."""
+
+        frame_size = self.observation_size
+        if observation.shape[-1] % frame_size != 0:
+            raise ValueError(
+                "stacked actor observation size must be divisible by one frame, got "
+                f"{observation.shape[-1]} and {frame_size}"
+            )
+        frames = observation.reshape(
+            observation.shape[:-1] + (observation.shape[-1] // frame_size, frame_size)
+        )
+        mirrored = frames
+        offset = 0
+        for name, size in self.observation_layout.components:
+            value = frames[..., offset : offset + size]
+            if name in {"imu_linear_acceleration", "projected_gravity"}:
+                value = value * jnp.asarray((-1.0, 1.0, 1.0), dtype=value.dtype)
+            elif name == "imu_angular_velocity":
+                value = value * jnp.asarray((1.0, -1.0, -1.0), dtype=value.dtype)
+            elif name == "command":
+                value = value * jnp.asarray((-1.0, 1.0, -1.0), dtype=value.dtype)
+            elif name == "gait_phase":
+                value = value * jnp.asarray((-1.0, -1.0, 1.0), dtype=value.dtype)
+            elif name in {"joint_position", "joint_velocity", "last_action"}:
+                value = self.mirror_action(value)
+            else:
+                raise ValueError(
+                    f"unsupported actor observation symmetry component: {name!r}"
+                )
+            mirrored = mirrored.at[..., offset : offset + size].set(value)
+            offset += size
+        return mirrored.reshape(observation.shape)
 
     def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]:
         flat_action = env_action.reshape((-1, self.action_size))
@@ -1851,6 +2103,35 @@ class BelloLocomotionEnv:
         weights[low_weight_indices] = 0.01
         return jnp.asarray(weights)
 
+    def _action_smoothness_weights(self) -> jax.Array:
+        names = self.action_layout.names
+        return jnp.asarray(
+            [
+                (
+                    self.reward_config.smoothness.ankle_action_weight
+                    if "_ankle_" in name
+                    else self.reward_config.smoothness.waist_action_weight
+                    if name == "waist_yaw_joint"
+                    else 1.0
+                )
+                for name in names
+            ],
+            dtype=jnp.float32,
+        )
+
+    def requested_actuator_force(self, data: mjx.Data) -> jax.Array:
+        """Return the unclipped force requested by the position servos."""
+
+        model = self.model.mj_model
+        gain = jnp.asarray(model.actuator_gainprm[:, 0], dtype=jnp.float32)
+        bias_position = jnp.asarray(model.actuator_biasprm[:, 1], dtype=jnp.float32)
+        bias_velocity = jnp.asarray(model.actuator_biasprm[:, 2], dtype=jnp.float32)
+        return (
+            gain * data.ctrl
+            + bias_position * data.actuator_length
+            + bias_velocity * data._impl.actuator_velocity
+        )
+
     def _all_actuator_joint_terms(
         self, state: BelloState
     ) -> tuple[jax.Array, jax.Array]:
@@ -2084,7 +2365,10 @@ class BelloLocomotionEnv:
         done: jax.Array,
         foot_contact: jax.Array,
         foot_touchdown: jax.Array,
-        foot_normal_force: jax.Array,
+        foot_normal_impulse: jax.Array,
+        foot_peak_normal_force: jax.Array,
+        touchdown_foot_linear_velocity: jax.Array,
+        requested_actuator_force: jax.Array,
         foot_linear_velocity: jax.Array,
         foot_angular_speed: jax.Array,
         undesired_contact: jax.Array,
@@ -2132,7 +2416,10 @@ class BelloLocomotionEnv:
                 action=action,
                 requested_action=requested_action,
                 last_action=state.last_action,
+                last_action_delta=state.last_action_delta,
+                action_smoothness_weights=self._action_smoothness_weights(),
                 actuator_force=next_state.data.actuator_force,
+                requested_actuator_force=requested_actuator_force,
                 actuator_peak_force=jnp.asarray(self.model.actuator_peak_force),
                 joint_force=self._leg_joint_force(next_state),
                 robot_weight=self._robot_weight(),
@@ -2146,8 +2433,9 @@ class BelloLocomotionEnv:
                 action_target_high=self._policy_action_target_high(),
                 foot_contact=foot_contact,
                 foot_touchdown=foot_touchdown,
-                foot_normal_force=foot_normal_force,
-                previous_foot_linear_velocity=(self._foot_world_linear_velocity(state)),
+                foot_normal_impulse=foot_normal_impulse,
+                foot_peak_normal_force=foot_peak_normal_force,
+                touchdown_foot_linear_velocity=touchdown_foot_linear_velocity,
                 foot_linear_velocity=foot_linear_velocity,
                 foot_angular_speed=foot_angular_speed,
                 foot_height=self._foot_height(next_state, world_id),
@@ -2530,7 +2818,8 @@ class BelloLocomotionEnv:
         next_state: BelloState,
         foot_contact: jax.Array,
         foot_touchdown: jax.Array,
-        foot_normal_force: jax.Array,
+        foot_normal_impulse: jax.Array,
+        foot_peak_normal_force: jax.Array,
     ) -> dict[str, jax.Array]:
         contact = foot_contact.astype(bool)
         previous = state.last_foot_contact.astype(bool)
@@ -2545,8 +2834,11 @@ class BelloLocomotionEnv:
         normalized_joint_force = self._leg_joint_force(next_state) / jnp.maximum(
             self._robot_weight(), 1.0e-6
         )
-        normalized_contact_force = foot_normal_force / jnp.maximum(
+        normalized_contact_force = foot_peak_normal_force / jnp.maximum(
             self._robot_weight(), 1.0e-6
+        )
+        normalized_contact_impulse = foot_normal_impulse / jnp.maximum(
+            self._robot_weight() * self.control_timestep, 1.0e-6
         )
         joint_force_excess = jnp.maximum(
             normalized_joint_force
@@ -2581,6 +2873,10 @@ class BelloLocomotionEnv:
             ),
             "gait/contact_force_mean_body_weight": jnp.mean(normalized_contact_force),
             "gait/contact_force_max_body_weight": jnp.max(normalized_contact_force),
+            "gait/contact_impulse_mean_body_weight": jnp.mean(
+                normalized_contact_impulse
+            ),
+            "gait/contact_impulse_max_body_weight": jnp.max(normalized_contact_impulse),
         }
 
     def _command_diagnostics(self, command: jax.Array) -> dict[str, jax.Array]:

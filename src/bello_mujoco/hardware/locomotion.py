@@ -132,6 +132,7 @@ class HardwarePolicyAdapter:
         self._action_ctrl = jax.jit(
             lambda action: env.action_to_ctrl(action, zero_offset)
         )
+        self._filter_action = jax.jit(env.filter_action)
         self._obs_stack: np.ndarray | None = None
         self._last_action = np.zeros(env.action_size, dtype=np.float32)
         self._gait_phase = 0.0
@@ -239,16 +240,27 @@ class HardwarePolicyAdapter:
         raw_action = np.asarray(
             jax.device_get(inference.requested_action), dtype=np.float32
         )
-        action = np.asarray(jax.device_get(inference.applied_action), dtype=np.float32)
+        policy_action = np.asarray(
+            jax.device_get(inference.applied_action), dtype=np.float32
+        )
         if (
             raw_action.shape != (self.env.action_size,)
             or not np.all(np.isfinite(raw_action))
-            or action.shape != (self.env.action_size,)
-            or not np.all(np.isfinite(action))
+            or policy_action.shape != (self.env.action_size,)
+            or not np.all(np.isfinite(policy_action))
         ):
             raise RuntimeError(
-                f"policy produced an invalid hardware action with shape {action.shape}"
+                "policy produced an invalid hardware action with shape "
+                f"{policy_action.shape}"
             )
+        action = np.asarray(
+            jax.device_get(
+                self._filter_action(
+                    jnp.asarray(self._last_action), jnp.asarray(policy_action)
+                )
+            ),
+            dtype=np.float32,
+        )
         physical_target = np.asarray(
             jax.device_get(self._action_ctrl(jnp.asarray(action))), dtype=np.float64
         )

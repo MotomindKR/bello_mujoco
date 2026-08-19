@@ -11,6 +11,7 @@ from bello_mujoco.assets_pipeline.prepare import PreparedAsset
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
     BadOrientationDoneConfig,
+    ActionFilterConfig,
     BaseHeightDoneConfig,
     BelloEnvConfig,
     BelloLocomotionEnv,
@@ -127,6 +128,38 @@ def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> No
     assert desired_gait_foot_contact(jnp.asarray(0.6), gait_config) == pytest.approx(
         jnp.asarray([0.0, 1.0])
     )
+
+
+def test_action_filter_and_bilateral_mirrors_are_explicit_and_involutive(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=replace(
+            BelloEnvConfig(),
+            action_filter=ActionFilterConfig(enabled=True, cutoff_hz=5.5),
+        ),
+    )
+    previous = jnp.zeros(env.action_size, dtype=jnp.float32)
+    requested = jnp.ones(env.action_size, dtype=jnp.float32)
+    filtered = env.filter_action(previous, requested)
+    expected_alpha = 1.0 - np.exp(-2.0 * np.pi * 5.5 * env.control_timestep)
+
+    assert filtered == pytest.approx(np.full(env.action_size, expected_alpha))
+
+    action = jnp.linspace(-0.9, 0.9, env.action_size)
+    assert env.mirror_action(env.mirror_action(action)) == pytest.approx(action)
+    names = env.action_layout.names
+    assert env.mirror_action(action)[names.index("right_hip_pitch_joint")] == (
+        pytest.approx(-action[names.index("left_hip_pitch_joint")])
+    )
+    assert env.mirror_action(action)[names.index("right_hip_roll_joint")] == (
+        pytest.approx(action[names.index("left_hip_roll_joint")])
+    )
+
+    observation = jnp.linspace(-1.0, 1.0, 2 * env.observation_size)
+    mirrored = env.mirror_actor_observation(observation)
+    assert env.mirror_actor_observation(mirrored) == pytest.approx(observation)
 
 
 def test_native_data_adapter_uses_shared_observation_function(

@@ -199,7 +199,8 @@ class RewardWeights:
     ang_vel_xy: float = -0.15
     flat_orientation: float = -2.0
     base_height: float = -10.0
-    action_rate: float = -0.01
+    action_rate: float = -0.05
+    action_acceleration: float = -0.02
     action_limit: float = -1.0
     torque_l1: float = -1.2
     torque_peak: float = -12.0
@@ -236,9 +237,9 @@ class RewardLinks:
 
 @dataclass(frozen=True)
 class TrackingRewardConfig:
-    lin_vel_xy_moving_std: float = 0.75
+    lin_vel_xy_moving_std: float = 0.45
     lin_vel_xy_still_std: float = 0.25
-    ang_vel_z_moving_std: float = 0.50
+    ang_vel_z_moving_std: float = 0.35
     ang_vel_z_still_std: float = 0.20
 
 
@@ -256,8 +257,14 @@ class GaitRewardConfig:
     joint_force_soft_limit_body_weights: float = 0.8
     joint_force_top_k: int = 2
     joint_force_apply_while_standing: bool = False
-    touchdown_force_soft_limit_body_weights: float = 1.0
+    touchdown_force_soft_limit_body_weights: float = 0.6
     touchdown_vertical_speed_scale: float = 0.3
+
+
+@dataclass(frozen=True)
+class SmoothnessRewardConfig:
+    ankle_action_weight: float = 2.0
+    waist_action_weight: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -265,7 +272,7 @@ class LimitsPoseRewardConfig:
     base_height_target: float = 0.86
     action_soft_limit_ratio: float = 0.8
     joint_soft_limit_factor: float = 0.9
-    hip_lateral_command_index: int = 1
+    hip_lateral_command_index: int = 0
     hip_lateral_command_threshold: float = 0.1
 
 
@@ -278,6 +285,7 @@ class RewardConfig:
     tracking: TrackingRewardConfig = TrackingRewardConfig()
     standing: StandingRewardConfig = StandingRewardConfig()
     gait: GaitRewardConfig = GaitRewardConfig()
+    smoothness: SmoothnessRewardConfig = SmoothnessRewardConfig()
     limits_pose: LimitsPoseRewardConfig = LimitsPoseRewardConfig()
 
     def __post_init__(self) -> None:
@@ -343,7 +351,10 @@ class RewardInputs:
     action: jax.Array
     requested_action: jax.Array
     last_action: jax.Array
+    last_action_delta: jax.Array
+    action_smoothness_weights: jax.Array
     actuator_force: jax.Array
+    requested_actuator_force: jax.Array
     actuator_peak_force: jax.Array
     joint_force: jax.Array
     robot_weight: jax.Array
@@ -355,8 +366,9 @@ class RewardInputs:
     action_target_high: jax.Array
     foot_contact: jax.Array
     foot_touchdown: jax.Array
-    foot_normal_force: jax.Array
-    previous_foot_linear_velocity: jax.Array
+    foot_normal_impulse: jax.Array
+    foot_peak_normal_force: jax.Array
+    touchdown_foot_linear_velocity: jax.Array
     foot_linear_velocity: jax.Array
     foot_angular_speed: jax.Array
     foot_height: jax.Array
@@ -404,7 +416,12 @@ def compute_locomotion_reward(
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
     base_height = (inputs.base_height - config.limits_pose.base_height_target) ** 2
-    action_rate = jnp.sum((inputs.action - inputs.last_action) ** 2)
+    action_delta = inputs.action - inputs.last_action
+    action_rate = jnp.sum(inputs.action_smoothness_weights * action_delta**2)
+    action_acceleration = jnp.sum(
+        inputs.action_smoothness_weights
+        * (action_delta - inputs.last_action_delta) ** 2
+    )
 
     action_soft_limit = (
         config.limits_pose.action_soft_limit_ratio * inputs.action_clip_limit
@@ -421,7 +438,11 @@ def compute_locomotion_reward(
     policy_peak_force = inputs.actuator_peak_force[inputs.policy_joint_indices]
     normalized_torque = policy_force / policy_peak_force
     torque_l1 = jnp.mean(normalized_torque)
-    torque_peak = jnp.mean(jnp.maximum(normalized_torque - 1.0, 0.0) ** 2)
+    requested_policy_force = jnp.abs(
+        inputs.requested_actuator_force[inputs.policy_joint_indices]
+    )
+    normalized_requested_torque = requested_policy_force / policy_peak_force
+    torque_peak = jnp.mean(jnp.maximum(normalized_requested_torque - 1.0, 0.0) ** 2)
     normalized_joint_force = inputs.joint_force / jnp.maximum(
         inputs.robot_weight, 1.0e-6
     )
@@ -438,21 +459,27 @@ def compute_locomotion_reward(
         joint_force_peak,
         0.0,
     )
-    foot_normal_impulse = inputs.foot_normal_force * inputs.control_timestep
-    normalized_foot_impulse = foot_normal_impulse / jnp.maximum(
+    normalized_foot_impulse = inputs.foot_normal_impulse / jnp.maximum(
         inputs.robot_weight * inputs.control_timestep, 1.0e-6
     )
-    touchdown_force_excess = jnp.maximum(
-        normalized_foot_impulse - config.gait.touchdown_force_soft_limit_body_weights,
+    normalized_foot_peak_force = inputs.foot_peak_normal_force / jnp.maximum(
+        inputs.robot_weight, 1.0e-6
+    )
+    touchdown_load = jnp.maximum(normalized_foot_impulse, normalized_foot_peak_force)
+    touchdown_force_excess_ratio = jnp.maximum(
+        touchdown_load / config.gait.touchdown_force_soft_limit_body_weights - 1.0,
         0.0,
     )
     touchdown_speed_ratio = (
-        jnp.maximum(-inputs.previous_foot_linear_velocity[:, 2], 0.0)
+        jnp.maximum(-inputs.touchdown_foot_linear_velocity[:, 2], 0.0)
         / config.gait.touchdown_vertical_speed_scale
     )
     touchdown_impact = jnp.mean(
         inputs.foot_touchdown.astype(jnp.float32)
-        * (jnp.tanh(touchdown_force_excess**2) + jnp.tanh(touchdown_speed_ratio**2))
+        * (
+            squared_huber(touchdown_force_excess_ratio)
+            + squared_huber(touchdown_speed_ratio)
+        )
     )
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
     standing_command = command_is_standing(inputs.command, command_config)
@@ -557,6 +584,7 @@ def compute_locomotion_reward(
         "flat_orientation": flat_orientation,
         "base_height": base_height,
         "action_rate": action_rate,
+        "action_acceleration": action_acceleration,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
         "torque_peak": torque_peak,
@@ -585,6 +613,17 @@ def compute_locomotion_reward(
     }
     reward = sum(terms.values(), jnp.asarray(0.0, dtype=jnp.float32))
     return reward, terms
+
+
+def squared_huber(value: jax.Array, delta: float = 2.0) -> jax.Array:
+    """Quadratic near zero and linear past ``delta``, without saturation."""
+
+    absolute = jnp.abs(value)
+    return jnp.where(
+        absolute <= delta,
+        absolute**2,
+        2.0 * delta * absolute - delta**2,
+    )
 
 
 def reward_terms(config: RewardConfig) -> dict[str, float]:
@@ -653,6 +692,8 @@ def validate_reward_config(config: RewardConfig) -> None:
             config.gait.stance_slip_angular_speed_scale
         ),
         "standing.foot_angular_weight": config.standing.foot_angular_weight,
+        "smoothness.ankle_action_weight": config.smoothness.ankle_action_weight,
+        "smoothness.waist_action_weight": config.smoothness.waist_action_weight,
         "limits_pose.hip_lateral_command_threshold": (
             config.limits_pose.hip_lateral_command_threshold
         ),
