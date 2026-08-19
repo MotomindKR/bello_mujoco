@@ -1257,11 +1257,15 @@ class VastLifecycle:
                 )
                 write_active_state(self.state_path, instance_id, self.label)
                 print(f"Created Vast instance {instance_id}; teardown is armed.")
-                wait_for_instance(
-                    self.api,
-                    instance_id,
-                    self.config.ready_timeout_seconds,
-                )
+                try:
+                    wait_for_instance(
+                        self.api,
+                        instance_id,
+                        self.config.ready_timeout_seconds,
+                    )
+                except TimeoutError:
+                    retry_offer = True
+                    raise
                 try:
                     ssh_target = wait_for_ssh(
                         self.api,

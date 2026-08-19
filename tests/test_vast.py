@@ -1812,6 +1812,56 @@ def test_lifecycle_retries_next_offer_when_direct_ssh_times_out(
     assert remote_targets == [("root", "host-2", 22)]
 
 
+def test_lifecycle_retries_next_offer_when_instance_readiness_times_out(
+    monkeypatch, tmp_path
+) -> None:
+    class Api(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            return offer_id
+
+    api = Api()
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: [
+            VastOffer.from_mapping(make_offer(1, location="Seoul, KR")),
+            VastOffer.from_mapping(make_offer(2, location="Tokyo, JP")),
+        ],
+    )
+    readiness_attempts = iter((TimeoutError("instance remained loading"), None))
+
+    def wait_for_instance(api, instance_id, timeout):
+        failure = next(readiness_attempts)
+        if failure is not None:
+            raise failure
+
+    monkeypatch.setattr(vast, "wait_for_instance", wait_for_instance)
+    monkeypatch.setattr(
+        vast,
+        "wait_for_ssh",
+        lambda api, instance_id, timeout: ("root", f"host-{instance_id}", 22),
+    )
+    remote_targets = []
+
+    VastLifecycle(
+        api,
+        valid_config(),
+        tmp_path / ".vast" / "active_instance.json",
+        "readiness-test",
+    ).run(
+        selection(),
+        "readiness-test",
+        lambda target, *args, **kwargs: remote_targets.append(target),
+        wandb_key="secret",
+        github_token="",
+    )
+
+    assert [offer_id for offer_id, _ in api.created] == [1, 2]
+    assert api.destroyed == [1, 2]
+    assert remote_targets == [("root", "host-2", 22)]
+
+
 def test_motion_dry_run_never_reads_credentials_or_rents(
     monkeypatch, tmp_path, capsys
 ) -> None:
