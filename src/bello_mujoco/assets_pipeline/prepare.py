@@ -60,6 +60,12 @@ _GENERATOR_DISTRIBUTIONS = (
 _DEFAULT_CACHE_GUARD = threading.Lock()
 _DEFAULT_CACHE_LEASES: dict[Path, TextIO] = {}
 _DEFAULT_CACHE_ASSETS: dict[Path, PreparedAsset] = {}
+END_EFFECTOR_PAYLOAD_LINK_NAMES = (
+    "l_end_effector_sphere_link",
+    "r_end_effector_sphere_link",
+)
+END_EFFECTOR_SPHERE_RADIUS_M = 0.0325
+END_EFFECTOR_SPHERE_CENTER_M = (0.0, 0.0, -0.02)
 
 
 def _close_default_asset_cache_leases() -> None:
@@ -81,6 +87,7 @@ class AssetPrepConfig:
     visual_mesh_face_budget: int = 200_000
     collision_mode: CollisionMode = "mesh"
     target_total_mass_kg: float | None = None
+    end_effector_payload_mass_kg: float = 0.0
     neighbor_exclusion_depth: int = 2
     enforce_policy_effort_limits: bool = True
     imu_config: ImuSensorConfig = ImuSensorConfig()
@@ -102,6 +109,14 @@ class AssetPrepConfig:
             raise ValueError(
                 "target_total_mass_kg must be positive and finite when set, got "
                 f"{self.target_total_mass_kg}"
+            )
+        if (
+            not math.isfinite(self.end_effector_payload_mass_kg)
+            or self.end_effector_payload_mass_kg < 0.0
+        ):
+            raise ValueError(
+                "end_effector_payload_mass_kg must be finite and nonnegative, got "
+                f"{self.end_effector_payload_mass_kg}"
             )
         removed_joints = set(self.joint_availability.disabled_joint_names)
         active_joints = {
@@ -223,6 +238,9 @@ def prepare_asset_unlocked(
     )
     if config.target_total_mass_kg is not None:
         scale_urdf_total_mass(out_urdf, config.target_total_mass_kg)
+    add_end_effector_payload_inertials(
+        out_urdf, config.end_effector_payload_mass_kg
+    )
     actuated_joint_order = actuated_urdf_joint_names(out_urdf)
     validate_actuator_joint_contract(config.actuator_config, actuated_joint_order)
     for src, dst_name in mesh_sources.collision.items():
@@ -339,6 +357,57 @@ def scale_urdf_total_mass(urdf_path: Path, target_total_mass_kg: float) -> None:
     tree.write(urdf_path, encoding="utf-8", xml_declaration=True)
 
 
+def add_end_effector_payload_inertials(
+    urdf_path: Path, mass_kg_per_hand: float
+) -> None:
+    """Attach equal payload inertials at the two sphere-hand centers."""
+
+    if not math.isfinite(mass_kg_per_hand) or mass_kg_per_hand < 0.0:
+        raise ValueError(
+            "mass_kg_per_hand must be finite and nonnegative, got "
+            f"{mass_kg_per_hand}"
+        )
+    if mass_kg_per_hand == 0.0:
+        return
+
+    tree = ET.parse(urdf_path)
+    root = tree.getroot()
+    links = {link.get("name"): link for link in root.findall("link")}
+    inertia = 0.4 * mass_kg_per_hand * END_EFFECTOR_SPHERE_RADIUS_M**2
+    for name in END_EFFECTOR_PAYLOAD_LINK_NAMES:
+        link = links.get(name)
+        if link is None:
+            raise ValueError(f"generated URDF is missing payload link {name!r}")
+        if link.find("inertial") is not None:
+            raise ValueError(f"payload link {name!r} already has inertial data")
+        inertial = ET.Element("inertial")
+        ET.SubElement(
+            inertial,
+            "origin",
+            {
+                "xyz": " ".join(str(value) for value in END_EFFECTOR_SPHERE_CENTER_M),
+                "rpy": "0 0 0",
+            },
+        )
+        ET.SubElement(inertial, "mass", {"value": f"{mass_kg_per_hand:.17g}"})
+        ET.SubElement(
+            inertial,
+            "inertia",
+            {
+                "ixx": f"{inertia:.17g}",
+                "iyy": f"{inertia:.17g}",
+                "izz": f"{inertia:.17g}",
+                "ixy": "0",
+                "ixz": "0",
+                "iyz": "0",
+            },
+        )
+        link.insert(0, inertial)
+
+    ET.indent(tree, space="  ")
+    tree.write(urdf_path, encoding="utf-8", xml_declaration=True)
+
+
 def validate_actuator_joint_contract(
     config: ActuatorConfig,
     actuated_joint_order: tuple[str, ...],
@@ -380,6 +449,7 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "visual_mesh_face_budget": config.visual_mesh_face_budget,
         "collision_mode": config.collision_mode,
         "target_total_mass_kg": config.target_total_mass_kg,
+        "end_effector_payload_mass_kg": config.end_effector_payload_mass_kg,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
         "enforce_policy_effort_limits": config.enforce_policy_effort_limits,
         "imu_config": asdict(config.imu_config),

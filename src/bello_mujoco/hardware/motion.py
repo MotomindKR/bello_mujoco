@@ -65,6 +65,7 @@ class HardwareMotionConfig(HardwareControlConfig):
 
     client_name: str = "bello-motion-policy"
     motion_path: Path | None = None
+    end_effector_payload_mass_kg: float | None = None
     pose_endpoint: str = "127.0.0.1:50053"
     pose_reference_frame: str = "odom"
     pose_tracked_frame: str = "pelvis_link"
@@ -771,6 +772,13 @@ def validate_hardware_motion_config(
             raise ValueError(f"{name} must be positive and finite")
     if config.max_pose_age_ms <= 0:
         raise ValueError("max_pose_age_ms must be positive")
+    if config.end_effector_payload_mass_kg is not None and (
+        not math.isfinite(config.end_effector_payload_mass_kg)
+        or config.end_effector_payload_mass_kg < 0.0
+    ):
+        raise ValueError(
+            "end_effector_payload_mass_kg must be finite and nonnegative"
+        )
     if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
         raise ValueError("start_time_seconds must be finite and nonnegative")
     if env is not None and config.start_time_seconds >= env.motion.duration:
@@ -792,6 +800,21 @@ def load_hardware_motion_policy(
         use_viewer_model=False,
         allow_git_commit_mismatch=config.allow_git_commit_mismatch,
     )
+    checkpoint_payload_mass = runtime.metadata.asset.end_effector_payload_mass_kg
+    if (
+        config.end_effector_payload_mass_kg is not None
+        and not math.isclose(
+            config.end_effector_payload_mass_kg,
+            checkpoint_payload_mass,
+            rel_tol=0.0,
+            abs_tol=1.0e-6,
+        )
+    ):
+        raise ValueError(
+            "configured end-effector payload does not match the motion checkpoint: "
+            f"runner={config.end_effector_payload_mass_kg:.6g} kg per hand, "
+            f"checkpoint={checkpoint_payload_mass:.6g} kg per hand"
+        )
     return (
         HardwareMotionPolicyAdapter(
             runtime.env,
@@ -872,6 +895,9 @@ def run_hardware_motion(
                 "standing_control_rate_hz": (1.0 / standing_adapter.control_timestep),
                 "jax_backend": jax.default_backend(),
                 "motion_start_seconds": motion_adapter.start_time,
+                "end_effector_payload_mass_kg_per_hand": (
+                    metadata.asset.end_effector_payload_mass_kg
+                ),
                 "nominal_ramp_distance_max": initial_error,
                 "standing_preview_action_abs_max": float(
                     np.max(np.abs(standing_preview.action))

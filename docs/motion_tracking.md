@@ -94,6 +94,11 @@ itself.
 Native evaluation uses the same bounded action transformation and observation
 normalization stored by training. It reports completion fraction, episode
 return, terminal/timeout state, and RMS root, orientation, and joint errors.
+The generated motion asset can carry an equal configured payload at each
+sphere-hand center. Training records the per-hand mass in checkpoint metadata;
+evaluation uses that mass by default and accepts an explicit load-ablation
+override. Hardware deployment treats the same field as a declared physical
+load and refuses a value that differs from the checkpoint.
 
 Physical motion deployment adds absolute pelvis PoseService input and validates
 Pose/IMU agreement, nominal-pose arrival, action bounds, and reference

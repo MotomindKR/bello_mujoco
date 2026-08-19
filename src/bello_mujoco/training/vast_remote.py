@@ -162,7 +162,8 @@ repo_url="$3"
 remote_dir="$4"
 experiment="$5"
 motion_path="$6"
-run_name="$7"
+end_effector_payload_mass_kg="$7"
+run_name="$8"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -215,6 +216,9 @@ uv run python -c 'import jax; devices=jax.devices(); print({"backend": jax.defau
 training_overrides=("experiment=$experiment")
 if [ -n "$motion_path" ]; then
   training_overrides+=("motion_path=$motion_path")
+fi
+if [ -n "$end_effector_payload_mass_kg" ]; then
+  training_overrides+=("end_effector_payload_mass_kg=$end_effector_payload_mass_kg")
 fi
 
 uv run bello-train \
@@ -461,6 +465,11 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             str(config.remote_dir),
             config.experiment,
             str(selection.motion_path or ""),
+            (
+                ""
+                if config.end_effector_payload_mass_kg is None
+                else f"{config.end_effector_payload_mass_kg:.17g}"
+            ),
             run_name,
         ]
     )

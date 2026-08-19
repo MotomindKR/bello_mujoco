@@ -1,5 +1,6 @@
 experiment: hardware_locomotion
 motion_path: null
+end_effector_payload_mass_kg: null
 max_price: null
 branch: null  # Required: exact branch to fetch and pin.
 run_name: null

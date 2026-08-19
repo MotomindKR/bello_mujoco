@@ -6,6 +6,7 @@ endpoint: http://127.0.0.1:50051
 remote_endpoint: null
 remote_staleness_ms: 200
 motion_path: null
+end_effector_payload_mass_kg: null
 duration_seconds: null
 ramp_seconds: null
 gain_scale: 1.0

@@ -720,14 +720,20 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     command = vast_remote.remote_start_command(
         str(tmp_path / "job"),
         motion_selection(),
-        motion_config(),
+        motion_config(end_effector_payload_mass_kg=4.5359237),
         "motion-test",
     )
 
     assert shlex.split(command)[-1] == "motion-test"
+    assert float(shlex.split(command)[-2]) == pytest.approx(4.5359237)
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
     assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert (
+        'training_overrides+=("end_effector_payload_mass_kg='
+        '$end_effector_payload_mass_kg")'
+        in vast_remote.REMOTE_TRAIN_SCRIPT
+    )
     overrides_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
         'training_overrides=("experiment=$experiment")'
     )
@@ -739,6 +745,14 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     )
     assert overrides_index < validation_index
     assert user_index < forced_index < checkpoint_index
+
+
+@pytest.mark.parametrize("payload_mass", [-1.0, float("nan"), float("inf")])
+def test_motion_vast_config_rejects_invalid_payload(payload_mass: float) -> None:
+    with pytest.raises(ValueError, match="end-effector-payload-mass-kg"):
+        validate_config(
+            motion_config(end_effector_payload_mass_kg=payload_mass)
+        )
 
 
 def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> None:

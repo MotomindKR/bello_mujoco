@@ -569,6 +569,13 @@ def _with_checkpoint_metadata_defaults(
         return value
     if allow_retired_asset_schema:
         value = _without_retired_asset_schema(value)
+    asset = value.get("asset")
+    if isinstance(asset, dict) and "end_effector_payload_mass_kg" not in asset:
+        normalized = dict(value)
+        normalized_asset = dict(asset)
+        normalized_asset["end_effector_payload_mass_kg"] = 0.0
+        normalized["asset"] = normalized_asset
+        value = normalized
     if value.get("task") == "locomotion":
         normalized = dict(value)
         env = value.get("env")

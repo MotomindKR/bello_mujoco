@@ -3,6 +3,7 @@ seed: null
 total_timesteps: null
 num_envs: null
 motion_path: null
+end_effector_payload_mass_kg: null
 resume_path: null
 allow_git_commit_mismatch: false
 checkpoint_directory: null

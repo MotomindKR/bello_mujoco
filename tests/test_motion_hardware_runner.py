@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.hardware import motion as motion_hardware
 from bello_mujoco.hardware.runtime import HardwareFrame
 
@@ -178,6 +179,12 @@ def test_pose_and_imu_orientation_must_agree() -> None:
 def test_motion_config_rejects_unsafe_ranges() -> None:
     assert motion_hardware.HardwareMotionConfig().max_duration_seconds is None
     assert motion_hardware.HardwareMotionConfig().max_state_sample_span_ms == 40.0
+    with pytest.raises(ValueError, match="end_effector_payload_mass_kg"):
+        motion_hardware.validate_hardware_motion_config(
+            motion_hardware.HardwareMotionConfig(
+                end_effector_payload_mass_kg=-1.0
+            )
+        )
     motion_hardware.validate_hardware_motion_config(
         motion_hardware.HardwareMotionConfig(max_duration_seconds=None)
     )
@@ -203,6 +210,47 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
         motion_hardware.validate_hardware_motion_config(
             motion_hardware.HardwareMotionConfig(max_state_sample_span_ms=0.0)
         )
+
+
+def test_motion_hardware_rejects_payload_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = SimpleNamespace(
+        asset=AssetPrepConfig(end_effector_payload_mass_kg=4.5359237)
+    )
+    runtime = SimpleNamespace(
+        env=object(),
+        policy=object(),
+        metadata=metadata,
+        normalization=object(),
+    )
+    monkeypatch.setattr(
+        motion_hardware,
+        "load_motion_policy_runtime",
+        lambda *args, **kwargs: runtime,
+    )
+    monkeypatch.setattr(
+        motion_hardware,
+        "HardwareMotionPolicyAdapter",
+        lambda *args, **kwargs: object(),
+    )
+
+    with pytest.raises(ValueError, match="does not match the motion checkpoint"):
+        motion_hardware.load_hardware_motion_policy(
+            Path("checkpoint"),
+            motion_hardware.HardwareMotionConfig(
+                end_effector_payload_mass_kg=3.0
+            ),
+        )
+
+    adapter, restored = motion_hardware.load_hardware_motion_policy(
+        Path("checkpoint"),
+        motion_hardware.HardwareMotionConfig(
+            end_effector_payload_mass_kg=4.5359237
+        ),
+    )
+    assert adapter is not None
+    assert restored is metadata
 
 
 def test_motion_transition_requires_matching_impedance_gains() -> None:
@@ -368,7 +416,13 @@ def test_read_only_preflight_never_acquires_control(
     monkeypatch.setattr(
         motion_hardware,
         "load_hardware_motion_policy",
-        lambda *_args, **_kwargs: (adapter, SimpleNamespace(task="motion_tracking")),
+        lambda *_args, **_kwargs: (
+            adapter,
+            SimpleNamespace(
+                task="motion_tracking",
+                asset=AssetPrepConfig(),
+            ),
+        ),
     )
     monkeypatch.setattr(
         motion_hardware,

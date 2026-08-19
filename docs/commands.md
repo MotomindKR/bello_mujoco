@@ -70,6 +70,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
 | `motion_path` | path or `null`; `null` | For `experiment=motion`, select one canonical `.npz` clip by replacing the profile's motion directory and sequence. Checkpointed training requires the clip to be inside the repository and tracked in `HEAD`. Do not supply this field for locomotion profiles. |
+| `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | Motion only. Add this many kilograms to each sphere hand. `null` keeps the profile value, normally zero. |
 | `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and normally match its recorded Git commit; resume then validates the full training and environment state. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` to come from a different commit. Requires `resume_path`; all metadata, layout, state, and content checks still apply. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
@@ -104,6 +105,7 @@ Configuration source: `configs/commands/eval.yaml`.
 | `task` | `locomotion` or `motion`; `locomotion` | both | Select checkpoint validation and evaluation mode. |
 | `checkpoint_path` | path or `null`; `null` | both | Required checkpoint directory. `~` is expanded. |
 | `allow_git_commit_mismatch` | boolean; `false` | both | Permit a different clean checkout than the checkpoint's recorded commit. Other checkpoint checks still apply. |
+| `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | motion | Explicit native-simulation load ablation, in kilograms per hand. `null` uses the checkpoint's trained payload. |
 | `output_path` | path; `outputs/evaluation/motion.mp4` | motion | Video destination. Parent directories are created by the renderer. |
 | `command` | three floats; `[0,0,0]` | locomotion | Fixed `+X` lateral/right, `+Y` forward, and `+Z` yaw velocity command. |
 | `steps` | positive integer or `null`; `null` | both | Bound rollout steps. `null` is unbounded for locomotion and uses the motion episode length for motion. |
@@ -131,8 +133,8 @@ validation, so it should remain within the checkpoint's trained bounds.
 
 Evaluation validates the checkpoint task, policy and critic observation
 sizes/layouts, action size/layout, asset configuration, and environment
-metadata. It does not accept runtime overrides for the trained robot or reward
-formulation.
+metadata. The explicit motion payload field is the only physical-model
+ablation; no reward or other trained-robot overrides are accepted.
 
 Motion-policy evaluation renders at 640 by 480 pixels and 50 fps. The `width`,
 `height`, and `fps` fields under `bello-motion` configure reference rendering.
@@ -196,6 +198,7 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | --- | --- | --- |
 | `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, or `motion`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
+| `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | Motion only. Forward a symmetric per-hand payload mass to both the remote validation run and full training run. |
 | `max_price` | positive float or `null`; `null` | Maximum total hourly rental price. A positive value is required, including for dry-run offer queries. |
 | `branch` | string or `null`; `null` | Required remote `origin` branch. A null value is rejected before rental. |
 | `run_name` | string or `null`; `null` | Explicit lifecycle/W&B run label. Otherwise a unique name is generated from the profile, branch, commit, and current UTC timestamp. |
@@ -273,6 +276,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `remote_endpoint` | string or `null`; `null` | locomotion | Required plaintext URL of the visualizer's RemoteCommandService, for example `http://visualizer-host:50054`. |
 | `remote_staleness_ms` | positive integer; `200` | locomotion | Maximum age of the latest remote-command sample before the command becomes zero and the stream reconnects. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
+| `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | motion | Declare the physical mass carried by each hand. `null` uses the checkpoint value; an explicit mismatch is rejected before control is acquired. |
 | `duration_seconds` | positive float or `null`; `null` | both | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
 | `ramp_seconds` | positive float or `null`; `null` | both | Override nominal-pose ramp time. `null` uses 10 seconds for both tasks. |
 | `gain_scale` | float in `(0, 1]`; `1.0` | both | Multiply every commanded motor `kp` and `kd` by this value during start, ramp, and policy control. Fault damping is unchanged. |
