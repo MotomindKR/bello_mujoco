@@ -250,6 +250,7 @@ def test_motion_runner_defaults_to_read_only() -> None:
     assert config.task == "motion"
     assert not config.arm
     assert config.motion_path is None
+    assert config.max_linear_acceleration is None
     assert HardwareMotionConfig().policy_transition_seconds == 0.2
     assert HardwareMotionConfig().max_motion_tilt_radians == pytest.approx(
         math.radians(70.0)
@@ -258,21 +259,13 @@ def test_motion_runner_defaults_to_read_only() -> None:
     validate_hardware_motion_config(HardwareMotionConfig(arm=True))
 
 
-def test_motion_checkpoint_validation_rejects_task_and_hand_mismatch(
+def test_motion_checkpoint_validation_rejects_task_and_formulation_mismatch(
     level4_adapter: HardwareMotionPolicyAdapter,
 ) -> None:
     adapter = level4_adapter
     with pytest.raises(ValueError, match="motion-tracking checkpoint"):
         validate_hardware_motion_checkpoint(
             adapter.env, replace(adapter.metadata, task="locomotion")
-        )
-    with pytest.raises(ValueError, match="sphere hands"):
-        validate_hardware_motion_checkpoint(
-            adapter.env,
-            replace(
-                adapter.metadata,
-                asset=replace(adapter.metadata.asset, end_effector_sphere_mode="none"),
-            ),
         )
     with pytest.raises(ValueError, match="bounded BeyondMimic"):
         validate_hardware_motion_checkpoint(

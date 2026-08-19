@@ -59,7 +59,25 @@ from bello_mujoco.training.ppo import (
     init_observation_norm_state,
     init_value_norm_state,
 )
-from bello_mujoco.gamepad import GamepadConfig, GamepadInput, axis_to_range
+from bello_mujoco.gamepad import axis_to_range
+from bello_mujoco.hardware.remote import RemoteCommandConfig, RemoteCommandInput
+
+
+def remote_input(
+    command=(0.0, 0.0, 0.0),
+    *,
+    service_connected=True,
+    controller_connected=True,
+    intent_armed=True,
+    abort_active=False,
+) -> RemoteCommandInput:
+    return RemoteCommandInput(
+        normalized_command=tuple(command),
+        service_connected=service_connected,
+        controller_connected=controller_connected,
+        intent_armed=intent_armed,
+        abort_active=abort_active,
+    )
 
 
 def compose_hardware_training_config() -> TrainingRunConfig:
@@ -218,14 +236,15 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
 ) -> None:
     config = compose_hardware_training_config()
 
-    assert config.asset_config.end_effector_sphere_mode == "both"
-    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
+    assert config.asset_config.target_total_mass_kg is None
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
-    assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(60.0)
+    assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(
+        55.0683575411785
+    )
 
     metadata = SimpleNamespace(
         task="locomotion",
@@ -324,12 +343,14 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
 
     result = adapter.step(frame, command)
 
-    assert result.observation.shape == (51,)
+    assert result.observation.shape == (54,)
     assert result.observation[:3] == pytest.approx((0.0, 0.0, 0.980665))
     assert result.observation[3:6] == pytest.approx(np.zeros(3))
     assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
     assert result.observation[9:12] == pytest.approx(command)
+    assert result.observation[12:15] == pytest.approx((0.0, 1.0, 1.0))
     assert result.action.shape == (13,)
+    assert result.action == pytest.approx(np.clip(result.raw_action, -1.0, 1.0))
     assert result.physical_target.shape == (25,)
     assert np.all(np.isfinite(result.physical_target))
     assert result.physical_target == pytest.approx(
@@ -360,19 +381,26 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     config = compose_hardware_runner_config()
 
     assert not config.hardware.arm
-    assert config.hardware.command == (0.0, 0.0, 0.0)
-    assert config.hardware.gamepad.enabled
+    assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
+    assert config.hardware.remote.staleness_ms == 200
     validate_hardware_config(config.hardware)
     validate_hardware_config(HardwareLocomotionConfig(arm=True))
-    with pytest.raises(ValueError, match="controller_index"):
+    with pytest.raises(ValueError, match="plaintext"):
         validate_hardware_config(
             HardwareLocomotionConfig(
-                gamepad=replace(GamepadConfig(), controller_index=-1)
+                remote=replace(RemoteCommandConfig(), endpoint="https://remote:50054")
             )
         )
-    validate_hardware_config(
-        HardwareLocomotionConfig(gamepad=replace(GamepadConfig(), enabled=False))
-    )
+    with pytest.raises(ValueError, match="staleness_ms"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(
+                remote=replace(RemoteCommandConfig(), staleness_ms=0)
+            )
+        )
+    with pytest.raises(ValueError, match="gain_scale"):
+        validate_hardware_config(HardwareLocomotionConfig(gain_scale=0.0))
+    with pytest.raises(ValueError, match="gain_scale"):
+        validate_hardware_config(HardwareLocomotionConfig(gain_scale=1.01))
 
 
 def test_coordinate_targets_use_policy_gains() -> None:
@@ -396,6 +424,17 @@ def test_coordinate_targets_use_policy_gains() -> None:
         "left": (0.2, 12.0, 0.5),
         "right": (-0.4, 34.0, 0.75),
     }
+
+    scaled_targets = coordinate_targets(
+        binding,
+        ("left", "right"),
+        np.asarray((0.2, -0.4)),
+        adapter,
+        gain_scale=5.0 / 6.0,
+    )
+
+    assert scaled_targets["left"] == pytest.approx((0.2, 10.0, 5.0 / 12.0))
+    assert scaled_targets["right"] == pytest.approx((-0.4, 85.0 / 3.0, 0.625))
 
 
 def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
@@ -623,15 +662,11 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
         "bello_mujoco.hardware.locomotion.require_nominal_pose",
         lambda checked_frame, _adapter: checks.append(checked_frame),
     )
-    gamepad_inputs = iter(
+    remote_inputs = iter(
         (
-            GamepadInput(np.zeros(3, dtype=np.float32), connected=True),
-            GamepadInput(np.zeros(3, dtype=np.float32), connected=True),
-            GamepadInput(
-                np.zeros(3, dtype=np.float32),
-                connected=True,
-                exit_held=True,
-            ),
+            remote_input(),
+            remote_input(),
+            remote_input(abort_active=True),
         )
     )
 
@@ -648,7 +683,7 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
         frame,
         adapter,
         HardwareLocomotionConfig(max_duration_seconds=None),
-        SimpleNamespace(poll=lambda: next(gamepad_inputs)),
+        SimpleNamespace(poll=lambda: next(remote_inputs)),
     )
 
     assert len(checks) == 3
@@ -669,7 +704,7 @@ def test_hardware_command_limits() -> None:
         validate_command(np.asarray((0.6, 0.0, 0.0)), metadata)
 
 
-def test_hardware_gamepad_commands_fail_closed_and_use_checkpoint_bounds() -> None:
+def test_hardware_remote_commands_fail_closed_and_use_checkpoint_bounds() -> None:
     metadata = SimpleNamespace(
         command=CommandConfig(
             lin_vel_x=(-0.5, 1.0),
@@ -677,23 +712,19 @@ def test_hardware_gamepad_commands_fail_closed_and_use_checkpoint_bounds() -> No
             ang_vel_yaw=(-0.4, 0.6),
         )
     )
-    config = HardwareLocomotionConfig(command=(0.1, 0.1, 0.1))
-
     assert command_ranges(metadata) == ((-0.5, 1.0), (-0.2, 0.3), (-0.4, 0.6))
     assert command_minimum_moving_speeds(metadata) == (0.2, 0.2, 0.2)
     assert hardware_command(
-        config,
         metadata,
-        GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
+        remote_input(service_connected=False, controller_connected=False),
     ) == pytest.approx(np.zeros(3))
     assert hardware_command(
-        config,
         metadata,
-        GamepadInput(np.asarray((0.8, -0.1, 0.4)), connected=True),
-    ) == pytest.approx((0.8, -0.1, 0.4))
+        remote_input((0.8, -0.1, 0.4)),
+    ) == pytest.approx((-0.23, 0.28, 0.36))
 
 
-def test_gamepad_axis_mapping_preserves_standing_and_conditioned_ranges() -> None:
+def test_normalized_axis_mapping_preserves_standing_and_conditioned_ranges() -> None:
     assert axis_to_range(0.0, (0.3, 1.0), 0.2) == 0.0
     assert axis_to_range(0.5, (0.3, 1.0), 0.2) == pytest.approx(0.65)
     assert axis_to_range(-0.5, (0.3, 1.0), 0.2) == 0.0
@@ -702,7 +733,7 @@ def test_gamepad_axis_mapping_preserves_standing_and_conditioned_ranges() -> Non
     assert axis_to_range(0.25, (-1.0, 1.0), 0.2) == pytest.approx(0.4)
 
 
-def test_hardware_honors_held_gamepad_abort_before_connect(monkeypatch) -> None:
+def test_hardware_honors_held_remote_abort_before_connect(monkeypatch) -> None:
     adapter = SimpleNamespace(precompile=lambda: None)
     metadata = SimpleNamespace(command=CommandConfig())
     monkeypatch.setattr(
@@ -720,12 +751,9 @@ def test_hardware_honors_held_gamepad_abort_before_connect(monkeypatch) -> None:
         ControlState=SimpleNamespace(RUNNING="running"),
         Robot=SimpleNamespace(connect=connect),
     )
-    gamepad = SimpleNamespace(
-        poll=lambda: GamepadInput(
-            np.zeros(3, dtype=np.float32),
-            connected=True,
-            exit_held=True,
-        ),
+    remote = SimpleNamespace(
+        wait_until_ready=lambda _timeout: remote_input(abort_active=True),
+        poll=lambda: remote_input(abort_active=True),
         close=lambda: None,
     )
 
@@ -733,10 +761,103 @@ def test_hardware_honors_held_gamepad_abort_before_connect(monkeypatch) -> None:
         Path("unused"),
         HardwareLocomotionConfig(arm=True),
         hardware_binding=binding,
-        gamepad_factory=lambda *_args: gamepad,
+        remote_factory=lambda *_args: remote,
     )
 
     assert not connect_calls
+
+
+def test_hardware_requires_remote_sample_before_connect(monkeypatch) -> None:
+    adapter = SimpleNamespace(precompile=lambda: None)
+    metadata = SimpleNamespace(command=CommandConfig())
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.locomotion.load_hardware_policy",
+        lambda *_args, **_kwargs: (adapter, metadata),
+    )
+    connect_calls = []
+
+    def connect(*_args, **_kwargs):
+        connect_calls.append(True)
+        raise AssertionError("hardware connected without a remote sample")
+
+    def wait_until_ready(_timeout):
+        raise TimeoutError("remote unavailable")
+
+    binding = SimpleNamespace(Robot=SimpleNamespace(connect=connect))
+    remote = SimpleNamespace(
+        wait_until_ready=wait_until_ready,
+        close=lambda: None,
+    )
+
+    with pytest.raises(TimeoutError, match="remote unavailable"):
+        run_hardware_locomotion(
+            Path("unused"),
+            HardwareLocomotionConfig(),
+            hardware_binding=binding,
+            remote_factory=lambda *_args: remote,
+        )
+
+    assert not connect_calls
+
+
+@pytest.mark.parametrize("abort_during_prompt", (True, False))
+def test_remote_abort_around_hold_never_acquires_control(
+    monkeypatch,
+    hardware_preflight_factory,
+    abort_during_prompt,
+) -> None:
+    coordinates = ("left_hip_pitch_joint", "right_hip_pitch_joint")
+    hardware = hardware_preflight_factory(coordinates, (0.0, 0.0))
+    hardware.binding.ControlSession = SimpleNamespace(send_async=lambda: None)
+    hardware.binding.ControlState = SimpleNamespace(RUNNING="running")
+    adapter = SimpleNamespace(
+        physical_coordinate_names=coordinates,
+        nominal_physical_target=np.zeros(2),
+        env=SimpleNamespace(action_size=13),
+        control_timestep=0.02,
+        precompile=lambda: None,
+        reset=lambda: None,
+        step=lambda _frame, _command: SimpleNamespace(
+            action=np.zeros(13),
+            tilt_radians=0.0,
+        ),
+    )
+    metadata = SimpleNamespace(command=CommandConfig())
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.locomotion.load_hardware_policy",
+        lambda *_args, **_kwargs: (adapter, metadata),
+    )
+
+    def wait_for_hold(_expected, _prompt, before_step, _operator_input):
+        continued = before_step()
+        assert continued is not abort_during_prompt
+        return continued
+
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.locomotion.wait_for_operator_confirmation_while_holding",
+        wait_for_hold,
+    )
+    inputs = iter(
+        (
+            remote_input(),
+            remote_input(abort_active=abort_during_prompt),
+            remote_input(abort_active=True),
+        )
+    )
+    remote = SimpleNamespace(
+        wait_until_ready=lambda _timeout: next(inputs),
+        poll=lambda: next(inputs),
+        close=lambda: None,
+    )
+
+    run_hardware_locomotion(
+        Path("unused"),
+        HardwareLocomotionConfig(arm=True, allow_git_commit_mismatch=True),
+        hardware_binding=hardware.binding,
+        remote_factory=lambda _config: remote,
+    )
+
+    assert not hardware.control_requests
 
 
 def test_hardware_groups_start_concurrently() -> None:
@@ -983,8 +1104,17 @@ def test_read_only_preflight_never_acquires_control(
         Path("unused"),
         HardwareLocomotionConfig(allow_git_commit_mismatch=True),
         hardware_binding=hardware.binding,
-        gamepad_factory=lambda config, ranges, minimums: SimpleNamespace(
-            poll=lambda: GamepadInput(np.zeros(3, dtype=np.float32), connected=False),
+        remote_factory=lambda _config: SimpleNamespace(
+            wait_until_ready=lambda _timeout: remote_input(
+                service_connected=True,
+                controller_connected=False,
+                intent_armed=False,
+            ),
+            poll=lambda: remote_input(
+                service_connected=True,
+                controller_connected=False,
+                intent_armed=False,
+            ),
             close=lambda: None,
         ),
     )

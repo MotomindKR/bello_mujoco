@@ -1,5 +1,5 @@
 config:
-  total_timesteps: 150000000
+  total_timesteps: 8000000000
   num_envs: 2048
   num_steps: 20
   update_epochs: 4
@@ -9,6 +9,7 @@ config:
   max_learning_rate: 0.0001
   gamma: 0.97
   ent_coef: 0.005
+  symmetry_loss_coef: 0.1
   policy:
     hidden_dims: [512, 256, 128]
     activation: swish

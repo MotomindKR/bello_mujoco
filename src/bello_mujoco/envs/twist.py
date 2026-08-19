@@ -76,13 +76,7 @@ DEFAULT_KEY_BODY_NAMES = (
     "head_link",
 )
 
-TWIST_JOINT_AVAILABILITY = JointAvailabilityConfig(
-    waist_yaw=True,
-    waist_roll=False,
-    waist_pitch=False,
-    neck_yaw=False,
-    head_pitch=False,
-)
+TWIST_JOINT_AVAILABILITY = JointAvailabilityConfig(waist_yaw=True)
 
 
 @dataclass(frozen=True)
@@ -1851,7 +1845,6 @@ def default_twist_asset_config() -> AssetPrepConfig:
     return AssetPrepConfig(
         asset="full_body",
         collision_mode="box",
-        end_effector_sphere_mode="both",
         target_total_mass_kg=60.0,
         enforce_policy_effort_limits=False,
         joint_availability=TWIST_JOINT_AVAILABILITY,

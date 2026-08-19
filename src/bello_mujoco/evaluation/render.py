@@ -15,6 +15,7 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv, BelloState
+from bello_mujoco.envs.rewards import command_is_moving
 from bello_mujoco.policy import (
     apply_actor,
     init_observation_stack,
@@ -52,6 +53,7 @@ class CameraConfig:
 @dataclass(frozen=True)
 class NativeDataImplementation:
     cacc: jax.Array
+    cfrc_int: jax.Array
     actuator_velocity: jax.Array
     efc__force: jax.Array
 
@@ -70,6 +72,7 @@ class NativeDataView:
     subtree_com: jax.Array
     geom_xpos: jax.Array
     geom_xmat: jax.Array
+    actuator_length: jax.Array
     actuator_force: jax.Array
     qfrc_constraint: jax.Array
     _impl: NativeDataImplementation
@@ -433,14 +436,15 @@ def mujoco_policy_observation(
     command: np.ndarray,
     last_action: np.ndarray,
     step_count: int,
+    last_action_delta: np.ndarray | None = None,
+    gait_phase: float | jax.Array | None = None,
 ) -> jax.Array:
     state = mujoco_eval_state(
         env,
         mj_data,
         command=command,
         last_action=last_action,
-        foot_air_time=jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32),
-        foot_contact_time=jnp.zeros(env.model.foot_body_ids.size, dtype=jnp.float32),
+        last_action_delta=last_action_delta,
         foot_contact_debounce_time=jnp.zeros(
             env.model.foot_body_ids.size, dtype=jnp.float32
         ),
@@ -449,6 +453,7 @@ def mujoco_policy_observation(
         episode_return=jnp.asarray(0.0, dtype=jnp.float32),
         episode_track_lin_vel_xy=jnp.asarray(0.0, dtype=jnp.float32),
         episode_length=jnp.asarray(0, dtype=jnp.int32),
+        gait_phase=gait_phase,
     )
     return env.observation(state)
 
@@ -476,6 +481,19 @@ def mujoco_action_to_ctrl(env: BelloLocomotionEnv, action: np.ndarray) -> np.nda
     )
 
 
+def mujoco_requested_actuator_force(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData
+) -> np.ndarray:
+    """Return native MuJoCo's unclipped position-servo force request."""
+
+    model = env.model.mj_model
+    return (
+        model.actuator_gainprm[:, 0] * mj_data.ctrl
+        + model.actuator_biasprm[:, 1] * mj_data.actuator_length
+        + model.actuator_biasprm[:, 2] * mj_data.actuator_velocity
+    ).astype(np.float32)
+
+
 def mujoco_done_flags(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, step_count: int
 ) -> dict[str, bool]:
@@ -485,8 +503,6 @@ def mujoco_done_flags(
         mj_data,
         command=np.zeros(3, dtype=np.float32),
         last_action=np.zeros(env.action_size, dtype=np.float32),
-        foot_air_time=zeros,
-        foot_contact_time=zeros,
         foot_contact_debounce_time=zeros,
         last_foot_contact=zeros,
         step_count=step_count,
@@ -589,15 +605,29 @@ def mujoco_eval_state(
     *,
     command: np.ndarray,
     last_action: np.ndarray,
-    foot_air_time: jax.Array,
-    foot_contact_time: jax.Array,
     foot_contact_debounce_time: jax.Array,
     last_foot_contact: jax.Array,
     step_count: int,
     episode_return: jax.Array,
     episode_track_lin_vel_xy: jax.Array,
     episode_length: jax.Array,
+    gait_phase: float | jax.Array | None = None,
+    last_action_delta: np.ndarray | None = None,
 ) -> BelloState:
+    if gait_phase is None:
+        moving = command_is_moving(
+            jnp.asarray(command, dtype=jnp.float32), env.command_config
+        )
+        gait_phase = jnp.where(
+            moving,
+            jnp.mod(
+                step_count * env.config.gait.frequency_hz * env.control_timestep,
+                1.0,
+            ),
+            0.0,
+        )
+    if last_action_delta is None:
+        last_action_delta = np.zeros(env.action_size, dtype=np.float32)
     data = NativeDataView(
         qpos=jnp.asarray(np.asarray(mj_data.qpos, dtype=np.float32).copy()),
         qvel=jnp.asarray(np.asarray(mj_data.qvel, dtype=np.float32).copy()),
@@ -613,6 +643,9 @@ def mujoco_eval_state(
         geom_xmat=jnp.asarray(
             np.asarray(mj_data.geom_xmat, dtype=np.float32).reshape((-1, 3, 3)).copy()
         ),
+        actuator_length=jnp.asarray(
+            np.asarray(mj_data.actuator_length, dtype=np.float32).copy()
+        ),
         actuator_force=jnp.asarray(
             np.asarray(mj_data.actuator_force, dtype=np.float32).copy()
         ),
@@ -621,6 +654,7 @@ def mujoco_eval_state(
         ),
         _impl=NativeDataImplementation(
             cacc=jnp.asarray(np.asarray(mj_data.cacc, dtype=np.float32).copy()),
+            cfrc_int=jnp.asarray(np.asarray(mj_data.cfrc_int, dtype=np.float32).copy()),
             actuator_velocity=jnp.asarray(
                 np.asarray(mj_data.actuator_velocity, dtype=np.float32).copy()
             ),
@@ -632,6 +666,7 @@ def mujoco_eval_state(
     state = BelloState(
         data=data,
         last_action=jnp.asarray(last_action, dtype=jnp.float32),
+        last_action_delta=jnp.asarray(last_action_delta, dtype=jnp.float32),
         actor_feedback_history=jnp.zeros(
             (
                 env.maximum_observation_delay_steps + 1,
@@ -640,11 +675,10 @@ def mujoco_eval_state(
             dtype=jnp.float32,
         ),
         actor_feedback_delay_steps=jnp.asarray(0, dtype=jnp.int32),
-        foot_air_time=foot_air_time,
-        foot_contact_time=foot_contact_time,
         foot_contact_debounce_time=foot_contact_debounce_time,
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
+        gait_phase=jnp.asarray(gait_phase, dtype=jnp.float32),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,
@@ -682,9 +716,18 @@ def mujoco_eval_info(
 
 def mujoco_contact_terms(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+) -> tuple[
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+]:
+    foot_contact, foot_normal_force = mujoco_foot_contact_and_normal_force(env, mj_data)
     return (
-        jnp.asarray(mujoco_foot_contact(env, mj_data), dtype=jnp.float32),
+        jnp.asarray(foot_contact, dtype=jnp.float32),
+        jnp.asarray(foot_normal_force, dtype=jnp.float32),
         jnp.asarray(mujoco_foot_linear_velocity(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_foot_angular_speed(env, mj_data), dtype=jnp.float32),
         jnp.asarray(mujoco_undesired_contact(env, mj_data), dtype=jnp.float32),
@@ -693,9 +736,17 @@ def mujoco_contact_terms(
 
 
 def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:
+    foot_contact, _ = mujoco_foot_contact_and_normal_force(env, mj_data)
+    return foot_contact
+
+
+def mujoco_foot_contact_and_normal_force(
+    env: BelloLocomotionEnv, mj_data: mujoco.MjData
+) -> tuple[np.ndarray, np.ndarray]:
     foot_contact = np.zeros(env.model.foot_body_ids.size, dtype=np.float32)
+    foot_normal_force = np.zeros_like(foot_contact)
     if env.model.terrain_geom_ids.size == 0:
-        return foot_contact
+        return foot_contact, foot_normal_force
     force_threshold = float(env.config.contact.foot_contact_force_threshold)
     terrain_geom_ids = set(int(geom_id) for geom_id in env.model.terrain_geom_ids)
     foot_body_ids = np.asarray(env.model.foot_body_ids, dtype=np.int32)
@@ -718,12 +769,12 @@ def mujoco_foot_contact(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.n
         normal_force = mujoco_contact_normal_force(
             env.model.mj_model, mj_data, contact_index
         )
-        if normal_force <= force_threshold:
-            continue
         foot_index = foot_body_index.get(int(geom_body_ids[other_geom]))
         if foot_index is not None:
-            foot_contact[foot_index] = 1.0
-    return foot_contact
+            foot_normal_force[foot_index] += normal_force
+            if normal_force > force_threshold:
+                foot_contact[foot_index] = 1.0
+    return foot_contact, foot_normal_force
 
 
 def mujoco_foot_height(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.ndarray:

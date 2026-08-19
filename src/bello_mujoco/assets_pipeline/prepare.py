@@ -26,7 +26,6 @@ from bello_mujoco.assets_pipeline import (
     robot_description_root,
 )
 from bello_mujoco.assets_pipeline.mesh import (
-    EndEffectorSphereMode,
     JointAvailabilityConfig,
     export_binary_simplified_mesh,
     rewrite_urdf_for_mujoco,
@@ -61,16 +60,6 @@ _GENERATOR_DISTRIBUTIONS = (
 _DEFAULT_CACHE_GUARD = threading.Lock()
 _DEFAULT_CACHE_LEASES: dict[Path, TextIO] = {}
 _DEFAULT_CACHE_ASSETS: dict[Path, PreparedAsset] = {}
-SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
-    {
-        "right_wrist_yaw_joint",
-        "left_wrist_yaw_joint",
-        "right_finger_right_slide_joint",
-        "right_finger_left_slide_joint",
-        "left_finger_right_slide_joint",
-        "left_finger_left_slide_joint",
-    }
-)
 
 
 def _close_default_asset_cache_leases() -> None:
@@ -91,7 +80,6 @@ class AssetPrepConfig:
     mesh_face_budget: int = 1_000
     visual_mesh_face_budget: int = 200_000
     collision_mode: CollisionMode = "mesh"
-    end_effector_sphere_mode: EndEffectorSphereMode = "none"
     target_total_mass_kg: float | None = None
     neighbor_exclusion_depth: int = 2
     enforce_policy_effort_limits: bool = True
@@ -107,11 +95,6 @@ class AssetPrepConfig:
             raise ValueError(
                 f"collision_mode must be 'mesh' or 'box', got {self.collision_mode!r}"
             )
-        if self.end_effector_sphere_mode not in {"none", "both"}:
-            raise ValueError(
-                "end_effector_sphere_mode must be 'none' or 'both', got "
-                f"{self.end_effector_sphere_mode!r}"
-            )
         if self.target_total_mass_kg is not None and (
             not math.isfinite(self.target_total_mass_kg)
             or self.target_total_mass_kg <= 0.0
@@ -121,8 +104,6 @@ class AssetPrepConfig:
                 f"{self.target_total_mass_kg}"
             )
         removed_joints = set(self.joint_availability.disabled_joint_names)
-        if self.end_effector_sphere_mode == "both":
-            removed_joints.update(SPHERE_REMOVED_ACTUATED_JOINTS)
         active_joints = {
             name: config
             for name, config in self.actuator_config.joints.items()
@@ -142,19 +123,12 @@ def canonical_physical_asset_config(
 ) -> AssetPrepConfig:
     return AssetPrepConfig(
         collision_mode="box",
-        end_effector_sphere_mode="both",
-        target_total_mass_kg=60.0,
+        target_total_mass_kg=None,
         imu_config=ImuSensorConfig(
             enabled=imu_enabled,
             body_name="pelvis_link",
         ),
-        joint_availability=JointAvailabilityConfig(
-            waist_yaw=True,
-            waist_roll=False,
-            waist_pitch=False,
-            neck_yaw=False,
-            head_pitch=False,
-        ),
+        joint_availability=JointAvailabilityConfig(waist_yaw=True),
     )
 
 
@@ -245,7 +219,6 @@ def prepare_asset_unlocked(
     mesh_sources = rewrite_urdf_for_mujoco(
         source_urdf,
         out_urdf,
-        end_effector_sphere_mode=config.end_effector_sphere_mode,
         joint_availability=config.joint_availability,
     )
     if config.target_total_mass_kg is not None:
@@ -322,12 +295,21 @@ def scale_urdf_total_mass(urdf_path: Path, target_total_mass_kg: float) -> None:
 
     tree = ET.parse(urdf_path)
     root = tree.getroot()
+    movable_links = {
+        child.attrib["link"]
+        for joint in root.findall("joint")
+        if joint.get("type") != "fixed"
+        for child in joint.findall("child")
+        if "link" in child.attrib
+    }
     inertials: list[tuple[ET.Element, ET.Element]] = []
     total_mass = 0.0
     for link in root.findall("link"):
         mass = link.find("./inertial/mass")
         inertia = link.find("./inertial/inertia")
         if mass is None or inertia is None or "value" not in mass.attrib:
+            if link.get("name") not in movable_links and link.find("inertial") is None:
+                continue
             raise ValueError(
                 f"link {link.get('name', '<unnamed>')!r} is missing complete inertial data"
             )
@@ -397,7 +379,6 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "mesh_face_budget": config.mesh_face_budget,
         "visual_mesh_face_budget": config.visual_mesh_face_budget,
         "collision_mode": config.collision_mode,
-        "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "target_total_mass_kg": config.target_total_mass_kg,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
         "enforce_policy_effort_limits": config.enforce_policy_effort_limits,

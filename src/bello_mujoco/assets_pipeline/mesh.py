@@ -4,7 +4,6 @@ import xml.etree.ElementTree as ET
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import fast_simplification
 import trimesh
@@ -20,19 +19,11 @@ class MeshSources:
 @dataclass(frozen=True)
 class JointAvailabilityConfig:
     waist_yaw: bool = True
-    waist_roll: bool = True
-    waist_pitch: bool = True
-    neck_yaw: bool = True
-    head_pitch: bool = True
 
     @property
     def by_name(self) -> dict[str, bool]:
         return {
             "waist_yaw_joint": self.waist_yaw,
-            "waist_roll_joint": self.waist_roll,
-            "waist_pitch_joint": self.waist_pitch,
-            "neck_yaw_joint": self.neck_yaw,
-            "head_pitch_joint": self.head_pitch,
         }
 
     @property
@@ -44,35 +35,15 @@ class JointAvailabilityConfig:
         return {name for name, enabled in self.by_name.items() if not enabled}
 
 
-EndEffectorSphereMode = Literal["none", "both"]
-END_EFFECTOR_SPHERE_RADIUS = 0.0325
-END_EFFECTOR_SPHERE_OFFSET_Z = -0.02
-END_EFFECTOR_SPHERE_MASS = 0.05
-END_EFFECTOR_SPHERES = {
-    "right": (
-        "right_wrist_yaw_joint",
-        "r_end_effector_sphere_link",
-        "r_end_effector_sphere_fixed",
-    ),
-    "left": (
-        "left_wrist_yaw_joint",
-        "l_end_effector_sphere_link",
-        "l_end_effector_sphere_fixed",
-    ),
-}
-
-
 def rewrite_urdf_for_mujoco(
     source_urdf: Path,
     out_urdf: Path,
     *,
-    end_effector_sphere_mode: EndEffectorSphereMode = "none",
     joint_availability: JointAvailabilityConfig = JointAvailabilityConfig(),
 ) -> MeshSources:
     tree = ET.parse(source_urdf)
     root = tree.getroot()
     preserve_fixed_link_bodies(root)
-    replace_end_effectors_with_spheres(root, end_effector_sphere_mode)
     fix_disabled_joints(root, joint_availability)
     collision_sources: dict[Path, str] = {}
     visual_sources: dict[Path, str] = {}
@@ -152,116 +123,6 @@ def preserve_fixed_link_bodies(root: ET.Element) -> None:
     if compiler is None:
         compiler = ET.SubElement(mujoco_config, "compiler")
     compiler.set("fusestatic", "false")
-
-
-def replace_end_effectors_with_spheres(
-    root: ET.Element, mode: EndEffectorSphereMode
-) -> None:
-    if mode == "none":
-        return
-    if mode != "both":
-        raise ValueError(
-            f"end-effector sphere mode must be 'none' or 'both', got {mode!r}"
-        )
-
-    for side in ("right", "left"):
-        joint_name, sphere_link_name, fixed_joint_name = END_EFFECTOR_SPHERES[side]
-        joint = root.find(f"./joint[@name='{joint_name}']")
-        if joint is None:
-            raise ValueError(f"end-effector replacement joint not found: {joint_name}")
-        parent = joint.find("parent")
-        child = joint.find("child")
-        if parent is None or child is None:
-            raise ValueError(f"joint {joint_name} is missing parent or child")
-        parent_link = parent.attrib["link"]
-        child_link = child.attrib["link"]
-        origin = joint.find("origin")
-        xyz = parse_xyz(origin.get("xyz", "0 0 0") if origin is not None else "0 0 0")
-        rpy = origin.get("rpy", "0 0 0") if origin is not None else "0 0 0"
-
-        remove_link_subtree(root, child_link)
-        sphere_xyz = (xyz[0], xyz[1], xyz[2] + END_EFFECTOR_SPHERE_OFFSET_Z)
-        root.append(make_sphere_link(sphere_link_name))
-        fixed_joint = ET.Element("joint", {"name": fixed_joint_name, "type": "fixed"})
-        ET.SubElement(
-            fixed_joint, "origin", {"xyz": format_xyz(sphere_xyz), "rpy": rpy}
-        )
-        ET.SubElement(fixed_joint, "parent", {"link": parent_link})
-        ET.SubElement(fixed_joint, "child", {"link": sphere_link_name})
-        root.append(fixed_joint)
-
-
-def remove_link_subtree(root: ET.Element, root_link: str) -> None:
-    joints_by_parent: dict[str, list[ET.Element]] = {}
-    for joint in root.findall("joint"):
-        parent = joint.find("parent")
-        if parent is not None:
-            joints_by_parent.setdefault(parent.attrib["link"], []).append(joint)
-
-    links_to_remove: set[str] = set()
-    joints_to_remove: set[ET.Element] = set()
-
-    def visit(link_name: str) -> None:
-        links_to_remove.add(link_name)
-        for joint in joints_by_parent.get(link_name, ()):
-            joints_to_remove.add(joint)
-            child = joint.find("child")
-            if child is not None:
-                visit(child.attrib["link"])
-
-    incoming = [
-        joint
-        for joint in root.findall("joint")
-        if joint.find("child") is not None
-        and joint.find("child").attrib["link"] == root_link
-    ]
-    joints_to_remove.update(incoming)
-    visit(root_link)
-
-    for joint in root.findall("joint"):
-        if joint in joints_to_remove:
-            root.remove(joint)
-    for link in root.findall("link"):
-        if link.get("name") in links_to_remove:
-            root.remove(link)
-
-
-def make_sphere_link(
-    name: str, *, origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
-) -> ET.Element:
-    inertia = 0.4 * END_EFFECTOR_SPHERE_MASS * END_EFFECTOR_SPHERE_RADIUS**2
-    origin_text = format_xyz(origin)
-    link = ET.Element("link", {"name": name})
-    inertial = ET.SubElement(link, "inertial")
-    ET.SubElement(inertial, "origin", {"xyz": origin_text, "rpy": "0 0 0"})
-    ET.SubElement(inertial, "mass", {"value": f"{END_EFFECTOR_SPHERE_MASS:g}"})
-    ET.SubElement(
-        inertial,
-        "inertia",
-        {
-            "ixx": f"{inertia:g}",
-            "iyy": f"{inertia:g}",
-            "izz": f"{inertia:g}",
-            "ixy": "0",
-            "iyz": "0",
-            "ixz": "0",
-        },
-    )
-    for tag in ("visual", "collision"):
-        element = ET.SubElement(link, tag, {"name": f"{name}_{tag}"})
-        ET.SubElement(element, "origin", {"xyz": origin_text, "rpy": "0 0 0"})
-        geometry = ET.SubElement(element, "geometry")
-        ET.SubElement(geometry, "sphere", {"radius": f"{END_EFFECTOR_SPHERE_RADIUS:g}"})
-    return link
-
-
-def parse_xyz(value: str) -> tuple[float, float, float]:
-    x, y, z = value.split()
-    return float(x), float(y), float(z)
-
-
-def format_xyz(value: tuple[float, float, float]) -> str:
-    return " ".join(f"{item:.8g}" for item in value)
 
 
 def rewrite_meshes(

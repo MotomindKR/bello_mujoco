@@ -16,13 +16,23 @@ from bello_mujoco.envs.locomotion import (
     BelloLocomotionEnv,
     ContactConfig,
     DoneConfig,
+    GaitConfig,
     ObservationConfig,
     ObservationLatencyConfig,
     ObservationNoiseConfig,
     RandomPushConfig,
     SpawnConfig,
+    advance_gait_phase,
+    desired_gait_foot_contact,
+    gait_phase_features,
 )
-from bello_mujoco.envs.rewards import CommandConfig, RewardConfig, RewardLinks
+from bello_mujoco.envs.rewards import (
+    CommandConfig,
+    RewardConfig,
+    RewardLinks,
+    command_is_moving,
+    command_is_standing,
+)
 from bello_mujoco.evaluation.render import (
     mujoco_done_flags,
     mujoco_eval_info,
@@ -76,6 +86,7 @@ def test_reset_exposes_explicit_actor_critic_and_action_contracts(
         ("imu_angular_velocity", 3),
         ("projected_gravity", 3),
         ("command", 3),
+        ("gait_phase", 3),
         ("joint_position", 13),
         ("joint_velocity", 13),
         ("last_action", 13),
@@ -88,6 +99,72 @@ def test_reset_exposes_explicit_actor_critic_and_action_contracts(
     assert observation.shape == (env.observation_size,)
     assert env.critic_observation(state).shape == (env.critic_observation_size,)
     assert state.last_action.shape == (env.action_size,)
+
+
+def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> None:
+    command_config = CommandConfig()
+    gait_config = GaitConfig(frequency_hz=0.9, stance_fraction=0.6)
+    moving = jnp.asarray([0.5, 0.0, 0.0], dtype=jnp.float32)
+    standing = jnp.zeros(3, dtype=jnp.float32)
+
+    phase = advance_gait_phase(
+        jnp.asarray(0.0), moving, command_config, gait_config, 0.02
+    )
+
+    assert phase == pytest.approx(0.018)
+    assert gait_phase_features(
+        jnp.asarray(0.0), moving, command_config
+    ) == pytest.approx(jnp.asarray([0.0, 1.0, 1.0]))
+    assert gait_phase_features(phase, standing, command_config) == pytest.approx(
+        jnp.zeros(3)
+    )
+    assert advance_gait_phase(
+        phase, standing, command_config, gait_config, 0.02
+    ) == pytest.approx(0.0)
+    assert desired_gait_foot_contact(jnp.asarray(0.2), gait_config) == pytest.approx(
+        jnp.asarray([1.0, 0.0])
+    )
+    assert desired_gait_foot_contact(jnp.asarray(0.6), gait_config) == pytest.approx(
+        jnp.asarray([0.0, 1.0])
+    )
+
+
+def test_bilateral_mirrors_are_explicit_and_involutive(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+
+    action = jnp.linspace(-0.9, 0.9, env.action_size)
+    assert env.mirror_action(env.mirror_action(action)) == pytest.approx(action)
+    names = env.action_layout.names
+    assert env.mirror_action(action)[names.index("right_hip_pitch_joint")] == (
+        pytest.approx(-action[names.index("left_hip_pitch_joint")])
+    )
+    assert env.mirror_action(action)[names.index("right_hip_roll_joint")] == (
+        pytest.approx(action[names.index("left_hip_roll_joint")])
+    )
+
+    observation = jnp.linspace(-1.0, 1.0, 2 * env.observation_size)
+    mirrored = env.mirror_actor_observation(observation)
+    assert env.mirror_actor_observation(mirrored) == pytest.approx(observation)
+
+
+def test_foot_heading_uses_each_mirrored_foot_forward_axis(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env._reset(
+        jnp.zeros(3),
+        None,
+        0,
+        forward=False,
+        align_clearance=False,
+    )
+
+    heading_error_degrees = np.degrees(np.asarray(env._foot_heading_error(state)))
+
+    assert np.all(np.abs(heading_error_degrees) < 5.0)
+    assert heading_error_degrees[0] == pytest.approx(-heading_error_degrees[1], abs=0.1)
 
 
 def test_native_data_adapter_uses_shared_observation_function(
@@ -106,8 +183,6 @@ def test_native_data_adapter_uses_shared_observation_function(
         mj_data,
         command=command,
         last_action=last_action,
-        foot_air_time=zeros,
-        foot_contact_time=zeros,
         foot_contact_debounce_time=zeros,
         last_foot_contact=zeros,
         step_count=7,
@@ -143,8 +218,6 @@ def test_native_data_adapter_preserves_constraint_forces(
         mj_data,
         command=np.zeros(3, dtype=np.float32),
         last_action=np.zeros(env.action_size, dtype=np.float32),
-        foot_air_time=jnp.zeros(2, dtype=jnp.float32),
-        foot_contact_time=jnp.zeros(2, dtype=jnp.float32),
         foot_contact_debounce_time=jnp.zeros(2, dtype=jnp.float32),
         last_foot_contact=jnp.zeros(2, dtype=jnp.float32),
         step_count=0,
@@ -207,6 +280,8 @@ def test_reset_batch_and_step_have_finite_fixed_shapes(
     assert jnp.all(jnp.isfinite(reward))
     assert next_state.data.ctrl.shape == (2, env.model.mj_model.nu)
     assert "reward/track_lin_vel_xy" in info
+    assert jnp.all(jnp.isfinite(info["gait/foot_heading_error_mean_deg"]))
+    assert jnp.all(jnp.isfinite(info["gait/foot_heading_error_max_deg"]))
     assert "done/nonfinite" in info
     assert "done/unstable" in info
 
@@ -308,7 +383,7 @@ def test_action_target_reports_joint_and_motor_saturation_separately(
     assert 0.0 <= motor_saturation <= 1.0
 
 
-def test_contact_debounce_and_memory_have_explicit_transitions(
+def test_contact_debounce_has_explicit_transitions(
     full_body_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(
@@ -326,17 +401,32 @@ def test_contact_debounce_and_memory_have_explicit_transitions(
     second, _ = env.debounce_foot_contact(
         state.replace(foot_contact_debounce_time=elapsed), raw, jnp.asarray(False)
     )
-    air, contact, previous = env.next_foot_memory(
-        state,
-        jnp.asarray([False, True]),
-        jnp.asarray(False),
-    )
-
     assert jnp.array_equal(first.astype(bool), jnp.asarray([False, False]))
     assert jnp.array_equal(second.astype(bool), jnp.asarray([True, False]))
-    assert air == pytest.approx(jnp.asarray([env.control_timestep, 0.0]))
-    assert contact == pytest.approx(jnp.asarray([0.0, env.control_timestep]))
-    assert previous.tolist() == [False, True]
+
+
+def test_touchdown_is_emitted_on_first_raw_contact_sample_only(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env.reset()
+    raw = jnp.asarray([True, False])
+    initialized = state.replace(step_count=jnp.asarray(1))
+
+    touchdown = env._foot_touchdown(initialized, raw)
+    debouncing = env._foot_touchdown(
+        initialized.replace(
+            foot_contact_debounce_time=jnp.asarray([0.02, 0.0], dtype=jnp.float32)
+        ),
+        raw,
+    )
+    filtered = env._foot_touchdown(
+        initialized.replace(last_foot_contact=jnp.asarray([True, False])), raw
+    )
+
+    assert jnp.array_equal(touchdown, jnp.asarray([True, False]))
+    assert not jnp.any(debouncing)
+    assert not jnp.any(filtered)
 
 
 def test_observation_noise_changes_only_noisy_evaluation(
@@ -453,6 +543,33 @@ def test_command_sampling_and_periodic_resampling_are_bounded(
     assert info["command/standing"] == pytest.approx(jnp.zeros(4))
     assert info["command/moving"] == pytest.approx(jnp.ones(4))
     assert not jnp.allclose(next_state.command, state.command)
+
+
+def test_batch_command_mode_cohort_survives_resampling(
+    full_body_asset: PreparedAsset,
+) -> None:
+    command_config = CommandConfig(
+        standing_probability=0.25,
+        resample_seconds=0.02,
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset, batch_size=8, command_config=command_config
+    )
+    state, _ = env.reset_batch(8, rng=jax.random.PRNGKey(10))
+    standing = command_is_standing(state.command, command_config)
+    reset_command = env._reset_batch_command(state.command, 8, jax.random.PRNGKey(12))
+    next_state, _, _, _, _ = env.step_batch(
+        state,
+        jnp.zeros((8, env.action_size)),
+        rng=jax.random.PRNGKey(11),
+    )
+
+    assert jnp.sum(standing) == 2
+    assert jnp.array_equal(command_is_standing(reset_command, command_config), standing)
+    assert jnp.array_equal(
+        command_is_standing(next_state.command, command_config), standing
+    )
+    assert jnp.all(command_is_moving(next_state.command[~standing], command_config))
 
 
 def test_random_push_overwrites_root_xy_velocity_on_interval(

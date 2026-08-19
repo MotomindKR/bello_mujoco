@@ -22,6 +22,7 @@ class HardwareControlConfig:
     acknowledgement_timeout_seconds: float = 0.08
     rpc_timeout_seconds: float = 2.0
     ramp_seconds: float = 10.0
+    gain_scale: float = 1.0
     max_duration_seconds: float | None = None
     max_motor_age_ms: int = 100
     max_imu_age_ms: int = 100

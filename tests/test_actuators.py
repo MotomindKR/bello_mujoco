@@ -22,7 +22,7 @@ def test_public_actuator_defaults_use_canonical_policy_partition() -> None:
         "right_ankle_roll_joint",
         "waist_yaw_joint",
     }
-    assert len(config.hold_joint_names) == 22
+    assert len(config.hold_joint_names) == 12
 
 
 def test_actuator_config_rejects_invalid_mode() -> None:

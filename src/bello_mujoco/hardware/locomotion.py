@@ -20,9 +20,14 @@ from bello_mujoco.training.checkpoint import (
     LocomotionCheckpointMetadata,
 )
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
-from bello_mujoco.gamepad import GamepadCommandSource, GamepadConfig, GamepadInput
+from bello_mujoco.gamepad import axis_to_range
 from bello_mujoco.hardware.config import HardwareControlConfig
 from bello_mujoco.hardware.policy_log import PolicyStepLogger, policy_phase_schema
+from bello_mujoco.hardware.remote import (
+    RemoteCommandConfig,
+    RemoteCommandInput,
+    RemoteCommandSource,
+)
 from bello_mujoco.hardware.runtime import (
     HOLD_CONFIRMATION,
     HardwareFrame,
@@ -33,13 +38,13 @@ from bello_mujoco.hardware.runtime import (
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
     require_nominal_pose,
-    require_operator_confirmation,
     require_state_frame_binding,
     specific_force_from_gravity_removed_acceleration,
     tilt_from_xyzw,
     validate_hardware_control_config,
     validate_hardware_frame,
     validate_hardware_inventory,
+    wait_for_operator_confirmation_while_holding,
     wait_for_hardware_frame,
 )
 from bello_mujoco.policy import infer_policy_action
@@ -49,11 +54,10 @@ from bello_mujoco.training.ppo import normalize_observation
 
 @dataclass(frozen=True)
 class HardwareLocomotionConfig(HardwareControlConfig):
-    """Hardware endpoint, command, and fail-closed deployment limits."""
+    """Hardware and visualizer-remote fail-closed deployment limits."""
 
     client_name: str = "bello-locomotion-policy"
-    command: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    gamepad: GamepadConfig = GamepadConfig()
+    remote: RemoteCommandConfig = RemoteCommandConfig()
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,7 @@ class HardwarePolicyAdapter:
         )
         self._obs_stack: np.ndarray | None = None
         self._last_action = np.zeros(env.action_size, dtype=np.float32)
+        self._gait_phase = 0.0
 
     @property
     def control_timestep(self) -> float:
@@ -147,6 +152,7 @@ class HardwarePolicyAdapter:
     def reset(self) -> None:
         self._obs_stack = None
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
+        self._gait_phase = 0.0
 
     def precompile(self) -> None:
         nominal = self.nominal_physical_target
@@ -176,11 +182,19 @@ class HardwarePolicyAdapter:
             frame.linear_acceleration, projected_gravity
         )
         scale = self.env.config.observation.scale
+        gait_active = self._command_is_moving(command)
+        gait_angle = 2.0 * np.pi * self._gait_phase
+        gait_phase = (
+            np.asarray((np.sin(gait_angle), np.cos(gait_angle), 1.0), dtype=np.float32)
+            if gait_active
+            else np.zeros(3, dtype=np.float32)
+        )
         components = {
             "imu_linear_acceleration": specific_force * scale.base_lin_acc,
             "imu_angular_velocity": frame.angular_velocity * scale.base_ang_vel,
             "projected_gravity": projected_gravity * scale.projected_gravity,
             "command": command * scale.command,
+            "gait_phase": gait_phase * scale.gait_phase,
             "joint_position": (
                 logical_position[self.policy_indices]
                 - self.default_joint_target[self.policy_indices]
@@ -225,22 +239,33 @@ class HardwarePolicyAdapter:
         raw_action = np.asarray(
             jax.device_get(inference.requested_action), dtype=np.float32
         )
-        action = np.asarray(jax.device_get(inference.applied_action), dtype=np.float32)
+        policy_action = np.asarray(
+            jax.device_get(inference.applied_action), dtype=np.float32
+        )
         if (
             raw_action.shape != (self.env.action_size,)
             or not np.all(np.isfinite(raw_action))
-            or action.shape != (self.env.action_size,)
-            or not np.all(np.isfinite(action))
+            or policy_action.shape != (self.env.action_size,)
+            or not np.all(np.isfinite(policy_action))
         ):
             raise RuntimeError(
-                f"policy produced an invalid hardware action with shape {action.shape}"
+                "policy produced an invalid hardware action with shape "
+                f"{policy_action.shape}"
             )
+        action = policy_action
         physical_target = np.asarray(
             jax.device_get(self._action_ctrl(jnp.asarray(action))), dtype=np.float64
         )
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("policy produced non-finite physical motor targets")
         self._last_action = action
+        if self._command_is_moving(command):
+            self._gait_phase = (
+                self._gait_phase
+                + self.env.config.gait.frequency_hz * self.control_timestep
+            ) % 1.0
+        else:
+            self._gait_phase = 0.0
         return HardwarePolicyStep(
             action=action,
             raw_action=raw_action,
@@ -248,6 +273,13 @@ class HardwarePolicyAdapter:
             observation=observation,
             policy_observation=policy_observation,
             tilt_radians=tilt_from_xyzw(frame.orientation_xyzw),
+        )
+
+    def _command_is_moving(self, command: np.ndarray) -> bool:
+        command = np.asarray(command, dtype=np.float32)
+        return bool(
+            np.any(np.abs(command[:2]) >= self.env.command_config.linear_deadband)
+            or abs(float(command[2])) >= self.env.command_config.yaw_deadband
         )
 
 
@@ -274,24 +306,7 @@ def validate_hardware_checkpoint(
 ) -> None:
     if metadata.task != "locomotion":
         raise ValueError("hardware locomotion requires a locomotion checkpoint")
-    if metadata.asset.end_effector_sphere_mode != "both":
-        raise ValueError("hardware locomotion requires sphere hands")
     availability = metadata.asset.joint_availability
-    unexpected = sorted(
-        availability.enabled_joint_names
-        & {
-            "waist_roll_joint",
-            "waist_pitch_joint",
-            "neck_yaw_joint",
-            "head_pitch_joint",
-        }
-    )
-    if unexpected:
-        raise ValueError(
-            "checkpoint morphology contains joints absent from bello-stack hardware: "
-            + ", ".join(unexpected)
-            + "; train with `bello-train experiment=hardware_locomotion`"
-        )
     if not availability.waist_yaw:
         raise ValueError("hardware locomotion requires waist_yaw_joint")
     if env.config.observation.privileged:
@@ -309,15 +324,13 @@ def validate_hardware_config(
     metadata: LocomotionCheckpointMetadata | None = None,
 ) -> None:
     validate_hardware_control_config(config)
-    command = np.asarray(config.command, dtype=np.float64)
-    if command.shape != (3,) or not np.all(np.isfinite(command)):
-        raise ValueError("command must contain three finite values")
+    if not config.remote.endpoint.startswith("http://"):
+        raise ValueError("remote.endpoint must use plaintext http:// in protocol v1")
+    if config.remote.staleness_ms <= 0:
+        raise ValueError("remote.staleness_ms must be positive")
     if metadata is not None:
-        validate_command(command, metadata)
-    if config.gamepad.controller_index < 0:
-        raise ValueError("gamepad.controller_index must be nonnegative")
-    if not 0.0 <= config.gamepad.deadzone < 1.0:
-        raise ValueError("gamepad.deadzone must be in [0, 1)")
+        command_ranges(metadata)
+        command_minimum_moving_speeds(metadata)
 
 
 def validate_command(
@@ -368,32 +381,53 @@ def command_minimum_moving_speeds(
 
 
 def hardware_command(
-    config: HardwareLocomotionConfig,
     metadata: LocomotionCheckpointMetadata,
-    gamepad_input: GamepadInput,
+    remote_input: RemoteCommandInput,
 ) -> np.ndarray:
-    command = (
-        gamepad_input.command
-        if config.gamepad.enabled
-        else np.asarray(config.command, dtype=np.float32)
+    remote_axes = np.asarray(remote_input.normalized_command, dtype=np.float64)
+    if (
+        remote_axes.shape != (3,)
+        or not np.all(np.isfinite(remote_axes))
+        or np.any(remote_axes < -1.0)
+        or np.any(remote_axes > 1.0)
+    ):
+        raise RuntimeError("remote service produced an invalid normalized command")
+    forward, lateral, yaw = remote_axes
+    normalized = np.asarray((lateral, forward, yaw), dtype=np.float64)
+    command = np.asarray(
+        [
+            axis_to_range(value, bounds, minimum)
+            for value, bounds, minimum in zip(
+                normalized,
+                command_ranges(metadata),
+                command_minimum_moving_speeds(metadata),
+                strict=True,
+            )
+        ],
+        dtype=np.float32,
     )
-    command = np.asarray(command, dtype=np.float32)
-    if command.shape != (3,) or not np.all(np.isfinite(command)):
-        raise RuntimeError("gamepad produced an invalid hardware command")
     validate_command(command, metadata)
     return command
 
 
-def report_gamepad_connection(gamepad_input: GamepadInput) -> None:
-    if not gamepad_input.connection_changed:
-        return
-    state = "connected" if gamepad_input.connected else "disconnected"
-    suffix = (
-        f": {gamepad_input.controller_name}"
-        if gamepad_input.controller_name is not None
-        else ""
-    )
-    print(f"Hardware gamepad {state}{suffix}; command is zero while disconnected.")
+def report_remote_connection(remote_input: RemoteCommandInput) -> None:
+    if remote_input.service_connection_changed:
+        state = "connected" if remote_input.service_connected else "disconnected"
+        print(f"Visualizer remote service {state}; command is zero while disconnected.")
+    if remote_input.controller_connection_changed:
+        state = "connected" if remote_input.controller_connected else "disconnected"
+        suffix = (
+            f": {remote_input.controller_name}"
+            if remote_input.controller_name is not None
+            else ""
+        )
+        print(f"Remote controller {state}{suffix}; command is zero while disconnected.")
+    if (
+        remote_input.controller_connection_changed
+        and remote_input.controller_connected
+        and not remote_input.intent_armed
+    ):
+        print("Remote controller is waiting for neutral sticks; command is zero.")
 
 
 def run_hardware_locomotion(
@@ -401,7 +435,7 @@ def run_hardware_locomotion(
     config: HardwareLocomotionConfig = HardwareLocomotionConfig(),
     *,
     hardware_binding: Any | None = None,
-    gamepad_factory: Any = GamepadCommandSource,
+    remote_factory: Any = RemoteCommandSource,
     operator_input: Callable[[str], str] | None = None,
 ) -> None:
     validate_hardware_config(config)
@@ -413,18 +447,14 @@ def run_hardware_locomotion(
     adapter.precompile()
     binding = hardware_binding or import_hardware_binding()
     with ExitStack() as resources:
-        gamepad = gamepad_factory(
-            config.gamepad,
-            command_ranges(metadata),
-            command_minimum_moving_speeds(metadata),
-        )
-        resources.callback(gamepad.close)
-        gamepad_input = gamepad.poll()
-        report_gamepad_connection(gamepad_input)
-        if gamepad_input.exit_active:
-            print("Hardware gamepad requested exit before preflight.")
+        remote = remote_factory(config.remote)
+        resources.callback(remote.close)
+        remote_input = remote.wait_until_ready(config.connection_timeout_seconds)
+        report_remote_connection(remote_input)
+        if remote_input.abort_active:
+            print("Remote controller requested exit before preflight.")
             return
-        command = hardware_command(config, metadata, gamepad_input)
+        command = hardware_command(metadata, remote_input)
         require_state_frame_binding(binding)
         if config.arm:
             require_async_hardware_binding(binding)
@@ -461,8 +491,10 @@ def run_hardware_locomotion(
                 "coordinates": len(adapter.physical_coordinate_names),
                 "policy_joints": adapter.env.action_size,
                 "control_rate_hz": 1.0 / adapter.control_timestep,
-                "command_source": "gamepad" if config.gamepad.enabled else "fixed",
-                "gamepad_connected": gamepad_input.connected,
+                "command_source": "visualizer_remote",
+                "remote_service_connected": remote_input.service_connected,
+                "remote_controller_connected": remote_input.controller_connected,
+                "remote_intent_armed": remote_input.intent_armed,
                 "command": tuple(float(value) for value in command),
                 "initial_pose_error_max": initial_error,
                 "preview_action_abs_max": float(np.max(np.abs(preview.action))),
@@ -478,12 +510,30 @@ def run_hardware_locomotion(
                 "Read-only preflight complete; no lease was acquired and no motor command was sent."
             )
             return
-        require_operator_confirmation(
+
+        def continue_hold_confirmation() -> bool:
+            current = remote.poll()
+            report_remote_connection(current)
+            if current.abort_active:
+                print("Remote controller requested exit before control acquisition.")
+                return False
+            time.sleep(adapter.control_timestep)
+            return True
+
+        confirmed = wait_for_operator_confirmation_while_holding(
             HOLD_CONFIRMATION,
             "Support the robot, then type HOLD to acquire control and begin the "
             "nominal-pose ramp: ",
+            continue_hold_confirmation,
             operator_input,
         )
+        if not confirmed:
+            return
+        remote_input = remote.poll()
+        report_remote_connection(remote_input)
+        if remote_input.abort_active:
+            print("Remote controller requested exit before control acquisition.")
+            return
         frame = wait_for_hardware_frame(
             state_reader,
             adapter.physical_coordinate_names,
@@ -511,7 +561,7 @@ def run_hardware_locomotion(
             frame,
             adapter,
             config,
-            gamepad,
+            remote,
             policy_log=policy_log,
             operator_input=operator_input,
         )
@@ -524,7 +574,7 @@ def control_physical_robot(
     initial_frame: HardwareFrame,
     adapter: HardwarePolicyAdapter,
     config: HardwareLocomotionConfig,
-    gamepad: GamepadCommandSource,
+    remote: RemoteCommandSource,
     *,
     policy_log: PolicyStepLogger | None = None,
     operator_input: Callable[[str], str] | None = None,
@@ -541,10 +591,10 @@ def control_physical_robot(
     ) as control:
 
         def continue_ramp() -> bool:
-            gamepad_input = gamepad.poll()
-            report_gamepad_connection(gamepad_input)
-            if gamepad_input.exit_active:
-                print("Hardware gamepad requested exit during the nominal-pose ramp.")
+            remote_input = remote.poll()
+            report_remote_connection(remote_input)
+            if remote_input.abort_active:
+                print("Remote controller requested exit during the nominal-pose ramp.")
                 return False
             return True
 
@@ -558,10 +608,10 @@ def control_physical_robot(
         require_nominal_pose(frame, adapter)
 
         def continue_hold() -> bool:
-            gamepad_input = gamepad.poll()
-            report_gamepad_connection(gamepad_input)
-            if gamepad_input.exit_active:
-                print("Hardware gamepad requested exit before policy start.")
+            remote_input = remote.poll()
+            report_remote_connection(remote_input)
+            if remote_input.abort_active:
+                print("Remote controller requested exit before policy start.")
                 return False
             return True
 
@@ -587,12 +637,12 @@ def control_physical_robot(
                 config.max_duration_seconds is None
                 or time.monotonic() - start_time < config.max_duration_seconds
             ):
-                gamepad_input = gamepad.poll()
-                report_gamepad_connection(gamepad_input)
-                if gamepad_input.exit_active:
-                    print("Hardware gamepad requested exit; entering damped shutdown.")
+                remote_input = remote.poll()
+                report_remote_connection(remote_input)
+                if remote_input.abort_active:
+                    print("Remote controller requested exit; entering damped shutdown.")
                     break
-                command = hardware_command(config, adapter.metadata, gamepad_input)
+                command = hardware_command(adapter.metadata, remote_input)
                 frame = control.read_frame()
                 policy_step = adapter.step(frame, command)
                 control.send_target(policy_step.physical_target)
@@ -618,7 +668,10 @@ def control_physical_robot(
                             "tilt_radians": policy_step.tilt_radians,
                             "action_abs_max": float(np.max(np.abs(policy_step.action))),
                             "command": tuple(float(value) for value in command),
-                            "gamepad_connected": gamepad_input.connected,
+                            "remote_service_connected": remote_input.service_connected,
+                            "remote_controller_connected": remote_input.controller_connected,
+                            "remote_intent_armed": remote_input.intent_armed,
+                            "remote_sample_age_ms": remote_input.sample_age_ms,
                             "motor_age_ms": frame.max_motor_age_ms,
                             "imu_age_ms": frame.imu_age_ms,
                             "group_age_ms": frame.max_group_age_ms,

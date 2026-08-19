@@ -362,6 +362,7 @@ def restore_evaluation_checkpoint(
     metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
         path,
         allow_git_commit_mismatch=allow_git_commit_mismatch,
+        allow_retired_asset_schema=allow_git_commit_mismatch,
     )
     template_state, _ = init_train_state(
         jax.random.PRNGKey(metadata.ppo.seed),
@@ -512,6 +513,7 @@ def load_checkpoint_metadata(
     metadata, _, _, _ = _load_checkpoint_document(
         Path(path).resolve(),
         allow_git_commit_mismatch=allow_git_commit_mismatch,
+        allow_retired_asset_schema=allow_git_commit_mismatch,
     )
     return metadata
 
@@ -721,6 +723,7 @@ def _load_checkpoint_document(
     path: Path,
     *,
     allow_git_commit_mismatch: bool = False,
+    allow_retired_asset_schema: bool = False,
 ) -> tuple[CheckpointMetadata, int, str, str]:
     metadata_path = Path(path).resolve() / METADATA_FILE
     try:
@@ -765,7 +768,10 @@ def _load_checkpoint_document(
             "the checkpoint is corrupt or has been modified"
         )
     metadata = _metadata_from_dict(
-        _with_checkpoint_metadata_defaults(metadata_payload),
+        _with_checkpoint_metadata_defaults(
+            metadata_payload,
+            allow_retired_asset_schema=allow_retired_asset_schema,
+        ),
         strict=True,
         require_all_fields=True,
         path="metadata",
@@ -778,17 +784,59 @@ def _load_checkpoint_document(
     return metadata, update, train_fingerprint, continuation_fingerprint
 
 
-def _with_checkpoint_metadata_defaults(value: Any) -> Any:
+def _with_checkpoint_metadata_defaults(
+    value: Any,
+    *,
+    allow_retired_asset_schema: bool = False,
+) -> Any:
     if not isinstance(value, dict):
         return value
+    if allow_retired_asset_schema:
+        value = _without_retired_asset_schema(value)
     if value.get("task") == "locomotion":
-        env = value.get("env")
-        if not isinstance(env, dict) or "observation_latency" in env:
-            return value
         normalized = dict(value)
-        normalized_env = dict(env)
-        normalized_env["observation_latency"] = to_builtin(ObservationLatencyConfig())
-        normalized["env"] = normalized_env
+        env = value.get("env")
+        if isinstance(env, dict) and "gait" not in env:
+            raise ValueError(
+                "locomotion checkpoint predates the gait-phase observation contract; "
+                "use the archived source revision or train a new policy"
+            )
+        if isinstance(env, dict) and "observation_latency" not in env:
+            normalized_env = dict(env)
+            normalized_env["observation_latency"] = to_builtin(
+                ObservationLatencyConfig()
+            )
+            normalized["env"] = normalized_env
+        reward = value.get("reward")
+        if isinstance(reward, dict):
+            normalized_reward = dict(reward)
+            weights = reward.get("weights")
+            if isinstance(weights, dict):
+                normalized_weights = dict(weights)
+                for name in (
+                    "joint_force_peak",
+                    "touchdown_impact",
+                    "stand_still",
+                    "stand_contact",
+                ):
+                    if name not in normalized_weights:
+                        normalized_weights[name] = 0.0
+                normalized_reward["weights"] = normalized_weights
+            gait = reward.get("gait")
+            if isinstance(gait, dict):
+                normalized_gait = dict(gait)
+                legacy_gait_defaults = {
+                    "joint_force_soft_limit_body_weights": 1.0,
+                    "joint_force_top_k": 12,
+                    "joint_force_apply_while_standing": False,
+                    "touchdown_force_soft_limit_body_weights": 1.0,
+                    "touchdown_vertical_speed_scale": 0.3,
+                }
+                for name, default in legacy_gait_defaults.items():
+                    if name not in normalized_gait:
+                        normalized_gait[name] = default
+                normalized_reward["gait"] = normalized_gait
+            normalized["reward"] = normalized_reward
         return normalized
     if value.get("task") != "motion_tracking":
         return value
@@ -801,6 +849,41 @@ def _with_checkpoint_metadata_defaults(value: Any) -> Any:
         MotionObservationLatencyConfig()
     )
     normalized["motion_env"] = normalized_motion_env
+    return normalized
+
+
+def _without_retired_asset_schema(value: dict[str, Any]) -> dict[str, Any]:
+    asset = value.get("asset")
+    if not isinstance(asset, dict):
+        return value
+    normalized_asset = dict(asset)
+    changed = False
+    if "end_effector_sphere_mode" in normalized_asset:
+        legacy_mode = normalized_asset.pop("end_effector_sphere_mode")
+        if legacy_mode not in {"none", "both"}:
+            raise ValueError(
+                "metadata.asset.end_effector_sphere_mode must be 'none' or "
+                f"'both', got {legacy_mode!r}"
+            )
+        changed = True
+    availability = normalized_asset.get("joint_availability")
+    if isinstance(availability, dict):
+        normalized_availability = dict(availability)
+        for name in ("waist_roll", "waist_pitch", "neck_yaw", "head_pitch"):
+            if name not in normalized_availability:
+                continue
+            legacy_enabled = normalized_availability.pop(name)
+            if legacy_enabled is not False:
+                raise ValueError(
+                    f"metadata.asset.joint_availability.{name} must be false "
+                    "for the canonical fixed joint"
+                )
+            changed = True
+        normalized_asset["joint_availability"] = normalized_availability
+    if not changed:
+        return value
+    normalized = dict(value)
+    normalized["asset"] = normalized_asset
     return normalized
 
 

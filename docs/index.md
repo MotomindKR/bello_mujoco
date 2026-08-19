@@ -10,6 +10,7 @@ guides define the supported interfaces and contracts:
 - [TWIST teacher, student, and dataset pipeline](twist.md)
 - [One-stage TWIST2](twist2.md)
 - [Physical hardware](hardware.md)
+- [URDF inertial overhaul](urdf_inertial_overhaul.md)
 - [RobStride emulator](emulator.md)
 - [Vast.ai lifecycle](vast_ai.md)
 

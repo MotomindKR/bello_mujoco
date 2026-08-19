@@ -31,6 +31,7 @@ config:
   rollout_value_max_abs: 10000.0
   target_max_abs: 10000.0
   gradient_norm_max: 10000.0
+  symmetry_loss_coef: 0.0
   policy:
     hidden_dims: [256, 256]
     activation: tanh
@@ -45,21 +46,16 @@ asset_config:
   collision_mode: box
   mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
-  end_effector_sphere_mode: both
-  target_total_mass_kg: 60.0
+  target_total_mass_kg: null
   neighbor_exclusion_depth: 2
-  # Preserve effort limits as reward normalization metadata without clipping
-  # policy-actuator force before the over-peak penalty can observe it.
-  enforce_policy_effort_limits: false
+  # Match hardware saturation in dynamics. The reward separately measures the
+  # unclipped servo demand before this physical limit is applied.
+  enforce_policy_effort_limits: true
   ankle_differential_config:
     motor_gain_scale: 0.5
     motor_effort_limit_scale: 1.0
   joint_availability:
     waist_yaw: true
-    waist_roll: false
-    waist_pitch: false
-    neck_yaw: false
-    head_pitch: false
 env_config:
   decimation: 4
   max_episode_steps: 1000
@@ -110,6 +106,7 @@ env_config:
       projected_gravity: 1.0
       base_height: 1.0
       command: 1.0
+      gait_phase: 1.0
       joint_pos: 1.0
       joint_vel: 0.05
       actuator_force: 1.0
@@ -119,6 +116,9 @@ env_config:
   observation_latency:
     enabled: false
     delay_steps: [0, 0]
+  gait:
+    frequency_hz: 0.9
+    stance_fraction: 0.6
   critic_observation:
     privileged: true
     scale:
@@ -128,6 +128,7 @@ env_config:
       projected_gravity: 1.0
       base_height: 1.0
       command: 1.0
+      gait_phase: 1.0
       joint_pos: 1.0
       joint_vel: 0.05
       actuator_force: 0.01
@@ -138,24 +139,30 @@ reward_config:
   weights:
     track_lin_vel_xy: 1.0
     track_ang_vel_z: 1.0
+    healthy_survival: 1.5
     lin_vel_z: -2.0
     ang_vel_xy: -0.15
     flat_orientation: -2.0
     base_height: -10.0
-    action_rate: -0.01
+    action_rate: -0.05
+    action_acceleration: -0.02
     action_limit: -1.0
     torque_l1: -1.2
     torque_peak: -12.0
+    joint_force_peak: -4.0
+    touchdown_impact: -4.0
     joint_pose: -0.1
+    stand_still: 1.0
     stand_foot_motion: -1.0
+    stand_foot_heading: -5.0
+    stand_contact: -0.5
     hip_deviation: -0.25
     knee_deviation: -0.1
     joint_limit: -1.0
     invalid_action: 0.0
-    foot_slip: -0.25
-    flight: -2.0
-    contact_timing: -5.0
-    touchdown_air_time: 0.5
+    gait_contact: -1.0
+    gait_stance_slip: -0.25
+    gait_swing_clearance: -0.5
     undesired_contact: 0.0
     self_collision: 0.0
     termination: -100.0
@@ -168,27 +175,30 @@ reward_config:
     flat_orientation: null
     base_height: null
   tracking:
-    lin_vel_xy_moving_std: 0.75
+    lin_vel_xy_moving_std: 0.45
     lin_vel_xy_still_std: 0.25
-    ang_vel_z_moving_std: 0.5
+    ang_vel_z_moving_std: 0.35
     ang_vel_z_still_std: 0.2
   standing:
     foot_linear_speed_scale: 0.15
     foot_angular_speed_scale: 1.0
     foot_angular_weight: 0.25
   gait:
-    foot_slip_angular_speed_scale: 0.0
-    flight_body_speed_threshold: 0.1
-    flight_yaw_speed_threshold: 0.1
-    contact_min_air_time: 0.2
-    contact_min_contact_time: 0.3
-    touchdown_min_air_time: 0.2
-    touchdown_max_air_time: 0.5
+    stance_slip_angular_speed_scale: 0.0
+    swing_clearance_target: 0.08
+    joint_force_soft_limit_body_weights: 0.8
+    joint_force_top_k: 2
+    joint_force_apply_while_standing: false
+    touchdown_force_soft_limit_body_weights: 0.6
+    touchdown_vertical_speed_scale: 0.3
+  smoothness:
+    ankle_action_weight: 2.0
+    waist_action_weight: 2.0
   limits_pose:
     base_height_target: 0.86
     action_soft_limit_ratio: 0.8
     joint_soft_limit_factor: 0.9
-    hip_lateral_command_index: 1
+    hip_lateral_command_index: 0
     hip_lateral_command_threshold: 0.1
 command_config:
   enabled: true

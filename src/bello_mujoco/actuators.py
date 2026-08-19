@@ -124,18 +124,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
             gains=(180.0, 12.0),
             effort_limit=120.0,
         ),
-        "waist_roll_joint": JointActuatorConfig(
-            mode="hold", gains=(240.0, 20.0), effort_limit=120.0
-        ),
-        "waist_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(240.0, 20.0), effort_limit=120.0
-        ),
-        "neck_yaw_joint": JointActuatorConfig(
-            mode="hold", gains=(5.5, 0.5), effort_limit=5.5
-        ),
-        "head_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(5.5, 0.5), effort_limit=5.5
-        ),
         "right_shoulder_pitch_joint": JointActuatorConfig(
             mode="hold", gains=(70.0, 2.0), effort_limit=120.0
         ),
@@ -154,9 +142,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         "right_wrist_pitch_joint": JointActuatorConfig(
             mode="hold", gains=(10.0, 1.0), effort_limit=14.0
         ),
-        "right_wrist_yaw_joint": JointActuatorConfig(
-            mode="hold", gains=(10.0, 1.0), effort_limit=5.5
-        ),
         "left_shoulder_pitch_joint": JointActuatorConfig(
             mode="hold", gains=(70.0, 2.0), effort_limit=120.0
         ),
@@ -174,21 +159,6 @@ def default_joint_configs() -> dict[str, JointActuatorConfig]:
         ),
         "left_wrist_pitch_joint": JointActuatorConfig(
             mode="hold", gains=(10.0, 1.0), effort_limit=14.0
-        ),
-        "left_wrist_yaw_joint": JointActuatorConfig(
-            mode="hold", gains=(10.0, 1.0), effort_limit=5.5
-        ),
-        "right_finger_right_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0), effort_limit=100.0
-        ),
-        "right_finger_left_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0), effort_limit=100.0
-        ),
-        "left_finger_right_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0), effort_limit=100.0
-        ),
-        "left_finger_left_slide_joint": JointActuatorConfig(
-            mode="hold", gains=(100.0, 5.0), effort_limit=100.0
         ),
     }
 

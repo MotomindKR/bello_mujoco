@@ -3,15 +3,17 @@ checkpoint_path: null
 standing_checkpoint_path: null
 allow_git_commit_mismatch: false
 endpoint: http://127.0.0.1:50051
-command: [0.0, 0.0, 0.0]
+remote_endpoint: null
+remote_staleness_ms: 200
 motion_path: null
 duration_seconds: null
 ramp_seconds: null
+gain_scale: 1.0
+max_linear_acceleration: null
 policy_transition_seconds: null
 max_motion_tilt_radians: null
 status_interval_seconds: null
 policy_log_path: null
-gamepad_enabled: true
 arm: false
 fastsam_endpoint: 127.0.0.1:50055
 fastsam_tls_root_certificate_path: null

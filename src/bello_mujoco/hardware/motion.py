@@ -733,8 +733,6 @@ def validate_hardware_motion_checkpoint(
             "bounded BeyondMimic hardware deployment requires "
             "'tanh_gaussian' policy actions"
         )
-    if metadata.asset.end_effector_sphere_mode != "both":
-        raise ValueError("motion hardware runner requires sphere hands")
     availability = metadata.asset.joint_availability
     if availability.enabled_joint_names != {"waist_yaw_joint"}:
         raise ValueError(
@@ -853,19 +851,12 @@ def run_hardware_motion(
         pose = poses.latest()
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
         validate_pose_imu_agreement(frame, pose, config)
-        motion_adapter.initialize_alignment(pose)
         initial_delta = np.abs(
             frame.positions - standing_adapter.nominal_physical_target
         )
         initial_error = float(np.max(initial_delta))
         standing_preview = standing_adapter.step(frame, standing_command)
-        motion_preview = motion_adapter.step(
-            frame,
-            pose,
-            reference_time=motion_adapter.start_time,
-        )
         standing_adapter.reset()
-        motion_adapter.reset()
         print(
             {
                 "motion_hardware_preflight": "passed",
@@ -885,10 +876,6 @@ def run_hardware_motion(
                 "standing_preview_action_abs_max": float(
                     np.max(np.abs(standing_preview.action))
                 ),
-                "motion_preview_action_abs_max": float(
-                    np.max(np.abs(motion_preview.raw_action))
-                ),
-                "motion_preview_action_clipped": motion_preview.action_clipped,
                 "group_age_ms": frame.max_group_age_ms,
                 "state_sample_span_ms": frame.sample_span_ms,
                 "state_frame_round_trip_ms": frame.state_frame_round_trip_ms,

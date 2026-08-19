@@ -18,7 +18,8 @@ motion
 
 `smoke` runs a real, minimal MJX-Warp PPO update. `locomotion` is the canonical
 gait baseline. `hardware_locomotion` uses the same reward and policy contract
-with the longer credit horizon used by the physical policy. `motion` is bounded
+with the longer credit horizon used by the physical policy. Its periodic and
+final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
 BeyondMimic tracking.
 
 The public command can override seed, total timesteps, environment count,
@@ -29,24 +30,42 @@ public command.
 
 ## Locomotion baseline
 
-The physical profile is a 60 kg sphere-hand robot with 13 policy joints and 12
-held arm joints. Commands contain forward, lateral, and yaw velocity. Ten
-percent of sampled commands are exactly zero; moving samples are conditioned
-outside the shared standing deadbands.
+The physical profile is a 55.068 kg sphere-hand robot with 13 policy joints and 12
+held arm joints. Commands contain `+X` lateral/right, `+Y` forward, and `+Z`
+yaw velocity. Ten percent of batched environments form a fixed exact-zero
+standing cohort; moving samples are conditioned outside the shared standing
+deadbands. Cohort membership survives resets and command resampling so failed
+standing episodes cannot starve standing frames out of later rollouts.
 
-The canonical reward combines command tracking, base stability, normalized
-torque costs, standing foot motion, contact timing, touchdown air time, and
-termination cost. Exact terms and weights are defined in
+Moving commands activate a fixed 0.9 Hz per-leg gait clock, producing 1.8
+alternating footfalls per second. The legs are offset by half a cycle and use a
+60% stance fraction, which provides short double-support intervals. The actor
+receives sine/cosine phase and a gait-active bit. An exact standing command
+resets the clock, supplies three zero gait inputs, and makes every moving-gait
+reward exactly zero.
+
+The canonical reward combines healthy survival, command tracking, base
+stability, normalized torque costs, moving-only body-weight-normalized lower-body
+joint reaction-force peaks, standing foot motion, phase contact matching,
+stance-foot slip, swing clearance, substep-integrated touchdown impact, and
+termination cost. Standing frames also penalize the squared physical heading
+error of each foot relative to the pelvis, discouraging learned toe-in without
+constraining turns during commanded locomotion. A left/right actor-consistency
+loss augments PPO; action smoothness is learned through the rate and
+acceleration costs rather than imposed by a stateful command filter. Exact terms
+and weights are defined in
 [`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
-Training leaves policy effort unclipped so the over-peak torque penalty observes
-excess demand; the emulator and hardware enforce physical limits.
+Training dynamics enforce the same motor effort limits as the emulator and
+hardware. The over-peak torque term uses separately reconstructed unclipped
+servo demand, so saturation cannot hide an infeasible policy request.
 
 ## Evaluation
 
 `bello-eval` always uses native MuJoCo. Locomotion streams the scene, commands,
-actions, rewards, and termination diagnostics to Rerun. Motion evaluation
-renders a deterministic video and reports completion and RMS tracking errors.
+actions, rewards, foot-heading error, and termination diagnostics to Rerun.
+Motion evaluation renders a deterministic video and reports completion and RMS
+tracking errors.
 
 Locomotion gamepad input is enabled by default. With a connected controller it
 replaces the configured fixed command; with a disconnected controller the
@@ -72,8 +91,12 @@ Checkpoints store:
 - motion content and its named data layout when applicable;
 - normalization, optimizer, environment continuation, RNG, and sampler state.
 
-There is no automatic cross-revision adaptation. Checkpoint-producing training
-requires a clean `HEAD` contained by a local `origin/*` tracking
+There is no general automatic cross-revision adaptation. With an explicit
+commit-mismatch override, evaluation and hardware loading remove the retired
+generated-hand field and disabled selectors for joints now fixed by the
+canonical URDF. Enabled retired selectors are rejected, and resume remains
+strict. Checkpoint-producing training requires a clean `HEAD` contained by a
+local `origin/*` tracking
 branch and rechecks that revision immediately before every checkpoint is
 published. The root commit pins `deps/bello-stack`; its recursive submodules
 must be initialized, clean, and at their recorded commits. Fetch or push before
@@ -84,6 +107,10 @@ override bypasses root-commit equality and provenance-only source-revision
 identity; metadata semantics, state layout, task, motion content, submodule
 integrity, and runtime validation remain active. It cannot load older
 checkpoint envelopes that do not contain `git_commit`.
+
+Locomotion checkpoints created before the gait-phase observation contract are
+also rejected explicitly. Their 51-value actor frame cannot be adapted to the
+new 54-value frame without retraining.
 
 Checkpoint output must be outside the source repository or covered by a Git
 ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name

@@ -50,8 +50,6 @@ def test_generated_mujoco_imu_is_bound_to_pelvis(tmp_path: Path) -> None:
         data,
         command=np.zeros(3, dtype=np.float32),
         last_action=np.zeros(env.action_size, dtype=np.float32),
-        foot_air_time=zeros,
-        foot_contact_time=zeros,
         foot_contact_debounce_time=zeros,
         last_foot_contact=zeros,
         step_count=0,

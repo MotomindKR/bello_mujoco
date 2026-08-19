@@ -47,7 +47,7 @@ Configuration source: `configs/commands/prepare_assets.yaml`.
 | `profile` | `physical` or `visualizer`; `physical` | Select the canonical physical recipe or the lower-resolution persistent viewer recipe. |
 | `output_root` | path or `null`; `null` | Override the generated-asset root. `~` is expanded. With the physical profile, `null` uses the content-addressed user cache at `$XDG_CACHE_HOME/bello-mujoco/assets` (or `~/.cache/bello-mujoco/assets`) and retains the eight most recently used variants. The visualizer profile defaults to `assets/generated/visualizer`. |
 
-Both profiles use the 60 kg, box-collision, sphere-hand morphology with active
+Both profiles use the 55.068 kg, box-collision, sphere-hand morphology with active
 waist yaw and fixed waist roll/pitch, neck yaw, and head pitch. The physical
 profile keeps a 200,000-face visual budget; the visualizer profile uses 20,000.
 The collision budget remains 1,000 faces. Both standalone profiles omit
@@ -114,7 +114,7 @@ Configuration source: `configs/commands/eval.yaml`.
 | `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout than the checkpoint's recorded commit. Other checkpoint checks still apply. |
 | `output_path` | path; `outputs/evaluation/motion.mp4` | motion, twist_student, twist2 | Video destination for motion. TWIST and TWIST2 write JSON and select task-specific `.json` defaults when this field was not explicitly overridden. |
 | `video_path` | path or `null`; `null` | twist2 | TWIST2 representative-video destination. When omitted, TWIST2 writes `outputs/evaluation/twist2.mp4`; explicitly set `video_path=null` to score without rendering. |
-| `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw velocity command. |
+| `command` | three floats; `[0,0,0]` | locomotion | Fixed `+X` lateral/right, `+Y` forward, and `+Z` yaw velocity command. |
 | `steps` | positive integer or `null`; `null` | locomotion, motion, twist2 | Bound rollout steps. It limits only the representative video for TWIST2 and is rejected for `twist_student`. |
 | `stop_on_done` | boolean; `false` | locomotion, motion, twist_student | Stop at the first done/terminal state. TWIST2 always stops terminal clips so its held-out metrics cannot cross an automatic reset, and rejects this override. |
 | `stochastic_actions` | boolean; `false` | locomotion | Sample from the checkpoint policy instead of using its deterministic mean. |
@@ -134,8 +134,9 @@ A/Cross requests an episode reset and Start/Options exits. Stick values are
 dead-zoned at the fixed value 0.1. Neutral remains the exact standing command;
 each supported nonzero direction starts at the checkpoint's minimum moving
 speed and scales to its command bound. The controller index is fixed at zero. A
-fixed `command` is passed through without clipping or range validation, so it
-should remain within the checkpoint's trained bounds.
+fixed `command` uses `[lin_vel_x, lin_vel_y, ang_vel_yaw]`, with `+X`
+lateral/right and `+Y` forward. It is passed through without clipping or range
+validation, so it should remain within the checkpoint's trained bounds.
 
 Evaluation validates the checkpoint task, policy and critic observation
 sizes/layouts, action size/layout, asset configuration, and environment
@@ -303,7 +304,8 @@ installed from the pinned `deps/bello-stack` uv workspace member:
 ```text
 git submodule update --init --recursive
 uv sync --frozen
-uv run bello-run-hardware checkpoint_path=...
+uv run bello-run-hardware checkpoint_path=... \
+  remote_endpoint=http://visualizer-host:50054
 ```
 
 Physical hardware execution is checkout-only. A wheel installation does not
@@ -320,17 +322,19 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `task` | `locomotion`, `motion`, or `twist2`; `locomotion` | all | Select the checkpoint and observation contract. |
 | `checkpoint_path` | path or `null`; `null` | all | Required checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
 | `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
-| `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout. This does not disable task, shape, asset, motion-content, source-service, or hardware preflight checks. |
+| `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout. Evaluation/hardware loading removes retired generated-asset fields replaced by the canonical URDF, but rejects retired joint selectors that were enabled. This does not disable other task, shape, asset, motion-content, source-service, or hardware preflight checks. |
 | `endpoint` | string; `http://127.0.0.1:50051` | all | `bello-hardwared` endpoint. |
-| `command` | three floats; `[0,0,0]` | locomotion | Fixed forward, lateral, and yaw command when gamepad input is disabled. Values must lie within checkpoint bounds. An enabled but disconnected gamepad commands zero instead. |
+| `remote_endpoint` | string or `null`; `null` | locomotion | Required plaintext URL of the visualizer's `RemoteCommandService`, for example `http://visualizer-host:50054`. |
+| `remote_staleness_ms` | positive integer; `200` | locomotion | Maximum age of the latest remote-command sample before the command becomes zero and the stream reconnects. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
 | `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. TWIST2 combines the repository-owned relaxed-standing SMPL-X upper-body retarget with the checkpoint's canonical Bello leg stance; other tasks use their checkpoint nominal pose. |
+| `gain_scale` | float in `(0, 1]`; `1.0` | all | Multiply every commanded motor `kp` and `kd` by this value during start, ramp, and policy control. Fault damping is unchanged. |
+| `max_linear_acceleration` | positive float or `null`; `null` | all | Override the IMU acceleration-norm safety limit in m/s². `null` uses 100 m/s². Exceeding the limit immediately enters damped shutdown. |
 | `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 normal-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion, twist2 | Maximum robot tilt during transitions and active motion. `null` uses 70 degrees (approximately 1.222 radians); standing keeps its 0.70-radian limit. |
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
-| `gamepad_enabled` | boolean; `true` | locomotion | Enable live command input. A disconnected controller yields a zero command. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
 | `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
 | `fastsam_tls_root_certificate_path` | path or `null`; `null` | twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
@@ -352,10 +356,13 @@ Configuration source: `configs/commands/hardware.yaml`.
 Fields that apply to only one task must not be explicitly supplied when the
 other task is selected, even if the supplied value equals the documented
 default.
-For locomotion, supplying `command` requires `gamepad_enabled=false`; an
-enabled gamepad is the sole command source.
+Locomotion requires `remote_endpoint`. Its visualizer-hosted physical controller
+uses the same stick mapping as `bello-eval`; R1 aborts. Controller or
+service loss commands zero, reconnects automatically, and requires a neutral
+controller before accepting nonzero intent again. The visualizer service must
+produce a fresh sample before the hardware daemon is contacted. Hardware
+locomotion has no native-controller or fixed-command mode.
 
-Locomotion uses the same stick mapping as `bello-eval`; Start/Options aborts.
 Motion additionally requires a locomotion checkpoint selected by
 `standing_checkpoint_path` and absolute pelvis pose from
 `bello-state-estimatord` PoseService at `127.0.0.1:50053`. The standing and
@@ -396,6 +403,14 @@ per hour, depending on the checkpoint observation-stack size.
 
 Hardware targets use the proportional and derivative gains stored in checkpoint
 metadata.
+
+Motor velocity observations come from `bello-hardwared`, whose deployment YAML
+sets `runtime.motor_velocity_filter.cutoff_hz` (15 Hz by default). This filter
+cannot be changed by `bello-run-hardware`; `null` and zero are invalid daemon
+settings. For experiments that need effectively unfiltered observations, use a
+high positive cutoff such as 1000 Hz and restart `bello-hardwared`. This only
+changes published motor velocity telemetry; daemon health and safety checks
+continue to use raw protocol feedback.
 
 Preflight validates the checkpoint task, sphere-hand/fixed-joint morphology,
 policy layouts, generated transmission, motor inventory, IMU presence,

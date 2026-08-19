@@ -55,6 +55,7 @@ def compile_urdf_to_mjcf(
     imu_config: ImuSensorConfig = ImuSensorConfig(),
     ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig(),
 ) -> None:
+    massless_fixed_links = massless_fixed_urdf_link_names(urdf_path)
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tmp_path = mjcf_path.with_suffix(".compiled.xml")
     mujoco.mj_saveLastXML(str(tmp_path), model)
@@ -71,6 +72,7 @@ def compile_urdf_to_mjcf(
         inject_visual_geoms(root, urdf_path, mjcf_path.parent)
         ensure_visual_geoms(root)
         ensure_collision_geoms_transparent(root)
+    keep_fixed_link_geoms_massless(root, massless_fixed_links)
     ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
     ensure_position_actuators(
         root,
@@ -93,6 +95,43 @@ def compile_urdf_to_mjcf(
     tmp_path.unlink(missing_ok=True)
 
     mujoco.MjModel.from_xml_path(str(mjcf_path))
+
+
+def massless_fixed_urdf_link_names(urdf_path: Path) -> set[str]:
+    """Return inertial-free fixed links and reject inertial-free dynamic links."""
+
+    root = ET.parse(urdf_path).getroot()
+    incoming_joint = {
+        child.attrib["link"]: joint
+        for joint in root.findall("joint")
+        for child in joint.findall("child")
+        if "link" in child.attrib
+    }
+    names: set[str] = set()
+    for link in root.findall("link"):
+        if link.find("inertial") is not None:
+            continue
+        name = link.get("name")
+        if name is None:
+            raise ValueError("URDF contains an unnamed link without inertial data")
+        joint = incoming_joint.get(name)
+        if joint is None or joint.get("type") != "fixed":
+            raise ValueError(f"dynamic link {name!r} is missing explicit inertial data")
+        names.add(name)
+    return names
+
+
+def keep_fixed_link_geoms_massless(
+    root: ET.Element, massless_fixed_links: set[str]
+) -> None:
+    """Prevent MuJoCo from inferring mass from geoms on fixed massless frames."""
+
+    for name in massless_fixed_links:
+        body = root.find(f".//body[@name='{name}']")
+        if body is None:
+            raise ValueError(f"compiled MJCF is missing fixed link body {name!r}")
+        for geom in body.findall("geom"):
+            geom.set("mass", "0")
 
 
 def canonicalize_compiled_mesh_metadata(root: ET.Element) -> None:

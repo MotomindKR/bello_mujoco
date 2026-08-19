@@ -351,36 +351,25 @@ def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
         {"can0": "vcan0", "can1": "vcan1"},
     )
     validate_motor_coverage(
-        JointAvailabilityConfig(
-            waist_yaw=True,
-            waist_roll=False,
-            waist_pitch=False,
-            neck_yaw=False,
-            head_pitch=False,
-        ),
+        JointAvailabilityConfig(waist_yaw=True),
         config.motors,
     )
 
     with pytest.raises(ValueError, match="require RobStride motor mappings"):
         validate_motor_coverage(
-            JointAvailabilityConfig(
-                waist_yaw=True,
-                waist_roll=False,
-                waist_pitch=False,
-                neck_yaw=True,
-                head_pitch=True,
+            JointAvailabilityConfig(waist_yaw=True),
+            tuple(
+                motor
+                for motor in config.motors
+                if not (
+                    motor.target.type == "joint"
+                    and motor.target.name == "waist_yaw_joint"
+                )
             ),
-            config.motors,
         )
     with pytest.raises(ValueError, match="fixed by joint availability"):
         validate_motor_coverage(
-            JointAvailabilityConfig(
-                waist_yaw=False,
-                waist_roll=False,
-                waist_pitch=False,
-                neck_yaw=False,
-                head_pitch=False,
-            ),
+            JointAvailabilityConfig(waist_yaw=False),
             config.motors,
         )
 
@@ -420,8 +409,8 @@ def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
             )
     assert "left_wrist_pitch_joint" in transmission.mapped_joint_names
     assert "right_wrist_pitch_joint" in transmission.mapped_joint_names
-    assert "left_wrist_yaw_joint" not in transmission.mapped_joint_names
-    assert "right_wrist_yaw_joint" not in transmission.mapped_joint_names
+    assert "left_end_effector_sphere_joint" not in transmission.mapped_joint_names
+    assert "right_end_effector_sphere_joint" not in transmission.mapped_joint_names
     for body_name in ("l_end_effector_sphere_link", "r_end_effector_sphere_link"):
         assert (
             mujoco.mj_name2id(

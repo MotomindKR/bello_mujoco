@@ -21,6 +21,7 @@ import optax
 from bello_mujoco.policy import (
     ActorCritic,
     ActorCriticConfig,
+    apply_actor,
     apply_policy,
     clamp_policy_log_std,
     evaluate_actions,
@@ -144,6 +145,10 @@ class PPOEnvironment(Protocol):
 
     def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]: ...
 
+    def mirror_actor_observation(self, observation: jax.Array) -> jax.Array: ...
+
+    def mirror_action(self, action: jax.Array) -> jax.Array: ...
+
 
 @dataclass(frozen=True)
 class PPOConfig:
@@ -195,6 +200,7 @@ class PPOConfig:
     rollout_value_max_abs: float = _validated(1.0e4, _positive_finite)
     target_max_abs: float = _validated(1.0e4, _positive_finite)
     gradient_norm_max: float = _validated(1.0e4, _positive_finite)
+    symmetry_loss_coef: float = _validated(0.0, _nonnegative_finite)
     policy: ActorCriticConfig = _validated(
         ActorCriticConfig(),
         _no_scalar_constraint,
@@ -616,6 +622,8 @@ def ppo_loss(
     value_norm_state: ValueNormState | None = None,
     distillation: DistillationContext | None = None,
     distillation_weight: jax.Array | float = 0.0,
+    mirror_observation: Callable[[jax.Array], jax.Array] | None = None,
+    mirror_action: Callable[[jax.Array], jax.Array] | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     network_rng = entropy_rng if model.stochastic_actor else None
     log_prob, entropy, value = evaluate_actions(
@@ -665,11 +673,22 @@ def ppo_loss(
             teacher_observation,
         ).mean()
     distillation_weight = jnp.asarray(distillation_weight, dtype=jnp.float32)
+    symmetry_loss = jnp.asarray(0.0, dtype=actor_loss.dtype)
+    if config.symmetry_loss_coef > 0.0:
+        if mirror_observation is None or mirror_action is None:
+            raise ValueError(
+                "symmetry_loss_coef requires observation and action mirror functions"
+            )
+        current_action_mean = apply_actor(model, transitions.obs)
+        mirrored_action_mean = apply_actor(model, mirror_observation(transitions.obs))
+        symmetry_target = mirror_action(current_action_mean)
+        symmetry_loss = jnp.mean((mirrored_action_mean - symmetry_target) ** 2)
     total_loss = (
         actor_loss
         + config.vf_coef * value_loss
         - config.ent_coef * entropy_loss
         + distillation_weight * distillation_kl
+        + config.symmetry_loss_coef * symmetry_loss
     )
     metrics = {
         "loss": total_loss,
@@ -679,6 +698,7 @@ def ppo_loss(
         "entropy": entropy_loss,
         "distillation/kl_student_teacher": distillation_kl,
         "distillation/weight": distillation_weight,
+        "symmetry_loss": symmetry_loss,
         "approx_kl": ((ratio - 1.0) - safe_log_ratio).mean(),
         "nonfinite/current_log_probability": (~current_log_prob_finite).astype(
             jnp.float32
@@ -700,6 +720,8 @@ def update_ppo(
     value_norm_state: ValueNormState | None = None,
     distillation: DistillationContext | None = None,
     distillation_weight: jax.Array | float = 0.0,
+    mirror_observation: Callable[[jax.Array], jax.Array] | None = None,
+    mirror_action: Callable[[jax.Array], jax.Array] | None = None,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
     bounded_policy = config.policy.action_distribution == "tanh_gaussian"
     policy_action_max_abs = (
@@ -807,6 +829,8 @@ def update_ppo(
                     value_norm_state=value_norm_state,
                     distillation=distillation,
                     distillation_weight=distillation_weight,
+                    mirror_observation=mirror_observation,
+                    mirror_action=mirror_action,
                 )
 
             (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
@@ -1041,6 +1065,41 @@ def command_diagnostic_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]
     }
 
 
+def command_conditioned_metrics(
+    info: dict[str, jax.Array], reward: jax.Array
+) -> dict[str, jax.Array]:
+    """Report reward and completed-episode outcomes for each command mode."""
+
+    standing = info.get("command/standing")
+    moving = info.get("command/moving")
+    if standing is None or moving is None:
+        return {}
+
+    metrics = {
+        "command/standing_mean_reward": masked_mean_or_zero(reward, standing),
+        "command/standing_positive_reward_fraction": masked_mean_or_zero(
+            (reward > 0.0).astype(jnp.float32), standing
+        ),
+        "command/moving_mean_reward": masked_mean_or_zero(reward, moving),
+    }
+    returned = info.get("returned_episode")
+    episode_return = info.get("episode_return")
+    episode_length = info.get("episode_length")
+    if returned is None or episode_return is None or episode_length is None:
+        return metrics
+
+    for name, mode in (("standing", standing), ("moving", moving)):
+        completed = returned.astype(bool) & mode.astype(bool)
+        metrics[f"episode/{name}_count"] = jnp.sum(completed.astype(jnp.float32))
+        metrics[f"episode/{name}_return"] = masked_mean_or_zero(
+            episode_return, completed
+        )
+        metrics[f"episode/{name}_length"] = masked_mean_or_zero(
+            episode_length, completed
+        )
+    return metrics
+
+
 def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
     return {
         f"mean_{name}": value.astype(jnp.float32).mean()
@@ -1090,8 +1149,6 @@ def gait_diagnostics(
 
     touchdown = info.get("gait/touchdown")
     liftoff = info.get("gait/liftoff")
-    premature_touchdown = info.get("gait/premature_touchdown")
-    premature_liftoff = info.get("gait/premature_liftoff")
     if touchdown is not None:
         metrics["gait/footfalls_per_second"] = (
             touchdown.astype(jnp.float32).mean() / control_timestep
@@ -1107,14 +1164,14 @@ def gait_diagnostics(
         metrics["gait/liftoffs_per_second"] = (
             liftoff.astype(jnp.float32).mean() / control_timestep
         )
-    if premature_touchdown is not None:
-        metrics["gait/premature_touchdowns_per_second"] = (
-            premature_touchdown.astype(jnp.float32).mean() / control_timestep
-        )
-    if premature_liftoff is not None:
-        metrics["gait/premature_liftoffs_per_second"] = (
-            premature_liftoff.astype(jnp.float32).mean() / control_timestep
-        )
+    for force_name in ("joint_force", "contact_force", "contact_impulse"):
+        rollout_max = info.get(f"gait/{force_name}_max_body_weight")
+        if rollout_max is None:
+            continue
+        rollout_max = rollout_max.astype(jnp.float32).reshape(-1)
+        metrics[f"gait/{force_name}_p95_body_weight"] = jnp.quantile(rollout_max, 0.95)
+        metrics[f"gait/{force_name}_p99_body_weight"] = jnp.quantile(rollout_max, 0.99)
+        metrics[f"gait/{force_name}_worst_body_weight"] = jnp.max(rollout_max)
     return metrics
 
 
@@ -1123,6 +1180,12 @@ def masked_mean(value: jax.Array, mask: jax.Array) -> jax.Array:
     mask = mask.astype(jnp.float32)
     count = jnp.sum(mask)
     return jnp.where(count > 0, jnp.sum(value * mask) / count, jnp.nan)
+
+
+def masked_mean_or_zero(value: jax.Array, mask: jax.Array) -> jax.Array:
+    value = value.astype(jnp.float32)
+    mask = mask.astype(jnp.float32)
+    return jnp.sum(value * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
 
 def action_diagnostics(
@@ -1511,6 +1574,10 @@ def update_runner_state(
         value_norm_state=value_norm_state,
         distillation=distillation,
         distillation_weight=distillation_weight,
+        mirror_observation=(
+            env.mirror_actor_observation if config.symmetry_loss_coef > 0.0 else None
+        ),
+        mirror_action=env.mirror_action if config.symmetry_loss_coef > 0.0 else None,
     )
     next_learning_rate = adapt_learning_rate(
         learning_rate,
@@ -1557,6 +1624,7 @@ def update_runner_state(
         **random_push_means(transitions.info),
         **sampling_diagnostic_means(transitions.info),
         **command_diagnostic_means(transitions.info),
+        **command_conditioned_metrics(transitions.info, transitions.reward),
         **foot_contact_means(transitions.info),
         **target_saturation_means(transitions.info),
         **physics_diagnostics(transitions.info),
@@ -1614,6 +1682,11 @@ def _validate_declared_fields(config: PPOConfig) -> None:
 
 def validate_ppo_config(config: PPOConfig) -> None:
     _validate_declared_fields(config)
+    if config.symmetry_loss_coef > 0.0 and config.normalize_observations:
+        raise ValueError(
+            "symmetry_loss_coef requires normalize_observations=false so reflection "
+            "is applied in the physical observation coordinates"
+        )
     if config.num_updates <= 0:
         raise ValueError(
             "total_timesteps must cover at least one rollout batch, got "
