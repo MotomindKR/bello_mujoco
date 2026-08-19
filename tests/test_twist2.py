@@ -47,6 +47,10 @@ from bello_mujoco.training.twist2 import (
 )
 
 
+def test_twist2_uses_canonical_unscaled_robot_mass() -> None:
+    assert default_twist2_asset_config().target_total_mass_kg is None
+
+
 JOINT_NAMES = tuple(f"joint_{index}" for index in range(25))
 FINGERPRINT = "sha256:" + "a" * 64
 

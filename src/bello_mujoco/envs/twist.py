@@ -1845,7 +1845,7 @@ def default_twist_asset_config() -> AssetPrepConfig:
     return AssetPrepConfig(
         asset="full_body",
         collision_mode="box",
-        target_total_mass_kg=60.0,
+        target_total_mass_kg=None,
         enforce_policy_effort_limits=False,
         joint_availability=TWIST_JOINT_AVAILABILITY,
         actuator_config=actuators,
