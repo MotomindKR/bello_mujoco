@@ -1176,7 +1176,7 @@ def _validate_twist2_metadata(metadata: Twist2CheckpointMetadata) -> None:
     ):
         raise ValueError("TWIST2 critic observation layout differs from its contract")
     if metadata.parity_contract != Twist2ParityContract():
-        raise ValueError("TWIST2 parity contract differs from the pinned release")
+        raise ValueError("TWIST2 parity contract differs from the maintained behavior")
     normalization = (
         metadata.value_norm,
         metadata.observation_norm,

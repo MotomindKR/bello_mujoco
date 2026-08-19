@@ -337,6 +337,7 @@ class TwistState:
     foot_air_time: jax.Array
     last_foot_contact: jax.Array
     total_step: jax.Array
+    root_push_phase: jax.Array
     gravity_fraction: jax.Array
 
 
@@ -646,6 +647,7 @@ class BelloTwistEnv:
             foot_air_time=jnp.zeros(2, dtype=jnp.float32),
             last_foot_contact=jnp.zeros(2, dtype=bool),
             total_step=jnp.asarray(0, dtype=jnp.int32),
+            root_push_phase=jnp.asarray(0, dtype=jnp.int32),
             gravity_fraction=jnp.asarray(self.model.gravity_fraction[0]),
         )
         state = partial_state
@@ -930,6 +932,7 @@ class BelloTwistEnv:
             foot_air_time=jnp.where(contacts, 0.0, foot_air_time),
             last_foot_contact=contacts,
             total_step=state.total_step + 1,
+            root_push_phase=state.root_push_phase,
             gravity_fraction=state.gravity_fraction,
         )
         if self.stage == "student":
@@ -1079,6 +1082,7 @@ class BelloTwistEnv:
             foot_air_time=jnp.where(contacts, 0.0, foot_air_time),
             last_foot_contact=contacts,
             total_step=state.total_step + 1,
+            root_push_phase=state.root_push_phase,
             gravity_fraction=state.gravity_fraction,
         )
         if self.stage == "student":

@@ -126,7 +126,13 @@ acceleration penalties. Reward terms are logged individually.
 Per-world randomization covers added base mass and center of mass, friction,
 and independent proportional/derivative motor strength. Root XY velocity
 pushes occur after simulation every 200 policy steps (four seconds), as in the
-release, with magnitude up to 1 m/s.
+release, with magnitude up to 1 m/s. This port assigns every environment an
+independent random push phase at reset. The released implementation instead
+uses one global phase for all environments, which concentrates every push into
+the same PPO rollout and produces periodic value-loss and gradient spikes.
+Random phases preserve the per-environment interval and push distribution while
+keeping the aggregate rollout distribution stationary.
+
 At each stochastic training reset, active joint positions are initialized at an
 independent `0.8` to `1.2` multiple of the sampled reference pose, matching the
 release's recovery-state distribution. Deterministic evaluation resets retain
@@ -155,8 +161,9 @@ explicit.
 One upstream indexing bug is intentionally corrected: the offset-zero command
 encoder receives all 25 Bello joint targets instead of dropping its final
 channel as though a disabled mask were present. The correction is explicit in
-the checkpoint parity contract. The actor's source-specific Xavier gains,
-training-only dropout, and final-hidden LayerNorm are preserved. Bello
+the checkpoint parity contract. Per-environment root-push phasing is recorded
+there as a second intentional training adaptation. The actor's source-specific
+Xavier gains, training-only dropout, and final-hidden LayerNorm are preserved. Bello
 joint/key-body mappings and reference root deltas are native equivalents of
 the G1 release and are covered by layout, robot, dataset, and source
 fingerprints.

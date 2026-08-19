@@ -45,6 +45,7 @@ TWIST2_PAST_FRAMES = 10
 TWIST2_NOISE_INCREASING_STEPS = 50_000
 TWIST2_NOISE_WARMUP_POLICY_STEPS = TWIST2_NOISE_INCREASING_STEPS * 24
 TWIST2_ROOT_PUSH_INTERVAL_STEPS = 4 * TWIST_POLICY_HZ
+TWIST2_ROOT_PUSH_PHASE_MODE: Literal["per_environment_reset"] = "per_environment_reset"
 TWIST2_RAW_ACTION_CLIP = 5.0 / 0.5
 TWIST2_RELEASED_MOTION_COUNTS = (
     ("twist1_to_twist2", 12_788),
@@ -56,7 +57,7 @@ TWIST2_RELEASED_MOTION_COUNTS = (
 
 @dataclass(frozen=True)
 class Twist2ParityContract:
-    """Executed behavior of the pinned public TWIST2 controller release."""
+    """Pinned TWIST2 behavior plus this port's explicit adaptations."""
 
     upstream_revision: str = TWIST2_UPSTREAM_REVISION
     privileged_offsets: tuple[int, ...] = TWIST_FUTURE_OFFSETS
@@ -68,6 +69,7 @@ class Twist2ParityContract:
     action_delay_steps: tuple[int, int] = (0, 1)
     action_delay_warmup_policy_steps: int = TWIST2_NOISE_WARMUP_POLICY_STEPS
     root_push_interval_policy_steps: int = TWIST2_ROOT_PUSH_INTERVAL_STEPS
+    root_push_phase_mode: Literal["per_environment_reset"] = TWIST2_ROOT_PUSH_PHASE_MODE
     gravity_randomization_executed: bool = False
     actor_normalization_updates: int = 3_000
     critic_observation_normalization: bool = False
@@ -96,6 +98,8 @@ class Twist2ParityContract:
             raise ValueError("TWIST2 action-delay warm-up differs from executed source")
         if self.root_push_interval_policy_steps != TWIST2_ROOT_PUSH_INTERVAL_STEPS:
             raise ValueError("TWIST2 root-push interval differs from executed source")
+        if self.root_push_phase_mode != TWIST2_ROOT_PUSH_PHASE_MODE:
+            raise ValueError("TWIST2 root-push phase mode differs from this port")
         if self.gravity_randomization_executed:
             raise ValueError("released TWIST2 never calls its gravity randomizer")
         if self.actor_normalization_updates != 3_000:
@@ -467,12 +471,16 @@ class BelloTwist2Env(BelloTwistEnv):
 
     def reset(self, rng: jax.Array | None = None) -> tuple[TwistState, jax.Array]:
         state, _ = super().reset(rng)
+        state = state.replace(root_push_phase=self._sample_root_push_phase(rng, ()))
         return state, self._initial_actor_observation(state)
 
     def reset_batch(
         self, batch_size: int, rng: jax.Array | None = None
     ) -> tuple[TwistState, jax.Array]:
         state, _ = super().reset_batch(batch_size, rng)
+        state = state.replace(
+            root_push_phase=self._sample_root_push_phase(rng, (batch_size,))
+        )
         current = state.observation_history[:, -1]
         command = current[:, : self.contract.command_frame_size]
         empty_history = jnp.zeros_like(state.observation_history[:, :-1]).reshape(
@@ -893,6 +901,26 @@ class BelloTwist2Env(BelloTwistEnv):
         warmup = self.config.observation_noise.increasing_steps * 24
         return jnp.where(state.total_step[0] <= warmup, 0, sampled).astype(jnp.int32)
 
+    def _sample_root_push_phase(
+        self, rng: jax.Array | None, shape: tuple[int, ...]
+    ) -> jax.Array:
+        if rng is None:
+            return jnp.zeros(shape, dtype=jnp.int32)
+        return jax.random.randint(
+            jax.random.fold_in(rng, 4),
+            shape,
+            minval=0,
+            maxval=self.config.domain_randomization.root_push_interval_steps,
+            dtype=jnp.int32,
+        )
+
+    def _root_push_due(self, state: TwistState) -> jax.Array:
+        cfg = self.config.domain_randomization
+        next_total_step = state.total_step + 1
+        return (
+            next_total_step + state.root_push_phase
+        ) % cfg.root_push_interval_steps == 0
+
     def _apply_disturbances_batch(self, data, state: TwistState, rng):
         batch_size = int(state.motion_state.step_count.shape[0])
         cfg = self.config.domain_randomization
@@ -900,9 +928,7 @@ class BelloTwist2Env(BelloTwistEnv):
             return data.replace(
                 xfrc_applied=jnp.zeros_like(data.xfrc_applied)
             ), jnp.zeros((batch_size,), dtype=bool)
-        next_total_step = state.total_step[0] + 1
-        root_due_scalar = next_total_step % cfg.root_push_interval_steps == 0
-        root_due = jnp.full((batch_size,), root_due_scalar, dtype=bool)
+        root_due = self._root_push_due(state)
         return data.replace(xfrc_applied=jnp.zeros_like(data.xfrc_applied)), root_due
 
     def _apply_post_step_disturbances_batch(self, data, state: TwistState, rng):
@@ -910,9 +936,7 @@ class BelloTwist2Env(BelloTwistEnv):
         if rng is None or not cfg.enabled:
             return data
         batch_size = int(state.motion_state.step_count.shape[0])
-        next_total_step = state.total_step[0] + 1
-        root_due_scalar = next_total_step % cfg.root_push_interval_steps == 0
-        root_due = jnp.full((batch_size,), root_due_scalar, dtype=bool)
+        root_due = self._root_push_due(state)
         root_velocity = jax.random.uniform(
             rng,
             (batch_size, 2),

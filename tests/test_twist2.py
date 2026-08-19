@@ -14,6 +14,7 @@ from bello_mujoco.envs.twist import TwistSamplingConfig, TwistSimulationConfig
 from bello_mujoco.envs.twist2 import (
     BelloTwist2Env,
     TWIST2_UPSTREAM_REVISION,
+    Twist2EnvConfig,
     Twist2ObservationContract,
     Twist2ParityContract,
     default_twist2_asset_config,
@@ -82,6 +83,7 @@ def test_twist2_observation_contract_matches_bello_release_dimensions() -> None:
     assert Twist2ParityContract().raw_action_clip == 10.0
     assert Twist2ParityContract().action_delay_warmup_policy_steps == 1_200_000
     assert Twist2ParityContract().root_push_interval_policy_steps == 200
+    assert Twist2ParityContract().root_push_phase_mode == "per_environment_reset"
     assert not Twist2ParityContract().gravity_randomization_executed
 
 
@@ -107,6 +109,34 @@ def test_twist2_reset_randomizes_reference_joint_positions_like_release() -> Non
     assert jnp.all(randomized[7:] < 1.2)
     assert not jnp.array_equal(randomized[7:], reference[7:])
     assert jnp.array_equal(deterministic[7:], reference[7:])
+
+
+def test_twist2_root_pushes_use_random_per_environment_phases() -> None:
+    env = object.__new__(BelloTwist2Env)
+    object.__setattr__(env, "config", Twist2EnvConfig())
+    phases = env._sample_root_push_phase(jax.random.PRNGKey(11), (4096,))
+
+    assert phases.shape == (4096,)
+    assert jnp.all(phases >= 0)
+    assert jnp.all(phases < 200)
+    assert jnp.unique(phases).size > 1
+
+    state = SimpleNamespace(
+        total_step=jnp.zeros((200,), dtype=jnp.int32),
+        root_push_phase=jnp.arange(200, dtype=jnp.int32),
+    )
+    first_due = env._root_push_due(state)
+    second_due = env._root_push_due(
+        SimpleNamespace(
+            total_step=state.total_step + 1,
+            root_push_phase=state.root_push_phase,
+        )
+    )
+
+    assert jnp.sum(first_due) == 1
+    assert first_due[199]
+    assert jnp.sum(second_due) == 1
+    assert second_due[198]
 
 
 def test_twist2_actor_and_critic_shapes_and_training_dropout() -> None:
