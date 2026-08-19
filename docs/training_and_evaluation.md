@@ -48,12 +48,13 @@ The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body
 joint reaction-force peaks, standing foot motion, phase contact matching,
 stance-foot slip, swing clearance, substep-integrated touchdown impact, and
-termination cost. Standing frames also penalize the squared physical heading
-error of each foot relative to the pelvis, discouraging learned toe-in without
-constraining turns during commanded locomotion. A left/right actor-consistency
-loss augments PPO; action smoothness is learned through the rate and
-acceleration costs rather than imposed by a stateful command filter. Exact terms
-and weights are defined in
+termination cost. During healthy double support, standing frames also apply a
+bounded physical foot-heading cost relative to the pelvis. Its 5-degree
+deadband and `0.01` per-step cap discourage learned toe-in without overwhelming
+balance acquisition or constraining commanded turns. A left/right
+actor-consistency loss augments PPO; action smoothness is learned through the
+rate and acceleration costs rather than imposed by a stateful command filter.
+Exact terms and weights are defined in
 [`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
 Training dynamics enforce the same motor effort limits as the emulator and

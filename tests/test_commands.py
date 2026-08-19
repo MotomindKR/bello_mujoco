@@ -158,11 +158,16 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.asset_config.enforce_policy_effort_limits
     assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
     assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-4.0)
-    assert hardware.reward_config.weights.action_rate == pytest.approx(-0.05)
-    assert hardware.reward_config.weights.action_acceleration == pytest.approx(-0.02)
+    assert hardware.reward_config.weights.action_rate == pytest.approx(-0.01)
+    assert hardware.reward_config.weights.action_acceleration == pytest.approx(-0.005)
     assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
     assert hardware.reward_config.weights.stand_foot_motion == pytest.approx(-1.0)
-    assert hardware.reward_config.weights.stand_foot_heading == pytest.approx(-5.0)
+    assert hardware.reward_config.weights.stand_foot_heading == pytest.approx(-0.5)
+    assert hardware.reward_config.tracking.lin_vel_xy_moving_std == pytest.approx(0.75)
+    assert hardware.reward_config.tracking.ang_vel_z_lpf_cutoff_hz == pytest.approx(5.0)
+    assert hardware.reward_config.standing.foot_heading_deadband == pytest.approx(
+        0.0872664626
+    )
     assert hardware.reward_config.weights.stand_contact == pytest.approx(-0.5)
     assert not hardware.reward_config.gait.joint_force_apply_while_standing
     assert hardware.video_config.command == (0.0, 0.5, 0.0)

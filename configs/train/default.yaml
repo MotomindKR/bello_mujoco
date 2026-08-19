@@ -144,8 +144,8 @@ reward_config:
     ang_vel_xy: -0.15
     flat_orientation: -2.0
     base_height: -10.0
-    action_rate: -0.05
-    action_acceleration: -0.02
+    action_rate: -0.01
+    action_acceleration: -0.005
     action_limit: -1.0
     torque_l1: -1.2
     torque_peak: -12.0
@@ -154,7 +154,7 @@ reward_config:
     joint_pose: -0.1
     stand_still: 1.0
     stand_foot_motion: -1.0
-    stand_foot_heading: -5.0
+    stand_foot_heading: -0.5
     stand_contact: -0.5
     hip_deviation: -0.25
     knee_deviation: -0.1
@@ -175,14 +175,17 @@ reward_config:
     flat_orientation: null
     base_height: null
   tracking:
-    lin_vel_xy_moving_std: 0.45
+    lin_vel_xy_moving_std: 0.75
     lin_vel_xy_still_std: 0.25
     ang_vel_z_moving_std: 0.35
     ang_vel_z_still_std: 0.2
+    ang_vel_z_lpf_cutoff_hz: 5.0
   standing:
     foot_linear_speed_scale: 0.15
     foot_angular_speed_scale: 1.0
     foot_angular_weight: 0.25
+    foot_heading_deadband: 0.0872664626
+    foot_heading_scale: 0.2617993878
   gait:
     stance_slip_angular_speed_scale: 0.0
     swing_clearance_target: 0.08

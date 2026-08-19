@@ -512,20 +512,46 @@ def test_stand_foot_motion_is_bounded_command_gated_and_contact_free() -> None:
     assert saturated["reward/stand_foot_motion"] == pytest.approx(-0.00625)
 
 
-def test_stand_foot_heading_penalizes_squared_error_only_while_standing() -> None:
-    config = reward_config(stand_foot_heading=-5.0)
+def test_stand_foot_heading_is_bounded_and_requires_healthy_double_support() -> None:
+    config = reward_config(
+        stand_foot_heading=-0.5,
+        standing=StandingRewardConfig(
+            foot_heading_deadband=0.1,
+            foot_heading_scale=0.2,
+        ),
+    )
     inputs = reward_inputs(
-        foot_heading_error=jnp.asarray([0.2, -0.1], dtype=jnp.float32)
+        foot_heading_error=jnp.asarray([0.3, -0.2], dtype=jnp.float32)
     )
 
     _, standing = compute_locomotion_reward(config, inputs)
+    _, inside_deadband = compute_locomotion_reward(
+        config,
+        inputs.replace(foot_heading_error=jnp.asarray([0.1, -0.1])),
+    )
+    _, single_support = compute_locomotion_reward(
+        config,
+        inputs.replace(foot_contact=jnp.asarray([1.0, 0.0])),
+    )
+    _, terminal = compute_locomotion_reward(
+        config,
+        inputs.replace(done=jnp.asarray(True)),
+    )
     _, moving = compute_locomotion_reward(
         config,
         inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0])),
     )
+    _, saturated = compute_locomotion_reward(
+        config,
+        inputs.replace(foot_heading_error=jnp.asarray([1.0e6, -1.0e6])),
+    )
 
-    assert standing["reward/stand_foot_heading"] == pytest.approx(-0.0025)
+    assert standing["reward/stand_foot_heading"] == pytest.approx(-1.0 / 240.0)
+    assert inside_deadband["reward/stand_foot_heading"] == pytest.approx(0.0)
+    assert single_support["reward/stand_foot_heading"] == pytest.approx(0.0)
+    assert terminal["reward/stand_foot_heading"] == pytest.approx(0.0)
     assert moving["reward/stand_foot_heading"] == pytest.approx(0.0)
+    assert saturated["reward/stand_foot_heading"] == pytest.approx(-0.01, abs=1.0e-8)
 
 
 def test_stand_contact_penalizes_missing_double_support_only_while_standing() -> None:
@@ -664,6 +690,15 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
             control_timestep=jnp.asarray(0.005),
         ),
     )
+    heading_inputs = standing_inputs.replace(foot_contact=jnp.ones(2))
+    _, heading_terms = compute(config, heading_inputs)
+    _, heading_fine = compute(
+        config,
+        heading_inputs.replace(
+            foot_normal_impulse=jnp.asarray([0.01, 0.0]),
+            control_timestep=jnp.asarray(0.005),
+        ),
+    )
     _, airborne_terms = compute(
         config,
         moving_inputs.replace(
@@ -700,6 +735,9 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
             coarse = standing_terms[name]
             fine = standing_fine[name]
         if coarse == 0.0:
+            coarse = heading_terms[name]
+            fine = heading_fine[name]
+        if coarse == 0.0:
             coarse = airborne_terms[name]
             fine = airborne_fine[name]
         if coarse == 0.0:
@@ -718,12 +756,18 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
         RewardConfig(limits_pose=LimitsPoseRewardConfig(base_height_target=0.0))
     with pytest.raises(ValueError, match="foot_linear_speed_scale"):
         RewardConfig(standing=StandingRewardConfig(foot_linear_speed_scale=0.0))
+    with pytest.raises(ValueError, match="ang_vel_z_lpf_cutoff_hz"):
+        RewardConfig(tracking=TrackingRewardConfig(ang_vel_z_lpf_cutoff_hz=0.0))
     with pytest.raises(ValueError, match="foot_angular_speed_scale"):
         RewardConfig(
             standing=StandingRewardConfig(foot_angular_speed_scale=float("nan"))
         )
     with pytest.raises(ValueError, match="foot_angular_weight"):
         RewardConfig(standing=StandingRewardConfig(foot_angular_weight=-1.0))
+    with pytest.raises(ValueError, match="foot_heading_deadband"):
+        RewardConfig(standing=StandingRewardConfig(foot_heading_deadband=-1.0))
+    with pytest.raises(ValueError, match="foot_heading_scale"):
+        RewardConfig(standing=StandingRewardConfig(foot_heading_scale=0.0))
     with pytest.raises(ValueError, match="joint_force_soft_limit_body_weights"):
         RewardConfig(gait=GaitRewardConfig(joint_force_soft_limit_body_weights=0.0))
     with pytest.raises(ValueError, match="joint_force_top_k"):

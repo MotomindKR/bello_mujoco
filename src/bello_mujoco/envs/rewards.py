@@ -199,8 +199,8 @@ class RewardWeights:
     ang_vel_xy: float = -0.15
     flat_orientation: float = -2.0
     base_height: float = -10.0
-    action_rate: float = -0.05
-    action_acceleration: float = -0.02
+    action_rate: float = -0.01
+    action_acceleration: float = -0.005
     action_limit: float = -1.0
     torque_l1: float = -1.2
     torque_peak: float = -12.0
@@ -209,7 +209,7 @@ class RewardWeights:
     joint_pose: float = -0.1
     stand_still: float = 1.0
     stand_foot_motion: float = -1.0
-    stand_foot_heading: float = -5.0
+    stand_foot_heading: float = -0.5
     stand_contact: float = -0.5
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
@@ -238,10 +238,11 @@ class RewardLinks:
 
 @dataclass(frozen=True)
 class TrackingRewardConfig:
-    lin_vel_xy_moving_std: float = 0.45
+    lin_vel_xy_moving_std: float = 0.75
     lin_vel_xy_still_std: float = 0.25
     ang_vel_z_moving_std: float = 0.35
     ang_vel_z_still_std: float = 0.20
+    ang_vel_z_lpf_cutoff_hz: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,8 @@ class StandingRewardConfig:
     foot_linear_speed_scale: float = 0.15
     foot_angular_speed_scale: float = 1.0
     foot_angular_weight: float = 0.25
+    foot_heading_deadband: float = math.radians(5.0)
+    foot_heading_scale: float = math.radians(15.0)
 
 
 @dataclass(frozen=True)
@@ -498,9 +501,17 @@ def compute_locomotion_reward(
         + config.standing.foot_angular_weight * stand_foot_angular_motion
     )
     stand_foot_motion = jnp.where(standing_command, foot_motion, 0.0)
+    foot_heading_excess = jnp.maximum(
+        jnp.abs(inputs.foot_heading_error) - config.standing.foot_heading_deadband,
+        0.0,
+    )
+    bounded_foot_heading_error = foot_heading_excess / (
+        foot_heading_excess + config.standing.foot_heading_scale
+    )
+    standing_double_support = standing_command & jnp.all(inputs.foot_contact)
     stand_foot_heading = jnp.where(
-        standing_command,
-        jnp.mean(inputs.foot_heading_error**2),
+        standing_double_support & ~inputs.done,
+        jnp.mean(bounded_foot_heading_error),
         0.0,
     )
     actual_contact = inputs.foot_contact.astype(jnp.float32)
@@ -664,12 +675,20 @@ def validate_reward_config(config: RewardConfig) -> None:
             config.tracking.ang_vel_z_still_std,
         ),
         (
+            "tracking.ang_vel_z_lpf_cutoff_hz",
+            config.tracking.ang_vel_z_lpf_cutoff_hz,
+        ),
+        (
             "standing.foot_linear_speed_scale",
             config.standing.foot_linear_speed_scale,
         ),
         (
             "standing.foot_angular_speed_scale",
             config.standing.foot_angular_speed_scale,
+        ),
+        (
+            "standing.foot_heading_scale",
+            config.standing.foot_heading_scale,
         ),
         (
             "gait.swing_clearance_target",
@@ -701,6 +720,7 @@ def validate_reward_config(config: RewardConfig) -> None:
             config.gait.stance_slip_angular_speed_scale
         ),
         "standing.foot_angular_weight": config.standing.foot_angular_weight,
+        "standing.foot_heading_deadband": config.standing.foot_heading_deadband,
         "smoothness.ankle_action_weight": config.smoothness.ankle_action_weight,
         "smoothness.waist_action_weight": config.smoothness.waist_action_weight,
         "limits_pose.hip_lateral_command_threshold": (

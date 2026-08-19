@@ -275,8 +275,8 @@ computation where possible.
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
 | `flat_orientation` | `-2.0` | Penalize gravity-vector tilt. |
 | `base_height` | `-10.0` | Penalize error from `limits_pose.base_height_target`. |
-| `action_rate` | `-0.05` | Penalize change from the previous applied action, with extra ankle and waist weighting. |
-| `action_acceleration` | `-0.02` | Penalize change in applied action delta, using the same joint weighting. |
+| `action_rate` | `-0.01` | Penalize change from the previous applied action, with extra ankle and waist weighting. |
+| `action_acceleration` | `-0.005` | Penalize change in applied action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
 | `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
@@ -285,7 +285,7 @@ computation where possible.
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
-| `stand_foot_heading` | `-5.0` | At standing command, penalize mean squared left/right foot heading error relative to pelvis forward. It is inactive for moving commands so turning remains unconstrained. |
+| `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize bounded left/right foot heading error outside the configured deadband relative to pelvis forward. The weighted cost is capped below `0.01` per control step and is inactive during recovery, termination, and moving commands. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation, gated by lateral command. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |
@@ -308,8 +308,8 @@ Supporting fields are:
 
 | Section | Fields |
 | --- | --- |
-| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std` |
-| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight` |
+| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_lpf_cutoff_hz` |
+| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `smoothness` | `ankle_action_weight`, `waist_action_weight` |
 | `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_lateral_command_index`, `hip_lateral_command_threshold` |
@@ -321,6 +321,11 @@ reward terms, they expose short impacts that would otherwise be diluted across
 joints and rollout frames. `command/standing_positive_reward_fraction` reports
 the fraction of standing transitions whose total reward is positive; it should
 rise toward one as quiet standing matures.
+
+`track_ang_vel_z` uses a first-order low-pass-filtered measured yaw rate. The
+filter is initialized from the measurement on reset and
+`tracking.ang_vel_z_lpf_cutoff_hz` sets its cutoff; it does not filter policy
+actions or the commanded yaw rate.
 
 ## Locomotion termination: `done_config`
 

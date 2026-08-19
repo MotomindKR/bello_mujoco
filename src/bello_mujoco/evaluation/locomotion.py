@@ -495,6 +495,7 @@ def run_rerun_evaluation(
     episode_length = jnp.asarray(0, dtype=jnp.int32)
     episode_step_count = 0
     gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
+    tracking_ang_vel_z = jnp.asarray(0.0, dtype=jnp.float32)
     obs_stack = init_observation_stack(
         jnp.zeros(env.observation_size, dtype=jnp.float32), obs_stack_size
     )
@@ -502,7 +503,8 @@ def run_rerun_evaluation(
     def reset_episode() -> None:
         nonlocal last_action, last_action_delta, foot_contact_debounce_time
         nonlocal last_foot_contact, episode_return, episode_track_lin_vel_xy
-        nonlocal episode_length, episode_step_count, gait_phase, obs_stack
+        nonlocal episode_length, episode_step_count, gait_phase
+        nonlocal tracking_ang_vel_z, obs_stack
         reset_mujoco_data(env, mj_data)
         last_action = np.zeros(env.action_size, dtype=np.float32)
         last_action_delta = np.zeros(env.action_size, dtype=np.float32)
@@ -515,6 +517,10 @@ def run_rerun_evaluation(
         episode_length = jnp.asarray(0, dtype=jnp.int32)
         episode_step_count = 0
         gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
+        tracking_ang_vel_z = jnp.asarray(
+            mujoco_link_ang_vel(env, mj_data, env._reward_link("track_ang_vel_z"))[2],
+            dtype=jnp.float32,
+        )
         obs = mujoco_policy_observation(
             env,
             mj_data,
@@ -618,6 +624,7 @@ def run_rerun_evaluation(
                 episode_track_lin_vel_xy=episode_track_lin_vel_xy,
                 episode_length=episode_length,
                 gait_phase=gait_phase,
+                tracking_ang_vel_z=tracking_ang_vel_z,
             )
             mj_data.ctrl[:] = ctrl
             touchdown_eligible = (
@@ -669,6 +676,15 @@ def run_rerun_evaluation(
             )
             done_flags = mujoco_done_flags(env, mj_data, episode_step_count)
             done = jnp.asarray(done_flags["done/any"])
+            next_tracking_ang_vel_z = env.filter_tracking_ang_vel_z(
+                tracking_ang_vel_z,
+                jnp.asarray(
+                    mujoco_link_ang_vel(
+                        env, mj_data, env._reward_link("track_ang_vel_z")
+                    )[2],
+                    dtype=jnp.float32,
+                ),
+            )
             next_state = mujoco_eval_state(
                 env,
                 mj_data,
@@ -682,6 +698,7 @@ def run_rerun_evaluation(
                 episode_track_lin_vel_xy=episode_track_lin_vel_xy,
                 episode_length=episode_length,
                 gait_phase=gait_phase,
+                tracking_ang_vel_z=next_tracking_ang_vel_z,
             )
             (
                 raw_foot_contact,
@@ -721,6 +738,7 @@ def run_rerun_evaluation(
                 episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
             )
             episode_length = episode_length + 1
+            tracking_ang_vel_z = next_tracking_ang_vel_z
             last_foot_contact = foot_contact.astype(bool)
             info = {
                 **mujoco_eval_info(env, mj_data, command=current_command),

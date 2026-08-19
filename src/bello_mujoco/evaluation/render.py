@@ -613,6 +613,7 @@ def mujoco_eval_state(
     episode_length: jax.Array,
     gait_phase: float | jax.Array | None = None,
     last_action_delta: np.ndarray | None = None,
+    tracking_ang_vel_z: float | jax.Array | None = None,
 ) -> BelloState:
     if gait_phase is None:
         moving = command_is_moving(
@@ -628,6 +629,10 @@ def mujoco_eval_state(
         )
     if last_action_delta is None:
         last_action_delta = np.zeros(env.action_size, dtype=np.float32)
+    if tracking_ang_vel_z is None:
+        tracking_ang_vel_z = mujoco_link_ang_vel(
+            env, mj_data, env._reward_link("track_ang_vel_z")
+        )[2]
     data = NativeDataView(
         qpos=jnp.asarray(np.asarray(mj_data.qpos, dtype=np.float32).copy()),
         qvel=jnp.asarray(np.asarray(mj_data.qvel, dtype=np.float32).copy()),
@@ -667,6 +672,7 @@ def mujoco_eval_state(
         data=data,
         last_action=jnp.asarray(last_action, dtype=jnp.float32),
         last_action_delta=jnp.asarray(last_action_delta, dtype=jnp.float32),
+        tracking_ang_vel_z=jnp.asarray(tracking_ang_vel_z, dtype=jnp.float32),
         actor_feedback_history=jnp.zeros(
             (
                 env.maximum_observation_delay_steps + 1,

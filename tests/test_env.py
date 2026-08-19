@@ -262,11 +262,38 @@ def test_mjx_link_kinematics_match_native_mujoco(
         )
 
 
+def test_tracking_yaw_velocity_uses_recursive_low_pass_filter(
+    full_body_asset: PreparedAsset,
+) -> None:
+    reward_config = RewardConfig(
+        tracking=replace(
+            RewardConfig().tracking,
+            ang_vel_z_lpf_cutoff_hz=5.0,
+        )
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        reward_config=reward_config,
+    )
+    previous = jnp.asarray(0.25, dtype=jnp.float32)
+    measured = jnp.asarray(1.25, dtype=jnp.float32)
+
+    filtered = env.filter_tracking_ang_vel_z(previous, measured)
+    alpha = 1.0 - np.exp(-2.0 * np.pi * 5.0 * env.control_timestep)
+
+    assert filtered == pytest.approx(0.25 + alpha, abs=1.0e-6)
+    assert env.filter_tracking_ang_vel_z(filtered, measured) > filtered
+
+
 def test_reset_batch_and_step_have_finite_fixed_shapes(
     full_body_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset, batch_size=2)
     state, observation = env.reset_batch(2, rng=jax.random.PRNGKey(0))
+    assert state.tracking_ang_vel_z == pytest.approx(
+        jax.vmap(env._raw_tracking_ang_vel_z)(state),
+        abs=1.0e-6,
+    )
     next_state, next_observation, reward, done, info = env.step_batch(
         state,
         jnp.zeros((2, env.action_size), dtype=jnp.float32),
