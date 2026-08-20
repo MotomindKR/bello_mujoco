@@ -284,6 +284,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `max_linear_acceleration` | positive float or `null`; `null` | both | Override the IMU acceleration-norm safety limit in m/s². `null` uses 100 m/s². Exceeding the limit immediately enters damped shutdown. |
 | `policy_transition_seconds` | positive float or `null`; `null` | motion | Duration of each standing-to-motion and motion-to-standing target transition. `null` uses 0.2 seconds. |
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion | Maximum robot tilt during transitions into and out of motion tracking and while motion tracking is active. `null` uses 70 degrees (approximately 1.222 radians); standing locomotion keeps its 0.70-radian limit. |
+| `action_lpf_cutoff_hz` | positive float or `null`; `null` | motion | First-order low-pass cutoff for the motion action sent to the motors and fed back as `last_action`. `null` uses 15 Hz. |
 | `status_interval_seconds` | positive float or `null`; `null` | both | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | both | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | both | `false` performs read-only preflight and sends no command. |

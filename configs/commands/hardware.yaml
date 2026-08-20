@@ -13,6 +13,7 @@ gain_scale: 1.0
 max_linear_acceleration: null
 policy_transition_seconds: null
 max_motion_tilt_radians: null
+action_lpf_cutoff_hz: null
 status_interval_seconds: null
 policy_log_path: null
 arm: false

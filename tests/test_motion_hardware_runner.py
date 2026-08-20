@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+import math
 import time
 
 import jax
@@ -245,6 +246,10 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
                 max_action_abs=2.0, max_raw_action_abs=1.0
             )
         )
+    with pytest.raises(ValueError, match="action_lpf_cutoff_hz"):
+        motion_hardware.validate_hardware_motion_config(
+            motion_hardware.HardwareMotionConfig(action_lpf_cutoff_hz=0.0)
+        )
     with pytest.raises(ValueError, match="telemetry age limits"):
         motion_hardware.validate_hardware_motion_config(
             motion_hardware.HardwareMotionConfig(max_group_age_ms=0)
@@ -345,6 +350,7 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
         anchor_body_id = 0
         anchor_body_index = 0
         maximum_observation_delay_steps = 0
+        control_timestep = 0.02
 
         def _actor_feedback(self, data):
             return data.qpos
@@ -407,8 +413,12 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
         ((0.85, -0.05), (0.85, -0.05)),
     )
     assert result.raw_action == pytest.approx((0.85, -0.05))
-    assert result.action == pytest.approx((0.5, -0.05))
-    assert result.physical_target == pytest.approx((0.5, -0.05))
+    alpha = 1.0 - math.exp(-2.0 * math.pi * 15.0 * env.control_timestep)
+    expected_action = np.asarray((0.1, 0.2)) + alpha * (
+        np.asarray((0.5, -0.05)) - np.asarray((0.1, 0.2))
+    )
+    assert result.action == pytest.approx(expected_action)
+    assert result.physical_target == pytest.approx(expected_action)
     assert not bool(result.done_flags["done/any"])
     assert float(result.anchor_position_error) == pytest.approx(1.0)
     assert float(result.anchor_orientation_error) == pytest.approx(0.0)
