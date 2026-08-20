@@ -1,3 +1,4 @@
+from dataclasses import replace
 import os
 import struct
 
@@ -376,6 +377,7 @@ def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
 
 def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
     config = EmulatorConfig()
+    assert config.asset_config.end_effector_payload_mass_kg == 0.0
     robstride = load_robstride_description(
         default_hardware_description(),
         default_motor_model_catalog(),
@@ -420,6 +422,35 @@ def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
             )
             >= 0
         )
+
+
+def test_emulator_end_effector_payload_is_configurable_per_hand() -> None:
+    payload_mass = 4.5359237
+    config = EmulatorConfig(
+        asset_config=replace(
+            EmulatorConfig().asset_config,
+            end_effector_payload_mass_kg=payload_mass,
+        )
+    )
+    prepared = prepare_asset(config.asset_config)
+    model = load_prepared_bello_model(
+        prepared,
+        terrain=FLAT_TERRAIN,
+        simulation_physics=config.simulation_physics,
+        load_mjx=False,
+    )
+
+    for body_name in (
+        "l_end_effector_sphere_link",
+        "r_end_effector_sphere_link",
+    ):
+        body_id = mujoco.mj_name2id(
+            model.mj_model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            body_name,
+        )
+        assert body_id >= 0
+        assert model.mj_model.body_mass[body_id] == pytest.approx(payload_mass)
 
 
 def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(

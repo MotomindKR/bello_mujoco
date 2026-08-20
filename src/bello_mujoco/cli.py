@@ -94,6 +94,7 @@ class VastTrainCommandConfig:
 class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...]
     command_latency_seconds: float
+    end_effector_payload_mass_kg: float
 
 
 @dataclass(frozen=True)
@@ -475,6 +476,10 @@ def _emulator_hydra(config: DictConfig) -> None:
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
             command_latency_seconds=command.command_latency_seconds,
+            asset_config=replace(
+                emulator.default_emulator_asset_config(),
+                end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
+            ),
         )
     )
 
