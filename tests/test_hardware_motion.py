@@ -145,6 +145,7 @@ def reference_frame(
             position=np.asarray(reference.qpos[:3]),
             orientation_xyzw=orientation_xyzw,
             linear_velocity=np.asarray(reference.qvel[:3]),
+            angular_velocity=np.asarray(reference.qvel[3:6]),
             sequence=1,
             source_age_ms=0,
             received_at=0.0,
@@ -215,20 +216,25 @@ def test_motion_runner_checks_nominal_pose_after_ramp(
         require_nominal_pose(replace(frame, positions=positions), adapter)
 
 
-def test_motion_hardware_preserves_body_local_gyro_at_nonzero_yaw(
+def test_motion_hardware_uses_estimator_body_local_gyro_at_nonzero_yaw(
     level4_adapter: HardwareMotionPolicyAdapter,
 ) -> None:
     adapter = level4_adapter
     frame, pose = reference_frame(adapter)
     half_sqrt_two = np.sqrt(0.5)
     orientation_xyzw = np.asarray((0.0, 0.0, half_sqrt_two, half_sqrt_two))
-    angular_velocity = np.asarray((0.4, -0.2, 0.1))
+    state_frame_angular_velocity = np.asarray((4.0, -2.0, 1.0))
+    estimator_angular_velocity = np.asarray((0.4, -0.2, 0.1))
     frame = replace(
         frame,
         orientation_xyzw=orientation_xyzw,
-        angular_velocity=angular_velocity,
+        angular_velocity=state_frame_angular_velocity,
     )
-    pose = replace(pose, orientation_xyzw=orientation_xyzw)
+    pose = replace(
+        pose,
+        orientation_xyzw=orientation_xyzw,
+        angular_velocity=estimator_angular_velocity,
+    )
     adapter.initialize_alignment(pose)
 
     hardware_state = adapter._state(frame, pose, adapter.start_time)
@@ -237,7 +243,7 @@ def test_motion_hardware_preserves_body_local_gyro_at_nonzero_yaw(
 
     np.testing.assert_allclose(
         qvel[root_qvel + 3 : root_qvel + 6],
-        angular_velocity,
+        estimator_angular_velocity,
         atol=1.0e-7,
     )
 

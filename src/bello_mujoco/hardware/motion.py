@@ -85,6 +85,7 @@ class PoseFrame:
     position: np.ndarray
     orientation_xyzw: np.ndarray
     linear_velocity: np.ndarray
+    angular_velocity: np.ndarray
     sequence: int
     source_age_ms: int
     received_at: float
@@ -367,6 +368,7 @@ class PoseStream:
                     "translation_metres",
                     "orientation_xyzw",
                     "linear_velocity_metres_per_second",
+                    "angular_velocity_radians_per_second",
                 ):
                     if not response.HasField(field):
                         raise RuntimeError(
@@ -397,11 +399,20 @@ class PoseStream:
                     ),
                     dtype=np.float64,
                 )
+                angular_velocity = np.asarray(
+                    (
+                        response.angular_velocity_radians_per_second.x,
+                        response.angular_velocity_radians_per_second.y,
+                        response.angular_velocity_radians_per_second.z,
+                    ),
+                    dtype=np.float64,
+                )
                 source_age = int(response.sample_age_ms)
                 frame = PoseFrame(
                     position=position,
                     orientation_xyzw=orientation,
                     linear_velocity=linear_velocity,
+                    angular_velocity=angular_velocity,
                     sequence=sequence,
                     source_age_ms=source_age,
                     received_at=received,
@@ -444,6 +455,7 @@ def validate_pose_frame(frame: PoseFrame, config: HardwareMotionConfig) -> None:
         "position": (frame.position, (3,)),
         "orientation": (frame.orientation_xyzw, (4,)),
         "linear velocity": (frame.linear_velocity, (3,)),
+        "angular velocity": (frame.angular_velocity, (3,)),
     }
     for name, (value, shape) in values.items():
         array = np.asarray(value)
@@ -465,6 +477,12 @@ def validate_pose_frame(frame: PoseFrame, config: HardwareMotionConfig) -> None:
         raise RuntimeError(
             f"estimated base speed {speed:.3f} m/s exceeds "
             f"{config.max_base_linear_velocity:.3f} m/s"
+        )
+    angular_speed = float(np.linalg.norm(frame.angular_velocity))
+    if angular_speed > config.max_angular_velocity:
+        raise RuntimeError(
+            f"estimated base angular speed {angular_speed:.3f} rad/s exceeds "
+            f"{config.max_angular_velocity:.3f} rad/s"
         )
 
 
@@ -588,6 +606,7 @@ class HardwareMotionPolicyAdapter:
             position=np.asarray(source.qpos[:3], dtype=np.float64),
             orientation_xyzw=wxyz_to_xyzw(np.asarray(source.qpos[3:7])),
             linear_velocity=np.asarray(source.qvel[:3], dtype=np.float64),
+            angular_velocity=np.asarray(source.qvel[3:6], dtype=np.float64),
             sequence=0,
             source_age_ms=0,
             received_at=time.monotonic(),
@@ -699,8 +718,8 @@ class HardwareMotionPolicyAdapter:
         qpos[root + 3 : root + 7] = root_quat
         qpos[model.actuator_qpos_indices] = logical_position
         qvel[root_velocity : root_velocity + 3] = pose.linear_velocity
-        # The hardware gyro and MuJoCo free-joint angular qvel are both root-local.
-        qvel[root_velocity + 3 : root_velocity + 6] = frame.angular_velocity
+        # The estimator gyro and MuJoCo free-joint angular qvel are both root-local.
+        qvel[root_velocity + 3 : root_velocity + 6] = pose.angular_velocity
         qvel[model.actuator_qvel_indices] = logical_velocity
         self._mj_data.qpos[:] = qpos
         self._mj_data.qvel[:] = qvel
@@ -776,9 +795,7 @@ def validate_hardware_motion_config(
         not math.isfinite(config.end_effector_payload_mass_kg)
         or config.end_effector_payload_mass_kg < 0.0
     ):
-        raise ValueError(
-            "end_effector_payload_mass_kg must be finite and nonnegative"
-        )
+        raise ValueError("end_effector_payload_mass_kg must be finite and nonnegative")
     if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
         raise ValueError("start_time_seconds must be finite and nonnegative")
     if env is not None and config.start_time_seconds >= env.motion.duration:
@@ -801,14 +818,11 @@ def load_hardware_motion_policy(
         allow_git_commit_mismatch=config.allow_git_commit_mismatch,
     )
     checkpoint_payload_mass = runtime.metadata.asset.end_effector_payload_mass_kg
-    if (
-        config.end_effector_payload_mass_kg is not None
-        and not math.isclose(
-            config.end_effector_payload_mass_kg,
-            checkpoint_payload_mass,
-            rel_tol=0.0,
-            abs_tol=1.0e-6,
-        )
+    if config.end_effector_payload_mass_kg is not None and not math.isclose(
+        config.end_effector_payload_mass_kg,
+        checkpoint_payload_mass,
+        rel_tol=0.0,
+        abs_tol=1.0e-6,
     ):
         raise ValueError(
             "configured end-effector payload does not match the motion checkpoint: "

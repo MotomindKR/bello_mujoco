@@ -490,19 +490,29 @@ def publish_body_pose(
 
     position = np.asarray(data.xpos[body_id])
     quaternion = np.asarray(data.xquat[body_id])
-    velocity = np.empty(6, dtype=np.float64)
+    world_velocity = np.empty(6, dtype=np.float64)
     mujoco.mj_objectVelocity(
         model,
         data,
         mujoco.mjtObj.mjOBJ_BODY,
         body_id,
-        velocity,
+        world_velocity,
         0,
+    )
+    local_velocity = np.empty(6, dtype=np.float64)
+    mujoco.mj_objectVelocity(
+        model,
+        data,
+        mujoco.mjtObj.mjOBJ_BODY,
+        body_id,
+        local_velocity,
+        1,
     )
     server.publish(
         tuple(float(value) for value in position),
         tuple(float(value) for value in quaternion),
-        tuple(float(value) for value in velocity[3:]),
+        tuple(float(value) for value in world_velocity[3:]),
+        tuple(float(value) for value in local_velocity[:3]),
         sample_monotonic_ns=time.monotonic_ns(),
     )
 

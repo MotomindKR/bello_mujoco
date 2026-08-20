@@ -21,6 +21,7 @@ def pose_frame(*, age_ms: int = 0) -> motion_hardware.PoseFrame:
         position=np.asarray((0.0, 0.0, 0.8)),
         orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
         linear_velocity=np.zeros(3),
+        angular_velocity=np.zeros(3),
         sequence=1,
         source_age_ms=age_ms,
         received_at=time.monotonic(),
@@ -39,6 +40,7 @@ def test_pose_validation_is_fail_closed() -> None:
                 position=np.zeros(3),
                 orientation_xyzw=np.zeros(4),
                 linear_velocity=np.zeros(3),
+                angular_velocity=np.zeros(3),
                 sequence=1,
                 source_age_ms=0,
                 received_at=time.monotonic(),
@@ -50,6 +52,16 @@ def test_pose_validation_is_fail_closed() -> None:
             replace(pose_frame(), position=np.zeros(2)),
             config,
         )
+    with pytest.raises(RuntimeError, match="angular velocity must contain 3"):
+        motion_hardware.validate_pose_frame(
+            replace(pose_frame(), angular_velocity=np.zeros(2)),
+            config,
+        )
+    with pytest.raises(RuntimeError, match="estimated base angular speed"):
+        motion_hardware.validate_pose_frame(
+            replace(pose_frame(), angular_velocity=np.asarray((21.0, 0.0, 0.0))),
+            config,
+        )
 
 
 def pose_response(
@@ -58,6 +70,7 @@ def pose_response(
     sample_monotonic_ns: int,
     position: tuple[float, float, float],
     velocity: tuple[float, float, float] | None,
+    angular_velocity: tuple[float, float, float] | None = (0.0, 0.0, 0.0),
 ):
     response = motion_hardware._pose_pb2.WatchPoseResponse(
         reference_frame="odom",
@@ -80,10 +93,18 @@ def pose_response(
                 z=velocity[2],
             )
         )
+    if angular_velocity is not None:
+        response.angular_velocity_radians_per_second.CopyFrom(
+            motion_hardware._pose_pb2.AngularVelocity(
+                x=angular_velocity[0],
+                y=angular_velocity[1],
+                z=angular_velocity[2],
+            )
+        )
     return response
 
 
-def test_pose_stream_uses_estimator_velocity_without_differentiating_position() -> None:
+def test_pose_stream_uses_estimator_velocities_without_differentiating_pose() -> None:
     stream = motion_hardware.PoseStream(
         motion_hardware.HardwareMotionConfig(max_base_linear_velocity=0.5)
     )
@@ -94,12 +115,14 @@ def test_pose_stream_uses_estimator_velocity_without_differentiating_position() 
                 sample_monotonic_ns=1_000_000,
                 position=(0.0, 0.0, 0.8),
                 velocity=(0.1, 0.2, 0.0),
+                angular_velocity=(0.3, 0.4, 0.5),
             ),
             pose_response(
                 sequence=2,
                 sample_monotonic_ns=3_000_000,
                 position=(10.0, -10.0, 0.8),
                 velocity=(0.1, 0.2, 0.0),
+                angular_velocity=(0.3, 0.4, 0.5),
             ),
         )
     )
@@ -110,6 +133,7 @@ def test_pose_stream_uses_estimator_velocity_without_differentiating_position() 
     assert latest.sequence == 2
     assert latest.position == pytest.approx((10.0, -10.0, 0.8))
     assert latest.linear_velocity == pytest.approx((0.1, 0.2, 0.0))
+    assert latest.angular_velocity == pytest.approx((0.3, 0.4, 0.5))
 
 
 def test_pose_stream_requires_estimator_velocity() -> None:
@@ -130,6 +154,27 @@ def test_pose_stream_requires_estimator_velocity() -> None:
     with pytest.raises(RuntimeError, match="pose-estimator stream failed") as raised:
         stream.latest()
     assert "no linear velocity" in str(raised.value.__cause__)
+
+
+def test_pose_stream_requires_estimator_angular_velocity() -> None:
+    stream = motion_hardware.PoseStream(motion_hardware.HardwareMotionConfig())
+    stream._call = iter(
+        (
+            pose_response(
+                sequence=1,
+                sample_monotonic_ns=1_000_000,
+                position=(0.0, 0.0, 0.8),
+                velocity=(0.0, 0.0, 0.0),
+                angular_velocity=None,
+            ),
+        )
+    )
+
+    stream._consume()
+
+    with pytest.raises(RuntimeError, match="pose-estimator stream failed") as raised:
+        stream.latest()
+    assert "no angular velocity" in str(raised.value.__cause__)
 
 
 def test_pose_stream_requires_source_timestamp() -> None:
@@ -181,9 +226,7 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
     assert motion_hardware.HardwareMotionConfig().max_state_sample_span_ms == 40.0
     with pytest.raises(ValueError, match="end_effector_payload_mass_kg"):
         motion_hardware.validate_hardware_motion_config(
-            motion_hardware.HardwareMotionConfig(
-                end_effector_payload_mass_kg=-1.0
-            )
+            motion_hardware.HardwareMotionConfig(end_effector_payload_mass_kg=-1.0)
         )
     motion_hardware.validate_hardware_motion_config(
         motion_hardware.HardwareMotionConfig(max_duration_seconds=None)
@@ -238,16 +281,12 @@ def test_motion_hardware_rejects_payload_mismatch(
     with pytest.raises(ValueError, match="does not match the motion checkpoint"):
         motion_hardware.load_hardware_motion_policy(
             Path("checkpoint"),
-            motion_hardware.HardwareMotionConfig(
-                end_effector_payload_mass_kg=3.0
-            ),
+            motion_hardware.HardwareMotionConfig(end_effector_payload_mass_kg=3.0),
         )
 
     adapter, restored = motion_hardware.load_hardware_motion_policy(
         Path("checkpoint"),
-        motion_hardware.HardwareMotionConfig(
-            end_effector_payload_mass_kg=4.5359237
-        ),
+        motion_hardware.HardwareMotionConfig(end_effector_payload_mass_kg=4.5359237),
     )
     assert adapter is not None
     assert restored is metadata

@@ -42,8 +42,9 @@ differential-ankle transform.
 
 Observations include aligned reference state, anchor/body tracking features,
 base and joint state, previous action, and optional noise. Root linear velocity
-uses world coordinates in MuJoCo state, while root angular velocity and the
-hardware gyro use the root-local free-joint convention. Training can:
+uses world coordinates in MuJoCo state. Root angular velocity uses the root-local
+free-joint convention; physical motion deployment receives it from the pose
+estimator's filtered local gyro output. Training can:
 
 - randomize reference start time and initial root/joint state;
 - perturb observations;

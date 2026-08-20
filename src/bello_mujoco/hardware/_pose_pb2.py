@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n!bello_mujoco/hardware/_pose.proto\x12\rbello.pose.v1\"B\n\x10WatchPoseRequest\x12\x17\n\x0freference_frame\x18\x01 \x01(\t\x12\x15\n\rtracked_frame\x18\x02 \x01(\t\".\n\x0bTranslation\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\"1\n\x0eLinearVelocity\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\"9\n\x0bOrientation\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\x12\t\n\x01w\x18\x04 \x01(\x01\"\xc1\x02\n\x11WatchPoseResponse\x12\x17\n\x0freference_frame\x18\x01 \x01(\t\x12\x15\n\rtracked_frame\x18\x02 \x01(\t\x12\x10\n\x08sequence\x18\x03 \x01(\x04\x12\x36\n\x12translation_metres\x18\x04 \x01(\x0b\x32\x1a.bello.pose.v1.Translation\x12\x34\n\x10orientation_xyzw\x18\x05 \x01(\x0b\x32\x1a.bello.pose.v1.Orientation\x12\x15\n\rsample_age_ms\x18\x06 \x01(\x04\x12H\n!linear_velocity_metres_per_second\x18\x07 \x01(\x0b\x32\x1d.bello.pose.v1.LinearVelocity\x12\x1b\n\x13sample_monotonic_ns\x18\x08 \x01(\x04\x32_\n\x0bPoseService\x12P\n\tWatchPose\x12\x1f.bello.pose.v1.WatchPoseRequest\x1a .bello.pose.v1.WatchPoseResponse0\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n!bello_mujoco/hardware/_pose.proto\x12\rbello.pose.v1\"B\n\x10WatchPoseRequest\x12\x17\n\x0freference_frame\x18\x01 \x01(\t\x12\x15\n\rtracked_frame\x18\x02 \x01(\t\".\n\x0bTranslation\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\"1\n\x0eLinearVelocity\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\"2\n\x0f\x41ngularVelocity\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\"9\n\x0bOrientation\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\x12\t\n\x01w\x18\x04 \x01(\x01\"\x8e\x03\n\x11WatchPoseResponse\x12\x17\n\x0freference_frame\x18\x01 \x01(\t\x12\x15\n\rtracked_frame\x18\x02 \x01(\t\x12\x10\n\x08sequence\x18\x03 \x01(\x04\x12\x36\n\x12translation_metres\x18\x04 \x01(\x0b\x32\x1a.bello.pose.v1.Translation\x12\x34\n\x10orientation_xyzw\x18\x05 \x01(\x0b\x32\x1a.bello.pose.v1.Orientation\x12\x15\n\rsample_age_ms\x18\x06 \x01(\x04\x12H\n!linear_velocity_metres_per_second\x18\x07 \x01(\x0b\x32\x1d.bello.pose.v1.LinearVelocity\x12\x1b\n\x13sample_monotonic_ns\x18\x08 \x01(\x04\x12K\n#angular_velocity_radians_per_second\x18\t \x01(\x0b\x32\x1e.bello.pose.v1.AngularVelocity2_\n\x0bPoseService\x12P\n\tWatchPose\x12\x1f.bello.pose.v1.WatchPoseRequest\x1a .bello.pose.v1.WatchPoseResponse0\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -37,10 +37,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_TRANSLATION']._serialized_end=166
   _globals['_LINEARVELOCITY']._serialized_start=168
   _globals['_LINEARVELOCITY']._serialized_end=217
-  _globals['_ORIENTATION']._serialized_start=219
-  _globals['_ORIENTATION']._serialized_end=276
-  _globals['_WATCHPOSERESPONSE']._serialized_start=279
-  _globals['_WATCHPOSERESPONSE']._serialized_end=600
-  _globals['_POSESERVICE']._serialized_start=602
-  _globals['_POSESERVICE']._serialized_end=697
+  _globals['_ANGULARVELOCITY']._serialized_start=219
+  _globals['_ANGULARVELOCITY']._serialized_end=269
+  _globals['_ORIENTATION']._serialized_start=271
+  _globals['_ORIENTATION']._serialized_end=328
+  _globals['_WATCHPOSERESPONSE']._serialized_start=331
+  _globals['_WATCHPOSERESPONSE']._serialized_end=729
+  _globals['_POSESERVICE']._serialized_start=731
+  _globals['_POSESERVICE']._serialized_end=826
 # @@protoc_insertion_point(module_scope)
