@@ -421,6 +421,11 @@ Git commit. `allow_git_commit_mismatch=true` bypasses only that equality check.
 Checkpoint document integrity, metadata and state layout hashes, normalization
 state, saved update, task, and actor/critic observation and action runtime
 sizes/layouts are still validated.
+Checkpoints created before the PPO symmetry-loss field was introduced load it
+as zero. This preserves their original policy and affects neither inference nor
+the saved parameter layout. Legacy locomotion checkpoints similarly load newer
+reward weights as zero and missing joint-specific smoothness multipliers as one,
+preserving their original reward calculation if resumed.
 Resume additionally validates and restores environment continuation,
 observation stacks, RNG, current learning rate, sampler state, environment
 layout, and the full resume contract. A changed `total_timesteps` is allowed

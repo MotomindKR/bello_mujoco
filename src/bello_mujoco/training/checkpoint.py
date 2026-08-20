@@ -569,6 +569,13 @@ def _with_checkpoint_metadata_defaults(
         return value
     if allow_retired_asset_schema:
         value = _without_retired_asset_schema(value)
+    ppo = value.get("ppo")
+    if isinstance(ppo, dict) and "symmetry_loss_coef" not in ppo:
+        normalized = dict(value)
+        normalized_ppo = dict(ppo)
+        normalized_ppo["symmetry_loss_coef"] = 0.0
+        normalized["ppo"] = normalized_ppo
+        value = normalized
     asset = value.get("asset")
     if isinstance(asset, dict) and "end_effector_payload_mass_kg" not in asset:
         normalized = dict(value)
@@ -597,10 +604,12 @@ def _with_checkpoint_metadata_defaults(
             if isinstance(weights, dict):
                 normalized_weights = dict(weights)
                 for name in (
+                    "action_acceleration",
                     "joint_force_peak",
                     "touchdown_impact",
                     "stand_still",
                     "stand_contact",
+                    "stand_foot_heading",
                 ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
@@ -619,6 +628,11 @@ def _with_checkpoint_metadata_defaults(
                     if name not in normalized_gait:
                         normalized_gait[name] = default
                 normalized_reward["gait"] = normalized_gait
+            if "smoothness" not in reward:
+                normalized_reward["smoothness"] = {
+                    "ankle_action_weight": 1.0,
+                    "waist_action_weight": 1.0,
+                }
             normalized["reward"] = normalized_reward
         return normalized
     if value.get("task") != "motion_tracking":

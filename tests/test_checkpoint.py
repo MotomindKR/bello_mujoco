@@ -543,6 +543,26 @@ def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(
     assert restored.env.observation_latency.delay_steps == (0, 0)
 
 
+def test_checkpoint_without_symmetry_loss_loads_with_loss_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_checkpoint_without_symmetry_loss"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["ppo"].pop("symmetry_loss_coef")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert restored.ppo.symmetry_loss_coef == 0.0
+
+
 def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     tmp_path: Path,
 ) -> None:
@@ -555,10 +575,12 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     metadata_path = path / checkpoint.METADATA_FILE
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
     for name in (
+        "action_acceleration",
         "joint_force_peak",
         "touchdown_impact",
         "stand_still",
         "stand_contact",
+        "stand_foot_heading",
     ):
         document["metadata"]["reward"]["weights"].pop(name)
     for name in (
@@ -569,18 +591,23 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
         "touchdown_vertical_speed_scale",
     ):
         document["metadata"]["reward"]["gait"].pop(name)
+    document["metadata"]["reward"].pop("smoothness")
     document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
     metadata_path.write_text(json.dumps(document), encoding="utf-8")
 
     _, restored, _ = restore_evaluation_checkpoint(path)
 
+    assert restored.reward.weights.action_acceleration == 0.0
     assert restored.reward.weights.joint_force_peak == 0.0
     assert restored.reward.weights.touchdown_impact == 0.0
     assert restored.reward.weights.stand_still == 0.0
     assert restored.reward.weights.stand_contact == 0.0
+    assert restored.reward.weights.stand_foot_heading == 0.0
     assert restored.reward.gait.joint_force_soft_limit_body_weights == 1.0
     assert restored.reward.gait.joint_force_top_k == 12
     assert not restored.reward.gait.joint_force_apply_while_standing
+    assert restored.reward.smoothness.ankle_action_weight == 1.0
+    assert restored.reward.smoothness.waist_action_weight == 1.0
 
 
 def test_locomotion_checkpoint_without_gait_phase_contract_is_rejected(
