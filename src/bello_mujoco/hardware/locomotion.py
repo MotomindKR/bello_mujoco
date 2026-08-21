@@ -61,6 +61,7 @@ class UpperBodyFollowConfig:
     max_reference_joint_speed_rps: float = 25.0
     max_reference_joint_limit_violation_radians: float = 0.01
     max_target_speed_rps: float = 3.0 * math.pi
+    elbow_yaw_offset_radians: float = 0.0
     connection_transition_duration_seconds: float = 1.0
 
 
@@ -154,6 +155,20 @@ class HardwarePolicyAdapter:
         self.upper_body_qvel_indices = np.asarray(
             env.model.actuator_qvel_indices[self.upper_body_indices], dtype=np.int32
         )
+        self.upper_body_elbow_yaw_indices = np.asarray(
+            [
+                upper_index
+                for upper_index, actuator_index in enumerate(self.upper_body_indices)
+                if env.model.actuator_joint_names[int(actuator_index)].endswith(
+                    "_elbow_yaw_joint"
+                )
+            ],
+            dtype=np.int32,
+        )
+        if self.upper_body_elbow_yaw_indices.shape != (2,):
+            raise ValueError(
+                "hardware upper body must contain exactly two elbow-yaw joints"
+            )
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
         )
@@ -443,7 +458,10 @@ class HardwarePolicyAdapter:
         self.validate_upper_body_reference(reference, live=live)
         desired = np.asarray(reference.qpos, dtype=np.float64)[
             self.upper_body_qpos_indices
-        ]
+        ].copy()
+        desired[self.upper_body_elbow_yaw_indices] += (
+            self.upper_body_follow.elbow_yaw_offset_radians
+        )
         low = self.env.model.joint_target_low[self.upper_body_indices]
         high = self.env.model.joint_target_high[self.upper_body_indices]
         return np.clip(desired, low, high)
@@ -599,6 +617,8 @@ def validate_hardware_config(
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"upper_body_follow.{name} must be positive and finite")
+    if not math.isfinite(upper.elbow_yaw_offset_radians):
+        raise ValueError("upper_body_follow.elbow_yaw_offset_radians must be finite")
     if (
         not math.isfinite(config.smplx_human_height_m)
         or config.smplx_human_height_m <= 0.0

@@ -519,6 +519,31 @@ def test_locomotion_overlays_only_slew_limited_upper_body_reference(
     assert recovered.reference_sequence == 3
 
 
+def test_locomotion_applies_configured_and_clipped_elbow_yaw_offset(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    adapter.upper_body_follow = replace(
+        adapter.upper_body_follow,
+        elbow_yaw_offset_radians=np.pi / 2.0,
+    )
+    upper = adapter.upper_body_indices
+    desired = adapter.default_joint_target[upper]
+    low = hardware_env.model.joint_target_low[upper]
+    high = hardware_env.model.joint_target_high[upper]
+    target = adapter._reference_upper_body_target(
+        hardware_reference(adapter, desired),
+        live=True,
+    )
+    elbow_yaw = adapter.upper_body_elbow_yaw_indices
+    expected = desired.copy()
+    expected[elbow_yaw] += np.pi / 2.0
+    expected = np.clip(expected, low, high)
+
+    assert target == pytest.approx(expected)
+    assert target[elbow_yaw] == pytest.approx(high[elbow_yaw])
+
+
 def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
@@ -568,6 +593,7 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.acknowledgement_timeout_seconds == pytest.approx(0.5)
     assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
     assert config.hardware.remote.staleness_ms == 200
+    assert config.hardware.upper_body_follow.elbow_yaw_offset_radians == 0.0
     validate_hardware_config(config.hardware)
     validate_hardware_config(pose_hardware_config(arm=True))
     with pytest.raises(ValueError, match="smplx_neutral_model_path"):
@@ -596,6 +622,15 @@ def test_hardware_runner_defaults_to_read_only() -> None:
                 upper_body_follow=replace(
                     UpperBodyFollowConfig(),
                     connection_transition_duration_seconds=0.0,
+                )
+            )
+        )
+    with pytest.raises(ValueError, match="elbow_yaw_offset_radians"):
+        validate_hardware_config(
+            pose_hardware_config(
+                upper_body_follow=replace(
+                    UpperBodyFollowConfig(),
+                    elbow_yaw_offset_radians=np.nan,
                 )
             )
         )

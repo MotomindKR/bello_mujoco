@@ -358,6 +358,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `fastsam_align_initial_floor` | boolean; `true` | locomotion, twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
 | `smplx_neutral_model_path` | path or `null`; `null` | locomotion, twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
 | `smplx_human_height_m` | positive float; `1.66` | locomotion, twist2 | Human height supplied to the pinned GMR scale table. |
+| `upper_body_follow.elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Offset added to both GMR elbow-yaw targets before each target is clipped to its configured range. Set `1.57079632679` for a positive 90-degree offset. |
+| `upper_body_follow.connection_transition_duration_seconds` | positive float; `1.0` | locomotion | Blend duration from live upper-body tracking to GMR standing on source loss and back to live tracking after recovery. |
 
 Task-specific fields must not be explicitly supplied to an inapplicable task,
 even if the supplied value equals the documented default.
