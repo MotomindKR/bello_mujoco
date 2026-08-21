@@ -109,6 +109,10 @@ stop-confirm-disable sequence. A hard fault or lost daemon connection can
 prevent part of this handshake. The external hardware daemon remains the final
 authority for command validity, leases, damping, and device faults.
 
+Motor commands remain valid for 80 ms. Their asynchronous gRPC acknowledgement
+may arrive up to 500 ms after submission; this longer client-side receipt window
+does not extend command validity or delay the daemon's command-timeout damping.
+
 ## Locomotion mode
 
 Locomotion checkpoints must use the sphere-hand physical morphology, active

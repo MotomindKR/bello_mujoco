@@ -19,7 +19,7 @@ class HardwareControlConfig:
     connection_timeout_seconds: float = 3.0
     telemetry_timeout_seconds: float = 2.0
     command_validity_seconds: float = 0.08
-    acknowledgement_timeout_seconds: float = 0.08
+    acknowledgement_timeout_seconds: float = 0.5
     rpc_timeout_seconds: float = 2.0
     ramp_seconds: float = 10.0
     gain_scale: float = 1.0

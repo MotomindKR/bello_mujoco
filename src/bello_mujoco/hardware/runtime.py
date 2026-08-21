@@ -97,6 +97,10 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be positive and finite")
+    if config.acknowledgement_timeout_seconds <= config.command_validity_seconds:
+        raise ValueError(
+            "acknowledgement_timeout_seconds must exceed command_validity_seconds"
+        )
     if config.gain_scale > 1.0:
         raise ValueError("gain_scale must be at most 1.0")
     if config.max_duration_seconds is not None and (

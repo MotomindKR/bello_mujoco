@@ -553,6 +553,8 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     config = compose_hardware_runner_config()
 
     assert not config.hardware.arm
+    assert config.hardware.command_validity_seconds == pytest.approx(0.08)
+    assert config.hardware.acknowledgement_timeout_seconds == pytest.approx(0.5)
     assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
     assert config.hardware.remote.staleness_ms == 200
     validate_hardware_config(config.hardware)
@@ -573,6 +575,10 @@ def test_hardware_runner_defaults_to_read_only() -> None:
         validate_hardware_config(pose_hardware_config(gain_scale=0.0))
     with pytest.raises(ValueError, match="gain_scale"):
         validate_hardware_config(pose_hardware_config(gain_scale=1.01))
+    with pytest.raises(ValueError, match="acknowledgement_timeout_seconds"):
+        validate_hardware_config(
+            pose_hardware_config(acknowledgement_timeout_seconds=0.08)
+        )
 
 
 def test_coordinate_targets_use_policy_gains() -> None:
