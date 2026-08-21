@@ -22,6 +22,7 @@ def test_pose_service_streams_latest_world_state_in_xyzw_order() -> None:
             (1.0, 2.0, 3.0),
             (1.0, 0.0, 0.0, 0.0),
             (0.1, 0.2, 0.3),
+            (0.4, 0.5, 0.6),
             sample_monotonic_ns=time.monotonic_ns(),
         )
         source_ns = time.monotonic_ns() - 20_000_000
@@ -29,6 +30,7 @@ def test_pose_service_streams_latest_world_state_in_xyzw_order() -> None:
             (4.0, 5.0, 6.0),
             (2.0, 0.0, 0.0, 0.0),
             (0.4, 0.5, 0.6),
+            (0.7, 0.8, 0.9),
             sample_monotonic_ns=source_ns,
         )
         with grpc.insecure_channel(f"127.0.0.1:{server.port}") as channel:
@@ -55,6 +57,9 @@ def test_pose_service_streams_latest_world_state_in_xyzw_order() -> None:
     assert sample.linear_velocity_metres_per_second.x == pytest.approx(0.4)
     assert sample.linear_velocity_metres_per_second.y == pytest.approx(0.5)
     assert sample.linear_velocity_metres_per_second.z == pytest.approx(0.6)
+    assert sample.angular_velocity_radians_per_second.x == pytest.approx(0.7)
+    assert sample.angular_velocity_radians_per_second.y == pytest.approx(0.8)
+    assert sample.angular_velocity_radians_per_second.z == pytest.approx(0.9)
     assert sample.sample_monotonic_ns == source_ns
     assert sample.sample_age_ms >= 15
 
@@ -83,6 +88,7 @@ def test_pose_service_rejects_invalid_samples() -> None:
                 (float("nan"), 0.0, 0.0),
                 (1.0, 0.0, 0.0, 0.0),
                 (0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0),
                 sample_monotonic_ns=time.monotonic_ns(),
             )
         with pytest.raises(ValueError, match="nonzero norm"):
@@ -90,12 +96,14 @@ def test_pose_service_rejects_invalid_samples() -> None:
                 (0.0, 0.0, 0.0),
                 (0.0, 0.0, 0.0, 0.0),
                 (0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0),
                 sample_monotonic_ns=time.monotonic_ns(),
             )
         with pytest.raises(ValueError, match="timestamp must be positive"):
             server.publish(
                 (0.0, 0.0, 0.0),
                 (1.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0),
                 (0.0, 0.0, 0.0),
                 sample_monotonic_ns=0,
             )

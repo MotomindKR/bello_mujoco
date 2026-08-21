@@ -74,6 +74,7 @@ class VastTrainConfig:
     allow_git_commit_mismatch: bool = False
     total_timesteps: int | None = None
     learning_rate: float | None = None
+    end_effector_payload_mass_kg: float | None = None
     max_price: float | None = None
     branch: str | None = None
     run_name: str | None = None
@@ -155,8 +156,21 @@ def validate_config(config: VastTrainConfig) -> None:
         if config.motion_path is None:
             raise ValueError("--motion-path is required for the motion experiment")
         _repository_motion_path(config.motion_path)
-    elif config.motion_path is not None:
-        raise ValueError("--motion-path is only valid for the motion experiment")
+        if config.end_effector_payload_mass_kg is not None and (
+            not math.isfinite(config.end_effector_payload_mass_kg)
+            or config.end_effector_payload_mass_kg < 0.0
+        ):
+            raise ValueError(
+                "--end-effector-payload-mass-kg must be finite and nonnegative"
+            )
+    elif (
+        config.motion_path is not None
+        or config.end_effector_payload_mass_kg is not None
+    ):
+        raise ValueError(
+            "--motion-path and --end-effector-payload-mass-kg are only valid "
+            "for the motion experiment"
+        )
     if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
         if config.dataset_path is None:
             raise ValueError("--dataset-path is required for TWIST Vast training")

@@ -793,6 +793,20 @@ def _with_checkpoint_metadata_defaults(
         return value
     if allow_retired_asset_schema:
         value = _without_retired_asset_schema(value)
+    ppo = value.get("ppo")
+    if isinstance(ppo, dict) and "symmetry_loss_coef" not in ppo:
+        normalized = dict(value)
+        normalized_ppo = dict(ppo)
+        normalized_ppo["symmetry_loss_coef"] = 0.0
+        normalized["ppo"] = normalized_ppo
+        value = normalized
+    asset = value.get("asset")
+    if isinstance(asset, dict) and "end_effector_payload_mass_kg" not in asset:
+        normalized = dict(value)
+        normalized_asset = dict(asset)
+        normalized_asset["end_effector_payload_mass_kg"] = 0.0
+        normalized["asset"] = normalized_asset
+        value = normalized
     if value.get("task") == "locomotion":
         normalized = dict(value)
         ppo = value.get("ppo")
@@ -851,11 +865,11 @@ def _with_checkpoint_metadata_defaults(
             if isinstance(weights, dict):
                 normalized_weights = dict(weights)
                 for name in (
+                    "action_acceleration",
                     "joint_force_peak",
                     "touchdown_impact",
                     "stand_still",
                     "stand_contact",
-                    "action_acceleration",
                     "stand_foot_heading",
                 ):
                     if name not in normalized_weights:
@@ -863,9 +877,22 @@ def _with_checkpoint_metadata_defaults(
                 normalized_reward["weights"] = normalized_weights
             if "smoothness" not in normalized_reward:
                 normalized_reward["smoothness"] = {
-                    "ankle_action_weight": 2.0,
-                    "waist_action_weight": 2.0,
+                    "ankle_action_weight": 1.0,
+                    "waist_action_weight": 1.0,
                 }
+            tracking = reward.get("tracking")
+            if isinstance(tracking, dict) and "ang_vel_z_lpf_cutoff_hz" not in tracking:
+                normalized_tracking = dict(tracking)
+                normalized_tracking["ang_vel_z_lpf_cutoff_hz"] = 5.0
+                normalized_reward["tracking"] = normalized_tracking
+            standing = reward.get("standing")
+            if isinstance(standing, dict):
+                normalized_standing = dict(standing)
+                normalized_standing.setdefault(
+                    "foot_heading_deadband", math.radians(5.0)
+                )
+                normalized_standing.setdefault("foot_heading_scale", math.radians(15.0))
+                normalized_reward["standing"] = normalized_standing
             gait = reward.get("gait")
             if isinstance(gait, dict):
                 normalized_gait = dict(gait)

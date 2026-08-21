@@ -33,6 +33,7 @@ def load_motion_policy_runtime(
     checkpoint_path: Path,
     *,
     motion_path: Path | None = None,
+    end_effector_payload_mass_kg: float | None = None,
     use_viewer_model: bool,
     allow_git_commit_mismatch: bool = False,
 ) -> MotionPolicyRuntime:
@@ -48,11 +49,17 @@ def load_motion_policy_runtime(
         else Path(motion_path)
     )
     env_config = replace(metadata.motion_env, motion_path=resolved_motion_path)
-    prepared = prepare_asset(metadata.asset)
+    asset = metadata.asset
+    if end_effector_payload_mass_kg is not None:
+        asset = replace(
+            asset,
+            end_effector_payload_mass_kg=end_effector_payload_mass_kg,
+        )
+    prepared = prepare_asset(asset)
     env = BelloMotionTrackingEnv.load_prepared_native(
         prepared,
         env_config,
-        actuator_config=metadata.asset.actuator_config,
+        actuator_config=asset.actuator_config,
         use_viewer_model=use_viewer_model,
     )
     validate_motion_checkpoint_runtime(env, metadata)

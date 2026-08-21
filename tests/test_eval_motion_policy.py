@@ -7,6 +7,7 @@ import pytest
 
 import bello_mujoco.evaluation.motion as eval_motion
 import bello_mujoco.motion.runtime as motion_runtime
+from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.policy import ActorCriticConfig
@@ -27,7 +28,7 @@ def motion_metadata(
     stack_size = ppo.policy.obs_stack_size
     return MotionCheckpointMetadata(
         ppo=ppo,
-        asset=SimpleNamespace(actuator_config=object()),
+        asset=AssetPrepConfig(),
         warp=object(),
         obs_size=ACTOR_LAYOUT.size * stack_size,
         critic_obs_size=CRITIC_LAYOUT.size * stack_size,
@@ -179,6 +180,49 @@ def test_relocated_motion_is_loaded_validated_and_rendered(
     assert render_kwargs["obs_stack_size"] == 3
     assert render_kwargs["observation_norm_state"] is normalization.observation
     assert result == rollout_stats()
+
+
+def test_motion_runtime_can_override_payload_mass_for_evaluation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    motion_path = tmp_path / "motion.npz"
+    metadata = motion_metadata(motion_path)
+    env = motion_runtime_env()
+    loaded_assets = []
+    monkeypatch.setattr(
+        motion_runtime,
+        "restore_evaluation_checkpoint",
+        lambda *args, **kwargs: (
+            SimpleNamespace(policy=object()),
+            metadata,
+            SimpleNamespace(observation=object()),
+        ),
+    )
+    monkeypatch.setattr(
+        motion_runtime,
+        "prepare_asset",
+        lambda asset: loaded_assets.append(asset) or object(),
+    )
+    monkeypatch.setattr(
+        motion_runtime.BelloMotionTrackingEnv,
+        "load_prepared_native",
+        staticmethod(lambda *args, **kwargs: env),
+    )
+    monkeypatch.setattr(
+        motion_runtime,
+        "validate_motion_clip_contract",
+        lambda *args: None,
+    )
+
+    motion_runtime.load_motion_policy_runtime(
+        tmp_path / "checkpoint",
+        motion_path=motion_path,
+        end_effector_payload_mass_kg=4.5359237,
+        use_viewer_model=True,
+    )
+
+    assert loaded_assets[0].end_effector_payload_mass_kg == pytest.approx(4.5359237)
+    assert metadata.asset.end_effector_payload_mass_kg == 0.0
 
 
 def test_relocated_motion_validation_failure_prevents_rollout(

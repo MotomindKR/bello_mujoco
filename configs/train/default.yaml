@@ -47,6 +47,7 @@ asset_config:
   mesh_face_budget: 1000
   visual_mesh_face_budget: 200000
   target_total_mass_kg: null
+  end_effector_payload_mass_kg: 0.0
   neighbor_exclusion_depth: 2
   # Match hardware saturation in dynamics. The reward separately measures the
   # unclipped servo demand before this physical limit is applied.

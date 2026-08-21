@@ -6,12 +6,14 @@ endpoint: http://127.0.0.1:50051
 remote_endpoint: null
 remote_staleness_ms: 200
 motion_path: null
+end_effector_payload_mass_kg: null
 duration_seconds: null
 ramp_seconds: null
 gain_scale: 1.0
 max_linear_acceleration: null
 policy_transition_seconds: null
 max_motion_tilt_radians: null
+action_lpf_cutoff_hz: null
 status_interval_seconds: null
 policy_log_path: null
 arm: false

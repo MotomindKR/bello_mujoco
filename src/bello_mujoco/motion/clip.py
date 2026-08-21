@@ -106,6 +106,7 @@ def motion_tracking_asset_config(
     *,
     collision_mode: CollisionMode = "box",
     output_root: Path | None = None,
+    end_effector_payload_mass_kg: float = 0.0,
 ) -> AssetPrepConfig:
     """Return the fixed-head, sphere-hand asset used by motion workflows."""
 
@@ -114,6 +115,7 @@ def motion_tracking_asset_config(
         output_root=output_root,
         collision_mode=collision_mode,
         target_total_mass_kg=None,
+        end_effector_payload_mass_kg=end_effector_payload_mass_kg,
         enforce_policy_effort_limits=False,
         joint_availability=FIXED_TRACKING_JOINT_AVAILABILITY,
         actuator_config=motion_tracking_actuator_config(),

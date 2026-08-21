@@ -81,6 +81,46 @@ def test_prepared_asset_has_canonical_fixed_sphere_hands(
         assert model.body_mass[body_id] == pytest.approx(0.0)
 
 
+def test_prepared_asset_attaches_equal_payload_mass_to_sphere_hands(
+    tmp_path: Path,
+) -> None:
+    payload_mass = 10.0 * 0.45359237
+    prepared = prepare_asset(
+        AssetPrepConfig(
+            output_root=tmp_path,
+            end_effector_payload_mass_kg=payload_mass,
+        )
+    )
+    model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
+
+    assert np.sum(model.body_mass) == pytest.approx(
+        CANONICAL_TOTAL_MASS_KG + 2.0 * payload_mass
+    )
+    expected_inertia = 0.4 * payload_mass * 0.0325**2
+    for prefix in ("l", "r"):
+        body_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            f"{prefix}_end_effector_sphere_link",
+        )
+        assert model.body_mass[body_id] == pytest.approx(payload_mass)
+        assert model.body_ipos[body_id] == pytest.approx((0.0, 0.0, -0.02))
+        assert model.body_inertia[body_id] == pytest.approx(
+            np.full(3, expected_inertia), rel=2.0e-6
+        )
+
+
+@pytest.mark.parametrize(
+    "payload_mass",
+    (-1.0, float("nan"), float("inf")),
+)
+def test_asset_config_rejects_invalid_end_effector_payload_mass(
+    payload_mass: float,
+) -> None:
+    with pytest.raises(ValueError, match="end_effector_payload_mass_kg"):
+        AssetPrepConfig(end_effector_payload_mass_kg=payload_mass)
+
+
 def test_morphology_pruning_removes_only_absent_actuator_configs() -> None:
     config = AssetPrepConfig(
         joint_availability=JointAvailabilityConfig(waist_yaw=False),
@@ -475,6 +515,9 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     assert asset_config_hash(base) != asset_config_hash(changed)
     assert asset_config_hash(base) != asset_config_hash(
         AssetPrepConfig(asset="full_body", target_total_mass_kg=60.0)
+    )
+    assert asset_config_hash(base) != asset_config_hash(
+        AssetPrepConfig(asset="full_body", end_effector_payload_mass_kg=4.5359237)
     )
     assert asset_config_hash(base) != asset_config_hash(
         AssetPrepConfig(asset="full_body", enforce_policy_effort_limits=False)

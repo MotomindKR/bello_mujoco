@@ -603,6 +603,26 @@ def test_locomotion_checkpoint_without_split_ppo_fields_loads_historical_default
     assert not restored.ppo.policy.layer_norm_final_hidden
 
 
+def test_checkpoint_without_symmetry_loss_loads_with_loss_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_checkpoint_without_symmetry_loss"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["ppo"].pop("symmetry_loss_coef")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert restored.ppo.symmetry_loss_coef == 0.0
+
+
 def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     tmp_path: Path,
 ) -> None:
@@ -615,15 +635,18 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     metadata_path = path / checkpoint.METADATA_FILE
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
     for name in (
+        "action_acceleration",
         "joint_force_peak",
         "touchdown_impact",
         "stand_still",
         "stand_contact",
-        "action_acceleration",
         "stand_foot_heading",
     ):
         document["metadata"]["reward"]["weights"].pop(name)
     document["metadata"]["reward"].pop("smoothness")
+    document["metadata"]["reward"]["tracking"].pop("ang_vel_z_lpf_cutoff_hz")
+    document["metadata"]["reward"]["standing"].pop("foot_heading_deadband")
+    document["metadata"]["reward"]["standing"].pop("foot_heading_scale")
     for name in (
         "joint_force_soft_limit_body_weights",
         "joint_force_top_k",
@@ -637,17 +660,24 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
 
     _, restored, _ = restore_evaluation_checkpoint(path)
 
+    assert restored.reward.weights.action_acceleration == 0.0
     assert restored.reward.weights.joint_force_peak == 0.0
     assert restored.reward.weights.touchdown_impact == 0.0
     assert restored.reward.weights.stand_still == 0.0
     assert restored.reward.weights.stand_contact == 0.0
-    assert restored.reward.weights.action_acceleration == 0.0
     assert restored.reward.weights.stand_foot_heading == 0.0
-    assert restored.reward.smoothness.ankle_action_weight == 2.0
-    assert restored.reward.smoothness.waist_action_weight == 2.0
     assert restored.reward.gait.joint_force_soft_limit_body_weights == 1.0
     assert restored.reward.gait.joint_force_top_k == 12
     assert not restored.reward.gait.joint_force_apply_while_standing
+    assert restored.reward.smoothness.ankle_action_weight == 1.0
+    assert restored.reward.smoothness.waist_action_weight == 1.0
+    assert restored.reward.tracking.ang_vel_z_lpf_cutoff_hz == pytest.approx(5.0)
+    assert restored.reward.standing.foot_heading_deadband == pytest.approx(
+        np.deg2rad(5.0)
+    )
+    assert restored.reward.standing.foot_heading_scale == pytest.approx(
+        np.deg2rad(15.0)
+    )
 
 
 def test_locomotion_checkpoint_without_new_randomization_fields_loads_as_noops(

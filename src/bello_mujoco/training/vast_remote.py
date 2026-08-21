@@ -199,13 +199,14 @@ repo_url="$3"
 remote_dir="$4"
 experiment="$5"
 motion_path="$6"
-run_name="$7"
-dataset_path="$8"
-teacher_checkpoint_path="$9"
-warm_start_checkpoint_path="${10}"
-allow_git_commit_mismatch="${11}"
-total_timesteps="${12}"
-learning_rate="${13}"
+end_effector_payload_mass_kg="$7"
+run_name="$8"
+dataset_path="$9"
+teacher_checkpoint_path="${10}"
+warm_start_checkpoint_path="${11}"
+allow_git_commit_mismatch="${12}"
+total_timesteps="${13}"
+learning_rate="${14}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -259,6 +260,9 @@ uv run python -c 'import jax; devices=jax.devices(); print({"backend": jax.defau
 training_overrides=("experiment=$experiment")
 if [ -n "$motion_path" ]; then
   training_overrides+=("motion_path=$motion_path")
+fi
+if [ -n "$end_effector_payload_mass_kg" ]; then
+  training_overrides+=("end_effector_payload_mass_kg=$end_effector_payload_mass_kg")
 fi
 if [ -n "$dataset_path" ]; then
   training_overrides+=("dataset_path=$dataset_path")
@@ -816,6 +820,11 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             str(config.remote_dir),
             config.experiment,
             str(selection.motion_path or ""),
+            (
+                ""
+                if config.end_effector_payload_mass_kg is None
+                else f"{config.end_effector_payload_mass_kg:.17g}"
+            ),
             run_name,
             dataset_path,
             teacher_checkpoint_path,

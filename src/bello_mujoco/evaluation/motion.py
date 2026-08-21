@@ -71,11 +71,13 @@ def render_checkpoint_with_stats(
     height: int = 480,
     fps: int = 50,
     motion_path: Path | None = None,
+    end_effector_payload_mass_kg: float | None = None,
     allow_git_commit_mismatch: bool = False,
 ) -> MotionRolloutStats:
     runtime = load_motion_policy_runtime(
         checkpoint,
         motion_path=motion_path,
+        end_effector_payload_mass_kg=end_effector_payload_mass_kg,
         use_viewer_model=True,
         allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
@@ -389,9 +391,12 @@ def render_reference(
     width: int = 640,
     height: int = 480,
     fps: int = 30,
+    end_effector_payload_mass_kg: float = 0.0,
 ) -> Path:
     model = load_bello_model(
-        motion_tracking_asset_config(),
+        motion_tracking_asset_config(
+            end_effector_payload_mass_kg=end_effector_payload_mass_kg
+        ),
         terrain=FLAT_TERRAIN,
         use_viewer_model=True,
         load_mjx=False,

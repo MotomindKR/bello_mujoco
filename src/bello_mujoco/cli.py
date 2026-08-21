@@ -44,6 +44,7 @@ class TrainCommandConfig:
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
+    end_effector_payload_mass_kg: float | None
     resume_path: Path | None
     warm_start_path: Path | None
     allow_git_commit_mismatch: bool
@@ -59,6 +60,7 @@ class EvalCommandConfig:
     task: Literal["locomotion", "motion", "twist_student", "twist2"]
     checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
+    end_effector_payload_mass_kg: float | None
     output_path: Path
     video_path: Path | None
     command: tuple[float, float, float]
@@ -120,6 +122,7 @@ class VastTrainCommandConfig:
     allow_git_commit_mismatch: bool
     total_timesteps: int | None
     learning_rate: float | None
+    end_effector_payload_mass_kg: float | None
     max_price: float | None
     branch: str | None
     run_name: str | None
@@ -136,6 +139,7 @@ class VastTrainCommandConfig:
 class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...]
     command_latency_seconds: float
+    end_effector_payload_mass_kg: float
 
 
 @dataclass(frozen=True)
@@ -148,12 +152,14 @@ class HardwareCommandConfig:
     remote_endpoint: str | None
     remote_staleness_ms: int
     motion_path: Path | None
+    end_effector_payload_mass_kg: float | None
     duration_seconds: float | None
     ramp_seconds: float | None
     gain_scale: float
     max_linear_acceleration: float | None
     policy_transition_seconds: float | None
     max_motion_tilt_radians: float | None
+    action_lpf_cutoff_hz: float | None
     status_interval_seconds: float | None
     policy_log_path: Path | None
     arm: bool
@@ -283,6 +289,13 @@ def _train_hydra(config: DictConfig) -> None:
             run_config,
             config=_ppo_overrides(run_config.config, command),
             warp=_warp_overrides(run_config.warp, command),
+            asset_config=replace(
+                run_config.asset_config,
+                end_effector_payload_mass_kg=_coalesce(
+                    command.end_effector_payload_mass_kg,
+                    run_config.asset_config.end_effector_payload_mass_kg,
+                ),
+            ),
             checkpoint_config=_checkpoint_overrides(
                 run_config.checkpoint_config, command
             ),
@@ -296,14 +309,21 @@ def _train_hydra(config: DictConfig) -> None:
         )
         run_motion_training(run_config)
         return
-    if command.motion_path is not None:
-        raise ValueError("motion_path is only valid for the motion experiment")
+    if (
+        command.motion_path is not None
+        or command.end_effector_payload_mass_kg is not None
+    ):
+        raise ValueError(
+            "motion_path and end_effector_payload_mass_kg are only valid for "
+            "the motion experiment"
+        )
     _reject_explicit_fields(
         (
             "motion_path",
             "dataset_path",
             "teacher_checkpoint_path",
             "warm_start_path",
+            "end_effector_payload_mass_kg",
         ),
         context=f"experiment={command.experiment}",
     )
@@ -424,11 +444,15 @@ def _eval_hydra(config: DictConfig) -> None:
             command.output_path.expanduser(),
             steps=command.steps,
             stop_on_terminal=command.stop_on_done,
+            end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
-    _reject_explicit_fields(("output_path", "video_path"), context="task=locomotion")
+    _reject_explicit_fields(
+        ("output_path", "video_path", "end_effector_payload_mass_kg"),
+        context="task=locomotion",
+    )
     if command.gamepad_enabled:
         _reject_explicit_fields(("command",), context="gamepad_enabled=true")
     if not command.stochastic_actions:
@@ -733,10 +757,16 @@ def _vast_train_hydra(config: DictConfig) -> None:
                 "training"
             )
     else:
-        if command.motion_path is not None:
-            raise ValueError("motion_path is only valid for the motion experiment")
+        if (
+            command.motion_path is not None
+            or command.end_effector_payload_mass_kg is not None
+        ):
+            raise ValueError(
+                "motion_path and end_effector_payload_mass_kg are only valid for "
+                "the motion experiment"
+            )
         _reject_explicit_fields(
-            ("motion_path",),
+            ("motion_path", "end_effector_payload_mass_kg"),
             context=f"experiment={command.experiment}",
         )
     if command.experiment in {"twist_teacher", "twist_student", "twist2"}:
@@ -792,6 +822,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
         allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         total_timesteps=command.total_timesteps,
         learning_rate=command.learning_rate,
+        end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
         max_price=command.max_price,
         branch=command.branch,
         run_name=command.run_name,
@@ -834,6 +865,10 @@ def _emulator_hydra(config: DictConfig) -> None:
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
             command_latency_seconds=command.command_latency_seconds,
+            asset_config=replace(
+                emulator.default_emulator_asset_config(),
+                end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
+            ),
         )
     )
 
@@ -990,6 +1025,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 base,
                 endpoint=command.endpoint,
                 motion_path=command.motion_path,
+                end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
                 max_duration_seconds=command.duration_seconds,
                 ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
                 gain_scale=command.gain_scale,
@@ -1005,6 +1041,10 @@ def _hardware_hydra(config: DictConfig) -> None:
                     command.max_motion_tilt_radians,
                     base.max_motion_tilt_radians,
                 ),
+                action_lpf_cutoff_hz=_coalesce(
+                    command.action_lpf_cutoff_hz,
+                    base.action_lpf_cutoff_hz,
+                ),
                 status_interval_seconds=command.status_interval_seconds,
                 policy_log_path=policy_log_path,
                 arm=command.arm,
@@ -1012,16 +1052,23 @@ def _hardware_hydra(config: DictConfig) -> None:
             ),
         )
         return
-    if command.motion_path is not None or command.standing_checkpoint_path is not None:
+    if (
+        command.motion_path is not None
+        or command.standing_checkpoint_path is not None
+        or command.end_effector_payload_mass_kg is not None
+    ):
         raise ValueError(
-            "motion_path and standing_checkpoint_path are only valid for task=motion"
+            "motion_path, standing_checkpoint_path, and "
+            "end_effector_payload_mass_kg are only valid for task=motion"
         )
     _reject_explicit_fields(
         (
             "motion_path",
             "standing_checkpoint_path",
+            "end_effector_payload_mass_kg",
             "policy_transition_seconds",
             "max_motion_tilt_radians",
+            "action_lpf_cutoff_hz",
         ),
         context="task=locomotion",
     )

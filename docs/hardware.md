@@ -189,10 +189,12 @@ The motion checkpoint restores the reference contract.
 when its schema and content identity match.
 
 The pose stream supplies world-frame pelvis translation, estimator-state linear
-velocity, orientation, and a precise source timestamp, normally from PoseService
-at `127.0.0.1:50053`. The runner never differentiates received positions. IMU
-orientation is retained as an independent agreement check. Root translation is
-never estimated by double-integrating acceleration.
+velocity, orientation, filtered root-local angular velocity, and a precise source
+timestamp, normally from PoseService at `127.0.0.1:50053`. The runner never
+differentiates received poses. State-frame IMU orientation remains an independent
+agreement check, and its raw angular velocity and acceleration remain subject to
+hardware safety limits. Root translation is never estimated by double-integrating
+acceleration.
 
 Motion first uses the standing checkpoint's default ten-second ramp, bounded
 nominal-pose arrival, and manual `HOLD` and `RUN` confirmations. `RUN` starts

@@ -108,6 +108,7 @@ The asset section selects a deterministic prepared morphology.
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
 | `visual_mesh_face_budget` | `200000` | Per-mesh viewer simplification budget. |
 | `target_total_mass_kg` | `null` | Optional experimental uniform rescaling. Maintained policies use the canonical 55.068 kg physical inertials without rescaling. |
+| `end_effector_payload_mass_kg` | `0` | Equal payload mass attached at each sphere-hand center. This is a per-hand mass; it is added after any robot-mass rescaling and becomes part of the asset/checkpoint fingerprint. |
 | `neighbor_exclusion_depth` | `2` | Exclude nearby kinematic neighbors from generated self-collision pairs. |
 | `enforce_policy_effort_limits` | `true` | Enforce the same physical actuator-force saturation used by hardware. Locomotion separately reconstructs the unclipped servo demand for the over-peak reward. |
 | `imu_config` | disabled | Optional generated IMU site/sensors. Its `enabled` field controls generation and `body_name` selects the instrumented body. Training observations derive simulated IMU features without requiring this native sensor block. |
@@ -132,8 +133,9 @@ Motion training supplies its `asset_config` from the
 `MotionTrainingRunConfig` default factory rather than its YAML. The fixed
 tracking contract is the canonical 55.068 kg, box-collision, sphere-hand asset with
 waist yaw enabled; waist roll/pitch and neck/head joints are fixed, and all 25
-remaining coordinates are policy-controlled. Motion initialization rejects an
-asset that deviates from this contract.
+remaining coordinates are policy-controlled. A symmetric sphere-hand payload
+may be added without changing the joint or observation contract. Motion
+initialization rejects other deviations from this contract.
 
 ## Locomotion environment: `env_config`
 
@@ -495,6 +497,11 @@ source-revision identity only.
 Checkpoint document integrity, metadata and state layout hashes, normalization
 state, saved update, task, and actor/critic observation and action runtime
 sizes/layouts are still validated.
+Checkpoints created before the PPO symmetry-loss field was introduced load it
+as zero. This preserves their original policy and affects neither inference nor
+the saved parameter layout. Legacy locomotion checkpoints similarly load newer
+reward weights as zero and missing joint-specific smoothness multipliers as one,
+preserving their original reward calculation if resumed.
 Resume additionally validates and restores environment continuation,
 observation stacks, RNG, current learning rate, sampler state, environment
 layout, and the full resume contract. A changed `total_timesteps` is allowed

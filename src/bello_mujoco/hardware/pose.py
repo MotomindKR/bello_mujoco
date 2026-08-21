@@ -32,6 +32,7 @@ class _PoseSample:
     translation: tuple[float, float, float]
     orientation_xyzw: tuple[float, float, float, float]
     linear_velocity: tuple[float, float, float]
+    angular_velocity: tuple[float, float, float]
     sample_monotonic_ns: int
 
 
@@ -86,15 +87,21 @@ class PoseServiceServer:
         translation: tuple[float, float, float],
         orientation_wxyz: tuple[float, float, float, float],
         linear_velocity: tuple[float, float, float],
+        angular_velocity: tuple[float, float, float],
         *,
         sample_monotonic_ns: int,
     ) -> None:
-        """Publish one world pose and velocity without waiting for a consumer."""
+        """Publish one world pose and its velocities without waiting."""
 
-        values = (*translation, *orientation_wxyz, *linear_velocity)
+        values = (
+            *translation,
+            *orientation_wxyz,
+            *linear_velocity,
+            *angular_velocity,
+        )
         if not all(math.isfinite(value) for value in values):
             raise ValueError(
-                "pose translation, orientation, and velocity must be finite"
+                "pose translation, orientation, and velocities must be finite"
             )
         norm = math.sqrt(sum(value * value for value in orientation_wxyz))
         if norm <= 1.0e-12:
@@ -111,6 +118,7 @@ class PoseServiceServer:
                 translation=translation,
                 orientation_xyzw=(x, y, z, w),
                 linear_velocity=linear_velocity,
+                angular_velocity=angular_velocity,
                 sample_monotonic_ns=sample_monotonic_ns,
             )
             self._condition.notify_all()
@@ -174,6 +182,11 @@ class PoseServiceServer:
                     x=sample.linear_velocity[0],
                     y=sample.linear_velocity[1],
                     z=sample.linear_velocity[2],
+                ),
+                angular_velocity_radians_per_second=_pose_pb2.AngularVelocity(
+                    x=sample.angular_velocity[0],
+                    y=sample.angular_velocity[1],
+                    z=sample.angular_velocity[2],
                 ),
                 sample_monotonic_ns=sample.sample_monotonic_ns,
             )

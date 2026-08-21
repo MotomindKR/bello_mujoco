@@ -42,8 +42,9 @@ differential-ankle transform.
 
 Observations include aligned reference state, anchor/body tracking features,
 base and joint state, previous action, and optional noise. Root linear velocity
-uses world coordinates in MuJoCo state, while root angular velocity and the
-hardware gyro use the root-local free-joint convention. Training can:
+uses world coordinates in MuJoCo state. Root angular velocity uses the root-local
+free-joint convention; physical motion deployment receives it from the pose
+estimator's filtered local gyro output. Training can:
 
 - randomize reference start time and initial root/joint state;
 - perturb observations;
@@ -94,6 +95,11 @@ itself.
 Native evaluation uses the same bounded action transformation and observation
 normalization stored by training. It reports completion fraction, episode
 return, terminal/timeout state, and RMS root, orientation, and joint errors.
+The generated motion asset can carry an equal configured payload at each
+sphere-hand center. Training records the per-hand mass in checkpoint metadata;
+evaluation uses that mass by default and accepts an explicit load-ablation
+override. Hardware deployment treats the same field as a declared physical
+load and refuses a value that differs from the checkpoint.
 
 Physical motion deployment adds absolute pelvis PoseService input and validates
 Pose/IMU agreement, nominal-pose arrival, action bounds, and reference
