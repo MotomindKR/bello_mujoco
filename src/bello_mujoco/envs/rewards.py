@@ -237,9 +237,9 @@ class RewardLinks:
 
 @dataclass(frozen=True)
 class TrackingRewardConfig:
-    lin_vel_xy_moving_std: float = 0.45
+    lin_vel_xy_moving_std: float = 0.30
     lin_vel_xy_still_std: float = 0.25
-    ang_vel_z_moving_std: float = 0.35
+    ang_vel_z_moving_std: float = 0.25
     ang_vel_z_still_std: float = 0.20
     ang_vel_z_lpf_cutoff_hz: float = 5.0
 

@@ -173,9 +173,9 @@ reward_config:
     flat_orientation: null
     base_height: null
   tracking:
-    lin_vel_xy_moving_std: 0.45
+    lin_vel_xy_moving_std: 0.3
     lin_vel_xy_still_std: 0.25
-    ang_vel_z_moving_std: 0.35
+    ang_vel_z_moving_std: 0.25
     ang_vel_z_still_std: 0.2
     ang_vel_z_lpf_cutoff_hz: 5.0
   standing:

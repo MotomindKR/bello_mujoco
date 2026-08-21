@@ -258,7 +258,9 @@ names.
 The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
 The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
 observation is unchanged. Planar and yaw tracking each have weight `2.0`, so
-their maximum contribution is `0.04` per control step.
+their maximum contribution is `0.04` per control step. Moving-command tracking
+uses standard deviations of `0.30 m/s` for planar velocity and `0.25 rad/s` for
+yaw velocity; standing-command tolerances remain `0.25 m/s` and `0.20 rad/s`.
 
 ## Locomotion reward: `reward_config`
 
