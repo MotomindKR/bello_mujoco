@@ -485,11 +485,15 @@ def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
     adapter = make_hardware_adapter(hardware_env)
+    assert adapter.upper_body_follow.max_reference_age_ms == 1_000
     default_upper = adapter.default_joint_target[adapter.upper_body_indices]
+    adapter.validate_upper_body_reference(
+        hardware_reference(adapter, default_upper, source_age_ms=470)
+    )
     stale = hardware_reference(
         adapter,
         default_upper,
-        received_at=time.monotonic() - 1.0,
+        received_at=time.monotonic() - 1.1,
     )
     with pytest.raises(ReferenceUnavailable, match="stale"):
         adapter.validate_upper_body_reference(stale)

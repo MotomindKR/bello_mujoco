@@ -143,7 +143,7 @@ control the trained gait. No separate `MOTION` confirmation is used.
 Live upper-body changes are limited to `3*pi` rad/s at the 50 Hz control rate,
 including the first pose and source recovery, and outgoing targets remain inside
 the model actuator range. Briefly rejected frames leave the last safe reference
-usable until its total age reaches 250 ms. When no fresh safe pose remains, the
+usable until its total age reaches 1000 ms. When no fresh safe pose remains, the
 runner reports the loss and returns only the arms toward GMR standing at the same
 bounded rate; joystick locomotion continues. A later safe pose resumes arm
 following. A terminal gRPC/GMR worker failure still causes fail-closed damped

@@ -57,7 +57,7 @@ from bello_mujoco.training.ppo import normalize_observation
 class UpperBodyFollowConfig:
     """Fixed safety envelope for locomotion's pose-driven hold coordinates."""
 
-    max_reference_age_ms: int = 250
+    max_reference_age_ms: int = 1_000
     max_reference_joint_speed_rps: float = 25.0
     max_reference_joint_limit_violation_radians: float = 0.01
     max_target_speed_rps: float = 3.0 * math.pi
