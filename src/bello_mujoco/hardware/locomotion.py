@@ -61,7 +61,8 @@ class UpperBodyFollowConfig:
     max_reference_joint_speed_rps: float = 25.0
     max_reference_joint_limit_violation_radians: float = 0.01
     max_target_speed_rps: float = 3.0 * math.pi
-    elbow_yaw_offset_radians: float = 0.0
+    left_elbow_yaw_offset_radians: float = 0.0
+    right_elbow_yaw_offset_radians: float = 0.0
     connection_transition_duration_seconds: float = 1.0
 
 
@@ -155,20 +156,19 @@ class HardwarePolicyAdapter:
         self.upper_body_qvel_indices = np.asarray(
             env.model.actuator_qvel_indices[self.upper_body_indices], dtype=np.int32
         )
-        self.upper_body_elbow_yaw_indices = np.asarray(
-            [
-                upper_index
-                for upper_index, actuator_index in enumerate(self.upper_body_indices)
-                if env.model.actuator_joint_names[int(actuator_index)].endswith(
-                    "_elbow_yaw_joint"
-                )
-            ],
-            dtype=np.int32,
-        )
-        if self.upper_body_elbow_yaw_indices.shape != (2,):
+        upper_body_index_by_name = {
+            env.model.actuator_joint_names[int(actuator_index)]: upper_index
+            for upper_index, actuator_index in enumerate(self.upper_body_indices)
+        }
+        elbow_yaw_names = tuple(f"{side}_elbow_yaw_joint" for side in ("left", "right"))
+        if not all(name in upper_body_index_by_name for name in elbow_yaw_names):
             raise ValueError(
                 "hardware upper body must contain exactly two elbow-yaw joints"
             )
+        self.upper_body_elbow_yaw_indices = np.asarray(
+            [upper_body_index_by_name[name] for name in elbow_yaw_names],
+            dtype=np.int32,
+        )
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
         )
@@ -459,8 +459,11 @@ class HardwarePolicyAdapter:
         desired = np.asarray(reference.qpos, dtype=np.float64)[
             self.upper_body_qpos_indices
         ].copy()
-        desired[self.upper_body_elbow_yaw_indices] += (
-            self.upper_body_follow.elbow_yaw_offset_radians
+        desired[self.upper_body_elbow_yaw_indices] += np.asarray(
+            (
+                self.upper_body_follow.left_elbow_yaw_offset_radians,
+                self.upper_body_follow.right_elbow_yaw_offset_radians,
+            )
         )
         low = self.env.model.joint_target_low[self.upper_body_indices]
         high = self.env.model.joint_target_high[self.upper_body_indices]
@@ -617,8 +620,13 @@ def validate_hardware_config(
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"upper_body_follow.{name} must be positive and finite")
-    if not math.isfinite(upper.elbow_yaw_offset_radians):
-        raise ValueError("upper_body_follow.elbow_yaw_offset_radians must be finite")
+    finite = {
+        "left_elbow_yaw_offset_radians": upper.left_elbow_yaw_offset_radians,
+        "right_elbow_yaw_offset_radians": upper.right_elbow_yaw_offset_radians,
+    }
+    for name, value in finite.items():
+        if not math.isfinite(value):
+            raise ValueError(f"upper_body_follow.{name} must be finite")
     if (
         not math.isfinite(config.smplx_human_height_m)
         or config.smplx_human_height_m <= 0.0

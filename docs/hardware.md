@@ -146,10 +146,11 @@ control the trained gait. No separate `MOTION` confirmation is used.
 
 Live upper-body changes are limited to `3*pi` rad/s at the 50 Hz control rate,
 including the first pose and source recovery, and outgoing targets remain inside
-the model actuator range. Locomotion adds
-`upper_body_follow.elbow_yaw_offset_radians` to both GMR elbow-yaw targets and
-clips the adjusted values to their respective target ranges; the default offset
-is zero. Briefly rejected frames leave the last safe reference usable
+the model actuator range. Locomotion adds the independently configurable
+`upper_body_follow.left_elbow_yaw_offset_radians` and
+`upper_body_follow.right_elbow_yaw_offset_radians` to their respective GMR
+targets, then clips the adjusted values to the corresponding target ranges; both
+offsets default to zero. Briefly rejected frames leave the last safe reference usable
 until its total age reaches 1000 ms. When no fresh safe pose remains, the runner
 reports the loss and returns only the arms toward GMR standing at the same
 bounded rate; joystick locomotion continues. A later safe pose resumes arm
