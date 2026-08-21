@@ -129,6 +129,47 @@ def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> No
     )
 
 
+def test_foot_heading_uses_each_mirrored_foot_forward_axis(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    state, _ = env._reset(
+        jnp.zeros(3),
+        None,
+        0,
+        forward=False,
+        align_clearance=False,
+    )
+
+    heading_error_degrees = np.degrees(np.asarray(env._foot_heading_error(state)))
+
+    assert np.all(np.abs(heading_error_degrees) < 5.0)
+    assert heading_error_degrees[0] == pytest.approx(-heading_error_degrees[1], abs=0.1)
+
+
+def test_tracking_yaw_velocity_uses_recursive_low_pass_filter(
+    full_body_asset: PreparedAsset,
+) -> None:
+    reward_config = RewardConfig(
+        tracking=replace(
+            RewardConfig().tracking,
+            ang_vel_z_lpf_cutoff_hz=5.0,
+        )
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        reward_config=reward_config,
+    )
+    previous = jnp.asarray(0.25, dtype=jnp.float32)
+    measured = jnp.asarray(1.25, dtype=jnp.float32)
+
+    filtered = env.filter_tracking_ang_vel_z(previous, measured)
+    alpha = 1.0 - np.exp(-2.0 * np.pi * 5.0 * env.control_timestep)
+
+    assert filtered == pytest.approx(0.25 + alpha, abs=1.0e-6)
+    assert env.filter_tracking_ang_vel_z(filtered, measured) > filtered
+
+
 def test_native_data_adapter_uses_shared_observation_function(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -229,6 +270,10 @@ def test_reset_batch_and_step_have_finite_fixed_shapes(
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(full_body_asset, batch_size=2)
     state, observation = env.reset_batch(2, rng=jax.random.PRNGKey(0))
+    assert state.tracking_ang_vel_z == pytest.approx(
+        jax.vmap(env._raw_tracking_ang_vel_z)(state),
+        abs=1.0e-6,
+    )
     next_state, next_observation, reward, done, info = env.step_batch(
         state,
         jnp.zeros((2, env.action_size), dtype=jnp.float32),
@@ -242,6 +287,8 @@ def test_reset_batch_and_step_have_finite_fixed_shapes(
     assert jnp.all(jnp.isfinite(reward))
     assert next_state.data.ctrl.shape == (2, env.model.mj_model.nu)
     assert "reward/track_lin_vel_xy" in info
+    assert jnp.all(jnp.isfinite(info["gait/foot_heading_error_mean_deg"]))
+    assert jnp.all(jnp.isfinite(info["gait/foot_heading_error_max_deg"]))
     assert "done/nonfinite" in info
     assert "done/unstable" in info
 

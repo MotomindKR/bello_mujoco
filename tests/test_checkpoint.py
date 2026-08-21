@@ -110,6 +110,7 @@ class FakeEnv:
                 "position": jnp.zeros((batch_size, 3), dtype=jnp.float32),
             },
             last_action=jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
+            tracking_ang_vel_z=zeros,
             actor_feedback_history=jnp.zeros((batch_size, 1, 0), dtype=jnp.float32),
             actor_feedback_delay_steps=jnp.zeros((batch_size,), dtype=jnp.int32),
             foot_contact_debounce_time=foot_zeros,

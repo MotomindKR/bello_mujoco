@@ -192,8 +192,8 @@ def command_is_moving(command: jax.Array, config: CommandConfig) -> jax.Array:
 class RewardWeights:
     """Scalar weights for the stable locomotion reward term names."""
 
-    track_lin_vel_xy: float = 1.0
-    track_ang_vel_z: float = 1.0
+    track_lin_vel_xy: float = 2.0
+    track_ang_vel_z: float = 2.0
     healthy_survival: float = 1.5
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.15
@@ -208,6 +208,7 @@ class RewardWeights:
     joint_pose: float = -0.1
     stand_still: float = 1.0
     stand_foot_motion: float = -1.0
+    stand_foot_heading: float = -0.5
     stand_contact: float = -0.5
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
@@ -236,10 +237,11 @@ class RewardLinks:
 
 @dataclass(frozen=True)
 class TrackingRewardConfig:
-    lin_vel_xy_moving_std: float = 0.75
+    lin_vel_xy_moving_std: float = 0.45
     lin_vel_xy_still_std: float = 0.25
-    ang_vel_z_moving_std: float = 0.50
+    ang_vel_z_moving_std: float = 0.35
     ang_vel_z_still_std: float = 0.20
+    ang_vel_z_lpf_cutoff_hz: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -247,6 +249,7 @@ class StandingRewardConfig:
     foot_linear_speed_scale: float = 0.15
     foot_angular_speed_scale: float = 1.0
     foot_angular_weight: float = 0.25
+    foot_heading_deadband: float = math.radians(5.0)
 
 
 @dataclass(frozen=True)
@@ -296,6 +299,7 @@ class RewardConfig:
                 "touchdown_impact",
                 "stand_contact",
                 "stand_still",
+                "stand_foot_heading",
             )
         )
 
@@ -305,6 +309,7 @@ class RewardConfig:
             self.uses_foot_contact_metadata
             or self.enabled("gait_swing_clearance")
             or self.enabled("stand_foot_motion")
+            or self.enabled("stand_foot_heading")
         )
 
     @property
@@ -359,6 +364,7 @@ class RewardInputs:
     previous_foot_linear_velocity: jax.Array
     foot_linear_velocity: jax.Array
     foot_angular_speed: jax.Array
+    foot_heading_error: jax.Array
     foot_height: jax.Array
     gait_active: jax.Array
     desired_foot_contact: jax.Array
@@ -468,6 +474,16 @@ def compute_locomotion_reward(
         + config.standing.foot_angular_weight * stand_foot_angular_motion
     )
     stand_foot_motion = jnp.where(standing_command, foot_motion, 0.0)
+    foot_heading_excess = jnp.maximum(
+        jnp.abs(inputs.foot_heading_error) - config.standing.foot_heading_deadband,
+        0.0,
+    )
+    standing_double_support = standing_command & jnp.all(inputs.foot_contact)
+    stand_foot_heading = jnp.where(
+        standing_double_support & ~inputs.done,
+        jnp.mean(foot_heading_excess**2),
+        0.0,
+    )
     actual_contact = inputs.foot_contact.astype(jnp.float32)
     support_fraction = jnp.mean(actual_contact)
     stand_contact = jnp.where(
@@ -565,6 +581,7 @@ def compute_locomotion_reward(
         "joint_pose": joint_pose,
         "stand_still": stand_still,
         "stand_foot_motion": stand_foot_motion,
+        "stand_foot_heading": stand_foot_heading,
         "stand_contact": stand_contact,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
@@ -616,6 +633,10 @@ def validate_reward_config(config: RewardConfig) -> None:
             config.tracking.ang_vel_z_still_std,
         ),
         (
+            "tracking.ang_vel_z_lpf_cutoff_hz",
+            config.tracking.ang_vel_z_lpf_cutoff_hz,
+        ),
+        (
             "standing.foot_linear_speed_scale",
             config.standing.foot_linear_speed_scale,
         ),
@@ -653,6 +674,7 @@ def validate_reward_config(config: RewardConfig) -> None:
             config.gait.stance_slip_angular_speed_scale
         ),
         "standing.foot_angular_weight": config.standing.foot_angular_weight,
+        "standing.foot_heading_deadband": config.standing.foot_heading_deadband,
         "limits_pose.hip_lateral_command_threshold": (
             config.limits_pose.hip_lateral_command_threshold
         ),

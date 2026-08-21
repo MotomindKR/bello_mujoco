@@ -255,6 +255,11 @@ completed-episode return and length, and completed-episode count under the
 `command/standing_*`, `command/moving_*`, and `episode/{standing,moving}_*`
 names.
 
+The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
+The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
+observation is unchanged. Planar and yaw tracking each have weight `2.0`, so
+their maximum contribution is `0.04` per control step.
+
 ## Locomotion reward: `reward_config`
 
 Every term is computed independently and multiplied by its configured weight.
@@ -263,8 +268,8 @@ computation where possible.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
-| `track_lin_vel_xy` | `1.0` | Gaussian command tracking for planar velocity. |
-| `track_ang_vel_z` | `1.0` | Gaussian yaw-rate command tracking. |
+| `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. |
+| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. |
 | `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
@@ -279,6 +284,7 @@ computation where possible.
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
+| `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize squared foot-heading error outside the configured deadband relative to pelvis forward. It is inactive during recovery, termination, and moving commands. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation, gated by lateral command. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |
@@ -301,8 +307,8 @@ Supporting fields are:
 
 | Section | Fields |
 | --- | --- |
-| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std` |
-| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight` |
+| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_lpf_cutoff_hz` |
+| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_lateral_command_index`, `hip_lateral_command_threshold` |
 

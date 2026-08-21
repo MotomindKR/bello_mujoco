@@ -48,10 +48,17 @@ from bello_mujoco.terrain import (
 )
 
 
+_FOOT_FORWARD_AXES = (
+    ("left_ankle_roll_link", (0.0, 1.0, 0.0)),
+    ("right_ankle_roll_link", (0.0, -1.0, 0.0)),
+)
+
+
 @chex.dataclass(frozen=True)
 class BelloState:
     data: mjx.Data
     last_action: jax.Array
+    tracking_ang_vel_z: jax.Array
     actor_feedback_history: jax.Array
     actor_feedback_delay_steps: jax.Array
     foot_contact_debounce_time: jax.Array
@@ -663,12 +670,15 @@ class BelloLocomotionEnv:
             "nonfoot_robot_body_ids", model.nonfoot_robot_body_ids, mj_model.nbody
         )
         if isinstance(mj_model, mujoco.MjModel):
-            for link_name in {
+            required_link_names = {
                 self.config.root_link,
                 model.imu_body_name,
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
-            }:
+            }
+            if self.reward_config.enabled("stand_foot_heading"):
+                required_link_names.update(name for name, _ in _FOOT_FORWARD_AXES)
+            for link_name in required_link_names:
                 if self._link_body_id(link_name) < 0:
                     raise ValueError(f"configured link/body not found: {link_name!r}")
         if model.actuator_coordinate_transform.shape != (mj_model.nu, mj_model.nu):
@@ -775,6 +785,7 @@ class BelloLocomotionEnv:
         state = BelloState(
             data=data,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
+            tracking_ang_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
             actor_feedback_history=jnp.zeros(
                 (
                     self.maximum_observation_delay_steps + 1,
@@ -807,11 +818,12 @@ class BelloLocomotionEnv:
             state = state.replace(data=data)
         actor_feedback = self._actor_feedback(state)
         state = state.replace(
+            tracking_ang_vel_z=self._raw_tracking_ang_vel_z(state),
             actor_feedback_history=jnp.repeat(
                 actor_feedback[None, :],
                 self.maximum_observation_delay_steps + 1,
                 axis=0,
-            )
+            ),
         )
         return state, self.observation(state, obs_rng)
 
@@ -865,6 +877,9 @@ class BelloLocomotionEnv:
         )
         data = mjx.forward(self.model.mjx_model, data)
         state = state.replace(data=data)
+        state = state.replace(
+            tracking_ang_vel_z=jax.vmap(self._raw_tracking_ang_vel_z)(state)
+        )
         actor_feedback = jax.vmap(self._actor_feedback)(state)
         state = state.replace(
             actor_feedback_history=jnp.repeat(
@@ -1006,11 +1021,16 @@ class BelloLocomotionEnv:
         data = jax.lax.fori_loop(
             0, self.decimation, lambda _, d: mjx.step(self.model.mjx_model, d), data
         )
+        next_data_state = state.replace(data=data)
         next_state = BelloState(
             data=data,
             last_action=action,
+            tracking_ang_vel_z=self.filter_tracking_ang_vel_z(
+                state.tracking_ang_vel_z,
+                self._raw_tracking_ang_vel_z(next_data_state),
+            ),
             actor_feedback_history=self._advance_actor_feedback_history(
-                state.actor_feedback_history, state.replace(data=data)
+                state.actor_feedback_history, next_data_state
             ),
             actor_feedback_delay_steps=state.actor_feedback_delay_steps,
             foot_contact_debounce_time=state.foot_contact_debounce_time,
@@ -1071,6 +1091,7 @@ class BelloLocomotionEnv:
         next_state = BelloState(
             data=next_state.data,
             last_action=next_state.last_action,
+            tracking_ang_vel_z=next_state.tracking_ang_vel_z,
             actor_feedback_history=next_state.actor_feedback_history,
             actor_feedback_delay_steps=next_state.actor_feedback_delay_steps,
             foot_contact_debounce_time=foot_contact_debounce_time,
@@ -1154,11 +1175,16 @@ class BelloLocomotionEnv:
         data = jax.lax.fori_loop(
             0, self.decimation, lambda _, d: mjx.step(self.model.mjx_model, d), data
         )
+        next_data_state = state.replace(data=data)
         stepped_state = BelloState(
             data=data,
             last_action=action,
+            tracking_ang_vel_z=self.filter_tracking_ang_vel_z(
+                state.tracking_ang_vel_z,
+                jax.vmap(self._raw_tracking_ang_vel_z)(next_data_state),
+            ),
             actor_feedback_history=jax.vmap(self._advance_actor_feedback_history)(
-                state.actor_feedback_history, state.replace(data=data)
+                state.actor_feedback_history, next_data_state
             ),
             actor_feedback_delay_steps=state.actor_feedback_delay_steps,
             foot_contact_debounce_time=state.foot_contact_debounce_time,
@@ -1225,6 +1251,7 @@ class BelloLocomotionEnv:
         stepped_state = BelloState(
             data=stepped_state.data,
             last_action=stepped_state.last_action,
+            tracking_ang_vel_z=stepped_state.tracking_ang_vel_z,
             actor_feedback_history=stepped_state.actor_feedback_history,
             actor_feedback_delay_steps=stepped_state.actor_feedback_delay_steps,
             foot_contact_debounce_time=foot_contact_debounce_time,
@@ -2100,9 +2127,7 @@ class BelloLocomotionEnv:
             self._reward_link("track_lin_vel_xy"),
             self._reward_frame_link("track_lin_vel_xy"),
         )[:2]
-        yaw_vel_z = self._link_body_ang_vel(
-            next_state, self._reward_link("track_ang_vel_z")
-        )[2]
+        yaw_vel_z = next_state.tracking_ang_vel_z
         lin_vel_z = self._link_body_lin_vel(next_state, self._reward_link("lin_vel_z"))[
             2
         ]
@@ -2150,6 +2175,7 @@ class BelloLocomotionEnv:
                 previous_foot_linear_velocity=(self._foot_world_linear_velocity(state)),
                 foot_linear_velocity=foot_linear_velocity,
                 foot_angular_speed=foot_angular_speed,
+                foot_heading_error=self._foot_heading_error(next_state),
                 foot_height=self._foot_height(next_state, world_id),
                 gait_active=command_is_moving(command, self.command_config),
                 desired_foot_contact=desired_gait_foot_contact(
@@ -2168,6 +2194,25 @@ class BelloLocomotionEnv:
             ),
             self.command_config,
         )
+
+    def _raw_tracking_ang_vel_z(self, state: BelloState) -> jax.Array:
+        return self._link_body_ang_vel(state, self._reward_link("track_ang_vel_z"))[2]
+
+    def filter_tracking_ang_vel_z(
+        self, previous: jax.Array, measured: jax.Array
+    ) -> jax.Array:
+        """Low-pass the measured yaw rate used by the tracking reward."""
+
+        alpha = 1.0 - jnp.exp(
+            -2.0
+            * jnp.pi
+            * jnp.asarray(
+                self.reward_config.tracking.ang_vel_z_lpf_cutoff_hz,
+                dtype=jnp.float32,
+            )
+            * jnp.asarray(self.control_timestep, dtype=jnp.float32)
+        )
+        return previous + alpha * (measured - previous)
 
     def sanitize_nonfinite_reward(
         self,
@@ -2515,6 +2560,27 @@ class BelloLocomotionEnv:
         foot_ang_vel = state.data.cvel[foot_body_ids, :3]
         return jnp.linalg.norm(foot_ang_vel, axis=1)
 
+    def _foot_heading_error(self, state: BelloState) -> jax.Array:
+        pelvis_forward = quat_rotate(
+            self._link_quat(state, self.config.root_link),
+            jnp.asarray((0.0, 1.0, 0.0), dtype=jnp.float32),
+        )[:2]
+        pelvis_forward /= jnp.maximum(jnp.linalg.norm(pelvis_forward), 1.0e-6)
+        errors = []
+        for link_name, local_forward in _FOOT_FORWARD_AXES:
+            foot_forward = quat_rotate(
+                self._link_quat(state, link_name),
+                jnp.asarray(local_forward, dtype=jnp.float32),
+            )[:2]
+            foot_forward /= jnp.maximum(jnp.linalg.norm(foot_forward), 1.0e-6)
+            cross_z = (
+                pelvis_forward[0] * foot_forward[1]
+                - pelvis_forward[1] * foot_forward[0]
+            )
+            dot = jnp.dot(pelvis_forward, foot_forward)
+            errors.append(jnp.arctan2(cross_z, dot))
+        return jnp.stack(errors)
+
     def _stance_width(self, state: BelloState, frame_link_name: str) -> jax.Array:
         if self.model.foot_body_ids.size != 2:
             return jnp.asarray(0.0, dtype=jnp.float32)
@@ -2553,8 +2619,13 @@ class BelloLocomotionEnv:
             - self.reward_config.gait.joint_force_soft_limit_body_weights,
             0.0,
         )
+        foot_heading_error_deg = (
+            jnp.abs(self._foot_heading_error(next_state)) * 180.0 / jnp.pi
+        )
         return {
             "gait/stance_width": self._stance_width(next_state, self.config.root_link),
+            "gait/foot_heading_error_mean_deg": jnp.mean(foot_heading_error_deg),
+            "gait/foot_heading_error_max_deg": jnp.max(foot_heading_error_deg),
             "gait/active": moving.astype(jnp.float32),
             "gait/phase": jnp.where(moving, next_state.gait_phase, 0.0),
             "gait/desired_left_contact": jnp.where(

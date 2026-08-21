@@ -47,8 +47,10 @@ reward exactly zero.
 The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body
 joint reaction-force peaks, standing foot motion, phase contact matching,
-stance-foot slip, swing clearance, and termination cost. Exact terms and weights
-are defined in
+stance-foot slip, swing clearance, and termination cost. Healthy standing double
+support also penalizes squared foot-heading error outside a five-degree deadband,
+and yaw-rate tracking uses a 5 Hz low-pass-filtered measurement. Exact terms and
+weights are defined in
 [`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
 Training leaves policy effort unclipped so the over-peak torque penalty observes

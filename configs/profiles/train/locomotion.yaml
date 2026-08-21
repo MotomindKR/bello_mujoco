@@ -1,5 +1,5 @@
 config:
-  total_timesteps: 150000000
+  total_timesteps: 8000000000
   num_envs: 2048
   num_steps: 20
   update_epochs: 4
