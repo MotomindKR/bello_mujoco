@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib
@@ -785,11 +785,18 @@ def send_targets(
     adapter: HardwarePolicyAdapter,
     config: HardwareControlConfig,
     executor: Executor,
+    pending_submissions: dict[str, Future[Any]],
     pending_receipts: list[Any],
 ) -> None:
+    resolve_command_submissions(pending_submissions, pending_receipts)
     reap_command_receipts(pending_receipts)
-    submissions = {
-        name: executor.submit(
+    maximum_pending = len(config.groups) * (
+        math.ceil(config.acknowledgement_timeout_seconds / adapter.control_timestep) + 1
+    )
+    while len(pending_receipts) > maximum_pending:
+        pending_receipts.pop(0).result()
+    for name in config.groups:
+        pending_submissions[name] = executor.submit(
             controls[name].send_async,
             coordinate_targets(
                 binding,
@@ -799,15 +806,14 @@ def send_targets(
                 gain_scale=config.gain_scale,
             ),
         )
-        for name in config.groups
-    }
-    for name in config.groups:
-        pending_receipts.append(submissions[name].result())
-    maximum_pending = len(config.groups) * (
-        math.ceil(config.acknowledgement_timeout_seconds / adapter.control_timestep) + 1
-    )
-    while len(pending_receipts) > maximum_pending:
-        pending_receipts.pop(0).result()
+
+
+def resolve_command_submissions(
+    pending_submissions: dict[str, Future[Any]],
+    pending_receipts: list[Any],
+) -> None:
+    for name in tuple(pending_submissions):
+        pending_receipts.append(pending_submissions.pop(name).result())
 
 
 def reap_command_receipts(pending_receipts: list[Any]) -> None:
@@ -886,6 +892,7 @@ class ArmedControlSession:
     adapter: HardwarePolicyAdapter
     config: HardwareControlConfig
     executor: Executor
+    pending_submissions: dict[str, Future[Any]]
     pending_receipts: list[Any]
     previous_target: np.ndarray
     deadline: float
@@ -919,6 +926,7 @@ class ArmedControlSession:
             self.adapter,
             self.config,
             self.executor,
+            self.pending_submissions,
             self.pending_receipts,
         )
         self.previous_target = np.asarray(target, dtype=np.float64)
@@ -1007,6 +1015,10 @@ class ArmedControlSession:
         )
 
     def drain(self) -> None:
+        resolve_command_submissions(
+            self.pending_submissions,
+            self.pending_receipts,
+        )
         drain_command_receipts(self.pending_receipts)
 
 
@@ -1059,6 +1071,7 @@ def armed_control_session(
                     adapter=adapter,
                     config=config,
                     executor=executor,
+                    pending_submissions={},
                     pending_receipts=[],
                     previous_target=np.asarray(
                         initial_frame.positions, dtype=np.float64

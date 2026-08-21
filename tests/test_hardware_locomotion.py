@@ -42,6 +42,7 @@ from bello_mujoco.hardware.runtime import (
     require_async_hardware_binding,
     require_idle_confirmation,
     require_operator_confirmation,
+    resolve_command_submissions,
     send_targets,
     specific_force_from_gravity_removed_acceleration,
     start_hardware_controls,
@@ -1072,6 +1073,7 @@ def test_hardware_groups_start_concurrently() -> None:
             HardwareLocomotionConfig(groups=names),
             executor,
         )
+        pending_submissions = {}
         pending_receipts = []
         send_targets(
             binding,
@@ -1081,8 +1083,10 @@ def test_hardware_groups_start_concurrently() -> None:
             adapter,
             HardwareLocomotionConfig(groups=names),
             executor,
+            pending_submissions,
             pending_receipts,
         )
+        resolve_command_submissions(pending_submissions, pending_receipts)
         assert len(pending_receipts) == 2
         stop_hardware_controls(
             binding,
@@ -1095,6 +1099,54 @@ def test_hardware_groups_start_concurrently() -> None:
     assert set(sent) == set(names)
     assert stopped == ["lower_body"]
     assert closed == []
+
+
+def test_hardware_target_submission_overlaps_control_loop() -> None:
+    submission_started = threading.Event()
+    release_submission = threading.Event()
+    receipt = SimpleNamespace(done=lambda: True, result=lambda: None)
+
+    class Control:
+        def send_async(self, targets):
+            assert targets == {"lower_body": "lower_body"}
+            submission_started.set()
+            assert release_submission.wait(timeout=1.0)
+            return receipt
+
+    adapter = SimpleNamespace(
+        coordinate_index={"lower_body": 0},
+        kp=np.ones(1),
+        kd=np.ones(1),
+        control_timestep=0.02,
+    )
+    binding = SimpleNamespace(
+        CoordinateTarget=SimpleNamespace(position=lambda value, kp, kd: "lower_body")
+    )
+    config = HardwareLocomotionConfig(groups=("lower_body",))
+    pending_submissions = {}
+    pending_receipts = []
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        send_targets(
+            binding,
+            {"lower_body": Control()},
+            {"lower_body": SimpleNamespace(coordinates=("lower_body",))},
+            np.asarray((0.0,)),
+            adapter,
+            config,
+            executor,
+            pending_submissions,
+            pending_receipts,
+        )
+        assert submission_started.wait(timeout=1.0)
+        assert not pending_receipts
+        assert tuple(pending_submissions) == ("lower_body",)
+
+        release_submission.set()
+        resolve_command_submissions(pending_submissions, pending_receipts)
+
+    assert pending_submissions == {}
+    assert pending_receipts == [receipt]
 
 
 def test_hardware_cleanup_stops_only_running_groups() -> None:

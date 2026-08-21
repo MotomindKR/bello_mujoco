@@ -304,6 +304,14 @@ keeps sending normal-standing commands while waiting up to
 GMR reference. If that timeout expires, normal standing continues and the
 operator can type `MOTION` to retry.
 
+Hardware command-stream submission is pipelined across one control tick. Before
+enqueuing the current target, the runtime resolves the preceding tick's
+submission and checks completed acknowledgement errors; the current queue
+submission then overlaps state acquisition, policy inference, and pacing for
+the next tick. Targets remain ordered and none are coalesced or dropped. Explicit
+drains resolve both outstanding submissions and acknowledgements; shutdown
+waits for submission workers before releasing the command streams.
+
 A rejected frame caused by brief occlusion, ambiguity, low confidence,
 excessive latency, or an invalid retargeted pose does not replace the last safe
 reference or reset GMR. The last safe reference remains usable only until its
