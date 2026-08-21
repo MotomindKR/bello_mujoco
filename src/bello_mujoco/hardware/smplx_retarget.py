@@ -22,13 +22,11 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.hardware.twist2 import (
-    HardwareTwist2Environment,
     ReferenceDiscontinuity,
     ReferenceUnavailable,
     Twist2ReferenceFrame,
 )
 from bello_mujoco.repository import repository_root
-from bello_mujoco.training.checkpoint import Twist2CheckpointMetadata
 
 
 SMPLX_GMR_BODY_NAMES = (
@@ -126,6 +124,14 @@ class SmplxTargetFrame:
     source_age_ms: int
     received_at: float
     foot_contacts: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class GmrSourceIdentity:
+    """Pinned solver and canonical robot identities used by live GMR."""
+
+    revision: str
+    robot_fingerprint: str
 
 
 class SmplxTargetStream(Protocol):
@@ -645,17 +651,17 @@ def _rotation_vector(quaternion: np.ndarray) -> np.ndarray:
 
 
 class GmrBelloRetargeter:
-    """Stateful, source-rate GMR retargeter producing TWIST2 command frames."""
+    """Stateful, source-rate GMR retargeter producing Bello reference frames."""
 
     def __init__(
         self,
-        env: HardwareTwist2Environment,
-        metadata: Twist2CheckpointMetadata,
+        env: Any,
+        source_identity: GmrSourceIdentity,
         config: GmrLiveRetargetConfig = GmrLiveRetargetConfig(),
         validate_reference: Callable[[Twist2ReferenceFrame], None] | None = None,
     ) -> None:
-        gmr_root = require_pinned_gmr_revision(metadata.dataset.gmr_revision)
-        require_robot_fingerprint(metadata.robot_fingerprint)
+        gmr_root = require_pinned_gmr_revision(source_identity.revision)
+        require_robot_fingerprint(source_identity.robot_fingerprint)
         solver_path = (
             gmr_root
             / "general_motion_retargeting"
@@ -677,7 +683,7 @@ class GmrBelloRetargeter:
             )
         retargeter.max_iter = 0
         self.env = env
-        self.metadata = metadata
+        self.source_identity = source_identity
         self.config = config
         self.validate_reference = validate_reference
         self.solver_settings = solver_settings
@@ -1123,8 +1129,9 @@ def require_pinned_gmr_revision(expected: str) -> Path:
     current = _git_output(gmr_root, "rev-parse", "HEAD")
     if pinned != expected or current != expected:
         raise ValueError(
-            "TWIST2 checkpoint, repository gitlink, and checked-out GMR revision "
-            f"differ: checkpoint={expected}, gitlink={pinned}, checkout={current}"
+            "live-pose source identity, repository gitlink, and checked-out GMR "
+            f"revision differ: expected={expected}, gitlink={pinned}, "
+            f"checkout={current}"
         )
     status = _git_output(
         gmr_root,
@@ -1151,10 +1158,37 @@ def require_robot_fingerprint(expected: str) -> Path:
     actual = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     if actual != expected:
         raise ValueError(
-            "TWIST2 checkpoint robot fingerprint differs from the canonical "
-            f"Bello description: checkpoint={expected}, current={actual}"
+            "live-pose robot fingerprint differs from the canonical Bello "
+            f"description: expected={expected}, current={actual}"
         )
     return path
+
+
+def repository_gmr_source_identity() -> GmrSourceIdentity:
+    """Resolve and validate the GMR/robot identity pinned by this checkout."""
+
+    root = repository_root()
+    gitlink = _git_output(root, "ls-tree", "HEAD", "--", "deps/GMR").split()
+    if len(gitlink) < 3 or gitlink[1] != "commit":
+        raise RuntimeError("deps/GMR is not a pinned Git submodule")
+    robot_path = (
+        root
+        / "deps"
+        / "bello-stack"
+        / "descriptions"
+        / "bello"
+        / "full_body"
+        / "urdf"
+        / "bello_full_body.urdf"
+    )
+    identity = GmrSourceIdentity(
+        revision=gitlink[2],
+        robot_fingerprint="sha256:"
+        + hashlib.sha256(robot_path.read_bytes()).hexdigest(),
+    )
+    require_pinned_gmr_revision(identity.revision)
+    require_robot_fingerprint(identity.robot_fingerprint)
+    return identity
 
 
 def import_pinned_gmr_retargeter() -> type[Any]:

@@ -322,13 +322,13 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `task` | `locomotion`, `motion`, or `twist2`; `locomotion` | all | Select the checkpoint and observation contract. |
 | `checkpoint_path` | path or `null`; `null` | all | Required checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
 | `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
-| `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout. Evaluation/hardware loading removes retired generated-asset fields replaced by the canonical URDF, but rejects retired joint selectors that were enabled. This does not disable other task, shape, asset, motion-content, source-service, or hardware preflight checks. |
+| `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout. Evaluation/hardware loading removes retired generated-asset fields replaced by the canonical URDF, rejects retired joint selectors that were enabled, and supplies explicit historical PPO and no-op reward/randomization defaults for older locomotion metadata. This does not disable other task, shape, asset, motion-content, source-service, or hardware preflight checks. |
 | `endpoint` | string; `http://127.0.0.1:50051` | all | `bello-hardwared` endpoint. |
 | `remote_endpoint` | string or `null`; `null` | locomotion | Required plaintext URL of the visualizer's `RemoteCommandService`, for example `http://visualizer-host:50054`. |
 | `remote_staleness_ms` | positive integer; `200` | locomotion | Maximum age of the latest remote-command sample before the command becomes zero and the stream reconnects. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
-| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. TWIST2 combines the repository-owned relaxed-standing SMPL-X upper-body retarget with the checkpoint's canonical Bello leg stance; other tasks use their checkpoint nominal pose. |
+| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. Locomotion and TWIST2 combine the repository-owned relaxed-standing SMPL-X upper-body retarget with the checkpoint's canonical Bello leg stance; motion uses its standing checkpoint nominal pose. |
 | `gain_scale` | float in `(0, 1]`; `1.0` | all | Multiply every commanded motor `kp` and `kd` by this value during start, ramp, and policy control. Fault damping is unchanged. |
 | `max_linear_acceleration` | positive float or `null`; `null` | all | Override the IMU acceleration-norm safety limit in m/s². `null` uses 100 m/s². Exceeding the limit immediately enters damped shutdown. |
 | `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 normal-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
@@ -336,32 +336,34 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
-| `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
-| `fastsam_tls_root_certificate_path` | path or `null`; `null` | twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
-| `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |
-| `fastsam_connect_timeout_seconds` | positive float; `5.0` | twist2 | Deadline for establishing the gRPC channel. |
-| `fastsam_rpc_timeout_seconds` | positive float; `2.0` | twist2 | Deadline for stream-info and status RPCs. |
-| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | twist2 | Time allowed for a valid tracked pose and GMR result after each `MOTION` confirmation. Normal-standing commands continue during the wait. |
-| `fastsam_reference_qualification_frames` | positive integer; `5` | twist2 | Number of distinct, successively received safe references required before entering live tracking. Re-reading one cached frame does not satisfy the gate. |
-| `fastsam_min_tracking_confidence` | float in `[0,1]`; `0.5` | twist2 | Minimum whole-person confidence. |
-| `fastsam_min_joint_confidence` | float in `[0,1]`; `0.25` | twist2 | Minimum confidence for every GMR target joint. |
-| `fastsam_max_pipeline_latency_ms` | positive float; `120.0` | twist2 | Maximum server-reported submission-to-output latency. |
-| `fastsam_transport_latency_budget_ms` | nonnegative float; `10.0` | twist2 | Conservative transport contribution added to every reference age because server and robot hosts need not share a monotonic clock. |
-| `fastsam_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | twist2 | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
-| `fastsam_align_initial_heading` | boolean; `true` | twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
-| `fastsam_align_initial_floor` | boolean; `true` | twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
-| `smplx_neutral_model_path` | path or `null`; `null` | twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
-| `smplx_human_height_m` | positive float; `1.66` | twist2 | Human height supplied to the pinned GMR scale table. |
+| `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion, twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
+| `fastsam_tls_root_certificate_path` | path or `null`; `null` | locomotion, twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
+| `fastsam_tls_server_name_override` | string or `null`; `null` | locomotion, twist2 | TLS certificate name override. It is rejected without a CA certificate. |
+| `fastsam_connect_timeout_seconds` | positive float; `5.0` | locomotion, twist2 | Deadline for establishing the gRPC channel. |
+| `fastsam_rpc_timeout_seconds` | positive float; `2.0` | locomotion, twist2 | Deadline for stream-info and status RPCs. |
+| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | locomotion, twist2 | Locomotion requires a qualified pose before hardware connection. TWIST2 applies this timeout after each `MOTION` confirmation while normal-standing commands continue. |
+| `fastsam_reference_qualification_frames` | positive integer; `5` | locomotion, twist2 | Number of distinct, successively received safe references required before locomotion preflight or TWIST2 live tracking. Re-reading one cached frame does not satisfy the gate. |
+| `fastsam_min_tracking_confidence` | float in `[0,1]`; `0.5` | locomotion, twist2 | Minimum whole-person confidence. |
+| `fastsam_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion, twist2 | Minimum confidence for every GMR target joint. |
+| `fastsam_max_pipeline_latency_ms` | positive float; `120.0` | locomotion, twist2 | Maximum server-reported submission-to-output latency. |
+| `fastsam_transport_latency_budget_ms` | nonnegative float; `10.0` | locomotion, twist2 | Conservative transport contribution added to every reference age because server and robot hosts need not share a monotonic clock. |
+| `fastsam_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion, twist2 | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
+| `fastsam_align_initial_heading` | boolean; `true` | locomotion, twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
+| `fastsam_align_initial_floor` | boolean; `true` | locomotion, twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
+| `smplx_neutral_model_path` | path or `null`; `null` | locomotion, twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
+| `smplx_human_height_m` | positive float; `1.66` | locomotion, twist2 | Human height supplied to the pinned GMR scale table. |
 
-Fields that apply to only one task must not be explicitly supplied when the
-other task is selected, even if the supplied value equals the documented
-default.
-Locomotion requires `remote_endpoint`. Its visualizer-hosted physical controller
-uses the same stick mapping as `bello-eval`; R1 aborts. Controller or
-service loss commands zero, reconnects automatically, and requires a neutral
-controller before accepting nonzero intent again. The visualizer service must
-produce a fresh sample before the hardware daemon is contacted. Hardware
-locomotion has no native-controller or fixed-command mode.
+Task-specific fields must not be explicitly supplied to an inapplicable task,
+even if the supplied value equals the documented default.
+Locomotion requires both `remote_endpoint` and `smplx_neutral_model_path`. Its
+visualizer-hosted physical controller uses the same stick mapping as
+`bello-eval`; R1 aborts. Controller or service loss commands zero, reconnects
+automatically, and requires a neutral controller before accepting nonzero
+intent again. The visualizer service must produce a fresh sample before the
+hardware daemon is contacted. The joystick continues to command the
+13-coordinate locomotion policy while Fast-SAM/GMR targets only the 12 arm
+coordinates. Hardware locomotion has no native-controller or fixed-command
+mode.
 
 Motion additionally requires a locomotion checkpoint selected by
 `standing_checkpoint_path` and absolute pelvis pose from

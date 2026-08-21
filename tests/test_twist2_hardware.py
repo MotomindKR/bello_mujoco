@@ -43,6 +43,7 @@ from bello_mujoco.hardware.twist2 import (
 from bello_mujoco.hardware.smplx_retarget import (
     GmrBelloRetargeter,
     GmrLiveRetargetConfig,
+    GmrSourceIdentity,
     LiveGmrReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
@@ -601,18 +602,12 @@ def test_pinned_gmr_produces_finite_standing_reference(
         root / "deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf"
     )
     fingerprint = "sha256:" + hashlib.sha256(robot_source.read_bytes()).hexdigest()
-    metadata = replace(
-        adapter.metadata,
-        dataset=replace(
-            adapter.metadata.dataset,
-            gmr_revision=revision,
-            robot_fingerprint=fingerprint,
-        ),
-        robot_fingerprint=fingerprint,
-    )
     retargeter = GmrBelloRetargeter(
         adapter.env,
-        metadata,
+        GmrSourceIdentity(
+            revision=revision,
+            robot_fingerprint=fingerprint,
+        ),
         GmrLiveRetargetConfig(),
     )
 

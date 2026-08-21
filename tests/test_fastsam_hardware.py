@@ -267,7 +267,13 @@ def test_reference_factory_defers_live_target_check_until_motion(
         lambda _stream, _retargeter, **_kwargs: source,
     )
 
-    adapter = SimpleNamespace(env=SimpleNamespace(), metadata=SimpleNamespace())
+    adapter = SimpleNamespace(
+        env=SimpleNamespace(),
+        metadata=SimpleNamespace(
+            dataset=SimpleNamespace(gmr_revision="a" * 40),
+            robot_fingerprint="sha256:" + "b" * 64,
+        ),
+    )
     with fastsam_reference_source(adapter, HardwareTwist2Config()) as result:
         assert result is source
 

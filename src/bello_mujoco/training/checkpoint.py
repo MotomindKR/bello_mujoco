@@ -795,17 +795,54 @@ def _with_checkpoint_metadata_defaults(
         value = _without_retired_asset_schema(value)
     if value.get("task") == "locomotion":
         normalized = dict(value)
+        ppo = value.get("ppo")
+        if isinstance(ppo, dict):
+            normalized_ppo = dict(ppo)
+            legacy_ppo_defaults = {
+                "adam_epsilon": 1.0e-5,
+                "value_loss_scale": 0.5,
+                "normalize_critic_observations": True,
+                "observation_norm_update_mode": "online",
+                "observation_norm_update_updates": None,
+                "observation_norm_epsilon_mode": "variance_floor",
+                "symmetry_loss_coef": 0.0,
+            }
+            for name, default in legacy_ppo_defaults.items():
+                if name not in normalized_ppo:
+                    normalized_ppo[name] = default
+            policy = ppo.get("policy")
+            if isinstance(policy, dict):
+                normalized_policy = dict(policy)
+                normalized_policy.setdefault("architecture", "mlp")
+                normalized_policy.setdefault("layer_norm_final_hidden", False)
+                normalized_ppo["policy"] = normalized_policy
+            normalized["ppo"] = normalized_ppo
         env = value.get("env")
         if isinstance(env, dict) and "gait" not in env:
             raise ValueError(
                 "locomotion checkpoint predates the gait-phase observation contract; "
                 "use the archived source revision or train a new policy"
             )
-        if isinstance(env, dict) and "observation_latency" not in env:
+        if isinstance(env, dict):
             normalized_env = dict(env)
-            normalized_env["observation_latency"] = to_builtin(
-                ObservationLatencyConfig()
-            )
+            if "observation_latency" not in normalized_env:
+                normalized_env["observation_latency"] = to_builtin(
+                    ObservationLatencyConfig()
+                )
+            model_randomization = env.get("model_randomization")
+            if isinstance(model_randomization, dict):
+                normalized_randomization = dict(model_randomization)
+                legacy_randomization_defaults = {
+                    "added_base_mass_range": (0.0, 0.0),
+                    "base_com_offset_range": (0.0, 0.0),
+                    "friction_range": (1.0, 1.0),
+                    "actuator_strength_range": (1.0, 1.0),
+                    "gravity_fraction_range": (0.0, 0.0),
+                }
+                for name, default in legacy_randomization_defaults.items():
+                    if name not in normalized_randomization:
+                        normalized_randomization[name] = default
+                normalized_env["model_randomization"] = normalized_randomization
             normalized["env"] = normalized_env
         reward = value.get("reward")
         if isinstance(reward, dict):
@@ -818,10 +855,17 @@ def _with_checkpoint_metadata_defaults(
                     "touchdown_impact",
                     "stand_still",
                     "stand_contact",
+                    "action_acceleration",
+                    "stand_foot_heading",
                 ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
                 normalized_reward["weights"] = normalized_weights
+            if "smoothness" not in normalized_reward:
+                normalized_reward["smoothness"] = {
+                    "ankle_action_weight": 2.0,
+                    "waist_action_weight": 2.0,
+                }
             gait = reward.get("gait")
             if isinstance(gait, dict):
                 normalized_gait = dict(gait)

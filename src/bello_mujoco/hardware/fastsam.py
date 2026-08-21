@@ -27,12 +27,14 @@ from bello_mujoco.fastsam_conditioning import (
 from bello_mujoco.hardware.smplx_retarget import (
     GmrBelloRetargeter,
     GmrLiveRetargetConfig,
+    GmrSourceIdentity,
     LiveGmrReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
     load_smplx_standing_sample,
+    repository_gmr_source_identity,
 )
 from bello_mujoco.hardware.twist2 import (
     HardwareTwist2Config,
@@ -76,9 +78,11 @@ class FastSamGrpcConfig:
     )
 
     @classmethod
-    def from_hardware(cls, config: HardwareTwist2Config) -> FastSamGrpcConfig:
+    def from_hardware(cls, config: Any) -> FastSamGrpcConfig:
         if config.smplx_neutral_model_path is None:
-            raise ValueError("smplx_neutral_model_path is required for TWIST2 hardware")
+            raise ValueError(
+                "smplx_neutral_model_path is required for live Fast-SAM hardware pose"
+            )
         return cls(
             endpoint=config.fastsam_endpoint,
             neutral_model_path=config.smplx_neutral_model_path,
@@ -565,16 +569,58 @@ def fastsam_reference_source(
 ) -> Iterator[LiveGmrReferenceSource]:
     """Construct the pinned gRPC -> SMPL-X -> GMR hardware source."""
 
+    identity = GmrSourceIdentity(
+        revision=adapter.metadata.dataset.gmr_revision,
+        robot_fingerprint=adapter.metadata.robot_fingerprint,
+    )
+    with _fastsam_reference_source(
+        adapter,
+        config,
+        identity,
+        validate_reference=lambda reference: validate_twist2_reference(
+            reference, adapter.env, config
+        ),
+        live_target_check="deferred_until_MOTION",
+    ) as source:
+        yield source
+
+
+@contextmanager
+def fastsam_locomotion_reference_source(
+    adapter: Any,
+    config: Any,
+) -> Iterator[LiveGmrReferenceSource]:
+    """Construct the repository-pinned live upper-body source for locomotion."""
+
+    with _fastsam_reference_source(
+        adapter,
+        config,
+        repository_gmr_source_identity(),
+        validate_reference=adapter.validate_upper_body_reference,
+        live_target_check="required_before_hardware_connection",
+    ) as source:
+        yield source
+
+
+@contextmanager
+def _fastsam_reference_source(
+    adapter: Any,
+    config: Any,
+    source_identity: GmrSourceIdentity,
+    *,
+    validate_reference: Any,
+    live_target_check: str,
+) -> Iterator[LiveGmrReferenceSource]:
+    """Build the shared Fast-SAM transport and source-rate GMR worker."""
+
     grpc_config = FastSamGrpcConfig.from_hardware(config)
     stream = FastSamSmplxStream(grpc_config)
     with stream:
         retargeter = GmrBelloRetargeter(
             adapter.env,
-            adapter.metadata,
+            source_identity,
             GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),
-            validate_reference=lambda reference: validate_twist2_reference(
-                reference, adapter.env, config
-            ),
+            validate_reference=validate_reference,
         )
         with LiveGmrReferenceSource(stream, retargeter) as source:
             print(
@@ -588,7 +634,7 @@ def fastsam_reference_source(
                     "body_representation": "smplx_body_22",
                     "neutral_model_sha256": stream.neutral_model_sha256,
                     "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
-                    "live_target_check": "deferred_until_MOTION",
+                    "live_target_check": live_target_check,
                 }
             )
             yield source
