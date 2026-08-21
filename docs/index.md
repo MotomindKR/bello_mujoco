@@ -7,6 +7,8 @@ guides define the supported interfaces and contracts:
 - [Training configuration](training_configuration.md)
 - [Training and evaluation contracts](training_and_evaluation.md)
 - [Motion data and tracking](motion_tracking.md)
+- [TWIST teacher, student, and dataset pipeline](twist.md)
+- [One-stage TWIST2](twist2.md)
 - [Physical hardware](hardware.md)
 - [URDF inertial overhaul](urdf_inertial_overhaul.md)
 - [RobStride emulator](emulator.md)
@@ -15,15 +17,17 @@ guides define the supported interfaces and contracts:
 ## Repository shape
 
 ```text
-configs/commands/          seven public Hydra command documents
+configs/commands/          public Hydra command documents
 configs/profiles/train/    maintained training profiles
 deps/bello-stack/          pinned robot, hardware, and client dependency
+deps/GMR/                  pinned offline and live motion retargeter
+deps/Fast-SAM-3D-Body/     pinned SMPL-X skeletal gRPC contract
 motions/asap_fixed_head/   tracked reference clips
 src/bello_mujoco/
   assets_pipeline/         asset preparation and project data paths
-  envs/                    locomotion, motion tracking, and rewards
+  envs/                    locomotion, motion tracking, TWIST/TWIST2, and rewards
   evaluation/              native rendering and policy evaluation
-  hardware/                physical runners, IMU, and pose service
+  hardware/                physical runners, IMU/pose services, and live GMR
   motion/                  motion clips, import, and feasibility tools
   robstride/               CAN protocol, transmission, and hardware emulator
   training/                PPO, checkpoints, tracking, and Vast orchestration

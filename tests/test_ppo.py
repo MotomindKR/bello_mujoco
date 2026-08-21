@@ -348,6 +348,28 @@ def test_observation_normalization_updates_round_trips_and_rejects_poison() -> N
     )
 
 
+def test_observation_normalization_freezes_at_configured_sample_count() -> None:
+    config = small_config(normalize_observations=True)
+    state = init_observation_norm_state(2)
+    first = update_observation_norm_state(
+        state,
+        jnp.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32),
+        config,
+        max_count=2.0,
+    )
+    frozen = update_observation_norm_state(
+        first,
+        jnp.asarray([[100.0, 200.0]], dtype=jnp.float32),
+        config,
+        max_count=2.0,
+    )
+
+    assert all(
+        jnp.array_equal(before, after)
+        for before, after in zip(first, frozen, strict=True)
+    )
+
+
 def test_value_normalization_round_trips_and_rejects_poison() -> None:
     config = small_config(normalize_value=True)
     initial = init_value_norm_state()

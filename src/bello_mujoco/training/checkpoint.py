@@ -34,7 +34,19 @@ from bello_mujoco.envs.motion_tracking import (
     MotionObservationLatencyConfig,
     MotionTrackingEnvConfig,
 )
+from bello_mujoco.envs.twist import (
+    TwistEnvConfig,
+    TwistObservationContract,
+    TwistSamplingConfig,
+    TwistSimulationConfig,
+)
+from bello_mujoco.envs.twist2 import (
+    Twist2EnvConfig,
+    Twist2ObservationContract,
+    Twist2ParityContract,
+)
 from bello_mujoco.motion.clip import MOTION_FORMAT_VERSION, MotionClip
+from bello_mujoco.motion.twist2_dataset import Twist2DatasetAudit
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.training.ppo import (
@@ -82,6 +94,7 @@ class CheckpointConfig:
     name: str | None = None
     every_updates: int | None = None
     resume_path: Path | None = None
+    warm_start_path: Path | None = None
     allow_git_commit_mismatch: bool = False
     upload_wandb_artifact: bool = True
     wandb_artifact_name: str | None = None
@@ -151,7 +164,86 @@ class MotionCheckpointMetadata(_CheckpointMetadataBase):
     motion_sampling_failure_ema: tuple[float, ...] | None = None
 
 
-CheckpointMetadata: TypeAlias = LocomotionCheckpointMetadata | MotionCheckpointMetadata
+@dataclass(frozen=True)
+class TwistDatasetContract:
+    index_path: Path
+    schema_version: int
+    dataset_fingerprint: str
+    robot_fingerprint: str
+    gmr_revision: str
+    joint_names: tuple[str, ...]
+    body_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TwistKLSchedule:
+    direction: Literal["student||teacher"] = "student||teacher"
+    start: float = 0.1
+    end: float = 0.01
+    anneal_updates: int = 60_000
+
+
+@dataclass(frozen=True)
+class TwistTeacherCheckpointMetadata(_CheckpointMetadataBase):
+    simulation: TwistSimulationConfig
+    twist_env: TwistEnvConfig
+    sampling: TwistSamplingConfig
+    observation_contract: TwistObservationContract
+    dataset: TwistDatasetContract
+    robot_fingerprint: str
+    source_revision: str
+    stage: Literal["teacher"] = "teacher"
+    task: Literal["twist_teacher"] = "twist_teacher"
+    value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
+
+
+@dataclass(frozen=True)
+class TwistStudentCheckpointMetadata(_CheckpointMetadataBase):
+    simulation: TwistSimulationConfig
+    twist_env: TwistEnvConfig
+    sampling: TwistSamplingConfig
+    observation_contract: TwistObservationContract
+    dataset: TwistDatasetContract
+    robot_fingerprint: str
+    source_revision: str
+    teacher_fingerprint: str
+    kl_schedule: TwistKLSchedule = TwistKLSchedule()
+    stage: Literal["student"] = "student"
+    task: Literal["twist_student"] = "twist_student"
+    value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
+
+
+@dataclass(frozen=True)
+class Twist2CheckpointMetadata(_CheckpointMetadataBase):
+    simulation: TwistSimulationConfig
+    twist2_env: Twist2EnvConfig
+    sampling: TwistSamplingConfig
+    observation_contract: Twist2ObservationContract
+    parity_contract: Twist2ParityContract
+    dataset: TwistDatasetContract
+    dataset_audit: Twist2DatasetAudit
+    robot_fingerprint: str
+    source_revision: str
+    task: Literal["twist2"] = "twist2"
+    value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
+
+
+TwistCheckpointMetadata: TypeAlias = (
+    TwistTeacherCheckpointMetadata | TwistStudentCheckpointMetadata
+)
+CheckpointMetadata: TypeAlias = (
+    LocomotionCheckpointMetadata
+    | MotionCheckpointMetadata
+    | TwistTeacherCheckpointMetadata
+    | TwistStudentCheckpointMetadata
+    | Twist2CheckpointMetadata
+)
 
 
 class CheckpointNormalizationState(NamedTuple):
@@ -190,9 +282,16 @@ def validate_checkpoint_name(name: str | None) -> None:
 
 def validate_checkpoint_options(config: CheckpointConfig) -> None:
     validate_checkpoint_name(config.name)
-    if config.allow_git_commit_mismatch and config.resume_path is None:
+    if config.resume_path is not None and config.warm_start_path is not None:
+        raise ValueError("resume_path and warm_start_path are mutually exclusive")
+    if (
+        config.allow_git_commit_mismatch
+        and config.resume_path is None
+        and config.warm_start_path is None
+    ):
         raise ValueError(
-            "checkpoint_config.allow_git_commit_mismatch requires resume_path"
+            "checkpoint_config.allow_git_commit_mismatch requires resume_path or "
+            "warm_start_path"
         )
 
 
@@ -218,8 +317,8 @@ def save_training_checkpoint(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     staging_path = Path(tempfile.mkdtemp(prefix=f".{path.name}.tmp-", dir=path.parent))
+    checkpointer = ocp.PyTreeCheckpointer()
     try:
-        checkpointer = ocp.PyTreeCheckpointer()
         checkpointer.save(
             staging_path / STATE_DIR,
             _orbax_storage_item(train_item),
@@ -248,6 +347,8 @@ def save_training_checkpoint(
     except BaseException:
         shutil.rmtree(staging_path, ignore_errors=True)
         raise
+    finally:
+        checkpointer.close()
 
 
 def restore_evaluation_checkpoint(
@@ -315,6 +416,7 @@ def restore_runner_checkpoint(
         recorded_metadata,
         expected_metadata,
         saved_update=saved_update,
+        allow_source_revision_mismatch=allow_git_commit_mismatch,
     )
     _validate_environment_layouts(env, effective_metadata)
     template, static_policy, optimizer = init_runner_state(
@@ -350,9 +452,57 @@ def restore_runner_checkpoint(
         value_norm_state=train_item["value_norm_state"],
         observation_norm_state=train_item["observation_norm_state"],
         critic_observation_norm_state=train_item["critic_observation_norm_state"],
+        task_state=continuation_item.get("task_state", template.task_state),
     )
     _validate_restored_motion_runner_state(runner_state, recorded_metadata)
     return runner_state, static_policy, optimizer, effective_metadata
+
+
+def warm_start_runner_checkpoint(
+    path: Path,
+    env: PPOEnvironment,
+    fresh_runner: RunnerState,
+    expected_metadata: CheckpointMetadata,
+    *,
+    allow_git_commit_mismatch: bool = False,
+) -> tuple[RunnerState, CheckpointMetadata]:
+    """Initialize policy and normalization from a compatible prior run.
+
+    Unlike resume, warm start intentionally keeps the newly initialized optimizer,
+    update counter, environment state, sampler state, RNG, and learning rate. The
+    source checkpoint may use a different dataset fingerprint, but its robot,
+    retargeter, observation/action layouts, environment semantics, and policy
+    architecture must remain identical.
+    """
+
+    path = Path(path).resolve()
+    recorded_metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
+        path,
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
+    )
+    validate_warm_start_metadata(
+        recorded_metadata,
+        expected_metadata,
+        allow_source_revision_mismatch=allow_git_commit_mismatch,
+    )
+    _validate_environment_layouts(env, expected_metadata)
+    restored = _restore_checkpoint_item(
+        path / STATE_DIR,
+        _train_checkpoint_item(fresh_runner),
+        train_fingerprint,
+        label="warm-start state",
+    )
+    _validate_restored_normalization_state(restored, recorded_metadata)
+    _validate_restored_update(restored["update"], saved_update, recorded_metadata.ppo)
+    return (
+        fresh_runner._replace(
+            params=restored["policy"],
+            value_norm_state=restored["value_norm_state"],
+            observation_norm_state=restored["observation_norm_state"],
+            critic_observation_norm_state=(restored["critic_observation_norm_state"]),
+        ),
+        recorded_metadata,
+    )
 
 
 def load_checkpoint_metadata(
@@ -368,16 +518,37 @@ def load_checkpoint_metadata(
     return metadata
 
 
+def load_checkpoint_update(
+    path: Path,
+    *,
+    allow_git_commit_mismatch: bool = False,
+) -> int:
+    """Return the integrity-checked saved update without restoring arrays."""
+
+    _, saved_update, _, _ = _load_checkpoint_document(
+        Path(path).resolve(),
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
+    )
+    return saved_update
+
+
 def resumed_checkpoint_metadata(
     recorded: CheckpointMetadata,
     requested: CheckpointMetadata,
     *,
     saved_update: int,
+    allow_source_revision_mismatch: bool = False,
 ) -> CheckpointMetadata:
     """Validate a resume request and apply its operationally mutable fields."""
 
-    recorded_payload = _resume_contract_payload(recorded)
-    requested_payload = _resume_contract_payload(requested)
+    recorded_payload = _resume_contract_payload(
+        recorded,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    requested_payload = _resume_contract_payload(
+        requested,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
     if recorded_payload != requested_payload:
         mismatches = sorted(
             key
@@ -394,6 +565,34 @@ def resumed_checkpoint_metadata(
             f"{requested.ppo.num_updates} < {saved_update}"
         )
     return requested
+
+
+def validate_warm_start_metadata(
+    recorded: CheckpointMetadata,
+    requested: CheckpointMetadata,
+    *,
+    allow_source_revision_mismatch: bool = False,
+) -> None:
+    """Require transfer-compatible task semantics while allowing new data."""
+
+    recorded_payload = _warm_start_contract_payload(
+        recorded,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    requested_payload = _warm_start_contract_payload(
+        requested,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    if recorded_payload != requested_payload:
+        mismatches = sorted(
+            key
+            for key in set(recorded_payload) | set(requested_payload)
+            if recorded_payload.get(key) != requested_payload.get(key)
+        )
+        raise ValueError(
+            "warm-start checkpoint contract differs from the requested run for "
+            + ", ".join(mismatches)
+        )
 
 
 def _train_state_checkpoint_item(
@@ -424,13 +623,16 @@ def _train_checkpoint_item(runner_state: RunnerState) -> dict[str, Any]:
 
 
 def _continuation_checkpoint_item(runner_state: RunnerState) -> dict[str, Any]:
-    return {
+    item = {
         "env_state": runner_state.env_state,
         "obs_stack": runner_state.obs_stack,
         "critic_obs_stack": runner_state.critic_obs_stack,
         "rng": runner_state.rng,
         "learning_rate": runner_state.learning_rate,
     }
+    if getattr(runner_state.task_state, "size", 0) > 0:
+        item["task_state"] = runner_state.task_state
+    return item
 
 
 def _checkpoint_document(
@@ -474,11 +676,15 @@ def _require_unchanged_git_commit(git_commit: str) -> None:
         )
 
 
-def _resume_contract_payload(metadata: CheckpointMetadata) -> dict[str, Any]:
+def _resume_contract_payload(
+    metadata: CheckpointMetadata, *, omit_source_revision: bool = False
+) -> dict[str, Any]:
     """Return training semantics, excluding budget and persisted running state."""
 
     payload = to_builtin(metadata)
     payload["ppo"].pop("total_timesteps")
+    if omit_source_revision:
+        payload.pop("source_revision", None)
     for key in (
         "value_norm",
         "observation_norm",
@@ -492,6 +698,24 @@ def _resume_contract_payload(metadata: CheckpointMetadata) -> dict[str, Any]:
     motion = payload.get("motion")
     if motion is not None:
         motion.pop("path")
+    dataset = payload.get("dataset")
+    if dataset is not None:
+        dataset.pop("index_path")
+    return payload
+
+
+def _warm_start_contract_payload(
+    metadata: CheckpointMetadata, *, omit_source_revision: bool
+) -> dict[str, Any]:
+    payload = _resume_contract_payload(
+        metadata,
+        omit_source_revision=omit_source_revision,
+    )
+    payload["ppo"] = {"policy": payload["ppo"]["policy"]}
+    dataset = payload.get("dataset")
+    if dataset is not None:
+        dataset.pop("dataset_fingerprint", None)
+    payload.pop("dataset_audit", None)
     return payload
 
 
@@ -571,17 +795,54 @@ def _with_checkpoint_metadata_defaults(
         value = _without_retired_asset_schema(value)
     if value.get("task") == "locomotion":
         normalized = dict(value)
+        ppo = value.get("ppo")
+        if isinstance(ppo, dict):
+            normalized_ppo = dict(ppo)
+            legacy_ppo_defaults = {
+                "adam_epsilon": 1.0e-5,
+                "value_loss_scale": 0.5,
+                "normalize_critic_observations": True,
+                "observation_norm_update_mode": "online",
+                "observation_norm_update_updates": None,
+                "observation_norm_epsilon_mode": "variance_floor",
+                "symmetry_loss_coef": 0.0,
+            }
+            for name, default in legacy_ppo_defaults.items():
+                if name not in normalized_ppo:
+                    normalized_ppo[name] = default
+            policy = ppo.get("policy")
+            if isinstance(policy, dict):
+                normalized_policy = dict(policy)
+                normalized_policy.setdefault("architecture", "mlp")
+                normalized_policy.setdefault("layer_norm_final_hidden", False)
+                normalized_ppo["policy"] = normalized_policy
+            normalized["ppo"] = normalized_ppo
         env = value.get("env")
         if isinstance(env, dict) and "gait" not in env:
             raise ValueError(
                 "locomotion checkpoint predates the gait-phase observation contract; "
                 "use the archived source revision or train a new policy"
             )
-        if isinstance(env, dict) and "observation_latency" not in env:
+        if isinstance(env, dict):
             normalized_env = dict(env)
-            normalized_env["observation_latency"] = to_builtin(
-                ObservationLatencyConfig()
-            )
+            if "observation_latency" not in normalized_env:
+                normalized_env["observation_latency"] = to_builtin(
+                    ObservationLatencyConfig()
+                )
+            model_randomization = env.get("model_randomization")
+            if isinstance(model_randomization, dict):
+                normalized_randomization = dict(model_randomization)
+                legacy_randomization_defaults = {
+                    "added_base_mass_range": (0.0, 0.0),
+                    "base_com_offset_range": (0.0, 0.0),
+                    "friction_range": (1.0, 1.0),
+                    "actuator_strength_range": (1.0, 1.0),
+                    "gravity_fraction_range": (0.0, 0.0),
+                }
+                for name, default in legacy_randomization_defaults.items():
+                    if name not in normalized_randomization:
+                        normalized_randomization[name] = default
+                normalized_env["model_randomization"] = normalized_randomization
             normalized["env"] = normalized_env
         reward = value.get("reward")
         if isinstance(reward, dict):
@@ -594,10 +855,17 @@ def _with_checkpoint_metadata_defaults(
                     "touchdown_impact",
                     "stand_still",
                     "stand_contact",
+                    "action_acceleration",
+                    "stand_foot_heading",
                 ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
                 normalized_reward["weights"] = normalized_weights
+            if "smoothness" not in normalized_reward:
+                normalized_reward["smoothness"] = {
+                    "ankle_action_weight": 2.0,
+                    "waist_action_weight": 2.0,
+                }
             gait = reward.get("gait")
             if isinstance(gait, dict):
                 normalized_gait = dict(gait)
@@ -677,9 +945,16 @@ def _metadata_from_dict(
         metadata_type = LocomotionCheckpointMetadata
     elif task == "motion_tracking":
         metadata_type = MotionCheckpointMetadata
+    elif task == "twist_teacher":
+        metadata_type = TwistTeacherCheckpointMetadata
+    elif task == "twist_student":
+        metadata_type = TwistStudentCheckpointMetadata
+    elif task == "twist2":
+        metadata_type = Twist2CheckpointMetadata
     else:
         raise ValueError(
-            f"{path}.task must be 'locomotion' or 'motion_tracking', got {task!r}"
+            f"{path}.task must be 'locomotion', 'motion_tracking', "
+            f"'twist_teacher', 'twist_student', or 'twist2', got {task!r}"
         )
     return dataclass_from_dict(
         metadata_type,
@@ -762,6 +1037,12 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
                 "checkpoint action layout does not match the motion joint order"
             )
         _validate_motion_state_metadata(metadata)
+    elif isinstance(
+        metadata, (TwistTeacherCheckpointMetadata, TwistStudentCheckpointMetadata)
+    ):
+        _validate_twist_metadata(metadata)
+    elif isinstance(metadata, Twist2CheckpointMetadata):
+        _validate_twist2_metadata(metadata)
     elif not isinstance(metadata, LocomotionCheckpointMetadata):
         raise TypeError(f"unsupported checkpoint metadata type {type(metadata)!r}")
     stack_size = metadata.ppo.policy.obs_stack_size
@@ -820,6 +1101,158 @@ def _validate_motion_state_metadata(metadata: MotionCheckpointMetadata) -> None:
         )
 
 
+def _validate_twist_metadata(metadata: TwistCheckpointMetadata) -> None:
+    for name, value in (
+        ("dataset_fingerprint", metadata.dataset.dataset_fingerprint),
+        ("dataset.robot_fingerprint", metadata.dataset.robot_fingerprint),
+        ("robot_fingerprint", metadata.robot_fingerprint),
+    ):
+        _validated_fingerprint(value, f"metadata.{name}")
+    if metadata.dataset.robot_fingerprint != metadata.robot_fingerprint:
+        raise ValueError("TWIST dataset and checkpoint robot fingerprints differ")
+    if not re.fullmatch(r"[0-9a-f]{40}", metadata.dataset.gmr_revision):
+        raise ValueError("TWIST dataset GMR revision must be a 40-character commit")
+    if not re.fullmatch(r"[0-9a-f]{40}", metadata.source_revision):
+        raise ValueError("TWIST source revision must be a 40-character commit")
+    if metadata.dataset.schema_version <= 0:
+        raise ValueError("TWIST dataset schema version must be positive")
+    if metadata.dataset.joint_names != metadata.action_layout.names:
+        raise ValueError("TWIST dataset joint order does not match checkpoint actions")
+    if metadata.observation_contract.joint_names != metadata.action_layout.names:
+        raise ValueError(
+            "TWIST observation contract joint order does not match actions"
+        )
+    missing = set(metadata.observation_contract.key_body_names) - set(
+        metadata.dataset.body_names
+    )
+    if missing:
+        raise ValueError(f"TWIST dataset is missing key bodies: {sorted(missing)}")
+    expected_architecture = f"twist_{metadata.stage}"
+    if metadata.ppo.policy.architecture != expected_architecture:
+        raise ValueError(
+            f"TWIST {metadata.stage} checkpoint requires policy architecture "
+            f"{expected_architecture!r}"
+        )
+    if metadata.actor_observation_layout != metadata.observation_contract.actor_layout(
+        metadata.stage
+    ):
+        raise ValueError("TWIST actor observation layout differs from its contract")
+    if (
+        metadata.critic_observation_layout
+        != metadata.observation_contract.critic_layout
+    ):
+        raise ValueError("TWIST critic observation layout differs from its contract")
+    if isinstance(metadata, TwistStudentCheckpointMetadata):
+        _validated_fingerprint(
+            metadata.teacher_fingerprint, "metadata.teacher_fingerprint"
+        )
+        if metadata.kl_schedule.direction != "student||teacher":
+            raise ValueError("TWIST student KL direction must be student||teacher")
+        if (
+            metadata.kl_schedule.start != 0.1
+            or metadata.kl_schedule.end != 0.01
+            or metadata.kl_schedule.anneal_updates != 60_000
+        ):
+            raise ValueError("TWIST student KL schedule differs from the release")
+    normalization = (
+        metadata.value_norm,
+        metadata.observation_norm,
+        metadata.critic_observation_norm,
+    )
+    if any(value is None for value in normalization):
+        raise ValueError("TWIST checkpoint normalization snapshots are required")
+    assert metadata.value_norm is not None
+    assert metadata.observation_norm is not None
+    assert metadata.critic_observation_norm is not None
+    _validate_running_moments(
+        (metadata.value_norm.mean,),
+        (metadata.value_norm.var,),
+        metadata.value_norm.count,
+        name="TWIST value normalization",
+    )
+    _validate_running_moments(
+        metadata.observation_norm.mean,
+        metadata.observation_norm.var,
+        metadata.observation_norm.count,
+        name="TWIST actor observation normalization",
+        expected_size=metadata.obs_size,
+    )
+    _validate_running_moments(
+        metadata.critic_observation_norm.mean,
+        metadata.critic_observation_norm.var,
+        metadata.critic_observation_norm.count,
+        name="TWIST critic observation normalization",
+        expected_size=metadata.critic_obs_size,
+    )
+
+
+def _validate_twist2_metadata(metadata: Twist2CheckpointMetadata) -> None:
+    for name, value in (
+        ("dataset_fingerprint", metadata.dataset.dataset_fingerprint),
+        ("dataset.robot_fingerprint", metadata.dataset.robot_fingerprint),
+        ("robot_fingerprint", metadata.robot_fingerprint),
+    ):
+        _validated_fingerprint(value, f"metadata.{name}")
+    if metadata.dataset.robot_fingerprint != metadata.robot_fingerprint:
+        raise ValueError("TWIST2 dataset and checkpoint robot fingerprints differ")
+    if not re.fullmatch(r"[0-9a-f]{40}", metadata.dataset.gmr_revision):
+        raise ValueError("TWIST2 dataset GMR revision must be a 40-character commit")
+    if not re.fullmatch(r"[0-9a-f]{40}", metadata.source_revision):
+        raise ValueError("TWIST2 source revision must be a 40-character commit")
+    if metadata.dataset.schema_version <= 0:
+        raise ValueError("TWIST2 dataset schema version must be positive")
+    if metadata.dataset.joint_names != metadata.action_layout.names:
+        raise ValueError("TWIST2 dataset joint order does not match checkpoint actions")
+    if metadata.observation_contract.joint_names != metadata.action_layout.names:
+        raise ValueError("TWIST2 observation joint order does not match actions")
+    missing = set(metadata.observation_contract.key_body_names) - set(
+        metadata.dataset.body_names
+    )
+    if missing:
+        raise ValueError(f"TWIST2 dataset is missing key bodies: {sorted(missing)}")
+    if metadata.ppo.policy.architecture != "twist2":
+        raise ValueError("TWIST2 checkpoint requires policy architecture 'twist2'")
+    if metadata.actor_observation_layout != metadata.observation_contract.actor_layout:
+        raise ValueError("TWIST2 actor observation layout differs from its contract")
+    if (
+        metadata.critic_observation_layout
+        != metadata.observation_contract.critic_layout
+    ):
+        raise ValueError("TWIST2 critic observation layout differs from its contract")
+    if metadata.parity_contract != Twist2ParityContract():
+        raise ValueError("TWIST2 parity contract differs from the maintained behavior")
+    normalization = (
+        metadata.value_norm,
+        metadata.observation_norm,
+        metadata.critic_observation_norm,
+    )
+    if any(value is None for value in normalization):
+        raise ValueError("TWIST2 checkpoint normalization snapshots are required")
+    assert metadata.value_norm is not None
+    assert metadata.observation_norm is not None
+    assert metadata.critic_observation_norm is not None
+    _validate_running_moments(
+        (metadata.value_norm.mean,),
+        (metadata.value_norm.var,),
+        metadata.value_norm.count,
+        name="TWIST2 value normalization",
+    )
+    _validate_running_moments(
+        metadata.observation_norm.mean,
+        metadata.observation_norm.var,
+        metadata.observation_norm.count,
+        name="TWIST2 actor observation normalization",
+        expected_size=metadata.obs_size,
+    )
+    _validate_running_moments(
+        metadata.critic_observation_norm.mean,
+        metadata.critic_observation_norm.var,
+        metadata.critic_observation_norm.count,
+        name="TWIST2 critic observation normalization",
+        expected_size=metadata.critic_obs_size,
+    )
+
+
 def _validate_running_moments(
     mean: tuple[float, ...],
     var: tuple[float, ...],
@@ -843,7 +1276,15 @@ def _validate_running_moments(
 def _validate_restored_normalization_state(
     restored: dict[str, Any], metadata: CheckpointMetadata
 ) -> None:
-    if not isinstance(metadata, MotionCheckpointMetadata):
+    if not isinstance(
+        metadata,
+        (
+            MotionCheckpointMetadata,
+            TwistTeacherCheckpointMetadata,
+            TwistStudentCheckpointMetadata,
+            Twist2CheckpointMetadata,
+        ),
+    ):
         return
     value = metadata.value_norm
     actor = metadata.observation_norm
@@ -960,11 +1401,15 @@ def _restore_checkpoint_item(
         )
     storage_template = _orbax_storage_item(template)
     restore_args = ocp.checkpoint_utils.construct_restore_args(storage_template)
-    restored_storage = ocp.PyTreeCheckpointer().restore(
-        path,
-        item=storage_template,
-        restore_args=restore_args,
-    )
+    checkpointer = ocp.PyTreeCheckpointer()
+    try:
+        restored_storage = checkpointer.restore(
+            path,
+            item=storage_template,
+            restore_args=restore_args,
+        )
+    finally:
+        checkpointer.close()
     restored = _restore_empty_arrays(restored_storage, template)
     if _layout_fingerprint(restored) != saved_fingerprint:
         raise ValueError(
@@ -1064,6 +1509,28 @@ def observation_norm_metadata(state: ObservationNormState) -> ObservationNormMet
         var=tuple(float(value) for value in np.asarray(jax.device_get(state.var))),
         count=float(jax.device_get(state.count)),
     )
+
+
+def twist_metadata_with_runner_state(
+    metadata: TwistCheckpointMetadata | Twist2CheckpointMetadata,
+    runner_state: RunnerState,
+) -> TwistCheckpointMetadata | Twist2CheckpointMetadata:
+    """Attach normalization state to a typed TWIST checkpoint."""
+
+    return replace(
+        metadata,
+        value_norm=value_norm_metadata(runner_state.value_norm_state),
+        observation_norm=observation_norm_metadata(runner_state.observation_norm_state),
+        critic_observation_norm=observation_norm_metadata(
+            runner_state.critic_observation_norm_state
+        ),
+    )
+
+
+def checkpoint_metadata_fingerprint(metadata: CheckpointMetadata) -> str:
+    """Return the canonical metadata identity used to bind a student teacher."""
+
+    return _fingerprint(to_builtin(metadata))
 
 
 def motion_metadata_with_runner_state(

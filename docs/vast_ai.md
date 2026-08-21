@@ -13,11 +13,13 @@ Before rental, the launcher:
 3. verifies the selected profile, `.gitmodules`, pinned `deps/bello-stack`
    gitlink, `.python-version`, `pyproject.toml`, and `uv.lock` in that commit;
 4. verifies any motion archive is repository-tracked in that commit;
-5. generates a unique timestamped run/lifecycle label;
-6. builds offer queries from the maintained hardware policy.
+5. validates any local TWIST/TWIST2 dataset and typed teacher checkpoint;
+6. generates a unique timestamped run/lifecycle label;
+7. builds offer queries from the maintained hardware policy.
 
-Motion jobs require an explicit tracked clip. Ignored local datasets are never
-uploaded implicitly.
+Motion jobs require an explicit tracked clip. TWIST and TWIST2 jobs instead
+require an explicit local schema-3 dataset. A student additionally requires one explicit
+typed teacher checkpoint. No dataset or teacher is selected implicitly.
 
 The default offer policy performs one global search for an RTX 5090 with at
 least 64 GB CPU RAM, 80 GB disk, 0.98 reliability, CUDA 13, verification,
@@ -33,21 +35,92 @@ Non-dry execution:
 3. records a creating state before requesting the instance;
 4. records the active instance ID as soon as it is known;
 5. waits for instance readiness and its required direct SSH mapping;
-6. recursively clones the exact root commit and pinned submodules, then performs
+6. transfers explicit TWIST inputs with resumable `rsync --append-verify` and
+   verifies every file's SHA-256 on the instance;
+7. recursively clones the exact root commit and pinned submodules, then performs
    a frozen workspace dependency sync;
-7. verifies the JAX GPU backend;
-8. runs a bounded training preflight;
-9. starts the real job in a detached process, records PID/status/log files, and
+8. verifies the JAX GPU backend;
+9. runs a bounded training preflight;
+10. starts the real job in a detached process, records PID/status/log files, and
    streams bounded log/status updates;
-10. relies on the configured W&B run for checkpoint artifacts;
-11. attempts and verifies instance teardown after success, error, timeout, or
+11. relies on the configured W&B run for checkpoint artifacts;
+12. attempts and verifies instance teardown after success, error, timeout, or
     handled interruption; unconfirmed destruction retains durable state and
     fails closed.
 
-The preflight uses a small fixed rollout and disables W&B and videos. The real
-job forces W&B on and assigns the resolved run/checkpoint names. Every produced
+The preflight uses a small fixed rollout and disables W&B. Non-TWIST preflights
+also disable video; TWIST does not expose that setting. The real job forces W&B
+on and assigns the resolved run/checkpoint names. Every produced
 checkpoint records the same full commit selected by the launcher, and W&B logs
 that commit with the run configuration.
+
+## TWIST transfer
+
+The launch machine must provide `rsync` and direct outbound SSH. The remote
+bootstrap installs its own `rsync` before transfer. Dataset files and checkpoint
+contents remain outside Git and are copied only to dedicated paths under
+`/workspace`. Interrupted transfers retry with partial-file continuation. A
+remote SHA-256 mismatch prevents training and triggers normal teardown.
+TWIST2 warm starts transfer an explicitly selected typed checkpoint directory;
+the remote trainer restores policy and normalization only and records the new
+dataset fingerprint in every output checkpoint.
+
+TWIST and TWIST2 offers are ranked by proximity to Korea (`KR`, `JP`, `TW`,
+`HK`, then `SG`) before marketplace value. After SSH becomes ready, the launcher uploads a
+16 MiB probe and requires at least 5 MiB/s. A slower instance is destroyed and
+the next nearby offer is tried before the multi-gigabyte dataset is transferred.
+These controls can be overridden with `preferred_countries`,
+`min_upload_mib_per_second`, and `route_probe_mib`.
+
+Teacher example:
+
+```bash
+uv run bello-vast-train \
+  experiment=twist_teacher \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
+  branch=feature/twist-teacher-student \
+  max_price=1.25 \
+  duration_hours=36
+```
+
+Student example:
+
+```bash
+uv run bello-vast-train \
+  experiment=twist_student \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
+  teacher_checkpoint_path=/path/to/teacher/final \
+  branch=feature/twist-teacher-student \
+  max_price=1.25 \
+  duration_hours=60
+```
+
+One-stage TWIST2 example:
+
+```bash
+uv run bello-vast-train \
+  experiment=twist2 \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
+  branch=feature/twist-teacher-student \
+  max_price=1.25 \
+  duration_hours=60
+```
+
+TWIST2 transfer example:
+
+```bash
+uv run bello-vast-train \
+  experiment=twist2 \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
+  warm_start_checkpoint_path=/path/to/previous/final \
+  allow_git_commit_mismatch=true \
+  total_timesteps=491520000 \
+  learning_rate=0.00005 \
+  branch=feature/twist-teacher-student \
+  run_name=twist2_fastsam_finetune_seed1 \
+  max_price=1.25 \
+  duration_hours=24
+```
 
 ## Time bounds
 
@@ -55,9 +128,10 @@ that commit with the run configuration.
 that duration. The selected profile's timestep budget still determines normal
 completion and may finish earlier.
 
-The watchdog also includes readiness and SSH windows plus teardown grace. With
-the six-hour default, the upper bound is the six-hour job window plus 15 minutes
-for readiness, 15 minutes for SSH, and 15 minutes of final watchdog grace.
+The watchdog also includes readiness, SSH, input-transfer, and teardown grace
+windows. With the six-hour default, the upper bound is the six-hour job window
+plus 15 minutes for readiness, 15 minutes for SSH, one hour for input transfer,
+and 15 minutes of final watchdog grace.
 Progress must be observed at least every 30 minutes or before the shorter job
 deadline.
 

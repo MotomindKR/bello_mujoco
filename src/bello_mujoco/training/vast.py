@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import shlex
 import signal
 import subprocess
@@ -32,6 +33,7 @@ from bello_mujoco.training.vast_provider import (
     exception_http_status,
 )
 from bello_mujoco.training.vast_remote import (
+    measure_upload_mib_per_second,
     run_remote_training,
     wait_for_ssh,
 )
@@ -57,7 +59,7 @@ class VastOfferConfig:
     min_reliability: float = 0.98
     min_cuda: float = 13.0
     image: str = "vastai/base-image:cuda-13.0.3-auto"
-    search_limit: int = 10
+    search_limit: int = 50
 
 
 @dataclass(frozen=True)
@@ -66,15 +68,29 @@ class VastTrainConfig:
 
     experiment: ExperimentName = "hardware_locomotion"
     motion_path: Path | None = None
+    dataset_path: Path | None = None
+    teacher_checkpoint_path: Path | None = None
+    warm_start_checkpoint_path: Path | None = None
+    allow_git_commit_mismatch: bool = False
+    total_timesteps: int | None = None
+    learning_rate: float | None = None
     max_price: float | None = None
     branch: str | None = None
     run_name: str | None = None
     skip_confirmation: bool = False
     dry_run: bool = False
     remote_dir: str = "/workspace/bello_mujoco"
+    remote_dataset_dir: str = "/workspace/datasets/twist"
+    remote_teacher_checkpoint_dir: str = "/workspace/checkpoints/twist_teacher"
+    remote_warm_start_checkpoint_dir: str = "/workspace/checkpoints/twist2_warm_start"
     lifecycle_state_dir: Path = Path(".vast")
     ready_timeout_seconds: int = 900
     ssh_timeout_seconds: int = 900
+    transfer_timeout_seconds: int = 3_600
+    transfer_retries: int = 3
+    preferred_countries: tuple[str, ...] = ("KR", "JP", "TW", "HK", "SG")
+    min_upload_mib_per_second: float = 5.0
+    route_probe_mib: int = 16
     job_timeout_seconds: int = 43_200
     progress_timeout_seconds: int = 1_800
     reconcile_retries: int = 3
@@ -89,6 +105,10 @@ class GitSelection:
     config_path: PurePosixPath
     repo_url: str
     motion_path: PurePosixPath | None = None
+    dataset_fingerprint: str | None = None
+    dataset_files: tuple[Path, ...] = ()
+    teacher_checkpoint_path: Path | None = None
+    warm_start_checkpoint_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +146,9 @@ def validate_config(config: VastTrainConfig) -> None:
         "locomotion",
         "hardware_locomotion",
         "motion",
+        "twist_teacher",
+        "twist_student",
+        "twist2",
     }:
         raise ValueError("--experiment is invalid")
     if config.experiment == "motion":
@@ -134,6 +157,42 @@ def validate_config(config: VastTrainConfig) -> None:
         _repository_motion_path(config.motion_path)
     elif config.motion_path is not None:
         raise ValueError("--motion-path is only valid for the motion experiment")
+    if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
+        if config.dataset_path is None:
+            raise ValueError("--dataset-path is required for TWIST Vast training")
+    elif config.dataset_path is not None:
+        raise ValueError("--dataset-path is only valid for TWIST Vast training")
+    if config.experiment == "twist_student":
+        if config.teacher_checkpoint_path is None:
+            raise ValueError(
+                "--teacher-checkpoint-path is required for TWIST student Vast training"
+            )
+    elif config.teacher_checkpoint_path is not None:
+        raise ValueError(
+            "--teacher-checkpoint-path is only valid for TWIST student Vast training"
+        )
+    if config.experiment != "twist2" and config.warm_start_checkpoint_path is not None:
+        raise ValueError(
+            "--warm-start-checkpoint-path is only valid for TWIST2 Vast training"
+        )
+    if (
+        config.allow_git_commit_mismatch
+        and config.experiment != "twist_student"
+        and not (
+            config.experiment == "twist2"
+            and config.warm_start_checkpoint_path is not None
+        )
+    ):
+        raise ValueError(
+            "--allow-git-commit-mismatch requires a TWIST student teacher or "
+            "TWIST2 warm-start checkpoint"
+        )
+    if config.total_timesteps is not None and config.total_timesteps <= 0:
+        raise ValueError("--total-timesteps must be positive")
+    if config.learning_rate is not None and (
+        not math.isfinite(config.learning_rate) or config.learning_rate <= 0.0
+    ):
+        raise ValueError("--learning-rate must be finite and positive")
     if (
         config.max_price is None
         or not math.isfinite(config.max_price)
@@ -144,22 +203,56 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError("--branch is required")
     if config.ready_timeout_seconds <= 0 or config.ssh_timeout_seconds <= 0:
         raise ValueError("readiness timeouts must be positive")
+    if config.transfer_timeout_seconds <= 0 or config.transfer_retries <= 0:
+        raise ValueError("transfer timeout and retries must be positive")
+    if (
+        not math.isfinite(config.min_upload_mib_per_second)
+        or config.min_upload_mib_per_second <= 0
+        or config.route_probe_mib <= 0
+    ):
+        raise ValueError("route probe size and minimum upload speed must be positive")
+    if not config.preferred_countries or any(
+        re.fullmatch(r"[A-Z]{2}", country) is None
+        for country in config.preferred_countries
+    ):
+        raise ValueError("preferred countries must be non-empty ISO alpha-2 codes")
     if config.job_timeout_seconds <= 0 or config.progress_timeout_seconds <= 0:
         raise ValueError("job and progress timeouts must be positive")
     if config.progress_timeout_seconds > config.job_timeout_seconds:
         raise ValueError("progress-timeout-seconds must not exceed job-timeout-seconds")
     if config.reconcile_retries <= 0 or config.destroy_retries <= 0:
         raise ValueError("reconcile-retries and destroy-retries must be positive")
-    remote_dir = PurePosixPath(config.remote_dir)
+    remote_paths = {
+        "--remote-dir": PurePosixPath(config.remote_dir),
+        "--remote-dataset-dir": PurePosixPath(config.remote_dataset_dir),
+        "--remote-teacher-checkpoint-dir": PurePosixPath(
+            config.remote_teacher_checkpoint_dir
+        ),
+        "--remote-warm-start-checkpoint-dir": PurePosixPath(
+            config.remote_warm_start_checkpoint_dir
+        ),
+    }
     workspace = PurePosixPath("/workspace")
-    if (
-        not remote_dir.is_absolute()
-        or remote_dir.anchor != "/"
-        or workspace not in remote_dir.parents
-        or ".." in remote_dir.parts
-        or str(remote_dir) != config.remote_dir
-    ):
-        raise ValueError("--remote-dir must be a normalized strict child of /workspace")
+    for label, remote_path in remote_paths.items():
+        raw = {
+            "--remote-dir": config.remote_dir,
+            "--remote-dataset-dir": config.remote_dataset_dir,
+            "--remote-teacher-checkpoint-dir": config.remote_teacher_checkpoint_dir,
+            "--remote-warm-start-checkpoint-dir": (
+                config.remote_warm_start_checkpoint_dir
+            ),
+        }[label]
+        if (
+            not remote_path.is_absolute()
+            or remote_path.anchor != "/"
+            or workspace not in remote_path.parents
+            or ".." in remote_path.parts
+            or str(remote_path) != raw
+            or re.fullmatch(r"/[A-Za-z0-9._/-]+", raw) is None
+        ):
+            raise ValueError(f"{label} must be a normalized strict child of /workspace")
+    if len(set(remote_paths.values())) != len(remote_paths):
+        raise ValueError("remote repository, dataset, and checkpoint paths must differ")
     state_dir = config.lifecycle_state_dir
     if (
         state_dir.is_absolute()
@@ -192,8 +285,32 @@ def run_git(repo_root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def fetch_origin(
+    repo_root: Path,
+    *,
+    retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            run_git(repo_root, "fetch", "--prune", "origin")
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if attempt < retries:
+                print(f"git fetch origin attempt {attempt} failed; retrying.")
+                sleep(float(2**attempt))
+    assert last_error is not None
+    detail = (last_error.stderr or "").strip() or str(last_error)
+    raise RuntimeError(
+        f"git fetch origin failed after {retries} attempts: "
+        f"{safe_exception_message(detail)}"
+    ) from last_error
+
+
 def remote_branches(repo_root: Path) -> list[str]:
-    run_git(repo_root, "fetch", "--prune", "origin")
+    fetch_origin(repo_root)
     output = run_git(
         repo_root,
         "for-each-ref",
@@ -250,6 +367,23 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
                 f"{motion_path!s} is absent from origin/{branch}. Ignored local "
                 "datasets are never uploaded implicitly."
             ) from exc
+    dataset_fingerprint = None
+    dataset_files: tuple[Path, ...] = ()
+    if config.dataset_path is not None:
+        dataset_fingerprint, dataset_files = _twist_dataset_files(config.dataset_path)
+    teacher_checkpoint_path = None
+    if config.teacher_checkpoint_path is not None:
+        teacher_checkpoint_path = _twist_teacher_checkpoint(
+            config.teacher_checkpoint_path,
+            dataset_fingerprint=dataset_fingerprint,
+        )
+    warm_start_checkpoint_path = None
+    if config.warm_start_checkpoint_path is not None:
+        assert config.dataset_path is not None
+        warm_start_checkpoint_path = _twist2_warm_start_checkpoint(
+            config.warm_start_checkpoint_path,
+            dataset_path=config.dataset_path,
+        )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -257,7 +391,121 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         config_path=config_path,
         repo_url=repo_url,
         motion_path=motion_path,
+        dataset_fingerprint=dataset_fingerprint,
+        dataset_files=dataset_files,
+        teacher_checkpoint_path=teacher_checkpoint_path,
+        warm_start_checkpoint_path=warm_start_checkpoint_path,
     )
+
+
+def _twist_dataset_files(index_path: Path) -> tuple[str, tuple[Path, ...]]:
+    from bello_mujoco.motion.twist_dataset import (
+        TWIST_DATASET_SCHEMA_VERSION,
+        TWIST_TRAIN_SAMPLING,
+    )
+
+    index_path = Path(index_path).expanduser().resolve()
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"TWIST dataset index does not exist: {index_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"TWIST dataset index is invalid JSON: {index_path}") from exc
+    if index.get("schema_version") != TWIST_DATASET_SCHEMA_VERSION:
+        raise ValueError("Vast TWIST training requires the current dataset schema")
+    if index.get("train_sampling") != TWIST_TRAIN_SAMPLING:
+        raise ValueError("Vast TWIST dataset has an unsupported sampling contract")
+    split_files = index.get("split_files")
+    if split_files != {"train": "train.npz", "evaluation": "evaluation.npz"}:
+        raise ValueError("Vast TWIST dataset has an unsupported split file contract")
+    fingerprint = index.get("dataset_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None
+    ):
+        raise ValueError("Vast TWIST dataset fingerprint is invalid")
+    root = index_path.parent
+    paths = (
+        index_path,
+        root / "train.npz",
+        root / "evaluation.npz",
+        root / "heldout_manifest.json",
+        root / "conversion_report.json",
+    )
+    missing = [str(path) for path in paths if not path.is_file() or path.is_symlink()]
+    if missing:
+        raise ValueError("Vast TWIST dataset files are missing: " + ", ".join(missing))
+    return fingerprint, paths
+
+
+def _twist_teacher_checkpoint(
+    checkpoint_path: Path, *, dataset_fingerprint: str | None
+) -> Path:
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    if any(path.is_symlink() for path in checkpoint_path.rglob("*")):
+        raise ValueError("TWIST teacher checkpoint must not contain symbolic links")
+    metadata_path = checkpoint_path / "metadata.json"
+    try:
+        envelope = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"TWIST teacher checkpoint metadata does not exist: {metadata_path}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("TWIST teacher checkpoint metadata is invalid JSON") from exc
+    metadata = envelope.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("task") != "twist_teacher":
+        raise ValueError("Vast TWIST student requires a typed teacher checkpoint")
+    dataset = metadata.get("dataset")
+    if not isinstance(dataset, dict) or (
+        dataset.get("dataset_fingerprint") != dataset_fingerprint
+    ):
+        raise ValueError("TWIST teacher checkpoint dataset fingerprint differs")
+    for name in ("state", "continuation"):
+        if not (checkpoint_path / name).is_dir():
+            raise ValueError(f"TWIST teacher checkpoint is missing {name}/")
+    return checkpoint_path
+
+
+def _twist2_warm_start_checkpoint(checkpoint_path: Path, *, dataset_path: Path) -> Path:
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    if any(path.is_symlink() for path in checkpoint_path.rglob("*")):
+        raise ValueError("TWIST2 warm-start checkpoint must not contain symbolic links")
+    metadata_path = checkpoint_path / "metadata.json"
+    try:
+        envelope = json.loads(metadata_path.read_text(encoding="utf-8"))
+        index = json.loads(
+            Path(dataset_path).expanduser().resolve().read_text(encoding="utf-8")
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"TWIST2 warm-start input does not exist: {exc.filename}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "TWIST2 warm-start metadata or dataset is invalid JSON"
+        ) from exc
+    metadata = envelope.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("task") != "twist2":
+        raise ValueError("Vast TWIST2 warm start requires a typed TWIST2 checkpoint")
+    recorded_dataset = metadata.get("dataset")
+    if not isinstance(recorded_dataset, dict):
+        raise ValueError("TWIST2 warm-start checkpoint has no dataset contract")
+    for key in (
+        "schema_version",
+        "robot_fingerprint",
+        "gmr_revision",
+        "joint_names",
+        "body_names",
+    ):
+        if recorded_dataset.get(key) != index.get(key):
+            raise ValueError(f"TWIST2 warm-start dataset differs for {key}")
+    if recorded_dataset.get("dataset_fingerprint") == index.get("dataset_fingerprint"):
+        raise ValueError("TWIST2 warm start requires a different dataset fingerprint")
+    for name in ("state", "continuation"):
+        if not (checkpoint_path / name).is_dir():
+            raise ValueError(f"TWIST2 warm-start checkpoint is missing {name}/")
+    return checkpoint_path
 
 
 def _repository_motion_path(value: Path) -> PurePosixPath:
@@ -275,7 +523,11 @@ def _repository_motion_path(value: Path) -> PurePosixPath:
 
 
 def _task_name(config: VastTrainConfig) -> str:
-    return "motion-tracking" if config.experiment == "motion" else "locomotion"
+    if config.experiment == "motion":
+        return "motion-tracking"
+    if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
+        return config.experiment.replace("_", "-")
+    return "locomotion"
 
 
 def normalized_repo_url(repo_url: str) -> str:
@@ -316,12 +568,23 @@ def find_offers(api: VastApi, config: VastTrainConfig) -> list[VastOffer]:
     )
     offers = [VastOffer.from_mapping(item) for item in raw_offers]
     offers = [offer for offer in offers if offer_matches(offer, config)]
-    offers.sort(key=lambda offer: (-offer.dlperf_per_dphtotal, offer.dph_total))
+    offers.sort(key=lambda offer: _offer_sort_key(offer, config))
     if offers:
         return offers
     raise RuntimeError(
         "no Vast offers matched the configured hardware and price limits"
     )
+
+
+def _offer_sort_key(
+    offer: VastOffer, config: VastTrainConfig
+) -> tuple[int, float, float]:
+    country = offer.geolocation.rsplit(",", 1)[-1].strip().upper()
+    try:
+        location_rank = config.preferred_countries.index(country)
+    except ValueError:
+        location_rank = len(config.preferred_countries)
+    return location_rank, -offer.dlperf_per_dphtotal, offer.dph_total
 
 
 def offer_matches(offer: VastOffer, config: VastTrainConfig) -> bool:
@@ -653,18 +916,21 @@ def create_available_instance(
                 raise RuntimeError(
                     f"Vast rental result for offer {offer.id} is ambiguous; "
                     f"no instance with label {label!r} was visible after "
-                    "reconciliation, so another offer will not be rented"
+                    "reconciliation, so another offer will not be rented. "
+                    f"Vast cause: {safe_exception_message(exc)}"
                 ) from exc
             on_offer_unavailable()
             print(
                 f"Vast offer {offer.id} could not be rented "
                 f"({type(exc).__name__}); trying the next match."
             )
-    raise RuntimeError("all matching Vast offers became unavailable during rental")
+    raise OffersUnavailableError(
+        "all matching Vast offers became unavailable during rental"
+    )
 
 
 def _is_explicit_offer_unavailable(exc: BaseException) -> bool:
-    return exception_http_status(exc) in {404, 410}
+    return exception_http_status(exc) in {400, 404, 409, 410, 422}
 
 
 def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> int:
@@ -672,6 +938,7 @@ def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> i
     return int(created_at) + (
         config.ready_timeout_seconds
         + config.ssh_timeout_seconds
+        + config.transfer_timeout_seconds
         + config.job_timeout_seconds
         + WATCHDOG_TEARDOWN_GRACE_SECONDS
     )
@@ -747,6 +1014,10 @@ class PipelineInterrupted(RuntimeError):
     pass
 
 
+class OffersUnavailableError(RuntimeError):
+    pass
+
+
 @contextmanager
 def termination_handler():
     handled_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
@@ -791,48 +1062,79 @@ class VastLifecycle:
         )
         offers = find_offers(self.api, self.config)
         print_offers(offers)
-        instance_id: int | None = None
-        failure: BaseException | None = None
-        try:
-            instance_id = create_available_instance(
-                self.api,
-                offers,
-                self.config,
-                self.label,
-                on_before_create=lambda: write_creating_state(
-                    self.state_path, self.label
-                ),
-                on_offer_unavailable=lambda: self.state_path.unlink(missing_ok=True),
-            )
-            write_active_state(self.state_path, instance_id, self.label)
-            print(f"Created Vast instance {instance_id}; teardown is armed.")
-            wait_for_instance(
-                self.api,
-                instance_id,
-                self.config.ready_timeout_seconds,
-            )
-            ssh_target = wait_for_ssh(
-                self.api,
-                instance_id,
-                self.config.ssh_timeout_seconds,
-            )
-            remote_runner(
-                ssh_target,
-                selection,
-                self.config,
-                run_name,
-                wandb_key=wandb_key,
-                github_token=github_token,
-            )
-        except BaseException as exc:
-            failure = exc
-        finally:
-            if instance_id is not None:
-                teardown_failure = self._destroy(instance_id)
-                if teardown_failure is not None:
-                    failure = teardown_failure
-        if failure is not None:
+        for offer_number, offer in enumerate(offers, start=1):
+            instance_id: int | None = None
+            failure: BaseException | None = None
+            retry_offer = False
+            try:
+                instance_id = create_available_instance(
+                    self.api,
+                    [offer],
+                    self.config,
+                    self.label,
+                    on_before_create=lambda: write_creating_state(
+                        self.state_path, self.label
+                    ),
+                    on_offer_unavailable=lambda: self.state_path.unlink(
+                        missing_ok=True
+                    ),
+                )
+                write_active_state(self.state_path, instance_id, self.label)
+                print(f"Created Vast instance {instance_id}; teardown is armed.")
+                wait_for_instance(
+                    self.api,
+                    instance_id,
+                    self.config.ready_timeout_seconds,
+                )
+                try:
+                    ssh_target = wait_for_ssh(
+                        self.api,
+                        instance_id,
+                        self.config.ssh_timeout_seconds,
+                    )
+                except TimeoutError as exc:
+                    retry_offer = True
+                    raise RuntimeError(
+                        f"offer {offer.id} did not become reachable over SSH"
+                    ) from exc
+                if selection.dataset_files:
+                    speed = measure_upload_mib_per_second(
+                        ssh_target,
+                        size_mib=self.config.route_probe_mib,
+                        timeout_seconds=self.config.ssh_timeout_seconds,
+                    )
+                    print(f"Measured direct SSH upload: {speed:.1f} MiB/s.")
+                    if speed < self.config.min_upload_mib_per_second:
+                        retry_offer = True
+                        raise RuntimeError(
+                            f"offer {offer.id} upload route is too slow: "
+                            f"{speed:.1f} MiB/s < "
+                            f"{self.config.min_upload_mib_per_second:.1f} MiB/s"
+                        )
+                remote_runner(
+                    ssh_target,
+                    selection,
+                    self.config,
+                    run_name,
+                    wandb_key=wandb_key,
+                    github_token=github_token,
+                )
+            except BaseException as exc:
+                failure = exc
+                retry_offer = retry_offer or isinstance(exc, OffersUnavailableError)
+            finally:
+                if instance_id is not None:
+                    teardown_failure = self._destroy(instance_id)
+                    if teardown_failure is not None:
+                        failure = teardown_failure
+                        retry_offer = False
+            if failure is None:
+                return
+            if retry_offer and offer_number < len(offers):
+                print(f"Rejected offer {offer.id}; trying the next nearby offer.")
+                continue
             raise failure
+        raise RuntimeError("all matching Vast offers were exhausted")
 
     def _destroy(self, instance_id: int) -> RuntimeError | None:
         print(f"Destroying Vast instance {instance_id}.")
@@ -873,6 +1175,9 @@ def launch_pipeline(
         print(f"Offer query: {offer_query(config)}")
         print("Dry run: no credentials were read and no instance was rented.")
         return 0
+
+    if selection.dataset_files and shutil.which("rsync") is None:
+        raise RuntimeError("TWIST Vast training requires rsync on the launch machine")
 
     vast_key = credential(
         "VAST_API_KEY", VAST_KEYRING_SERVICE, VAST_KEYRING_USERNAME, required=True

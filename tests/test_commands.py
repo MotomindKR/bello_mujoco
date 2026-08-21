@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 import subprocess
 import sys
@@ -16,8 +16,10 @@ from bello_mujoco.cli import (
     MotionCommandConfig,
     PrepareAssetsCommandConfig,
     TrainCommandConfig,
+    TwistDataCommandConfig,
     VastTrainCommandConfig,
     _reject_explicit_fields,
+    _warp_overrides,
 )
 from bello_mujoco.configuration import (
     CONFIG_ROOT,
@@ -26,6 +28,8 @@ from bello_mujoco.configuration import (
     locomotion_training_profile,
     motion_training_profile,
     structured_config,
+    twist2_training_profile,
+    twist_training_profile,
 )
 
 COMMAND_SCHEMAS = {
@@ -33,6 +37,7 @@ COMMAND_SCHEMAS = {
     "train": TrainCommandConfig,
     "eval": EvalCommandConfig,
     "motion": MotionCommandConfig,
+    "twist_data": TwistDataCommandConfig,
     "vast_train": VastTrainCommandConfig,
     "emulator": EmulatorCommandConfig,
     "hardware": HardwareCommandConfig,
@@ -56,6 +61,36 @@ def test_importing_command_surface_does_not_import_jax() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_training_entrypoint_uses_memory_sharing_jax_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bello_mujoco.cli as cli
+
+    monkeypatch.delenv("XLA_PYTHON_CLIENT_PREALLOCATE", raising=False)
+    monkeypatch.delenv("TF_GPU_ALLOCATOR", raising=False)
+    monkeypatch.setattr(cli, "_train_hydra", lambda: None)
+
+    cli.train_entrypoint()
+
+    assert cli.os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "false"
+    assert cli.os.environ["TF_GPU_ALLOCATOR"] == "cuda_malloc_async"
+
+
+def test_training_entrypoint_preserves_explicit_allocator_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bello_mujoco.cli as cli
+
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+    monkeypatch.setenv("TF_GPU_ALLOCATOR", "platform")
+    monkeypatch.setattr(cli, "_train_hydra", lambda: None)
+
+    cli.train_entrypoint()
+
+    assert cli.os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "true"
+    assert cli.os.environ["TF_GPU_ALLOCATOR"] == "platform"
 
 
 def test_hardware_entrypoint_forces_cpu_backend() -> None:
@@ -139,10 +174,21 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     locomotion = locomotion_training_profile("locomotion")
     hardware = locomotion_training_profile("hardware_locomotion")
     motion = motion_training_profile()
+    twist_teacher = twist_training_profile("teacher")
+    twist_student = twist_training_profile("student")
+    twist2 = twist2_training_profile()
 
     assert all(
         profile.config.num_updates > 0
-        for profile in (smoke, locomotion, hardware, motion)
+        for profile in (
+            smoke,
+            locomotion,
+            hardware,
+            motion,
+            twist_teacher,
+            twist_student,
+            twist2,
+        )
     )
     assert smoke.config.num_envs == 2
     assert smoke.config.num_updates == 1
@@ -176,6 +222,34 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.env_config.observation_latency.enabled
     assert hardware.env_config.observation_latency.delay_steps == (0, 2)
     assert motion.checkpoint_config.every_updates == 500
+    assert twist_teacher.config.num_updates == 30_002
+    assert twist_teacher.config.policy.architecture == "twist_teacher"
+    assert twist_teacher.warp.contact_budget_per_env == 32
+    assert twist_student.config.num_updates == 200_000
+    assert twist_student.config.policy.architecture == "twist_student"
+    assert twist2.config.num_updates == 30_001
+    assert twist2.config.policy.architecture == "twist2"
+    assert twist2.config.normalize_observations
+    assert not twist2.config.normalize_critic_observations
+    assert twist2.config.observation_norm_update_mode == "rollout"
+    assert twist2.config.observation_norm_update_updates == 3_000
+    assert twist2.config.observation_norm_epsilon_mode == "std_offset"
+    assert twist2.sampling.base_distribution == "manifest_weight"
+    assert twist2.sampling.curriculum_max_difficulty == 10.0
+
+
+def test_contact_budget_command_override_is_explicit_and_positive() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        raw = compose(config_name="train", overrides=["contact_budget_per_env=64"])
+    command = command_config(TrainCommandConfig, raw)
+    warp = twist_training_profile("teacher").warp
+
+    assert _warp_overrides(warp, command).contact_budget_per_env == 64
+    with pytest.raises(ValueError, match="must be positive"):
+        _warp_overrides(warp, replace(command, contact_budget_per_env=0))
 
 
 def test_motion_path_override_is_explicit(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ task: locomotion
 checkpoint_path: null
 allow_git_commit_mismatch: false
 output_path: outputs/evaluation/motion.mp4
+video_path: null
 command: [0.0, 0.0, 0.0]
 steps: null
 stop_on_done: false

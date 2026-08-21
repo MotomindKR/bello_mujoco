@@ -1,0 +1,101 @@
+stage: teacher
+dataset_index: datasets/twist/index.json
+teacher_checkpoint_path: null
+
+config:
+  seed: 1
+  total_timesteps: 2949316608
+  num_envs: 4096
+  num_steps: 24
+  update_epochs: 5
+  num_minibatches: 4
+  learning_rate: 0.0002
+  schedule: adaptive
+  desired_kl: 0.008
+  target_kl: null
+  min_learning_rate: 0.00001
+  max_learning_rate: 0.01
+  adaptive_lr_factor: 1.5
+  adaptive_kl_statistic: mean
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  ent_coef: 0.005
+  vf_coef: 1.0
+  max_grad_norm: 1.0
+  adam_epsilon: 0.00000001
+  value_loss_scale: 1.0
+  normalize_value: false
+  normalize_observations: true
+  policy:
+    hidden_dims: [512, 512, 256, 128]
+    activation: swish
+    init_log_std: 0.0
+    min_log_std: -5.0
+    max_log_std: 1.0
+    obs_stack_size: 1
+    action_distribution: gaussian
+    action_limit: 1.0
+    architecture: twist_teacher
+    layer_norm_final_hidden: true
+
+simulation: {}
+
+twist_env:
+  max_episode_steps: 500
+  action_clip: 5.0
+  action_delay_steps: [0, 1]
+  action_history_steps: 8
+  observation_noise:
+    enabled: true
+    base_angular_velocity: 0.1
+    roll_pitch: 0.1
+    joint_position: 0.01
+    joint_velocity: 0.1
+  key_body_names:
+    - l_wrist_link
+    - r_wrist_link
+    - left_ankle_roll_link
+    - right_ankle_roll_link
+    - left_knee_link
+    - right_knee_link
+    - l_elbow_link
+    - r_elbow_link
+    - head_link
+
+sampling:
+  base_distribution: manifest_weight
+  curriculum_enabled: true
+  curriculum_gamma: 0.01
+  curriculum_min_difficulty: 1.0
+  curriculum_max_difficulty: 9.0
+
+checkpoint_config:
+  enabled: true
+  directory: checkpoints
+  name: twist_teacher_seed1
+  every_updates: 500
+  resume_path: null
+  allow_git_commit_mismatch: false
+  upload_wandb_artifact: true
+  wandb_artifact_name: twist_teacher_seed1
+  wandb_artifact_type: checkpoint
+
+wandb_config:
+  enabled: true
+  project: bello-mujoco
+  entity: null
+  group: twist
+  job_type: train
+  run_name: twist_teacher_seed1
+  mode: online
+  dir: .wandb
+  tags: [twist, teacher, whole-body]
+
+warp:
+  contact_budget_per_env: 32
+  naconmax: null
+  naccdmax: null
+  njmax: 2048
+
+runtime_clip_directory: outputs/twist_runtime_clips
