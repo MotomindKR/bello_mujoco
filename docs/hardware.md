@@ -348,8 +348,11 @@ SMPL-X quaternion validity, GMR joint velocity/acceleration and hard upper-body
 joint limits, and a fixed upper-body target slew bound. These checks affect only
 the 12 arm targets; the joystick-conditioned locomotion policy continues
 controlling the waist and legs. A temporarily unavailable or stale reference
-returns the arms to GMR standing while locomotion continues; a terminal source
-failure remains fatal.
+blends the arms back to GMR standing over
+`upper_body_follow.connection_transition_duration_seconds`; a recovered
+reference uses the same blend before resuming direct tracking. Locomotion
+continues throughout either transition, while a terminal source failure remains
+fatal.
 
 TWIST2 adds exact Fast-SAM stream semantics, tracking and required-joint
 confidence, pipeline/reference age, source sequence and timestamp monotonicity,

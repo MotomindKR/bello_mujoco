@@ -61,6 +61,7 @@ class UpperBodyFollowConfig:
     max_reference_joint_speed_rps: float = 25.0
     max_reference_joint_limit_violation_radians: float = 0.01
     max_target_speed_rps: float = 3.0 * math.pi
+    connection_transition_duration_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -192,6 +193,9 @@ class HardwarePolicyAdapter:
         self._gait_phase = 0.0
         self._standing_reference: Twist2ReferenceFrame | None = None
         self._upper_body_target: np.ndarray | None = None
+        self._upper_body_reference_live = False
+        self._upper_body_transition_start: np.ndarray | None = None
+        self._upper_body_transition_elapsed_seconds = 0.0
 
     @property
     def control_timestep(self) -> float:
@@ -227,6 +231,9 @@ class HardwarePolicyAdapter:
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
         self._gait_phase = 0.0
         self._upper_body_target = None
+        self._upper_body_reference_live = False
+        self._upper_body_transition_start = None
+        self._upper_body_transition_elapsed_seconds = 0.0
 
     def precompile(self, reference: Twist2ReferenceFrame | None = None) -> None:
         nominal = self.nominal_physical_target
@@ -459,6 +466,23 @@ class HardwarePolicyAdapter:
         if self._upper_body_target is None:
             measured = self.inverse_transform @ np.asarray(frame.positions)
             self._upper_body_target = measured[self.upper_body_indices].copy()
+        reference_live = reference is not None
+        if reference_live != self._upper_body_reference_live:
+            self._upper_body_reference_live = reference_live
+            self._upper_body_transition_start = self._upper_body_target.copy()
+            self._upper_body_transition_elapsed_seconds = 0.0
+        if self._upper_body_transition_start is not None:
+            duration = self.upper_body_follow.connection_transition_duration_seconds
+            self._upper_body_transition_elapsed_seconds = min(
+                duration,
+                self._upper_body_transition_elapsed_seconds + self.control_timestep,
+            )
+            blend = self._upper_body_transition_elapsed_seconds / duration
+            desired = self._upper_body_transition_start + blend * (
+                desired - self._upper_body_transition_start
+            )
+            if self._upper_body_transition_elapsed_seconds >= duration:
+                self._upper_body_transition_start = None
         maximum_step = (
             self.upper_body_follow.max_target_speed_rps * self.control_timestep
         )
@@ -568,6 +592,9 @@ def validate_hardware_config(
     positive = {
         "max_reference_joint_speed_rps": upper.max_reference_joint_speed_rps,
         "max_target_speed_rps": upper.max_target_speed_rps,
+        "connection_transition_duration_seconds": (
+            upper.connection_transition_duration_seconds
+        ),
     }
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:

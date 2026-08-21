@@ -459,8 +459,13 @@ def test_locomotion_overlays_only_slew_limited_upper_body_reference(
     maximum_step = (
         adapter.upper_body_follow.max_target_speed_rps * adapter.control_timestep
     )
+    transition_step = (
+        adapter.control_timestep
+        / adapter.upper_body_follow.connection_transition_duration_seconds
+    )
+    blended_live = default_upper + transition_step * (desired_upper - default_upper)
     expected_upper = default_upper + np.clip(
-        desired_upper - default_upper,
+        blended_live - default_upper,
         -maximum_step,
         maximum_step,
     )
@@ -481,8 +486,11 @@ def test_locomotion_overlays_only_slew_limited_upper_body_reference(
     )
     fallback = adapter.step(frame, joystick_command, stale)
     fallback_logical = adapter.inverse_transform @ fallback.physical_target
+    blended_fallback = expected_upper + transition_step * (
+        default_upper - expected_upper
+    )
     expected_fallback = expected_upper + np.clip(
-        default_upper - expected_upper,
+        blended_fallback - expected_upper,
         -maximum_step,
         maximum_step,
     )
@@ -497,8 +505,11 @@ def test_locomotion_overlays_only_slew_limited_upper_body_reference(
         hardware_reference(adapter, desired_upper, sequence=3),
     )
     recovered_logical = adapter.inverse_transform @ recovered.physical_target
+    blended_recovered = expected_fallback + transition_step * (
+        desired_upper - expected_fallback
+    )
     expected_recovered = expected_fallback + np.clip(
-        desired_upper - expected_fallback,
+        blended_recovered - expected_fallback,
         -maximum_step,
         maximum_step,
     )
@@ -578,6 +589,15 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     with pytest.raises(ValueError, match="acknowledgement_timeout_seconds"):
         validate_hardware_config(
             pose_hardware_config(acknowledgement_timeout_seconds=0.08)
+        )
+    with pytest.raises(ValueError, match="connection_transition_duration_seconds"):
+        validate_hardware_config(
+            pose_hardware_config(
+                upper_body_follow=replace(
+                    UpperBodyFollowConfig(),
+                    connection_transition_duration_seconds=0.0,
+                )
+            )
         )
 
 
