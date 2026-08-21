@@ -61,8 +61,6 @@ class UpperBodyFollowConfig:
     max_reference_joint_speed_rps: float = 25.0
     max_reference_joint_limit_violation_radians: float = 0.01
     max_target_speed_rps: float = 3.0 * math.pi
-    left_elbow_yaw_offset_radians: float = 0.0
-    right_elbow_yaw_offset_radians: float = 0.0
     connection_transition_duration_seconds: float = 1.0
 
 
@@ -92,7 +90,6 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     fastsam_align_initial_heading: bool = True
     fastsam_align_initial_floor: bool = True
     smplx_neutral_model_path: Path | None = None
-    smplx_human_height_m: float = 1.66
     upper_body_follow: UpperBodyFollowConfig = UpperBodyFollowConfig()
 
 
@@ -155,19 +152,6 @@ class HardwarePolicyAdapter:
         )
         self.upper_body_qvel_indices = np.asarray(
             env.model.actuator_qvel_indices[self.upper_body_indices], dtype=np.int32
-        )
-        upper_body_index_by_name = {
-            env.model.actuator_joint_names[int(actuator_index)]: upper_index
-            for upper_index, actuator_index in enumerate(self.upper_body_indices)
-        }
-        elbow_yaw_names = tuple(f"{side}_elbow_yaw_joint" for side in ("left", "right"))
-        if not all(name in upper_body_index_by_name for name in elbow_yaw_names):
-            raise ValueError(
-                "hardware upper body must contain exactly two elbow-yaw joints"
-            )
-        self.upper_body_elbow_yaw_indices = np.asarray(
-            [upper_body_index_by_name[name] for name in elbow_yaw_names],
-            dtype=np.int32,
         )
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
@@ -236,7 +220,7 @@ class HardwarePolicyAdapter:
     def set_upper_body_standing_reference(
         self, reference: Twist2ReferenceFrame
     ) -> None:
-        """Bind the GMR standing arms used by ramp, hold, and pose fallback."""
+        """Bind the calibrated standing arms used by ramp, hold, and fallback."""
 
         self.validate_upper_body_reference(reference, live=False)
         self._standing_reference = reference
@@ -459,12 +443,6 @@ class HardwarePolicyAdapter:
         desired = np.asarray(reference.qpos, dtype=np.float64)[
             self.upper_body_qpos_indices
         ].copy()
-        desired[self.upper_body_elbow_yaw_indices] += np.asarray(
-            (
-                self.upper_body_follow.left_elbow_yaw_offset_radians,
-                self.upper_body_follow.right_elbow_yaw_offset_radians,
-            )
-        )
         low = self.env.model.joint_target_low[self.upper_body_indices]
         high = self.env.model.joint_target_high[self.upper_body_indices]
         return np.clip(desired, low, high)
@@ -620,18 +598,6 @@ def validate_hardware_config(
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"upper_body_follow.{name} must be positive and finite")
-    finite = {
-        "left_elbow_yaw_offset_radians": upper.left_elbow_yaw_offset_radians,
-        "right_elbow_yaw_offset_radians": upper.right_elbow_yaw_offset_radians,
-    }
-    for name, value in finite.items():
-        if not math.isfinite(value):
-            raise ValueError(f"upper_body_follow.{name} must be finite")
-    if (
-        not math.isfinite(config.smplx_human_height_m)
-        or config.smplx_human_height_m <= 0.0
-    ):
-        raise ValueError("smplx_human_height_m must be positive and finite")
     if upper.max_reference_age_ms <= 0:
         raise ValueError("upper_body_follow.max_reference_age_ms must be positive")
     if (
@@ -845,7 +811,7 @@ def run_hardware_locomotion(
                 "remote_controller_connected": remote_input.controller_connected,
                 "remote_intent_armed": remote_input.intent_armed,
                 "command": tuple(float(value) for value in command),
-                "upper_body_pose_source": "fastsam_smplx_gmr",
+                "upper_body_pose_source": "fastsam_smplx_direct",
                 "reference_sequence": preview.reference_sequence,
                 "reference_age_ms": preview.reference_age_ms,
                 "initial_pose_error_max": initial_error,
@@ -1013,7 +979,7 @@ def control_physical_robot(
                     else:
                         print(
                             "Live upper-body pose is unavailable; returning the arms "
-                            f"to GMR standing: {reference_error}"
+                            f"to calibrated standing: {reference_error}"
                         )
                     pose_following = following
                 policy_step = adapter.step(frame, command, reference)

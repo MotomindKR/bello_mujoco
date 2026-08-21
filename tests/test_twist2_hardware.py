@@ -44,7 +44,7 @@ from bello_mujoco.hardware.smplx_retarget import (
     GmrBelloRetargeter,
     GmrLiveRetargetConfig,
     GmrSourceIdentity,
-    LiveGmrReferenceSource,
+    LiveSmplxReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     SMPLX_GMR_BODY_NAMES,
@@ -702,7 +702,7 @@ def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
         def reset_live(self):
             return None
 
-    with LiveGmrReferenceSource(
+    with LiveSmplxReferenceSource(
         FakeStream(), FakeRetargeter(), poll_timeout_seconds=0.01
     ) as source:
         result = source.wait_until_ready(1.0)
@@ -710,7 +710,7 @@ def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
         assert source.standing().sequence == 0
         assert source.latest().sequence == result.sequence == 1
 
-    assert calls == ["bello-live-gmr"]
+    assert calls == ["bello-live-smplx"]
 
 
 def test_live_gmr_source_keeps_last_valid_frame_during_transient_rejection() -> None:
@@ -757,7 +757,7 @@ def test_live_gmr_source_keeps_last_valid_frame_during_transient_rejection() -> 
         def reset_live(self):
             reset_calls.append(None)
 
-    with LiveGmrReferenceSource(
+    with LiveSmplxReferenceSource(
         FakeStream(), FakeRetargeter(), poll_timeout_seconds=0.01
     ) as source:
         accepted = source.wait_until_ready(1.0)
@@ -812,7 +812,7 @@ def test_live_gmr_source_clears_reference_on_tracking_discontinuity() -> None:
         def reset_live(self):
             reset_complete.set()
 
-    with LiveGmrReferenceSource(
+    with LiveSmplxReferenceSource(
         FakeStream(), FakeRetargeter(), poll_timeout_seconds=0.01
     ) as source:
         source.wait_until_ready(1.0)

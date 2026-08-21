@@ -179,8 +179,6 @@ class HardwareCommandConfig:
     fastsam_align_initial_floor: bool
     smplx_neutral_model_path: Path | None
     smplx_human_height_m: float
-    left_elbow_yaw_offset_radians: float
-    right_elbow_yaw_offset_radians: float
 
 
 def prepare_assets_entrypoint() -> None:
@@ -918,10 +916,6 @@ def _hardware_hydra(config: DictConfig) -> None:
         "smplx_neutral_model_path",
         "smplx_human_height_m",
     )
-    locomotion_upper_body_fields = (
-        "left_elbow_yaw_offset_radians",
-        "right_elbow_yaw_offset_radians",
-    )
     if command.task == "twist2":
         _reject_explicit_fields(
             (
@@ -929,7 +923,6 @@ def _hardware_hydra(config: DictConfig) -> None:
                 "remote_staleness_ms",
                 "motion_path",
                 "standing_checkpoint_path",
-                *locomotion_upper_body_fields,
             ),
             context="task=twist2",
         )
@@ -1016,7 +1009,6 @@ def _hardware_hydra(config: DictConfig) -> None:
                 "remote_endpoint",
                 "remote_staleness_ms",
                 *fastsam_fields,
-                *locomotion_upper_body_fields,
             ),
             context="task=motion",
         )
@@ -1081,6 +1073,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             "policy_transition_seconds",
             "max_motion_tilt_radians",
             "action_lpf_cutoff_hz",
+            "smplx_human_height_m",
         ),
         context="task=locomotion",
     )
@@ -1140,12 +1133,6 @@ def _hardware_hydra(config: DictConfig) -> None:
             smplx_neutral_model_path=_required_path(
                 command.smplx_neutral_model_path,
                 "smplx_neutral_model_path",
-            ),
-            smplx_human_height_m=command.smplx_human_height_m,
-            upper_body_follow=replace(
-                base.upper_body_follow,
-                left_elbow_yaw_offset_radians=(command.left_elbow_yaw_offset_radians),
-                right_elbow_yaw_offset_radians=(command.right_elbow_yaw_offset_radians),
             ),
         ),
     )

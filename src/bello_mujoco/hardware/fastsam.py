@@ -28,13 +28,16 @@ from bello_mujoco.hardware.smplx_retarget import (
     GmrBelloRetargeter,
     GmrLiveRetargetConfig,
     GmrSourceIdentity,
-    LiveGmrReferenceSource,
+    LiveSmplxReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
     load_smplx_standing_sample,
-    repository_gmr_source_identity,
+)
+from bello_mujoco.hardware.smplx_arm import (
+    DirectSmplxArmMapper,
+    SMPLX_ARM_TARGET_NAMES,
 )
 from bello_mujoco.hardware.twist2 import (
     HardwareTwist2Config,
@@ -73,12 +76,18 @@ class FastSamGrpcConfig:
     camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
     align_initial_heading: bool
     align_initial_floor: bool
+    required_joint_names: tuple[str, ...] = SMPLX_GMR_BODY_NAMES
     root_conditioning: FootConditionedRootConfig = field(
         default_factory=FootConditionedRootConfig
     )
 
     @classmethod
-    def from_hardware(cls, config: Any) -> FastSamGrpcConfig:
+    def from_hardware(
+        cls,
+        config: Any,
+        *,
+        required_joint_names: tuple[str, ...] = SMPLX_GMR_BODY_NAMES,
+    ) -> FastSamGrpcConfig:
         if config.smplx_neutral_model_path is None:
             raise ValueError(
                 "smplx_neutral_model_path is required for live Fast-SAM hardware pose"
@@ -99,6 +108,7 @@ class FastSamGrpcConfig:
             ),
             align_initial_heading=config.fastsam_align_initial_heading,
             align_initial_floor=config.fastsam_align_initial_floor,
+            required_joint_names=required_joint_names,
         )
 
     def __post_init__(self) -> None:
@@ -133,6 +143,12 @@ class FastSamGrpcConfig:
             self.tls_root_certificate_path is None
         ):
             raise ValueError("Fast-SAM TLS server-name override requires a CA file")
+        if (
+            not self.required_joint_names
+            or len(set(self.required_joint_names)) != len(self.required_joint_names)
+            or not set(self.required_joint_names).issubset(SMPLX_BODY_JOINT_NAMES)
+        ):
+            raise ValueError("Fast-SAM required joint names are invalid")
 
 
 class FastSamCoordinateAdapter:
@@ -479,11 +495,16 @@ class FastSamSmplxStream:
         if np.any((confidence < 0.0) | (confidence > 1.0)):
             raise ReferenceUnavailable("Fast-SAM joint confidence is outside [0, 1]")
         required = np.asarray(
-            [SMPLX_BODY_JOINT_NAMES.index(name) for name in SMPLX_GMR_BODY_NAMES]
+            [
+                SMPLX_BODY_JOINT_NAMES.index(name)
+                for name in self.config.required_joint_names
+            ]
         )
         minimum = float(np.min(confidence[required]))
         if minimum < self.config.min_joint_confidence:
-            name = SMPLX_GMR_BODY_NAMES[int(np.argmin(confidence[required]))]
+            name = self.config.required_joint_names[
+                int(np.argmin(confidence[required]))
+            ]
             raise ReferenceUnavailable(
                 f"Fast-SAM joint {name!r} confidence is too low: {minimum:.3f}"
             )
@@ -566,7 +587,7 @@ class FastSamSmplxStream:
 def fastsam_reference_source(
     adapter: HardwareTwist2PolicyAdapter,
     config: HardwareTwist2Config,
-) -> Iterator[LiveGmrReferenceSource]:
+) -> Iterator[LiveSmplxReferenceSource]:
     """Construct the pinned gRPC -> SMPL-X -> GMR hardware source."""
 
     identity = GmrSourceIdentity(
@@ -589,17 +610,36 @@ def fastsam_reference_source(
 def fastsam_locomotion_reference_source(
     adapter: Any,
     config: Any,
-) -> Iterator[LiveGmrReferenceSource]:
-    """Construct the repository-pinned live upper-body source for locomotion."""
+) -> Iterator[LiveSmplxReferenceSource]:
+    """Construct the calibrated direct SMPL-X arm source for locomotion."""
 
-    with _fastsam_reference_source(
-        adapter,
+    grpc_config = FastSamGrpcConfig.from_hardware(
         config,
-        repository_gmr_source_identity(),
-        validate_reference=adapter.validate_upper_body_reference,
-        live_target_check="required_before_hardware_connection",
-    ) as source:
-        yield source
+        required_joint_names=SMPLX_ARM_TARGET_NAMES,
+    )
+    stream = FastSamSmplxStream(grpc_config)
+    with stream:
+        mapper = DirectSmplxArmMapper(
+            adapter.env,
+            validate_reference=adapter.validate_upper_body_reference,
+        )
+        with LiveSmplxReferenceSource(stream, mapper) as source:
+            print(
+                {
+                    "fastsam_connection_preflight": "passed",
+                    "endpoint": grpc_config.endpoint,
+                    "stream_instance_id": stream.stream_instance_id,
+                    "stream_config_sha256": stream.stream_config_sha256,
+                    "inference_profile": stream.inference_profile,
+                    "inference_mode": stream.inference_mode,
+                    "body_representation": "smplx_body_22",
+                    "neutral_model_sha256": stream.neutral_model_sha256,
+                    "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
+                    "arm_mapping": "calibrated_direct",
+                    "live_target_check": "required_before_hardware_connection",
+                }
+            )
+            yield source
 
 
 @contextmanager
@@ -610,7 +650,7 @@ def _fastsam_reference_source(
     *,
     validate_reference: Any,
     live_target_check: str,
-) -> Iterator[LiveGmrReferenceSource]:
+) -> Iterator[LiveSmplxReferenceSource]:
     """Build the shared Fast-SAM transport and source-rate GMR worker."""
 
     grpc_config = FastSamGrpcConfig.from_hardware(config)
@@ -622,7 +662,7 @@ def _fastsam_reference_source(
             GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),
             validate_reference=validate_reference,
         )
-        with LiveGmrReferenceSource(stream, retargeter) as source:
+        with LiveSmplxReferenceSource(stream, retargeter) as source:
             print(
                 {
                     "fastsam_connection_preflight": "passed",
