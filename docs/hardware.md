@@ -149,7 +149,11 @@ including the first pose and source recovery, and outgoing targets remain inside
 the model actuator range. Locomotion adds the independently configurable
 `left_elbow_yaw_offset_radians` and `right_elbow_yaw_offset_radians` to their
 respective GMR targets, then clips the adjusted values to the corresponding
-target ranges; both offsets default to zero. Briefly rejected frames leave the
+target ranges; both offsets default to zero. After `RUN`, the terminal also
+accepts nonblocking 5-degree jogs: `q`/`a` increase/decrease the left offset and
+`e`/`d` increase/decrease the right offset. The configured offsets are the
+starting values, and each jogged target uses the same clipping and slew-rate
+limits. Briefly rejected frames leave the
 last safe reference usable
 until its total age reaches 1000 ms. When no fresh safe pose remains, the runner
 reports the loss and returns only the arms toward GMR standing at the same

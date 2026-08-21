@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
+import os
 from pathlib import Path
+import select
+import sys
+import termios
 import time
-from typing import Any
+import tty
+from typing import Any, TextIO
 
 import equinox as eqx
 import jax
@@ -51,6 +56,97 @@ from bello_mujoco.hardware.twist2 import ReferenceUnavailable, Twist2ReferenceFr
 from bello_mujoco.policy import infer_policy_action
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.training.ppo import normalize_observation
+
+
+ELBOW_YAW_JOG_STEP_RADIANS = math.radians(5.0)
+_ELBOW_YAW_JOG_DELTAS = {
+    "q": (ELBOW_YAW_JOG_STEP_RADIANS, 0.0),
+    "a": (-ELBOW_YAW_JOG_STEP_RADIANS, 0.0),
+    "e": (0.0, ELBOW_YAW_JOG_STEP_RADIANS),
+    "d": (0.0, -ELBOW_YAW_JOG_STEP_RADIANS),
+}
+
+
+class TerminalElbowYawJogInput:
+    """Read single-key elbow-yaw jog commands without blocking policy control."""
+
+    def __init__(
+        self,
+        stream: TextIO | None = None,
+        *,
+        enabled: bool | None = None,
+    ) -> None:
+        self._stream = sys.stdin if stream is None else stream
+        self._requested_enabled = enabled
+        self._fd: int | None = None
+        self._previous_attributes: list[Any] | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self._fd is not None
+
+    def __enter__(self) -> TerminalElbowYawJogInput:
+        self.open()
+        return self
+
+    def __exit__(self, *_exception: object) -> bool:
+        self.close()
+        return False
+
+    def open(self) -> None:
+        enabled = (
+            self._stream.isatty()
+            if self._requested_enabled is None
+            else self._requested_enabled
+        )
+        if not enabled:
+            return
+        fd = self._stream.fileno()
+        self._fd = fd
+        self._previous_attributes = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd, termios.TCSANOW)
+        except BaseException:
+            self._restore()
+            raise
+
+    def close(self) -> None:
+        self._restore()
+
+    def poll(self) -> tuple[float, float]:
+        """Return accumulated left and right offset deltas since the last poll."""
+
+        if self._fd is None:
+            return 0.0, 0.0
+        payload = bytearray()
+        try:
+            while select.select((self._fd,), (), (), 0.0)[0]:
+                chunk = os.read(self._fd, 64)
+                if not chunk:
+                    self._restore()
+                    break
+                payload.extend(chunk)
+        except (OSError, ValueError) as error:
+            self._restore()
+            print(f"Terminal elbow-yaw jogging disabled: {error}")
+            return 0.0, 0.0
+        left_delta = 0.0
+        right_delta = 0.0
+        for key in payload.decode(errors="ignore"):
+            left, right = _ELBOW_YAW_JOG_DELTAS.get(key, (0.0, 0.0))
+            left_delta += left
+            right_delta += right
+        return left_delta, right_delta
+
+    def _restore(self) -> None:
+        if self._fd is not None and self._previous_attributes is not None:
+            termios.tcsetattr(
+                self._fd,
+                termios.TCSANOW,
+                self._previous_attributes,
+            )
+        self._fd = None
+        self._previous_attributes = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +336,34 @@ class HardwarePolicyAdapter:
 
         self.validate_upper_body_reference(reference, live=False)
         self._standing_reference = reference
+
+    def jog_elbow_yaw_offsets(
+        self,
+        *,
+        left_delta_radians: float = 0.0,
+        right_delta_radians: float = 0.0,
+    ) -> tuple[float, float]:
+        """Adjust the runtime elbow-yaw offsets and return their new values."""
+
+        deltas = np.asarray(
+            (left_delta_radians, right_delta_radians), dtype=np.float64
+        )
+        if not np.all(np.isfinite(deltas)):
+            raise ValueError("elbow-yaw jog deltas must be finite")
+        current = self.upper_body_follow
+        self.upper_body_follow = replace(
+            current,
+            left_elbow_yaw_offset_radians=(
+                current.left_elbow_yaw_offset_radians + float(deltas[0])
+            ),
+            right_elbow_yaw_offset_radians=(
+                current.right_elbow_yaw_offset_radians + float(deltas[1])
+            ),
+        )
+        return (
+            self.upper_body_follow.left_elbow_yaw_offset_radians,
+            self.upper_body_follow.right_elbow_yaw_offset_radians,
+        )
 
     def reset(self) -> None:
         self._obs_stack = None
@@ -987,7 +1111,14 @@ def control_physical_robot(
         control.reset_deadline()
         step = 0
         pose_following: bool | None = None
+        jog_input = TerminalElbowYawJogInput(enabled=operator_input is None)
+        jog_input.open()
         try:
+            if jog_input.enabled:
+                print(
+                    "Elbow-yaw keyboard jog: q/a = left +/-5 deg, "
+                    "e/d = right +/-5 deg."
+                )
             while (
                 config.max_duration_seconds is None
                 or time.monotonic() - start_time < config.max_duration_seconds
@@ -997,6 +1128,17 @@ def control_physical_robot(
                 if remote_input.abort_active:
                     print("Remote controller requested exit; entering damped shutdown.")
                     break
+                left_delta, right_delta = jog_input.poll()
+                if left_delta != 0.0 or right_delta != 0.0:
+                    left_offset, right_offset = adapter.jog_elbow_yaw_offsets(
+                        left_delta_radians=left_delta,
+                        right_delta_radians=right_delta,
+                    )
+                    print(
+                        "Elbow-yaw offsets: "
+                        f"left={math.degrees(left_offset):+.1f} deg, "
+                        f"right={math.degrees(right_offset):+.1f} deg."
+                    )
                 command = hardware_command(adapter.metadata, remote_input)
                 frame = control.read_frame()
                 reference_error: ReferenceUnavailable | None = None
@@ -1064,6 +1206,8 @@ def control_physical_robot(
             control.drain()
         except KeyboardInterrupt:
             print("Hardware locomotion interrupted; entering damped shutdown.")
+        finally:
+            jog_input.close()
 
 
 def wait_for_qualified_upper_body_reference(

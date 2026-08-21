@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -18,8 +19,10 @@ from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware import runtime as hardware_runtime
 from bello_mujoco.hardware.locomotion import (
+    ELBOW_YAW_JOG_STEP_RADIANS,
     HardwareLocomotionConfig,
     HardwarePolicyAdapter,
+    TerminalElbowYawJogInput,
     UpperBodyFollowConfig,
     command_minimum_moving_speeds,
     command_ranges,
@@ -543,6 +546,35 @@ def test_locomotion_applies_configured_and_clipped_elbow_yaw_offset(
 
     assert target == pytest.approx(expected)
     assert target[elbow_yaw] == pytest.approx((high[elbow_yaw[0]], low[elbow_yaw[1]]))
+
+
+def test_locomotion_keyboard_jogs_elbow_yaw_offsets(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+
+    offsets = adapter.jog_elbow_yaw_offsets(
+        left_delta_radians=ELBOW_YAW_JOG_STEP_RADIANS,
+        right_delta_radians=-2.0 * ELBOW_YAW_JOG_STEP_RADIANS,
+    )
+
+    assert offsets == pytest.approx(
+        (ELBOW_YAW_JOG_STEP_RADIANS, -2.0 * ELBOW_YAW_JOG_STEP_RADIANS)
+    )
+
+
+def test_terminal_elbow_yaw_jog_reads_single_keys() -> None:
+    master_fd, slave_fd = os.openpty()
+    stream = os.fdopen(slave_fd, "r", closefd=True)
+    try:
+        with TerminalElbowYawJogInput(stream) as jog_input:
+            os.write(master_fd, b"qqaedx\x1b[D")
+            left_delta, right_delta = jog_input.poll()
+            assert left_delta == pytest.approx(ELBOW_YAW_JOG_STEP_RADIANS)
+            assert right_delta == pytest.approx(0.0)
+    finally:
+        stream.close()
+        os.close(master_fd)
 
 
 def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
