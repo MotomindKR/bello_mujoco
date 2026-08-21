@@ -332,7 +332,7 @@ All armed modes continuously check:
 - quaternion normalization, robot tilt, angular velocity, and acceleration;
 - bounded checkpoint nominal-pose error from ramp completion through `RUN`;
 - policy target bounds;
-- accumulated control-loop deadline lag over a fixed two-second window.
+- per-iteration control-loop deadline lag.
 
 Motion adds pose age/frame/source-time validation, pose/IMU agreement,
 estimator-provided base-velocity bounds,

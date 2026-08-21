@@ -1180,7 +1180,7 @@ def test_hardware_target_submission_overlaps_control_loop() -> None:
     assert pending_receipts == [receipt]
 
 
-def test_hardware_loop_lag_is_bounded_to_two_second_windows(monkeypatch) -> None:
+def test_hardware_loop_rebases_after_each_late_iteration(monkeypatch) -> None:
     clock = SimpleNamespace(now=0.0)
     monkeypatch.setattr(hardware_runtime.time, "monotonic", lambda: clock.now)
     monkeypatch.setattr(
@@ -1190,38 +1190,31 @@ def test_hardware_loop_lag_is_bounded_to_two_second_windows(monkeypatch) -> None
     )
     config = HardwareLocomotionConfig()
     deadline = clock.now
-    window_started_at = clock.now
 
     for _ in range(600):
-        clock.now += 0.0202
-        deadline, window_started_at = pace_hardware_loop(
+        clock.now += 0.022
+        deadline = pace_hardware_loop(
             deadline,
-            window_started_at,
             0.02,
             config,
         )
 
-    assert window_started_at > 0.0
+    assert deadline == pytest.approx(clock.now)
 
 
-def test_hardware_loop_lag_still_rejects_sustained_under_rate(
-    monkeypatch,
-) -> None:
+def test_hardware_loop_rejects_one_excessively_late_iteration(monkeypatch) -> None:
     clock = SimpleNamespace(now=0.0)
     monkeypatch.setattr(hardware_runtime.time, "monotonic", lambda: clock.now)
     config = HardwareLocomotionConfig()
     deadline = clock.now
-    window_started_at = clock.now
 
     with pytest.raises(RuntimeError, match="missed its deadline"):
-        for _ in range(100):
-            clock.now += 0.022
-            deadline, window_started_at = pace_hardware_loop(
-                deadline,
-                window_started_at,
-                0.02,
-                config,
-            )
+        clock.now += 0.121
+        pace_hardware_loop(
+            deadline,
+            0.02,
+            config,
+        )
 
 
 def test_hardware_cleanup_stops_only_running_groups() -> None:

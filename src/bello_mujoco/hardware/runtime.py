@@ -29,7 +29,6 @@ IDLE_CONFIRMATION = "IDLE"
 FAULT_GROUP_STATES = frozenset({"FAULT", "SHUTDOWN", "UNSPECIFIED"})
 STANDARD_GRAVITY = 9.80665
 GROUP_STATE_POLL_INTERVAL_SECONDS = 0.01
-LOOP_LAG_WINDOW_SECONDS = 2.0
 NOMINAL_POSE_MAX_ERROR_RADIANS = 0.25
 ANKLE_NOMINAL_POSE_MAX_ERROR_RADIANS = 1.00
 ANKLE_MOTOR_COORDINATES = frozenset(
@@ -870,10 +869,9 @@ def wait_for_group_state(
 
 def pace_hardware_loop(
     previous_deadline: float,
-    pacing_window_started_at: float,
     control_timestep: float,
     config: HardwareControlConfig,
-) -> tuple[float, float]:
+) -> float:
     deadline = previous_deadline + control_timestep
     remaining = deadline - time.monotonic()
     if remaining > 0.0:
@@ -884,9 +882,7 @@ def pace_hardware_loop(
         raise RuntimeError(
             f"hardware policy loop missed its deadline by {lag:.3f} seconds"
         )
-    if now - pacing_window_started_at >= LOOP_LAG_WINDOW_SECONDS:
-        return now, now
-    return deadline, pacing_window_started_at
+    return max(deadline, now)
 
 
 @dataclass
@@ -902,7 +898,6 @@ class ArmedControlSession:
     pending_receipts: list[Any]
     previous_target: np.ndarray
     deadline: float
-    pacing_window_started_at: float
 
     def read_frame(
         self,
@@ -939,17 +934,14 @@ class ArmedControlSession:
         self.previous_target = np.asarray(target, dtype=np.float64)
 
     def pace(self) -> None:
-        self.deadline, self.pacing_window_started_at = pace_hardware_loop(
+        self.deadline = pace_hardware_loop(
             self.deadline,
-            self.pacing_window_started_at,
             self.adapter.control_timestep,
             self.config,
         )
 
     def reset_deadline(self) -> None:
-        now = time.monotonic()
-        self.deadline = now
-        self.pacing_window_started_at = now
+        self.deadline = time.monotonic()
 
     def ramp_to_nominal(
         self,
@@ -1072,7 +1064,6 @@ def armed_control_session(
                 config,
                 "RUNNING",
             )
-            pacing_started_at = time.monotonic()
             try:
                 yield ArmedControlSession(
                     binding=binding,
@@ -1087,8 +1078,7 @@ def armed_control_session(
                     previous_target=np.asarray(
                         initial_frame.positions, dtype=np.float64
                     ).copy(),
-                    deadline=pacing_started_at,
-                    pacing_window_started_at=pacing_started_at,
+                    deadline=time.monotonic(),
                 )
             except BaseException:
                 try:
