@@ -543,6 +543,50 @@ def test_motion_checkpoint_without_observation_latency_loads_as_disabled(
     assert restored.motion_env.observation_latency.delay_steps == (0, 0)
 
 
+def test_motion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    motion_env = FakeMotionEnv()
+    state = runner_state(config, motion_env)
+    motion_path = tmp_path / "motion.npz"
+    motion_path.write_bytes(b"motion checkpoint fixture")
+    checkpoint_metadata = motion_metadata(
+        config,
+        motion_path,
+        synthetic_motion_clip(),
+        state,
+    )
+    path = tmp_path / "legacy_motion_ppo_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for name in (
+        "adam_epsilon",
+        "value_loss_scale",
+        "normalize_critic_observations",
+        "observation_norm_update_mode",
+        "observation_norm_update_updates",
+        "observation_norm_epsilon_mode",
+    ):
+        document["metadata"]["ppo"].pop(name)
+    document["metadata"]["ppo"]["policy"].pop("architecture")
+    document["metadata"]["ppo"]["policy"].pop("layer_norm_final_hidden")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert restored.ppo.adam_epsilon == pytest.approx(1.0e-5)
+    assert restored.ppo.value_loss_scale == pytest.approx(0.5)
+    assert restored.ppo.normalize_critic_observations
+    assert restored.ppo.observation_norm_update_mode == "online"
+    assert restored.ppo.observation_norm_update_updates is None
+    assert restored.ppo.observation_norm_epsilon_mode == "variance_floor"
+    assert restored.ppo.policy.architecture == "mlp"
+    assert not restored.ppo.policy.layer_norm_final_hidden
+
+
 def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(
     tmp_path: Path,
 ) -> None:

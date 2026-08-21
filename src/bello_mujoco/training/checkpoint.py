@@ -794,10 +794,27 @@ def _with_checkpoint_metadata_defaults(
     if allow_retired_asset_schema:
         value = _without_retired_asset_schema(value)
     ppo = value.get("ppo")
-    if isinstance(ppo, dict) and "symmetry_loss_coef" not in ppo:
+    if isinstance(ppo, dict):
         normalized = dict(value)
         normalized_ppo = dict(ppo)
-        normalized_ppo["symmetry_loss_coef"] = 0.0
+        normalized_ppo.setdefault("symmetry_loss_coef", 0.0)
+        if value.get("task") in {"locomotion", "motion_tracking"}:
+            legacy_ppo_defaults = {
+                "adam_epsilon": 1.0e-5,
+                "value_loss_scale": 0.5,
+                "normalize_critic_observations": True,
+                "observation_norm_update_mode": "online",
+                "observation_norm_update_updates": None,
+                "observation_norm_epsilon_mode": "variance_floor",
+            }
+            for name, default in legacy_ppo_defaults.items():
+                normalized_ppo.setdefault(name, default)
+            policy = ppo.get("policy")
+            if isinstance(policy, dict):
+                normalized_policy = dict(policy)
+                normalized_policy.setdefault("architecture", "mlp")
+                normalized_policy.setdefault("layer_norm_final_hidden", False)
+                normalized_ppo["policy"] = normalized_policy
         normalized["ppo"] = normalized_ppo
         value = normalized
     asset = value.get("asset")
@@ -809,28 +826,6 @@ def _with_checkpoint_metadata_defaults(
         value = normalized
     if value.get("task") == "locomotion":
         normalized = dict(value)
-        ppo = value.get("ppo")
-        if isinstance(ppo, dict):
-            normalized_ppo = dict(ppo)
-            legacy_ppo_defaults = {
-                "adam_epsilon": 1.0e-5,
-                "value_loss_scale": 0.5,
-                "normalize_critic_observations": True,
-                "observation_norm_update_mode": "online",
-                "observation_norm_update_updates": None,
-                "observation_norm_epsilon_mode": "variance_floor",
-                "symmetry_loss_coef": 0.0,
-            }
-            for name, default in legacy_ppo_defaults.items():
-                if name not in normalized_ppo:
-                    normalized_ppo[name] = default
-            policy = ppo.get("policy")
-            if isinstance(policy, dict):
-                normalized_policy = dict(policy)
-                normalized_policy.setdefault("architecture", "mlp")
-                normalized_policy.setdefault("layer_norm_final_hidden", False)
-                normalized_ppo["policy"] = normalized_policy
-            normalized["ppo"] = normalized_ppo
         env = value.get("env")
         if isinstance(env, dict) and "gait" not in env:
             raise ValueError(
