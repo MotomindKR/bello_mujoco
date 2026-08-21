@@ -138,6 +138,24 @@ def test_command_yaml_is_complete(name: str, schema: type) -> None:
             command_config(schema, OmegaConf.create(incomplete))
 
 
+def test_hardware_elbow_yaw_offsets_are_flat_overrides() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        config = compose(
+            config_name="hardware",
+            overrides=(
+                "left_elbow_yaw_offset_radians=1.57079632679",
+                "right_elbow_yaw_offset_radians=-1.57079632679",
+            ),
+        )
+
+    command = command_config(HardwareCommandConfig, config)
+    assert command.left_elbow_yaw_offset_radians == pytest.approx(1.57079632679)
+    assert command.right_elbow_yaw_offset_radians == pytest.approx(-1.57079632679)
+
+
 @pytest.mark.parametrize(
     "value",
     (

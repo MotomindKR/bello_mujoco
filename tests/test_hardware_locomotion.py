@@ -8,7 +8,6 @@ import threading
 import time
 from types import SimpleNamespace
 
-import mujoco
 import numpy as np
 import pytest
 import jax
@@ -66,8 +65,6 @@ from bello_mujoco.training.ppo import (
 )
 from bello_mujoco.gamepad import axis_to_range
 from bello_mujoco.hardware.remote import RemoteCommandConfig, RemoteCommandInput
-from bello_mujoco.hardware.smplx_arm import DirectSmplxArmMapper
-from bello_mujoco.hardware.smplx_retarget import SmplxTargetFrame
 from bello_mujoco.hardware.twist2 import ReferenceUnavailable, Twist2ReferenceFrame
 
 
@@ -378,86 +375,6 @@ def hardware_reference(
     )
 
 
-def direct_smplx_arm_frame(
-    arm_pose: dict[str, tuple[float, float, float, float, float, float]],
-    *,
-    sequence: int,
-    timestamp_ns: int,
-) -> SmplxTargetFrame:
-    transforms = {
-        "spine3": (np.zeros(3), matrix_quaternion(np.eye(3))),
-    }
-    for side, values in arm_pose.items():
-        (
-            shoulder_pitch,
-            shoulder_roll,
-            shoulder_yaw,
-            elbow_pitch,
-            elbow_yaw,
-            wrist_pitch,
-        ) = values
-        shoulder_sign_x = -1.0 if side == "left" else 1.0
-        shoulder_sign_y = 1.0 if side == "left" else -1.0
-        elbow_sign = -1.0 if side == "left" else 1.0
-        wrist_sign = 1.0 if side == "left" else -1.0
-        shoulder_rotation = (
-            arm_rotation_x(shoulder_sign_x * shoulder_pitch)
-            @ arm_rotation_y(shoulder_sign_y * shoulder_roll)
-            @ arm_rotation_z(shoulder_yaw)
-        )
-        elbow_rotation = shoulder_rotation @ arm_rotation_y(elbow_sign * elbow_pitch)
-        wrist_rotation = (
-            elbow_rotation
-            @ arm_rotation_z(elbow_yaw)
-            @ arm_rotation_y(wrist_sign * wrist_pitch)
-        )
-        lateral = 0.25 if side == "left" else -0.25
-        shoulder_position = np.asarray((0.0, lateral, 1.4))
-        elbow_position = shoulder_position + np.asarray((0.0, 0.0, -0.3))
-        forearm = arm_rotation_y(elbow_pitch) @ np.asarray((0.0, 0.0, -0.25))
-        wrist_position = elbow_position + forearm
-        transforms[f"{side}_shoulder"] = (
-            shoulder_position,
-            matrix_quaternion(shoulder_rotation),
-        )
-        transforms[f"{side}_elbow"] = (
-            elbow_position,
-            matrix_quaternion(elbow_rotation),
-        )
-        transforms[f"{side}_wrist"] = (
-            wrist_position,
-            matrix_quaternion(wrist_rotation),
-        )
-    return SmplxTargetFrame(
-        transforms=transforms,
-        sequence=sequence,
-        source_timestamp_ns=timestamp_ns,
-        source_age_ms=0,
-        received_at=time.monotonic(),
-    )
-
-
-def matrix_quaternion(rotation: np.ndarray) -> np.ndarray:
-    quaternion = np.empty(4, dtype=np.float64)
-    mujoco.mju_mat2Quat(quaternion, np.asarray(rotation).reshape(-1))
-    return quaternion
-
-
-def arm_rotation_x(angle: float) -> np.ndarray:
-    cosine, sine = np.cos(angle), np.sin(angle)
-    return np.asarray(((1.0, 0.0, 0.0), (0.0, cosine, -sine), (0.0, sine, cosine)))
-
-
-def arm_rotation_y(angle: float) -> np.ndarray:
-    cosine, sine = np.cos(angle), np.sin(angle)
-    return np.asarray(((cosine, 0.0, sine), (0.0, 1.0, 0.0), (-sine, 0.0, cosine)))
-
-
-def arm_rotation_z(angle: float) -> np.ndarray:
-    cosine, sine = np.cos(angle), np.sin(angle)
-    return np.asarray(((cosine, -sine, 0.0), (sine, cosine, 0.0), (0.0, 0.0, 1.0)))
-
-
 def test_hardware_adapter_reconstructs_actor_frame_and_targets(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
@@ -602,49 +519,30 @@ def test_locomotion_overlays_only_slew_limited_upper_body_reference(
     assert recovered.reference_sequence == 3
 
 
-def test_locomotion_directly_maps_smplx_arm_frames(
+def test_locomotion_applies_configured_and_clipped_elbow_yaw_offset(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
-    mapper = DirectSmplxArmMapper(hardware_env)
-    standing_pose = {side: (0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for side in ("left", "right")}
-    standing = direct_smplx_arm_frame(standing_pose, sequence=0, timestamp_ns=0)
-    reference = mapper.standing(standing)
-    assert reference.qpos == pytest.approx(hardware_env.model.default_qpos)
-
-    arm_pose = {
-        "left": (0.20, 0.35, -0.25, 0.65, -0.80, 0.30),
-        "right": (-0.15, 0.40, 0.20, 0.55, 1.20, -0.25),
-    }
-    live = mapper.retarget(
-        direct_smplx_arm_frame(
-            arm_pose,
-            sequence=1,
-            timestamp_ns=1_000_000_000,
-        )
+    adapter = make_hardware_adapter(hardware_env)
+    adapter.upper_body_follow = replace(
+        adapter.upper_body_follow,
+        left_elbow_yaw_offset_radians=np.pi / 2.0,
+        right_elbow_yaw_offset_radians=-np.pi,
     )
-    names = hardware_env.model.actuator_joint_names
-    for side, values in arm_pose.items():
-        for suffix, expected in zip(
-            (
-                "shoulder_pitch",
-                "shoulder_roll",
-                "shoulder_yaw",
-                "elbow_pitch",
-                "elbow_yaw",
-                "wrist_pitch",
-            ),
-            values,
-            strict=True,
-        ):
-            actuator = names.index(f"{side}_{suffix}_joint")
-            qpos = hardware_env.model.actuator_qpos_indices[actuator]
-            clipped = np.clip(
-                expected,
-                hardware_env.model.joint_target_low[actuator],
-                hardware_env.model.joint_target_high[actuator],
-            )
-            assert live.qpos[qpos] == pytest.approx(clipped, abs=1.0e-6)
-    assert live.qvel == pytest.approx(np.zeros(hardware_env.model.mj_model.nv))
+    upper = adapter.upper_body_indices
+    desired = adapter.default_joint_target[upper]
+    low = hardware_env.model.joint_target_low[upper]
+    high = hardware_env.model.joint_target_high[upper]
+    target = adapter._reference_upper_body_target(
+        hardware_reference(adapter, desired),
+        live=True,
+    )
+    elbow_yaw = adapter.upper_body_elbow_yaw_indices
+    expected = desired.copy()
+    expected[elbow_yaw] += np.asarray((np.pi / 2.0, -np.pi))
+    expected = np.clip(expected, low, high)
+
+    assert target == pytest.approx(expected)
+    assert target[elbow_yaw] == pytest.approx((high[elbow_yaw[0]], low[elbow_yaw[1]]))
 
 
 def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
@@ -696,6 +594,8 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.acknowledgement_timeout_seconds == pytest.approx(0.5)
     assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
     assert config.hardware.remote.staleness_ms == 200
+    assert config.hardware.upper_body_follow.left_elbow_yaw_offset_radians == 0.0
+    assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
     validate_hardware_config(config.hardware)
     validate_hardware_config(pose_hardware_config(arm=True))
     with pytest.raises(ValueError, match="smplx_neutral_model_path"):
@@ -724,6 +624,15 @@ def test_hardware_runner_defaults_to_read_only() -> None:
                 upper_body_follow=replace(
                     UpperBodyFollowConfig(),
                     connection_transition_duration_seconds=0.0,
+                )
+            )
+        )
+    with pytest.raises(ValueError, match="left_elbow_yaw_offset_radians"):
+        validate_hardware_config(
+            pose_hardware_config(
+                upper_body_follow=replace(
+                    UpperBodyFollowConfig(),
+                    left_elbow_yaw_offset_radians=np.nan,
                 )
             )
         )

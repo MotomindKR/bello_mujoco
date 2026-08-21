@@ -99,7 +99,7 @@ class HardwareTwist2Config(HardwareControlConfig):
 
 @dataclass(frozen=True)
 class Twist2ReferenceFrame:
-    """One pose-mapped Bello reference in MuJoCo qpos/qvel ordering."""
+    """One GMR-retargeted Bello reference in MuJoCo qpos/qvel ordering."""
 
     qpos: np.ndarray
     qvel: np.ndarray
@@ -123,7 +123,7 @@ class ReferenceDiscontinuity(ReferenceUnavailable):
 
 
 class Twist2ReferenceSource(Protocol):
-    """Reference boundary implemented by a validated live-pose integration."""
+    """Reference boundary implemented by the vision/GMR integration."""
 
     def standing(self) -> Twist2ReferenceFrame: ...
 

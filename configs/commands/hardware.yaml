@@ -33,6 +33,8 @@ fastsam_align_initial_heading: true
 fastsam_align_initial_floor: true
 smplx_neutral_model_path: null
 smplx_human_height_m: 1.66
+left_elbow_yaw_offset_radians: 0.0
+right_elbow_yaw_offset_radians: 0.0
 hydra:
   job:
     chdir: false

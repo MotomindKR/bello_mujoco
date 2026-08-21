@@ -263,7 +263,7 @@ def test_reference_factory_defers_live_target_check_until_motion(
     )
     monkeypatch.setattr(
         fastsam,
-        "LiveSmplxReferenceSource",
+        "LiveGmrReferenceSource",
         lambda _stream, _retargeter, **_kwargs: source,
     )
 

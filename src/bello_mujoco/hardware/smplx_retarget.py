@@ -147,16 +147,6 @@ class SmplxTargetStream(Protocol):
     ) -> SmplxTargetFrame | None: ...
 
 
-class SmplxReferenceMapper(Protocol):
-    """Source-frame mapper consumed by the shared latest-only worker."""
-
-    def standing(self, frame: SmplxTargetFrame) -> Twist2ReferenceFrame: ...
-
-    def retarget(self, frame: SmplxTargetFrame) -> Twist2ReferenceFrame: ...
-
-    def reset_live(self) -> None: ...
-
-
 def load_smplx_standing_sample(model_path: Path) -> SmplxTargetFrame:
     """Pose the supplied neutral SMPL-X skeleton in a relaxed normal stand."""
 
@@ -970,20 +960,20 @@ class GmrBelloRetargeter:
         self._cached = None
 
 
-class LiveSmplxReferenceSource:
-    """Map source-rate SMPL-X in a worker while policy code reads latest-only data."""
+class LiveGmrReferenceSource:
+    """Run source-rate GMR in a worker while the policy reads latest-only data."""
 
     def __init__(
         self,
         stream: SmplxTargetStream,
-        mapper: SmplxReferenceMapper,
+        retargeter: GmrBelloRetargeter,
         *,
         poll_timeout_seconds: float = 0.1,
     ) -> None:
         if not math.isfinite(poll_timeout_seconds) or poll_timeout_seconds <= 0.0:
-            raise ValueError("SMPL-X worker poll timeout must be positive and finite")
+            raise ValueError("GMR worker poll timeout must be positive and finite")
         self.stream = stream
-        self.mapper = mapper
+        self.retargeter = retargeter
         self.poll_timeout_seconds = poll_timeout_seconds
         self._condition = threading.Condition()
         self._stop = threading.Event()
@@ -993,14 +983,14 @@ class LiveSmplxReferenceSource:
         self._unavailable: ReferenceUnavailable | None = None
         self._terminal_error: BaseException | None = None
 
-    def __enter__(self) -> LiveSmplxReferenceSource:
+    def __enter__(self) -> LiveGmrReferenceSource:
         if self._thread is not None:
-            raise RuntimeError("SMPL-X reference source is already running")
-        self._standing = self.mapper.standing(self.stream.standing_sample())
+            raise RuntimeError("GMR reference source is already running")
+        self._standing = self.retargeter.standing(self.stream.standing_sample())
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
-            name="bello-live-smplx",
+            name="bello-live-gmr",
             daemon=True,
         )
         self._thread.start()
@@ -1012,41 +1002,37 @@ class LiveSmplxReferenceSource:
         if thread is not None:
             thread.join(timeout=max(2.0, 2.0 * self.poll_timeout_seconds))
             if thread.is_alive():
-                raise RuntimeError("live SMPL-X worker did not stop")
+                raise RuntimeError("live GMR worker did not stop")
         self._thread = None
         return False
 
     def standing(self) -> Twist2ReferenceFrame:
         if self._standing is None:
-            raise RuntimeError("live SMPL-X source is not running")
+            raise RuntimeError("live GMR source is not running")
         return self._standing
 
     def latest(self) -> Twist2ReferenceFrame:
         with self._condition:
             if self._terminal_error is not None:
-                raise RuntimeError(
-                    "live SMPL-X worker failed"
-                ) from self._terminal_error
+                raise RuntimeError("live GMR worker failed") from self._terminal_error
             if self._latest is not None:
                 return self._latest
             if self._unavailable is not None:
                 raise self._unavailable
-            raise ReferenceUnavailable("no live SMPL-X frame has been mapped")
+            raise ReferenceUnavailable("no live SMPL-X frame has been retargeted")
 
     def wait_until_ready(self, timeout_seconds: float) -> Twist2ReferenceFrame:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
-            raise ValueError("SMPL-X ready timeout must be positive and finite")
+            raise ValueError("GMR ready timeout must be positive and finite")
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
             while self._latest is None and self._terminal_error is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
-                    raise TimeoutError("timed out waiting for a live SMPL-X reference")
+                    raise TimeoutError("timed out waiting for a live GMR reference")
                 self._condition.wait(remaining)
             if self._terminal_error is not None:
-                raise RuntimeError(
-                    "live SMPL-X worker failed"
-                ) from self._terminal_error
+                raise RuntimeError("live GMR worker failed") from self._terminal_error
             assert self._latest is not None
             return self._latest
 
@@ -1060,10 +1046,10 @@ class LiveSmplxReferenceSource:
                 )
                 if frame is None:
                     continue
-                reference = self.mapper.retarget(frame)
+                reference = self.retargeter.retarget(frame)
             except ReferenceDiscontinuity as error:
                 try:
-                    self.mapper.reset_live()
+                    self.retargeter.reset_live()
                 except BaseException as reset_error:
                     self._set_terminal(reset_error)
                     return

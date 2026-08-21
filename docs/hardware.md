@@ -8,7 +8,7 @@ The runner has three task modes:
 
 | Task | Policy input | External services |
 | --- | --- | --- |
-| Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent; live SMPL-X arm frames map directly to the upper body outside the policy | `bello-hardwared`, the visualizer's RemoteCommandService, and `fastsam3dbody-serve` |
+| Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent; live GMR pose targets the upper body outside the policy | `bello-hardwared`, the visualizer's RemoteCommandService, and `fastsam3dbody-serve` |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
 | TWIST2 | Motor state, pelvis IMU, current and historical proprioception, and a live retargeted pose | `bello-hardwared` plus `fastsam3dbody-serve` |
 
@@ -47,7 +47,7 @@ safety fix is not inherited automatically by a historical checkpoint.
 4. reconstructs observation, action, and physical-coordinate layouts;
 5. compiles policy inference;
 6. requires a fresh sample from the visualizer's remote-command service and five
-   qualified live Fast-SAM arm poses for locomotion, then connects to the hardware
+   qualified live Fast-SAM/GMR poses for locomotion, then connects to the hardware
    daemon without acquiring a control lease;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite complete state frames;
@@ -81,7 +81,7 @@ After preflight, all task modes begin with the same interactive sequence:
    abort remains active while the runner waits and prevents control acquisition.
 2. The runner acquires control and ramps to the task's standing target over ten
    seconds by default. Locomotion combines the checkpoint nominal lower body with
-   the calibrated canonical standing arms.
+   the repository-owned GMR standing arms.
 3. The runner continuously refreshes the nominal target and checks telemetry
    and nominal-pose error bounds while the operator releases external support
    and lets the robot settle. Direct coordinates use 0.25 rad; the
@@ -119,13 +119,14 @@ Locomotion checkpoints must use the sphere-hand physical morphology, active
 waist yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy.
 The joystick command path remains unchanged: RemoteCommandService supplies
 forward, lateral, and yaw intent to the locomotion actor, which remains
-authoritative over its 13 waist and leg coordinates. Fast-SAM supplies SMPL-X
-shoulder, elbow, and wrist transforms to a calibrated direct mapper for the
-other 12 coordinates. The live pose does not enter the locomotion actor
-observation and cannot replace joystick intent or any policy coordinate.
+authoritative over its 13 waist and leg coordinates. The same Fast-SAM -> SMPL-X
+-> pinned GMR pipeline used by TWIST2 supplies only the other 12 coordinates:
+the bilateral shoulder, elbow, and wrist joints. The live pose does not enter
+the locomotion actor observation and cannot replace joystick intent or any
+policy coordinate.
 
-Locomotion requires the pinned `deps/Fast-SAM-3D-Body` revision and an
-operator-supplied licensed `SMPLX_NEUTRAL.npz`; it no longer initializes GMR.
+Locomotion therefore also requires the pinned `deps/Fast-SAM-3D-Body` and
+`deps/GMR` revisions and an operator-supplied licensed `SMPLX_NEUTRAL.npz`.
 Start and calibrate the server as described under [TWIST2 mode](#twist2-mode),
 then include the model path in locomotion preflight:
 
@@ -138,29 +139,23 @@ uv run bello-run-hardware \
 ```
 
 Before contacting `bello-hardwared`, preflight requires five distinct fresh
-confidence-, latency-, direct-mapping-, and upper-body-limit-qualified poses by
-default. The supported ramp and `RUN` hold use the canonical arms to which the
-SMPL-X standing frames are calibrated. After `RUN`,
+confidence-, latency-, GMR-, and upper-body-limit-qualified poses by default.
+The supported ramp and `RUN` hold use canonical GMR standing arms. After `RUN`,
 upper-body tracking begins automatically while joystick commands continue to
 control the trained gait. No separate `MOTION` confirmation is used.
 
-For each arm, the mapper expresses SMPL-X shoulder and wrist frames relative to
-`spine3` and calibrates their basis against Bello's canonical standing link
-frames. It decomposes shoulder orientation directly onto shoulder pitch, roll,
-and yaw; obtains elbow pitch from the shoulder-elbow-wrist bend angle; and
-decomposes the remaining wrist orientation onto elbow yaw and wrist pitch. This
-uses SMPL-X wrist axial rotation to drive Bello elbow yaw instead of dropping
-that component in a position-weighted IK solve.
-
 Live upper-body changes are limited to `3*pi` rad/s at the 50 Hz control rate,
 including the first pose and source recovery, and outgoing targets remain inside
-the model actuator range. Each directly mapped arm coordinate is clipped to its
-configured target range. Briefly rejected frames leave the last safe reference
-usable until its total age reaches 1000 ms. When no fresh safe pose remains, the
-runner reports the loss and returns only the arms toward calibrated standing at
-the same bounded rate; joystick locomotion continues. A later safe pose resumes
-arm following. A terminal gRPC/direct-mapping worker failure still causes
-fail-closed damped shutdown.
+the model actuator range. Locomotion adds the independently configurable
+`left_elbow_yaw_offset_radians` and `right_elbow_yaw_offset_radians` to their
+respective GMR targets, then clips the adjusted values to the corresponding
+target ranges; both offsets default to zero. Briefly rejected frames leave the
+last safe reference usable
+until its total age reaches 1000 ms. When no fresh safe pose remains, the runner
+reports the loss and returns only the arms toward GMR standing at the same
+bounded rate; joystick locomotion continues. A later safe pose resumes arm
+following. A terminal gRPC/GMR worker failure still causes fail-closed damped
+shutdown.
 
 The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
@@ -353,11 +348,12 @@ reference completion, and raw-versus-applied action bounds.
 
 Locomotion adds exact Fast-SAM stream semantics, tracking and required-joint
 confidence, pipeline/reference age, source sequence and timestamp monotonicity,
-SMPL-X quaternion validity, direct arm joint velocity and hard upper-body joint
-limits, and a fixed upper-body target slew bound. These checks affect only
+SMPL-X quaternion validity, GMR joint velocity/acceleration and hard upper-body
+joint limits, and a fixed upper-body target slew bound. These checks affect only
 the 12 arm targets; the joystick-conditioned locomotion policy continues
 controlling the waist and legs. A temporarily unavailable or stale reference
-blends the arms back to calibrated standing over one second; a recovered
+blends the arms back to GMR standing over
+`upper_body_follow.connection_transition_duration_seconds`; a recovered
 reference uses the same blend before resuming direct tracking. Locomotion
 continues throughout either transition, while a terminal source failure remains
 fatal.
