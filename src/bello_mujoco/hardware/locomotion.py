@@ -335,11 +335,19 @@ class HardwarePolicyAdapter:
         physical_target = np.asarray(
             jax.device_get(self._action_ctrl(jnp.asarray(action))), dtype=np.float64
         )
-        physical_target = self._apply_upper_body_reference(
-            physical_target,
-            frame,
-            reference,
-        )
+        try:
+            physical_target = self._apply_upper_body_reference(
+                physical_target,
+                frame,
+                reference,
+            )
+        except ReferenceUnavailable:
+            reference = None
+            physical_target = self._apply_upper_body_reference(
+                physical_target,
+                frame,
+                reference,
+            )
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("policy produced non-finite physical motor targets")
         self._last_action = action

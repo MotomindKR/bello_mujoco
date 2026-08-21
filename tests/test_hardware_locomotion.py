@@ -472,13 +472,39 @@ def test_locomotion_overlays_only_slew_limited_upper_body_reference(
     assert step.upper_body_following
     assert step.reference_sequence == 1
 
-    fallback = adapter.step(frame, joystick_command, None)
-    fallback_logical = adapter.inverse_transform @ fallback.physical_target
-    assert np.abs(fallback_logical[upper] - default_upper) == pytest.approx(
-        np.maximum(np.abs(expected_upper - default_upper) - maximum_step, 0.0),
-        abs=1.0e-6,
+    stale = hardware_reference(
+        adapter,
+        desired_upper,
+        sequence=2,
+        received_at=time.monotonic() - 1.1,
     )
+    fallback = adapter.step(frame, joystick_command, stale)
+    fallback_logical = adapter.inverse_transform @ fallback.physical_target
+    expected_fallback = expected_upper + np.clip(
+        default_upper - expected_upper,
+        -maximum_step,
+        maximum_step,
+    )
+    assert fallback_logical[upper] == pytest.approx(expected_fallback, abs=1.0e-6)
+    assert fallback.observation[9:12] == pytest.approx(joystick_command)
     assert not fallback.upper_body_following
+    assert fallback.reference_sequence is None
+
+    recovered = adapter.step(
+        frame,
+        joystick_command,
+        hardware_reference(adapter, desired_upper, sequence=3),
+    )
+    recovered_logical = adapter.inverse_transform @ recovered.physical_target
+    expected_recovered = expected_fallback + np.clip(
+        desired_upper - expected_fallback,
+        -maximum_step,
+        maximum_step,
+    )
+    assert recovered_logical[upper] == pytest.approx(expected_recovered, abs=1.0e-6)
+    assert recovered.observation[9:12] == pytest.approx(joystick_command)
+    assert recovered.upper_body_following
+    assert recovered.reference_sequence == 3
 
 
 def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
