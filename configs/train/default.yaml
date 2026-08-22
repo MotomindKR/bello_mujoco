@@ -208,6 +208,7 @@ command_config:
   minimum_moving_linear_speed: 0.2
   minimum_moving_yaw_speed: 0.2
   resample_seconds: 10.0
+  standing_transitions_enabled: false
 checkpoint_config:
   enabled: false
   directory: checkpoints

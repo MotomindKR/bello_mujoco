@@ -160,6 +160,12 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.reward_config.weights.stand_contact == pytest.approx(-0.5)
     assert hardware.reward_config.tracking.lin_vel_xy_moving_std == pytest.approx(0.3)
     assert hardware.reward_config.tracking.ang_vel_z_moving_std == pytest.approx(0.25)
+    assert hardware.command_config.lin_vel_x == (-1.0, 1.0)
+    assert hardware.command_config.lin_vel_y == (-1.0, 1.0)
+    assert hardware.command_config.ang_vel_yaw == (-1.0, 1.0)
+    assert hardware.command_config.resample_seconds == pytest.approx(10.0)
+    assert hardware.command_config.standing_transitions_enabled
+    assert hardware.env_config.random_push.enabled
     assert not hardware.reward_config.gait.joint_force_apply_while_standing
     assert hardware.video_config.command == (0.0, 0.5, 0.0)
     assert locomotion.env_config.observation_latency.enabled

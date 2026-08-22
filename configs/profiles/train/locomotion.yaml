@@ -46,6 +46,7 @@ command_config:
   lin_vel_x: [-1.0, 1.0]
   lin_vel_y: [-1.0, 1.0]
   ang_vel_yaw: [-1.0, 1.0]
+  standing_transitions_enabled: true
 reward_config:
   links:
     track_lin_vel_xy: pelvis_link
