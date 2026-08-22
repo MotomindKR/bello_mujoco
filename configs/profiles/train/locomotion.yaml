@@ -31,7 +31,7 @@ env_config:
     foot_contact_on_seconds: 0.04
     foot_contact_off_seconds: 0.04
   random_push:
-    enabled: true
+    enabled: false
     lin_vel_x: [-2.0, 2.0]
     lin_vel_y: [-2.0, 2.0]
   observation:
@@ -43,9 +43,10 @@ env_config:
     enabled: true
     delay_steps: [0, 2]
 command_config:
-  lin_vel_x: [-1.0, 1.0]
-  lin_vel_y: [-1.0, 1.0]
-  ang_vel_yaw: [-1.0, 1.0]
+  lin_vel_x: [0.0, 0.0]
+  lin_vel_y: [0.2, 1.0]
+  ang_vel_yaw: [0.0, 0.0]
+  resample_seconds: 20.0
 reward_config:
   links:
     track_lin_vel_xy: pelvis_link
