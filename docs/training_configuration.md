@@ -244,16 +244,19 @@ source revision because its environment state predates the feedback history.
 | `minimum_moving_linear_speed` | `0.2` | A selected moving linear axis is sampled outside this magnitude. |
 | `minimum_moving_yaw_speed` | `0.2` | A selected moving yaw axis is sampled outside this magnitude. |
 | `resample_seconds` | `10` | Interval between command samples. |
+| `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling to train standing-to-walking and walking-to-standing transitions. |
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
-Training assigns the standing cohort once at batch reset and preserves each
-environment's standing or moving mode across failures and periodic command
-resampling. This prevents short standing episodes from reducing standing's
-share of rollout frames. Training telemetry reports mode-specific mean reward,
-completed-episode return and length, and completed-episode count under the
-`command/standing_*`, `command/moving_*`, and `episode/{standing,moving}_*`
-names.
+Training assigns an exact standing cohort at batch reset. Failure resets
+preserve each environment's standing or moving mode so short standing episodes
+cannot reduce standing's share of rollout frames. When
+`standing_transitions_enabled` is true, periodic command resampling independently
+reassigns the exact standing cohort, exposing both standing-to-walking and
+walking-to-standing transitions. Training telemetry reports mode-specific mean
+reward, completed-episode return and length, and completed-episode count under
+the `command/standing_*`, `command/moving_*`, and
+`episode/{standing,moving}_*` names.
 
 The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
 The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
@@ -473,7 +476,7 @@ profiles raise these values for their larger batches and contact workloads.
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment forward/backward gait acquisition with one sagittal command per episode, no random pushes, slope/model/reset randomization, observation noise and latency, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
+| `locomotion` | 2,048-environment forward/backward gait acquisition with sagittal commands resampled every 5 seconds, explicit standing/walking transitions, no random pushes, slope/model/reset randomization, observation noise and latency, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 

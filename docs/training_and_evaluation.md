@@ -32,16 +32,16 @@ public command.
 
 The physical profile is a 55.068 kg sphere-hand robot with 13 policy joints and 12
 held arm joints. Commands contain `+X` lateral/right, `+Y` forward, and `+Z`
-yaw velocity. Ten percent of batched environments form a fixed exact-zero
-standing cohort; moving samples are conditioned outside the shared standing
-deadbands. Cohort membership survives resets and command resampling so failed
-standing episodes cannot starve standing frames out of later rollouts.
+yaw velocity. Ten percent of batched environments form an exact-zero standing
+cohort; moving samples are conditioned outside the shared standing deadbands.
+Failure resets preserve command mode so failed standing episodes cannot starve
+standing frames out of later rollouts. Periodic resampling reassigns the cohort
+to train transitions in both directions between standing and walking.
 
 The maintained gait-acquisition profile samples forward or backward commands
-with magnitudes from `0.2` to `1.0 m/s`, holds one direction for the full
-20-second episode, and disables random base-velocity pushes. Lateral, yaw,
-within-episode direction-change, and walking/standing-transition curricula are
-introduced only after a stepping gait has been learned.
+with magnitudes from `0.2` to `1.0 m/s`, resamples every 5 seconds, and disables
+random base-velocity pushes. Resampling can switch between forward, backward,
+and standing commands. Lateral and yaw curricula remain disabled.
 
 Moving commands activate a fixed 0.9 Hz per-leg gait clock, producing 1.8
 alternating footfalls per second. The legs are offset by half a cycle and use a

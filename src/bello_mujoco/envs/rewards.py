@@ -24,6 +24,7 @@ class CommandConfig:
     minimum_moving_linear_speed: float = 0.20
     minimum_moving_yaw_speed: float = 0.20
     resample_seconds: float = 10.0
+    standing_transitions_enabled: bool = False
 
     def __post_init__(self) -> None:
         validate_range("lin_vel_x", self.lin_vel_x)
