@@ -161,7 +161,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.reward_config.tracking.lin_vel_xy_moving_std == pytest.approx(0.3)
     assert hardware.reward_config.tracking.ang_vel_z_moving_std == pytest.approx(0.25)
     assert hardware.command_config.lin_vel_x == (0.0, 0.0)
-    assert hardware.command_config.lin_vel_y == (0.2, 1.0)
+    assert hardware.command_config.lin_vel_y == (-1.0, 1.0)
     assert hardware.command_config.ang_vel_yaw == (0.0, 0.0)
     assert hardware.command_config.resample_seconds == pytest.approx(20.0)
     assert not hardware.env_config.random_push.enabled

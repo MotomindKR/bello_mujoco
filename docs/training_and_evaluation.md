@@ -37,11 +37,11 @@ standing cohort; moving samples are conditioned outside the shared standing
 deadbands. Cohort membership survives resets and command resampling so failed
 standing episodes cannot starve standing frames out of later rollouts.
 
-The maintained gait-acquisition profile samples only forward commands from
-`0.2` to `1.0 m/s`, holds one command for the full 20-second episode, and
-disables random base-velocity pushes. Lateral, yaw, direction-change, and
-walking/standing-transition curricula are introduced only after a stepping gait
-has been learned.
+The maintained gait-acquisition profile samples forward or backward commands
+with magnitudes from `0.2` to `1.0 m/s`, holds one direction for the full
+20-second episode, and disables random base-velocity pushes. Lateral, yaw,
+within-episode direction-change, and walking/standing-transition curricula are
+introduced only after a stepping gait has been learned.
 
 Moving commands activate a fixed 0.9 Hz per-leg gait clock, producing 1.8
 alternating footfalls per second. The legs are offset by half a cycle and use a
