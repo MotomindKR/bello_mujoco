@@ -168,7 +168,12 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip
 
-python3 -m pip install --break-system-packages --disable-pip-version-check uv==0.11.25
+python3 -m pip install \
+  --break-system-packages \
+  --disable-pip-version-check \
+  --retries 10 \
+  --timeout 300 \
+  uv==0.11.25
 command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
 
 askpass="$(mktemp /tmp/bello-git-askpass.XXXXXX)"
@@ -202,6 +207,7 @@ fi
 
 export UV_CACHE_DIR="$PWD/.uv-cache"
 export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+export UV_HTTP_TIMEOUT=300
 export WARP_CACHE_PATH="$PWD/.warp-cache"
 export MUJOCO_GL=egl
 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"

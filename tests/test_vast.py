@@ -725,6 +725,9 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     )
 
     assert shlex.split(command)[-1] == "motion-test"
+    assert "--retries 10" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "--timeout 300" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "export UV_HTTP_TIMEOUT=300" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
     assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
