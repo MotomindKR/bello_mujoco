@@ -153,6 +153,9 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert locomotion.checkpoint_config.every_updates == 512
     assert hardware.checkpoint_config.every_updates == 512
     assert hardware.config.total_timesteps == 8_000_000_000
+    assert hardware.config.learning_rate == pytest.approx(1.0e-4)
+    assert hardware.config.min_learning_rate == pytest.approx(3.0e-5)
+    assert hardware.config.adaptive_kl_statistic == "mean"
     assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
     assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-4.0)
     assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
