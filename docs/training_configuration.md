@@ -71,6 +71,23 @@ The effective update count is
 `total_timesteps // (num_envs * num_steps)`. Extra transitions below one full
 rollout batch are not sampled.
 
+### PPO update diagnostics
+
+`train/policy_clip_fraction` reports the fraction of policy-training samples
+whose probability ratio is outside `[1 - clip_eps, 1 + clip_eps]`. This is the
+standard PPO `clipfrac`; it is distinct from `train/action_clip_fraction`, which
+reports actions changed by the environment's physical action clamp.
+
+There is no universal target because the useful range depends on batch size,
+minibatch count, update epochs, and the policy distribution. As a practical
+diagnostic, a sustained value around 0.05-0.20 usually indicates meaningful but
+controlled updates. Values below 0.05 are conservative only when KL is also low
+and returns have stalled. Sustained values around 0.20-0.30 deserve attention,
+and values above 0.30 usually mean that too much of the batch lies outside the
+PPO trust region. Interpret isolated early-training spikes with
+`train/mean_approx_kl`, `train/max_approx_kl`, `train/ppo_update_fraction`, and
+episode returns rather than treating clip fraction as a standalone target.
+
 ### Policy: `config.policy`
 
 | Field | Base default | Meaning |
