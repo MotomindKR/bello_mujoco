@@ -209,6 +209,31 @@ def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> N
     assert tiny_command["reward/track_ang_vel_z"] == pytest.approx(0.02)
 
 
+def test_standing_tracking_requires_double_support() -> None:
+    config = reward_config(track_lin_vel_xy=2.0, track_ang_vel_z=2.0)
+    inputs = reward_inputs(command=jnp.zeros(3))
+
+    _, supported = compute_locomotion_reward(config, inputs)
+    _, single_support = compute_locomotion_reward(
+        config,
+        inputs.replace(foot_contact=jnp.asarray([1.0, 0.0])),
+    )
+    _, moving = compute_locomotion_reward(
+        config,
+        inputs.replace(
+            command=jnp.asarray([0.5, 0.0, 0.0]),
+            foot_contact=jnp.asarray([1.0, 0.0]),
+        ),
+    )
+
+    assert supported["reward/track_lin_vel_xy"] == pytest.approx(0.04)
+    assert supported["reward/track_ang_vel_z"] == pytest.approx(0.04)
+    assert single_support["reward/track_lin_vel_xy"] == pytest.approx(0.0)
+    assert single_support["reward/track_ang_vel_z"] == pytest.approx(0.0)
+    assert moving["reward/track_lin_vel_xy"] > 0.0
+    assert moving["reward/track_ang_vel_z"] > 0.0
+
+
 def test_joint_limit_penalty_increases_with_distance_past_soft_limit() -> None:
     config = reward_config(
         joint_limit=-1.0,
@@ -538,7 +563,7 @@ def test_stand_still_rewards_healthy_quiet_double_support() -> None:
 
     assert quiet["reward/stand_still"] == pytest.approx(0.02)
     assert quiet_reward > 0.0
-    assert one_foot["reward/stand_still"] == pytest.approx(0.01)
+    assert one_foot["reward/stand_still"] == pytest.approx(0.0)
     assert 0.0 < moving_feet["reward/stand_still"] < 0.02
     assert moving_command["reward/stand_still"] == pytest.approx(0.0)
     assert terminal["reward/stand_still"] == pytest.approx(0.0)

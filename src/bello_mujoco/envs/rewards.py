@@ -389,6 +389,8 @@ def compute_locomotion_reward(
     if command_config is None:
         command_config = CommandConfig()
 
+    standing_command = command_is_standing(inputs.command, command_config)
+    standing_double_support = standing_command & jnp.all(inputs.foot_contact)
     linear_still = jnp.abs(inputs.command[:2]) < command_config.linear_deadband
     linear_target = jnp.where(linear_still, 0.0, inputs.command[:2])
     linear_std = jnp.where(
@@ -407,6 +409,9 @@ def compute_locomotion_reward(
     yaw_vel_error = ((inputs.yaw_vel_z - yaw_target) / yaw_std) ** 2
     track_lin_vel_xy = jnp.exp(-lin_vel_error)
     track_ang_vel_z = jnp.exp(-yaw_vel_error)
+    tracking_supported = ~standing_command | standing_double_support
+    track_lin_vel_xy = jnp.where(tracking_supported, track_lin_vel_xy, 0.0)
+    track_ang_vel_z = jnp.where(tracking_supported, track_ang_vel_z, 0.0)
     lin_vel_z = inputs.lin_vel_z**2
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
@@ -462,7 +467,6 @@ def compute_locomotion_reward(
         * (jnp.tanh(touchdown_force_excess**2) + jnp.tanh(touchdown_speed_ratio**2))
     )
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
-    standing_command = command_is_standing(inputs.command, command_config)
     foot_linear_speed_sq = jnp.sum(inputs.foot_linear_velocity**2, axis=1)
     stand_foot_linear_motion = jnp.tanh(
         foot_linear_speed_sq / config.standing.foot_linear_speed_scale**2
@@ -479,7 +483,6 @@ def compute_locomotion_reward(
         jnp.abs(inputs.foot_heading_error) - config.standing.foot_heading_deadband,
         0.0,
     )
-    standing_double_support = standing_command & jnp.all(inputs.foot_contact)
     stand_foot_heading = jnp.where(
         standing_double_support & ~inputs.done,
         jnp.mean(foot_heading_excess**2),
@@ -498,8 +501,8 @@ def compute_locomotion_reward(
         1.0,
     )
     stand_still = jnp.where(
-        standing_command & ~inputs.done,
-        support_fraction * standing_stillness,
+        standing_double_support & ~inputs.done,
+        standing_stillness,
         0.0,
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))

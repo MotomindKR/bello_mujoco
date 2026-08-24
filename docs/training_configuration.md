@@ -290,8 +290,8 @@ computation where possible.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
-| `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. |
-| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. |
+| `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. At a standing command it is awarded only in double support. |
+| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. At a standing command it is awarded only in double support. |
 | `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
