@@ -6,13 +6,35 @@ endpoint: http://127.0.0.1:50051
 remote_endpoint: null
 remote_staleness_ms: 200
 motion_path: null
+end_effector_payload_mass_kg: null
 duration_seconds: null
 ramp_seconds: null
+gain_scale: 1.0
+max_linear_acceleration: null
 policy_transition_seconds: null
 max_motion_tilt_radians: null
+action_lpf_cutoff_hz: null
 status_interval_seconds: null
 policy_log_path: null
 arm: false
+fastsam_endpoint: 127.0.0.1:50055
+fastsam_tls_root_certificate_path: null
+fastsam_tls_server_name_override: null
+fastsam_connect_timeout_seconds: 5.0
+fastsam_rpc_timeout_seconds: 2.0
+fastsam_reference_ready_timeout_seconds: 15.0
+fastsam_reference_qualification_frames: 5
+fastsam_min_tracking_confidence: 0.5
+fastsam_min_joint_confidence: 0.25
+fastsam_max_pipeline_latency_ms: 120.0
+fastsam_transport_latency_budget_ms: 10.0
+fastsam_camera_to_world_quaternion_xyzw: [0.5, -0.5, 0.5, -0.5]
+fastsam_align_initial_heading: true
+fastsam_align_initial_floor: true
+smplx_neutral_model_path: null
+smplx_human_height_m: 1.66
+left_elbow_yaw_offset_radians: 0.0
+right_elbow_yaw_offset_radians: 0.0
 hydra:
   job:
     chdir: false

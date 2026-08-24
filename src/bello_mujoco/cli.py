@@ -40,12 +40,15 @@ class TrainCommandConfig:
     seed: int | None
     total_timesteps: int | None
     num_envs: int | None
+    learning_rate: float | None
     contact_budget_per_env: int | None
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
     sonic_artifact_path: Path | None
+    end_effector_payload_mass_kg: float | None
     resume_path: Path | None
+    warm_start_path: Path | None
     allow_git_commit_mismatch: bool
     checkpoint_directory: Path | None
     checkpoint_name: str | None
@@ -63,6 +66,7 @@ class EvalCommandConfig:
     checkpoint_path: Path | None
     sonic_artifact_path: Path | None
     allow_git_commit_mismatch: bool
+    end_effector_payload_mass_kg: float | None
     output_path: Path
     video_path: Path | None
     command: tuple[float, float, float]
@@ -161,14 +165,18 @@ class VastTrainCommandConfig:
     teacher_checkpoint_path: Path | None
     sonic_artifact_path: Path | None
     resume_path: Path | None
+    warm_start_checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
     total_timesteps: int | None
     num_envs: int | None
     checkpoint_every_updates: int | None
+    learning_rate: float | None
+    end_effector_payload_mass_kg: float | None
     max_price: float | None
     branch: str | None
     run_name: str | None
     duration_hours: float
+    ssh_timeout_seconds: int
     skip_confirmation: bool
     dry_run: bool
     preferred_countries: list[str]
@@ -180,11 +188,12 @@ class VastTrainCommandConfig:
 class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...]
     command_latency_seconds: float
+    end_effector_payload_mass_kg: float
 
 
 @dataclass(frozen=True)
 class HardwareCommandConfig:
-    task: Literal["locomotion", "motion"]
+    task: Literal["locomotion", "motion", "twist2"]
     checkpoint_path: Path | None
     standing_checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
@@ -192,13 +201,35 @@ class HardwareCommandConfig:
     remote_endpoint: str | None
     remote_staleness_ms: int
     motion_path: Path | None
+    end_effector_payload_mass_kg: float | None
     duration_seconds: float | None
     ramp_seconds: float | None
+    gain_scale: float
+    max_linear_acceleration: float | None
     policy_transition_seconds: float | None
     max_motion_tilt_radians: float | None
+    action_lpf_cutoff_hz: float | None
     status_interval_seconds: float | None
     policy_log_path: Path | None
     arm: bool
+    fastsam_endpoint: str
+    fastsam_tls_root_certificate_path: Path | None
+    fastsam_tls_server_name_override: str | None
+    fastsam_connect_timeout_seconds: float
+    fastsam_rpc_timeout_seconds: float
+    fastsam_reference_ready_timeout_seconds: float
+    fastsam_reference_qualification_frames: int
+    fastsam_min_tracking_confidence: float
+    fastsam_min_joint_confidence: float
+    fastsam_max_pipeline_latency_ms: float
+    fastsam_transport_latency_budget_ms: float
+    fastsam_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
+    fastsam_align_initial_heading: bool
+    fastsam_align_initial_floor: bool
+    smplx_neutral_model_path: Path | None
+    smplx_human_height_m: float
+    left_elbow_yaw_offset_radians: float
+    right_elbow_yaw_offset_radians: float
 
 
 def prepare_assets_entrypoint() -> None:
@@ -259,7 +290,13 @@ def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
     if command.experiment == "sonic":
         _reject_explicit_fields(
-            ("motion_path", "teacher_checkpoint_path", "video_enabled"),
+            (
+                "motion_path",
+                "teacher_checkpoint_path",
+                "video_enabled",
+                "warm_start_path",
+                "end_effector_payload_mass_kg",
+            ),
             context="experiment=sonic",
         )
         from bello_mujoco.training.sonic import run_training as run_sonic_training
@@ -297,6 +334,7 @@ def _train_hydra(config: DictConfig) -> None:
                 "teacher_checkpoint_path",
                 "sonic_artifact_path",
                 "video_enabled",
+                "end_effector_payload_mass_kg",
             ),
             context="experiment=twist2",
         )
@@ -316,7 +354,13 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment in {"twist_teacher", "twist_student"}:
         _reject_explicit_fields(
-            ("motion_path", "sonic_artifact_path", "video_enabled"),
+            (
+                "motion_path",
+                "sonic_artifact_path",
+                "video_enabled",
+                "warm_start_path",
+                "end_effector_payload_mass_kg",
+            ),
             context=f"experiment={command.experiment}",
         )
         stage = command.experiment.removeprefix("twist_")
@@ -345,7 +389,12 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment == "motion":
         _reject_explicit_fields(
-            ("dataset_path", "teacher_checkpoint_path", "sonic_artifact_path"),
+            (
+                "dataset_path",
+                "teacher_checkpoint_path",
+                "sonic_artifact_path",
+                "warm_start_path",
+            ),
             context="experiment=motion",
         )
         from bello_mujoco.training.motion import (
@@ -357,6 +406,13 @@ def _train_hydra(config: DictConfig) -> None:
             run_config,
             config=_ppo_overrides(run_config.config, command),
             warp=_warp_overrides(run_config.warp, command),
+            asset_config=replace(
+                run_config.asset_config,
+                end_effector_payload_mass_kg=_coalesce(
+                    command.end_effector_payload_mass_kg,
+                    run_config.asset_config.end_effector_payload_mass_kg,
+                ),
+            ),
             checkpoint_config=_checkpoint_overrides(
                 run_config.checkpoint_config, command
             ),
@@ -370,14 +426,22 @@ def _train_hydra(config: DictConfig) -> None:
         )
         run_motion_training(run_config)
         return
-    if command.motion_path is not None:
-        raise ValueError("motion_path is only valid for the motion experiment")
+    if (
+        command.motion_path is not None
+        or command.end_effector_payload_mass_kg is not None
+    ):
+        raise ValueError(
+            "motion_path and end_effector_payload_mass_kg are only valid for "
+            "the motion experiment"
+        )
     _reject_explicit_fields(
         (
             "motion_path",
             "dataset_path",
             "teacher_checkpoint_path",
             "sonic_artifact_path",
+            "warm_start_path",
+            "end_effector_payload_mass_kg",
         ),
         context=f"experiment={command.experiment}",
     )
@@ -545,12 +609,18 @@ def _eval_hydra(config: DictConfig) -> None:
             command.output_path.expanduser(),
             steps=command.steps,
             stop_on_terminal=command.stop_on_done,
+            end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
     _reject_explicit_fields(
-        ("output_path", "video_path", "sonic_artifact_path"),
+        (
+            "output_path",
+            "video_path",
+            "sonic_artifact_path",
+            "end_effector_payload_mass_kg",
+        ),
         context="task=locomotion",
     )
     if command.gamepad_enabled:
@@ -979,6 +1049,7 @@ def vast_train_entrypoint() -> None:
             "teacher_checkpoint_path=",
             "sonic_artifact_path=",
             "resume_path=",
+            "warm_start_checkpoint_path=",
         )
     )
     _vast_train_hydra()
@@ -1000,10 +1071,16 @@ def _vast_train_hydra(config: DictConfig) -> None:
                 "training"
             )
     else:
-        if command.motion_path is not None:
-            raise ValueError("motion_path is only valid for the motion experiment")
+        if (
+            command.motion_path is not None
+            or command.end_effector_payload_mass_kg is not None
+        ):
+            raise ValueError(
+                "motion_path and end_effector_payload_mass_kg are only valid for "
+                "the motion experiment"
+            )
         _reject_explicit_fields(
-            ("motion_path",),
+            ("motion_path", "end_effector_payload_mass_kg"),
             context=f"experiment={command.experiment}",
         )
     if command.experiment in {"twist_teacher", "twist_student", "twist2", "sonic"}:
@@ -1046,11 +1123,20 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("sonic_artifact_path", "resume_path"),
             context=f"experiment={command.experiment}",
         )
-        if command.experiment != "twist_student":
-            _reject_explicit_fields(
-                ("allow_git_commit_mismatch",),
-                context=f"experiment={command.experiment}",
+    if command.experiment != "twist2":
+        if command.warm_start_checkpoint_path is not None:
+            raise ValueError(
+                "warm_start_checkpoint_path is only valid for experiment=twist2"
             )
+        _reject_explicit_fields(
+            ("warm_start_checkpoint_path",),
+            context=f"experiment={command.experiment}",
+        )
+    if command.experiment not in {"twist_student", "twist2", "sonic"}:
+        _reject_explicit_fields(
+            ("allow_git_commit_mismatch",),
+            context=f"experiment={command.experiment}",
+        )
     from bello_mujoco.assets_pipeline import repo_root
     from bello_mujoco.training.vast import (
         VastTrainConfig,
@@ -1066,10 +1152,13 @@ def _vast_train_hydra(config: DictConfig) -> None:
         teacher_checkpoint_path=command.teacher_checkpoint_path,
         sonic_artifact_path=command.sonic_artifact_path,
         resume_path=command.resume_path,
+        warm_start_checkpoint_path=command.warm_start_checkpoint_path,
         allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         total_timesteps=command.total_timesteps,
         num_envs=command.num_envs,
         checkpoint_every_updates=command.checkpoint_every_updates,
+        learning_rate=command.learning_rate,
+        end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
         max_price=command.max_price,
         branch=command.branch,
         run_name=command.run_name,
@@ -1078,6 +1167,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
         preferred_countries=tuple(command.preferred_countries),
         min_upload_mib_per_second=command.min_upload_mib_per_second,
         route_probe_mib=command.route_probe_mib,
+        ssh_timeout_seconds=command.ssh_timeout_seconds,
         job_timeout_seconds=round(command.duration_hours * 3600),
         progress_timeout_seconds=min(
             1800, max(60, round(command.duration_hours * 3600))
@@ -1111,6 +1201,10 @@ def _emulator_hydra(config: DictConfig) -> None:
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
             command_latency_seconds=command.command_latency_seconds,
+            asset_config=replace(
+                emulator.default_emulator_asset_config(),
+                end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
+            ),
         )
     )
 
@@ -1124,6 +1218,8 @@ def hardware_entrypoint() -> None:
             "standing_checkpoint_path=",
             "motion_path=",
             "policy_log_path=",
+            "fastsam_tls_root_certificate_path=",
+            "smplx_neutral_model_path=",
         )
     )
     _hardware_hydra()
@@ -1138,9 +1234,125 @@ def _hardware_hydra(config: DictConfig) -> None:
     command = command_config(HardwareCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     policy_log_path = _hardware_policy_log_path(command.policy_log_path)
+    fastsam_fields = (
+        "fastsam_endpoint",
+        "fastsam_tls_root_certificate_path",
+        "fastsam_tls_server_name_override",
+        "fastsam_connect_timeout_seconds",
+        "fastsam_rpc_timeout_seconds",
+        "fastsam_reference_ready_timeout_seconds",
+        "fastsam_reference_qualification_frames",
+        "fastsam_min_tracking_confidence",
+        "fastsam_min_joint_confidence",
+        "fastsam_max_pipeline_latency_ms",
+        "fastsam_transport_latency_budget_ms",
+        "fastsam_camera_to_world_quaternion_xyzw",
+        "fastsam_align_initial_heading",
+        "fastsam_align_initial_floor",
+        "smplx_neutral_model_path",
+        "smplx_human_height_m",
+    )
+    locomotion_upper_body_fields = (
+        "left_elbow_yaw_offset_radians",
+        "right_elbow_yaw_offset_radians",
+    )
+    if command.task == "twist2":
+        _reject_explicit_fields(
+            (
+                "remote_endpoint",
+                "remote_staleness_ms",
+                "motion_path",
+                "standing_checkpoint_path",
+                *locomotion_upper_body_fields,
+            ),
+            context="task=twist2",
+        )
+        if (
+            command.motion_path is not None
+            or command.standing_checkpoint_path is not None
+        ):
+            raise ValueError(
+                "motion_path and standing_checkpoint_path are not valid for task=twist2"
+            )
+        from bello_mujoco.hardware.twist2 import (
+            HardwareTwist2Config,
+            run_hardware_twist2,
+        )
+
+        base = HardwareTwist2Config()
+        run_hardware_twist2(
+            checkpoint,
+            replace(
+                base,
+                endpoint=command.endpoint,
+                max_duration_seconds=command.duration_seconds,
+                ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
+                gain_scale=command.gain_scale,
+                max_linear_acceleration=_coalesce(
+                    command.max_linear_acceleration,
+                    base.max_linear_acceleration,
+                ),
+                policy_transition_seconds=_coalesce(
+                    command.policy_transition_seconds,
+                    base.policy_transition_seconds,
+                ),
+                max_motion_tilt_radians=_coalesce(
+                    command.max_motion_tilt_radians,
+                    base.max_motion_tilt_radians,
+                ),
+                status_interval_seconds=command.status_interval_seconds,
+                policy_log_path=policy_log_path,
+                arm=command.arm,
+                allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+                fastsam_endpoint=command.fastsam_endpoint,
+                fastsam_tls_root_certificate_path=(
+                    command.fastsam_tls_root_certificate_path
+                ),
+                fastsam_tls_server_name_override=(
+                    command.fastsam_tls_server_name_override
+                ),
+                fastsam_connect_timeout_seconds=(
+                    command.fastsam_connect_timeout_seconds
+                ),
+                fastsam_rpc_timeout_seconds=command.fastsam_rpc_timeout_seconds,
+                fastsam_reference_ready_timeout_seconds=(
+                    command.fastsam_reference_ready_timeout_seconds
+                ),
+                fastsam_reference_qualification_frames=(
+                    command.fastsam_reference_qualification_frames
+                ),
+                fastsam_min_tracking_confidence=(
+                    command.fastsam_min_tracking_confidence
+                ),
+                fastsam_min_joint_confidence=command.fastsam_min_joint_confidence,
+                fastsam_max_pipeline_latency_ms=(
+                    command.fastsam_max_pipeline_latency_ms
+                ),
+                fastsam_transport_latency_budget_ms=(
+                    command.fastsam_transport_latency_budget_ms
+                ),
+                fastsam_camera_to_world_quaternion_xyzw=(
+                    command.fastsam_camera_to_world_quaternion_xyzw
+                ),
+                fastsam_align_initial_heading=command.fastsam_align_initial_heading,
+                fastsam_align_initial_floor=command.fastsam_align_initial_floor,
+                smplx_neutral_model_path=_required_path(
+                    command.smplx_neutral_model_path,
+                    "smplx_neutral_model_path",
+                ),
+                smplx_human_height_m=command.smplx_human_height_m,
+            ),
+        )
+        return
     if command.task == "motion":
         _reject_explicit_fields(
-            ("remote_endpoint", "remote_staleness_ms"), context="task=motion"
+            (
+                "remote_endpoint",
+                "remote_staleness_ms",
+                *fastsam_fields,
+                *locomotion_upper_body_fields,
+            ),
+            context="task=motion",
         )
         standing_checkpoint = _required_path(
             command.standing_checkpoint_path,
@@ -1159,8 +1371,14 @@ def _hardware_hydra(config: DictConfig) -> None:
                 base,
                 endpoint=command.endpoint,
                 motion_path=command.motion_path,
+                end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
                 max_duration_seconds=command.duration_seconds,
                 ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
+                gain_scale=command.gain_scale,
+                max_linear_acceleration=_coalesce(
+                    command.max_linear_acceleration,
+                    base.max_linear_acceleration,
+                ),
                 policy_transition_seconds=_coalesce(
                     command.policy_transition_seconds,
                     base.policy_transition_seconds,
@@ -1169,6 +1387,10 @@ def _hardware_hydra(config: DictConfig) -> None:
                     command.max_motion_tilt_radians,
                     base.max_motion_tilt_radians,
                 ),
+                action_lpf_cutoff_hz=_coalesce(
+                    command.action_lpf_cutoff_hz,
+                    base.action_lpf_cutoff_hz,
+                ),
                 status_interval_seconds=command.status_interval_seconds,
                 policy_log_path=policy_log_path,
                 arm=command.arm,
@@ -1176,16 +1398,23 @@ def _hardware_hydra(config: DictConfig) -> None:
             ),
         )
         return
-    if command.motion_path is not None or command.standing_checkpoint_path is not None:
+    if (
+        command.motion_path is not None
+        or command.standing_checkpoint_path is not None
+        or command.end_effector_payload_mass_kg is not None
+    ):
         raise ValueError(
-            "motion_path and standing_checkpoint_path are only valid for task=motion"
+            "motion_path, standing_checkpoint_path, and "
+            "end_effector_payload_mass_kg are only valid for task=motion"
         )
     _reject_explicit_fields(
         (
             "motion_path",
             "standing_checkpoint_path",
+            "end_effector_payload_mass_kg",
             "policy_transition_seconds",
             "max_motion_tilt_radians",
+            "action_lpf_cutoff_hz",
         ),
         context="task=locomotion",
     )
@@ -1209,10 +1438,49 @@ def _hardware_hydra(config: DictConfig) -> None:
             ),
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
+            gain_scale=command.gain_scale,
+            max_linear_acceleration=_coalesce(
+                command.max_linear_acceleration,
+                base.max_linear_acceleration,
+            ),
             status_interval_seconds=command.status_interval_seconds,
             policy_log_path=policy_log_path,
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+            fastsam_endpoint=command.fastsam_endpoint,
+            fastsam_tls_root_certificate_path=(
+                command.fastsam_tls_root_certificate_path
+            ),
+            fastsam_tls_server_name_override=(command.fastsam_tls_server_name_override),
+            fastsam_connect_timeout_seconds=(command.fastsam_connect_timeout_seconds),
+            fastsam_rpc_timeout_seconds=command.fastsam_rpc_timeout_seconds,
+            fastsam_reference_ready_timeout_seconds=(
+                command.fastsam_reference_ready_timeout_seconds
+            ),
+            fastsam_reference_qualification_frames=(
+                command.fastsam_reference_qualification_frames
+            ),
+            fastsam_min_tracking_confidence=(command.fastsam_min_tracking_confidence),
+            fastsam_min_joint_confidence=command.fastsam_min_joint_confidence,
+            fastsam_max_pipeline_latency_ms=(command.fastsam_max_pipeline_latency_ms),
+            fastsam_transport_latency_budget_ms=(
+                command.fastsam_transport_latency_budget_ms
+            ),
+            fastsam_camera_to_world_quaternion_xyzw=(
+                command.fastsam_camera_to_world_quaternion_xyzw
+            ),
+            fastsam_align_initial_heading=command.fastsam_align_initial_heading,
+            fastsam_align_initial_floor=command.fastsam_align_initial_floor,
+            smplx_neutral_model_path=_required_path(
+                command.smplx_neutral_model_path,
+                "smplx_neutral_model_path",
+            ),
+            smplx_human_height_m=command.smplx_human_height_m,
+            upper_body_follow=replace(
+                base.upper_body_follow,
+                left_elbow_yaw_offset_radians=(command.left_elbow_yaw_offset_radians),
+                right_elbow_yaw_offset_radians=(command.right_elbow_yaw_offset_radians),
+            ),
         ),
     )
 
@@ -1227,7 +1495,7 @@ def _hardware_policy_log_path(configured: Path | None) -> Path:
 
 def _ppo_overrides(config, command: TrainCommandConfig):
     values = {}
-    for name in ("seed", "total_timesteps", "num_envs"):
+    for name in ("seed", "total_timesteps", "num_envs", "learning_rate"):
         value = getattr(command, name)
         if value is not None:
             values[name] = value
@@ -1242,6 +1510,8 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
         values["enabled"] = command.checkpoint_enabled
     if command.resume_path is not None:
         values["resume_path"] = command.resume_path.expanduser()
+    if command.warm_start_path is not None:
+        values["warm_start_path"] = command.warm_start_path.expanduser()
     if command.checkpoint_directory is not None:
         values["directory"] = command.checkpoint_directory.expanduser()
     if command.checkpoint_name is not None:

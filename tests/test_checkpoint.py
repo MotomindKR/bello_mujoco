@@ -110,13 +110,16 @@ class FakeEnv:
                 "position": jnp.zeros((batch_size, 3), dtype=jnp.float32),
             },
             last_action=jnp.zeros((batch_size, self.action_size), dtype=jnp.float32),
+            last_action_delta=jnp.zeros(
+                (batch_size, self.action_size), dtype=jnp.float32
+            ),
+            tracking_ang_vel_z=zeros,
             actor_feedback_history=jnp.zeros((batch_size, 1, 0), dtype=jnp.float32),
             actor_feedback_delay_steps=jnp.zeros((batch_size,), dtype=jnp.int32),
-            foot_air_time=foot_zeros,
-            foot_contact_time=foot_zeros,
             foot_contact_debounce_time=foot_zeros,
             last_foot_contact=jnp.zeros((batch_size, 2), dtype=bool),
             command=jnp.zeros((batch_size, 3), dtype=jnp.float32),
+            gait_phase=zeros,
             step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
             episode_return=zeros,
             episode_track_lin_vel_xy=zeros,
@@ -540,6 +543,50 @@ def test_motion_checkpoint_without_observation_latency_loads_as_disabled(
     assert restored.motion_env.observation_latency.delay_steps == (0, 0)
 
 
+def test_motion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    motion_env = FakeMotionEnv()
+    state = runner_state(config, motion_env)
+    motion_path = tmp_path / "motion.npz"
+    motion_path.write_bytes(b"motion checkpoint fixture")
+    checkpoint_metadata = motion_metadata(
+        config,
+        motion_path,
+        synthetic_motion_clip(),
+        state,
+    )
+    path = tmp_path / "legacy_motion_ppo_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for name in (
+        "adam_epsilon",
+        "value_loss_scale",
+        "normalize_critic_observations",
+        "observation_norm_update_mode",
+        "observation_norm_update_updates",
+        "observation_norm_epsilon_mode",
+    ):
+        document["metadata"]["ppo"].pop(name)
+    document["metadata"]["ppo"]["policy"].pop("architecture")
+    document["metadata"]["ppo"]["policy"].pop("layer_norm_final_hidden")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert restored.ppo.adam_epsilon == pytest.approx(1.0e-5)
+    assert restored.ppo.value_loss_scale == pytest.approx(0.5)
+    assert restored.ppo.normalize_critic_observations
+    assert restored.ppo.observation_norm_update_mode == "online"
+    assert restored.ppo.observation_norm_update_updates is None
+    assert restored.ppo.observation_norm_epsilon_mode == "variance_floor"
+    assert restored.ppo.policy.architecture == "mlp"
+    assert not restored.ppo.policy.layer_norm_final_hidden
+
+
 def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(
     tmp_path: Path,
 ) -> None:
@@ -559,6 +606,174 @@ def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(
 
     assert not restored.env.observation_latency.enabled
     assert restored.env.observation_latency.delay_steps == (0, 0)
+
+
+def test_locomotion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_ppo_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for name in (
+        "adam_epsilon",
+        "value_loss_scale",
+        "normalize_critic_observations",
+        "observation_norm_update_mode",
+        "observation_norm_update_updates",
+        "observation_norm_epsilon_mode",
+        "symmetry_loss_coef",
+    ):
+        document["metadata"]["ppo"].pop(name)
+    document["metadata"]["ppo"]["policy"].pop("architecture")
+    document["metadata"]["ppo"]["policy"].pop("layer_norm_final_hidden")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert restored.ppo.adam_epsilon == pytest.approx(1.0e-5)
+    assert restored.ppo.value_loss_scale == pytest.approx(0.5)
+    assert restored.ppo.normalize_critic_observations
+    assert restored.ppo.observation_norm_update_mode == "online"
+    assert restored.ppo.observation_norm_update_updates is None
+    assert restored.ppo.observation_norm_epsilon_mode == "variance_floor"
+    assert restored.ppo.symmetry_loss_coef == 0.0
+    assert restored.ppo.policy.architecture == "mlp"
+    assert not restored.ppo.policy.layer_norm_final_hidden
+
+
+def test_checkpoint_without_symmetry_loss_loads_with_loss_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_checkpoint_without_symmetry_loss"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["ppo"].pop("symmetry_loss_coef")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert restored.ppo.symmetry_loss_coef == 0.0
+
+
+def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_joint_force_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for name in (
+        "action_acceleration",
+        "joint_force_peak",
+        "touchdown_impact",
+        "stand_still",
+        "stand_contact",
+        "stand_foot_heading",
+    ):
+        document["metadata"]["reward"]["weights"].pop(name)
+    document["metadata"]["reward"].pop("smoothness")
+    document["metadata"]["reward"]["tracking"].pop("ang_vel_z_lpf_cutoff_hz")
+    document["metadata"]["reward"]["standing"].pop("foot_heading_deadband")
+    document["metadata"]["reward"]["standing"].pop("foot_heading_scale")
+    for name in (
+        "joint_force_soft_limit_body_weights",
+        "joint_force_top_k",
+        "joint_force_apply_while_standing",
+        "touchdown_force_soft_limit_body_weights",
+        "touchdown_vertical_speed_scale",
+    ):
+        document["metadata"]["reward"]["gait"].pop(name)
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert restored.reward.weights.action_acceleration == 0.0
+    assert restored.reward.weights.joint_force_peak == 0.0
+    assert restored.reward.weights.touchdown_impact == 0.0
+    assert restored.reward.weights.stand_still == 0.0
+    assert restored.reward.weights.stand_contact == 0.0
+    assert restored.reward.weights.stand_foot_heading == 0.0
+    assert restored.reward.gait.joint_force_soft_limit_body_weights == 1.0
+    assert restored.reward.gait.joint_force_top_k == 12
+    assert not restored.reward.gait.joint_force_apply_while_standing
+    assert restored.reward.smoothness.ankle_action_weight == 1.0
+    assert restored.reward.smoothness.waist_action_weight == 1.0
+    assert restored.reward.tracking.ang_vel_z_lpf_cutoff_hz == pytest.approx(5.0)
+    assert restored.reward.standing.foot_heading_deadband == pytest.approx(
+        np.deg2rad(5.0)
+    )
+    assert restored.reward.standing.foot_heading_scale == pytest.approx(
+        np.deg2rad(15.0)
+    )
+
+
+def test_locomotion_checkpoint_without_new_randomization_fields_loads_as_noops(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_randomization_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    randomization = document["metadata"]["env"]["model_randomization"]
+    for name in (
+        "added_base_mass_range",
+        "base_com_offset_range",
+        "friction_range",
+        "actuator_strength_range",
+        "gravity_fraction_range",
+    ):
+        randomization.pop(name)
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    randomization_config = restored.env.model_randomization
+    assert randomization_config.added_base_mass_range == (0.0, 0.0)
+    assert randomization_config.base_com_offset_range == (0.0, 0.0)
+    assert randomization_config.friction_range == (1.0, 1.0)
+    assert randomization_config.actuator_strength_range == (1.0, 1.0)
+    assert randomization_config.gravity_fraction_range == (0.0, 0.0)
+
+
+def test_locomotion_checkpoint_without_gait_phase_contract_is_rejected(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_without_gait_phase"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["env"].pop("gait")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="predates the gait-phase observation"):
+        restore_evaluation_checkpoint(path)
 
 
 def test_motion_contract_allows_relocation_and_rejects_content_or_schema_tampering(
@@ -658,6 +873,19 @@ def test_checkpoint_config_and_timestamped_name() -> None:
         validate_checkpoint_options(CheckpointConfig(name="../run"))
     with pytest.raises(ValueError, match="requires resume_path"):
         validate_checkpoint_options(CheckpointConfig(allow_git_commit_mismatch=True))
+    validate_checkpoint_options(
+        CheckpointConfig(
+            warm_start_path=Path("previous/final"),
+            allow_git_commit_mismatch=True,
+        )
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        validate_checkpoint_options(
+            CheckpointConfig(
+                resume_path=Path("previous/update_000025"),
+                warm_start_path=Path("previous/final"),
+            )
+        )
 
 
 def test_checkpoint_metadata_upgrade_adds_optional_critic_learning_rate() -> None:
@@ -668,6 +896,7 @@ def test_checkpoint_metadata_upgrade_adds_optional_critic_learning_rate() -> Non
     assert upgraded["ppo"] == {
         "learning_rate": 3.0e-4,
         "critic_learning_rate": None,
+        "symmetry_loss_coef": 0.0,
     }
     assert "critic_learning_rate" not in legacy["ppo"]
 
@@ -855,6 +1084,73 @@ def test_metadata_rejects_unknown_resolved_config_key(tmp_path: Path) -> None:
         load_checkpoint_metadata(path)
 
 
+def test_evaluation_mismatch_override_migrates_retired_sphere_asset_field(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    expected_metadata = metadata(config, tmp_path)
+    document = checkpoint_document(expected_metadata, runner_state(config, FakeEnv()))
+    document["git_commit"] = "2" * 40
+    document["metadata"]["asset"]["end_effector_sphere_mode"] = "both"
+    document["metadata"]["asset"]["joint_availability"].update(
+        waist_roll=False,
+        waist_pitch=False,
+        neck_yaw=False,
+        head_pitch=False,
+    )
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    path = tmp_path / "retired_sphere_asset_field"
+    write_checkpoint_document(path, document)
+
+    with pytest.raises(ValueError, match="source commit does not match"):
+        load_checkpoint_metadata(path)
+
+    restored = load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
+
+    assert restored.asset == AssetPrepConfig()
+    with pytest.raises(ValueError, match=r"unknown config key.*metadata\.asset"):
+        restore_runner_checkpoint(
+            path,
+            FakeEnv(),
+            expected_metadata,
+            allow_git_commit_mismatch=True,
+        )
+
+
+def test_evaluation_mismatch_override_validates_retired_sphere_asset_field(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    document = checkpoint_document(
+        metadata(config, tmp_path), runner_state(config, FakeEnv())
+    )
+    document["git_commit"] = "2" * 40
+    document["metadata"]["asset"]["end_effector_sphere_mode"] = "left"
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    path = tmp_path / "invalid_retired_sphere_asset_field"
+    write_checkpoint_document(path, document)
+
+    with pytest.raises(ValueError, match="end_effector_sphere_mode must be"):
+        load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
+
+
+def test_evaluation_mismatch_override_rejects_enabled_retired_joint(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    document = checkpoint_document(
+        metadata(config, tmp_path), runner_state(config, FakeEnv())
+    )
+    document["git_commit"] = "2" * 40
+    document["metadata"]["asset"]["joint_availability"]["waist_roll"] = True
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    path = tmp_path / "enabled_retired_joint"
+    write_checkpoint_document(path, document)
+
+    with pytest.raises(ValueError, match="waist_roll must be false"):
+        load_checkpoint_metadata(path, allow_git_commit_mismatch=True)
+
+
 def test_checkpoint_checks_git_commit_before_revision_private_fields(
     tmp_path: Path,
     exact_source_checkout,
@@ -914,7 +1210,7 @@ def test_resume_allows_budget_extension_and_rejects_semantic_changes(
             extended.reward,
             weights=replace(
                 extended.reward.weights,
-                track_lin_vel_xy=2.0,
+                track_lin_vel_xy=3.0,
             ),
         ),
     )

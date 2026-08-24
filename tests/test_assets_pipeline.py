@@ -13,7 +13,6 @@ from bello_mujoco.assets_pipeline.mesh import (
     JointAvailabilityConfig,
     fix_disabled_joints,
     preserve_fixed_link_bodies,
-    replace_end_effectors_with_spheres,
 )
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
@@ -28,44 +27,7 @@ from bello_mujoco.assets_pipeline.prepare import (
     write_prepared_asset_manifest,
 )
 
-
-def test_end_effector_sphere_replacement_prunes_both_subtrees() -> None:
-    root = ET.Element("robot", {"name": "test"})
-    for side in ("r", "l"):
-        for suffix in ("wrist_link", "eef_link", "gripper_link"):
-            ET.SubElement(root, "link", {"name": f"{side}_{suffix}"})
-    for side, name in (("r", "right"), ("l", "left")):
-        revolute = ET.SubElement(
-            root, "joint", {"name": f"{name}_wrist_yaw_joint", "type": "revolute"}
-        )
-        ET.SubElement(revolute, "origin", {"xyz": "0 0 -0.102", "rpy": "0 0 0"})
-        ET.SubElement(revolute, "parent", {"link": f"{side}_wrist_link"})
-        ET.SubElement(revolute, "child", {"link": f"{side}_eef_link"})
-        ET.SubElement(revolute, "axis", {"xyz": "0 0 1"})
-        fixed = ET.SubElement(
-            root, "joint", {"name": f"{name}_gripper_joint", "type": "fixed"}
-        )
-        ET.SubElement(fixed, "parent", {"link": f"{side}_eef_link"})
-        ET.SubElement(fixed, "child", {"link": f"{side}_gripper_link"})
-
-    replace_end_effectors_with_spheres(root, "both")
-
-    for side, name in (("r", "right"), ("l", "left")):
-        links = {link.get("name") for link in root.findall("link")}
-        joints = {joint.get("name") for joint in root.findall("joint")}
-        sphere_joint = root.find(f"./joint[@name='{side}_end_effector_sphere_fixed']")
-        sphere = root.find(f"./link[@name='{side}_end_effector_sphere_link']")
-
-        assert f"{side}_wrist_link" in links
-        assert f"{side}_eef_link" not in links
-        assert f"{side}_gripper_link" not in links
-        assert f"{name}_wrist_yaw_joint" not in joints
-        assert f"{name}_gripper_joint" not in joints
-        assert sphere_joint is not None
-        assert sphere_joint.find("parent").get("link") == f"{side}_wrist_link"
-        assert sphere_joint.find("origin").get("xyz") == "0 0 -0.122"
-        assert sphere is not None
-        assert sphere.find("./collision/geometry/sphere").get("radius") == "0.0325"
+CANONICAL_TOTAL_MASS_KG = 55.0683575411785
 
 
 def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
@@ -93,46 +55,82 @@ def test_prepared_full_body_preserves_pelvis_body(
     assert model.sensor_type[sensor_id] == mujoco.mjtSensor.mjSENS_ACCELEROMETER
 
 
-def test_prepared_both_sphere_mode_removes_wrist_subtrees(tmp_path: Path) -> None:
-    prepared = prepare_asset(
-        AssetPrepConfig(
-            output_root=tmp_path,
-            end_effector_sphere_mode="both",
-        )
-    )
+def test_prepared_asset_has_canonical_fixed_sphere_hands(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_asset(AssetPrepConfig(output_root=tmp_path))
     model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
 
-    assert model.nu == 29
+    assert model.nu == 25
+    assert np.sum(model.body_mass) == pytest.approx(CANONICAL_TOTAL_MASS_KG)
     for side, prefix in (("left", "l"), ("right", "r")):
         assert (
             mujoco.mj_name2id(
                 model,
                 mujoco.mjtObj.mjOBJ_JOINT,
-                f"{side}_wrist_yaw_joint",
+                f"{side}_end_effector_sphere_joint",
             )
             == -1
         )
-        assert (
-            mujoco.mj_name2id(
-                model,
-                mujoco.mjtObj.mjOBJ_BODY,
-                f"{prefix}_end_effector_sphere_link",
-            )
-            >= 0
+        body_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            f"{prefix}_end_effector_sphere_link",
         )
+        assert body_id >= 0
+        assert model.body_mass[body_id] == pytest.approx(0.0)
+
+
+def test_prepared_asset_attaches_equal_payload_mass_to_sphere_hands(
+    tmp_path: Path,
+) -> None:
+    payload_mass = 10.0 * 0.45359237
+    prepared = prepare_asset(
+        AssetPrepConfig(
+            output_root=tmp_path,
+            end_effector_payload_mass_kg=payload_mass,
+        )
+    )
+    model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
+
+    assert np.sum(model.body_mass) == pytest.approx(
+        CANONICAL_TOTAL_MASS_KG + 2.0 * payload_mass
+    )
+    expected_inertia = 0.4 * payload_mass * 0.0325**2
+    for prefix in ("l", "r"):
+        body_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            f"{prefix}_end_effector_sphere_link",
+        )
+        assert model.body_mass[body_id] == pytest.approx(payload_mass)
+        assert model.body_ipos[body_id] == pytest.approx((0.0, 0.0, -0.02))
+        assert model.body_inertia[body_id] == pytest.approx(
+            np.full(3, expected_inertia), rel=2.0e-6
+        )
+
+
+@pytest.mark.parametrize(
+    "payload_mass",
+    (-1.0, float("nan"), float("inf")),
+)
+def test_asset_config_rejects_invalid_end_effector_payload_mass(
+    payload_mass: float,
+) -> None:
+    with pytest.raises(ValueError, match="end_effector_payload_mass_kg"):
+        AssetPrepConfig(end_effector_payload_mass_kg=payload_mass)
 
 
 def test_morphology_pruning_removes_only_absent_actuator_configs() -> None:
     config = AssetPrepConfig(
-        end_effector_sphere_mode="both",
-        joint_availability=JointAvailabilityConfig(waist_roll=False),
+        joint_availability=JointAvailabilityConfig(waist_yaw=False),
     )
 
-    assert len(config.actuator_config.joints) == 28
-    assert "right_wrist_yaw_joint" not in config.actuator_config.joints
+    assert len(config.actuator_config.joints) == 24
+    assert "right_wrist_pitch_joint" in config.actuator_config.joints
     assert "right_finger_right_slide_joint" not in config.actuator_config.joints
     assert "waist_roll_joint" not in config.actuator_config.joints
-    assert "waist_yaw_joint" in config.actuator_config.joints
+    assert "waist_yaw_joint" not in config.actuator_config.joints
 
 
 def test_actuator_contract_rejects_missing_and_unknown_joint_configs() -> None:
@@ -188,7 +186,6 @@ def test_visualizer_recipe_produces_loadable_flattened_viewer_mjcf(
     )
 
     assert recipe.visual_mesh_face_budget == 20_000
-    assert recipe.end_effector_sphere_mode == "both"
     prepared = prepare_asset(recipe)
     model = mujoco.MjModel.from_xml_path(str(prepared.viewer_mjcf_path))
     root = ET.parse(prepared.viewer_mjcf_path).getroot()
@@ -198,8 +195,6 @@ def test_visualizer_recipe_produces_loadable_flattened_viewer_mjcf(
     assert root.findall("./asset/mesh")
     assert root.findall(".//geom[@type='mesh']")
     assert len(root.findall("./tendon/fixed")) == 4
-    for joint in ("left_wrist_yaw_joint", "right_wrist_yaw_joint"):
-        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint) == -1
     for body in ("l_end_effector_sphere_link", "r_end_effector_sphere_link"):
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body) >= 0
 
@@ -256,6 +251,124 @@ def test_urdf_mass_scaling_preserves_mass_distribution_and_inertia_ratio(
     assert masses == pytest.approx([24.0, 36.0])
     assert float(first_inertia.attrib["ixx"]) == pytest.approx(24.0)
     assert float(first_inertia.attrib["ixy"]) == pytest.approx(1.2)
+
+
+def test_urdf_mass_scaling_keeps_fixed_massless_links_massless(
+    tmp_path: Path,
+) -> None:
+    urdf_path = tmp_path / "robot.urdf"
+    urdf_path.write_text(
+        """<robot name="test">
+  <link name="base"><inertial><mass value="2"/><inertia ixx="2" iyy="3" izz="4" ixy="0" ixz="0" iyz="0"/></inertial></link>
+  <link name="marker"/>
+  <joint name="marker_joint" type="fixed"><parent link="base"/><child link="marker"/></joint>
+</robot>"""
+    )
+
+    scale_urdf_total_mass(urdf_path, 10.0)
+
+    root = ET.parse(urdf_path).getroot()
+    mass = root.find("./link[@name='base']/inertial/mass")
+    assert mass is not None
+    assert float(mass.attrib["value"]) == 10.0
+    assert root.find("./link[@name='marker']/inertial") is None
+
+
+def test_canonical_bilateral_link_inertias_are_symmetric(
+    full_body_asset: PreparedAsset,
+) -> None:
+    root = ET.parse(full_body_asset.urdf_path).getroot()
+    pairs = {
+        ("left_hip_pitch_link", "right_hip_pitch_link"): (-1, -1, 1),
+        ("left_hip_roll_link", "right_hip_roll_link"): (-1, -1, 1),
+        ("left_hip_yaw_link", "right_hip_yaw_link"): (-1, 1, 1),
+        ("left_knee_link", "right_knee_link"): (-1, 1, 1),
+        ("left_ankle_pitch_link", "right_ankle_pitch_link"): (-1, 1, 1),
+        ("left_ankle_roll_link", "right_ankle_roll_link"): (-1, 1, 1),
+        ("l_shoulder_pitch_link", "r_shoulder_pitch_link"): (-1, -1, 1),
+        ("l_shoulder_roll_link", "r_shoulder_roll_link"): (-1, -1, 1),
+        ("l_upper_arm_link", "r_upper_arm_link"): (-1, -1, 1),
+        ("l_elbow_link", "r_elbow_link"): (-1, -1, 1),
+        ("l_lower_arm_link", "r_lower_arm_link"): (-1, -1, 1),
+        ("l_wrist_link", "r_wrist_link"): (-1, -1, 1),
+    }
+
+    incoming_joint = {
+        joint.find("child").attrib["link"]: joint
+        for joint in root.findall("joint")
+        if joint.find("child") is not None
+    }
+    world_transforms: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+    def origin_transform(element: ET.Element | None) -> tuple[np.ndarray, np.ndarray]:
+        if element is None:
+            return np.eye(3), np.zeros(3)
+        xyz = np.fromstring(element.get("xyz", "0 0 0"), sep=" ")
+        roll, pitch, yaw = np.fromstring(element.get("rpy", "0 0 0"), sep=" ")
+        cx, cy, cz = np.cos((roll, pitch, yaw))
+        sx, sy, sz = np.sin((roll, pitch, yaw))
+        rotation = np.asarray(
+            (
+                (cy * cz, cz * sx * sy - cx * sz, sx * sz + cx * cz * sy),
+                (cy * sz, cx * cz + sx * sy * sz, cx * sy * sz - cz * sx),
+                (-sy, cy * sx, cx * cy),
+            )
+        )
+        return rotation, xyz
+
+    def world_transform(name: str) -> tuple[np.ndarray, np.ndarray]:
+        cached = world_transforms.get(name)
+        if cached is not None:
+            return cached
+        joint = incoming_joint.get(name)
+        if joint is None:
+            result = (np.eye(3), np.zeros(3))
+        else:
+            parent = joint.find("parent")
+            assert parent is not None
+            parent_rotation, parent_position = world_transform(parent.attrib["link"])
+            local_rotation, local_position = origin_transform(joint.find("origin"))
+            result = (
+                parent_rotation @ local_rotation,
+                parent_position + parent_rotation @ local_position,
+            )
+        world_transforms[name] = result
+        return result
+
+    def inertial_properties(name: str) -> tuple[float, np.ndarray, np.ndarray]:
+        inertial = root.find(f"./link[@name='{name}']/inertial")
+        assert inertial is not None
+        origin = inertial.find("origin")
+        mass = inertial.find("mass")
+        inertia = inertial.find("inertia")
+        assert origin is not None and mass is not None and inertia is not None
+        local_rotation, center = origin_transform(origin)
+        values = inertia.attrib
+        tensor = np.asarray(
+            (
+                (float(values["ixx"]), float(values["ixy"]), float(values["ixz"])),
+                (float(values["ixy"]), float(values["iyy"]), float(values["iyz"])),
+                (float(values["ixz"]), float(values["iyz"]), float(values["izz"])),
+            )
+        )
+        link_rotation, link_position = world_transform(name)
+        world_center = link_position + link_rotation @ center
+        world_inertia_rotation = link_rotation @ local_rotation
+        world_inertia = world_inertia_rotation @ tensor @ world_inertia_rotation.T
+        return float(mass.attrib["value"]), world_center, world_inertia
+
+    for (left_name, right_name), signs in pairs.items():
+        left_mass, left_center, left_inertia = inertial_properties(left_name)
+        right_mass, right_center, right_inertia = inertial_properties(right_name)
+        transform = np.diag(signs)
+
+        assert left_mass == pytest.approx(right_mass, rel=0.0, abs=1.0e-15)
+        np.testing.assert_allclose(left_center, transform @ right_center, atol=1.0e-15)
+        np.testing.assert_allclose(
+            left_inertia,
+            transform @ right_inertia @ transform,
+            atol=1.0e-15,
+        )
 
 
 def test_default_output_root_is_deterministic_bounded_user_cache(
@@ -404,17 +517,17 @@ def test_asset_cache_key_tracks_prep_config() -> None:
         AssetPrepConfig(asset="full_body", target_total_mass_kg=60.0)
     )
     assert asset_config_hash(base) != asset_config_hash(
+        AssetPrepConfig(asset="full_body", end_effector_payload_mass_kg=4.5359237)
+    )
+    assert asset_config_hash(base) != asset_config_hash(
         AssetPrepConfig(asset="full_body", enforce_policy_effort_limits=False)
     )
-    fixed_head = AssetPrepConfig(
+    fixed_waist = AssetPrepConfig(
         asset="full_body",
         mesh_face_budget=1000,
-        joint_availability=JointAvailabilityConfig(
-            neck_yaw=False,
-            head_pitch=False,
-        ),
+        joint_availability=JointAvailabilityConfig(waist_yaw=False),
     )
-    assert asset_config_hash(base) != asset_config_hash(fixed_head)
+    assert asset_config_hash(base) != asset_config_hash(fixed_waist)
 
 
 def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort(
@@ -460,39 +573,22 @@ def test_policy_effort_limits_can_be_disabled_without_losing_peak_metadata(
 
 def test_disabled_joints_are_fixed_in_the_generated_urdf() -> None:
     root = ET.Element("robot")
-    for joint_name in (
-        "waist_yaw_joint",
-        "waist_roll_joint",
-        "waist_pitch_joint",
-        "neck_yaw_joint",
-        "head_pitch_joint",
-    ):
-        joint = ET.SubElement(root, "joint", {"name": joint_name, "type": "revolute"})
-        ET.SubElement(joint, "axis", {"xyz": "0 0 1"})
-        ET.SubElement(joint, "limit", {"lower": "-1", "upper": "1"})
+    joint = ET.SubElement(
+        root, "joint", {"name": "waist_yaw_joint", "type": "revolute"}
+    )
+    ET.SubElement(joint, "axis", {"xyz": "0 0 1"})
+    ET.SubElement(joint, "limit", {"lower": "-1", "upper": "1"})
 
     fix_disabled_joints(
         root,
-        JointAvailabilityConfig(
-            waist_yaw=True,
-            waist_roll=False,
-            waist_pitch=False,
-            neck_yaw=False,
-            head_pitch=False,
-        ),
+        JointAvailabilityConfig(waist_yaw=False),
     )
 
-    assert root.find("./joint[@name='waist_yaw_joint']").get("type") == "revolute"
-    for joint_name in (
-        "waist_roll_joint",
-        "waist_pitch_joint",
-        "neck_yaw_joint",
-        "head_pitch_joint",
-    ):
-        joint = root.find(f"./joint[@name='{joint_name}']")
-        assert joint.get("type") == "fixed"
-        assert joint.find("axis") is None
-        assert joint.find("limit") is None
+    joint = root.find("./joint[@name='waist_yaw_joint']")
+    assert joint is not None
+    assert joint.get("type") == "fixed"
+    assert joint.find("axis") is None
+    assert joint.find("limit") is None
 
 
 def test_actuator_force_observation_is_clamped_by_force_range(
@@ -500,7 +596,9 @@ def test_actuator_force_observation_is_clamped_by_force_range(
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
     data = mujoco.MjData(model)
-    joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "neck_yaw_joint")
+    joint_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_JOINT, "right_wrist_pitch_joint"
+    )
     actuator_id = next(
         actuator_id
         for actuator_id, joint_pair in enumerate(model.actuator_trnid)
@@ -513,8 +611,8 @@ def test_actuator_force_observation_is_clamped_by_force_range(
     data.ctrl[actuator_id] = 1.0
     mujoco.mj_forward(model, data)
 
-    assert data.actuator_force[actuator_id] == pytest.approx(5.5)
-    assert data.qfrc_actuator[dof_id] == pytest.approx(5.5)
+    assert data.actuator_force[actuator_id] == pytest.approx(14.0)
+    assert data.qfrc_actuator[dof_id] == pytest.approx(14.0)
 
 
 def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> None:

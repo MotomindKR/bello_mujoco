@@ -4,7 +4,9 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+import os
 import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,8 +19,11 @@ from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware import runtime as hardware_runtime
 from bello_mujoco.hardware.locomotion import (
+    ELBOW_YAW_JOG_STEP_RADIANS,
     HardwareLocomotionConfig,
     HardwarePolicyAdapter,
+    TerminalElbowYawJogInput,
+    UpperBodyFollowConfig,
     command_minimum_moving_speeds,
     command_ranges,
     control_physical_robot,
@@ -36,10 +41,12 @@ from bello_mujoco.hardware.runtime import (
     actuator_impedance_gains,
     armed_control_session,
     coordinate_targets,
+    pace_hardware_loop,
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
     require_idle_confirmation,
     require_operator_confirmation,
+    resolve_command_submissions,
     send_targets,
     specific_force_from_gravity_removed_acceleration,
     start_hardware_controls,
@@ -61,6 +68,35 @@ from bello_mujoco.training.ppo import (
 )
 from bello_mujoco.gamepad import axis_to_range
 from bello_mujoco.hardware.remote import RemoteCommandConfig, RemoteCommandInput
+from bello_mujoco.hardware.twist2 import ReferenceUnavailable, Twist2ReferenceFrame
+
+
+_TEST_SMPLX_MODEL = Path("SMPLX_NEUTRAL.npz")
+
+
+def pose_hardware_config(**overrides) -> HardwareLocomotionConfig:
+    return HardwareLocomotionConfig(
+        smplx_neutral_model_path=_TEST_SMPLX_MODEL,
+        **overrides,
+    )
+
+
+class FakeReferences:
+    def __init__(self) -> None:
+        self.sequence = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exception):
+        return False
+
+    def standing(self):
+        return SimpleNamespace(sequence=0, age_ms=lambda: None)
+
+    def latest(self):
+        self.sequence += 1
+        return SimpleNamespace(sequence=self.sequence, age_ms=lambda: 0.0)
 
 
 def remote_input(
@@ -85,7 +121,7 @@ def compose_hardware_training_config() -> TrainingRunConfig:
 
 
 def compose_hardware_runner_config() -> SimpleNamespace:
-    return SimpleNamespace(hardware=HardwareLocomotionConfig())
+    return SimpleNamespace(hardware=pose_hardware_config())
 
 
 def test_hardware_state_frame_preserves_order_and_consumer_age(
@@ -236,14 +272,15 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
 ) -> None:
     config = compose_hardware_training_config()
 
-    assert config.asset_config.end_effector_sphere_mode == "both"
-    assert config.asset_config.target_total_mass_kg == pytest.approx(60.0)
+    assert config.asset_config.target_total_mass_kg is None
     assert config.asset_config.joint_availability.enabled_joint_names == {
         "waist_yaw_joint"
     }
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
-    assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(60.0)
+    assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(
+        55.0683575411785
+    )
 
     metadata = SimpleNamespace(
         task="locomotion",
@@ -293,9 +330,7 @@ def test_hardware_uses_generated_motor_impedance_gains(
         assert kd[index] == pytest.approx(0.5)
 
 
-def test_hardware_adapter_reconstructs_actor_frame_and_targets(
-    hardware_env: BelloLocomotionEnv,
-) -> None:
+def make_hardware_adapter(hardware_env: BelloLocomotionEnv) -> HardwarePolicyAdapter:
     config = compose_hardware_training_config()
     actor_size = policy_observation_size(
         hardware_env.observation_size, config.config.policy
@@ -321,7 +356,32 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
         observation=init_observation_norm_state(actor_size),
         critic_observation=init_observation_norm_state(critic_size),
     )
-    adapter = HardwarePolicyAdapter(hardware_env, policy, metadata, normalization)
+    return HardwarePolicyAdapter(hardware_env, policy, metadata, normalization)
+
+
+def hardware_reference(
+    adapter: HardwarePolicyAdapter,
+    upper_body_positions: np.ndarray,
+    *,
+    sequence: int = 1,
+    source_age_ms: int | None = 0,
+    received_at: float | None = None,
+) -> Twist2ReferenceFrame:
+    qpos = np.asarray(adapter.env.model.default_qpos, dtype=np.float64).copy()
+    qpos[adapter.upper_body_qpos_indices] = upper_body_positions
+    return Twist2ReferenceFrame(
+        qpos=qpos,
+        qvel=np.zeros(adapter.env.model.mj_model.nv, dtype=np.float64),
+        sequence=sequence,
+        source_age_ms=source_age_ms,
+        received_at=time.monotonic() if received_at is None else received_at,
+    )
+
+
+def test_hardware_adapter_reconstructs_actor_frame_and_targets(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
     nominal = adapter.nominal_physical_target
     frame = HardwareFrame(
         positions=nominal,
@@ -342,18 +402,202 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
 
     result = adapter.step(frame, command)
 
-    assert result.observation.shape == (51,)
+    assert result.observation.shape == (54,)
     assert result.observation[:3] == pytest.approx((0.0, 0.0, 0.980665))
     assert result.observation[3:6] == pytest.approx(np.zeros(3))
     assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
     assert result.observation[9:12] == pytest.approx(command)
+    assert result.observation[12:15] == pytest.approx((0.0, 1.0, 1.0))
     assert result.action.shape == (13,)
+    assert result.action == pytest.approx(np.clip(result.raw_action, -1.0, 1.0))
     assert result.physical_target.shape == (25,)
     assert np.all(np.isfinite(result.physical_target))
     assert result.physical_target == pytest.approx(
         np.asarray(hardware_env.action_to_ctrl(result.action, np.zeros(25))),
         abs=1.0e-6,
     )
+
+
+def test_locomotion_overlays_only_slew_limited_upper_body_reference(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    upper = adapter.upper_body_indices
+    default_upper = adapter.default_joint_target[upper]
+    standing = hardware_reference(
+        adapter,
+        default_upper,
+        sequence=0,
+        source_age_ms=None,
+    )
+    low = hardware_env.model.joint_target_low[upper]
+    high = hardware_env.model.joint_target_high[upper]
+    desired_upper = np.clip(default_upper + 0.5, low + 0.01, high - 0.01)
+    live = hardware_reference(adapter, desired_upper)
+    adapter.set_upper_body_standing_reference(standing)
+    nominal = adapter.nominal_physical_target
+    frame = HardwareFrame(
+        positions=nominal,
+        velocities=np.zeros_like(nominal),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=("RUNNING", "RUNNING"),
+        group_causes=("START", "START"),
+        group_details=("", ""),
+    )
+
+    joystick_command = np.asarray((0.0, 0.3, -0.2), dtype=np.float32)
+    step = adapter.step(frame, joystick_command, live)
+    logical_target = adapter.inverse_transform @ step.physical_target
+    policy_only = np.asarray(
+        hardware_env.action_to_ctrl(step.action, np.zeros(25)), dtype=np.float64
+    )
+    policy_logical_target = adapter.inverse_transform @ policy_only
+    maximum_step = (
+        adapter.upper_body_follow.max_target_speed_rps * adapter.control_timestep
+    )
+    transition_step = (
+        adapter.control_timestep
+        / adapter.upper_body_follow.connection_transition_duration_seconds
+    )
+    blended_live = default_upper + transition_step * (desired_upper - default_upper)
+    expected_upper = default_upper + np.clip(
+        blended_live - default_upper,
+        -maximum_step,
+        maximum_step,
+    )
+
+    assert logical_target[adapter.policy_indices] == pytest.approx(
+        policy_logical_target[adapter.policy_indices], abs=1.0e-6
+    )
+    assert logical_target[upper] == pytest.approx(expected_upper, abs=1.0e-6)
+    assert step.observation[9:12] == pytest.approx(joystick_command)
+    assert step.upper_body_following
+    assert step.reference_sequence == 1
+
+    stale = hardware_reference(
+        adapter,
+        desired_upper,
+        sequence=2,
+        received_at=time.monotonic() - 1.1,
+    )
+    fallback = adapter.step(frame, joystick_command, stale)
+    fallback_logical = adapter.inverse_transform @ fallback.physical_target
+    blended_fallback = expected_upper + transition_step * (
+        default_upper - expected_upper
+    )
+    expected_fallback = expected_upper + np.clip(
+        blended_fallback - expected_upper,
+        -maximum_step,
+        maximum_step,
+    )
+    assert fallback_logical[upper] == pytest.approx(expected_fallback, abs=1.0e-6)
+    assert fallback.observation[9:12] == pytest.approx(joystick_command)
+    assert not fallback.upper_body_following
+    assert fallback.reference_sequence is None
+
+    recovered = adapter.step(
+        frame,
+        joystick_command,
+        hardware_reference(adapter, desired_upper, sequence=3),
+    )
+    recovered_logical = adapter.inverse_transform @ recovered.physical_target
+    blended_recovered = expected_fallback + transition_step * (
+        desired_upper - expected_fallback
+    )
+    expected_recovered = expected_fallback + np.clip(
+        blended_recovered - expected_fallback,
+        -maximum_step,
+        maximum_step,
+    )
+    assert recovered_logical[upper] == pytest.approx(expected_recovered, abs=1.0e-6)
+    assert recovered.observation[9:12] == pytest.approx(joystick_command)
+    assert recovered.upper_body_following
+    assert recovered.reference_sequence == 3
+
+
+def test_locomotion_applies_configured_and_clipped_elbow_yaw_offset(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    adapter.upper_body_follow = replace(
+        adapter.upper_body_follow,
+        left_elbow_yaw_offset_radians=np.pi / 2.0,
+        right_elbow_yaw_offset_radians=-np.pi,
+    )
+    upper = adapter.upper_body_indices
+    desired = adapter.default_joint_target[upper]
+    low = hardware_env.model.joint_target_low[upper]
+    high = hardware_env.model.joint_target_high[upper]
+    target = adapter._reference_upper_body_target(
+        hardware_reference(adapter, desired),
+        live=True,
+    )
+    elbow_yaw = adapter.upper_body_elbow_yaw_indices
+    expected = desired.copy()
+    expected[elbow_yaw] += np.asarray((np.pi / 2.0, -np.pi))
+    expected = np.clip(expected, low, high)
+
+    assert target == pytest.approx(expected)
+    assert target[elbow_yaw] == pytest.approx((high[elbow_yaw[0]], low[elbow_yaw[1]]))
+
+
+def test_locomotion_keyboard_jogs_elbow_yaw_offsets(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+
+    offsets = adapter.jog_elbow_yaw_offsets(
+        left_delta_radians=ELBOW_YAW_JOG_STEP_RADIANS,
+        right_delta_radians=-2.0 * ELBOW_YAW_JOG_STEP_RADIANS,
+    )
+
+    assert offsets == pytest.approx(
+        (ELBOW_YAW_JOG_STEP_RADIANS, -2.0 * ELBOW_YAW_JOG_STEP_RADIANS)
+    )
+
+
+def test_terminal_elbow_yaw_jog_reads_single_keys() -> None:
+    master_fd, slave_fd = os.openpty()
+    stream = os.fdopen(slave_fd, "r", closefd=True)
+    try:
+        with TerminalElbowYawJogInput(stream) as jog_input:
+            os.write(master_fd, b"qqaedx\x1b[D")
+            left_delta, right_delta = jog_input.poll()
+            assert left_delta == pytest.approx(ELBOW_YAW_JOG_STEP_RADIANS)
+            assert right_delta == pytest.approx(0.0)
+    finally:
+        stream.close()
+        os.close(master_fd)
+
+
+def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    assert adapter.upper_body_follow.max_reference_age_ms == 1_000
+    default_upper = adapter.default_joint_target[adapter.upper_body_indices]
+    adapter.validate_upper_body_reference(
+        hardware_reference(adapter, default_upper, source_age_ms=470)
+    )
+    stale = hardware_reference(
+        adapter,
+        default_upper,
+        received_at=time.monotonic() - 1.1,
+    )
+    with pytest.raises(ReferenceUnavailable, match="stale"):
+        adapter.validate_upper_body_reference(stale)
+
+    unsafe = hardware_reference(adapter, default_upper)
+    unsafe.qvel[adapter.upper_body_qvel_indices[0]] = 26.0
+    with pytest.raises(ReferenceUnavailable, match="joint speed"):
+        adapter.validate_upper_body_reference(unsafe)
 
 
 def test_hardware_imu_terms_match_deployment_conventions() -> None:
@@ -378,20 +622,50 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     config = compose_hardware_runner_config()
 
     assert not config.hardware.arm
+    assert config.hardware.command_validity_seconds == pytest.approx(0.08)
+    assert config.hardware.acknowledgement_timeout_seconds == pytest.approx(0.5)
     assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
     assert config.hardware.remote.staleness_ms == 200
+    assert config.hardware.upper_body_follow.left_elbow_yaw_offset_radians == 0.0
+    assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
     validate_hardware_config(config.hardware)
-    validate_hardware_config(HardwareLocomotionConfig(arm=True))
+    validate_hardware_config(pose_hardware_config(arm=True))
+    with pytest.raises(ValueError, match="smplx_neutral_model_path"):
+        validate_hardware_config(HardwareLocomotionConfig())
     with pytest.raises(ValueError, match="plaintext"):
         validate_hardware_config(
-            HardwareLocomotionConfig(
+            pose_hardware_config(
                 remote=replace(RemoteCommandConfig(), endpoint="https://remote:50054")
             )
         )
     with pytest.raises(ValueError, match="staleness_ms"):
         validate_hardware_config(
-            HardwareLocomotionConfig(
-                remote=replace(RemoteCommandConfig(), staleness_ms=0)
+            pose_hardware_config(remote=replace(RemoteCommandConfig(), staleness_ms=0))
+        )
+    with pytest.raises(ValueError, match="gain_scale"):
+        validate_hardware_config(pose_hardware_config(gain_scale=0.0))
+    with pytest.raises(ValueError, match="gain_scale"):
+        validate_hardware_config(pose_hardware_config(gain_scale=1.01))
+    with pytest.raises(ValueError, match="acknowledgement_timeout_seconds"):
+        validate_hardware_config(
+            pose_hardware_config(acknowledgement_timeout_seconds=0.08)
+        )
+    with pytest.raises(ValueError, match="connection_transition_duration_seconds"):
+        validate_hardware_config(
+            pose_hardware_config(
+                upper_body_follow=replace(
+                    UpperBodyFollowConfig(),
+                    connection_transition_duration_seconds=0.0,
+                )
+            )
+        )
+    with pytest.raises(ValueError, match="left_elbow_yaw_offset_radians"):
+        validate_hardware_config(
+            pose_hardware_config(
+                upper_body_follow=replace(
+                    UpperBodyFollowConfig(),
+                    left_elbow_yaw_offset_radians=np.nan,
+                )
             )
         )
 
@@ -417,6 +691,17 @@ def test_coordinate_targets_use_policy_gains() -> None:
         "left": (0.2, 12.0, 0.5),
         "right": (-0.4, 34.0, 0.75),
     }
+
+    scaled_targets = coordinate_targets(
+        binding,
+        ("left", "right"),
+        np.asarray((0.2, -0.4)),
+        adapter,
+        gain_scale=5.0 / 6.0,
+    )
+
+    assert scaled_targets["left"] == pytest.approx((0.2, 10.0, 5.0 / 12.0))
+    assert scaled_targets["right"] == pytest.approx((-0.4, 85.0 / 3.0, 0.625))
 
 
 def test_hardware_requires_exact_hold_and_run_confirmations() -> None:
@@ -666,6 +951,7 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
         adapter,
         HardwareLocomotionConfig(max_duration_seconds=None),
         SimpleNamespace(poll=lambda: next(remote_inputs)),
+        SimpleNamespace(latest=lambda: pytest.fail("pose read after remote abort")),
     )
 
     assert len(checks) == 3
@@ -741,7 +1027,7 @@ def test_hardware_honors_held_remote_abort_before_connect(monkeypatch) -> None:
 
     run_hardware_locomotion(
         Path("unused"),
-        HardwareLocomotionConfig(arm=True),
+        pose_hardware_config(arm=True),
         hardware_binding=binding,
         remote_factory=lambda *_args: remote,
     )
@@ -774,7 +1060,7 @@ def test_hardware_requires_remote_sample_before_connect(monkeypatch) -> None:
     with pytest.raises(TimeoutError, match="remote unavailable"):
         run_hardware_locomotion(
             Path("unused"),
-            HardwareLocomotionConfig(),
+            pose_hardware_config(),
             hardware_binding=binding,
             remote_factory=lambda *_args: remote,
         )
@@ -797,11 +1083,15 @@ def test_remote_abort_around_hold_never_acquires_control(
         nominal_physical_target=np.zeros(2),
         env=SimpleNamespace(action_size=13),
         control_timestep=0.02,
-        precompile=lambda: None,
+        precompile=lambda _reference: None,
+        set_upper_body_standing_reference=lambda _reference: None,
+        validate_upper_body_reference=lambda _reference: None,
         reset=lambda: None,
-        step=lambda _frame, _command: SimpleNamespace(
+        step=lambda _frame, _command, reference: SimpleNamespace(
             action=np.zeros(13),
             tilt_radians=0.0,
+            reference_sequence=reference.sequence,
+            reference_age_ms=reference.age_ms(),
         ),
     )
     metadata = SimpleNamespace(command=CommandConfig())
@@ -822,6 +1112,8 @@ def test_remote_abort_around_hold_never_acquires_control(
     inputs = iter(
         (
             remote_input(),
+            remote_input(),
+            remote_input(),
             remote_input(abort_active=abort_during_prompt),
             remote_input(abort_active=True),
         )
@@ -834,9 +1126,14 @@ def test_remote_abort_around_hold_never_acquires_control(
 
     run_hardware_locomotion(
         Path("unused"),
-        HardwareLocomotionConfig(arm=True, allow_git_commit_mismatch=True),
+        pose_hardware_config(
+            arm=True,
+            allow_git_commit_mismatch=True,
+            fastsam_reference_qualification_frames=1,
+        ),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: remote,
+        reference_source_factory=lambda *_args: FakeReferences(),
     )
 
     assert not hardware.control_requests
@@ -902,6 +1199,7 @@ def test_hardware_groups_start_concurrently() -> None:
             HardwareLocomotionConfig(groups=names),
             executor,
         )
+        pending_submissions = {}
         pending_receipts = []
         send_targets(
             binding,
@@ -911,8 +1209,10 @@ def test_hardware_groups_start_concurrently() -> None:
             adapter,
             HardwareLocomotionConfig(groups=names),
             executor,
+            pending_submissions,
             pending_receipts,
         )
+        resolve_command_submissions(pending_submissions, pending_receipts)
         assert len(pending_receipts) == 2
         stop_hardware_controls(
             binding,
@@ -925,6 +1225,91 @@ def test_hardware_groups_start_concurrently() -> None:
     assert set(sent) == set(names)
     assert stopped == ["lower_body"]
     assert closed == []
+
+
+def test_hardware_target_submission_overlaps_control_loop() -> None:
+    submission_started = threading.Event()
+    release_submission = threading.Event()
+    receipt = SimpleNamespace(done=lambda: True, result=lambda: None)
+
+    class Control:
+        def send_async(self, targets):
+            assert targets == {"lower_body": "lower_body"}
+            submission_started.set()
+            assert release_submission.wait(timeout=1.0)
+            return receipt
+
+    adapter = SimpleNamespace(
+        coordinate_index={"lower_body": 0},
+        kp=np.ones(1),
+        kd=np.ones(1),
+        control_timestep=0.02,
+    )
+    binding = SimpleNamespace(
+        CoordinateTarget=SimpleNamespace(position=lambda value, kp, kd: "lower_body")
+    )
+    config = HardwareLocomotionConfig(groups=("lower_body",))
+    pending_submissions = {}
+    pending_receipts = []
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        send_targets(
+            binding,
+            {"lower_body": Control()},
+            {"lower_body": SimpleNamespace(coordinates=("lower_body",))},
+            np.asarray((0.0,)),
+            adapter,
+            config,
+            executor,
+            pending_submissions,
+            pending_receipts,
+        )
+        assert submission_started.wait(timeout=1.0)
+        assert not pending_receipts
+        assert tuple(pending_submissions) == ("lower_body",)
+
+        release_submission.set()
+        resolve_command_submissions(pending_submissions, pending_receipts)
+
+    assert pending_submissions == {}
+    assert pending_receipts == [receipt]
+
+
+def test_hardware_loop_rebases_after_each_late_iteration(monkeypatch) -> None:
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(hardware_runtime.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(
+        hardware_runtime.time,
+        "sleep",
+        lambda duration: setattr(clock, "now", clock.now + duration),
+    )
+    config = HardwareLocomotionConfig()
+    deadline = clock.now
+
+    for _ in range(600):
+        clock.now += 0.022
+        deadline = pace_hardware_loop(
+            deadline,
+            0.02,
+            config,
+        )
+
+    assert deadline == pytest.approx(clock.now)
+
+
+def test_hardware_loop_rejects_one_excessively_late_iteration(monkeypatch) -> None:
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(hardware_runtime.time, "monotonic", lambda: clock.now)
+    config = HardwareLocomotionConfig()
+    deadline = clock.now
+
+    with pytest.raises(RuntimeError, match="missed its deadline"):
+        clock.now += 0.121
+        pace_hardware_loop(
+            deadline,
+            0.02,
+            config,
+        )
 
 
 def test_hardware_cleanup_stops_only_running_groups() -> None:
@@ -1060,13 +1445,20 @@ def test_read_only_preflight_never_acquires_control(
         nominal_physical_target=np.zeros(2),
         env=SimpleNamespace(action_size=13),
         control_timestep=0.02,
-        precompile=lambda: None,
+        precompile=lambda _reference: None,
+        set_upper_body_standing_reference=lambda _reference: None,
+        validate_upper_body_reference=lambda _reference: None,
     )
     preview_calls = []
 
-    def preview(frame, command):
+    def preview(frame, command, reference):
         preview_calls.append(("step", frame, command.copy()))
-        return SimpleNamespace(action=np.asarray((0.25, -0.5)), tilt_radians=0.0)
+        return SimpleNamespace(
+            action=np.asarray((0.25, -0.5)),
+            tilt_radians=0.0,
+            reference_sequence=reference.sequence,
+            reference_age_ms=reference.age_ms(),
+        )
 
     adapter.step = preview
     adapter.reset = lambda: preview_calls.append(("reset",))
@@ -1084,7 +1476,10 @@ def test_read_only_preflight_never_acquires_control(
 
     run_hardware_locomotion(
         Path("unused"),
-        HardwareLocomotionConfig(allow_git_commit_mismatch=True),
+        pose_hardware_config(
+            allow_git_commit_mismatch=True,
+            fastsam_reference_qualification_frames=1,
+        ),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: SimpleNamespace(
             wait_until_ready=lambda _timeout: remote_input(
@@ -1099,11 +1494,18 @@ def test_read_only_preflight_never_acquires_control(
             ),
             close=lambda: None,
         ),
+        reference_source_factory=lambda *_args: FakeReferences(),
     )
 
     output = capsys.readouterr().out
     assert load_calls == [
-        (Path("unused"), {"allow_git_commit_mismatch": True}),
+        (
+            Path("unused"),
+            {
+                "allow_git_commit_mismatch": True,
+                "upper_body_follow": UpperBodyFollowConfig(),
+            },
+        ),
     ]
     assert not hardware.control_requests
     assert len(preview_calls) == 2

@@ -65,6 +65,9 @@ bootstrap installs its own `rsync` before transfer. Dataset files and checkpoint
 contents remain outside Git and are copied only to dedicated paths under
 `/workspace`. Interrupted transfers retry with partial-file continuation. A
 remote SHA-256 mismatch prevents training and triggers normal teardown.
+TWIST2 warm starts transfer an explicitly selected typed checkpoint directory;
+the remote trainer restores policy and normalization only and records the new
+dataset fingerprint in every output checkpoint.
 
 Dataset-backed offers are ranked by proximity to Korea (`KR`, `JP`, `TW`,
 `HK`, then `SG`) before marketplace value. After SSH becomes ready, the
@@ -113,7 +116,7 @@ rollout steps, `786,432,000` transitions are 8,000 PPO updates:
 ```bash
 uv run bello-vast-train \
   experiment=sonic \
-  dataset_path=/home/gmmyung/amass/sonic_dataset_v5/index.json \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v7_author_fidelity/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
   total_timesteps=786432000 \
   num_envs=4096 \
@@ -142,7 +145,7 @@ exact 4,096-environment batch contract:
 ```bash
 uv run bello-vast-train \
   experiment=sonic \
-  dataset_path=/home/gmmyung/amass/sonic_dataset_v5/index.json \
+  dataset_path=/home/gmmyung/amass/sonic_dataset_v7_author_fidelity/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
   resume_path=outputs/wandb_artifacts/sonic_edge_4096 \
   allow_git_commit_mismatch=true \
@@ -160,6 +163,21 @@ release hashes, environment count, or absolute budget is
 incompatible. The remote trainer then enforces the complete observation,
 action, robot, PPO, and simulator contract while restoring the array state.
 
+TWIST2 transfer example:
+
+```bash
+uv run bello-vast-train \
+  experiment=twist2 \
+  dataset_path=/home/gmmyung/amass/twist_dataset/index.json \
+  warm_start_checkpoint_path=/path/to/previous/final \
+  allow_git_commit_mismatch=true \
+  total_timesteps=491520000 \
+  learning_rate=0.00005 \
+  branch=feature/twist-teacher-student \
+  run_name=twist2_fastsam_finetune_seed1 \
+  max_price=1.25 \
+  duration_hours=24
+```
 ## Time bounds
 
 `duration_hours` is the remote-job timeout, not a request to train for exactly

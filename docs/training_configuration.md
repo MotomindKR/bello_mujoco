@@ -83,10 +83,28 @@ The `config` section is shared by locomotion and motion tracking.
 | `rollout_value_max_abs` | `10,000` | Fail an update when critic outputs exceed this bound. |
 | `target_max_abs` | `10,000` | Fail an update when value targets exceed this bound. |
 | `gradient_norm_max` | `10,000` | Independent nonfinite/explosion guard beyond optimizer clipping. |
+| `symmetry_loss_coef` | `0` | Nonnegative actor left/right consistency coefficient. The locomotion profile sets `0.1`; it requires unnormalized physical observation coordinates. |
 
 The effective update count is
 `total_timesteps // (num_envs * num_steps)`. Extra transitions below one full
 rollout batch are not sampled.
+
+### PPO update diagnostics
+
+`train/policy_clip_fraction` reports the fraction of policy-training samples
+whose probability ratio is outside `[1 - clip_eps, 1 + clip_eps]`. This is the
+standard PPO `clipfrac`; it is distinct from `train/action_clip_fraction`, which
+reports actions changed by the environment's physical action clamp.
+
+There is no universal target because the useful range depends on batch size,
+minibatch count, update epochs, and the policy distribution. As a practical
+diagnostic, a sustained value around 0.05-0.20 usually indicates meaningful but
+controlled updates. Values below 0.05 are conservative only when KL is also low
+and returns have stalled. Sustained values around 0.20-0.30 deserve attention,
+and values above 0.30 usually mean that too much of the batch lies outside the
+PPO trust region. Interpret isolated early-training spikes with
+`train/mean_approx_kl`, `train/max_approx_kl`, `train/ppo_update_fraction`, and
+episode returns rather than treating clip fraction as a standalone target.
 
 ### Policy: `config.policy`
 
@@ -117,19 +135,19 @@ The asset section selects a deterministic prepared morphology.
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
 | `visual_mesh_face_budget` | `200000` | Per-mesh viewer simplification budget. |
-| `end_effector_sphere_mode` | `both` | Replace both wrist/gripper subtrees with fixed sphere hands. |
-| `target_total_mass_kg` | `60` | Uniformly rescale all link masses and inertias to the target total. |
+| `target_total_mass_kg` | `null` | Optional experimental uniform rescaling. Maintained policies use the canonical 55.068 kg physical inertials without rescaling. |
+| `end_effector_payload_mass_kg` | `0` | Equal payload mass attached at each sphere-hand center. This is a per-hand mass; it is added after any robot-mass rescaling and becomes part of the asset/checkpoint fingerprint. |
 | `neighbor_exclusion_depth` | `2` | Exclude nearby kinematic neighbors from generated self-collision pairs. |
-| `enforce_policy_effort_limits` | `false` | When false, training can observe and penalize over-peak requested force. The native emulator and hardware still enforce physical limits. |
+| `enforce_policy_effort_limits` | `true` | Enforce the same physical actuator-force saturation used by hardware. Locomotion separately reconstructs the unclipped servo demand for the over-peak reward. |
 | `imu_config` | disabled | Optional generated IMU site/sensors. Its `enabled` field controls generation and `body_name` selects the instrumented body. Training observations derive simulated IMU features without requiring this native sensor block. |
 | `ankle_differential_config.motor_gain_scale` | `0.5` | Gain multiplier applied to each differential-ankle motor. |
 | `ankle_differential_config.motor_effort_limit_scale` | `1` | Motor effort-limit multiplier. |
-| `joint_availability.*` | waist yaw on; waist roll/pitch and neck/head off | Fix optional joints at asset-generation time. |
+| `joint_availability.waist_yaw` | `true` | Optionally fix the physical waist-yaw joint at asset-generation time. Waist roll/pitch and neck/head joints are fixed in the canonical URDF. |
 | `actuator_config` | canonical Bello map | Its `joints` mapping assigns a `JointActuatorConfig` to each joint. |
 
 The `ankle_differential_config` fields are `motor_gain_scale` and
-`motor_effort_limit_scale`. `joint_availability` has the boolean fields
-`waist_yaw`, `waist_roll`, `waist_pitch`, `neck_yaw`, and `head_pitch`.
+`motor_effort_limit_scale`. `joint_availability` has only the `waist_yaw`
+boolean field.
 Each `actuator_config.joints` entry has a `mode` (`policy` or `hold`),
 `default_pos`, optional `soft_limit`, `[kp, kd]` `gains`, and optional
 `effort_limit`.
@@ -141,10 +159,11 @@ a custom `output_root`.
 
 Motion training supplies its `asset_config` from the
 `MotionTrainingRunConfig` default factory rather than its YAML. The fixed
-tracking contract is the canonical 60 kg, box-collision, sphere-hand asset with
+tracking contract is the canonical 55.068 kg, box-collision, sphere-hand asset with
 waist yaw enabled; waist roll/pitch and neck/head joints are fixed, and all 25
-remaining coordinates are policy-controlled. Motion initialization rejects an
-asset that deviates from this contract.
+remaining coordinates are policy-controlled. A symmetric sphere-hand payload
+may be added without changing the joint or observation contract. Motion
+initialization rejects other deviations from this contract.
 
 ## Locomotion environment: `env_config`
 
@@ -163,6 +182,7 @@ asset that deviates from this contract.
 | `numerical_safety` | Broad finite-state and solver-force bounds that terminate invalid rollouts. |
 | `observation` | Deployable actor observation scaling and noise. |
 | `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
+| `gait` | Fixed gait frequency and stance fraction shared by simulation, native evaluation, and hardware. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
 
 ### Simulation physics
@@ -224,9 +244,18 @@ Both `observation` and `critic_observation` contain `privileged`, `scale`, and
 `noise`. The `noise` section also has an `enabled` switch.
 
 Scale and noise fields are `base_lin_vel`, `base_lin_acc`, `base_ang_vel`,
-`projected_gravity`, `base_height`, `command`, `joint_pos`, `joint_vel`,
-`actuator_force`, and `last_action`. Scales multiply observations; noise values
-are ordered uniform ranges applied before stacking.
+`projected_gravity`, `base_height`, `command`, `gait_phase`, `joint_pos`,
+`joint_vel`, `actuator_force`, and `last_action`. Scales multiply observations;
+noise values are ordered uniform ranges applied before stacking.
+
+With commands enabled, the actor and critic both receive a three-value gait
+component: sine phase, cosine phase, and a gait-active bit. The default 0.9 Hz
+per-leg clock has a 60% stance fraction and a half-cycle offset between the two
+feet. Standing resets its phase and makes the complete component exactly zero.
+`frequency_hz` is the complete cycle frequency of each leg, so the default
+repeats each leg about every 1.11 seconds and offsets nominal left/right
+footfalls by about 0.56 seconds: 1.8 total footfalls per second, or 108 steps
+per minute. `stance_fraction` must be in `[0.5, 1.0)`.
 
 Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
@@ -243,6 +272,10 @@ do not inject synthetic delay. Older locomotion checkpoints load with latency
 disabled; resuming their rollout continuation still requires the original
 source revision because its environment state predates the feedback history.
 
+`last_action` is the clipped policy action sent to the position servos. Action
+rate and acceleration rewards teach smooth commands without adding a stateful
+filter to training, native evaluation, or the hardware runner.
+
 ## Locomotion commands: `command_config`
 
 | Field | Default | Meaning |
@@ -251,15 +284,32 @@ source revision because its environment state predates the feedback history.
 | `lin_vel_x` | `[-0.5,0.5]` | Lateral/right velocity sampling range. |
 | `lin_vel_y` | `[-0.5,0.5]` | Forward velocity sampling range. |
 | `ang_vel_yaw` | `[-0.5,0.5]` | Yaw-rate sampling range. |
-| `standing_probability` | `0.1` | Probability of an exact all-zero command. |
+| `standing_probability` | `0.1` | Fraction of batched training environments assigned an exact all-zero command cohort; scalar sampling uses this as a probability. |
 | `linear_deadband` | `0.1` | Actor/reward standing threshold for XY command. |
 | `yaw_deadband` | `0.1` | Standing threshold for yaw command. |
 | `minimum_moving_linear_speed` | `0.2` | A selected moving linear axis is sampled outside this magnitude. |
 | `minimum_moving_yaw_speed` | `0.2` | A selected moving yaw axis is sampled outside this magnitude. |
 | `resample_seconds` | `10` | Interval between command samples. |
+| `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling to train standing-to-moving and moving-to-standing transitions. |
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
+Training assigns an exact standing cohort at batch reset. Failure resets
+preserve each environment's standing or moving mode so short standing episodes
+cannot reduce standing's share of rollout frames. When
+`standing_transitions_enabled` is true, periodic command resampling independently
+reassigns the exact standing cohort, exposing both standing-to-moving and
+moving-to-standing transitions. Training telemetry reports mode-specific mean
+reward, completed-episode return and length, and completed-episode count under
+the `command/standing_*`, `command/moving_*`, and
+`episode/{standing,moving}_*` names.
+
+The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
+The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
+observation is unchanged. Planar and yaw tracking each have weight `2.0`, so
+their maximum contribution is `0.04` per control step. Moving-command tracking
+uses standard deviations of `0.30 m/s` for planar velocity and `0.25 rad/s` for
+yaw velocity; standing-command tolerances remain `0.25 m/s` and `0.20 rad/s`.
 
 ## Locomotion reward: `reward_config`
 
@@ -269,26 +319,32 @@ computation where possible.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
-| `track_lin_vel_xy` | `1.0` | Gaussian command tracking for planar velocity. |
-| `track_ang_vel_z` | `1.0` | Gaussian yaw-rate command tracking. |
+| `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. At a standing command it is awarded only in double support. |
+| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. At a standing command it is awarded only in double support. |
+| `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
 | `flat_orientation` | `-2.0` | Penalize gravity-vector tilt. |
 | `base_height` | `-10.0` | Penalize error from `limits_pose.base_height_target`. |
-| `action_rate` | `-0.01` | Penalize change from the previous action. |
+| `action_rate` | `-0.01` | Penalize change from the previous applied action, with extra ankle and waist weighting. |
+| `action_acceleration` | `-0.005` | Penalize change in applied action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
-| `torque_l1` | `-1.2` | Penalize absolute requested torque normalized by each joint's peak torque. |
-| `torque_peak` | `-12.0` | Quadratically penalize normalized torque above peak. |
+| `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
+| `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
+| `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
+| `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Squared-Huber shaping stays quadratic near the target and linear for large impacts instead of saturating. |
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
-| `stand_foot_motion` | `-1.0` | At standing command, penalize foot linear and angular motion. |
+| `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
+| `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
+| `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize bounded left/right foot heading error outside the configured deadband relative to pelvis forward. The weighted cost is capped below `0.01` per control step and is inactive during recovery, termination, and moving commands. |
+| `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation, gated by lateral command. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
 | `invalid_action` | `0.0` | Optional penalty for invalid/nonfinite requested action. |
-| `foot_slip` | `-0.25` | Penalize contacting-foot motion. |
-| `flight` | `-2.0` | Penalize no-foot-contact flight while locomotion is requested. |
-| `contact_timing` | `-5.0` | Penalize premature liftoff and touchdown. |
-| `touchdown_air_time` | `0.5` | Reward touchdown after a bounded swing duration. |
+| `gait_contact` | `-1.0` | Penalize disagreement between measured foot contact and the phase-conditioned stance schedule. |
+| `gait_stance_slip` | `-0.25` | Penalize planar foot motion during the phase-conditioned stance interval. |
+| `gait_swing_clearance` | `-0.5` | Penalize swing-foot clearance below the configured target. |
 | `undesired_contact` | `0.0` | Optional non-foot terrain-contact penalty. |
 | `self_collision` | `0.0` | Optional self-collision penalty. |
 | `termination` | `-100.0` | Penalize non-timeout terminal failure. |
@@ -303,10 +359,24 @@ Supporting fields are:
 
 | Section | Fields |
 | --- | --- |
-| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std` |
-| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight` |
-| `gait` | `foot_slip_angular_speed_scale`, `flight_body_speed_threshold`, `flight_yaw_speed_threshold`, `contact_min_air_time`, `contact_min_contact_time`, `touchdown_min_air_time`, `touchdown_max_air_time` |
+| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_lpf_cutoff_hz` |
+| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale` |
+| `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
+| `smoothness` | `ankle_action_weight`, `waist_action_weight` |
 | `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_lateral_command_index`, `hip_lateral_command_threshold` |
+
+Rollout telemetry reports the mean, p95, p99, and worst normalized joint-force,
+foot-contact peak, and control-interval impulse maxima. The tail metrics are named
+`gait/{joint_force,contact_force,contact_impulse}_{p95,p99,worst}_body_weight`; unlike the mean
+reward terms, they expose short impacts that would otherwise be diluted across
+joints and rollout frames. `command/standing_positive_reward_fraction` reports
+the fraction of standing transitions whose total reward is positive; it should
+rise toward one as quiet standing matures.
+
+`track_ang_vel_z` uses a first-order low-pass-filtered measured yaw rate. The
+filter is initialized from the measurement on reset and
+`tracking.ang_vel_z_lpf_cutoff_hz` sets its cutoff; it does not filter policy
+actions or the commanded yaw rate.
 
 ## Locomotion termination: `done_config`
 
@@ -506,7 +576,8 @@ checkpoint validation. See the [SONIC transfer guide](sonic.md).
 | `name` | Stable, single-component run label. Locomotion final checkpoints are timestamped roots; motion also maintains a `final` child. |
 | `every_updates` | Periodic save interval, or `null` for final-only behavior. |
 | `resume_path` | Checkpoint to continue, normally from its exact clean Git revision. |
-| `allow_git_commit_mismatch` | Permit resume from a different clean commit. It requires `resume_path` and bypasses checkout/source-revision identity only. |
+| `warm_start_path` | TWIST2-only transfer source. It restores policy and normalization but resets optimizer and runtime state; it is mutually exclusive with `resume_path`. |
+| `allow_git_commit_mismatch` | Permit resume or warm start from a different clean commit. It requires one of those paths and bypasses checkout/source-revision identity only. |
 | `upload_wandb_artifact` | Upload saved checkpoints when a W&B run exists. |
 | `wandb_artifact_name` | Explicit artifact name or profile-derived default. |
 | `wandb_artifact_type` | W&B artifact type, normally `checkpoint`. |
@@ -517,10 +588,18 @@ source-revision identity only.
 Checkpoint document integrity, metadata and state layout hashes, normalization
 state, saved update, task, and actor/critic observation and action runtime
 sizes/layouts are still validated.
+Checkpoints created before the PPO symmetry-loss field was introduced load it
+as zero. This preserves their original policy and affects neither inference nor
+the saved parameter layout. Legacy locomotion checkpoints similarly load newer
+reward weights as zero and missing joint-specific smoothness multipliers as one,
+preserving their original reward calculation if resumed.
 Resume additionally validates and restores environment continuation,
 observation stacks, RNG, current learning rate, sampler state, environment
 layout, and the full resume contract. A changed `total_timesteps` is allowed
 only when the resulting update budget still covers the saved update.
+TWIST2 warm start instead allows a new dataset fingerprint and optimization
+budget while requiring the same task, robot, GMR revision, policy architecture,
+environment semantics, and observation/action layouts.
 
 ## W&B: `wandb_config`
 
@@ -574,7 +653,7 @@ TWIST uses 32 contacts per environment and logs
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise and latency, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
+| `locomotion` | 2,048-environment gait training with full planar/yaw commands, standing/moving transitions, slope, model/reset randomization, observation noise and latency, pushes, mean-KL adaptive learning with a `0.00003` floor, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
@@ -586,8 +665,8 @@ Headline resolved PPO values are:
 | Profile | Timesteps | Envs × steps | Epochs × minibatches | Learning rate | Gamma / GAE | Policy |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | `smoke` | 4 | 2 × 2 | 1 × 1 | 0.001 | 0.99 / 0.95 | 256-256 tanh |
-| `locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
-| `hardware_locomotion` | 150,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.995 / 0.98 | 512-256-128 swish |
+| `locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.97 / 0.95 | 512-256-128 swish |
+| `hardware_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |

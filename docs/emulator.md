@@ -1,8 +1,9 @@
 # RobStride emulator
 
-The RobStride emulator presents the canonical 60 kg sphere-hand Bello
-morphology through the same motor, IMU, and pose interfaces used around
-physical hardware, while native MuJoCo supplies real-time dynamics.
+The RobStride emulator presents the canonical 55.068 kg sphere-hand Bello
+morphology, plus an optional symmetric hand payload, through the same motor,
+IMU, and pose interfaces used around physical hardware, while native MuJoCo
+supplies real-time dynamics.
 
 Public controls are documented under
 [`bello-run-emulator`](commands.md#bello-run-emulator).
@@ -33,8 +34,8 @@ The emulated motor contract is:
   differential-transmission ownership.
 
 The sphere-hand emulator selects the canonical `lower_body` and `upper_body`
-groups and leaves the physical `wrist_yaw` group inactive. Differential ankles
-remain two coupled tendon motors per side. Initialization validates unique
+groups. Differential ankles remain two coupled tendon motors per side.
+Initialization validates unique
 bus/CAN identities, model ranges, optional-joint coverage, complete coupling
 groups, URDF transmission ownership, and torque enforcement. The command
 requires a source checkout because the wheel intentionally omits hardware
@@ -48,6 +49,11 @@ The public `command_latency_seconds` option delays only MIT motor-control
 frames before they affect MuJoCo. Motor enable/stop, parameter access, and
 other lifecycle traffic remains immediate. Set it to `0` to disable synthetic
 command latency.
+
+Set `end_effector_payload_mass_kg` to the carried mass at each hand. The value
+uses the same asset-generation path and per-hand convention as motion training
+and evaluation; for example, two 10 lb loads use
+`end_effector_payload_mass_kg=4.5359237`. The default is zero.
 
 ## Linux interfaces
 

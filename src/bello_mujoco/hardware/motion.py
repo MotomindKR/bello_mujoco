@@ -65,6 +65,7 @@ class HardwareMotionConfig(HardwareControlConfig):
 
     client_name: str = "bello-motion-policy"
     motion_path: Path | None = None
+    end_effector_payload_mass_kg: float | None = None
     pose_endpoint: str = "127.0.0.1:50053"
     pose_reference_frame: str = "odom"
     pose_tracked_frame: str = "pelvis_link"
@@ -73,6 +74,7 @@ class HardwareMotionConfig(HardwareControlConfig):
     start_time_seconds: float = 0.0
     max_action_abs: float = 1.0
     max_raw_action_abs: float = 5.0
+    action_lpf_cutoff_hz: float = 15.0
     max_pose_imu_orientation_error: float = 0.25
     max_base_linear_velocity: float = 5.0
     max_motion_tilt_radians: float = math.radians(70.0)
@@ -84,6 +86,7 @@ class PoseFrame:
     position: np.ndarray
     orientation_xyzw: np.ndarray
     linear_velocity: np.ndarray
+    angular_velocity: np.ndarray
     sequence: int
     source_age_ms: int
     received_at: float
@@ -252,7 +255,15 @@ def _build_motion_inference(
             metadata.ppo,
         )
         raw_action = apply_actor(policy, normalized)
-        action = jnp.clip(raw_action, -config.max_action_abs, config.max_action_abs)
+        clipped_action = jnp.clip(
+            raw_action, -config.max_action_abs, config.max_action_abs
+        )
+        action_lpf_alpha = 1.0 - math.exp(
+            -2.0 * math.pi * config.action_lpf_cutoff_hz * env.control_timestep
+        )
+        action = state.last_action + action_lpf_alpha * (
+            clipped_action - state.last_action
+        )
         physical_target = env.action_target(state, action)
         reference = env.aligned_reference(
             state.reference_time,
@@ -366,6 +377,7 @@ class PoseStream:
                     "translation_metres",
                     "orientation_xyzw",
                     "linear_velocity_metres_per_second",
+                    "angular_velocity_radians_per_second",
                 ):
                     if not response.HasField(field):
                         raise RuntimeError(
@@ -396,11 +408,20 @@ class PoseStream:
                     ),
                     dtype=np.float64,
                 )
+                angular_velocity = np.asarray(
+                    (
+                        response.angular_velocity_radians_per_second.x,
+                        response.angular_velocity_radians_per_second.y,
+                        response.angular_velocity_radians_per_second.z,
+                    ),
+                    dtype=np.float64,
+                )
                 source_age = int(response.sample_age_ms)
                 frame = PoseFrame(
                     position=position,
                     orientation_xyzw=orientation,
                     linear_velocity=linear_velocity,
+                    angular_velocity=angular_velocity,
                     sequence=sequence,
                     source_age_ms=source_age,
                     received_at=received,
@@ -443,6 +464,7 @@ def validate_pose_frame(frame: PoseFrame, config: HardwareMotionConfig) -> None:
         "position": (frame.position, (3,)),
         "orientation": (frame.orientation_xyzw, (4,)),
         "linear velocity": (frame.linear_velocity, (3,)),
+        "angular velocity": (frame.angular_velocity, (3,)),
     }
     for name, (value, shape) in values.items():
         array = np.asarray(value)
@@ -464,6 +486,12 @@ def validate_pose_frame(frame: PoseFrame, config: HardwareMotionConfig) -> None:
         raise RuntimeError(
             f"estimated base speed {speed:.3f} m/s exceeds "
             f"{config.max_base_linear_velocity:.3f} m/s"
+        )
+    angular_speed = float(np.linalg.norm(frame.angular_velocity))
+    if angular_speed > config.max_angular_velocity:
+        raise RuntimeError(
+            f"estimated base angular speed {angular_speed:.3f} rad/s exceeds "
+            f"{config.max_angular_velocity:.3f} rad/s"
         )
 
 
@@ -587,6 +615,7 @@ class HardwareMotionPolicyAdapter:
             position=np.asarray(source.qpos[:3], dtype=np.float64),
             orientation_xyzw=wxyz_to_xyzw(np.asarray(source.qpos[3:7])),
             linear_velocity=np.asarray(source.qvel[:3], dtype=np.float64),
+            angular_velocity=np.asarray(source.qvel[3:6], dtype=np.float64),
             sequence=0,
             source_age_ms=0,
             received_at=time.monotonic(),
@@ -682,7 +711,14 @@ class HardwareMotionPolicyAdapter:
             reference_time=reference_time,
             anchor_position_error=float(host.anchor_position_error),
             anchor_orientation_error=float(host.anchor_orientation_error),
-            action_clipped=not np.array_equal(action, raw_action),
+            action_clipped=not np.array_equal(
+                np.clip(
+                    raw_action,
+                    -self.config.max_action_abs,
+                    self.config.max_action_abs,
+                ),
+                raw_action,
+            ),
         )
 
     def _state(self, frame: HardwareFrame, pose: PoseFrame, reference_time: float):
@@ -698,8 +734,8 @@ class HardwareMotionPolicyAdapter:
         qpos[root + 3 : root + 7] = root_quat
         qpos[model.actuator_qpos_indices] = logical_position
         qvel[root_velocity : root_velocity + 3] = pose.linear_velocity
-        # The hardware gyro and MuJoCo free-joint angular qvel are both root-local.
-        qvel[root_velocity + 3 : root_velocity + 6] = frame.angular_velocity
+        # The estimator gyro and MuJoCo free-joint angular qvel are both root-local.
+        qvel[root_velocity + 3 : root_velocity + 6] = pose.angular_velocity
         qvel[model.actuator_qvel_indices] = logical_velocity
         self._mj_data.qpos[:] = qpos
         self._mj_data.qvel[:] = qvel
@@ -733,8 +769,6 @@ def validate_hardware_motion_checkpoint(
             "bounded BeyondMimic hardware deployment requires "
             "'tanh_gaussian' policy actions"
         )
-    if metadata.asset.end_effector_sphere_mode != "both":
-        raise ValueError("motion hardware runner requires sphere hands")
     availability = metadata.asset.joint_availability
     if availability.enabled_joint_names != {"waist_yaw_joint"}:
         raise ValueError(
@@ -763,6 +797,7 @@ def validate_hardware_motion_config(
         "pose_timeout_seconds": config.pose_timeout_seconds,
         "max_action_abs": config.max_action_abs,
         "max_raw_action_abs": config.max_raw_action_abs,
+        "action_lpf_cutoff_hz": config.action_lpf_cutoff_hz,
         "max_pose_imu_orientation_error": config.max_pose_imu_orientation_error,
         "max_base_linear_velocity": config.max_base_linear_velocity,
         "max_motion_tilt_radians": config.max_motion_tilt_radians,
@@ -773,6 +808,11 @@ def validate_hardware_motion_config(
             raise ValueError(f"{name} must be positive and finite")
     if config.max_pose_age_ms <= 0:
         raise ValueError("max_pose_age_ms must be positive")
+    if config.end_effector_payload_mass_kg is not None and (
+        not math.isfinite(config.end_effector_payload_mass_kg)
+        or config.end_effector_payload_mass_kg < 0.0
+    ):
+        raise ValueError("end_effector_payload_mass_kg must be finite and nonnegative")
     if not math.isfinite(config.start_time_seconds) or config.start_time_seconds < 0.0:
         raise ValueError("start_time_seconds must be finite and nonnegative")
     if env is not None and config.start_time_seconds >= env.motion.duration:
@@ -794,6 +834,18 @@ def load_hardware_motion_policy(
         use_viewer_model=False,
         allow_git_commit_mismatch=config.allow_git_commit_mismatch,
     )
+    checkpoint_payload_mass = runtime.metadata.asset.end_effector_payload_mass_kg
+    if config.end_effector_payload_mass_kg is not None and not math.isclose(
+        config.end_effector_payload_mass_kg,
+        checkpoint_payload_mass,
+        rel_tol=0.0,
+        abs_tol=1.0e-6,
+    ):
+        raise ValueError(
+            "configured end-effector payload does not match the motion checkpoint: "
+            f"runner={config.end_effector_payload_mass_kg:.6g} kg per hand, "
+            f"checkpoint={checkpoint_payload_mass:.6g} kg per hand"
+        )
     return (
         HardwareMotionPolicyAdapter(
             runtime.env,
@@ -871,9 +923,13 @@ def run_hardware_motion(
                 "motion_policy_joints": motion_adapter.env.action_size,
                 "standing_policy_joints": standing_adapter.env.action_size,
                 "motion_control_rate_hz": (1.0 / motion_adapter.control_timestep),
+                "motion_action_lpf_cutoff_hz": config.action_lpf_cutoff_hz,
                 "standing_control_rate_hz": (1.0 / standing_adapter.control_timestep),
                 "jax_backend": jax.default_backend(),
                 "motion_start_seconds": motion_adapter.start_time,
+                "end_effector_payload_mass_kg_per_hand": (
+                    metadata.asset.end_effector_payload_mass_kg
+                ),
                 "nominal_ramp_distance_max": initial_error,
                 "standing_preview_action_abs_max": float(
                     np.max(np.abs(standing_preview.action))

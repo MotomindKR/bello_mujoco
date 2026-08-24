@@ -4,14 +4,18 @@ dataset_path: null
 teacher_checkpoint_path: null
 sonic_artifact_path: null
 resume_path: null
+warm_start_checkpoint_path: null
 allow_git_commit_mismatch: false
 total_timesteps: null
 num_envs: null
 checkpoint_every_updates: null
+learning_rate: null
+end_effector_payload_mass_kg: null
 max_price: null
 branch: null  # Required: exact branch to fetch and pin.
 run_name: null
 duration_hours: 6.0
+ssh_timeout_seconds: 900
 skip_confirmation: false
 dry_run: false
 preferred_countries: [KR, JP, TW, HK, SG]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib
@@ -87,6 +87,7 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
         "acknowledgement_timeout_seconds": config.acknowledgement_timeout_seconds,
         "rpc_timeout_seconds": config.rpc_timeout_seconds,
         "ramp_seconds": config.ramp_seconds,
+        "gain_scale": config.gain_scale,
         "max_tilt_radians": config.max_tilt_radians,
         "max_angular_velocity": config.max_angular_velocity,
         "max_linear_acceleration": config.max_linear_acceleration,
@@ -96,6 +97,12 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be positive and finite")
+    if config.acknowledgement_timeout_seconds <= config.command_validity_seconds:
+        raise ValueError(
+            "acknowledgement_timeout_seconds must exceed command_validity_seconds"
+        )
+    if config.gain_scale > 1.0:
+        raise ValueError("gain_scale must be at most 1.0")
     if config.max_duration_seconds is not None and (
         not math.isfinite(config.max_duration_seconds)
         or config.max_duration_seconds <= 0.0
@@ -567,21 +574,38 @@ def require_nominal_pose(
 ) -> None:
     """Require measured coordinates to remain near the checkpoint nominal pose."""
 
+    require_target_pose(
+        frame,
+        adapter,
+        adapter.nominal_physical_target,
+        pose_name="the checkpoint nominal pose",
+    )
+
+
+def require_target_pose(
+    frame: HardwareFrame,
+    adapter: HardwarePolicyAdapter,
+    target: np.ndarray,
+    *,
+    pose_name: str,
+) -> None:
+    """Require measured coordinates to remain near an explicit target pose."""
+
     measured = np.asarray(frame.positions, dtype=np.float64)
-    nominal = np.asarray(adapter.nominal_physical_target, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
     coordinate_count = len(adapter.physical_coordinate_names)
     if coordinate_count == 0:
-        raise RuntimeError("nominal-pose validation requires physical coordinates")
+        raise RuntimeError("target-pose validation requires physical coordinates")
     expected_shape = (coordinate_count,)
-    if measured.shape != expected_shape or nominal.shape != expected_shape:
+    if measured.shape != expected_shape or target.shape != expected_shape:
         raise RuntimeError(
-            "nominal-pose validation requires one measured and target value per "
+            "target-pose validation requires one measured and target value per "
             "physical coordinate"
         )
     if not np.all(np.isfinite(measured)):
-        raise RuntimeError("measured nominal-pose coordinates are non-finite")
-    if not np.all(np.isfinite(nominal)):
-        raise RuntimeError("checkpoint nominal-pose target is non-finite")
+        raise RuntimeError("measured target-pose coordinates are non-finite")
+    if not np.all(np.isfinite(target)):
+        raise RuntimeError(f"{pose_name} target is non-finite")
     limits = np.asarray(
         [
             (
@@ -593,15 +617,15 @@ def require_nominal_pose(
         ],
         dtype=np.float64,
     )
-    error = np.abs(measured - nominal)
+    error = np.abs(measured - target)
     excess = error - limits
     index = int(np.argmax(excess))
     if excess[index] > 0.0:
         name = adapter.physical_coordinate_names[index]
         raise RuntimeError(
-            "robot is too far from the checkpoint nominal pose: "
+            f"robot is too far from {pose_name}: "
             f"{name} is {error[index]:.3f} rad away "
-            f"(measured={measured[index]:.3f}, nominal={nominal[index]:.3f}); "
+            f"(measured={measured[index]:.3f}, target={target[index]:.3f}); "
             f"maximum allowed error is {limits[index]:.3f} rad"
         )
 
@@ -611,12 +635,14 @@ def coordinate_targets(
     coordinate_names: tuple[str, ...],
     physical_target: np.ndarray,
     adapter: HardwarePolicyAdapter,
+    *,
+    gain_scale: float = 1.0,
 ) -> dict[str, Any]:
     return {
         name: binding.CoordinateTarget.position(
             float(physical_target[adapter.coordinate_index[name]]),
-            kp=float(adapter.kp[adapter.coordinate_index[name]]),
-            kd=float(adapter.kd[adapter.coordinate_index[name]]),
+            kp=float(adapter.kp[adapter.coordinate_index[name]] * gain_scale),
+            kd=float(adapter.kd[adapter.coordinate_index[name]] * gain_scale),
         )
         for name in coordinate_names
     }
@@ -639,6 +665,7 @@ def start_hardware_controls(
                 groups[name].coordinates,
                 physical_target,
                 adapter,
+                gain_scale=config.gain_scale,
             ),
         )
         for name in config.groups
@@ -762,28 +789,35 @@ def send_targets(
     adapter: HardwarePolicyAdapter,
     config: HardwareControlConfig,
     executor: Executor,
+    pending_submissions: dict[str, Future[Any]],
     pending_receipts: list[Any],
 ) -> None:
+    resolve_command_submissions(pending_submissions, pending_receipts)
     reap_command_receipts(pending_receipts)
-    submissions = {
-        name: executor.submit(
+    maximum_pending = len(config.groups) * (
+        math.ceil(config.acknowledgement_timeout_seconds / adapter.control_timestep) + 1
+    )
+    while len(pending_receipts) > maximum_pending:
+        pending_receipts.pop(0).result()
+    for name in config.groups:
+        pending_submissions[name] = executor.submit(
             controls[name].send_async,
             coordinate_targets(
                 binding,
                 groups[name].coordinates,
                 physical_target,
                 adapter,
+                gain_scale=config.gain_scale,
             ),
         )
-        for name in config.groups
-    }
-    for name in config.groups:
-        pending_receipts.append(submissions[name].result())
-    maximum_pending = len(config.groups) * (
-        math.ceil(config.acknowledgement_timeout_seconds / adapter.control_timestep) + 1
-    )
-    while len(pending_receipts) > maximum_pending:
-        pending_receipts.pop(0).result()
+
+
+def resolve_command_submissions(
+    pending_submissions: dict[str, Future[Any]],
+    pending_receipts: list[Any],
+) -> None:
+    for name in tuple(pending_submissions):
+        pending_receipts.append(pending_submissions.pop(name).result())
 
 
 def reap_command_receipts(pending_receipts: list[Any]) -> None:
@@ -846,11 +880,13 @@ def pace_hardware_loop(
     remaining = deadline - time.monotonic()
     if remaining > 0.0:
         time.sleep(remaining)
-    elif -remaining > config.max_loop_lag_seconds:
+    now = time.monotonic()
+    lag = now - deadline
+    if lag > config.max_loop_lag_seconds:
         raise RuntimeError(
-            f"hardware policy loop missed its deadline by {-remaining:.3f} seconds"
+            f"hardware policy loop missed its deadline by {lag:.3f} seconds"
         )
-    return deadline
+    return max(deadline, now)
 
 
 @dataclass
@@ -862,6 +898,7 @@ class ArmedControlSession:
     adapter: HardwarePolicyAdapter
     config: HardwareControlConfig
     executor: Executor
+    pending_submissions: dict[str, Future[Any]]
     pending_receipts: list[Any]
     previous_target: np.ndarray
     deadline: float
@@ -895,6 +932,7 @@ class ArmedControlSession:
             self.adapter,
             self.config,
             self.executor,
+            self.pending_submissions,
             self.pending_receipts,
         )
         self.previous_target = np.asarray(target, dtype=np.float64)
@@ -915,6 +953,32 @@ class ArmedControlSession:
         *,
         before_step: Callable[[], bool] | None = None,
     ) -> HardwareFrame | None:
+        return self.ramp_to_target(
+            initial_positions,
+            self.adapter.nominal_physical_target,
+            before_step=before_step,
+        )
+
+    def ramp_to_target(
+        self,
+        initial_positions: np.ndarray,
+        target_positions: np.ndarray,
+        *,
+        before_step: Callable[[], bool] | None = None,
+    ) -> HardwareFrame | None:
+        initial_positions = np.asarray(initial_positions, dtype=np.float64)
+        target_positions = np.asarray(target_positions, dtype=np.float64)
+        expected_shape = (len(self.adapter.physical_coordinate_names),)
+        if (
+            initial_positions.shape != expected_shape
+            or target_positions.shape != expected_shape
+            or not np.all(np.isfinite(initial_positions))
+            or not np.all(np.isfinite(target_positions))
+        ):
+            raise ValueError(
+                "hardware ramp requires one finite initial and target value per "
+                "physical coordinate"
+            )
         ramp_steps = max(
             1, math.ceil(self.config.ramp_seconds / self.adapter.control_timestep)
         )
@@ -924,7 +988,7 @@ class ArmedControlSession:
                 return None
             fraction = step / ramp_steps
             target = initial_positions + fraction * (
-                self.adapter.nominal_physical_target - initial_positions
+                target_positions - initial_positions
             )
             self.send_target(target)
             self.pace()
@@ -957,6 +1021,10 @@ class ArmedControlSession:
         )
 
     def drain(self) -> None:
+        resolve_command_submissions(
+            self.pending_submissions,
+            self.pending_receipts,
+        )
         drain_command_receipts(self.pending_receipts)
 
 
@@ -1009,6 +1077,7 @@ def armed_control_session(
                     adapter=adapter,
                     config=config,
                     executor=executor,
+                    pending_submissions={},
                     pending_receipts=[],
                     previous_target=np.asarray(
                         initial_frame.positions, dtype=np.float64

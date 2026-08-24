@@ -108,6 +108,7 @@ def test_released_teacher_training_defaults_are_locked() -> None:
     assert config.config.num_updates == 30_002
     assert config.twist_env.action_clip == 5.0
     assert config.sampling == TwistSamplingConfig()
+    assert config.asset_config.target_total_mass_kg is None
 
 
 def test_twist_checkpoint_upload_honors_checkpoint_config(

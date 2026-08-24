@@ -26,7 +26,6 @@ from bello_mujoco.assets_pipeline import (
     robot_description_root,
 )
 from bello_mujoco.assets_pipeline.mesh import (
-    EndEffectorSphereMode,
     JointAvailabilityConfig,
     export_binary_simplified_mesh,
     rewrite_urdf_for_mujoco,
@@ -61,16 +60,12 @@ _GENERATOR_DISTRIBUTIONS = (
 _DEFAULT_CACHE_GUARD = threading.Lock()
 _DEFAULT_CACHE_LEASES: dict[Path, TextIO] = {}
 _DEFAULT_CACHE_ASSETS: dict[Path, PreparedAsset] = {}
-SPHERE_REMOVED_ACTUATED_JOINTS = frozenset(
-    {
-        "right_wrist_yaw_joint",
-        "left_wrist_yaw_joint",
-        "right_finger_right_slide_joint",
-        "right_finger_left_slide_joint",
-        "left_finger_right_slide_joint",
-        "left_finger_left_slide_joint",
-    }
+END_EFFECTOR_PAYLOAD_LINK_NAMES = (
+    "l_end_effector_sphere_link",
+    "r_end_effector_sphere_link",
 )
+END_EFFECTOR_SPHERE_RADIUS_M = 0.0325
+END_EFFECTOR_SPHERE_CENTER_M = (0.0, 0.0, -0.02)
 
 
 def _close_default_asset_cache_leases() -> None:
@@ -91,8 +86,8 @@ class AssetPrepConfig:
     mesh_face_budget: int = 1_000
     visual_mesh_face_budget: int = 200_000
     collision_mode: CollisionMode = "mesh"
-    end_effector_sphere_mode: EndEffectorSphereMode = "none"
     target_total_mass_kg: float | None = None
+    end_effector_payload_mass_kg: float = 0.0
     neighbor_exclusion_depth: int = 2
     enforce_policy_effort_limits: bool = True
     imu_config: ImuSensorConfig = ImuSensorConfig()
@@ -107,11 +102,6 @@ class AssetPrepConfig:
             raise ValueError(
                 f"collision_mode must be 'mesh' or 'box', got {self.collision_mode!r}"
             )
-        if self.end_effector_sphere_mode not in {"none", "both"}:
-            raise ValueError(
-                "end_effector_sphere_mode must be 'none' or 'both', got "
-                f"{self.end_effector_sphere_mode!r}"
-            )
         if self.target_total_mass_kg is not None and (
             not math.isfinite(self.target_total_mass_kg)
             or self.target_total_mass_kg <= 0.0
@@ -120,9 +110,15 @@ class AssetPrepConfig:
                 "target_total_mass_kg must be positive and finite when set, got "
                 f"{self.target_total_mass_kg}"
             )
+        if (
+            not math.isfinite(self.end_effector_payload_mass_kg)
+            or self.end_effector_payload_mass_kg < 0.0
+        ):
+            raise ValueError(
+                "end_effector_payload_mass_kg must be finite and nonnegative, got "
+                f"{self.end_effector_payload_mass_kg}"
+            )
         removed_joints = set(self.joint_availability.disabled_joint_names)
-        if self.end_effector_sphere_mode == "both":
-            removed_joints.update(SPHERE_REMOVED_ACTUATED_JOINTS)
         active_joints = {
             name: config
             for name, config in self.actuator_config.joints.items()
@@ -142,19 +138,12 @@ def canonical_physical_asset_config(
 ) -> AssetPrepConfig:
     return AssetPrepConfig(
         collision_mode="box",
-        end_effector_sphere_mode="both",
-        target_total_mass_kg=60.0,
+        target_total_mass_kg=None,
         imu_config=ImuSensorConfig(
             enabled=imu_enabled,
             body_name="pelvis_link",
         ),
-        joint_availability=JointAvailabilityConfig(
-            waist_yaw=True,
-            waist_roll=False,
-            waist_pitch=False,
-            neck_yaw=False,
-            head_pitch=False,
-        ),
+        joint_availability=JointAvailabilityConfig(waist_yaw=True),
     )
 
 
@@ -245,11 +234,11 @@ def prepare_asset_unlocked(
     mesh_sources = rewrite_urdf_for_mujoco(
         source_urdf,
         out_urdf,
-        end_effector_sphere_mode=config.end_effector_sphere_mode,
         joint_availability=config.joint_availability,
     )
     if config.target_total_mass_kg is not None:
         scale_urdf_total_mass(out_urdf, config.target_total_mass_kg)
+    add_end_effector_payload_inertials(out_urdf, config.end_effector_payload_mass_kg)
     actuated_joint_order = actuated_urdf_joint_names(out_urdf)
     validate_actuator_joint_contract(config.actuator_config, actuated_joint_order)
     for src, dst_name in mesh_sources.collision.items():
@@ -322,12 +311,21 @@ def scale_urdf_total_mass(urdf_path: Path, target_total_mass_kg: float) -> None:
 
     tree = ET.parse(urdf_path)
     root = tree.getroot()
+    movable_links = {
+        child.attrib["link"]
+        for joint in root.findall("joint")
+        if joint.get("type") != "fixed"
+        for child in joint.findall("child")
+        if "link" in child.attrib
+    }
     inertials: list[tuple[ET.Element, ET.Element]] = []
     total_mass = 0.0
     for link in root.findall("link"):
         mass = link.find("./inertial/mass")
         inertia = link.find("./inertial/inertia")
         if mass is None or inertia is None or "value" not in mass.attrib:
+            if link.get("name") not in movable_links and link.find("inertial") is None:
+                continue
             raise ValueError(
                 f"link {link.get('name', '<unnamed>')!r} is missing complete inertial data"
             )
@@ -352,6 +350,56 @@ def scale_urdf_total_mass(urdf_path: Path, target_total_mass_kg: float) -> None:
             if not math.isfinite(value):
                 raise ValueError(f"inertia tensor has nonfinite {attribute}={value}")
             inertia.set(attribute, f"{value * scale:.17g}")
+
+    ET.indent(tree, space="  ")
+    tree.write(urdf_path, encoding="utf-8", xml_declaration=True)
+
+
+def add_end_effector_payload_inertials(
+    urdf_path: Path, mass_kg_per_hand: float
+) -> None:
+    """Attach equal payload inertials at the two sphere-hand centers."""
+
+    if not math.isfinite(mass_kg_per_hand) or mass_kg_per_hand < 0.0:
+        raise ValueError(
+            f"mass_kg_per_hand must be finite and nonnegative, got {mass_kg_per_hand}"
+        )
+    if mass_kg_per_hand == 0.0:
+        return
+
+    tree = ET.parse(urdf_path)
+    root = tree.getroot()
+    links = {link.get("name"): link for link in root.findall("link")}
+    inertia = 0.4 * mass_kg_per_hand * END_EFFECTOR_SPHERE_RADIUS_M**2
+    for name in END_EFFECTOR_PAYLOAD_LINK_NAMES:
+        link = links.get(name)
+        if link is None:
+            raise ValueError(f"generated URDF is missing payload link {name!r}")
+        if link.find("inertial") is not None:
+            raise ValueError(f"payload link {name!r} already has inertial data")
+        inertial = ET.Element("inertial")
+        ET.SubElement(
+            inertial,
+            "origin",
+            {
+                "xyz": " ".join(str(value) for value in END_EFFECTOR_SPHERE_CENTER_M),
+                "rpy": "0 0 0",
+            },
+        )
+        ET.SubElement(inertial, "mass", {"value": f"{mass_kg_per_hand:.17g}"})
+        ET.SubElement(
+            inertial,
+            "inertia",
+            {
+                "ixx": f"{inertia:.17g}",
+                "iyy": f"{inertia:.17g}",
+                "izz": f"{inertia:.17g}",
+                "ixy": "0",
+                "ixz": "0",
+                "iyz": "0",
+            },
+        )
+        link.insert(0, inertial)
 
     ET.indent(tree, space="  ")
     tree.write(urdf_path, encoding="utf-8", xml_declaration=True)
@@ -397,8 +445,8 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "mesh_face_budget": config.mesh_face_budget,
         "visual_mesh_face_budget": config.visual_mesh_face_budget,
         "collision_mode": config.collision_mode,
-        "end_effector_sphere_mode": config.end_effector_sphere_mode,
         "target_total_mass_kg": config.target_total_mass_kg,
+        "end_effector_payload_mass_kg": config.end_effector_payload_mass_kg,
         "neighbor_exclusion_depth": config.neighbor_exclusion_depth,
         "enforce_policy_effort_limits": config.enforce_policy_effort_limits,
         "imu_config": asdict(config.imu_config),

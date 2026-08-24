@@ -76,13 +76,7 @@ DEFAULT_KEY_BODY_NAMES = (
     "head_link",
 )
 
-TWIST_JOINT_AVAILABILITY = JointAvailabilityConfig(
-    waist_yaw=True,
-    waist_roll=False,
-    waist_pitch=False,
-    neck_yaw=False,
-    head_pitch=False,
-)
+TWIST_JOINT_AVAILABILITY = JointAvailabilityConfig(waist_yaw=True)
 
 
 @dataclass(frozen=True)
@@ -343,6 +337,7 @@ class TwistState:
     foot_air_time: jax.Array
     last_foot_contact: jax.Array
     total_step: jax.Array
+    root_push_phase: jax.Array
     gravity_fraction: jax.Array
 
 
@@ -631,7 +626,7 @@ class BelloTwistEnv:
         alignment_xy = desired_xy - source.qpos[:2]
         motion_state = motion_state.replace(alignment_xy=alignment_xy)
         reference = self._aligned_reference(motion_state, clip_index, 0)
-        qpos = reference.qpos.at[2].add(0.05)
+        qpos = self._reset_qpos(reference.qpos, pose_key)
         qvel = 0.8 * reference.qvel
         data = motion_state.data.replace(
             qpos=qpos,
@@ -663,6 +658,7 @@ class BelloTwistEnv:
             foot_air_time=jnp.zeros(2, dtype=jnp.float32),
             last_foot_contact=jnp.zeros(2, dtype=bool),
             total_step=jnp.asarray(0, dtype=jnp.int32),
+            root_push_phase=jnp.asarray(0, dtype=jnp.int32),
             gravity_fraction=jnp.asarray(self.model.gravity_fraction[0]),
         )
         state = partial_state
@@ -674,6 +670,12 @@ class BelloTwistEnv:
                 )
             )
         return state
+
+    def _reset_qpos(
+        self, reference_qpos: jax.Array, rng: jax.Array | None
+    ) -> jax.Array:
+        del rng
+        return reference_qpos.at[2].add(0.05)
 
     def reset_batch(
         self, batch_size: int, rng: jax.Array | None = None
@@ -941,6 +943,8 @@ class BelloTwistEnv:
             foot_air_time=jnp.where(contacts, 0.0, foot_air_time),
             last_foot_contact=contacts,
             total_step=state.total_step + 1,
+            root_push_phase=state.root_push_phase,
+            gravity_fraction=state.gravity_fraction,
         )
         stepped = self._post_step_state(stepped, jnp.asarray(False), rng)
         if self.stage == "student":
@@ -1091,6 +1095,8 @@ class BelloTwistEnv:
             foot_air_time=jnp.where(contacts, 0.0, foot_air_time),
             last_foot_contact=contacts,
             total_step=state.total_step + 1,
+            root_push_phase=state.root_push_phase,
+            gravity_fraction=state.gravity_fraction,
         )
         stepped = self._post_step_state(stepped, push_applied, push_key)
         if self.stage == "student":
@@ -1872,8 +1878,7 @@ def default_twist_asset_config() -> AssetPrepConfig:
     return AssetPrepConfig(
         asset="full_body",
         collision_mode="box",
-        end_effector_sphere_mode="both",
-        target_total_mass_kg=60.0,
+        target_total_mass_kg=None,
         enforce_policy_effort_limits=False,
         joint_availability=TWIST_JOINT_AVAILABILITY,
         actuator_config=actuators,

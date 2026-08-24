@@ -1069,7 +1069,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     command = vast_remote.remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
-    assert shlex.split(command)[-10] == "test-run"
+    assert shlex.split(command)[-12] == "test-run"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
@@ -1099,19 +1099,19 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     command = vast_remote.remote_start_command(
         str(tmp_path / "job"),
         motion_selection(),
-        motion_config(),
+        motion_config(end_effector_payload_mass_kg=4.5359237),
         "motion-test",
     )
 
-    assert shlex.split(command)[-10] == "motion-test"
+    assert shlex.split(command)[-12] == "motion-test"
+    assert float(shlex.split(command)[-13]) == pytest.approx(4.5359237)
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 3
-    assert "git clone --single-branch" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert "submodule update --init deps/bello-stack" in (
-        vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert (
+        'training_overrides+=("end_effector_payload_mass_kg='
+        '$end_effector_payload_mass_kg")' in vast_remote.REMOTE_TRAIN_SCRIPT
     )
-    assert "submodule status deps/bello-stack" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert "--recurse-submodules" not in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert "submodule update --init deps/GMR" not in vast_remote.REMOTE_TRAIN_SCRIPT
     overrides_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
         'training_overrides=("experiment=$experiment")'
     )
@@ -1136,10 +1136,13 @@ def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-9:-6] == [
+    assert arguments[-11:-5] == [
         "/workspace/datasets/twist/index.json",
         "/workspace/checkpoints/twist_teacher",
+        "",
         "true",
+        "",
+        "",
     ]
     assert "TF_GPU_ALLOCATOR=cuda_malloc_async" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
@@ -1170,8 +1173,9 @@ def test_sonic_remote_command_runs_bounded_baseline_and_evaluation() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-9:] == [
+    assert arguments[-11:] == [
         "/workspace/datasets/sonic/index.json",
+        "",
         "",
         "false",
         "/workspace/artifacts/sonic/default_release",
@@ -1179,9 +1183,10 @@ def test_sonic_remote_command_runs_bounded_baseline_and_evaluation() -> None:
         "1425408",
         "4096",
         "29",
+        "",
         "/workspace/.bello-vast-jobs/sonic/results",
     ]
-    assert 'actual_overrides+=("total_timesteps=$total_timesteps")' in (
+    assert 'training_overrides+=("total_timesteps=$total_timesteps")' in (
         vast_remote.REMOTE_TRAIN_SCRIPT
     )
     assert "uv run bello-eval" in vast_remote.REMOTE_TRAIN_SCRIPT
@@ -1217,8 +1222,9 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-9:] == [
+    assert arguments[-11:] == [
         "/workspace/datasets/sonic/index.json",
+        "",
         "",
         "true",
         "/workspace/artifacts/sonic/default_release",
@@ -1226,6 +1232,7 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
         "71270400",
         "4096",
         "580",
+        "",
         "/workspace/.bello-vast-jobs/sonic-long/results",
     ]
     script = vast_remote.REMOTE_TRAIN_SCRIPT
@@ -1337,7 +1344,7 @@ def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None
         def run(self, command, *, timeout_seconds):
             rsync_commands.append(command)
 
-    dataset_index, teacher = vast_remote.stage_twist_inputs(
+    dataset_index, teacher, warm_start = vast_remote.stage_twist_inputs(
         ("root", "example.com", 22001),
         selected,
         valid_config(experiment="twist_teacher", dataset_path=dataset_path),
@@ -1348,6 +1355,7 @@ def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None
 
     assert dataset_index == "/workspace/datasets/twist/index.json"
     assert teacher == ""
+    assert warm_start == ""
     assert len(rsync_commands) == 1
     assert {Path(path).name for path in rsync_commands[0] if path.startswith("/")} >= {
         "index.json",
@@ -1395,26 +1403,29 @@ def test_sonic_staging_preserves_split_files_and_verifies_release(
     (resume / "continuation" / "data").write_bytes(b"continuation")
     selected = replace(selected, resume_checkpoint_path=resume)
 
-    dataset, teacher, release, staged_resume = vast_remote.stage_training_inputs(
-        ("root", "example.com", 22001),
-        selected,
-        valid_config(
-            experiment="sonic",
-            dataset_path=index_path,
-            sonic_artifact_path=artifact,
-            resume_path=resume,
-            total_timesteps=71_270_400,
-            num_envs=4096,
-        ),
-        executor=Executor(),
-        rsync_executor=Transfer(),
-        sleep=lambda _: None,
+    dataset, teacher, release, staged_resume, warm_start = (
+        vast_remote.stage_training_inputs(
+            ("root", "example.com", 22001),
+            selected,
+            valid_config(
+                experiment="sonic",
+                dataset_path=index_path,
+                sonic_artifact_path=artifact,
+                resume_path=resume,
+                total_timesteps=71_270_400,
+                num_envs=4096,
+            ),
+            executor=Executor(),
+            rsync_executor=Transfer(),
+            sleep=lambda _: None,
+        )
     )
 
     assert dataset == "/workspace/datasets/sonic/index.json"
     assert teacher == ""
     assert release == "/workspace/artifacts/sonic/default_release"
     assert staged_resume == "/workspace/checkpoints/sonic_resume"
+    assert warm_start == ""
     assert len(rsync_commands) == 3
     assert "--relative" in rsync_commands[0]
     assert any("/./train.npz" in value for value in rsync_commands[0])
@@ -1522,6 +1533,12 @@ def test_remote_checksum_verifier_detects_corruption(tmp_path: Path) -> None:
             executor=LocalExecutor(),
             timeout_seconds=30,
         )
+
+
+@pytest.mark.parametrize("payload_mass", [-1.0, float("nan"), float("inf")])
+def test_motion_vast_config_rejects_invalid_payload(payload_mass: float) -> None:
+    with pytest.raises(ValueError, match="end-effector-payload-mass-kg"):
+        validate_config(motion_config(end_effector_payload_mass_kg=payload_mass))
 
 
 def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> None:

@@ -142,6 +142,24 @@ def test_command_yaml_is_complete(name: str, schema: type) -> None:
             command_config(schema, OmegaConf.create(incomplete))
 
 
+def test_hardware_elbow_yaw_offsets_are_flat_overrides() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        config = compose(
+            config_name="hardware",
+            overrides=(
+                "left_elbow_yaw_offset_radians=1.57079632679",
+                "right_elbow_yaw_offset_radians=-1.57079632679",
+            ),
+        )
+
+    command = command_config(HardwareCommandConfig, config)
+    assert command.left_elbow_yaw_offset_radians == pytest.approx(1.57079632679)
+    assert command.right_elbow_yaw_offset_radians == pytest.approx(-1.57079632679)
+
+
 @pytest.mark.parametrize(
     "value",
     (
@@ -204,7 +222,36 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.video_config.enabled is False
     assert not smoke.config.normalize_critic_observations
     assert locomotion.checkpoint_config.every_updates == 512
+    assert locomotion.config.total_timesteps == 8_000_000_000
+    assert locomotion.config.symmetry_loss_coef == pytest.approx(0.1)
     assert hardware.checkpoint_config.every_updates == 512
+    assert hardware.config.total_timesteps == 8_000_000_000
+    assert hardware.asset_config.enforce_policy_effort_limits
+    assert hardware.config.learning_rate == pytest.approx(1.0e-4)
+    assert hardware.config.min_learning_rate == pytest.approx(3.0e-5)
+    assert hardware.config.adaptive_kl_statistic == "mean"
+    assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
+    assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-4.0)
+    assert hardware.reward_config.weights.action_rate == pytest.approx(-0.01)
+    assert hardware.reward_config.weights.action_acceleration == pytest.approx(-0.005)
+    assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
+    assert hardware.reward_config.weights.stand_foot_motion == pytest.approx(-1.0)
+    assert hardware.reward_config.weights.stand_foot_heading == pytest.approx(-0.5)
+    assert hardware.reward_config.tracking.lin_vel_xy_moving_std == pytest.approx(0.3)
+    assert hardware.reward_config.tracking.ang_vel_z_lpf_cutoff_hz == pytest.approx(5.0)
+    assert hardware.reward_config.standing.foot_heading_deadband == pytest.approx(
+        0.0872664626
+    )
+    assert hardware.reward_config.weights.stand_contact == pytest.approx(-0.5)
+    assert hardware.reward_config.tracking.ang_vel_z_moving_std == pytest.approx(0.25)
+    assert hardware.command_config.lin_vel_x == (-1.0, 1.0)
+    assert hardware.command_config.lin_vel_y == (-1.0, 1.0)
+    assert hardware.command_config.ang_vel_yaw == (-1.0, 1.0)
+    assert hardware.command_config.resample_seconds == pytest.approx(10.0)
+    assert hardware.command_config.standing_transitions_enabled
+    assert hardware.env_config.random_push.enabled
+    assert not hardware.reward_config.gait.joint_force_apply_while_standing
+    assert hardware.video_config.command == (0.0, 0.5, 0.0)
     assert locomotion.env_config.observation_latency.enabled
     assert locomotion.env_config.observation_latency.delay_steps == (0, 2)
     assert hardware.env_config.observation_latency.enabled

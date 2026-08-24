@@ -98,6 +98,7 @@ class CheckpointConfig:
     name: str | None = None
     every_updates: int | None = None
     resume_path: Path | None = None
+    warm_start_path: Path | None = None
     allow_git_commit_mismatch: bool = False
     upload_wandb_artifact: bool = True
     wandb_artifact_name: str | None = None
@@ -319,9 +320,16 @@ def validate_checkpoint_name(name: str | None) -> None:
 
 def validate_checkpoint_options(config: CheckpointConfig) -> None:
     validate_checkpoint_name(config.name)
-    if config.allow_git_commit_mismatch and config.resume_path is None:
+    if config.resume_path is not None and config.warm_start_path is not None:
+        raise ValueError("resume_path and warm_start_path are mutually exclusive")
+    if (
+        config.allow_git_commit_mismatch
+        and config.resume_path is None
+        and config.warm_start_path is None
+    ):
         raise ValueError(
-            "checkpoint_config.allow_git_commit_mismatch requires resume_path"
+            "checkpoint_config.allow_git_commit_mismatch requires resume_path or "
+            "warm_start_path"
         )
 
 
@@ -393,6 +401,7 @@ def restore_evaluation_checkpoint(
     metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
         path,
         allow_git_commit_mismatch=allow_git_commit_mismatch,
+        allow_retired_asset_schema=allow_git_commit_mismatch,
     )
     template_state, _ = init_train_state(
         jax.random.PRNGKey(metadata.ppo.seed),
@@ -491,6 +500,53 @@ def restore_runner_checkpoint(
     return runner_state, static_policy, optimizer, effective_metadata
 
 
+def warm_start_runner_checkpoint(
+    path: Path,
+    env: PPOEnvironment,
+    fresh_runner: RunnerState,
+    expected_metadata: CheckpointMetadata,
+    *,
+    allow_git_commit_mismatch: bool = False,
+) -> tuple[RunnerState, CheckpointMetadata]:
+    """Initialize policy and normalization from a compatible prior run.
+
+    Unlike resume, warm start intentionally keeps the newly initialized optimizer,
+    update counter, environment state, sampler state, RNG, and learning rate. The
+    source checkpoint may use a different dataset fingerprint, but its robot,
+    retargeter, observation/action layouts, environment semantics, and policy
+    architecture must remain identical.
+    """
+
+    path = Path(path).resolve()
+    recorded_metadata, saved_update, train_fingerprint, _ = _load_checkpoint_document(
+        path,
+        allow_git_commit_mismatch=allow_git_commit_mismatch,
+    )
+    validate_warm_start_metadata(
+        recorded_metadata,
+        expected_metadata,
+        allow_source_revision_mismatch=allow_git_commit_mismatch,
+    )
+    _validate_environment_layouts(env, expected_metadata)
+    restored = _restore_checkpoint_item(
+        path / STATE_DIR,
+        _train_checkpoint_item(fresh_runner),
+        train_fingerprint,
+        label="warm-start state",
+    )
+    _validate_restored_normalization_state(restored, recorded_metadata)
+    _validate_restored_update(restored["update"], saved_update, recorded_metadata.ppo)
+    return (
+        fresh_runner._replace(
+            params=restored["policy"],
+            value_norm_state=restored["value_norm_state"],
+            observation_norm_state=restored["observation_norm_state"],
+            critic_observation_norm_state=(restored["critic_observation_norm_state"]),
+        ),
+        recorded_metadata,
+    )
+
+
 def load_checkpoint_metadata(
     path: Path,
     *,
@@ -499,6 +555,7 @@ def load_checkpoint_metadata(
     metadata, _, _, _ = _load_checkpoint_document(
         Path(path).resolve(),
         allow_git_commit_mismatch=allow_git_commit_mismatch,
+        allow_retired_asset_schema=allow_git_commit_mismatch,
     )
     return metadata
 
@@ -550,6 +607,34 @@ def resumed_checkpoint_metadata(
             f"{requested.ppo.num_updates} < {saved_update}"
         )
     return requested
+
+
+def validate_warm_start_metadata(
+    recorded: CheckpointMetadata,
+    requested: CheckpointMetadata,
+    *,
+    allow_source_revision_mismatch: bool = False,
+) -> None:
+    """Require transfer-compatible task semantics while allowing new data."""
+
+    recorded_payload = _warm_start_contract_payload(
+        recorded,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    requested_payload = _warm_start_contract_payload(
+        requested,
+        omit_source_revision=allow_source_revision_mismatch,
+    )
+    if recorded_payload != requested_payload:
+        mismatches = sorted(
+            key
+            for key in set(recorded_payload) | set(requested_payload)
+            if recorded_payload.get(key) != requested_payload.get(key)
+        )
+        raise ValueError(
+            "warm-start checkpoint contract differs from the requested run for "
+            + ", ".join(mismatches)
+        )
 
 
 def _train_state_checkpoint_item(
@@ -662,10 +747,26 @@ def _resume_contract_payload(
     return payload
 
 
+def _warm_start_contract_payload(
+    metadata: CheckpointMetadata, *, omit_source_revision: bool
+) -> dict[str, Any]:
+    payload = _resume_contract_payload(
+        metadata,
+        omit_source_revision=omit_source_revision,
+    )
+    payload["ppo"] = {"policy": payload["ppo"]["policy"]}
+    dataset = payload.get("dataset")
+    if dataset is not None:
+        dataset.pop("dataset_fingerprint", None)
+    payload.pop("dataset_audit", None)
+    return payload
+
+
 def _load_checkpoint_document(
     path: Path,
     *,
     allow_git_commit_mismatch: bool = False,
+    allow_retired_asset_schema: bool = False,
 ) -> tuple[CheckpointMetadata, int, str, str]:
     metadata_path = Path(path).resolve() / METADATA_FILE
     try:
@@ -710,7 +811,10 @@ def _load_checkpoint_document(
             "the checkpoint is corrupt or has been modified"
         )
     metadata = _metadata_from_dict(
-        _with_checkpoint_metadata_defaults(metadata_payload),
+        _with_checkpoint_metadata_defaults(
+            metadata_payload,
+            allow_retired_asset_schema=allow_retired_asset_schema,
+        ),
         strict=True,
         require_all_fields=True,
         path="metadata",
@@ -723,36 +827,173 @@ def _load_checkpoint_document(
     return metadata, update, train_fingerprint, continuation_fingerprint
 
 
-def _with_checkpoint_metadata_defaults(value: Any) -> Any:
+def _with_checkpoint_metadata_defaults(
+    value: Any,
+    *,
+    allow_retired_asset_schema: bool = False,
+) -> Any:
     if not isinstance(value, dict):
         return value
-    normalized = value
-    ppo = normalized.get("ppo")
-    if isinstance(ppo, dict) and "critic_learning_rate" not in ppo:
-        normalized = dict(normalized)
+    if allow_retired_asset_schema:
+        value = _without_retired_asset_schema(value)
+    ppo = value.get("ppo")
+    if isinstance(ppo, dict):
+        normalized = dict(value)
         normalized_ppo = dict(ppo)
-        normalized_ppo["critic_learning_rate"] = None
+        normalized_ppo.setdefault("critic_learning_rate", None)
+        normalized_ppo.setdefault("symmetry_loss_coef", 0.0)
+        if value.get("task") in {"locomotion", "motion_tracking"}:
+            legacy_ppo_defaults = {
+                "adam_epsilon": 1.0e-5,
+                "value_loss_scale": 0.5,
+                "normalize_critic_observations": True,
+                "observation_norm_update_mode": "online",
+                "observation_norm_update_updates": None,
+                "observation_norm_epsilon_mode": "variance_floor",
+            }
+            for name, default in legacy_ppo_defaults.items():
+                normalized_ppo.setdefault(name, default)
+            policy = ppo.get("policy")
+            if isinstance(policy, dict):
+                normalized_policy = dict(policy)
+                normalized_policy.setdefault("architecture", "mlp")
+                normalized_policy.setdefault("layer_norm_final_hidden", False)
+                normalized_ppo["policy"] = normalized_policy
         normalized["ppo"] = normalized_ppo
-    if normalized.get("task") == "locomotion":
-        env = normalized.get("env")
-        if not isinstance(env, dict) or "observation_latency" in env:
-            return normalized
-        normalized = dict(normalized)
-        normalized_env = dict(env)
-        normalized_env["observation_latency"] = to_builtin(ObservationLatencyConfig())
-        normalized["env"] = normalized_env
+        value = normalized
+    asset = value.get("asset")
+    if isinstance(asset, dict) and "end_effector_payload_mass_kg" not in asset:
+        normalized = dict(value)
+        normalized_asset = dict(asset)
+        normalized_asset["end_effector_payload_mass_kg"] = 0.0
+        normalized["asset"] = normalized_asset
+        value = normalized
+    if value.get("task") == "locomotion":
+        normalized = dict(value)
+        env = value.get("env")
+        if isinstance(env, dict) and "gait" not in env:
+            raise ValueError(
+                "locomotion checkpoint predates the gait-phase observation contract; "
+                "use the archived source revision or train a new policy"
+            )
+        if isinstance(env, dict):
+            normalized_env = dict(env)
+            if "observation_latency" not in normalized_env:
+                normalized_env["observation_latency"] = to_builtin(
+                    ObservationLatencyConfig()
+                )
+            model_randomization = env.get("model_randomization")
+            if isinstance(model_randomization, dict):
+                normalized_randomization = dict(model_randomization)
+                legacy_randomization_defaults = {
+                    "added_base_mass_range": (0.0, 0.0),
+                    "base_com_offset_range": (0.0, 0.0),
+                    "friction_range": (1.0, 1.0),
+                    "actuator_strength_range": (1.0, 1.0),
+                    "gravity_fraction_range": (0.0, 0.0),
+                }
+                for name, default in legacy_randomization_defaults.items():
+                    if name not in normalized_randomization:
+                        normalized_randomization[name] = default
+                normalized_env["model_randomization"] = normalized_randomization
+            normalized["env"] = normalized_env
+        reward = value.get("reward")
+        if isinstance(reward, dict):
+            normalized_reward = dict(reward)
+            weights = reward.get("weights")
+            if isinstance(weights, dict):
+                normalized_weights = dict(weights)
+                for name in (
+                    "action_acceleration",
+                    "joint_force_peak",
+                    "touchdown_impact",
+                    "stand_still",
+                    "stand_contact",
+                    "stand_foot_heading",
+                ):
+                    if name not in normalized_weights:
+                        normalized_weights[name] = 0.0
+                normalized_reward["weights"] = normalized_weights
+            if "smoothness" not in normalized_reward:
+                normalized_reward["smoothness"] = {
+                    "ankle_action_weight": 1.0,
+                    "waist_action_weight": 1.0,
+                }
+            tracking = reward.get("tracking")
+            if isinstance(tracking, dict) and "ang_vel_z_lpf_cutoff_hz" not in tracking:
+                normalized_tracking = dict(tracking)
+                normalized_tracking["ang_vel_z_lpf_cutoff_hz"] = 5.0
+                normalized_reward["tracking"] = normalized_tracking
+            standing = reward.get("standing")
+            if isinstance(standing, dict):
+                normalized_standing = dict(standing)
+                normalized_standing.setdefault(
+                    "foot_heading_deadband", math.radians(5.0)
+                )
+                normalized_standing.setdefault("foot_heading_scale", math.radians(15.0))
+                normalized_reward["standing"] = normalized_standing
+            gait = reward.get("gait")
+            if isinstance(gait, dict):
+                normalized_gait = dict(gait)
+                legacy_gait_defaults = {
+                    "joint_force_soft_limit_body_weights": 1.0,
+                    "joint_force_top_k": 12,
+                    "joint_force_apply_while_standing": False,
+                    "touchdown_force_soft_limit_body_weights": 1.0,
+                    "touchdown_vertical_speed_scale": 0.3,
+                }
+                for name, default in legacy_gait_defaults.items():
+                    if name not in normalized_gait:
+                        normalized_gait[name] = default
+                normalized_reward["gait"] = normalized_gait
+            normalized["reward"] = normalized_reward
         return normalized
-    if normalized.get("task") != "motion_tracking":
-        return normalized
-    motion_env = normalized.get("motion_env")
+    if value.get("task") != "motion_tracking":
+        return value
+    motion_env = value.get("motion_env")
     if not isinstance(motion_env, dict) or "observation_latency" in motion_env:
-        return normalized
-    normalized = dict(normalized)
+        return value
+    normalized = dict(value)
     normalized_motion_env = dict(motion_env)
     normalized_motion_env["observation_latency"] = to_builtin(
         MotionObservationLatencyConfig()
     )
     normalized["motion_env"] = normalized_motion_env
+    return normalized
+
+
+def _without_retired_asset_schema(value: dict[str, Any]) -> dict[str, Any]:
+    asset = value.get("asset")
+    if not isinstance(asset, dict):
+        return value
+    normalized_asset = dict(asset)
+    changed = False
+    if "end_effector_sphere_mode" in normalized_asset:
+        legacy_mode = normalized_asset.pop("end_effector_sphere_mode")
+        if legacy_mode not in {"none", "both"}:
+            raise ValueError(
+                "metadata.asset.end_effector_sphere_mode must be 'none' or "
+                f"'both', got {legacy_mode!r}"
+            )
+        changed = True
+    availability = normalized_asset.get("joint_availability")
+    if isinstance(availability, dict):
+        normalized_availability = dict(availability)
+        for name in ("waist_roll", "waist_pitch", "neck_yaw", "head_pitch"):
+            if name not in normalized_availability:
+                continue
+            legacy_enabled = normalized_availability.pop(name)
+            if legacy_enabled is not False:
+                raise ValueError(
+                    f"metadata.asset.joint_availability.{name} must be false "
+                    "for the canonical fixed joint"
+                )
+            changed = True
+        normalized_asset["joint_availability"] = normalized_availability
+    if not changed:
+        return value
+    normalized = dict(value)
+    normalized["asset"] = normalized_asset
     return normalized
 
 
@@ -1050,7 +1291,7 @@ def _validate_twist2_metadata(metadata: Twist2CheckpointMetadata) -> None:
     ):
         raise ValueError("TWIST2 critic observation layout differs from its contract")
     if metadata.parity_contract != Twist2ParityContract():
-        raise ValueError("TWIST2 parity contract differs from the pinned release")
+        raise ValueError("TWIST2 parity contract differs from the maintained behavior")
     normalization = (
         metadata.value_norm,
         metadata.observation_norm,

@@ -650,8 +650,6 @@ def _validate_fixed_tracking_asset(config: AssetPrepConfig) -> None:
         raise ValueError(
             "motion tracking requires fixed waist roll/pitch and neck/head joints"
         )
-    if config.end_effector_sphere_mode != "both":
-        raise ValueError("motion tracking requires end_effector_sphere_mode='both'")
     if config.actuator_config != expected.actuator_config:
         raise ValueError(
             "motion tracking requires the canonical all-policy actuator contract"

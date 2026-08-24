@@ -66,6 +66,7 @@ class RemoteCommandSource:
         self._received: _ReceivedCommand | None = None
         self._fatal_error: RuntimeError | None = None
         self._abort_latched = False
+        self._rearm_required = False
         self._reported_service_connected = False
         self._reported_controller_connected = False
         self._thread = threading.Thread(
@@ -95,20 +96,15 @@ class RemoteCommandSource:
                     self._condition.wait(remaining)
                 if self._closed.is_set():
                     raise RuntimeError("remote command source closed while waiting")
-                result, cancel = self._poll_locked()
-            if cancel is not None:
-                cancel.cancel()
+                result = self._poll_locked()
             if result.service_connected:
                 return result
 
     def poll(self) -> RemoteCommandInput:
         with self._condition:
-            result, cancel = self._poll_locked()
-        if cancel is not None:
-            cancel.cancel()
-        return result
+            return self._poll_locked()
 
-    def _poll_locked(self) -> tuple[RemoteCommandInput, grpc.Call | None]:
+    def _poll_locked(self) -> RemoteCommandInput:
         if self._fatal_error is not None:
             raise self._fatal_error
         now = time.monotonic()
@@ -117,7 +113,6 @@ class RemoteCommandSource:
             received is not None
             and now - received.received_at <= self._staleness_seconds
         )
-        cancel = self._active_call if not fresh else None
         service_connected = fresh
         controller_connected = bool(
             fresh and received is not None and received.controller_connected
@@ -152,8 +147,10 @@ class RemoteCommandSource:
             ),
         )
         if not fresh:
+            if received is not None:
+                self._rearm_required = True
             self._received = None
-        return result, cancel
+        return result
 
     def close(self) -> None:
         if self._closed.is_set():
@@ -167,82 +164,91 @@ class RemoteCommandSource:
         self._thread.join(timeout=2.0)
 
     def _run(self) -> None:
+        channel = grpc.insecure_channel(self.config.endpoint.removeprefix("http://"))
+        method = channel.unary_stream(
+            "/bello.remote.v1.RemoteCommandService/WatchCommand",
+            request_serializer=_remote_pb2.WatchCommandRequest.SerializeToString,
+            response_deserializer=_remote_pb2.WatchCommandResponse.FromString,
+        )
         backoff_seconds = 0.1
-        while not self._closed.is_set():
-            channel = grpc.insecure_channel(
-                self.config.endpoint.removeprefix("http://")
-            )
-            method = channel.unary_stream(
-                "/bello.remote.v1.RemoteCommandService/WatchCommand",
-                request_serializer=_remote_pb2.WatchCommandRequest.SerializeToString,
-                response_deserializer=_remote_pb2.WatchCommandResponse.FromString,
-            )
-            call = method(_remote_pb2.WatchCommandRequest(), wait_for_ready=True)
-            with self._condition:
-                self._active_call = call
-                self._received = None
-                self._condition.notify_all()
-                close_requested = self._closed.is_set()
-            if close_requested:
-                call.cancel()
+        try:
+            while not self._closed.is_set():
+                call = method(_remote_pb2.WatchCommandRequest(), wait_for_ready=True)
                 with self._condition:
-                    if self._active_call is call:
-                        self._active_call = None
-                channel.close()
-                return
-            last_sequence: int | None = None
-            client_armed = False
-            try:
-                for response in call:
-                    normalized = _validated_response(response, last_sequence)
-                    last_sequence = int(response.sequence)
-                    if not response.controller_connected or not response.intent_armed:
-                        client_armed = False
-                    if (
-                        not client_armed
-                        and response.controller_connected
-                        and response.intent_armed
-                        and normalized == (0.0, 0.0, 0.0)
-                    ):
-                        client_armed = True
-                    effective = normalized if client_armed else (0.0, 0.0, 0.0)
-                    with self._condition:
-                        if response.abort_active:
-                            self._abort_latched = True
-                        self._received = _ReceivedCommand(
-                            normalized_command=effective,
-                            controller_connected=bool(response.controller_connected),
-                            intent_armed=bool(response.intent_armed and client_armed),
-                            controller_name=(
-                                response.controller_name
-                                if response.controller_connected
-                                else None
-                            ),
-                            received_at=time.monotonic(),
-                        )
-                        self._condition.notify_all()
-                    backoff_seconds = 0.1
-                    if self._closed.is_set():
-                        break
-            except grpc.RpcError:
-                pass
-            except (TypeError, ValueError) as error:
-                with self._condition:
-                    self._fatal_error = RuntimeError(
-                        f"invalid visualizer remote-command stream: {error}"
-                    )
-                    self._condition.notify_all()
-                return
-            finally:
-                with self._condition:
-                    if self._active_call is call:
-                        self._active_call = None
+                    self._active_call = call
                     self._received = None
                     self._condition.notify_all()
-                channel.close()
-            if self._closed.wait(backoff_seconds):
-                break
-            backoff_seconds = min(1.0, backoff_seconds * 2.0)
+                    close_requested = self._closed.is_set()
+                if close_requested:
+                    call.cancel()
+                    with self._condition:
+                        if self._active_call is call:
+                            self._active_call = None
+                    return
+                last_sequence: int | None = None
+                client_armed = False
+                try:
+                    for response in call:
+                        normalized = _validated_response(response, last_sequence)
+                        last_sequence = int(response.sequence)
+                        with self._condition:
+                            if self._rearm_required:
+                                client_armed = False
+                                self._rearm_required = False
+                            if (
+                                not response.controller_connected
+                                or not response.intent_armed
+                            ):
+                                client_armed = False
+                            if (
+                                not client_armed
+                                and response.controller_connected
+                                and response.intent_armed
+                                and normalized == (0.0, 0.0, 0.0)
+                            ):
+                                client_armed = True
+                            effective = normalized if client_armed else (0.0, 0.0, 0.0)
+                            if response.abort_active:
+                                self._abort_latched = True
+                            self._received = _ReceivedCommand(
+                                normalized_command=effective,
+                                controller_connected=bool(
+                                    response.controller_connected
+                                ),
+                                intent_armed=bool(
+                                    response.intent_armed and client_armed
+                                ),
+                                controller_name=(
+                                    response.controller_name
+                                    if response.controller_connected
+                                    else None
+                                ),
+                                received_at=time.monotonic(),
+                            )
+                            self._condition.notify_all()
+                        backoff_seconds = 0.1
+                        if self._closed.is_set():
+                            break
+                except grpc.RpcError:
+                    pass
+                except (TypeError, ValueError) as error:
+                    with self._condition:
+                        self._fatal_error = RuntimeError(
+                            f"invalid visualizer remote-command stream: {error}"
+                        )
+                        self._condition.notify_all()
+                    return
+                finally:
+                    with self._condition:
+                        if self._active_call is call:
+                            self._active_call = None
+                        self._received = None
+                        self._condition.notify_all()
+                if self._closed.wait(backoff_seconds):
+                    break
+                backoff_seconds = min(1.0, backoff_seconds * 2.0)
+        finally:
+            channel.close()
 
 
 def _validated_response(

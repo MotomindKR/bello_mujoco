@@ -218,16 +218,19 @@ repo_url="$3"
 remote_dir="$4"
 experiment="$5"
 motion_path="$6"
-run_name="$7"
-dataset_path="$8"
-teacher_checkpoint_path="$9"
-allow_git_commit_mismatch="${10}"
-sonic_artifact_path="${11}"
-resume_checkpoint_path="${12}"
-total_timesteps="${13}"
-num_envs="${14}"
-checkpoint_every_updates="${15}"
-result_dir="${16}"
+end_effector_payload_mass_kg="$7"
+run_name="$8"
+dataset_path="$9"
+teacher_checkpoint_path="${10}"
+warm_start_checkpoint_path="${11}"
+allow_git_commit_mismatch="${12}"
+sonic_artifact_path="${13}"
+resume_checkpoint_path="${14}"
+total_timesteps="${15}"
+num_envs="${16}"
+checkpoint_every_updates="${17}"
+learning_rate="${18}"
+result_dir="${19}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -249,11 +252,10 @@ ASKPASS
 chmod 700 "$askpass"
 
 rm -rf "$remote_dir"
-GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --single-branch --branch "$branch" "$repo_url" "$remote_dir"
-GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -C "$remote_dir" submodule update --init deps/bello-stack
-submodule_status="$(git -C "$remote_dir" submodule status deps/bello-stack)"
+GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --recurse-submodules --single-branch --branch "$branch" "$repo_url" "$remote_dir"
+submodule_status="$(git -C "$remote_dir" submodule status --recursive)"
 if [ -z "$submodule_status" ] || printf '%s\n' "$submodule_status" | grep -Eq '^[-+U]'; then
-  echo "bello-stack submodule is absent, uninitialized, or not at its pinned commit" >&2
+  echo "a required submodule is absent, uninitialized, or not at its pinned commit" >&2
   exit 1
 fi
 unset GITHUB_TOKEN
@@ -283,17 +285,29 @@ training_overrides=("experiment=$experiment")
 if [ -n "$motion_path" ]; then
   training_overrides+=("motion_path=$motion_path")
 fi
+if [ -n "$end_effector_payload_mass_kg" ]; then
+  training_overrides+=("end_effector_payload_mass_kg=$end_effector_payload_mass_kg")
+fi
 if [ -n "$dataset_path" ]; then
   training_overrides+=("dataset_path=$dataset_path")
 fi
 if [ -n "$teacher_checkpoint_path" ]; then
   training_overrides+=("teacher_checkpoint_path=$teacher_checkpoint_path")
 fi
+if [ -n "$warm_start_checkpoint_path" ]; then
+  training_overrides+=("warm_start_path=$warm_start_checkpoint_path")
+fi
 if [ -n "$sonic_artifact_path" ]; then
   training_overrides+=("sonic_artifact_path=$sonic_artifact_path")
 fi
-if [ "$allow_git_commit_mismatch" = "true" ] && [ "$experiment" = "twist_student" ]; then
+if [ "$allow_git_commit_mismatch" = "true" ] && [ "$experiment" != "sonic" ]; then
   training_overrides+=("allow_git_commit_mismatch=true")
+fi
+if [ -n "$total_timesteps" ]; then
+  training_overrides+=("total_timesteps=$total_timesteps")
+fi
+if [ -n "$learning_rate" ]; then
+  training_overrides+=("learning_rate=$learning_rate")
 fi
 
 actual_overrides=("${training_overrides[@]}")
@@ -302,9 +316,6 @@ if [ -n "$resume_checkpoint_path" ]; then
   if [ "$allow_git_commit_mismatch" = "true" ]; then
     actual_overrides+=("allow_git_commit_mismatch=true")
   fi
-fi
-if [ -n "$total_timesteps" ]; then
-  actual_overrides+=("total_timesteps=$total_timesteps")
 fi
 if [ -n "$num_envs" ]; then
   actual_overrides+=("num_envs=$num_envs")
@@ -521,18 +532,20 @@ def stage_twist_inputs(
     executor: SshExecutor,
     rsync_executor: RsyncExecutor,
     sleep: Callable[[float], None] = time.sleep,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Transfer and verify explicit TWIST inputs before remote training starts."""
 
-    dataset_path, teacher_checkpoint_path, _, _ = stage_training_inputs(
-        target,
-        selection,
-        config,
-        executor=executor,
-        rsync_executor=rsync_executor,
-        sleep=sleep,
+    dataset_path, teacher_checkpoint_path, _, _, warm_start_checkpoint_path = (
+        stage_training_inputs(
+            target,
+            selection,
+            config,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+        )
     )
-    return dataset_path, teacher_checkpoint_path
+    return dataset_path, teacher_checkpoint_path, warm_start_checkpoint_path
 
 
 def stage_training_inputs(
@@ -543,11 +556,11 @@ def stage_training_inputs(
     executor: SshExecutor,
     rsync_executor: RsyncExecutor,
     sleep: Callable[[float], None] = time.sleep,
-) -> tuple[str, str, str, str]:
-    """Transfer and verify explicit dataset, teacher, release, and resume inputs."""
+) -> tuple[str, str, str, str, str]:
+    """Transfer and verify all explicit dataset and checkpoint inputs."""
 
     if not selection.dataset_files:
-        return "", "", "", ""
+        return "", "", "", "", ""
     if selection.dataset_root is None:
         dataset_path = _stage_files(
             target,
@@ -609,11 +622,24 @@ def stage_training_inputs(
             rsync_executor=rsync_executor,
             sleep=sleep,
         )
+    warm_start_checkpoint_path = ""
+    if selection.warm_start_checkpoint_path is not None:
+        warm_start_checkpoint_path = _stage_directory(
+            target,
+            selection.warm_start_checkpoint_path,
+            remote_root=config.remote_warm_start_checkpoint_dir,
+            timeout_seconds=config.transfer_timeout_seconds,
+            retries=config.transfer_retries,
+            executor=executor,
+            rsync_executor=rsync_executor,
+            sleep=sleep,
+        )
     return (
         f"{dataset_path}/index.json",
         teacher_checkpoint_path,
         sonic_artifact_path,
         resume_checkpoint_path,
+        warm_start_checkpoint_path,
     )
 
 
@@ -1016,6 +1042,7 @@ def run_remote_training(
         teacher_checkpoint_path,
         sonic_artifact_path,
         resume_checkpoint_path,
+        warm_start_checkpoint_path,
     ) = stage_training_inputs(
         target,
         selection,
@@ -1043,6 +1070,7 @@ def run_remote_training(
         teacher_checkpoint_path=teacher_checkpoint_path,
         sonic_artifact_path=sonic_artifact_path,
         resume_checkpoint_path=resume_checkpoint_path,
+        warm_start_checkpoint_path=warm_start_checkpoint_path,
     )
     started_at = time.monotonic()
     ssh_start_deadline = started_at + config.ssh_timeout_seconds
@@ -1210,6 +1238,7 @@ def remote_start_command(
     teacher_checkpoint_path: str = "",
     sonic_artifact_path: str = "",
     resume_checkpoint_path: str = "",
+    warm_start_checkpoint_path: str = "",
 ) -> str:
     bootstrap = r"""import json, os, pathlib, subprocess, sys
 payload = json.load(sys.stdin)
@@ -1278,15 +1307,22 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             str(config.remote_dir),
             config.experiment,
             str(selection.motion_path or ""),
+            (
+                ""
+                if config.end_effector_payload_mass_kg is None
+                else f"{config.end_effector_payload_mass_kg:.17g}"
+            ),
             run_name,
             dataset_path,
             teacher_checkpoint_path,
+            warm_start_checkpoint_path,
             str(config.allow_git_commit_mismatch).lower(),
             sonic_artifact_path,
             resume_checkpoint_path,
             str(config.total_timesteps or ""),
             str(config.num_envs or ""),
             str(config.checkpoint_every_updates or ""),
+            str(config.learning_rate or ""),
             f"{job_dir}/results",
         ]
     )

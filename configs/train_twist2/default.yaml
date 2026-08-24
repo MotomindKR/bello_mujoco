@@ -95,6 +95,7 @@ checkpoint_config:
   name: twist2_seed1
   every_updates: 500
   resume_path: null
+  warm_start_path: null
   allow_git_commit_mismatch: false
   upload_wandb_artifact: true
   wandb_artifact_name: twist2_seed1

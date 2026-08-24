@@ -14,6 +14,7 @@ from bello_mujoco.envs.twist import TwistSamplingConfig, TwistSimulationConfig
 from bello_mujoco.envs.twist2 import (
     BelloTwist2Env,
     TWIST2_UPSTREAM_REVISION,
+    Twist2EnvConfig,
     Twist2ObservationContract,
     Twist2ParityContract,
     default_twist2_asset_config,
@@ -32,6 +33,7 @@ from bello_mujoco.training.checkpoint import (
     ValueNormMetadata,
     _metadata_from_dict,
     _validate_metadata_layouts,
+    validate_warm_start_metadata,
 )
 from bello_mujoco.training.ppo import PPOConfig
 from bello_mujoco.training.ppo import (
@@ -44,6 +46,10 @@ from bello_mujoco.training.twist2 import (
     Twist2TrainingRunConfig,
     validate_twist2_training_config,
 )
+
+
+def test_twist2_uses_canonical_unscaled_robot_mass() -> None:
+    assert default_twist2_asset_config().target_total_mass_kg is None
 
 
 JOINT_NAMES = tuple(f"joint_{index}" for index in range(25))
@@ -77,7 +83,60 @@ def test_twist2_observation_contract_matches_bello_release_dimensions() -> None:
     assert Twist2ParityContract().raw_action_clip == 10.0
     assert Twist2ParityContract().action_delay_warmup_policy_steps == 1_200_000
     assert Twist2ParityContract().root_push_interval_policy_steps == 200
+    assert Twist2ParityContract().root_push_phase_mode == "per_environment_reset"
     assert not Twist2ParityContract().gravity_randomization_executed
+
+
+def test_twist2_reset_randomizes_reference_joint_positions_like_release() -> None:
+    env = object.__new__(BelloTwist2Env)
+    object.__setattr__(
+        env,
+        "model",
+        SimpleNamespace(
+            policy_qpos_indices=jnp.arange(7, 32, dtype=jnp.int32),
+            policy_ctrl_indices=jnp.arange(25, dtype=jnp.int32),
+        ),
+    )
+    reference = jnp.concatenate(
+        (jnp.asarray((0.0, 0.0, 0.8, 1.0, 0.0, 0.0, 0.0)), jnp.ones(25))
+    )
+
+    randomized = jax.jit(env._reset_qpos)(reference, jax.random.PRNGKey(7))
+    deterministic = env._reset_qpos(reference, None)
+
+    assert randomized[2] == pytest.approx(0.85)
+    assert jnp.all(randomized[7:] >= 0.8)
+    assert jnp.all(randomized[7:] < 1.2)
+    assert not jnp.array_equal(randomized[7:], reference[7:])
+    assert jnp.array_equal(deterministic[7:], reference[7:])
+
+
+def test_twist2_root_pushes_use_random_per_environment_phases() -> None:
+    env = object.__new__(BelloTwist2Env)
+    object.__setattr__(env, "config", Twist2EnvConfig())
+    phases = env._sample_root_push_phase(jax.random.PRNGKey(11), (4096,))
+
+    assert phases.shape == (4096,)
+    assert jnp.all(phases >= 0)
+    assert jnp.all(phases < 200)
+    assert jnp.unique(phases).size > 1
+
+    state = SimpleNamespace(
+        total_step=jnp.zeros((200,), dtype=jnp.int32),
+        root_push_phase=jnp.arange(200, dtype=jnp.int32),
+    )
+    first_due = env._root_push_due(state)
+    second_due = env._root_push_due(
+        SimpleNamespace(
+            total_step=state.total_step + 1,
+            root_push_phase=state.root_push_phase,
+        )
+    )
+
+    assert jnp.sum(first_due) == 1
+    assert first_due[199]
+    assert jnp.sum(second_due) == 1
+    assert second_due[198]
 
 
 def test_twist2_actor_and_critic_shapes_and_training_dropout() -> None:
@@ -267,6 +326,41 @@ def test_typed_twist2_checkpoint_round_trips_strict_metadata() -> None:
         require_all_fields=True,
         path="metadata",
     )
+
+    transferred = replace(
+        metadata,
+        ppo=replace(metadata.ppo, total_timesteps=2 * 4096 * 24, learning_rate=5e-5),
+        dataset=replace(
+            metadata.dataset,
+            index_path=Path("new-dataset/index.json"),
+            dataset_fingerprint="sha256:" + "d" * 64,
+        ),
+        dataset_audit=replace(
+            metadata.dataset_audit,
+            clip_count=2,
+            train_clip_count=2,
+            source_counts=(("amass", 2),),
+            train_source_counts=(("amass", 2),),
+        ),
+        source_revision="d" * 40,
+    )
+    validate_warm_start_metadata(
+        metadata,
+        transferred,
+        allow_source_revision_mismatch=True,
+    )
+    with pytest.raises(ValueError, match="dataset"):
+        validate_warm_start_metadata(
+            metadata,
+            replace(
+                transferred,
+                dataset=replace(
+                    transferred.dataset,
+                    robot_fingerprint="sha256:" + "e" * 64,
+                ),
+            ),
+            allow_source_revision_mismatch=True,
+        )
 
     assert restored == metadata
     assert isinstance(restored, Twist2CheckpointMetadata)

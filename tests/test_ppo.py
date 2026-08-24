@@ -29,19 +29,22 @@ from bello_mujoco.training.ppo import (
     adapt_learning_rate,
     adaptive_learning_rate_kl,
     aggregate_ppo_metrics,
+    command_conditioned_metrics,
     command_diagnostic_means,
     compute_gae,
     denormalize_value,
+    flatten_batch,
+    gait_diagnostics,
     init_observation_norm_state,
     init_runner_state,
     init_train_state,
     init_value_norm_state,
-    gait_diagnostics,
     learning_rate_for_update,
     normalize_advantages,
     normalize_critic_observation,
     normalize_observation,
     normalize_value,
+    ppo_loss,
     update_observation_norm_state,
     update_critic_observation_norm_state,
     update_ppo,
@@ -82,25 +85,55 @@ def test_every_ppo_field_declares_local_validation() -> None:
     assert invalid == []
 
 
+def test_symmetry_loss_requires_physical_observation_coordinates() -> None:
+    with pytest.raises(ValueError, match="normalize_observations=false"):
+        validate_ppo_config(
+            small_config(symmetry_loss_coef=0.1, normalize_observations=True)
+        )
+
+
 def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     info = {
         "command/standing": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
         "command/moving": jnp.asarray([[0.0, 1.0, 0.0, 1.0]]),
+        "returned_episode": jnp.asarray([[1.0, 1.0, 0.0, 1.0]]),
+        "episode_return": jnp.asarray([[10.0, 20.0, 0.0, 40.0]]),
+        "episode_length": jnp.asarray([[5.0, 6.0, 0.0, 8.0]]),
         "gait/touchdown": jnp.asarray([[2.0, 1.0, 0.0, 1.0]]),
         "gait/double_support": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
+        "gait/joint_force_max_body_weight": jnp.asarray([[0.5, 1.0, 1.5, 2.0]]),
+        "gait/contact_force_max_body_weight": jnp.asarray([[0.4, 0.8, 1.2, 1.6]]),
     }
 
     command_metrics = command_diagnostic_means(info)
+    conditioned = command_conditioned_metrics(info, jnp.asarray([[1.0, 2.0, 3.0, 4.0]]))
     gait_metrics = gait_diagnostics(info, control_timestep=0.02)
 
     assert command_metrics["command/standing_fraction"] == pytest.approx(0.5)
     assert command_metrics["command/moving_fraction"] == pytest.approx(0.5)
+    assert conditioned["command/standing_mean_reward"] == pytest.approx(2.0)
+    assert conditioned["command/standing_positive_reward_fraction"] == pytest.approx(
+        1.0
+    )
+    assert conditioned["command/moving_mean_reward"] == pytest.approx(3.0)
+    assert conditioned["episode/standing_count"] == pytest.approx(1.0)
+    assert conditioned["episode/standing_return"] == pytest.approx(10.0)
+    assert conditioned["episode/standing_length"] == pytest.approx(5.0)
+    assert conditioned["episode/moving_count"] == pytest.approx(2.0)
+    assert conditioned["episode/moving_return"] == pytest.approx(30.0)
+    assert conditioned["episode/moving_length"] == pytest.approx(7.0)
     assert gait_metrics["gait/standing_touchdown"] == pytest.approx(1.0)
     assert gait_metrics["gait/moving_touchdown"] == pytest.approx(1.0)
     assert gait_metrics["gait/standing_double_support"] == pytest.approx(1.0)
     assert gait_metrics["gait/moving_double_support"] == pytest.approx(0.0)
     assert gait_metrics["gait/standing_footfalls_per_second"] == pytest.approx(50.0)
     assert gait_metrics["gait/moving_footfalls_per_second"] == pytest.approx(50.0)
+    assert gait_metrics["gait/joint_force_p95_body_weight"] == pytest.approx(1.925)
+    assert gait_metrics["gait/joint_force_p99_body_weight"] == pytest.approx(1.985)
+    assert gait_metrics["gait/joint_force_worst_body_weight"] == pytest.approx(2.0)
+    assert gait_metrics["gait/contact_force_p95_body_weight"] == pytest.approx(1.54)
+    assert gait_metrics["gait/contact_force_p99_body_weight"] == pytest.approx(1.588)
+    assert gait_metrics["gait/contact_force_worst_body_weight"] == pytest.approx(1.6)
 
 
 def test_action_limit_contract_rejects_environment_mismatch() -> None:
@@ -466,6 +499,31 @@ def test_advantage_normalization_is_zero_mean_and_unit_scale() -> None:
     assert normalized.std() == pytest.approx(1.0, abs=1.0e-6)
 
 
+def test_ppo_loss_reports_policy_ratio_clip_fraction() -> None:
+    config = small_config()
+    state, _ = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, state.policy)
+    batch, advantages, targets = flatten_batch(
+        (batch, jnp.ones_like(batch.reward), batch.value)
+    )
+    ratios = jnp.tile(
+        jnp.asarray([0.79, 0.81, 1.19, 1.21], dtype=jnp.float32),
+        config.batch_size // 4,
+    )
+    batch = batch._replace(log_prob=batch.log_prob - jnp.log(ratios))
+
+    _, metrics = ppo_loss(
+        state.policy,
+        batch,
+        advantages,
+        targets,
+        config,
+        entropy_rng=jax.random.PRNGKey(1),
+    )
+
+    assert metrics["policy_clip_fraction"] == pytest.approx(0.5)
+
+
 def test_linear_and_constant_learning_rate_schedules() -> None:
     linear = small_config(schedule="linear", total_timesteps=64)
     constant = small_config(schedule="constant")
@@ -539,6 +597,27 @@ def test_finite_ppo_update_changes_parameters() -> None:
     assert metrics["nonfinite_update"] == 0
     assert metrics["ppo_update_fraction"] > 0
     assert jnp.isfinite(metrics["loss"])
+
+
+def test_ppo_update_reports_configured_symmetry_consistency_loss() -> None:
+    config = small_config(symmetry_loss_coef=0.1)
+    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, train_state.policy)
+    advantages = jnp.ones((config.num_steps, config.num_envs))
+    _, metrics = update_ppo(
+        train_state,
+        optimizer,
+        batch,
+        advantages,
+        jnp.ones_like(advantages),
+        jax.random.PRNGKey(1),
+        config,
+        mirror_observation=lambda value: value[..., ::-1],
+        mirror_action=lambda value: value[..., ::-1],
+    )
+
+    assert metrics["symmetry_loss"] >= 0.0
+    assert jnp.isfinite(metrics["symmetry_loss"])
 
 
 def test_nonfinite_training_input_is_identified_and_skipped() -> None:

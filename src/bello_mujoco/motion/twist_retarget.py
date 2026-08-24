@@ -153,26 +153,33 @@ def batch_retarget_manifest(
             )
         partial_path.unlink(missing_ok=True)
         try:
-            command_runner(
-                [
-                    sys.executable,
-                    str(normalize_tool),
-                    "--source",
-                    str(sequence.local_path),
-                    "--output",
-                    str(normalized_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                cwd=repository,
+            direct_fastsam = (
+                sequence.metadata.get("source_format") == "fastsam-smplx-body-22-v1"
             )
+            if direct_fastsam:
+                retarget_source = sequence.local_path
+            else:
+                command_runner(
+                    [
+                        sys.executable,
+                        str(normalize_tool),
+                        "--source",
+                        str(sequence.local_path),
+                        "--output",
+                        str(normalized_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    cwd=repository,
+                )
+                retarget_source = normalized_path
             command_runner(
                 [
                     str(gmr_python),
                     str(retarget_tool),
                     "--source",
-                    str(normalized_path),
+                    str(retarget_source),
                     "--provenance-source",
                     str(sequence.local_path),
                     "--output",
@@ -195,7 +202,7 @@ def batch_retarget_manifest(
             ):
                 raise ValueError("retargeted output provenance does not match inputs")
             os.replace(partial_path, output_path)
-            if not keep_normalized:
+            if not direct_fastsam and not keep_normalized:
                 normalized_path.unlink(missing_ok=True)
             return RetargetDecision(
                 sequence.source_id,
