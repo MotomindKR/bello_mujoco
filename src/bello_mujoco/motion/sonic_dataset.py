@@ -615,9 +615,9 @@ def synchronize_retargeted_clip(
         raw_bello_root_quaternion,
     )
     # Retain the complete Bello QC/provenance surface while adding the packed
-    # SONIC fields.  Only ``_PACKED_ARRAY_NAMES`` are written to the device
-    # dataset, but quality validation still needs sole heights, joint limits,
-    # and knee-pole metadata here.
+    # SONIC fields. Only ``_PACKED_ARRAY_NAMES`` are written to the device
+    # dataset, but validation still needs the GMR report, sole heights, and
+    # joint limits here.
     synchronized = {name: np.asarray(value) for name, value in bello.items()}
     synchronized.update(
         {

@@ -6,9 +6,6 @@ max_timestamp_gap_factor: 2.0
 max_joint_step_radians: 0.2
 max_joint_velocity_radians_per_second: 10.0
 max_joint_acceleration_radians_per_second_squared: 220.0
-minimum_knee_flexion_radians: 0.17453292519943295
-max_knee_pole_p95_degrees: 80.0
-max_knee_pole_opposite_fraction: 0.01
 max_joint_limit_violation_radians: 0.02
 max_joint_limit_violation_fraction: 0.02
 persistent_limit_margin_radians: 1.0e-5

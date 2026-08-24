@@ -266,6 +266,10 @@ calibration validation, and split-file hashes. It fits the default-anchored
 bidirectional dense ridge maps only on accepted training frames. The two-pass
 writer uses temporary memory-mapped arrays, so it creates the complete split
 files without retaining the entire corpus in process RAM.
+Current Bello inputs must use retarget format 10 and carry the pinned GMR
+`universal`-profile solver settings and quality report. Author-gate failures
+are quarantined during the build rather than counted as retarget worker
+failures.
 The command reports validation and per-split packing progress every 100 clips;
 its conversion report is written before calibration and packing so failed
 builds retain their sanitation decisions.

@@ -88,7 +88,8 @@ the portable manifest, Bello robot, both GMR revisions/configs, calibration,
 separate policy/action and MuJoCo-qpos joint orders, clip content, split
 descriptors, and split-file hashes.
 
-Before a clip can enter either split, SONIC-specific sanitation labels its root
+Before a clip can enter either split, the pinned GMR universal-profile gate
+must pass its tracking, jitter, and collision checks. SONIC-specific sanitation then labels its root
 motion, root height, and contact behavior. Name-pattern treadmill/crawl clips,
 stationary-root gait cycles, clips that remain near the ground for most of
 their duration, and excessive contact-foot slip are quarantined. The shared
@@ -160,6 +161,13 @@ and written atomically; reruns skip exact matching outputs. Use `limit=10` for
 a deterministic smoke conversion and `keep_normalized=true` only when the
 intermediate archives are useful for debugging. `normalized_root` and
 `output_root` must be different directories.
+
+The Bello view uses GMR's pinned `universal` task profile and shared offline
+solver directly. Retarget format 10 records its velocity-limit, settling,
+smoothing, and complete quality report. A successful conversion is retained
+even when the GMR quality gate rejects the motion; the dataset build reports
+that clip as quarantined. This keeps data-quality decisions separate from
+worker failures while preventing a rejected clip from entering either split.
 
 Join those sidecars to the already-retargeted Bello clips:
 
