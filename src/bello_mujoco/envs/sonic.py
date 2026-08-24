@@ -41,7 +41,6 @@ from bello_mujoco.motion.clip import MotionSample, load_motion_clip
 from bello_mujoco.motion.sonic_dataset import (
     SONIC_CRITIC_FUTURE_OFFSETS,
     SONIC_REQUIRED_FUTURE_HORIZON,
-    SONIC_SMPL_FUTURE_OFFSETS,
     SonicReferenceBank,
     build_sonic_sampling_bins,
 )
@@ -55,7 +54,7 @@ from bello_mujoco.sonic_policy import (
     SONIC_G1_ACTION_SIZE,
     SONIC_G1_CRITIC_OBSERVATION_SIZE,
     SONIC_G1_DEFAULT_JOINT_POSITION,
-    SONIC_SMPL_INPUT_SIZE,
+    SONIC_ROBOT_INPUT_SIZE,
     semantic_g1_from_bello_joint_map,
 )
 
@@ -82,13 +81,15 @@ SONIC_TRACKED_BODY_NAMES = (
     "r_elbow_link",
     "r_wrist_link",
 )
-# The released term is named ``tracking_vr_5point_local``, but its pinned
-# configuration contains only a head proxy and the two wrists. Bello has a
-# real head body, so use that semantic point instead of G1's torso offset.
 SONIC_REWARD_POINT_BODY_NAMES = (
-    "head_link",
+    "torso_link",
     "l_wrist_link",
     "r_wrist_link",
+)
+SONIC_REWARD_POINT_OFFSETS = (
+    (0.0, 0.0, 0.5),
+    (0.0, 0.0, 0.0),
+    (0.0, 0.0, 0.0),
 )
 SONIC_END_EFFECTOR_BODY_NAMES = (
     "left_ankle_roll_link",
@@ -112,7 +113,7 @@ class SonicObservationContract:
     joint_names: tuple[str, ...]
     body_names: tuple[str, ...] = SONIC_TRACKED_BODY_NAMES
     history_frames: int = SONIC_HISTORY_FRAMES
-    smpl_future_offsets: tuple[int, ...] = SONIC_SMPL_FUTURE_OFFSETS
+    robot_future_offsets: tuple[int, ...] = SONIC_CRITIC_FUTURE_OFFSETS
     critic_future_offsets: tuple[int, ...] = SONIC_CRITIC_FUTURE_OFFSETS
 
     def __post_init__(self) -> None:
@@ -124,8 +125,8 @@ class SonicObservationContract:
             raise ValueError("SONIC tracked-body order differs from the port contract")
         if self.history_frames != SONIC_HISTORY_FRAMES:
             raise ValueError("SONIC requires exactly ten proprioceptive frames")
-        if self.smpl_future_offsets != SONIC_SMPL_FUTURE_OFFSETS:
-            raise ValueError("SONIC SMPL future offsets differ from the release")
+        if self.robot_future_offsets != SONIC_CRITIC_FUTURE_OFFSETS:
+            raise ValueError("SONIC robot future offsets differ from the release")
         if self.critic_future_offsets != SONIC_CRITIC_FUTURE_OFFSETS:
             raise ValueError("SONIC critic future offsets differ from the release")
 
@@ -149,7 +150,7 @@ class SonicObservationContract:
     @property
     def student_reference_frame_size(self) -> int:
         # Compatibility with the shared history transition; SONIC commands are
-        # supplied separately to its frozen SMPL encoder.
+        # supplied separately to its frozen robot motion encoder.
         return 0
 
     @property
@@ -174,7 +175,7 @@ class SonicObservationContract:
     def actor_layout(self) -> ObservationLayout:
         return ObservationLayout(
             (
-                ("smpl_future_encoder_input", SONIC_SMPL_INPUT_SIZE),
+                ("robot_motion_encoder_input", SONIC_ROBOT_INPUT_SIZE),
                 ("projected_gravity_history", 30),
                 ("base_angular_velocity_history", 30),
                 ("joint_position_history", 250),
@@ -211,9 +212,8 @@ class SonicObservationContract:
 @dataclass(frozen=True)
 class SonicObservationNoiseConfig:
     enabled: bool = True
-    ramp_steps: int = 48_000
-    smpl_joint_position: float = 0.05
-    smpl_root_orientation_6d: float = 0.05
+    ramp_steps: int = 0
+    robot_root_orientation_6d: float = 0.05
     projected_gravity: float = 0.05
     base_angular_velocity: float = 0.2
     joint_position: float = 0.01
@@ -225,12 +225,12 @@ class SonicDomainRandomizationConfig:
     enabled: bool = True
     seed: int = 0
     joint_default_position: tuple[float, float] = (-0.01, 0.01)
-    added_base_mass: tuple[float, float] = (-2.0, 5.0)
-    base_com: tuple[float, float] = (-0.05, 0.05)
+    torso_wrist_mass_scale: tuple[float, float] = (0.8, 1.5)
+    torso_com_x: tuple[float, float] = (-0.025, 0.025)
+    torso_com_yz: tuple[float, float] = (-0.05, 0.05)
     friction: tuple[float, float] = (0.3, 1.6)
-    motor_strength: tuple[float, float] = (0.9, 1.1)
     push_interval_steps: tuple[int, int] = (4 * SONIC_POLICY_HZ, 6 * SONIC_POLICY_HZ)
-    push_warmup_steps: int = 48_000
+    push_warmup_steps: int = 0
     push_linear_velocity_xy: float = 0.5
     push_linear_velocity_z: float = 0.2
     push_angular_velocity_roll_pitch: float = 0.52
@@ -245,11 +245,8 @@ class SonicRewardConfig:
     tracking_relative_body_orientation: float = 1.0
     tracking_body_linear_velocity: float = 1.0
     tracking_body_angular_velocity: float = 1.0
-    tracking_joint_position: float = 1.0
-    tracking_foot_contact: float = 0.25
     action_rate: float = -0.1
     joint_limit: float = -10.0
-    target_joint_limit: float = -1.0
     undesired_contacts: float = -0.1
     anti_shake_angular_velocity: float = -0.005
     tracking_five_point_local: float = 2.0
@@ -260,7 +257,6 @@ class SonicRewardConfig:
     relative_body_orientation_std: float = 0.4
     body_linear_velocity_std: float = 1.0
     body_angular_velocity_std: float = 3.14
-    joint_position_std: float = 0.35
     five_point_std: float = 0.1
     undesired_contact_threshold: float = 1.0
     anti_shake_threshold: float = 1.5
@@ -300,6 +296,7 @@ class SonicEnvConfig:
     reward: SonicRewardConfig = SonicRewardConfig()
     done: SonicDoneConfig = SonicDoneConfig()
     sampling: SonicSamplingConfig = SonicSamplingConfig()
+    freeze_frame_probability: float = 0.1
     key_body_names: tuple[str, ...] = SONIC_TRACKED_BODY_NAMES
 
     def __post_init__(self) -> None:
@@ -311,6 +308,8 @@ class SonicEnvConfig:
             raise ValueError("SONIC transfer does not add action delay")
         if self.key_body_names != SONIC_TRACKED_BODY_NAMES:
             raise ValueError("SONIC key-body order differs from the port contract")
+        if not 0.0 <= self.freeze_frame_probability <= 1.0:
+            raise ValueError("SONIC freeze-frame probability must be in [0, 1]")
         noise = self.observation_noise
         if isinstance(noise.ramp_steps, bool) or noise.ramp_steps < 0:
             raise ValueError("observation_noise.ramp_steps must be nonnegative")
@@ -326,10 +325,15 @@ class SonicEnvConfig:
             seed=domain.seed,
             joint_angle_offset_range=domain.joint_default_position,
             joint_angle_offset_scope="policy",
-            added_base_mass_range=domain.added_base_mass,
-            base_com_offset_range=domain.base_com,
+            body_mass_scale_range=domain.torso_wrist_mass_scale,
+            body_mass_scale_names=("torso_link", "l_wrist_link", "r_wrist_link"),
+            body_com_offset_range_xyz=(
+                domain.torso_com_x,
+                domain.torso_com_yz,
+                domain.torso_com_yz,
+            ),
+            body_com_offset_name="torso_link",
             friction_range=domain.friction,
-            actuator_strength_range=domain.motor_strength,
         )
         push_low, push_high = domain.push_interval_steps
         if push_low <= 0 or push_high < push_low:
@@ -356,7 +360,6 @@ class SonicEnvConfig:
             "relative_body_orientation_std",
             "body_linear_velocity_std",
             "body_angular_velocity_std",
-            "joint_position_std",
             "five_point_std",
             "undesired_contact_threshold",
             "anti_shake_threshold",
@@ -410,6 +413,7 @@ class BelloSonicEnv(BelloTwistEnv):
     sampling_bin_cdf: jax.Array | None = None
     action_scale: tuple[float, ...] = ()
     g1_from_bello_joint: tuple[tuple[float, ...], ...] = ()
+    freeze_frame_indices: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.stage != "student":
@@ -485,6 +489,13 @@ class BelloSonicEnv(BelloTwistEnv):
         valid_lengths = np.asarray(self.reference_bank.lengths)
         if np.any(valid_lengths <= SONIC_REQUIRED_FUTURE_HORIZON):
             raise ValueError("SONIC clips do not cover the required future horizon")
+        freeze_frames = np.asarray(self.freeze_frame_indices, dtype=np.int32)
+        if (
+            freeze_frames.shape != valid_lengths.shape
+            or np.any(freeze_frames < 0)
+            or np.any(freeze_frames > valid_lengths)
+        ):
+            raise ValueError("SONIC freeze-frame augmentation indices are invalid")
         probabilities = np.asarray(self.reference_bank.sampling_probabilities)
         if probabilities.shape != np.asarray(self.reference_bank.lengths).shape:
             raise ValueError("SONIC clip sampling-probability shape has drifted")
@@ -543,10 +554,19 @@ class BelloSonicEnv(BelloTwistEnv):
                 seed=domain.seed,
                 joint_angle_offset_range=domain.joint_default_position,
                 joint_angle_offset_scope="policy",
-                added_base_mass_range=domain.added_base_mass,
-                base_com_offset_range=domain.base_com,
+                body_mass_scale_range=domain.torso_wrist_mass_scale,
+                body_mass_scale_names=(
+                    "torso_link",
+                    "l_wrist_link",
+                    "r_wrist_link",
+                ),
+                body_com_offset_range_xyz=(
+                    domain.torso_com_x,
+                    domain.torso_com_yz,
+                    domain.torso_com_yz,
+                ),
+                body_com_offset_name="torso_link",
                 friction_range=domain.friction,
-                actuator_strength_range=domain.motor_strength,
             ),
         )
         motion = load_motion_clip(motion_path, model)
@@ -568,6 +588,11 @@ class BelloSonicEnv(BelloTwistEnv):
                 tuple(float(value) for value in row)
                 for row in semantic_g1_from_bello_joint_map(reference_bank.calibration)
             ),
+            freeze_frame_indices=_sonic_freeze_frame_indices(
+                np.asarray(reference_bank.lengths),
+                probability=config.freeze_frame_probability,
+                seed=config.domain_randomization.seed,
+            ),
         )
         return (
             env.with_task_state(env.initial_task_state())
@@ -582,6 +607,33 @@ class BelloSonicEnv(BelloTwistEnv):
     @property
     def task(self) -> Literal["sonic"]:
         return "sonic"
+
+    @property
+    def ppo_stagger_initial_step_count(self) -> bool:
+        return True
+
+    def initial_step_counts(
+        self, batch_size: int, rng: jax.Array | None = None
+    ) -> jax.Array:
+        if rng is None:
+            return jnp.zeros((batch_size,), dtype=jnp.int32)
+        return jax.random.randint(
+            rng,
+            (batch_size,),
+            0,
+            self.config.max_episode_steps,
+            dtype=jnp.int32,
+        )
+
+    def with_initial_step_counts(
+        self, state: SonicState, step_count: jax.Array
+    ) -> SonicState:
+        return state.replace(
+            motion_state=state.motion_state.replace(
+                step_count=step_count,
+                episode_length=jnp.copy(step_count),
+            )
+        )
 
     @property
     def observation_layout(self) -> ObservationLayout:
@@ -614,6 +666,7 @@ class BelloSonicEnv(BelloTwistEnv):
             "sampling",
             "action_scale",
             "g1_from_bello_joint",
+            "freeze_frame_indices",
         ):
             object.__setattr__(bound, name, getattr(self, name))
         object.__setattr__(bound, "reference_bank", reference_bank)
@@ -643,7 +696,7 @@ class BelloSonicEnv(BelloTwistEnv):
     def with_task_state(self, state: SonicSamplingState) -> "BelloSonicEnv":
         if not self.sampling.enabled:
             return self
-        bin_clips, _, bin_widths, bin_valid, _ = self._sampling_bins
+        bin_clips, _, bin_widths, bin_valid, clip_bin_offsets = self._sampling_bins
         if (
             state.failures.shape != bin_clips.shape
             or state.attempts.shape != bin_clips.shape
@@ -657,9 +710,11 @@ class BelloSonicEnv(BelloTwistEnv):
         clip_mass = jnp.asarray(self.reference_bank.sampling_probabilities)[
             jnp.asarray(bin_clips)
         ]
-        clip_lengths = jnp.asarray(self.reference_bank.lengths)[jnp.asarray(bin_clips)]
-        valid_starts = clip_lengths - SONIC_REQUIRED_FUTURE_HORIZON
-        base = clip_mass * jnp.asarray(bin_widths) / valid_starts * valid
+        peer_bins = (
+            jnp.asarray(clip_bin_offsets)[jnp.asarray(bin_clips) + 1]
+            - jnp.asarray(clip_bin_offsets)[jnp.asarray(bin_clips)]
+        )
+        base = clip_mass * jnp.asarray(bin_widths) / peer_bins * valid
         failure_based = rates * valid
         failure_based /= jnp.sum(failure_based)
         uniform = valid / jnp.sum(valid)
@@ -728,14 +783,15 @@ class BelloSonicEnv(BelloTwistEnv):
             clip_mass = jnp.asarray(self.reference_bank.sampling_probabilities)[
                 jnp.asarray(bin_clips)
             ]
-            clip_lengths = jnp.asarray(self.reference_bank.lengths)[
-                jnp.asarray(bin_clips)
-            ]
-            valid_starts = clip_lengths - SONIC_REQUIRED_FUTURE_HORIZON
+            clip_bin_offsets = jnp.asarray(self._sampling_bins[4])
+            peer_bins = (
+                clip_bin_offsets[jnp.asarray(bin_clips) + 1]
+                - clip_bin_offsets[jnp.asarray(bin_clips)]
+            )
             probabilities = (
                 clip_mass
                 * jnp.asarray(widths)
-                / valid_starts
+                / peer_bins
                 * jnp.asarray(bin_valid, dtype=jnp.float32)
             )
             probabilities /= jnp.sum(probabilities)
@@ -838,7 +894,15 @@ class BelloSonicEnv(BelloTwistEnv):
                     maxval=jnp.asarray((0.52, 0.52, 0.78)),
                 )
             )
-        qvel = qvel.at[jnp.asarray(self.model.policy_qvel_indices)].set(0.0)
+        policy_qpos = jnp.asarray(self.model.policy_qpos_indices)
+        control = jnp.asarray(self.model.policy_ctrl_indices)
+        lower = jnp.asarray(self.model.joint_target_low)[control]
+        upper = jnp.asarray(self.model.joint_target_high)[control]
+        center = 0.5 * (lower + upper)
+        radius = 0.45 * (upper - lower)
+        qpos = qpos.at[policy_qpos].set(
+            jnp.clip(qpos[policy_qpos], center - radius, center + radius)
+        )
         data = motion_state.data.replace(
             qpos=qpos,
             qvel=qvel,
@@ -894,10 +958,7 @@ class BelloSonicEnv(BelloTwistEnv):
             return frame
         keys = jax.random.split(jax.random.fold_in(rng, 0x50524F50), 4)
         cfg = self.config.observation_noise
-        ramp = jnp.minimum(
-            state.total_step.astype(jnp.float32) / max(cfg.ramp_steps, 1),
-            1.0,
-        )
+        ramp = _sonic_curriculum_scale(state.total_step, cfg.ramp_steps)
         gravity = _uniform_noise(frame[:3], ramp * cfg.projected_gravity, keys[0])
         angular = _uniform_noise(frame[6:9], ramp * cfg.base_angular_velocity, keys[1])
         qpos_start = 9
@@ -947,9 +1008,9 @@ class BelloSonicEnv(BelloTwistEnv):
         )
 
     def observation(self, state: SonicState, rng: jax.Array | None = None) -> jax.Array:
-        smpl = self._smpl_encoder_input(state, rng)
+        robot_motion = self._robot_encoder_input(state, rng)
         proprioception = self._actor_proprioception(state.observation_history, rng)
-        observation = jnp.concatenate((smpl, proprioception))
+        observation = jnp.concatenate((robot_motion, proprioception))
         if observation.shape != (SONIC_ACTOR_OBSERVATION_SIZE,):
             raise RuntimeError("SONIC actor observation shape has drifted")
         return observation
@@ -984,62 +1045,72 @@ class BelloSonicEnv(BelloTwistEnv):
             raise RuntimeError("SONIC Bello proprioception shape has drifted")
         return value
 
-    def _smpl_encoder_input(
+    def _robot_encoder_input(
         self, state: SonicState, rng: jax.Array | None = None
     ) -> jax.Array:
-        assert self.reference_bank is not None
         basis = jnp.asarray(BELLO_TO_G1_VECTOR_BASIS)
         current_rotation = _quat_rotation_matrix(state.motion_state.data.qpos[3:7])
-        alignment_rotation = _quat_rotation_matrix(
-            yaw_quat_from_angle(state.motion_state.alignment_yaw)
+        joint_map = jnp.asarray(self.g1_from_bello_joint)
+        policy_qpos = jnp.asarray(self.model.policy_qpos_indices)
+        policy_qvel = jnp.asarray(self.model.policy_qvel_indices)
+        policy_control = jnp.asarray(self.model.policy_ctrl_indices)
+        bello_default = jnp.asarray(self.model.default_joint_target)[policy_control]
+        g1_default = jnp.asarray(SONIC_G1_DEFAULT_JOINT_POSITION)
+        references = tuple(
+            self._aligned_reference(state.motion_state, state.clip_index, offset)
+            for offset in SONIC_CRITIC_FUTURE_OFFSETS
         )
-        joint_noise = orientation_noise = None
+        orientation_noise = None
         if rng is not None and self.config.observation_noise.enabled:
-            noise_key = jax.random.fold_in(rng, 0x534D504C)
-            joint_key, orientation_key = jax.random.split(noise_key)
-            ramp = jnp.minimum(
-                state.total_step.astype(jnp.float32)
-                / max(self.config.observation_noise.ramp_steps, 1),
-                1.0,
-            )
-            joint_noise = _uniform_noise(
-                jnp.zeros((len(SONIC_SMPL_FUTURE_OFFSETS), 24, 3)),
-                ramp * self.config.observation_noise.smpl_joint_position,
-                joint_key,
+            orientation_key = jax.random.fold_in(rng, 0x524F424F)
+            ramp = _sonic_curriculum_scale(
+                state.total_step, self.config.observation_noise.ramp_steps
             )
             orientation_noise = _uniform_noise(
-                jnp.zeros((len(SONIC_SMPL_FUTURE_OFFSETS), 6)),
-                ramp * self.config.observation_noise.smpl_root_orientation_6d,
+                jnp.zeros((len(SONIC_CRITIC_FUTURE_OFFSETS), 6)),
+                ramp * self.config.observation_noise.robot_root_orientation_6d,
                 orientation_key,
             )
 
-        def frame(frame_index: int, offset: int) -> jax.Array:
-            absolute = self._absolute_reference_frame(
-                state.motion_state, state.clip_index, offset
+        g1_joint_positions = jnp.stack(
+            tuple(
+                g1_default + joint_map @ (reference.qpos[policy_qpos] - bello_default)
+                for reference in references
             )
-            joints = jnp.asarray(self.reference_bank.smpl_joint_pos)[absolute]
-            root_quat = jnp.asarray(self.reference_bank.smpl_root_quat_wxyz)[absolute]
+        )
+        g1_joint_velocities = jnp.stack(
+            tuple(joint_map @ reference.qvel[policy_qvel] for reference in references)
+        )
+
+        def orientation(frame_index: int, reference: MotionSample) -> jax.Array:
             relative_matrix = (
                 basis
                 @ current_rotation.T
-                @ alignment_rotation
-                @ _quat_rotation_matrix(root_quat)
+                @ _quat_rotation_matrix(reference.qpos[3:7])
+                @ basis.T
             )
-            orientation = relative_matrix[:, :2].reshape(-1)
-            if joint_noise is not None and orientation_noise is not None:
-                joints = joints + joint_noise[frame_index]
-                orientation = orientation + orientation_noise[frame_index]
-            wrists = jnp.asarray(self.reference_bank.g1_joint_pos)[absolute, 23:29]
-            return jnp.concatenate((joints.reshape(-1), orientation, wrists))
+            value = relative_matrix[:, :2].reshape(-1)
+            return (
+                value
+                if orientation_noise is None
+                else value + orientation_noise[frame_index]
+            )
 
-        value = jnp.concatenate(
+        orientations = jnp.stack(
             tuple(
-                frame(frame_index, offset)
-                for frame_index, offset in enumerate(SONIC_SMPL_FUTURE_OFFSETS)
+                orientation(index, reference)
+                for index, reference in enumerate(references)
             )
         )
-        if value.shape != (SONIC_SMPL_INPUT_SIZE,):
-            raise RuntimeError("SONIC SMPL encoder input shape has drifted")
+        # Preserve the released encoder's temporal packing bug: command qpos for
+        # all frames precede command qvel for all frames before the (10, 58)
+        # reshape.  Correcting this ordering changes every frozen token.
+        command = jnp.concatenate(
+            (g1_joint_positions.reshape(-1), g1_joint_velocities.reshape(-1))
+        ).reshape((len(references), 2 * SONIC_G1_ACTION_SIZE))
+        value = jnp.concatenate((command, orientations), axis=-1).reshape(-1)
+        if value.shape != (SONIC_ROBOT_INPUT_SIZE,):
+            raise RuntimeError("SONIC robot encoder input shape has drifted")
         return value
 
     def critic_observation(self, state: SonicState) -> jax.Array:
@@ -1190,25 +1261,34 @@ class BelloSonicEnv(BelloTwistEnv):
         )
         body_linear_velocity = self._body_linear_velocity(current, body_ids)
         body_angular_velocity = current.data.cvel[body_ids, :3]
-        five_model_ids = jnp.asarray(
+        reward_point_model_ids = jnp.asarray(
             [self._body_id(name) for name in SONIC_REWARD_POINT_BODY_NAMES]
         )
-        five_reference_ids = jnp.asarray(
+        reward_point_reference_ids = jnp.asarray(
             [
                 self.motion.body_names.index(name)
                 for name in SONIC_REWARD_POINT_BODY_NAMES
             ]
         )
+        reward_point_offsets = jnp.asarray(SONIC_REWARD_POINT_OFFSETS)
+        reference_points_world = reference.body_pos[
+            reward_point_reference_ids
+        ] + jax.vmap(quat_rotate)(
+            reference.body_quat[reward_point_reference_ids], reward_point_offsets
+        )
+        current_points_world = current.data.xpos[reward_point_model_ids] + jax.vmap(
+            quat_rotate
+        )(current.data.xquat[reward_point_model_ids], reward_point_offsets)
         reference_five = jax.vmap(
             lambda value: quat_rotate_inverse(
                 reference.qpos[3:7], value - reference.qpos[:3]
             )
-        )(reference.body_pos[five_reference_ids])
+        )(reference_points_world)
         current_five = jax.vmap(
             lambda value: quat_rotate_inverse(
                 current.data.qpos[3:7], value - current.data.qpos[:3]
             )
-        )(current.data.xpos[five_model_ids])
+        )(current_points_world)
         policy_qpos = jnp.asarray(self.model.policy_qpos_indices)
         policy_qvel = jnp.asarray(self.model.policy_qvel_indices)
         positions = current.data.qpos[policy_qpos]
@@ -1242,14 +1322,10 @@ class BelloSonicEnv(BelloTwistEnv):
             jnp.linalg.norm(foot_velocity[:, :2], axis=-1)
             * foot_contact.astype(jnp.float32)
         )
-        requested_target = self._unbounded_policy_target(
-            current.last_action,
-            previous.domain_randomization,
-        )
-        target_limit_excess = (
-            jax.nn.relu(lower - requested_target)
-            + jax.nn.relu(requested_target - upper)
-        ) / jnp.asarray(self.action_scale, dtype=jnp.float32)
+        limit_center = 0.5 * (lower + upper)
+        limit_radius = 0.45 * (upper - lower)
+        soft_lower = limit_center - limit_radius
+        soft_upper = limit_center + limit_radius
         raw = {
             "tracking_anchor_position": jnp.exp(
                 -jnp.sum((reference.qpos[:3] - current.data.qpos[:3]) ** 2)
@@ -1298,24 +1374,13 @@ class BelloSonicEnv(BelloTwistEnv):
                 )
                 / cfg.body_angular_velocity_std**2
             ),
-            "tracking_joint_position": jnp.exp(
-                -jnp.mean((reference.qpos[policy_qpos] - positions) ** 2)
-                / cfg.joint_position_std**2
-            ),
-            "tracking_foot_contact": 1.0
-            - jnp.mean(
-                jnp.abs(
-                    foot_contact.astype(jnp.float32)
-                    - reference.foot_contacts.astype(jnp.float32)
-                )
-            ),
             "action_rate": jnp.sum(
                 (current.last_action - previous.motion_state.last_action) ** 2
             ),
             "joint_limit": jnp.sum(
-                jax.nn.relu(lower - positions) + jax.nn.relu(positions - upper)
+                jax.nn.relu(soft_lower - positions)
+                + jax.nn.relu(positions - soft_upper)
             ),
-            "target_joint_limit": jnp.mean(target_limit_excess**2),
             "undesired_contacts": self._undesired_contact(current, world_id).astype(
                 jnp.float32
             ),
@@ -1343,9 +1408,6 @@ class BelloSonicEnv(BelloTwistEnv):
                 jnp.mean((reference.qpos[policy_qpos] - positions) ** 2)
             ),
             "tracking/foot_slip_mean_mps": foot_slip,
-            "target/joint_limit_excess_rms_action": jnp.sqrt(
-                jnp.mean(target_limit_excess**2)
-            ),
         }
         return (
             sum(components.values(), jnp.asarray(0.0, dtype=jnp.float32)),
@@ -1469,6 +1531,7 @@ class BelloSonicEnv(BelloTwistEnv):
         frame = jnp.rint(state.reference_time * SONIC_POLICY_HZ).astype(jnp.int32)
         length = jnp.asarray(self.reference_bank.lengths)[clip_index]
         frame = jnp.clip(frame + offset, 0, length - 1)
+        frame = jnp.minimum(frame, jnp.asarray(self.freeze_frame_indices)[clip_index])
         return jnp.asarray(self.reference_bank.offsets)[clip_index] + frame
 
     def _aligned_reference(
@@ -1476,12 +1539,16 @@ class BelloSonicEnv(BelloTwistEnv):
     ) -> MotionSample:
         assert self.reference_bank is not None
         absolute = self._absolute_reference_frame(state, clip_index, offset)
+        nominal_frame = (
+            jnp.rint(state.reference_time * SONIC_POLICY_HZ).astype(jnp.int32) + offset
+        )
+        frozen = nominal_frame >= jnp.asarray(self.freeze_frame_indices)[clip_index]
 
         def value(name: str) -> jax.Array:
             return jnp.asarray(getattr(self.reference_bank, name))[absolute]
 
         qpos = value("qpos")
-        qvel = value("qvel")
+        qvel = jnp.where(frozen, 0.0, value("qvel"))
         body_pos = value("body_pos")
         body_quat = value("body_quat_wxyz")
         rotation = yaw_quat_from_angle(state.alignment_yaw)
@@ -1497,10 +1564,10 @@ class BelloSonicEnv(BelloTwistEnv):
             .add(state.alignment_xy),
             body_quat=jax.vmap(lambda item: _quat_multiply(rotation, item))(body_quat),
             body_lin_vel=jax.vmap(lambda item: quat_rotate(rotation, item))(
-                value("body_lin_vel")
+                jnp.where(frozen, 0.0, value("body_lin_vel"))
             ),
             body_ang_vel=jax.vmap(lambda item: quat_rotate(rotation, item))(
-                value("body_ang_vel")
+                jnp.where(frozen, 0.0, value("body_ang_vel"))
             ),
             foot_contacts=value("foot_contacts"),
         )
@@ -1639,22 +1706,22 @@ class BelloSonicEnv(BelloTwistEnv):
         motion_state=None,
         randomization: jax.Array | None = None,
     ) -> jax.Array:
-        """Apply scale-aware SONIC actions and bound every requested joint target."""
+        """Apply scale-aware SONIC actions without changing the requested target."""
 
         del motion_state
         policy = jnp.asarray(self.model.policy_ctrl_indices)
         logical = jnp.asarray(self.model.default_joint_target)
-        target = jnp.clip(
-            self._unbounded_policy_target(action, randomization),
-            jnp.asarray(self.model.joint_target_low)[policy],
-            jnp.asarray(self.model.joint_target_high)[policy],
-        )
+        target = self._unbounded_policy_target(action, randomization)
         logical = logical.at[policy].set(target)
         return jnp.matmul(
             jnp.asarray(self.model.actuator_coordinate_transform),
             logical,
             precision=jax.lax.Precision.HIGHEST,
         )
+
+    def _clip_applied_action(self, action: jax.Array) -> jax.Array:
+        # The released clip is applied in G1 space before the fixed embodiment map.
+        return action
 
     def _termination_torso_contacts_batch(self, state, batch_size: int) -> jax.Array:
         del state
@@ -1775,11 +1842,10 @@ def _build_sampling_bins(
     widths: list[int] = []
     clip_bin_offsets = [0]
     for clip_index, length in enumerate(np.asarray(lengths).tolist()):
-        valid_frames = int(length) - SONIC_REQUIRED_FUTURE_HORIZON
-        for start in range(0, valid_frames, bin_size):
+        for start in range(0, int(length), bin_size):
             clip_indices.append(clip_index)
             starts.append(start)
-            widths.append(min(bin_size, valid_frames - start))
+            widths.append(min(bin_size, int(length) - start))
         clip_bin_offsets.append(len(starts))
     if not starts:
         raise ValueError("SONIC reference bank has no valid sampling bins")
@@ -1793,6 +1859,24 @@ def _build_sampling_bins(
 
 def _quat_conjugate(quaternion: jax.Array) -> jax.Array:
     return quaternion * jnp.asarray((1.0, -1.0, -1.0, -1.0))
+
+
+def _sonic_freeze_frame_indices(
+    lengths: np.ndarray, *, probability: float, seed: int
+) -> tuple[int, ...]:
+    lengths = np.asarray(lengths, dtype=np.int32)
+    rng = np.random.default_rng(np.random.SeedSequence((seed, 0x46524545)))
+    selected = rng.random(len(lengths)) < probability
+    sampled = np.asarray(
+        [rng.integers(0, int(length)) for length in lengths], dtype=np.int32
+    )
+    return tuple(np.where(selected, sampled, lengths).tolist())
+
+
+def _sonic_curriculum_scale(step: jax.Array, ramp_steps: int) -> jax.Array:
+    if ramp_steps == 0:
+        return jnp.asarray(1.0, dtype=jnp.float32)
+    return jnp.minimum(step.astype(jnp.float32) / ramp_steps, 1.0)
 
 
 def _quat_rotation_matrix(quaternion: jax.Array) -> jax.Array:

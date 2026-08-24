@@ -112,7 +112,7 @@ class TwistDataCommandConfig:
 
 @dataclass(frozen=True)
 class SonicDataCommandConfig:
-    operation: Literal["retarget_g1", "build", "upgrade_v5"]
+    operation: Literal["retarget_g1", "build", "upgrade_v5", "upgrade_v6"]
     manifest: Path | None
     input_index: Path | None
     body_model_root: Path | None
@@ -130,9 +130,10 @@ class SonicDataCommandConfig:
     sanitation_config: Path
 
     def __post_init__(self) -> None:
-        if self.operation not in {"retarget_g1", "build", "upgrade_v5"}:
+        if self.operation not in {"retarget_g1", "build", "upgrade_v5", "upgrade_v6"}:
             raise ValueError(
-                "SONIC data operation must be retarget_g1, build, or upgrade_v5"
+                "SONIC data operation must be retarget_g1, build, upgrade_v5, or "
+                "upgrade_v6"
             )
         if (
             isinstance(self.jobs, bool)
@@ -701,6 +702,31 @@ def sonic_data_entrypoint() -> None:
 def _sonic_data_hydra(config: DictConfig) -> None:
     command = command_config(SonicDataCommandConfig, config)
     output_root = _required_path(command.output_root, "output_root")
+    if command.operation == "upgrade_v6":
+        _reject_explicit_fields(
+            (
+                "manifest",
+                "body_model_root",
+                "bello_retargeted_root",
+                "g1_retargeted_root",
+                "normalized_root",
+                "gmr_python",
+                "jobs",
+                "overwrite",
+                "keep_normalized",
+                "limit",
+                "quality_config",
+                "calibration_config",
+                "sanitation_config",
+            ),
+            context="operation=upgrade_v6",
+        )
+        input_index = _required_path(command.input_index, "input_index")
+        from bello_mujoco.motion.sonic_dataset import upgrade_sonic_dataset_v6
+
+        upgraded = upgrade_sonic_dataset_v6(input_index, output_root)
+        print(json.dumps(upgraded, indent=2, sort_keys=True))
+        return
     if command.operation == "upgrade_v5":
         _reject_explicit_fields(
             (

@@ -69,11 +69,8 @@ _REWARD_TERM_NAMES = (
     "reward/tracking_relative_body_orientation",
     "reward/tracking_body_linear_velocity",
     "reward/tracking_body_angular_velocity",
-    "reward/tracking_joint_position",
-    "reward/tracking_foot_contact",
     "reward/action_rate",
     "reward/joint_limit",
-    "reward/target_joint_limit",
     "reward/undesired_contacts",
     "reward/anti_shake_angular_velocity",
     "reward/tracking_five_point_local",
@@ -331,6 +328,7 @@ def _load_clip_env(
             metadata.sonic_env.domain_randomization, enabled=False
         ),
         sampling=replace(metadata.sonic_env.sampling, enabled=False),
+        freeze_frame_probability=0.0,
     )
     return BelloSonicEnv.load(
         metadata.asset,

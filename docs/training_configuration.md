@@ -517,20 +517,20 @@ exact released 19,426-clip source composition with unit weights. See the
 ## SONIC transfer: `configs/train_sonic`
 
 SONIC is an isolated 200 Hz simulation/50 Hz control task with ten-second
-episodes and a 25-joint Bello action. Its actor consumes 1,650 raw values: ten
-84-value SMPL command frames for the frozen encoder and ten Bello history
+episodes and a 25-joint Bello action. Its actor consumes 1,450 raw values: ten
+64-value mapped G1 robot-command frames for the frozen encoder and ten Bello history
 frames containing projected gravity, base angular velocity, joint position,
 joint velocity, and previous action. The privileged critic consumes the
 released 1,645-value G1-semantic layout. Both actor and critic align Bello
 joints/vectors into the source spaces; the exact released critic running
 mean/variance is applied inside the policy.
 
-The exported release supplies the frozen five-layer SMPL encoder, 32-level FSQ,
+The exported release supplies the frozen five-layer G1 robot encoder, 32-level FSQ,
 complete 29-output dynamics decoder, critic, and critic observation moments.
 A fixed block-sparse 29-to-25 semantic transform wraps the source policy.
 Rank-32 LoRA residuals on actor proprioception, actor backbone/output, and all
 critic linears are optimizer leaves; the source arrays and semantic maps are
-not. The mapped Bello log standard deviation remains trainable. Frozen arrays
+not. The released 29-value log standard deviation remains frozen. Frozen arrays
 are content-hashed before periodic and final checkpoints.
 
 Fresh maintained runs start PPO with zero-output LoRA residuals. The offline
@@ -541,10 +541,10 @@ The maintained PPO profile uses 4,096 environments, 24 steps, five epochs,
 four minibatches, actor-edge learning rate `2e-5`, critic learning rate
 `1e-3`, desired KL `0.01`, entropy coefficient `0.01`, maximum gradient norm
 `0.1`, gamma `0.99`, GAE lambda `0.95`, and clip ratio `0.2`. It uses an
-unsquashed Gaussian with trainable mapped variance. Raw actions are clipped to
-`[-20,20]`, multiplied by Bello's
-per-joint `0.25 * effort_limit / stiffness` action scale, and clipped again to
-the generated model's feasible joint-target interval.
+unsquashed Gaussian in G1 space. Source actions are clipped to `[-20,20]`,
+mapped once into Bello's normalized action space, and multiplied by Bello's
+per-joint `0.25 * effort_limit / stiffness` action scale. No target-side action
+or joint-target clip is added.
 
 The `pretraining` section contains `enabled`, `updates`, `batch_size`,
 `validation_batch_size`, `learning_rate`, `max_gradient_norm`,
@@ -562,7 +562,7 @@ the safe NPZ/JSON export of the exact pinned NVIDIA checkpoint, while
 `runtime_clip_directory` is ignored scratch space for native motion loading.
 The packed dataset contains one complete training bank and one complete
 evaluation bank. Training transfers the full training bank to the accelerator
-once, so all clips participate in the frame-count-times-manifest-weight sampler
+once, so all clips participate in the sequence-length-agnostic manifest sampler
 without host-side data rotation or update-boundary environment resets.
 All data, release, robot, layout, and calibration identities enter typed
 checkpoint validation. See the [SONIC transfer guide](sonic.md).

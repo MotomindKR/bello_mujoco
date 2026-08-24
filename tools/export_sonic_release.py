@@ -26,8 +26,8 @@ OFFICIAL_CHECKPOINT_SHA256 = (
 OFFICIAL_CONFIG_SHA256 = (
     "f08187795fa16a839a28bc1c18e0555d38d9420e03733744341cdcb56ab629c7"
 )
-SCHEMA_VERSION = 2
-ENCODER_DIMS = (840, 2048, 1024, 512, 512, 64)
+SCHEMA_VERSION = 3
+ENCODER_DIMS = (640, 2048, 1024, 512, 512, 64)
 DECODER_DIMS = (994, 2048, 2048, 1024, 1024, 512, 512, 29)
 CRITIC_DIMS = (1645, 2048, 2048, 1024, 1024, 512, 512, 1)
 
@@ -169,13 +169,13 @@ def _load_trusted_checkpoint(torch, path: Path):
 
 def _extract_arrays(policy: dict, value: dict) -> dict[str, np.ndarray]:
     arrays = {}
-    encoder_prefix = "actor_module.encoders.smpl.module"
+    encoder_prefix = "actor_module.encoders.g1.module"
     decoder_prefix = "actor_module.decoders.g1_dyn.module"
     for output_index, module_index in enumerate((0, 2, 4, 6, 8)):
-        arrays[f"smpl_encoder_weight_{output_index}"] = _tensor_array(
+        arrays[f"robot_encoder_weight_{output_index}"] = _tensor_array(
             policy[f"{encoder_prefix}.{module_index}.weight"]
         )
-        arrays[f"smpl_encoder_bias_{output_index}"] = _tensor_array(
+        arrays[f"robot_encoder_bias_{output_index}"] = _tensor_array(
             policy[f"{encoder_prefix}.{module_index}.bias"]
         )
     for output_index, module_index in enumerate((0, 2, 4, 6, 8, 10, 12)):
@@ -209,8 +209,8 @@ def _tensor_array(value) -> np.ndarray:
 
 def _validate_arrays(arrays: dict[str, np.ndarray]) -> None:
     expected_names = {
-        *(f"smpl_encoder_weight_{index}" for index in range(5)),
-        *(f"smpl_encoder_bias_{index}" for index in range(5)),
+        *(f"robot_encoder_weight_{index}" for index in range(5)),
+        *(f"robot_encoder_bias_{index}" for index in range(5)),
         *(f"decoder_weight_{index}" for index in range(7)),
         *(f"decoder_bias_{index}" for index in range(7)),
         *(f"critic_weight_{index}" for index in range(7)),
@@ -221,7 +221,7 @@ def _validate_arrays(arrays: dict[str, np.ndarray]) -> None:
     }
     if set(arrays) != expected_names:
         raise ValueError("extracted SONIC arrays differ from schema")
-    for prefix, dims in (("smpl_encoder", ENCODER_DIMS), ("decoder", DECODER_DIMS)):
+    for prefix, dims in (("robot_encoder", ENCODER_DIMS), ("decoder", DECODER_DIMS)):
         for index, (input_size, output_size) in enumerate(
             zip(dims[:-1], dims[1:], strict=True)
         ):
@@ -252,18 +252,20 @@ def _validate_arrays(arrays: dict[str, np.ndarray]) -> None:
 def _golden_vectors(torch, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     generator = torch.Generator(device="cpu")
     generator.manual_seed(20251107)
-    smpl_input = torch.randn((8, 840), generator=generator, dtype=torch.float32) * 0.25
+    robot_encoder_input = (
+        torch.randn((8, 640), generator=generator, dtype=torch.float32) * 0.25
+    )
     g1_proprio = torch.randn((8, 930), generator=generator, dtype=torch.float32) * 0.2
     critic_input = torch.randn(
         (8, CRITIC_DIMS[0]), generator=generator, dtype=torch.float32
     )
     with torch.inference_mode():
-        latent = smpl_input
+        latent = robot_encoder_input
         for index in range(5):
             latent = torch.nn.functional.linear(
                 latent,
-                torch.from_numpy(arrays[f"smpl_encoder_weight_{index}"]),
-                torch.from_numpy(arrays[f"smpl_encoder_bias_{index}"]),
+                torch.from_numpy(arrays[f"robot_encoder_weight_{index}"]),
+                torch.from_numpy(arrays[f"robot_encoder_bias_{index}"]),
             )
             if index != 4:
                 latent = torch.nn.functional.silu(latent)
@@ -299,7 +301,7 @@ def _golden_vectors(torch, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarra
             if index != 6:
                 critic = torch.nn.functional.silu(critic)
     return {
-        "smpl_input": smpl_input.numpy(),
+        "robot_encoder_input": robot_encoder_input.numpy(),
         "g1_proprio": g1_proprio.numpy(),
         "encoder_latent": latent.numpy(),
         "quantized_tokens": tokens.numpy(),
@@ -312,9 +314,11 @@ def _golden_vectors(torch, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarra
 
 def _architecture_document() -> dict:
     return {
-        "smpl_encoder_dims": list(ENCODER_DIMS),
-        "smpl_frame_count": 10,
-        "smpl_frame_size": 84,
+        "robot_encoder_dims": list(ENCODER_DIMS),
+        "robot_frame_count": 10,
+        "robot_frame_size": 64,
+        "robot_future_offsets": list(range(0, 50, 5)),
+        "command_temporal_layout": "qpos_major_then_qvel_major_before_reshape",
         "fsq_levels": [32] * 32,
         "token_count": 2,
         "decoder_dims": list(DECODER_DIMS),

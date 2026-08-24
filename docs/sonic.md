@@ -16,12 +16,12 @@ dynamics-sensitive modules.
 
 | Block | Initialization | Training status |
 | --- | --- | --- |
-| Five-layer SMPL encoder, `840 -> 64` | Exact release arrays | Frozen |
+| Five-layer G1 robot motion encoder, `640 -> 64` | Exact release arrays | Frozen |
 | Two 32-value, 32-level FSQ tokens | Exact release operation | Frozen |
 | Bello-to-G1 proprioception alignment | Signed semantic scatter plus paired inclined-hip decoupling | Fixed |
 | Seven-layer G1 dynamics decoder, `994 -> 29` | Exact release arrays | Frozen base with rank-32 LoRA on proprioception, backbone, and output paths |
 | G1-to-Bello action alignment | Explicit inverse semantic transform with action-scale conversion | Fixed |
-| Gaussian log standard deviation | Released covariance mapped into Bello action units | Trainable |
+| Gaussian standard deviation | Exact released 29-value source vector, clamped to `[0.001, 0.5]` | Frozen |
 | Privileged G1 critic and observation normalizer | Exact release arrays/statistics | Frozen base with rank-32 LoRA on every critic linear |
 
 Frozen parameters are excluded structurally from the optimizer, not merely
@@ -42,12 +42,11 @@ and wrist yaw are zero-padded. The reverse action map is constructed as the
 paired inverse, so Bello-to-G1-to-Bello is identity on all 25 matched joints;
 cross-body and opposite-limb correlations cannot enter the controller.
 
-The released G1 standard-deviation clamp is applied conceptually before the
-output alignment. Bello's per-joint action scales differ enough that the same
-physical covariance spans roughly `0.0002` to `3.0` in Bello-normalized action
-units. The maintained global log-standard-deviation envelope covers that
-mapped range; clipping it back to G1's `0.001` to `0.5` range would silently
-discard most of the transferred exploration covariance.
+Sampling and PPO log probability stay in the released 29-dimensional G1 action
+space. The sampled source action is clamped to `[-20, 20]` and only then passed
+through the fixed G1-to-Bello map. The mapped 25-dimensional action is what the
+environment executes and stores in its target-side history; it is never used to
+evaluate the source Gaussian.
 
 The corpus-wide anchored ridge fit is retained only as a calibration audit and
 as axis/basis evidence. It is not a learned policy parameter and is not used as
@@ -55,8 +54,9 @@ a dense runtime adapter. Joint positions are transported relative to each
 robot's configured default, velocities use the same signed basis, and action
 history/output also converts the two robots' per-joint action scales. Vector
 inputs use the explicit Bello `+Y`-forward to G1 `+X`-forward basis change.
-Requested Bello targets remain clipped to the generated model's feasible
-interval, with pre-clipping limit diagnostics logged by PPO.
+Requested Bello joint targets are not physically clipped by the environment.
+MuJoCo receives the mapped target directly, while the released soft joint-limit
+penalty and target-limit diagnostics expose unsafe requests.
 
 ## Why the motion data needs three views
 
@@ -65,11 +65,11 @@ frame must retain three timestamp-identical representations:
 
 1. Bello `qpos`, `qvel`, tracked-body poses/velocities, and foot contacts for
    MJX tracking and rewards.
-2. The 24-joint SMPL skeleton canonicalized into SONIC's G1-root-local,
-   Z-up convention, plus its processed root quaternion and translation, for
-   the frozen encoder's online ten-frame command.
-3. The 29-joint G1 retarget for the six released wrist inputs and the
-   bidirectional morphology-edge calibration.
+2. The 24-joint SMPL skeleton canonicalized into SONIC's G1-root-local, Z-up
+   convention, plus its processed root quaternion and translation, retained
+   for provenance and future encoder experiments.
+3. The paired 29-joint G1 retarget used to fit and audit the bidirectional
+   morphology-edge calibration.
 
 Using one manifest for both retargeters is what makes the views joinable. The
 builder rejects any disagreement in source digest or exact source timestamps;
@@ -77,11 +77,13 @@ it does not interpolate one retarget to make a mismatch appear valid. The
 existing Bello GMR output can therefore be reused directly, while the SONIC
 pipeline adds only the paired G1/SMPL sidecar.
 
-The packed dataset is 50 Hz. The actor uses offsets `[0..9]`; the privileged
-critic uses `[0,5,...,45]`, so every sampled start preserves the full future
-window. Train/evaluation assignment comes from the licensed manifest. Dense
-Calibration is fitted only on accepted training frames, and duration times
-manifest weight determines initial training clip probability. The index binds
+The packed dataset is 50 Hz. Both the robot motion encoder and privileged
+critic use offsets `[0,5,...,45]`; future references clamp to the final source
+frame, matching the author implementation. Train/evaluation assignment comes
+from the licensed manifest. Dense calibration is fitted only on accepted
+training frames. Initial sampling is sequence-length agnostic: manifest weight
+sets clip mass and the adaptive sampler applies the released bin-width,
+failure-rate, uniform-mixture, and 200-frame pre-failure rules. The index binds
 the portable manifest, Bello robot, both GMR revisions/configs, calibration,
 separate policy/action and MuJoCo-qpos joint orders, clip content, split
 descriptors, and split-file hashes.
@@ -131,7 +133,7 @@ official SHA-256
 The release configuration is independently pinned by SHA-256
 `f08187795fa16a839a28bc1c18e0555d38d9420e03733744341cdcb56ab629c7`.
 It writes only plain `weights.npz`, `golden.npz`, and `manifest.json`. Schema
-version 2 includes the released critic weights and its 1,645-value running
+version 3 includes the G1 robot motion encoder, released critic weights, and its 1,645-value running
 mean/variance in addition to the actor. The loader verifies file, array,
 architecture, source, golden-vector, and exact deterministic export hashes.
 `artifacts/` is ignored and must not be committed.
@@ -193,6 +195,19 @@ they are never silently mixed into a new dataset.
 including entries later rejected by quality control. Licensed AMASS and
 body-model content stays outside Git.
 
+An already sanitized schema-6 bank can be migrated without repacking its large
+arrays:
+
+```bash
+uv run bello-sonic-data \
+  operation=upgrade_v6 \
+  input_index=/data/sonic/schema6/index.json \
+  output_root=/data/sonic/schema7
+```
+
+The command revalidates the self-authenticating index and split hashes, writes
+the clip-balanced schema-7 metadata, and hard-links the unchanged NPZ files.
+
 ## Train and resume
 
 Run the maintained transfer profile from a clean commit on an `origin/*`
@@ -208,13 +223,24 @@ uv run bello-train \
 
 The environment runs at 200 Hz with 50 Hz control and ten-second episodes. It
 retains the released action clip `20` but uses the per-joint G1 and Bello scales
-described above. The actor receives 1,650 raw values. Its first 840 values are
-ten frame-major encoder records containing 24 root-local SMPL joints, root
-orientation relative to the current robot, and six G1 wrist joints. The
-remaining 810 values are term-major ten-frame histories
+described above. The actor receives 1,450 raw values. Its first 640 values are
+ten 64-value G1 robot-command rows containing mapped reference joint position,
+mapped reference joint velocity, and root orientation relative to the current
+robot. For checkpoint parity, all ten qpos rows precede all ten qvel rows before
+the released `(10, 58)` reshape; changing that upstream ordering changes every
+frozen token. The remaining 810 values are term-major ten-frame histories
 of gravity, base angular velocity, Bello joint position, Bello joint velocity,
 and previous action. Observation corruption is applied once when a history
 frame is recorded; the critic retains a separate clean history.
+
+Training also mirrors the pinned environment randomization: full-strength
+observation noise from reset, `[-0.01, 0.01]` joint-default offsets, `0.8` to
+`1.5` torso/wrist mass scaling, anisotropic torso COM offsets, sliding friction
+from `0.3` to `1.6`, four-to-six-second velocity pushes, randomized initial
+episode age, and deterministic 10% motion-level freeze-frame augmentation.
+MuJoCo exposes one sliding-friction coefficient rather than PhysX's separate
+static/dynamic pair and restitution buckets; those two backend-specific
+material degrees of freedom are therefore not fabricated.
 
 The critic receives the released 1,645-value G1-semantic layout: 290 future
 joint positions, 290 future joint velocities, a 3-value anchor delta, a 6D
@@ -224,7 +250,7 @@ this boundary. The exact released running mean/variance then normalizes and
 clips the input before the frozen critic plus LoRA residuals.
 
 Training transfers the complete training bank to the accelerator once. Starts
-use the manifest frame-count-times-weight prior mixed with the released
+use the sequence-length-agnostic manifest prior mixed with the released
 failure/uniform curriculum and pre-failure offset. Failure/attempt bins cover
 the whole corpus and remain in the runner continuation, so PPO updates do not
 pause for host data loads and vectorized worlds are not reset at data-boundary
@@ -241,10 +267,9 @@ before PPO receives survival feedback.
 The maintained PPO values are 4,096 worlds, 24 rollout steps, five epochs, four
 minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`,
 desired KL `0.01`, entropy coefficient `0.01`, gamma `0.99`, lambda `0.95`, clip
-ratio `0.2`, and maximum gradient norm `0.1`. Initial Bello action variance is
-the released G1 diagonal covariance projected through the normalized
-G1-to-Bello map; it remains trainable instead of being replaced by a uniform
-`0.05` standard deviation. The maintained budget is 30,000 updates
+ratio `0.2`, and maximum gradient norm `0.1`. The released 29-dimensional
+standard deviation remains frozen and is clamped in source space before
+sampling. The maintained budget is 30,000 updates
 (`2,949,120,000` transitions). Update 8,000 matches the iteration scale used
 in Any2Any's compute comparison; the remaining updates provide the longer
 Bello convergence tail requested after the earlier learning curves.

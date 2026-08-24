@@ -242,11 +242,11 @@ Configuration source: `configs/commands/sonic_data.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `operation` | `retarget_g1`, `build`, or `upgrade_v5`; `build` | Generate the G1/SMPL sidecar view, assemble a fingerprinted synchronized dataset, or audit and upgrade an existing schema-v5 packed dataset. |
-| `input_index` | path or `null`; `null` | Required only for `upgrade_v5`; schema-v5 `index.json` to verify and migrate. |
+| `operation` | `retarget_g1`, `build`, `upgrade_v5`, or `upgrade_v6`; `build` | Generate the G1/SMPL sidecar view, assemble a fingerprinted synchronized dataset, migrate schema 5 with recalibration, or migrate schema 6 to author-fidelity sampling. |
+| `input_index` | path or `null`; `null` | Required for either upgrade; source `index.json` to verify and migrate. |
 | `manifest` | path or `null`; `null` | Required licensed AMASS manifest. Use the same manifest that selected the Bello retargets. |
 | `body_model_root` | path or `null`; `null` | Required for `retarget_g1`; contains the licensed SMPL-X model NPZ files. |
-| `bello_retargeted_root` | path or `null`; `null` | Required for `build` and `upgrade_v5`; Bello clips use `<source_id>__<sequence_id>.npz`. |
+| `bello_retargeted_root` | path or `null`; `null` | Required for `build` and `upgrade_v5`; Bello clips use `<source_id>__<sequence_id>.npz`. Schema-6 banks already contain the qpos-order audit and do not need this input. |
 | `g1_retargeted_root` | path or `null`; `null` | Required for `build`; synchronized G1/SMPL sidecars use the same filenames. |
 | `normalized_root` | path or `null`; `null` | Required scratch directory for normalized SMPL sources during `retarget_g1`; it must differ from `output_root`. |
 | `output_root` | path or `null`; `null` | Required operation output. Build and upgrade require an empty destination and write `train.npz`, `evaluation.npz`, `index.json`, `heldout_manifest.json`, and `conversion_report.json`. The upgrade hard-links verified split files and therefore requires the same filesystem. |
@@ -273,9 +273,14 @@ See the [SONIC transfer guide](sonic.md) for the end-to-end workflow.
 
 `upgrade_v5` re-verifies every source clip's MuJoCo qpos joint order,
 recomputes train-only affine calibration means and held-out diagnostics from the
-packed arrays, hashes the new schema-v6 contract, and hard-links the already
+packed arrays, hashes the current schema contract, and hard-links the already
 verified split payloads. It does not silently copy a multi-gigabyte dataset
 across filesystems.
+
+`upgrade_v6` verifies the schema-6 fingerprint and split payload hashes, changes
+the training prior from frame-count weighting to sequence-length-agnostic
+manifest weighting, hashes the new schema-7 index, and hard-links the unchanged
+sanitized arrays.
 
 ## `bello-vast-train`
 

@@ -14,7 +14,7 @@ import numpy as np
 import optax
 
 from bello_mujoco.motion.sonic_dataset import (
-    SONIC_SMPL_FUTURE_OFFSETS,
+    SONIC_CRITIC_FUTURE_OFFSETS,
     SonicReferenceBank,
 )
 from bello_mujoco.policy import ActorCritic, SonicActor
@@ -24,9 +24,10 @@ from bello_mujoco.sonic_policy import (
     SONIC_G1_ACTION_SCALE,
     SONIC_G1_DEFAULT_JOINT_POSITION,
     SONIC_PROPRIO_HISTORY_FRAMES,
-    SONIC_SMPL_INPUT_SIZE,
+    SONIC_ROBOT_INPUT_SIZE,
     SONIC_TOKEN_FLAT_SIZE,
     SonicReleaseWeights,
+    semantic_g1_from_bello_joint_map,
     sonic_fsq,
 )
 
@@ -120,6 +121,7 @@ class SonicOfflineBatchBuilder:
             SONIC_BELLO_ACTION_SIZE,
             "Bello action scale",
         )
+        self.g1_from_bello_joint = semantic_g1_from_bello_joint_map(bank.calibration)
         if not 0.0 <= startup_history_fraction <= 1.0:
             raise ValueError("startup history fraction must be in [0, 1]")
         self.startup_history_fraction = float(startup_history_fraction)
@@ -166,7 +168,7 @@ class SonicOfflineBatchBuilder:
         )
         lengths = np.asarray(self.bank.lengths)[clip_indices]
         minimum_frame = 10
-        maximum_frame = lengths - max(SONIC_SMPL_FUTURE_OFFSETS) - 2
+        maximum_frame = lengths - max(SONIC_CRITIC_FUTURE_OFFSETS) - 2
         if np.any(maximum_frame < minimum_frame):
             raise ValueError("SONIC pretraining clip does not cover its history/future")
         frames = minimum_frame + np.floor(
@@ -191,34 +193,53 @@ class SonicOfflineBatchBuilder:
         )
 
     def _observation(self, absolute: np.ndarray, startup_age: np.ndarray) -> np.ndarray:
-        future = absolute[:, None] + np.asarray(SONIC_SMPL_FUTURE_OFFSETS)[None, :]
+        future = absolute[:, None] + np.asarray(SONIC_CRITIC_FUTURE_OFFSETS)[None, :]
         history, reset_slots = _startup_history(absolute, startup_age)
         current_quaternion = np.asarray(self.bank.qpos)[absolute, 3:7]
         current_rotation = _quaternion_rotation_matrix(current_quaternion)
-        smpl_rotation = _quaternion_rotation_matrix(
-            np.asarray(self.bank.smpl_root_quat_wxyz)[future]
+        reference_rotation = _quaternion_rotation_matrix(
+            np.asarray(self.bank.qpos)[future, 3:7]
         )
         relative_rotation = np.einsum(
-            "ij,bjk,bfkl->bfil",
+            "ij,bjk,bfkl,lm->bfim",
             BELLO_TO_G1_VECTOR_BASIS,
             np.swapaxes(current_rotation, -1, -2),
-            smpl_rotation,
+            reference_rotation,
+            BELLO_TO_G1_VECTOR_BASIS.T,
         )
         orientation = relative_rotation[..., :2].reshape(
             len(absolute), len(future[0]), 6
         )
-        smpl_frames = np.concatenate(
+        bello_joint_position = np.asarray(self.bank.qpos)[
+            future[:, :, None],
+            7 + self._policy_qpos_index[None, None, :],
+        ]
+        bello_joint_velocity = np.asarray(self.bank.qvel)[
+            future[:, :, None],
+            6 + self._policy_qpos_index[None, None, :],
+        ]
+        g1_joint_position = SONIC_G1_DEFAULT_JOINT_POSITION + np.einsum(
+            "ij,bfj->bfi",
+            self.g1_from_bello_joint,
+            bello_joint_position - self.bello_default,
+        )
+        g1_joint_velocity = np.einsum(
+            "ij,bfj->bfi", self.g1_from_bello_joint, bello_joint_velocity
+        )
+        command = np.concatenate(
             (
-                np.asarray(self.bank.smpl_joint_pos)[future].reshape(
-                    len(absolute), len(future[0]), 72
-                ),
-                orientation,
-                np.asarray(self.bank.g1_joint_pos)[future, 23:29],
+                g1_joint_position.reshape(len(absolute), -1),
+                g1_joint_velocity.reshape(len(absolute), -1),
             ),
             axis=-1,
-        ).reshape(len(absolute), -1)
+        ).reshape(len(absolute), len(future[0]), -1)
+        robot_frames = np.concatenate((command, orientation), axis=-1).reshape(
+            len(absolute), -1
+        )
         proprioception = self._bello_proprioception(history, reset_slots)
-        return np.concatenate((smpl_frames, proprioception), axis=-1).astype(np.float32)
+        return np.concatenate((robot_frames, proprioception), axis=-1).astype(
+            np.float32
+        )
 
     def _bello_proprioception(
         self, history: np.ndarray, reset_slots: np.ndarray
@@ -290,13 +311,17 @@ class SonicOfflineBatchBuilder:
         )
 
     def _action_target(self, absolute: np.ndarray) -> np.ndarray:
-        return (
+        bello_delta = (
             np.asarray(self.bank.qpos)[
                 absolute[:, None],
                 7 + self._policy_qpos_index[None, :],
             ]
             - self.bello_default
-        ) / self.bello_action_scale
+        )
+        return (
+            np.einsum("ij,bj->bi", self.g1_from_bello_joint, bello_delta)
+            / SONIC_G1_ACTION_SCALE
+        ).astype(np.float32)
 
 
 def pretrain_sonic_adapters(
@@ -350,10 +375,12 @@ def pretrain_sonic_adapters(
         )
         tokens = jax.vmap(
             lambda observation: sonic_fsq(
-                actor.smpl_encoder(observation[:SONIC_SMPL_INPUT_SIZE]).reshape((2, 32))
+                actor.robot_encoder(observation[:SONIC_ROBOT_INPUT_SIZE]).reshape(
+                    (2, 32)
+                )
             ).reshape((SONIC_TOKEN_FLAT_SIZE,))
         )(batch.observation)
-        bello_proprioception = batch.observation[:, SONIC_SMPL_INPUT_SIZE:]
+        bello_proprioception = batch.observation[:, SONIC_ROBOT_INPUT_SIZE:]
         decoder = actor.decoder
         aligned_proprioception = bello_proprioception @ jax.lax.stop_gradient(
             decoder.g1_from_bello_proprio
@@ -374,7 +401,10 @@ def pretrain_sonic_adapters(
             + release_first_bias
         )
         activation_loss = jnp.mean((student_first - teacher_first) ** 2)
-        limit_excess = jax.nn.relu(low - prediction) + jax.nn.relu(prediction - high)
+        mapped_prediction = jax.vmap(decoder.bello_action)(prediction)
+        limit_excess = jax.nn.relu(low - mapped_prediction) + jax.nn.relu(
+            mapped_prediction - high
+        )
         target_limit_loss = jnp.mean(limit_excess**2)
         parameter_anchor_loss = _parameter_mean_square_error(params, initial_parameters)
         loss = (

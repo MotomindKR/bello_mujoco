@@ -20,7 +20,7 @@ from bello_mujoco.sonic_policy import (
     SONIC_ACTOR_OBSERVATION_SIZE,
     SONIC_BELLO_PROPRIO_SIZE,
     SONIC_G1_CRITIC_OBSERVATION_SIZE,
-    SONIC_SMPL_INPUT_SIZE,
+    SONIC_ROBOT_INPUT_SIZE,
     SONIC_TOKEN_FLAT_SIZE,
     SonicDecoderInitialization,
     SonicReleaseWeights,
@@ -193,11 +193,10 @@ class ActorCritic(eqx.Module):
         else:
             raise ValueError(f"unsupported policy architecture {config.architecture!r}")
         if config.architecture == "sonic":
-            assert sonic_initialization is not None
             self.log_std = jnp.clip(
-                jnp.log(jnp.asarray(sonic_initialization.output_std)),
-                config.min_log_std,
-                config.max_log_std,
+                jnp.log(jnp.asarray(sonic_release.released_std)),
+                math.log(0.001),
+                math.log(0.5),
             )
         else:
             self.log_std = jnp.full(
@@ -208,9 +207,7 @@ class ActorCritic(eqx.Module):
         self.action_distribution = config.action_distribution
         self.action_limit = config.action_limit
         self.stochastic_actor = config.architecture == "twist2"
-        self.train_log_std = (
-            config.architecture != "sonic" or config.sonic_train_log_std
-        )
+        self.train_log_std = config.architecture != "sonic"
 
     def __call__(
         self,
@@ -256,12 +253,12 @@ def sonic_frozen_parameter_hashes(policy: ActorCritic) -> dict[str, str]:
         raise TypeError("frozen SONIC hashes require a SONIC actor")
     arrays = {
         **{
-            f"smpl_encoder_weight_{index}": value
-            for index, value in enumerate(policy.actor.smpl_encoder.weights)
+            f"robot_encoder_weight_{index}": value
+            for index, value in enumerate(policy.actor.robot_encoder.weights)
         },
         **{
-            f"smpl_encoder_bias_{index}": value
-            for index, value in enumerate(policy.actor.smpl_encoder.biases)
+            f"robot_encoder_bias_{index}": value
+            for index, value in enumerate(policy.actor.robot_encoder.biases)
         },
         **{
             f"decoder_weight_{index}": value
@@ -369,17 +366,19 @@ def _xavier_linear(
     return layer
 
 
-class SonicFrozenSmplEncoder(eqx.Module):
-    """The released SMPL encoder; all arrays are explicit stop-gradient leaves."""
+class SonicFrozenRobotEncoder(eqx.Module):
+    """The released G1 motion encoder with explicit stop-gradient leaves."""
 
     weights: tuple[jax.Array, ...]
     biases: tuple[jax.Array, ...]
 
     def __init__(self, release: SonicReleaseWeights):
         self.weights = tuple(
-            jnp.asarray(value) for value in release.smpl_encoder_weights
+            jnp.asarray(value) for value in release.robot_encoder_weights
         )
-        self.biases = tuple(jnp.asarray(value) for value in release.smpl_encoder_biases)
+        self.biases = tuple(
+            jnp.asarray(value) for value in release.robot_encoder_biases
+        )
 
     def __call__(self, value: jax.Array) -> jax.Array:
         for index, (weight, bias) in enumerate(
@@ -484,6 +483,11 @@ class SonicEdgeDecoder(eqx.Module):
             self.lora_b[-1],
             self.lora_scale,
         )
+        return g1_action
+
+    def bello_action(self, g1_action: jax.Array) -> jax.Array:
+        """Apply the frozen source-to-target action map after source sampling."""
+
         return jnp.matmul(
             g1_action,
             jax.lax.stop_gradient(self.bello_from_g1_action).T,
@@ -598,9 +602,9 @@ def _lora_linear(
 
 
 class SonicActor(eqx.Module):
-    """Online frozen SMPL encoder and adaptable Bello SONIC decoder."""
+    """Online frozen G1 motion encoder and adaptable SONIC decoder."""
 
-    smpl_encoder: SonicFrozenSmplEncoder
+    robot_encoder: SonicFrozenRobotEncoder
     decoder: SonicEdgeDecoder
 
     def __init__(
@@ -612,7 +616,7 @@ class SonicActor(eqx.Module):
         lora_alpha: float,
         key: jax.Array,
     ):
-        self.smpl_encoder = SonicFrozenSmplEncoder(release)
+        self.robot_encoder = SonicFrozenRobotEncoder(release)
         self.decoder = SonicEdgeDecoder(
             release,
             initialization,
@@ -627,11 +631,11 @@ class SonicActor(eqx.Module):
                 f"SONIC observation must have {SONIC_ACTOR_OBSERVATION_SIZE} "
                 f"features, got {observation.shape[-1]}"
             )
-        smpl_input = observation[:SONIC_SMPL_INPUT_SIZE]
-        proprioception = observation[SONIC_SMPL_INPUT_SIZE:]
+        robot_input = observation[:SONIC_ROBOT_INPUT_SIZE]
+        proprioception = observation[SONIC_ROBOT_INPUT_SIZE:]
         if proprioception.shape[-1] != SONIC_BELLO_PROPRIO_SIZE:
             raise RuntimeError("SONIC Bello proprioception slice has drifted")
-        latent = self.smpl_encoder(smpl_input)
+        latent = self.robot_encoder(robot_input)
         tokens = sonic_fsq(latent.reshape((2, 32))).reshape((SONIC_TOKEN_FLAT_SIZE,))
         return self.decoder(tokens, proprioception)
 
@@ -1182,6 +1186,13 @@ def evaluate_actions(
 
 
 def transform_action(policy: ActorCritic, latent_action: jax.Array) -> jax.Array:
+    if isinstance(policy.actor, SonicActor):
+        source_action = jnp.clip(
+            latent_action,
+            -policy.action_limit,
+            policy.action_limit,
+        )
+        return policy.actor.decoder.bello_action(source_action)
     if policy.action_distribution == "gaussian":
         return latent_action
     return policy.action_limit * jnp.tanh(latent_action)
@@ -1195,7 +1206,13 @@ def policy_log_prob(
     latent_action: jax.Array | None = None,
 ) -> jax.Array:
     if policy.action_distribution == "gaussian":
-        return gaussian_log_prob(latent_mean, log_std, action)
+        distribution_action = action if latent_action is None else latent_action
+        if distribution_action.shape[-1] != latent_mean.shape[-1]:
+            raise ValueError(
+                "Gaussian log probability requires the action sampled in policy "
+                "space; mapped SONIC actions require latent_action"
+            )
+        return gaussian_log_prob(latent_mean, log_std, distribution_action)
     limit = jnp.asarray(policy.action_limit, dtype=action.dtype)
     normalized_action = jnp.clip(action / limit, -1.0 + 1.0e-6, 1.0 - 1.0e-6)
     if latent_action is None:
@@ -1279,5 +1296,9 @@ def infer_policy_action(
         if rng is None
         else sample_actor_action(policy, policy_observation, rng)
     )
-    applied_action = jnp.clip(requested_action, -action_clip, action_clip)
+    applied_action = (
+        requested_action
+        if isinstance(policy.actor, SonicActor)
+        else jnp.clip(requested_action, -action_clip, action_clip)
+    )
     return PolicyInferenceStep(action_mean, requested_action, applied_action)

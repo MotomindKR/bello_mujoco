@@ -272,7 +272,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert twist2.config.observation_norm_epsilon_mode == "std_offset"
     assert twist2.sampling.base_distribution == "manifest_weight"
     assert twist2.sampling.curriculum_max_difficulty == 10.0
-    assert sonic.config.num_updates == 8_000
+    assert sonic.config.num_updates == 30_000
     assert sonic.config.policy.architecture == "sonic"
     assert sonic.config.learning_rate == pytest.approx(2.0e-5)
     assert sonic.config.critic_learning_rate == pytest.approx(1.0e-3)

@@ -34,6 +34,7 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
+from bello_mujoco.sonic_policy import SONIC_G1_ACTION_SIZE
 
 LearningRateSchedule = Literal["constant", "linear", "adaptive"]
 AdaptiveKLStatistic = Literal["mean", "max"]
@@ -315,8 +316,11 @@ def init_train_state(
         if policy is None
         else policy
     )
-    if model.log_std.shape != (action_size,):
-        raise ValueError("supplied policy action size differs from the environment")
+    distribution_action_size = (
+        SONIC_G1_ACTION_SIZE if config.policy.architecture == "sonic" else action_size
+    )
+    if model.log_std.shape != (distribution_action_size,):
+        raise ValueError("supplied policy distribution size differs from its contract")
     optimizer = make_optimizer(config)
     params, _ = partition_policy_parameters(model)
     opt_state = optimizer.init(params)
@@ -1371,10 +1375,14 @@ def collect_rollout(
             if hasattr(env, "with_task_state")
             else env
         )
-        env_action = jnp.clip(action, -current_env.action_clip, current_env.action_clip)
+        env_action = (
+            action
+            if config.policy.architecture == "sonic"
+            else jnp.clip(action, -current_env.action_clip, current_env.action_clip)
+        )
         value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = current_env.step_batch(
-            state, action, rng=env_key
+            state, env_action, rng=env_key
         )
         next_task_state = (
             current_env.update_task_state(current_task_state, info)
@@ -1852,6 +1860,18 @@ def validate_ppo_config(config: PPOConfig) -> None:
             raise ValueError("SONIC owns its history; policy.obs_stack_size must be 1")
         if config.policy.layer_norm_final_hidden:
             raise ValueError("SONIC does not use final-hidden LayerNorm")
+        if config.policy.action_distribution != "gaussian":
+            raise ValueError("SONIC requires its released Gaussian action distribution")
+        if config.policy.action_limit != 20.0:
+            raise ValueError("SONIC requires source-action clipping at 20")
+        if config.policy.sonic_train_log_std:
+            raise ValueError("SONIC requires the frozen released standard deviation")
+        if not math.isclose(
+            config.policy.min_log_std, math.log(0.001)
+        ) or not math.isclose(config.policy.max_log_std, math.log(0.5)):
+            raise ValueError(
+                "SONIC requires the released standard-deviation clamp [0.001, 0.5]"
+            )
     elif not config.policy.sonic_train_log_std:
         raise ValueError("sonic_train_log_std=false is only valid for SONIC")
     if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:

@@ -1,11 +1,11 @@
 """Synchronized AMASS references for the Bello SONIC transfer task.
 
-The released SONIC SMPL encoder does not consume the Bello retarget alone.  A
-single source frame must retain three views with identical timestamps:
+The frozen robot encoder consumes Bello reference motion projected into G1
+semantics. A single source frame retains three synchronized views:
 
 * Bello generalized coordinates and body states for simulation tracking;
-* 24 SMPL joint positions plus the SMPL root orientation for the frozen encoder;
-* the paired 29-DoF G1 retarget for the six wrist inputs and edge calibration.
+* 24 SMPL joint positions and root motion for provenance and future experiments;
+* the paired 29-DoF G1 retarget used to fit and audit the embodiment mapping.
 
 This module owns that contract.  Licensed AMASS and SMPL-X inputs remain
 outside Git; only deterministic manifests and code are repository content.
@@ -45,7 +45,7 @@ from bello_mujoco.motion.twist_dataset import (
     portable_manifest,
 )
 
-SONIC_DATASET_SCHEMA_VERSION = 6
+SONIC_DATASET_SCHEMA_VERSION = 7
 SONIC_G1_RETARGET_FORMAT_VERSION = 2
 SONIC_SMPL_COORDINATE_CONVENTION = "sonic_g1_root_local_z_up"
 SONIC_POLICY_FPS = 50.0
@@ -54,7 +54,8 @@ SONIC_CRITIC_FUTURE_OFFSETS = tuple(range(0, 50, 5))
 SONIC_REQUIRED_FUTURE_HORIZON = max(
     max(SONIC_SMPL_FUTURE_OFFSETS), max(SONIC_CRITIC_FUTURE_OFFSETS)
 )
-SONIC_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
+SONIC_TRAIN_SAMPLING = "sequence_length_agnostic_manifest_weight"
+_SONIC_LEGACY_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
 SONIC_REFERENCE_BANK_MEMORY_MULTIPLIER = 1.25
 SONIC_REFERENCE_BANK_MEMORY_RESERVE_BYTES = 2 * 1024**3
 SONIC_SMPL_JOINT_NAMES = (
@@ -1577,9 +1578,13 @@ def upgrade_sonic_dataset_v5(
         calibration_config,
         label="heldout",
     )
+    upgraded_clips, upgraded_split_files = _sequence_agnostic_sampling_metadata(old)
     upgraded_payload = {
         **payload,
         "schema_version": SONIC_DATASET_SCHEMA_VERSION,
+        "train_sampling": SONIC_TRAIN_SAMPLING,
+        "split_files": upgraded_split_files,
+        "clips": upgraded_clips,
         "qpos_joint_names": qpos_joint_names,
         "joint_calibration": calibration.to_document(),
         "heldout_calibration": heldout,
@@ -1588,6 +1593,9 @@ def upgrade_sonic_dataset_v5(
         **old,
         "schema_version": SONIC_DATASET_SCHEMA_VERSION,
         "dataset_fingerprint": _json_sha256(upgraded_payload),
+        "train_sampling": SONIC_TRAIN_SAMPLING,
+        "split_files": upgraded_split_files,
+        "clips": upgraded_clips,
         "qpos_joint_names": list(qpos_joint_names),
         "joint_calibration": calibration.to_document(),
         "heldout_calibration": heldout,
@@ -1610,6 +1618,105 @@ def upgrade_sonic_dataset_v5(
         shutil.copy2(source, output_root / name)
     _write_json_once(output_root / "index.json", upgraded)
     return load_sonic_dataset_index(output_root / "index.json")
+
+
+def upgrade_sonic_dataset_v6(
+    input_index_path: Path,
+    output_root: Path,
+) -> dict[str, Any]:
+    """Upgrade a verified schema-v6 bank to clip-balanced sampling metadata."""
+
+    input_index_path = Path(input_index_path).expanduser().resolve()
+    output_root = Path(output_root).expanduser().resolve()
+    if output_root.exists() and any(output_root.iterdir()):
+        raise FileExistsError(
+            f"SONIC dataset output is not empty: {output_root}; upgrades never overwrite"
+        )
+    old = json.loads(input_index_path.read_text(encoding="utf-8"))
+    if not isinstance(old, dict) or set(old) != _SONIC_INDEX_FIELDS:
+        raise ValueError(
+            "SONIC schema-v6 index fields differ from the upgrade contract"
+        )
+    if old.get("schema_version") != 6:
+        raise ValueError("SONIC sampling upgrade requires schema version 6")
+    if old.get("train_sampling") != _SONIC_LEGACY_TRAIN_SAMPLING:
+        raise ValueError(
+            "SONIC schema-v6 sampling contract is not the expected legacy one"
+        )
+    payload = old.get("fingerprint_payload")
+    if not isinstance(payload, dict) or _json_sha256(payload) != old.get(
+        "dataset_fingerprint"
+    ):
+        raise ValueError("SONIC schema-v6 dataset fingerprint is invalid")
+    for split, descriptor in old["split_files"].items():
+        _validate_split_file_descriptor(descriptor, split=split)
+        _validate_split_file(
+            descriptor,
+            _split_file_path(input_index_path, descriptor),
+            split=split,
+        )
+    _validate_index_clip_bounds(old)
+    upgraded_clips, upgraded_split_files = _sequence_agnostic_sampling_metadata(old)
+    upgraded_payload = {
+        **payload,
+        "schema_version": SONIC_DATASET_SCHEMA_VERSION,
+        "train_sampling": SONIC_TRAIN_SAMPLING,
+        "split_files": upgraded_split_files,
+        "clips": upgraded_clips,
+    }
+    upgraded = {
+        **old,
+        "schema_version": SONIC_DATASET_SCHEMA_VERSION,
+        "dataset_fingerprint": _json_sha256(upgraded_payload),
+        "train_sampling": SONIC_TRAIN_SAMPLING,
+        "split_files": upgraded_split_files,
+        "clips": upgraded_clips,
+        "fingerprint_payload": upgraded_payload,
+    }
+    _write_metadata_only_upgrade(input_index_path, output_root, upgraded)
+    return load_sonic_dataset_index(output_root / "index.json")
+
+
+def _sequence_agnostic_sampling_metadata(
+    index: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    clips = [dict(clip) for clip in index["clips"]]
+    _assign_sampling_metadata(clips)
+    split_files = {
+        split: {
+            **descriptor,
+            "sampling_mass": sum(
+                float(clip["sampling_weight"])
+                for clip in clips
+                if clip["split"] == split
+            ),
+        }
+        for split, descriptor in index["split_files"].items()
+    }
+    return clips, split_files
+
+
+def _write_metadata_only_upgrade(
+    input_index_path: Path,
+    output_root: Path,
+    upgraded: dict[str, Any],
+) -> None:
+    output_root.mkdir(parents=True, exist_ok=True)
+    for descriptor in upgraded["split_files"].values():
+        source = _split_file_path(input_index_path, descriptor)
+        try:
+            os.link(source, output_root / descriptor["file"])
+        except OSError as error:
+            raise OSError(
+                "SONIC schema upgrade requires hard-linkable input/output paths; "
+                "run a full build when crossing filesystems"
+            ) from error
+    for name in ("conversion_report.json", "heldout_manifest.json"):
+        source = input_index_path.parent / name
+        if not source.is_file():
+            raise FileNotFoundError(f"SONIC schema-v6 metadata is missing: {source}")
+        shutil.copy2(source, output_root / name)
+    _write_json_once(output_root / "index.json", upgraded)
 
 
 def _verify_upgrade_qpos_order(
@@ -2077,7 +2184,7 @@ def select_sonic_reference_clip_in_bank(
 
 
 def sample_sonic_start_frames(rng, lengths, probabilities, *, batch_size: int):
-    """JAX-compatible clip/start sampling that preserves every future window."""
+    """JAX-compatible clip/start sampling with future references end-clamped."""
 
     import jax
     import jax.numpy as jnp
@@ -2086,9 +2193,7 @@ def sample_sonic_start_frames(rng, lengths, probabilities, *, batch_size: int):
     clip_indices = jax.random.categorical(
         clip_key, jnp.log(jnp.asarray(probabilities)), shape=(batch_size,)
     ).astype(jnp.int32)
-    maximum_start = (
-        jnp.asarray(lengths)[clip_indices] - SONIC_REQUIRED_FUTURE_HORIZON - 1
-    )
+    maximum_start = jnp.asarray(lengths)[clip_indices] - 1
     start_frames = jnp.floor(
         jax.random.uniform(frame_key, (batch_size,)) * (maximum_start + 1)
     ).astype(jnp.int32)
@@ -2182,9 +2287,7 @@ def _write_split_file(
         except BaseException:
             temporary_archive.unlink(missing_ok=True)
             raise
-    sampling_mass = sum(
-        item.frames * item.assigned.sequence.sampling_weight for item in items
-    )
+    sampling_mass = sum(item.assigned.sequence.sampling_weight for item in items)
     return (
         {
             "file": path.name,
@@ -2280,9 +2383,7 @@ def _clip_entry(item: _AcceptedSonicClip, offset: int) -> dict[str, Any]:
 
 def _assign_sampling_metadata(entries: list[dict[str, Any]]) -> None:
     train_mass = sum(
-        entry["frames"] * entry["sampling_weight"]
-        for entry in entries
-        if entry["split"] == "train"
+        entry["sampling_weight"] for entry in entries if entry["split"] == "train"
     )
     evaluation_order = {
         (entry["source_id"], entry["sequence_id"]): index
@@ -2295,9 +2396,7 @@ def _assign_sampling_metadata(entries: list[dict[str, Any]]) -> None:
     }
     for entry in entries:
         if entry["split"] == "train":
-            entry["sampling_probability_numerator"] = (
-                entry["frames"] * entry["sampling_weight"]
-            )
+            entry["sampling_probability_numerator"] = entry["sampling_weight"]
             entry["sampling_probability_denominator"] = train_mass
         else:
             entry["evaluation_order"] = evaluation_order[
@@ -2497,8 +2596,19 @@ def _validate_index_clip_bounds(index: dict[str, Any]) -> None:
     identities = [(clip["source_id"], clip["sequence_id"]) for clip in clips]
     if len(set(identities)) != len(identities):
         raise ValueError("SONIC dataset clip identities must be unique")
+    sampling_contract = index.get("train_sampling")
+    if sampling_contract not in {
+        SONIC_TRAIN_SAMPLING,
+        _SONIC_LEGACY_TRAIN_SAMPLING,
+    }:
+        raise ValueError("SONIC training-sampling contract is unsupported")
+    length_agnostic = sampling_contract == SONIC_TRAIN_SAMPLING
     train_mass = sum(
-        float(clip["frames"]) * float(clip["sampling_weight"])
+        (
+            float(clip["sampling_weight"])
+            if length_agnostic
+            else float(clip["frames"]) * float(clip["sampling_weight"])
+        )
         for clip in clips
         if clip["split"] == "train"
     )
@@ -2519,9 +2629,10 @@ def _validate_index_clip_bounds(index: dict[str, Any]) -> None:
             if clip_offset != offset:
                 raise ValueError(f"SONIC {split} clip bounds are not contiguous")
             offset += frames
-            split_mass += frames * float(weight)
+            clip_mass = float(weight) if length_agnostic else frames * float(weight)
+            split_mass += clip_mass
             if split == "train":
-                expected_numerator = frames * float(weight)
+                expected_numerator = clip_mass
                 numerator = clip["sampling_probability_numerator"]
                 denominator = clip["sampling_probability_denominator"]
                 if (
@@ -2640,7 +2751,7 @@ def build_sonic_sampling_bins(
     widths: list[int] = []
     clip_bin_offsets = [0]
     for clip_index, length in enumerate(lengths.tolist()):
-        valid_frames = int(length) - SONIC_REQUIRED_FUTURE_HORIZON
+        valid_frames = int(length)
         for start in range(0, valid_frames, bin_size):
             clip_indices.append(clip_index)
             starts.append(start)

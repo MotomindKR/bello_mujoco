@@ -17,10 +17,10 @@ from bello_mujoco.motion.sonic_dataset import (
     SonicJointCalibration,
 )
 
-SONIC_ARTIFACT_SCHEMA_VERSION = 2
-SONIC_SMPL_FRAME_COUNT = 10
-SONIC_SMPL_FRAME_SIZE = 84
-SONIC_SMPL_INPUT_SIZE = SONIC_SMPL_FRAME_COUNT * SONIC_SMPL_FRAME_SIZE
+SONIC_ARTIFACT_SCHEMA_VERSION = 3
+SONIC_ROBOT_FRAME_COUNT = 10
+SONIC_ROBOT_FRAME_SIZE = 64
+SONIC_ROBOT_INPUT_SIZE = SONIC_ROBOT_FRAME_COUNT * SONIC_ROBOT_FRAME_SIZE
 SONIC_TOKEN_COUNT = 2
 SONIC_TOKEN_SIZE = 32
 SONIC_TOKEN_FLAT_SIZE = SONIC_TOKEN_COUNT * SONIC_TOKEN_SIZE
@@ -29,9 +29,9 @@ SONIC_BELLO_ACTION_SIZE = 25
 SONIC_G1_PROPRIO_SIZE = 930
 SONIC_BELLO_PROPRIO_SIZE = 810
 SONIC_PROPRIO_HISTORY_FRAMES = 10
-SONIC_ACTOR_OBSERVATION_SIZE = SONIC_SMPL_INPUT_SIZE + SONIC_BELLO_PROPRIO_SIZE
+SONIC_ACTOR_OBSERVATION_SIZE = SONIC_ROBOT_INPUT_SIZE + SONIC_BELLO_PROPRIO_SIZE
 SONIC_G1_CRITIC_OBSERVATION_SIZE = 1645
-SONIC_ENCODER_DIMS = (840, 2048, 1024, 512, 512, 64)
+SONIC_ENCODER_DIMS = (640, 2048, 1024, 512, 512, 64)
 SONIC_DECODER_DIMS = (994, 2048, 2048, 1024, 1024, 512, 512, 29)
 SONIC_CRITIC_DIMS = (1645, 2048, 2048, 1024, 1024, 512, 512, 1)
 SONIC_OFFICIAL_CHECKPOINT_SHA256 = (
@@ -41,7 +41,7 @@ SONIC_OFFICIAL_CONFIG_SHA256 = (
     "f08187795fa16a839a28bc1c18e0555d38d9420e03733744341cdcb56ab629c7"
 )
 SONIC_OFFICIAL_ARTIFACT_SHA256 = (
-    "899100beaafbfc376d18fc12af9e670479b1dff194f246af2ae380d3dfb5eeec"
+    "abfcabcae82fde61f873c87ef735cdf9d8b278f6140521d5c3e4df66bd3088bf"
 )
 
 BELLO_TO_G1_VECTOR_BASIS = np.asarray(
@@ -119,8 +119,8 @@ SONIC_G1_DEFAULT_JOINT_POSITION = np.asarray(
 
 @dataclass(frozen=True)
 class SonicReleaseWeights:
-    smpl_encoder_weights: tuple[np.ndarray, ...]
-    smpl_encoder_biases: tuple[np.ndarray, ...]
+    robot_encoder_weights: tuple[np.ndarray, ...]
+    robot_encoder_biases: tuple[np.ndarray, ...]
     decoder_weights: tuple[np.ndarray, ...]
     decoder_biases: tuple[np.ndarray, ...]
     critic_weights: tuple[np.ndarray, ...]
@@ -133,10 +133,10 @@ class SonicReleaseWeights:
 
     def __post_init__(self) -> None:
         _validate_linear_stack(
-            self.smpl_encoder_weights,
-            self.smpl_encoder_biases,
+            self.robot_encoder_weights,
+            self.robot_encoder_biases,
             SONIC_ENCODER_DIMS,
-            "SMPL encoder",
+            "robot motion encoder",
         )
         _validate_linear_stack(
             self.decoder_weights,
@@ -177,16 +177,11 @@ class SonicReleaseWeights:
 
 @dataclass(frozen=True)
 class SonicDecoderInitialization:
-    output_std: np.ndarray
     g1_from_bello_proprio: np.ndarray
     g1_from_bello_proprio_offset: np.ndarray
     bello_from_g1_action: np.ndarray
 
     def __post_init__(self) -> None:
-        if self.output_std.shape != (SONIC_BELLO_ACTION_SIZE,) or not np.all(
-            np.isfinite(self.output_std) & (self.output_std > 0.0)
-        ):
-            raise ValueError("SONIC Bello output standard deviation is invalid")
         if self.g1_from_bello_proprio.shape != (
             SONIC_G1_PROPRIO_SIZE,
             SONIC_BELLO_PROPRIO_SIZE,
@@ -273,11 +268,11 @@ def load_sonic_release_artifact(directory: Path) -> SonicReleaseWeights:
         raise ValueError("SONIC artifact arrays differ from the pinned release export")
     load_sonic_golden(directory, manifest=manifest)
     return SonicReleaseWeights(
-        smpl_encoder_weights=tuple(
-            arrays[f"smpl_encoder_weight_{index}"] for index in range(5)
+        robot_encoder_weights=tuple(
+            arrays[f"robot_encoder_weight_{index}"] for index in range(5)
         ),
-        smpl_encoder_biases=tuple(
-            arrays[f"smpl_encoder_bias_{index}"] for index in range(5)
+        robot_encoder_biases=tuple(
+            arrays[f"robot_encoder_bias_{index}"] for index in range(5)
         ),
         decoder_weights=tuple(arrays[f"decoder_weight_{index}"] for index in range(7)),
         decoder_biases=tuple(arrays[f"decoder_bias_{index}"] for index in range(7)),
@@ -303,7 +298,7 @@ def load_sonic_golden(
     if _file_sha256(path) != manifest.get("golden_file_sha256"):
         raise ValueError("SONIC golden.npz hash differs from manifest")
     expected_shapes = {
-        "smpl_input": (8, SONIC_SMPL_INPUT_SIZE),
+        "robot_encoder_input": (8, SONIC_ROBOT_INPUT_SIZE),
         "g1_proprio": (8, SONIC_G1_PROPRIO_SIZE),
         "encoder_latent": (8, SONIC_TOKEN_FLAT_SIZE),
         "quantized_tokens": (8, SONIC_TOKEN_COUNT, SONIC_TOKEN_SIZE),
@@ -361,13 +356,7 @@ def build_bello_decoder_initialization(
     bello_from_g1 = _normalized_bello_from_g1(
         semantic_bello_from_g1_joint_map(calibration), bello_action_scale
     )
-    output_std = np.sqrt(
-        (bello_from_g1 * bello_from_g1) @ (release.released_std**2)
-    ).astype(np.float32)
-    if not np.all(np.isfinite(output_std) & (output_std > 0.0)):
-        raise ValueError("mapped Bello action standard deviation is invalid")
     return SonicDecoderInitialization(
-        output_std=output_std,
         g1_from_bello_proprio=affine,
         g1_from_bello_proprio_offset=affine_offset,
         bello_from_g1_action=bello_from_g1,
@@ -625,8 +614,8 @@ def _validate_linear_stack(
 
 def _artifact_array_names() -> set[str]:
     return {
-        *(f"smpl_encoder_weight_{index}" for index in range(5)),
-        *(f"smpl_encoder_bias_{index}" for index in range(5)),
+        *(f"robot_encoder_weight_{index}" for index in range(5)),
+        *(f"robot_encoder_bias_{index}" for index in range(5)),
         *(f"decoder_weight_{index}" for index in range(7)),
         *(f"decoder_bias_{index}" for index in range(7)),
         *(f"critic_weight_{index}" for index in range(7)),
@@ -639,9 +628,11 @@ def _artifact_array_names() -> set[str]:
 
 def _architecture_document() -> dict[str, Any]:
     return {
-        "smpl_encoder_dims": list(SONIC_ENCODER_DIMS),
-        "smpl_frame_count": SONIC_SMPL_FRAME_COUNT,
-        "smpl_frame_size": SONIC_SMPL_FRAME_SIZE,
+        "robot_encoder_dims": list(SONIC_ENCODER_DIMS),
+        "robot_frame_count": SONIC_ROBOT_FRAME_COUNT,
+        "robot_frame_size": SONIC_ROBOT_FRAME_SIZE,
+        "robot_future_offsets": list(range(0, 50, 5)),
+        "command_temporal_layout": "qpos_major_then_qvel_major_before_reshape",
         "fsq_levels": [32] * SONIC_TOKEN_SIZE,
         "token_count": SONIC_TOKEN_COUNT,
         "decoder_dims": list(SONIC_DECODER_DIMS),

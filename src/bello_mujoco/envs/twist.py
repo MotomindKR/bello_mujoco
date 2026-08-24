@@ -488,6 +488,9 @@ class BelloTwistEnv:
     def action_clip(self) -> float:
         return self.config.action_clip
 
+    def _clip_applied_action(self, action: jax.Array) -> jax.Array:
+        return jnp.clip(action, -self.action_clip, self.action_clip)
+
     @property
     def control_timestep(self) -> float:
         return self.physics_steps_per_control * float(self.model.mj_model.opt.timestep)
@@ -882,14 +885,12 @@ class BelloTwistEnv:
         action_history = jnp.concatenate(
             (state.action_history[1:], action[None, :]), axis=0
         )
-        applied = jnp.clip(
+        applied = self._clip_applied_action(
             jax.lax.dynamic_index_in_dim(
                 action_history,
                 action_history.shape[0] - 1 - state.action_delay_steps,
                 keepdims=False,
-            ),
-            -self.action_clip,
-            self.action_clip,
+            )
         )
         data = state.motion_state.data.replace(
             ctrl=self._action_target(
@@ -987,7 +988,7 @@ class BelloTwistEnv:
                 values, index, keepdims=False
             )
         )(action_history, indices)
-        applied = jnp.clip(applied, -self.action_clip, self.action_clip)
+        applied = self._clip_applied_action(applied)
         ctrl = jax.vmap(self._action_target)(
             applied, state.motion_state, state.domain_randomization
         )

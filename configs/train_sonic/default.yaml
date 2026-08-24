@@ -42,8 +42,8 @@ config:
     hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
     activation: swish
     init_log_std: -2.995732273553991
-    min_log_std: -8.517193191416238
-    max_log_std: 1.0986122886681098
+    min_log_std: -6.907755278982137
+    max_log_std: -0.6931471805599453
     obs_stack_size: 1
     action_distribution: gaussian
     action_limit: 20.0
@@ -51,7 +51,7 @@ config:
     layer_norm_final_hidden: false
     sonic_lora_rank: 32
     sonic_lora_alpha: 32.0
-    sonic_train_log_std: true
+    sonic_train_log_std: false
 
 simulation: {}
 sonic_env: {}

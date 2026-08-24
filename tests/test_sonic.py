@@ -17,6 +17,7 @@ from bello_mujoco.envs.sonic import (
     SonicDoneConfig,
     SonicObservationContract,
     _build_sampling_bins,
+    _sonic_freeze_frame_indices,
 )
 import bello_mujoco.evaluation.sonic as sonic_evaluation
 import bello_mujoco.motion.sonic_dataset as sonic_dataset
@@ -55,21 +56,25 @@ from bello_mujoco.motion.sonic_dataset import (
     select_sonic_reference_clip,
     select_sonic_reference_clip_in_bank,
     sonic_semantic_quality,
+    upgrade_sonic_dataset_v6,
 )
 from bello_mujoco.policy import (
     ActorCritic,
     SonicActor,
     SonicEdgeDecoder,
-    SonicFrozenSmplEncoder,
+    SonicFrozenRobotEncoder,
     SonicLoRACritic,
     partition_policy_parameters,
+    policy_log_prob,
+    transform_action,
 )
 from bello_mujoco.sonic_policy import (
     BELLO_TO_G1_VECTOR_BASIS,
     SONIC_BELLO_PROPRIO_SIZE,
     SONIC_G1_ACTION_SCALE,
+    SONIC_G1_DEFAULT_JOINT_POSITION,
     SONIC_G1_PROPRIO_SIZE,
-    SONIC_SMPL_INPUT_SIZE,
+    SONIC_ROBOT_INPUT_SIZE,
     apply_frozen_mlp,
     build_bello_decoder_initialization,
     g1_from_bello_proprio_affine,
@@ -243,10 +248,10 @@ def test_sonic_observation_contract_matches_bello_edge_dimensions() -> None:
 
     assert contract.action_size == 25
     assert contract.history_frame_size == 84
-    assert contract.actor_observation_size == 1650
+    assert contract.actor_observation_size == 1450
     assert contract.critic_command_frame_size == 58
     assert contract.critic_observation_size == 1645
-    assert contract.actor_layout.size == 1650
+    assert contract.actor_layout.size == 1450
     assert contract.critic_layout.size == 1645
     assert SonicDoneConfig().root_height_error == 0.25
     assert SonicDoneConfig().root_orientation_squared_error == 0.8
@@ -556,7 +561,35 @@ def test_sonic_action_target_applies_randomized_default_and_release_scale() -> N
         randomization=jnp.asarray((0.03, 0.04)),
     )
 
-    np.testing.assert_allclose(target, np.asarray((0.5, -0.5)), atol=1.0e-6)
+    np.testing.assert_allclose(target, np.asarray((0.63, -0.56)), atol=1.0e-6)
+
+
+def test_sonic_samples_and_scores_in_source_action_space_before_mapping() -> None:
+    decoder = object.__new__(SonicEdgeDecoder)
+    object.__setattr__(
+        decoder,
+        "bello_from_g1_action",
+        jnp.asarray(((1.0, 2.0, 0.0), (0.0, -1.0, 3.0))),
+    )
+    actor = object.__new__(SonicActor)
+    object.__setattr__(actor, "decoder", decoder)
+    policy = object.__new__(ActorCritic)
+    object.__setattr__(policy, "actor", actor)
+    object.__setattr__(policy, "action_distribution", "gaussian")
+    object.__setattr__(policy, "action_limit", 20.0)
+
+    source_action = jnp.asarray((30.0, -2.0, 1.0))
+    mapped = transform_action(policy, source_action)
+    np.testing.assert_allclose(mapped, np.asarray((16.0, 5.0)))
+
+    latent = jnp.asarray((0.1, -0.2, 0.3))
+    mean = jnp.zeros(3)
+    log_std = jnp.zeros(3)
+    actual = policy_log_prob(policy, mean, log_std, mapped, latent_action=latent)
+    expected = -0.5 * np.sum(np.asarray(latent) ** 2 + np.log(2.0 * np.pi))
+    assert float(actual) == pytest.approx(float(expected))
+    with pytest.raises(ValueError, match="policy space"):
+        policy_log_prob(policy, mean, log_std, mapped)
 
 
 def test_sonic_reference_action_requests_next_joint_pose() -> None:
@@ -629,8 +662,21 @@ def test_sampling_bins_are_host_materialized_and_clip_local() -> None:
 
     np.testing.assert_array_equal(clips, np.asarray((0, 0, 0, 1, 1)))
     np.testing.assert_array_equal(starts, np.asarray((0, 50, 100, 0, 50)))
-    np.testing.assert_array_equal(widths, np.asarray((50, 50, 1, 50, 1)))
+    np.testing.assert_array_equal(widths, np.asarray((50, 50, 46, 50, 46)))
     np.testing.assert_array_equal(offsets, np.asarray((0, 3, 5)))
+
+
+def test_freeze_frame_augmentation_is_seeded_and_uses_disabled_sentinel() -> None:
+    lengths = np.asarray((50, 75, 100), dtype=np.int32)
+
+    disabled = _sonic_freeze_frame_indices(lengths, probability=0.0, seed=7)
+    frozen = _sonic_freeze_frame_indices(lengths, probability=1.0, seed=7)
+
+    assert disabled == (50, 75, 100)
+    assert frozen == _sonic_freeze_frame_indices(lengths, probability=1.0, seed=7)
+    assert all(
+        0 <= frame < length for frame, length in zip(frozen, lengths, strict=True)
+    )
 
 
 def test_split_sampling_bins_cover_every_valid_start() -> None:
@@ -642,7 +688,7 @@ def test_split_sampling_bins_cover_every_valid_start() -> None:
     assert clips.shape == starts.shape == widths.shape == valid.shape == (3,)
     np.testing.assert_array_equal(clips, np.asarray((0, 1, 1)))
     np.testing.assert_array_equal(starts, np.asarray((0, 0, 50)))
-    np.testing.assert_array_equal(widths, np.asarray((5, 50, 5)))
+    np.testing.assert_array_equal(widths, np.asarray((50, 50, 50)))
     np.testing.assert_array_equal(valid, np.ones(3, dtype=bool))
     np.testing.assert_array_equal(offsets, np.asarray((0, 1, 3)))
 
@@ -653,7 +699,7 @@ def test_tracking_dataset_summary_excludes_clip_and_fingerprint_payloads() -> No
         "dataset_fingerprint": "sha256:" + "a" * 64,
         "portable_manifest_fingerprint": "sha256:" + "b" * 64,
         "policy_fps": 50.0,
-        "train_sampling": "frame_count_times_manifest_weight",
+        "train_sampling": "sequence_length_agnostic_manifest_weight",
         "joint_names": list(BELLO_JOINT_NAMES),
         "qpos_joint_names": list(BELLO_QPOS_JOINT_NAMES),
         "body_names": ["pelvis_link"],
@@ -752,31 +798,57 @@ def test_offline_pretraining_batch_uses_synchronized_history_and_future() -> Non
 
     batch = builder.batch("train", 8)
 
-    assert batch.observation.shape == (8, 1650)
-    assert batch.next_observation.shape == (8, 1650)
+    assert batch.observation.shape == (8, 1450)
+    assert batch.next_observation.shape == (8, 1450)
     assert batch.g1_proprioception.shape == (8, 930)
-    assert batch.action_target.shape == (8, 25)
-    assert batch.next_action_target.shape == (8, 25)
-    current_qpos_start = SONIC_SMPL_INPUT_SIZE + 60 + 9 * 25
-    np.testing.assert_allclose(
-        batch.action_target,
-        batch.observation[:, current_qpos_start : current_qpos_start + 25] + 0.001,
-        atol=1.0e-7,
+    assert batch.action_target.shape == (8, 29)
+    assert batch.next_action_target.shape == (8, 29)
+    current_qpos_start = SONIC_ROBOT_INPUT_SIZE + 60 + 9 * 25
+    bello_action = (
+        batch.observation[:, current_qpos_start : current_qpos_start + 25] + 0.001
     )
+    expected_action = (
+        bello_action
+        @ semantic_g1_from_bello_joint_map(bank.calibration).T
+        / SONIC_G1_ACTION_SCALE
+    )
+    np.testing.assert_allclose(batch.action_target, expected_action, atol=1.0e-7)
     np.testing.assert_allclose(
         batch.next_action_target - batch.action_target,
-        np.full((8, 25), 0.001, dtype=np.float32),
+        np.broadcast_to(
+            (
+                semantic_g1_from_bello_joint_map(bank.calibration)
+                @ np.full(25, 0.001, dtype=np.float32)
+            )
+            / SONIC_G1_ACTION_SCALE,
+            (8, 29),
+        ),
         atol=1.0e-7,
     )
-    action_history_start = SONIC_SMPL_INPUT_SIZE + 560
+    action_history_start = SONIC_ROBOT_INPUT_SIZE + 560
     np.testing.assert_allclose(
         batch.observation[
             :, action_history_start + 9 * 25 : action_history_start + 10 * 25
         ],
-        batch.action_target - 0.001,
+        bello_action - 0.001,
         atol=1.0e-7,
     )
     assert np.all(np.isfinite(batch.observation))
+
+    direct = builder._observation(
+        np.asarray((20,), dtype=np.int32),
+        np.asarray((10,), dtype=np.int32),
+    )[0, :SONIC_ROBOT_INPUT_SIZE].reshape(10, 64)
+    joint_map = semantic_g1_from_bello_joint_map(bank.calibration)
+    position_20 = SONIC_G1_DEFAULT_JOINT_POSITION + joint_map @ np.full(25, 0.02)
+    position_25 = SONIC_G1_DEFAULT_JOINT_POSITION + joint_map @ np.full(25, 0.025)
+    velocity = joint_map @ np.full(25, 0.05)
+    np.testing.assert_allclose(
+        direct[0, :58], np.concatenate((position_20, position_25)), atol=1.0e-7
+    )
+    np.testing.assert_allclose(
+        direct[5, :58], np.concatenate((velocity, velocity)), atol=1.0e-7
+    )
 
 
 def test_offline_pretraining_models_rollout_history_fill_after_reset() -> None:
@@ -796,7 +868,7 @@ def test_offline_pretraining_models_rollout_history_fill_after_reset() -> None:
         startup_history_fraction=1.0,
         seed=7,
     )
-    proprio_start = SONIC_SMPL_INPUT_SIZE
+    proprio_start = SONIC_ROBOT_INPUT_SIZE
     qpos_start = proprio_start + 60
     qvel_start = proprio_start + 310
     action_start = proprio_start + 560
@@ -853,7 +925,7 @@ def test_in_bank_reference_clip_selection_preserves_full_array_shapes() -> None:
     assert selected.valid_clip_count == 2
     assert selected.source_ids == ("source_0", "source_1")
     absolute = BelloSonicEnv._absolute_reference_frame(
-        SimpleNamespace(reference_bank=selected),
+        SimpleNamespace(reference_bank=selected, freeze_frame_indices=(50, 60)),
         SimpleNamespace(reference_time=jnp.asarray(0.02, dtype=jnp.float32)),
         jnp.asarray(1, dtype=jnp.int32),
         0,
@@ -958,6 +1030,44 @@ def test_dataset_index_and_split_hashes_are_enforced(tmp_path: Path) -> None:
         load_sonic_reference_bank(index_path, split="train")
 
 
+def test_schema_v6_upgrade_rewrites_sampling_metadata_without_repacking(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "schema6"
+    source.mkdir()
+    index_path = _write_dataset_fixture(source)
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["schema_version"] = 6
+    index["train_sampling"] = "frame_count_times_manifest_weight"
+    for descriptor in index["split_files"].values():
+        descriptor["sampling_mass"] = float(descriptor["frames"])
+    train_clip = next(clip for clip in index["clips"] if clip["split"] == "train")
+    train_clip["sampling_probability_numerator"] = float(train_clip["frames"])
+    train_clip["sampling_probability_denominator"] = float(train_clip["frames"])
+    payload = index["fingerprint_payload"]
+    payload["schema_version"] = 6
+    payload["train_sampling"] = index["train_sampling"]
+    payload["split_files"] = index["split_files"]
+    payload["clips"] = index["clips"]
+    index["dataset_fingerprint"] = _json_sha256(payload)
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    (source / "conversion_report.json").write_text("{}\n", encoding="utf-8")
+    (source / "heldout_manifest.json").write_text("{}\n", encoding="utf-8")
+
+    output = tmp_path / "schema7"
+    upgraded = upgrade_sonic_dataset_v6(index_path, output)
+
+    assert upgraded["schema_version"] == 7
+    assert upgraded["train_sampling"] == SONIC_TRAIN_SAMPLING
+    assert upgraded["split_files"]["train"]["sampling_mass"] == 1.0
+    upgraded_train = next(
+        clip for clip in upgraded["clips"] if clip["split"] == "train"
+    )
+    assert upgraded_train["sampling_probability_numerator"] == 1.0
+    assert upgraded_train["sampling_probability_denominator"] == 1.0
+    assert (source / "train.npz").stat().st_ino == (output / "train.npz").stat().st_ino
+
+
 def test_reference_bank_memory_preflight_fails_before_allocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -986,9 +1096,9 @@ def test_release_artifact_matches_exporter_golden() -> None:
     release = load_sonic_release_artifact(artifact)
     golden = load_sonic_golden(artifact)
     latent = apply_frozen_mlp(
-        jnp.asarray(golden["smpl_input"]),
-        tuple(jnp.asarray(value) for value in release.smpl_encoder_weights),
-        tuple(jnp.asarray(value) for value in release.smpl_encoder_biases),
+        jnp.asarray(golden["robot_encoder_input"]),
+        tuple(jnp.asarray(value) for value in release.robot_encoder_weights),
+        tuple(jnp.asarray(value) for value in release.robot_encoder_biases),
     )
     tokens = sonic_fsq(latent.reshape((-1, 2, 32)))
     g1_action = apply_frozen_mlp(
@@ -1017,7 +1127,7 @@ def test_release_artifact_matches_exporter_golden() -> None:
     np.testing.assert_allclose(critic_value, golden["critic_value"], atol=5.0e-6)
 
 
-def test_bello_initialization_maps_released_action_covariance() -> None:
+def test_bello_initialization_keeps_mapping_separate_from_source_std() -> None:
     artifact = Path("artifacts/sonic/default_release")
     if not artifact.is_dir():
         pytest.skip("ignored SONIC release artifact is not installed")
@@ -1046,10 +1156,12 @@ def test_bello_initialization_maps_released_action_covariance() -> None:
     normalized_map = (
         semantic_bello_from_g1_joint_map(calibration) * (SONIC_G1_ACTION_SCALE[None, :])
     )
-    expected = np.sqrt((normalized_map**2) @ (release.released_std**2))
-
-    np.testing.assert_allclose(initialization.output_std, expected, rtol=1.0e-6)
-    assert not np.allclose(initialization.output_std, 0.05)
+    np.testing.assert_allclose(
+        initialization.bello_from_g1_action,
+        normalized_map,
+        rtol=1.0e-6,
+    )
+    assert release.released_std.shape == (29,)
 
 
 def test_zero_lora_preserves_aligned_released_actor_and_critic() -> None:
@@ -1086,9 +1198,9 @@ def test_zero_lora_preserves_aligned_released_actor_and_critic() -> None:
         + initialization.g1_from_bello_proprio_offset
     )
     latent = apply_frozen_mlp(
-        jnp.asarray(golden["smpl_input"][0]),
-        tuple(jnp.asarray(value) for value in release.smpl_encoder_weights),
-        tuple(jnp.asarray(value) for value in release.smpl_encoder_biases),
+        jnp.asarray(golden["robot_encoder_input"][0]),
+        tuple(jnp.asarray(value) for value in release.robot_encoder_weights),
+        tuple(jnp.asarray(value) for value in release.robot_encoder_biases),
     )
     tokens = sonic_fsq(latent.reshape((2, 32))).reshape(-1)
     g1_action = apply_frozen_mlp(
@@ -1096,21 +1208,29 @@ def test_zero_lora_preserves_aligned_released_actor_and_critic() -> None:
         tuple(jnp.asarray(value) for value in release.decoder_weights),
         tuple(jnp.asarray(value) for value in release.decoder_biases),
     )
-    expected_actor = initialization.bello_from_g1_action @ g1_action
+    expected_actor = g1_action
 
     actual_actor = actor(
         jnp.concatenate(
-            (jnp.asarray(golden["smpl_input"][0]), jnp.asarray(bello_proprioception))
+            (
+                jnp.asarray(golden["robot_encoder_input"][0]),
+                jnp.asarray(bello_proprioception),
+            )
         )
     )
     actual_critic = critic(jnp.asarray(golden["critic_input"][0]))
 
     np.testing.assert_allclose(actual_actor, expected_actor, atol=5.0e-6)
+    np.testing.assert_allclose(
+        actor.decoder.bello_action(actual_actor),
+        initialization.bello_from_g1_action @ g1_action,
+        atol=5.0e-6,
+    )
     np.testing.assert_allclose(actual_critic, golden["critic_value"][0], atol=5.0e-6)
 
 
 def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
-    encoder = object.__new__(SonicFrozenSmplEncoder)
+    encoder = object.__new__(SonicFrozenRobotEncoder)
     object.__setattr__(encoder, "weights", (jnp.ones((1, 1)),))
     object.__setattr__(encoder, "biases", (jnp.ones((1,)),))
     decoder = object.__new__(SonicEdgeDecoder)
@@ -1131,7 +1251,7 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
     object.__setattr__(critic, "observation_variance", jnp.ones((1,)))
     object.__setattr__(critic, "lora_scale", 1.0)
     actor = object.__new__(SonicActor)
-    object.__setattr__(actor, "smpl_encoder", encoder)
+    object.__setattr__(actor, "robot_encoder", encoder)
     object.__setattr__(actor, "decoder", decoder)
     policy = object.__new__(ActorCritic)
     object.__setattr__(policy, "actor", actor)
@@ -1145,13 +1265,13 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
     object.__setattr__(policy, "train_log_std", False)
     trainable, frozen = partition_policy_parameters(policy)
 
-    assert all(value is None for value in trainable.actor.smpl_encoder.weights)
+    assert all(value is None for value in trainable.actor.robot_encoder.weights)
     assert trainable.actor.decoder.base_weights[0] is None
     assert trainable.actor.decoder.base_biases[0] is None
     assert trainable.actor.decoder.lora_a[0] is not None
     assert trainable.actor.decoder.lora_b[0] is not None
     assert trainable.actor.decoder.g1_from_bello_proprio is None
-    assert all(value is not None for value in frozen.actor.smpl_encoder.weights)
+    assert all(value is not None for value in frozen.actor.robot_encoder.weights)
     assert trainable.critic.base_weights[0] is None
     assert trainable.critic.lora_a[0] is not None
     assert trainable.critic.lora_b[0] is not None
@@ -1344,7 +1464,7 @@ def _write_dataset_fixture(root: Path) -> Path:
             "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
             "clip_count": 1,
             "frames": frames,
-            "sampling_mass": float(frames),
+            "sampling_mass": 1.0,
         }
     clips = [
         {
@@ -1362,8 +1482,8 @@ def _write_dataset_fixture(root: Path) -> Path:
             "semantic_labels": ["traveling_root", "gait_contact_cycles"],
             **(
                 {
-                    "sampling_probability_numerator": float(frames),
-                    "sampling_probability_denominator": float(frames),
+                    "sampling_probability_numerator": 1.0,
+                    "sampling_probability_denominator": 1.0,
                 }
                 if split == "train"
                 else {"evaluation_order": 0}
