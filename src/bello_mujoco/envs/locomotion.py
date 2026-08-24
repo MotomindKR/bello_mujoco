@@ -1926,7 +1926,7 @@ class BelloLocomotionEnv:
             1, int(round(self.command_config.resample_seconds / self.control_timestep))
         )
         resample = (state.step_count % resample_steps == 0) & ~done
-        sampled = self._reset_batch_command(
+        sampled = self._resample_batch_command(
             state.command, int(state.command.shape[0]), rng
         )
         command = jnp.where(resample[:, None], sampled, state.command)
@@ -1935,6 +1935,20 @@ class BelloLocomotionEnv:
         reset_phase = new_standing | (resample & old_standing)
         phase = jnp.where(reset_phase, 0.0, state.gait_phase)
         return command, phase
+
+    def _resample_batch_command(
+        self,
+        command: jax.Array,
+        batch_size: int,
+        rng: jax.Array | None,
+    ) -> jax.Array:
+        if rng is None:
+            return command
+        if not self.command_config.enabled:
+            return jnp.zeros_like(command)
+        if self.command_config.standing_transitions_enabled:
+            return self.command_config.sample_stratified_batch(rng, batch_size)
+        return self._reset_batch_command(command, batch_size, rng)
 
     def _reset_batch_command(
         self,
@@ -2825,7 +2839,7 @@ class BelloLocomotionEnv:
             foot_forward /= jnp.maximum(jnp.linalg.norm(foot_forward), 1.0e-6)
             cross_z = (
                 pelvis_forward[0] * foot_forward[1]
-                - pelvis_forward[1] * (foot_forward[0])
+                - pelvis_forward[1] * foot_forward[0]
             )
             dot = jnp.dot(pelvis_forward, foot_forward)
             errors.append(jnp.arctan2(cross_z, dot))

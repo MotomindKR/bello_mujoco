@@ -83,6 +83,23 @@ The effective update count is
 `total_timesteps // (num_envs * num_steps)`. Extra transitions below one full
 rollout batch are not sampled.
 
+### PPO update diagnostics
+
+`train/policy_clip_fraction` reports the fraction of policy-training samples
+whose probability ratio is outside `[1 - clip_eps, 1 + clip_eps]`. This is the
+standard PPO `clipfrac`; it is distinct from `train/action_clip_fraction`, which
+reports actions changed by the environment's physical action clamp.
+
+There is no universal target because the useful range depends on batch size,
+minibatch count, update epochs, and the policy distribution. As a practical
+diagnostic, a sustained value around 0.05-0.20 usually indicates meaningful but
+controlled updates. Values below 0.05 are conservative only when KL is also low
+and returns have stalled. Sustained values around 0.20-0.30 deserve attention,
+and values above 0.30 usually mean that too much of the batch lies outside the
+PPO trust region. Interpret isolated early-training spikes with
+`train/mean_approx_kl`, `train/max_approx_kl`, `train/ppo_update_fraction`, and
+episode returns rather than treating clip fraction as a standalone target.
+
 ### Policy: `config.policy`
 
 | Field | Base default | Meaning |
@@ -262,16 +279,26 @@ filter to training, native evaluation, or the hardware runner.
 | `minimum_moving_linear_speed` | `0.2` | A selected moving linear axis is sampled outside this magnitude. |
 | `minimum_moving_yaw_speed` | `0.2` | A selected moving yaw axis is sampled outside this magnitude. |
 | `resample_seconds` | `10` | Interval between command samples. |
+| `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling to train standing-to-moving and moving-to-standing transitions. |
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
-Training assigns the standing cohort once at batch reset and preserves each
-environment's standing or moving mode across failures and periodic command
-resampling. This prevents short standing episodes from reducing standing's
-share of rollout frames. Training telemetry reports mode-specific mean reward,
-completed-episode return and length, and completed-episode count under the
-`command/standing_*`, `command/moving_*`, and `episode/{standing,moving}_*`
-names.
+Training assigns an exact standing cohort at batch reset. Failure resets
+preserve each environment's standing or moving mode so short standing episodes
+cannot reduce standing's share of rollout frames. When
+`standing_transitions_enabled` is true, periodic command resampling independently
+reassigns the exact standing cohort, exposing both standing-to-moving and
+moving-to-standing transitions. Training telemetry reports mode-specific mean
+reward, completed-episode return and length, and completed-episode count under
+the `command/standing_*`, `command/moving_*`, and
+`episode/{standing,moving}_*` names.
+
+The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
+The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
+observation is unchanged. Planar and yaw tracking each have weight `2.0`, so
+their maximum contribution is `0.04` per control step. Moving-command tracking
+uses standard deviations of `0.30 m/s` for planar velocity and `0.25 rad/s` for
+yaw velocity; standing-command tolerances remain `0.25 m/s` and `0.20 rad/s`.
 
 ## Locomotion reward: `reward_config`
 
@@ -281,8 +308,8 @@ computation where possible.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
-| `track_lin_vel_xy` | `1.0` | Gaussian command tracking for planar velocity. |
-| `track_ang_vel_z` | `1.0` | Gaussian yaw-rate command tracking. |
+| `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. At a standing command it is awarded only in double support. |
+| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. At a standing command it is awarded only in double support. |
 | `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
@@ -562,7 +589,7 @@ TWIST uses 32 contacts per environment and logs
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment gait training with slope, model/reset randomization, observation noise and latency, pushes, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
+| `locomotion` | 2,048-environment gait training with full planar/yaw commands, standing/moving transitions, slope, model/reset randomization, observation noise and latency, pushes, mean-KL adaptive learning with a `0.00003` floor, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
@@ -574,8 +601,8 @@ Headline resolved PPO values are:
 | Profile | Timesteps | Envs × steps | Epochs × minibatches | Learning rate | Gamma / GAE | Policy |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | `smoke` | 4 | 2 × 2 | 1 × 1 | 0.001 | 0.99 / 0.95 | 256-256 tanh |
-| `locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.97 / 0.95 | 512-256-128 swish |
-| `hardware_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive | 0.995 / 0.98 | 512-256-128 swish |
+| `locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.97 / 0.95 | 512-256-128 swish |
+| `hardware_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |

@@ -599,6 +599,32 @@ def test_batch_command_mode_cohort_survives_resampling(
     assert jnp.all(command_is_moving(next_state.command[~standing], command_config))
 
 
+def test_batch_command_mode_transitions_when_enabled(
+    full_body_asset: PreparedAsset,
+) -> None:
+    command_config = CommandConfig(
+        standing_probability=0.5,
+        resample_seconds=0.02,
+        standing_transitions_enabled=True,
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset, batch_size=16, command_config=command_config
+    )
+    state, _ = env.reset_batch(16, rng=jax.random.PRNGKey(20))
+    standing = command_is_standing(state.command, command_config)
+    next_state, _, _, _, _ = env.step_batch(
+        state,
+        jnp.zeros((16, env.action_size)),
+        rng=jax.random.PRNGKey(21),
+    )
+    next_standing = command_is_standing(next_state.command, command_config)
+
+    assert jnp.sum(standing) == 8
+    assert jnp.sum(next_standing) == 8
+    assert jnp.any(standing & ~next_standing)
+    assert jnp.any(~standing & next_standing)
+
+
 def test_random_push_overwrites_root_xy_velocity_on_interval(
     full_body_asset: PreparedAsset,
 ) -> None:

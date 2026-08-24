@@ -5,6 +5,8 @@ config:
   update_epochs: 4
   num_minibatches: 32
   learning_rate: 0.0001
+  min_learning_rate: 0.00003
+  adaptive_kl_statistic: mean
   target_kl: 0.03
   max_learning_rate: 0.0001
   gamma: 0.97
@@ -47,6 +49,7 @@ command_config:
   lin_vel_x: [-1.0, 1.0]
   lin_vel_y: [-1.0, 1.0]
   ang_vel_yaw: [-1.0, 1.0]
+  standing_transitions_enabled: true
 reward_config:
   links:
     track_lin_vel_xy: pelvis_link

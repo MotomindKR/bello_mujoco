@@ -1111,7 +1111,9 @@ def control_physical_robot(
         control.reset_deadline()
         step = 0
         pose_following: bool | None = None
-        jog_input = TerminalElbowYawJogInput(enabled=operator_input is None)
+        jog_input = TerminalElbowYawJogInput(
+            enabled=False if operator_input is not None else None
+        )
         jog_input.open()
         try:
             if jog_input.enabled:

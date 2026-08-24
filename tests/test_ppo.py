@@ -33,15 +33,17 @@ from bello_mujoco.training.ppo import (
     command_diagnostic_means,
     compute_gae,
     denormalize_value,
+    flatten_batch,
+    gait_diagnostics,
     init_observation_norm_state,
     init_runner_state,
     init_train_state,
     init_value_norm_state,
-    gait_diagnostics,
     learning_rate_for_update,
     normalize_advantages,
     normalize_observation,
     normalize_value,
+    ppo_loss,
     update_observation_norm_state,
     update_ppo,
     update_value_norm_state,
@@ -475,6 +477,31 @@ def test_advantage_normalization_is_zero_mean_and_unit_scale() -> None:
     normalized = normalize_advantages(jnp.asarray([1.0, 2.0, 4.0, 8.0]))
     assert normalized.mean() == pytest.approx(0.0, abs=1.0e-6)
     assert normalized.std() == pytest.approx(1.0, abs=1.0e-6)
+
+
+def test_ppo_loss_reports_policy_ratio_clip_fraction() -> None:
+    config = small_config()
+    state, _ = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, state.policy)
+    batch, advantages, targets = flatten_batch(
+        (batch, jnp.ones_like(batch.reward), batch.value)
+    )
+    ratios = jnp.tile(
+        jnp.asarray([0.79, 0.81, 1.19, 1.21], dtype=jnp.float32),
+        config.batch_size // 4,
+    )
+    batch = batch._replace(log_prob=batch.log_prob - jnp.log(ratios))
+
+    _, metrics = ppo_loss(
+        state.policy,
+        batch,
+        advantages,
+        targets,
+        config,
+        entropy_rng=jax.random.PRNGKey(1),
+    )
+
+    assert metrics["policy_clip_fraction"] == pytest.approx(0.5)
 
 
 def test_linear_and_constant_learning_rate_schedules() -> None:

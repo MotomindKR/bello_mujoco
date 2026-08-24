@@ -32,10 +32,11 @@ public command.
 
 The physical profile is a 55.068 kg sphere-hand robot with 13 policy joints and 12
 held arm joints. Commands contain `+X` lateral/right, `+Y` forward, and `+Z`
-yaw velocity. Ten percent of batched environments form a fixed exact-zero
-standing cohort; moving samples are conditioned outside the shared standing
-deadbands. Cohort membership survives resets and command resampling so failed
-standing episodes cannot starve standing frames out of later rollouts.
+yaw velocity. Ten percent of batched environments form an exact-zero standing
+cohort; moving samples are conditioned outside the shared standing deadbands.
+Failure resets preserve command mode so failed standing episodes cannot starve
+standing frames out of later rollouts. Periodic resampling reassigns the cohort
+to train transitions in both directions between standing and moving commands.
 
 Moving commands activate a fixed 0.9 Hz per-leg gait clock, producing 1.8
 alternating footfalls per second. The legs are offset by half a cycle and use a
@@ -54,7 +55,8 @@ deadband and `0.01` per-step cap discourage learned toe-in without overwhelming
 balance acquisition or constraining commanded turns. A left/right
 actor-consistency loss augments PPO; action smoothness is learned through the
 rate and acceleration costs rather than imposed by a stateful command filter.
-Exact terms and weights are defined in
+Yaw-rate tracking uses a 5 Hz low-pass-filtered measurement. Exact terms and
+weights are defined in
 [`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
 Training dynamics enforce the same motor effort limits as the emulator and

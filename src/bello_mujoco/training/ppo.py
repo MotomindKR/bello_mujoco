@@ -700,6 +700,9 @@ def ppo_loss(
         "distillation/weight": distillation_weight,
         "symmetry_loss": symmetry_loss,
         "approx_kl": ((ratio - 1.0) - safe_log_ratio).mean(),
+        "policy_clip_fraction": jnp.mean(
+            (jnp.abs(ratio - 1.0) > config.clip_eps).astype(jnp.float32)
+        ),
         "nonfinite/current_log_probability": (~current_log_prob_finite).astype(
             jnp.float32
         ),

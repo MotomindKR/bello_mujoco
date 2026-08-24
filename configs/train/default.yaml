@@ -138,8 +138,8 @@ env_config:
       enabled: false
 reward_config:
   weights:
-    track_lin_vel_xy: 1.0
-    track_ang_vel_z: 1.0
+    track_lin_vel_xy: 2.0
+    track_ang_vel_z: 2.0
     healthy_survival: 1.5
     lin_vel_z: -2.0
     ang_vel_xy: -0.15
@@ -176,9 +176,9 @@ reward_config:
     flat_orientation: null
     base_height: null
   tracking:
-    lin_vel_xy_moving_std: 0.75
+    lin_vel_xy_moving_std: 0.3
     lin_vel_xy_still_std: 0.25
-    ang_vel_z_moving_std: 0.35
+    ang_vel_z_moving_std: 0.25
     ang_vel_z_still_std: 0.2
     ang_vel_z_lpf_cutoff_hz: 5.0
   standing:
@@ -215,6 +215,7 @@ command_config:
   minimum_moving_linear_speed: 0.2
   minimum_moving_yaw_speed: 0.2
   resample_seconds: 10.0
+  standing_transitions_enabled: false
 checkpoint_config:
   enabled: false
   directory: checkpoints

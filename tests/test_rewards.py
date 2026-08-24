@@ -165,6 +165,13 @@ def test_tracking_reward_is_maximal_at_command_and_scales_with_timestep() -> Non
     assert worse < reward
 
 
+def test_default_tracking_weights_are_doubled() -> None:
+    config = RewardConfig()
+
+    assert config.weights.track_lin_vel_xy == pytest.approx(2.0)
+    assert config.weights.track_ang_vel_z == pytest.approx(2.0)
+
+
 def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> None:
     config = reward_config(
         track_lin_vel_xy=1.0,
@@ -207,6 +214,31 @@ def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> N
     )
     assert tiny_command["reward/track_lin_vel_xy"] == pytest.approx(0.02)
     assert tiny_command["reward/track_ang_vel_z"] == pytest.approx(0.02)
+
+
+def test_standing_tracking_requires_double_support() -> None:
+    config = reward_config(track_lin_vel_xy=2.0, track_ang_vel_z=2.0)
+    inputs = reward_inputs(command=jnp.zeros(3))
+
+    _, supported = compute_locomotion_reward(config, inputs)
+    _, single_support = compute_locomotion_reward(
+        config,
+        inputs.replace(foot_contact=jnp.asarray([1.0, 0.0])),
+    )
+    _, moving = compute_locomotion_reward(
+        config,
+        inputs.replace(
+            command=jnp.asarray([0.5, 0.0, 0.0]),
+            foot_contact=jnp.asarray([1.0, 0.0]),
+        ),
+    )
+
+    assert supported["reward/track_lin_vel_xy"] == pytest.approx(0.04)
+    assert supported["reward/track_ang_vel_z"] == pytest.approx(0.04)
+    assert single_support["reward/track_lin_vel_xy"] == pytest.approx(0.0)
+    assert single_support["reward/track_ang_vel_z"] == pytest.approx(0.0)
+    assert moving["reward/track_lin_vel_xy"] > 0.0
+    assert moving["reward/track_ang_vel_z"] > 0.0
 
 
 def test_joint_limit_penalty_increases_with_distance_past_soft_limit() -> None:
@@ -601,7 +633,7 @@ def test_stand_still_rewards_healthy_quiet_double_support() -> None:
 
     assert quiet["reward/stand_still"] == pytest.approx(0.02)
     assert quiet_reward > 0.0
-    assert one_foot["reward/stand_still"] == pytest.approx(0.01)
+    assert one_foot["reward/stand_still"] == pytest.approx(0.0)
     assert 0.0 < moving_feet["reward/stand_still"] < 0.02
     assert moving_command["reward/stand_still"] == pytest.approx(0.0)
     assert terminal["reward/stand_still"] == pytest.approx(0.0)
@@ -698,6 +730,11 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
             foot_normal_impulse=jnp.asarray([0.01, 0.0]),
             control_timestep=jnp.asarray(0.005),
         ),
+    )
+    heading_inputs = standing_inputs.replace(foot_contact=jnp.ones(2))
+    _, heading_terms = compute(config, heading_inputs)
+    _, heading_fine = compute(
+        config, heading_inputs.replace(control_timestep=jnp.asarray(0.005))
     )
     _, airborne_terms = compute(
         config,

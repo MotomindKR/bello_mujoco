@@ -24,6 +24,7 @@ class CommandConfig:
     minimum_moving_linear_speed: float = 0.20
     minimum_moving_yaw_speed: float = 0.20
     resample_seconds: float = 10.0
+    standing_transitions_enabled: bool = False
 
     def __post_init__(self) -> None:
         validate_range("lin_vel_x", self.lin_vel_x)
@@ -192,8 +193,8 @@ def command_is_moving(command: jax.Array, config: CommandConfig) -> jax.Array:
 class RewardWeights:
     """Scalar weights for the stable locomotion reward term names."""
 
-    track_lin_vel_xy: float = 1.0
-    track_ang_vel_z: float = 1.0
+    track_lin_vel_xy: float = 2.0
+    track_ang_vel_z: float = 2.0
     healthy_survival: float = 1.5
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.15
@@ -238,9 +239,9 @@ class RewardLinks:
 
 @dataclass(frozen=True)
 class TrackingRewardConfig:
-    lin_vel_xy_moving_std: float = 0.75
+    lin_vel_xy_moving_std: float = 0.30
     lin_vel_xy_still_std: float = 0.25
-    ang_vel_z_moving_std: float = 0.35
+    ang_vel_z_moving_std: float = 0.25
     ang_vel_z_still_std: float = 0.20
     ang_vel_z_lpf_cutoff_hz: float = 5.0
 
@@ -308,6 +309,7 @@ class RewardConfig:
                 "touchdown_impact",
                 "stand_contact",
                 "stand_still",
+                "stand_foot_heading",
             )
         )
 
@@ -400,6 +402,8 @@ def compute_locomotion_reward(
     if command_config is None:
         command_config = CommandConfig()
 
+    standing_command = command_is_standing(inputs.command, command_config)
+    standing_double_support = standing_command & jnp.all(inputs.foot_contact)
     linear_still = jnp.abs(inputs.command[:2]) < command_config.linear_deadband
     linear_target = jnp.where(linear_still, 0.0, inputs.command[:2])
     linear_std = jnp.where(
@@ -418,6 +422,9 @@ def compute_locomotion_reward(
     yaw_vel_error = ((inputs.yaw_vel_z - yaw_target) / yaw_std) ** 2
     track_lin_vel_xy = jnp.exp(-lin_vel_error)
     track_ang_vel_z = jnp.exp(-yaw_vel_error)
+    tracking_supported = ~standing_command | standing_double_support
+    track_lin_vel_xy = jnp.where(tracking_supported, track_lin_vel_xy, 0.0)
+    track_ang_vel_z = jnp.where(tracking_supported, track_ang_vel_z, 0.0)
     lin_vel_z = inputs.lin_vel_z**2
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
@@ -488,7 +495,6 @@ def compute_locomotion_reward(
         )
     )
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
-    standing_command = command_is_standing(inputs.command, command_config)
     foot_linear_speed_sq = jnp.sum(inputs.foot_linear_velocity**2, axis=1)
     stand_foot_linear_motion = jnp.tanh(
         foot_linear_speed_sq / config.standing.foot_linear_speed_scale**2
@@ -508,7 +514,6 @@ def compute_locomotion_reward(
     bounded_foot_heading_error = foot_heading_excess / (
         foot_heading_excess + config.standing.foot_heading_scale
     )
-    standing_double_support = standing_command & jnp.all(inputs.foot_contact)
     stand_foot_heading = jnp.where(
         standing_double_support & ~inputs.done,
         jnp.mean(bounded_foot_heading_error),
@@ -527,8 +532,8 @@ def compute_locomotion_reward(
         1.0,
     )
     stand_still = jnp.where(
-        standing_command & ~inputs.done,
-        support_fraction * standing_stillness,
+        standing_double_support & ~inputs.done,
+        standing_stillness,
         0.0,
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))

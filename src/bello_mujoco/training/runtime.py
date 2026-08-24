@@ -89,6 +89,7 @@ def raise_on_invalid_training_metrics(metrics: dict, update: int) -> None:
         "value_loss_raw",
         "entropy",
         "approx_kl",
+        "policy_clip_fraction",
         "action_std_mean",
         "action_std_min",
         "action_std_max",

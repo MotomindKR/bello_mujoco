@@ -1195,10 +1195,10 @@ def test_resume_allows_budget_extension_and_rejects_semantic_changes(
         extended,
         reward=replace(
             extended.reward,
-            weights=replace(
-                extended.reward.weights,
-                track_lin_vel_xy=2.0,
-            ),
+                weights=replace(
+                    extended.reward.weights,
+                    track_lin_vel_xy=3.0,
+                ),
         ),
     )
     with pytest.raises(ValueError, match="resume checkpoint contract.*reward"):
