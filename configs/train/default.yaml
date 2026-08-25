@@ -157,6 +157,7 @@ reward_config:
     stand_foot_motion: -1.0
     stand_foot_heading: -0.5
     stand_contact: -0.5
+    stand_upright: -8.0
     hip_deviation: -0.25
     knee_deviation: -0.1
     joint_limit: -1.0

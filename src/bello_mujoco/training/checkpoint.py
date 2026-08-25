@@ -866,6 +866,7 @@ def _with_checkpoint_metadata_defaults(
                     "stand_still",
                     "stand_contact",
                     "stand_foot_heading",
+                    "stand_upright",
                 ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
