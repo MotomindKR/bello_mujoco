@@ -16,9 +16,11 @@ from bello_mujoco.envs.sonic import (
     SONIC_TRACKED_BODY_NAMES,
     SonicDoneConfig,
     SonicObservationContract,
+    SonicState,
     _build_sampling_bins,
     _sonic_freeze_frame_indices,
 )
+from bello_mujoco.envs.twist import TwistState
 import bello_mujoco.evaluation.sonic as sonic_evaluation
 import bello_mujoco.motion.sonic_dataset as sonic_dataset
 from bello_mujoco.evaluation.sonic import (
@@ -273,6 +275,10 @@ def test_g1_action_scales_match_the_pinned_release_actuator_groups() -> None:
     for name, value in expected.items():
         index = G1_ISAACLAB_JOINT_NAMES.index(name)
         assert SONIC_G1_ACTION_SCALE[index] == pytest.approx(value)
+
+
+def test_sonic_state_covers_shared_twist_step_contract() -> None:
+    assert set(TwistState.__dataclass_fields__) <= set(SonicState.__dataclass_fields__)
 
 
 def _coupled_calibration_fixture(

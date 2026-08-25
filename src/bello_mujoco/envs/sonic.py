@@ -398,6 +398,7 @@ class SonicState:
     foot_air_time: jax.Array
     last_foot_contact: jax.Array
     total_step: jax.Array
+    root_push_phase: jax.Array
     gravity_fraction: jax.Array
     running_reference_root_height: jax.Array
     next_push_step: jax.Array
@@ -935,6 +936,7 @@ class BelloSonicEnv(BelloTwistEnv):
             foot_air_time=jnp.zeros(2, dtype=jnp.float32),
             last_foot_contact=jnp.zeros(2, dtype=bool),
             total_step=jnp.asarray(0, dtype=jnp.int32),
+            root_push_phase=jnp.asarray(0, dtype=jnp.int32),
             gravity_fraction=jnp.asarray(self.model.gravity_fraction[0]),
             running_reference_root_height=reference.qpos[2],
             next_push_step=next_push,
