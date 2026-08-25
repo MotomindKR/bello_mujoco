@@ -622,6 +622,7 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     config = compose_hardware_runner_config()
 
     assert not config.hardware.arm
+    assert config.hardware.upper_body_tracking_enabled
     assert config.hardware.command_validity_seconds == pytest.approx(0.08)
     assert config.hardware.acknowledgement_timeout_seconds == pytest.approx(0.5)
     assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
@@ -630,6 +631,9 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
     validate_hardware_config(config.hardware)
     validate_hardware_config(pose_hardware_config(arm=True))
+    validate_hardware_config(
+        HardwareLocomotionConfig(upper_body_tracking_enabled=False)
+    )
     with pytest.raises(ValueError, match="smplx_neutral_model_path"):
         validate_hardware_config(HardwareLocomotionConfig())
     with pytest.raises(ValueError, match="plaintext"):
@@ -1515,6 +1519,67 @@ def test_read_only_preflight_never_acquires_control(
     assert preview_calls[1] == ("reset",)
     assert "'initial_pose_error_max': 2.014" in output
     assert "'preview_action_abs_max': 0.5" in output
+    assert "no lease was acquired" in output
+
+
+def test_fixed_upper_body_preflight_skips_pose_source(
+    monkeypatch,
+    capsys,
+    hardware_preflight_factory,
+) -> None:
+    coordinates = ("left_hip_pitch_joint", "right_hip_pitch_joint")
+    hardware = hardware_preflight_factory(coordinates, (0.0, 0.0))
+    precompile_calls = []
+    preview_calls = []
+    adapter = SimpleNamespace(
+        physical_coordinate_names=coordinates,
+        nominal_physical_target=np.zeros(2),
+        env=SimpleNamespace(action_size=13),
+        control_timestep=0.02,
+        precompile=lambda reference: precompile_calls.append(reference),
+        reset=lambda: None,
+    )
+
+    def preview(_frame, _command, reference):
+        preview_calls.append(reference)
+        return SimpleNamespace(
+            action=np.zeros(13),
+            tilt_radians=0.0,
+            reference_sequence=None,
+            reference_age_ms=None,
+            upper_body_following=False,
+        )
+
+    adapter.step = preview
+    metadata = SimpleNamespace(command=CommandConfig())
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.locomotion.load_hardware_policy",
+        lambda *_args, **_kwargs: (adapter, metadata),
+    )
+    remote = SimpleNamespace(
+        wait_until_ready=lambda _timeout: remote_input(),
+        poll=lambda: pytest.fail("fixed upper-body preflight polled pose input"),
+        close=lambda: None,
+    )
+
+    run_hardware_locomotion(
+        Path("unused"),
+        HardwareLocomotionConfig(
+            upper_body_tracking_enabled=False,
+            allow_git_commit_mismatch=True,
+        ),
+        hardware_binding=hardware.binding,
+        remote_factory=lambda _config: remote,
+        reference_source_factory=lambda *_args: pytest.fail(
+            "fixed upper-body preflight created a pose source"
+        ),
+    )
+
+    output = capsys.readouterr().out
+    assert precompile_calls == [None]
+    assert preview_calls == [None]
+    assert not hardware.control_requests
+    assert "'upper_body_pose_source': 'checkpoint_nominal'" in output
     assert "no lease was acquired" in output
 
 

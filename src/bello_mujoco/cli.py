@@ -163,6 +163,7 @@ class HardwareCommandConfig:
     status_interval_seconds: float | None
     policy_log_path: Path | None
     arm: bool
+    upper_body_tracking_enabled: bool
     fastsam_endpoint: str
     fastsam_tls_root_certificate_path: Path | None
     fastsam_tls_server_name_override: str | None
@@ -918,9 +919,13 @@ def _hardware_hydra(config: DictConfig) -> None:
         "smplx_neutral_model_path",
         "smplx_human_height_m",
     )
-    locomotion_upper_body_fields = (
+    locomotion_upper_body_adjustment_fields = (
         "left_elbow_yaw_offset_radians",
         "right_elbow_yaw_offset_radians",
+    )
+    locomotion_upper_body_fields = (
+        "upper_body_tracking_enabled",
+        *locomotion_upper_body_adjustment_fields,
     )
     if command.task == "twist2":
         _reject_explicit_fields(
@@ -1086,6 +1091,11 @@ def _hardware_hydra(config: DictConfig) -> None:
     )
     if command.remote_endpoint is None or not command.remote_endpoint.strip():
         raise ValueError("remote_endpoint is required for task=locomotion")
+    if not command.upper_body_tracking_enabled:
+        _reject_explicit_fields(
+            (*fastsam_fields, *locomotion_upper_body_adjustment_fields),
+            context="upper_body_tracking_enabled=false",
+        )
     from bello_mujoco.hardware.locomotion import (
         HardwareLocomotionConfig,
         run_hardware_locomotion,
@@ -1113,6 +1123,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             policy_log_path=policy_log_path,
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+            upper_body_tracking_enabled=command.upper_body_tracking_enabled,
             fastsam_endpoint=command.fastsam_endpoint,
             fastsam_tls_root_certificate_path=(
                 command.fastsam_tls_root_certificate_path
@@ -1137,9 +1148,13 @@ def _hardware_hydra(config: DictConfig) -> None:
             ),
             fastsam_align_initial_heading=command.fastsam_align_initial_heading,
             fastsam_align_initial_floor=command.fastsam_align_initial_floor,
-            smplx_neutral_model_path=_required_path(
-                command.smplx_neutral_model_path,
-                "smplx_neutral_model_path",
+            smplx_neutral_model_path=(
+                _required_path(
+                    command.smplx_neutral_model_path,
+                    "smplx_neutral_model_path",
+                )
+                if command.upper_body_tracking_enabled
+                else None
             ),
             smplx_human_height_m=command.smplx_human_height_m,
             upper_body_follow=replace(

@@ -156,6 +156,27 @@ def test_hardware_elbow_yaw_offsets_are_flat_overrides() -> None:
     assert command.right_elbow_yaw_offset_radians == pytest.approx(-1.57079632679)
 
 
+def test_hardware_upper_body_tracking_is_an_explicit_boolean() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        default = command_config(
+            HardwareCommandConfig,
+            compose(config_name="hardware"),
+        )
+        disabled = command_config(
+            HardwareCommandConfig,
+            compose(
+                config_name="hardware",
+                overrides=("upper_body_tracking_enabled=false",),
+            ),
+        )
+
+    assert default.upper_body_tracking_enabled
+    assert not disabled.upper_body_tracking_enabled
+
+
 @pytest.mark.parametrize(
     "value",
     (

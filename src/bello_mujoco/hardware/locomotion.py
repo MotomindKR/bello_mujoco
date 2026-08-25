@@ -168,6 +168,7 @@ class HardwareLocomotionConfig(HardwareControlConfig):
 
     client_name: str = "bello-locomotion-policy"
     remote: RemoteCommandConfig = RemoteCommandConfig()
+    upper_body_tracking_enabled: bool = True
     fastsam_endpoint: str = "127.0.0.1:50055"
     fastsam_tls_root_certificate_path: Path | None = None
     fastsam_tls_server_name_override: str | None = None
@@ -345,9 +346,7 @@ class HardwarePolicyAdapter:
     ) -> tuple[float, float]:
         """Adjust the runtime elbow-yaw offsets and return their new values."""
 
-        deltas = np.asarray(
-            (left_delta_radians, right_delta_radians), dtype=np.float64
-        )
+        deltas = np.asarray((left_delta_radians, right_delta_radians), dtype=np.float64)
         if not np.all(np.isfinite(deltas)):
             raise ValueError("elbow-yaw jog deltas must be finite")
         current = self.upper_body_follow
@@ -721,18 +720,19 @@ def validate_hardware_config(
         raise ValueError("remote.endpoint must use plaintext http:// in protocol v1")
     if config.remote.staleness_ms <= 0:
         raise ValueError("remote.staleness_ms must be positive")
-    from bello_mujoco.hardware.fastsam import FastSamGrpcConfig
+    if config.upper_body_tracking_enabled:
+        from bello_mujoco.hardware.fastsam import FastSamGrpcConfig
 
-    FastSamGrpcConfig.from_hardware(config)
-    if (
-        not math.isfinite(config.fastsam_reference_ready_timeout_seconds)
-        or config.fastsam_reference_ready_timeout_seconds <= 0.0
-    ):
-        raise ValueError(
-            "fastsam_reference_ready_timeout_seconds must be positive and finite"
-        )
-    if config.fastsam_reference_qualification_frames < 1:
-        raise ValueError("fastsam_reference_qualification_frames must be positive")
+        FastSamGrpcConfig.from_hardware(config)
+        if (
+            not math.isfinite(config.fastsam_reference_ready_timeout_seconds)
+            or config.fastsam_reference_ready_timeout_seconds <= 0.0
+        ):
+            raise ValueError(
+                "fastsam_reference_ready_timeout_seconds must be positive and finite"
+            )
+        if config.fastsam_reference_qualification_frames < 1:
+            raise ValueError("fastsam_reference_qualification_frames must be positive")
     upper = config.upper_body_follow
     positive = {
         "max_reference_joint_speed_rps": upper.max_reference_joint_speed_rps,
@@ -751,7 +751,7 @@ def validate_hardware_config(
     for name, value in finite.items():
         if not math.isfinite(value):
             raise ValueError(f"upper_body_follow.{name} must be finite")
-    if (
+    if config.upper_body_tracking_enabled and (
         not math.isfinite(config.smplx_human_height_m)
         or config.smplx_human_height_m <= 0.0
     ):
@@ -766,15 +766,16 @@ def validate_hardware_config(
             "upper_body_follow.max_reference_joint_limit_violation_radians must be "
             "finite and nonnegative"
         )
-    minimum_age_budget = (
-        config.fastsam_max_pipeline_latency_ms
-        + config.fastsam_transport_latency_budget_ms
-    )
-    if upper.max_reference_age_ms <= minimum_age_budget:
-        raise ValueError(
-            "upper_body_follow.max_reference_age_ms must exceed the Fast-SAM "
-            "pipeline and transport latency budget"
+    if config.upper_body_tracking_enabled:
+        minimum_age_budget = (
+            config.fastsam_max_pipeline_latency_ms
+            + config.fastsam_transport_latency_budget_ms
         )
+        if upper.max_reference_age_ms <= minimum_age_budget:
+            raise ValueError(
+                "upper_body_follow.max_reference_age_ms must exceed the Fast-SAM "
+                "pipeline and transport latency budget"
+            )
     if metadata is not None:
         command_ranges(metadata)
         command_minimum_moving_speeds(metadata)
@@ -903,30 +904,35 @@ def run_hardware_locomotion(
             print("Remote controller requested exit before preflight.")
             return
         command = hardware_command(metadata, remote_input)
-        if reference_source_factory is None:
-            from bello_mujoco.hardware.fastsam import (
-                fastsam_locomotion_reference_source,
-            )
+        references = None
+        live_reference = None
+        if config.upper_body_tracking_enabled:
+            if reference_source_factory is None:
+                from bello_mujoco.hardware.fastsam import (
+                    fastsam_locomotion_reference_source,
+                )
 
-            reference_source_factory = fastsam_locomotion_reference_source
-        references = resources.enter_context(reference_source_factory(adapter, config))
-        standing = references.standing()
-        adapter.set_upper_body_standing_reference(standing)
-        live_reference = wait_for_qualified_upper_body_reference(
-            references,
-            adapter,
-            config,
-            remote,
-        )
-        if live_reference is None:
-            print("Remote controller requested exit during pose preflight.")
-            return
-        remote_input = remote.poll()
-        report_remote_connection(remote_input)
-        if remote_input.abort_active:
-            print("Remote controller requested exit during pose preflight.")
-            return
-        command = hardware_command(metadata, remote_input)
+                reference_source_factory = fastsam_locomotion_reference_source
+            references = resources.enter_context(
+                reference_source_factory(adapter, config)
+            )
+            standing = references.standing()
+            adapter.set_upper_body_standing_reference(standing)
+            live_reference = wait_for_qualified_upper_body_reference(
+                references,
+                adapter,
+                config,
+                remote,
+            )
+            if live_reference is None:
+                print("Remote controller requested exit during pose preflight.")
+                return
+            remote_input = remote.poll()
+            report_remote_connection(remote_input)
+            if remote_input.abort_active:
+                print("Remote controller requested exit during pose preflight.")
+                return
+            command = hardware_command(metadata, remote_input)
         adapter.precompile(live_reference)
         require_state_frame_binding(binding)
         if config.arm:
@@ -969,7 +975,11 @@ def run_hardware_locomotion(
                 "remote_controller_connected": remote_input.controller_connected,
                 "remote_intent_armed": remote_input.intent_armed,
                 "command": tuple(float(value) for value in command),
-                "upper_body_pose_source": "fastsam_smplx_gmr",
+                "upper_body_pose_source": (
+                    "fastsam_smplx_gmr"
+                    if config.upper_body_tracking_enabled
+                    else "checkpoint_nominal"
+                ),
                 "reference_sequence": preview.reference_sequence,
                 "reference_age_ms": preview.reference_age_ms,
                 "initial_pose_error_max": initial_error,
@@ -1052,7 +1062,7 @@ def control_physical_robot(
     adapter: HardwarePolicyAdapter,
     config: HardwareLocomotionConfig,
     remote: RemoteCommandSource,
-    references: Any,
+    references: Any | None,
     *,
     policy_log: PolicyStepLogger | None = None,
     operator_input: Callable[[str], str] | None = None,
@@ -1112,14 +1122,17 @@ def control_physical_robot(
         step = 0
         pose_following: bool | None = None
         jog_input = TerminalElbowYawJogInput(
-            enabled=False if operator_input is not None else None
+            enabled=(
+                False
+                if operator_input is not None or not config.upper_body_tracking_enabled
+                else None
+            )
         )
         jog_input.open()
         try:
             if jog_input.enabled:
                 print(
-                    "Elbow-yaw keyboard jog: q/a = left +/-5 deg, "
-                    "e/d = right +/-5 deg."
+                    "Elbow-yaw keyboard jog: q/a = left +/-5 deg, e/d = right +/-5 deg."
                 )
             while (
                 config.max_duration_seconds is None
@@ -1143,23 +1156,24 @@ def control_physical_robot(
                     )
                 command = hardware_command(adapter.metadata, remote_input)
                 frame = control.read_frame()
-                reference_error: ReferenceUnavailable | None = None
-                try:
-                    reference = references.latest()
-                    adapter.validate_upper_body_reference(reference)
-                except ReferenceUnavailable as error:
-                    reference = None
-                    reference_error = error
-                following = reference is not None
-                if following != pose_following:
-                    if following:
-                        print("Live upper-body pose following is active.")
-                    else:
-                        print(
-                            "Live upper-body pose is unavailable; returning the arms "
-                            f"to GMR standing: {reference_error}"
-                        )
-                    pose_following = following
+                reference = None
+                if references is not None:
+                    reference_error: ReferenceUnavailable | None = None
+                    try:
+                        reference = references.latest()
+                        adapter.validate_upper_body_reference(reference)
+                    except ReferenceUnavailable as error:
+                        reference_error = error
+                    following = reference is not None
+                    if following != pose_following:
+                        if following:
+                            print("Live upper-body pose following is active.")
+                        else:
+                            print(
+                                "Live upper-body pose is unavailable; returning the "
+                                f"arms to GMR standing: {reference_error}"
+                            )
+                        pose_following = following
                 policy_step = adapter.step(frame, command, reference)
                 control.send_target(policy_step.physical_target)
                 step += 1

@@ -17,6 +17,7 @@ action_lpf_cutoff_hz: null
 status_interval_seconds: null
 policy_log_path: null
 arm: false
+upper_body_tracking_enabled: true
 fastsam_endpoint: 127.0.0.1:50055
 fastsam_tls_root_certificate_path: null
 fastsam_tls_server_name_override: null

@@ -333,7 +333,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | motion | Declare the physical mass carried by each hand. `null` uses the checkpoint value; an explicit mismatch is rejected before control is acquired. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
-| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. Locomotion and TWIST2 combine the repository-owned relaxed-standing SMPL-X upper-body retarget with the checkpoint's canonical Bello leg stance; motion uses its standing checkpoint nominal pose. |
+| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. Tracking-enabled locomotion and TWIST2 combine the repository-owned relaxed-standing SMPL-X upper-body retarget with the checkpoint's canonical Bello leg stance; tracking-disabled locomotion and motion use their checkpoint nominal poses. |
 | `gain_scale` | float in `(0, 1]`; `1.0` | all | Multiply every commanded motor `kp` and `kd` by this value during start, ramp, and policy control. Fault damping is unchanged. |
 | `max_linear_acceleration` | positive float or `null`; `null` | all | Override the IMU acceleration-norm safety limit in m/s². `null` uses 100 m/s². Exceeding the limit immediately enters damped shutdown. |
 | `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 normal-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
@@ -342,6 +342,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
+| `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips Fast-SAM, SMPL-X, and GMR and actively holds the 12 arm joints at the locomotion checkpoint's nominal targets. |
 | `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion, twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
 | `fastsam_tls_root_certificate_path` | path or `null`; `null` | locomotion, twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `fastsam_tls_server_name_override` | string or `null`; `null` | locomotion, twist2 | TLS certificate name override. It is rejected without a CA certificate. |
@@ -363,7 +364,9 @@ Configuration source: `configs/commands/hardware.yaml`.
 
 Task-specific fields must not be explicitly supplied to an inapplicable task,
 even if the supplied value equals the documented default.
-Locomotion requires both `remote_endpoint` and `smplx_neutral_model_path`. Its
+Locomotion always requires `remote_endpoint`. When
+`upper_body_tracking_enabled=true`, it also requires
+`smplx_neutral_model_path`. Its
 visualizer-hosted physical controller uses the same stick mapping as
 `bello-eval`; R1 aborts. Controller or service loss commands zero, reconnects
 automatically, and requires a neutral controller before accepting nonzero
@@ -372,6 +375,19 @@ hardware daemon is contacted. The joystick continues to command the
 13-coordinate locomotion policy while Fast-SAM/GMR targets only the 12 arm
 coordinates. Hardware locomotion has no native-controller or fixed-command
 mode.
+
+With `upper_body_tracking_enabled=false`, explicit Fast-SAM and SMPL-X/GMR
+overrides must not be supplied. The runner uses the checkpoint's nominal
+targets for all 12 arm coordinates while the joystick continues to command
+locomotion:
+
+```text
+uv run bello-run-hardware \
+  task=locomotion \
+  checkpoint_path=checkpoints/hardware_locomotion \
+  remote_endpoint=http://visualizer-host:50054 \
+  upper_body_tracking_enabled=false
+```
 
 Motion additionally requires a locomotion checkpoint selected by
 `standing_checkpoint_path` and absolute pelvis pose from

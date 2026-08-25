@@ -125,8 +125,9 @@ the bilateral shoulder, elbow, and wrist joints. The live pose does not enter
 the locomotion actor observation and cannot replace joystick intent or any
 policy coordinate.
 
-Locomotion therefore also requires the pinned `deps/Fast-SAM-3D-Body` and
-`deps/GMR` revisions and an operator-supplied licensed `SMPLX_NEUTRAL.npz`.
+Live locomotion upper-body tracking also requires the pinned
+`deps/Fast-SAM-3D-Body` and `deps/GMR` revisions and an operator-supplied
+licensed `SMPLX_NEUTRAL.npz`.
 Start and calibrate the server as described under [TWIST2 mode](#twist2-mode),
 then include the model path in locomotion preflight:
 
@@ -138,8 +139,21 @@ uv run bello-run-hardware \
   smplx_neutral_model_path=/absolute/path/to/SMPLX_NEUTRAL.npz
 ```
 
-Before contacting `bello-hardwared`, preflight requires five distinct fresh
-confidence-, latency-, GMR-, and upper-body-limit-qualified poses by default.
+To run locomotion with fixed upper-body targets instead, disable tracking. This
+skips Fast-SAM, SMPL-X, and GMR pose setup and holds the 12 arm joints at the
+checkpoint's nominal training targets:
+
+```text
+uv run bello-run-hardware \
+  task=locomotion \
+  checkpoint_path=checkpoints/hardware_locomotion \
+  remote_endpoint=http://visualizer-host:50054 \
+  upper_body_tracking_enabled=false
+```
+
+With tracking enabled, preflight requires five distinct fresh confidence-,
+latency-, GMR-, and upper-body-limit-qualified poses by default before
+contacting `bello-hardwared`.
 The supported ramp and `RUN` hold use canonical GMR standing arms. After `RUN`,
 upper-body tracking begins automatically while joystick commands continue to
 control the trained gait. No separate `MOTION` confirmation is used.
