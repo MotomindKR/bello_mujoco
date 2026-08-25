@@ -161,6 +161,7 @@ class SonicCalibrationConfig:
     minimum_joint_standard_deviation: float = 2.0e-3
     minimum_mean_explained_variance: float = 0.35
     minimum_joint_explained_variance: float = 0.001
+    minimum_heldout_joint_explained_variance: float = -0.01
     minimum_critical_joint_explained_variance: float = 0.01
     maximum_absolute_coefficient: float = 20.0
     maximum_rms_residual_radians: float = 0.65
@@ -179,8 +180,12 @@ class SonicCalibrationConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
-        if not math.isfinite(self.minimum_joint_explained_variance):
-            raise ValueError("minimum_joint_explained_variance must be finite")
+        for name in (
+            "minimum_joint_explained_variance",
+            "minimum_heldout_joint_explained_variance",
+        ):
+            if not math.isfinite(getattr(self, name)):
+                raise ValueError(f"{name} must be finite")
         for name in (
             "minimum_mean_explained_variance",
             "minimum_joint_explained_variance",
@@ -188,6 +193,10 @@ class SonicCalibrationConfig:
         ):
             if not 0.0 <= getattr(self, name) <= 1.0:
                 raise ValueError(f"{name} must be in [0, 1]")
+        if not -1.0 <= self.minimum_heldout_joint_explained_variance <= 1.0:
+            raise ValueError(
+                "minimum_heldout_joint_explained_variance must be in [-1, 1]"
+            )
 
 
 @dataclass(frozen=True)
@@ -946,6 +955,9 @@ class _JointCalibrationMoments:
             g1_explained,
             g1_rms,
             config,
+            minimum_joint_explained_variance=(
+                config.minimum_heldout_joint_explained_variance
+            ),
         )
         _validate_calibration_metrics(
             f"{label} Bello-from-G1",
@@ -953,6 +965,9 @@ class _JointCalibrationMoments:
             bello_explained,
             bello_rms,
             config,
+            minimum_joint_explained_variance=(
+                config.minimum_heldout_joint_explained_variance
+            ),
         )
         return {
             "sample_count": self.sample_count,
@@ -981,16 +996,23 @@ def _validate_calibration_metrics(
     explained: np.ndarray,
     rms: np.ndarray,
     config: SonicCalibrationConfig,
+    *,
+    minimum_joint_explained_variance: float | None = None,
 ) -> None:
     mean_explained = float(np.mean(explained))
     if mean_explained < config.minimum_mean_explained_variance:
         raise ValueError(
             f"{label} calibration mean explained variance is {mean_explained:.3f}"
         )
+    joint_threshold = (
+        config.minimum_joint_explained_variance
+        if minimum_joint_explained_variance is None
+        else minimum_joint_explained_variance
+    )
     weak = [
         f"{name}={value:.3f}"
         for name, value in zip(joint_names, explained, strict=True)
-        if value < config.minimum_joint_explained_variance
+        if value < joint_threshold
     ]
     if weak:
         raise ValueError(f"{label} calibration has weak joint fits: {weak}")

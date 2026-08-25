@@ -383,6 +383,28 @@ def test_calibration_mean_shift_changes_rms_not_explained_variance() -> None:
     np.testing.assert_allclose(explained, (1.0, 1.0))
 
 
+def test_heldout_calibration_allows_small_noncritical_negative_variance() -> None:
+    names = ("left_wrist_pitch_joint", "left_knee_joint")
+    explained = np.asarray((-0.005, 0.8))
+    rms = np.asarray((0.11, 0.1))
+    config = SonicCalibrationConfig()
+
+    with pytest.raises(ValueError, match="weak joint fits"):
+        sonic_dataset._validate_calibration_metrics(
+            "training", names, explained, rms, config
+        )
+    sonic_dataset._validate_calibration_metrics(
+        "heldout",
+        names,
+        explained,
+        rms,
+        config,
+        minimum_joint_explained_variance=(
+            config.minimum_heldout_joint_explained_variance
+        ),
+    )
+
+
 def test_anatomy_prior_maps_forearm_twist_to_g1_wrist_roll() -> None:
     source_names = (
         "right_elbow_yaw_joint",

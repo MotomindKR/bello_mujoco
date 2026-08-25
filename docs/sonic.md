@@ -98,8 +98,12 @@ acceleration, joint-limit corruption, non-finite values, and floor
 penetration. Calibration
 checks mean and per-joint explained variance plus per-joint RMS residuals, then
 applies the fitted training maps to the held-out split and records those
-metrics in the dataset index. A build fails rather than publishing a dataset
-whose morphology map does not generalize.
+metrics in the dataset index. The held-out gate permits at most 0.01 negative
+explained variance for an individual noncritical joint, while the stricter
+training threshold, held-out mean, critical-joint, and RMS gates remain in
+force. This avoids rejecting an otherwise stable map for a low-variance wrist
+axis. A build fails rather than publishing a dataset whose morphology map does
+not generalize.
 
 The builder is deliberately bounded-memory. Its first pass validates one
 synchronized clip at a time and accumulates only calibration moments. Its
