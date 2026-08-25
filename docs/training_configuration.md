@@ -265,6 +265,7 @@ source revision because its environment state predates the feedback history.
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
+The maintained locomotion profiles override `standing_probability` to `0.25`.
 Training assigns an exact standing cohort at batch reset. Failure resets
 preserve each environment's standing or moving mode so short standing episodes
 cannot reduce standing's share of rollout frames. When
@@ -308,7 +309,8 @@ computation where possible.
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
 | `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize squared foot-heading error outside the configured deadband relative to pelvis forward. It is inactive during recovery, termination, and moving commands. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
-| `hip_deviation` | `-0.25` | Penalize hip deviation, gated by lateral command. |
+| `stand_upright` | `-8.0` | At standing command, apply an additional gravity-vector tilt penalty so a deeply leaned pose cannot retain most of the standing reward. |
+| `hip_deviation` | `-0.25` | Penalize hip deviation during standing or when a lateral command is active. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
 | `invalid_action` | `0.0` | Optional penalty for invalid/nonfinite requested action. |

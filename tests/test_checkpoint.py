@@ -557,6 +557,7 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
         "touchdown_impact",
         "stand_still",
         "stand_contact",
+        "stand_upright",
     ):
         document["metadata"]["reward"]["weights"].pop(name)
     for name in (
@@ -576,6 +577,7 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     assert restored.reward.weights.touchdown_impact == 0.0
     assert restored.reward.weights.stand_still == 0.0
     assert restored.reward.weights.stand_contact == 0.0
+    assert restored.reward.weights.stand_upright == 0.0
     assert restored.reward.gait.joint_force_soft_limit_body_weights == 1.0
     assert restored.reward.gait.joint_force_top_k == 12
     assert not restored.reward.gait.joint_force_apply_while_standing

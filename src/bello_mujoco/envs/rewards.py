@@ -211,6 +211,7 @@ class RewardWeights:
     stand_foot_motion: float = -1.0
     stand_foot_heading: float = -0.5
     stand_contact: float = -0.5
+    stand_upright: float = -8.0
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
     joint_limit: float = -1.0
@@ -328,6 +329,8 @@ class RewardConfig:
             for name in term_names
             if self.enabled(name) and (link := getattr(self.links, name))
         }
+        if self.enabled("stand_upright") and self.links.flat_orientation:
+            links.add(self.links.flat_orientation)
         if self.enabled("track_lin_vel_xy") and self.links.track_lin_vel_xy_frame:
             links.add(self.links.track_lin_vel_xy_frame)
         return tuple(sorted(links))
@@ -415,6 +418,7 @@ def compute_locomotion_reward(
     lin_vel_z = inputs.lin_vel_z**2
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
+    stand_upright = jnp.where(standing_command, flat_orientation, 0.0)
     base_height = (inputs.base_height - config.limits_pose.base_height_target) ** 2
     action_rate = jnp.sum((inputs.action - inputs.last_action) ** 2)
 
@@ -507,7 +511,7 @@ def compute_locomotion_reward(
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
     lateral_command = inputs.command[config.limits_pose.hip_lateral_command_index]
-    hip_deviation *= (
+    hip_deviation *= standing_command | (
         jnp.abs(lateral_command) > config.limits_pose.hip_lateral_command_threshold
     )
     knee_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.knee_joint_indices]))
@@ -587,6 +591,7 @@ def compute_locomotion_reward(
         "stand_foot_motion": stand_foot_motion,
         "stand_foot_heading": stand_foot_heading,
         "stand_contact": stand_contact,
+        "stand_upright": stand_upright,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,

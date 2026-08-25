@@ -306,9 +306,26 @@ def test_hip_deviation_uses_lateral_command_axis() -> None:
     _, lateral = compute_locomotion_reward(
         config, inputs.replace(command=jnp.asarray([0.0, 0.5, 0.0]))
     )
+    _, standing = compute_locomotion_reward(config, inputs)
 
     assert forward["reward/hip_deviation"] == pytest.approx(0.0)
     assert lateral["reward/hip_deviation"] == pytest.approx(-0.01)
+    assert standing["reward/hip_deviation"] == pytest.approx(-0.01)
+
+
+def test_stand_upright_penalty_is_gated_by_standing_command() -> None:
+    config = reward_config(stand_upright=-8.0)
+    inputs = reward_inputs(
+        projected_gravity=jnp.asarray([0.5, 0.0, -0.8660254], dtype=jnp.float32)
+    )
+
+    _, standing = compute_locomotion_reward(config, inputs)
+    _, moving = compute_locomotion_reward(
+        config, inputs.replace(command=jnp.asarray([0.0, 0.5, 0.0]))
+    )
+
+    assert standing["reward/stand_upright"] == pytest.approx(-0.04)
+    assert moving["reward/stand_upright"] == pytest.approx(0.0)
 
 
 def test_action_limit_penalty_is_quadratic_outside_soft_band() -> None:
