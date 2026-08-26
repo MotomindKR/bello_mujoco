@@ -207,7 +207,9 @@ class ActorCritic(eqx.Module):
         self.action_distribution = config.action_distribution
         self.action_limit = config.action_limit
         self.stochastic_actor = config.architecture == "twist2"
-        self.train_log_std = config.architecture != "sonic"
+        self.train_log_std = (
+            config.architecture != "sonic" or config.sonic_train_log_std
+        )
 
     def __call__(
         self,

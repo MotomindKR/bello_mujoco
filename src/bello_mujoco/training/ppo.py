@@ -1864,8 +1864,6 @@ def validate_ppo_config(config: PPOConfig) -> None:
             raise ValueError("SONIC requires its released Gaussian action distribution")
         if config.policy.action_limit != 20.0:
             raise ValueError("SONIC requires source-action clipping at 20")
-        if config.policy.sonic_train_log_std:
-            raise ValueError("SONIC requires the frozen released standard deviation")
         if not math.isclose(
             config.policy.min_log_std, math.log(0.001)
         ) or not math.isclose(config.policy.max_log_std, math.log(0.5)):

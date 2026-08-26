@@ -92,6 +92,7 @@ from bello_mujoco.sonic_policy import (
 from bello_mujoco.training.sonic import (
     _device_reference_bank_arrays,
     _tracking_dataset_summary,
+    validate_sonic_training_config,
 )
 from bello_mujoco.training.sonic_pretraining import SonicOfflineBatchBuilder
 from tools.sonic_gmr_retarget import (
@@ -274,6 +275,12 @@ def test_sonic_bootstrap_defaults_are_staged_for_bello_transfer() -> None:
     assert config.reward.joint_position_std == 0.35
     assert config.sampling.clip_prior == "frame_count_times_manifest_weight"
     assert config.freeze_frame_probability == 0.0
+
+
+def test_maintained_sonic_profile_passes_training_validation() -> None:
+    from bello_mujoco.configuration import sonic_training_profile
+
+    validate_sonic_training_config(sonic_training_profile())
 
 
 def test_sonic_runtime_sampling_prior_can_restore_frame_weighting() -> None:
@@ -1340,6 +1347,12 @@ def test_sonic_parameter_partition_freezes_only_the_semantic_core() -> None:
     assert trainable.critic.lora_b[0] is not None
     assert trainable.log_std is None
     assert frozen.log_std is not None
+
+    object.__setattr__(policy, "train_log_std", True)
+    trainable, frozen = partition_policy_parameters(policy)
+
+    assert trainable.log_std is not None
+    assert frozen.log_std is None
 
 
 def test_smpl_translation_resampling_matches_gmr_frame_coordinates() -> None:
