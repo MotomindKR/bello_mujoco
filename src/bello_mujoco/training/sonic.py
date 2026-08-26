@@ -139,6 +139,9 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         warp=run_config.warp,
         batch_size=run_config.config.num_envs,
     )
+    if env.reference_bank is None:
+        raise RuntimeError("SONIC environment lost its configured reference bank")
+    reference_bank = env.reference_bank
     validate_action_limit_contract(run_config.config, env.action_clip)
     release = load_sonic_release_artifact(run_config.release_artifact_directory)
     if release.checkpoint_sha256 != SONIC_OFFICIAL_CHECKPOINT_SHA256:

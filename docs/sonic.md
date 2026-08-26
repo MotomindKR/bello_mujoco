@@ -81,9 +81,12 @@ The packed dataset is 50 Hz. Both the robot motion encoder and privileged
 critic use offsets `[0,5,...,45]`; future references clamp to the final source
 frame, matching the author implementation. Train/evaluation assignment comes
 from the licensed manifest. Dense calibration is fitted only on accepted
-training frames. Initial sampling is sequence-length agnostic: manifest weight
-sets clip mass and the adaptive sampler applies the released bin-width,
-failure-rate, uniform-mixture, and 200-frame pre-failure rules. The index binds
+training frames. Schema 7 stores a sequence-length-agnostic manifest prior so
+the dataset remains reusable without baking an experiment choice into its
+arrays. The maintained Bello bootstrap multiplies that prior by clip length at
+runtime, restoring the frame-count-weighted v5 distribution before applying
+the bin-width, failure-rate, uniform-mixture, and 200-frame pre-failure rules.
+The index binds
 the portable manifest, Bello robot, both GMR revisions/configs, calibration,
 separate policy/action and MuJoCo-qpos joint orders, clip content, split
 descriptors, and split-file hashes.
@@ -245,11 +248,13 @@ of gravity, base angular velocity, Bello joint position, Bello joint velocity,
 and previous action. Observation corruption is applied once when a history
 frame is recorded; the critic retains a separate clean history.
 
-Training also mirrors the pinned environment randomization: full-strength
-observation noise from reset, `[-0.01, 0.01]` joint-default offsets, `0.8` to
-`1.5` torso/wrist mass scaling, anisotropic torso COM offsets, sliding friction
-from `0.3` to `1.6`, four-to-six-second velocity pushes, randomized initial
-episode age, and deterministic 10% motion-level freeze-frame augmentation.
+Training keeps the pinned randomization ranges: `[-0.01, 0.01]` joint-default
+offsets, `0.8` to `1.5` torso/wrist mass scaling, anisotropic torso COM
+offsets, and sliding friction from `0.3` to `1.6`. Observation noise ramps from
+zero over 48,000 world steps and four-to-six-second velocity pushes start only
+after that warmup. Initial episode age remains randomized. Freeze-frame
+augmentation is implemented as an explicit experiment but is disabled in the
+maintained profile.
 MuJoCo exposes one sliding-friction coefficient rather than PhysX's separate
 static/dynamic pair and restitution buckets; those two backend-specific
 material degrees of freedom are therefore not fabricated.
@@ -262,8 +267,10 @@ this boundary. The exact released running mean/variance then normalizes and
 clips the input before the frozen critic plus LoRA residuals.
 
 Training transfers the complete training bank to the accelerator once. Starts
-use the sequence-length-agnostic manifest prior mixed with the released
-failure/uniform curriculum and pre-failure offset. Failure/attempt bins cover
+use the frame-count-times-manifest-weight prior that produced the stronger v5
+bootstrap, mixed with the released failure/uniform curriculum and pre-failure
+offset. The schema-7 clip-balanced prior remains available through
+`sonic_env.sampling.clip_prior` for controlled ablations. Failure/attempt bins cover
 the whole corpus and remain in the runner continuation, so PPO updates do not
 pause for host data loads and vectorized worlds are not reset at data-boundary
 transitions. Sampling uses one uniform draw against the global cumulative
@@ -280,8 +287,9 @@ The maintained PPO values are 4,096 worlds, 24 rollout steps, five epochs, four
 minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`,
 desired KL `0.01`, entropy coefficient `0.01`, gamma `0.99`, lambda `0.95`, clip
 ratio `0.2`, and maximum gradient norm `0.1`. The released 29-dimensional
-standard deviation remains frozen and is clamped in source space before
-sampling. The maintained budget is 30,000 updates
+standard deviation starts from the source values, is trainable, and remains
+clamped to `[0.001, 0.5]` in source space before sampling. The maintained budget
+is 30,000 updates
 (`2,949,120,000` transitions). Update 8,000 matches the iteration scale used
 in Any2Any's compute comparison; the remaining updates provide the longer
 Bello convergence tail requested after the earlier learning curves.
@@ -306,20 +314,21 @@ The release reward weights and Gaussian widths are retained: anchor pose,
 heading-aligned body pose, body velocity, action rate, joint limits, undesired
 contacts, wrist/head angular shake, the release-named local `5point` term, and
 ankle-joint acceleration. Despite its upstream name, the pinned release
-configures only a torso-plus-head-offset proxy and two wrists. Bello uses its
-actual head body plus its two wrists. Feet remain separate termination and
+configures only a torso-plus-head-offset proxy and two wrists. Bello uses that
+same torso offset plus its two wrists. Feet remain separate termination and
 acceleration terms. Bello adds direct joint-position and foot-contact tracking,
-plus a penalty on the requested target's normalized joint-limit excess before
-the simulator clips it; this prevents clipping from hiding unsafe commands.
+plus a penalty on the requested target's normalized joint-limit excess.
+Requested targets remain unclipped, so unsafe commands are not hidden behind a
+target-side clamp.
 
 Termination uses the target-transfer limits reported by Any2Any: `0.25 m`
 root-height error, `0.8` squared root-orientation error, and `0.30 m` tracked
 end-effector-height error; the Bello foot-position limit is also `0.30 m`.
 Low-reference motions retain the existing adaptive height allowance.
 Root-height adaptation uses the same `0.1` exponential moving average. Reset
-perturbations, ten-frame sensor noise, joint-default
-offsets, 4–6 second velocity pushes, friction, mass/COM variation, and actuator
-strength are expressed through Bello's MuJoCo model randomizer. These are
+perturbations, ten-frame sensor noise, joint-default offsets, 4–6 second
+velocity pushes, friction, and mass/COM variation are expressed through
+Bello's MuJoCo model randomizer. These are
 semantic simulator adaptations rather than bitwise Isaac Lab event parity:
 MuJoCo has one sliding-friction coefficient here, and Bello's mass topology
 does not reproduce G1 wrist/torso bodies one-for-one. Observation noise ramps

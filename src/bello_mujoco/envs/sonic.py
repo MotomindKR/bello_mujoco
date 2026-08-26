@@ -7,7 +7,7 @@ contact plumbing from :mod:`bello_mujoco.envs.twist`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -212,7 +212,7 @@ class SonicObservationContract:
 @dataclass(frozen=True)
 class SonicObservationNoiseConfig:
     enabled: bool = True
-    ramp_steps: int = 0
+    ramp_steps: int = 48_000
     robot_root_orientation_6d: float = 0.05
     projected_gravity: float = 0.05
     base_angular_velocity: float = 0.2
@@ -230,7 +230,7 @@ class SonicDomainRandomizationConfig:
     torso_com_yz: tuple[float, float] = (-0.05, 0.05)
     friction: tuple[float, float] = (0.3, 1.6)
     push_interval_steps: tuple[int, int] = (4 * SONIC_POLICY_HZ, 6 * SONIC_POLICY_HZ)
-    push_warmup_steps: int = 0
+    push_warmup_steps: int = 48_000
     push_linear_velocity_xy: float = 0.5
     push_linear_velocity_z: float = 0.2
     push_angular_velocity_roll_pitch: float = 0.52
@@ -245,8 +245,11 @@ class SonicRewardConfig:
     tracking_relative_body_orientation: float = 1.0
     tracking_body_linear_velocity: float = 1.0
     tracking_body_angular_velocity: float = 1.0
+    tracking_joint_position: float = 1.0
+    tracking_foot_contact: float = 0.25
     action_rate: float = -0.1
     joint_limit: float = -10.0
+    target_joint_limit: float = -1.0
     undesired_contacts: float = -0.1
     anti_shake_angular_velocity: float = -0.005
     tracking_five_point_local: float = 2.0
@@ -257,6 +260,7 @@ class SonicRewardConfig:
     relative_body_orientation_std: float = 0.4
     body_linear_velocity_std: float = 1.0
     body_angular_velocity_std: float = 3.14
+    joint_position_std: float = 0.35
     five_point_std: float = 0.1
     undesired_contact_threshold: float = 1.0
     anti_shake_threshold: float = 1.5
@@ -281,6 +285,10 @@ class SonicSamplingConfig:
     uniform_sampling_rate: float = 0.1
     pre_failure_window: int = 200
     failure_rate_max_over_mean: float = 200.0
+    clip_prior: Literal[
+        "frame_count_times_manifest_weight",
+        "sequence_length_agnostic_manifest_weight",
+    ] = "frame_count_times_manifest_weight"
 
 
 @dataclass(frozen=True)
@@ -296,7 +304,7 @@ class SonicEnvConfig:
     reward: SonicRewardConfig = SonicRewardConfig()
     done: SonicDoneConfig = SonicDoneConfig()
     sampling: SonicSamplingConfig = SonicSamplingConfig()
-    freeze_frame_probability: float = 0.1
+    freeze_frame_probability: float = 0.0
     key_body_names: tuple[str, ...] = SONIC_TRACKED_BODY_NAMES
 
     def __post_init__(self) -> None:
@@ -360,6 +368,7 @@ class SonicEnvConfig:
             "relative_body_orientation_std",
             "body_linear_velocity_std",
             "body_angular_velocity_std",
+            "joint_position_std",
             "five_point_std",
             "undesired_contact_threshold",
             "anti_shake_threshold",
@@ -379,6 +388,11 @@ class SonicEnvConfig:
             raise ValueError("uniform_sampling_rate must be in [0, 1]")
         if sampling.failure_rate_max_over_mean < 1.0:
             raise ValueError("failure_rate_max_over_mean must be at least one")
+        if sampling.clip_prior not in {
+            "frame_count_times_manifest_weight",
+            "sequence_length_agnostic_manifest_weight",
+        }:
+            raise ValueError("SONIC clip sampling prior is invalid")
 
 
 class SonicSamplingState(NamedTuple):
@@ -544,6 +558,10 @@ class BelloSonicEnv(BelloTwistEnv):
         batch_size: int = 1,
     ) -> "BelloSonicEnv":
         domain = config.domain_randomization
+        reference_bank = with_sonic_runtime_sampling_prior(
+            reference_bank,
+            config.sampling.clip_prior,
+        )
         model = load_bello_model(
             asset_config,
             warp=warp,
@@ -1328,6 +1346,14 @@ class BelloSonicEnv(BelloTwistEnv):
         limit_radius = 0.45 * (upper - lower)
         soft_lower = limit_center - limit_radius
         soft_upper = limit_center + limit_radius
+        requested_target = self._unbounded_policy_target(
+            current.last_action,
+            previous.domain_randomization,
+        )
+        target_limit_excess = (
+            jax.nn.relu(lower - requested_target)
+            + jax.nn.relu(requested_target - upper)
+        ) / jnp.asarray(self.action_scale, dtype=jnp.float32)
         raw = {
             "tracking_anchor_position": jnp.exp(
                 -jnp.sum((reference.qpos[:3] - current.data.qpos[:3]) ** 2)
@@ -1376,6 +1402,17 @@ class BelloSonicEnv(BelloTwistEnv):
                 )
                 / cfg.body_angular_velocity_std**2
             ),
+            "tracking_joint_position": jnp.exp(
+                -jnp.mean((reference.qpos[policy_qpos] - positions) ** 2)
+                / cfg.joint_position_std**2
+            ),
+            "tracking_foot_contact": 1.0
+            - jnp.mean(
+                jnp.abs(
+                    foot_contact.astype(jnp.float32)
+                    - reference.foot_contacts.astype(jnp.float32)
+                )
+            ),
             "action_rate": jnp.sum(
                 (current.last_action - previous.motion_state.last_action) ** 2
             ),
@@ -1383,6 +1420,7 @@ class BelloSonicEnv(BelloTwistEnv):
                 jax.nn.relu(soft_lower - positions)
                 + jax.nn.relu(positions - soft_upper)
             ),
+            "target_joint_limit": jnp.mean(target_limit_excess**2),
             "undesired_contacts": self._undesired_contact(current, world_id).astype(
                 jnp.float32
             ),
@@ -1410,6 +1448,9 @@ class BelloSonicEnv(BelloTwistEnv):
                 jnp.mean((reference.qpos[policy_qpos] - positions) ** 2)
             ),
             "tracking/foot_slip_mean_mps": foot_slip,
+            "target/joint_limit_excess_rms_action": jnp.sqrt(
+                jnp.mean(target_limit_excess**2)
+            ),
         }
         return (
             sum(components.values(), jnp.asarray(0.0, dtype=jnp.float32)),
@@ -1873,6 +1914,27 @@ def _sonic_freeze_frame_indices(
         [rng.integers(0, int(length)) for length in lengths], dtype=np.int32
     )
     return tuple(np.where(selected, sampled, lengths).tolist())
+
+
+def with_sonic_runtime_sampling_prior(
+    bank: SonicReferenceBank,
+    prior: Literal[
+        "frame_count_times_manifest_weight",
+        "sequence_length_agnostic_manifest_weight",
+    ],
+) -> SonicReferenceBank:
+    weights = np.asarray(bank.sampling_probabilities, dtype=np.float64)
+    if prior == "frame_count_times_manifest_weight":
+        weights = weights * np.asarray(bank.lengths, dtype=np.float64)
+    elif prior != "sequence_length_agnostic_manifest_weight":
+        raise ValueError(f"invalid SONIC runtime sampling prior {prior!r}")
+    mass = float(weights.sum())
+    if not math.isfinite(mass) or mass <= 0.0:
+        raise ValueError("SONIC runtime sampling prior has no positive mass")
+    return replace(
+        bank,
+        sampling_probabilities=(weights / mass).astype(np.float32),
+    )
 
 
 def _sonic_curriculum_scale(step: jax.Array, ramp_steps: int) -> jax.Array:

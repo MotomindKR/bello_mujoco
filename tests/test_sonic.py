@@ -15,10 +15,13 @@ from bello_mujoco.envs.sonic import (
     BelloSonicEnv,
     SONIC_TRACKED_BODY_NAMES,
     SonicDoneConfig,
+    SonicEnvConfig,
     SonicObservationContract,
+    SonicSamplingConfig,
     SonicState,
     _build_sampling_bins,
     _sonic_freeze_frame_indices,
+    with_sonic_runtime_sampling_prior,
 )
 from bello_mujoco.envs.twist import TwistState
 import bello_mujoco.evaluation.sonic as sonic_evaluation
@@ -258,6 +261,38 @@ def test_sonic_observation_contract_matches_bello_edge_dimensions() -> None:
     assert SonicDoneConfig().root_height_error == 0.25
     assert SonicDoneConfig().root_orientation_squared_error == 0.8
     assert SonicDoneConfig().end_effector_height_error == 0.3
+
+
+def test_sonic_bootstrap_defaults_are_staged_for_bello_transfer() -> None:
+    config = SonicEnvConfig()
+
+    assert config.observation_noise.ramp_steps == 48_000
+    assert config.domain_randomization.push_warmup_steps == 48_000
+    assert config.reward.tracking_joint_position == 1.0
+    assert config.reward.tracking_foot_contact == 0.25
+    assert config.reward.target_joint_limit == -1.0
+    assert config.reward.joint_position_std == 0.35
+    assert config.sampling.clip_prior == "frame_count_times_manifest_weight"
+    assert config.freeze_frame_probability == 0.0
+
+
+def test_sonic_runtime_sampling_prior_can_restore_frame_weighting() -> None:
+    lengths = np.asarray((50, 100), dtype=np.int32)
+    bank = _reference_bank(int(lengths.sum()), lengths=lengths)
+
+    weighted = with_sonic_runtime_sampling_prior(
+        bank,
+        "frame_count_times_manifest_weight",
+    )
+    clip_balanced = with_sonic_runtime_sampling_prior(
+        bank,
+        "sequence_length_agnostic_manifest_weight",
+    )
+
+    np.testing.assert_allclose(weighted.sampling_probabilities, (1.0 / 3.0, 2.0 / 3.0))
+    np.testing.assert_allclose(clip_balanced.sampling_probabilities, (0.5, 0.5))
+    with pytest.raises(ValueError, match="clip sampling prior"):
+        SonicEnvConfig(sampling=replace(SonicSamplingConfig(), clip_prior="invalid"))
 
 
 def test_g1_action_scales_match_the_pinned_release_actuator_groups() -> None:

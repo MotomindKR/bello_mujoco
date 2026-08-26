@@ -530,8 +530,9 @@ complete 29-output dynamics decoder, critic, and critic observation moments.
 A fixed block-sparse 29-to-25 semantic transform wraps the source policy.
 Rank-32 LoRA residuals on actor proprioception, actor backbone/output, and all
 critic linears are optimizer leaves; the source arrays and semantic maps are
-not. The released 29-value log standard deviation remains frozen. Frozen arrays
-are content-hashed before periodic and final checkpoints.
+not. The 29-value source-space log standard deviation is also trainable and
+clamped to the maintained `[0.001, 0.5]` standard-deviation range. Frozen
+arrays are content-hashed before periodic and final checkpoints.
 
 Fresh maintained runs start PPO with zero-output LoRA residuals. The offline
 adapter warm-start remains available as an explicit experiment but defaults to
@@ -554,16 +555,21 @@ The `pretraining` section contains `enabled`, `updates`, `batch_size`,
 `seed`. All loss weights are nonnegative; sizes, update counts, and learning
 settings are validated before the policy is initialized.
 
-`sonic_env` owns released-style tracking rewards, failure termination,
-observation noise, per-world morphology/dynamics randomization, root pushes,
-and failure-bin adaptive start sampling. `dataset_index` identifies the
+`sonic_env` owns released-style tracking rewards plus Bello joint/contact and
+requested-target-limit bootstrap terms, failure termination, observation
+noise, per-world morphology/dynamics randomization, root pushes, and
+failure-bin adaptive start sampling. Noise ramps over 48,000 world steps,
+pushes start after the same warmup, and freeze-frame augmentation is disabled
+by default. `dataset_index` identifies the
 synchronized Bello/SMPL/G1 dataset. `release_artifact_directory` identifies
 the safe NPZ/JSON export of the exact pinned NVIDIA checkpoint, while
 `runtime_clip_directory` is ignored scratch space for native motion loading.
 The packed dataset contains one complete training bank and one complete
 evaluation bank. Training transfers the full training bank to the accelerator
-once, so all clips participate in the sequence-length-agnostic manifest sampler
-without host-side data rotation or update-boundary environment resets.
+once. The maintained `sonic_env.sampling.clip_prior` restores
+frame-count-times-manifest-weight sampling from schema 7's clip-balanced
+metadata; the sequence-length-agnostic prior remains an explicit ablation.
+There is no host-side data rotation or update-boundary environment reset.
 All data, release, robot, layout, and calibration identities enter typed
 checkpoint validation. See the [SONIC transfer guide](sonic.md).
 
@@ -671,7 +677,7 @@ Headline resolved PPO values are:
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist2` | 2,949,218,304 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | three released actor encoders + 512-512-256-128 SiLU + LN |
-| `sonic` | 2,949,120,000 | 4,096 × 24 | 5 × 4 | 0.00002 adaptive | 0.99 / 0.95 | frozen SONIC actor/critic + rank-32 LoRA |
+| `sonic` | 2,949,120,000 | 4,096 × 24 | 5 × 4 | 0.00002 adaptive | 0.99 / 0.95 | frozen SONIC actor/critic + rank-32 LoRA and trainable source log-std |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included

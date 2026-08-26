@@ -218,6 +218,11 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.config.num_updates == 1
     assert smoke.checkpoint_config.enabled is False
     assert smoke.checkpoint_config.allow_git_commit_mismatch is False
+    assert sonic.config.policy.sonic_train_log_std is True
+    assert sonic.sonic_env.observation_noise.ramp_steps == 48_000
+    assert sonic.sonic_env.domain_randomization.push_warmup_steps == 48_000
+    assert sonic.sonic_env.sampling.clip_prior == ("frame_count_times_manifest_weight")
+    assert sonic.sonic_env.freeze_frame_probability == 0.0
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
     assert not smoke.config.normalize_critic_observations
