@@ -162,6 +162,9 @@ The launcher rejects the resume before rental if its dataset fingerprint,
 release hashes, environment count, or absolute budget is
 incompatible. The remote trainer then enforces the complete observation,
 action, robot, PPO, and simulator contract while restoring the array state.
+After a detached job starts, a temporary SSH outage no longer tears down its
+instance. The launcher keeps reconnecting until the job deadline while the
+remote watchdog retains the final bounded-lifetime teardown.
 
 TWIST2 transfer example:
 

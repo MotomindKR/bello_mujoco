@@ -1127,24 +1127,17 @@ def run_remote_training(
             raise TimeoutError(
                 f"remote training exceeded {config.job_timeout_seconds} seconds"
             )
-        if now - last_progress_at >= config.progress_timeout_seconds:
+        if (
+            disconnected_at is None
+            and now - last_progress_at >= config.progress_timeout_seconds
+        ):
             raise TimeoutError(
                 "remote training produced no new output for "
                 f"{config.progress_timeout_seconds} seconds"
             )
-        if (
-            disconnected_at is not None
-            and now - disconnected_at >= config.ssh_timeout_seconds
-        ):
-            raise TimeoutError(
-                "SSH did not recover while detached remote training was running"
-            )
-        call_deadlines = [
-            job_deadline,
-            last_progress_at + config.progress_timeout_seconds,
-        ]
-        if disconnected_at is not None:
-            call_deadlines.append(disconnected_at + config.ssh_timeout_seconds)
+        call_deadlines = [job_deadline]
+        if disconnected_at is None:
+            call_deadlines.append(last_progress_at + config.progress_timeout_seconds)
         try:
             result = executor.run(
                 target,
@@ -1161,14 +1154,9 @@ def run_remote_training(
             sleep(5)
             continue
         if result.returncode == 255:
-            now = time.monotonic()
             if disconnected_at is None:
-                disconnected_at = now
+                disconnected_at = time.monotonic()
                 print("SSH disconnected; remote training continues while reconnecting.")
-            if now - disconnected_at >= config.ssh_timeout_seconds:
-                raise TimeoutError(
-                    "SSH did not recover while detached remote training was running"
-                )
             sleep(5)
             continue
         if result.returncode != 0:

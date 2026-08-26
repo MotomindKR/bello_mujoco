@@ -1634,6 +1634,69 @@ def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> 
     assert shlex.split(monitor_commands[-1])[-1] == "6"
 
 
+def test_remote_runner_does_not_destroy_job_during_long_ssh_outage(
+    monkeypatch, capfd
+) -> None:
+    monitor_calls = 0
+    clock = [0.0]
+
+    def response(state, offset, output=b"", returncode=None):
+        return json.dumps(
+            {
+                "state": state,
+                "offset": offset,
+                "output": base64.b64encode(output).decode("ascii"),
+                "returncode": returncode,
+            }
+        )
+
+    class Executor:
+        def run(self, target, remote_command, *, input_text=None, timeout_seconds):
+            nonlocal monitor_calls
+            assert timeout_seconds > 0
+            if input_text is not None:
+                return subprocess.CompletedProcess(
+                    remote_command, 0, stdout="started\n", stderr=""
+                )
+            monitor_calls += 1
+            if monitor_calls == 1:
+                return subprocess.CompletedProcess(
+                    remote_command, 255, stdout="", stderr="closed"
+                )
+            return subprocess.CompletedProcess(
+                remote_command,
+                0,
+                stdout=response("complete", 5, b"done\n", 0),
+                stderr="",
+            )
+
+    def advance(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: clock[0])
+
+    run_remote_training(
+        ("root", "example.com", 22001),
+        selection(),
+        valid_config(
+            ssh_timeout_seconds=1,
+            job_timeout_seconds=100,
+            progress_timeout_seconds=1,
+        ),
+        "test-run",
+        wandb_key="wandb-secret",
+        github_token="",
+        sleep=advance,
+        executor=Executor(),
+    )
+
+    output = capfd.readouterr().out
+    assert "remote training continues while reconnecting" in output
+    assert "SSH reconnected" in output
+    assert "done\n" in output
+    assert monitor_calls == 2
+
+
 def test_remote_runner_aborts_when_progress_deadline_expires(monkeypatch) -> None:
     class Executor:
         def run(self, target, remote_command, *, input_text=None, timeout_seconds):
