@@ -413,8 +413,6 @@ with pathlib.Path(sys.argv[2]).open(newline="") as source:
             power.append(float(row[0].strip()))
         except ValueError:
             continue
-if not rows:
-    raise RuntimeError("SONIC benchmark collected no GPU telemetry")
 elapsed = max(int(sys.argv[5]), 1)
 num_envs = int(sys.argv[3])
 updates = int(sys.argv[4])
@@ -426,13 +424,18 @@ report = {
         "elapsed_seconds": elapsed,
         "exit_status": int(sys.argv[6]),
         "samples": len(rows),
+        "gpu_telemetry_available": bool(rows),
         "updates_per_second_including_startup": updates / elapsed,
         "transitions_per_second_including_startup": num_envs * 24 * updates / elapsed,
-        "gpu_utilization_mean_percent": statistics.fmean(utilization),
-        "gpu_utilization_active_mean_percent": (
-            statistics.fmean(active_utilization) if active_utilization else 0.0
+        "gpu_utilization_mean_percent": (
+            statistics.fmean(utilization) if utilization else None
         ),
-        "gpu_active_sample_fraction": len(active_utilization) / len(utilization),
+        "gpu_utilization_active_mean_percent": (
+            statistics.fmean(active_utilization) if active_utilization else None
+        ),
+        "gpu_active_sample_fraction": (
+            len(active_utilization) / len(utilization) if utilization else None
+        ),
         "gpu_utilization_peak_percent": max(utilization, default=None),
         "gpu_memory_peak_mib": max(memory_used, default=None),
         "gpu_memory_total_mib": max(memory_total, default=None),

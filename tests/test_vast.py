@@ -1286,6 +1286,40 @@ def test_sonic_benchmark_accepts_unavailable_power_telemetry(tmp_path) -> None:
     assert report["gpu_power_mean_watts"] is None
 
 
+def test_sonic_benchmark_accepts_unavailable_gpu_telemetry(tmp_path) -> None:
+    telemetry_path = tmp_path / "gpu.csv"
+    power_path = tmp_path / "power.csv"
+    telemetry_path.write_text("", encoding="utf-8")
+    power_path.write_text("", encoding="utf-8")
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    program_start = script.index("import csv\n", script.index("benchmark_gpu_log"))
+    program_end = script.index("\nPY\n  rm -f", program_start)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-",
+            str(telemetry_path),
+            str(power_path),
+            "4096",
+            "3",
+            "240",
+            "0",
+            str(tmp_path),
+        ],
+        input=script[program_start:program_end],
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+    report = json.loads(result.stdout)["sonic_benchmark"]
+    assert report["exit_status"] == 0
+    assert report["gpu_telemetry_available"] is False
+    assert report["gpu_utilization_mean_percent"] is None
+    assert report["gpu_memory_peak_mib"] is None
+
+
 def test_rsync_transfer_is_resumable_and_retried(monkeypatch) -> None:
     attempts = []
     sleeps = []
