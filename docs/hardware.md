@@ -113,6 +113,58 @@ Motor commands remain valid for 80 ms. Their asynchronous gRPC acknowledgement
 may arrive up to 500 ms after submission; this longer client-side receipt window
 does not extend command validity or delay the daemon's command-timeout damping.
 
+## Single-joint chirp diagnostic
+
+`scripts/joint_chirp.py` applies a small exponential frequency sweep to one
+logical joint while holding every other coordinate in the selected motor groups
+at its measured starting position. It uses the same inventory checks, complete
+state frames, telemetry limits, asynchronous acknowledged commands, loop
+deadlines, and damped cleanup as the policy runner. Ankle pitch and roll are
+translated through the two-motor differential; the script never treats one
+ankle motor as an independently movable joint.
+
+Run the read-only preflight first. It connects to either physical
+`bello-hardwared` or the VCAN emulator, verifies that both groups are `IDLE`,
+checks the selected joint and complete proposed sweep against logical and motor
+limits, and sends no command:
+
+```text
+uv run python scripts/joint_chirp.py \
+  --joint left_hip_roll_joint \
+  --endpoint http://127.0.0.1:50051
+```
+
+Only run an armed sweep with the robot restrained or safely supported, a
+spotter, and a working E-stop. Start with a smaller amplitude when testing a new
+joint or load:
+
+```text
+uv run python scripts/joint_chirp.py \
+  --joint left_hip_roll_joint \
+  --amplitude 0.01 \
+  --start-frequency 0.5 \
+  --end-frequency 10 \
+  --duration 30 \
+  --output outputs/hardware_identification/left_hip_roll.jsonl \
+  --arm
+```
+
+Armed operation requires the exact confirmations `HOLD`, `CHIRP`, and `IDLE`.
+The first acquires control at the measured pose. The script refreshes that pose
+while waiting for `CHIRP`. Completion or failure enters the normal damped state,
+which is preserved until the supported robot is explicitly returned to `IDLE`.
+
+The JSONL log records the complete inventory and experiment configuration, then
+one record per command cycle. Each cycle contains logical and physical targets,
+reconstructed logical position and velocity, command-scheduling/deadline
+timestamps, raw motor position, daemon-filtered motor velocity, torque, faults
+and sample time, group command count/control tick/jitter, IMU samples,
+state-frame sample span, and RPC round-trip time. The state in a record is
+sampled after submission of its target is scheduled and that cycle's control
+deadline passes. The Python client does not expose the exact daemon/CAN transmit
+instant; use the group command count together with the monotonic timestamps,
+rather than JSONL row number alone, when estimating command/response delay.
+
 ## Locomotion mode
 
 Locomotion checkpoints must use the sphere-hand physical morphology, active

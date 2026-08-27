@@ -428,6 +428,22 @@ def wait_for_hardware_frame(
     timeout_seconds: float,
 ) -> HardwareFrame:
     frame = state_reader.read(timeout=timeout_seconds)
+    return decode_hardware_frame(
+        frame,
+        coordinate_names,
+        group_names,
+        imu_name,
+    )
+
+
+def decode_hardware_frame(
+    frame: Any,
+    coordinate_names: tuple[str, ...],
+    group_names: tuple[str, ...],
+    imu_name: str,
+) -> HardwareFrame:
+    """Decode one raw binding frame without hiding its transport metadata."""
+
     motors_by_coordinate = {motor.coordinate: motor for motor in frame.motors}
     groups_by_name = {group.group: group for group in frame.groups}
     imus_by_name = {imu.imu: imu for imu in frame.imus}
