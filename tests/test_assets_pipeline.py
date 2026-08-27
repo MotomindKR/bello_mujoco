@@ -26,8 +26,10 @@ from bello_mujoco.assets_pipeline.prepare import (
     validate_actuator_joint_contract,
     write_prepared_asset_manifest,
 )
+from bello_mujoco.robot import robot_definition
 
 CANONICAL_TOTAL_MASS_KG = 55.0683575411785
+FULL_BODY_DEFINITION = robot_definition("full_body")
 
 
 def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
@@ -123,7 +125,9 @@ def test_asset_config_rejects_invalid_end_effector_payload_mass(
 
 def test_morphology_pruning_removes_only_absent_actuator_configs() -> None:
     config = AssetPrepConfig(
-        joint_availability=JointAvailabilityConfig(waist_yaw=False),
+        joint_availability=JointAvailabilityConfig(
+            disabled_joint_names=("waist_yaw_joint",)
+        ),
     )
 
     assert len(config.actuator_config.joints) == 24
@@ -131,6 +135,26 @@ def test_morphology_pruning_removes_only_absent_actuator_configs() -> None:
     assert "right_finger_right_slide_joint" not in config.actuator_config.joints
     assert "waist_roll_joint" not in config.actuator_config.joints
     assert "waist_yaw_joint" not in config.actuator_config.joints
+
+
+@pytest.mark.parametrize(
+    "disabled_joint_names",
+    (("",), (" waist_yaw_joint",), ("waist_yaw_joint", "waist_yaw_joint")),
+)
+def test_joint_availability_rejects_invalid_names(
+    disabled_joint_names: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="disabled_joint_names"):
+        JointAvailabilityConfig(disabled_joint_names=disabled_joint_names)
+
+
+def test_asset_config_rejects_disabled_joint_outside_robot_definition() -> None:
+    with pytest.raises(ValueError, match="outside the robot definition"):
+        AssetPrepConfig(
+            joint_availability=JointAvailabilityConfig(
+                disabled_joint_names=("typo_joint",)
+            )
+        )
 
 
 def test_actuator_contract_rejects_missing_and_unknown_joint_configs() -> None:
@@ -180,7 +204,7 @@ def test_visualizer_recipe_produces_loadable_flattened_viewer_mjcf(
     tmp_path: Path,
 ) -> None:
     recipe = replace(
-        canonical_physical_asset_config(),
+        canonical_physical_asset_config(asset="full_body"),
         output_root=tmp_path,
         visual_mesh_face_budget=20_000,
     )
@@ -437,6 +461,7 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
+            FULL_BODY_DEFINITION,
             "cache-a",
         )
         is None
@@ -470,6 +495,7 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
+            FULL_BODY_DEFINITION,
             "cache-b",
         )
         is None
@@ -480,6 +506,7 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
+            FULL_BODY_DEFINITION,
             "cache-a",
         )
         is not None
@@ -491,6 +518,7 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
+            FULL_BODY_DEFINITION,
             "cache-a",
         )
         is not None
@@ -502,6 +530,7 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
+            FULL_BODY_DEFINITION,
             "cache-a",
         )
         is None
@@ -522,10 +551,15 @@ def test_asset_cache_key_tracks_prep_config() -> None:
     assert asset_config_hash(base) != asset_config_hash(
         AssetPrepConfig(asset="full_body", enforce_policy_effort_limits=False)
     )
+    assert asset_config_hash(base) != asset_config_hash(
+        AssetPrepConfig(asset="full_body", actuator_mode="policy")
+    )
     fixed_waist = AssetPrepConfig(
         asset="full_body",
         mesh_face_budget=1000,
-        joint_availability=JointAvailabilityConfig(waist_yaw=False),
+        joint_availability=JointAvailabilityConfig(
+            disabled_joint_names=("waist_yaw_joint",)
+        ),
     )
     assert asset_config_hash(base) != asset_config_hash(fixed_waist)
 
@@ -581,7 +615,7 @@ def test_disabled_joints_are_fixed_in_the_generated_urdf() -> None:
 
     fix_disabled_joints(
         root,
-        JointAvailabilityConfig(waist_yaw=False),
+        JointAvailabilityConfig(disabled_joint_names=("waist_yaw_joint",)),
     )
 
     joint = root.find("./joint[@name='waist_yaw_joint']")
@@ -589,6 +623,14 @@ def test_disabled_joints_are_fixed_in_the_generated_urdf() -> None:
     assert joint.get("type") == "fixed"
     assert joint.find("axis") is None
     assert joint.find("limit") is None
+
+
+def test_fix_disabled_joints_rejects_missing_source_joint() -> None:
+    with pytest.raises(ValueError, match="absent from the source URDF"):
+        fix_disabled_joints(
+            ET.Element("robot"),
+            JointAvailabilityConfig(disabled_joint_names=("missing_joint",)),
+        )
 
 
 def test_actuator_force_observation_is_clamped_by_force_range(

@@ -1,6 +1,13 @@
 dataset_index: datasets/twist/index.json
 require_released_dataset: false
 
+asset_config:
+  asset: full_body
+  collision_mode: box
+  target_total_mass_kg: null
+  enforce_policy_effort_limits: false
+  actuator_mode: policy
+
 config:
   seed: 1
   total_timesteps: 2949218304

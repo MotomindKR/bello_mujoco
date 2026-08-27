@@ -36,7 +36,10 @@ def main() -> None:
     robot_xml = args.robot_xml
     if robot_xml is None:
         robot_xml = prepare_asset(
-            motion_tracking_asset_config(output_root=Path("assets/generated/twist_gmr"))
+            motion_tracking_asset_config(
+                asset="full_body",
+                output_root=Path("assets/generated/twist_gmr"),
+            )
         ).mjcf_path
 
     def progress(current, total, decision) -> None:

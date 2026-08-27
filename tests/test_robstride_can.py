@@ -61,7 +61,7 @@ def motor_spec(
 ) -> MotorSpec:
     motor_model = next(
         candidate
-        for candidate in load_motor_models(default_motor_model_catalog())
+        for candidate in load_motor_models(default_motor_model_catalog("full_body"))
         if candidate.name == model
     )
     if "_ankle_" in name:
@@ -131,7 +131,7 @@ def test_model_protocol_ranges_match_platform_driver(
 ) -> None:
     limits = next(
         candidate.protocol
-        for candidate in load_motor_models(default_motor_model_catalog())
+        for candidate in load_motor_models(default_motor_model_catalog("full_body"))
         if candidate.name == model
     )
 
@@ -344,8 +344,8 @@ def test_canonical_hardware_description_drives_emulator_inventory() -> None:
         stack_description_path("bello/full_body/urdf/bello_full_body.urdf")
     )
     config = load_robstride_description(
-        default_hardware_description(),
-        default_motor_model_catalog(),
+        default_hardware_description("full_body"),
+        default_motor_model_catalog("full_body"),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     motors = {motor.name: motor for motor in config.motors}
@@ -372,7 +372,7 @@ def test_canonical_hardware_description_drives_emulator_inventory() -> None:
 
 
 def test_hardware_description_requires_existing_robot_description(tmp_path) -> None:
-    description = OmegaConf.load(default_hardware_description())
+    description = OmegaConf.load(default_hardware_description("full_body"))
     description.robot_description = "missing.urdf"
     hardware_path = tmp_path / "hardware.yaml"
     OmegaConf.save(description, hardware_path)
@@ -380,25 +380,27 @@ def test_hardware_description_requires_existing_robot_description(tmp_path) -> N
     with pytest.raises(ValueError, match="must reference an existing file"):
         load_robstride_description(
             hardware_path,
-            default_motor_model_catalog(),
+            default_motor_model_catalog("full_body"),
             {"can0": "vcan0", "can1": "vcan1"},
         )
 
 
-def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
+def test_emulator_robot_joints_require_matching_motor_assignments() -> None:
     config = load_robstride_description(
-        default_hardware_description(),
-        default_motor_model_catalog(),
+        default_hardware_description("full_body"),
+        default_motor_model_catalog("full_body"),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     validate_motor_coverage(
-        JointAvailabilityConfig(waist_yaw=True),
+        "full_body",
+        JointAvailabilityConfig(),
         config.motors,
     )
 
     with pytest.raises(ValueError, match="require RobStride motor mappings"):
         validate_motor_coverage(
-            JointAvailabilityConfig(waist_yaw=True),
+            "full_body",
+            JointAvailabilityConfig(),
             tuple(
                 motor
                 for motor in config.motors
@@ -410,7 +412,8 @@ def test_emulator_optional_joints_require_matching_motor_assignments() -> None:
         )
     with pytest.raises(ValueError, match="fixed by joint availability"):
         validate_motor_coverage(
-            JointAvailabilityConfig(waist_yaw=False),
+            "full_body",
+            JointAvailabilityConfig(disabled_joint_names=("waist_yaw_joint",)),
             config.motors,
         )
 
@@ -419,8 +422,8 @@ def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
     config = EmulatorConfig()
     assert config.asset_config.end_effector_payload_mass_kg == 0.0
     robstride = load_robstride_description(
-        default_hardware_description(),
-        default_motor_model_catalog(),
+        default_hardware_description("full_body"),
+        default_motor_model_catalog("full_body"),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     prepared = prepare_asset(config.asset_config)

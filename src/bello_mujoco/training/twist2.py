@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 
@@ -14,7 +14,6 @@ from bello_mujoco.envs.twist2 import (
     BelloTwist2Env,
     Twist2EnvConfig,
     Twist2ParityContract,
-    default_twist2_asset_config,
 )
 from bello_mujoco.motion.twist2_dataset import (
     Twist2DatasetAudit,
@@ -26,6 +25,7 @@ from bello_mujoco.motion.twist_dataset import (
     load_packed_reference_bank,
     materialize_packed_clip,
 )
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.repository import (
     capture_repository_commit,
     require_checkpoint_output_directory,
@@ -62,15 +62,16 @@ from bello_mujoco.training.twist import (
     _device_reference_bank_arrays,
     _load_dataset_contract,
     _source_sampling_mass,
+    validate_twist_asset_config,
 )
 
 
 @dataclass(frozen=True)
 class Twist2TrainingRunConfig:
+    asset_config: AssetPrepConfig
     dataset_index: Path = Path("datasets/twist/index.json")
     require_released_dataset: bool = False
     config: PPOConfig = PPOConfig()
-    asset_config: AssetPrepConfig = field(default_factory=default_twist2_asset_config)
     simulation: TwistSimulationConfig = TwistSimulationConfig()
     twist2_env: Twist2EnvConfig = Twist2EnvConfig()
     sampling: TwistSamplingConfig = TwistSamplingConfig(
@@ -242,6 +243,14 @@ def run_training(run_config: Twist2TrainingRunConfig) -> None:
 def validate_twist2_training_config(config: Twist2TrainingRunConfig) -> None:
     validate_ppo_config(config.config)
     validate_checkpoint_options(config.checkpoint_config)
+    validate_twist_asset_config(config.asset_config)
+    expected_key_bodies = motion_task_definition(
+        config.asset_config.asset
+    ).twist_key_body_names
+    if config.twist2_env.key_body_names != expected_key_bodies:
+        raise ValueError(
+            "TWIST2 key bodies differ from the selected robot's motion profile"
+        )
     policy = config.config.policy
     if policy.architecture != "twist2":
         raise ValueError("TWIST2 requires policy.architecture=twist2")

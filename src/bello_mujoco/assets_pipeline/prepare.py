@@ -13,17 +13,17 @@ import threading
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from importlib.metadata import version as distribution_version
 from pathlib import Path
-from typing import Literal, TextIO
+from typing import TextIO
 
 from bello_mujoco.assets_pipeline import (
     generated_model_path,
     generated_urdf_path,
     generated_viewer_model_path,
-    robot_description_root,
+    robot_descriptions_root,
 )
 from bello_mujoco.assets_pipeline.mesh import (
     JointAvailabilityConfig,
@@ -36,10 +36,16 @@ from bello_mujoco.assets_pipeline.mjcf import (
     ImuSensorConfig,
     compile_urdf_to_mjcf,
 )
-from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.actuators import ActuatorConfig, ActuatorMode
 from bello_mujoco.contracts import SIM_TIMESTEP
+from bello_mujoco.robot import (
+    AssetName,
+    PayloadAttachment,
+    RobotDefinition,
+    robot_definition,
+    validate_robot_source_urdf,
+)
 
-AssetName = Literal["full_body"]
 DEFAULT_ASSET_CACHE_LIMIT = 8
 _CACHE_KEY_PATTERN = re.compile(r"[0-9a-f]{16}\Z")
 _GENERATOR_SOURCE_PATHS = (
@@ -49,6 +55,7 @@ _GENERATOR_SOURCE_PATHS = (
     "assets_pipeline/mjcf.py",
     "assets_pipeline/prepare.py",
     "contracts.py",
+    "robot.py",
     "spatial.py",
 )
 _GENERATOR_DISTRIBUTIONS = (
@@ -60,12 +67,6 @@ _GENERATOR_DISTRIBUTIONS = (
 _DEFAULT_CACHE_GUARD = threading.Lock()
 _DEFAULT_CACHE_LEASES: dict[Path, TextIO] = {}
 _DEFAULT_CACHE_ASSETS: dict[Path, PreparedAsset] = {}
-END_EFFECTOR_PAYLOAD_LINK_NAMES = (
-    "l_end_effector_sphere_link",
-    "r_end_effector_sphere_link",
-)
-END_EFFECTOR_SPHERE_RADIUS_M = 0.0325
-END_EFFECTOR_SPHERE_CENTER_M = (0.0, 0.0, -0.02)
 
 
 def _close_default_asset_cache_leases() -> None:
@@ -93,11 +94,26 @@ class AssetPrepConfig:
     imu_config: ImuSensorConfig = ImuSensorConfig()
     ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig()
     joint_availability: JointAvailabilityConfig = JointAvailabilityConfig()
-    actuator_config: ActuatorConfig = field(default_factory=ActuatorConfig)
+    actuator_mode: ActuatorMode | None = None
+    actuator_config: ActuatorConfig | None = None
 
     def __post_init__(self) -> None:
-        if self.asset != "full_body":
-            raise ValueError(f"asset must be 'full_body', got {self.asset!r}")
+        definition = robot_definition(self.asset)
+        actuator_config = self.actuator_config
+        derived_actuator_config = ActuatorConfig.for_asset(
+            self.asset,
+            mode=self.actuator_mode,
+        )
+        if actuator_config is None:
+            actuator_config = derived_actuator_config
+            object.__setattr__(self, "actuator_config", actuator_config)
+        elif (
+            self.actuator_mode is not None
+            and actuator_config != derived_actuator_config
+        ):
+            raise ValueError(
+                "asset actuator_config must match actuator_mode when both are set"
+            )
         if self.collision_mode not in {"mesh", "box"}:
             raise ValueError(
                 f"collision_mode must be 'mesh' or 'box', got {self.collision_mode!r}"
@@ -119,12 +135,48 @@ class AssetPrepConfig:
                 f"{self.end_effector_payload_mass_kg}"
             )
         removed_joints = set(self.joint_availability.disabled_joint_names)
+        robot_joint_names = {actuator.joint_name for actuator in definition.actuators}
+        unknown_disabled_joints = sorted(removed_joints - robot_joint_names)
+        if unknown_disabled_joints:
+            raise ValueError(
+                "joint_availability disables joints outside the robot definition: "
+                + ", ".join(unknown_disabled_joints)
+            )
         active_joints = {
             name: config
-            for name, config in self.actuator_config.joints.items()
+            for name, config in actuator_config.joints.items()
             if name not in removed_joints
         }
-        if len(active_joints) != len(self.actuator_config.joints):
+        expected_joints = robot_joint_names - removed_joints
+        configured_joints = set(active_joints)
+        missing_joints = sorted(expected_joints - configured_joints)
+        unknown_joints = sorted(configured_joints - expected_joints)
+        if missing_joints:
+            raise ValueError(
+                "asset actuator config is missing robot joints: "
+                + ", ".join(missing_joints)
+            )
+        if unknown_joints:
+            raise ValueError(
+                "asset actuator config contains joints outside the robot definition: "
+                + ", ".join(unknown_joints)
+            )
+        required_effort_limits = {
+            actuator.joint_name
+            for actuator in definition.actuators
+            if actuator.effort_limit is not None
+        } - removed_joints
+        missing_effort_limits = sorted(
+            name
+            for name in required_effort_limits
+            if active_joints[name].effort_limit is None
+        )
+        if missing_effort_limits:
+            raise ValueError(
+                "asset actuator overrides must preserve effort limits for robot "
+                "joints: " + ", ".join(missing_effort_limits)
+            )
+        if len(active_joints) != len(actuator_config.joints):
             object.__setattr__(
                 self,
                 "actuator_config",
@@ -134,16 +186,19 @@ class AssetPrepConfig:
 
 def canonical_physical_asset_config(
     *,
+    asset: AssetName,
     imu_enabled: bool = False,
 ) -> AssetPrepConfig:
+    definition = robot_definition(asset)
     return AssetPrepConfig(
+        asset=asset,
         collision_mode="box",
         target_total_mass_kg=None,
         imu_config=ImuSensorConfig(
             enabled=imu_enabled,
-            body_name="pelvis_link",
+            body_name=definition.default_imu_body_name,
         ),
-        joint_availability=JointAvailabilityConfig(waist_yaw=True),
+        joint_availability=JointAvailabilityConfig(),
     )
 
 
@@ -204,21 +259,29 @@ def prepare_asset_unlocked(
     config: AssetPrepConfig,
     output_root: Path,
 ) -> PreparedAsset:
-    asset = "full_body"
-    source_root = robot_description_root()
-    source_urdf = source_root / asset / "urdf" / f"bello_{asset}.urdf"
+    definition = robot_definition(config.asset)
+    asset = definition.asset
+    source_root = robot_descriptions_root()
+    source_urdf = definition.source_urdf_path(source_root)
     if not source_urdf.exists():
         raise FileNotFoundError(source_urdf)
+    validate_robot_source_urdf(definition, source_urdf)
 
-    out_urdf = generated_urdf_path(output_root)
-    out_mesh_dir = output_root / asset / "meshes"
-    out_visual_mesh_dir = output_root / asset / "visual_meshes"
-    out_mjcf = generated_model_path(output_root)
-    out_viewer_mjcf = generated_viewer_model_path(output_root)
-    manifest_path = output_root / asset / "asset_manifest.json"
+    out_urdf = generated_urdf_path(output_root, definition)
+    asset_root = output_root / definition.output_directory
+    out_mesh_dir = asset_root / "meshes"
+    out_visual_mesh_dir = asset_root / "visual_meshes"
+    out_mjcf = generated_model_path(output_root, definition)
+    out_viewer_mjcf = generated_viewer_model_path(output_root, definition)
+    manifest_path = asset_root / "asset_manifest.json"
     cache_key = asset_config_hash(config)
     cached = read_prepared_asset_manifest(
-        out_urdf, out_mjcf, out_viewer_mjcf, manifest_path, cache_key
+        out_urdf,
+        out_mjcf,
+        out_viewer_mjcf,
+        manifest_path,
+        definition,
+        cache_key,
     )
     if cached is not None:
         return cached
@@ -238,7 +301,11 @@ def prepare_asset_unlocked(
     )
     if config.target_total_mass_kg is not None:
         scale_urdf_total_mass(out_urdf, config.target_total_mass_kg)
-    add_end_effector_payload_inertials(out_urdf, config.end_effector_payload_mass_kg)
+    add_end_effector_payload_inertials(
+        out_urdf,
+        config.end_effector_payload_mass_kg,
+        definition.payload_attachments,
+    )
     actuated_joint_order = actuated_urdf_joint_names(out_urdf)
     validate_actuator_joint_contract(config.actuator_config, actuated_joint_order)
     for src, dst_name in mesh_sources.collision.items():
@@ -269,6 +336,7 @@ def prepare_asset_unlocked(
         enforce_policy_effort_limits=config.enforce_policy_effort_limits,
         imu_config=config.imu_config,
         ankle_differential_config=config.ankle_differential_config,
+        robot=definition,
     )
     compile_urdf_to_mjcf(
         out_urdf,
@@ -281,6 +349,7 @@ def prepare_asset_unlocked(
         enforce_policy_effort_limits=config.enforce_policy_effort_limits,
         imu_config=config.imu_config,
         ankle_differential_config=config.ankle_differential_config,
+        robot=definition,
     )
     prepared = PreparedAsset(
         asset,
@@ -356,37 +425,50 @@ def scale_urdf_total_mass(urdf_path: Path, target_total_mass_kg: float) -> None:
 
 
 def add_end_effector_payload_inertials(
-    urdf_path: Path, mass_kg_per_hand: float
+    urdf_path: Path,
+    mass_kg_per_attachment: float,
+    attachments: tuple[PayloadAttachment, ...],
 ) -> None:
-    """Attach equal payload inertials at the two sphere-hand centers."""
+    """Attach equal payload inertials at configured spherical attachment points."""
 
-    if not math.isfinite(mass_kg_per_hand) or mass_kg_per_hand < 0.0:
+    if not math.isfinite(mass_kg_per_attachment) or mass_kg_per_attachment < 0.0:
         raise ValueError(
-            f"mass_kg_per_hand must be finite and nonnegative, got {mass_kg_per_hand}"
+            "mass_kg_per_attachment must be finite and nonnegative, got "
+            f"{mass_kg_per_attachment}"
         )
-    if mass_kg_per_hand == 0.0:
+    if mass_kg_per_attachment == 0.0:
         return
+    if not attachments:
+        raise ValueError("robot has no configured payload attachments")
 
     tree = ET.parse(urdf_path)
     root = tree.getroot()
     links = {link.get("name"): link for link in root.findall("link")}
-    inertia = 0.4 * mass_kg_per_hand * END_EFFECTOR_SPHERE_RADIUS_M**2
-    for name in END_EFFECTOR_PAYLOAD_LINK_NAMES:
-        link = links.get(name)
+    for attachment in attachments:
+        link = links.get(attachment.link_name)
         if link is None:
-            raise ValueError(f"generated URDF is missing payload link {name!r}")
+            raise ValueError(
+                f"generated URDF is missing payload link {attachment.link_name!r}"
+            )
         if link.find("inertial") is not None:
-            raise ValueError(f"payload link {name!r} already has inertial data")
+            raise ValueError(
+                f"payload link {attachment.link_name!r} already has inertial data"
+            )
+        inertia = 0.4 * mass_kg_per_attachment * attachment.radius_m**2
         inertial = ET.Element("inertial")
         ET.SubElement(
             inertial,
             "origin",
             {
-                "xyz": " ".join(str(value) for value in END_EFFECTOR_SPHERE_CENTER_M),
+                "xyz": " ".join(str(value) for value in attachment.center_m),
                 "rpy": "0 0 0",
             },
         )
-        ET.SubElement(inertial, "mass", {"value": f"{mass_kg_per_hand:.17g}"})
+        ET.SubElement(
+            inertial,
+            "mass",
+            {"value": f"{mass_kg_per_attachment:.17g}"},
+        )
         ET.SubElement(
             inertial,
             "inertia",
@@ -440,6 +522,7 @@ def default_asset_cache_root() -> Path:
 
 
 def asset_config_hash(config: AssetPrepConfig) -> str:
+    definition = robot_definition(config.asset)
     payload = {
         "asset": config.asset,
         "mesh_face_budget": config.mesh_face_budget,
@@ -454,11 +537,30 @@ def asset_config_hash(config: AssetPrepConfig) -> str:
         "joint_availability": asdict(config.joint_availability),
         "sim_timestep": SIM_TIMESTEP,
         "actuator_config": asdict(config.actuator_config),
+        "robot_definition": robot_definition_fingerprint(definition),
         "generator": asset_generator_fingerprint(),
-        "source": source_asset_fingerprint(),
+        "source": source_asset_fingerprint(definition),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def robot_definition_fingerprint(definition: RobotDefinition) -> str:
+    encoded = json.dumps(
+        asdict(definition),
+        default=_robot_definition_json_value,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _robot_definition_json_value(value) -> str:
+    if isinstance(value, Path):
+        return value.as_posix()
+    raise TypeError(
+        f"robot definition contains unsupported value {type(value).__name__}"
+    )
 
 
 @lru_cache(maxsize=1)
@@ -483,14 +585,10 @@ def asset_generator_fingerprint() -> str:
     return hasher.hexdigest()
 
 
-def source_asset_fingerprint() -> str:
-    source_root = robot_description_root()
+def source_asset_fingerprint(definition: RobotDefinition) -> str:
+    source_root = robot_descriptions_root()
     hasher = hashlib.sha256()
-    source_paths = (
-        source_root / "full_body" / "urdf",
-        source_root / "lower_body" / "meshes",
-        source_root / "upper_body" / "meshes",
-    )
+    source_paths = definition.source_directory_paths(source_root)
     missing = [path for path in source_paths if not path.is_dir()]
     if missing:
         raise FileNotFoundError(
@@ -568,6 +666,7 @@ def read_prepared_asset_manifest(
     mjcf_path: Path,
     viewer_mjcf_path: Path,
     manifest_path: Path,
+    definition: RobotDefinition,
     cache_key: str,
 ) -> PreparedAsset | None:
     if not (
@@ -583,7 +682,7 @@ def read_prepared_asset_manifest(
         data = json.loads(manifest_path.read_text())
     except json.JSONDecodeError:
         return None
-    if data.get("name") != "full_body":
+    if data.get("name") != definition.asset:
         return None
     if data.get("cache_key") != cache_key:
         return None
@@ -600,7 +699,7 @@ def read_prepared_asset_manifest(
         return None
     try:
         return PreparedAsset(
-            "full_body",
+            definition.asset,
             urdf_path,
             mjcf_path,
             viewer_mjcf_path,

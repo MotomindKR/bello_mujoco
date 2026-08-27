@@ -1152,7 +1152,8 @@ def test_stance_width_uses_lateral_frame_axis(full_body_asset: PreparedAsset) ->
     )
     state = state.replace(data=state.data.replace(xpos=xpos))
 
-    assert env._stance_width(state, env.config.root_link) == pytest.approx(0.2)
+    assert env.root_link_name == env.model.robot.root_body_name
+    assert env._stance_width(state, env.root_link_name) == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize(

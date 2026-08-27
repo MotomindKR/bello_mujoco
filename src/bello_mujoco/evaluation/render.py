@@ -280,7 +280,13 @@ def render_policy_rollout_mujoco(
     )
     try:
         for step_index in range(steps):
-            update_camera(camera, mj_model, mj_data, camera_config)
+            update_camera(
+                camera,
+                mj_model,
+                mj_data,
+                camera_config,
+                root_body_name=env.model.robot.root_body_name,
+            )
             renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
             action_rng = None
@@ -319,7 +325,13 @@ def render_policy_rollout_mujoco(
                     step_count=step_count,
                 )
                 obs_stack = update_observation_stack(obs_stack, obs, jnp.asarray(True))
-                update_camera(camera, mj_model, mj_data, camera_config)
+                update_camera(
+                    camera,
+                    mj_model,
+                    mj_data,
+                    camera_config,
+                    root_body_name=env.model.robot.root_body_name,
+                )
                 renderer.update_scene(mj_data, camera=camera)
                 writer.append_data(renderer.render())
                 break
@@ -519,7 +531,7 @@ def mujoco_done_flags(
 def mujoco_link_quat(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> np.ndarray:
-    if link_name == "bello_root":
+    if link_name == env.model.robot.root_body_name:
         root_qpos = int(env.model.root_qpos_adr)
         return np.asarray(mj_data.qpos[root_qpos + 3 : root_qpos + 7], dtype=np.float32)
     body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
@@ -531,7 +543,7 @@ def mujoco_link_quat(
 def mujoco_link_clearance(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> float:
-    if link_name == "bello_root":
+    if link_name == env.model.robot.root_body_name:
         root_qpos = int(env.model.root_qpos_adr)
         position = np.asarray(mj_data.qpos[root_qpos : root_qpos + 3])
     else:
@@ -556,7 +568,7 @@ def mujoco_link_clearance(
 def mujoco_link_lin_vel(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> np.ndarray:
-    if link_name == "bello_root":
+    if link_name == env.model.robot.root_body_name:
         root_qpos = int(env.model.root_qpos_adr)
         root_qvel = int(env.model.root_qvel_adr)
         return quat_rotate_inverse_wxyz(
@@ -581,7 +593,7 @@ def mujoco_link_lin_vel(
 def mujoco_link_ang_vel(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData, link_name: str
 ) -> np.ndarray:
-    if link_name == "bello_root":
+    if link_name == env.model.robot.root_body_name:
         root_qvel = int(env.model.root_qvel_adr)
         return np.asarray(mj_data.qvel[root_qvel + 3 : root_qvel + 6], dtype=np.float32)
     body_id = mujoco.mj_name2id(env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, link_name)
@@ -1048,10 +1060,12 @@ def update_camera(
     mj_model: mujoco.MjModel,
     mj_data: mujoco.MjData,
     config: CameraConfig,
+    *,
+    root_body_name: str,
 ) -> None:
     if config.mode != "follow":
         return
-    root_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "bello_root")
+    root_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, root_body_name)
     if root_body_id < 0:
-        raise ValueError("follow camera requires body 'bello_root'")
+        raise ValueError(f"follow camera requires body {root_body_name!r}")
     camera.lookat[:] = mj_data.xpos[root_body_id] + np.asarray(config.lookat_offset)

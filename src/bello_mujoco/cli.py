@@ -22,6 +22,7 @@ from bello_mujoco.configuration import (
     twist2_training_profile,
     twist_training_profile,
 )
+from bello_mujoco.robot import AssetName
 
 if TYPE_CHECKING:
     from bello_mujoco.training.tracking import WandbConfig
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class PrepareAssetsCommandConfig:
     profile: Literal["physical", "visualizer"]
+    asset: AssetName
     output_root: Path | None
 
 
@@ -74,6 +76,7 @@ class EvalCommandConfig:
 @dataclass(frozen=True)
 class MotionCommandConfig:
     operation: Literal["import", "import_dataset", "inspect", "render"]
+    asset: AssetName
     source: Path | None
     output: Path | None
     jobs: int
@@ -137,6 +140,7 @@ class VastTrainCommandConfig:
 
 @dataclass(frozen=True)
 class EmulatorCommandConfig:
+    asset: AssetName
     bus_interfaces: tuple[str, ...]
     command_latency_seconds: float
     motor_kp_scale: float
@@ -203,7 +207,7 @@ def _prepare_assets_hydra(config: DictConfig) -> None:
         prepare_asset,
     )
 
-    asset = canonical_physical_asset_config()
+    asset = canonical_physical_asset_config(asset=command.asset)
     if command.profile == "visualizer":
         asset = replace(
             asset,
@@ -651,6 +655,7 @@ def _motion_hydra(config: DictConfig) -> None:
             import_gmr_motion(
                 source,
                 output,
+                asset=command.asset,
                 reject_self_collisions=command.reject_self_collisions,
             )
         )
@@ -672,6 +677,7 @@ def _motion_hydra(config: DictConfig) -> None:
         motions, failures = import_dataset(
             source,
             output,
+            asset=command.asset,
             jobs=command.jobs,
             overwrite=command.overwrite,
         )
@@ -706,6 +712,7 @@ def _motion_hydra(config: DictConfig) -> None:
             render_reference(
                 source,
                 output,
+                asset=command.asset,
                 width=command.width,
                 height=command.height,
                 fps=command.fps,
@@ -725,7 +732,7 @@ def _motion_hydra(config: DictConfig) -> None:
     )
     from bello_mujoco.motion.feasibility import replay_motion_reference
 
-    report = replay_motion_reference(source)
+    report = replay_motion_reference(source, asset=command.asset)
     payload = json.dumps(asdict(report), indent=2, sort_keys=True)
     if command.output is not None:
         command.output.parent.mkdir(parents=True, exist_ok=True)
@@ -876,7 +883,7 @@ def _emulator_hydra(config: DictConfig) -> None:
             motor_kd_scale=command.motor_kd_scale,
             video_path=command.video_path,
             asset_config=replace(
-                emulator.default_emulator_asset_config(),
+                emulator.default_emulator_asset_config(command.asset),
                 end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
             ),
         )

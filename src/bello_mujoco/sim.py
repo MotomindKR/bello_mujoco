@@ -14,18 +14,16 @@ if TYPE_CHECKING:
     from mujoco import mjx
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
 from bello_mujoco.assets_pipeline.prepare import (
     AssetPrepConfig,
     PreparedAsset,
     prepare_asset,
 )
 from bello_mujoco.contracts import (
-    DEFAULT_ROOT_POS,
-    DEFAULT_ROOT_QUAT,
     DEFAULT_SPAWN_CLEARANCE,
     SIM_TIMESTEP,
 )
+from bello_mujoco.robot import RobotDefinition, robot_definition
 from bello_mujoco.terrain import (
     ROBOT_ONLY_TERRAIN,
     TerrainConfig,
@@ -35,14 +33,7 @@ from bello_mujoco.terrain import (
 
 DEFAULT_CONTACT_BUDGET_PER_ENV = 32
 DEFAULT_WARP_NJMAX = 256
-DEFAULT_IMU_BODY_NAME = ImuSensorConfig().body_name
 IMU_SITE_NAME = "bello_imu_site"
-ANKLE_TENDON_LOGICAL_JOINT = {
-    "left_ankle_motor_1": "left_ankle_pitch_joint",
-    "left_ankle_motor_2": "left_ankle_roll_joint",
-    "right_ankle_motor_1": "right_ankle_pitch_joint",
-    "right_ankle_motor_2": "right_ankle_roll_joint",
-}
 
 
 @dataclass(frozen=True)
@@ -204,6 +195,7 @@ class BelloModel:
     mj_model: mujoco.MjModel
     mjx_model: mjx.Model | None
     xml_path: Path
+    robot: RobotDefinition
     warp_naconmax: int | None
     warp_naccdmax: int | None
     warp_njmax: int | None
@@ -269,7 +261,9 @@ def preserve_runtime_physics(source: mujoco.MjModel, target: mujoco.MjModel) -> 
 
 
 def resolve_imu_body_name(
-    mj_model: mujoco.MjModel, configured_body_name: str | None
+    mj_model: mujoco.MjModel,
+    configured_body_name: str | None,
+    robot: RobotDefinition,
 ) -> str:
     """Resolve the actor IMU frame from the generated site or source config."""
 
@@ -288,7 +282,7 @@ def resolve_imu_body_name(
             )
         return site_body_name
 
-    body_name = configured_body_name or DEFAULT_IMU_BODY_NAME
+    body_name = configured_body_name or robot.default_imu_body_name
     body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_name)
     if body_id < 0:
         raise ValueError(f"configured IMU body not found in model: {body_name!r}")
@@ -333,16 +327,20 @@ def load_prepared_bello_model(
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(),
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
-    actuator_config: ActuatorConfig = ActuatorConfig(),
+    actuator_config: ActuatorConfig | None = None,
     imu_body_name: str | None = None,
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     use_viewer_model: bool = False,
     load_mjx: bool = True,
     simulation_timestep: float | None = None,
 ) -> BelloModel:
+    robot = robot_definition(prepared.name)
+    if actuator_config is None:
+        actuator_config = ActuatorConfig.for_asset(prepared.name)
     xml_path = prepared.viewer_mjcf_path if use_viewer_model else prepared.mjcf_path
     return _load_bello_model_from_path(
         xml_path,
+        robot=robot,
         warp=warp,
         batch_size=batch_size,
         terrain=terrain,
@@ -359,12 +357,13 @@ def load_prepared_bello_model(
 def _load_bello_model_from_path(
     xml_path: Path,
     *,
+    robot: RobotDefinition,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
     terrain: TerrainConfig = ROBOT_ONLY_TERRAIN,
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(),
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig(),
-    actuator_config: ActuatorConfig = ActuatorConfig(),
+    actuator_config: ActuatorConfig,
     imu_body_name: str | None = None,
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
     load_mjx: bool = True,
@@ -383,7 +382,7 @@ def _load_bello_model_from_path(
     if simulation_timestep is not None:
         if not math.isfinite(simulation_timestep) or simulation_timestep <= 0.0:
             raise ValueError("simulation_timestep must be positive and finite")
-    imu_body_name = resolve_imu_body_name(mj_model, imu_body_name)
+    imu_body_name = resolve_imu_body_name(mj_model, imu_body_name, robot)
 
     actuator_names = tuple(
         mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id)
@@ -391,7 +390,7 @@ def _load_bello_model_from_path(
     )
     if any(name is None for name in actuator_names):
         raise ValueError("every generated actuator must have a name")
-    actuator_joint_names = logical_actuator_joint_names(mj_model)
+    actuator_joint_names = logical_actuator_joint_names(mj_model, robot)
     actuator_joint_ids = np.asarray(
         [
             mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
@@ -402,7 +401,7 @@ def _load_bello_model_from_path(
     if np.any(actuator_joint_ids < 0):
         raise ValueError("generated actuator maps to a missing logical joint")
     actuator_coordinate_transform_matrix = actuator_coordinate_transform(
-        mj_model, actuator_joint_names
+        mj_model, actuator_joint_names, robot
     )
     policy_joint_names = actuator_config.policy_joint_names
     hold_joint_names = actuator_config.hold_joint_names
@@ -443,14 +442,18 @@ def _load_bello_model_from_path(
         dtype=np.int32,
     )
 
-    root_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, "root_free")
+    root_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_JOINT, robot.root_joint_name
+    )
     if root_id < 0:
-        raise ValueError("generated Bello MJCF must include root_free")
+        raise ValueError(
+            f"generated MJCF must include root joint {robot.root_joint_name!r}"
+        )
     root_qpos_adr = int(mj_model.jnt_qposadr[root_id])
     root_qvel_adr = int(mj_model.jnt_dofadr[root_id])
 
     terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
-    foot_body_ids = foot_body_indices(mj_model)
+    foot_body_ids = foot_body_indices(mj_model, robot)
     robot_geom_ids = robot_collision_geom_indices(mj_model)
     foot_geom_ids = robot_collision_geom_indices(
         mj_model, body_ids=set(foot_body_ids.tolist())
@@ -467,6 +470,7 @@ def _load_bello_model_from_path(
         batch_size=batch_size,
         actuator_joint_ids=actuator_joint_ids,
         policy_ctrl_indices=policy_ctrl_indices,
+        robot=robot,
     )
     if randomized_fields is not None:
         _apply_native_model_sample(mj_model, randomized_fields, sample=0)
@@ -504,10 +508,10 @@ def _load_bello_model_from_path(
 
     default_qpos, default_qvel, default_ctrl = model_home_state(mj_model)
     default_qpos[root_qpos_adr : root_qpos_adr + 3] = np.asarray(
-        DEFAULT_ROOT_POS, dtype=np.float32
+        robot.default_root_position, dtype=np.float32
     )
     default_qpos[root_qpos_adr + 3 : root_qpos_adr + 7] = np.asarray(
-        DEFAULT_ROOT_QUAT, dtype=np.float32
+        robot.default_root_quaternion, dtype=np.float32
     )
     default_qpos = place_root_above_terrain(
         mj_model,
@@ -526,7 +530,7 @@ def _load_bello_model_from_path(
     default_joint_target = default_qpos[actuator_qpos_indices].astype(np.float32)
     joint_target_range = np.asarray(
         [
-            configured_actuator_joint_range(mj_model, name, actuator_config)
+            configured_actuator_joint_range(mj_model, name, actuator_config, robot)
             for name in actuator_joint_names
         ],
         dtype=np.float32,
@@ -535,6 +539,7 @@ def _load_bello_model_from_path(
         mj_model=mj_model,
         mjx_model=mjx_model,
         xml_path=path,
+        robot=robot,
         warp_naconmax=warp.resolved_naconmax(batch_size),
         warp_naccdmax=warp.naccdmax,
         warp_njmax=warp.njmax,
@@ -596,6 +601,7 @@ def _randomized_model_fields(
     batch_size: int,
     actuator_joint_ids: np.ndarray,
     policy_ctrl_indices: np.ndarray,
+    robot: RobotDefinition,
 ) -> dict[str, np.ndarray] | None:
     if not config.enabled:
         return None
@@ -651,18 +657,36 @@ def _randomized_model_fields(
             size=offset_indices.size,
         ).astype(np.float32)
 
-    base_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link")
+    base_body_id = mujoco.mj_name2id(
+        mj_model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        robot.randomization_base_body_name,
+    )
     if base_body_id < 0:
-        raise ValueError("model randomization requires pelvis_link")
+        raise ValueError(
+            "model randomization requires base body "
+            f"{robot.randomization_base_body_name!r}"
+        )
     central_body_ids = np.asarray(
         [
             mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
-            for name in ("pelvis_link", "waist_yaw_link", "torso_link")
+            for name in robot.randomization_central_body_names
         ],
         dtype=np.int32,
     )
     if np.any(central_body_ids < 0):
-        raise ValueError("model randomization requires Bello central bodies")
+        missing = [
+            name
+            for name, body_id in zip(
+                robot.randomization_central_body_names,
+                central_body_ids,
+                strict=True,
+            )
+            if body_id < 0
+        ]
+        raise ValueError(
+            f"model randomization requires central bodies: {', '.join(missing)}"
+        )
     torso_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
     if torso_body_id < 0:
         raise ValueError("model randomization requires torso_link")
@@ -920,6 +944,7 @@ def configured_actuator_joint_range(
     mj_model: mujoco.MjModel,
     joint_name: str,
     config: ActuatorConfig,
+    robot: RobotDefinition,
 ) -> tuple[float, float]:
     configured = config.by_name[joint_name].soft_limit
     if configured is not None:
@@ -928,13 +953,19 @@ def configured_actuator_joint_range(
     if joint_id < 0:
         raise ValueError(f"actuator maps to missing joint {joint_name!r}")
     if not bool(mj_model.jnt_limited[joint_id]):
-        actuator_id = logical_actuator_joint_names(mj_model).index(joint_name)
+        actuator_id = logical_actuator_joint_names(mj_model, robot).index(joint_name)
         low, high = mj_model.actuator_ctrlrange[actuator_id]
         return float(low), float(high)
     return tuple(float(value) for value in mj_model.jnt_range[joint_id])
 
 
-def logical_actuator_joint_names(mj_model: mujoco.MjModel) -> tuple[str, ...]:
+def logical_actuator_joint_names(
+    mj_model: mujoco.MjModel,
+    robot: RobotDefinition,
+) -> tuple[str, ...]:
+    coupled_by_tendon = {
+        actuator.tendon_name: actuator for actuator in robot.coupled_actuators
+    }
     names: list[str] = []
     for actuator_id in range(mj_model.nu):
         transmission = mj_model.actuator_trntype[actuator_id]
@@ -948,7 +979,8 @@ def logical_actuator_joint_names(mj_model: mujoco.MjModel) -> tuple[str, ...]:
             tendon_name = mujoco.mj_id2name(
                 mj_model, mujoco.mjtObj.mjOBJ_TENDON, target_id
             )
-            name = ANKLE_TENDON_LOGICAL_JOINT.get(tendon_name or "")
+            coupled = coupled_by_tendon.get(tendon_name or "")
+            name = coupled.logical_joint_name if coupled is not None else None
         else:
             name = None
         if name is None:
@@ -965,41 +997,48 @@ def logical_actuator_joint_names(mj_model: mujoco.MjModel) -> tuple[str, ...]:
 
 
 def actuator_coordinate_transform(
-    mj_model: mujoco.MjModel, actuator_joint_names: tuple[str, ...]
+    mj_model: mujoco.MjModel,
+    actuator_joint_names: tuple[str, ...],
+    robot: RobotDefinition,
 ) -> np.ndarray:
     transform = np.eye(mj_model.nu, dtype=np.float32)
     index_by_joint = {name: index for index, name in enumerate(actuator_joint_names)}
+    coupled_by_tendon = {
+        actuator.tendon_name: actuator for actuator in robot.coupled_actuators
+    }
     for actuator_id in range(mj_model.nu):
         if mj_model.actuator_trntype[actuator_id] != mujoco.mjtTrn.mjTRN_TENDON:
             continue
         tendon_id = int(mj_model.actuator_trnid[actuator_id, 0])
         tendon_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_TENDON, tendon_id)
-        if tendon_name not in ANKLE_TENDON_LOGICAL_JOINT:
+        coupled = coupled_by_tendon.get(tendon_name or "")
+        if coupled is None:
             raise ValueError(f"unsupported policy tendon actuator {tendon_name!r}")
-        side, _, _, motor_index = tendon_name.split("_")
-        pitch_index = index_by_joint[f"{side}_ankle_pitch_joint"]
-        roll_index = index_by_joint[f"{side}_ankle_roll_joint"]
         transform[actuator_id] = 0.0
-        transform[actuator_id, pitch_index] = -1.0 if motor_index == "1" else 1.0
-        transform[actuator_id, roll_index] = 1.0
+        for joint_name, coefficient in coupled.joint_coefficients:
+            transform[actuator_id, index_by_joint[joint_name]] = coefficient
     return transform
 
 
-def foot_body_indices(mj_model: mujoco.MjModel) -> np.ndarray:
-    return np.asarray(
+def foot_body_indices(
+    mj_model: mujoco.MjModel,
+    robot: RobotDefinition,
+) -> np.ndarray:
+    ids = np.asarray(
         [
-            body_id
-            for body_id in range(mj_model.nbody)
-            if is_foot_body_name(
-                mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_id)
-            )
+            mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in robot.foot_body_names
         ],
         dtype=np.int32,
     )
-
-
-def is_foot_body_name(name: str | None) -> bool:
-    return bool(name and name.endswith("ankle_roll_link"))
+    if np.any(ids < 0):
+        missing = [
+            name
+            for name, body_id in zip(robot.foot_body_names, ids, strict=True)
+            if body_id < 0
+        ]
+        raise ValueError(f"model is missing configured foot bodies: {missing}")
+    return ids
 
 
 def named_geom_indices(mj_model: mujoco.MjModel, name: str) -> np.ndarray:

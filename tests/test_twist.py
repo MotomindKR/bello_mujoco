@@ -31,10 +31,6 @@ from bello_mujoco.envs.twist import (
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import ActionLayout
 from bello_mujoco.configuration import twist_training_profile
-from bello_mujoco.motion.clip import (
-    FIXED_TRACKING_JOINT_NAMES,
-    GMR_BELLO_JOINT_NAMES,
-)
 from bello_mujoco.motion.twist_dataset import (
     AssignedSequence,
     PackedReferenceBank,
@@ -62,6 +58,8 @@ from bello_mujoco.motion.twist_dataset import (
 )
 from bello_mujoco.motion.twist_retarget import batch_retarget_manifest
 from bello_mujoco.policy import ActorCriticConfig, init_actor_critic
+from bello_mujoco.robot import robot_definition
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import WarpConfig, logical_actuator_joint_names
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
@@ -85,9 +83,7 @@ from bello_mujoco.training.twist import (
     upload_twist_checkpoint,
 )
 
-JOINT_NAMES = tuple(
-    name for name in GMR_BELLO_JOINT_NAMES if name not in FIXED_TRACKING_JOINT_NAMES
-)
+JOINT_NAMES = motion_task_definition("full_body").imported_actuator_joint_names
 
 
 def test_batched_contact_reduction_is_linear_in_flattened_contacts() -> None:
@@ -526,7 +522,7 @@ def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
         range(1, model.njnt), key=lambda joint_id: int(model.jnt_qposadr[joint_id])
     )
 
-    assert names == logical_actuator_joint_names(model)
+    assert names == logical_actuator_joint_names(model, robot_definition("full_body"))
     assert qpos_names == tuple(
         model.joint(joint_id).name for joint_id in qpos_joint_ids
     )

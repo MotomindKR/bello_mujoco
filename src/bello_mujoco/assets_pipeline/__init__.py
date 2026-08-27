@@ -7,6 +7,8 @@ from functools import cache
 from importlib.resources import as_file, files
 from pathlib import Path
 
+from bello_mujoco.robot import RobotDefinition
+
 _RESOURCE_STACK = ExitStack()
 
 
@@ -31,8 +33,8 @@ def project_data_path(name: str) -> Path:
     return package_data_path(name)
 
 
-def robot_description_root() -> Path:
-    checkout_path = repo_root() / "deps" / "bello-stack" / "descriptions" / "bello"
+def robot_descriptions_root() -> Path:
+    checkout_path = repo_root() / "deps" / "bello-stack" / "descriptions"
     if checkout_path.is_dir():
         return checkout_path
     if (repo_root() / "pyproject.toml").is_file():
@@ -40,7 +42,7 @@ def robot_description_root() -> Path:
             "the pinned bello-stack robot description is not initialized; "
             "run `git submodule update --init --recursive`"
         )
-    return package_data_path("descriptions/bello")
+    return package_data_path("descriptions")
 
 
 def stack_description_path(relative_path: str) -> Path:
@@ -53,13 +55,13 @@ def stack_description_path(relative_path: str) -> Path:
     return path
 
 
-def generated_model_path(output_root: Path) -> Path:
-    return output_root / "full_body" / "mjcf" / "bello_full_body.xml"
+def generated_model_path(output_root: Path, definition: RobotDefinition) -> Path:
+    return definition.generated_mjcf_path(output_root)
 
 
-def generated_viewer_model_path(output_root: Path) -> Path:
-    return output_root / "full_body" / "mjcf" / "bello_full_body_viewer.xml"
+def generated_viewer_model_path(output_root: Path, definition: RobotDefinition) -> Path:
+    return definition.generated_mjcf_path(output_root, viewer=True)
 
 
-def generated_urdf_path(output_root: Path) -> Path:
-    return output_root / "full_body" / "urdf" / "bello_full_body.urdf"
+def generated_urdf_path(output_root: Path, definition: RobotDefinition) -> Path:
+    return definition.generated_urdf_path(output_root)

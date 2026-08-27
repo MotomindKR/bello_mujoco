@@ -273,9 +273,7 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     config = compose_hardware_training_config()
 
     assert config.asset_config.target_total_mass_kg is None
-    assert config.asset_config.joint_availability.enabled_joint_names == {
-        "waist_yaw_joint"
-    }
+    assert not config.asset_config.joint_availability.disabled_joint_names
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
     assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(

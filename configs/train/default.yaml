@@ -56,7 +56,7 @@ asset_config:
     motor_gain_scale: 0.5
     motor_effort_limit_scale: 1.0
   joint_availability:
-    waist_yaw: true
+    disabled_joint_names: []
 env_config:
   decimation: 4
   max_episode_steps: 1000

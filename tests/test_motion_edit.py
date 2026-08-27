@@ -23,7 +23,7 @@ def test_deep_lunge_arm_edit_is_reproducible_and_collision_clean(
         }
     np.savez_compressed(source, **fields)
 
-    edit_symmetric_downward_arm_pose(source, output)
+    edit_symmetric_downward_arm_pose(source, output, asset="full_body")
 
     with np.load(output, allow_pickle=False) as edited:
         names = tuple(str(name) for name in edited["joint_names"])

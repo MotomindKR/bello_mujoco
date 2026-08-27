@@ -268,6 +268,11 @@ locomotion checkpoint in `standing_checkpoint_path`. The locomotion checkpoint
 runs with a zero command before and after motion tracking. Both checkpoints must
 use the same ordered physical-coordinate mapping.
 
+Hardware and emulator topology is resolved from the robot selected by checkpoint or
+command configuration. The robot contract points at the pinned bello-stack hardware
+description and motor-model catalog; startup validates that every enabled robot
+actuator has a compatible physical mapping.
+
 The motion checkpoint restores the reference contract.
 `motion_path=null` reuses the saved path; a relocated archive is accepted only
 when its schema and content identity match.

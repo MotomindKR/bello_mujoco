@@ -9,7 +9,10 @@ from bello_mujoco.motion.clip import motion_tracking_asset_config
 
 def main() -> None:
     prepared = prepare_asset(
-        motion_tracking_asset_config(output_root=Path("assets/generated/twist_gmr"))
+        motion_tracking_asset_config(
+            asset="full_body",
+            output_root=Path("assets/generated/twist_gmr"),
+        )
     )
     print(prepared.mjcf_path.resolve())
 

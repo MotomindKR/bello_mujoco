@@ -18,21 +18,21 @@ class MeshSources:
 
 @dataclass(frozen=True)
 class JointAvailabilityConfig:
-    waist_yaw: bool = True
+    disabled_joint_names: tuple[str, ...] = ()
 
-    @property
-    def by_name(self) -> dict[str, bool]:
-        return {
-            "waist_yaw_joint": self.waist_yaw,
-        }
-
-    @property
-    def enabled_joint_names(self) -> set[str]:
-        return {name for name, enabled in self.by_name.items() if enabled}
-
-    @property
-    def disabled_joint_names(self) -> set[str]:
-        return {name for name, enabled in self.by_name.items() if not enabled}
+    def __post_init__(self) -> None:
+        if any(not name or name != name.strip() for name in self.disabled_joint_names):
+            raise ValueError(
+                "disabled_joint_names must contain nonempty names without "
+                "surrounding whitespace"
+            )
+        if len(set(self.disabled_joint_names)) != len(self.disabled_joint_names):
+            raise ValueError("disabled_joint_names must not contain duplicates")
+        object.__setattr__(
+            self,
+            "disabled_joint_names",
+            tuple(sorted(self.disabled_joint_names)),
+        )
 
 
 def rewrite_urdf_for_mujoco(
@@ -101,7 +101,9 @@ def fix_disabled_joints(root: ET.Element, config: JointAvailabilityConfig) -> No
     for joint_name in config.disabled_joint_names:
         joint = joints.get(joint_name)
         if joint is None:
-            continue
+            raise ValueError(
+                f"disabled joint {joint_name!r} is absent from the source URDF"
+            )
         joint.set("type", "fixed")
         for tag in (
             "axis",

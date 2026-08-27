@@ -33,9 +33,9 @@ from bello_mujoco.motion.clip import (
     MotionClip,
     MotionSample,
     load_motion_clip,
-    motion_tracking_asset_config,
     sample_motion,
 )
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import (
     BelloModel,
     WarpConfig,
@@ -177,8 +177,8 @@ class MotionTrackingEnvConfig:
 class BelloMotionTrackingEnv:
     model: BelloModel
     motion: MotionClip
+    actuator_config: ActuatorConfig
     config: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
-    actuator_config: ActuatorConfig = motion_tracking_asset_config().actuator_config
 
     def __post_init__(self) -> None:
         if self.model.actuator_joint_names != self.motion.joint_names:
@@ -249,8 +249,12 @@ class BelloMotionTrackingEnv:
         self._validate_observation_latency()
         self._validate_adaptive_sampling()
         self._validate_push()
-        if self.motion.body_names[0] != "pelvis_link":
-            raise ValueError("the first tracked body must be pelvis_link")
+        task = motion_task_definition(self.model.robot.asset)
+        if self.motion.body_names[0] != task.reference_root_body_name:
+            raise ValueError(
+                "the first tracked body must match the selected robot's motion "
+                f"reference root {task.reference_root_body_name!r}"
+            )
         for name in self.motion.body_names:
             if self._body_id(name) < 0:
                 raise ValueError(f"tracked body not found in model: {name!r}")
@@ -284,8 +288,8 @@ class BelloMotionTrackingEnv:
         return cls(
             model,
             load_motion_clip(env_config.motion_path, model),
-            env_config,
             asset_config.actuator_config,
+            env_config,
         )
 
     @classmethod
@@ -307,8 +311,8 @@ class BelloMotionTrackingEnv:
         return cls(
             model,
             load_motion_clip(env_config.motion_path, model),
-            env_config,
             asset_config.actuator_config,
+            env_config,
         )
 
     @classmethod
@@ -317,12 +321,14 @@ class BelloMotionTrackingEnv:
         prepared: PreparedAsset,
         env_config: MotionTrackingEnvConfig,
         *,
-        actuator_config: ActuatorConfig = motion_tracking_asset_config().actuator_config,
+        actuator_config: ActuatorConfig | None = None,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         use_viewer_model: bool = False,
         simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
+        if actuator_config is None:
+            actuator_config = ActuatorConfig.for_asset(prepared.name, mode="policy")
         model = load_prepared_bello_model(
             prepared,
             warp=warp,
@@ -335,8 +341,8 @@ class BelloMotionTrackingEnv:
         return cls(
             model,
             load_motion_clip(env_config.motion_path, model),
-            env_config,
             actuator_config,
+            env_config,
         )
 
     @classmethod
@@ -345,10 +351,12 @@ class BelloMotionTrackingEnv:
         prepared: PreparedAsset,
         env_config: MotionTrackingEnvConfig,
         *,
-        actuator_config: ActuatorConfig = motion_tracking_asset_config().actuator_config,
+        actuator_config: ActuatorConfig | None = None,
         use_viewer_model: bool = False,
         simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
+        if actuator_config is None:
+            actuator_config = ActuatorConfig.for_asset(prepared.name, mode="policy")
         model = load_prepared_bello_model(
             prepared,
             terrain=env_config.terrain,
@@ -360,8 +368,8 @@ class BelloMotionTrackingEnv:
         return cls(
             model,
             load_motion_clip(env_config.motion_path, model),
-            env_config,
             actuator_config,
+            env_config,
         )
 
     @property
@@ -480,14 +488,10 @@ class BelloMotionTrackingEnv:
 
     @property
     def end_effector_names(self) -> tuple[str, ...]:
+        task = motion_task_definition(self.model.robot.asset)
         if self.uses_beyondmimic_formulation:
-            return (
-                "left_ankle_roll_link",
-                "right_ankle_roll_link",
-                "l_wrist_link",
-                "r_wrist_link",
-            )
-        return ("l_wrist_link", "r_wrist_link")
+            return task.beyondmimic_end_effector_body_names
+        return task.default_end_effector_body_names
 
     @property
     def anchor_body_index(self) -> int:

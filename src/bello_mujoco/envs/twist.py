@@ -13,8 +13,6 @@ import jax.numpy as jnp
 import numpy as np
 from mujoco import mjx
 
-from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
@@ -34,6 +32,8 @@ from bello_mujoco.motion.twist_dataset import (
     TWIST_FUTURE_OFFSETS,
     PackedReferenceBank,
 )
+from bello_mujoco.robot import AssetName
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import (
     BelloModel,
     ModelRandomizationConfig,
@@ -64,19 +64,7 @@ TWIST_DECIMATION = TWIST_SIMULATION_HZ // TWIST_POLICY_HZ
 TWIST_EPISODE_STEPS = 10 * TWIST_POLICY_HZ
 TWIST_HISTORY_FRAMES = 11
 
-DEFAULT_KEY_BODY_NAMES = (
-    "l_wrist_link",
-    "r_wrist_link",
-    "left_ankle_roll_link",
-    "right_ankle_roll_link",
-    "left_knee_link",
-    "right_knee_link",
-    "l_elbow_link",
-    "r_elbow_link",
-    "head_link",
-)
-
-TWIST_JOINT_AVAILABILITY = JointAvailabilityConfig(waist_yaw=True)
+DEFAULT_KEY_BODY_NAMES = motion_task_definition("full_body").twist_key_body_names
 
 
 @dataclass(frozen=True)
@@ -1838,19 +1826,11 @@ def _uniform_noise(value: jax.Array, magnitude: float, rng: jax.Array) -> jax.Ar
     )
 
 
-def default_twist_asset_config() -> AssetPrepConfig:
-    defaults = ActuatorConfig()
-    actuators = ActuatorConfig(
-        joints={
-            name: replace(config, mode="policy")
-            for name, config in defaults.joints.items()
-        }
-    )
+def default_twist_asset_config(asset: AssetName) -> AssetPrepConfig:
     return AssetPrepConfig(
-        asset="full_body",
+        asset=asset,
         collision_mode="box",
         target_total_mass_kg=None,
         enforce_policy_effort_limits=False,
-        joint_availability=TWIST_JOINT_AVAILABILITY,
-        actuator_config=actuators,
+        actuator_mode="policy",
     )

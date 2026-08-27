@@ -22,7 +22,7 @@ from bello_mujoco.assets_pipeline.prepare import (
     prepare_asset,
 )
 from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
-from bello_mujoco.assets_pipeline import stack_description_path
+from bello_mujoco.assets_pipeline import robot_descriptions_root
 from bello_mujoco.hardware.ebimu import EbimuSerialEmulator
 from bello_mujoco.imu import (
     ImuNoiseConfig,
@@ -44,6 +44,7 @@ from bello_mujoco.robstride.sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )
+from bello_mujoco.robot import AssetName, robot_definition
 from bello_mujoco.sim import (
     BelloModel,
     SimulationPhysicsConfig,
@@ -53,16 +54,16 @@ from bello_mujoco.sim import (
 from bello_mujoco.terrain import FLAT_TERRAIN
 
 
-def default_hardware_description() -> Path:
-    return stack_description_path("bello/hardware.yaml")
+def default_hardware_description(asset: AssetName) -> Path:
+    return robot_definition(asset).hardware_description_path(robot_descriptions_root())
 
 
-def default_motor_model_catalog() -> Path:
-    return stack_description_path("robstride/models.yaml")
+def default_motor_model_catalog(asset: AssetName) -> Path:
+    return robot_definition(asset).motor_model_catalog_path(robot_descriptions_root())
 
 
-def default_emulator_asset_config() -> AssetPrepConfig:
-    return canonical_physical_asset_config(imu_enabled=True)
+def default_emulator_asset_config(asset: AssetName = "full_body") -> AssetPrepConfig:
+    return canonical_physical_asset_config(asset=asset, imu_enabled=True)
 
 
 @dataclass(frozen=True)
@@ -231,11 +232,15 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     validate_config(config)
     overrides = parse_bus_interfaces(config.bus_interfaces)
     robstride = load_robstride_description(
-        default_hardware_description(),
-        default_motor_model_catalog(),
+        default_hardware_description(config.asset_config.asset),
+        default_motor_model_catalog(config.asset_config.asset),
         overrides,
     )
-    validate_motor_coverage(config.asset_config.joint_availability, robstride.motors)
+    validate_motor_coverage(
+        config.asset_config.asset,
+        config.asset_config.joint_availability,
+        robstride.motors,
+    )
 
     prepared = prepare_asset(config.asset_config)
     model = load_prepared_bello_model(
@@ -789,7 +794,9 @@ def validate_config(config: EmulatorConfig) -> None:
 
 
 def validate_motor_coverage(
-    availability: JointAvailabilityConfig, motors: tuple[MotorSpec, ...]
+    asset: AssetName,
+    availability: JointAvailabilityConfig,
+    motors: tuple[MotorSpec, ...],
 ) -> None:
     mapped: set[str] = set()
     for motor in motors:
@@ -797,20 +804,26 @@ def validate_motor_coverage(
             mapped.add(motor.target.name)
         else:
             mapped.update(motor.target.owned_joints)
-    optional_names = set(availability.by_name)
-    mapped_optional = mapped & optional_names
-    enabled_optional = availability.enabled_joint_names
-    missing_motors = enabled_optional - mapped_optional
-    disabled_motors = mapped_optional - enabled_optional
+    configured = {actuator.joint_name for actuator in robot_definition(asset).actuators}
+    disabled = set(availability.disabled_joint_names)
+    enabled = configured - disabled
+    missing_motors = enabled - mapped
+    disabled_motors = mapped & disabled
+    unknown_motors = mapped - configured
     if missing_motors:
         raise ValueError(
-            "enabled optional joints require RobStride motor mappings: "
+            "enabled robot joints require RobStride motor mappings: "
             + ", ".join(sorted(missing_motors))
         )
     if disabled_motors:
         raise ValueError(
             "RobStride motors target joints fixed by joint availability: "
             + ", ".join(sorted(disabled_motors))
+        )
+    if unknown_motors:
+        raise ValueError(
+            "RobStride motors target joints outside the robot definition: "
+            + ", ".join(sorted(unknown_motors))
         )
 
 

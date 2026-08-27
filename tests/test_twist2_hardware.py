@@ -74,7 +74,7 @@ FINGERPRINT = "sha256:" + "a" * 64
 
 @pytest.fixture(scope="module")
 def twist2_hardware_adapter() -> HardwareTwist2PolicyAdapter:
-    asset = default_twist2_asset_config()
+    asset = default_twist2_asset_config("full_body")
     simulation = TwistSimulationConfig()
     model = load_bello_model(
         asset,

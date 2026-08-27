@@ -1151,7 +1151,10 @@ def test_evaluation_mismatch_override_migrates_retired_sphere_asset_field(
     document = checkpoint_document(expected_metadata, runner_state(config, FakeEnv()))
     document["git_commit"] = "2" * 40
     document["metadata"]["asset"]["end_effector_sphere_mode"] = "both"
-    document["metadata"]["asset"]["joint_availability"].update(
+    availability = document["metadata"]["asset"]["joint_availability"]
+    availability.pop("disabled_joint_names")
+    availability.update(
+        waist_yaw=True,
         waist_roll=False,
         waist_pitch=False,
         neck_yaw=False,

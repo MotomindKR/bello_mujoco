@@ -11,8 +11,9 @@ import numpy as np
 import trimesh
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.spatial import quat_rotate_wxyz
 from bello_mujoco.contracts import SIM_TIMESTEP
+from bello_mujoco.robot import CoupledActuatorGroup, RobotDefinition
+from bello_mujoco.spatial import quat_rotate_wxyz
 
 CollisionMode = Literal["mesh", "box"]
 TRANSPARENT_COLLISION_RGBA = "0.8 0.8 0.8 0"
@@ -23,7 +24,7 @@ ACCELERATION_STAGE_SENSOR = "bello_acceleration_stage_sensor"
 @dataclass(frozen=True)
 class ImuSensorConfig:
     enabled: bool = False
-    body_name: str = "pelvis_link"
+    body_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,11 +50,12 @@ def compile_urdf_to_mjcf(
     collision_mode: CollisionMode = "mesh",
     neighbor_exclusion_depth: int = 2,
     include_visuals: bool = False,
-    actuator_config: ActuatorConfig = ActuatorConfig(),
-    actuated_joint_order: tuple[str, ...] = (),
+    actuator_config: ActuatorConfig,
+    actuated_joint_order: tuple[str, ...],
     enforce_policy_effort_limits: bool = True,
     imu_config: ImuSensorConfig = ImuSensorConfig(),
     ankle_differential_config: AnkleDifferentialConfig = AnkleDifferentialConfig(),
+    robot: RobotDefinition,
 ) -> None:
     massless_fixed_links = massless_fixed_urdf_link_names(urdf_path)
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
@@ -64,8 +66,8 @@ def compile_urdf_to_mjcf(
     root = tree.getroot()
     canonicalize_compiled_mesh_metadata(root)
     ensure_option(root)
-    ensure_free_root_joint(root)
-    ensure_acceleration_stage_sensor(root)
+    ensure_free_root_joint(root, robot)
+    ensure_acceleration_stage_sensor(root, robot)
     ensure_visual_geoms(root)
     apply_collision_mode(root, mjcf_path.parent, collision_mode)
     if include_visuals:
@@ -80,15 +82,16 @@ def compile_urdf_to_mjcf(
         actuated_joint_order,
         enforce_policy_effort_limits=enforce_policy_effort_limits,
     )
-    ensure_ankle_differential_tendons(root)
-    replace_ankle_joint_actuators(
+    ensure_coupled_actuator_tendons(root, robot.coupled_actuator_groups)
+    replace_coupled_joint_actuators(
         root,
         actuator_config,
         ankle_differential_config,
+        robot.coupled_actuator_groups,
         enforce_policy_effort_limits=enforce_policy_effort_limits,
     )
-    ensure_imu_sensors(root, imu_config)
-    ensure_home_keyframe(root, actuator_config)
+    ensure_imu_sensors(root, imu_config, robot)
+    ensure_home_keyframe(root, actuator_config, robot)
 
     ET.indent(tree, space="  ")
     tree.write(mjcf_path, encoding="utf-8", xml_declaration=True)
@@ -141,22 +144,23 @@ def canonicalize_compiled_mesh_metadata(root: ET.Element) -> None:
         mesh.attrib.pop("content_type", None)
 
 
-def ensure_ankle_differential_tendons(root: ET.Element) -> None:
+def ensure_coupled_actuator_tendons(
+    root: ET.Element,
+    groups: tuple[CoupledActuatorGroup, ...],
+) -> None:
+    if not groups:
+        return
     joint_names = {
         joint.get("name")
         for joint in root.findall(".//joint")
         if joint.get("name") is not None
     }
-    required_joint_names = {
-        f"{side}_ankle_{axis}_joint"
-        for side in ("left", "right")
-        for axis in ("pitch", "roll")
-    }
+    required_joint_names = {name for group in groups for name in group.joint_names}
     present_joint_names = required_joint_names & joint_names
     if present_joint_names != required_joint_names:
         missing = required_joint_names - present_joint_names
         raise ValueError(
-            "ankle differential requires MuJoCo joints: " + ", ".join(sorted(missing))
+            "coupled actuators require MuJoCo joints: " + ", ".join(sorted(missing))
         )
 
     tendon = root.find("tendon")
@@ -166,66 +170,57 @@ def ensure_ankle_differential_tendons(root: ET.Element) -> None:
         item.get("name") for item in tendon if item.get("name") is not None
     }
 
-    for side in ("left", "right"):
-        pitch_joint = f"{side}_ankle_pitch_joint"
-        roll_joint = f"{side}_ankle_roll_joint"
-        for motor_index, pitch_coefficient in ((1, -1.0), (2, 1.0)):
-            tendon_name = f"{side}_ankle_motor_{motor_index}"
+    for group in groups:
+        for coupled in group.actuators:
+            tendon_name = coupled.tendon_name
             if tendon_name in existing_names:
                 raise ValueError(
                     f"generated MJCF already defines tendon {tendon_name!r}"
                 )
             fixed = ET.SubElement(tendon, "fixed", {"name": tendon_name})
-            ET.SubElement(
-                fixed,
-                "joint",
-                {"joint": pitch_joint, "coef": f"{pitch_coefficient:g}"},
-            )
-            ET.SubElement(
-                fixed,
-                "joint",
-                {"joint": roll_joint, "coef": "1"},
-            )
+            for joint_name, coefficient in coupled.joint_coefficients:
+                ET.SubElement(
+                    fixed,
+                    "joint",
+                    {"joint": joint_name, "coef": f"{coefficient:g}"},
+                )
             existing_names.add(tendon_name)
 
 
-def replace_ankle_joint_actuators(
+def replace_coupled_joint_actuators(
     root: ET.Element,
     config: ActuatorConfig,
     differential_config: AnkleDifferentialConfig,
+    groups: tuple[CoupledActuatorGroup, ...],
     *,
     enforce_policy_effort_limits: bool = True,
 ) -> None:
+    if not groups:
+        return
     actuator = root.find("actuator")
     if actuator is None:
         raise ValueError("generated MJCF has no actuator section")
 
     joint_configs = config.by_name
-    for side in ("left", "right"):
-        pitch_joint = f"{side}_ankle_pitch_joint"
-        roll_joint = f"{side}_ankle_roll_joint"
-        pitch_config = joint_configs[pitch_joint]
-        roll_config = joint_configs[roll_joint]
-        if pitch_config.mode != roll_config.mode:
-            raise ValueError(
-                f"{side} ankle differential joints must use the same actuator mode"
-            )
-        if pitch_config.gains != roll_config.gains:
-            raise ValueError(
-                f"{side} ankle differential joints must use identical gains"
-            )
-        if pitch_config.effort_limit != roll_config.effort_limit:
-            raise ValueError(
-                f"{side} ankle differential joints must use identical effort limits"
-            )
+    for group in groups:
+        group_configs = tuple(joint_configs[name] for name in group.joint_names)
+        reference_config = group_configs[0]
+        if any(config.mode != reference_config.mode for config in group_configs[1:]):
+            raise ValueError(f"{group.name} joints must use the same actuator mode")
+        if any(config.gains != reference_config.gains for config in group_configs[1:]):
+            raise ValueError(f"{group.name} joints must use identical gains")
+        if any(
+            config.effort_limit != reference_config.effort_limit
+            for config in group_configs[1:]
+        ):
+            raise ValueError(f"{group.name} joints must use identical effort limits")
 
-        pitch_range = configured_joint_range(root, pitch_joint, config)
-        roll_range = configured_joint_range(root, roll_joint, config)
-        replacements = (
-            (pitch_joint, 1, -1.0),
-            (roll_joint, 2, 1.0),
-        )
-        for logical_joint, motor_index, pitch_coefficient in replacements:
+        joint_ranges = {
+            name: configured_joint_range(root, name, config)
+            for name in group.joint_names
+        }
+        for coupled in group.actuators:
+            logical_joint = coupled.logical_joint_name
             direct = actuator.find(f"./position[@joint='{logical_joint}']")
             if direct is None:
                 raise ValueError(
@@ -234,21 +229,24 @@ def replace_ankle_joint_actuators(
             index = list(actuator).index(direct)
             actuator.remove(direct)
 
-            tendon_name = f"{side}_ankle_motor_{motor_index}"
-            low, high = differential_coordinate_range(
-                pitch_range, roll_range, pitch_coefficient
+            low, high = coupled_coordinate_range(
+                tuple(
+                    (joint_ranges[name], coefficient)
+                    for name, coefficient in coupled.joint_coefficients
+                )
             )
-            default = (
-                pitch_coefficient * pitch_config.default_pos + roll_config.default_pos
+            default = sum(
+                coefficient * joint_configs[name].default_pos
+                for name, coefficient in coupled.joint_coefficients
             )
             kp, kv = (
                 gain * differential_config.motor_gain_scale
-                for gain in pitch_config.gains
+                for gain in reference_config.gains
             )
-            suffix = "pos" if pitch_config.mode == "policy" else "hold"
+            suffix = "pos" if reference_config.mode == "policy" else "hold"
             attributes = {
-                "name": f"{tendon_name}_{suffix}",
-                "tendon": tendon_name,
+                "name": f"{coupled.tendon_name}_{suffix}",
+                "tendon": coupled.tendon_name,
                 "kp": f"{kp:g}",
                 "kv": f"{kv:g}",
                 "ctrlrange": f"{low:g} {high:g}",
@@ -256,7 +254,7 @@ def replace_ankle_joint_actuators(
                 "user": f"{default:g}",
             }
             force_range = actuator_force_range(
-                root, logical_joint, pitch_config.effort_limit
+                root, logical_joint, reference_config.effort_limit
             )
             if force_range is not None:
                 force_low, force_high = force_range
@@ -264,7 +262,7 @@ def replace_ankle_joint_actuators(
                 force_high *= differential_config.motor_effort_limit_scale
                 attributes["forcerange"] = f"{force_low:g} {force_high:g}"
                 attributes["forcelimited"] = str(
-                    pitch_config.mode != "policy" or enforce_policy_effort_limits
+                    reference_config.mode != "policy" or enforce_policy_effort_limits
                 ).lower()
             actuator.insert(index, ET.Element("position", attributes))
 
@@ -280,26 +278,31 @@ def configured_joint_range(
     )
 
 
-def differential_coordinate_range(
-    pitch_range: tuple[float, float],
-    roll_range: tuple[float, float],
-    pitch_coefficient: float,
+def coupled_coordinate_range(
+    coordinates: tuple[tuple[tuple[float, float], float], ...],
 ) -> tuple[float, float]:
-    pitch_values = tuple(pitch_coefficient * value for value in pitch_range)
-    return (
-        roll_range[0] + min(pitch_values),
-        roll_range[1] + max(pitch_values),
-    )
+    low = 0.0
+    high = 0.0
+    for (coordinate_low, coordinate_high), coefficient in coordinates:
+        values = (coefficient * coordinate_low, coefficient * coordinate_high)
+        low += min(values)
+        high += max(values)
+    return low, high
 
 
-def ensure_imu_sensors(root: ET.Element, config: ImuSensorConfig) -> None:
+def ensure_imu_sensors(
+    root: ET.Element,
+    config: ImuSensorConfig,
+    robot: RobotDefinition,
+) -> None:
     if not config.enabled:
         return
-    if not config.body_name:
+    if config.body_name == "":
         raise ValueError("IMU body name must not be empty")
-    body = root.find(f".//body[@name='{config.body_name}']")
+    body_name = config.body_name or robot.default_imu_body_name
+    body = root.find(f".//body[@name='{body_name}']")
     if body is None:
-        raise ValueError(f"IMU body not found in generated MJCF: {config.body_name!r}")
+        raise ValueError(f"IMU body not found in generated MJCF: {body_name!r}")
 
     site_name = "bello_imu_site"
     if root.find(f".//site[@name='{site_name}']") is not None:
@@ -614,7 +617,7 @@ def ensure_option(root: ET.Element) -> None:
     option.set("integrator", "implicitfast")
 
 
-def ensure_free_root_joint(root: ET.Element) -> None:
+def ensure_free_root_joint(root: ET.Element, robot: RobotDefinition) -> None:
     worldbody = root.find("worldbody")
     if worldbody is None:
         raise ValueError("MJCF has no worldbody")
@@ -624,18 +627,18 @@ def ensure_free_root_joint(root: ET.Element) -> None:
     robot_children = list(worldbody)
     if not robot_children:
         raise ValueError("MJCF worldbody has no robot geoms or bodies to wrap")
-    root_body = ET.Element("body", {"name": "bello_root"})
-    root_body.append(ET.Element("freejoint", {"name": "root_free"}))
+    root_body = ET.Element("body", {"name": robot.root_body_name})
+    root_body.append(ET.Element("freejoint", {"name": robot.root_joint_name}))
     for child in robot_children:
         worldbody.remove(child)
         root_body.append(child)
     worldbody.append(root_body)
 
 
-def ensure_acceleration_stage_sensor(root: ET.Element) -> None:
-    root_body = root.find(".//body[@name='bello_root']")
+def ensure_acceleration_stage_sensor(root: ET.Element, robot: RobotDefinition) -> None:
+    root_body = root.find(f".//body[@name='{robot.root_body_name}']")
     if root_body is None:
-        raise ValueError("MJCF has no generated bello_root body")
+        raise ValueError(f"MJCF has no generated root body {robot.root_body_name!r}")
     if root.find(f".//site[@name='{ACCELERATION_STAGE_SITE}']") is None:
         ET.SubElement(
             root_body,
@@ -710,7 +713,11 @@ def ensure_position_actuators(
         )
 
 
-def ensure_home_keyframe(root: ET.Element, config: ActuatorConfig) -> None:
+def ensure_home_keyframe(
+    root: ET.Element,
+    config: ActuatorConfig,
+    robot: RobotDefinition,
+) -> None:
     keyframe = root.find("keyframe")
     if keyframe is None:
         keyframe = ET.SubElement(root, "keyframe")
@@ -721,8 +728,12 @@ def ensure_home_keyframe(root: ET.Element, config: ActuatorConfig) -> None:
         joint_default(joint.get("name", ""), config)
         for joint in root.findall("./worldbody//joint")
     ]
+    root_qpos = (*robot.default_root_position, *robot.default_root_quaternion)
     qpos = " ".join(
-        ["0", "0", "0.91", "1", "0", "0", "0", *[f"{value:g}" for value in joint_qpos]]
+        [
+            *[f"{value:g}" for value in root_qpos],
+            *[f"{value:g}" for value in joint_qpos],
+        ]
     )
     ctrl_values = [float(item.get("user", "0")) for item in keyframe_actuators(root)]
     ctrl = " ".join(f"{value:g}" for value in ctrl_values)

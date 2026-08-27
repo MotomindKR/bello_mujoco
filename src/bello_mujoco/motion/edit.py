@@ -17,6 +17,7 @@ from bello_mujoco.motion.import_gmr import (
     _self_collision_report,
     _validate_joint_ranges,
 )
+from bello_mujoco.robot import AssetName
 from bello_mujoco.sim import load_bello_model
 
 SYMMETRIC_DOWNWARD_ARM_POSE = {
@@ -30,13 +31,18 @@ SYMMETRIC_DOWNWARD_ARM_POSE = {
 SYMMETRIC_DOWNWARD_ARM_EDIT_VERSION = "symmetric-downward-arms-v1"
 
 
-def edit_symmetric_downward_arm_pose(source: Path, output: Path) -> Path:
+def edit_symmetric_downward_arm_pose(
+    source: Path,
+    output: Path,
+    *,
+    asset: AssetName,
+) -> Path:
     """Replace both arm trajectories with a fixed down-and-out carrying pose."""
 
     source = Path(source).resolve()
     output = Path(output).resolve()
     model = load_bello_model(
-        motion_tracking_asset_config(),
+        motion_tracking_asset_config(asset=asset),
         load_mjx=False,
     )
     motion = load_motion_clip(source, model)

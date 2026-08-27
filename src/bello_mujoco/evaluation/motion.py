@@ -44,6 +44,7 @@ from bello_mujoco.motion.clip import (
     motion_tracking_asset_config,
     sample_motion,
 )
+from bello_mujoco.robot import AssetName
 from bello_mujoco.motion.native import NativeContactData, NativeMotionData
 from bello_mujoco.motion.runtime import load_motion_policy_runtime
 from bello_mujoco.sim import load_bello_model
@@ -181,7 +182,13 @@ def render_motion_policy(
                     )
                 )
             )
-            update_camera(camera, mj_model, mj_data, camera_config)
+            update_camera(
+                camera,
+                mj_model,
+                mj_data,
+                camera_config,
+                root_body_name=env.model.robot.root_body_name,
+            )
             renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
             policy_observation = normalize_observation(
@@ -388,6 +395,7 @@ def render_reference(
     motion_path: Path,
     output_path: Path,
     *,
+    asset: AssetName,
     width: int = 640,
     height: int = 480,
     fps: int = 30,
@@ -395,7 +403,7 @@ def render_reference(
 ) -> Path:
     model = load_bello_model(
         motion_tracking_asset_config(
-            end_effector_payload_mass_kg=end_effector_payload_mass_kg
+            asset=asset, end_effector_payload_mass_kg=end_effector_payload_mass_kg
         ),
         terrain=FLAT_TERRAIN,
         use_viewer_model=True,
@@ -418,7 +426,13 @@ def render_reference(
             mj_data.qpos[:] = np.asarray(reference.qpos)
             mj_data.qvel[:] = np.asarray(reference.qvel)
             mujoco.mj_forward(mj_model, mj_data)
-            update_camera(camera, mj_model, mj_data, camera_config)
+            update_camera(
+                camera,
+                mj_model,
+                mj_data,
+                camera_config,
+                root_body_name=model.robot.root_body_name,
+            )
             renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
     finally:

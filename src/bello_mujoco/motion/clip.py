@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import chex
@@ -11,99 +11,23 @@ import jax.numpy as jnp
 import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
 from bello_mujoco.assets_pipeline.mjcf import CollisionMode
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.robot import AssetName
 from bello_mujoco.sim import BelloModel
 
 MOTION_FORMAT_VERSION = 1
 
-FIXED_TRACKING_JOINT_NAMES = (
-    "waist_roll_joint",
-    "waist_pitch_joint",
-    "neck_yaw_joint",
-    "head_pitch_joint",
-)
 
-FIXED_TRACKING_JOINT_AVAILABILITY = JointAvailabilityConfig(
-    waist_yaw=True,
-)
-
-GMR_BELLO_JOINT_NAMES = (
-    "left_hip_pitch_joint",
-    "left_hip_roll_joint",
-    "left_hip_yaw_joint",
-    "left_knee_joint",
-    "left_ankle_pitch_joint",
-    "left_ankle_roll_joint",
-    "right_hip_pitch_joint",
-    "right_hip_roll_joint",
-    "right_hip_yaw_joint",
-    "right_knee_joint",
-    "right_ankle_pitch_joint",
-    "right_ankle_roll_joint",
-    "waist_yaw_joint",
-    "neck_yaw_joint",
-    "head_pitch_joint",
-    "right_shoulder_pitch_joint",
-    "right_shoulder_roll_joint",
-    "right_shoulder_yaw_joint",
-    "right_elbow_pitch_joint",
-    "right_elbow_yaw_joint",
-    "right_wrist_pitch_joint",
-    "left_shoulder_pitch_joint",
-    "left_shoulder_roll_joint",
-    "left_shoulder_yaw_joint",
-    "left_elbow_pitch_joint",
-    "left_elbow_yaw_joint",
-    "left_wrist_pitch_joint",
-)
-
-DEFAULT_TRACKED_BODY_NAMES = (
-    "pelvis_link",
-    "torso_link",
-    "left_ankle_roll_link",
-    "right_ankle_roll_link",
-    "l_wrist_link",
-    "r_wrist_link",
-    "left_knee_link",
-    "right_knee_link",
-    "l_elbow_link",
-    "r_elbow_link",
-)
-
-BEYONDMIMIC_TRACKED_BODY_NAMES = (
-    "pelvis_link",
-    "left_hip_roll_link",
-    "left_knee_link",
-    "left_ankle_roll_link",
-    "right_hip_roll_link",
-    "right_knee_link",
-    "right_ankle_roll_link",
-    "torso_link",
-    "l_shoulder_roll_link",
-    "l_elbow_link",
-    "l_wrist_link",
-    "r_shoulder_roll_link",
-    "r_elbow_link",
-    "r_wrist_link",
-)
-
-
-def motion_tracking_actuator_config() -> ActuatorConfig:
+def motion_tracking_actuator_config(asset: AssetName) -> ActuatorConfig:
     """Return the all-policy logical actuator contract for motion tracking."""
 
-    defaults = ActuatorConfig()
-    return ActuatorConfig(
-        joints={
-            name: replace(config, mode="policy")
-            for name, config in defaults.joints.items()
-        }
-    )
+    return ActuatorConfig.for_asset(asset, mode="policy")
 
 
 def motion_tracking_asset_config(
     *,
+    asset: AssetName,
     collision_mode: CollisionMode = "box",
     output_root: Path | None = None,
     end_effector_payload_mass_kg: float = 0.0,
@@ -111,14 +35,13 @@ def motion_tracking_asset_config(
     """Return the fixed-head, sphere-hand asset used by motion workflows."""
 
     return AssetPrepConfig(
-        asset="full_body",
+        asset=asset,
         output_root=output_root,
         collision_mode=collision_mode,
         target_total_mass_kg=None,
         end_effector_payload_mass_kg=end_effector_payload_mass_kg,
         enforce_policy_effort_limits=False,
-        joint_availability=FIXED_TRACKING_JOINT_AVAILABILITY,
-        actuator_config=motion_tracking_actuator_config(),
+        actuator_mode="policy",
     )
 
 

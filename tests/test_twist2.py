@@ -49,7 +49,7 @@ from bello_mujoco.training.twist2 import (
 
 
 def test_twist2_uses_canonical_unscaled_robot_mass() -> None:
-    assert default_twist2_asset_config().target_total_mass_kg is None
+    assert default_twist2_asset_config("full_body").target_total_mass_kg is None
 
 
 JOINT_NAMES = tuple(f"joint_{index}" for index in range(25))
@@ -186,6 +186,7 @@ def test_twist2_actor_normalization_matches_release_and_critic_is_raw() -> None:
 
 def test_twist2_training_contract_is_one_stage_and_has_no_teacher() -> None:
     config = Twist2TrainingRunConfig(
+        asset_config=default_twist2_asset_config("full_body"),
         config=PPOConfig(
             total_timesteps=4096 * 24,
             num_envs=4096,
@@ -277,7 +278,7 @@ def test_typed_twist2_checkpoint_round_trips_strict_metadata() -> None:
     )
     metadata = Twist2CheckpointMetadata(
         ppo=ppo,
-        asset=default_twist2_asset_config(),
+        asset=default_twist2_asset_config("full_body"),
         warp=WarpConfig(),
         obs_size=contract.actor_observation_size,
         critic_obs_size=contract.critic_observation_size,
@@ -286,7 +287,9 @@ def test_typed_twist2_checkpoint_round_trips_strict_metadata() -> None:
         critic_observation_layout=contract.critic_layout,
         action_layout=ActionLayout(JOINT_NAMES),
         simulation=TwistSimulationConfig(),
-        twist2_env=Twist2TrainingRunConfig().twist2_env,
+        twist2_env=Twist2TrainingRunConfig(
+            asset_config=default_twist2_asset_config("full_body")
+        ).twist2_env,
         sampling=TwistSamplingConfig(
             base_distribution="manifest_weight",
             curriculum_max_difficulty=10.0,
