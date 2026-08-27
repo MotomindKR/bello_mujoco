@@ -129,6 +129,14 @@ class ModelRandomizationConfig:
     joint_inertia_scale_range: tuple[float, float] = (1.0, 1.0)
     added_base_mass_range: tuple[float, float] = (0.0, 0.0)
     base_com_offset_range: tuple[float, float] = (0.0, 0.0)
+    body_mass_scale_range: tuple[float, float] = (1.0, 1.0)
+    body_mass_scale_names: tuple[str, ...] = ()
+    body_com_offset_range_xyz: tuple[tuple[float, float], ...] = (
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    )
+    body_com_offset_name: str = "pelvis_link"
     friction_range: tuple[float, float] = (1.0, 1.0)
     actuator_strength_range: tuple[float, float] = (1.0, 1.0)
     gravity_fraction_range: tuple[float, float] = (0.0, 0.0)
@@ -161,6 +169,34 @@ class ModelRandomizationConfig:
         _validate_randomization_range(
             "model_randomization.base_com_offset_range", self.base_com_offset_range
         )
+        _validate_randomization_range(
+            "model_randomization.body_mass_scale_range",
+            self.body_mass_scale_range,
+            positive=True,
+        )
+        if len(set(self.body_mass_scale_names)) != len(
+            self.body_mass_scale_names
+        ) or any(
+            not isinstance(name, str) or not name for name in self.body_mass_scale_names
+        ):
+            raise ValueError(
+                "model_randomization.body_mass_scale_names must be unique nonempty names"
+            )
+        if len(self.body_com_offset_range_xyz) != 3:
+            raise ValueError(
+                "model_randomization.body_com_offset_range_xyz must contain x/y/z ranges"
+            )
+        for axis, bounds in zip("xyz", self.body_com_offset_range_xyz, strict=True):
+            _validate_randomization_range(
+                f"model_randomization.body_com_offset_range_xyz.{axis}", bounds
+            )
+        if (
+            not isinstance(self.body_com_offset_name, str)
+            or not self.body_com_offset_name
+        ):
+            raise ValueError(
+                "model_randomization.body_com_offset_name must be a nonempty name"
+            )
         _validate_randomization_range(
             "model_randomization.friction_range", self.friction_range, positive=True
         )
@@ -646,6 +682,22 @@ def _randomized_model_fields(
     )
     if np.any(central_body_ids < 0):
         raise ValueError("model randomization requires Bello central bodies")
+    mass_scale_body_ids = np.asarray(
+        [
+            mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in config.body_mass_scale_names
+        ],
+        dtype=np.int32,
+    )
+    if np.any(mass_scale_body_ids < 0):
+        raise ValueError("model randomization mass-scale body is missing")
+    com_body_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_BODY, config.body_com_offset_name
+    )
+    if com_body_id < 0:
+        raise ValueError(
+            f"model randomization COM body is missing: {config.body_com_offset_name}"
+        )
     body_mass = np.broadcast_to(
         np.asarray(mj_model.body_mass, dtype=np.float32),
         (batch_size, mj_model.nbody),
@@ -683,12 +735,23 @@ def _randomized_model_fields(
             *config.actuator_strength_range, size=mj_model.nu
         ).astype(np.float32)
         gravity_fraction[world_index] = rng.uniform(*config.gravity_fraction_range)
+        named_com_offset = np.asarray(
+            [rng.uniform(*bounds) for bounds in config.body_com_offset_range_xyz],
+            dtype=np.float32,
+        )
+        mass_scales = rng.uniform(
+            *config.body_mass_scale_range,
+            size=mass_scale_body_ids.size,
+        ).astype(np.float32)
         central_mass = body_mass[world_index, central_body_ids]
         distribution = central_mass / central_mass.sum()
         body_mass[world_index, central_body_ids] += mass_offset * distribution
+        body_mass[world_index, mass_scale_body_ids] *= mass_scales
+        body_inertia[world_index, mass_scale_body_ids] *= mass_scales[:, None]
         if np.any(body_mass[world_index, central_body_ids] <= 0.0):
             raise ValueError("randomized central-body masses must remain positive")
         body_ipos[world_index, base_body_id] += com_offset
+        body_ipos[world_index, com_body_id] += named_com_offset
         geom_friction[world_index, :, 0] = friction
         actuator_gainprm[world_index, :, 0] *= kp_strength
         actuator_biasprm[world_index, :, 1] *= kp_strength

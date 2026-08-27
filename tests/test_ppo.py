@@ -41,10 +41,12 @@ from bello_mujoco.training.ppo import (
     init_value_norm_state,
     learning_rate_for_update,
     normalize_advantages,
+    normalize_critic_observation,
     normalize_observation,
     normalize_value,
     ppo_loss,
     update_observation_norm_state,
+    update_critic_observation_norm_state,
     update_ppo,
     update_value_norm_state,
     validate_action_limit_contract,
@@ -348,6 +350,24 @@ def test_observation_normalization_updates_round_trips_and_rejects_poison() -> N
         jnp.array_equal(before, after)
         for before, after in zip(updated, poisoned, strict=True)
     )
+
+
+def test_critic_normalization_is_independent_from_actor_normalization() -> None:
+    config = small_config(
+        normalize_observations=False,
+        normalize_critic_observations=True,
+    )
+    state = init_observation_norm_state(2)
+    observation = jnp.asarray([[1.0, 3.0], [3.0, 7.0]], dtype=jnp.float32)
+
+    updated = update_critic_observation_norm_state(state, observation, config)
+
+    assert updated.mean == pytest.approx(jnp.asarray([2.0, 5.0]))
+    assert updated.var == pytest.approx(jnp.asarray([1.0, 4.0]))
+    assert normalize_critic_observation(observation, updated, config) == pytest.approx(
+        jnp.asarray([[-1.0, -1.0], [1.0, 1.0]])
+    )
+    assert normalize_observation(observation, updated, config) is observation
 
 
 def test_observation_normalization_freezes_at_configured_sample_count() -> None:

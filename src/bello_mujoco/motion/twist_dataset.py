@@ -24,10 +24,21 @@ from bello_mujoco.configuration import dataclass_from_dict
 
 TWIST_SOURCE_MANIFEST_SCHEMA_VERSION = 1
 TWIST_DATASET_SCHEMA_VERSION = 3
-TWIST_RETARGET_FORMAT_VERSION = 9
+TWIST_RETARGET_FORMAT_VERSION = 10
 TWIST_SOURCE_CURATION_SCHEMA_VERSION = 1
 TWIST_POLICY_FPS = 50.0
 TWIST_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
+GMR_RETARGET_METADATA_NAMES = (
+    "gmr_task_profile",
+    "gmr_use_velocity_limit",
+    "gmr_passes_per_frame",
+    "gmr_initial_settle_passes",
+    "gmr_joint_smoothing_kernel",
+    "gmr_root_orientation_smoothing_kernel",
+    "gmr_joint_smoothing_passes",
+    "gmr_minimum_smoothing_alpha",
+    "gmr_quality_report",
+)
 TWIST_FUTURE_OFFSETS = (
     1,
     5,
@@ -116,9 +127,6 @@ class QualityConfig:
     max_joint_step_radians: float = 0.2
     max_joint_velocity_radians_per_second: float = 10.0
     max_joint_acceleration_radians_per_second_squared: float = 220.0
-    minimum_knee_flexion_radians: float = 0.17453292519943295
-    max_knee_pole_p95_degrees: float = 80.0
-    max_knee_pole_opposite_fraction: float = 0.01
     max_joint_limit_violation_radians: float = 0.02
     max_joint_limit_violation_fraction: float = 0.02
     persistent_limit_margin_radians: float = 1.0e-5
@@ -200,6 +208,7 @@ def load_source_manifest(
     *,
     body_model_root: Path | None = None,
     verify_files: bool = True,
+    verify_body_models: bool = True,
 ) -> SourceManifest:
     """Load a strict human-authored YAML/JSON manifest.
 
@@ -232,6 +241,7 @@ def load_source_manifest(
         manifest,
         body_model_root=body_model_root,
         verify_files=verify_files,
+        verify_body_models=verify_body_models,
     )
     return manifest
 
@@ -521,6 +531,7 @@ def validate_source_manifest(
     *,
     body_model_root: Path | None = None,
     verify_files: bool = True,
+    verify_body_models: bool = True,
 ) -> None:
     if manifest.schema_version != TWIST_SOURCE_MANIFEST_SCHEMA_VERSION:
         raise ValueError(
@@ -612,7 +623,7 @@ def validate_source_manifest(
                     f"{key}: source checksum mismatch; expected sha256:{checksum}, "
                     f"got sha256:{actual}"
                 )
-    if verify_files and needs_smpl_models:
+    if verify_files and verify_body_models and needs_smpl_models:
         _validate_body_model_root(body_model_root)
 
 
@@ -1071,9 +1082,6 @@ def load_and_normalize_retargeted_clip(
         "body_ang_vel",
         "foot_contacts",
         "foot_sole_z",
-        "knee_pole_local_axis",
-        "knee_pole_world_direction",
-        "knee_pole_sides",
         "joint_names",
         "qpos_joint_names",
         "body_names",
@@ -1085,6 +1093,7 @@ def load_and_normalize_retargeted_clip(
         "gmr_revision",
         "gmr_config_sha256",
         "robot_fingerprint",
+        *GMR_RETARGET_METADATA_NAMES,
     }
     with np.load(path, allow_pickle=False) as archive:
         missing = sorted(required - set(archive.files))
@@ -1096,6 +1105,7 @@ def load_and_normalize_retargeted_clip(
         != TWIST_RETARGET_FORMAT_VERSION
     ):
         raise ValueError(f"{path.name}: unsupported retarget format version")
+    _validate_gmr_retarget_metadata(arrays, path.name)
     frames = arrays["qpos"].shape[0]
     for name in (
         "timestamp_seconds",
@@ -1114,23 +1124,6 @@ def load_and_normalize_retargeted_clip(
             )
     if frames < 2:
         raise ValueError(f"{path.name}: retargeted clip has fewer than two frames")
-    knee_pole_sides = tuple(
-        str(side) for side in np.asarray(arrays["knee_pole_sides"]).tolist()
-    )
-    knee_pole_axes = np.asarray(arrays["knee_pole_local_axis"], dtype=np.float64)
-    knee_pole_world = np.asarray(arrays["knee_pole_world_direction"], dtype=np.float64)
-    expected_pole_shape = (frames, 2, 3)
-    if (
-        knee_pole_sides != ("left", "right")
-        or knee_pole_axes.shape != expected_pole_shape
-        or knee_pole_world.shape != expected_pole_shape
-    ):
-        raise ValueError(f"{path.name}: invalid knee-pole metadata")
-    pole_vectors = np.concatenate((knee_pole_axes, knee_pole_world), axis=1)
-    if not np.all(np.isfinite(pole_vectors)) or not np.allclose(
-        np.linalg.norm(pole_vectors, axis=2), 1.0, atol=1.0e-4
-    ):
-        raise ValueError(f"{path.name}: knee-pole axes must be finite unit vectors")
     qpos_joint_names = tuple(
         str(name) for name in np.asarray(arrays["qpos_joint_names"]).tolist()
     )
@@ -1170,10 +1163,75 @@ def load_and_normalize_retargeted_clip(
     return _align_floor_and_heading(normalized)
 
 
+def _validate_gmr_retarget_metadata(
+    arrays: dict[str, np.ndarray], filename: str
+) -> None:
+    profile = str(np.asarray(arrays["gmr_task_profile"]).item())
+    if profile != "universal":
+        raise ValueError(f"{filename}: GMR task profile must be universal")
+    velocity_limited = np.asarray(arrays["gmr_use_velocity_limit"]).item()
+    if not isinstance(velocity_limited, bool) or not velocity_limited:
+        raise ValueError(f"{filename}: GMR velocity limit must be enabled")
+    for name in (
+        "gmr_passes_per_frame",
+        "gmr_initial_settle_passes",
+        "gmr_joint_smoothing_passes",
+    ):
+        value = int(np.asarray(arrays[name]).item())
+        if value < 1:
+            raise ValueError(f"{filename}: {name} must be positive")
+    for name in (
+        "gmr_joint_smoothing_kernel",
+        "gmr_root_orientation_smoothing_kernel",
+    ):
+        kernel = np.asarray(arrays[name], dtype=np.float64)
+        if (
+            kernel.ndim != 1
+            or len(kernel) % 2 != 1
+            or not np.all(np.isfinite(kernel))
+            or np.any(kernel < 0.0)
+            or not np.isclose(kernel.sum(), 1.0)
+        ):
+            raise ValueError(f"{filename}: {name} is invalid")
+    minimum_alpha = float(np.asarray(arrays["gmr_minimum_smoothing_alpha"]).item())
+    if not np.isfinite(minimum_alpha) or not 0.0 <= minimum_alpha <= 1.0:
+        raise ValueError(
+            f"{filename}: gmr_minimum_smoothing_alpha must be finite and in [0, 1]"
+        )
+    try:
+        report = json.loads(str(np.asarray(arrays["gmr_quality_report"]).item()))
+        report_profile = report["task_profile"]
+        quality_gate = report["quality_gate"]
+        passed = quality_gate["passed"]
+        violations = quality_gate["violations"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"{filename}: GMR quality report is invalid") from error
+    if report_profile != profile:
+        raise ValueError(f"{filename}: GMR quality report profile differs")
+    if not isinstance(passed, bool) or not isinstance(violations, list):
+        raise ValueError(f"{filename}: GMR quality gate is invalid")
+    if any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("metric"), str)
+        or not item["metric"]
+        for item in violations
+    ):
+        raise ValueError(f"{filename}: GMR quality violations are invalid")
+    if passed != (not violations):
+        raise ValueError(f"{filename}: GMR quality gate is inconsistent")
+
+
 def clip_quality_reasons(
     arrays: dict[str, np.ndarray], quality: QualityConfig
 ) -> list[str]:
     reasons = []
+    if "gmr_quality_report" in arrays:
+        quality_report = json.loads(
+            str(np.asarray(arrays["gmr_quality_report"]).item())
+        )
+        for violation in quality_report["quality_gate"]["violations"]:
+            metric = violation.get("metric", "unknown")
+            reasons.append(f"GMR quality gate rejected {metric}")
     numeric_names = (
         "timestamp_seconds",
         "source_timestamp_seconds",
@@ -1185,11 +1243,6 @@ def clip_quality_reasons(
         "body_ang_vel",
         "foot_contacts",
         "foot_sole_z",
-    )
-    numeric_names += tuple(
-        name
-        for name in ("knee_pole_local_axis", "knee_pole_world_direction")
-        if name in arrays
     )
     for name in numeric_names:
         if not np.all(np.isfinite(arrays[name])):
@@ -1257,7 +1310,6 @@ def clip_quality_reasons(
         reasons.append("root height exceeds configured limit")
     if arrays["foot_sole_z"].min() < -quality.max_floor_penetration:
         reasons.append("foot sole penetration exceeds configured limit")
-    reasons.extend(_knee_pole_quality_reasons(arrays, quality))
     if {"joint_lower", "joint_upper"} <= arrays.keys():
         joint = arrays["qpos"][:, 7:]
         lower = np.asarray(arrays["joint_lower"])
@@ -1288,67 +1340,6 @@ def clip_quality_reasons(
             reasons.append(
                 "persistent hip/waist joint-limit saturation: " + ", ".join(saturated)
             )
-    return reasons
-
-
-def _knee_pole_quality_reasons(
-    arrays: dict[str, np.ndarray], quality: QualityConfig
-) -> list[str]:
-    if "knee_pole_world_direction" not in arrays:
-        return []
-    body_names = tuple(str(name) for name in np.asarray(arrays["body_names"]).tolist())
-    body_index = {name: index for index, name in enumerate(body_names)}
-    positions = np.asarray(arrays["body_pos"], dtype=np.float64)
-    desired_directions = np.asarray(
-        arrays["knee_pole_world_direction"], dtype=np.float64
-    )
-    qpos_joint_names = tuple(
-        str(name) for name in np.asarray(arrays["qpos_joint_names"]).tolist()
-    )
-    qpos_joint_index = {name: index for index, name in enumerate(qpos_joint_names)}
-    reasons = []
-    for side_index, side in enumerate(("left", "right")):
-        required = (
-            f"{side}_hip_roll_link",
-            f"{side}_knee_link",
-            f"{side}_ankle_roll_link",
-        )
-        missing = [name for name in required if name not in body_index]
-        if missing:
-            return ["knee-pole QC bodies are missing: " + ", ".join(missing)]
-        knee_joint_name = f"{side}_knee_joint"
-        if knee_joint_name not in qpos_joint_index:
-            return [f"knee-pole QC joint is missing: {knee_joint_name}"]
-        hip, knee, foot = (positions[:, body_index[name]] for name in required)
-        chord = foot - hip
-        chord_norm = np.linalg.norm(chord, axis=1)
-        chord_axis = chord / np.maximum(chord_norm[:, None], 1.0e-12)
-        robot_pole = knee - hip
-        robot_pole -= np.sum(robot_pole * chord_axis, axis=1)[:, None] * chord_axis
-        desired_pole = desired_directions[:, side_index].copy()
-        desired_pole -= np.sum(desired_pole * chord_axis, axis=1)[:, None] * chord_axis
-        robot_norm = np.linalg.norm(robot_pole, axis=1)
-        desired_norm = np.linalg.norm(desired_pole, axis=1)
-        valid = (
-            np.isfinite(robot_norm)
-            & np.isfinite(desired_norm)
-            & (robot_norm >= 1.0e-8)
-            & (desired_norm >= 1.0e-8)
-            & (
-                arrays["qpos"][:, 7 + qpos_joint_index[knee_joint_name]]
-                >= quality.minimum_knee_flexion_radians
-            )
-        )
-        if not np.any(valid):
-            continue
-        dots = np.sum(robot_pole[valid] * desired_pole[valid], axis=1) / (
-            robot_norm[valid] * desired_norm[valid]
-        )
-        angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
-        if np.percentile(angles, 95) > quality.max_knee_pole_p95_degrees:
-            reasons.append(f"{side} knee bend-plane error exceeds configured limit")
-        if np.mean(angles > 90.0) > quality.max_knee_pole_opposite_fraction:
-            reasons.append(f"{side} knee follows the opposite bend branch")
     return reasons
 
 
@@ -1558,7 +1549,6 @@ def _resample_clip(
             "source_timestamp_seconds",
             "source_sha256",
             "retarget_format_version",
-            "knee_pole_sides",
             "joint_names",
             "qpos_joint_names",
             "body_names",
@@ -1567,6 +1557,7 @@ def _resample_clip(
             "robot_fingerprint",
             "joint_lower",
             "joint_upper",
+            *GMR_RETARGET_METADATA_NAMES,
         }:
             continue
         if values.shape[0] != source_time.shape[0]:
@@ -1600,7 +1591,6 @@ def _resample_clip(
         "joint_names",
         "qpos_joint_names",
         "body_names",
-        "knee_pole_sides",
         "source_sha256",
         "retarget_format_version",
         "gmr_revision",
@@ -1608,13 +1598,10 @@ def _resample_clip(
         "robot_fingerprint",
         "joint_lower",
         "joint_upper",
+        *GMR_RETARGET_METADATA_NAMES,
     ):
         if name in arrays:
             result[name] = arrays[name]
-    for name in ("knee_pole_local_axis", "knee_pole_world_direction"):
-        if name in result:
-            norm = np.linalg.norm(result[name], axis=2, keepdims=True)
-            result[name] /= np.maximum(norm, 1.0e-12)
     return result
 
 
@@ -1639,10 +1626,6 @@ def _align_floor_and_heading(
     result["qpos"][:, :3] = result["qpos"][:, :3] @ rotation.T
     result["body_pos"][..., :2] -= initial_xy
     result["body_pos"] = result["body_pos"] @ rotation.T
-    if "knee_pole_world_direction" in result:
-        result["knee_pole_world_direction"] = (
-            result["knee_pole_world_direction"] @ rotation.T
-        )
     result["qvel"][:, :3] = result["qvel"][:, :3] @ rotation.T
     result["body_lin_vel"] = result["body_lin_vel"] @ rotation.T
     yaw_quat = np.asarray([math.cos(-yaw / 2.0), 0.0, 0.0, math.sin(-yaw / 2.0)])

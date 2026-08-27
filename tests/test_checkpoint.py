@@ -890,6 +890,19 @@ def test_checkpoint_config_and_timestamped_name() -> None:
         )
 
 
+def test_checkpoint_metadata_upgrade_adds_optional_critic_learning_rate() -> None:
+    legacy = {"task": "twist2", "ppo": {"learning_rate": 3.0e-4}}
+
+    upgraded = checkpoint._with_checkpoint_metadata_defaults(legacy)
+
+    assert upgraded["ppo"] == {
+        "learning_rate": 3.0e-4,
+        "critic_learning_rate": None,
+        "symmetry_loss_coef": 0.0,
+    }
+    assert "critic_learning_rate" not in legacy["ppo"]
+
+
 def test_repository_commit_requires_origin_tracked_clean_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1197,10 +1210,10 @@ def test_resume_allows_budget_extension_and_rejects_semantic_changes(
         extended,
         reward=replace(
             extended.reward,
-                weights=replace(
-                    extended.reward.weights,
-                    track_lin_vel_xy=3.0,
-                ),
+            weights=replace(
+                extended.reward.weights,
+                track_lin_vel_xy=3.0,
+            ),
         ),
     )
     with pytest.raises(ValueError, match="resume checkpoint contract.*reward"):

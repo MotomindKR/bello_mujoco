@@ -1,0 +1,116 @@
+dataset_index: datasets/sonic/index.json
+release_artifact_directory: artifacts/sonic/default_release
+
+config:
+  seed: 1
+  total_timesteps: 2949120000
+  num_envs: 4096
+  num_steps: 24
+  update_epochs: 5
+  num_minibatches: 4
+  learning_rate: 0.00002
+  critic_learning_rate: 0.001
+  schedule: adaptive
+  desired_kl: 0.01
+  target_kl: null
+  min_learning_rate: 0.00001
+  max_learning_rate: 0.0002
+  adaptive_lr_factor: 1.5
+  adaptive_kl_statistic: mean
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  ent_coef: 0.01
+  vf_coef: 1.0
+  max_grad_norm: 0.1
+  adam_epsilon: 0.00001
+  value_loss_scale: 1.0
+  normalize_value: false
+  normalize_observations: false
+  normalize_critic_observations: false
+  observation_norm_update_mode: rollout
+  observation_norm_update_updates: null
+  observation_norm_epsilon_mode: variance_floor
+  observation_norm_eps: 0.00001
+  observation_norm_clip: 10.0
+  rollout_observation_max_abs: 10000.0
+  rollout_reward_max_abs: 1000.0
+  rollout_value_max_abs: 10000.0
+  target_max_abs: 10000.0
+  gradient_norm_max: 10000.0
+  policy:
+    hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
+    activation: swish
+    init_log_std: -2.995732273553991
+    min_log_std: -6.907755278982137
+    max_log_std: -0.6931471805599453
+    obs_stack_size: 1
+    action_distribution: gaussian
+    action_limit: 20.0
+    architecture: sonic
+    layer_norm_final_hidden: false
+    sonic_lora_rank: 32
+    sonic_lora_alpha: 32.0
+    sonic_train_log_std: true
+
+simulation: {}
+sonic_env:
+  observation_noise:
+    ramp_steps: 48000
+  domain_randomization:
+    push_warmup_steps: 48000
+  reward:
+    tracking_joint_position: 1.0
+    tracking_foot_contact: 0.25
+    target_joint_limit: -1.0
+    joint_position_std: 0.35
+  sampling:
+    clip_prior: frame_count_times_manifest_weight
+  freeze_frame_probability: 0.0
+
+pretraining:
+  enabled: false
+  updates: 2000
+  batch_size: 512
+  validation_batch_size: 2048
+  learning_rate: 0.0001
+  max_gradient_norm: 1.0
+  validation_clip_fraction: 0.05
+  startup_history_fraction: 0.5
+  action_huber_delta: 0.5
+  activation_consistency_weight: 0.05
+  temporal_consistency_weight: 0.1
+  target_limit_weight: 0.05
+  parameter_anchor_weight: 0.000001
+  log_every_updates: 100
+  seed: 17
+
+checkpoint_config:
+  enabled: true
+  directory: checkpoints
+  name: sonic_seed1
+  every_updates: 500
+  resume_path: null
+  allow_git_commit_mismatch: false
+  upload_wandb_artifact: true
+  wandb_artifact_name: sonic_seed1
+  wandb_artifact_type: checkpoint
+
+wandb_config:
+  enabled: true
+  project: bello-mujoco
+  entity: null
+  group: sonic
+  job_type: train
+  run_name: sonic_seed1
+  mode: online
+  dir: .wandb
+  tags: [sonic, transfer, decoder-adaptation, whole-body]
+
+warp:
+  contact_budget_per_env: 32
+  naconmax: null
+  naccdmax: null
+  njmax: 2048
+
+runtime_clip_directory: outputs/sonic_runtime_clips

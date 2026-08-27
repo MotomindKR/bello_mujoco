@@ -2,8 +2,11 @@ import base64
 import json
 import shlex
 import subprocess
+import sys
 import time
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,7 +44,7 @@ def make_offer(
         "dlperf_per_dphtotal": value,
         "reliability": 0.995,
         "geolocation": location,
-        "cpu_ram": 65536,
+        "cpu_ram": 131072,
         "gpu_ram": 32768,
         "num_gpus": 1,
         "cuda_max_good": 13.0,
@@ -193,6 +196,47 @@ def twist_config(tmp_path: Path, *, stage: str = "teacher", **kwargs):
     return valid_config(**values)
 
 
+def sonic_dataset(tmp_path: Path, monkeypatch) -> tuple[Path, dict]:
+    root = tmp_path / "sonic_dataset"
+    root.mkdir(parents=True)
+    for relative in (
+        "heldout_manifest.json",
+        "conversion_report.json",
+        "train.npz",
+        "evaluation.npz",
+    ):
+        path = root / relative
+        path.write_bytes(relative.encode())
+    index = {
+        "dataset_fingerprint": "sha256:" + "d" * 64,
+        "split_files": {
+            "train": {"file": "train.npz"},
+            "evaluation": {"file": "evaluation.npz"},
+        },
+    }
+    index_path = root / "index.json"
+    index_path.write_text("{}", encoding="utf-8")
+    import bello_mujoco.motion.sonic_dataset as sonic
+
+    monkeypatch.setattr(sonic, "load_sonic_dataset_index", lambda path: index)
+    return index_path, index
+
+
+def sonic_artifact(tmp_path: Path, monkeypatch) -> Path:
+    root = tmp_path / "sonic_artifact"
+    root.mkdir()
+    for name in ("manifest.json", "weights.npz", "golden.npz"):
+        (root / name).write_bytes(name.encode())
+    import bello_mujoco.sonic_policy as sonic_policy
+
+    monkeypatch.setattr(
+        sonic_policy,
+        "load_sonic_release_artifact",
+        lambda path: object(),
+    )
+    return root
+
+
 @pytest.mark.parametrize("max_price", [None, 0.0, float("nan"), float("inf")])
 def test_validate_config_requires_finite_positive_price(max_price) -> None:
     with pytest.raises(ValueError, match="max-price"):
@@ -219,6 +263,147 @@ def test_twist_vast_config_requires_explicit_stage_inputs(tmp_path: Path) -> Non
             dataset_path=twist_dataset(tmp_path / "twist2_dataset"),
         )
     )
+
+
+def test_sonic_vast_config_requires_dataset_and_release_artifact() -> None:
+    with pytest.raises(ValueError, match="dataset-path is required"):
+        validate_config(valid_config(experiment="sonic"))
+    with pytest.raises(ValueError, match="sonic-artifact-path is required"):
+        validate_config(
+            valid_config(
+                experiment="sonic",
+                dataset_path=Path("dataset/index.json"),
+            )
+        )
+    validate_config(
+        valid_config(
+            experiment="sonic",
+            dataset_path=Path("dataset/index.json"),
+            sonic_artifact_path=Path("artifact"),
+            total_timesteps=1_425_408,
+            num_envs=4096,
+            checkpoint_every_updates=29,
+        )
+    )
+
+
+def test_sonic_vast_resume_requires_explicit_continuation_contract() -> None:
+    base = {
+        "experiment": "sonic",
+        "dataset_path": Path("dataset/index.json"),
+        "sonic_artifact_path": Path("artifact"),
+        "resume_path": Path("checkpoint/final"),
+    }
+    with pytest.raises(ValueError, match="requires explicit"):
+        validate_config(valid_config(**base))
+    validate_config(
+        valid_config(
+            **base,
+            allow_git_commit_mismatch=True,
+            total_timesteps=71_270_400,
+            num_envs=4096,
+        )
+    )
+    with pytest.raises(ValueError, match="only valid for SONIC"):
+        validate_config(valid_config(resume_path=Path("checkpoint/final")))
+
+
+def test_sonic_dataset_selection_preserves_canonical_split_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    index_path, index = sonic_dataset(tmp_path, monkeypatch)
+
+    fingerprint, paths, root = vast._sonic_dataset_files(index_path)
+
+    assert fingerprint == index["dataset_fingerprint"]
+    assert root == index_path.parent.resolve()
+    assert {path.relative_to(root).as_posix() for path in paths} == {
+        "index.json",
+        "heldout_manifest.json",
+        "conversion_report.json",
+        "train.npz",
+        "evaluation.npz",
+    }
+    (root / "unexpected.bin").write_bytes(b"unexpected")
+    with pytest.raises(ValueError, match="canonical files"):
+        vast._sonic_dataset_files(index_path)
+
+
+def test_sonic_release_selection_requires_exact_pinned_export(
+    tmp_path: Path, monkeypatch
+) -> None:
+    artifact = sonic_artifact(tmp_path, monkeypatch)
+
+    assert vast._sonic_release_artifact(artifact) == artifact.resolve()
+
+    (artifact / "unexpected.bin").write_bytes(b"unexpected")
+    with pytest.raises(ValueError, match="files differ"):
+        vast._sonic_release_artifact(artifact)
+
+
+def test_sonic_resume_selection_binds_dataset_release_and_budget(
+    tmp_path: Path, monkeypatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "metadata.json").write_text("{}", encoding="utf-8")
+    (checkpoint / "state").mkdir()
+    (checkpoint / "continuation").mkdir()
+    fingerprint = "sha256:" + "d" * 64
+    commit = "a" * 40
+
+    class FakeSonicMetadata:
+        dataset = SimpleNamespace(dataset_fingerprint=fingerprint)
+        source_revision = "b" * 40
+        release_checkpoint_sha256 = "sha256:" + "c" * 64
+        release_artifact_sha256 = "sha256:" + "e" * 64
+        ppo = SimpleNamespace(num_envs=4096, num_steps=24)
+
+    import bello_mujoco.sonic_policy as sonic_policy
+    import bello_mujoco.training.checkpoint as checkpoint_module
+
+    monkeypatch.setattr(checkpoint_module, "SonicCheckpointMetadata", FakeSonicMetadata)
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_checkpoint_metadata",
+        lambda path, **kwargs: FakeSonicMetadata(),
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_checkpoint_update",
+        lambda path, **kwargs: 116,
+    )
+    monkeypatch.setattr(
+        sonic_policy,
+        "load_sonic_release_artifact",
+        lambda path: SimpleNamespace(
+            checkpoint_sha256="c" * 64,
+            artifact_sha256="e" * 64,
+        ),
+    )
+
+    assert (
+        vast._sonic_resume_checkpoint(
+            checkpoint,
+            dataset_fingerprint=fingerprint,
+            release_artifact_path=tmp_path / "release",
+            selected_commit=commit,
+            allow_git_commit_mismatch=True,
+            total_timesteps=71_270_400,
+            num_envs=4096,
+        )
+        == checkpoint.resolve()
+    )
+    with pytest.raises(ValueError, match="budget ends before"):
+        vast._sonic_resume_checkpoint(
+            checkpoint,
+            dataset_fingerprint=fingerprint,
+            release_artifact_path=tmp_path / "release",
+            selected_commit=commit,
+            allow_git_commit_mismatch=True,
+            total_timesteps=115 * 4096 * 24,
+            num_envs=4096,
+        )
 
 
 def test_twist_dataset_selection_is_strict_and_portable(tmp_path: Path) -> None:
@@ -399,7 +584,7 @@ def test_offer_query_contains_hardware_and_price_constraints() -> None:
     query = offer_query(valid_config())
 
     assert "gpu_name=RTX_5090" in query
-    assert "cpu_ram>=64" in query
+    assert "cpu_ram>=128" in query
     assert "disk_space>=80" in query
     assert "cuda_max_good>=13.0" in query
     assert "dph_total<=1.25" in query
@@ -470,8 +655,8 @@ def test_safe_exception_message_redacts_query_credentials() -> None:
     assert "api_key=<redacted>&x=1" in message
 
 
-def test_nominal_64_gb_offer_accepts_vast_usable_ram_reporting() -> None:
-    api = SearchApi([[make_offer() | {"cpu_ram": 64469}]])
+def test_nominal_128_gb_offer_accepts_vast_usable_ram_reporting() -> None:
+    api = SearchApi([[make_offer() | {"cpu_ram": 128469}]])
 
     offers = find_offers(api, valid_config())
 
@@ -540,7 +725,7 @@ def test_credential_reads_python_keyring(monkeypatch) -> None:
     )
 
 
-def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch) -> None:
+def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch, tmp_path: Path) -> None:
     class Api:
         def show_instance(self, instance_id):
             assert instance_id == 123
@@ -557,11 +742,16 @@ def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch) -> None:
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(vast_remote.subprocess, "run", fake_run)
+    known_hosts = tmp_path / "vast_known_hosts"
+    known_hosts.write_text("stale recycled endpoint\n", encoding="utf-8")
+    monkeypatch.setattr(vast_remote, "EPHEMERAL_KNOWN_HOSTS_PATH", known_hosts)
 
     target = vast.wait_for_ssh(Api(), 123, 30, sleep=lambda _: None)
 
     assert target == ("root", "192.0.2.10", 22022)
     assert commands == [vast_remote.ssh_command(target, "true")]
+    assert not known_hosts.exists()
+    assert f"UserKnownHostsFile={known_hosts}" in commands[0]
 
 
 def test_upload_route_probe_measures_payload_throughput(monkeypatch) -> None:
@@ -802,6 +992,9 @@ def test_watchdog_uses_restricted_container_credentials_and_absolute_deadline(
     assert "CONTAINER_API_KEY" in script
     assert "Authorization" in script
     assert "VAST_API_KEY" not in script
+    assert "install -d -m 0700 -o root -g root /root/.ssh" in script
+    assert "chown root:root /root/.ssh/authorized_keys" in script
+    assert "chmod 0600 /root/.ssh/authorized_keys" in script
     assert "nohup" in script
     assert script.rstrip().endswith("&")
 
@@ -876,7 +1069,7 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     command = vast_remote.remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
-    assert shlex.split(command)[-7] == "test-run"
+    assert shlex.split(command)[-12] == "test-run"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
@@ -910,11 +1103,15 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
         "motion-test",
     )
 
-    assert shlex.split(command)[-7] == "motion-test"
-    assert float(shlex.split(command)[-8]) == pytest.approx(4.5359237)
-    assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
-    assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert shlex.split(command)[-12] == "motion-test"
+    assert float(shlex.split(command)[-13]) == pytest.approx(4.5359237)
+    assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 3
+    assert "git clone --single-branch" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule update --init --depth 1 --single-branch -- deps/bello-stack" in (
+        vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+    assert "git clone --recurse-submodules" not in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule status -- deps/bello-stack" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
         'training_overrides+=("end_effector_payload_mass_kg='
         '$end_effector_payload_mass_kg")' in vast_remote.REMOTE_TRAIN_SCRIPT
@@ -925,7 +1122,7 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     validation_index = vast_remote.REMOTE_TRAIN_SCRIPT.index("total_timesteps=768")
     user_index = vast_remote.REMOTE_TRAIN_SCRIPT.index('"${training_overrides[@]}"')
     forced_index = vast_remote.REMOTE_TRAIN_SCRIPT.rindex("wandb_enabled=true")
-    checkpoint_index = vast_remote.REMOTE_TRAIN_SCRIPT.index(
+    checkpoint_index = vast_remote.REMOTE_TRAIN_SCRIPT.rindex(
         'checkpoint_name="$run_name"'
     )
     assert overrides_index < validation_index
@@ -943,7 +1140,7 @@ def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
     )
     arguments = shlex.split(command)
 
-    assert arguments[-6:] == [
+    assert arguments[-11:-5] == [
         "/workspace/datasets/twist/index.json",
         "/workspace/checkpoints/twist_teacher",
         "",
@@ -953,12 +1150,178 @@ def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
     ]
     assert "TF_GPU_ALLOCATOR=cuda_malloc_async" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
-        'if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]'
-        in vast_remote.REMOTE_TRAIN_SCRIPT
+        'if [[ "$experiment" != twist_* && "$experiment" != twist2 '
+        '&& "$experiment" != sonic ]]' in vast_remote.REMOTE_TRAIN_SCRIPT
     )
     assert 'training_overrides+=("dataset_path=$dataset_path")' in (
         vast_remote.REMOTE_TRAIN_SCRIPT
     )
+
+
+def test_sonic_remote_command_runs_bounded_baseline_and_evaluation() -> None:
+    config = valid_config(
+        experiment="sonic",
+        dataset_path=Path("/data/sonic/index.json"),
+        sonic_artifact_path=Path("/data/artifact"),
+        total_timesteps=1_425_408,
+        num_envs=4096,
+        checkpoint_every_updates=29,
+    )
+    command = vast_remote.remote_start_command(
+        "/workspace/.bello-vast-jobs/sonic",
+        selection(),
+        config,
+        "sonic-test",
+        dataset_path="/workspace/datasets/sonic/index.json",
+        sonic_artifact_path="/workspace/artifacts/sonic/default_release",
+    )
+    arguments = shlex.split(command)
+
+    assert arguments[-11:] == [
+        "/workspace/datasets/sonic/index.json",
+        "",
+        "",
+        "false",
+        "/workspace/artifacts/sonic/default_release",
+        "",
+        "1425408",
+        "4096",
+        "29",
+        "",
+        "/workspace/.bello-vast-jobs/sonic/results",
+    ]
+    assert 'training_overrides+=("total_timesteps=$total_timesteps")' in (
+        vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+    assert "uv run bello-eval" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "task=sonic" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert (
+        '"$experiment" != twist2 && "$experiment" != sonic'
+        in vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+    assert 'output_path="$result_dir/sonic_evaluation.json"' in (
+        vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+
+
+def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
+    config = valid_config(
+        experiment="sonic",
+        dataset_path=Path("/data/sonic/index.json"),
+        sonic_artifact_path=Path("/data/artifact"),
+        resume_path=Path("/data/checkpoint"),
+        allow_git_commit_mismatch=True,
+        total_timesteps=71_270_400,
+        num_envs=4096,
+        checkpoint_every_updates=580,
+    )
+    command = vast_remote.remote_start_command(
+        "/workspace/.bello-vast-jobs/sonic-long",
+        selection(),
+        config,
+        "sonic-long",
+        dataset_path="/workspace/datasets/sonic/index.json",
+        sonic_artifact_path="/workspace/artifacts/sonic/default_release",
+        resume_checkpoint_path="/workspace/checkpoints/sonic_resume",
+    )
+    arguments = shlex.split(command)
+
+    assert arguments[-11:] == [
+        "/workspace/datasets/sonic/index.json",
+        "",
+        "",
+        "true",
+        "/workspace/artifacts/sonic/default_release",
+        "/workspace/checkpoints/sonic_resume",
+        "71270400",
+        "4096",
+        "580",
+        "",
+        "/workspace/.bello-vast-jobs/sonic-long/results",
+    ]
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    resume_index = script.index(
+        'actual_overrides+=("resume_path=$resume_checkpoint_path")'
+    )
+    preflight_index = script.index("preflight_overrides=(")
+    assert resume_index < preflight_index
+    assert 'preflight_overrides=("${training_overrides[@]}"' in script
+    assert "checkpoint_enabled=false" in script
+    assert "checkpoint_config.enabled=false" not in script
+    gpu_query = "--query-gpu=utilization.gpu,memory.used,memory.total"
+    power_query = "--query-gpu=power.draw"
+    assert script.count(gpu_query) == 2
+    assert script.count(power_query) == 2
+    assert '>> "$benchmark_gpu_log" 2>/dev/null || true' in script
+    assert '>> "$benchmark_power_log" 2>/dev/null || true' in script
+    assert "remote job heartbeat" in command
+
+
+def test_sonic_benchmark_accepts_unavailable_power_telemetry(tmp_path) -> None:
+    telemetry_path = tmp_path / "gpu.csv"
+    power_path = tmp_path / "power.csv"
+    telemetry_path.write_text("95,25899,32607\n", encoding="utf-8")
+    power_path.write_text("N/A\n", encoding="utf-8")
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    program_start = script.index("import csv\n", script.index("benchmark_gpu_log"))
+    program_end = script.index("\nPY\n  rm -f", program_start)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-",
+            str(telemetry_path),
+            str(power_path),
+            "4096",
+            "3",
+            "240",
+            "0",
+            str(tmp_path),
+        ],
+        input=script[program_start:program_end],
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+    report = json.loads(result.stdout)["sonic_benchmark"]
+    assert report["gpu_utilization_peak_percent"] == 95
+    assert report["gpu_memory_peak_mib"] == 25899
+    assert report["gpu_power_mean_watts"] is None
+
+
+def test_sonic_benchmark_accepts_unavailable_gpu_telemetry(tmp_path) -> None:
+    telemetry_path = tmp_path / "gpu.csv"
+    power_path = tmp_path / "power.csv"
+    telemetry_path.write_text("", encoding="utf-8")
+    power_path.write_text("", encoding="utf-8")
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    program_start = script.index("import csv\n", script.index("benchmark_gpu_log"))
+    program_end = script.index("\nPY\n  rm -f", program_start)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-",
+            str(telemetry_path),
+            str(power_path),
+            "4096",
+            "3",
+            "240",
+            "0",
+            str(tmp_path),
+        ],
+        input=script[program_start:program_end],
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+    report = json.loads(result.stdout)["sonic_benchmark"]
+    assert report["exit_status"] == 0
+    assert report["gpu_telemetry_available"] is False
+    assert report["gpu_utilization_mean_percent"] is None
+    assert report["gpu_memory_peak_mib"] is None
 
 
 def test_rsync_transfer_is_resumable_and_retried(monkeypatch) -> None:
@@ -1038,6 +1401,143 @@ def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None
         "evaluation.npz",
     }
     assert fingerprint in remote_commands[-1]
+
+
+def test_sonic_staging_preserves_split_files_and_verifies_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    index_path, index = sonic_dataset(tmp_path, monkeypatch)
+    fingerprint, paths, dataset_root = vast._sonic_dataset_files(index_path)
+    artifact = sonic_artifact(tmp_path, monkeypatch)
+    selected = GitSelection(
+        branch="main",
+        commit="a" * 40,
+        config_path=PurePosixPath("configs/profiles/train/sonic.yaml"),
+        repo_url="https://github.com/MotomindKR/bello_mujoco.git",
+        dataset_fingerprint=fingerprint,
+        dataset_files=paths,
+        dataset_root=dataset_root,
+        sonic_artifact_path=artifact,
+    )
+    remote_commands = []
+    rsync_commands = []
+
+    class Executor:
+        def run(self, target, remote_command, *, timeout_seconds, input_text=None):
+            remote_commands.append(remote_command)
+            return subprocess.CompletedProcess(
+                remote_command, 0, stdout="verified\n", stderr=""
+            )
+
+    class Transfer:
+        def run(self, command, *, timeout_seconds):
+            rsync_commands.append(command)
+
+    resume = tmp_path / "resume"
+    (resume / "state").mkdir(parents=True)
+    (resume / "continuation").mkdir()
+    (resume / "metadata.json").write_text("{}", encoding="utf-8")
+    (resume / "state" / "data").write_bytes(b"state")
+    (resume / "continuation" / "data").write_bytes(b"continuation")
+    selected = replace(selected, resume_checkpoint_path=resume)
+
+    dataset, teacher, release, staged_resume, warm_start = (
+        vast_remote.stage_training_inputs(
+            ("root", "example.com", 22001),
+            selected,
+            valid_config(
+                experiment="sonic",
+                dataset_path=index_path,
+                sonic_artifact_path=artifact,
+                resume_path=resume,
+                total_timesteps=71_270_400,
+                num_envs=4096,
+            ),
+            executor=Executor(),
+            rsync_executor=Transfer(),
+            sleep=lambda _: None,
+        )
+    )
+
+    assert dataset == "/workspace/datasets/sonic/index.json"
+    assert teacher == ""
+    assert release == "/workspace/artifacts/sonic/default_release"
+    assert staged_resume == "/workspace/checkpoints/sonic_resume"
+    assert warm_start == ""
+    assert len(rsync_commands) == 3
+    assert "--relative" in rsync_commands[0]
+    assert any("/./train.npz" in value for value in rsync_commands[0])
+    assert fingerprint in remote_commands[1]
+    assert any("weights.npz" in command for command in remote_commands)
+    assert "metadata.json" in remote_commands[-1]
+
+
+def test_downloaded_sonic_results_are_hash_and_dataset_bound(tmp_path: Path) -> None:
+    fingerprint = "sha256:" + "d" * 64
+    report = {
+        "task": "sonic",
+        "dataset_fingerprint": fingerprint,
+        "global": {"completion_rate": 0.5},
+        "acceptance": {"passed": False},
+        "per_clip": [{"completed": True}, {"completed": False}],
+        "reference_action_oracle": {
+            "global": {"completion_rate": 0.75},
+            "acceptance": {"passed": False},
+            "per_clip": [{"completed": True}, {"completed": False}],
+        },
+    }
+    summary = {
+        "task": "sonic",
+        "dataset_fingerprint": fingerprint,
+        "evaluated_clips": 2,
+        "global": report["global"],
+        "acceptance": report["acceptance"],
+        "reference_action_oracle": {
+            "evaluated_clips": 2,
+            "global": report["reference_action_oracle"]["global"],
+            "acceptance": report["reference_action_oracle"]["acceptance"],
+        },
+    }
+    benchmark = {
+        "sonic_benchmark": {
+            "num_envs": 4096,
+            "updates": 3,
+            "exit_status": 0,
+        }
+    }
+    (tmp_path / "benchmark.json").write_text(json.dumps(benchmark))
+    (tmp_path / "checkpoint_path.txt").write_text("checkpoints/run/final\n")
+    (tmp_path / "sonic_evaluation.json").write_text(json.dumps(report))
+    (tmp_path / "summary.json").write_text(json.dumps(summary))
+    files = {
+        name: vast_remote._sha256(tmp_path / name)
+        for name in (
+            "benchmark.json",
+            "checkpoint_path.txt",
+            "sonic_evaluation.json",
+            "summary.json",
+        )
+    }
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "files": files})
+    )
+
+    vast_remote._validate_local_sonic_results(
+        tmp_path,
+        expected_dataset_fingerprint=fingerprint,
+    )
+
+    summary["evaluated_clips"] = 3
+    (tmp_path / "summary.json").write_text(json.dumps(summary))
+    files["summary.json"] = vast_remote._sha256(tmp_path / "summary.json")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "files": files})
+    )
+    with pytest.raises(ValueError, match="summary differs"):
+        vast_remote._validate_local_sonic_results(
+            tmp_path,
+            expected_dataset_fingerprint=fingerprint,
+        )
 
 
 def test_remote_checksum_verifier_detects_corruption(tmp_path: Path) -> None:
@@ -1136,6 +1636,100 @@ def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> 
     assert "setup\ndone\n" in output
     assert sleeps == [5, 10]
     assert shlex.split(monitor_commands[-1])[-1] == "6"
+
+
+def test_remote_runner_does_not_destroy_job_during_long_ssh_outage(
+    monkeypatch, capfd
+) -> None:
+    monitor_calls = 0
+    clock = [0.0]
+
+    def response(state, offset, output=b"", returncode=None):
+        return json.dumps(
+            {
+                "state": state,
+                "offset": offset,
+                "output": base64.b64encode(output).decode("ascii"),
+                "returncode": returncode,
+            }
+        )
+
+    class Executor:
+        def run(self, target, remote_command, *, input_text=None, timeout_seconds):
+            nonlocal monitor_calls
+            assert timeout_seconds > 0
+            if input_text is not None:
+                return subprocess.CompletedProcess(
+                    remote_command, 0, stdout="started\n", stderr=""
+                )
+            monitor_calls += 1
+            if monitor_calls == 1:
+                return subprocess.CompletedProcess(
+                    remote_command, 255, stdout="", stderr="closed"
+                )
+            return subprocess.CompletedProcess(
+                remote_command,
+                0,
+                stdout=response("complete", 5, b"done\n", 0),
+                stderr="",
+            )
+
+    def advance(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: clock[0])
+
+    run_remote_training(
+        ("root", "example.com", 22001),
+        selection(),
+        valid_config(
+            ssh_timeout_seconds=1,
+            job_timeout_seconds=100,
+            progress_timeout_seconds=1,
+        ),
+        "test-run",
+        wandb_key="wandb-secret",
+        github_token="",
+        sleep=advance,
+        executor=Executor(),
+    )
+
+    output = capfd.readouterr().out
+    assert "remote training continues while reconnecting" in output
+    assert "SSH reconnected" in output
+    assert "done\n" in output
+    assert monitor_calls == 2
+
+
+def test_remote_runner_aborts_when_vast_confirms_instance_exited() -> None:
+    class Api:
+        def show_instance(self, instance_id):
+            assert instance_id == 456
+            return {"actual_status": "exited"}
+
+    class Executor:
+        def run(self, target, remote_command, *, input_text=None, timeout_seconds):
+            assert timeout_seconds > 0
+            if input_text is not None:
+                return subprocess.CompletedProcess(
+                    remote_command, 0, stdout="started\n", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                remote_command, 255, stdout="", stderr="closed"
+            )
+
+    with pytest.raises(RuntimeError, match="non-recoverable state 'exited'"):
+        run_remote_training(
+            ("root", "example.com", 22001),
+            selection(),
+            valid_config(),
+            "test-run",
+            wandb_key="wandb-secret",
+            github_token="",
+            executor=Executor(),
+            instance_api=Api(),
+            instance_id=456,
+        )
 
 
 def test_remote_runner_aborts_when_progress_deadline_expires(monkeypatch) -> None:
@@ -1242,7 +1836,7 @@ def test_pipeline_always_destroys_created_instance(
 
     assert api.destroyed == [456]
     assert api.created[0][1]["label"].startswith("bello-")
-    assert api.created[0][1]["runtype"] == "ssh_direc"
+    assert api.created[0][1]["runtype"] == "ssh_direct"
     assert "CONTAINER_ID" in api.created[0][1]["onstart_cmd"]
     assert "CONTAINER_API_KEY" in api.created[0][1]["onstart_cmd"]
     assert "ssh" not in api.created[0][1]
@@ -1250,8 +1844,12 @@ def test_pipeline_always_destroys_created_instance(
     assert not (tmp_path / ".vast" / "active_instance.json").exists()
 
 
-def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "first_probe",
+    [0.3, RuntimeError("route connection reset")],
+)
+def test_twist_lifecycle_rejects_unusable_route_and_tries_next_offer(
+    monkeypatch, tmp_path, first_probe
 ) -> None:
     class Api(LifecycleApi):
         def create_instance(self, offer_id, **kwargs):
@@ -1284,10 +1882,15 @@ def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
         "wait_for_ssh",
         lambda api, instance_id, timeout: ("root", f"host-{instance_id}", 22),
     )
-    speeds = iter((0.3, 20.0))
-    monkeypatch.setattr(
-        vast, "measure_upload_mib_per_second", lambda *args, **kwargs: next(speeds)
-    )
+    probe_results = iter((first_probe, 20.0))
+
+    def measure_upload(*args, **kwargs):
+        result = next(probe_results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(vast, "measure_upload_mib_per_second", measure_upload)
     remote_targets = []
 
     def remote_runner(target, *args, **kwargs):
@@ -1302,6 +1905,103 @@ def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
         twist_selection,
         "route-test",
         remote_runner,
+        wandb_key="secret",
+        github_token="",
+    )
+
+    assert [offer_id for offer_id, _ in api.created] == [1, 2]
+    assert api.destroyed == [1, 2]
+    assert remote_targets == [("root", "host-2", 22)]
+
+
+def test_lifecycle_retries_next_offer_when_direct_ssh_times_out(
+    monkeypatch, tmp_path
+) -> None:
+    class Api(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            return offer_id
+
+    api = Api()
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: [
+            VastOffer.from_mapping(make_offer(1, location="Seoul, KR")),
+            VastOffer.from_mapping(make_offer(2, location="Tokyo, JP")),
+        ],
+    )
+    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
+    ssh_attempts = iter((TimeoutError("direct SSH unavailable"), None))
+
+    def wait_for_ssh(api, instance_id, timeout):
+        failure = next(ssh_attempts)
+        if failure is not None:
+            raise failure
+        return "root", f"host-{instance_id}", 22
+
+    monkeypatch.setattr(vast, "wait_for_ssh", wait_for_ssh)
+    remote_targets = []
+
+    VastLifecycle(
+        api,
+        valid_config(),
+        tmp_path / ".vast" / "active_instance.json",
+        "ssh-test",
+    ).run(
+        selection(),
+        "ssh-test",
+        lambda target, *args, **kwargs: remote_targets.append(target),
+        wandb_key="secret",
+        github_token="",
+    )
+
+    assert [offer_id for offer_id, _ in api.created] == [1, 2]
+    assert api.destroyed == [1, 2]
+    assert remote_targets == [("root", "host-2", 22)]
+
+
+def test_lifecycle_retries_next_offer_when_instance_readiness_times_out(
+    monkeypatch, tmp_path
+) -> None:
+    class Api(LifecycleApi):
+        def create_instance(self, offer_id, **kwargs):
+            self.created.append((offer_id, kwargs))
+            return offer_id
+
+    api = Api()
+    monkeypatch.setattr(
+        vast,
+        "find_offers",
+        lambda *args: [
+            VastOffer.from_mapping(make_offer(1, location="Seoul, KR")),
+            VastOffer.from_mapping(make_offer(2, location="Tokyo, JP")),
+        ],
+    )
+    readiness_attempts = iter((TimeoutError("instance remained loading"), None))
+
+    def wait_for_instance(api, instance_id, timeout):
+        failure = next(readiness_attempts)
+        if failure is not None:
+            raise failure
+
+    monkeypatch.setattr(vast, "wait_for_instance", wait_for_instance)
+    monkeypatch.setattr(
+        vast,
+        "wait_for_ssh",
+        lambda api, instance_id, timeout: ("root", f"host-{instance_id}", 22),
+    )
+    remote_targets = []
+
+    VastLifecycle(
+        api,
+        valid_config(),
+        tmp_path / ".vast" / "active_instance.json",
+        "readiness-test",
+    ).run(
+        selection(),
+        "readiness-test",
+        lambda target, *args, **kwargs: remote_targets.append(target),
         wandb_key="secret",
         github_token="",
     )

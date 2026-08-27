@@ -27,12 +27,14 @@ from bello_mujoco.policy import (
     evaluate_actions,
     init_observation_stack,
     init_actor_critic,
+    partition_policy_parameters,
     policy_observation_size,
     policy_log_std,
     sample_action_with_latent_and_mean,
     stacked_observation,
     update_observation_stack,
 )
+from bello_mujoco.sonic_policy import SONIC_G1_ACTION_SIZE
 
 LearningRateSchedule = Literal["constant", "linear", "adaptive"]
 AdaptiveKLStatistic = Literal["mean", "max"]
@@ -159,6 +161,7 @@ class PPOConfig:
     update_epochs: int = _validated(5, _positive_integer)
     num_minibatches: int = _validated(4, _positive_integer)
     learning_rate: float = _validated(1.0e-3, _positive_finite)
+    critic_learning_rate: float | None = _validated(None, _optional_positive_finite)
     schedule: LearningRateSchedule = _validated(
         "adaptive",
         _one_of(*get_args(LearningRateSchedule)),
@@ -303,12 +306,24 @@ def init_train_state(
     action_size: int,
     config: PPOConfig,
     critic_obs_size: int | None = None,
+    *,
+    policy: ActorCritic | None = None,
 ) -> tuple[TrainState, optax.GradientTransformation]:
-    model = init_actor_critic(
-        rng, obs_size, action_size, config.policy, critic_obs_size=critic_obs_size
+    model = (
+        init_actor_critic(
+            rng, obs_size, action_size, config.policy, critic_obs_size=critic_obs_size
+        )
+        if policy is None
+        else policy
     )
+    distribution_action_size = (
+        SONIC_G1_ACTION_SIZE if config.policy.architecture == "sonic" else action_size
+    )
+    if model.log_std.shape != (distribution_action_size,):
+        raise ValueError("supplied policy distribution size differs from its contract")
     optimizer = make_optimizer(config)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    params, _ = partition_policy_parameters(model)
+    opt_state = optimizer.init(params)
     return TrainState(
         policy=model, opt_state=opt_state, update=jnp.asarray(0, dtype=jnp.int32)
     ), optimizer
@@ -400,6 +415,14 @@ def normalize_observation(
 ) -> jax.Array:
     if not config.normalize_observations:
         return observation
+    return _normalize_observation_value(observation, state, config)
+
+
+def _normalize_observation_value(
+    observation: jax.Array,
+    state: ObservationNormState,
+    config: PPOConfig,
+) -> jax.Array:
     if config.observation_norm_epsilon_mode == "std_offset":
         denominator = jnp.sqrt(jnp.maximum(state.var, 1.0e-8))
         denominator = denominator + config.observation_norm_eps
@@ -422,7 +445,7 @@ def normalize_critic_observation(
 ) -> jax.Array:
     if not config.normalize_critic_observations:
         return observation
-    return normalize_observation(observation, state, config)
+    return _normalize_observation_value(observation, state, config)
 
 
 def update_observation_norm_state(
@@ -434,6 +457,21 @@ def update_observation_norm_state(
 ) -> ObservationNormState:
     if not config.normalize_observations:
         return state
+    return _update_observation_norm_state_value(
+        state,
+        observation,
+        config,
+        max_count=max_count,
+    )
+
+
+def _update_observation_norm_state_value(
+    state: ObservationNormState,
+    observation: jax.Array,
+    config: PPOConfig,
+    *,
+    max_count: float | None = None,
+) -> ObservationNormState:
     valid = array_is_plausible(observation, config.rollout_observation_max_abs)
     safe_observation = sanitize_array(observation, config.rollout_observation_max_abs)
     values = safe_observation.reshape((-1, safe_observation.shape[-1]))
@@ -467,7 +505,7 @@ def update_critic_observation_norm_state(
 ) -> ObservationNormState:
     if not config.normalize_critic_observations:
         return state
-    return update_observation_norm_state(state, observation, config)
+    return _update_observation_norm_state_value(state, observation, config)
 
 
 def value_norm_std(state: ValueNormState, config: PPOConfig) -> jax.Array:
@@ -789,11 +827,16 @@ def update_ppo(
     advantages = normalize_advantages(sanitize_array(advantages, config.target_max_abs))
     targets = sanitize_array(targets, config.target_max_abs)
     batch = flatten_batch((safe_transitions, advantages, targets))
-    init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
+    init_params, static_policy = partition_policy_parameters(train_state.policy)
     if learning_rate is None:
         learning_rate = jnp.asarray(config.learning_rate, dtype=jnp.float32)
     else:
         learning_rate = jnp.asarray(learning_rate, dtype=jnp.float32)
+    critic_learning_rate = (
+        learning_rate
+        if config.critic_learning_rate is None
+        else jnp.asarray(config.critic_learning_rate, dtype=jnp.float32)
+    )
     target_kl = math.inf if config.target_kl is None else float(config.target_kl)
 
     def tree_all_finite(tree) -> jax.Array:
@@ -840,12 +883,20 @@ def update_ppo(
                 params
             )
             updates, opt_state = optimizer.update(grads, opt_state, params)
-            updates = jax.tree_util.tree_map(
+            actor_updates = jax.tree_util.tree_map(
                 lambda update: -learning_rate * update, updates
+            )
+            critic_updates = jax.tree_util.tree_map(
+                lambda update: -critic_learning_rate * update, updates.critic
+            )
+            updates = eqx.tree_at(
+                lambda value: value.critic,
+                actor_updates,
+                critic_updates,
             )
             next_params = optax.apply_updates(params, updates)
             policy = clamp_policy_log_std(eqx.combine(next_params, static_policy))
-            next_params, _ = eqx.partition(policy, eqx.is_array)
+            next_params, _ = partition_policy_parameters(policy)
 
             finite_loss = jnp.isfinite(loss_value)
             finite_metrics = tree_all_finite(metrics)
@@ -1324,10 +1375,14 @@ def collect_rollout(
             if hasattr(env, "with_task_state")
             else env
         )
-        env_action = jnp.clip(action, -current_env.action_clip, current_env.action_clip)
+        env_action = (
+            action
+            if config.policy.architecture == "sonic"
+            else jnp.clip(action, -current_env.action_clip, current_env.action_clip)
+        )
         value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = current_env.step_batch(
-            state, action, rng=env_key
+            state, env_action, rng=env_key
         )
         next_task_state = (
             current_env.update_task_state(current_task_state, info)
@@ -1430,6 +1485,8 @@ def init_runner_state(
     rng: jax.Array,
     env: PPOEnvironment,
     config: PPOConfig,
+    *,
+    policy: ActorCritic | None = None,
 ) -> tuple[RunnerState, eqx.Module, optax.GradientTransformation]:
     validate_action_limit_contract(config, env.action_clip)
     rng, init_key, env_key, step_count_key = jax.random.split(rng, 4)
@@ -1441,8 +1498,9 @@ def init_runner_state(
         critic_obs_size=policy_observation_size(
             critic_observation_size(env), config.policy
         ),
+        policy=policy,
     )
-    params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
+    params, static_policy = partition_policy_parameters(train_state.policy)
     env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
     step_count = env.initial_step_counts(config.num_envs, step_count_key)
     if hasattr(env, "with_initial_step_counts"):
@@ -1481,6 +1539,42 @@ def init_runner_state(
         ),
         static_policy,
         optimizer,
+    )
+
+
+def reset_runner_environment(
+    runner_state: RunnerState,
+    env: PPOEnvironment,
+    config: PPOConfig,
+) -> RunnerState:
+    """Reset every rollout world while preserving policy and optimizer state."""
+
+    validate_action_limit_contract(config, env.action_clip)
+    rng, env_key, step_count_key, observation_key = jax.random.split(
+        runner_state.rng, 4
+    )
+    env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
+    step_count = env.initial_step_counts(config.num_envs, step_count_key)
+    if hasattr(env, "with_initial_step_counts"):
+        env_state = env.with_initial_step_counts(env_state, step_count)
+    else:
+        env_state = env_state.replace(step_count=step_count, episode_length=step_count)
+    if env.ppo_stagger_initial_step_count:
+        obs = env.observation_batch(env_state, observation_key)
+    critic_obs = env.critic_observation_batch(env_state)
+    task_state = (
+        env.initial_task_state()
+        if hasattr(env, "initial_task_state")
+        else jnp.zeros((0,), dtype=jnp.float32)
+    )
+    return runner_state._replace(
+        env_state=env_state,
+        obs_stack=init_observation_stack(obs, config.policy.obs_stack_size),
+        critic_obs_stack=init_observation_stack(
+            critic_obs, config.policy.obs_stack_size
+        ),
+        rng=rng,
+        task_state=task_state,
     )
 
 
@@ -1588,7 +1682,7 @@ def update_runner_state(
         config,
         target_kl_exceeded=metrics["target_kl_exceeded"] > 0,
     )
-    params, _ = eqx.partition(train_state.policy, eqx.is_array)
+    params, _ = partition_policy_parameters(train_state.policy)
     reward_means = reward_component_means(transitions.info)
     task_metrics = (
         env.task_state_metrics(task_state) if hasattr(env, "task_state_metrics") else {}
@@ -1737,12 +1831,14 @@ def validate_ppo_config(config: PPOConfig) -> None:
         "twist_teacher",
         "twist_student",
         "twist2",
+        "sonic",
     }:
         raise ValueError(
             "policy.architecture must be 'mlp', 'twist_teacher', "
-            f"'twist_student', or 'twist2', got {config.policy.architecture!r}"
+            "'twist_student', 'twist2', or 'sonic', got "
+            f"{config.policy.architecture!r}"
         )
-    if config.policy.architecture != "mlp":
+    if config.policy.architecture in {"twist_teacher", "twist_student", "twist2"}:
         if config.policy.hidden_dims != (512, 512, 256, 128):
             raise ValueError("TWIST policy.hidden_dims must be [512, 512, 256, 128]")
         if config.policy.activation != "swish":
@@ -1753,6 +1849,29 @@ def validate_ppo_config(config: PPOConfig) -> None:
             )
         if not config.policy.layer_norm_final_hidden:
             raise ValueError("TWIST requires final-hidden LayerNorm")
+    if config.policy.architecture == "sonic":
+        if config.policy.hidden_dims != (2048, 2048, 1024, 1024, 512, 512):
+            raise ValueError(
+                "SONIC critic hidden_dims must be [2048, 2048, 1024, 1024, 512, 512]"
+            )
+        if config.policy.activation != "swish":
+            raise ValueError("SONIC critic activation must be swish")
+        if config.policy.obs_stack_size != 1:
+            raise ValueError("SONIC owns its history; policy.obs_stack_size must be 1")
+        if config.policy.layer_norm_final_hidden:
+            raise ValueError("SONIC does not use final-hidden LayerNorm")
+        if config.policy.action_distribution != "gaussian":
+            raise ValueError("SONIC requires its released Gaussian action distribution")
+        if config.policy.action_limit != 20.0:
+            raise ValueError("SONIC requires source-action clipping at 20")
+        if not math.isclose(
+            config.policy.min_log_std, math.log(0.001)
+        ) or not math.isclose(config.policy.max_log_std, math.log(0.5)):
+            raise ValueError(
+                "SONIC requires the released standard-deviation clamp [0.001, 0.5]"
+            )
+    elif not config.policy.sonic_train_log_std:
+        raise ValueError("sonic_train_log_std=false is only valid for SONIC")
     if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
         raise ValueError(
             "policy.action_limit must be positive and finite, got "

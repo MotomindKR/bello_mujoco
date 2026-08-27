@@ -488,9 +488,23 @@ class BelloTwistEnv:
     def action_clip(self) -> float:
         return self.config.action_clip
 
+    def _clip_applied_action(self, action: jax.Array) -> jax.Array:
+        return jnp.clip(action, -self.action_clip, self.action_clip)
+
     @property
     def control_timestep(self) -> float:
-        return TWIST_DECIMATION * float(self.model.mj_model.opt.timestep)
+        return self.physics_steps_per_control * float(self.model.mj_model.opt.timestep)
+
+    @property
+    def physics_steps_per_control(self) -> int:
+        """Number of simulator steps per policy action.
+
+        Derived tasks may share the vectorized MJX stepping machinery while
+        retaining their own simulator frequency.  TWIST itself remains fixed at
+        the released 500 Hz / 50 Hz contract.
+        """
+
+        return TWIST_DECIMATION
 
     @property
     def ppo_stagger_initial_step_count(self) -> bool:
@@ -871,14 +885,12 @@ class BelloTwistEnv:
         action_history = jnp.concatenate(
             (state.action_history[1:], action[None, :]), axis=0
         )
-        applied = jnp.clip(
+        applied = self._clip_applied_action(
             jax.lax.dynamic_index_in_dim(
                 action_history,
                 action_history.shape[0] - 1 - state.action_delay_steps,
                 keepdims=False,
-            ),
-            -self.action_clip,
-            self.action_clip,
+            )
         )
         data = state.motion_state.data.replace(
             ctrl=self._action_target(
@@ -887,7 +899,7 @@ class BelloTwistEnv:
         )
         data = jax.lax.fori_loop(
             0,
-            TWIST_DECIMATION,
+            self.physics_steps_per_control,
             lambda _, value: mjx.step(self.model.mjx_model, value),
             data,
         )
@@ -905,7 +917,11 @@ class BelloTwistEnv:
             state, motion_state, reference, contacts, foot_air_time, 0
         )
         done_flags = self._bank_termination_flags(
-            motion_state, state.clip_index, reference, 0
+            motion_state,
+            state.clip_index,
+            reference,
+            0,
+            tracking_state=state,
         )
         reward, reward_info = self._sanitize_reward(reward, reward_info, done_flags)
         episode_return = state.motion_state.episode_return + reward
@@ -922,19 +938,16 @@ class BelloTwistEnv:
                 state.motion_state.last_episode_length,
             ),
         )
-        stepped = TwistState(
+        stepped = state.replace(
             motion_state=motion_state,
-            observation_history=state.observation_history,
             action_history=action_history,
-            action_delay_steps=state.action_delay_steps,
-            clip_index=state.clip_index,
-            domain_randomization=state.domain_randomization,
             foot_air_time=jnp.where(contacts, 0.0, foot_air_time),
             last_foot_contact=contacts,
             total_step=state.total_step + 1,
             root_push_phase=state.root_push_phase,
             gravity_fraction=state.gravity_fraction,
         )
+        stepped = self._post_step_state(stepped, jnp.asarray(False), rng)
         if self.stage == "student":
             frame = self._student_frame(stepped, rng)
             stored_history, observation_history = self._student_history_transition(
@@ -975,7 +988,7 @@ class BelloTwistEnv:
                 values, index, keepdims=False
             )
         )(action_history, indices)
-        applied = jnp.clip(applied, -self.action_clip, self.action_clip)
+        applied = self._clip_applied_action(applied)
         ctrl = jax.vmap(self._action_target)(
             applied, state.motion_state, state.domain_randomization
         )
@@ -986,7 +999,7 @@ class BelloTwistEnv:
         data, push_applied = self._apply_disturbances_batch(data, state, push_key)
         data = jax.lax.fori_loop(
             0,
-            TWIST_DECIMATION,
+            self.physics_steps_per_control,
             lambda _, value: mjx.step(self.model.mjx_model, value),
             data,
         )
@@ -1013,6 +1026,7 @@ class BelloTwistEnv:
             twist_state,
             normal_force,
             tangent_force,
+            world_id,
         ):
             reference = self._aligned_reference(current, clip_index, 0)
             return self._twist_reward(
@@ -1021,7 +1035,7 @@ class BelloTwistEnv:
                 reference,
                 contact,
                 air_time,
-                0,
+                world_id,
                 contact_normal=normal_force,
                 contact_tangent=tangent_force,
             )
@@ -1035,6 +1049,7 @@ class BelloTwistEnv:
             state,
             contact_normal,
             contact_tangent,
+            jnp.arange(batch_size, dtype=jnp.int32),
         )
         references = jax.vmap(
             lambda current, clip: self._aligned_reference(current, clip, 0)
@@ -1043,13 +1058,14 @@ class BelloTwistEnv:
             motion_state, batch_size
         )
         done_flags = jax.vmap(
-            lambda current, clip, reference, torso_contact: (
+            lambda current, clip, reference, torso_contact, tracking_state: (
                 self._bank_termination_flags(
                     current,
                     clip,
                     reference,
                     0,
                     torso_contact=torso_contact,
+                    tracking_state=tracking_state,
                 )
             )
         )(
@@ -1057,6 +1073,7 @@ class BelloTwistEnv:
             state.clip_index,
             references,
             torso_contacts,
+            state,
         )
         reward, reward_info = self._sanitize_reward(reward, reward_info, done_flags)
         done = done_flags["done/any"]
@@ -1072,19 +1089,17 @@ class BelloTwistEnv:
                 state.motion_state.last_episode_length,
             ),
         )
-        stepped = TwistState(
+        stepped = state.replace(
             motion_state=motion_state,
-            observation_history=state.observation_history,
             action_history=action_history,
             action_delay_steps=jnp.full_like(state.action_delay_steps, delay),
-            clip_index=state.clip_index,
-            domain_randomization=state.domain_randomization,
             foot_air_time=jnp.where(contacts, 0.0, foot_air_time),
             last_foot_contact=contacts,
             total_step=state.total_step + 1,
             root_push_phase=state.root_push_phase,
             gravity_fraction=state.gravity_fraction,
         )
+        stepped = self._post_step_state(stepped, push_applied, push_key)
         if self.stage == "student":
             if obs_key is None:
                 frames = jax.vmap(self._student_frame)(stepped)
@@ -1110,6 +1125,7 @@ class BelloTwistEnv:
             ),
             total_step=stepped.total_step,
         )
+        reset_state = self._post_reset_state(reset_state, stepped)
         next_state = tree_where(done, reset_state, stepped)
         next_observation = jnp.where(
             done[:, None], reset_observation, stepped_observation
@@ -1338,7 +1354,9 @@ class BelloTwistEnv:
         world_id: jax.Array | int,
         *,
         torso_contact: jax.Array | None = None,
+        tracking_state: TwistState | None = None,
     ) -> dict[str, jax.Array]:
+        del tracking_state
         cfg = self.config.done
         height = jnp.abs(state.data.qpos[2] - reference.qpos[2]) > cfg.root_height_error
         roll_pitch = _roll_pitch(state.data.qpos[3:7])
@@ -1714,6 +1732,18 @@ class BelloTwistEnv:
     def _apply_post_step_disturbances_batch(self, data, state, rng):
         del state, rng
         return data
+
+    def _post_step_state(self, state: TwistState, push_applied: jax.Array, rng):
+        """Allow derived tasks to advance disturbance bookkeeping."""
+
+        del push_applied, rng
+        return state
+
+    def _post_reset_state(self, reset_state: TwistState, previous_state: TwistState):
+        """Allow derived tasks to preserve global episode-independent state."""
+
+        del previous_state
+        return reset_state
 
     def _body_linear_velocity(self, state, body_ids):
         cvel = state.data.cvel[body_ids]

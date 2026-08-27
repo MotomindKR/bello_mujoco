@@ -1,5 +1,6 @@
 task: locomotion
 checkpoint_path: null
+sonic_artifact_path: null
 allow_git_commit_mismatch: false
 end_effector_payload_mass_kg: null
 output_path: outputs/evaluation/motion.mp4

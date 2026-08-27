@@ -54,7 +54,7 @@ class VastOfferConfig:
 
     gpu_name: str = "RTX_5090"
     num_gpus: int = 1
-    min_cpu_ram_gb: int = 64
+    min_cpu_ram_gb: int = 128
     disk_gb: int = 80
     min_reliability: float = 0.98
     min_cuda: float = 13.0
@@ -70,9 +70,13 @@ class VastTrainConfig:
     motion_path: Path | None = None
     dataset_path: Path | None = None
     teacher_checkpoint_path: Path | None = None
+    sonic_artifact_path: Path | None = None
+    resume_path: Path | None = None
     warm_start_checkpoint_path: Path | None = None
     allow_git_commit_mismatch: bool = False
     total_timesteps: int | None = None
+    num_envs: int | None = None
+    checkpoint_every_updates: int | None = None
     learning_rate: float | None = None
     end_effector_payload_mass_kg: float | None = None
     max_price: float | None = None
@@ -82,7 +86,11 @@ class VastTrainConfig:
     dry_run: bool = False
     remote_dir: str = "/workspace/bello_mujoco"
     remote_dataset_dir: str = "/workspace/datasets/twist"
+    remote_sonic_dataset_dir: str = "/workspace/datasets/sonic"
     remote_teacher_checkpoint_dir: str = "/workspace/checkpoints/twist_teacher"
+    remote_sonic_artifact_dir: str = "/workspace/artifacts/sonic/default_release"
+    remote_sonic_resume_dir: str = "/workspace/checkpoints/sonic_resume"
+    local_result_dir: Path = Path("outputs/vast")
     remote_warm_start_checkpoint_dir: str = "/workspace/checkpoints/twist2_warm_start"
     lifecycle_state_dir: Path = Path(".vast")
     ready_timeout_seconds: int = 900
@@ -91,7 +99,7 @@ class VastTrainConfig:
     transfer_retries: int = 3
     preferred_countries: tuple[str, ...] = ("KR", "JP", "TW", "HK", "SG")
     min_upload_mib_per_second: float = 5.0
-    route_probe_mib: int = 16
+    route_probe_mib: int = 256
     job_timeout_seconds: int = 43_200
     progress_timeout_seconds: int = 1_800
     reconcile_retries: int = 3
@@ -108,7 +116,10 @@ class GitSelection:
     motion_path: PurePosixPath | None = None
     dataset_fingerprint: str | None = None
     dataset_files: tuple[Path, ...] = ()
+    dataset_root: Path | None = None
     teacher_checkpoint_path: Path | None = None
+    sonic_artifact_path: Path | None = None
+    resume_checkpoint_path: Path | None = None
     warm_start_checkpoint_path: Path | None = None
 
 
@@ -150,6 +161,7 @@ def validate_config(config: VastTrainConfig) -> None:
         "twist_teacher",
         "twist_student",
         "twist2",
+        "sonic",
     }:
         raise ValueError("--experiment is invalid")
     if config.experiment == "motion":
@@ -171,11 +183,14 @@ def validate_config(config: VastTrainConfig) -> None:
             "--motion-path and --end-effector-payload-mass-kg are only valid "
             "for the motion experiment"
         )
-    if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
+    dataset_experiments = {"twist_teacher", "twist_student", "twist2", "sonic"}
+    if config.experiment in dataset_experiments:
         if config.dataset_path is None:
-            raise ValueError("--dataset-path is required for TWIST Vast training")
+            raise ValueError("--dataset-path is required for dataset-backed training")
     elif config.dataset_path is not None:
-        raise ValueError("--dataset-path is only valid for TWIST Vast training")
+        raise ValueError(
+            "--dataset-path is only valid for TWIST, TWIST2, or SONIC Vast training"
+        )
     if config.experiment == "twist_student":
         if config.teacher_checkpoint_path is None:
             raise ValueError(
@@ -185,24 +200,63 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError(
             "--teacher-checkpoint-path is only valid for TWIST student Vast training"
         )
+    if config.experiment == "sonic":
+        if config.sonic_artifact_path is None:
+            raise ValueError(
+                "--sonic-artifact-path is required for SONIC Vast training"
+            )
+        if config.resume_path is not None:
+            missing = [
+                name
+                for name in (
+                    "total_timesteps",
+                    "num_envs",
+                )
+                if getattr(config, name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "resumed SONIC Vast training requires explicit "
+                    + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+                )
+        elif config.allow_git_commit_mismatch:
+            raise ValueError(
+                "--allow-git-commit-mismatch requires --resume-path for SONIC "
+                "Vast training"
+            )
+    else:
+        if config.sonic_artifact_path is not None:
+            raise ValueError(
+                "--sonic-artifact-path is only valid for SONIC Vast training"
+            )
+        if config.resume_path is not None:
+            raise ValueError("--resume-path is only valid for SONIC Vast training")
+    for name in (
+        "total_timesteps",
+        "num_envs",
+        "checkpoint_every_updates",
+    ):
+        value = getattr(config, name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise ValueError(f"--{name.replace('_', '-')} must be a positive integer")
     if config.experiment != "twist2" and config.warm_start_checkpoint_path is not None:
         raise ValueError(
             "--warm-start-checkpoint-path is only valid for TWIST2 Vast training"
         )
-    if (
-        config.allow_git_commit_mismatch
-        and config.experiment != "twist_student"
-        and not (
+    if config.allow_git_commit_mismatch and not (
+        config.experiment == "twist_student"
+        or (
             config.experiment == "twist2"
             and config.warm_start_checkpoint_path is not None
         )
+        or (config.experiment == "sonic" and config.resume_path is not None)
     ):
         raise ValueError(
             "--allow-git-commit-mismatch requires a TWIST student teacher or "
-            "TWIST2 warm-start checkpoint"
+            "TWIST2/SONIC continuation checkpoint"
         )
-    if config.total_timesteps is not None and config.total_timesteps <= 0:
-        raise ValueError("--total-timesteps must be positive")
     if config.learning_rate is not None and (
         not math.isfinite(config.learning_rate) or config.learning_rate <= 0.0
     ):
@@ -239,9 +293,12 @@ def validate_config(config: VastTrainConfig) -> None:
     remote_paths = {
         "--remote-dir": PurePosixPath(config.remote_dir),
         "--remote-dataset-dir": PurePosixPath(config.remote_dataset_dir),
+        "--remote-sonic-dataset-dir": PurePosixPath(config.remote_sonic_dataset_dir),
         "--remote-teacher-checkpoint-dir": PurePosixPath(
             config.remote_teacher_checkpoint_dir
         ),
+        "--remote-sonic-artifact-dir": PurePosixPath(config.remote_sonic_artifact_dir),
+        "--remote-sonic-resume-dir": PurePosixPath(config.remote_sonic_resume_dir),
         "--remote-warm-start-checkpoint-dir": PurePosixPath(
             config.remote_warm_start_checkpoint_dir
         ),
@@ -251,7 +308,10 @@ def validate_config(config: VastTrainConfig) -> None:
         raw = {
             "--remote-dir": config.remote_dir,
             "--remote-dataset-dir": config.remote_dataset_dir,
+            "--remote-sonic-dataset-dir": config.remote_sonic_dataset_dir,
             "--remote-teacher-checkpoint-dir": config.remote_teacher_checkpoint_dir,
+            "--remote-sonic-artifact-dir": config.remote_sonic_artifact_dir,
+            "--remote-sonic-resume-dir": config.remote_sonic_resume_dir,
             "--remote-warm-start-checkpoint-dir": (
                 config.remote_warm_start_checkpoint_dir
             ),
@@ -266,7 +326,17 @@ def validate_config(config: VastTrainConfig) -> None:
         ):
             raise ValueError(f"{label} must be a normalized strict child of /workspace")
     if len(set(remote_paths.values())) != len(remote_paths):
-        raise ValueError("remote repository, dataset, and checkpoint paths must differ")
+        raise ValueError(
+            "remote repository, dataset, checkpoint, and artifact paths must differ"
+        )
+    local_result_dir = config.local_result_dir
+    if (
+        local_result_dir.is_absolute()
+        or not local_result_dir.parts
+        or local_result_dir.parts[0] != "outputs"
+        or ".." in local_result_dir.parts
+    ):
+        raise ValueError("--local-result-dir must be a relative path inside outputs")
     state_dir = config.lifecycle_state_dir
     if (
         state_dir.is_absolute()
@@ -383,13 +453,36 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             ) from exc
     dataset_fingerprint = None
     dataset_files: tuple[Path, ...] = ()
+    dataset_root = None
     if config.dataset_path is not None:
-        dataset_fingerprint, dataset_files = _twist_dataset_files(config.dataset_path)
+        if config.experiment == "sonic":
+            dataset_fingerprint, dataset_files, dataset_root = _sonic_dataset_files(
+                config.dataset_path
+            )
+        else:
+            dataset_fingerprint, dataset_files = _twist_dataset_files(
+                config.dataset_path
+            )
     teacher_checkpoint_path = None
     if config.teacher_checkpoint_path is not None:
         teacher_checkpoint_path = _twist_teacher_checkpoint(
             config.teacher_checkpoint_path,
             dataset_fingerprint=dataset_fingerprint,
+        )
+    sonic_artifact_path = None
+    if config.sonic_artifact_path is not None:
+        sonic_artifact_path = _sonic_release_artifact(config.sonic_artifact_path)
+    resume_checkpoint_path = None
+    if config.resume_path is not None:
+        assert sonic_artifact_path is not None
+        resume_checkpoint_path = _sonic_resume_checkpoint(
+            config.resume_path,
+            dataset_fingerprint=dataset_fingerprint,
+            release_artifact_path=sonic_artifact_path,
+            selected_commit=commit,
+            allow_git_commit_mismatch=config.allow_git_commit_mismatch,
+            total_timesteps=config.total_timesteps,
+            num_envs=config.num_envs,
         )
     warm_start_checkpoint_path = None
     if config.warm_start_checkpoint_path is not None:
@@ -407,7 +500,10 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         motion_path=motion_path,
         dataset_fingerprint=dataset_fingerprint,
         dataset_files=dataset_files,
+        dataset_root=dataset_root,
         teacher_checkpoint_path=teacher_checkpoint_path,
+        sonic_artifact_path=sonic_artifact_path,
+        resume_checkpoint_path=resume_checkpoint_path,
         warm_start_checkpoint_path=warm_start_checkpoint_path,
     )
 
@@ -450,6 +546,152 @@ def _twist_dataset_files(index_path: Path) -> tuple[str, tuple[Path, ...]]:
     if missing:
         raise ValueError("Vast TWIST dataset files are missing: " + ", ".join(missing))
     return fingerprint, paths
+
+
+def _sonic_dataset_files(
+    index_path: Path,
+) -> tuple[str, tuple[Path, ...], Path]:
+    from bello_mujoco.motion.sonic_dataset import load_sonic_dataset_index
+
+    index_path = Path(index_path).expanduser().resolve()
+    if index_path.name != "index.json":
+        raise ValueError("Vast SONIC dataset path must name index.json")
+    try:
+        index = load_sonic_dataset_index(index_path)
+    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"Vast SONIC dataset is invalid: {exc}") from exc
+    root = index_path.parent
+    relative_paths = {
+        PurePosixPath("index.json"),
+        PurePosixPath("heldout_manifest.json"),
+        PurePosixPath("conversion_report.json"),
+    }
+    relative_paths.update(
+        PurePosixPath(index["split_files"][split]["file"])
+        for split in ("train", "evaluation")
+    )
+    paths = tuple(root / Path(relative) for relative in sorted(relative_paths))
+    missing = [str(path) for path in paths if not path.is_file() or path.is_symlink()]
+    if missing:
+        raise ValueError("Vast SONIC dataset files are missing: " + ", ".join(missing))
+    symlinks = [str(path) for path in root.rglob("*") if path.is_symlink()]
+    if symlinks:
+        raise ValueError(
+            "Vast SONIC dataset must not contain symbolic links: " + ", ".join(symlinks)
+        )
+    actual = {
+        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
+    }
+    expected = {relative.as_posix() for relative in relative_paths}
+    if actual != expected:
+        raise ValueError(
+            "Vast SONIC dataset tree differs from its canonical files: "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+    return index["dataset_fingerprint"], paths, root
+
+
+def _sonic_release_artifact(path: Path) -> Path:
+    from bello_mujoco.sonic_policy import load_sonic_release_artifact
+
+    root = Path(path).expanduser().resolve()
+    expected = {"manifest.json", "weights.npz", "golden.npz"}
+    if not root.is_dir() or any(
+        candidate.is_symlink() for candidate in root.rglob("*")
+    ):
+        raise ValueError(
+            "Vast SONIC release artifact must be a directory without symbolic links"
+        )
+    actual = {
+        candidate.relative_to(root).as_posix()
+        for candidate in root.rglob("*")
+        if candidate.is_file()
+    }
+    if actual != expected:
+        raise ValueError(
+            "Vast SONIC release artifact files differ from the pinned export"
+        )
+    try:
+        load_sonic_release_artifact(root)
+    except (FileNotFoundError, TypeError, ValueError) as exc:
+        raise ValueError(f"Vast SONIC release artifact is invalid: {exc}") from exc
+    return root
+
+
+def _sonic_resume_checkpoint(
+    checkpoint_path: Path,
+    *,
+    dataset_fingerprint: str | None,
+    release_artifact_path: Path,
+    selected_commit: str,
+    allow_git_commit_mismatch: bool,
+    total_timesteps: int | None,
+    num_envs: int | None,
+) -> Path:
+    from bello_mujoco.sonic_policy import load_sonic_release_artifact
+    from bello_mujoco.training.checkpoint import (
+        SonicCheckpointMetadata,
+        load_checkpoint_metadata,
+        load_checkpoint_update,
+    )
+
+    unresolved = Path(checkpoint_path).expanduser()
+    if unresolved.is_symlink():
+        raise ValueError("SONIC resume checkpoint must not be a symbolic link")
+    root = unresolved.resolve()
+    if not root.is_dir() or any(path.is_symlink() for path in root.rglob("*")):
+        raise ValueError(
+            "SONIC resume checkpoint must be a directory without symbolic links"
+        )
+    for name in ("metadata.json", "state", "continuation"):
+        candidate = root / name
+        expected = (
+            candidate.is_file() if name == "metadata.json" else candidate.is_dir()
+        )
+        if not expected:
+            raise ValueError(f"SONIC resume checkpoint is missing {name}")
+    try:
+        metadata = load_checkpoint_metadata(
+            root,
+            allow_git_commit_mismatch=allow_git_commit_mismatch,
+        )
+        saved_update = load_checkpoint_update(
+            root,
+            allow_git_commit_mismatch=allow_git_commit_mismatch,
+        )
+    except (FileNotFoundError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(f"Vast SONIC resume checkpoint is invalid: {exc}") from exc
+    if not isinstance(metadata, SonicCheckpointMetadata):
+        raise ValueError("Vast SONIC resume requires a typed SONIC checkpoint")
+    if metadata.dataset.dataset_fingerprint != dataset_fingerprint:
+        raise ValueError("SONIC resume checkpoint dataset fingerprint differs")
+    if metadata.source_revision != selected_commit and not allow_git_commit_mismatch:
+        raise ValueError("SONIC resume checkpoint source revision differs")
+
+    release = load_sonic_release_artifact(release_artifact_path)
+    if metadata.release_checkpoint_sha256.removeprefix(
+        "sha256:"
+    ) != release.checkpoint_sha256.removeprefix(
+        "sha256:"
+    ) or metadata.release_artifact_sha256.removeprefix(
+        "sha256:"
+    ) != release.artifact_sha256.removeprefix("sha256:"):
+        raise ValueError("SONIC resume checkpoint release artifact differs")
+    if num_envs != metadata.ppo.num_envs:
+        raise ValueError(
+            "SONIC resume num environments differs from the checkpoint: "
+            f"{num_envs} != {metadata.ppo.num_envs}"
+        )
+    assert total_timesteps is not None
+    requested_updates = total_timesteps // (
+        metadata.ppo.num_envs * metadata.ppo.num_steps
+    )
+    if requested_updates < saved_update:
+        raise ValueError(
+            "SONIC resume budget ends before the saved checkpoint update: "
+            f"{requested_updates} < {saved_update}"
+        )
+    return root
 
 
 def _twist_teacher_checkpoint(
@@ -541,6 +783,8 @@ def _task_name(config: VastTrainConfig) -> str:
         return "motion-tracking"
     if config.experiment in {"twist_teacher", "twist_student", "twist2"}:
         return config.experiment.replace("_", "-")
+    if config.experiment == "sonic":
+        return "sonic-transfer"
     return "locomotion"
 
 
@@ -913,7 +1157,7 @@ def create_available_instance(
                 image=config.offer.image,
                 disk=float(config.offer.disk_gb),
                 label=label,
-                runtype="ssh_direc",
+                runtype="ssh_direct",
                 cancel_unavail=True,
                 onstart_cmd=watchdog_onstart_script(config),
             )
@@ -961,7 +1205,13 @@ def watchdog_deadline(config: VastTrainConfig, *, now: float | None = None) -> i
 def watchdog_onstart_script(config: VastTrainConfig) -> str:
     program = _watchdog_program(watchdog_deadline(config))
     return (
-        f"set +x\nnohup python3 -c {shlex.quote(program)} </dev/null >/dev/null 2>&1 &"
+        "set +x\n"
+        "install -d -m 0700 -o root -g root /root/.ssh\n"
+        "if [ -f /root/.ssh/authorized_keys ]; then\n"
+        "  chown root:root /root/.ssh/authorized_keys\n"
+        "  chmod 0600 /root/.ssh/authorized_keys\n"
+        "fi\n"
+        f"nohup python3 -c {shlex.quote(program)} </dev/null >/dev/null 2>&1 &"
     )
 
 
@@ -1095,28 +1345,34 @@ class VastLifecycle:
                 )
                 write_active_state(self.state_path, instance_id, self.label)
                 print(f"Created Vast instance {instance_id}; teardown is armed.")
-                wait_for_instance(
-                    self.api,
-                    instance_id,
-                    self.config.ready_timeout_seconds,
-                )
+                try:
+                    wait_for_instance(
+                        self.api,
+                        instance_id,
+                        self.config.ready_timeout_seconds,
+                    )
+                except TimeoutError:
+                    retry_offer = True
+                    raise
                 try:
                     ssh_target = wait_for_ssh(
                         self.api,
                         instance_id,
                         self.config.ssh_timeout_seconds,
                     )
-                except TimeoutError as exc:
+                except TimeoutError:
                     retry_offer = True
-                    raise RuntimeError(
-                        f"offer {offer.id} did not become reachable over SSH"
-                    ) from exc
+                    raise
                 if selection.dataset_files:
-                    speed = measure_upload_mib_per_second(
-                        ssh_target,
-                        size_mib=self.config.route_probe_mib,
-                        timeout_seconds=self.config.ssh_timeout_seconds,
-                    )
+                    try:
+                        speed = measure_upload_mib_per_second(
+                            ssh_target,
+                            size_mib=self.config.route_probe_mib,
+                            timeout_seconds=self.config.ssh_timeout_seconds,
+                        )
+                    except (OSError, RuntimeError, subprocess.SubprocessError):
+                        retry_offer = True
+                        raise
                     print(f"Measured direct SSH upload: {speed:.1f} MiB/s.")
                     if speed < self.config.min_upload_mib_per_second:
                         retry_offer = True
@@ -1132,6 +1388,8 @@ class VastLifecycle:
                     run_name,
                     wandb_key=wandb_key,
                     github_token=github_token,
+                    instance_api=self.api,
+                    instance_id=instance_id,
                 )
             except BaseException as exc:
                 failure = exc
@@ -1191,7 +1449,9 @@ def launch_pipeline(
         return 0
 
     if selection.dataset_files and shutil.which("rsync") is None:
-        raise RuntimeError("TWIST Vast training requires rsync on the launch machine")
+        raise RuntimeError(
+            "dataset-backed Vast training requires rsync on the launch machine"
+        )
 
     vast_key = credential(
         "VAST_API_KEY", VAST_KEYRING_SERVICE, VAST_KEYRING_USERNAME, required=True

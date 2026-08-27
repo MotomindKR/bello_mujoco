@@ -18,7 +18,7 @@ from bello_mujoco.motion.twist_dataset import SourceSequence, load_source_manife
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
-RETARGET_FORMAT_VERSION = 9
+RETARGET_FORMAT_VERSION = 10
 
 
 @dataclass(frozen=True)

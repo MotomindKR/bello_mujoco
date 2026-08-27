@@ -15,9 +15,11 @@ from bello_mujoco.cli import (
     HardwareCommandConfig,
     MotionCommandConfig,
     PrepareAssetsCommandConfig,
+    SonicDataCommandConfig,
     TrainCommandConfig,
     TwistDataCommandConfig,
     VastTrainCommandConfig,
+    _checkpoint_overrides,
     _reject_explicit_fields,
     _warp_overrides,
 )
@@ -27,6 +29,7 @@ from bello_mujoco.configuration import (
     coerce_value,
     locomotion_training_profile,
     motion_training_profile,
+    sonic_training_profile,
     structured_config,
     twist2_training_profile,
     twist_training_profile,
@@ -38,6 +41,7 @@ COMMAND_SCHEMAS = {
     "eval": EvalCommandConfig,
     "motion": MotionCommandConfig,
     "twist_data": TwistDataCommandConfig,
+    "sonic_data": SonicDataCommandConfig,
     "vast_train": VastTrainCommandConfig,
     "emulator": EmulatorCommandConfig,
     "hardware": HardwareCommandConfig,
@@ -216,6 +220,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     twist_teacher = twist_training_profile("teacher")
     twist_student = twist_training_profile("student")
     twist2 = twist2_training_profile()
+    sonic = sonic_training_profile()
 
     assert all(
         profile.config.num_updates > 0
@@ -227,14 +232,21 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
             twist_teacher,
             twist_student,
             twist2,
+            sonic,
         )
     )
     assert smoke.config.num_envs == 2
     assert smoke.config.num_updates == 1
     assert smoke.checkpoint_config.enabled is False
     assert smoke.checkpoint_config.allow_git_commit_mismatch is False
+    assert sonic.config.policy.sonic_train_log_std is True
+    assert sonic.sonic_env.observation_noise.ramp_steps == 48_000
+    assert sonic.sonic_env.domain_randomization.push_warmup_steps == 48_000
+    assert sonic.sonic_env.sampling.clip_prior == ("frame_count_times_manifest_weight")
+    assert sonic.sonic_env.freeze_frame_probability == 0.0
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
+    assert not smoke.config.normalize_critic_observations
     assert locomotion.checkpoint_config.every_updates == 512
     assert locomotion.config.total_timesteps == 8_000_000_000
     assert locomotion.config.symmetry_loss_coef == pytest.approx(0.1)
@@ -273,6 +285,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.env_config.observation_latency.enabled
     assert hardware.env_config.observation_latency.delay_steps == (0, 2)
     assert motion.checkpoint_config.every_updates == 500
+    assert not motion.config.normalize_critic_observations
     assert twist_teacher.config.num_updates == 30_002
     assert twist_teacher.config.policy.architecture == "twist_teacher"
     assert twist_teacher.warp.contact_budget_per_env == 32
@@ -287,6 +300,15 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert twist2.config.observation_norm_epsilon_mode == "std_offset"
     assert twist2.sampling.base_distribution == "manifest_weight"
     assert twist2.sampling.curriculum_max_difficulty == 10.0
+    assert sonic.config.num_updates == 30_000
+    assert sonic.config.policy.architecture == "sonic"
+    assert sonic.config.learning_rate == pytest.approx(2.0e-5)
+    assert sonic.config.critic_learning_rate == pytest.approx(1.0e-3)
+    assert not sonic.config.normalize_observations
+    assert not sonic.config.normalize_critic_observations
+    assert sonic.config.policy.sonic_lora_rank == 32
+    assert sonic.config.policy.sonic_lora_alpha == 32.0
+    assert not sonic.pretraining.enabled
 
 
 def test_contact_budget_command_override_is_explicit_and_positive() -> None:
@@ -301,6 +323,18 @@ def test_contact_budget_command_override_is_explicit_and_positive() -> None:
     assert _warp_overrides(warp, command).contact_budget_per_env == 64
     with pytest.raises(ValueError, match="must be positive"):
         _warp_overrides(warp, replace(command, contact_budget_per_env=0))
+
+
+def test_checkpoint_enabled_command_override_is_explicit() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        raw = compose(config_name="train", overrides=["checkpoint_enabled=false"])
+    command = command_config(TrainCommandConfig, raw)
+    checkpoint = sonic_training_profile().checkpoint_config
+
+    assert not _checkpoint_overrides(checkpoint, command).enabled
 
 
 def test_motion_path_override_is_explicit(tmp_path: Path) -> None:

@@ -1,0 +1,21 @@
+operation: build
+manifest: null
+input_index: null
+body_model_root: null
+bello_retargeted_root: null
+g1_retargeted_root: null
+normalized_root: null
+output_root: null
+gmr_python: null
+jobs: 1
+overwrite: false
+keep_normalized: false
+limit: null
+quality_config: configs/twist/quality.yaml
+calibration_config: configs/sonic/calibration.yaml
+sanitation_config: configs/sonic/sanitation.yaml
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/sonic_data/${now:%Y-%m-%d}/${now:%H-%M-%S}

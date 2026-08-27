@@ -22,6 +22,7 @@ import optax
 import orbax.checkpoint as ocp
 
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.policy import ActorCritic, partition_policy_parameters
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.configuration import coerce_value as coerce_value
 from bello_mujoco.configuration import dataclass_from_dict
@@ -45,7 +46,9 @@ from bello_mujoco.envs.twist2 import (
     Twist2ObservationContract,
     Twist2ParityContract,
 )
+from bello_mujoco.envs.sonic import SonicEnvConfig, SonicObservationContract
 from bello_mujoco.motion.clip import MOTION_FORMAT_VERSION, MotionClip
+from bello_mujoco.motion.sonic_dataset import SonicJointCalibration
 from bello_mujoco.motion.twist2_dataset import Twist2DatasetAudit
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
@@ -61,6 +64,7 @@ from bello_mujoco.training.ppo import (
     init_train_state,
     init_value_norm_state,
 )
+from bello_mujoco.training.sonic_pretraining import SonicPretrainingConfig
 from bello_mujoco.repository import (
     capture_repository_commit,
     require_repository_commit,
@@ -234,6 +238,39 @@ class Twist2CheckpointMetadata(_CheckpointMetadataBase):
     critic_observation_norm: ObservationNormMetadata | None = None
 
 
+@dataclass(frozen=True)
+class SonicDatasetContract:
+    index_path: Path
+    schema_version: int
+    dataset_fingerprint: str
+    robot_fingerprint: str
+    bello_gmr_revision: str
+    bello_gmr_config_sha256: str
+    g1_gmr_revision: str
+    g1_config_sha256: str
+    g1_robot_sha256: str
+    joint_names: tuple[str, ...]
+    qpos_joint_names: tuple[str, ...]
+    body_names: tuple[str, ...]
+    calibration: SonicJointCalibration
+
+
+@dataclass(frozen=True)
+class SonicCheckpointMetadata(_CheckpointMetadataBase):
+    simulation: TwistSimulationConfig
+    sonic_env: SonicEnvConfig
+    observation_contract: SonicObservationContract
+    dataset: SonicDatasetContract
+    pretraining: SonicPretrainingConfig
+    release_checkpoint_sha256: str
+    release_artifact_sha256: str
+    source_revision: str
+    task: Literal["sonic"] = "sonic"
+    value_norm: ValueNormMetadata | None = None
+    observation_norm: ObservationNormMetadata | None = None
+    critic_observation_norm: ObservationNormMetadata | None = None
+
+
 TwistCheckpointMetadata: TypeAlias = (
     TwistTeacherCheckpointMetadata | TwistStudentCheckpointMetadata
 )
@@ -243,6 +280,7 @@ CheckpointMetadata: TypeAlias = (
     | TwistTeacherCheckpointMetadata
     | TwistStudentCheckpointMetadata
     | Twist2CheckpointMetadata
+    | SonicCheckpointMetadata
 )
 
 
@@ -355,6 +393,7 @@ def restore_evaluation_checkpoint(
     path: Path,
     *,
     allow_git_commit_mismatch: bool = False,
+    policy: ActorCritic | None = None,
 ) -> tuple[TrainState, CheckpointMetadata, CheckpointNormalizationState]:
     """Restore a policy plus the exact running statistics used by its actor."""
 
@@ -370,8 +409,9 @@ def restore_evaluation_checkpoint(
         metadata.action_size,
         metadata.ppo,
         critic_obs_size=metadata.critic_obs_size,
+        policy=policy,
     )
-    _, static_policy = eqx.partition(template_state.policy, eqx.is_array)
+    _, static_policy = partition_policy_parameters(template_state.policy)
     restored = _restore_checkpoint_item(
         path / STATE_DIR,
         _train_state_checkpoint_item(template_state, metadata),
@@ -399,6 +439,7 @@ def restore_runner_checkpoint(
     expected_metadata: CheckpointMetadata,
     *,
     allow_git_commit_mismatch: bool = False,
+    policy: ActorCritic | None = None,
 ) -> tuple[
     RunnerState,
     eqx.Module,
@@ -423,6 +464,7 @@ def restore_runner_checkpoint(
         jax.random.PRNGKey(effective_metadata.ppo.seed),
         env,
         effective_metadata.ppo,
+        policy=policy,
     )
     train_item = _restore_checkpoint_item(
         path / STATE_DIR,
@@ -598,7 +640,7 @@ def validate_warm_start_metadata(
 def _train_state_checkpoint_item(
     train_state: TrainState, metadata: CheckpointMetadata
 ) -> dict[str, Any]:
-    params, _ = eqx.partition(train_state.policy, eqx.is_array)
+    params, _ = partition_policy_parameters(train_state.policy)
     return {
         "policy": params,
         "opt_state": train_state.opt_state,
@@ -630,7 +672,8 @@ def _continuation_checkpoint_item(runner_state: RunnerState) -> dict[str, Any]:
         "rng": runner_state.rng,
         "learning_rate": runner_state.learning_rate,
     }
-    if getattr(runner_state.task_state, "size", 0) > 0:
+    task_leaves = jax.tree_util.tree_leaves(runner_state.task_state)
+    if any(getattr(value, "size", 0) > 0 for value in task_leaves):
         item["task_state"] = runner_state.task_state
     return item
 
@@ -797,6 +840,7 @@ def _with_checkpoint_metadata_defaults(
     if isinstance(ppo, dict):
         normalized = dict(value)
         normalized_ppo = dict(ppo)
+        normalized_ppo.setdefault("critic_learning_rate", None)
         normalized_ppo.setdefault("symmetry_loss_coef", 0.0)
         if value.get("task") in {"locomotion", "motion_tracking"}:
             legacy_ppo_defaults = {
@@ -974,10 +1018,13 @@ def _metadata_from_dict(
         metadata_type = TwistStudentCheckpointMetadata
     elif task == "twist2":
         metadata_type = Twist2CheckpointMetadata
+    elif task == "sonic":
+        metadata_type = SonicCheckpointMetadata
     else:
         raise ValueError(
             f"{path}.task must be 'locomotion', 'motion_tracking', "
-            f"'twist_teacher', 'twist_student', or 'twist2', got {task!r}"
+            "'twist_teacher', 'twist_student', 'twist2', or 'sonic', "
+            f"got {task!r}"
         )
     return dataclass_from_dict(
         metadata_type,
@@ -1066,6 +1113,8 @@ def _validate_metadata_layouts(metadata: CheckpointMetadata) -> None:
         _validate_twist_metadata(metadata)
     elif isinstance(metadata, Twist2CheckpointMetadata):
         _validate_twist2_metadata(metadata)
+    elif isinstance(metadata, SonicCheckpointMetadata):
+        _validate_sonic_metadata(metadata)
     elif not isinstance(metadata, LocomotionCheckpointMetadata):
         raise TypeError(f"unsupported checkpoint metadata type {type(metadata)!r}")
     stack_size = metadata.ppo.policy.obs_stack_size
@@ -1276,6 +1325,87 @@ def _validate_twist2_metadata(metadata: Twist2CheckpointMetadata) -> None:
     )
 
 
+def _validate_sonic_metadata(metadata: SonicCheckpointMetadata) -> None:
+    for name, value in (
+        ("dataset_fingerprint", metadata.dataset.dataset_fingerprint),
+        ("robot_fingerprint", metadata.dataset.robot_fingerprint),
+        ("bello_gmr_config_sha256", metadata.dataset.bello_gmr_config_sha256),
+        ("release_checkpoint_sha256", metadata.release_checkpoint_sha256),
+        ("release_artifact_sha256", metadata.release_artifact_sha256),
+        ("g1_config_sha256", metadata.dataset.g1_config_sha256),
+        ("g1_robot_sha256", metadata.dataset.g1_robot_sha256),
+    ):
+        _validated_fingerprint(value, f"metadata.{name}")
+    for name, revision in (
+        ("bello_gmr_revision", metadata.dataset.bello_gmr_revision),
+        ("g1_gmr_revision", metadata.dataset.g1_gmr_revision),
+        ("source_revision", metadata.source_revision),
+    ):
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise ValueError(f"SONIC {name} must be a 40-character Git revision")
+    if metadata.dataset.schema_version <= 0:
+        raise ValueError("SONIC dataset schema version must be positive")
+    if metadata.dataset.joint_names != metadata.action_layout.names:
+        raise ValueError("SONIC dataset joint order does not match actions")
+    if (
+        len(metadata.dataset.qpos_joint_names) != len(metadata.dataset.joint_names)
+        or len(set(metadata.dataset.qpos_joint_names))
+        != len(metadata.dataset.qpos_joint_names)
+        or set(metadata.dataset.qpos_joint_names) != set(metadata.dataset.joint_names)
+    ):
+        raise ValueError("SONIC dataset qpos joint order is not a joint permutation")
+    if metadata.dataset.calibration.bello_joint_names != metadata.action_layout.names:
+        raise ValueError("SONIC calibration joint order does not match actions")
+    if metadata.observation_contract.joint_names != metadata.action_layout.names:
+        raise ValueError("SONIC observation joint order does not match actions")
+    missing = set(metadata.observation_contract.required_body_names) - set(
+        metadata.dataset.body_names
+    )
+    if missing:
+        raise ValueError(f"SONIC dataset is missing tracked bodies: {sorted(missing)}")
+    if metadata.ppo.policy.architecture != "sonic":
+        raise ValueError("SONIC checkpoint requires policy architecture 'sonic'")
+    if metadata.ppo.policy.obs_stack_size != 1:
+        raise ValueError("SONIC owns its ten-frame history and cannot be PPO-stacked")
+    if metadata.actor_observation_layout != metadata.observation_contract.actor_layout:
+        raise ValueError("SONIC actor observation layout differs from its contract")
+    if (
+        metadata.critic_observation_layout
+        != metadata.observation_contract.critic_layout
+    ):
+        raise ValueError("SONIC critic observation layout differs from its contract")
+    normalization = (
+        metadata.value_norm,
+        metadata.observation_norm,
+        metadata.critic_observation_norm,
+    )
+    if any(value is None for value in normalization):
+        raise ValueError("SONIC checkpoint normalization snapshots are required")
+    assert metadata.value_norm is not None
+    assert metadata.observation_norm is not None
+    assert metadata.critic_observation_norm is not None
+    _validate_running_moments(
+        (metadata.value_norm.mean,),
+        (metadata.value_norm.var,),
+        metadata.value_norm.count,
+        name="SONIC value normalization",
+    )
+    _validate_running_moments(
+        metadata.observation_norm.mean,
+        metadata.observation_norm.var,
+        metadata.observation_norm.count,
+        name="SONIC actor observation normalization",
+        expected_size=metadata.obs_size,
+    )
+    _validate_running_moments(
+        metadata.critic_observation_norm.mean,
+        metadata.critic_observation_norm.var,
+        metadata.critic_observation_norm.count,
+        name="SONIC critic observation normalization",
+        expected_size=metadata.critic_obs_size,
+    )
+
+
 def _validate_running_moments(
     mean: tuple[float, ...],
     var: tuple[float, ...],
@@ -1306,6 +1436,7 @@ def _validate_restored_normalization_state(
             TwistTeacherCheckpointMetadata,
             TwistStudentCheckpointMetadata,
             Twist2CheckpointMetadata,
+            SonicCheckpointMetadata,
         ),
     ):
         return
@@ -1539,6 +1670,21 @@ def twist_metadata_with_runner_state(
     runner_state: RunnerState,
 ) -> TwistCheckpointMetadata | Twist2CheckpointMetadata:
     """Attach normalization state to a typed TWIST checkpoint."""
+
+    return replace(
+        metadata,
+        value_norm=value_norm_metadata(runner_state.value_norm_state),
+        observation_norm=observation_norm_metadata(runner_state.observation_norm_state),
+        critic_observation_norm=observation_norm_metadata(
+            runner_state.critic_observation_norm_state
+        ),
+    )
+
+
+def sonic_metadata_with_runner_state(
+    metadata: SonicCheckpointMetadata, runner_state: RunnerState
+) -> SonicCheckpointMetadata:
+    """Attach PPO normalization state to a typed SONIC checkpoint."""
 
     return replace(
         metadata,

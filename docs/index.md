@@ -9,6 +9,7 @@ guides define the supported interfaces and contracts:
 - [Motion data and tracking](motion_tracking.md)
 - [TWIST teacher, student, and dataset pipeline](twist.md)
 - [One-stage TWIST2](twist2.md)
+- [SONIC transfer learning](sonic.md)
 - [Physical hardware](hardware.md)
 - [URDF inertial overhaul](urdf_inertial_overhaul.md)
 - [RobStride emulator](emulator.md)
@@ -25,7 +26,7 @@ deps/Fast-SAM-3D-Body/     pinned SMPL-X skeletal gRPC contract
 motions/asap_fixed_head/   tracked reference clips
 src/bello_mujoco/
   assets_pipeline/         asset preparation and project data paths
-  envs/                    locomotion, motion tracking, TWIST/TWIST2, and rewards
+  envs/                    locomotion, motion tracking, TWIST/TWIST2/SONIC, and rewards
   evaluation/              native rendering and policy evaluation
   hardware/                physical runners, IMU/pose services, and live GMR
   motion/                  motion clips, import, and feasibility tools

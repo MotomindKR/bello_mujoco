@@ -7,20 +7,26 @@ asset, and output fields are in the
 
 ## Profiles
 
-`bello-train` exposes four profiles:
+`bello-train` exposes these maintained profiles:
 
 ```text
 smoke
 locomotion
 hardware_locomotion
 motion
+twist_teacher
+twist_student
+twist2
+sonic
 ```
 
 `smoke` runs a real, minimal MJX-Warp PPO update. `locomotion` is the canonical
 gait baseline. `hardware_locomotion` uses the same reward and policy contract
 with the longer credit horizon used by the physical policy. Its periodic and
 final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
-BeyondMimic tracking.
+BeyondMimic tracking. TWIST and TWIST2 are dedicated whole-body motion tasks;
+SONIC wraps NVIDIA's released actor/critic with fixed Bello↔G1 semantic maps
+and trains rank-32 LoRA dynamics residuals.
 
 The public command can override seed, total timesteps, environment count,
 motion path, resume path, checkpoint destination/name, W&B enablement/run name,
@@ -76,7 +82,8 @@ command is zero. Disable gamepad input to apply a fixed command. An unbounded
 `steps=null` rollout continues until controller exit or interruption, and
 completed episodes reset unless `stop_on_done=true`.
 
-Motion evaluation rejects non-default locomotion command/gamepad/stochastic
+Motion and whole-body evaluation reject non-default locomotion
+command/gamepad/stochastic
 fields. Its default step horizon is the checkpoint environment's maximum
 episode length.
 
@@ -147,6 +154,13 @@ dataset, Bello model, joint/body order, observation contract, and source
 revision. Student metadata binds the exact teacher metadata fingerprint and
 corrected KL schedule. Public TWIST evaluation accepts only the student and
 reports deterministic global, per-source, and per-clip held-out metrics.
+SONIC checkpoints contain only the trainable actor/critic LoRA adapters and log
+standard deviation; reconstruction therefore also requires the exact recorded
+safe release artifact. SONIC metadata binds its synchronized split-wide dataset and
+training-only G1/Bello calibration. The global adaptive failure/attempt state
+is restored with the runner continuation. Evaluation verifies the frozen
+release hashes, loads the complete held-out bank once, and reports deterministic
+per-clip and aggregate acceptance metrics.
 
 Read the recorded revision without loading policy state:
 

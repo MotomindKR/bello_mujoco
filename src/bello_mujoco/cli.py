@@ -19,6 +19,7 @@ from bello_mujoco.configuration import (
     config_path,
     locomotion_training_profile,
     motion_training_profile,
+    sonic_training_profile,
     twist2_training_profile,
     twist_training_profile,
 )
@@ -44,21 +45,26 @@ class TrainCommandConfig:
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
+    sonic_artifact_path: Path | None
     end_effector_payload_mass_kg: float | None
     resume_path: Path | None
     warm_start_path: Path | None
     allow_git_commit_mismatch: bool
     checkpoint_directory: Path | None
     checkpoint_name: str | None
+    checkpoint_enabled: bool | None
+    checkpoint_every_updates: int | None
     wandb_enabled: bool | None
     run_name: str | None
     video_enabled: bool | None
+    sonic_pretraining_enabled: bool | None
 
 
 @dataclass(frozen=True)
 class EvalCommandConfig:
-    task: Literal["locomotion", "motion", "twist_student", "twist2"]
+    task: Literal["locomotion", "motion", "twist_student", "twist2", "sonic"]
     checkpoint_path: Path | None
+    sonic_artifact_path: Path | None
     allow_git_commit_mismatch: bool
     end_effector_payload_mass_kg: float | None
     output_path: Path
@@ -105,6 +111,45 @@ class TwistDataCommandConfig:
 
 
 @dataclass(frozen=True)
+class SonicDataCommandConfig:
+    operation: Literal["retarget_g1", "build", "upgrade_v5", "upgrade_v6"]
+    manifest: Path | None
+    input_index: Path | None
+    body_model_root: Path | None
+    bello_retargeted_root: Path | None
+    g1_retargeted_root: Path | None
+    normalized_root: Path | None
+    output_root: Path | None
+    gmr_python: Path | None
+    jobs: int
+    overwrite: bool
+    keep_normalized: bool
+    limit: int | None
+    quality_config: Path
+    calibration_config: Path
+    sanitation_config: Path
+
+    def __post_init__(self) -> None:
+        if self.operation not in {"retarget_g1", "build", "upgrade_v5", "upgrade_v6"}:
+            raise ValueError(
+                "SONIC data operation must be retarget_g1, build, upgrade_v5, or "
+                "upgrade_v6"
+            )
+        if (
+            isinstance(self.jobs, bool)
+            or not isinstance(self.jobs, int)
+            or self.jobs < 1
+        ):
+            raise ValueError("SONIC data jobs must be a positive integer")
+        if self.limit is not None and (
+            isinstance(self.limit, bool)
+            or not isinstance(self.limit, int)
+            or self.limit < 1
+        ):
+            raise ValueError("SONIC data limit must be positive when provided")
+
+
+@dataclass(frozen=True)
 class VastTrainCommandConfig:
     experiment: Literal[
         "smoke",
@@ -114,13 +159,18 @@ class VastTrainCommandConfig:
         "twist_teacher",
         "twist_student",
         "twist2",
+        "sonic",
     ]
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None
+    sonic_artifact_path: Path | None
+    resume_path: Path | None
     warm_start_checkpoint_path: Path | None
     allow_git_commit_mismatch: bool
     total_timesteps: int | None
+    num_envs: int | None
+    checkpoint_every_updates: int | None
     learning_rate: float | None
     end_effector_payload_mass_kg: float | None
     max_price: float | None
@@ -220,6 +270,16 @@ def _prepare_assets_hydra(config: DictConfig) -> None:
 def train_entrypoint() -> None:
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     os.environ.setdefault("TF_GPU_ALLOCATOR", "cuda_malloc_async")
+    _expand_path_overrides(
+        (
+            "motion_path=",
+            "dataset_path=",
+            "teacher_checkpoint_path=",
+            "sonic_artifact_path=",
+            "resume_path=",
+            "checkpoint_directory=",
+        )
+    )
     _train_hydra()
 
 
@@ -230,9 +290,54 @@ def train_entrypoint() -> None:
 )
 def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
+    if command.experiment == "sonic":
+        _reject_explicit_fields(
+            (
+                "motion_path",
+                "teacher_checkpoint_path",
+                "video_enabled",
+                "warm_start_path",
+                "end_effector_payload_mass_kg",
+            ),
+            context="experiment=sonic",
+        )
+        from bello_mujoco.training.sonic import run_training as run_sonic_training
+
+        run_config = sonic_training_profile(
+            dataset_index=command.dataset_path,
+            release_artifact_directory=command.sonic_artifact_path,
+        )
+        run_config = replace(
+            run_config,
+            config=_ppo_overrides(run_config.config, command),
+            warp=_warp_overrides(run_config.warp, command),
+            checkpoint_config=_checkpoint_overrides(
+                run_config.checkpoint_config, command
+            ),
+            wandb_config=_wandb_overrides(run_config.wandb_config, command),
+            pretraining=replace(
+                run_config.pretraining,
+                enabled=_coalesce(
+                    command.sonic_pretraining_enabled,
+                    run_config.pretraining.enabled,
+                ),
+            ),
+        )
+        run_sonic_training(run_config)
+        return
+    _reject_explicit_fields(
+        ("sonic_pretraining_enabled",),
+        context=f"experiment={command.experiment}",
+    )
     if command.experiment == "twist2":
         _reject_explicit_fields(
-            ("motion_path", "teacher_checkpoint_path", "video_enabled"),
+            (
+                "motion_path",
+                "teacher_checkpoint_path",
+                "sonic_artifact_path",
+                "video_enabled",
+                "end_effector_payload_mass_kg",
+            ),
             context="experiment=twist2",
         )
         from bello_mujoco.training.twist2 import run_training as run_twist2_training
@@ -251,7 +356,13 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment in {"twist_teacher", "twist_student"}:
         _reject_explicit_fields(
-            ("motion_path", "video_enabled", "warm_start_path"),
+            (
+                "motion_path",
+                "sonic_artifact_path",
+                "video_enabled",
+                "warm_start_path",
+                "end_effector_payload_mass_kg",
+            ),
             context=f"experiment={command.experiment}",
         )
         stage = command.experiment.removeprefix("twist_")
@@ -280,7 +391,12 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if command.experiment == "motion":
         _reject_explicit_fields(
-            ("dataset_path", "teacher_checkpoint_path", "warm_start_path"),
+            (
+                "dataset_path",
+                "teacher_checkpoint_path",
+                "sonic_artifact_path",
+                "warm_start_path",
+            ),
             context="experiment=motion",
         )
         from bello_mujoco.training.motion import (
@@ -325,6 +441,7 @@ def _train_hydra(config: DictConfig) -> None:
             "motion_path",
             "dataset_path",
             "teacher_checkpoint_path",
+            "sonic_artifact_path",
             "warm_start_path",
             "end_effector_payload_mass_kg",
         ),
@@ -350,7 +467,14 @@ def _train_hydra(config: DictConfig) -> None:
 
 
 def eval_entrypoint() -> None:
-    _expand_path_overrides(("checkpoint_path=", "output_path=", "video_path="))
+    _expand_path_overrides(
+        (
+            "checkpoint_path=",
+            "sonic_artifact_path=",
+            "output_path=",
+            "video_path=",
+        )
+    )
     _eval_hydra()
 
 
@@ -362,6 +486,43 @@ def eval_entrypoint() -> None:
 def _eval_hydra(config: DictConfig) -> None:
     command = command_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
+    if command.task == "sonic":
+        _reject_explicit_fields(
+            (
+                "command",
+                "stochastic_actions",
+                "action_seed",
+                "gamepad_enabled",
+                "stop_on_done",
+            ),
+            context="task=sonic",
+        )
+        from bello_mujoco.evaluation.sonic import (
+            SonicEvaluationConfig,
+            evaluate_sonic_checkpoint,
+        )
+
+        base = SonicEvaluationConfig()
+        report = evaluate_sonic_checkpoint(
+            checkpoint,
+            replace(
+                base,
+                release_artifact_directory=_coalesce(
+                    command.sonic_artifact_path,
+                    base.release_artifact_directory,
+                ),
+                output_path=(
+                    command.output_path
+                    if "output_path" in _explicit_override_fields()
+                    else base.output_path
+                ),
+                video_path=command.video_path,
+                video_max_steps=_coalesce(command.steps, base.video_max_steps),
+            ),
+            allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
     if command.task == "twist2":
         _reject_explicit_fields(
             (
@@ -370,6 +531,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 "action_seed",
                 "gamepad_enabled",
                 "stop_on_done",
+                "sonic_artifact_path",
             ),
             context="task=twist2",
         )
@@ -407,6 +569,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 "action_seed",
                 "gamepad_enabled",
                 "video_path",
+                "sonic_artifact_path",
             ),
             context="task=twist_student",
         )
@@ -437,6 +600,7 @@ def _eval_hydra(config: DictConfig) -> None:
                 "action_seed",
                 "gamepad_enabled",
                 "video_path",
+                "sonic_artifact_path",
             ),
             context="task=motion",
         )
@@ -453,7 +617,12 @@ def _eval_hydra(config: DictConfig) -> None:
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
     _reject_explicit_fields(
-        ("output_path", "video_path", "end_effector_payload_mass_kg"),
+        (
+            "output_path",
+            "video_path",
+            "sonic_artifact_path",
+            "end_effector_payload_mass_kg",
+        ),
         context="task=locomotion",
     )
     if command.gamepad_enabled:
@@ -505,6 +674,173 @@ def twist_data_entrypoint() -> None:
         )
     )
     _twist_data_hydra()
+
+
+def sonic_data_entrypoint() -> None:
+    _expand_path_overrides(
+        (
+            "manifest=",
+            "body_model_root=",
+            "bello_retargeted_root=",
+            "g1_retargeted_root=",
+            "normalized_root=",
+            "output_root=",
+            "input_index=",
+            "gmr_python=",
+            "quality_config=",
+            "calibration_config=",
+            "sanitation_config=",
+        )
+    )
+    _sonic_data_hydra()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("commands"),
+    config_name="sonic_data",
+)
+def _sonic_data_hydra(config: DictConfig) -> None:
+    command = command_config(SonicDataCommandConfig, config)
+    output_root = _required_path(command.output_root, "output_root")
+    if command.operation == "upgrade_v6":
+        _reject_explicit_fields(
+            (
+                "manifest",
+                "body_model_root",
+                "bello_retargeted_root",
+                "g1_retargeted_root",
+                "normalized_root",
+                "gmr_python",
+                "jobs",
+                "overwrite",
+                "keep_normalized",
+                "limit",
+                "quality_config",
+                "calibration_config",
+                "sanitation_config",
+            ),
+            context="operation=upgrade_v6",
+        )
+        input_index = _required_path(command.input_index, "input_index")
+        from bello_mujoco.motion.sonic_dataset import upgrade_sonic_dataset_v6
+
+        upgraded = upgrade_sonic_dataset_v6(input_index, output_root)
+        print(json.dumps(upgraded, indent=2, sort_keys=True))
+        return
+    if command.operation == "upgrade_v5":
+        _reject_explicit_fields(
+            (
+                "manifest",
+                "body_model_root",
+                "g1_retargeted_root",
+                "normalized_root",
+                "gmr_python",
+                "jobs",
+                "overwrite",
+                "keep_normalized",
+                "limit",
+                "quality_config",
+                "calibration_config",
+                "sanitation_config",
+            ),
+            context="operation=upgrade_v5",
+        )
+        input_index = _required_path(command.input_index, "input_index")
+        bello_root = _required_path(
+            command.bello_retargeted_root, "bello_retargeted_root"
+        )
+        from bello_mujoco.motion.sonic_dataset import upgrade_sonic_dataset_v5
+
+        def progress(stage: str, current: int, total: int) -> None:
+            print(f"SONIC dataset {stage}: {current}/{total}", file=sys.stderr)
+
+        upgraded = upgrade_sonic_dataset_v5(
+            input_index,
+            bello_root,
+            output_root,
+            progress=progress,
+        )
+        print(json.dumps(upgraded, indent=2, sort_keys=True))
+        return
+    _reject_explicit_fields(("input_index",), context=f"operation={command.operation}")
+    manifest = _required_path(command.manifest, "manifest")
+    if command.operation == "retarget_g1":
+        _reject_explicit_fields(
+            (
+                "bello_retargeted_root",
+                "g1_retargeted_root",
+                "quality_config",
+                "calibration_config",
+                "sanitation_config",
+            ),
+            context="operation=retarget_g1",
+        )
+        body_model_root = _required_path(command.body_model_root, "body_model_root")
+        normalized_root = _required_path(command.normalized_root, "normalized_root")
+        gmr_python = _required_path(command.gmr_python, "gmr_python")
+        from bello_mujoco.motion.sonic_retarget import (
+            batch_retarget_sonic_manifest,
+        )
+
+        def progress(current, total, decision) -> None:
+            print(
+                f"retargeted {current}/{total}: {decision.source_id}/"
+                f"{decision.sequence_id} [{decision.status}]",
+                file=sys.stderr,
+            )
+
+        report = batch_retarget_sonic_manifest(
+            manifest,
+            body_model_root=body_model_root,
+            output_root=output_root,
+            normalized_root=normalized_root,
+            gmr_python=gmr_python,
+            jobs=command.jobs,
+            overwrite=command.overwrite,
+            keep_normalized=command.keep_normalized,
+            limit=command.limit,
+            progress=progress,
+        )
+        print(json.dumps(asdict(report), indent=2, sort_keys=True))
+        if report.failed:
+            raise RuntimeError(f"{report.failed} SONIC G1 retarget(s) failed")
+        return
+    _reject_explicit_fields(
+        (
+            "body_model_root",
+            "normalized_root",
+            "gmr_python",
+            "jobs",
+            "overwrite",
+            "keep_normalized",
+            "limit",
+        ),
+        context="operation=build",
+    )
+    bello_root = _required_path(command.bello_retargeted_root, "bello_retargeted_root")
+    g1_root = _required_path(command.g1_retargeted_root, "g1_retargeted_root")
+    from bello_mujoco.motion.sonic_dataset import (
+        build_sonic_dataset,
+        load_sonic_calibration_config,
+        load_sonic_sanitation_config,
+    )
+    from bello_mujoco.motion.twist_dataset import load_quality_config
+
+    def progress(stage: str, current: int, total: int) -> None:
+        print(f"SONIC dataset {stage}: {current}/{total}", file=sys.stderr)
+
+    index = build_sonic_dataset(
+        manifest,
+        bello_root,
+        g1_root,
+        output_root,
+        quality=load_quality_config(command.quality_config),
+        calibration=load_sonic_calibration_config(command.calibration_config),
+        sanitation=load_sonic_sanitation_config(command.sanitation_config),
+        progress=progress,
+    )
+    print(json.dumps(index, indent=2, sort_keys=True))
 
 
 @hydra.main(
@@ -738,6 +1074,8 @@ def vast_train_entrypoint() -> None:
             "motion_path=",
             "dataset_path=",
             "teacher_checkpoint_path=",
+            "sonic_artifact_path=",
+            "resume_path=",
             "warm_start_checkpoint_path=",
         )
     )
@@ -772,12 +1110,14 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("motion_path", "end_effector_payload_mass_kg"),
             context=f"experiment={command.experiment}",
         )
-    if command.experiment in {"twist_teacher", "twist_student", "twist2"}:
+    if command.experiment in {"twist_teacher", "twist_student", "twist2", "sonic"}:
         if command.dataset_path is None:
-            raise ValueError("dataset_path is required for Vast TWIST training")
+            raise ValueError("dataset_path is required for Vast dataset training")
     else:
         if command.dataset_path is not None:
-            raise ValueError("dataset_path is only valid for a TWIST experiment")
+            raise ValueError(
+                "dataset_path is only valid for a TWIST, TWIST2, or SONIC experiment"
+            )
         _reject_explicit_fields(
             ("dataset_path",), context=f"experiment={command.experiment}"
         )
@@ -794,6 +1134,22 @@ def _vast_train_hydra(config: DictConfig) -> None:
         _reject_explicit_fields(
             ("teacher_checkpoint_path",), context=f"experiment={command.experiment}"
         )
+    if command.experiment == "sonic":
+        if command.sonic_artifact_path is None:
+            raise ValueError("sonic_artifact_path is required for Vast SONIC training")
+        if command.resume_path is None and command.allow_git_commit_mismatch:
+            raise ValueError(
+                "allow_git_commit_mismatch requires resume_path for Vast SONIC training"
+            )
+    else:
+        if command.sonic_artifact_path is not None:
+            raise ValueError("sonic_artifact_path is only valid for experiment=sonic")
+        if command.resume_path is not None:
+            raise ValueError("resume_path is only valid for experiment=sonic")
+        _reject_explicit_fields(
+            ("sonic_artifact_path", "resume_path"),
+            context=f"experiment={command.experiment}",
+        )
     if command.experiment != "twist2":
         if command.warm_start_checkpoint_path is not None:
             raise ValueError(
@@ -803,7 +1159,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("warm_start_checkpoint_path",),
             context=f"experiment={command.experiment}",
         )
-    if command.experiment not in {"twist_student", "twist2"}:
+    if command.experiment not in {"twist_student", "twist2", "sonic"}:
         _reject_explicit_fields(
             ("allow_git_commit_mismatch",),
             context=f"experiment={command.experiment}",
@@ -821,9 +1177,13 @@ def _vast_train_hydra(config: DictConfig) -> None:
         motion_path=command.motion_path,
         dataset_path=command.dataset_path,
         teacher_checkpoint_path=command.teacher_checkpoint_path,
+        sonic_artifact_path=command.sonic_artifact_path,
+        resume_path=command.resume_path,
         warm_start_checkpoint_path=command.warm_start_checkpoint_path,
         allow_git_commit_mismatch=command.allow_git_commit_mismatch,
         total_timesteps=command.total_timesteps,
+        num_envs=command.num_envs,
+        checkpoint_every_updates=command.checkpoint_every_updates,
         learning_rate=command.learning_rate,
         end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
         max_price=command.max_price,
@@ -1187,6 +1547,8 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
     values = {
         "allow_git_commit_mismatch": command.allow_git_commit_mismatch,
     }
+    if command.checkpoint_enabled is not None:
+        values["enabled"] = command.checkpoint_enabled
     if command.resume_path is not None:
         values["resume_path"] = command.resume_path.expanduser()
     if command.warm_start_path is not None:
@@ -1195,6 +1557,8 @@ def _checkpoint_overrides(config, command: TrainCommandConfig):
         values["directory"] = command.checkpoint_directory.expanduser()
     if command.checkpoint_name is not None:
         values["name"] = command.checkpoint_name
+    if command.checkpoint_every_updates is not None:
+        values["every_updates"] = command.checkpoint_every_updates
     return replace(config, **values)
 
 

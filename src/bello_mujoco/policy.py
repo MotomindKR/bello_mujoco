@@ -4,15 +4,28 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
 import math
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 if TYPE_CHECKING:
     from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
+
+from bello_mujoco.sonic_policy import (
+    SONIC_ACTOR_OBSERVATION_SIZE,
+    SONIC_BELLO_PROPRIO_SIZE,
+    SONIC_G1_CRITIC_OBSERVATION_SIZE,
+    SONIC_ROBOT_INPUT_SIZE,
+    SONIC_TOKEN_FLAT_SIZE,
+    SonicDecoderInitialization,
+    SonicReleaseWeights,
+    sonic_fsq,
+)
 
 LOG_2PI = math.log(2.0 * math.pi)
 
@@ -31,8 +44,13 @@ class ActorCriticConfig:
     obs_stack_size: int = 10
     action_distribution: Literal["gaussian", "tanh_gaussian"] = "tanh_gaussian"
     action_limit: float = 1.0
-    architecture: Literal["mlp", "twist_teacher", "twist_student", "twist2"] = "mlp"
+    architecture: Literal[
+        "mlp", "twist_teacher", "twist_student", "twist2", "sonic"
+    ] = "mlp"
     layer_norm_final_hidden: bool = False
+    sonic_lora_rank: int = 32
+    sonic_lora_alpha: float = 32.0
+    sonic_train_log_std: bool = True
 
 
 class LayeredMLP(eqx.Module):
@@ -76,6 +94,7 @@ class ActorCritic(eqx.Module):
     action_distribution: str = eqx.field(static=True)
     action_limit: float = eqx.field(static=True)
     stochastic_actor: bool = eqx.field(static=True)
+    train_log_std: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -84,6 +103,8 @@ class ActorCritic(eqx.Module):
         config: ActorCriticConfig = ActorCriticConfig(),
         *,
         critic_obs_size: int | None = None,
+        sonic_release: SonicReleaseWeights | None = None,
+        sonic_initialization: SonicDecoderInitialization | None = None,
         key: jax.Array,
     ):
         if config.action_distribution not in {"gaussian", "tanh_gaussian"}:
@@ -136,14 +157,59 @@ class ActorCritic(eqx.Module):
                 config.hidden_dims,
                 key=critic_key,
             )
+        elif config.architecture == "sonic":
+            if sonic_release is None or sonic_initialization is None:
+                raise ValueError(
+                    "SONIC policy construction requires exported release weights "
+                    "and a Bello decoder initialization"
+                )
+            if obs_size != SONIC_ACTOR_OBSERVATION_SIZE:
+                raise ValueError(
+                    f"SONIC actor expected {SONIC_ACTOR_OBSERVATION_SIZE} "
+                    f"observations, got {obs_size}"
+                )
+            if action_size != 25:
+                raise ValueError(
+                    f"SONIC Bello actor requires 25 actions, got {action_size}"
+                )
+            self.actor = SonicActor(
+                sonic_release,
+                sonic_initialization,
+                lora_rank=config.sonic_lora_rank,
+                lora_alpha=config.sonic_lora_alpha,
+                key=actor_key,
+            )
+            if critic_obs_size != SONIC_G1_CRITIC_OBSERVATION_SIZE:
+                raise ValueError(
+                    "SONIC critic requires source-semantic observations of size "
+                    f"{SONIC_G1_CRITIC_OBSERVATION_SIZE}, got {critic_obs_size}"
+                )
+            self.critic = SonicLoRACritic(
+                sonic_release,
+                lora_rank=config.sonic_lora_rank,
+                lora_alpha=config.sonic_lora_alpha,
+                key=critic_key,
+            )
         else:
             raise ValueError(f"unsupported policy architecture {config.architecture!r}")
-        self.log_std = jnp.full((action_size,), config.init_log_std, dtype=jnp.float32)
+        if config.architecture == "sonic":
+            self.log_std = jnp.clip(
+                jnp.log(jnp.asarray(sonic_release.released_std)),
+                math.log(0.001),
+                math.log(0.5),
+            )
+        else:
+            self.log_std = jnp.full(
+                (action_size,), config.init_log_std, dtype=jnp.float32
+            )
         self.min_log_std = config.min_log_std
         self.max_log_std = config.max_log_std
         self.action_distribution = config.action_distribution
         self.action_limit = config.action_limit
         self.stochastic_actor = config.architecture == "twist2"
+        self.train_log_std = (
+            config.architecture != "sonic" or config.sonic_train_log_std
+        )
 
     def __call__(
         self,
@@ -168,10 +234,98 @@ def init_actor_critic(
     config: ActorCriticConfig = ActorCriticConfig(),
     *,
     critic_obs_size: int | None = None,
+    sonic_release: SonicReleaseWeights | None = None,
+    sonic_initialization: SonicDecoderInitialization | None = None,
 ) -> ActorCritic:
     return ActorCritic(
-        obs_size, action_size, config, critic_obs_size=critic_obs_size, key=rng
+        obs_size,
+        action_size,
+        config,
+        critic_obs_size=critic_obs_size,
+        sonic_release=sonic_release,
+        sonic_initialization=sonic_initialization,
+        key=rng,
     )
+
+
+def sonic_frozen_parameter_hashes(policy: ActorCritic) -> dict[str, str]:
+    """Return content hashes for every frozen SONIC source-policy array."""
+
+    if not isinstance(policy.actor, SonicActor):
+        raise TypeError("frozen SONIC hashes require a SONIC actor")
+    arrays = {
+        **{
+            f"robot_encoder_weight_{index}": value
+            for index, value in enumerate(policy.actor.robot_encoder.weights)
+        },
+        **{
+            f"robot_encoder_bias_{index}": value
+            for index, value in enumerate(policy.actor.robot_encoder.biases)
+        },
+        **{
+            f"decoder_weight_{index}": value
+            for index, value in enumerate(policy.actor.decoder.base_weights)
+        },
+        **{
+            f"decoder_bias_{index}": value
+            for index, value in enumerate(policy.actor.decoder.base_biases)
+        },
+        **{
+            f"critic_weight_{index}": value
+            for index, value in enumerate(policy.critic.base_weights)
+        },
+        **{
+            f"critic_bias_{index}": value
+            for index, value in enumerate(policy.critic.base_biases)
+        },
+        "critic_observation_mean": policy.critic.observation_mean,
+        "critic_observation_variance": policy.critic.observation_variance,
+        "g1_from_bello_proprio": policy.actor.decoder.g1_from_bello_proprio,
+        "g1_from_bello_proprio_offset": (
+            policy.actor.decoder.g1_from_bello_proprio_offset
+        ),
+        "bello_from_g1_action": policy.actor.decoder.bello_from_g1_action,
+    }
+    if not policy.train_log_std:
+        arrays["log_std"] = policy.log_std
+    result = {}
+    for name, array in arrays.items():
+        value = np.ascontiguousarray(jax.device_get(array))
+        digest = hashlib.sha256()
+        digest.update(str(value.dtype).encode("ascii") + b"\0")
+        digest.update(np.asarray(value.shape, dtype=np.int64).tobytes())
+        digest.update(value.tobytes())
+        result[name] = digest.hexdigest()
+    return result
+
+
+def policy_trainable_filter(policy: ActorCritic):
+    """Return the optimizer filter, structurally excluding SONIC's frozen core."""
+
+    specification = jax.tree_util.tree_map(eqx.is_array, policy)
+    if not isinstance(policy.actor, SonicActor):
+        return specification
+    specification = jax.tree_util.tree_map(lambda _: False, policy)
+    for selector in (
+        lambda value: value.actor.decoder.lora_a,
+        lambda value: value.actor.decoder.lora_b,
+        lambda value: value.critic.lora_a,
+        lambda value: value.critic.lora_b,
+    ):
+        specification = eqx.tree_at(
+            selector,
+            specification,
+            tuple(True for _ in selector(policy)),
+        )
+    if policy.train_log_std:
+        specification = eqx.tree_at(lambda value: value.log_std, specification, True)
+    return specification
+
+
+def partition_policy_parameters(policy: ActorCritic):
+    """Partition an actor-critic using its architecture-specific freeze contract."""
+
+    return eqx.partition(policy, policy_trainable_filter(policy))
 
 
 def make_mlp(
@@ -212,6 +366,280 @@ def _xavier_linear(
     if layer.bias is not None:
         layer = eqx.tree_at(lambda value: value.bias, layer, jnp.zeros_like(layer.bias))
     return layer
+
+
+class SonicFrozenRobotEncoder(eqx.Module):
+    """The released G1 motion encoder with explicit stop-gradient leaves."""
+
+    weights: tuple[jax.Array, ...]
+    biases: tuple[jax.Array, ...]
+
+    def __init__(self, release: SonicReleaseWeights):
+        self.weights = tuple(
+            jnp.asarray(value) for value in release.robot_encoder_weights
+        )
+        self.biases = tuple(
+            jnp.asarray(value) for value in release.robot_encoder_biases
+        )
+
+    def __call__(self, value: jax.Array) -> jax.Array:
+        for index, (weight, bias) in enumerate(
+            zip(self.weights, self.biases, strict=True)
+        ):
+            value = jnp.matmul(
+                value,
+                jax.lax.stop_gradient(weight).T,
+                precision=jax.lax.Precision.HIGHEST,
+            ) + jax.lax.stop_gradient(bias)
+            if index != len(self.weights) - 1:
+                value = jax.nn.silu(value)
+        return value
+
+
+class SonicEdgeDecoder(eqx.Module):
+    """Released G1 decoder with fixed Bello alignment and trainable LoRA."""
+
+    base_weights: tuple[jax.Array, ...]
+    base_biases: tuple[jax.Array, ...]
+    lora_a: tuple[jax.Array, ...]
+    lora_b: tuple[jax.Array, ...]
+    g1_from_bello_proprio: jax.Array
+    g1_from_bello_proprio_offset: jax.Array
+    bello_from_g1_action: jax.Array
+    lora_scale: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        release: SonicReleaseWeights,
+        initialization: SonicDecoderInitialization,
+        *,
+        lora_rank: int,
+        lora_alpha: float,
+        key: jax.Array,
+    ):
+        self.base_weights = tuple(
+            jnp.asarray(value) for value in release.decoder_weights
+        )
+        self.base_biases = tuple(jnp.asarray(value) for value in release.decoder_biases)
+        input_sizes = (930, 2048, 2048, 1024, 1024, 512, 512)
+        output_sizes = (2048, 2048, 1024, 1024, 512, 512, 29)
+        self.lora_a, self.lora_b, self.lora_scale = _initialize_lora(
+            input_sizes,
+            output_sizes,
+            rank=lora_rank,
+            alpha=lora_alpha,
+            key=key,
+        )
+        self.g1_from_bello_proprio = jnp.asarray(initialization.g1_from_bello_proprio)
+        self.g1_from_bello_proprio_offset = jnp.asarray(
+            initialization.g1_from_bello_proprio_offset
+        )
+        self.bello_from_g1_action = jnp.asarray(initialization.bello_from_g1_action)
+
+    def __call__(
+        self,
+        tokens: jax.Array,
+        proprioception: jax.Array,
+    ) -> jax.Array:
+        g1_proprioception = jnp.matmul(
+            proprioception,
+            jax.lax.stop_gradient(self.g1_from_bello_proprio).T,
+            precision=jax.lax.Precision.HIGHEST,
+        ) + jax.lax.stop_gradient(self.g1_from_bello_proprio_offset)
+        first_weight = jax.lax.stop_gradient(self.base_weights[0])
+        value = jnp.matmul(
+            tokens,
+            first_weight[:, :SONIC_TOKEN_FLAT_SIZE].T,
+            precision=jax.lax.Precision.HIGHEST,
+        ) + _lora_linear(
+            g1_proprioception,
+            first_weight[:, SONIC_TOKEN_FLAT_SIZE:],
+            jax.lax.stop_gradient(self.base_biases[0]),
+            self.lora_a[0],
+            self.lora_b[0],
+            self.lora_scale,
+        )
+        value = jax.nn.silu(value)
+        for weight, bias, lora_a, lora_b in zip(
+            self.base_weights[1:-1],
+            self.base_biases[1:-1],
+            self.lora_a[1:-1],
+            self.lora_b[1:-1],
+            strict=True,
+        ):
+            value = jax.nn.silu(
+                _lora_linear(
+                    value,
+                    jax.lax.stop_gradient(weight),
+                    jax.lax.stop_gradient(bias),
+                    lora_a,
+                    lora_b,
+                    self.lora_scale,
+                )
+            )
+        g1_action = _lora_linear(
+            value,
+            jax.lax.stop_gradient(self.base_weights[-1]),
+            jax.lax.stop_gradient(self.base_biases[-1]),
+            self.lora_a[-1],
+            self.lora_b[-1],
+            self.lora_scale,
+        )
+        return g1_action
+
+    def bello_action(self, g1_action: jax.Array) -> jax.Array:
+        """Apply the frozen source-to-target action map after source sampling."""
+
+        return jnp.matmul(
+            g1_action,
+            jax.lax.stop_gradient(self.bello_from_g1_action).T,
+            precision=jax.lax.Precision.HIGHEST,
+        )
+
+
+class SonicLoRACritic(eqx.Module):
+    """Released normalized SONIC critic with low-rank dynamics adaptation."""
+
+    base_weights: tuple[jax.Array, ...]
+    base_biases: tuple[jax.Array, ...]
+    lora_a: tuple[jax.Array, ...]
+    lora_b: tuple[jax.Array, ...]
+    observation_mean: jax.Array
+    observation_variance: jax.Array
+    lora_scale: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        release: SonicReleaseWeights,
+        *,
+        lora_rank: int,
+        lora_alpha: float,
+        key: jax.Array,
+    ):
+        self.base_weights = tuple(
+            jnp.asarray(value) for value in release.critic_weights
+        )
+        self.base_biases = tuple(jnp.asarray(value) for value in release.critic_biases)
+        self.observation_mean = jnp.asarray(release.critic_observation_mean)
+        self.observation_variance = jnp.asarray(release.critic_observation_variance)
+        self.lora_a, self.lora_b, self.lora_scale = _initialize_lora(
+            (1645, 2048, 2048, 1024, 1024, 512, 512),
+            (2048, 2048, 1024, 1024, 512, 512, 1),
+            rank=lora_rank,
+            alpha=lora_alpha,
+            key=key,
+        )
+
+    def __call__(self, observation: jax.Array) -> jax.Array:
+        value = jnp.clip(
+            (observation - jax.lax.stop_gradient(self.observation_mean))
+            / jnp.sqrt(jax.lax.stop_gradient(self.observation_variance) + 1.0e-5),
+            -5.0,
+            5.0,
+        )
+        for index, (weight, bias, lora_a, lora_b) in enumerate(
+            zip(
+                self.base_weights,
+                self.base_biases,
+                self.lora_a,
+                self.lora_b,
+                strict=True,
+            )
+        ):
+            value = _lora_linear(
+                value,
+                jax.lax.stop_gradient(weight),
+                jax.lax.stop_gradient(bias),
+                lora_a,
+                lora_b,
+                self.lora_scale,
+            )
+            if index != len(self.base_weights) - 1:
+                value = jax.nn.silu(value)
+        return value
+
+
+def _initialize_lora(
+    input_sizes: tuple[int, ...],
+    output_sizes: tuple[int, ...],
+    *,
+    rank: int,
+    alpha: float,
+    key: jax.Array,
+) -> tuple[tuple[jax.Array, ...], tuple[jax.Array, ...], float]:
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank <= 0:
+        raise ValueError("sonic_lora_rank must be a positive integer")
+    if not math.isfinite(alpha) or alpha <= 0.0:
+        raise ValueError("sonic_lora_alpha must be positive and finite")
+    if len(input_sizes) != len(output_sizes):
+        raise ValueError("SONIC LoRA layer dimensions are inconsistent")
+    keys = jax.random.split(key, len(input_sizes))
+    lora_a = tuple(
+        jax.random.normal(layer_key, (rank, input_size), dtype=jnp.float32)
+        / math.sqrt(input_size)
+        for input_size, layer_key in zip(input_sizes, keys, strict=True)
+    )
+    lora_b = tuple(
+        jnp.zeros((output_size, rank), dtype=jnp.float32)
+        for output_size in output_sizes
+    )
+    return lora_a, lora_b, float(alpha / rank)
+
+
+def _lora_linear(
+    value: jax.Array,
+    weight: jax.Array,
+    bias: jax.Array,
+    lora_a: jax.Array,
+    lora_b: jax.Array,
+    scale: float,
+) -> jax.Array:
+    base = jnp.matmul(value, weight.T, precision=jax.lax.Precision.HIGHEST) + bias
+    low_rank = jnp.matmul(
+        jnp.matmul(value, lora_a.T, precision=jax.lax.Precision.HIGHEST),
+        lora_b.T,
+        precision=jax.lax.Precision.HIGHEST,
+    )
+    return base + scale * low_rank
+
+
+class SonicActor(eqx.Module):
+    """Online frozen G1 motion encoder and adaptable SONIC decoder."""
+
+    robot_encoder: SonicFrozenRobotEncoder
+    decoder: SonicEdgeDecoder
+
+    def __init__(
+        self,
+        release: SonicReleaseWeights,
+        initialization: SonicDecoderInitialization,
+        *,
+        lora_rank: int,
+        lora_alpha: float,
+        key: jax.Array,
+    ):
+        self.robot_encoder = SonicFrozenRobotEncoder(release)
+        self.decoder = SonicEdgeDecoder(
+            release,
+            initialization,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            key=key,
+        )
+
+    def __call__(self, observation: jax.Array) -> jax.Array:
+        if observation.shape[-1] != SONIC_ACTOR_OBSERVATION_SIZE:
+            raise ValueError(
+                f"SONIC observation must have {SONIC_ACTOR_OBSERVATION_SIZE} "
+                f"features, got {observation.shape[-1]}"
+            )
+        robot_input = observation[:SONIC_ROBOT_INPUT_SIZE]
+        proprioception = observation[SONIC_ROBOT_INPUT_SIZE:]
+        if proprioception.shape[-1] != SONIC_BELLO_PROPRIO_SIZE:
+            raise RuntimeError("SONIC Bello proprioception slice has drifted")
+        latent = self.robot_encoder(robot_input)
+        tokens = sonic_fsq(latent.reshape((2, 32))).reshape((SONIC_TOKEN_FLAT_SIZE,))
+        return self.decoder(tokens, proprioception)
 
 
 class TwistBackbone(eqx.Module):
@@ -760,6 +1188,13 @@ def evaluate_actions(
 
 
 def transform_action(policy: ActorCritic, latent_action: jax.Array) -> jax.Array:
+    if isinstance(policy.actor, SonicActor):
+        source_action = jnp.clip(
+            latent_action,
+            -policy.action_limit,
+            policy.action_limit,
+        )
+        return policy.actor.decoder.bello_action(source_action)
     if policy.action_distribution == "gaussian":
         return latent_action
     return policy.action_limit * jnp.tanh(latent_action)
@@ -773,7 +1208,13 @@ def policy_log_prob(
     latent_action: jax.Array | None = None,
 ) -> jax.Array:
     if policy.action_distribution == "gaussian":
-        return gaussian_log_prob(latent_mean, log_std, action)
+        distribution_action = action if latent_action is None else latent_action
+        if distribution_action.shape[-1] != latent_mean.shape[-1]:
+            raise ValueError(
+                "Gaussian log probability requires the action sampled in policy "
+                "space; mapped SONIC actions require latent_action"
+            )
+        return gaussian_log_prob(latent_mean, log_std, distribution_action)
     limit = jnp.asarray(policy.action_limit, dtype=action.dtype)
     normalized_action = jnp.clip(action / limit, -1.0 + 1.0e-6, 1.0 - 1.0e-6)
     if latent_action is None:
@@ -857,5 +1298,9 @@ def infer_policy_action(
         if rng is None
         else sample_actor_action(policy, policy_observation, rng)
     )
-    applied_action = jnp.clip(requested_action, -action_clip, action_clip)
+    applied_action = (
+        requested_action
+        if isinstance(policy.actor, SonicActor)
+        else jnp.clip(requested_action, -action_clip, action_clip)
+    )
     return PolicyInferenceStep(action_mean, requested_action, applied_action)

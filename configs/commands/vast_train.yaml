@@ -2,9 +2,13 @@ experiment: hardware_locomotion
 motion_path: null
 dataset_path: null
 teacher_checkpoint_path: null
+sonic_artifact_path: null
+resume_path: null
 warm_start_checkpoint_path: null
 allow_git_commit_mismatch: false
 total_timesteps: null
+num_envs: null
+checkpoint_every_updates: null
 learning_rate: null
 end_effector_payload_mass_kg: null
 max_price: null
@@ -16,7 +20,7 @@ skip_confirmation: false
 dry_run: false
 preferred_countries: [KR, JP, TW, HK, SG]
 min_upload_mib_per_second: 5.0
-route_probe_mib: 16
+route_probe_mib: 256
 hydra:
   job:
     chdir: false

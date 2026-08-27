@@ -460,6 +460,53 @@ def test_model_randomization_applies_twist_physical_ranges(
     assert np.max(np.abs(randomized.gravity_fraction)) <= 0.1 + 1.0e-7
 
 
+def test_model_randomization_scales_named_masses_and_offsets_named_com(
+    full_body_asset: PreparedAsset,
+) -> None:
+    nominal = load_prepared_bello_model(
+        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+    )
+    randomized = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        batch_size=4,
+        model_randomization=ModelRandomizationConfig(
+            enabled=True,
+            seed=31,
+            body_mass_scale_range=(0.8, 1.5),
+            body_mass_scale_names=("torso_link", "l_wrist_link", "r_wrist_link"),
+            body_com_offset_range_xyz=(
+                (-0.025, 0.025),
+                (-0.05, 0.05),
+                (-0.05, 0.05),
+            ),
+            body_com_offset_name="torso_link",
+        ),
+    )
+    assert randomized.mjx_model is not None
+    body_ids = np.asarray(
+        [
+            mujoco.mj_name2id(nominal.mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in ("torso_link", "l_wrist_link", "r_wrist_link")
+        ],
+        dtype=np.int32,
+    )
+    mass_ratio = (
+        np.asarray(randomized.mjx_model.body_mass)[:, body_ids]
+        / nominal.mj_model.body_mass[body_ids]
+    )
+    assert np.min(mass_ratio) >= 0.8 - 1.0e-6
+    assert np.max(mass_ratio) <= 1.5 + 1.0e-6
+    assert not np.allclose(mass_ratio[0], mass_ratio[1])
+    torso_id = int(body_ids[0])
+    com_delta = (
+        np.asarray(randomized.mjx_model.body_ipos)[:, torso_id]
+        - nominal.mj_model.body_ipos[torso_id]
+    )
+    assert np.max(np.abs(com_delta[:, 0])) <= 0.025 + 1.0e-7
+    assert np.max(np.abs(com_delta[:, 1:])) <= 0.05 + 1.0e-7
+
+
 def test_native_episode_reset_clears_all_mujoco_solver_state(
     full_body_asset: PreparedAsset,
 ) -> None:

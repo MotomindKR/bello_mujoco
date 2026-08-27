@@ -1,0 +1,10 @@
+quarantine_name_patterns:
+  - treadmill
+  - crawl
+stationary_root_extent_meters: 0.35
+minimum_leg_rms_velocity_radians_per_second: 0.35
+minimum_contact_transitions: 4
+maximum_contact_foot_speed_meters_per_second: 0.6
+maximum_fast_contact_fraction: 0.15
+low_root_height_meters: 0.45
+maximum_low_root_fraction: 0.8

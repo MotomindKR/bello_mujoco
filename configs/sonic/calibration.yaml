@@ -1,0 +1,9 @@
+minimum_samples: 1000
+ridge_regularization: 1.0
+minimum_joint_standard_deviation: 0.002
+minimum_mean_explained_variance: 0.35
+minimum_joint_explained_variance: 0.001
+minimum_heldout_joint_explained_variance: -0.01
+minimum_critical_joint_explained_variance: 0.01
+maximum_absolute_coefficient: 20.0
+maximum_rms_residual_radians: 0.65
