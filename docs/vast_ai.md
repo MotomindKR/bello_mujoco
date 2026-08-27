@@ -24,7 +24,7 @@ explicit typed teacher checkpoint; SONIC requires the exact exported NVIDIA
 release artifact. No dataset, checkpoint, or artifact is selected implicitly.
 
 The default offer policy performs one global search for an RTX 5090 with at
-least 64 GB CPU RAM, 80 GB disk, 0.98 reliability, CUDA 13, verification,
+least 128 GB CPU RAM, 80 GB disk, 0.98 reliability, CUDA 13, verification,
 rentability, and direct SSH. `max_price` is a required upper bound on total
 hourly price.
 

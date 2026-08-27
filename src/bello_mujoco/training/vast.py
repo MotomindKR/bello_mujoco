@@ -54,7 +54,7 @@ class VastOfferConfig:
 
     gpu_name: str = "RTX_5090"
     num_gpus: int = 1
-    min_cpu_ram_gb: int = 64
+    min_cpu_ram_gb: int = 128
     disk_gb: int = 80
     min_reliability: float = 0.98
     min_cuda: float = 13.0

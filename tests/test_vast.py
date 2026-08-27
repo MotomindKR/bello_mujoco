@@ -44,7 +44,7 @@ def make_offer(
         "dlperf_per_dphtotal": value,
         "reliability": 0.995,
         "geolocation": location,
-        "cpu_ram": 65536,
+        "cpu_ram": 131072,
         "gpu_ram": 32768,
         "num_gpus": 1,
         "cuda_max_good": 13.0,
@@ -584,7 +584,7 @@ def test_offer_query_contains_hardware_and_price_constraints() -> None:
     query = offer_query(valid_config())
 
     assert "gpu_name=RTX_5090" in query
-    assert "cpu_ram>=64" in query
+    assert "cpu_ram>=128" in query
     assert "disk_space>=80" in query
     assert "cuda_max_good>=13.0" in query
     assert "dph_total<=1.25" in query
@@ -655,8 +655,8 @@ def test_safe_exception_message_redacts_query_credentials() -> None:
     assert "api_key=<redacted>&x=1" in message
 
 
-def test_nominal_64_gb_offer_accepts_vast_usable_ram_reporting() -> None:
-    api = SearchApi([[make_offer() | {"cpu_ram": 64469}]])
+def test_nominal_128_gb_offer_accepts_vast_usable_ram_reporting() -> None:
+    api = SearchApi([[make_offer() | {"cpu_ram": 128469}]])
 
     offers = find_offers(api, valid_config())
 
