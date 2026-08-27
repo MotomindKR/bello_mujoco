@@ -1106,8 +1106,12 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     assert shlex.split(command)[-12] == "motion-test"
     assert float(shlex.split(command)[-13]) == pytest.approx(4.5359237)
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 3
-    assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "git clone --single-branch" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule update --init --depth 1 --single-branch -- deps/bello-stack" in (
+        vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+    assert "git clone --recurse-submodules" not in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "submodule status -- deps/bello-stack" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
         'training_overrides+=("end_effector_payload_mass_kg='
         '$end_effector_payload_mass_kg")' in vast_remote.REMOTE_TRAIN_SCRIPT

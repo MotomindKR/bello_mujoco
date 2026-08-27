@@ -162,6 +162,9 @@ The launcher rejects the resume before rental if its dataset fingerprint,
 release hashes, environment count, or absolute budget is
 incompatible. The remote trainer then enforces the complete observation,
 action, robot, PPO, and simulator contract while restoring the array state.
+Remote training initializes only the pinned `deps/bello-stack` submodule needed
+by the package workspace and robot assets. Tool-only GMR and Fast-SAM
+submodules are not downloaded onto paid training instances.
 After a detached job starts, a temporary SSH outage no longer tears down its
 instance. The launcher keeps reconnecting until the job deadline while the
 remote watchdog retains the final bounded-lifetime teardown. During an outage,
