@@ -42,7 +42,7 @@ requires a source checkout because the wheel intentionally omits hardware
 topology and model catalogs.
 
 The command always uses the canonical physical asset with a generated pelvis
-IMU. It publishes 100 Hz motor feedback, a 250 Hz EBIMU stream at
+IMU. It publishes 100 Hz motor feedback, a 200 Hz EBIMU stream at
 `/dev/ttyIMU-mujoco`, and PoseService on port 50052.
 
 The public `command_latency_seconds` option delays only MIT motor-control

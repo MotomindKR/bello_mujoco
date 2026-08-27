@@ -77,7 +77,7 @@ class EmulatorConfig:
     command_latency_seconds: float = 0.01
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
-    imu_serial_rate_hz: float = 250.0
+    imu_serial_rate_hz: float = 200.0
     imu_serial_device: Path = Path("/dev/ttyIMU-mujoco")
     imu_noise: ImuNoiseConfig = ImuNoiseConfig(
         enabled=True,
