@@ -164,7 +164,10 @@ incompatible. The remote trainer then enforces the complete observation,
 action, robot, PPO, and simulator contract while restoring the array state.
 After a detached job starts, a temporary SSH outage no longer tears down its
 instance. The launcher keeps reconnecting until the job deadline while the
-remote watchdog retains the final bounded-lifetime teardown.
+remote watchdog retains the final bounded-lifetime teardown. During an outage,
+the launcher also polls the Vast instance state. A confirmed `exited`,
+`offline`, or absent instance ends reconnection and triggers lifecycle cleanup
+immediately.
 
 TWIST2 transfer example:
 

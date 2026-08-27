@@ -1697,6 +1697,37 @@ def test_remote_runner_does_not_destroy_job_during_long_ssh_outage(
     assert monitor_calls == 2
 
 
+def test_remote_runner_aborts_when_vast_confirms_instance_exited() -> None:
+    class Api:
+        def show_instance(self, instance_id):
+            assert instance_id == 456
+            return {"actual_status": "exited"}
+
+    class Executor:
+        def run(self, target, remote_command, *, input_text=None, timeout_seconds):
+            assert timeout_seconds > 0
+            if input_text is not None:
+                return subprocess.CompletedProcess(
+                    remote_command, 0, stdout="started\n", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                remote_command, 255, stdout="", stderr="closed"
+            )
+
+    with pytest.raises(RuntimeError, match="non-recoverable state 'exited'"):
+        run_remote_training(
+            ("root", "example.com", 22001),
+            selection(),
+            valid_config(),
+            "test-run",
+            wandb_key="wandb-secret",
+            github_token="",
+            executor=Executor(),
+            instance_api=Api(),
+            instance_id=456,
+        )
+
+
 def test_remote_runner_aborts_when_progress_deadline_expires(monkeypatch) -> None:
     class Executor:
         def run(self, target, remote_command, *, input_text=None, timeout_seconds):

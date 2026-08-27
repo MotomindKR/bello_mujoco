@@ -1388,6 +1388,8 @@ class VastLifecycle:
                     run_name,
                     wandb_key=wandb_key,
                     github_token=github_token,
+                    instance_api=self.api,
+                    instance_id=instance_id,
                 )
             except BaseException as exc:
                 failure = exc

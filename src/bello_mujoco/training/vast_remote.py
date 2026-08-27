@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 
 SSH_SUBPROCESS_TIMEOUT_SECONDS = 60.0
+NONRECOVERABLE_INSTANCE_STATUSES = frozenset(("exited", "offline"))
 EPHEMERAL_KNOWN_HOSTS_PATH = (
     Path(tempfile.gettempdir()) / f"bello-mujoco-vast-{os.getpid()}.known_hosts"
 )
@@ -34,6 +35,31 @@ def _remove_ephemeral_known_hosts() -> None:
 
 
 atexit.register(_remove_ephemeral_known_hosts)
+
+
+def _require_recoverable_instance(
+    api: VastApi | None,
+    instance_id: int | None,
+) -> None:
+    if api is None or instance_id is None:
+        return
+    try:
+        info = api.show_instance(instance_id)
+    except Exception:
+        print(
+            "Vast instance status is temporarily unavailable; continuing SSH recovery."
+        )
+        return
+    if info is None:
+        status = "absent"
+    else:
+        status = str(info.get("actual_status", "")).strip()
+        if status not in NONRECOVERABLE_INSTANCE_STATUSES:
+            return
+    raise RuntimeError(
+        f"Vast instance {instance_id} entered non-recoverable state "
+        f"{status!r} while SSH was unavailable"
+    )
 
 
 @dataclass(frozen=True)
@@ -1035,6 +1061,8 @@ def run_remote_training(
     sleep: Callable[[float], None] = time.sleep,
     executor: SshExecutor | None = None,
     rsync_executor: RsyncExecutor | None = None,
+    instance_api: VastApi | None = None,
+    instance_id: int | None = None,
 ) -> None:
     if executor is None:
         executor = SshExecutor()
@@ -1101,6 +1129,7 @@ def run_remote_training(
                 ),
             )
         except subprocess.TimeoutExpired:
+            _require_recoverable_instance(instance_api, instance_id)
             if not disconnect_reported:
                 print("SSH timed out while starting; retrying the detached remote job.")
                 disconnect_reported = True
@@ -1111,6 +1140,7 @@ def run_remote_training(
             break
         if result.returncode != 255:
             _raise_remote_failure(result)
+        _require_recoverable_instance(instance_api, instance_id)
         if time.monotonic() >= ssh_start_deadline:
             raise TimeoutError("SSH did not recover while starting remote training")
         if not disconnect_reported:
@@ -1148,12 +1178,14 @@ def run_remote_training(
                 ),
             )
         except subprocess.TimeoutExpired:
+            _require_recoverable_instance(instance_api, instance_id)
             if disconnected_at is None:
                 disconnected_at = time.monotonic()
                 print("SSH timed out; remote training continues while reconnecting.")
             sleep(5)
             continue
         if result.returncode == 255:
+            _require_recoverable_instance(instance_api, instance_id)
             if disconnected_at is None:
                 disconnected_at = time.monotonic()
                 print("SSH disconnected; remote training continues while reconnecting.")
