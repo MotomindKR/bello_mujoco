@@ -29,6 +29,7 @@ from bello_mujoco.envs.locomotion import (
     BelloEnvConfig,
     DoneConfig,
     ObservationLatencyConfig,
+    ObservationLowPassFilterConfig,
 )
 from bello_mujoco.envs.motion_tracking import (
     MotionObservationLatencyConfig,
@@ -842,6 +843,10 @@ def _with_checkpoint_metadata_defaults(
             )
         if isinstance(env, dict):
             normalized_env = dict(env)
+            if "observation_low_pass_filter" not in normalized_env:
+                normalized_env["observation_low_pass_filter"] = to_builtin(
+                    ObservationLowPassFilterConfig()
+                )
             if "observation_latency" not in normalized_env:
                 normalized_env["observation_latency"] = to_builtin(
                     ObservationLatencyConfig()
@@ -850,6 +855,8 @@ def _with_checkpoint_metadata_defaults(
             if isinstance(model_randomization, dict):
                 normalized_randomization = dict(model_randomization)
                 legacy_randomization_defaults = {
+                    "torso_mass_scale_range": (1.0, 1.0),
+                    "torso_com_offset_range": (0.0, 0.0),
                     "added_base_mass_range": (0.0, 0.0),
                     "base_com_offset_range": (0.0, 0.0),
                     "friction_range": (1.0, 1.0),

@@ -460,6 +460,43 @@ def test_model_randomization_applies_twist_physical_ranges(
     assert np.max(np.abs(randomized.gravity_fraction)) <= 0.1 + 1.0e-7
 
 
+def test_model_randomization_scales_torso_mass_inertia_and_com(
+    full_body_asset: PreparedAsset,
+) -> None:
+    nominal = load_prepared_bello_model(
+        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+    )
+    randomized = load_prepared_bello_model(
+        full_body_asset,
+        terrain=FLAT_TERRAIN,
+        batch_size=4,
+        model_randomization=ModelRandomizationConfig(
+            enabled=True,
+            seed=29,
+            torso_mass_scale_range=(0.8, 1.2),
+            torso_com_offset_range=(-0.03, 0.03),
+        ),
+    )
+    torso_id = mujoco.mj_name2id(
+        nominal.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link"
+    )
+    body_mass = np.asarray(randomized.mjx_model.body_mass)
+    body_inertia = np.asarray(randomized.mjx_model.body_inertia)
+    body_ipos = np.asarray(randomized.mjx_model.body_ipos)
+    mass_scale = body_mass[:, torso_id] / nominal.mj_model.body_mass[torso_id]
+
+    assert np.min(mass_scale) >= 0.8 - 1.0e-7
+    assert np.max(mass_scale) <= 1.2 + 1.0e-7
+    np.testing.assert_allclose(
+        body_inertia[:, torso_id],
+        nominal.mj_model.body_inertia[torso_id] * mass_scale[:, None],
+        atol=1.0e-7,
+    )
+    assert np.max(
+        np.abs(body_ipos[:, torso_id] - nominal.mj_model.body_ipos[torso_id])
+    ) <= (0.03 + 1.0e-7)
+
+
 def test_native_episode_reset_clears_all_mujoco_solver_state(
     full_body_asset: PreparedAsset,
 ) -> None:
@@ -520,6 +557,8 @@ def test_plane_slope_stays_static_in_batched_warp_model(
         ({"joint_angle_offset_range": (0.1, -0.1)}, "joint_angle_offset_range"),
         ({"joint_angle_offset_scope": "bad"}, "joint_angle_offset_scope"),
         ({"joint_inertia_scale_range": (0.0, 1.0)}, "positive values"),
+        ({"torso_mass_scale_range": (0.0, 1.0)}, "positive values"),
+        ({"torso_com_offset_range": (0.1, -0.1)}, "torso_com_offset_range"),
         ({"added_base_mass_range": (1.0, -1.0)}, "added_base_mass_range"),
         ({"base_com_offset_range": (float("nan"), 0.0)}, "base_com_offset_range"),
         ({"friction_range": (0.0, 1.0)}, "positive values"),

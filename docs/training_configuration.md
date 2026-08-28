@@ -164,12 +164,13 @@ initialization rejects other deviations from this contract.
 | `root_link` | Floating-base link used by environment indexing. |
 | `simulation_physics` | Runtime timestep and optional foot/terrain contact overrides. |
 | `terrain` | Plane, rough heightfield, or robot-only scene parameters. |
-| `model_randomization` | Per-environment joint-origin, angle-offset, and inertia variation. |
+| `model_randomization` | Per-environment joint, torso inertial, and other physical variation. |
 | `spawn` | Initial base pose, joint pose/velocity, root velocity, and episode staggering. |
 | `contact` | Contact debounce durations and force thresholds. |
 | `random_push` | Periodic base linear-velocity perturbations. |
 | `numerical_safety` | Broad finite-state and solver-force bounds that terminate invalid rollouts. |
 | `observation` | Deployable actor observation scaling and noise. |
+| `observation_low_pass_filter` | Training-side low-pass filter for hardware-derived actor feedback. |
 | `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
 | `gait` | Fixed gait frequency and stance fraction shared by simulation, native evaluation, and hardware. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
@@ -204,6 +205,13 @@ must be at least twice the timestep.
 | `joint_angle_offset_range` | Ordered default joint-angle offset range. |
 | `joint_angle_offset_scope` | Apply angle offsets to `all` active coordinates or only `policy` coordinates. |
 | `joint_inertia_scale_range` | Ordered positive inertia multiplier range. |
+| `torso_mass_scale_range` | Ordered positive multiplier for `torso_link` mass and inertia. |
+| `torso_com_offset_range` | Ordered per-axis offset range for the `torso_link` center of mass, in meters. |
+| `added_base_mass_range` | Ordered additive mass range distributed over the pelvis, waist yaw, and torso, in kilograms. |
+| `base_com_offset_range` | Ordered per-axis offset range for the pelvis center of mass, in meters. |
+| `friction_range` | Ordered positive sliding-friction range. |
+| `actuator_strength_range` | Ordered positive multiplier range sampled independently for proportional and derivative servo gains. |
+| `gravity_fraction_range` | Ordered fraction of nominal gravity added as a model-level perturbation. |
 
 `spawn` independently samples episode-level initial state.
 
@@ -249,6 +257,16 @@ per minute. `stance_fraction` must be in `[0.5, 1.0)`.
 Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
 enter the deployed policy.
+
+The `observation_low_pass_filter` section contains `enabled` and `cutoff_hz`.
+The maintained locomotion profiles use the same 10 Hz first-order response as
+hardwared for IMU acceleration, angular velocity, orientation-derived projected
+gravity, and joint velocity. Joint position remains unfiltered. Training updates
+the filter at the 50 Hz policy boundary using the exact elapsed-time response;
+four constant-input 200 Hz updates have the same 20 ms response. Synthetic
+observation noise is applied afterward and therefore represents residual
+post-filter measurement uncertainty. Older checkpoints load with this
+training-side filter disabled.
 
 The `observation_latency` section contains `enabled` and `delay_steps`, an
 inclusive integer lower/upper range. The maintained locomotion and

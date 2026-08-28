@@ -270,8 +270,21 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.video_config.command == (0.0, 0.5, 0.0)
     assert locomotion.env_config.observation_latency.enabled
     assert locomotion.env_config.observation_latency.delay_steps == (0, 2)
+    assert locomotion.env_config.observation_low_pass_filter.enabled
+    assert locomotion.env_config.observation_low_pass_filter.cutoff_hz == pytest.approx(
+        10.0
+    )
+    assert locomotion.env_config.model_randomization.torso_mass_scale_range == (
+        0.8,
+        1.2,
+    )
+    assert locomotion.env_config.model_randomization.torso_com_offset_range == (
+        -0.1,
+        0.1,
+    )
     assert hardware.env_config.observation_latency.enabled
     assert hardware.env_config.observation_latency.delay_steps == (0, 2)
+    assert hardware.env_config.observation_low_pass_filter.enabled
     assert motion.checkpoint_config.every_updates == 500
     assert twist_teacher.config.num_updates == 30_002
     assert twist_teacher.config.policy.architecture == "twist_teacher"

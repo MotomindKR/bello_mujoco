@@ -162,6 +162,14 @@ class ObservationLatencyConfig:
 
 
 @dataclass(frozen=True)
+class ObservationLowPassFilterConfig:
+    """First-order filtering for hardware-derived actor feedback."""
+
+    enabled: bool = False
+    cutoff_hz: float = 10.0
+
+
+@dataclass(frozen=True)
 class GaitConfig:
     """Fixed alternating gait clock shared by training, evaluation, and hardware."""
 
@@ -286,6 +294,9 @@ class BelloEnvConfig:
     random_push: RandomPushConfig = RandomPushConfig()
     numerical_safety: NumericalSafetyConfig = NumericalSafetyConfig()
     observation: ObservationConfig = ObservationConfig()
+    observation_low_pass_filter: ObservationLowPassFilterConfig = (
+        ObservationLowPassFilterConfig()
+    )
     observation_latency: ObservationLatencyConfig = ObservationLatencyConfig()
     gait: GaitConfig = GaitConfig()
     critic_observation: ObservationConfig = ObservationConfig(privileged=True)
@@ -349,6 +360,7 @@ class BelloLocomotionEnv:
                 "valid for critic_observation"
             )
         self._validate_observation_config("observation", self.config.observation)
+        self._validate_observation_low_pass_filter()
         self._validate_observation_latency()
         self._validate_observation_config(
             "critic_observation", self.config.critic_observation
@@ -458,6 +470,14 @@ class BelloLocomotionEnv:
         if delay_steps[0] > delay_steps[1]:
             raise ValueError(
                 "observation_latency.delay_steps lower bound exceeds upper bound"
+            )
+
+    def _validate_observation_low_pass_filter(self) -> None:
+        cutoff_hz = self.config.observation_low_pass_filter.cutoff_hz
+        if not math.isfinite(cutoff_hz) or cutoff_hz <= 0.0:
+            raise ValueError(
+                "observation_low_pass_filter.cutoff_hz must be positive and "
+                f"finite, got {cutoff_hz}"
             )
 
     @classmethod
@@ -1655,16 +1675,57 @@ class BelloLocomotionEnv:
         )
 
     def _delayed_actor_feedback(self, state: BelloState) -> jax.Array:
-        return jnp.where(
-            state.actor_feedback_delay_steps == 0,
-            self._actor_feedback(state),
-            state.actor_feedback_history[state.actor_feedback_delay_steps],
-        )
+        return state.actor_feedback_history[state.actor_feedback_delay_steps]
 
     def _advance_actor_feedback_history(
         self, history: jax.Array, state: BelloState
     ) -> jax.Array:
-        return jnp.concatenate((self._actor_feedback(state)[None, :], history[:-1]))
+        feedback = self._low_pass_actor_feedback(
+            history[0], self._actor_feedback(state), self.control_timestep
+        )
+        return jnp.concatenate((feedback[None, :], history[:-1]))
+
+    def _low_pass_actor_feedback(
+        self, previous: jax.Array, measured: jax.Array, timestep: float | jax.Array
+    ) -> jax.Array:
+        config = self.config.observation_low_pass_filter
+        if not config.enabled:
+            return measured
+        alpha = 1.0 - jnp.exp(
+            -2.0
+            * jnp.pi
+            * jnp.asarray(config.cutoff_hz, dtype=jnp.float32)
+            * jnp.asarray(timestep, dtype=jnp.float32)
+        )
+        previous_parts = self._unpack_actor_feedback(previous)
+        measured_parts = self._unpack_actor_feedback(measured)
+        linear_acceleration = previous_parts[0] + alpha * (
+            measured_parts[0] - previous_parts[0]
+        )
+        angular_velocity = previous_parts[1] + alpha * (
+            measured_parts[1] - previous_parts[1]
+        )
+        projected_gravity = previous_parts[2] + alpha * (
+            measured_parts[2] - previous_parts[2]
+        )
+        projected_gravity_norm = jnp.linalg.norm(projected_gravity)
+        projected_gravity = jnp.where(
+            projected_gravity_norm > jnp.finfo(projected_gravity.dtype).eps,
+            projected_gravity / projected_gravity_norm,
+            measured_parts[2],
+        )
+        joint_velocity = previous_parts[4] + alpha * (
+            measured_parts[4] - previous_parts[4]
+        )
+        return jnp.concatenate(
+            (
+                linear_acceleration,
+                angular_velocity,
+                projected_gravity,
+                measured_parts[3],
+                joint_velocity,
+            )
+        )
 
     def _sample_observation_delay(self, rng: jax.Array | None) -> jax.Array:
         config = self.config.observation_latency

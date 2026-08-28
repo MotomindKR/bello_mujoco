@@ -127,6 +127,8 @@ class ModelRandomizationConfig:
     joint_angle_offset_range: tuple[float, float] = (0.0, 0.0)
     joint_angle_offset_scope: Literal["all", "policy"] = "all"
     joint_inertia_scale_range: tuple[float, float] = (1.0, 1.0)
+    torso_mass_scale_range: tuple[float, float] = (1.0, 1.0)
+    torso_com_offset_range: tuple[float, float] = (0.0, 0.0)
     added_base_mass_range: tuple[float, float] = (0.0, 0.0)
     base_com_offset_range: tuple[float, float] = (0.0, 0.0)
     friction_range: tuple[float, float] = (1.0, 1.0)
@@ -154,6 +156,15 @@ class ModelRandomizationConfig:
             "model_randomization.joint_inertia_scale_range",
             self.joint_inertia_scale_range,
             positive=True,
+        )
+        _validate_randomization_range(
+            "model_randomization.torso_mass_scale_range",
+            self.torso_mass_scale_range,
+            positive=True,
+        )
+        _validate_randomization_range(
+            "model_randomization.torso_com_offset_range",
+            self.torso_com_offset_range,
         )
         _validate_randomization_range(
             "model_randomization.added_base_mass_range", self.added_base_mass_range
@@ -646,6 +657,9 @@ def _randomized_model_fields(
     )
     if np.any(central_body_ids < 0):
         raise ValueError("model randomization requires Bello central bodies")
+    torso_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
+    if torso_body_id < 0:
+        raise ValueError("model randomization requires torso_link")
     body_mass = np.broadcast_to(
         np.asarray(mj_model.body_mass, dtype=np.float32),
         (batch_size, mj_model.nbody),
@@ -683,12 +697,19 @@ def _randomized_model_fields(
             *config.actuator_strength_range, size=mj_model.nu
         ).astype(np.float32)
         gravity_fraction[world_index] = rng.uniform(*config.gravity_fraction_range)
+        torso_mass_scale = float(rng.uniform(*config.torso_mass_scale_range))
+        torso_com_offset = rng.uniform(*config.torso_com_offset_range, size=3).astype(
+            np.float32
+        )
         central_mass = body_mass[world_index, central_body_ids]
         distribution = central_mass / central_mass.sum()
         body_mass[world_index, central_body_ids] += mass_offset * distribution
         if np.any(body_mass[world_index, central_body_ids] <= 0.0):
             raise ValueError("randomized central-body masses must remain positive")
         body_ipos[world_index, base_body_id] += com_offset
+        body_mass[world_index, torso_body_id] *= torso_mass_scale
+        body_inertia[world_index, torso_body_id] *= torso_mass_scale
+        body_ipos[world_index, torso_body_id] += torso_com_offset
         geom_friction[world_index, :, 0] = friction
         actuator_gainprm[world_index, :, 0] *= kp_strength
         actuator_biasprm[world_index, :, 1] *= kp_strength

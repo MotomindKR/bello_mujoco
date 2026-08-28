@@ -608,6 +608,27 @@ def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(
     assert restored.env.observation_latency.delay_steps == (0, 0)
 
 
+def test_locomotion_checkpoint_without_observation_filter_loads_as_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_observation_filter_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["env"].pop("observation_low_pass_filter")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert not restored.env.observation_low_pass_filter.enabled
+    assert restored.env.observation_low_pass_filter.cutoff_hz == pytest.approx(10.0)
+
+
 def test_locomotion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
     tmp_path: Path,
 ) -> None:
@@ -759,6 +780,8 @@ def test_locomotion_checkpoint_without_new_randomization_fields_loads_as_noops(
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
     randomization = document["metadata"]["env"]["model_randomization"]
     for name in (
+        "torso_mass_scale_range",
+        "torso_com_offset_range",
         "added_base_mass_range",
         "base_com_offset_range",
         "friction_range",
@@ -772,6 +795,8 @@ def test_locomotion_checkpoint_without_new_randomization_fields_loads_as_noops(
     _, restored, _ = restore_evaluation_checkpoint(path)
 
     randomization_config = restored.env.model_randomization
+    assert randomization_config.torso_mass_scale_range == (1.0, 1.0)
+    assert randomization_config.torso_com_offset_range == (0.0, 0.0)
     assert randomization_config.added_base_mass_range == (0.0, 0.0)
     assert randomization_config.base_com_offset_range == (0.0, 0.0)
     assert randomization_config.friction_range == (1.0, 1.0)

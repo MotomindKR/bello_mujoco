@@ -80,6 +80,8 @@ env_config:
     joint_angle_offset_range: [0.0, 0.0]
     joint_angle_offset_scope: all
     joint_inertia_scale_range: [1.0, 1.0]
+    torso_mass_scale_range: [1.0, 1.0]
+    torso_com_offset_range: [0.0, 0.0]
   contact:
     foot_contact_on_seconds: 0.0
     foot_contact_off_seconds: 0.0
@@ -114,6 +116,9 @@ env_config:
       last_action: 1.0
     noise:
       enabled: false
+  observation_low_pass_filter:
+    enabled: false
+    cutoff_hz: 10.0
   observation_latency:
     enabled: false
     delay_steps: [0, 0]

@@ -19,6 +19,7 @@ from bello_mujoco.envs.locomotion import (
     GaitConfig,
     ObservationConfig,
     ObservationLatencyConfig,
+    ObservationLowPassFilterConfig,
     ObservationNoiseConfig,
     RandomPushConfig,
     SpawnConfig,
@@ -526,6 +527,52 @@ def test_observation_latency_delays_only_actor_feedback(
     ] == pytest.approx(current[3])
 
 
+def test_actor_feedback_low_pass_matches_hardware_first_order_response(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            observation_low_pass_filter=ObservationLowPassFilterConfig(
+                enabled=True,
+                cutoff_hz=10.0,
+            )
+        ),
+    )
+    previous = jnp.concatenate(
+        (
+            jnp.zeros(3),
+            jnp.zeros(3),
+            jnp.asarray((0.0, 0.0, -1.0)),
+            jnp.zeros(env.action_size),
+            jnp.zeros(env.action_size),
+        )
+    )
+    measured = jnp.concatenate(
+        (
+            jnp.ones(3),
+            jnp.ones(3),
+            jnp.asarray((0.0, -1.0, 0.0)),
+            jnp.ones(env.action_size),
+            jnp.ones(env.action_size),
+        )
+    )
+    timestep = env.control_timestep
+    filtered = env._low_pass_actor_feedback(previous, measured, timestep)
+    acceleration, angular_velocity, gravity, position, velocity = (
+        env._unpack_actor_feedback(filtered)
+    )
+    alpha = 1.0 - np.exp(-2.0 * np.pi * 10.0 * timestep)
+    expected_gravity = np.asarray((0.0, -alpha, -(1.0 - alpha)))
+    expected_gravity /= np.linalg.norm(expected_gravity)
+
+    assert acceleration == pytest.approx(np.full(3, alpha))
+    assert angular_velocity == pytest.approx(np.full(3, alpha))
+    assert gravity == pytest.approx(expected_gravity)
+    assert position == pytest.approx(np.ones(env.action_size))
+    assert velocity == pytest.approx(np.full(env.action_size, alpha))
+
+
 @pytest.mark.parametrize(
     "delay_steps",
     ((-1, 1), (2, 1), (0, 1, 2)),
@@ -541,6 +588,23 @@ def test_observation_latency_rejects_invalid_step_range(
                 observation_latency=ObservationLatencyConfig(
                     enabled=True,
                     delay_steps=delay_steps,
+                )
+            ),
+        )
+
+
+@pytest.mark.parametrize("cutoff_hz", (0.0, -1.0, float("nan")))
+def test_observation_low_pass_filter_rejects_invalid_cutoff(
+    full_body_asset: PreparedAsset,
+    cutoff_hz: float,
+) -> None:
+    with pytest.raises(ValueError, match="observation_low_pass_filter.cutoff_hz"):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(
+                observation_low_pass_filter=ObservationLowPassFilterConfig(
+                    enabled=True,
+                    cutoff_hz=cutoff_hz,
                 )
             ),
         )
