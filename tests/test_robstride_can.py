@@ -249,8 +249,48 @@ def test_emulator_rejects_invalid_command_latency(latency: float) -> None:
         validate_config(EmulatorConfig(command_latency_seconds=latency))
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("motor_kp_scale", 0.0, "motor_kp_scale must be finite and positive"),
+        ("motor_kp_scale", float("inf"), "motor_kp_scale must be finite and positive"),
+        ("motor_kd_scale", -0.1, "motor_kd_scale must be finite and nonnegative"),
+        (
+            "motor_kd_scale",
+            float("nan"),
+            "motor_kd_scale must be finite and nonnegative",
+        ),
+    ),
+)
+def test_emulator_rejects_invalid_motor_gain_scales(
+    field: str, value: float, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_config(replace(EmulatorConfig(), **{field: value}))
+
+
 def test_emulator_defaults_to_current_firmware_feedback_rate() -> None:
     assert EmulatorConfig().feedback_rate_hz == 100.0
+
+
+def test_emulator_video_capture_samples_only_free_torso_state(
+    full_body_asset: PreparedAsset,
+) -> None:
+    from bello_mujoco.robstride.emulator import EmulatorVideoCapture
+
+    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    data = mujoco.MjData(model.mj_model)
+    capture = EmulatorVideoCapture(fps=20)
+
+    capture.sample(data, active=False)
+    capture.sample(data, active=True)
+    data.time = 0.025
+    capture.sample(data, active=True)
+    data.time = 0.05
+    capture.sample(data, active=True)
+
+    assert len(capture.qpos_frames) == 2
+    assert capture.qpos_frames[0].shape == (model.mj_model.nq,)
 
 
 def test_emulator_reset_disables_motors_and_clears_stale_commands() -> None:
@@ -577,6 +617,32 @@ def test_bello_transmission_maps_knee_and_differential_ankle(
     assert data.qfrc_actuator[
         transmission.bindings["left_ankle_roll_joint"].qvel_index
     ] == pytest.approx(3.0)
+
+
+def test_bello_transmission_scales_effective_mit_gains(
+    full_body_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    motor = RobstrideMotor(motor_spec())
+    model = configure_robstride_actuators(model, (motor.spec,))
+    transmission = BelloRobstrideTransmission(model, (motor,))
+    data = mujoco.MjData(model.mj_model)
+    motor.mode_status = 2
+    motor.command = MotorCommand(position=0.2, kp=80.0, kd=4.0)
+
+    transmission.apply_motor_controls(data, kp_scale=1.5, kd_scale=0.25)
+
+    binding = transmission.actuators[motor.spec.name]
+    assert model.mj_model.actuator_gainprm[binding.position_id, 0] == pytest.approx(
+        120.0
+    )
+    assert model.mj_model.actuator_biasprm[binding.position_id, 1] == pytest.approx(
+        -120.0
+    )
+    assert model.mj_model.actuator_gainprm[binding.velocity_id, 0] == pytest.approx(1.0)
+    assert model.mj_model.actuator_biasprm[binding.velocity_id, 2] == pytest.approx(
+        -1.0
+    )
 
 
 def test_ankle_motors_require_configured_native_actuator_banks(

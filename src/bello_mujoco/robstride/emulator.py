@@ -75,6 +75,9 @@ class EmulatorConfig:
         timestep=0.0025
     )
     command_latency_seconds: float = 0.01
+    motor_kp_scale: float = 1.0
+    motor_kd_scale: float = 1.0
+    video_path: Path | None = None
     feedback_rate_hz: float = 100.0
     temperature_c: float = 25.0
     imu_serial_rate_hz: float = 200.0
@@ -130,6 +133,27 @@ class TorsoHold:
             return False
         data.eq_active[self.equality_id] = False
         return True
+
+
+@dataclass
+class EmulatorVideoCapture:
+    """Collect free-torso states at video rate without slowing the control loop."""
+
+    fps: int = 30
+    qpos_frames: list[np.ndarray] = field(default_factory=list)
+    next_frame_time: float | None = None
+
+    def sample(self, data: mujoco.MjData, *, active: bool) -> None:
+        if not active:
+            self.next_frame_time = None
+            return
+        period = 1.0 / self.fps
+        if self.next_frame_time is None:
+            self.next_frame_time = float(data.time)
+        if float(data.time) + 1.0e-12 < self.next_frame_time:
+            return
+        self.qpos_frames.append(np.asarray(data.qpos).copy())
+        self.next_frame_time += period
 
 
 @dataclass
@@ -319,6 +343,7 @@ def run_simulation(
         else None
     )
     imu_noise = ImuNoiseInjector(config.imu_noise)
+    video_capture = EmulatorVideoCapture() if config.video_path is not None else None
 
     with _open_emulator_resources(
         model,
@@ -329,6 +354,12 @@ def run_simulation(
     ) as resources:
         print_emulator_summary(model, emulators)
         print(f"  command latency: {config.command_latency_seconds * 1000:g} ms")
+        print(
+            "  effective motor gains: "
+            f"kp x{config.motor_kp_scale:g}, kd x{config.motor_kd_scale:g}"
+        )
+        if config.video_path is not None:
+            print(f"  video: record free-torso motion to {config.video_path}")
         fixed_joints = sorted(
             config.asset_config.joint_availability.disabled_joint_names
         )
@@ -367,18 +398,29 @@ def run_simulation(
             print("  keyboard: press Enter to release; press again to reset/guide")
         else:
             print("  keyboard: unavailable; torso guide remains engaged")
-        _simulation_loop(
-            model,
-            data,
-            emulators,
-            transmission,
-            config,
-            torso_hold,
-            imu_sensor,
-            imu_noise,
-            terminal_enter,
-            resources,
-        )
+        try:
+            _simulation_loop(
+                model,
+                data,
+                emulators,
+                transmission,
+                config,
+                torso_hold,
+                imu_sensor,
+                imu_noise,
+                terminal_enter,
+                resources,
+                video_capture,
+            )
+        finally:
+            if config.video_path is not None and video_capture is not None:
+                render_emulator_video(
+                    model,
+                    video_capture.qpos_frames,
+                    config.video_path,
+                    torso_hold,
+                    fps=video_capture.fps,
+                )
 
 
 def _simulation_loop(
@@ -392,6 +434,7 @@ def _simulation_loop(
     imu_noise: ImuNoiseInjector,
     terminal_enter: TerminalEnterInput,
     resources: _EmulatorResources,
+    video_capture: EmulatorVideoCapture | None = None,
 ) -> None:
     endpoints = resources.endpoints
     imu_serial = resources.imu_serial
@@ -453,9 +496,15 @@ def _simulation_loop(
             for response in emulators[bus_name].handle_frame(frame):
                 endpoints[bus_name].send(response)
 
-        transmission.apply_motor_controls(data)
+        transmission.apply_motor_controls(
+            data,
+            kp_scale=config.motor_kp_scale,
+            kd_scale=config.motor_kd_scale,
+        )
         mujoco.mj_step(model.mj_model, data)
         transmission.update_motor_states(data)
+        if video_capture is not None:
+            video_capture.sample(data, active=torso_released)
 
         if imu_sensor is not None and imu_serial is not None:
             imu_serial.update(imu_noise.apply(imu_sensor.sample(data)))
@@ -478,6 +527,54 @@ def _simulation_loop(
         delay = deadline - time.monotonic()
         if delay > 0.0:
             time.sleep(delay)
+
+
+def render_emulator_video(
+    model: BelloModel,
+    qpos_frames: list[np.ndarray],
+    output_path: Path,
+    torso_hold: TorsoHold,
+    *,
+    fps: int,
+    width: int = 640,
+    height: int = 480,
+) -> None:
+    """Render captured emulator states after the real-time loop has stopped."""
+
+    if not qpos_frames:
+        print("  video: no free-torso frames captured; no video written")
+        return
+    from bello_mujoco.evaluation.render import (
+        CameraConfig,
+        VideoWriter,
+        make_camera,
+        update_camera,
+    )
+
+    data = mujoco.MjData(model.mj_model)
+    data.eq_active[torso_hold.equality_id] = False
+    camera_config = CameraConfig(
+        mode="follow",
+        distance=3.0,
+        azimuth=135.0,
+        elevation=-14.0,
+        lookat_offset=(0.0, 0.0, 0.35),
+    )
+    camera = make_camera(model.mj_model, camera_config)
+    renderer = mujoco.Renderer(model.mj_model, width=width, height=height)
+    writer = VideoWriter(output_path, width=width, height=height, fps=fps)
+    try:
+        for qpos in qpos_frames:
+            data.qpos[:] = qpos
+            data.qvel[:] = 0.0
+            mujoco.mj_forward(model.mj_model, data)
+            update_camera(camera, model.mj_model, data, camera_config)
+            renderer.update_scene(data, camera=camera)
+            writer.append_data(renderer.render())
+    finally:
+        writer.close()
+        renderer.close()
+    print(f"  video: wrote {len(qpos_frames)} frames to {output_path}")
 
 
 def publish_body_pose(
@@ -659,6 +756,10 @@ def validate_config(config: EmulatorConfig) -> None:
         or config.command_latency_seconds < 0.0
     ):
         raise ValueError("command_latency_seconds must be finite and nonnegative")
+    if not math.isfinite(config.motor_kp_scale) or config.motor_kp_scale <= 0.0:
+        raise ValueError("motor_kp_scale must be finite and positive")
+    if not math.isfinite(config.motor_kd_scale) or config.motor_kd_scale < 0.0:
+        raise ValueError("motor_kd_scale must be finite and nonnegative")
     if not math.isfinite(config.temperature_c) or config.temperature_c < 0.0:
         raise ValueError("temperature_c must be nonnegative")
     if not math.isfinite(config.imu_serial_rate_hz) or config.imu_serial_rate_hz <= 0.0:

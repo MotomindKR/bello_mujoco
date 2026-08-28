@@ -177,16 +177,22 @@ class BelloRobstrideTransmission:
                 data.sensordata[binding.force_sensor_address]
             )
 
-    def apply_motor_controls(self, data: mujoco.MjData) -> None:
-        """Write MIT targets and gains to the three native actuators per motor."""
+    def apply_motor_controls(
+        self,
+        data: mujoco.MjData,
+        *,
+        kp_scale: float = 1.0,
+        kd_scale: float = 1.0,
+    ) -> None:
+        """Write MIT targets and effective gains to the native actuators."""
 
         self.update_motor_states(data)
         data.qfrc_applied[:] = 0.0
         for motor_name, motor in self.motors.items():
             binding = self.actuators[motor_name]
             enabled = motor.enabled
-            kp = motor.command.kp if enabled else 0.0
-            kd = motor.command.kd if enabled else 0.0
+            kp = motor.command.kp * kp_scale if enabled else 0.0
+            kd = motor.command.kd * kd_scale if enabled else 0.0
 
             mj_model = self.model.mj_model
             mj_model.actuator_gainprm[binding.position_id, 0] = kp

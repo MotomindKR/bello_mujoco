@@ -1,5 +1,8 @@
 bus_interfaces: [can0=vcan0, can1=vcan1]
 command_latency_seconds: 0.01
+motor_kp_scale: 1.0
+motor_kd_scale: 1.0
+video_path: null
 end_effector_payload_mass_kg: 0.0
 hydra:
   job:

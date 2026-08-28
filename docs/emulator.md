@@ -50,6 +50,17 @@ frames before they affect MuJoCo. Motor enable/stop, parameter access, and
 other lifecycle traffic remains immediate. Set it to `0` to disable synthetic
 command latency.
 
+`motor_kp_scale` and `motor_kd_scale` multiply the effective decoded MIT gains
+inside MuJoCo without changing the targets or feedback protocol. Their default
+of one is the canonical emulator. They are diagnostic controls for reproducing
+stiffness and damping mismatch; report both values with any comparison and do
+not treat a non-default result as a calibrated hardware model.
+
+Set `video_path` to an MP4 destination to capture a diagnostic run. State
+sampling begins when Enter releases the torso guide and pauses whenever the
+guide is engaged. Frames are rendered only after the emulator exits, keeping
+offscreen rendering out of the real-time motor and sensor loop.
+
 Set `end_effector_payload_mass_kg` to the carried mass at each hand. The value
 uses the same asset-generation path and per-hand convention as motion training
 and evaluation; for example, two 10 lb loads use

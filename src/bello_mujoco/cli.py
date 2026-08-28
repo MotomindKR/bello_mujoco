@@ -139,6 +139,9 @@ class VastTrainCommandConfig:
 class EmulatorCommandConfig:
     bus_interfaces: tuple[str, ...]
     command_latency_seconds: float
+    motor_kp_scale: float
+    motor_kd_scale: float
+    video_path: Path | None
     end_effector_payload_mass_kg: float
 
 
@@ -852,6 +855,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
 
 
 def emulator_entrypoint() -> None:
+    _expand_path_overrides(("video_path=",))
     _emulator_hydra()
 
 
@@ -868,6 +872,9 @@ def _emulator_hydra(config: DictConfig) -> None:
         emulator.EmulatorConfig(
             bus_interfaces=command.bus_interfaces,
             command_latency_seconds=command.command_latency_seconds,
+            motor_kp_scale=command.motor_kp_scale,
+            motor_kd_scale=command.motor_kd_scale,
+            video_path=command.video_path,
             asset_config=replace(
                 emulator.default_emulator_asset_config(),
                 end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,

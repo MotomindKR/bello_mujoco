@@ -288,6 +288,9 @@ Configuration source: `configs/commands/emulator.yaml`.
 | --- | --- | --- |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
 | `command_latency_seconds` | nonnegative float; `0.01` | Delay MIT motor-control frames before applying them to MuJoCo. Lifecycle, parameter, and stop traffic remains immediate; use `0` to disable the delay. |
+| `motor_kp_scale` | positive float; `1` | Emulator-only multiplier on decoded MIT position gains. Use controlled sweeps to diagnose effective stiffness mismatch; `1` preserves the canonical plant. |
+| `motor_kd_scale` | nonnegative float; `1` | Emulator-only multiplier on decoded MIT velocity gains. Use controlled sweeps to diagnose effective damping mismatch; `1` preserves the canonical plant. |
+| `video_path` | path or `null`; `null` | Capture free-torso emulator state at 30 FPS and render it to MP4 when the emulator exits. Guided setup is omitted so recording does not disturb the real-time loop. |
 | `end_effector_payload_mass_kg` | nonnegative float; `0` | Add this many kilograms to each sphere hand. Use the payload recorded by the motion-policy checkpoint when emulating a weighted policy. |
 
 The emulator is checkout-only. It selects the canonical `lower_body` and
