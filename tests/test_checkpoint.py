@@ -726,6 +726,26 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     )
 
 
+def test_locomotion_checkpoint_without_standing_transitions_loads_as_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_command_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["command"].pop("standing_transitions_enabled")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert not restored.command.standing_transitions_enabled
+
+
 def test_locomotion_checkpoint_without_new_randomization_fields_loads_as_noops(
     tmp_path: Path,
 ) -> None:

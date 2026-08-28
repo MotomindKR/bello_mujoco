@@ -826,6 +826,14 @@ def _with_checkpoint_metadata_defaults(
         value = normalized
     if value.get("task") == "locomotion":
         normalized = dict(value)
+        command = value.get("command")
+        if (
+            isinstance(command, dict)
+            and "standing_transitions_enabled" not in command
+        ):
+            normalized_command = dict(command)
+            normalized_command["standing_transitions_enabled"] = False
+            normalized["command"] = normalized_command
         env = value.get("env")
         if isinstance(env, dict) and "gait" not in env:
             raise ValueError(
