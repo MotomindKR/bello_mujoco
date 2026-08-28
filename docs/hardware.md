@@ -244,7 +244,7 @@ objectives rather than a deployment-only command filter.
 The deployed `bello-hardwared` filters every 200 Hz EBIMU orientation, angular
 velocity, and linear-acceleration sample with timestamp-aware 10 Hz first-order
 low-pass filters before the locomotion runner samples its latest state at 50 Hz.
-Motor velocity is independently filtered at 15 Hz. Joint position and
+Motor velocity is independently filtered at 10 Hz. Joint position and
 locomotion action targets remain unfiltered.
 Configure the visualizer to listen on port 50054 and supply its plaintext URL
 as `remote_endpoint`, for example

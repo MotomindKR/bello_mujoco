@@ -431,7 +431,7 @@ Hardware targets use the proportional and derivative gains stored in checkpoint
 metadata.
 
 Motor velocity observations come from `bello-hardwared`, whose deployment YAML
-sets `runtime.motor_velocity_filter.cutoff_hz` (15 Hz by default). This filter
+sets `runtime.motor_velocity_filter.cutoff_hz` (10 Hz by default). This filter
 cannot be changed by `bello-run-hardware`; `null` and zero are invalid daemon
 settings. For experiments that need effectively unfiltered observations, use a
 high positive cutoff such as 1000 Hz and restart `bello-hardwared`. This only
