@@ -438,11 +438,19 @@ high positive cutoff such as 1000 Hz and restart `bello-hardwared`. This only
 changes published motor velocity telemetry; daemon health and safety checks
 continue to use raw protocol feedback.
 
+IMU state frames are filtered inside `bello-hardwared` before either hardware
+runner consumes them. The deployment YAML's `runtime.imu_filter` section sets
+independent orientation, gyro, and acceleration cutoffs, all 10 Hz by default.
+The filter advances on every 200 Hz EBIMU device timestamp before the runner
+selects the latest sample at 50 Hz; it cannot be configured through
+`bello-run-hardware`.
+
 Motion-policy base angular velocity comes from the filtered root-local gyro field
-published by `bello-state-estimatord` through `PoseService`. The raw gyro in the
-hardware state frame remains independently validated against the configured
-hardware angular-velocity safety limit. The canonical estimator configuration
-uses a 15 Hz gyro low-pass cutoff.
+published by `bello-state-estimatord` through `PoseService`. The
+hardwared-filtered gyro in the hardware state frame remains independently
+validated against the configured hardware angular-velocity safety limit. The
+canonical estimator configuration applies an additional 15 Hz gyro low-pass
+cutoff for its PoseService output.
 
 Preflight validates the checkpoint task, sphere-hand/fixed-joint morphology,
 policy layouts, generated transmission, motor inventory, IMU presence,

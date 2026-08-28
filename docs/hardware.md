@@ -240,6 +240,12 @@ sample is clipped to the checkpoint action bound, converted directly to motor
 targets, and fed back as `last_action`, matching training and native evaluation
 exactly. Smoothness comes from the trained action-rate and action-acceleration
 objectives rather than a deployment-only command filter.
+
+The deployed `bello-hardwared` filters every 200 Hz EBIMU orientation, angular
+velocity, and linear-acceleration sample with timestamp-aware 10 Hz first-order
+low-pass filters before the locomotion runner samples its latest state at 50 Hz.
+Motor velocity is independently filtered at 15 Hz. Joint position and
+locomotion action targets remain unfiltered.
 Configure the visualizer to listen on port 50054 and supply its plaintext URL
 as `remote_endpoint`, for example
 `remote_endpoint=http://visualizer-host:50054`.
@@ -270,9 +276,9 @@ The pose stream supplies world-frame pelvis translation, estimator-state linear
 velocity, orientation, filtered root-local angular velocity, and a precise source
 timestamp, normally from PoseService at `127.0.0.1:50053`. The runner never
 differentiates received poses. State-frame IMU orientation remains an independent
-agreement check, and its raw angular velocity and acceleration remain subject to
-hardware safety limits. Root translation is never estimated by double-integrating
-acceleration.
+agreement check, and its hardwared-filtered angular velocity and acceleration
+remain subject to hardware safety limits. Root translation is never estimated by
+double-integrating acceleration.
 
 Motion first uses the standing checkpoint's default ten-second ramp, bounded
 nominal-pose arrival, and manual `HOLD` and `RUN` confirmations. `RUN` starts
