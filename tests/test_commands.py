@@ -237,17 +237,17 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.video_config.enabled is False
     assert locomotion.checkpoint_config.every_updates == 512
     assert locomotion.config.total_timesteps == 8_000_000_000
-    assert locomotion.config.symmetry_loss_coef == pytest.approx(0.1)
+    assert locomotion.config.symmetry_loss_coef == pytest.approx(0.0)
     assert hardware.checkpoint_config.every_updates == 512
     assert hardware.config.total_timesteps == 8_000_000_000
-    assert hardware.asset_config.enforce_policy_effort_limits
+    assert not hardware.asset_config.enforce_policy_effort_limits
     assert hardware.config.learning_rate == pytest.approx(1.0e-4)
     assert hardware.config.min_learning_rate == pytest.approx(3.0e-5)
     assert hardware.config.adaptive_kl_statistic == "mean"
     assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
     assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-4.0)
     assert hardware.reward_config.weights.action_rate == pytest.approx(-0.01)
-    assert hardware.reward_config.weights.action_acceleration == pytest.approx(-0.005)
+    assert hardware.reward_config.weights.action_acceleration == pytest.approx(0.0)
     assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
     assert hardware.reward_config.weights.stand_foot_motion == pytest.approx(-1.0)
     assert hardware.reward_config.weights.stand_foot_heading == pytest.approx(-0.5)
@@ -267,6 +267,12 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.command_config.standing_transitions_enabled
     assert hardware.env_config.random_push.enabled
     assert not hardware.reward_config.gait.joint_force_apply_while_standing
+    assert hardware.reward_config.gait.touchdown_force_soft_limit_body_weights == (
+        pytest.approx(1.0)
+    )
+    assert hardware.reward_config.smoothness.ankle_action_weight == pytest.approx(1.0)
+    assert hardware.reward_config.smoothness.waist_action_weight == pytest.approx(1.0)
+    assert hardware.reward_config.limits_pose.hip_lateral_command_index == 1
     assert hardware.video_config.command == (0.0, 0.5, 0.0)
     assert locomotion.env_config.observation_latency.enabled
     assert locomotion.env_config.observation_latency.delay_steps == (0, 2)
@@ -274,6 +280,12 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert locomotion.env_config.observation_low_pass_filter.cutoff_hz == pytest.approx(
         10.0
     )
+    assert locomotion.env_config.observation_low_pass_filter.noise_before_filter
+    assert locomotion.env_config.observation_low_pass_filter.residual_noise_scale == (
+        pytest.approx(0.1)
+    )
+    assert locomotion.env_config.torso_com_curriculum.enabled
+    assert locomotion.env_config.torso_com_curriculum.ramp_steps == 3_000_000
     assert locomotion.env_config.model_randomization.torso_mass_scale_range == (
         0.8,
         1.2,

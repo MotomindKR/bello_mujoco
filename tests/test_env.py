@@ -23,6 +23,7 @@ from bello_mujoco.envs.locomotion import (
     ObservationNoiseConfig,
     RandomPushConfig,
     SpawnConfig,
+    TorsoComCurriculumConfig,
     advance_gait_phase,
     desired_gait_foot_contact,
     gait_phase_features,
@@ -573,6 +574,83 @@ def test_actor_feedback_low_pass_matches_hardware_first_order_response(
     assert velocity == pytest.approx(np.full(env.action_size, alpha))
 
 
+def test_actor_feedback_noise_is_filtered_before_history(
+    full_body_asset: PreparedAsset,
+) -> None:
+    noise = ObservationNoiseConfig(
+        enabled=True,
+        base_ang_vel=(1.0, 1.0),
+        joint_pos=(0.5, 0.5),
+        joint_vel=(2.0, 2.0),
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        env_config=BelloEnvConfig(
+            observation=ObservationConfig(noise=noise),
+            observation_low_pass_filter=ObservationLowPassFilterConfig(
+                enabled=True,
+                cutoff_hz=10.0,
+                noise_before_filter=True,
+                residual_noise_scale=0.0,
+            ),
+        ),
+    )
+    state, _ = env.reset()
+    measured = env._actor_feedback(state)
+    advanced = env._advance_actor_feedback_history(
+        state.actor_feedback_history, state, jax.random.PRNGKey(4)
+    )[0]
+    previous = env._unpack_actor_feedback(state.actor_feedback_history[0])
+    filtered = env._unpack_actor_feedback(advanced)
+    alpha = 1.0 - np.exp(-2.0 * np.pi * 10.0 * env.control_timestep)
+
+    assert filtered[1] == pytest.approx(previous[1] + alpha)
+    assert filtered[3] == pytest.approx(env._unpack_actor_feedback(measured)[3] + 0.5)
+    assert filtered[4] == pytest.approx(previous[4] + 2.0 * alpha)
+
+
+def test_torso_com_curriculum_scales_fixed_world_offsets(
+    full_body_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        full_body_asset,
+        batch_size=4,
+        env_config=BelloEnvConfig(
+            model_randomization=ModelRandomizationConfig(
+                enabled=True,
+                seed=31,
+                torso_com_offset_range=(-0.1, 0.1),
+            ),
+            torso_com_curriculum=TorsoComCurriculumConfig(
+                enabled=True,
+                ramp_steps=100,
+            ),
+        ),
+    )
+    torso_id = mujoco.mj_name2id(
+        env.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link"
+    )
+    full = np.asarray(env.model.mjx_model.body_ipos)[:, torso_id]
+    offset = env.model.torso_com_offset
+    zero = np.asarray(
+        env.with_task_state(jnp.asarray([0.0])).model.mjx_model.body_ipos
+    )[:, torso_id]
+    half = np.asarray(
+        env.with_task_state(jnp.asarray([50.0])).model.mjx_model.body_ipos
+    )[:, torso_id]
+    complete = np.asarray(
+        env.with_task_state(jnp.asarray([100.0])).model.mjx_model.body_ipos
+    )[:, torso_id]
+
+    np.testing.assert_allclose(zero, full - offset, atol=1.0e-7)
+    np.testing.assert_allclose(half, full - 0.5 * offset, atol=1.0e-7)
+    np.testing.assert_allclose(complete, full, atol=1.0e-7)
+    assert env.initial_task_state() == pytest.approx(jnp.asarray([0.0]))
+    assert env.update_task_state(jnp.asarray([99.5]), {}) == pytest.approx(
+        jnp.asarray([100.0])
+    )
+
+
 @pytest.mark.parametrize(
     "delay_steps",
     ((-1, 1), (2, 1), (0, 1, 2)),
@@ -606,6 +684,35 @@ def test_observation_low_pass_filter_rejects_invalid_cutoff(
                     enabled=True,
                     cutoff_hz=cutoff_hz,
                 )
+            ),
+        )
+
+
+@pytest.mark.parametrize("residual_noise_scale", (-0.1, 1.1, float("nan")))
+def test_observation_low_pass_filter_rejects_invalid_residual_noise_scale(
+    full_body_asset: PreparedAsset,
+    residual_noise_scale: float,
+) -> None:
+    with pytest.raises(ValueError, match="residual_noise_scale"):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(
+                observation_low_pass_filter=ObservationLowPassFilterConfig(
+                    enabled=True,
+                    residual_noise_scale=residual_noise_scale,
+                )
+            ),
+        )
+
+
+def test_torso_com_curriculum_requires_model_randomization(
+    full_body_asset: PreparedAsset,
+) -> None:
+    with pytest.raises(ValueError, match="requires model_randomization.enabled"):
+        BelloLocomotionEnv.load_prepared(
+            full_body_asset,
+            env_config=BelloEnvConfig(
+                torso_com_curriculum=TorsoComCurriculumConfig(enabled=True)
             ),
         )
 

@@ -1,4 +1,5 @@
 from dataclasses import fields
+import math
 
 import jax
 import jax.numpy as jnp
@@ -441,7 +442,8 @@ def test_touchdown_impact_uses_normal_impulse_and_preimpact_vertical_speed() -> 
         config, inputs.replace(foot_touchdown=jnp.zeros(2, dtype=bool))
     )
 
-    assert terms["reward/touchdown_impact"] == pytest.approx(-0.08)
+    expected = -4.0 * 0.02 * math.tanh(1.0)
+    assert terms["reward/touchdown_impact"] == pytest.approx(expected)
     assert no_touchdown["reward/touchdown_impact"] == pytest.approx(0.0)
 
 

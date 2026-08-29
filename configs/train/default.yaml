@@ -119,6 +119,11 @@ env_config:
   observation_low_pass_filter:
     enabled: false
     cutoff_hz: 10.0
+    noise_before_filter: false
+    residual_noise_scale: 0.0
+  torso_com_curriculum:
+    enabled: false
+    ramp_steps: 1
   observation_latency:
     enabled: false
     delay_steps: [0, 0]

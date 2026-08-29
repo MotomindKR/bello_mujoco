@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Literal
 
@@ -167,6 +167,16 @@ class ObservationLowPassFilterConfig:
 
     enabled: bool = False
     cutoff_hz: float = 10.0
+    noise_before_filter: bool = False
+    residual_noise_scale: float = 0.0
+
+
+@dataclass(frozen=True)
+class TorsoComCurriculumConfig:
+    """Ramp fixed per-world torso COM offsets over policy steps."""
+
+    enabled: bool = False
+    ramp_steps: int = 1
 
 
 @dataclass(frozen=True)
@@ -297,6 +307,7 @@ class BelloEnvConfig:
     observation_low_pass_filter: ObservationLowPassFilterConfig = (
         ObservationLowPassFilterConfig()
     )
+    torso_com_curriculum: TorsoComCurriculumConfig = TorsoComCurriculumConfig()
     observation_latency: ObservationLatencyConfig = ObservationLatencyConfig()
     gait: GaitConfig = GaitConfig()
     critic_observation: ObservationConfig = ObservationConfig(privileged=True)
@@ -361,6 +372,7 @@ class BelloLocomotionEnv:
             )
         self._validate_observation_config("observation", self.config.observation)
         self._validate_observation_low_pass_filter()
+        self._validate_torso_com_curriculum()
         self._validate_observation_latency()
         self._validate_observation_config(
             "critic_observation", self.config.critic_observation
@@ -473,11 +485,37 @@ class BelloLocomotionEnv:
             )
 
     def _validate_observation_low_pass_filter(self) -> None:
-        cutoff_hz = self.config.observation_low_pass_filter.cutoff_hz
+        config = self.config.observation_low_pass_filter
+        cutoff_hz = config.cutoff_hz
         if not math.isfinite(cutoff_hz) or cutoff_hz <= 0.0:
             raise ValueError(
                 "observation_low_pass_filter.cutoff_hz must be positive and "
                 f"finite, got {cutoff_hz}"
+            )
+        if (
+            not math.isfinite(config.residual_noise_scale)
+            or config.residual_noise_scale < 0.0
+            or config.residual_noise_scale > 1.0
+        ):
+            raise ValueError(
+                "observation_low_pass_filter.residual_noise_scale must be finite "
+                f"and in [0, 1], got {config.residual_noise_scale}"
+            )
+        if config.noise_before_filter and not config.enabled:
+            raise ValueError(
+                "observation_low_pass_filter.noise_before_filter requires enabled=true"
+            )
+
+    def _validate_torso_com_curriculum(self) -> None:
+        config = self.config.torso_com_curriculum
+        if type(config.ramp_steps) is not int or config.ramp_steps <= 0:
+            raise ValueError(
+                "torso_com_curriculum.ramp_steps must be a positive integer, got "
+                f"{config.ramp_steps}"
+            )
+        if config.enabled and not self.config.model_randomization.enabled:
+            raise ValueError(
+                "torso_com_curriculum.enabled requires model_randomization.enabled"
             )
 
     @classmethod
@@ -608,6 +646,61 @@ class BelloLocomotionEnv:
     @property
     def actor_feedback_size(self) -> int:
         return 9 + 2 * self.action_size
+
+    def initial_task_state(self) -> jax.Array:
+        if not self.config.torso_com_curriculum.enabled:
+            return jnp.zeros((0,), dtype=jnp.float32)
+        return jnp.zeros((1,), dtype=jnp.float32)
+
+    def with_task_state(self, task_state: jax.Array) -> "BelloLocomotionEnv":
+        if not self.config.torso_com_curriculum.enabled:
+            return self
+        if task_state.shape != (1,):
+            raise ValueError(
+                "torso COM curriculum task state must have shape (1,), got "
+                f"{task_state.shape}"
+            )
+        if self.model.mjx_model is None:
+            raise RuntimeError("torso COM curriculum requires an MJX model")
+        progress = jnp.clip(
+            task_state[0] / self.config.torso_com_curriculum.ramp_steps, 0.0, 1.0
+        )
+        torso_body_id = mujoco.mj_name2id(
+            self.model.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link"
+        )
+        offsets = jnp.asarray(self.model.torso_com_offset)
+        body_ipos = self.model.mjx_model.body_ipos.at[:, torso_body_id].add(
+            (progress - 1.0) * offsets
+        )
+        model = replace(
+            self.model,
+            mjx_model=self.model.mjx_model.replace(body_ipos=body_ipos),
+        )
+        return replace(self, model=model)
+
+    def update_task_state(
+        self, task_state: jax.Array, info: dict[str, jax.Array]
+    ) -> jax.Array:
+        del info
+        if not self.config.torso_com_curriculum.enabled:
+            return task_state
+        return jnp.minimum(
+            task_state + 1.0,
+            jnp.asarray(
+                [self.config.torso_com_curriculum.ramp_steps], dtype=jnp.float32
+            ),
+        )
+
+    def task_state_metrics(self, task_state: jax.Array) -> dict[str, jax.Array]:
+        if not self.config.torso_com_curriculum.enabled:
+            return {}
+        return {
+            "curriculum/torso_com_scale": jnp.clip(
+                task_state[0] / self.config.torso_com_curriculum.ramp_steps,
+                0.0,
+                1.0,
+            )
+        }
 
     def _observation_layout(self, observation: ObservationConfig) -> ObservationLayout:
         components: list[tuple[str, int]] = [
@@ -792,11 +885,17 @@ class BelloLocomotionEnv:
         forward: bool = True,
         align_clearance: bool = True,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = reset_rng = obs_rng = latency_rng = gait_rng = rng
+        command_rng = reset_rng = feedback_rng = obs_rng = latency_rng = gait_rng = rng
         if rng is not None:
-            command_rng, reset_rng, obs_rng, latency_rng, gait_rng = jax.random.split(
-                rng, 5
-            )
+            (
+                command_rng,
+                reset_rng,
+                obs_rng,
+                latency_rng,
+                gait_rng,
+            ) = jax.random.split(rng, 5)
+            feedback_rng = jax.random.fold_in(obs_rng, 1)
+            obs_rng = jax.random.fold_in(obs_rng, 2)
         command = self._resolve_command(command, command_rng)
         gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
         if gait_rng is not None:
@@ -848,6 +947,8 @@ class BelloLocomotionEnv:
             )
             state = state.replace(data=data)
         actor_feedback = self._actor_feedback(state)
+        if self.config.observation_low_pass_filter.noise_before_filter:
+            actor_feedback = self._noisy_actor_feedback(actor_feedback, feedback_rng)
         state = state.replace(
             tracking_ang_vel_z=self._raw_tracking_ang_vel_z(state),
             actor_feedback_history=jnp.repeat(
@@ -864,9 +965,11 @@ class BelloLocomotionEnv:
         command: jax.Array | None = None,
         rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = reset_rng = obs_rng = rng
+        command_rng = reset_rng = feedback_rng = obs_rng = rng
         if rng is not None:
             command_rng, reset_rng, obs_rng = jax.random.split(rng, 3)
+            feedback_rng = jax.random.fold_in(obs_rng, 1)
+            obs_rng = jax.random.fold_in(obs_rng, 2)
         command = self._resolve_batch_command(batch_size, command, command_rng)
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         if reset_rng is None:
@@ -912,6 +1015,14 @@ class BelloLocomotionEnv:
             tracking_ang_vel_z=jax.vmap(self._raw_tracking_ang_vel_z)(state)
         )
         actor_feedback = jax.vmap(self._actor_feedback)(state)
+        if (
+            feedback_rng is not None
+            and self.config.observation_low_pass_filter.noise_before_filter
+        ):
+            feedback_keys = jax.random.split(feedback_rng, batch_size)
+            actor_feedback = jax.vmap(self._noisy_actor_feedback)(
+                actor_feedback, feedback_keys
+            )
         state = state.replace(
             actor_feedback_history=jnp.repeat(
                 actor_feedback[:, None, :],
@@ -1305,11 +1416,18 @@ class BelloLocomotionEnv:
         rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
         batch_size = int(action.shape[0])
-        resample_rng = reset_command_rng = reset_obs_rng = push_rng = obs_rng = None
+        resample_rng = reset_command_rng = reset_obs_rng = None
+        push_rng = feedback_rng = obs_rng = None
         if rng is not None:
-            resample_rng, reset_command_rng, reset_obs_rng, push_rng, obs_rng = (
-                jax.random.split(rng, 5)
-            )
+            (
+                resample_rng,
+                reset_command_rng,
+                reset_obs_rng,
+                push_rng,
+                obs_rng,
+            ) = jax.random.split(rng, 5)
+            feedback_rng = jax.random.fold_in(obs_rng, 1)
+            obs_rng = jax.random.fold_in(obs_rng, 2)
         requested_action = jnp.asarray(action, dtype=jnp.float32)
         action = jnp.clip(
             requested_action,
@@ -1337,6 +1455,15 @@ class BelloLocomotionEnv:
             requested_actuator_force,
         ) = self._step_physics_with_impacts_batch(state, data, batch_size)
         next_data_state = state.replace(data=data)
+        if feedback_rng is None:
+            actor_feedback_history = jax.vmap(self._advance_actor_feedback_history)(
+                state.actor_feedback_history, next_data_state
+            )
+        else:
+            feedback_keys = jax.random.split(feedback_rng, batch_size)
+            actor_feedback_history = jax.vmap(self._advance_actor_feedback_history)(
+                state.actor_feedback_history, next_data_state, feedback_keys
+            )
         stepped_state = BelloState(
             data=data,
             last_action=action,
@@ -1345,9 +1472,7 @@ class BelloLocomotionEnv:
                 state.tracking_ang_vel_z,
                 jax.vmap(self._raw_tracking_ang_vel_z)(next_data_state),
             ),
-            actor_feedback_history=jax.vmap(self._advance_actor_feedback_history)(
-                state.actor_feedback_history, next_data_state
-            ),
+            actor_feedback_history=actor_feedback_history,
             actor_feedback_delay_steps=state.actor_feedback_delay_steps,
             foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
@@ -1575,6 +1700,16 @@ class BelloLocomotionEnv:
             ) = self._unpack_actor_feedback(_feedback)
         scale = observation.scale
         noise = observation.noise
+        feedback_noise_scale = 1.0
+        joint_position_noise_scale = 1.0
+        if (
+            _feedback is not None
+            and self.config.observation_low_pass_filter.noise_before_filter
+        ):
+            feedback_noise_scale = (
+                self.config.observation_low_pass_filter.residual_noise_scale
+            )
+            joint_position_noise_scale = 0.0
         keys = (
             jax.random.split(rng, 11)
             if rng is not None and noise.enabled
@@ -1582,16 +1717,25 @@ class BelloLocomotionEnv:
         )
         parts = [
             self._observation_component(
-                base_lin_acc, noise.base_lin_acc, scale.base_lin_acc, keys[0]
+                base_lin_acc,
+                noise.base_lin_acc,
+                scale.base_lin_acc,
+                keys[0],
+                noise_scale=feedback_noise_scale,
             ),
             self._observation_component(
-                base_ang_vel, noise.base_ang_vel, scale.base_ang_vel, keys[1]
+                base_ang_vel,
+                noise.base_ang_vel,
+                scale.base_ang_vel,
+                keys[1],
+                noise_scale=feedback_noise_scale,
             ),
             self._observation_component(
                 projected_gravity,
                 noise.projected_gravity,
                 scale.projected_gravity,
                 keys[2],
+                noise_scale=feedback_noise_scale,
             ),
         ]
         if self.command_config.enabled:
@@ -1611,10 +1755,18 @@ class BelloLocomotionEnv:
         parts.extend(
             (
                 self._observation_component(
-                    joint_pos, noise.joint_pos, scale.joint_pos, keys[5]
+                    joint_pos,
+                    noise.joint_pos,
+                    scale.joint_pos,
+                    keys[5],
+                    noise_scale=joint_position_noise_scale,
                 ),
                 self._observation_component(
-                    joint_vel, noise.joint_vel, scale.joint_vel, keys[6]
+                    joint_vel,
+                    noise.joint_vel,
+                    scale.joint_vel,
+                    keys[6],
+                    noise_scale=feedback_noise_scale,
                 ),
                 self._observation_component(
                     last_action, noise.last_action, scale.last_action, keys[7]
@@ -1675,15 +1827,44 @@ class BelloLocomotionEnv:
         )
 
     def _delayed_actor_feedback(self, state: BelloState) -> jax.Array:
+        if (
+            not self.config.observation_low_pass_filter.enabled
+            and not self.config.observation_latency.enabled
+        ):
+            return self._actor_feedback(state)
         return state.actor_feedback_history[state.actor_feedback_delay_steps]
 
     def _advance_actor_feedback_history(
-        self, history: jax.Array, state: BelloState
+        self,
+        history: jax.Array,
+        state: BelloState,
+        rng: jax.Array | None = None,
     ) -> jax.Array:
+        measured = self._actor_feedback(state)
+        if self.config.observation_low_pass_filter.noise_before_filter:
+            measured = self._noisy_actor_feedback(measured, rng)
         feedback = self._low_pass_actor_feedback(
-            history[0], self._actor_feedback(state), self.control_timestep
+            history[0], measured, self.control_timestep
         )
         return jnp.concatenate((feedback[None, :], history[:-1]))
+
+    def _noisy_actor_feedback(
+        self, measured: jax.Array, rng: jax.Array | None
+    ) -> jax.Array:
+        noise = self.config.observation.noise
+        if rng is None or not noise.enabled:
+            return measured
+        keys = jax.random.split(rng, 5)
+        parts = self._unpack_actor_feedback(measured)
+        return jnp.concatenate(
+            (
+                self._add_uniform_noise(parts[0], noise.base_lin_acc, keys[0]),
+                self._add_uniform_noise(parts[1], noise.base_ang_vel, keys[1]),
+                self._add_uniform_noise(parts[2], noise.projected_gravity, keys[2]),
+                self._add_uniform_noise(parts[3], noise.joint_pos, keys[3]),
+                self._add_uniform_noise(parts[4], noise.joint_vel, keys[4]),
+            )
+        )
 
     def _low_pass_actor_feedback(
         self, previous: jax.Array, measured: jax.Array, timestep: float | jax.Array
@@ -1745,16 +1926,30 @@ class BelloLocomotionEnv:
         noise_range: tuple[float, float],
         scale: float,
         rng: jax.Array | None,
+        *,
+        noise_scale: float = 1.0,
     ) -> jax.Array:
-        if rng is not None:
-            value = value + jax.random.uniform(
-                rng,
-                value.shape,
-                minval=noise_range[0],
-                maxval=noise_range[1],
-                dtype=value.dtype,
+        if rng is not None and noise_scale > 0.0:
+            scaled_range = (
+                noise_scale * noise_range[0],
+                noise_scale * noise_range[1],
             )
+            value = self._add_uniform_noise(value, scaled_range, rng)
         return value * jnp.asarray(scale, dtype=value.dtype)
+
+    @staticmethod
+    def _add_uniform_noise(
+        value: jax.Array,
+        noise_range: tuple[float, float],
+        rng: jax.Array,
+    ) -> jax.Array:
+        return value + jax.random.uniform(
+            rng,
+            value.shape,
+            minval=noise_range[0],
+            maxval=noise_range[1],
+            dtype=value.dtype,
+        )
 
     def action_to_ctrl(
         self,

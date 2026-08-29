@@ -11,12 +11,14 @@ config:
   max_learning_rate: 0.0001
   gamma: 0.97
   ent_coef: 0.005
-  symmetry_loss_coef: 0.1
+  symmetry_loss_coef: 0.0
   policy:
     hidden_dims: [512, 256, 128]
     activation: swish
     init_log_std: -1.5
     max_log_std: -1.0
+asset_config:
+  enforce_policy_effort_limits: false
 env_config:
   terrain:
     slope_angle_range: [-0.034906585, 0.034906585]
@@ -47,6 +49,11 @@ env_config:
   observation_low_pass_filter:
     enabled: true
     cutoff_hz: 10.0
+    noise_before_filter: true
+    residual_noise_scale: 0.1
+  torso_com_curriculum:
+    enabled: true
+    ramp_steps: 3000000
   observation_latency:
     enabled: true
     delay_steps: [0, 2]
@@ -57,6 +64,15 @@ command_config:
   standing_probability: 0.25
   standing_transitions_enabled: true
 reward_config:
+  weights:
+    action_acceleration: 0.0
+  gait:
+    touchdown_force_soft_limit_body_weights: 1.0
+  smoothness:
+    ankle_action_weight: 1.0
+    waist_action_weight: 1.0
+  limits_pose:
+    hip_lateral_command_index: 1
   links:
     track_lin_vel_xy: pelvis_link
     track_lin_vel_xy_frame: pelvis_link

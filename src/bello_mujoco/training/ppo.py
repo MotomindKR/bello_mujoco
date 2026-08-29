@@ -1443,7 +1443,15 @@ def init_runner_state(
         ),
     )
     params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
-    env_state, obs = env.reset_batch(config.num_envs, rng=env_key)
+    task_state = (
+        env.initial_task_state()
+        if hasattr(env, "initial_task_state")
+        else jnp.zeros((0,), dtype=jnp.float32)
+    )
+    initial_env = (
+        env.with_task_state(task_state) if hasattr(env, "with_task_state") else env
+    )
+    env_state, obs = initial_env.reset_batch(config.num_envs, rng=env_key)
     step_count = env.initial_step_counts(config.num_envs, step_count_key)
     if hasattr(env, "with_initial_step_counts"):
         env_state = env.with_initial_step_counts(env_state, step_count)
@@ -1451,13 +1459,8 @@ def init_runner_state(
         env_state = env_state.replace(step_count=step_count, episode_length=step_count)
     if env.ppo_stagger_initial_step_count:
         rng, staggered_obs_key = jax.random.split(rng)
-        obs = env.observation_batch(env_state, staggered_obs_key)
-    critic_obs = env.critic_observation_batch(env_state)
-    task_state = (
-        env.initial_task_state()
-        if hasattr(env, "initial_task_state")
-        else jnp.zeros((0,), dtype=jnp.float32)
-    )
+        obs = initial_env.observation_batch(env_state, staggered_obs_key)
+    critic_obs = initial_env.critic_observation_batch(env_state)
     obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
     critic_obs_stack = init_observation_stack(critic_obs, config.policy.obs_stack_size)
     return (

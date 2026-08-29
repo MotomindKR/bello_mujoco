@@ -30,6 +30,7 @@ from bello_mujoco.envs.locomotion import (
     DoneConfig,
     ObservationLatencyConfig,
     ObservationLowPassFilterConfig,
+    TorsoComCurriculumConfig,
 )
 from bello_mujoco.envs.motion_tracking import (
     MotionObservationLatencyConfig,
@@ -828,10 +829,7 @@ def _with_checkpoint_metadata_defaults(
     if value.get("task") == "locomotion":
         normalized = dict(value)
         command = value.get("command")
-        if (
-            isinstance(command, dict)
-            and "standing_transitions_enabled" not in command
-        ):
+        if isinstance(command, dict) and "standing_transitions_enabled" not in command:
             normalized_command = dict(command)
             normalized_command["standing_transitions_enabled"] = False
             normalized["command"] = normalized_command
@@ -846,6 +844,10 @@ def _with_checkpoint_metadata_defaults(
             if "observation_low_pass_filter" not in normalized_env:
                 normalized_env["observation_low_pass_filter"] = to_builtin(
                     ObservationLowPassFilterConfig()
+                )
+            if "torso_com_curriculum" not in normalized_env:
+                normalized_env["torso_com_curriculum"] = to_builtin(
+                    TorsoComCurriculumConfig()
                 )
             if "observation_latency" not in normalized_env:
                 normalized_env["observation_latency"] = to_builtin(

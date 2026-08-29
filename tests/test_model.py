@@ -495,6 +495,11 @@ def test_model_randomization_scales_torso_mass_inertia_and_com(
     assert np.max(
         np.abs(body_ipos[:, torso_id] - nominal.mj_model.body_ipos[torso_id])
     ) <= (0.03 + 1.0e-7)
+    np.testing.assert_allclose(
+        randomized.torso_com_offset,
+        body_ipos[:, torso_id] - nominal.mj_model.body_ipos[torso_id],
+        atol=1.0e-7,
+    )
 
 
 def test_native_episode_reset_clears_all_mujoco_solver_state(

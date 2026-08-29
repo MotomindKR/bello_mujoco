@@ -627,6 +627,31 @@ def test_locomotion_checkpoint_without_observation_filter_loads_as_disabled(
 
     assert not restored.env.observation_low_pass_filter.enabled
     assert restored.env.observation_low_pass_filter.cutoff_hz == pytest.approx(10.0)
+    assert not restored.env.observation_low_pass_filter.noise_before_filter
+    assert restored.env.observation_low_pass_filter.residual_noise_scale == (
+        pytest.approx(0.0)
+    )
+
+
+def test_locomotion_checkpoint_without_torso_com_curriculum_loads_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    checkpoint_metadata = metadata(config, tmp_path)
+    path = tmp_path / "legacy_locomotion_torso_com_curriculum_checkpoint"
+    save_checkpoint(path, state, checkpoint_metadata)
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["env"].pop("torso_com_curriculum")
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert not restored.env.torso_com_curriculum.enabled
+    assert restored.env.torso_com_curriculum.ramp_steps == 1
 
 
 def test_locomotion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
@@ -1242,10 +1267,10 @@ def test_resume_allows_budget_extension_and_rejects_semantic_changes(
         extended,
         reward=replace(
             extended.reward,
-                weights=replace(
-                    extended.reward.weights,
-                    track_lin_vel_xy=3.0,
-                ),
+            weights=replace(
+                extended.reward.weights,
+                track_lin_vel_xy=3.0,
+            ),
         ),
     )
     with pytest.raises(ValueError, match="resume checkpoint contract.*reward"):

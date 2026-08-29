@@ -483,8 +483,8 @@ def compute_locomotion_reward(
         inputs.robot_weight, 1.0e-6
     )
     touchdown_load = jnp.maximum(normalized_foot_impulse, normalized_foot_peak_force)
-    touchdown_force_excess_ratio = jnp.maximum(
-        touchdown_load / config.gait.touchdown_force_soft_limit_body_weights - 1.0,
+    touchdown_force_excess = jnp.maximum(
+        touchdown_load - config.gait.touchdown_force_soft_limit_body_weights,
         0.0,
     )
     touchdown_speed_ratio = (
@@ -493,10 +493,7 @@ def compute_locomotion_reward(
     )
     touchdown_impact = jnp.mean(
         inputs.foot_touchdown.astype(jnp.float32)
-        * (
-            squared_huber(touchdown_force_excess_ratio)
-            + squared_huber(touchdown_speed_ratio)
-        )
+        * (jnp.tanh(touchdown_force_excess**2) + jnp.tanh(touchdown_speed_ratio**2))
     )
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
     foot_linear_speed_sq = jnp.sum(inputs.foot_linear_velocity**2, axis=1)
@@ -643,17 +640,6 @@ def compute_locomotion_reward(
     }
     reward = sum(terms.values(), jnp.asarray(0.0, dtype=jnp.float32))
     return reward, terms
-
-
-def squared_huber(value: jax.Array, delta: float = 2.0) -> jax.Array:
-    """Quadratic near zero and linear past ``delta``, without saturation."""
-
-    absolute = jnp.abs(value)
-    return jnp.where(
-        absolute <= delta,
-        absolute**2,
-        2.0 * delta * absolute - delta**2,
-    )
 
 
 def reward_terms(config: RewardConfig) -> dict[str, float]:

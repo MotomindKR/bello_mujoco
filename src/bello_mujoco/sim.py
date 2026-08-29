@@ -220,6 +220,7 @@ class BelloModel:
     imu_body_name: str
     actuator_coordinate_transform: np.ndarray
     joint_angle_offset: np.ndarray
+    torso_com_offset: np.ndarray
     physical_randomization: np.ndarray
     gravity_fraction: np.ndarray
     default_joint_target: np.ndarray
@@ -554,6 +555,11 @@ def _load_bello_model_from_path(
             if randomized_fields is not None
             else np.zeros((1, mj_model.nu), dtype=np.float32)
         ),
+        torso_com_offset=(
+            randomized_fields["torso_com_offset"]
+            if randomized_fields is not None
+            else np.zeros((1, 3), dtype=np.float32)
+        ),
         physical_randomization=(
             randomized_fields["physical_randomization"]
             if randomized_fields is not None
@@ -684,6 +690,7 @@ def _randomized_model_fields(
         (batch_size, 5 + 2 * mj_model.nu), dtype=np.float32
     )
     gravity_fraction = np.empty((batch_size,), dtype=np.float32)
+    torso_com_offset = np.empty((batch_size, 3), dtype=np.float32)
     for world_index, rng in enumerate(random_generators):
         mass_offset = float(rng.uniform(*config.added_base_mass_range))
         com_offset = rng.uniform(*config.base_com_offset_range, size=3).astype(
@@ -698,9 +705,9 @@ def _randomized_model_fields(
         ).astype(np.float32)
         gravity_fraction[world_index] = rng.uniform(*config.gravity_fraction_range)
         torso_mass_scale = float(rng.uniform(*config.torso_mass_scale_range))
-        torso_com_offset = rng.uniform(*config.torso_com_offset_range, size=3).astype(
-            np.float32
-        )
+        torso_com_offset[world_index] = rng.uniform(
+            *config.torso_com_offset_range, size=3
+        ).astype(np.float32)
         central_mass = body_mass[world_index, central_body_ids]
         distribution = central_mass / central_mass.sum()
         body_mass[world_index, central_body_ids] += mass_offset * distribution
@@ -709,7 +716,7 @@ def _randomized_model_fields(
         body_ipos[world_index, base_body_id] += com_offset
         body_mass[world_index, torso_body_id] *= torso_mass_scale
         body_inertia[world_index, torso_body_id] *= torso_mass_scale
-        body_ipos[world_index, torso_body_id] += torso_com_offset
+        body_ipos[world_index, torso_body_id] += torso_com_offset[world_index]
         geom_friction[world_index, :, 0] = friction
         actuator_gainprm[world_index, :, 0] *= kp_strength
         actuator_biasprm[world_index, :, 1] *= kp_strength
@@ -732,6 +739,7 @@ def _randomized_model_fields(
         "geom_friction": geom_friction,
         "actuator_gainprm": actuator_gainprm,
         "actuator_biasprm": actuator_biasprm,
+        "torso_com_offset": torso_com_offset,
         "physical_randomization": physical_randomization,
         "gravity_fraction": gravity_fraction,
         "joint_angle_offset": joint_angle_offset,

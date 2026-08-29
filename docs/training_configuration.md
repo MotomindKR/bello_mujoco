@@ -77,7 +77,7 @@ The `config` section is shared by locomotion and motion tracking.
 | `rollout_value_max_abs` | `10,000` | Fail an update when critic outputs exceed this bound. |
 | `target_max_abs` | `10,000` | Fail an update when value targets exceed this bound. |
 | `gradient_norm_max` | `10,000` | Independent nonfinite/explosion guard beyond optimizer clipping. |
-| `symmetry_loss_coef` | `0` | Nonnegative actor left/right consistency coefficient. The locomotion profile sets `0.1`; it requires unnormalized physical observation coordinates. |
+| `symmetry_loss_coef` | `0` | Nonnegative actor left/right consistency coefficient. The maintained locomotion profile leaves it disabled. |
 
 The effective update count is
 `total_timesteps // (num_envs * num_steps)`. Extra transitions below one full
@@ -171,6 +171,7 @@ initialization rejects other deviations from this contract.
 | `numerical_safety` | Broad finite-state and solver-force bounds that terminate invalid rollouts. |
 | `observation` | Deployable actor observation scaling and noise. |
 | `observation_low_pass_filter` | Training-side low-pass filter for hardware-derived actor feedback. |
+| `torso_com_curriculum` | Optional policy-step ramp for fixed per-world torso COM offsets. |
 | `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
 | `gait` | Fixed gait frequency and stance fraction shared by simulation, native evaluation, and hardware. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
@@ -196,7 +197,9 @@ must be at least twice the timestep.
 
 ### Model and reset randomization
 
-`model_randomization` is fixed per vectorized world.
+`model_randomization` samples are fixed per vectorized world. When the torso COM
+curriculum is enabled, its sampled offset remains fixed while its applied scale
+increases during training.
 
 | Field | Meaning |
 | --- | --- |
@@ -258,15 +261,23 @@ Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
 enter the deployed policy.
 
-The `observation_low_pass_filter` section contains `enabled` and `cutoff_hz`.
+The `observation_low_pass_filter` section contains `enabled`, `cutoff_hz`,
+`noise_before_filter`, and `residual_noise_scale`.
 The maintained locomotion profiles use the same 10 Hz first-order response as
 hardwared for IMU acceleration, angular velocity, orientation-derived projected
 gravity, and joint velocity. Joint position remains unfiltered. Training updates
 the filter at the 50 Hz policy boundary using the exact elapsed-time response;
-four constant-input 200 Hz updates have the same 20 ms response. Synthetic
-observation noise is applied afterward and therefore represents residual
-post-filter measurement uncertainty. Older checkpoints load with this
-training-side filter disabled.
+four constant-input 200 Hz updates have the same 20 ms response. The maintained
+profile injects configured IMU and joint noise before the filter, then adds 10%
+of that range as residual post-filter noise; noisy joint position is delayed but
+not filtered or duplicated afterward. Older checkpoints load with this
+training-side filter and pre-filter noise path disabled.
+
+The `torso_com_curriculum` section contains `enabled` and positive integer
+`ramp_steps`. A value of 3,000,000 corresponds to 150,000 PPO updates for the
+maintained 20-step rollout. It starts from the nominal torso COM and linearly
+reaches each world's complete sampled offset, retaining the full configured
+plus-or-minus 10 cm per-axis envelope for the final 45,312 updates.
 
 The `observation_latency` section contains `enabled` and `delay_steps`, an
 inclusive integer lower/upper range. The maintained locomotion and
@@ -609,7 +620,7 @@ TWIST uses 32 contacts per environment and logs
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment gait training with full planar/yaw commands, standing/moving transitions, slope, model/reset randomization, observation noise and latency, pushes, mean-KL adaptive learning with a `0.00003` floor, a larger policy, and periodic checkpoint/video evaluation every 512 updates. |
+| `locomotion` | 2,048-environment clean-baseline gait training with full planar/yaw commands, standing/moving transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
 | `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
