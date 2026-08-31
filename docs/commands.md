@@ -396,25 +396,27 @@ Configuration source: `configs/commands/hardware.yaml`.
 
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
-| `task` | `locomotion`, `motion`, or `twist2`; `locomotion` | all | Select the checkpoint and observation contract. |
+| `task` | `locomotion`, `motion`, `twist2`, or `sonic`; `locomotion` | all | Select the checkpoint and observation contract. |
 | `checkpoint_path` | path or `null`; `null` | all | Required checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
 | `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
+| `sonic_artifact_path` | path or `null`; `null` | sonic | Required pinned NVIDIA SONIC release artifact used to reconstruct and hash-check the frozen encoder/controller arrays omitted from the transfer checkpoint. |
 | `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout. Evaluation/hardware loading removes retired generated-asset fields replaced by the canonical URDF, rejects retired joint selectors that were enabled, and supplies explicit historical PPO and no-op reward/randomization defaults for older locomotion metadata. This does not disable other task, shape, asset, motion-content, source-service, or hardware preflight checks. |
 | `endpoint` | string; `http://127.0.0.1:50051` | all | `bello-hardwared` endpoint. |
 | `remote_endpoint` | string or `null`; `null` | locomotion | Required plaintext URL of the visualizer's `RemoteCommandService`, for example `http://visualizer-host:50054`. |
 | `remote_staleness_ms` | positive integer; `200` | locomotion | Maximum age of the latest remote-command sample before the command becomes zero and the stream reconnects. |
-| `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
+| `motion_path` | path or `null`; `null` | motion, sonic clip | Override the motion checkpoint's bound clip, or select one 50 Hz Bello runtime clip validated directly against the SONIC checkpoint's native robot model. |
 | `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | motion | Declare the physical mass carried by each hand. `null` uses the checkpoint value; an explicit mismatch is rejected before control is acquired. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
 | `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. Locomotion and TWIST2 combine the repository-owned relaxed-standing SMPL-X upper-body retarget with the checkpoint's canonical Bello leg stance; motion uses its standing checkpoint nominal pose. |
 | `gain_scale` | float in `(0, 1]`; `1.0` | all | Multiply every commanded motor `kp` and `kd` by this value during start, ramp, and policy control. Fault damping is unchanged. |
 | `max_linear_acceleration` | positive float or `null`; `null` | all | Override the IMU acceleration-norm safety limit in m/s². `null` uses 100 m/s². Exceeding the limit immediately enters damped shutdown. |
-| `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 normal-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
-| `max_motion_tilt_radians` | positive float or `null`; `null` | motion, twist2 | Maximum robot tilt during transitions and active motion. `null` uses 70 degrees (approximately 1.222 radians); standing keeps its 0.70-radian limit. |
+| `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2, sonic | Duration of each policy-target transition, including the normal-hold-to-policy handoff. `null` uses 0.2 seconds. |
+| `max_motion_tilt_radians` | positive float or `null`; `null` | motion, twist2, sonic | Maximum robot tilt during transitions and active motion. `null` uses 70 degrees (approximately 1.222 radians); standing keeps its 0.70-radian limit. |
 | `action_lpf_cutoff_hz` | positive float or `null`; `null` | motion | First-order low-pass cutoff for the motion action sent to the motors and fed back as `last_action`. `null` uses 15 Hz. |
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
+| `reference_mode` | `clip` or `live`; `clip` | sonic | Select deterministic indexed-clip playback or live GEM-X SOMA-77 tracking. |
 | `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion, twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
 | `fastsam_tls_root_certificate_path` | path or `null`; `null` | locomotion, twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `fastsam_tls_server_name_override` | string or `null`; `null` | locomotion, twist2 | TLS certificate name override. It is rejected without a CA certificate. |
@@ -429,10 +431,22 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `fastsam_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion, twist2 | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
 | `fastsam_align_initial_heading` | boolean; `true` | locomotion, twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
 | `fastsam_align_initial_floor` | boolean; `true` | locomotion, twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
-| `smplx_neutral_model_path` | path or `null`; `null` | locomotion, twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
-| `smplx_human_height_m` | positive float; `1.66` | locomotion, twist2 | Human height supplied to the pinned GMR scale table. |
+| `smplx_neutral_model_path` | path or `null`; `null` | locomotion, twist2, sonic live | Required licensed `SMPLX_NEUTRAL.npz`. SONIC live uses it only to initialize the existing pinned GMR solver's canonical standing/reset state; GEM-X itself emits SOMA-77 rather than SMPL-X. |
+| `smplx_human_height_m` | positive float; `1.66` | locomotion, twist2, sonic live | Human height supplied to the pinned GMR scale table. |
 | `left_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Offset added to the left GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. |
 | `right_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Offset added to the right GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. |
+| `gemx_endpoint` | gRPC host:port; `127.0.0.1:50056` | sonic live | Pinned GEM-X `SkeletonService` endpoint. The Bello default avoids the hardware daemon's port 50051. |
+| `gemx_connect_timeout_seconds` | positive float; `5.0` | sonic live | Deadline for establishing the GEM-X gRPC channel. |
+| `gemx_rpc_timeout_seconds` | positive float; `2.0` | sonic live | Deadline for GEM-X stream-info and status RPCs. |
+| `gemx_reference_ready_timeout_seconds` | positive float; `15.0` | sonic live | Post-`MOTION` time allowed for qualified live targets while SONIC standing remains active. |
+| `gemx_reference_qualification_frames` | positive integer; `5` | sonic live | Number of distinct successively received safe GEM-X/GMR references required before live tracking. |
+| `gemx_min_tracking_confidence` | float in `[0,1]`; `0.5` | sonic live | Minimum GEM-X target-association confidence. |
+| `gemx_min_joint_confidence` | float in `[0,1]`; `0.25` | sonic live | Minimum confidence for every SOMA joint selected by the 14-body GMR semantic adapter. |
+| `gemx_max_pipeline_latency_ms` | positive float; `120.0` | sonic live | Maximum GEM-X server-reported decode/detection/inference/FK latency. |
+| `gemx_transport_latency_budget_ms` | nonnegative float; `10.0` | sonic live | Conservative transport contribution added to every GEM-X reference age. |
+| `gemx_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | sonic live | Calibrated OpenCV-camera-to-Bello-world rotation. |
+| `gemx_align_initial_heading` | boolean; `true` | sonic live | Align the acquired SOMA pelvis heading with world forward. |
+| `gemx_align_initial_floor` | boolean; `true` | sonic live | Use the lower initial SOMA toe as the fixed source floor. |
 
 Task-specific fields must not be explicitly supplied to an inapplicable task,
 even if the supplied value equals the documented default.
@@ -451,6 +465,17 @@ Motion additionally requires a locomotion checkpoint selected by
 `bello-state-estimatord` PoseService at `127.0.0.1:50053`. The standing and
 motion checkpoints must resolve to the same ordered physical-coordinate
 mapping.
+
+SONIC requires `sonic_artifact_path` and one explicit reference boundary.
+`reference_mode=clip` requires `motion_path` and rejects all GEM-X and human
+model fields. `reference_mode=live` rejects `motion_path`, consumes native
+SOMA-77 from the pinned `deps/GEM-X` gRPC service, and requires
+`smplx_neutral_model_path` only for the retained GMR standing/reset
+initialization. Neither SOMA nor SMPL-X is passed to the frozen SONIC encoder:
+both paths first produce Bello qpos/qvel windows, which the checkpointed
+Bello-to-G1 semantic adapter packs into the released 640-value robot input.
+Clip mode validates one runtime clip against the checkpoint's native Bello
+model and does not reopen the packed training dataset.
 
 All armed tasks require the operator to type exact interactive confirmations:
 `HOLD` before the nominal-pose ramp and `RUN` before policy control. Motion mode

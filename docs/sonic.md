@@ -405,3 +405,9 @@ The report applies these initial transfer gates:
 These are validation gates, not a claim of hardware readiness. A policy that
 passes still needs actuator-limit review, latency testing, system
 identification, and staged safety validation before physical deployment.
+
+The maintained hardware/emulator adapter is documented under
+[SONIC hardware mode](hardware.md#sonic-mode). It supports either an indexed
+50 Hz Bello clip or native GEM-X SOMA-77 live input. The frozen encoder itself
+does not consume either SOMA or SMPL-X; the runtime always retargets to Bello
+qpos/qvel first and then applies the checkpointed Bello-to-G1 semantic map.

@@ -1,6 +1,7 @@
 task: locomotion
 checkpoint_path: null
 standing_checkpoint_path: null
+sonic_artifact_path: null
 allow_git_commit_mismatch: false
 endpoint: http://127.0.0.1:50051
 remote_endpoint: null
@@ -17,6 +18,7 @@ action_lpf_cutoff_hz: null
 status_interval_seconds: null
 policy_log_path: null
 arm: false
+reference_mode: clip
 fastsam_endpoint: 127.0.0.1:50055
 fastsam_tls_root_certificate_path: null
 fastsam_tls_server_name_override: null
@@ -35,6 +37,18 @@ smplx_neutral_model_path: null
 smplx_human_height_m: 1.66
 left_elbow_yaw_offset_radians: 0.0
 right_elbow_yaw_offset_radians: 0.0
+gemx_endpoint: 127.0.0.1:50056
+gemx_connect_timeout_seconds: 5.0
+gemx_rpc_timeout_seconds: 2.0
+gemx_reference_ready_timeout_seconds: 15.0
+gemx_reference_qualification_frames: 5
+gemx_min_tracking_confidence: 0.5
+gemx_min_joint_confidence: 0.25
+gemx_max_pipeline_latency_ms: 120.0
+gemx_transport_latency_budget_ms: 10.0
+gemx_camera_to_world_quaternion_xyzw: [0.5, -0.5, 0.5, -0.5]
+gemx_align_initial_heading: true
+gemx_align_initial_floor: true
 hydra:
   job:
     chdir: false

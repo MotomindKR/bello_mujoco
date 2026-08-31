@@ -4,13 +4,14 @@
 complete public fields and defaults are in the
 [command reference](commands.md#bello-run-hardware).
 
-The runner has three task modes:
+The runner has four task modes:
 
 | Task | Policy input | External services |
 | --- | --- | --- |
 | Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent; live GMR pose targets the upper body outside the policy | `bello-hardwared`, the visualizer's RemoteCommandService, and `fastsam3dbody-serve` |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
 | TWIST2 | Motor state, pelvis IMU, current and historical proprioception, and a live retargeted pose | `bello-hardwared` plus `fastsam3dbody-serve` |
+| SONIC | Motor state, pelvis IMU, ten-frame proprioception, and a ten-frame robot-space reference window | `bello-hardwared`, plus `gem-live-server` only for live mode |
 
 All modes run policy inference on JAX's CPU backend. The command overrides
 inherited JAX platform selectors before importing either runner, and exposes no
@@ -334,6 +335,98 @@ reference and re-anchors both coordinates and GMR immediately. `LOST` remains
 terminal for that server target until its `ResetTarget` RPC is invoked; target
 reacquisition is not performed silently by the Bello runner.
 
+## SONIC mode
+
+SONIC deployment requires a typed `sonic` checkpoint and the exact pinned
+NVIDIA release artifact used to create it. The checkpoint contains Bello's
+trained edge parameters but deliberately omits the frozen release arrays, so
+`sonic_artifact_path` is mandatory and every release hash is checked again at
+load time. The runner also verifies that all frozen encoder/controller arrays
+still match their release hashes.
+
+The frozen robot encoder accepts neither raw SMPL-X nor raw SOMA. Its input is
+640 robot-space values: ten frames of G1-semantic 29-joint position, 29-joint
+velocity, and six-dimensional root orientation. The hardware adapter first
+constructs Bello qpos/qvel reference windows, applies the checkpointed
+Bello-to-G1 semantic map, preserves the released temporal packing, and appends
+ten frames of Bello proprioception. The trained decoder still produces a
+29-coordinate G1 source action; its checkpointed edge maps that action to 25
+Bello policy coordinates before actuator scaling and differential-ankle safety
+projection.
+
+A checkpoint trained before this hardware runner was added records an older Git
+commit. Running that checkpoint from the reviewed current checkout therefore
+requires `allow_git_commit_mismatch=true`; the release, dataset calibration,
+robot, policy layout, and frozen-parameter checks remain enforced. Keep the
+default `false` for a checkpoint produced from the same commit as its runner.
+
+Deterministic clip playback uses one 50 Hz Bello runtime motion clip:
+
+```text
+uv run bello-run-hardware \
+  task=sonic \
+  checkpoint_path=checkpoints/sonic_seed1/final \
+  sonic_artifact_path=artifacts/sonic/default_release \
+  reference_mode=clip \
+  motion_path=/absolute/path/to/runtime_clip.npz
+```
+
+The runner ramps to the checkpoint's canonical Bello standing pose, starts the
+SONIC standing policy after `RUN`, and waits for exact `MOTION` confirmation.
+It then blends into frame zero, advances one clip frame per 50 Hz policy tick,
+end-clamps the encoder's future horizon, and returns through SONIC standing
+before damped shutdown. The complete clip schema, joint/body order, qpos/qvel
+dimensions, finite arrays, future horizon, and policy rate are validated
+directly against the checkpoint's native Bello model. The runner does not load
+the large packed training dataset and does not require the clip to have been a
+training member.
+
+Live mode replaces only that reference source with native GEM-X SOMA-77:
+
+```text
+# In the pinned GEM-X environment, configure the service to listen on 50056.
+cd deps/GEM-X
+direnv allow
+scripts/bootstrap_live_env.sh
+gem-build-live-engines
+gem-live-server --listen 0.0.0.0:50056
+
+# Start gem-camera-client as documented by GEM-X, then from this repository:
+uv run bello-run-hardware \
+  task=sonic \
+  checkpoint_path=checkpoints/sonic_seed1/final \
+  sonic_artifact_path=artifacts/sonic/default_release \
+  reference_mode=live \
+  gemx_endpoint=127.0.0.1:50056 \
+  smplx_neutral_model_path=/absolute/path/to/SMPLX_NEUTRAL.npz
+```
+
+The lightweight Bello client validates GEM-X schema 1, its exact SOMA-77 joint
+order/hierarchy, OpenCV camera coordinates, global `xyzw` quaternions, 30-frame
+model context, tracking identity, confidence, and latency. It selects the
+pelvis, chest, bilateral hip/knee/toe, shoulder/elbow/wrist semantics required
+by the retained GMR solver. GEM-X rotations include SOMA's joint-specific
+T-pose frames; the adapter removes the reviewed pinned SOMA neutral
+orientations before passing common-rest-frame pose rotations to GMR. Positions
+and corrected rotations then follow the same support-foot root conditioner,
+pinned GMR solver, Bello joint/rate limits, and newest-only worker boundary as
+the existing live retargeter. The licensed SMPL-X neutral file is used only to
+initialize GMR's canonical standing/reset state; GEM-X does not emit SMPL-X.
+
+GMR produces the current Bello pose and velocity at the source rate. For the
+encoder's future offsets, the runner applies bounded constant-velocity native
+MuJoCo integration, preserves current root translation because the actor uses
+root orientation rather than future translation, and clips predicted joint
+positions to hard URDF limits. Five distinct safe frames are required after
+`MOTION` by default. A stale, discontinuous, low-confidence, or unsafe source
+returns through SONIC standing and then damped shutdown.
+
+Both modes use the ordinary hardware endpoint and therefore run unchanged
+against `bello-run-emulator`. Start the emulator and hardware daemon as
+documented in [the emulator guide](emulator.md), use `arm=false` first, and only
+then repeat with `arm=true` and the required `HOLD`, `RUN`, and `MOTION`
+confirmations.
+
 ## Runtime safety checks
 
 All armed modes continuously check:
@@ -381,6 +474,12 @@ and fails closed if the projected pair is still invalid. This minimal coupled
 projection prevents independently legal ankle motor targets from resolving to
 an illegal ankle pitch or roll without imposing the training soft limits on the
 rest of the policy output.
+
+SONIC adds exact release/frozen-parameter hashes, actor/robot-input/history
+shape checks, native-model clip validation or exact GEM-X SOMA stream semantics,
+retargeted window freshness and root/joint bounds, raw 29-coordinate source
+action bounds, and the same outgoing physical and coupled-ankle target checks
+as TWIST2.
 
 `duration_seconds` covers the complete post-`RUN` policy flow. Ramp time and the
 `HOLD`/`RUN` confirmation waits are not included. A `null` duration runs until

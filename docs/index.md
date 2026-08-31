@@ -23,6 +23,7 @@ configs/profiles/train/    maintained training profiles
 deps/bello-stack/          pinned robot, hardware, and client dependency
 deps/GMR/                  pinned offline and live motion retargeter
 deps/Fast-SAM-3D-Body/     pinned SMPL-X skeletal gRPC contract
+deps/GEM-X/                pinned native SOMA-77 live skeletal gRPC service
 motions/asap_fixed_head/   tracked reference clips
 src/bello_mujoco/
   assets_pipeline/         asset preparation and project data paths

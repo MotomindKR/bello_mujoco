@@ -194,9 +194,10 @@ class EmulatorCommandConfig:
 
 @dataclass(frozen=True)
 class HardwareCommandConfig:
-    task: Literal["locomotion", "motion", "twist2"]
+    task: Literal["locomotion", "motion", "twist2", "sonic"]
     checkpoint_path: Path | None
     standing_checkpoint_path: Path | None
+    sonic_artifact_path: Path | None
     allow_git_commit_mismatch: bool
     endpoint: str
     remote_endpoint: str | None
@@ -213,6 +214,7 @@ class HardwareCommandConfig:
     status_interval_seconds: float | None
     policy_log_path: Path | None
     arm: bool
+    reference_mode: Literal["clip", "live"]
     fastsam_endpoint: str
     fastsam_tls_root_certificate_path: Path | None
     fastsam_tls_server_name_override: str | None
@@ -231,6 +233,18 @@ class HardwareCommandConfig:
     smplx_human_height_m: float
     left_elbow_yaw_offset_radians: float
     right_elbow_yaw_offset_radians: float
+    gemx_endpoint: str
+    gemx_connect_timeout_seconds: float
+    gemx_rpc_timeout_seconds: float
+    gemx_reference_ready_timeout_seconds: float
+    gemx_reference_qualification_frames: int
+    gemx_min_tracking_confidence: float
+    gemx_min_joint_confidence: float
+    gemx_max_pipeline_latency_ms: float
+    gemx_transport_latency_budget_ms: float
+    gemx_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
+    gemx_align_initial_heading: bool
+    gemx_align_initial_floor: bool
 
 
 def prepare_assets_entrypoint() -> None:
@@ -1242,6 +1256,7 @@ def hardware_entrypoint() -> None:
         (
             "checkpoint_path=",
             "standing_checkpoint_path=",
+            "sonic_artifact_path=",
             "motion_path=",
             "policy_log_path=",
             "fastsam_tls_root_certificate_path=",
@@ -1275,13 +1290,125 @@ def _hardware_hydra(config: DictConfig) -> None:
         "fastsam_camera_to_world_quaternion_xyzw",
         "fastsam_align_initial_heading",
         "fastsam_align_initial_floor",
-        "smplx_neutral_model_path",
-        "smplx_human_height_m",
     )
+    human_model_fields = ("smplx_neutral_model_path", "smplx_human_height_m")
+    gemx_fields = (
+        "gemx_endpoint",
+        "gemx_connect_timeout_seconds",
+        "gemx_rpc_timeout_seconds",
+        "gemx_reference_ready_timeout_seconds",
+        "gemx_reference_qualification_frames",
+        "gemx_min_tracking_confidence",
+        "gemx_min_joint_confidence",
+        "gemx_max_pipeline_latency_ms",
+        "gemx_transport_latency_budget_ms",
+        "gemx_camera_to_world_quaternion_xyzw",
+        "gemx_align_initial_heading",
+        "gemx_align_initial_floor",
+    )
+    sonic_fields = ("sonic_artifact_path", "reference_mode", *gemx_fields)
     locomotion_upper_body_fields = (
         "left_elbow_yaw_offset_radians",
         "right_elbow_yaw_offset_radians",
     )
+    if command.task == "sonic":
+        _reject_explicit_fields(
+            (
+                "remote_endpoint",
+                "remote_staleness_ms",
+                "standing_checkpoint_path",
+                "end_effector_payload_mass_kg",
+                "action_lpf_cutoff_hz",
+                *fastsam_fields,
+                *locomotion_upper_body_fields,
+            ),
+            context="task=sonic",
+        )
+        if command.standing_checkpoint_path is not None:
+            raise ValueError("standing_checkpoint_path is not valid for task=sonic")
+        if command.reference_mode == "clip":
+            _reject_explicit_fields(
+                (*gemx_fields, *human_model_fields),
+                context="task=sonic reference_mode=clip",
+            )
+            if command.motion_path is None:
+                raise ValueError(
+                    "motion_path is required for task=sonic reference_mode=clip"
+                )
+            if command.smplx_neutral_model_path is not None:
+                raise ValueError(
+                    "smplx_neutral_model_path is not valid for SONIC clip playback"
+                )
+            neutral_model_path = None
+        else:
+            if command.motion_path is not None:
+                raise ValueError(
+                    "motion_path is not valid for task=sonic reference_mode=live"
+                )
+            neutral_model_path = _required_path(
+                command.smplx_neutral_model_path,
+                "smplx_neutral_model_path",
+            )
+        from bello_mujoco.hardware.sonic import (
+            HardwareSonicConfig,
+            run_hardware_sonic,
+        )
+
+        base = HardwareSonicConfig()
+        run_hardware_sonic(
+            checkpoint,
+            replace(
+                base,
+                endpoint=command.endpoint,
+                reference_mode=command.reference_mode,
+                release_artifact_directory=_required_path(
+                    command.sonic_artifact_path, "sonic_artifact_path"
+                ),
+                motion_path=command.motion_path,
+                max_duration_seconds=command.duration_seconds,
+                ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
+                gain_scale=command.gain_scale,
+                max_linear_acceleration=_coalesce(
+                    command.max_linear_acceleration,
+                    base.max_linear_acceleration,
+                ),
+                policy_transition_seconds=_coalesce(
+                    command.policy_transition_seconds,
+                    base.policy_transition_seconds,
+                ),
+                max_motion_tilt_radians=_coalesce(
+                    command.max_motion_tilt_radians,
+                    base.max_motion_tilt_radians,
+                ),
+                status_interval_seconds=command.status_interval_seconds,
+                policy_log_path=policy_log_path,
+                arm=command.arm,
+                allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+                gemx_endpoint=command.gemx_endpoint,
+                gemx_connect_timeout_seconds=(command.gemx_connect_timeout_seconds),
+                gemx_rpc_timeout_seconds=command.gemx_rpc_timeout_seconds,
+                gemx_reference_ready_timeout_seconds=(
+                    command.gemx_reference_ready_timeout_seconds
+                ),
+                gemx_reference_qualification_frames=(
+                    command.gemx_reference_qualification_frames
+                ),
+                gemx_min_tracking_confidence=command.gemx_min_tracking_confidence,
+                gemx_min_joint_confidence=command.gemx_min_joint_confidence,
+                gemx_max_pipeline_latency_ms=command.gemx_max_pipeline_latency_ms,
+                gemx_transport_latency_budget_ms=(
+                    command.gemx_transport_latency_budget_ms
+                ),
+                gemx_camera_to_world_quaternion_xyzw=(
+                    command.gemx_camera_to_world_quaternion_xyzw
+                ),
+                gemx_align_initial_heading=command.gemx_align_initial_heading,
+                gemx_align_initial_floor=command.gemx_align_initial_floor,
+                smplx_neutral_model_path=neutral_model_path,
+                smplx_human_height_m=command.smplx_human_height_m,
+            ),
+        )
+        return
     if command.task == "twist2":
         _reject_explicit_fields(
             (
@@ -1289,6 +1416,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 "remote_staleness_ms",
                 "motion_path",
                 "standing_checkpoint_path",
+                *sonic_fields,
                 *locomotion_upper_body_fields,
             ),
             context="task=twist2",
@@ -1376,6 +1504,8 @@ def _hardware_hydra(config: DictConfig) -> None:
                 "remote_endpoint",
                 "remote_staleness_ms",
                 *fastsam_fields,
+                *human_model_fields,
+                *sonic_fields,
                 *locomotion_upper_body_fields,
             ),
             context="task=motion",
@@ -1441,6 +1571,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             "policy_transition_seconds",
             "max_motion_tilt_radians",
             "action_lpf_cutoff_hz",
+            *sonic_fields,
         ),
         context="task=locomotion",
     )

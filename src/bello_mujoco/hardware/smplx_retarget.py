@@ -305,14 +305,15 @@ def _load_gmr_solver_settings(path: Path) -> _GmrSolverSettings:
             f"invalid pinned Bello GMR configuration {path}: {error}"
         ) from error
     expected = {
+        "use_velocity_limit",
         "passes_per_frame",
-        "max_joint_velocity_radians_per_second",
-        "max_joint_acceleration_radians_per_second_squared",
-        "knee_pole_reference_flexion_radians",
-        "knee_target_minimum_flexion_radians",
-        "knee_pole_sample_minimum_flexion_radians",
-        "knee_pole_sample_minimum_distance_meters",
-        "knee_pole_smoothing_frames",
+        "initial_settle_passes",
+        "joint_smoothing_kernel",
+        "root_orientation_smoothing_kernel",
+        "joint_smoothing_passes",
+        "max_additional_collision_penetration",
+        "maximum_collision_penetration",
+        "protected_bodies",
     }
     if not isinstance(solver, dict) or set(solver) != expected:
         raise ValueError("pinned Bello GMR offline_solver fields are incompatible")
@@ -320,25 +321,62 @@ def _load_gmr_solver_settings(path: Path) -> _GmrSolverSettings:
         isinstance(name, str) and name for name in ground_geoms
     ):
         raise ValueError("pinned Bello GMR must configure two foot clearance geoms")
+    if solver["use_velocity_limit"] is not True:
+        raise ValueError("pinned Bello GMR must enable its velocity limiter")
+    for name in (
+        "passes_per_frame",
+        "initial_settle_passes",
+        "joint_smoothing_passes",
+    ):
+        value = solver[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"pinned Bello GMR {name} must be a positive integer")
+    for name in ("joint_smoothing_kernel", "root_orientation_smoothing_kernel"):
+        kernel = np.asarray(solver[name], dtype=np.float64)
+        if (
+            kernel.ndim != 1
+            or len(kernel) % 2 != 1
+            or not np.all(np.isfinite(kernel))
+            or np.any(kernel < 0.0)
+            or not np.isclose(np.sum(kernel), 1.0)
+        ):
+            raise ValueError(f"pinned Bello GMR {name} is invalid")
+    for name in (
+        "max_additional_collision_penetration",
+        "maximum_collision_penetration",
+    ):
+        value = solver[name]
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"pinned Bello GMR {name} must be finite and nonnegative")
+    protected = solver["protected_bodies"]
+    if not isinstance(protected, list) or not protected:
+        raise ValueError("pinned Bello GMR protected_bodies must be a non-empty list")
+    protected_fields = {
+        "body_name",
+        "max_position_delta",
+        "max_orientation_delta_radians",
+    }
+    for item in protected:
+        if not isinstance(item, dict) or set(item) != protected_fields:
+            raise ValueError("pinned Bello GMR protected body fields are invalid")
+        if not isinstance(item["body_name"], str) or not item["body_name"]:
+            raise ValueError("pinned Bello GMR protected body name is invalid")
+        for name in ("max_position_delta", "max_orientation_delta_radians"):
+            value = item[name]
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"pinned Bello GMR protected {name} is invalid")
+
+    # Offline settling and trajectory smoothing are non-causal. Live GMR uses
+    # the same one-pass IK/config plus explicit causal rate and knee-pole limits.
     settings = _GmrSolverSettings(
         passes_per_frame=solver["passes_per_frame"],
-        max_joint_velocity_rps=solver["max_joint_velocity_radians_per_second"],
-        max_joint_acceleration_rps2=solver[
-            "max_joint_acceleration_radians_per_second_squared"
-        ],
-        knee_pole_reference_flexion_radians=solver[
-            "knee_pole_reference_flexion_radians"
-        ],
-        knee_target_minimum_flexion_radians=solver[
-            "knee_target_minimum_flexion_radians"
-        ],
-        knee_pole_sample_minimum_flexion_radians=solver[
-            "knee_pole_sample_minimum_flexion_radians"
-        ],
-        knee_pole_sample_minimum_distance_meters=solver[
-            "knee_pole_sample_minimum_distance_meters"
-        ],
-        knee_pole_smoothing_frames=solver["knee_pole_smoothing_frames"],
+        max_joint_velocity_rps=3.0 * math.pi,
+        max_joint_acceleration_rps2=200.0,
+        knee_pole_reference_flexion_radians=math.radians(50.0),
+        knee_target_minimum_flexion_radians=math.radians(5.0),
+        knee_pole_sample_minimum_flexion_radians=math.radians(20.0),
+        knee_pole_sample_minimum_distance_meters=0.04,
+        knee_pole_smoothing_frames=5,
         ground_clearance_geoms=ground_geoms,
     )
     if not isinstance(settings.passes_per_frame, int) or settings.passes_per_frame < 1:

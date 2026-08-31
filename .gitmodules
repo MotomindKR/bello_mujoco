@@ -7,3 +7,6 @@
 [submodule "deps/Fast-SAM-3D-Body"]
 	path = deps/Fast-SAM-3D-Body
 	url = https://github.com/MotomindKR/Fast-SAM-3D-Body.git
+[submodule "deps/GEM-X"]
+	path = deps/GEM-X
+	url = https://github.com/MotomindKR/GEM-X.git
