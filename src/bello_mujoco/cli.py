@@ -1316,7 +1316,6 @@ def _hardware_hydra(config: DictConfig) -> None:
             (
                 "remote_endpoint",
                 "remote_staleness_ms",
-                "standing_checkpoint_path",
                 "end_effector_payload_mass_kg",
                 "action_lpf_cutoff_hz",
                 *fastsam_fields,
@@ -1324,8 +1323,10 @@ def _hardware_hydra(config: DictConfig) -> None:
             ),
             context="task=sonic",
         )
-        if command.standing_checkpoint_path is not None:
-            raise ValueError("standing_checkpoint_path is not valid for task=sonic")
+        standing_checkpoint = _required_path(
+            command.standing_checkpoint_path,
+            "standing_checkpoint_path",
+        )
         if command.reference_mode == "clip":
             _reject_explicit_fields(
                 (*gemx_fields, *human_model_fields),
@@ -1357,6 +1358,7 @@ def _hardware_hydra(config: DictConfig) -> None:
         base = HardwareSonicConfig()
         run_hardware_sonic(
             checkpoint,
+            standing_checkpoint,
             replace(
                 base,
                 endpoint=command.endpoint,

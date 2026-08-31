@@ -366,18 +366,20 @@ Deterministic clip playback uses one 50 Hz Bello runtime motion clip:
 uv run bello-run-hardware \
   task=sonic \
   checkpoint_path=checkpoints/sonic_seed1/final \
+  standing_checkpoint_path=checkpoints/hardware_locomotion_standing/final \
   sonic_artifact_path=artifacts/sonic/default_release \
   reference_mode=clip \
   motion_path=/absolute/path/to/runtime_clip.npz
 ```
 
-The runner ramps to the checkpoint's canonical Bello standing pose and keeps
-sending that fixed impedance target after `RUN` while it waits for exact
-`MOTION` confirmation. SONIC inference is not run against a synthetic standing
-reference: the transferred motion tracker was not trained as a zero-motion
-balance controller. After `MOTION`, the runner blends into frame zero, advances
-one clip frame per 50 Hz policy tick, end-clamps the encoder's future horizon,
-and blends back to the fixed standing target before damped shutdown. The
+The runner requires a compatible locomotion checkpoint for active balance.
+Keep external support engaged during the nominal-pose ramp and type `RUN` while
+it is still engaged. The zero-command standing policy then starts; release
+support only after that policy is active and stable. SONIC inference is not run
+against a synthetic standing reference because the transferred motion tracker
+was not trained as a zero-motion balance controller. After `MOTION`, the runner
+blends into frame zero, advances one clip frame per 50 Hz policy tick, end-clamps
+the encoder's future horizon, and blends back to the standing policy. The
 complete clip schema, joint/body order, qpos/qvel
 dimensions, finite arrays, future horizon, and policy rate are validated
 directly against the checkpoint's native Bello model. The runner does not load
@@ -398,6 +400,7 @@ gem-live-server --listen 0.0.0.0:50056
 uv run bello-run-hardware \
   task=sonic \
   checkpoint_path=checkpoints/sonic_seed1/final \
+  standing_checkpoint_path=checkpoints/hardware_locomotion_standing/final \
   sonic_artifact_path=artifacts/sonic/default_release \
   reference_mode=live \
   gemx_endpoint=127.0.0.1:50056 \
@@ -422,7 +425,7 @@ MuJoCo integration, preserves current root translation because the actor uses
 root orientation rather than future translation, and clips predicted joint
 positions to hard URDF limits. Five distinct safe frames are required after
 `MOTION` by default. A stale, discontinuous, low-confidence, or unsafe source
-returns to the fixed standing target and then enters damped shutdown.
+returns to the zero-command standing policy.
 
 Both modes use the ordinary hardware endpoint and therefore run unchanged
 against `bello-run-emulator`. Start the emulator and hardware daemon as

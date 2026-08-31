@@ -17,9 +17,9 @@ from bello_mujoco.hardware.sonic import (
     SonicClipReferenceSource,
     SonicLiveReferenceSource,
     SonicReferenceWindow,
-    _hold_static_sonic_standing,
-    _transition_to_static_sonic_standing,
+    _transition_to_sonic_standing_policy,
     validate_hardware_sonic_config,
+    validate_sonic_transition_adapters,
 )
 from bello_mujoco.hardware.twist2 import Twist2ReferenceFrame
 from bello_mujoco.motion.clip import MotionClip
@@ -269,29 +269,7 @@ class _FakeStaticControl:
         self.pace_count += 1
 
 
-def test_sonic_static_standing_hold_never_runs_policy(monkeypatch) -> None:
-    control = _FakeStaticControl(np.asarray((0.0, 0.0)))
-    target = np.asarray((0.25, -0.5))
-    adapter = SimpleNamespace(
-        step=lambda *_args: pytest.fail("static standing must not run SONIC"),
-    )
-    validated = []
-    monkeypatch.setattr(
-        "bello_mujoco.hardware.sonic.require_target_pose",
-        lambda frame, *_args, **_kwargs: validated.append(frame),
-    )
-
-    frame = _hold_static_sonic_standing(
-        control, adapter, target, HardwareSonicConfig(motion_path=Path("clip.npz"))
-    )
-
-    assert frame is control.frame
-    assert validated == [control.frame]
-    assert control.pace_count == 1
-    np.testing.assert_array_equal(control.targets, [target])
-
-
-def test_sonic_return_to_standing_interpolates_only_static_targets() -> None:
+def test_sonic_return_to_standing_runs_balance_policy_and_interpolates() -> None:
     control = _FakeStaticControl(np.asarray((0.0, 2.0)))
     target = np.asarray((2.0, 0.0))
     reset_count = 0
@@ -300,16 +278,56 @@ def test_sonic_return_to_standing_interpolates_only_static_targets() -> None:
         nonlocal reset_count
         reset_count += 1
 
-    adapter = SimpleNamespace(control_timestep=0.02, reset=reset_adapter)
+    policy_step = SimpleNamespace(
+        physical_target=target,
+        observation=np.zeros(2),
+        policy_observation=np.zeros(2),
+        raw_action=np.zeros(2),
+        action=np.zeros(2),
+    )
+    adapter = SimpleNamespace(
+        control_timestep=0.02,
+        reset=reset_adapter,
+        step=lambda frame, command: policy_step,
+    )
     config = replace(
         HardwareSonicConfig(motion_path=Path("clip.npz")),
         policy_transition_seconds=0.04,
     )
 
-    _transition_to_static_sonic_standing(control, adapter, target, config)
+    _transition_to_sonic_standing_policy(
+        control,
+        adapter,
+        np.zeros(3, dtype=np.float32),
+        config,
+        policy_log=None,
+        run_started=time.monotonic(),
+    )
 
     np.testing.assert_allclose(control.targets, ((1.0, 1.0), (2.0, 0.0)))
+    assert control.adapter is adapter
     assert control.drain_count == 2
     assert control.reset_deadline_count == 1
     assert control.pace_count == 2
     assert reset_count == 1
+
+
+def test_sonic_transition_requires_identical_standing_hardware_contract() -> None:
+    common = {
+        "physical_coordinate_names": ("left", "right"),
+        "nominal_physical_target": np.asarray((0.1, -0.2)),
+        "kp": np.asarray((10.0, 20.0)),
+        "kd": np.asarray((1.0, 2.0)),
+        "control_timestep": 0.02,
+    }
+    validate_sonic_transition_adapters(
+        SimpleNamespace(**common),
+        SimpleNamespace(**common),
+    )
+    incompatible = dict(common)
+    incompatible["nominal_physical_target"] = np.asarray((0.1, -0.1))
+    with pytest.raises(ValueError, match="different nominal poses"):
+        validate_sonic_transition_adapters(
+            SimpleNamespace(**common),
+            SimpleNamespace(**incompatible),
+        )

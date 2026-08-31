@@ -398,7 +398,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | --- | --- | --- | --- |
 | `task` | `locomotion`, `motion`, `twist2`, or `sonic`; `locomotion` | all | Select the checkpoint and observation contract. |
 | `checkpoint_path` | path or `null`; `null` | all | Required checkpoint directory. Its recorded Git commit normally equals the current clean checkout. |
-| `standing_checkpoint_path` | path or `null`; `null` | motion | Required locomotion checkpoint used before and after motion tracking. |
+| `standing_checkpoint_path` | path or `null`; `null` | motion, sonic | Required locomotion checkpoint used for active balance before and after motion tracking. |
 | `sonic_artifact_path` | path or `null`; `null` | sonic | Required pinned NVIDIA SONIC release artifact used to reconstruct and hash-check the frozen encoder/controller arrays omitted from the transfer checkpoint. |
 | `allow_git_commit_mismatch` | boolean; `false` | all | Permit a different clean checkout. Evaluation/hardware loading removes retired generated-asset fields replaced by the canonical URDF, rejects retired joint selectors that were enabled, and supplies explicit historical PPO and no-op reward/randomization defaults for older locomotion metadata. This does not disable other task, shape, asset, motion-content, source-service, or hardware preflight checks. |
 | `endpoint` | string; `http://127.0.0.1:50051` | all | `bello-hardwared` endpoint. |
@@ -466,7 +466,10 @@ Motion additionally requires a locomotion checkpoint selected by
 motion checkpoints must resolve to the same ordered physical-coordinate
 mapping.
 
-SONIC requires `sonic_artifact_path` and one explicit reference boundary.
+SONIC requires `standing_checkpoint_path`, `sonic_artifact_path`, and one
+explicit reference boundary. The standing and SONIC checkpoints must have the
+same physical-coordinate mapping, nominal pose, impedance gains, and 50 Hz
+control rate.
 `reference_mode=clip` requires `motion_path` and rejects all GEM-X and human
 model fields. `reference_mode=live` rejects `motion_path`, consumes native
 SOMA-77 from the pinned `deps/GEM-X` gRPC service, and requires
@@ -493,11 +496,12 @@ repository-owned relaxed SMPL-X sample retargeted through pinned GMR and live
 `MOTION` input is the latest valid Fast-SAM SMPL-X frame. Five distinct safe
 frames qualify a new target by default. Its complete setup and loss behavior
 are documented in [Physical hardware](hardware.md#twist2-mode).
-SONIC differs deliberately: after `RUN` it keeps sending the fixed canonical
-standing target and does not evaluate the transferred policy until `MOTION`
-selects a clip or five qualified GEM-X frames. Completion, interruption, or
-reference loss blends directly back to that fixed target; a synthetic standing
-reference is never passed to SONIC as an active balance command.
+SONIC starts the supplied zero-command locomotion policy after `RUN` and does
+not evaluate the transferred policy until `MOTION` selects a clip or five
+qualified GEM-X frames. Keep support engaged until the standing policy is
+active. Completion, interruption, or reference loss blends back to that
+standing policy; a synthetic standing reference is never passed to SONIC as an
+active balance command.
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
@@ -509,9 +513,8 @@ unstacked observation, normalized stacked policy observation, raw and applied
 action, and physical target. Locomotion
 records include the velocity command. Motion records cover the standing
 policy, both policy transitions, and motion tracking; transition records contain
-both the policy target and the blended target actually sent. SONIC records only
-its transition into motion and active motion; its static standing hold runs no
-policy and therefore emits no policy-step records. File encoding and flushing
+both the policy target and the blended target actually sent. SONIC records the
+standing policy, both transitions, and active motion. File encoding and flushing
 run on a dedicated background thread so normal disk I/O does not block the
 control loop. Complete 50 Hz logs can grow by multiple gigabytes per hour for
 large observation layouts such as SONIC's.
