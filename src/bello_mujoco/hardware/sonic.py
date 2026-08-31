@@ -1305,7 +1305,7 @@ def control_physical_sonic(
             f"Type MOTION to begin {source_name}."
         )
 
-        def resume_standing_control() -> None:
+        def transition_to_standing_control() -> None:
             nonlocal next_standing_status
             _transition_to_sonic_standing_policy(
                 control,
@@ -1321,6 +1321,8 @@ def control_physical_sonic(
                 else None
             )
             print("The zero-command standing balance policy resumed.")
+
+        def hold_standing_control() -> None:
             while duration_available():
                 standing_step()
             control.drain()
@@ -1341,103 +1343,148 @@ def control_physical_sonic(
                     "MOTION confirmed. Waiting for qualified live GEM-X SOMA "
                     "targets while normal standing remains active."
                 )
-                first_motion = _wait_for_live_sonic_reference(
-                    references, sonic_adapter, config, standing_step
-                )
-                if first_motion is None:
-                    control.drain()
-                    print(
-                        "No qualified GEM-X target arrived; SONIC motion was not run."
-                    )
-                    return
+                first_motion = None
             else:
                 first_motion = references.latest()
                 sonic_adapter.validate_reference(first_motion)
 
-            print(f"Transitioning from standing control to {source_name}.")
-            try:
-                _transition_sonic_reference(
-                    control,
-                    sonic_adapter,
-                    references.latest,
-                    config,
-                    phase="transition_to_motion",
-                    policy_log=policy_log,
-                    run_started=run_started,
-                    first_reference=first_motion,
-                    advance_reference=(
-                        references.advance if references.mode == "clip" else None
-                    ),
-                )
-            except ReferenceUnavailable as error:
-                print(
-                    "SONIC reference became unavailable during the motion "
-                    f"transition; restoring standing control: {error}"
-                )
-                resume_standing_control()
-                return
-            motion_started = time.monotonic()
-            control.reset_deadline()
-            motion_steps = 0
-            next_motion_status = (
-                motion_started if config.status_interval_seconds is not None else None
-            )
-            source_lost: ReferenceUnavailable | None = None
-            clip_completed = False
-            try:
-                while duration_available():
-                    frame = control.read_frame(
-                        max_tilt_radians=config.max_motion_tilt_radians
+            while duration_available():
+                if first_motion is None:
+                    first_motion = _wait_for_live_sonic_reference(
+                        references, sonic_adapter, config, standing_step
                     )
-                    try:
-                        reference = references.latest()
-                        step = sonic_adapter.step(frame, reference)
-                    except ReferenceUnavailable as error:
-                        source_lost = error
-                        break
-                    control.send_target(step.physical_target)
-                    motion_steps += 1
-                    now = time.monotonic()
-                    _log_sonic_step(
-                        policy_log,
-                        phase="motion",
-                        step_number=motion_steps,
-                        run_started=run_started,
-                        step=step,
-                    )
-                    has_next = references.advance()
-                    control.pace()
-                    if next_motion_status is not None and now >= next_motion_status:
+                    if first_motion is None:
+                        if not duration_available():
+                            control.drain()
+                            print(
+                                "Hardware run duration completed while waiting for "
+                                "live GEM-X recovery."
+                            )
+                            return
                         print(
-                            {
-                                "hardware_phase": "motion",
-                                "hardware_step": motion_steps,
-                                "elapsed_seconds": now - run_started,
-                                "reference_sequence": step.reference_sequence,
-                                "reference_age_ms": step.reference_age_ms,
-                                "source_action_abs_max": float(
-                                    np.max(np.abs(step.raw_source_action))
-                                ),
-                                "action_abs_max": float(np.max(np.abs(step.action))),
-                                "action_clipped": step.action_clipped,
-                            }
+                            "No qualified GEM-X target arrived; normal standing "
+                            "remains active and MOTION remains armed. Retrying."
                         )
-                        assert config.status_interval_seconds is not None
-                        next_motion_status = now + config.status_interval_seconds
-                    if not has_next:
-                        clip_completed = True
-                        break
-            except KeyboardInterrupt:
-                print("SONIC motion interrupted; returning to standing.")
-            if source_lost is not None:
-                print(
-                    "Live GEM-X reference became unavailable; returning to normal "
-                    f"standing: {source_lost}"
+                        continue
+
+                print(f"Transitioning from standing control to {source_name}.")
+                try:
+                    _transition_sonic_reference(
+                        control,
+                        sonic_adapter,
+                        references.latest,
+                        config,
+                        phase="transition_to_motion",
+                        policy_log=policy_log,
+                        run_started=run_started,
+                        first_reference=first_motion,
+                        advance_reference=(
+                            references.advance if references.mode == "clip" else None
+                        ),
+                    )
+                except ReferenceUnavailable as error:
+                    print(
+                        "SONIC reference became unavailable during the motion "
+                        f"transition; restoring standing control: {error}"
+                    )
+                    transition_to_standing_control()
+                    if references.mode == "live":
+                        first_motion = None
+                        print(
+                            "MOTION remains armed; requalifying live GEM-X before "
+                            "the next SONIC transition."
+                        )
+                        continue
+                    hold_standing_control()
+                    return
+
+                motion_started = time.monotonic()
+                control.reset_deadline()
+                motion_steps = 0
+                next_motion_status = (
+                    motion_started
+                    if config.status_interval_seconds is not None
+                    else None
                 )
-            elif clip_completed:
-                print("SONIC clip completed; returning to normal standing.")
-            print("Transitioning from SONIC motion back to standing control.")
-            resume_standing_control()
+                source_lost: ReferenceUnavailable | None = None
+                clip_completed = False
+                motion_interrupted = False
+                try:
+                    while duration_available():
+                        frame = control.read_frame(
+                            max_tilt_radians=config.max_motion_tilt_radians
+                        )
+                        try:
+                            reference = references.latest()
+                            step = sonic_adapter.step(frame, reference)
+                        except ReferenceUnavailable as error:
+                            source_lost = error
+                            break
+                        control.send_target(step.physical_target)
+                        motion_steps += 1
+                        now = time.monotonic()
+                        _log_sonic_step(
+                            policy_log,
+                            phase="motion",
+                            step_number=motion_steps,
+                            run_started=run_started,
+                            step=step,
+                        )
+                        has_next = references.advance()
+                        control.pace()
+                        if (
+                            next_motion_status is not None
+                            and now >= next_motion_status
+                        ):
+                            print(
+                                {
+                                    "hardware_phase": "motion",
+                                    "hardware_step": motion_steps,
+                                    "elapsed_seconds": now - run_started,
+                                    "reference_sequence": step.reference_sequence,
+                                    "reference_age_ms": step.reference_age_ms,
+                                    "source_action_abs_max": float(
+                                        np.max(np.abs(step.raw_source_action))
+                                    ),
+                                    "action_abs_max": float(
+                                        np.max(np.abs(step.action))
+                                    ),
+                                    "action_clipped": step.action_clipped,
+                                }
+                            )
+                            assert config.status_interval_seconds is not None
+                            next_motion_status = (
+                                now + config.status_interval_seconds
+                            )
+                        if not has_next:
+                            clip_completed = True
+                            break
+                except KeyboardInterrupt:
+                    motion_interrupted = True
+                    print("SONIC motion interrupted; returning to standing.")
+
+                if source_lost is not None:
+                    print(
+                        "Live GEM-X reference became unavailable; returning to "
+                        f"normal standing: {source_lost}"
+                    )
+                elif clip_completed:
+                    print("SONIC clip completed; returning to normal standing.")
+                print("Transitioning from SONIC motion back to standing control.")
+                transition_to_standing_control()
+
+                if motion_interrupted or references.mode == "clip":
+                    hold_standing_control()
+                    return
+                if source_lost is not None and duration_available():
+                    first_motion = None
+                    print(
+                        "MOTION remains armed; requalifying live GEM-X while the "
+                        "standing balance policy stays active."
+                    )
+                    continue
+                control.drain()
+                return
         except KeyboardInterrupt:
             if control.adapter is not sonic_adapter:
                 print("SONIC standing interrupted; entering damped shutdown.")
@@ -1445,7 +1492,8 @@ def control_physical_sonic(
             control.drain()
             print("SONIC motion interrupted; returning to standing control.")
             try:
-                resume_standing_control()
+                transition_to_standing_control()
+                hold_standing_control()
             except KeyboardInterrupt:
                 print("SONIC standing interrupted; entering damped shutdown.")
 

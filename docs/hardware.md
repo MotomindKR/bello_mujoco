@@ -436,7 +436,12 @@ limits. The default 220 ms server-latency admission limit covers the measured
 that inference time plus one normal 200 ms source interval; a missed subsequent
 frame still fails closed. Five distinct safe frames are
 required after `MOTION` by default. A stale, discontinuous, low-confidence, or
-unsafe source returns to the zero-command standing policy.
+unsafe source returns to the zero-command standing policy. In live mode the
+operator's `MOTION` confirmation remains armed: while standing, the runner
+requalifies five distinct recovered frames and then blends back into SONIC
+automatically. It repeats this standing-to-SONIC recovery cycle across later
+source interruptions. Ctrl-C cancels automatic re-entry and proceeds through
+the normal standing and damped-shutdown path.
 
 Both modes use the ordinary hardware endpoint and therefore run unchanged
 against `bello-run-emulator`. Start the emulator and hardware daemon as

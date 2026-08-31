@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 import math
@@ -319,6 +320,195 @@ def test_sonic_return_to_standing_runs_balance_policy_and_interpolates() -> None
     assert control.reset_deadline_count == 1
     assert control.pace_count == 2
     assert reset_count == 1
+
+
+def test_sonic_live_motion_reenters_after_reference_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from bello_mujoco.hardware import sonic as sonic_hardware
+
+    frame = HardwareFrame(
+        positions=np.zeros(2),
+        velocities=np.zeros(2),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=("RUNNING", "RUNNING"),
+        group_causes=("UNSPECIFIED", "UNSPECIFIED"),
+        group_details=("", ""),
+    )
+    transitions: list[str] = []
+    sonic_sequences: list[int] = []
+    confirmations = 0
+
+    class FakeStandingAdapter:
+        control_timestep = 0.02
+
+        def reset(self) -> None:
+            return None
+
+        def step(self, _frame, _command):
+            values = np.zeros(2)
+            return SimpleNamespace(
+                physical_target=values,
+                observation=values,
+                policy_observation=values,
+                raw_action=values,
+                action=values,
+                tilt_radians=0.0,
+            )
+
+    class FakeSonicAdapter:
+        control_timestep = 0.02
+
+        def reset(self) -> None:
+            return None
+
+        def validate_reference(self, _reference) -> None:
+            return None
+
+        def step(self, _frame, reference):
+            sonic_sequences.append(reference.sequence)
+            values = np.zeros(2)
+            return SimpleNamespace(
+                physical_target=values,
+                observation=values,
+                policy_observation=values,
+                raw_source_action=values,
+                action=values,
+                command=values,
+                action_clipped=False,
+                reference_sequence=reference.sequence,
+                reference_age_ms=0.0,
+            )
+
+    standing_adapter = FakeStandingAdapter()
+    sonic_adapter = FakeSonicAdapter()
+
+    def reference(sequence: int) -> SonicReferenceWindow:
+        return SonicReferenceWindow(
+            qpos=np.zeros((1, 1)),
+            qvel=np.zeros((1, 1)),
+            sequence=sequence,
+            source_age_ms=0,
+            received_at=time.monotonic(),
+        )
+
+    class FakeReferences:
+        mode = "live"
+        calls = 0
+
+        def reset(self) -> None:
+            self.calls = 0
+
+        def latest(self) -> SonicReferenceWindow:
+            self.calls += 1
+            if self.calls == 3:
+                raise sonic_hardware.ReferenceUnavailable("tracking stalled")
+            if self.calls == 6:
+                raise KeyboardInterrupt
+            return reference(self.calls)
+
+        def advance(self) -> bool:
+            return True
+
+    class FakeControl:
+        previous_target = np.zeros(2)
+
+        def __init__(self) -> None:
+            self._adapter = standing_adapter
+
+        @property
+        def adapter(self):
+            return self._adapter
+
+        @adapter.setter
+        def adapter(self, adapter) -> None:
+            self._adapter = adapter
+            transitions.append("sonic" if adapter is sonic_adapter else "standing")
+
+        def ramp_to_nominal(self, _positions):
+            return frame
+
+        def wait_for_run(
+            self, _prompt, *, operator_input, validate_hold
+        ) -> bool:
+            del operator_input
+            validate_hold(frame)
+            return True
+
+        def read_frame(self, *, max_tilt_radians=None):
+            del max_tilt_radians
+            return frame
+
+        def send_target(self, target) -> None:
+            self.previous_target = np.asarray(target)
+
+        def pace(self) -> None:
+            time.sleep(0.001)
+
+        def reset_deadline(self) -> None:
+            return None
+
+        def drain(self) -> None:
+            return None
+
+    control = FakeControl()
+    monkeypatch.setattr(
+        sonic_hardware,
+        "armed_control_session",
+        lambda *_args, **_kwargs: nullcontext(control),
+    )
+    monkeypatch.setattr(
+        sonic_hardware,
+        "require_nominal_pose",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def confirm_motion(expected, _prompt, hold_step, _operator_input) -> bool:
+        nonlocal confirmations
+        assert expected == "MOTION"
+        assert hold_step()
+        confirmations += 1
+        return True
+
+    monkeypatch.setattr(
+        sonic_hardware,
+        "wait_for_operator_confirmation_while_holding",
+        confirm_motion,
+    )
+
+    sonic_hardware.control_physical_sonic(
+        SimpleNamespace(),
+        {},
+        SimpleNamespace(),
+        FakeReferences(),
+        frame,
+        standing_adapter,
+        sonic_adapter,
+        HardwareSonicConfig(
+            reference_mode="live",
+            smplx_neutral_model_path=Path("neutral.npz"),
+            max_duration_seconds=0.04,
+            policy_transition_seconds=0.001,
+            gemx_reference_ready_timeout_seconds=0.01,
+            gemx_reference_qualification_frames=1,
+        ),
+    )
+
+    assert confirmations == 1
+    assert sonic_sequences == [1, 2, 4, 5]
+    assert transitions == ["sonic", "standing", "sonic", "standing"]
+    output = capsys.readouterr().out
+    assert "reference became unavailable" in output
+    assert "MOTION remains armed" in output
+    assert output.count("Transitioning from standing control") == 2
 
 
 def test_sonic_transition_requires_identical_standing_hardware_contract() -> None:
