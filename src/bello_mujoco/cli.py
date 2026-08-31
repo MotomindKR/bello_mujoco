@@ -238,6 +238,8 @@ class HardwareCommandConfig:
     gemx_rpc_timeout_seconds: float
     gemx_reference_ready_timeout_seconds: float
     gemx_reference_qualification_frames: int
+    gemx_max_reference_age_ms: int
+    gemx_max_source_interval_seconds: float
     gemx_min_tracking_confidence: float
     gemx_min_joint_confidence: float
     gemx_full_joint_confidence: float
@@ -1299,6 +1301,8 @@ def _hardware_hydra(config: DictConfig) -> None:
         "gemx_rpc_timeout_seconds",
         "gemx_reference_ready_timeout_seconds",
         "gemx_reference_qualification_frames",
+        "gemx_max_reference_age_ms",
+        "gemx_max_source_interval_seconds",
         "gemx_min_tracking_confidence",
         "gemx_min_joint_confidence",
         "gemx_full_joint_confidence",
@@ -1396,6 +1400,10 @@ def _hardware_hydra(config: DictConfig) -> None:
                 ),
                 gemx_reference_qualification_frames=(
                     command.gemx_reference_qualification_frames
+                ),
+                max_reference_age_ms=command.gemx_max_reference_age_ms,
+                gemx_max_source_interval_seconds=(
+                    command.gemx_max_source_interval_seconds
                 ),
                 gemx_min_tracking_confidence=command.gemx_min_tracking_confidence,
                 gemx_min_joint_confidence=command.gemx_min_joint_confidence,

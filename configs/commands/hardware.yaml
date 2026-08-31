@@ -42,6 +42,8 @@ gemx_connect_timeout_seconds: 5.0
 gemx_rpc_timeout_seconds: 2.0
 gemx_reference_ready_timeout_seconds: 15.0
 gemx_reference_qualification_frames: 5
+gemx_max_reference_age_ms: 500
+gemx_max_source_interval_seconds: 0.25
 gemx_min_tracking_confidence: 0.5
 gemx_min_joint_confidence: 0.05
 gemx_full_joint_confidence: 0.25

@@ -700,7 +700,12 @@ def gemx_sonic_reference_source(
         retargeter = GmrBelloRetargeter(
             adapter.env,
             identity,
-            GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),
+            GmrLiveRetargetConfig(
+                human_height_m=config.smplx_human_height_m,
+                max_source_interval_seconds=(
+                    config.gemx_max_source_interval_seconds
+                ),
+            ),
             validate_reference=adapter.validate_reference_frame,
         )
         with LiveGmrReferenceSource(stream, retargeter) as source:

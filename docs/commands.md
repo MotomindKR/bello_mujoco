@@ -440,6 +440,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `gemx_rpc_timeout_seconds` | positive float; `2.0` | sonic live | Deadline for GEM-X stream-info and status RPCs. |
 | `gemx_reference_ready_timeout_seconds` | positive float; `15.0` | sonic live | Post-`MOTION` time allowed for qualified live targets while SONIC standing remains active. |
 | `gemx_reference_qualification_frames` | positive integer; `5` | sonic live | Number of distinct successively received safe GEM-X/GMR references required before live tracking. |
+| `gemx_max_reference_age_ms` | positive integer; `500` | sonic live | Maximum capture-to-control age after including inference, transport, and time since the latest 5 Hz source frame. A missed source frame exceeds this envelope and returns to standing. |
+| `gemx_max_source_interval_seconds` | positive float; `0.25` | sonic live | Maximum interval between successive GEM-X capture timestamps accepted by live GMR. The default admits the measured 0.20-second stream with scheduling margin. |
 | `gemx_min_tracking_confidence` | float in `[0,1]`; `0.5` | sonic live | Minimum GEM-X target-association confidence. |
 | `gemx_min_joint_confidence` | float in `[0,1]`; `0.05` | sonic live | Minimum confidence required to initialize each selected SOMA joint. Once initialized, values at or below this floor hold the previous transform. |
 | `gemx_full_joint_confidence` | float in `[gemx_min_joint_confidence,1]`; `0.25` | sonic live | Confidence at which a new joint transform is accepted completely. Intermediate confidence values blend proportionally from the prior skeleton. |

@@ -103,7 +103,7 @@ class HardwareSonicConfig(HardwareControlConfig):
     reference_mode: SonicReferenceMode = "clip"
     release_artifact_directory: Path = Path("artifacts/sonic/default_release")
     motion_path: Path | None = None
-    max_reference_age_ms: int = 250
+    max_reference_age_ms: int = 500
     max_reference_root_height_m: float = 1.5
     min_reference_root_height_m: float = 0.35
     max_reference_root_speed_mps: float = 5.0
@@ -118,6 +118,7 @@ class HardwareSonicConfig(HardwareControlConfig):
     gemx_rpc_timeout_seconds: float = 2.0
     gemx_reference_ready_timeout_seconds: float = 15.0
     gemx_reference_qualification_frames: int = 5
+    gemx_max_source_interval_seconds: float = 0.25
     gemx_min_tracking_confidence: float = 0.5
     gemx_min_joint_confidence: float = 0.05
     gemx_full_joint_confidence: float = 0.25
@@ -740,6 +741,7 @@ def validate_hardware_sonic_config(config: HardwareSonicConfig) -> None:
         "gemx_reference_ready_timeout_seconds": (
             config.gemx_reference_ready_timeout_seconds
         ),
+        "gemx_max_source_interval_seconds": config.gemx_max_source_interval_seconds,
         "gemx_max_pipeline_latency_ms": config.gemx_max_pipeline_latency_ms,
         "smplx_human_height_m": config.smplx_human_height_m,
     }
@@ -757,11 +759,14 @@ def validate_hardware_sonic_config(config: HardwareSonicConfig) -> None:
     if not config.gemx_endpoint or "://" in config.gemx_endpoint:
         raise ValueError("gemx_endpoint must be a non-empty gRPC host:port target")
     minimum_age_budget = (
-        config.gemx_max_pipeline_latency_ms + config.gemx_transport_latency_budget_ms
+        config.gemx_max_pipeline_latency_ms
+        + config.gemx_transport_latency_budget_ms
+        + 1_000.0 * config.gemx_max_source_interval_seconds
     )
     if config.max_reference_age_ms <= minimum_age_budget:
         raise ValueError(
-            "max_reference_age_ms must exceed the GEM-X pipeline and transport budget"
+            "max_reference_age_ms must exceed the GEM-X pipeline, transport, "
+            "and source-interval budget"
         )
     if (
         not math.isfinite(config.max_reference_joint_limit_violation_radians)

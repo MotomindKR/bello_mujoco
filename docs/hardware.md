@@ -432,8 +432,9 @@ adding a second interpolation delay. It preserves root translation because the
 actor consumes root orientation rather than translation, uses native MuJoCo
 quaternion integration, and clips predicted joint positions to hard URDF
 limits. The default 220 ms server-latency admission limit covers the measured
-170-180 ms local RTX 5090 pipeline; the independent 250 ms total-age cutoff
-still fails closed on delayed or stalled frames. Five distinct safe frames are
+170-180 ms local RTX 5090 pipeline. The separate 500 ms total-age cutoff spans
+that inference time plus one normal 200 ms source interval; a missed subsequent
+frame still fails closed. Five distinct safe frames are
 required after `MOTION` by default. A stale, discontinuous, low-confidence, or
 unsafe source returns to the zero-command standing policy.
 
