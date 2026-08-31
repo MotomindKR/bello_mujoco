@@ -3,7 +3,7 @@ release_artifact_directory: artifacts/sonic/default_release
 
 config:
   seed: 1
-  total_timesteps: 2949120000
+  total_timesteps: 9830400000
   num_envs: 4096
   num_steps: 24
   update_epochs: 5
@@ -66,7 +66,8 @@ sonic_env:
     joint_position_std: 0.35
   sampling:
     clip_prior: frame_count_times_manifest_weight
-  freeze_frame_probability: 0.0
+  freeze_frame_probability: 0.1
+  balanced_idle_probability: 0.05
 
 pretraining:
   enabled: false

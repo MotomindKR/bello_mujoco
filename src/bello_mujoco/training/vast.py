@@ -90,6 +90,7 @@ class VastTrainConfig:
     remote_teacher_checkpoint_dir: str = "/workspace/checkpoints/twist_teacher"
     remote_sonic_artifact_dir: str = "/workspace/artifacts/sonic/default_release"
     remote_sonic_resume_dir: str = "/workspace/checkpoints/sonic_resume"
+    remote_sonic_warm_start_dir: str = "/workspace/checkpoints/sonic_warm_start"
     local_result_dir: Path = Path("outputs/vast")
     remote_warm_start_checkpoint_dir: str = "/workspace/checkpoints/twist2_warm_start"
     lifecycle_state_dir: Path = Path(".vast")
@@ -205,6 +206,13 @@ def validate_config(config: VastTrainConfig) -> None:
             raise ValueError(
                 "--sonic-artifact-path is required for SONIC Vast training"
             )
+        if (
+            config.resume_path is not None
+            and config.warm_start_checkpoint_path is not None
+        ):
+            raise ValueError(
+                "--resume-path and --warm-start-checkpoint-path are mutually exclusive"
+            )
         if config.resume_path is not None:
             missing = [
                 name
@@ -219,10 +227,13 @@ def validate_config(config: VastTrainConfig) -> None:
                     "resumed SONIC Vast training requires explicit "
                     + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
                 )
-        elif config.allow_git_commit_mismatch:
+        elif (
+            config.allow_git_commit_mismatch
+            and config.warm_start_checkpoint_path is None
+        ):
             raise ValueError(
-                "--allow-git-commit-mismatch requires --resume-path for SONIC "
-                "Vast training"
+                "--allow-git-commit-mismatch requires --resume-path or "
+                "--warm-start-checkpoint-path for SONIC Vast training"
             )
     else:
         if config.sonic_artifact_path is not None:
@@ -241,9 +252,13 @@ def validate_config(config: VastTrainConfig) -> None:
             isinstance(value, bool) or not isinstance(value, int) or value <= 0
         ):
             raise ValueError(f"--{name.replace('_', '-')} must be a positive integer")
-    if config.experiment != "twist2" and config.warm_start_checkpoint_path is not None:
+    if (
+        config.experiment not in {"twist2", "sonic"}
+        and config.warm_start_checkpoint_path is not None
+    ):
         raise ValueError(
-            "--warm-start-checkpoint-path is only valid for TWIST2 Vast training"
+            "--warm-start-checkpoint-path is only valid for TWIST2 or SONIC Vast "
+            "training"
         )
     if config.allow_git_commit_mismatch and not (
         config.experiment == "twist_student"
@@ -252,6 +267,10 @@ def validate_config(config: VastTrainConfig) -> None:
             and config.warm_start_checkpoint_path is not None
         )
         or (config.experiment == "sonic" and config.resume_path is not None)
+        or (
+            config.experiment == "sonic"
+            and config.warm_start_checkpoint_path is not None
+        )
     ):
         raise ValueError(
             "--allow-git-commit-mismatch requires a TWIST student teacher or "
@@ -299,6 +318,9 @@ def validate_config(config: VastTrainConfig) -> None:
         ),
         "--remote-sonic-artifact-dir": PurePosixPath(config.remote_sonic_artifact_dir),
         "--remote-sonic-resume-dir": PurePosixPath(config.remote_sonic_resume_dir),
+        "--remote-sonic-warm-start-dir": PurePosixPath(
+            config.remote_sonic_warm_start_dir
+        ),
         "--remote-warm-start-checkpoint-dir": PurePosixPath(
             config.remote_warm_start_checkpoint_dir
         ),
@@ -312,6 +334,7 @@ def validate_config(config: VastTrainConfig) -> None:
             "--remote-teacher-checkpoint-dir": config.remote_teacher_checkpoint_dir,
             "--remote-sonic-artifact-dir": config.remote_sonic_artifact_dir,
             "--remote-sonic-resume-dir": config.remote_sonic_resume_dir,
+            "--remote-sonic-warm-start-dir": config.remote_sonic_warm_start_dir,
             "--remote-warm-start-checkpoint-dir": (
                 config.remote_warm_start_checkpoint_dir
             ),
@@ -487,10 +510,20 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
     warm_start_checkpoint_path = None
     if config.warm_start_checkpoint_path is not None:
         assert config.dataset_path is not None
-        warm_start_checkpoint_path = _twist2_warm_start_checkpoint(
-            config.warm_start_checkpoint_path,
-            dataset_path=config.dataset_path,
-        )
+        if config.experiment == "sonic":
+            assert sonic_artifact_path is not None
+            warm_start_checkpoint_path = _sonic_warm_start_checkpoint(
+                config.warm_start_checkpoint_path,
+                dataset_fingerprint=dataset_fingerprint,
+                release_artifact_path=sonic_artifact_path,
+                selected_commit=commit,
+                allow_git_commit_mismatch=config.allow_git_commit_mismatch,
+            )
+        else:
+            warm_start_checkpoint_path = _twist2_warm_start_checkpoint(
+                config.warm_start_checkpoint_path,
+                dataset_path=config.dataset_path,
+            )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -691,6 +724,62 @@ def _sonic_resume_checkpoint(
             "SONIC resume budget ends before the saved checkpoint update: "
             f"{requested_updates} < {saved_update}"
         )
+    return root
+
+
+def _sonic_warm_start_checkpoint(
+    checkpoint_path: Path,
+    *,
+    dataset_fingerprint: str | None,
+    release_artifact_path: Path,
+    selected_commit: str,
+    allow_git_commit_mismatch: bool,
+) -> Path:
+    from bello_mujoco.sonic_policy import load_sonic_release_artifact
+    from bello_mujoco.training.checkpoint import (
+        SonicCheckpointMetadata,
+        load_checkpoint_metadata,
+    )
+
+    unresolved = Path(checkpoint_path).expanduser()
+    if unresolved.is_symlink():
+        raise ValueError("SONIC warm-start checkpoint must not be a symbolic link")
+    root = unresolved.resolve()
+    if not root.is_dir() or any(path.is_symlink() for path in root.rglob("*")):
+        raise ValueError(
+            "SONIC warm-start checkpoint must be a directory without symbolic links"
+        )
+    for name in ("metadata.json", "state", "continuation"):
+        candidate = root / name
+        expected = (
+            candidate.is_file() if name == "metadata.json" else candidate.is_dir()
+        )
+        if not expected:
+            raise ValueError(f"SONIC warm-start checkpoint is missing {name}")
+    try:
+        metadata = load_checkpoint_metadata(
+            root,
+            allow_git_commit_mismatch=allow_git_commit_mismatch,
+        )
+    except (FileNotFoundError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Vast SONIC warm-start checkpoint is invalid: {exc}"
+        ) from exc
+    if not isinstance(metadata, SonicCheckpointMetadata):
+        raise ValueError("Vast SONIC warm start requires a typed SONIC checkpoint")
+    if metadata.dataset.dataset_fingerprint != dataset_fingerprint:
+        raise ValueError("SONIC warm-start checkpoint dataset fingerprint differs")
+    if metadata.source_revision != selected_commit and not allow_git_commit_mismatch:
+        raise ValueError("SONIC warm-start checkpoint source revision differs")
+    release = load_sonic_release_artifact(release_artifact_path)
+    if metadata.release_checkpoint_sha256.removeprefix(
+        "sha256:"
+    ) != release.checkpoint_sha256.removeprefix(
+        "sha256:"
+    ) or metadata.release_artifact_sha256.removeprefix(
+        "sha256:"
+    ) != release.artifact_sha256.removeprefix("sha256:"):
+        raise ValueError("SONIC warm-start checkpoint release artifact differs")
     return root
 
 

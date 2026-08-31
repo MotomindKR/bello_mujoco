@@ -507,14 +507,16 @@ def warm_start_runner_checkpoint(
     expected_metadata: CheckpointMetadata,
     *,
     allow_git_commit_mismatch: bool = False,
+    allow_sonic_env_mismatch: bool = False,
 ) -> tuple[RunnerState, CheckpointMetadata]:
     """Initialize policy and normalization from a compatible prior run.
 
     Unlike resume, warm start intentionally keeps the newly initialized optimizer,
     update counter, environment state, sampler state, RNG, and learning rate. The
     source checkpoint may use a different dataset fingerprint, but its robot,
-    retargeter, observation/action layouts, environment semantics, and policy
-    architecture must remain identical.
+    retargeter, observation/action layouts, and policy architecture must remain
+    identical. SONIC adaptation stages may explicitly waive environment-reward
+    and augmentation equality while retaining those structural checks.
     """
 
     path = Path(path).resolve()
@@ -526,6 +528,7 @@ def warm_start_runner_checkpoint(
         recorded_metadata,
         expected_metadata,
         allow_source_revision_mismatch=allow_git_commit_mismatch,
+        allow_sonic_env_mismatch=allow_sonic_env_mismatch,
     )
     _validate_environment_layouts(env, expected_metadata)
     restored = _restore_checkpoint_item(
@@ -614,6 +617,7 @@ def validate_warm_start_metadata(
     requested: CheckpointMetadata,
     *,
     allow_source_revision_mismatch: bool = False,
+    allow_sonic_env_mismatch: bool = False,
 ) -> None:
     """Require transfer-compatible task semantics while allowing new data."""
 
@@ -625,6 +629,13 @@ def validate_warm_start_metadata(
         requested,
         omit_source_revision=allow_source_revision_mismatch,
     )
+    if allow_sonic_env_mismatch:
+        if recorded_payload.get("task") != "sonic" or requested_payload.get(
+            "task"
+        ) != "sonic":
+            raise ValueError("SONIC environment mismatch waiver requires SONIC inputs")
+        recorded_payload.pop("sonic_env", None)
+        requested_payload.pop("sonic_env", None)
     if recorded_payload != requested_payload:
         mismatches = sorted(
             key
@@ -964,6 +975,14 @@ def _with_checkpoint_metadata_defaults(
                 normalized_reward["gait"] = normalized_gait
             normalized["reward"] = normalized_reward
         return normalized
+    if value.get("task") == "sonic":
+        sonic_env = value.get("sonic_env")
+        if isinstance(sonic_env, dict) and "balanced_idle_probability" not in sonic_env:
+            normalized = dict(value)
+            normalized_sonic_env = dict(sonic_env)
+            normalized_sonic_env["balanced_idle_probability"] = 0.0
+            normalized["sonic_env"] = normalized_sonic_env
+            return normalized
     if value.get("task") != "motion_tracking":
         return value
     motion_env = value.get("motion_env")

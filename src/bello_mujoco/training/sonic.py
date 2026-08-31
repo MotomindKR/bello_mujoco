@@ -44,6 +44,7 @@ from bello_mujoco.training.checkpoint import (
     save_training_checkpoint,
     sonic_metadata_with_runner_state,
     validate_checkpoint_options,
+    warm_start_runner_checkpoint,
 )
 from bello_mujoco.training.ppo import (
     PPOConfig,
@@ -170,6 +171,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
     if (
         run_config.pretraining.enabled
         and run_config.checkpoint_config.resume_path is None
+        and run_config.checkpoint_config.warm_start_path is None
     ):
         policy_indices = np.asarray(env.model.policy_ctrl_indices)
         default = np.asarray(env.model.default_joint_target)[policy_indices]
@@ -219,6 +221,24 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         runner, static_policy, optimizer = init_runner_state(
             rng, env, run_config.config, policy=policy_template
         )
+        if checkpoint_config.warm_start_path is not None:
+            runner, source_metadata = warm_start_runner_checkpoint(
+                checkpoint_config.warm_start_path,
+                env,
+                runner,
+                metadata,
+                allow_git_commit_mismatch=(
+                    checkpoint_config.allow_git_commit_mismatch
+                ),
+                allow_sonic_env_mismatch=True,
+            )
+            print(
+                {
+                    "sonic_warm_start": str(checkpoint_config.warm_start_path),
+                    "source_update_budget": source_metadata.ppo.num_updates,
+                    "target_update_budget": metadata.ppo.num_updates,
+                }
+            )
     else:
         runner, static_policy, optimizer, _ = restore_runner_checkpoint(
             checkpoint_config.resume_path,

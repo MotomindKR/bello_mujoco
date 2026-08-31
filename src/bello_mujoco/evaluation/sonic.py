@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 
-from bello_mujoco.envs.sonic import BelloSonicEnv
+from bello_mujoco.envs.sonic import BelloSonicEnv, _balanced_idle_frame_indices
 from bello_mujoco.evaluation.render import (
     CameraConfig,
     open_rollout_video_resources,
@@ -21,6 +21,7 @@ from bello_mujoco.evaluation.render import (
 )
 from bello_mujoco.motion.sonic_dataset import (
     SonicReferenceBank,
+    build_sonic_sampling_bins,
     load_sonic_dataset_index,
     load_sonic_reference_bank,
     materialize_sonic_reference_clip,
@@ -104,17 +105,23 @@ class SonicAcceptanceThresholds:
     maximum_root_orientation_rms_deg: float = 15.0
     maximum_joint_position_rms_rad: float = 0.30
     maximum_foot_slip_mean_mps: float = 0.20
+    minimum_static_completion_fraction: float = 0.95
+    maximum_static_root_xy_drift_m: float = 0.30
 
     def __post_init__(self) -> None:
-        if not np.isfinite(self.minimum_completion_rate) or not (
-            0.0 <= self.minimum_completion_rate <= 1.0
+        for name in (
+            "minimum_completion_rate",
+            "minimum_static_completion_fraction",
         ):
-            raise ValueError("SONIC minimum completion rate must be in [0, 1]")
+            value = getattr(self, name)
+            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"SONIC {name} must be in [0, 1]")
         for name in (
             "maximum_root_position_rms_m",
             "maximum_root_orientation_rms_deg",
             "maximum_joint_position_rms_rad",
             "maximum_foot_slip_mean_mps",
+            "maximum_static_root_xy_drift_m",
         ):
             value = getattr(self, name)
             if not np.isfinite(value) or value <= 0.0:
@@ -224,6 +231,22 @@ def evaluate_sonic_checkpoint(
         metadata,
         reference_action_oracle=True,
     )
+    static_bank, static_source = _balanced_static_evaluation_bank(
+        current_bank,
+        heldout,
+        frames=metadata.sonic_env.max_episode_steps + 1,
+    )
+    static_env = replace(
+        first_env,
+        reference_bank=_device_reference_bank(static_bank),
+        freeze_frame_indices=(metadata.sonic_env.max_episode_steps + 1,),
+    )
+    evaluate_static = _build_compiled_clip_evaluator(
+        static_env,
+        train_state.policy,
+        normalization.observation,
+        metadata,
+    )
 
     clip_results = []
     oracle_clip_results = []
@@ -258,6 +281,12 @@ def evaluate_sonic_checkpoint(
 
     clip_results.sort(key=lambda clip: int(clip["evaluation_order"]))
     oracle_clip_results.sort(key=lambda clip: int(clip["evaluation_order"]))
+    static_result = {
+        **static_source,
+        **_compiled_clip_result(
+            evaluate_static(_device_reference_bank_arrays(static_bank))
+        ),
+    }
 
     video = None
     if video_env is not None and config.video_path is not None:
@@ -283,6 +312,37 @@ def evaluate_sonic_checkpoint(
         )
         video = {"path": str(video_path), "steps": max(1, steps)}
     report = _aggregate_results(metadata, clip_results, config.thresholds, video)
+    static_checks = {
+        "completion_fraction": (
+            static_result["completion_fraction"]
+            >= config.thresholds.minimum_static_completion_fraction
+        ),
+        "root_xy_drift_m": (
+            static_result["root_xy_drift_m"]
+            <= config.thresholds.maximum_static_root_xy_drift_m
+        ),
+    }
+    report["static_reference"] = {
+        "result": static_result,
+        "acceptance": {
+            "passed": all(static_checks.values()),
+            "checks": static_checks,
+            "thresholds": {
+                "minimum_completion_fraction": (
+                    config.thresholds.minimum_static_completion_fraction
+                ),
+                "maximum_root_xy_drift_m": (
+                    config.thresholds.maximum_static_root_xy_drift_m
+                ),
+            },
+        },
+    }
+    report["acceptance"]["checks"]["static_reference"] = all(
+        static_checks.values()
+    )
+    report["acceptance"]["passed"] = all(
+        report["acceptance"]["checks"].values()
+    )
     oracle_report = _aggregate_results(
         metadata, oracle_clip_results, config.thresholds, None
     )
@@ -332,6 +392,7 @@ def _load_clip_env(
         ),
         sampling=replace(metadata.sonic_env.sampling, enabled=False),
         freeze_frame_probability=0.0,
+        balanced_idle_probability=0.0,
     )
     return BelloSonicEnv.load(
         metadata.asset,
@@ -348,6 +409,74 @@ def _load_clip_env(
 
 def _device_reference_bank(bank: SonicReferenceBank) -> SonicReferenceBank:
     return _reference_bank_with_frame_arrays(bank, bank, device_put=True)
+
+
+def _balanced_static_evaluation_bank(
+    bank: SonicReferenceBank,
+    clips: list[dict[str, Any]],
+    *,
+    frames: int,
+) -> tuple[SonicReferenceBank, dict[str, Any]]:
+    idle_frames = _balanced_idle_frame_indices(bank)
+    candidates = []
+    for clip in clips:
+        labels = set(clip.get("semantic_labels", ()))
+        if not {"stationary_root", "non_gait_motion"}.issubset(labels):
+            continue
+        clip_index = _bank_clip_index(bank, clip)
+        frame = int(idle_frames[clip_index])
+        if frame >= int(bank.lengths[clip_index]):
+            continue
+        absolute = int(bank.offsets[clip_index]) + frame
+        velocity_score = float(np.linalg.norm(np.asarray(bank.qvel)[absolute]))
+        candidates.append((velocity_score, clip_index, frame, clip))
+    if not candidates:
+        raise ValueError(
+            "SONIC evaluation dataset has no stationary double-support reference"
+        )
+    _, clip_index, frame, clip = min(
+        candidates,
+        key=lambda item: (item[0], item[3]["source_id"], item[3]["sequence_id"]),
+    )
+    absolute = int(bank.offsets[clip_index]) + frame
+
+    def repeated(name: str) -> np.ndarray:
+        value = np.asarray(getattr(bank, name))[absolute : absolute + 1]
+        return np.repeat(value, frames, axis=0)
+
+    lengths = np.asarray((frames,), dtype=np.int32)
+    bins = build_sonic_sampling_bins(lengths, bin_size=bank.sampling_bin_size)
+    static = replace(
+        bank,
+        qpos=repeated("qpos"),
+        qvel=np.zeros_like(repeated("qvel")),
+        body_pos=repeated("body_pos"),
+        body_quat_wxyz=repeated("body_quat_wxyz"),
+        body_lin_vel=np.zeros_like(repeated("body_lin_vel")),
+        body_ang_vel=np.zeros_like(repeated("body_ang_vel")),
+        foot_contacts=repeated("foot_contacts"),
+        smpl_joint_pos=repeated("smpl_joint_pos"),
+        smpl_root_quat_wxyz=repeated("smpl_root_quat_wxyz"),
+        smpl_root_translation=repeated("smpl_root_translation"),
+        g1_joint_pos=repeated("g1_joint_pos"),
+        offsets=np.asarray((0,), dtype=np.int32),
+        lengths=lengths,
+        sampling_probabilities=np.asarray((1.0,), dtype=np.float32),
+        sampling_bin_clip_indices=bins[0],
+        sampling_bin_starts=bins[1],
+        sampling_bin_widths=bins[2],
+        sampling_bin_valid=bins[3],
+        sampling_clip_bin_offsets=bins[4],
+        valid_clip_count=1,
+        source_ids=(clip["source_id"],),
+        sequence_ids=(clip["sequence_id"],),
+    )
+    return static, {
+        "source_id": clip["source_id"],
+        "sequence_id": clip["sequence_id"],
+        "source_frame": frame,
+        "frames": frames,
+    }
 
 
 def _reference_bank_with_frame_arrays(
@@ -445,6 +574,7 @@ def _build_compiled_clip_evaluator(
             "root_orientation_square_sum": jnp.asarray(0.0, dtype=jnp.float32),
             "joint_position_square_sum": jnp.asarray(0.0, dtype=jnp.float32),
             "foot_slip_sum": jnp.asarray(0.0, dtype=jnp.float32),
+            "root_xy_drift_m": jnp.asarray(0.0, dtype=jnp.float32),
             "terminal": jnp.asarray(False),
             "timeout": jnp.asarray(False),
             "termination_counts": {
@@ -492,6 +622,10 @@ def _build_compiled_clip_evaluator(
                     "foot_slip_sum": (
                         step_totals["foot_slip_sum"]
                         + info["tracking/foot_slip_mean_mps"]
+                    ),
+                    "root_xy_drift_m": jnp.maximum(
+                        step_totals["root_xy_drift_m"],
+                        info["tracking/root_xy_error_m"],
                     ),
                     "terminal": (
                         step_totals["terminal"] | info["done/terminal"].astype(bool)
@@ -567,6 +701,7 @@ def _compiled_clip_result(accumulators) -> dict[str, Any]:
         ),
         "joint_position_rms_rad": rms("joint_position_square_sum"),
         "foot_slip_mean_mps": float(values["foot_slip_sum"]) / denominator,
+        "root_xy_drift_m": float(values["root_xy_drift_m"]),
         "terminal": terminal,
         "timeout": bool(values["timeout"]),
         "termination_counts": termination_counts,

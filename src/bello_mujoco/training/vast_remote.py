@@ -321,9 +321,6 @@ fi
 if [ -n "$teacher_checkpoint_path" ]; then
   training_overrides+=("teacher_checkpoint_path=$teacher_checkpoint_path")
 fi
-if [ -n "$warm_start_checkpoint_path" ]; then
-  training_overrides+=("warm_start_path=$warm_start_checkpoint_path")
-fi
 if [ -n "$sonic_artifact_path" ]; then
   training_overrides+=("sonic_artifact_path=$sonic_artifact_path")
 fi
@@ -338,6 +335,12 @@ if [ -n "$learning_rate" ]; then
 fi
 
 actual_overrides=("${training_overrides[@]}")
+if [ -n "$warm_start_checkpoint_path" ]; then
+  actual_overrides+=("warm_start_path=$warm_start_checkpoint_path")
+  if [ "$allow_git_commit_mismatch" = "true" ]; then
+    actual_overrides+=("allow_git_commit_mismatch=true")
+  fi
+fi
 if [ -n "$resume_checkpoint_path" ]; then
   actual_overrides+=("resume_path=$resume_checkpoint_path")
   if [ "$allow_git_commit_mismatch" = "true" ]; then
@@ -527,6 +530,7 @@ summary = {
     "evaluated_clips": len(report["per_clip"]),
     "global": report["global"],
     "acceptance": report["acceptance"],
+    "static_reference": report["static_reference"],
     "reference_action_oracle": {
         "evaluated_clips": len(report["reference_action_oracle"]["per_clip"]),
         "global": report["reference_action_oracle"]["global"],
@@ -654,10 +658,15 @@ def stage_training_inputs(
         )
     warm_start_checkpoint_path = ""
     if selection.warm_start_checkpoint_path is not None:
+        remote_root = (
+            config.remote_sonic_warm_start_dir
+            if config.experiment == "sonic"
+            else config.remote_warm_start_checkpoint_dir
+        )
         warm_start_checkpoint_path = _stage_directory(
             target,
             selection.warm_start_checkpoint_path,
-            remote_root=config.remote_warm_start_checkpoint_dir,
+            remote_root=remote_root,
             timeout_seconds=config.transfer_timeout_seconds,
             retries=config.transfer_retries,
             executor=executor,
@@ -1039,6 +1048,7 @@ def _validate_local_sonic_results(
         or summary.get("evaluated_clips") != len(report.get("per_clip", ()))
         or summary.get("global") != report.get("global")
         or summary.get("acceptance") != report.get("acceptance")
+        or summary.get("static_reference") != report.get("static_reference")
         or summary.get("reference_action_oracle")
         != {
             "evaluated_clips": len(

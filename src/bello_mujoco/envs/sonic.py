@@ -304,7 +304,8 @@ class SonicEnvConfig:
     reward: SonicRewardConfig = SonicRewardConfig()
     done: SonicDoneConfig = SonicDoneConfig()
     sampling: SonicSamplingConfig = SonicSamplingConfig()
-    freeze_frame_probability: float = 0.0
+    freeze_frame_probability: float = 0.1
+    balanced_idle_probability: float = 0.05
     key_body_names: tuple[str, ...] = SONIC_TRACKED_BODY_NAMES
 
     def __post_init__(self) -> None:
@@ -318,6 +319,13 @@ class SonicEnvConfig:
             raise ValueError("SONIC key-body order differs from the port contract")
         if not 0.0 <= self.freeze_frame_probability <= 1.0:
             raise ValueError("SONIC freeze-frame probability must be in [0, 1]")
+        if not 0.0 <= self.balanced_idle_probability <= 1.0:
+            raise ValueError("SONIC balanced-idle probability must be in [0, 1]")
+        if self.freeze_frame_probability + self.balanced_idle_probability > 1.0:
+            raise ValueError(
+                "SONIC freeze-frame and balanced-idle probabilities must sum to "
+                "at most one"
+            )
         noise = self.observation_noise
         if isinstance(noise.ramp_steps, bool) or noise.ramp_steps < 0:
             raise ValueError("observation_noise.ramp_steps must be nonnegative")
@@ -607,9 +615,10 @@ class BelloSonicEnv(BelloTwistEnv):
                 tuple(float(value) for value in row)
                 for row in semantic_g1_from_bello_joint_map(reference_bank.calibration)
             ),
-            freeze_frame_indices=_sonic_freeze_frame_indices(
-                np.asarray(reference_bank.lengths),
-                probability=config.freeze_frame_probability,
+            freeze_frame_indices=_sonic_static_frame_indices(
+                reference_bank,
+                freeze_probability=config.freeze_frame_probability,
+                balanced_idle_probability=config.balanced_idle_probability,
                 seed=config.domain_randomization.seed,
             ),
         )
@@ -1441,6 +1450,9 @@ class BelloSonicEnv(BelloTwistEnv):
             "tracking/root_position_error_m": jnp.linalg.norm(
                 reference.qpos[:3] - current.data.qpos[:3]
             ),
+            "tracking/root_xy_error_m": jnp.linalg.norm(
+                reference.qpos[:2] - current.data.qpos[:2]
+            ),
             "tracking/root_orientation_error_rad": _quat_distance(
                 reference.qpos[3:7], current.data.qpos[3:7]
             ),
@@ -1914,6 +1926,71 @@ def _sonic_freeze_frame_indices(
         [rng.integers(0, int(length)) for length in lengths], dtype=np.int32
     )
     return tuple(np.where(selected, sampled, lengths).tolist())
+
+
+def _sonic_static_frame_indices(
+    bank: SonicReferenceBank,
+    *,
+    freeze_probability: float,
+    balanced_idle_probability: float,
+    seed: int,
+) -> tuple[int, ...]:
+    """Choose reference-author freezes plus explicit supported idle holds."""
+
+    lengths = np.asarray(bank.lengths, dtype=np.int32)
+    if balanced_idle_probability == 0.0:
+        return _sonic_freeze_frame_indices(
+            lengths,
+            probability=freeze_probability,
+            seed=seed,
+        )
+    rng = np.random.default_rng(np.random.SeedSequence((seed, 0x53544154)))
+    idle_selected = rng.random(len(lengths)) < balanced_idle_probability
+    remaining_probability = 1.0 - balanced_idle_probability
+    conditional_freeze_probability = (
+        freeze_probability / remaining_probability if remaining_probability else 0.0
+    )
+    freeze_selected = (~idle_selected) & (
+        rng.random(len(lengths)) < conditional_freeze_probability
+    )
+    sampled = np.asarray(
+        [rng.integers(0, int(length)) for length in lengths], dtype=np.int32
+    )
+    idle_frames = _balanced_idle_frame_indices(bank)
+    idle_selected &= idle_frames < lengths
+    return tuple(
+        np.where(
+            idle_selected,
+            idle_frames,
+            np.where(freeze_selected, sampled, lengths),
+        ).tolist()
+    )
+
+
+def _balanced_idle_frame_indices(bank: SonicReferenceBank) -> np.ndarray:
+    """Select the lowest-velocity double-support frame from each clip."""
+
+    offsets = np.asarray(bank.offsets, dtype=np.int64)
+    lengths = np.asarray(bank.lengths, dtype=np.int32)
+    qvel = np.asarray(bank.qvel)
+    contacts = np.asarray(bank.foot_contacts)
+    selected = lengths.copy()
+    for clip_index, (offset, length) in enumerate(
+        zip(offsets, lengths, strict=True)
+    ):
+        clip_slice = slice(int(offset), int(offset + length))
+        supported = np.all(contacts[clip_slice] >= 0.5, axis=-1)
+        if not np.any(supported):
+            continue
+        velocity = qvel[clip_slice]
+        root_linear = np.linalg.norm(velocity[:, :3], axis=-1)
+        root_angular = np.linalg.norm(velocity[:, 3:6], axis=-1)
+        joint_rms = np.sqrt(np.mean(velocity[:, 6:] ** 2, axis=-1))
+        score = root_linear + 0.5 * root_angular + joint_rms
+        selected[clip_index] = int(
+            np.argmin(np.where(supported, score, np.inf))
+        )
+    return selected
 
 
 def with_sonic_runtime_sampling_prior(

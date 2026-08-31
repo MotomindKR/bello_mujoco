@@ -559,8 +559,9 @@ settings are validated before the policy is initialized.
 requested-target-limit bootstrap terms, failure termination, observation
 noise, per-world morphology/dynamics randomization, root pushes, and
 failure-bin adaptive start sampling. Noise ramps over 48,000 world steps,
-pushes start after the same warmup, and freeze-frame augmentation is disabled
-by default. `dataset_index` identifies the
+pushes start after the same warmup, author-style freeze-frame augmentation uses
+10 percent of clips, and balanced double-support idle augmentation uses another
+5 percent. `dataset_index` identifies the
 synchronized Bello/SMPL/G1 dataset. `release_artifact_directory` identifies
 the safe NPZ/JSON export of the exact pinned NVIDIA checkpoint, while
 `runtime_clip_directory` is ignored scratch space for native motion loading.
@@ -582,7 +583,7 @@ checkpoint validation. See the [SONIC transfer guide](sonic.md).
 | `name` | Stable, single-component run label. Locomotion final checkpoints are timestamped roots; motion also maintains a `final` child. |
 | `every_updates` | Periodic save interval, or `null` for final-only behavior. |
 | `resume_path` | Checkpoint to continue, normally from its exact clean Git revision. |
-| `warm_start_path` | TWIST2-only transfer source. It restores policy and normalization but resets optimizer and runtime state; it is mutually exclusive with `resume_path`. |
+| `warm_start_path` | TWIST2 or SONIC transfer source. It restores policy and normalization but resets optimizer and runtime state; it is mutually exclusive with `resume_path`. SONIC permits an explicitly reviewed environment-augmentation change while preserving robot, layout, and policy compatibility. |
 | `allow_git_commit_mismatch` | Permit resume or warm start from a different clean commit. It requires one of those paths and bypasses checkout/source-revision identity only. |
 | `upload_wandb_artifact` | Upload saved checkpoints when a W&B run exists. |
 | `wandb_artifact_name` | Explicit artifact name or profile-derived default. |
@@ -677,7 +678,7 @@ Headline resolved PPO values are:
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist2` | 2,949,218,304 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | three released actor encoders + 512-512-256-128 SiLU + LN |
-| `sonic` | 2,949,120,000 | 4,096 × 24 | 5 × 4 | 0.00002 adaptive | 0.99 / 0.95 | frozen SONIC actor/critic + rank-32 LoRA and trainable source log-std |
+| `sonic` | 9,830,400,000 | 4,096 × 24 | 5 × 4 | 0.00002 adaptive | 0.99 / 0.95 | frozen SONIC actor/critic + rank-32 LoRA and trainable source log-std |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included

@@ -312,7 +312,6 @@ def _train_hydra(config: DictConfig) -> None:
                 "motion_path",
                 "teacher_checkpoint_path",
                 "video_enabled",
-                "warm_start_path",
                 "end_effector_payload_mass_kg",
             ),
             context="experiment=sonic",
@@ -1153,9 +1152,21 @@ def _vast_train_hydra(config: DictConfig) -> None:
     if command.experiment == "sonic":
         if command.sonic_artifact_path is None:
             raise ValueError("sonic_artifact_path is required for Vast SONIC training")
-        if command.resume_path is None and command.allow_git_commit_mismatch:
+        if (
+            command.resume_path is not None
+            and command.warm_start_checkpoint_path is not None
+        ):
             raise ValueError(
-                "allow_git_commit_mismatch requires resume_path for Vast SONIC training"
+                "resume_path and warm_start_checkpoint_path are mutually exclusive"
+            )
+        if (
+            command.resume_path is None
+            and command.warm_start_checkpoint_path is None
+            and command.allow_git_commit_mismatch
+        ):
+            raise ValueError(
+                "allow_git_commit_mismatch requires resume_path or "
+                "warm_start_checkpoint_path for Vast SONIC training"
             )
     else:
         if command.sonic_artifact_path is not None:
@@ -1166,10 +1177,11 @@ def _vast_train_hydra(config: DictConfig) -> None:
             ("sonic_artifact_path", "resume_path"),
             context=f"experiment={command.experiment}",
         )
-    if command.experiment != "twist2":
+    if command.experiment not in {"twist2", "sonic"}:
         if command.warm_start_checkpoint_path is not None:
             raise ValueError(
-                "warm_start_checkpoint_path is only valid for experiment=twist2"
+                "warm_start_checkpoint_path is only valid for experiment=twist2 "
+                "or experiment=sonic"
             )
         _reject_explicit_fields(
             ("warm_start_checkpoint_path",),

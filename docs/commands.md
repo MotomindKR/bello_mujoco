@@ -78,7 +78,7 @@ Configuration source: `configs/commands/train.yaml`.
 | `sonic_pretraining_enabled` | boolean or `null`; `null` | Enable or disable the experimental offline SONIC LoRA warm-start. The maintained SONIC profile defaults to disabled; other experiments reject this field. |
 | `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | Motion only. Add this many kilograms to each sphere hand. `null` keeps the profile value, normally zero. |
 | `resume_path` | path or `null`; `null` | Restore a continuation checkpoint. The current checkout must be clean and normally match its recorded Git commit; resume then validates the full training and environment state. |
-| `warm_start_path` | path or `null`; `null` | TWIST2 only: initialize policy and normalization from a compatible checkpoint trained on a different dataset. Optimizer, update counter, curriculum, rollout state, RNG, and learning rate start fresh. Mutually exclusive with `resume_path`. |
+| `warm_start_path` | path or `null`; `null` | TWIST2 or SONIC: initialize policy and normalization from a compatible checkpoint. Optimizer, update counter, curriculum, rollout state, RNG, and learning rate start fresh. Mutually exclusive with `resume_path`. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit `resume_path` or `warm_start_path` to come from a different commit. It waives source-revision identity while task semantics and runtime layouts remain enforced. |
 | `checkpoint_directory` | path or `null`; `null` | Override the profile's checkpoint parent directory. It must be outside the source repository or covered by a Git ignore rule. |
 | `checkpoint_name` | string or `null`; `null` | Override the checkpoint run name below the selected directory. It must be one path component. |
@@ -304,7 +304,7 @@ Configuration source: `configs/commands/vast_train.yaml`.
 | `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |
 | `sonic_artifact_path` | path or `null`; `null` | Required pinned NPZ/JSON release artifact directory for `sonic`; rejected by other experiments. |
 | `resume_path` | path or `null`; `null` | Optional typed SONIC checkpoint directory to continue. The launcher hash-verifies the staged tree and requires explicit `total_timesteps` and `num_envs`. Other experiments reject it. |
-| `warm_start_checkpoint_path` | path or `null`; `null` | Optional local typed TWIST2 checkpoint to transfer. Its dataset fingerprint must differ while its robot, GMR, joint/body ordering, task, and model contract remain compatible. |
+| `warm_start_checkpoint_path` | path or `null`; `null` | Optional local typed TWIST2 or SONIC checkpoint to transfer into a fresh training stage. SONIC requires the same dataset and release artifact while permitting reviewed reward/augmentation changes; structural policy and robot contracts remain enforced. |
 | `allow_git_commit_mismatch` | boolean; `false` | Permit a staged TWIST student teacher, TWIST2 warm start, or SONIC resume checkpoint from a different clean source commit. Dataset, release, robot, observation, and layout checks remain enforced. |
 | `total_timesteps` | positive integer or `null`; `null` | Override the real remote run's transition budget. SONIC first benchmarks three updates at the requested environment count; other tasks retain the 768-transition smoke preflight. |
 | `num_envs` | positive integer or `null`; `null` | Optional remote training batch-size override. |

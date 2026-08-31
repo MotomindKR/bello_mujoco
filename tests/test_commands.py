@@ -222,7 +222,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert sonic.sonic_env.observation_noise.ramp_steps == 48_000
     assert sonic.sonic_env.domain_randomization.push_warmup_steps == 48_000
     assert sonic.sonic_env.sampling.clip_prior == ("frame_count_times_manifest_weight")
-    assert sonic.sonic_env.freeze_frame_probability == 0.0
+    assert sonic.sonic_env.freeze_frame_probability == pytest.approx(0.1)
+    assert sonic.sonic_env.balanced_idle_probability == pytest.approx(0.05)
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
     assert not smoke.config.normalize_critic_observations
@@ -277,7 +278,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert twist2.config.observation_norm_epsilon_mode == "std_offset"
     assert twist2.sampling.base_distribution == "manifest_weight"
     assert twist2.sampling.curriculum_max_difficulty == 10.0
-    assert sonic.config.num_updates == 30_000
+    assert sonic.config.num_updates == 100_000
     assert sonic.config.policy.architecture == "sonic"
     assert sonic.config.learning_rate == pytest.approx(2.0e-5)
     assert sonic.config.critic_learning_rate == pytest.approx(1.0e-3)

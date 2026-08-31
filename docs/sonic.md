@@ -289,10 +289,17 @@ desired KL `0.01`, entropy coefficient `0.01`, gamma `0.99`, lambda `0.95`, clip
 ratio `0.2`, and maximum gradient norm `0.1`. The released 29-dimensional
 standard deviation starts from the source values, is trainable, and remains
 clamped to `[0.001, 0.5]` in source space before sampling. The maintained budget
-is 30,000 updates
-(`2,949,120,000` transitions). Update 8,000 matches the iteration scale used
-in Any2Any's compute comparison; the remaining updates provide the longer
-Bello convergence tail requested after the earlier learning curves.
+is 100,000 fresh-stage updates (`9,830,400,000` transitions). Update 8,000
+matches the iteration scale used in Any2Any's compute comparison. A transferred
+checkpoint can initialize this stage without restoring its optimizer, sampler,
+update counter, rollout state, RNG, or adaptive learning rate.
+
+The author configuration's static-reference distribution is also retained.
+Ten percent of clips stop at a uniformly sampled frame. Another five percent
+stop at the lowest-velocity double-support frame available in the clip, giving
+Bello an explicit balanced idle target while preserving moving-to-idle
+transitions. These augmentations select views of the immutable packed bank;
+they do not duplicate or mutate the dataset on disk.
 
 Evaluation reports the original clip-weighted acceptance metrics as well as
 frame-weighted tracking metrics and strata for stationary/traveling root motion
@@ -337,7 +344,7 @@ for that same warmup so the edge first learns nominal tracking.
 
 ## Evaluate the transfer
 
-For a branch-pinned Vast.ai benchmark, 30,000-update run, and complete
+For a branch-pinned Vast.ai benchmark, 100,000-update run, and complete
 held-out evaluation in one billed lifecycle, use:
 
 ```bash
@@ -345,7 +352,7 @@ uv run bello-vast-train \
   experiment=sonic \
   dataset_path=/data/sonic/packed/index.json \
   sonic_artifact_path=artifacts/sonic/default_release \
-  total_timesteps=2949120000 \
+  total_timesteps=9830400000 \
   num_envs=4096 \
   checkpoint_every_updates=500 \
   branch=feature/sonic-transfer \
@@ -354,9 +361,8 @@ uv run bello-vast-train \
   skip_confirmation=true
 ```
 
-This budget is 30,000 PPO updates at the maintained 4,096-world, 24-step batch.
-Update 8,000 remains the paper-comparable Any2Any milestone; the longer tail is
-intentional because Bello's learning curves were still improving there.
+This budget is 100,000 PPO updates at the maintained 4,096-world, 24-step
+batch. Update 8,000 remains the paper-comparable Any2Any milestone.
 Before the real job, the launcher runs three updates at the same environment
 count and records GPU utilization, peak memory, power, elapsed time, and exit
 status. A failed production-scale benchmark prevents the longer run. The
@@ -373,6 +379,13 @@ an intentionally reviewed cross-commit resume. The GPU preflight always starts
 fresh. The real run restores controller and optimizer state only after the
 dataset, frozen release, and resume checkpoint have each passed local and
 remote hash verification.
+
+To start a new adaptation stage from an existing SONIC controller, use
+`warm_start_path=/path/to/checkpoint` locally or
+`warm_start_checkpoint_path=/path/to/checkpoint` with `bello-vast-train`.
+Warm start restores controller and normalization arrays but deliberately
+starts the optimizer, update counter, sampler, rollout state, RNG, and learning
+rate from their new-run defaults. It is mutually exclusive with resume.
 
 The same evaluation can be run locally with:
 
@@ -401,6 +414,8 @@ The report applies these initial transfer gates:
 | Root-orientation RMS | at most `15 deg` |
 | Joint-position RMS | at most `0.30 rad` |
 | Mean foot slip | at most `0.20 m/s` |
+| Static-reference completion | at least `0.95` |
+| Static-reference horizontal root drift | at most `0.30 m` |
 
 These are validation gates, not a claim of hardware readiness. A policy that
 passes still needs actuator-limit review, latency testing, system

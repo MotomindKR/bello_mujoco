@@ -139,7 +139,7 @@ types retain the fixed 32-environment,
 
 To continue an 8,000-update checkpoint, download its W&B artifact and pass the
 artifact directory as `resume_path`. The budget is absolute. This example
-extends the run to the maintained 30,000-update budget while retaining the
+extends the run to the maintained 100,000-update budget while retaining the
 exact 4,096-environment batch contract:
 
 ```bash
@@ -149,7 +149,7 @@ uv run bello-vast-train \
   sonic_artifact_path=artifacts/sonic/default_release \
   resume_path=outputs/wandb_artifacts/sonic_edge_4096 \
   allow_git_commit_mismatch=true \
-  total_timesteps=2949120000 \
+  total_timesteps=9830400000 \
   num_envs=4096 \
   checkpoint_every_updates=500 \
   branch=feature/sonic-transfer \
@@ -162,6 +162,10 @@ The launcher rejects the resume before rental if its dataset fingerprint,
 release hashes, environment count, or absolute budget is
 incompatible. The remote trainer then enforces the complete observation,
 action, robot, PPO, and simulator contract while restoring the array state.
+Use `warm_start_checkpoint_path` instead when a prior SONIC controller should
+seed a new stage. The real job restores policy and normalization only; its
+optimizer, update counter, sampler, rollout state, RNG, and adaptive learning
+rate start fresh. The production-scale preflight remains a true fresh start.
 Remote training initializes only the pinned `deps/bello-stack` submodule needed
 by the package workspace and robot assets. Tool-only GMR and Fast-SAM
 submodules are not downloaded onto paid training instances.

@@ -20,7 +20,9 @@ from bello_mujoco.envs.sonic import (
     SonicSamplingConfig,
     SonicState,
     _build_sampling_bins,
+    _balanced_idle_frame_indices,
     _sonic_freeze_frame_indices,
+    _sonic_static_frame_indices,
     with_sonic_runtime_sampling_prior,
 )
 from bello_mujoco.envs.twist import TwistState
@@ -30,6 +32,7 @@ from bello_mujoco.evaluation.sonic import (
     _REWARD_TERM_NAMES,
     _TERMINATION_NAMES,
     _build_compiled_clip_evaluator,
+    _balanced_static_evaluation_bank,
     _compiled_clip_result,
     _device_reference_bank,
 )
@@ -203,6 +206,7 @@ class _FakeEvaluationEnv:
                 "done/terminal": done,
                 "done/any": done,
                 "tracking/root_position_error_m": value,
+                "tracking/root_xy_error_m": value * 0.5,
                 "tracking/root_orientation_error_rad": value * 0.1,
                 "tracking/joint_position_rms_rad": value * 0.2,
                 "tracking/foot_slip_mean_mps": jnp.asarray(0.3),
@@ -274,7 +278,8 @@ def test_sonic_bootstrap_defaults_are_staged_for_bello_transfer() -> None:
     assert config.reward.target_joint_limit == -1.0
     assert config.reward.joint_position_std == 0.35
     assert config.sampling.clip_prior == "frame_count_times_manifest_weight"
-    assert config.freeze_frame_probability == 0.0
+    assert config.freeze_frame_probability == pytest.approx(0.1)
+    assert config.balanced_idle_probability == pytest.approx(0.05)
 
 
 def test_maintained_sonic_profile_passes_training_validation() -> None:
@@ -749,6 +754,52 @@ def test_freeze_frame_augmentation_is_seeded_and_uses_disabled_sentinel() -> Non
     )
 
 
+def test_balanced_idle_augmentation_uses_lowest_velocity_double_support() -> None:
+    lengths = np.asarray((50, 50), dtype=np.int32)
+    bank = _reference_bank(int(lengths.sum()), lengths=lengths)
+    contacts = bank.foot_contacts.copy()
+    contacts[2:4] = 1.0
+    qvel = bank.qvel.copy()
+    qvel[2] = 2.0
+    qvel[3] = 0.25
+    bank = replace(bank, foot_contacts=contacts, qvel=qvel)
+
+    balanced = _balanced_idle_frame_indices(bank)
+    selected = _sonic_static_frame_indices(
+        bank,
+        freeze_probability=0.0,
+        balanced_idle_probability=1.0,
+        seed=3,
+    )
+
+    np.testing.assert_array_equal(balanced, (3, 50))
+    assert selected == (3, 50)
+
+
+def test_static_evaluation_bank_repeats_supported_stationary_frame() -> None:
+    lengths = np.asarray((50, 60), dtype=np.int32)
+    bank = _reference_bank(int(lengths.sum()), lengths=lengths)
+    contacts = bank.foot_contacts.copy()
+    contacts[52] = 1.0
+    bank = replace(bank, foot_contacts=contacts)
+    clips = [
+        {
+            "source_id": "source_1",
+            "sequence_id": "sequence_1",
+            "semantic_labels": ["stationary_root", "non_gait_motion"],
+        }
+    ]
+
+    static, source = _balanced_static_evaluation_bank(bank, clips, frames=50)
+
+    assert source["source_frame"] == 2
+    assert static.lengths.tolist() == [50]
+    assert static.source_ids == ("source_1",)
+    np.testing.assert_array_equal(static.foot_contacts, np.ones((50, 2)))
+    np.testing.assert_array_equal(static.qvel, np.zeros_like(static.qvel))
+    np.testing.assert_array_equal(static.qpos[:, 0], np.full(50, 52.0))
+
+
 def test_split_sampling_bins_cover_every_valid_start() -> None:
     clips, starts, widths, valid, offsets = build_sonic_sampling_bins(
         np.asarray((50, 100), dtype=np.int32),
@@ -1065,6 +1116,7 @@ def test_compiled_evaluation_stops_at_terminal_and_aggregates_metrics(
     )
     assert result["joint_position_rms_rad"] == pytest.approx(np.sqrt(0.56 / 3.0))
     assert result["foot_slip_mean_mps"] == pytest.approx(0.3)
+    assert result["root_xy_drift_m"] == pytest.approx(1.5)
     assert result["terminal"] is True
     assert result["timeout"] is False
     assert result["termination_counts"] == {

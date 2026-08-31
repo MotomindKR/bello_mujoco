@@ -308,6 +308,21 @@ def test_sonic_vast_resume_requires_explicit_continuation_contract() -> None:
         validate_config(valid_config(resume_path=Path("checkpoint/final")))
 
 
+def test_sonic_vast_warm_start_is_a_fresh_mutually_exclusive_stage() -> None:
+    base = {
+        "experiment": "sonic",
+        "dataset_path": Path("dataset/index.json"),
+        "sonic_artifact_path": Path("artifact"),
+        "warm_start_checkpoint_path": Path("checkpoint/final"),
+        "allow_git_commit_mismatch": True,
+    }
+    validate_config(valid_config(**base))
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        validate_config(
+            valid_config(**base, resume_path=Path("checkpoint/continuation"))
+        )
+
+
 def test_sonic_dataset_selection_preserves_canonical_split_files(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1255,6 +1270,37 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     assert '>> "$benchmark_gpu_log" 2>/dev/null || true' in script
     assert '>> "$benchmark_power_log" 2>/dev/null || true' in script
     assert "remote job heartbeat" in command
+
+
+def test_sonic_remote_warm_start_is_applied_only_to_the_real_run() -> None:
+    config = valid_config(
+        experiment="sonic",
+        dataset_path=Path("/data/sonic/index.json"),
+        sonic_artifact_path=Path("/data/artifact"),
+        warm_start_checkpoint_path=Path("/data/checkpoint"),
+        allow_git_commit_mismatch=True,
+        total_timesteps=9_830_400_000,
+        num_envs=4096,
+    )
+    command = vast_remote.remote_start_command(
+        "/workspace/.bello-vast-jobs/sonic-static",
+        selection(),
+        config,
+        "sonic-static",
+        dataset_path="/workspace/datasets/sonic/index.json",
+        sonic_artifact_path="/workspace/artifacts/sonic/default_release",
+        warm_start_checkpoint_path="/workspace/checkpoints/sonic_warm_start",
+    )
+    arguments = shlex.split(command)
+
+    assert "/workspace/checkpoints/sonic_warm_start" in arguments
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    actual_index = script.index(
+        'actual_overrides+=("warm_start_path=$warm_start_checkpoint_path")'
+    )
+    preflight_index = script.index("preflight_overrides=(")
+    assert actual_index < preflight_index
+    assert 'training_overrides+=("warm_start_path=' not in script
 
 
 def test_sonic_benchmark_accepts_unavailable_power_telemetry(tmp_path) -> None:
