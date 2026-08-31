@@ -873,6 +873,11 @@ def _with_checkpoint_metadata_defaults(
         value = normalized
     if value.get("task") == "locomotion":
         normalized = dict(value)
+        command = value.get("command")
+        if isinstance(command, dict):
+            normalized_command = dict(command)
+            normalized_command.setdefault("standing_transitions_enabled", False)
+            normalized["command"] = normalized_command
         env = value.get("env")
         if isinstance(env, dict) and "gait" not in env:
             raise ValueError(
@@ -891,6 +896,14 @@ def _with_checkpoint_metadata_defaults(
                 legacy_randomization_defaults = {
                     "added_base_mass_range": (0.0, 0.0),
                     "base_com_offset_range": (0.0, 0.0),
+                    "body_mass_scale_range": (1.0, 1.0),
+                    "body_mass_scale_names": (),
+                    "body_com_offset_range_xyz": (
+                        (0.0, 0.0),
+                        (0.0, 0.0),
+                        (0.0, 0.0),
+                    ),
+                    "body_com_offset_name": "pelvis_link",
                     "friction_range": (1.0, 1.0),
                     "actuator_strength_range": (1.0, 1.0),
                     "gravity_fraction_range": (0.0, 0.0),

@@ -614,6 +614,25 @@ def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(
     assert restored.env.observation_latency.delay_steps == (0, 0)
 
 
+def test_locomotion_checkpoint_without_standing_transitions_loads_as_disabled(
+    tmp_path: Path,
+) -> None:
+    config = ppo_config()
+    env = FakeEnv()
+    state = runner_state(config, env)
+    path = tmp_path / "legacy_locomotion_command_checkpoint"
+    save_checkpoint(path, state, metadata(config, tmp_path))
+    metadata_path = path / checkpoint.METADATA_FILE
+    document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["command"].pop("standing_transitions_enabled", None)
+    document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
+    metadata_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert not restored.command.standing_transitions_enabled
+
+
 def test_locomotion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
     tmp_path: Path,
 ) -> None:
@@ -745,6 +764,10 @@ def test_locomotion_checkpoint_without_new_randomization_fields_loads_as_noops(
     for name in (
         "added_base_mass_range",
         "base_com_offset_range",
+        "body_mass_scale_range",
+        "body_mass_scale_names",
+        "body_com_offset_range_xyz",
+        "body_com_offset_name",
         "friction_range",
         "actuator_strength_range",
         "gravity_fraction_range",
@@ -758,6 +781,14 @@ def test_locomotion_checkpoint_without_new_randomization_fields_loads_as_noops(
     randomization_config = restored.env.model_randomization
     assert randomization_config.added_base_mass_range == (0.0, 0.0)
     assert randomization_config.base_com_offset_range == (0.0, 0.0)
+    assert randomization_config.body_mass_scale_range == (1.0, 1.0)
+    assert randomization_config.body_mass_scale_names == ()
+    assert randomization_config.body_com_offset_range_xyz == (
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    )
+    assert randomization_config.body_com_offset_name == "pelvis_link"
     assert randomization_config.friction_range == (1.0, 1.0)
     assert randomization_config.actuator_strength_range == (1.0, 1.0)
     assert randomization_config.gravity_fraction_range == (0.0, 0.0)
