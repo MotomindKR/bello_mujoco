@@ -572,6 +572,9 @@ def test_motion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
         document["metadata"]["ppo"].pop(name)
     document["metadata"]["ppo"]["policy"].pop("architecture")
     document["metadata"]["ppo"]["policy"].pop("layer_norm_final_hidden")
+    document["metadata"]["ppo"]["policy"].pop("sonic_lora_rank", None)
+    document["metadata"]["ppo"]["policy"].pop("sonic_lora_alpha", None)
+    document["metadata"]["ppo"]["policy"].pop("sonic_train_log_std", None)
     document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
     metadata_path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -585,6 +588,9 @@ def test_motion_checkpoint_without_split_ppo_fields_loads_historical_defaults(
     assert restored.ppo.observation_norm_epsilon_mode == "variance_floor"
     assert restored.ppo.policy.architecture == "mlp"
     assert not restored.ppo.policy.layer_norm_final_hidden
+    assert restored.ppo.policy.sonic_lora_rank == 32
+    assert restored.ppo.policy.sonic_lora_alpha == pytest.approx(32.0)
+    assert restored.ppo.policy.sonic_train_log_std
 
 
 def test_locomotion_checkpoint_without_observation_latency_loads_as_disabled(

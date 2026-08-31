@@ -858,6 +858,9 @@ def _with_checkpoint_metadata_defaults(
                 normalized_policy = dict(policy)
                 normalized_policy.setdefault("architecture", "mlp")
                 normalized_policy.setdefault("layer_norm_final_hidden", False)
+                normalized_policy.setdefault("sonic_lora_rank", 32)
+                normalized_policy.setdefault("sonic_lora_alpha", 32.0)
+                normalized_policy.setdefault("sonic_train_log_std", True)
                 normalized_ppo["policy"] = normalized_policy
         normalized["ppo"] = normalized_ppo
         value = normalized
