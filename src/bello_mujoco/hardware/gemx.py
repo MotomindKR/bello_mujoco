@@ -37,7 +37,7 @@ from bello_mujoco.hardware.twist2 import (
 from bello_mujoco.repository import repository_root
 
 
-GEMX_REVISION = "5afc06cbd460f50f27adffbc8e62c97cb00869df"
+GEMX_REVISION = "ba65a308a1879c27f8184c4391b53f20d1ea86dd"
 GEMX_ROOT_CONDITIONING_VERSION = "causal-support-foot-xy-v2"
 
 _ACTIVE_TRACKING_STATES = frozenset(("ACQUIRED", "TRACKING", "REACQUIRED"))
