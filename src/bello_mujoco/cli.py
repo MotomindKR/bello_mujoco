@@ -240,6 +240,7 @@ class HardwareCommandConfig:
     gemx_reference_qualification_frames: int
     gemx_min_tracking_confidence: float
     gemx_min_joint_confidence: float
+    gemx_full_joint_confidence: float
     gemx_max_pipeline_latency_ms: float
     gemx_transport_latency_budget_ms: float
     gemx_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
@@ -1300,6 +1301,7 @@ def _hardware_hydra(config: DictConfig) -> None:
         "gemx_reference_qualification_frames",
         "gemx_min_tracking_confidence",
         "gemx_min_joint_confidence",
+        "gemx_full_joint_confidence",
         "gemx_max_pipeline_latency_ms",
         "gemx_transport_latency_budget_ms",
         "gemx_camera_to_world_quaternion_xyzw",
@@ -1397,6 +1399,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 ),
                 gemx_min_tracking_confidence=command.gemx_min_tracking_confidence,
                 gemx_min_joint_confidence=command.gemx_min_joint_confidence,
+                gemx_full_joint_confidence=command.gemx_full_joint_confidence,
                 gemx_max_pipeline_latency_ms=command.gemx_max_pipeline_latency_ms,
                 gemx_transport_latency_budget_ms=(
                     command.gemx_transport_latency_budget_ms

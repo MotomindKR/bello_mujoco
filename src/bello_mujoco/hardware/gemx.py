@@ -168,6 +168,7 @@ class GemxGrpcConfig:
     rpc_timeout_seconds: float
     min_tracking_confidence: float
     min_joint_confidence: float
+    full_joint_confidence: float
     max_pipeline_latency_ms: float
     transport_latency_budget_ms: float
     camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
@@ -191,6 +192,7 @@ class GemxGrpcConfig:
             rpc_timeout_seconds=config.gemx_rpc_timeout_seconds,
             min_tracking_confidence=config.gemx_min_tracking_confidence,
             min_joint_confidence=config.gemx_min_joint_confidence,
+            full_joint_confidence=config.gemx_full_joint_confidence,
             max_pipeline_latency_ms=config.gemx_max_pipeline_latency_ms,
             transport_latency_budget_ms=config.gemx_transport_latency_budget_ms,
             camera_to_world_quaternion_xyzw=(
@@ -220,9 +222,15 @@ class GemxGrpcConfig:
         for name, value in (
             ("min_tracking_confidence", self.min_tracking_confidence),
             ("min_joint_confidence", self.min_joint_confidence),
+            ("full_joint_confidence", self.full_joint_confidence),
         ):
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"GEM-X {name} must be finite and in [0, 1]")
+        if self.min_joint_confidence > self.full_joint_confidence:
+            raise ValueError(
+                "GEM-X min_joint_confidence must not exceed "
+                "full_joint_confidence"
+            )
         quaternion = np.asarray(self.camera_to_world_quaternion_xyzw)
         if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
             raise ValueError("GEM-X camera rotation must be a finite quaternion")
@@ -315,6 +323,8 @@ class GemxSomaStream:
         self._last_frame_id: int | None = None
         self._last_source_timestamp_ns: int | None = None
         self._active_track_id: int | None = None
+        self._previous_mapped_positions: np.ndarray | None = None
+        self._previous_mapped_quaternions: np.ndarray | None = None
 
     def __enter__(self) -> GemxSomaStream:
         if self._thread is not None:
@@ -537,17 +547,19 @@ class GemxSomaStream:
                 "GEM-X association confidence is too low: "
                 f"{tracking_confidence:.3f} < {self.config.min_tracking_confidence:.3f}"
             )
+        required_names = tuple(_SOMA_TO_SMPLX_GMR.values())
         required_indices = np.asarray(
-            [self._soma_joint_names.index(name) for name in _SOMA_TO_SMPLX_GMR.values()]
+            [self._soma_joint_names.index(name) for name in required_names]
         )
         required_confidence = confidence[required_indices]
-        if float(np.min(required_confidence)) < self.config.min_joint_confidence:
-            index = int(np.argmin(required_confidence))
-            name = tuple(_SOMA_TO_SMPLX_GMR.values())[index]
-            raise ReferenceUnavailable(
-                f"GEM-X joint {name!r} confidence is too low: "
-                f"{required_confidence[index]:.3f}"
-            )
+        if self._previous_mapped_positions is None:
+            if float(np.min(required_confidence)) < self.config.min_joint_confidence:
+                index = int(np.argmin(required_confidence))
+                name = required_names[index]
+                raise ReferenceUnavailable(
+                    f"GEM-X joint {name!r} has no interpolation anchor: "
+                    f"{required_confidence[index]:.3f}"
+                )
         pipeline_latency_ms = float(message.pipeline_latency_ms)
         if not math.isfinite(pipeline_latency_ms) or pipeline_latency_ms < 0.0:
             raise ReferenceUnavailable("GEM-X pipeline latency is invalid")
@@ -577,6 +589,12 @@ class GemxSomaStream:
                 for name in _SOMA_TO_SMPLX_GMR.values()
             ]
         )
+        mapped_positions, mapped_quaternions = self._condition_skeleton(
+            mapped_positions,
+            mapped_quaternions,
+            required_confidence,
+            required_names,
+        )
         self._last_frame_id = frame_id
         self._last_source_timestamp_ns = source_timestamp_ns
         return SmplxTargetFrame(
@@ -593,6 +611,46 @@ class GemxSomaStream:
             foot_contacts=contacts,
         )
 
+    def _condition_skeleton(
+        self,
+        positions: np.ndarray,
+        quaternions: np.ndarray,
+        confidence: np.ndarray,
+        soma_names: tuple[str, ...],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        positions = np.asarray(positions, dtype=np.float64).copy()
+        quaternions = np.asarray(quaternions, dtype=np.float64).copy()
+        previous_positions = self._previous_mapped_positions
+        previous_quaternions = self._previous_mapped_quaternions
+        for index, name in enumerate(soma_names):
+            value = float(confidence[index])
+            if previous_positions is None or previous_quaternions is None:
+                if value < self.config.min_joint_confidence:
+                    raise ReferenceUnavailable(
+                        f"GEM-X joint {name!r} has no interpolation "
+                        f"anchor: {value:.3f}"
+                    )
+                continue
+            if value <= self.config.min_joint_confidence:
+                alpha = 0.0
+            elif value >= self.config.full_joint_confidence:
+                alpha = 1.0
+            else:
+                span = (
+                    self.config.full_joint_confidence
+                    - self.config.min_joint_confidence
+                )
+                alpha = (value - self.config.min_joint_confidence) / span
+            positions[index] = (
+                (1.0 - alpha) * previous_positions[index] + alpha * positions[index]
+            )
+            quaternions[index] = _normalized_quaternion_interpolation(
+                previous_quaternions[index], quaternions[index], alpha
+            )
+        self._previous_mapped_positions = positions.copy()
+        self._previous_mapped_quaternions = quaternions.copy()
+        return positions, quaternions
+
     def _reset_tracking_epoch(self, track_id: int | None) -> None:
         assert self._coordinates is not None
         self._coordinates.reset()
@@ -600,6 +658,8 @@ class GemxSomaStream:
         self._active_track_id = track_id
         self._last_frame_id = None
         self._last_source_timestamp_ns = None
+        self._previous_mapped_positions = None
+        self._previous_mapped_quaternions = None
 
     def _publish(self, payload: SmplxTargetFrame | BaseException) -> None:
         with self._condition:
@@ -725,6 +785,20 @@ def _quat_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
         ),
         axis=-1,
     )
+
+
+def _normalized_quaternion_interpolation(
+    previous: np.ndarray, current: np.ndarray, alpha: float
+) -> np.ndarray:
+    previous = np.asarray(previous, dtype=np.float64)
+    current = np.asarray(current, dtype=np.float64)
+    if float(np.dot(previous, current)) < 0.0:
+        current = -current
+    result = (1.0 - alpha) * previous + alpha * current
+    norm = float(np.linalg.norm(result))
+    if not math.isfinite(norm) or norm < 1.0e-12:
+        raise ReferenceUnavailable("GEM-X interpolated an invalid upper-body rotation")
+    return result / norm
 
 
 def _remove_soma_joint_orient(

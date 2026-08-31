@@ -119,7 +119,8 @@ class HardwareSonicConfig(HardwareControlConfig):
     gemx_reference_ready_timeout_seconds: float = 15.0
     gemx_reference_qualification_frames: int = 5
     gemx_min_tracking_confidence: float = 0.5
-    gemx_min_joint_confidence: float = 0.25
+    gemx_min_joint_confidence: float = 0.05
+    gemx_full_joint_confidence: float = 0.25
     gemx_max_pipeline_latency_ms: float = 220.0
     gemx_transport_latency_budget_ms: float = 10.0
     gemx_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
@@ -772,9 +773,15 @@ def validate_hardware_sonic_config(config: HardwareSonicConfig) -> None:
     for name, value in (
         ("gemx_min_tracking_confidence", config.gemx_min_tracking_confidence),
         ("gemx_min_joint_confidence", config.gemx_min_joint_confidence),
+        ("gemx_full_joint_confidence", config.gemx_full_joint_confidence),
     ):
         if not math.isfinite(value) or not 0.0 <= value <= 1.0:
             raise ValueError(f"{name} must be finite and in [0, 1]")
+    if config.gemx_min_joint_confidence > config.gemx_full_joint_confidence:
+        raise ValueError(
+            "gemx_min_joint_confidence must not exceed "
+            "gemx_full_joint_confidence"
+        )
     if (
         not math.isfinite(config.gemx_transport_latency_budget_ms)
         or config.gemx_transport_latency_budget_ms < 0.0

@@ -411,10 +411,15 @@ The lightweight Bello client validates GEM-X schema 1, its exact SOMA-77 joint
 order/hierarchy, OpenCV camera coordinates, global `xyzw` quaternions, 30-frame
 model context, tracking identity, confidence, and latency. It selects the
 pelvis, chest, bilateral hip/knee/toe, shoulder/elbow/wrist semantics required
-by the retained GMR solver. GEM-X rotations include SOMA's joint-specific
-T-pose frames; the adapter removes the reviewed pinned SOMA neutral
-orientations before passing common-rest-frame pose rotations to GMR. Positions
-and corrected rotations then follow the same support-foot root conditioner,
+by the retained GMR solver. Each selected joint first needs the configured
+minimum confidence to establish an interpolation anchor. Later low-confidence
+positions and rotations blend against that joint's prior transform; values
+below the floor hold it. This avoids discarding a complete skeleton because
+GEM-X's input-keypoint confidences are low even while target association and
+the reconstructed SOMA pose remain stable. GEM-X rotations include SOMA's
+joint-specific T-pose frames; the adapter removes the reviewed pinned SOMA
+neutral orientations before passing common-rest-frame pose rotations to GMR.
+Positions and corrected rotations then follow the support-foot root conditioner,
 pinned GMR solver, Bello joint/rate limits, and newest-only worker boundary as
 the existing live retargeter. The licensed SMPL-X neutral file is used only to
 initialize GMR's canonical standing/reset state; GEM-X does not emit SMPL-X.

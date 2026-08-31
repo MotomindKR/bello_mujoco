@@ -441,7 +441,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `gemx_reference_ready_timeout_seconds` | positive float; `15.0` | sonic live | Post-`MOTION` time allowed for qualified live targets while SONIC standing remains active. |
 | `gemx_reference_qualification_frames` | positive integer; `5` | sonic live | Number of distinct successively received safe GEM-X/GMR references required before live tracking. |
 | `gemx_min_tracking_confidence` | float in `[0,1]`; `0.5` | sonic live | Minimum GEM-X target-association confidence. |
-| `gemx_min_joint_confidence` | float in `[0,1]`; `0.25` | sonic live | Minimum confidence for every SOMA joint selected by the 14-body GMR semantic adapter. |
+| `gemx_min_joint_confidence` | float in `[0,1]`; `0.05` | sonic live | Minimum confidence required to initialize each selected SOMA joint. Once initialized, values at or below this floor hold the previous transform. |
+| `gemx_full_joint_confidence` | float in `[gemx_min_joint_confidence,1]`; `0.25` | sonic live | Confidence at which a new joint transform is accepted completely. Intermediate confidence values blend proportionally from the prior skeleton. |
 | `gemx_max_pipeline_latency_ms` | positive float; `220.0` | sonic live | Maximum GEM-X server-reported decode/detection/inference/FK latency. The default covers the measured 170-180 ms local RTX 5090 path while retaining margin below the 250 ms total reference-age cutoff. |
 | `gemx_transport_latency_budget_ms` | nonnegative float; `10.0` | sonic live | Conservative transport contribution added to every GEM-X reference age. |
 | `gemx_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | sonic live | Calibrated OpenCV-camera-to-Bello-world rotation. |
