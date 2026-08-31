@@ -419,13 +419,18 @@ pinned GMR solver, Bello joint/rate limits, and newest-only worker boundary as
 the existing live retargeter. The licensed SMPL-X neutral file is used only to
 initialize GMR's canonical standing/reset state; GEM-X does not emit SMPL-X.
 
-GMR produces the current Bello pose and velocity at the source rate. For the
-encoder's future offsets, the runner applies bounded constant-velocity native
-MuJoCo integration, preserves current root translation because the actor uses
-root orientation rather than future translation, and clips predicted joint
-positions to hard URDF limits. Five distinct safe frames are required after
-`MOTION` by default. A stale, discontinuous, low-confidence, or unsafe source
-returns to the zero-command standing policy.
+GMR produces a Bello pose and velocity at the source rate. At every 50 Hz policy
+tick, the runner advances that latest pose by its measured capture-to-control
+age, then advances it again for each encoder future offset. This causal
+constant-velocity resampling makes the sparse GEM-X stream continuous without
+adding a second interpolation delay. It preserves root translation because the
+actor consumes root orientation rather than translation, uses native MuJoCo
+quaternion integration, and clips predicted joint positions to hard URDF
+limits. The default 220 ms server-latency admission limit covers the measured
+170-180 ms local RTX 5090 pipeline; the independent 250 ms total-age cutoff
+still fails closed on delayed or stalled frames. Five distinct safe frames are
+required after `MOTION` by default. A stale, discontinuous, low-confidence, or
+unsafe source returns to the zero-command standing policy.
 
 Both modes use the ordinary hardware endpoint and therefore run unchanged
 against `bello-run-emulator`. Start the emulator and hardware daemon as

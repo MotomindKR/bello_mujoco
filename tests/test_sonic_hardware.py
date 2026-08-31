@@ -89,7 +89,9 @@ def test_sonic_clip_uses_canonical_standing_and_end_clamped_future() -> None:
     )
 
 
-def test_sonic_live_prediction_keeps_root_translation(monkeypatch) -> None:
+def test_sonic_live_prediction_compensates_age_and_keeps_root_translation(
+    monkeypatch,
+) -> None:
     nq = 10
     nv = 9
     current = np.zeros(nq, dtype=np.float64)
@@ -100,7 +102,7 @@ def test_sonic_live_prediction_keeps_root_translation(monkeypatch) -> None:
         qvel=np.ones(nv, dtype=np.float64),
         sequence=3,
         source_age_ms=10,
-        received_at=time.monotonic(),
+        received_at=12.0,
     )
     source = SimpleNamespace(standing=lambda: reference, latest=lambda: reference)
     env = SimpleNamespace(
@@ -126,9 +128,13 @@ def test_sonic_live_prediction_keeps_root_translation(monkeypatch) -> None:
         "bello_mujoco.hardware.sonic._clip_reference_joints",
         lambda *_args: None,
     )
+    monkeypatch.setattr("bello_mujoco.hardware.twist2.time.monotonic", lambda: 12.04)
 
+    intervals = []
     def integrate(_model, qpos, _qvel, interval):
+        intervals.append(interval)
         qpos[:3] += interval
+        qpos[-1] += interval
 
     monkeypatch.setattr("bello_mujoco.hardware.sonic.mujoco.mj_integratePos", integrate)
 
@@ -137,6 +143,9 @@ def test_sonic_live_prediction_keeps_root_translation(monkeypatch) -> None:
         predicted.qpos[:, :3],
         np.repeat(current[None, :3], len(SONIC_CRITIC_FUTURE_OFFSETS), axis=0),
     )
+    expected = 0.05 + np.asarray(SONIC_CRITIC_FUTURE_OFFSETS) / 50.0
+    np.testing.assert_allclose(intervals, expected)
+    np.testing.assert_allclose(predicted.qpos[:, -1], expected)
     assert predicted.sequence == reference.sequence
 
 

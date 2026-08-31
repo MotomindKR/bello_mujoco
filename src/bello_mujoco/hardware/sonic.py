@@ -120,7 +120,7 @@ class HardwareSonicConfig(HardwareControlConfig):
     gemx_reference_qualification_frames: int = 5
     gemx_min_tracking_confidence: float = 0.5
     gemx_min_joint_confidence: float = 0.25
-    gemx_max_pipeline_latency_ms: float = 120.0
+    gemx_max_pipeline_latency_ms: float = 220.0
     gemx_transport_latency_budget_ms: float = 10.0
     gemx_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
         0.5,
@@ -632,7 +632,7 @@ class SonicClipReferenceSource:
 
 
 class SonicLiveReferenceSource:
-    """Constant-velocity future prediction over latest-only live GMR output."""
+    """Causally resample latest-only live GMR output at the policy rate."""
 
     mode: SonicReferenceMode = "live"
 
@@ -660,18 +660,21 @@ class SonicLiveReferenceSource:
 
     def _predict(self, reference: Twist2ReferenceFrame) -> SonicReferenceWindow:
         validate_sonic_reference_frame(reference, self.env, self.config)
+        age_ms = reference.age_ms()
+        latency_seconds = 0.0 if age_ms is None else age_ms / 1_000.0
         qpos_frames = []
         qvel_frames = []
         for offset in SONIC_CRITIC_FUTURE_OFFSETS:
             qpos = np.asarray(reference.qpos, dtype=np.float64).copy()
-            if offset:
+            prediction_seconds = latency_seconds + offset / SONIC_POLICY_HZ
+            if prediction_seconds:
                 root = self.env.model.root_qpos_adr
                 root_position = qpos[root : root + 3].copy()
                 mujoco.mj_integratePos(
                     self.env.model.mj_model,
                     qpos,
                     np.asarray(reference.qvel, dtype=np.float64),
-                    offset / SONIC_POLICY_HZ,
+                    prediction_seconds,
                 )
                 qpos[root : root + 3] = root_position
                 _clip_reference_joints(qpos, self.env)

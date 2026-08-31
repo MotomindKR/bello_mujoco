@@ -442,7 +442,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `gemx_reference_qualification_frames` | positive integer; `5` | sonic live | Number of distinct successively received safe GEM-X/GMR references required before live tracking. |
 | `gemx_min_tracking_confidence` | float in `[0,1]`; `0.5` | sonic live | Minimum GEM-X target-association confidence. |
 | `gemx_min_joint_confidence` | float in `[0,1]`; `0.25` | sonic live | Minimum confidence for every SOMA joint selected by the 14-body GMR semantic adapter. |
-| `gemx_max_pipeline_latency_ms` | positive float; `120.0` | sonic live | Maximum GEM-X server-reported decode/detection/inference/FK latency. |
+| `gemx_max_pipeline_latency_ms` | positive float; `220.0` | sonic live | Maximum GEM-X server-reported decode/detection/inference/FK latency. The default covers the measured 170-180 ms local RTX 5090 path while retaining margin below the 250 ms total reference-age cutoff. |
 | `gemx_transport_latency_budget_ms` | nonnegative float; `10.0` | sonic live | Conservative transport contribution added to every GEM-X reference age. |
 | `gemx_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | sonic live | Calibrated OpenCV-camera-to-Bello-world rotation. |
 | `gemx_align_initial_heading` | boolean; `true` | sonic live | Align the acquired SOMA pelvis heading with world forward. |

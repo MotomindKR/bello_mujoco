@@ -44,7 +44,7 @@ gemx_reference_ready_timeout_seconds: 15.0
 gemx_reference_qualification_frames: 5
 gemx_min_tracking_confidence: 0.5
 gemx_min_joint_confidence: 0.25
-gemx_max_pipeline_latency_ms: 120.0
+gemx_max_pipeline_latency_ms: 220.0
 gemx_transport_latency_budget_ms: 10.0
 gemx_camera_to_world_quaternion_xyzw: [0.5, -0.5, 0.5, -0.5]
 gemx_align_initial_heading: true
