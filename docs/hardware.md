@@ -371,11 +371,14 @@ uv run bello-run-hardware \
   motion_path=/absolute/path/to/runtime_clip.npz
 ```
 
-The runner ramps to the checkpoint's canonical Bello standing pose, starts the
-SONIC standing policy after `RUN`, and waits for exact `MOTION` confirmation.
-It then blends into frame zero, advances one clip frame per 50 Hz policy tick,
-end-clamps the encoder's future horizon, and returns through SONIC standing
-before damped shutdown. The complete clip schema, joint/body order, qpos/qvel
+The runner ramps to the checkpoint's canonical Bello standing pose and keeps
+sending that fixed impedance target after `RUN` while it waits for exact
+`MOTION` confirmation. SONIC inference is not run against a synthetic standing
+reference: the transferred motion tracker was not trained as a zero-motion
+balance controller. After `MOTION`, the runner blends into frame zero, advances
+one clip frame per 50 Hz policy tick, end-clamps the encoder's future horizon,
+and blends back to the fixed standing target before damped shutdown. The
+complete clip schema, joint/body order, qpos/qvel
 dimensions, finite arrays, future horizon, and policy rate are validated
 directly against the checkpoint's native Bello model. The runner does not load
 the large packed training dataset and does not require the clip to have been a
@@ -419,7 +422,7 @@ MuJoCo integration, preserves current root translation because the actor uses
 root orientation rather than future translation, and clips predicted joint
 positions to hard URDF limits. Five distinct safe frames are required after
 `MOTION` by default. A stale, discontinuous, low-confidence, or unsafe source
-returns through SONIC standing and then damped shutdown.
+returns to the fixed standing target and then enters damped shutdown.
 
 Both modes use the ordinary hardware endpoint and therefore run unchanged
 against `bello-run-emulator`. Start the emulator and hardware daemon as

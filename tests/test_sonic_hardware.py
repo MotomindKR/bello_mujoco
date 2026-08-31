@@ -17,6 +17,8 @@ from bello_mujoco.hardware.sonic import (
     SonicClipReferenceSource,
     SonicLiveReferenceSource,
     SonicReferenceWindow,
+    _hold_static_sonic_standing,
+    _transition_to_static_sonic_standing,
     validate_hardware_sonic_config,
 )
 from bello_mujoco.hardware.twist2 import Twist2ReferenceFrame
@@ -238,3 +240,76 @@ def test_sonic_reference_modes_are_explicitly_validated() -> None:
                 smplx_neutral_model_path=Path("neutral.npz"),
             )
         )
+
+
+class _FakeStaticControl:
+    def __init__(self, previous_target: np.ndarray) -> None:
+        self.previous_target = previous_target.copy()
+        self.frame = SimpleNamespace(max_motor_age_ms=1, imu_age_ms=2)
+        self.targets: list[np.ndarray] = []
+        self.drain_count = 0
+        self.reset_deadline_count = 0
+        self.pace_count = 0
+
+    def read_frame(self, **_kwargs):
+        return self.frame
+
+    def send_target(self, target) -> None:
+        value = np.asarray(target).copy()
+        self.targets.append(value)
+        self.previous_target = value
+
+    def drain(self) -> None:
+        self.drain_count += 1
+
+    def reset_deadline(self) -> None:
+        self.reset_deadline_count += 1
+
+    def pace(self) -> None:
+        self.pace_count += 1
+
+
+def test_sonic_static_standing_hold_never_runs_policy(monkeypatch) -> None:
+    control = _FakeStaticControl(np.asarray((0.0, 0.0)))
+    target = np.asarray((0.25, -0.5))
+    adapter = SimpleNamespace(
+        step=lambda *_args: pytest.fail("static standing must not run SONIC"),
+    )
+    validated = []
+    monkeypatch.setattr(
+        "bello_mujoco.hardware.sonic.require_target_pose",
+        lambda frame, *_args, **_kwargs: validated.append(frame),
+    )
+
+    frame = _hold_static_sonic_standing(
+        control, adapter, target, HardwareSonicConfig(motion_path=Path("clip.npz"))
+    )
+
+    assert frame is control.frame
+    assert validated == [control.frame]
+    assert control.pace_count == 1
+    np.testing.assert_array_equal(control.targets, [target])
+
+
+def test_sonic_return_to_standing_interpolates_only_static_targets() -> None:
+    control = _FakeStaticControl(np.asarray((0.0, 2.0)))
+    target = np.asarray((2.0, 0.0))
+    reset_count = 0
+
+    def reset_adapter() -> None:
+        nonlocal reset_count
+        reset_count += 1
+
+    adapter = SimpleNamespace(control_timestep=0.02, reset=reset_adapter)
+    config = replace(
+        HardwareSonicConfig(motion_path=Path("clip.npz")),
+        policy_transition_seconds=0.04,
+    )
+
+    _transition_to_static_sonic_standing(control, adapter, target, config)
+
+    np.testing.assert_allclose(control.targets, ((1.0, 1.0), (2.0, 0.0)))
+    assert control.drain_count == 2
+    assert control.reset_deadline_count == 1
+    assert control.pace_count == 2
+    assert reset_count == 1

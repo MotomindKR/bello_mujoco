@@ -493,6 +493,11 @@ repository-owned relaxed SMPL-X sample retargeted through pinned GMR and live
 `MOTION` input is the latest valid Fast-SAM SMPL-X frame. Five distinct safe
 frames qualify a new target by default. Its complete setup and loss behavior
 are documented in [Physical hardware](hardware.md#twist2-mode).
+SONIC differs deliberately: after `RUN` it keeps sending the fixed canonical
+standing target and does not evaluate the transferred policy until `MOTION`
+selects a clip or five qualified GEM-X frames. Completion, interruption, or
+reference loss blends directly back to that fixed target; a synthetic standing
+reference is never passed to SONIC as an active balance command.
 `duration_seconds` measures only the post-`RUN` policy flow; the ramp and
 `HOLD`/`RUN` confirmation waits are outside that duration.
 
@@ -504,10 +509,12 @@ unstacked observation, normalized stacked policy observation, raw and applied
 action, and physical target. Locomotion
 records include the velocity command. Motion records cover the standing
 policy, both policy transitions, and motion tracking; transition records contain
-both the policy target and the blended target actually sent. File encoding and
-flushing run on a dedicated background thread so normal disk I/O does not block
-the control loop. These complete 50 Hz logs can grow by hundreds of megabytes
-per hour, depending on the checkpoint observation-stack size.
+both the policy target and the blended target actually sent. SONIC records only
+its transition into motion and active motion; its static standing hold runs no
+policy and therefore emits no policy-step records. File encoding and flushing
+run on a dedicated background thread so normal disk I/O does not block the
+control loop. Complete 50 Hz logs can grow by multiple gigabytes per hour for
+large observation layouts such as SONIC's.
 
 Hardware targets use the proportional and derivative gains stored in checkpoint
 metadata.

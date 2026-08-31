@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 from pathlib import Path
 import time
@@ -1039,21 +1039,6 @@ def run_hardware_sonic(
         )
         validate_hardware_frame(frame, config, expected_group_state="IDLE")
         initial_error = float(np.max(np.abs(frame.positions - standing_target)))
-        initial_preview = adapter.step(frame, standing)
-        adapter.reset()
-        root = adapter.env.model.root_qpos_adr
-        standing_orientation_wxyz = standing.qpos[0, root + 3 : root + 7]
-        settled_preview = adapter.step(
-            replace(
-                frame,
-                positions=standing_target,
-                velocities=np.zeros_like(standing_target),
-                orientation_xyzw=standing_orientation_wxyz[[1, 2, 3, 0]],
-                angular_velocity=np.zeros(3, dtype=np.float64),
-            ),
-            standing,
-        )
-        adapter.reset()
         print(
             {
                 "sonic_hardware_preflight": "passed",
@@ -1069,18 +1054,6 @@ def run_hardware_sonic(
                 "control_rate_hz": 1.0 / adapter.control_timestep,
                 "jax_backend": jax.default_backend(),
                 "normal_standing_ramp_distance_max": initial_error,
-                "initial_state_preview_source_action_abs_max": float(
-                    np.max(np.abs(initial_preview.raw_source_action))
-                ),
-                "initial_state_preview_action_clipped": (
-                    initial_preview.action_clipped
-                ),
-                "settled_standing_preview_source_action_abs_max": float(
-                    np.max(np.abs(settled_preview.raw_source_action))
-                ),
-                "settled_standing_preview_action_clipped": (
-                    settled_preview.action_clipped
-                ),
                 "armed": config.arm,
             }
         )
@@ -1111,10 +1084,8 @@ def run_hardware_sonic(
                 task="sonic",
                 checkpoints={"sonic": checkpoint_path},
                 phases={
-                    "standing": schema,
                     "transition_to_motion": schema,
                     "motion": schema,
-                    "transition_to_standing": schema,
                 },
             )
             if config.policy_log_path is not None
@@ -1210,30 +1181,17 @@ def control_physical_sonic(
             nonlocal standing_steps, next_standing_status
             if not duration_available():
                 return False
-            frame = control.read_frame()
-            step = adapter.step(frame, standing)
-            control.send_target(step.physical_target)
+            frame = _hold_static_sonic_standing(
+                control, adapter, standing_target, config
+            )
             standing_steps += 1
             now = time.monotonic()
-            _log_sonic_step(
-                policy_log,
-                phase="standing",
-                step_number=standing_steps,
-                run_started=run_started,
-                step=step,
-            )
-            control.pace()
             if next_standing_status is not None and now >= next_standing_status:
                 print(
                     {
-                        "hardware_phase": "standing",
+                        "hardware_phase": "static_standing",
                         "hardware_step": standing_steps,
                         "elapsed_seconds": now - run_started,
-                        "source_action_abs_max": float(
-                            np.max(np.abs(step.raw_source_action))
-                        ),
-                        "action_abs_max": float(np.max(np.abs(step.action))),
-                        "action_clipped": step.action_clipped,
                         "motor_age_ms": frame.max_motor_age_ms,
                         "imu_age_ms": frame.imu_age_ms,
                     }
@@ -1242,20 +1200,11 @@ def control_physical_sonic(
                 next_standing_status = now + config.status_interval_seconds
             return True
 
-        print("Transitioning from the normal-standing hold to SONIC policy standing.")
-        _transition_sonic_reference(
-            control,
-            adapter,
-            lambda: standing,
-            config,
-            phase="transition_to_standing",
-            policy_log=policy_log,
-            run_started=run_started,
-            max_tilt_radians=config.max_tilt_radians,
-        )
-        control.reset_deadline()
         source_name = "live GEM-X tracking" if references.mode == "live" else "the clip"
-        print(f"SONIC normal standing is active. Type MOTION to begin {source_name}.")
+        print(
+            "Static normal standing remains active. "
+            f"Type MOTION to begin {source_name}."
+        )
         try:
             requested_motion = wait_for_operator_confirmation_while_holding(
                 MOTION_CONFIRMATION,
@@ -1285,20 +1234,30 @@ def control_physical_sonic(
                 first_motion = references.latest()
                 adapter.validate_reference(first_motion)
 
-            print(f"Transitioning from normal standing to {source_name}.")
-            _transition_sonic_reference(
-                control,
-                adapter,
-                references.latest,
-                config,
-                phase="transition_to_motion",
-                policy_log=policy_log,
-                run_started=run_started,
-                first_reference=first_motion,
-                advance_reference=(
-                    references.advance if references.mode == "clip" else None
-                ),
-            )
+            print(f"Transitioning from static normal standing to {source_name}.")
+            try:
+                _transition_sonic_reference(
+                    control,
+                    adapter,
+                    references.latest,
+                    config,
+                    phase="transition_to_motion",
+                    policy_log=policy_log,
+                    run_started=run_started,
+                    first_reference=first_motion,
+                    advance_reference=(
+                        references.advance if references.mode == "clip" else None
+                    ),
+                )
+            except ReferenceUnavailable as error:
+                print(
+                    "SONIC reference became unavailable during the motion "
+                    f"transition; restoring static standing: {error}"
+                )
+                _transition_to_static_sonic_standing(
+                    control, adapter, standing_target, config
+                )
+                return
             motion_started = time.monotonic()
             control.reset_deadline()
             motion_steps = 0
@@ -1359,18 +1318,14 @@ def control_physical_sonic(
                 )
             elif clip_completed:
                 print("SONIC clip completed; returning to normal standing.")
-            _transition_sonic_reference(
+            _transition_to_static_sonic_standing(
                 control,
                 adapter,
-                lambda: standing,
+                standing_target,
                 config,
-                phase="transition_to_standing",
-                policy_log=policy_log,
-                run_started=run_started,
-                max_tilt_radians=config.max_tilt_radians,
             )
             control.drain()
-            print("SONIC normal standing restored; entering damped shutdown.")
+            print("Static normal-standing target restored; entering damped shutdown.")
         except KeyboardInterrupt:
             print("SONIC standing interrupted; entering damped shutdown.")
 
@@ -1386,7 +1341,6 @@ def _transition_sonic_reference(
     run_started: float,
     first_reference: SonicReferenceWindow | None = None,
     advance_reference: Callable[[], bool] | None = None,
-    max_tilt_radians: float | None = None,
 ) -> None:
     control.drain()
     initial_target = control.previous_target.copy()
@@ -1396,13 +1350,7 @@ def _transition_sonic_reference(
         1, math.ceil(config.policy_transition_seconds / adapter.control_timestep)
     )
     for step_number in range(1, steps + 1):
-        frame = control.read_frame(
-            max_tilt_radians=(
-                config.max_motion_tilt_radians
-                if max_tilt_radians is None
-                else max_tilt_radians
-            )
-        )
+        frame = control.read_frame(max_tilt_radians=config.max_motion_tilt_radians)
         current_reference = (
             first_reference
             if step_number == 1 and first_reference is not None
@@ -1431,6 +1379,46 @@ def _transition_sonic_reference(
             raise ReferenceUnavailable("SONIC clip ended during the policy transition")
         control.pace()
     control.drain()
+
+
+def _hold_static_sonic_standing(
+    control: Any,
+    adapter: HardwareSonicPolicyAdapter,
+    standing_target: np.ndarray,
+    config: HardwareSonicConfig,
+) -> HardwareFrame:
+    frame = control.read_frame(max_tilt_radians=config.max_tilt_radians)
+    require_target_pose(
+        frame,
+        adapter,
+        standing_target,
+        pose_name="the static normal standing pose",
+    )
+    control.send_target(standing_target)
+    control.pace()
+    return frame
+
+
+def _transition_to_static_sonic_standing(
+    control: Any,
+    adapter: HardwareSonicPolicyAdapter,
+    standing_target: np.ndarray,
+    config: HardwareSonicConfig,
+) -> None:
+    control.drain()
+    initial_target = control.previous_target.copy()
+    control.reset_deadline()
+    steps = max(
+        1, math.ceil(config.policy_transition_seconds / adapter.control_timestep)
+    )
+    for step_number in range(1, steps + 1):
+        control.read_frame(max_tilt_radians=config.max_tilt_radians)
+        fraction = step_number / steps
+        target = initial_target + fraction * (standing_target - initial_target)
+        control.send_target(target)
+        control.pace()
+    control.drain()
+    adapter.reset()
 
 
 def _wait_for_live_sonic_reference(
