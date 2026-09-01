@@ -1018,6 +1018,28 @@ def test_checkpoint_metadata_upgrade_removes_retired_sonic_idle_augmentation() -
     assert "balanced_idle_probability" in legacy["sonic_env"]
 
 
+def test_checkpoint_metadata_upgrade_adds_sonic_sampling_schedule() -> None:
+    legacy = {
+        "task": "sonic",
+        "sonic_env": {
+            "sampling": {
+                "enabled": True,
+                "bin_size": 50,
+            }
+        },
+    }
+
+    upgraded = checkpoint._with_checkpoint_metadata_defaults(legacy)
+
+    assert upgraded["sonic_env"]["sampling"] == {
+        "enabled": True,
+        "bin_size": 50,
+        "adaptive_warmup_steps": 48_000,
+        "adaptive_ramp_steps": 192_000,
+    }
+    assert "adaptive_warmup_steps" not in legacy["sonic_env"]["sampling"]
+
+
 def test_repository_commit_requires_origin_tracked_clean_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -630,9 +630,10 @@ def validate_warm_start_metadata(
         omit_source_revision=allow_source_revision_mismatch,
     )
     if allow_sonic_env_mismatch:
-        if recorded_payload.get("task") != "sonic" or requested_payload.get(
-            "task"
-        ) != "sonic":
+        if (
+            recorded_payload.get("task") != "sonic"
+            or requested_payload.get("task") != "sonic"
+        ):
             raise ValueError("SONIC environment mismatch waiver requires SONIC inputs")
         recorded_payload.pop("sonic_env", None)
         requested_payload.pop("sonic_env", None)
@@ -979,10 +980,16 @@ def _with_checkpoint_metadata_defaults(
         return normalized
     if value.get("task") == "sonic":
         sonic_env = value.get("sonic_env")
-        if isinstance(sonic_env, dict) and "balanced_idle_probability" in sonic_env:
+        if isinstance(sonic_env, dict):
             normalized = dict(value)
             normalized_sonic_env = dict(sonic_env)
-            normalized_sonic_env.pop("balanced_idle_probability")
+            normalized_sonic_env.pop("balanced_idle_probability", None)
+            sampling = sonic_env.get("sampling")
+            if isinstance(sampling, dict):
+                normalized_sampling = dict(sampling)
+                normalized_sampling.setdefault("adaptive_warmup_steps", 48_000)
+                normalized_sampling.setdefault("adaptive_ramp_steps", 192_000)
+                normalized_sonic_env["sampling"] = normalized_sampling
             normalized["sonic_env"] = normalized_sonic_env
             return normalized
     if value.get("task") != "motion_tracking":
