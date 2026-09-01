@@ -8,13 +8,13 @@ config:
   num_steps: 24
   update_epochs: 5
   num_minibatches: 4
-  learning_rate: 0.00002
+  learning_rate: 0.000005
   critic_learning_rate: 0.001
   schedule: adaptive
   desired_kl: 0.01
   target_kl: null
-  min_learning_rate: 0.00001
-  max_learning_rate: 0.0002
+  min_learning_rate: 0.000002
+  max_learning_rate: 0.000005
   adaptive_lr_factor: 1.5
   adaptive_kl_statistic: mean
   gamma: 0.99
@@ -66,6 +66,8 @@ sonic_env:
     joint_position_std: 0.35
   sampling:
     clip_prior: frame_count_times_manifest_weight
+    adaptive_warmup_steps: 48000
+    adaptive_ramp_steps: 192000
   freeze_frame_probability: 0.1
 
 pretraining:
@@ -84,6 +86,11 @@ pretraining:
   parameter_anchor_weight: 0.000001
   log_every_updates: 100
   seed: 17
+
+warm_start:
+  source_policy_kl_start_weight: 0.1
+  source_policy_kl_end_weight: 0.0
+  source_policy_kl_anneal_updates: 10000
 
 checkpoint_config:
   enabled: true

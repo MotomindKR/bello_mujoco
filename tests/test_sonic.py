@@ -276,7 +276,40 @@ def test_sonic_bootstrap_defaults_are_staged_for_bello_transfer() -> None:
     assert config.reward.target_joint_limit == -1.0
     assert config.reward.joint_position_std == 0.35
     assert config.sampling.clip_prior == "frame_count_times_manifest_weight"
+    assert config.sampling.adaptive_warmup_steps == 48_000
+    assert config.sampling.adaptive_ramp_steps == 192_000
     assert config.freeze_frame_probability == pytest.approx(0.1)
+
+
+def test_sonic_adaptive_sampling_weight_delays_and_ramps() -> None:
+    env = object.__new__(BelloSonicEnv)
+    object.__setattr__(
+        env,
+        "sampling",
+        replace(
+            SonicSamplingConfig(),
+            adaptive_warmup_steps=10,
+            adaptive_ramp_steps=20,
+        ),
+    )
+
+    assert env._adaptive_sampling_weight(jnp.asarray(9)) == pytest.approx(0.0)
+    assert env._adaptive_sampling_weight(jnp.asarray(10)) == pytest.approx(0.0)
+    assert env._adaptive_sampling_weight(jnp.asarray(20)) == pytest.approx(0.5)
+    assert env._adaptive_sampling_weight(jnp.asarray(30)) == pytest.approx(1.0)
+
+
+def test_maintained_sonic_profile_uses_anchored_warm_start_rates() -> None:
+    from bello_mujoco.configuration import sonic_training_profile
+
+    config = sonic_training_profile()
+
+    assert config.config.learning_rate == pytest.approx(5.0e-6)
+    assert config.config.min_learning_rate == pytest.approx(2.0e-6)
+    assert config.config.max_learning_rate == pytest.approx(5.0e-6)
+    assert config.warm_start.source_policy_kl_start_weight == pytest.approx(0.1)
+    assert config.warm_start.source_policy_kl_end_weight == pytest.approx(0.0)
+    assert config.warm_start.source_policy_kl_anneal_updates == 10_000
 
 
 def test_maintained_sonic_profile_passes_training_validation() -> None:
@@ -673,10 +706,8 @@ def test_sonic_reference_action_requests_next_joint_pose() -> None:
             default_joint_target=np.asarray((0.1, -0.2), dtype=np.float32),
         ),
     )
-    fake._aligned_reference = (
-        lambda motion_state, clip_index, offset, *, freeze_frame: SimpleNamespace(
-            qpos=jnp.asarray((0.0,) * 7 + (0.6 + offset * 0.1, -0.1))
-        )
+    fake._aligned_reference = lambda motion_state, clip_index, offset, *, freeze_frame: (
+        SimpleNamespace(qpos=jnp.asarray((0.0,) * 7 + (0.6 + offset * 0.1, -0.1)))
     )
     fake.reference_action = MethodType(BelloSonicEnv.reference_action, fake)
     state = SimpleNamespace(
@@ -745,11 +776,7 @@ def test_freeze_frame_augmentation_is_sampled_per_episode_and_jittable() -> None
     length = jnp.asarray(75, dtype=jnp.int32)
     keys = jax.random.split(jax.random.PRNGKey(7), 64)
     sample = jax.jit(
-        jax.vmap(
-            lambda key: _sample_sonic_freeze_frame(
-                key, length, probability=1.0
-            )
-        )
+        jax.vmap(lambda key: _sample_sonic_freeze_frame(key, length, probability=1.0))
     )
 
     frozen = np.asarray(sample(keys))

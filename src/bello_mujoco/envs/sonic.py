@@ -285,6 +285,8 @@ class SonicSamplingConfig:
     uniform_sampling_rate: float = 0.1
     pre_failure_window: int = 200
     failure_rate_max_over_mean: float = 200.0
+    adaptive_warmup_steps: int = 48_000
+    adaptive_ramp_steps: int = 192_000
     clip_prior: Literal[
         "frame_count_times_manifest_weight",
         "sequence_length_agnostic_manifest_weight",
@@ -382,6 +384,13 @@ class SonicEnvConfig:
         sampling = self.sampling
         if sampling.bin_size <= 0 or sampling.pre_failure_window < 0:
             raise ValueError("SONIC sampling bin/window sizes are invalid")
+        if (
+            isinstance(sampling.adaptive_warmup_steps, bool)
+            or sampling.adaptive_warmup_steps < 0
+            or isinstance(sampling.adaptive_ramp_steps, bool)
+            or sampling.adaptive_ramp_steps < 0
+        ):
+            raise ValueError("SONIC adaptive sampling warmup/ramp must be nonnegative")
         if sampling.initial_failures <= 0.0:
             raise ValueError("initial_failures must be positive")
         if not 0.0 <= sampling.uniform_sampling_rate <= 1.0:
@@ -398,6 +407,7 @@ class SonicEnvConfig:
 class SonicSamplingState(NamedTuple):
     failures: jax.Array
     attempts: jax.Array
+    elapsed_steps: jax.Array
 
 
 @chex.dataclass(frozen=True)
@@ -697,7 +707,11 @@ class BelloSonicEnv(BelloTwistEnv):
     def initial_task_state(self) -> SonicSamplingState:
         bins = len(self._sampling_bins[0])
         initial = jnp.full((bins,), self.sampling.initial_failures, dtype=jnp.float32)
-        return SonicSamplingState(initial, jnp.ones_like(initial))
+        return SonicSamplingState(
+            initial,
+            jnp.ones_like(initial),
+            jnp.asarray(0, dtype=jnp.int32),
+        )
 
     def with_task_state(self, state: SonicSamplingState) -> "BelloSonicEnv":
         if not self.sampling.enabled:
@@ -728,6 +742,10 @@ class BelloSonicEnv(BelloTwistEnv):
             base * (1.0 - self.sampling.uniform_sampling_rate) * failure_based
             + base * self.sampling.uniform_sampling_rate * uniform
         )
+        mixture /= jnp.sum(mixture)
+        base /= jnp.sum(base)
+        adaptive_weight = self._adaptive_sampling_weight(state.elapsed_steps)
+        mixture = (1.0 - adaptive_weight) * base + adaptive_weight * mixture
         mixture /= jnp.sum(mixture)
         cdf = jnp.cumsum(mixture)
         cdf = cdf.at[-1].set(1.0)
@@ -768,6 +786,7 @@ class BelloSonicEnv(BelloTwistEnv):
         return SonicSamplingState(
             failures=state.failures + failures,
             attempts=state.attempts + attempts,
+            elapsed_steps=state.elapsed_steps + 1,
         )
 
     def task_state_metrics(self, state: SonicSamplingState) -> dict[str, jax.Array]:
@@ -779,7 +798,21 @@ class BelloSonicEnv(BelloTwistEnv):
                 jnp.where(valid.astype(bool), rates, -jnp.inf)
             ),
             "sampling/attempts": jnp.sum(state.attempts * valid),
+            "sampling/adaptive_weight": self._adaptive_sampling_weight(
+                state.elapsed_steps
+            ),
         }
+
+    def _adaptive_sampling_weight(self, elapsed_steps: jax.Array) -> jax.Array:
+        warmup = float(self.sampling.adaptive_warmup_steps)
+        ramp = float(self.sampling.adaptive_ramp_steps)
+        if ramp == 0.0:
+            return jnp.asarray(elapsed_steps >= warmup, dtype=jnp.float32)
+        return jnp.clip(
+            (jnp.asarray(elapsed_steps, dtype=jnp.float32) - warmup) / ramp,
+            0.0,
+            1.0,
+        )
 
     def _sample_clip_start(self, rng: jax.Array | None) -> tuple[jax.Array, jax.Array]:
         bin_clips, starts, widths, bin_valid, _ = self._sampling_bins
@@ -1582,12 +1615,12 @@ class BelloSonicEnv(BelloTwistEnv):
             jnp.clip(nominal_frame, 0, length - 1), state.freeze_frame
         )
         info["reference/frame"] = effective_frame.astype(jnp.float32)
-        info["reference/freeze_enabled"] = (
-            state.freeze_frame < length
-        ).astype(jnp.float32)
-        info["reference/frozen"] = (
-            nominal_frame >= state.freeze_frame
-        ).astype(jnp.float32)
+        info["reference/freeze_enabled"] = (state.freeze_frame < length).astype(
+            jnp.float32
+        )
+        info["reference/frozen"] = (nominal_frame >= state.freeze_frame).astype(
+            jnp.float32
+        )
         info["total_step"] = state.total_step.astype(jnp.float32)
         return info
 

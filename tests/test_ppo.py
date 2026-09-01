@@ -23,6 +23,7 @@ from bello_mujoco.policy import (
     update_observation_stack,
 )
 from bello_mujoco.training.ppo import (
+    DistillationContext,
     PPOConfig,
     Transition,
     action_diagnostics,
@@ -522,6 +523,42 @@ def test_ppo_loss_reports_policy_ratio_clip_fraction() -> None:
     )
 
     assert metrics["policy_clip_fraction"] == pytest.approx(0.5)
+
+
+def test_actor_sourced_distillation_reuses_rollout_observation() -> None:
+    config = small_config(
+        policy=ActorCriticConfig(
+            hidden_dims=(16,),
+            obs_stack_size=1,
+            init_log_std=-1.0,
+            action_distribution="gaussian",
+            action_limit=1.0,
+        )
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, state.policy)
+    batch, advantages, targets = flatten_batch(
+        (batch, jnp.ones_like(batch.reward), batch.value)
+    )
+    distillation = DistillationContext(
+        teacher_policy=state.policy,
+        teacher_observation_size=3,
+        teacher_observation_norm_state=init_observation_norm_state(3),
+        teacher_config=config,
+        teacher_observation_source="actor",
+    )
+
+    _, metrics = ppo_loss(
+        state.policy,
+        batch,
+        advantages,
+        targets,
+        config,
+        distillation=distillation,
+        distillation_weight=0.1,
+    )
+
+    assert metrics["distillation/kl_student_teacher"] == pytest.approx(0.0)
 
 
 def test_linear_and_constant_learning_rate_schedules() -> None:

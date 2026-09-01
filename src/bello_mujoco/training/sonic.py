@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import numpy as np
 
@@ -47,6 +48,7 @@ from bello_mujoco.training.checkpoint import (
     warm_start_runner_checkpoint,
 )
 from bello_mujoco.training.ppo import (
+    DistillationContext,
     PPOConfig,
     init_runner_state,
     runner_train_state,
@@ -93,6 +95,25 @@ _SONIC_BANK_ARRAY_FIELDS = (
 
 
 @dataclass(frozen=True)
+class SonicWarmStartConfig:
+    source_policy_kl_start_weight: float = 0.1
+    source_policy_kl_end_weight: float = 0.0
+    source_policy_kl_anneal_updates: int = 10_000
+
+    def __post_init__(self) -> None:
+        start = self.source_policy_kl_start_weight
+        end = self.source_policy_kl_end_weight
+        if not np.isfinite(start) or not np.isfinite(end):
+            raise ValueError("SONIC warm-start KL weights must be finite")
+        if start < end or end < 0.0:
+            raise ValueError(
+                "SONIC warm-start KL weights must satisfy start >= end >= 0"
+            )
+        if self.source_policy_kl_anneal_updates <= 0:
+            raise ValueError("SONIC warm-start KL anneal updates must be positive")
+
+
+@dataclass(frozen=True)
 class SonicTrainingRunConfig:
     dataset_index: Path = Path("datasets/sonic/index.json")
     release_artifact_directory: Path = Path("artifacts/sonic/default_release")
@@ -101,6 +122,7 @@ class SonicTrainingRunConfig:
     simulation: TwistSimulationConfig = TwistSimulationConfig()
     sonic_env: SonicEnvConfig = SonicEnvConfig()
     pretraining: SonicPretrainingConfig = SonicPretrainingConfig()
+    warm_start: SonicWarmStartConfig = SonicWarmStartConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
@@ -217,6 +239,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
         if checkpoint_config.enabled
         else None
     )
+    distillation = None
     if checkpoint_config.resume_path is None:
         runner, static_policy, optimizer = init_runner_state(
             rng, env, run_config.config, policy=policy_template
@@ -227,17 +250,23 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
                 env,
                 runner,
                 metadata,
-                allow_git_commit_mismatch=(
-                    checkpoint_config.allow_git_commit_mismatch
-                ),
+                allow_git_commit_mismatch=(checkpoint_config.allow_git_commit_mismatch),
                 allow_sonic_env_mismatch=True,
             )
+            if not isinstance(source_metadata, SonicCheckpointMetadata):
+                raise TypeError("SONIC warm start requires a SONIC checkpoint")
             print(
                 {
                     "sonic_warm_start": str(checkpoint_config.warm_start_path),
                     "source_update_budget": source_metadata.ppo.num_updates,
                     "target_update_budget": metadata.ppo.num_updates,
                 }
+            )
+            distillation = _warm_start_distillation_context(
+                run_config,
+                runner,
+                static_policy,
+                source_metadata,
             )
     else:
         runner, static_policy, optimizer, _ = restore_runner_checkpoint(
@@ -275,6 +304,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
                 "simulation": run_config.simulation,
                 "sonic_env": run_config.sonic_env,
                 "pretraining": run_config.pretraining,
+                "warm_start": run_config.warm_start,
                 "reference_bank_frames": int(bank_arrays[0].shape[0]),
                 "reference_bank_clips": int(bank_arrays[11].shape[0]),
                 "release_checkpoint_sha256": release.checkpoint_sha256,
@@ -302,6 +332,7 @@ def run_training(run_config: SonicTrainingRunConfig) -> None:
                 optimizer,
                 current_env,
                 run_config.config,
+                distillation=distillation,
             )
 
         update_fn = jax.jit(update_fn, donate_argnums=(0,))
@@ -360,6 +391,31 @@ def validate_sonic_training_config(config: SonicTrainingRunConfig) -> None:
         )
     if ppo.critic_learning_rate is None:
         raise ValueError("SONIC requires an explicit independent critic learning rate")
+
+
+def _warm_start_distillation_context(
+    run_config: SonicTrainingRunConfig,
+    runner,
+    static_policy,
+    source_metadata: SonicCheckpointMetadata,
+) -> DistillationContext | None:
+    config = run_config.warm_start
+    if config.source_policy_kl_start_weight == 0.0:
+        return None
+    teacher_params = jax.tree_util.tree_map(
+        lambda value: value.copy() if isinstance(value, jax.Array) else value,
+        runner.params,
+    )
+    return DistillationContext(
+        teacher_policy=eqx.combine(teacher_params, static_policy),
+        teacher_observation_size=source_metadata.obs_size,
+        teacher_observation_norm_state=runner.observation_norm_state,
+        teacher_config=source_metadata.ppo,
+        start_weight=config.source_policy_kl_start_weight,
+        end_weight=config.source_policy_kl_end_weight,
+        anneal_updates=config.source_policy_kl_anneal_updates,
+        teacher_observation_source="actor",
+    )
 
 
 def _tracking_dataset_summary(index: dict) -> dict:

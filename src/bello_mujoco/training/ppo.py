@@ -224,7 +224,7 @@ class PPOConfig:
 
 @dataclass(frozen=True)
 class DistillationContext:
-    """Frozen teacher and schedule for a TWIST student PPO update."""
+    """Frozen teacher and schedule for a policy-anchored PPO update."""
 
     teacher_policy: ActorCritic
     teacher_observation_size: int
@@ -233,10 +233,11 @@ class DistillationContext:
     start_weight: float = 0.1
     end_weight: float = 0.01
     anneal_updates: int = 60_000
+    teacher_observation_source: Literal["actor", "critic_prefix"] = "critic_prefix"
 
     def __post_init__(self) -> None:
         if self.teacher_policy.action_distribution != "gaussian":
-            raise ValueError("TWIST teacher must use an unsquashed Gaussian policy")
+            raise ValueError("distillation teacher must use a Gaussian policy")
         if self.teacher_observation_size <= 0:
             raise ValueError("teacher_observation_size must be positive")
         if self.start_weight < self.end_weight or self.end_weight < 0.0:
@@ -245,6 +246,8 @@ class DistillationContext:
             )
         if self.anneal_updates <= 0:
             raise ValueError("distillation anneal_updates must be positive")
+        if self.teacher_observation_source not in {"actor", "critic_prefix"}:
+            raise ValueError("invalid distillation teacher observation source")
 
 
 @chex.dataclass(frozen=True)
@@ -703,7 +706,11 @@ def ppo_loss(
     entropy_loss = entropy.mean()
     distillation_kl = jnp.asarray(0.0, dtype=jnp.float32)
     if distillation is not None:
-        teacher_observation = transitions.info["_distillation_teacher_observation"]
+        teacher_observation = (
+            transitions.obs
+            if distillation.teacher_observation_source == "actor"
+            else transitions.info["_distillation_teacher_observation"]
+        )
         distillation_kl = gaussian_policy_kl_student_teacher(
             model,
             distillation.teacher_policy,
@@ -1320,6 +1327,27 @@ def collect_rollout(
         )
     )
     rollout_normalization = config.observation_norm_update_mode == "rollout"
+    if distillation is not None:
+        actor_observation_size = int(stacked_observation(obs_stack).shape[-1])
+        critic_observation_size = int(stacked_observation(critic_obs_stack).shape[-1])
+        if (
+            distillation.teacher_observation_source == "actor"
+            and distillation.teacher_observation_size != actor_observation_size
+        ):
+            raise ValueError(
+                "actor-sourced teacher observation size does not match the policy "
+                f"observation: {distillation.teacher_observation_size} != "
+                f"{actor_observation_size}"
+            )
+        if (
+            distillation.teacher_observation_source == "critic_prefix"
+            and distillation.teacher_observation_size > critic_observation_size
+        ):
+            raise ValueError(
+                "critic-sourced teacher observation exceeds the critic observation: "
+                f"{distillation.teacher_observation_size} > "
+                f"{critic_observation_size}"
+            )
 
     def env_step(
         carry: tuple[
@@ -1429,7 +1457,10 @@ def collect_rollout(
             for name, value in info.items()
             if name not in {"bootstrap_observation", "bootstrap_critic_observation"}
         }
-        if distillation is not None:
+        if (
+            distillation is not None
+            and distillation.teacher_observation_source == "critic_prefix"
+        ):
             raw_teacher_observation = raw_critic_policy_obs[
                 ..., : distillation.teacher_observation_size
             ]

@@ -53,7 +53,7 @@ The `config` section is shared by locomotion and motion tracking.
 | `update_epochs` | `5` | Optimizer passes over each rollout batch. |
 | `num_minibatches` | `4` | Minibatches per epoch. `num_envs * num_steps` must be divisible by this value. |
 | `learning_rate` | `0.001` | Initial Adam learning rate; positive and finite. |
-| `critic_learning_rate` | `null` | Optional independent critic rate. SONIC requires `0.001` while its actor edges use `learning_rate=0.00002`. |
+| `critic_learning_rate` | `null` | Optional independent critic rate. SONIC requires `0.001` while its actor edges use `learning_rate=0.000005`. |
 | `schedule` | `adaptive` | `constant`, `linear`, or KL-adaptive scheduling. |
 | `desired_kl` | `0.01` | KL target used by the adaptive scheduler. |
 | `target_kl` | `null` | Optional hard early-stop threshold for an update epoch. |
@@ -539,9 +539,10 @@ adapter warm-start remains available as an explicit experiment but defaults to
 disabled because its one-step pose targets do not capture target dynamics.
 
 The maintained PPO profile uses 4,096 environments, 24 steps, five epochs,
-four minibatches, actor-edge learning rate `2e-5`, critic learning rate
-`1e-3`, desired KL `0.01`, entropy coefficient `0.01`, maximum gradient norm
-`0.1`, gamma `0.99`, GAE lambda `0.95`, and clip ratio `0.2`. It uses an
+four minibatches, actor-edge learning rate `5e-6` with a `2e-6` adaptive floor,
+critic learning rate `1e-3`, desired KL `0.01`, entropy coefficient `0.01`,
+maximum gradient norm `0.1`, gamma `0.99`, GAE lambda `0.95`, and clip ratio
+`0.2`. It uses an
 unsquashed Gaussian in G1 space. Source actions are clipped to `[-20,20]`,
 mapped once into Bello's normalized action space, and multiplied by Bello's
 per-joint `0.25 * effort_limit / stiffness` action scale. No target-side action
@@ -563,6 +564,10 @@ pushes start after the same warmup, and author-style freeze-frame augmentation
 is sampled independently at 10 percent of episode resets. A new uniform freeze
 frame is drawn for every selected episode, and adaptive failures use the
 effective frozen frame. The optional contact-tracking reward defaults to zero.
+Start sampling follows the immutable dataset prior for 48,000 policy steps
+(2,000 maintained PPO updates), then linearly mixes in the learned failure
+distribution over 192,000 more policy steps. The sampler continues collecting
+failure statistics during both phases and reports `sampling/adaptive_weight`.
 `dataset_index` identifies the
 synchronized Bello/SMPL/G1 dataset. `release_artifact_directory` identifies
 the safe NPZ/JSON export of the exact pinned NVIDIA checkpoint, while
@@ -572,7 +577,11 @@ evaluation bank. Training transfers the full training bank to the accelerator
 once. The maintained `sonic_env.sampling.clip_prior` restores
 frame-count-times-manifest-weight sampling from schema 7's clip-balanced
 metadata; the sequence-length-agnostic prior remains an explicit ablation.
-There is no host-side data rotation or update-boundary environment reset.
+The `warm_start` section configures a frozen source-policy KL anchor. Its
+maintained weight decreases from `0.1` to zero over the first 10,000 updates;
+it is applied only when `warm_start_path` is set. Actor-sourced anchoring reuses
+the rollout observation rather than materializing a duplicate observation
+batch. There is no host-side data rotation or update-boundary environment reset.
 All data, release, robot, layout, and calibration identities enter typed
 checkpoint validation. See the [SONIC transfer guide](sonic.md).
 
@@ -680,7 +689,7 @@ Headline resolved PPO values are:
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist2` | 2,949,218,304 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | three released actor encoders + 512-512-256-128 SiLU + LN |
-| `sonic` | 9,830,400,000 | 4,096 × 24 | 5 × 4 | 0.00002 adaptive | 0.99 / 0.95 | frozen SONIC actor/critic + rank-32 LoRA and trainable source log-std |
+| `sonic` | 9,830,400,000 | 4,096 × 24 | 5 × 4 | 0.000005 adaptive, 0.000002 floor | 0.99 / 0.95 | frozen SONIC actor/critic + rank-32 LoRA and trainable source log-std |
 
 `bello-train --cfg job` prints the outer public command document; profile
 resolution occurs afterward inside the command and is therefore not included

@@ -283,7 +283,10 @@ the whole corpus and remain in the runner continuation, so PPO updates do not
 pause for host data loads and vectorized worlds are not reset at data-boundary
 transitions. Sampling uses one uniform draw against the global cumulative
 distribution rather than materializing per-environment categorical noise over
-every bin.
+every bin. The maintained curriculum uses only that dataset prior for the
+first 48,000 policy steps (2,000 PPO updates), then linearly introduces the
+failure-based distribution over 192,000 policy steps, reaching full adaptive
+sampling at update 10,000.
 
 The maintained profile starts PPO directly from zero-output LoRA residuals, as
 in Any2Any. The older one-step supervised pose-copy warm-start remains an
@@ -292,7 +295,8 @@ model target dynamics and can move the policy away from the source behavior
 before PPO receives survival feedback.
 
 The maintained PPO values are 4,096 worlds, 24 rollout steps, five epochs, four
-minibatches, actor-edge learning rate `2e-5`, critic learning rate `1e-3`,
+minibatches, actor-edge learning rate `5e-6` with a `2e-6` adaptive floor,
+critic learning rate `1e-3`,
 desired KL `0.01`, entropy coefficient `0.01`, gamma `0.99`, lambda `0.95`, clip
 ratio `0.2`, and maximum gradient norm `0.1`. The released 29-dimensional
 standard deviation starts from the source values, is trainable, and remains
@@ -300,7 +304,11 @@ clamped to `[0.001, 0.5]` in source space before sampling. The maintained budget
 is 100,000 fresh-stage updates (`9,830,400,000` transitions). Update 8,000
 matches the iteration scale used in Any2Any's compute comparison. A transferred
 checkpoint can initialize this stage without restoring its optimizer, sampler,
-update counter, rollout state, RNG, or adaptive learning rate.
+update counter, rollout state, RNG, or adaptive learning rate. During such a
+warm start, a frozen copy of the source actor anchors the new actor with latent
+Gaussian KL weight `0.1`, cosine-decayed to zero over the first 10,000 updates.
+The source actor is used only as a gradient-free teacher; its parameters are
+not added to the optimizer.
 
 The author configuration's static-reference distribution is also retained.
 At every episode reset, ten percent of environments sample a new uniform freeze
@@ -398,7 +406,9 @@ To start a new adaptation stage from an existing SONIC controller, use
 `warm_start_checkpoint_path=/path/to/checkpoint` with `bello-vast-train`.
 Warm start restores controller and normalization arrays but deliberately
 starts the optimizer, update counter, sampler, rollout state, RNG, and learning
-rate from their new-run defaults. It is mutually exclusive with resume.
+rate from their new-run defaults. It also enables the maintained source-policy
+KL anchor and delayed adaptive-sampling schedule. It is mutually exclusive
+with resume.
 
 The same evaluation can be run locally with:
 
