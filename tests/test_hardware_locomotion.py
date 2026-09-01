@@ -1316,6 +1316,21 @@ def test_hardware_loop_rejects_one_excessively_late_iteration(monkeypatch) -> No
         )
 
 
+def test_hardware_loop_reports_stage_timings_on_late_iteration(monkeypatch) -> None:
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(hardware_runtime.time, "monotonic", lambda: clock.now)
+    config = HardwareLocomotionConfig()
+
+    with pytest.raises(RuntimeError, match=r"stage_ms: state=1\.250, policy=2\.500"):
+        clock.now += 0.121
+        pace_hardware_loop(
+            0.0,
+            0.02,
+            config,
+            {"state": 1.25, "policy": 2.5},
+        )
+
+
 def test_hardware_cleanup_stops_only_running_groups() -> None:
     stopped = []
     closed = []

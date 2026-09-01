@@ -18,6 +18,7 @@ from bello_mujoco.cli import (
     TrainCommandConfig,
     TwistDataCommandConfig,
     VastTrainCommandConfig,
+    _hardware_policy_log_path,
     _reject_explicit_fields,
     _warp_overrides,
 )
@@ -175,6 +176,21 @@ def test_hardware_upper_body_tracking_is_an_explicit_boolean() -> None:
 
     assert default.upper_body_tracking_enabled
     assert not disabled.upper_body_tracking_enabled
+
+
+def test_hardware_policy_log_is_disabled_by_null() -> None:
+    assert _hardware_policy_log_path(None) is None
+
+
+def test_hardware_policy_log_expands_explicit_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert _hardware_policy_log_path(Path("~/policy.jsonl")) == (
+        tmp_path / "policy.jsonl"
+    )
 
 
 @pytest.mark.parametrize(

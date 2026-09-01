@@ -891,6 +891,7 @@ def pace_hardware_loop(
     previous_deadline: float,
     control_timestep: float,
     config: HardwareControlConfig,
+    stage_ms: Mapping[str, float] | None = None,
 ) -> float:
     deadline = previous_deadline + control_timestep
     remaining = deadline - time.monotonic()
@@ -899,9 +900,13 @@ def pace_hardware_loop(
     now = time.monotonic()
     lag = now - deadline
     if lag > config.max_loop_lag_seconds:
-        raise RuntimeError(
-            f"hardware policy loop missed its deadline by {lag:.3f} seconds"
-        )
+        message = f"hardware policy loop missed its deadline by {lag:.3f} seconds"
+        if stage_ms is not None:
+            detail = ", ".join(
+                f"{name}={duration:.3f}" for name, duration in stage_ms.items()
+            )
+            message = f"{message}; last iteration stage_ms: {detail}"
+        raise RuntimeError(message)
     return max(deadline, now)
 
 
@@ -953,11 +958,12 @@ class ArmedControlSession:
         )
         self.previous_target = np.asarray(target, dtype=np.float64)
 
-    def pace(self) -> None:
+    def pace(self, stage_ms: Mapping[str, float] | None = None) -> None:
         self.deadline = pace_hardware_loop(
             self.deadline,
             self.adapter.control_timestep,
             self.config,
+            stage_ms,
         )
 
     def reset_deadline(self) -> None:

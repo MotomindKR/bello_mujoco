@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bello_mujoco.hardware.policy_log import PolicyStepLogger, policy_phase_schema
+from bello_mujoco.hardware.policy_log import (
+    PolicyStepLogger,
+    _encode_step,
+    policy_phase_schema,
+)
 
 
 def test_policy_phase_schema_preserves_checkpoint_array_order() -> None:
@@ -94,3 +98,58 @@ def test_policy_step_logger_does_not_overwrite_existing_file(tmp_path: Path) -> 
         )
 
     assert path.read_text() == "existing\n"
+
+
+def test_policy_step_packet_size_does_not_grow_with_elapsed_time() -> None:
+    values = np.arange(32, dtype=np.float32)
+    arguments = {
+        "phase_id": 0,
+        "step": 1,
+        "wall_time_ns": 2,
+        "monotonic_time_ns": 3,
+        "observation": values,
+        "policy_observation": values,
+        "raw_action": values,
+        "action": values,
+        "physical_target": values,
+        "command": values,
+        "reference_time": 2.5,
+        "policy_target": values,
+    }
+
+    initial = _encode_step(elapsed_seconds=0.0, **arguments)
+    long_running = _encode_step(elapsed_seconds=1.0e12, **arguments)
+
+    assert len(initial) == len(long_running)
+
+
+def test_policy_step_logger_drops_instead_of_blocking_on_backpressure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "policy.jsonl"
+    with PolicyStepLogger(
+        path,
+        task="locomotion",
+        checkpoints={},
+        phases={"locomotion": {}},
+    ) as policy_log:
+
+        def blocked(_packet: bytes) -> None:
+            raise BlockingIOError
+
+        monkeypatch.setattr(policy_log, "_send_packet", blocked)
+        policy_log.write_step(
+            phase="locomotion",
+            step=1,
+            elapsed_seconds=0.02,
+            observation=np.zeros(1),
+            policy_observation=np.zeros(1),
+            action=np.zeros(1),
+            physical_target=np.zeros(1),
+        )
+        assert policy_log.dropped_records == 1
+
+    header, summary = [json.loads(line) for line in path.read_text().splitlines()]
+    assert header["type"] == "header"
+    assert summary == {"type": "logger_summary", "dropped_records": 1}

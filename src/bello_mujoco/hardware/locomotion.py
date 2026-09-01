@@ -1138,6 +1138,7 @@ def control_physical_robot(
                 config.max_duration_seconds is None
                 or time.monotonic() - start_time < config.max_duration_seconds
             ):
+                loop_started = time.monotonic()
                 remote_input = remote.poll()
                 report_remote_connection(remote_input)
                 if remote_input.abort_active:
@@ -1155,7 +1156,9 @@ def control_physical_robot(
                         f"right={math.degrees(right_offset):+.1f} deg."
                     )
                 command = hardware_command(adapter.metadata, remote_input)
+                input_finished = time.monotonic()
                 frame = control.read_frame()
+                state_finished = time.monotonic()
                 reference = None
                 if references is not None:
                     reference_error: ReferenceUnavailable | None = None
@@ -1175,7 +1178,9 @@ def control_physical_robot(
                             )
                         pose_following = following
                 policy_step = adapter.step(frame, command, reference)
+                policy_finished = time.monotonic()
                 control.send_target(policy_step.physical_target)
+                command_finished = time.monotonic()
                 step += 1
                 now = time.monotonic()
                 if policy_log is not None:
@@ -1190,6 +1195,7 @@ def control_physical_robot(
                         physical_target=policy_step.physical_target,
                         command=command,
                     )
+                log_finished = time.monotonic()
                 if next_status is not None and now >= next_status:
                     print(
                         {
@@ -1214,11 +1220,27 @@ def control_physical_robot(
                             "state_frame_round_trip_ms": (
                                 frame.state_frame_round_trip_ms
                             ),
+                            "policy_log_dropped_records": (
+                                None
+                                if policy_log is None
+                                else policy_log.dropped_records
+                            ),
                         }
                     )
                     assert config.status_interval_seconds is not None
                     next_status = now + config.status_interval_seconds
-                control.pace()
+                status_finished = time.monotonic()
+                control.pace(
+                    {
+                        "input": (input_finished - loop_started) * 1_000.0,
+                        "state": (state_finished - input_finished) * 1_000.0,
+                        "policy": (policy_finished - state_finished) * 1_000.0,
+                        "command": (command_finished - policy_finished) * 1_000.0,
+                        "log": (log_finished - command_finished) * 1_000.0,
+                        "status": (status_finished - log_finished) * 1_000.0,
+                        "before_pace": (status_finished - loop_started) * 1_000.0,
+                    }
+                )
             control.drain()
         except KeyboardInterrupt:
             print("Hardware locomotion interrupted; entering damped shutdown.")

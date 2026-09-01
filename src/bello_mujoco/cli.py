@@ -1173,12 +1173,8 @@ def _hardware_hydra(config: DictConfig) -> None:
     )
 
 
-def _hardware_policy_log_path(configured: Path | None) -> Path:
-    if configured is not None:
-        return configured.expanduser()
-    from hydra.core.hydra_config import HydraConfig
-
-    return Path(HydraConfig.get().runtime.output_dir) / "policy_steps.jsonl"
+def _hardware_policy_log_path(configured: Path | None) -> Path | None:
+    return None if configured is None else configured.expanduser()
 
 
 def _ppo_overrides(config, command: TrainCommandConfig):
