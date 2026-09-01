@@ -333,14 +333,14 @@ fi
 if [ -n "$learning_rate" ]; then
   training_overrides+=("learning_rate=$learning_rate")
 fi
-
-actual_overrides=("${training_overrides[@]}")
 if [ -n "$warm_start_checkpoint_path" ]; then
-  actual_overrides+=("warm_start_path=$warm_start_checkpoint_path")
+  training_overrides+=("warm_start_path=$warm_start_checkpoint_path")
   if [ "$allow_git_commit_mismatch" = "true" ]; then
-    actual_overrides+=("allow_git_commit_mismatch=true")
+    training_overrides+=("allow_git_commit_mismatch=true")
   fi
 fi
+
+actual_overrides=("${training_overrides[@]}")
 if [ -n "$resume_checkpoint_path" ]; then
   actual_overrides+=("resume_path=$resume_checkpoint_path")
   if [ "$allow_git_commit_mismatch" = "true" ]; then

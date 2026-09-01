@@ -1316,7 +1316,7 @@ def test_sonic_remote_resume_is_applied_only_to_the_real_run() -> None:
     assert "remote job heartbeat" in command
 
 
-def test_sonic_remote_warm_start_is_applied_only_to_the_real_run() -> None:
+def test_sonic_remote_warm_start_is_applied_to_preflight_and_real_run() -> None:
     config = valid_config(
         experiment="sonic",
         dataset_path=Path("/data/sonic/index.json"),
@@ -1339,12 +1339,15 @@ def test_sonic_remote_warm_start_is_applied_only_to_the_real_run() -> None:
 
     assert "/workspace/checkpoints/sonic_warm_start" in arguments
     script = vast_remote.REMOTE_TRAIN_SCRIPT
-    actual_index = script.index(
-        'actual_overrides+=("warm_start_path=$warm_start_checkpoint_path")'
+    warm_start_index = script.index(
+        'training_overrides+=("warm_start_path=$warm_start_checkpoint_path")'
     )
     preflight_index = script.index("preflight_overrides=(")
-    assert actual_index < preflight_index
-    assert 'training_overrides+=("warm_start_path=' not in script
+    assert warm_start_index < preflight_index
+    assert (
+        'actual_overrides+=("warm_start_path=$warm_start_checkpoint_path")'
+        not in script
+    )
 
 
 def test_sonic_benchmark_accepts_unavailable_power_telemetry(tmp_path) -> None:
