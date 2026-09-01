@@ -514,7 +514,6 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             assert sonic_artifact_path is not None
             warm_start_checkpoint_path = _sonic_warm_start_checkpoint(
                 config.warm_start_checkpoint_path,
-                dataset_fingerprint=dataset_fingerprint,
                 release_artifact_path=sonic_artifact_path,
                 selected_commit=commit,
                 allow_git_commit_mismatch=config.allow_git_commit_mismatch,
@@ -730,7 +729,6 @@ def _sonic_resume_checkpoint(
 def _sonic_warm_start_checkpoint(
     checkpoint_path: Path,
     *,
-    dataset_fingerprint: str | None,
     release_artifact_path: Path,
     selected_commit: str,
     allow_git_commit_mismatch: bool,
@@ -767,8 +765,6 @@ def _sonic_warm_start_checkpoint(
         ) from exc
     if not isinstance(metadata, SonicCheckpointMetadata):
         raise ValueError("Vast SONIC warm start requires a typed SONIC checkpoint")
-    if metadata.dataset.dataset_fingerprint != dataset_fingerprint:
-        raise ValueError("SONIC warm-start checkpoint dataset fingerprint differs")
     if metadata.source_revision != selected_commit and not allow_git_commit_mismatch:
         raise ValueError("SONIC warm-start checkpoint source revision differs")
     release = load_sonic_release_artifact(release_artifact_path)

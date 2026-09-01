@@ -421,6 +421,50 @@ def test_sonic_resume_selection_binds_dataset_release_and_budget(
         )
 
 
+def test_sonic_warm_start_selection_allows_new_dataset(
+    tmp_path: Path, monkeypatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "metadata.json").write_text("{}", encoding="utf-8")
+    (checkpoint / "state").mkdir()
+    (checkpoint / "continuation").mkdir()
+    commit = "a" * 40
+
+    class FakeSonicMetadata:
+        source_revision = "b" * 40
+        release_checkpoint_sha256 = "sha256:" + "c" * 64
+        release_artifact_sha256 = "sha256:" + "e" * 64
+
+    import bello_mujoco.sonic_policy as sonic_policy
+    import bello_mujoco.training.checkpoint as checkpoint_module
+
+    monkeypatch.setattr(checkpoint_module, "SonicCheckpointMetadata", FakeSonicMetadata)
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_checkpoint_metadata",
+        lambda path, **kwargs: FakeSonicMetadata(),
+    )
+    monkeypatch.setattr(
+        sonic_policy,
+        "load_sonic_release_artifact",
+        lambda path: SimpleNamespace(
+            checkpoint_sha256="c" * 64,
+            artifact_sha256="e" * 64,
+        ),
+    )
+
+    assert (
+        vast._sonic_warm_start_checkpoint(
+            checkpoint,
+            release_artifact_path=tmp_path / "release",
+            selected_commit=commit,
+            allow_git_commit_mismatch=True,
+        )
+        == checkpoint.resolve()
+    )
+
+
 def test_twist_dataset_selection_is_strict_and_portable(tmp_path: Path) -> None:
     index_path = twist_dataset(tmp_path)
 

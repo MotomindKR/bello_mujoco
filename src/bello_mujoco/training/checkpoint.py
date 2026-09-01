@@ -769,6 +769,8 @@ def _warm_start_contract_payload(
     dataset = payload.get("dataset")
     if dataset is not None:
         dataset.pop("dataset_fingerprint", None)
+        if payload.get("task") == "sonic":
+            dataset.pop("calibration", None)
     payload.pop("dataset_audit", None)
     return payload
 

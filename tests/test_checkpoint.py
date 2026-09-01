@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -216,6 +216,71 @@ def metadata(config: PPOConfig, tmp_path: Path) -> CheckpointMetadata:
         action_layout=ACTION_LAYOUT,
         critic_obs_size=CRITIC_LAYOUT.size * config.policy.obs_stack_size,
     )
+
+
+@dataclass(frozen=True)
+class _WarmStartPPO:
+    total_timesteps: int
+    policy: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _WarmStartDataset:
+    index_path: Path
+    dataset_fingerprint: str
+    calibration: tuple[float, ...]
+    robot_fingerprint: str
+
+
+@dataclass(frozen=True)
+class _WarmStartSonicMetadata:
+    ppo: _WarmStartPPO
+    dataset: _WarmStartDataset
+    source_revision: str
+    task: str = "sonic"
+
+
+def test_sonic_warm_start_allows_new_dataset_calibration() -> None:
+    recorded = _WarmStartSonicMetadata(
+        ppo=_WarmStartPPO(total_timesteps=100, policy={"architecture": "sonic"}),
+        dataset=_WarmStartDataset(
+            index_path=Path("old/index.json"),
+            dataset_fingerprint="sha256:" + "a" * 64,
+            calibration=(1.0,),
+            robot_fingerprint="sha256:" + "b" * 64,
+        ),
+        source_revision="c" * 40,
+    )
+    requested = replace(
+        recorded,
+        dataset=replace(
+            recorded.dataset,
+            index_path=Path("new/index.json"),
+            dataset_fingerprint="sha256:" + "d" * 64,
+            calibration=(2.0,),
+        ),
+        source_revision="e" * 40,
+    )
+
+    checkpoint.validate_warm_start_metadata(
+        recorded,
+        requested,
+        allow_source_revision_mismatch=True,
+        allow_sonic_env_mismatch=True,
+    )
+    with pytest.raises(ValueError, match="dataset"):
+        checkpoint.validate_warm_start_metadata(
+            recorded,
+            replace(
+                requested,
+                dataset=replace(
+                    requested.dataset,
+                    robot_fingerprint="sha256:" + "f" * 64,
+                ),
+            ),
+            allow_source_revision_mismatch=True,
+            allow_sonic_env_mismatch=True,
+        )
 
 
 def synthetic_motion_clip() -> MotionClip:
