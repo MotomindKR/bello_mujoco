@@ -48,6 +48,7 @@ from bello_mujoco.motion.twist_dataset import (
     TWIST_TRAIN_SAMPLING,
     _align_floor_and_heading,
     _arrays_fingerprint,
+    _normalized_foot_contacts,
     assign_splits,
     build_packed_dataset,
     clip_quality_reasons,
@@ -875,6 +876,26 @@ def test_floor_alignment_uses_lowest_canonical_sole_point() -> None:
 
     assert aligned["foot_sole_z"].min() == pytest.approx(0.0)
     np.testing.assert_allclose(aligned["qpos"][:, 2], 0.78)
+
+
+def test_normalized_contact_reconstruction_uses_post_alignment_sole_height() -> None:
+    arrays = {
+        "body_names": np.asarray(
+            ("left_ankle_roll_link", "right_ankle_roll_link", "torso_link")
+        ),
+        "body_lin_vel": np.zeros((3, 3, 3), dtype=np.float32),
+        "foot_sole_z": np.asarray(
+            ((0.0, 0.10), (0.02, 0.01), (0.01, 0.01)), dtype=np.float32
+        ),
+    }
+    arrays["body_lin_vel"][2, 0, 0] = 0.3
+
+    contacts = _normalized_foot_contacts(arrays)
+
+    np.testing.assert_array_equal(
+        contacts,
+        np.asarray(((1.0, 0.0), (1.0, 1.0), (1.0, 1.0)), dtype=np.float32),
+    )
 
 
 def test_packed_sampler_is_jittable_and_never_crosses_clip_end() -> None:

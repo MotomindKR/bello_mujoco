@@ -108,6 +108,14 @@ force. This avoids rejecting an otherwise stable map for a low-variance wrist
 axis. A build fails rather than publishing a dataset whose morphology map does
 not generalize.
 
+Foot contact is reconstructed after the robot trajectory has been resampled and
+aligned to its canonical floor. A sole is labeled supported only while it is at
+most `0.03 m` above that floor. Foot speed stays an independent sanitation
+signal so a slipping treadmill retarget cannot hide by being labeled airborne.
+This deliberately replaces the retarget file's pre-alignment contact gate: an
+absolute vertical offset in GMR output must not turn a valid standing clip into
+an all-airborne target.
+
 The builder is deliberately bounded-memory. Its first pass validates one
 synchronized clip at a time and accumulates only calibration moments. Its
 second pass reloads accepted clips into temporary memory-mapped arrays and
@@ -295,11 +303,13 @@ checkpoint can initialize this stage without restoring its optimizer, sampler,
 update counter, rollout state, RNG, or adaptive learning rate.
 
 The author configuration's static-reference distribution is also retained.
-Ten percent of clips stop at a uniformly sampled frame. Another five percent
-stop at the lowest-velocity double-support frame available in the clip, giving
-Bello an explicit balanced idle target while preserving moving-to-idle
-transitions. These augmentations select views of the immutable packed bank;
-they do not duplicate or mutate the dataset on disk.
+At every episode reset, ten percent of environments sample a new uniform freeze
+frame for their selected clip. The remaining environments stay dynamic. Freeze
+selection is not permanently attached to clip identity, and adaptive-sampler
+failures are charged to the effective clamped frame rather than to nominal
+post-freeze frames. `reference/freeze_enabled` and `reference/frozen` expose the
+selected and currently active static cohorts. The augmentation is a view of the
+immutable packed bank; it does not duplicate or mutate the dataset on disk.
 
 Evaluation reports the original clip-weighted acceptance metrics as well as
 frame-weighted tracking metrics and strata for stationary/traveling root motion
@@ -323,8 +333,11 @@ contacts, wrist/head angular shake, the release-named local `5point` term, and
 ankle-joint acceleration. Despite its upstream name, the pinned release
 configures only a torso-plus-head-offset proxy and two wrists. Bello uses that
 same torso offset plus its two wrists. Feet remain separate termination and
-acceleration terms. Bello adds direct joint-position and foot-contact tracking,
-plus a penalty on the requested target's normalized joint-limit excess.
+acceleration terms. Bello adds direct joint-position tracking plus a penalty on
+the requested target's normalized joint-limit excess. The optional
+foot-contact tracking term remains available for audited datasets but is zero
+in the maintained profile; older packed datasets contain labels invalidated by
+pre-alignment height gating.
 Requested targets remain unclipped, so unsafe commands are not hidden behind a
 target-side clamp.
 

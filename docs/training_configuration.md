@@ -555,13 +555,15 @@ The `pretraining` section contains `enabled`, `updates`, `batch_size`,
 `seed`. All loss weights are nonnegative; sizes, update counts, and learning
 settings are validated before the policy is initialized.
 
-`sonic_env` owns released-style tracking rewards plus Bello joint/contact and
+`sonic_env` owns released-style tracking rewards plus Bello joint-position and
 requested-target-limit bootstrap terms, failure termination, observation
 noise, per-world morphology/dynamics randomization, root pushes, and
 failure-bin adaptive start sampling. Noise ramps over 48,000 world steps,
-pushes start after the same warmup, author-style freeze-frame augmentation uses
-10 percent of clips, and balanced double-support idle augmentation uses another
-5 percent. `dataset_index` identifies the
+pushes start after the same warmup, and author-style freeze-frame augmentation
+is sampled independently at 10 percent of episode resets. A new uniform freeze
+frame is drawn for every selected episode, and adaptive failures use the
+effective frozen frame. The optional contact-tracking reward defaults to zero.
+`dataset_index` identifies the
 synchronized Bello/SMPL/G1 dataset. `release_artifact_directory` identifies
 the safe NPZ/JSON export of the exact pinned NVIDIA checkpoint, while
 `runtime_clip_directory` is ignored scratch space for native motion loading.

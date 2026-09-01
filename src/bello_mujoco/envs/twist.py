@@ -910,7 +910,9 @@ class BelloTwistEnv:
             step_count=state.motion_state.step_count + 1,
             episode_length=state.motion_state.episode_length + 1,
         )
-        reference = self._aligned_reference(motion_state, state.clip_index, 0)
+        reference = self._tracking_reference(
+            state, motion_state, state.clip_index, 0
+        )
         contacts = self._foot_contacts(motion_state, 0).astype(bool)
         foot_air_time = state.foot_air_time + self.control_timestep
         reward, reward_info = self._twist_reward(
@@ -1028,7 +1030,9 @@ class BelloTwistEnv:
             tangent_force,
             world_id,
         ):
-            reference = self._aligned_reference(current, clip_index, 0)
+            reference = self._tracking_reference(
+                twist_state, current, clip_index, 0
+            )
             return self._twist_reward(
                 twist_state,
                 current,
@@ -1052,8 +1056,10 @@ class BelloTwistEnv:
             jnp.arange(batch_size, dtype=jnp.int32),
         )
         references = jax.vmap(
-            lambda current, clip: self._aligned_reference(current, clip, 0)
-        )(motion_state, state.clip_index)
+            lambda tracking_state, current, clip: self._tracking_reference(
+                tracking_state, current, clip, 0
+            )
+        )(state, motion_state, state.clip_index)
         torso_contacts = self._termination_torso_contacts_batch(
             motion_state, batch_size
         )
@@ -1437,6 +1443,16 @@ class BelloTwistEnv:
                 jax.random.uniform(frame_key) * (maximum_start + 1)
             ).astype(jnp.int32)
         return clip_index, start_frame.astype(jnp.float32) / TWIST_POLICY_HZ
+
+    def _tracking_reference(
+        self,
+        tracking_state: TwistState,
+        motion_state: TwistMotionState,
+        clip_index: jax.Array,
+        offset: int,
+    ) -> MotionSample:
+        del tracking_state
+        return self._aligned_reference(motion_state, clip_index, offset)
 
     def _aligned_reference(
         self, state, clip_index: jax.Array, offset: int

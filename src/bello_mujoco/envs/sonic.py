@@ -246,7 +246,7 @@ class SonicRewardConfig:
     tracking_body_linear_velocity: float = 1.0
     tracking_body_angular_velocity: float = 1.0
     tracking_joint_position: float = 1.0
-    tracking_foot_contact: float = 0.25
+    tracking_foot_contact: float = 0.0
     action_rate: float = -0.1
     joint_limit: float = -10.0
     target_joint_limit: float = -1.0
@@ -305,7 +305,6 @@ class SonicEnvConfig:
     done: SonicDoneConfig = SonicDoneConfig()
     sampling: SonicSamplingConfig = SonicSamplingConfig()
     freeze_frame_probability: float = 0.1
-    balanced_idle_probability: float = 0.05
     key_body_names: tuple[str, ...] = SONIC_TRACKED_BODY_NAMES
 
     def __post_init__(self) -> None:
@@ -319,13 +318,6 @@ class SonicEnvConfig:
             raise ValueError("SONIC key-body order differs from the port contract")
         if not 0.0 <= self.freeze_frame_probability <= 1.0:
             raise ValueError("SONIC freeze-frame probability must be in [0, 1]")
-        if not 0.0 <= self.balanced_idle_probability <= 1.0:
-            raise ValueError("SONIC balanced-idle probability must be in [0, 1]")
-        if self.freeze_frame_probability + self.balanced_idle_probability > 1.0:
-            raise ValueError(
-                "SONIC freeze-frame and balanced-idle probabilities must sum to "
-                "at most one"
-            )
         noise = self.observation_noise
         if isinstance(noise.ramp_steps, bool) or noise.ramp_steps < 0:
             raise ValueError("observation_noise.ramp_steps must be nonnegative")
@@ -416,6 +408,7 @@ class SonicState:
     action_history: jax.Array
     action_delay_steps: jax.Array
     clip_index: jax.Array
+    freeze_frame: jax.Array
     domain_randomization: jax.Array
     foot_air_time: jax.Array
     last_foot_contact: jax.Array
@@ -436,7 +429,6 @@ class BelloSonicEnv(BelloTwistEnv):
     sampling_bin_cdf: jax.Array | None = None
     action_scale: tuple[float, ...] = ()
     g1_from_bello_joint: tuple[tuple[float, ...], ...] = ()
-    freeze_frame_indices: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.stage != "student":
@@ -512,13 +504,6 @@ class BelloSonicEnv(BelloTwistEnv):
         valid_lengths = np.asarray(self.reference_bank.lengths)
         if np.any(valid_lengths <= SONIC_REQUIRED_FUTURE_HORIZON):
             raise ValueError("SONIC clips do not cover the required future horizon")
-        freeze_frames = np.asarray(self.freeze_frame_indices, dtype=np.int32)
-        if (
-            freeze_frames.shape != valid_lengths.shape
-            or np.any(freeze_frames < 0)
-            or np.any(freeze_frames > valid_lengths)
-        ):
-            raise ValueError("SONIC freeze-frame augmentation indices are invalid")
         probabilities = np.asarray(self.reference_bank.sampling_probabilities)
         if probabilities.shape != np.asarray(self.reference_bank.lengths).shape:
             raise ValueError("SONIC clip sampling-probability shape has drifted")
@@ -615,12 +600,6 @@ class BelloSonicEnv(BelloTwistEnv):
                 tuple(float(value) for value in row)
                 for row in semantic_g1_from_bello_joint_map(reference_bank.calibration)
             ),
-            freeze_frame_indices=_sonic_static_frame_indices(
-                reference_bank,
-                freeze_probability=config.freeze_frame_probability,
-                balanced_idle_probability=config.balanced_idle_probability,
-                seed=config.domain_randomization.seed,
-            ),
         )
         return (
             env.with_task_state(env.initial_task_state())
@@ -694,7 +673,6 @@ class BelloSonicEnv(BelloTwistEnv):
             "sampling",
             "action_scale",
             "g1_from_bello_joint",
-            "freeze_frame_indices",
         ):
             object.__setattr__(bound, name, getattr(self, name))
         object.__setattr__(bound, "reference_bank", reference_bank)
@@ -860,9 +838,24 @@ class BelloSonicEnv(BelloTwistEnv):
         return state, self.observation(state, rng)
 
     def _reset_state(self, rng: jax.Array | None = None) -> SonicState:
-        keys = (None,) * 6 if rng is None else tuple(jax.random.split(rng, 6))
-        clip_key, pose_key, velocity_key, joint_key, push_key, observation_key = keys
+        keys = (None,) * 7 if rng is None else tuple(jax.random.split(rng, 7))
+        (
+            clip_key,
+            freeze_key,
+            pose_key,
+            velocity_key,
+            joint_key,
+            push_key,
+            observation_key,
+        ) = keys
         clip_index, reference_time = self._sample_clip_start(clip_key)
+        assert self.reference_bank is not None
+        clip_length = jnp.asarray(self.reference_bank.lengths)[clip_index]
+        freeze_frame = _sample_sonic_freeze_frame(
+            freeze_key,
+            clip_length,
+            probability=self.config.freeze_frame_probability,
+        )
         motion_state = TwistMotionState(
             data=self.model.make_data(),
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
@@ -875,9 +868,13 @@ class BelloSonicEnv(BelloTwistEnv):
             last_episode_return=jnp.asarray(0.0, dtype=jnp.float32),
             last_episode_length=jnp.asarray(0, dtype=jnp.int32),
         )
-        source = self._aligned_reference(motion_state, clip_index, 0)
+        source = self._aligned_reference(
+            motion_state, clip_index, 0, freeze_frame=freeze_frame
+        )
         motion_state = motion_state.replace(alignment_xy=-source.qpos[:2])
-        reference = self._aligned_reference(motion_state, clip_index, 0)
+        reference = self._aligned_reference(
+            motion_state, clip_index, 0, freeze_frame=freeze_frame
+        )
         position_delta = jnp.zeros(3, dtype=jnp.float32)
         rotation_delta = jnp.asarray((1.0, 0.0, 0.0, 0.0), dtype=jnp.float32)
         if pose_key is not None:
@@ -959,6 +956,7 @@ class BelloSonicEnv(BelloTwistEnv):
             action_history=jnp.zeros((1, self.action_size), dtype=jnp.float32),
             action_delay_steps=jnp.asarray(0, dtype=jnp.int32),
             clip_index=clip_index,
+            freeze_frame=freeze_frame,
             domain_randomization=self._sample_domain_randomization(),
             foot_air_time=jnp.zeros(2, dtype=jnp.float32),
             last_foot_contact=jnp.zeros(2, dtype=bool),
@@ -1086,7 +1084,9 @@ class BelloSonicEnv(BelloTwistEnv):
         bello_default = jnp.asarray(self.model.default_joint_target)[policy_control]
         g1_default = jnp.asarray(SONIC_G1_DEFAULT_JOINT_POSITION)
         references = tuple(
-            self._aligned_reference(state.motion_state, state.clip_index, offset)
+            self._tracking_reference(
+                state, state.motion_state, state.clip_index, offset
+            )
             for offset in SONIC_CRITIC_FUTURE_OFFSETS
         )
         orientation_noise = None
@@ -1155,7 +1155,7 @@ class BelloSonicEnv(BelloTwistEnv):
             / jnp.asarray(SONIC_G1_ACTION_SCALE)[:, None]
         )
         future_references = tuple(
-            self._aligned_reference(current, state.clip_index, offset)
+            self._tracking_reference(state, current, state.clip_index, offset)
             for offset in SONIC_CRITIC_FUTURE_OFFSETS
         )
         policy_qpos = jnp.asarray(self.model.policy_qpos_indices)
@@ -1172,7 +1172,7 @@ class BelloSonicEnv(BelloTwistEnv):
                 for reference in future_references
             )
         )
-        reference = self._aligned_reference(current, state.clip_index, 0)
+        reference = self._tracking_reference(state, current, state.clip_index, 0)
         root_quat = current.data.qpos[3:7]
         anchor_position = basis @ quat_rotate_inverse(
             root_quat,
@@ -1573,31 +1573,74 @@ class BelloSonicEnv(BelloTwistEnv):
 
     def _bank_info(self, state, observation, reward_info, done_flags):
         info = super()._bank_info(state, observation, reward_info, done_flags)
-        info["reference/frame"] = jnp.rint(
+        assert self.reference_bank is not None
+        nominal_frame = jnp.rint(
             state.motion_state.reference_time * SONIC_POLICY_HZ
+        ).astype(jnp.int32)
+        length = jnp.asarray(self.reference_bank.lengths)[state.clip_index]
+        effective_frame = jnp.minimum(
+            jnp.clip(nominal_frame, 0, length - 1), state.freeze_frame
+        )
+        info["reference/frame"] = effective_frame.astype(jnp.float32)
+        info["reference/freeze_enabled"] = (
+            state.freeze_frame < length
+        ).astype(jnp.float32)
+        info["reference/frozen"] = (
+            nominal_frame >= state.freeze_frame
         ).astype(jnp.float32)
         info["total_step"] = state.total_step.astype(jnp.float32)
         return info
 
     def _absolute_reference_frame(
-        self, state, clip_index: jax.Array, offset: int
+        self,
+        state,
+        clip_index: jax.Array,
+        offset: int,
+        *,
+        freeze_frame: jax.Array | None = None,
     ) -> jax.Array:
         assert self.reference_bank is not None
         frame = jnp.rint(state.reference_time * SONIC_POLICY_HZ).astype(jnp.int32)
         length = jnp.asarray(self.reference_bank.lengths)[clip_index]
         frame = jnp.clip(frame + offset, 0, length - 1)
-        frame = jnp.minimum(frame, jnp.asarray(self.freeze_frame_indices)[clip_index])
+        if freeze_frame is not None:
+            frame = jnp.minimum(frame, freeze_frame)
         return jnp.asarray(self.reference_bank.offsets)[clip_index] + frame
 
+    def _tracking_reference(
+        self,
+        tracking_state: SonicState,
+        motion_state: TwistMotionState,
+        clip_index: jax.Array,
+        offset: int,
+    ) -> MotionSample:
+        return self._aligned_reference(
+            motion_state,
+            clip_index,
+            offset,
+            freeze_frame=tracking_state.freeze_frame,
+        )
+
     def _aligned_reference(
-        self, state, clip_index: jax.Array, offset: int
+        self,
+        state,
+        clip_index: jax.Array,
+        offset: int,
+        *,
+        freeze_frame: jax.Array | None = None,
     ) -> MotionSample:
         assert self.reference_bank is not None
-        absolute = self._absolute_reference_frame(state, clip_index, offset)
+        absolute = self._absolute_reference_frame(
+            state, clip_index, offset, freeze_frame=freeze_frame
+        )
         nominal_frame = (
             jnp.rint(state.reference_time * SONIC_POLICY_HZ).astype(jnp.int32) + offset
         )
-        frozen = nominal_frame >= jnp.asarray(self.freeze_frame_indices)[clip_index]
+        frozen = (
+            jnp.asarray(False)
+            if freeze_frame is None
+            else nominal_frame >= freeze_frame
+        )
 
         def value(name: str) -> jax.Array:
             return jnp.asarray(getattr(self.reference_bank, name))[absolute]
@@ -1722,7 +1765,10 @@ class BelloSonicEnv(BelloTwistEnv):
         """Return the normalized action that requests the next reference pose."""
 
         reference = self._aligned_reference(
-            state.motion_state, state.clip_index, offset
+            state.motion_state,
+            state.clip_index,
+            offset,
+            freeze_frame=state.freeze_frame,
         )
         policy = jnp.asarray(self.model.policy_qpos_indices)
         control = jnp.asarray(self.model.policy_ctrl_indices)
@@ -1839,13 +1885,17 @@ class BelloSonicEnv(BelloTwistEnv):
 
     def _post_step_state(self, state: SonicState, push_applied: jax.Array, rng):
         reference_height = (
-            self._aligned_reference(state.motion_state, state.clip_index, 0).qpos[2]
+            self._tracking_reference(
+                state, state.motion_state, state.clip_index, 0
+            ).qpos[2]
             if state.clip_index.ndim == 0
             else jax.vmap(
-                lambda motion_state, clip_index: self._aligned_reference(
-                    motion_state, clip_index, 0
-                ).qpos[2]
-            )(state.motion_state, state.clip_index)
+                lambda tracking_state, motion_state, clip_index: (
+                    self._tracking_reference(
+                        tracking_state, motion_state, clip_index, 0
+                    ).qpos[2]
+                )
+            )(state, state.motion_state, state.clip_index)
         )
         clean_frame = (
             self._clean_student_frame(state)
@@ -1916,81 +1966,21 @@ def _quat_conjugate(quaternion: jax.Array) -> jax.Array:
     return quaternion * jnp.asarray((1.0, -1.0, -1.0, -1.0))
 
 
-def _sonic_freeze_frame_indices(
-    lengths: np.ndarray, *, probability: float, seed: int
-) -> tuple[int, ...]:
-    lengths = np.asarray(lengths, dtype=np.int32)
-    rng = np.random.default_rng(np.random.SeedSequence((seed, 0x46524545)))
-    selected = rng.random(len(lengths)) < probability
-    sampled = np.asarray(
-        [rng.integers(0, int(length)) for length in lengths], dtype=np.int32
-    )
-    return tuple(np.where(selected, sampled, lengths).tolist())
-
-
-def _sonic_static_frame_indices(
-    bank: SonicReferenceBank,
+def _sample_sonic_freeze_frame(
+    rng: jax.Array | None,
+    clip_length: jax.Array,
     *,
-    freeze_probability: float,
-    balanced_idle_probability: float,
-    seed: int,
-) -> tuple[int, ...]:
-    """Choose reference-author freezes plus explicit supported idle holds."""
+    probability: float,
+) -> jax.Array:
+    """Sample one reference freeze for an episode, using length as the sentinel."""
 
-    lengths = np.asarray(bank.lengths, dtype=np.int32)
-    if balanced_idle_probability == 0.0:
-        return _sonic_freeze_frame_indices(
-            lengths,
-            probability=freeze_probability,
-            seed=seed,
-        )
-    rng = np.random.default_rng(np.random.SeedSequence((seed, 0x53544154)))
-    idle_selected = rng.random(len(lengths)) < balanced_idle_probability
-    remaining_probability = 1.0 - balanced_idle_probability
-    conditional_freeze_probability = (
-        freeze_probability / remaining_probability if remaining_probability else 0.0
-    )
-    freeze_selected = (~idle_selected) & (
-        rng.random(len(lengths)) < conditional_freeze_probability
-    )
-    sampled = np.asarray(
-        [rng.integers(0, int(length)) for length in lengths], dtype=np.int32
-    )
-    idle_frames = _balanced_idle_frame_indices(bank)
-    idle_selected &= idle_frames < lengths
-    return tuple(
-        np.where(
-            idle_selected,
-            idle_frames,
-            np.where(freeze_selected, sampled, lengths),
-        ).tolist()
-    )
-
-
-def _balanced_idle_frame_indices(bank: SonicReferenceBank) -> np.ndarray:
-    """Select the lowest-velocity double-support frame from each clip."""
-
-    offsets = np.asarray(bank.offsets, dtype=np.int64)
-    lengths = np.asarray(bank.lengths, dtype=np.int32)
-    qvel = np.asarray(bank.qvel)
-    contacts = np.asarray(bank.foot_contacts)
-    selected = lengths.copy()
-    for clip_index, (offset, length) in enumerate(
-        zip(offsets, lengths, strict=True)
-    ):
-        clip_slice = slice(int(offset), int(offset + length))
-        supported = np.all(contacts[clip_slice] >= 0.5, axis=-1)
-        if not np.any(supported):
-            continue
-        velocity = qvel[clip_slice]
-        root_linear = np.linalg.norm(velocity[:, :3], axis=-1)
-        root_angular = np.linalg.norm(velocity[:, 3:6], axis=-1)
-        joint_rms = np.sqrt(np.mean(velocity[:, 6:] ** 2, axis=-1))
-        score = root_linear + 0.5 * root_angular + joint_rms
-        selected[clip_index] = int(
-            np.argmin(np.where(supported, score, np.inf))
-        )
-    return selected
+    length = jnp.asarray(clip_length, dtype=jnp.int32)
+    if rng is None or probability == 0.0:
+        return length
+    selection_key, frame_key = jax.random.split(rng)
+    selected = jax.random.bernoulli(selection_key, probability)
+    frame = jax.random.randint(frame_key, (), 0, length, dtype=jnp.int32)
+    return jnp.where(selected, frame, length)
 
 
 def with_sonic_runtime_sampling_prior(

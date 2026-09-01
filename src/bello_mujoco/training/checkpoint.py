@@ -977,10 +977,10 @@ def _with_checkpoint_metadata_defaults(
         return normalized
     if value.get("task") == "sonic":
         sonic_env = value.get("sonic_env")
-        if isinstance(sonic_env, dict) and "balanced_idle_probability" not in sonic_env:
+        if isinstance(sonic_env, dict) and "balanced_idle_probability" in sonic_env:
             normalized = dict(value)
             normalized_sonic_env = dict(sonic_env)
-            normalized_sonic_env["balanced_idle_probability"] = 0.0
+            normalized_sonic_env.pop("balanced_idle_probability")
             normalized["sonic_env"] = normalized_sonic_env
             return normalized
     if value.get("task") != "motion_tracking":

@@ -128,20 +128,22 @@ def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
         raise ValueError("legacy dof_pos contains nonfinite values")
     contacts = motion.get("foot_contacts")
     if contacts is None:
-        arrays["foot_contacts"] = np.zeros((frames, 2), dtype=np.float32)
-    else:
-        if not isinstance(contacts, dict):
-            raise ValueError("legacy foot_contacts must be a dict")
-        contact_columns = []
-        for foot in ("left_foot", "right_foot"):
-            values = np.asarray(contacts.get(foot), dtype=np.float32)
-            if values.shape != (frames,):
-                raise ValueError(
-                    f"legacy foot_contacts[{foot!r}] has shape {values.shape}; "
-                    f"expected {(frames,)}"
-                )
-            contact_columns.append(values)
-        arrays["foot_contacts"] = np.stack(contact_columns, axis=-1)
+        raise ValueError(
+            "legacy motion is missing foot_contacts; regenerate it with the "
+            "maintained GMR retargeter"
+        )
+    if not isinstance(contacts, dict):
+        raise ValueError("legacy foot_contacts must be a dict")
+    contact_columns = []
+    for foot in ("left_foot", "right_foot"):
+        values = np.asarray(contacts.get(foot), dtype=np.float32)
+        if values.shape != (frames,):
+            raise ValueError(
+                f"legacy foot_contacts[{foot!r}] has shape {values.shape}; "
+                f"expected {(frames,)}"
+            )
+        contact_columns.append(values)
+    arrays["foot_contacts"] = np.stack(contact_columns, axis=-1)
     return arrays
 
 

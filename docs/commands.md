@@ -266,6 +266,10 @@ calibration validation, and split-file hashes. It fits the default-anchored
 bidirectional dense ridge maps only on accepted training frames. The two-pass
 writer uses temporary memory-mapped arrays, so it creates the complete split
 files without retaining the entire corpus in process RAM.
+After resampling and canonical floor alignment, the builder reconstructs robot
+foot support from sole height. Foot speed remains a separate slip-sanitation
+signal. The builder does not preserve the pre-alignment contact gate in older
+GMR outputs.
 Current Bello inputs must use retarget format 10 and carry the pinned GMR
 `universal`-profile solver settings and quality report. Author-gate failures
 are quarantined during the build rather than counted as retarget worker

@@ -223,7 +223,6 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert sonic.sonic_env.domain_randomization.push_warmup_steps == 48_000
     assert sonic.sonic_env.sampling.clip_prior == ("frame_count_times_manifest_weight")
     assert sonic.sonic_env.freeze_frame_probability == pytest.approx(0.1)
-    assert sonic.sonic_env.balanced_idle_probability == pytest.approx(0.05)
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
     assert not smoke.config.normalize_critic_observations

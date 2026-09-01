@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 
-from bello_mujoco.envs.sonic import BelloSonicEnv, _balanced_idle_frame_indices
+from bello_mujoco.envs.sonic import BelloSonicEnv
 from bello_mujoco.evaluation.render import (
     CameraConfig,
     open_rollout_video_resources,
@@ -231,7 +231,7 @@ def evaluate_sonic_checkpoint(
         metadata,
         reference_action_oracle=True,
     )
-    static_bank, static_source = _balanced_static_evaluation_bank(
+    static_bank, static_source = _stationary_static_evaluation_bank(
         current_bank,
         heldout,
         frames=metadata.sonic_env.max_episode_steps + 1,
@@ -239,7 +239,6 @@ def evaluate_sonic_checkpoint(
     static_env = replace(
         first_env,
         reference_bank=_device_reference_bank(static_bank),
-        freeze_frame_indices=(metadata.sonic_env.max_episode_steps + 1,),
     )
     evaluate_static = _build_compiled_clip_evaluator(
         static_env,
@@ -392,7 +391,6 @@ def _load_clip_env(
         ),
         sampling=replace(metadata.sonic_env.sampling, enabled=False),
         freeze_frame_probability=0.0,
-        balanced_idle_probability=0.0,
     )
     return BelloSonicEnv.load(
         metadata.asset,
@@ -411,28 +409,43 @@ def _device_reference_bank(bank: SonicReferenceBank) -> SonicReferenceBank:
     return _reference_bank_with_frame_arrays(bank, bank, device_put=True)
 
 
-def _balanced_static_evaluation_bank(
+def _stationary_static_evaluation_bank(
     bank: SonicReferenceBank,
     clips: list[dict[str, Any]],
     *,
     frames: int,
 ) -> tuple[SonicReferenceBank, dict[str, Any]]:
-    idle_frames = _balanced_idle_frame_indices(bank)
+    ankle_indices = np.asarray(
+        [
+            bank.body_names.index("left_ankle_roll_link"),
+            bank.body_names.index("right_ankle_roll_link"),
+        ],
+        dtype=np.int32,
+    )
     candidates = []
     for clip in clips:
         labels = set(clip.get("semantic_labels", ()))
         if not {"stationary_root", "non_gait_motion"}.issubset(labels):
             continue
         clip_index = _bank_clip_index(bank, clip)
-        frame = int(idle_frames[clip_index])
-        if frame >= int(bank.lengths[clip_index]):
+        offset = int(bank.offsets[clip_index])
+        length = int(bank.lengths[clip_index])
+        clip_slice = slice(offset, offset + length)
+        ankle_height = np.asarray(bank.body_pos)[clip_slice][:, ankle_indices, 2]
+        near_support = np.all(
+            ankle_height - np.min(ankle_height, axis=0, keepdims=True) <= 0.03,
+            axis=-1,
+        )
+        if not np.any(near_support):
             continue
-        absolute = int(bank.offsets[clip_index]) + frame
-        velocity_score = float(np.linalg.norm(np.asarray(bank.qvel)[absolute]))
-        candidates.append((velocity_score, clip_index, frame, clip))
+        velocity = np.asarray(bank.qvel)[clip_slice]
+        velocity_score = np.linalg.norm(velocity, axis=-1)
+        frame = int(np.argmin(np.where(near_support, velocity_score, np.inf)))
+        candidates.append((float(velocity_score[frame]), clip_index, frame, clip))
     if not candidates:
         raise ValueError(
-            "SONIC evaluation dataset has no stationary double-support reference"
+            "SONIC evaluation dataset has no kinematically supported stationary "
+            "reference"
         )
     _, clip_index, frame, clip = min(
         candidates,
@@ -454,7 +467,7 @@ def _balanced_static_evaluation_bank(
         body_quat_wxyz=repeated("body_quat_wxyz"),
         body_lin_vel=np.zeros_like(repeated("body_lin_vel")),
         body_ang_vel=np.zeros_like(repeated("body_ang_vel")),
-        foot_contacts=repeated("foot_contacts"),
+        foot_contacts=np.ones((frames, 2), dtype=np.float32),
         smpl_joint_pos=repeated("smpl_joint_pos"),
         smpl_root_quat_wxyz=repeated("smpl_root_quat_wxyz"),
         smpl_root_translation=repeated("smpl_root_translation"),

@@ -20,9 +20,7 @@ from bello_mujoco.envs.sonic import (
     SonicSamplingConfig,
     SonicState,
     _build_sampling_bins,
-    _balanced_idle_frame_indices,
-    _sonic_freeze_frame_indices,
-    _sonic_static_frame_indices,
+    _sample_sonic_freeze_frame,
     with_sonic_runtime_sampling_prior,
 )
 from bello_mujoco.envs.twist import TwistState
@@ -32,9 +30,9 @@ from bello_mujoco.evaluation.sonic import (
     _REWARD_TERM_NAMES,
     _TERMINATION_NAMES,
     _build_compiled_clip_evaluator,
-    _balanced_static_evaluation_bank,
     _compiled_clip_result,
     _device_reference_bank,
+    _stationary_static_evaluation_bank,
 )
 from bello_mujoco.motion.sonic_dataset import (
     G1_ISAACLAB_JOINT_NAMES,
@@ -274,12 +272,11 @@ def test_sonic_bootstrap_defaults_are_staged_for_bello_transfer() -> None:
     assert config.observation_noise.ramp_steps == 48_000
     assert config.domain_randomization.push_warmup_steps == 48_000
     assert config.reward.tracking_joint_position == 1.0
-    assert config.reward.tracking_foot_contact == 0.25
+    assert config.reward.tracking_foot_contact == 0.0
     assert config.reward.target_joint_limit == -1.0
     assert config.reward.joint_position_std == 0.35
     assert config.sampling.clip_prior == "frame_count_times_manifest_weight"
     assert config.freeze_frame_probability == pytest.approx(0.1)
-    assert config.balanced_idle_probability == pytest.approx(0.05)
 
 
 def test_maintained_sonic_profile_passes_training_validation() -> None:
@@ -676,13 +673,16 @@ def test_sonic_reference_action_requests_next_joint_pose() -> None:
             default_joint_target=np.asarray((0.1, -0.2), dtype=np.float32),
         ),
     )
-    fake._aligned_reference = lambda motion_state, clip_index, offset: SimpleNamespace(
-        qpos=jnp.asarray((0.0,) * 7 + (0.6 + offset * 0.1, -0.1))
+    fake._aligned_reference = (
+        lambda motion_state, clip_index, offset, *, freeze_frame: SimpleNamespace(
+            qpos=jnp.asarray((0.0,) * 7 + (0.6 + offset * 0.1, -0.1))
+        )
     )
     fake.reference_action = MethodType(BelloSonicEnv.reference_action, fake)
     state = SimpleNamespace(
         motion_state=object(),
         clip_index=jnp.asarray(0),
+        freeze_frame=jnp.asarray(50),
         domain_randomization=jnp.asarray((0.05, -0.02)),
     )
 
@@ -741,47 +741,28 @@ def test_sampling_bins_are_host_materialized_and_clip_local() -> None:
     np.testing.assert_array_equal(offsets, np.asarray((0, 3, 5)))
 
 
-def test_freeze_frame_augmentation_is_seeded_and_uses_disabled_sentinel() -> None:
-    lengths = np.asarray((50, 75, 100), dtype=np.int32)
-
-    disabled = _sonic_freeze_frame_indices(lengths, probability=0.0, seed=7)
-    frozen = _sonic_freeze_frame_indices(lengths, probability=1.0, seed=7)
-
-    assert disabled == (50, 75, 100)
-    assert frozen == _sonic_freeze_frame_indices(lengths, probability=1.0, seed=7)
-    assert all(
-        0 <= frame < length for frame, length in zip(frozen, lengths, strict=True)
+def test_freeze_frame_augmentation_is_sampled_per_episode_and_jittable() -> None:
+    length = jnp.asarray(75, dtype=jnp.int32)
+    keys = jax.random.split(jax.random.PRNGKey(7), 64)
+    sample = jax.jit(
+        jax.vmap(
+            lambda key: _sample_sonic_freeze_frame(
+                key, length, probability=1.0
+            )
+        )
     )
 
+    frozen = np.asarray(sample(keys))
 
-def test_balanced_idle_augmentation_uses_lowest_velocity_double_support() -> None:
-    lengths = np.asarray((50, 50), dtype=np.int32)
-    bank = _reference_bank(int(lengths.sum()), lengths=lengths)
-    contacts = bank.foot_contacts.copy()
-    contacts[2:4] = 1.0
-    qvel = bank.qvel.copy()
-    qvel[2] = 2.0
-    qvel[3] = 0.25
-    bank = replace(bank, foot_contacts=contacts, qvel=qvel)
-
-    balanced = _balanced_idle_frame_indices(bank)
-    selected = _sonic_static_frame_indices(
-        bank,
-        freeze_probability=0.0,
-        balanced_idle_probability=1.0,
-        seed=3,
-    )
-
-    np.testing.assert_array_equal(balanced, (3, 50))
-    assert selected == (3, 50)
+    assert _sample_sonic_freeze_frame(None, length, probability=1.0) == 75
+    assert _sample_sonic_freeze_frame(keys[0], length, probability=0.0) == 75
+    assert np.all((0 <= frozen) & (frozen < 75))
+    assert np.unique(frozen).size > 1
 
 
 def test_static_evaluation_bank_repeats_supported_stationary_frame() -> None:
     lengths = np.asarray((50, 60), dtype=np.int32)
     bank = _reference_bank(int(lengths.sum()), lengths=lengths)
-    contacts = bank.foot_contacts.copy()
-    contacts[52] = 1.0
-    bank = replace(bank, foot_contacts=contacts)
     clips = [
         {
             "source_id": "source_1",
@@ -790,14 +771,14 @@ def test_static_evaluation_bank_repeats_supported_stationary_frame() -> None:
         }
     ]
 
-    static, source = _balanced_static_evaluation_bank(bank, clips, frames=50)
+    static, source = _stationary_static_evaluation_bank(bank, clips, frames=50)
 
-    assert source["source_frame"] == 2
+    assert source["source_frame"] == 0
     assert static.lengths.tolist() == [50]
     assert static.source_ids == ("source_1",)
     np.testing.assert_array_equal(static.foot_contacts, np.ones((50, 2)))
     np.testing.assert_array_equal(static.qvel, np.zeros_like(static.qvel))
-    np.testing.assert_array_equal(static.qpos[:, 0], np.full(50, 52.0))
+    np.testing.assert_array_equal(static.qpos[:, 0], np.full(50, 50.0))
 
 
 def test_split_sampling_bins_cover_every_valid_start() -> None:
@@ -1046,12 +1027,20 @@ def test_in_bank_reference_clip_selection_preserves_full_array_shapes() -> None:
     assert selected.valid_clip_count == 2
     assert selected.source_ids == ("source_0", "source_1")
     absolute = BelloSonicEnv._absolute_reference_frame(
-        SimpleNamespace(reference_bank=selected, freeze_frame_indices=(50, 60)),
+        SimpleNamespace(reference_bank=selected),
         SimpleNamespace(reference_time=jnp.asarray(0.02, dtype=jnp.float32)),
         jnp.asarray(1, dtype=jnp.int32),
         0,
     )
     assert int(absolute) == 51
+    frozen_absolute = BelloSonicEnv._absolute_reference_frame(
+        SimpleNamespace(reference_bank=selected),
+        SimpleNamespace(reference_time=jnp.asarray(0.20, dtype=jnp.float32)),
+        jnp.asarray(1, dtype=jnp.int32),
+        0,
+        freeze_frame=jnp.asarray(3, dtype=jnp.int32),
+    )
+    assert int(frozen_absolute) == 53
     device_bank = _device_reference_bank(bank)
     device_selected = select_sonic_reference_clip_in_bank(device_bank, 1)
     assert device_selected.qpos is device_bank.qpos

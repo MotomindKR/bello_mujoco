@@ -61,13 +61,12 @@ sonic_env:
     push_warmup_steps: 48000
   reward:
     tracking_joint_position: 1.0
-    tracking_foot_contact: 0.25
+    tracking_foot_contact: 0.0
     target_joint_limit: -1.0
     joint_position_std: 0.35
   sampling:
     clip_prior: frame_count_times_manifest_weight
   freeze_frame_probability: 0.1
-  balanced_idle_probability: 0.05
 
 pretraining:
   enabled: false

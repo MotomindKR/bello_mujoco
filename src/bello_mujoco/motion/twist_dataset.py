@@ -28,6 +28,7 @@ TWIST_RETARGET_FORMAT_VERSION = 10
 TWIST_SOURCE_CURATION_SCHEMA_VERSION = 1
 TWIST_POLICY_FPS = 50.0
 TWIST_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
+NORMALIZED_FOOT_CONTACT_HEIGHT_METERS = 0.03
 GMR_RETARGET_METADATA_NAMES = (
     "gmr_task_profile",
     "gmr_use_velocity_limit",
@@ -1159,8 +1160,20 @@ def load_and_normalize_retargeted_clip(
     timestamps = np.asarray(arrays["timestamp_seconds"], dtype=np.float64)
     if not np.all(np.isfinite(timestamps)) or np.any(np.diff(timestamps) <= 0.0):
         raise ValueError(f"{path.name}: timestamps must be finite and increasing")
-    normalized = _resample_clip(arrays, quality.policy_fps)
-    return _align_floor_and_heading(normalized)
+    normalized = _align_floor_and_heading(
+        _resample_clip(arrays, quality.policy_fps)
+    )
+    normalized["foot_contacts"] = _normalized_foot_contacts(normalized)
+    return normalized
+
+
+def _normalized_foot_contacts(arrays: dict[str, np.ndarray]) -> np.ndarray:
+    """Infer support from sole height after canonical floor alignment."""
+
+    sole_height = np.asarray(arrays["foot_sole_z"], dtype=np.float64)
+    if sole_height.ndim != 2 or sole_height.shape[1] != 2:
+        raise ValueError("retargeted foot_sole_z must have shape (frames, 2)")
+    return (sole_height <= NORMALIZED_FOOT_CONTACT_HEIGHT_METERS).astype(np.float32)
 
 
 def _validate_gmr_retarget_metadata(

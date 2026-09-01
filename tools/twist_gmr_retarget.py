@@ -149,7 +149,10 @@ def main() -> None:
     body_pos, body_quat, body_lin_vel, body_ang_vel = _body_state(
         model, qpos, qvel, body_ids
     )
-    contacts = (source_contacts & (foot_sole_z < 0.03)).astype(np.float32)
+    normalized_sole_z = foot_sole_z - float(np.min(foot_sole_z))
+    contacts = (
+        source_contacts & (normalized_sole_z <= CONTACT_HEIGHT_MARGIN)
+    ).astype(np.float32)
     revision = subprocess.run(
         ["git", "-C", str(GMR_ROOT), "rev-parse", "HEAD"],
         check=True,

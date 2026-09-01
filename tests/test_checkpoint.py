@@ -938,6 +938,21 @@ def test_checkpoint_metadata_upgrade_adds_optional_critic_learning_rate() -> Non
     assert "critic_learning_rate" not in legacy["ppo"]
 
 
+def test_checkpoint_metadata_upgrade_removes_retired_sonic_idle_augmentation() -> None:
+    legacy = {
+        "task": "sonic",
+        "sonic_env": {
+            "freeze_frame_probability": 0.1,
+            "balanced_idle_probability": 0.05,
+        },
+    }
+
+    upgraded = checkpoint._with_checkpoint_metadata_defaults(legacy)
+
+    assert upgraded["sonic_env"] == {"freeze_frame_probability": 0.1}
+    assert "balanced_idle_probability" in legacy["sonic_env"]
+
+
 def test_repository_commit_requires_origin_tracked_clean_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

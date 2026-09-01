@@ -189,20 +189,17 @@ def observation_component_slice(
     raise KeyError(component_name)
 
 
-def test_legacy_gmr_import_defaults_missing_foot_contacts() -> None:
+def test_legacy_gmr_import_rejects_missing_foot_contacts() -> None:
     frame_count = 2
-    arrays = _validate_legacy_motion(
-        {
-            "fps": 30.0,
-            "root_pos": np.zeros((frame_count, 3)),
-            "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
-            "dof_pos": np.zeros((frame_count, len(GMR_BELLO_JOINT_NAMES))),
-        }
-    )
-
-    np.testing.assert_array_equal(
-        arrays["foot_contacts"], np.zeros((frame_count, 2), dtype=np.float32)
-    )
+    with pytest.raises(ValueError, match="missing foot_contacts"):
+        _validate_legacy_motion(
+            {
+                "fps": 30.0,
+                "root_pos": np.zeros((frame_count, 3)),
+                "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
+                "dof_pos": np.zeros((frame_count, len(GMR_BELLO_JOINT_NAMES))),
+            }
+        )
 
 
 def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
@@ -217,6 +214,10 @@ def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
             "root_pos": np.zeros((frame_count, 3)),
             "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
             "dof_pos": np.zeros((frame_count, fixed_head_joint_count)),
+            "foot_contacts": {
+                "left_foot": np.ones(frame_count),
+                "right_foot": np.ones(frame_count),
+            },
         }
     )
 
