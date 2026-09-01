@@ -66,6 +66,7 @@ command_config:
 reward_config:
   weights:
     action_acceleration: 0.0
+    touchdown_impact: -8.0
   gait:
     touchdown_force_soft_limit_body_weights: 1.0
   smoothness:

@@ -351,7 +351,7 @@ computation where possible.
 | `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
 | `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
-| `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Squared-Huber shaping stays quadratic near the target and linear for large impacts instead of saturating. |
+| `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Bounded squared `tanh` shaping limits isolated impacts from dominating an update. |
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
@@ -368,6 +368,11 @@ computation where possible.
 | `undesired_contact` | `0.0` | Optional non-foot terrain-contact penalty. |
 | `self_collision` | `0.0` | Optional self-collision penalty. |
 | `termination` | `-100.0` | Penalize non-timeout terminal failure. |
+
+The maintained locomotion profile overrides `touchdown_impact` to `-8.0` while
+retaining its `1.0` body-weight touchdown-force soft limit. This restores the
+impact-to-tracking balance after the profile's tracking rewards were doubled,
+without changing the bounded touchdown formulation.
 
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and

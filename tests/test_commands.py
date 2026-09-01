@@ -245,7 +245,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert hardware.config.min_learning_rate == pytest.approx(3.0e-5)
     assert hardware.config.adaptive_kl_statistic == "mean"
     assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
-    assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-4.0)
+    assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-8.0)
     assert hardware.reward_config.weights.action_rate == pytest.approx(-0.01)
     assert hardware.reward_config.weights.action_acceleration == pytest.approx(0.0)
     assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
