@@ -205,11 +205,14 @@ forward of depth. These are nominal mechanical approximations, not runtime
 parameters or factory calibration. If the camera driver publishes factory
 sensor extrinsics, disable the URDF sensor-frame broadcaster for that subtree;
 the two sources must not publish duplicate TFs.
-The massless `imu_link` is a fixed identity child of `pelvis_link`, with +X
-forward, +Y left, and +Z up. This deliberately reproduces original Bello's
-pelvis-frame IMU convention. No recognizable IMU component or mounting datum
-exists in the reviewed STEP, so both its zero translation and orientation are
-documented nominal values rather than CAD-derived placement.
+The massless `imu_link` is fixed 50 mm below the midpoint of the reviewed
+left/right hip-pitch origins. Its exact pelvis translation is
+`[-0.0099999999999894115, 0, -0.230000001143162]` m and its yaw is
+`-1.5707963267948966` rad, giving IMU +X robot-right, +Y robot-forward, and +Z
+up as in original Bello. No recognizable IMU component or mounting datum
+exists in the reviewed STEP, so the 50 mm offset is a nominal placement; the
+hip midpoint itself is derived and symmetry-validated from the reviewed CAD
+joint origins.
 The generated MuJoCo compiler extension disables geometry-derived inertia, so
 the two fixed anonymous sphere links remain massless when the URDF is loaded
 directly and cannot silently increase the robot mass.
@@ -243,10 +246,20 @@ Open
 `http://127.0.0.1:8765/tools/robot_description/geometry_review.html?base=/artifacts/bello_mini_cad`
 for the final visual/collision gate. The fixed viewer can isolate a link, make
 all other links translucent, toggle collision primitives, and display the
-approved positive joint axes. Its motor audit overlays every CAD motor-frame
-`+Z` shaft axis at the corresponding actuator location and lists the assigned
-CAN bus/ID beside the CAD-only joint-axis alignment estimate. These estimates
-are geometric review evidence, not calibrated RobStride wire polarity.
+approved positive joint axes. Sliders cover all 28 revolute joints using the
+exact generated URDF tree and provisional limits; the reset and left/right
+mirror controls support pose and symmetry review. Mirroring is atomic: if any
+reflected target would exceed its provisional (and sometimes asymmetric)
+bilateral limit, the viewer leaves the entire pose unchanged and lists every
+offending target. Link meshes, collision primitives, anonymous end effectors,
+joint axes, sensor frames, motor markers, and camera FoV volumes all follow the
+same browser-side forward kinematics. A separate link-frame overlay draws
+compact RGB axes for all physical links and expands them with labels when one
+link is selected.
+The motor audit overlays every CAD motor-frame `+Z` shaft axis at the
+corresponding actuator location and lists the assigned CAN bus/ID beside the
+CAD-only joint-axis alignment estimate. These estimates are geometric review
+evidence, not calibrated RobStride wire polarity.
 
 The CAN layout retains Bello's body ranges while increasing IDs outward along
 each kinematic chain: left/right arms are `31..37` / `41..47`, waist yaw/roll

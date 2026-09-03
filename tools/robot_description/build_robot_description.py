@@ -156,19 +156,46 @@ def add_origin(
     )
 
 
-def nominal_imu_frame() -> dict[str, Any]:
+def nominal_imu_frame(ownership: dict[str, Any]) -> dict[str, Any]:
+    joint_by_name = {joint["name"]: joint for joint in ownership["joints"]}
+    hip_origins = []
+    for joint_name in ("left_hip_pitch_joint", "right_hip_pitch_joint"):
+        try:
+            origin_cad_mm = joint_by_name[joint_name]["origin_cad_mm"]
+        except KeyError as error:
+            raise ValueError(f"missing IMU datum joint: {joint_name}") from error
+        hip_origins.append(
+            CAD_TO_URDF @ np.asarray(origin_cad_mm, dtype=np.float64) / 1000.0
+        )
+    left_origin, right_origin = hip_origins
+    if not (
+        np.allclose(left_origin[[0, 2]], right_origin[[0, 2]], atol=1e-12)
+        and math.isclose(left_origin[1], -right_origin[1], abs_tol=1e-12)
+    ):
+        raise ValueError(
+            "left/right hip-pitch origins are not symmetric enough to define the IMU midpoint"
+        )
+    midpoint = (left_origin + right_origin) * 0.5
+    midpoint[2] -= 0.05
+    origin = clean_vector(midpoint).tolist()
+    rotation = [
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
     return {
         "link_name": "imu_link",
         "joint_name": "imu_joint",
         "parent_link": "pelvis_link",
-        "origin_xyz_parent_m": [0.0, 0.0, 0.0],
-        "origin_rpy_parent_rad": [0.0, 0.0, 0.0],
-        "rotation_parent_from_frame": np.eye(3).tolist(),
-        "origin_xyz_pelvis_m": [0.0, 0.0, 0.0],
-        "rotation_pelvis_from_frame": np.eye(3).tolist(),
-        "frame_convention": "+X forward, +Y left, +Z up",
+        "origin_xyz_parent_m": origin,
+        "origin_rpy_parent_rad": [0.0, 0.0, -math.pi / 2.0],
+        "rotation_parent_from_frame": rotation,
+        "origin_xyz_pelvis_m": origin,
+        "rotation_pelvis_from_frame": rotation,
+        "frame_convention": "+X robot-right, +Y robot-forward, +Z up",
         "datum": (
-            "nominal identity pose matching the original Bello pelvis IMU frame; "
+            "50 mm below the midpoint of the reviewed left/right hip-pitch joint "
+            "origins, with original Bello IMU yaw convention; "
             "the STEP contains no reviewed IMU component or mounting datum"
         ),
         "mass_policy": "massless fixed sensor frame",
@@ -176,7 +203,7 @@ def nominal_imu_frame() -> dict[str, Any]:
 
 
 def fixed_sensor_frames(ownership: dict[str, Any]) -> list[dict[str, Any]]:
-    return [nominal_imu_frame(), *camera_frames(ownership, CAD_TO_URDF)]
+    return [nominal_imu_frame(ownership), *camera_frames(ownership, CAD_TO_URDF)]
 
 
 def validate_inputs(
@@ -404,6 +431,45 @@ def joint_limit(
     }
 
 
+def kinematic_joint_records(
+    ownership: dict[str, Any], inertials: dict[str, Any]
+) -> list[dict[str, Any]]:
+    frame_origins = {
+        link["name"]: np.asarray(link["frame_origin_urdf_world_m"], dtype=np.float64)
+        for link in inertials["links"]
+    }
+    motors = {motor["id"]: motor for motor in ownership["motors"]}
+    records = []
+    for joint in ownership["joints"]:
+        limits = joint_limit(joint, motors)
+        records.append(
+            {
+                "name": joint["name"],
+                "parent_link": joint["parent_link"],
+                "child_link": joint["child_link"],
+                "side": joint["side"],
+                "station": joint["station"],
+                "coupling": joint["coupling"],
+                "origin_xyz_parent_m": clean_vector(
+                    frame_origins[joint["child_link"]]
+                    - frame_origins[joint["parent_link"]]
+                ).tolist(),
+                "origin_rpy_parent_rad": [0.0, 0.0, 0.0],
+                "axis_xyz_joint": clean_vector(
+                    CAD_TO_URDF @ np.asarray(joint["axis_cad"], dtype=np.float64)
+                ).tolist(),
+                "limits": {
+                    "lower_rad": float(limits["lower"]),
+                    "upper_rad": float(limits["upper"]),
+                    "effort_nm": float(limits["effort"]),
+                    "velocity_rad_s": float(limits["velocity"]),
+                    "status": "provisional_hardware_validation_required",
+                },
+            }
+        )
+    return records
+
+
 def add_joint(
     root: ET.Element,
     joint: dict[str, Any],
@@ -468,11 +534,23 @@ def add_fixed_sensor_frame(
     )
     ET.SubElement(joint, "parent", {"link": frame["parent_link"]})
     ET.SubElement(joint, "child", {"link": frame["link_name"]})
-    add_origin(
+    origin = add_origin(
         joint,
         frame["origin_xyz_parent_m"],
         frame["origin_rpy_parent_rad"],
     )
+    if frame["link_name"] == "imu_link":
+        values = frame["origin_xyz_parent_m"]
+        origin.set(
+            "xyz",
+            " ".join(
+                (
+                    format_float(float(values[0])),
+                    format_float(float(values[1])),
+                    format(float(values[2]), ".15g"),
+                )
+            ),
+        )
 
 
 def nominal_grounding(
@@ -558,8 +636,9 @@ def build_urdf(
     )
     root.append(
         ET.Comment(
-            "imu_link is a nominal identity child of pelvis_link, matching the "
-            "original Bello pelvis-frame IMU convention; no IMU CAD datum was found."
+            "imu_link is 50 mm below the midpoint of the left/right hip-pitch joint "
+            "origins and yawed -pi/2 from pelvis_link so its +X-right, +Y-forward, "
+            "+Z-up axes match original Bello."
         )
     )
     mujoco_extension = ET.SubElement(root, "mujoco")
@@ -800,6 +879,7 @@ def build_report(
             "fixed_anonymous_endpoint_count": len(geometry["anonymous_end_effectors"]),
             "fixed_sensor_frame_count": len(sensor_frames),
             "joint_limit_status": "provisional_hardware_validation_required",
+            "joints": kinematic_joint_records(ownership, inertials),
         },
         "fixed_sensor_frames": sensor_frames,
         "astra_stereo_s_u3": camera_cad_report(),

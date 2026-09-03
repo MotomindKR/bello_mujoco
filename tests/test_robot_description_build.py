@@ -240,6 +240,24 @@ def camera_ownership() -> dict:
     ]
     transform[:3, 3] = [0.0, -136.8292600604, 53.72063336791]
     return {
+        "joints": [
+            {
+                "name": "left_hip_pitch_joint",
+                "origin_cad_mm": [
+                    33.5968807710795,
+                    -180.000001143162,
+                    -9.999999999989411,
+                ],
+            },
+            {
+                "name": "right_hip_pitch_joint",
+                "origin_cad_mm": [
+                    -33.5968807710795,
+                    -180.000001143162,
+                    -9.999999999989411,
+                ],
+            },
+        ],
         "groups": [
             {
                 "id": "ownership-068",
@@ -253,7 +271,7 @@ def camera_ownership() -> dict:
                     }
                 ],
             }
-        ]
+        ],
     }
 
 
@@ -327,18 +345,28 @@ def test_astra_sensor_tree_uses_hard_coded_nominal_offsets() -> None:
     ]
 
 
-def test_nominal_imu_frame_matches_original_bello_pelvis_convention() -> None:
-    frame = MODULE.nominal_imu_frame()
+def test_nominal_imu_frame_uses_offset_from_reviewed_hip_pitch_midpoint() -> None:
+    ownership = camera_ownership()
+    frame = MODULE.nominal_imu_frame(ownership)
 
     assert frame["link_name"] == "imu_link"
     assert frame["joint_name"] == "imu_joint"
     assert frame["parent_link"] == "pelvis_link"
-    assert frame["origin_xyz_parent_m"] == [0.0, 0.0, 0.0]
-    assert frame["origin_rpy_parent_rad"] == [0.0, 0.0, 0.0]
-    np.testing.assert_array_equal(frame["rotation_parent_from_frame"], np.eye(3))
-    assert frame["origin_xyz_pelvis_m"] == [0.0, 0.0, 0.0]
-    np.testing.assert_array_equal(frame["rotation_pelvis_from_frame"], np.eye(3))
-    assert "no reviewed IMU component" in frame["datum"]
+    np.testing.assert_allclose(
+        frame["origin_xyz_parent_m"],
+        [-0.0099999999999894115, 0.0, -0.230000001143162],
+        atol=1e-15,
+    )
+    assert frame["origin_rpy_parent_rad"] == [0.0, 0.0, -np.pi / 2.0]
+    np.testing.assert_array_equal(
+        frame["rotation_parent_from_frame"],
+        [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+    assert frame["origin_xyz_pelvis_m"] == frame["origin_xyz_parent_m"]
+    assert frame["rotation_pelvis_from_frame"] == frame["rotation_parent_from_frame"]
+    assert frame["frame_convention"] == "+X robot-right, +Y robot-forward, +Z up"
+    assert "50 mm below" in frame["datum"]
+    assert "hip-pitch joint origins" in frame["datum"]
 
     root = ET.Element("robot")
     MODULE.add_fixed_sensor_frame(
@@ -354,7 +382,97 @@ def test_nominal_imu_frame_matches_original_bello_pelvis_convention() -> None:
     assert joint is not None
     assert joint.find("parent").attrib["link"] == "pelvis_link"
     assert joint.find("child").attrib["link"] == "imu_link"
-    assert joint.find("origin").attrib == {"xyz": "0 0 0", "rpy": "0 0 0"}
+    assert joint.find("origin").attrib == {
+        "xyz": "-0.0099999999999894115 0 -0.230000001143162",
+        "rpy": "0 0 -1.5707963267948966",
+    }
+
+
+def test_nominal_imu_frame_rejects_asymmetric_hip_datum() -> None:
+    ownership = camera_ownership()
+    ownership["joints"][1]["origin_cad_mm"][0] = -30.0
+
+    with pytest.raises(ValueError, match="not symmetric"):
+        MODULE.nominal_imu_frame(ownership)
+
+
+def test_kinematic_report_matches_urdf_joint_transform_and_limits() -> None:
+    ownership = {
+        "motors": [{"id": "motor", "model": "ROBSTRIDE_03"}],
+        "joints": [
+            {
+                "name": "waist_yaw_joint",
+                "parent_link": "pelvis_link",
+                "child_link": "waist_yaw_link",
+                "side": "center",
+                "station": "waist_yaw",
+                "coupling": "direct",
+                "axis_cad": [0.0, 1.0, 0.0],
+                "motor_ids": ["motor"],
+            }
+        ],
+    }
+    inertials = {
+        "links": [
+            {
+                "name": "pelvis_link",
+                "frame_origin_urdf_world_m": [0.0, 0.0, 0.0],
+            },
+            {
+                "name": "waist_yaw_link",
+                "frame_origin_urdf_world_m": [-0.01, 0.0, 0.021],
+            },
+        ]
+    }
+
+    records = MODULE.kinematic_joint_records(ownership, inertials)
+
+    assert records == [
+        {
+            "name": "waist_yaw_joint",
+            "parent_link": "pelvis_link",
+            "child_link": "waist_yaw_link",
+            "side": "center",
+            "station": "waist_yaw",
+            "coupling": "direct",
+            "origin_xyz_parent_m": [-0.01, 0.0, 0.021],
+            "origin_rpy_parent_rad": [0.0, 0.0, 0.0],
+            "axis_xyz_joint": [0.0, 0.0, 1.0],
+            "limits": {
+                "lower_rad": -0.5,
+                "upper_rad": 0.5,
+                "effort_nm": 60.0,
+                "velocity_rad_s": 20.0,
+                "status": "provisional_hardware_validation_required",
+            },
+        }
+    ]
+
+
+def test_geometry_reviewer_exposes_fk_joint_controls() -> None:
+    html = (
+        Path(__file__).parents[1]
+        / "tools"
+        / "robot_description"
+        / "geometry_review.html"
+    ).read_text(encoding="utf-8")
+
+    for required in (
+        'id="joint-controls"',
+        'id="reset-pose"',
+        'id="mirror-left-to-right"',
+        'id="mirror-right-to-left"',
+        'id="show-link-frames"',
+        "axisAngleMatrix",
+        "updateKinematics",
+        "Mirror refused; pose is unchanged",
+        "if(violations.length)return{applied:false,violations}",
+        "selectedVisuals",
+        "unselectedVisuals",
+        "this.visuals=await Promise.all",
+        "Visual mesh load failed",
+    ):
+        assert required in html
 
 
 def test_astra_optical_frames_use_exact_rep_103_rotation() -> None:
