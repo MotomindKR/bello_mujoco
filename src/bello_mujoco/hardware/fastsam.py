@@ -25,13 +25,12 @@ from bello_mujoco.fastsam_conditioning import (
     FootConditionedRootConfig,
 )
 from bello_mujoco.hardware.smplx_retarget import (
-    GmrBelloRetargeter,
     GmrLiveRetargetConfig,
+    GmrRetargeter,
     GmrSourceIdentity,
     LiveGmrReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
-    SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
     load_smplx_standing_sample,
     repository_gmr_source_identity,
@@ -44,6 +43,7 @@ from bello_mujoco.hardware.twist2 import (
     validate_twist2_reference,
 )
 from bello_mujoco.repository import repository_root
+from bello_mujoco.robot_tasks import motion_task_definition
 
 
 FASTSAM_REVISION = "bc5e5ffb7dbab305bf24373b06535d285692a00e"
@@ -193,9 +193,26 @@ class FastSamCoordinateAdapter:
 class FastSamSmplxStream:
     """Latest-only, validated SMPL-X stream backed by SubscribeEvents."""
 
-    def __init__(self, config: FastSamGrpcConfig) -> None:
+    def __init__(
+        self,
+        config: FastSamGrpcConfig,
+        source_body_names: tuple[str, ...],
+    ) -> None:
         self.config = config
-        self._standing_sample = load_smplx_standing_sample(config.neutral_model_path)
+        if not source_body_names or len(set(source_body_names)) != len(
+            source_body_names
+        ):
+            raise ValueError("Fast-SAM source body names must be nonempty and unique")
+        unknown = sorted(set(source_body_names) - set(SMPLX_BODY_JOINT_NAMES))
+        if unknown:
+            raise ValueError(
+                "Fast-SAM source body names are absent from SMPL-X: "
+                + ", ".join(unknown)
+            )
+        self.source_body_names = source_body_names
+        self._standing_sample = load_smplx_standing_sample(
+            config.neutral_model_path, source_body_names
+        )
         self.neutral_model_sha256 = _file_sha256(config.neutral_model_path)
         self._coordinates = FastSamCoordinateAdapter(config)
         self._root_conditioner = CausalFootConditionedRoot(
@@ -479,11 +496,11 @@ class FastSamSmplxStream:
         if np.any((confidence < 0.0) | (confidence > 1.0)):
             raise ReferenceUnavailable("Fast-SAM joint confidence is outside [0, 1]")
         required = np.asarray(
-            [SMPLX_BODY_JOINT_NAMES.index(name) for name in SMPLX_GMR_BODY_NAMES]
+            [SMPLX_BODY_JOINT_NAMES.index(name) for name in self.source_body_names]
         )
         minimum = float(np.min(confidence[required]))
         if minimum < self.config.min_joint_confidence:
-            name = SMPLX_GMR_BODY_NAMES[int(np.argmin(confidence[required]))]
+            name = self.source_body_names[int(np.argmin(confidence[required]))]
             raise ReferenceUnavailable(
                 f"Fast-SAM joint {name!r} confidence is too low: {minimum:.3f}"
             )
@@ -524,7 +541,7 @@ class FastSamSmplxStream:
         return SmplxTargetFrame(
             transforms={
                 name: (lookup[name].copy(), quaternion_lookup[name].copy())
-                for name in SMPLX_GMR_BODY_NAMES
+                for name in self.source_body_names
             },
             sequence=frame_id,
             source_timestamp_ns=source_timestamp_ns,
@@ -595,7 +612,7 @@ def fastsam_locomotion_reference_source(
     with _fastsam_reference_source(
         adapter,
         config,
-        repository_gmr_source_identity(),
+        repository_gmr_source_identity(adapter.env.model.robot.asset),
         validate_reference=adapter.validate_upper_body_reference,
         live_target_check="required_before_hardware_connection",
     ) as source:
@@ -614,9 +631,10 @@ def _fastsam_reference_source(
     """Build the shared Fast-SAM transport and source-rate GMR worker."""
 
     grpc_config = FastSamGrpcConfig.from_hardware(config)
-    stream = FastSamSmplxStream(grpc_config)
+    profile = motion_task_definition(adapter.env.model.robot.asset).gmr
+    stream = FastSamSmplxStream(grpc_config, profile.source_body_names)
     with stream:
-        retargeter = GmrBelloRetargeter(
+        retargeter = GmrRetargeter(
             adapter.env,
             source_identity,
             GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),

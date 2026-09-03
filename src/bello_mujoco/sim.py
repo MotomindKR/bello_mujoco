@@ -687,9 +687,16 @@ def _randomized_model_fields(
         raise ValueError(
             f"model randomization requires central bodies: {', '.join(missing)}"
         )
-    torso_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
+    torso_body_id = mujoco.mj_name2id(
+        mj_model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        robot.randomization_torso_body_name,
+    )
     if torso_body_id < 0:
-        raise ValueError("model randomization requires torso_link")
+        raise ValueError(
+            "model randomization requires torso body "
+            f"{robot.randomization_torso_body_name!r}"
+        )
     body_mass = np.broadcast_to(
         np.asarray(mj_model.body_mass, dtype=np.float32),
         (batch_size, mj_model.nbody),

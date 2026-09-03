@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retarget a TWIST source manifest to Bello with resumable workers."""
+"""Retarget a TWIST source manifest for one robot with resumable workers."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import sys
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.motion.clip import motion_tracking_asset_config
 from bello_mujoco.motion.twist_retarget import batch_retarget_manifest
+from bello_mujoco.robot import robot_definition
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,7 @@ def main() -> None:
     parser.add_argument("--body-model-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--normalized-root", type=Path, required=True)
+    parser.add_argument("--asset", required=True)
     parser.add_argument("--robot-xml", type=Path, default=None)
     parser.add_argument(
         "--gmr-python",
@@ -33,11 +35,12 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--keep-normalized", action="store_true")
     args = parser.parse_args()
+    robot_definition(args.asset)
     robot_xml = args.robot_xml
     if robot_xml is None:
         robot_xml = prepare_asset(
             motion_tracking_asset_config(
-                asset="full_body",
+                asset=args.asset,
                 output_root=Path("assets/generated/twist_gmr"),
             )
         ).mjcf_path
@@ -52,6 +55,7 @@ def main() -> None:
 
     report = batch_retarget_manifest(
         args.manifest,
+        asset=args.asset,
         body_model_root=args.body_model_root,
         robot_xml=robot_xml,
         output_root=args.output_root,

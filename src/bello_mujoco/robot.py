@@ -151,6 +151,7 @@ class RobotDefinition:
         tuple[str, tuple[float, float, float]],
     ]
     randomization_base_body_name: str
+    randomization_torso_body_name: str
     randomization_central_body_names: tuple[str, ...]
     actuators: tuple[JointActuatorDefinition, ...]
     payload_attachments: tuple[PayloadAttachment, ...] = ()
@@ -177,6 +178,7 @@ class RobotDefinition:
             self.root_joint_name,
             self.default_imu_body_name,
             self.randomization_base_body_name,
+            self.randomization_torso_body_name,
         )
         if any(not name for name in names):
             raise ValueError("robot definition names must not be empty")
@@ -223,6 +225,13 @@ class RobotDefinition:
         ):
             raise ValueError(
                 "randomization base body must be one of the central bodies"
+            )
+        if (
+            self.randomization_torso_body_name
+            not in self.randomization_central_body_names
+        ):
+            raise ValueError(
+                "randomization torso body must be one of the central bodies"
             )
         actuator_joint_names = tuple(actuator.joint_name for actuator in self.actuators)
         if not actuator_joint_names or len(set(actuator_joint_names)) != len(
@@ -342,6 +351,7 @@ def validate_robot_source_urdf(
         definition.default_imu_body_name,
         *definition.foot_body_names,
         definition.randomization_base_body_name,
+        definition.randomization_torso_body_name,
         *definition.randomization_central_body_names,
         *(attachment.link_name for attachment in definition.payload_attachments),
     }
@@ -386,6 +396,7 @@ _ROBOT_CONFIG_FIELDS = frozenset(
         "foot_body_names",
         "foot_forward_axes",
         "randomization_base_body_name",
+        "randomization_torso_body_name",
         "randomization_central_body_names",
         "actuators",
         "payload_attachments",
@@ -447,6 +458,10 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
         randomization_base_body_name=_string(
             data["randomization_base_body_name"],
             "randomization_base_body_name",
+        ),
+        randomization_torso_body_name=_string(
+            data["randomization_torso_body_name"],
+            "randomization_torso_body_name",
         ),
         randomization_central_body_names=_string_tuple(
             data["randomization_central_body_names"],

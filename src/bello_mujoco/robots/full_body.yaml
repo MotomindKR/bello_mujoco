@@ -22,6 +22,7 @@ foot_forward_axes:
   - body_name: right_ankle_roll_link
     axis: [0.0, -1.0, 0.0]
 randomization_base_body_name: pelvis_link
+randomization_torso_body_name: torso_link
 randomization_central_body_names:
   - pelvis_link
   - waist_yaw_link

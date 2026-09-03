@@ -23,6 +23,7 @@ def test_full_body_robot_config_declares_asset_topology() -> None:
     assert robot.root_body_name == "bello_root"
     assert robot.root_joint_name == "root_free"
     assert robot.default_imu_body_name == "pelvis_link"
+    assert robot.randomization_torso_body_name == "torso_link"
     assert robot.foot_body_names == (
         "left_ankle_roll_link",
         "right_ankle_roll_link",
@@ -74,6 +75,21 @@ def test_full_body_motion_task_profile_matches_robot_source() -> None:
         actuator.joint_name for actuator in robot.actuators
     }
     assert task.twist_key_body_names[-1] == "head_link"
+    assert task.gmr.source_human == "smplx"
+    assert task.gmr.target_robot == "bello"
+    assert task.gmr.task_profile == "universal"
+    assert task.gmr.config_path(Path("deps/GMR")) == Path(
+        "deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello.json"
+    )
+    assert task.gmr.source_foot_body_names == ("left_foot", "right_foot")
+    assert task.gmr.output_body_names[-1] == "head_link"
+    assert tuple(leg.name for leg in task.gmr.knee_pole.legs) == ("left", "right")
+    assert task.gmr.knee_pole.legs[0].target_body_names == (
+        "left_hip_roll_link",
+        "left_knee_link",
+        "left_ankle_roll_link",
+    )
+    assert task.gmr.knee_pole.legs[0].target_knee_joint_name == "left_knee_joint"
     validate_motion_task_source_urdf(
         task,
         robot.source_urdf_path(robot_descriptions_root()),

@@ -208,6 +208,7 @@ It never downloads datasets or body models. Configuration source:
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `operation` | `scan_amass`, `validate`, or `build`; `validate` | Generate an AMASS manifest, validate the source boundary, or build split files and an index. |
+| `asset` | robot asset; `full_body` | Select the robot and its motion/GMR profile for provenance validation and packing. |
 | `manifest` | path or `null`; `null` | Output path for `scan_amass`; required input manifest otherwise. |
 | `source_root` | path or `null`; `null` | Aggregated AMASS root for `scan_amass`; only `*_stageii.npz` motion archives are included. |
 | `dataset_release` | string or `null`; `null` | Required operator-supplied AMASS release identifier for `scan_amass`. |
@@ -218,7 +219,6 @@ It never downloads datasets or body models. Configuration source:
 | `body_model_root` | path or `null`; `null` | Required for SMPL-H/SMPL-X and checked for the three SMPL-X NPZ model files. |
 | `retargeted_root` | path or `null`; `null` | Required only for build; clips use `<source_id>__<sequence_id>.npz`. |
 | `output_root` | path or `null`; `null` | Required only for build and must be empty. |
-| `robot_model_path` | canonical Bello URDF path | Robot content used in provenance validation and the dataset fingerprint. |
 | `gmr_root` | `deps/GMR` | Clean pinned GMR checkout whose exact commit enters the fingerprint. |
 | `quality_config` | `configs/twist/quality.yaml` | Versioned rejection and quarantine thresholds. |
 | `curation_config` | `configs/twist/amass_flat_ground.yaml` | Versioned pre-split exclusions for generated outputs and motions requiring unsupported terrain; used only by `scan_amass`. |

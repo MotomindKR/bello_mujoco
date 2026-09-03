@@ -110,10 +110,10 @@ and is not imported by Bello training. Initialize it with:
 git submodule update --init --recursive
 ```
 
-Prepare the fixed-waist, fixed-head canonical Bello model:
+Prepare the selected robot's fixed-joint model:
 
 ```bash
-uv run python tools/prepare_twist_model.py
+uv run python tools/prepare_twist_model.py --asset full_body
 ```
 
 Install GMR's optional dependencies in a separate environment following
@@ -141,6 +141,7 @@ when its source, GMR, robot, and configuration fingerprints still match:
 
 ```bash
 uv run python tools/twist_batch_retarget.py \
+  --asset full_body \
   --manifest ~/amass/source_manifest.yaml \
   --body-model-root ~/body_models \
   --normalized-root ~/amass/twist_work/normalized \
@@ -165,6 +166,7 @@ environment. Use the stable manifest identifiers in the output filename:
 
 ```bash
 python tools/twist_gmr_retarget.py \
+  --asset full_body \
   --source /operator/work/normalized/source.npz \
   --provenance-source /operator/data/amass/source.npz \
   --body-model-root /operator/models/body_models \
@@ -203,32 +205,17 @@ generated source clips, manifests, or retargeted outputs.
 Each retargeted clip records source timestamps, root/joint state, body
 transforms and velocities, geometry-derived sole heights, contact hints,
 actuator/qpos/body ordering, source checksum, GMR revision and configuration,
-and the Bello fingerprint. Conversion uses source foot motion to ground stance
-soles against the canonical collision geometry while preserving airborne
+and the selected robot fingerprint. Conversion uses source foot motion to ground
+stance soles against the canonical collision geometry while preserving airborne
 phases, aligns initial heading deterministically, and samples at exactly 50 Hz.
-The pinned Bello mapping also versions the offline solver contract. The wrapper
-runs a fixed number of IK passes per source frame, enables GMR's native joint
-velocity limit, and applies a predictive 50 Hz velocity/acceleration bound
-before emitting each pose. This keeps convergence work deterministic and
-prevents a solver catch-up or joint-limit stop from becoming a one-frame pose
-jump. Knee-plane tracking is position based; Bello does not use the mismatched
-SMPL-X knee-link orientation as a full orientation constraint. Instead, the
-offline wrapper samples positive-flex poles from clearly bent SMPL-X frames,
-rejects the hyperextension hemisphere, and interpolates and smooths a
-hip-local pole trajectory through near-straight poses. Motions without a usable
-bent frame fall back to a subject-specific positive-flex pole derived from the
-SMPL-X rest-bone geometry. If a hip-to-foot target exceeds Bello's reachable
-envelope, the wrapper locally clamps only that frame's span while preserving
-the source direction and original landmark scale. Symmetric knee-position
-tasks participate in both IK stages so the anatomical branch is selected
-before the final foot/hip fit. Retargeted files record the local and world pole
-trajectories for review. Arm orientation costs are symmetric and expressed in
-each Bello link's local frame. During the final position-weighted fit, the wrist
-link's longitudinal local-Z component is left unconstrained so palm and forearm
-twist does not force a discontinuous axial-twist solution. The fully constrained
-first stage, upper-arm and elbow orientation, the two transverse wrist
-orientation components, elbow and wrist positions, joint limits, and temporal
-bounds remain active.
+The selected motion profile names the pinned GMR IK configuration, source and
+target types, task profile, source landmarks, output bodies, feet, and standing
+joint policy. GMR's versioned `offline_solver` block is authoritative for native
+velocity limiting, per-frame and initial settle passes, smoothing, collision
+avoidance, and protected-body tolerances; the repository wrapper does not apply
+a second pose conditioner. Knee-pole trajectories retained in the output are
+diagnostic metadata for quality review and do not modify GMR targets. Robot
+joint limits and the selected GMR mapping own the solved pose.
 
 ## Quality control and packing
 

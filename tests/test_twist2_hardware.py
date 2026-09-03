@@ -41,19 +41,21 @@ from bello_mujoco.hardware.twist2 import (
     validate_twist2_reference,
 )
 from bello_mujoco.hardware.smplx_retarget import (
-    GmrBelloRetargeter,
     GmrLiveRetargetConfig,
+    GmrRetargeter,
     GmrSourceIdentity,
     LiveGmrReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
-    SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
     import_pinned_gmr_retargeter,
     load_smplx_standing_sample,
     validate_smplx_target_frame,
 )
 from bello_mujoco.repository import repository_root
+from bello_mujoco.assets_pipeline import robot_descriptions_root
+from bello_mujoco.robot import robot_definition
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.motion.twist2_dataset import Twist2DatasetAudit
 from bello_mujoco.policy import ActorCriticConfig, init_actor_critic
 from bello_mujoco.sim import WarpConfig, load_bello_model
@@ -70,6 +72,7 @@ from bello_mujoco.training.ppo import (
 
 
 FINGERPRINT = "sha256:" + "a" * 64
+GMR_SOURCE_BODY_NAMES = motion_task_definition("full_body").gmr.source_body_names
 
 
 @pytest.fixture(scope="module")
@@ -219,7 +222,7 @@ def standing_smplx_frame(*, sequence: int = 0) -> SmplxTargetFrame:
     return SmplxTargetFrame(
         transforms={
             name: (np.asarray(positions[name]), identity.copy())
-            for name in SMPLX_GMR_BODY_NAMES
+            for name in GMR_SOURCE_BODY_NAMES
         },
         sequence=sequence,
         source_timestamp_ns=sequence * 33_333_333,
@@ -573,17 +576,21 @@ def test_pinned_gmr_import_avoids_optional_ui_and_torch_dependencies() -> None:
 
 def test_smplx_target_contract_requires_complete_global_transforms() -> None:
     frame = standing_smplx_frame()
-    validated = validate_smplx_target_frame(frame, live=False)
-    assert tuple(validated) == SMPLX_GMR_BODY_NAMES
+    validated = validate_smplx_target_frame(frame, GMR_SOURCE_BODY_NAMES, live=False)
+    assert tuple(validated) == GMR_SOURCE_BODY_NAMES
 
     missing = dict(frame.transforms)
     missing.pop("left_wrist")
     with pytest.raises(ReferenceUnavailable, match="left_wrist"):
-        validate_smplx_target_frame(replace(frame, transforms=missing), live=False)
+        validate_smplx_target_frame(
+            replace(frame, transforms=missing), GMR_SOURCE_BODY_NAMES, live=False
+        )
     invalid = dict(frame.transforms)
     invalid["pelvis"] = (np.zeros(3), np.zeros(4))
     with pytest.raises(ReferenceUnavailable, match="pelvis.*norm"):
-        validate_smplx_target_frame(replace(frame, transforms=invalid), live=False)
+        validate_smplx_target_frame(
+            replace(frame, transforms=invalid), GMR_SOURCE_BODY_NAMES, live=False
+        )
 
 
 def test_pinned_gmr_produces_finite_standing_reference(
@@ -598,11 +605,11 @@ def test_pinned_gmr_produces_finite_standing_reference(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    robot_source = (
-        root / "deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf"
+    robot_source = robot_definition("full_body").source_urdf_path(
+        robot_descriptions_root()
     )
     fingerprint = "sha256:" + hashlib.sha256(robot_source.read_bytes()).hexdigest()
-    retargeter = GmrBelloRetargeter(
+    retargeter = GmrRetargeter(
         adapter.env,
         GmrSourceIdentity(
             revision=revision,
@@ -612,7 +619,9 @@ def test_pinned_gmr_produces_finite_standing_reference(
     )
 
     standing = retargeter.standing(
-        load_smplx_standing_sample(synthetic_smplx_model(tmp_path))
+        load_smplx_standing_sample(
+            synthetic_smplx_model(tmp_path), GMR_SOURCE_BODY_NAMES
+        )
     )
 
     assert standing.qpos.shape == (adapter.env.model.mj_model.nq,)
@@ -710,7 +719,7 @@ def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:
         assert source.standing().sequence == 0
         assert source.latest().sequence == result.sequence == 1
 
-    assert calls == ["bello-live-gmr"]
+    assert calls == ["live-gmr"]
 
 
 def test_live_gmr_source_keeps_last_valid_frame_during_transient_rejection() -> None:

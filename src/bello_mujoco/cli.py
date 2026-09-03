@@ -91,6 +91,7 @@ class MotionCommandConfig:
 @dataclass(frozen=True)
 class TwistDataCommandConfig:
     operation: Literal["scan_amass", "validate", "build"]
+    asset: AssetName
     manifest: Path | None
     source_root: Path | None
     dataset_release: str | None
@@ -101,7 +102,6 @@ class TwistDataCommandConfig:
     body_model_root: Path | None
     retargeted_root: Path | None
     output_root: Path | None
-    robot_model_path: Path
     gmr_root: Path
     quality_config: Path
     curation_config: Path
@@ -505,7 +505,6 @@ def twist_data_entrypoint() -> None:
             "body_model_root=",
             "retargeted_root=",
             "output_root=",
-            "robot_model_path=",
             "gmr_root=",
             "quality_config=",
             "curation_config=",
@@ -538,7 +537,6 @@ def _twist_data_hydra(config: DictConfig) -> None:
                 "body_model_root",
                 "retargeted_root",
                 "output_root",
-                "robot_model_path",
                 "gmr_root",
                 "quality_config",
             ),
@@ -627,9 +625,9 @@ def _twist_data_hydra(config: DictConfig) -> None:
         manifest_path,
         retargeted_root,
         output_root,
+        asset=command.asset,
         body_model_root=command.body_model_root,
         quality=load_quality_config(command.quality_config),
-        robot_model_path=command.robot_model_path,
         gmr_root=command.gmr_root,
     )
     print(json.dumps(index, indent=2, sort_keys=True))

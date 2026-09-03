@@ -83,7 +83,9 @@ from bello_mujoco.training.twist import (
     upload_twist_checkpoint,
 )
 
-JOINT_NAMES = motion_task_definition("full_body").imported_actuator_joint_names
+MOTION_PROFILE = motion_task_definition("full_body")
+JOINT_NAMES = MOTION_PROFILE.imported_actuator_joint_names
+GMR_KNEE_POLE = MOTION_PROFILE.gmr.knee_pole
 
 
 def test_batched_contact_reduction_is_linear_in_flattened_contacts() -> None:
@@ -464,7 +466,7 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
             np.savez(
                 output,
                 source_sha256=np.asarray(sequence.source_sha256),
-                retarget_format_version=np.asarray(9, dtype=np.int32),
+                retarget_format_version=np.asarray(10, dtype=np.int32),
                 gmr_revision=np.asarray(revision),
                 gmr_config_sha256=np.asarray(
                     hashlib.sha256(config.read_bytes()).hexdigest()
@@ -476,6 +478,7 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     options = {
+        "asset": "full_body",
         "body_model_root": body_model_root,
         "robot_xml": robot_xml,
         "output_root": tmp_path / "retargeted",
@@ -515,7 +518,7 @@ def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
     spec.loader.exec_module(tool)
     model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
 
-    names = tool._logical_actuator_joint_names(model)
+    names = logical_actuator_joint_names(model, robot_definition("full_body"))
     qpos_names = tool._qpos_ordered_joint_names(model, names)
     ranges = tool._qpos_ordered_joint_ranges(model, names)
     qpos_joint_ids = sorted(
@@ -530,49 +533,19 @@ def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
     np.testing.assert_array_equal(ranges, model.jnt_range[qpos_joint_ids])
 
 
-def test_gmr_offline_temporal_limiter_respects_rate_and_native_limits() -> None:
-    tool_path = Path(__file__).resolve().parents[1] / "tools/twist_gmr_retarget.py"
-    spec = importlib.util.spec_from_file_location("twist_gmr_retarget", tool_path)
-    assert spec is not None and spec.loader is not None
-    tool = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tool)
-    config = tool.OfflineSolverConfig(
-        passes_per_frame=5,
-        max_joint_velocity_radians_per_second=3.0 * np.pi,
-        max_joint_acceleration_radians_per_second_squared=200.0,
-        knee_pole_reference_flexion_radians=np.deg2rad(50.0),
-        knee_target_minimum_flexion_radians=np.deg2rad(5.0),
-        knee_pole_sample_minimum_flexion_radians=np.deg2rad(20.0),
-        knee_pole_sample_minimum_distance_meters=0.04,
-        knee_pole_smoothing_frames=5,
+def test_gmr_profile_uses_current_pinned_offline_solver_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    profile = motion_task_definition("full_body").gmr
+    document = json.loads(profile.config_path(root / "deps/GMR").read_text())
+
+    assert profile.task_profile == document["default_task_profile"] == "universal"
+    assert document["offline_solver"]["use_velocity_limit"] is True
+    assert document["offline_solver"]["passes_per_frame"] == 1
+    assert document["offline_solver"]["initial_settle_passes"] == 20
+    assert (
+        "max_joint_acceleration_radians_per_second_squared"
+        not in document["offline_solver"]
     )
-    previous = np.asarray([0.0, 0.0, 0.9, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    previous_velocity = np.zeros(2)
-    ranges = np.asarray([[-0.25, 0.25], [-0.1, 0.1]])
-    trajectory = [previous.copy()]
-
-    for frame in range(30):
-        candidate = previous.copy()
-        candidate[0] = frame + 1.0
-        candidate[7:] = (1.0, -1.0)
-        previous, previous_velocity = tool._limit_scalar_joint_candidate(
-            candidate,
-            previous,
-            previous_velocity,
-            fps=50.0,
-            joint_ranges=ranges,
-            solver_config=config,
-        )
-        assert previous[0] == frame + 1.0
-        trajectory.append(previous.copy())
-
-    joints = np.asarray(trajectory)[:, 7:]
-    velocity = np.diff(joints, axis=0) * 50.0
-    acceleration = np.diff(velocity, axis=0) * 50.0
-    assert np.max(np.abs(velocity)) <= 3.0 * np.pi + 1.0e-10
-    assert np.max(np.abs(acceleration)) <= 200.0 + 1.0e-10
-    assert np.all(joints >= ranges[:, 0] - 1.0e-10)
-    assert np.all(joints <= ranges[:, 1] + 1.0e-10)
 
 
 def test_gmr_knee_pole_uses_positive_flexion_through_hyperextension() -> None:
@@ -581,16 +554,8 @@ def test_gmr_knee_pole_uses_positive_flexion_through_hyperextension() -> None:
     assert spec is not None and spec.loader is not None
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
-    config = tool.OfflineSolverConfig(
-        passes_per_frame=5,
-        max_joint_velocity_radians_per_second=3.0 * np.pi,
-        max_joint_acceleration_radians_per_second_squared=200.0,
-        knee_pole_reference_flexion_radians=np.deg2rad(50.0),
-        knee_target_minimum_flexion_radians=np.deg2rad(5.0),
-        knee_pole_sample_minimum_flexion_radians=np.deg2rad(20.0),
-        knee_pole_sample_minimum_distance_meters=0.01,
-        knee_pole_smoothing_frames=5,
-    )
+    config = motion_task_definition("full_body").gmr.knee_pole
+    leg = config.legs[0]
     thigh = np.asarray((0.0, -0.4, 0.0))
     shin = np.asarray((0.0, -0.4, 0.0))
     frames = []
@@ -620,9 +585,9 @@ def test_gmr_knee_pole_uses_positive_flexion_through_hyperextension() -> None:
             }
         )
 
-    trajectory = tool._infer_positive_knee_pole_trajectory(frames, "left", config)
+    trajectory = tool._infer_positive_knee_pole_trajectory(frames, leg, config)
     positive_reference_foot = thigh + tool.Rotation.from_rotvec(
-        (config.knee_pole_reference_flexion_radians, 0.0, 0.0)
+        (config.reference_flexion_radians, 0.0, 0.0)
     ).apply(shin)
     positive_axis = tool._normalized_knee_pole(
         np.zeros(3), thigh, positive_reference_foot
@@ -654,7 +619,14 @@ def test_gmr_retarget_measures_canonical_sole_collision_height(
     qpos = np.repeat(model.qpos0[None, :], 2, axis=0)
     qpos[1, 2] += 0.125
 
-    sole_z = tool._foot_sole_z(model, qpos)
+    profile = motion_task_definition("full_body").gmr
+    config = json.loads(
+        profile.config_path(
+            Path(__file__).resolve().parents[1] / "deps/GMR"
+        ).read_text()
+    )
+    geom_ids = tuple(model.geom(name).id for name in config["ground_clearance_geoms"])
+    sole_z = tool._foot_sole_z(model, qpos, geom_ids)
 
     assert sole_z.shape == (2, 2)
     np.testing.assert_allclose(sole_z[1] - sole_z[0], 0.125, atol=1.0e-8)
@@ -864,25 +836,30 @@ def test_qc_rejects_short_and_nonfinite_clips_and_hashes_are_reproducible() -> N
     }
     quality = QualityConfig()
 
-    assert clip_quality_reasons(arrays, quality) == []
+    assert clip_quality_reasons(arrays, quality, knee_pole=GMR_KNEE_POLE) == []
     assert _arrays_fingerprint(arrays) == _arrays_fingerprint(
         {name: value.copy() for name, value in arrays.items()}
     )
     short = {name: value[:95] for name, value in arrays.items()}
     assert any(
-        "future horizon" in reason for reason in clip_quality_reasons(short, quality)
+        "future horizon" in reason
+        for reason in clip_quality_reasons(short, quality, knee_pole=GMR_KNEE_POLE)
     )
     invalid = {name: value.copy() for name, value in arrays.items()}
     invalid["qpos"][0, 0] = np.nan
-    assert clip_quality_reasons(invalid, quality) == ["qpos contains non-finite values"]
+    assert clip_quality_reasons(invalid, quality, knee_pole=GMR_KNEE_POLE) == [
+        "qpos contains non-finite values"
+    ]
     penetrating = {name: value.copy() for name, value in arrays.items()}
     penetrating["foot_sole_z"][0, 0] = -0.011
     assert "foot sole penetration exceeds configured limit" in clip_quality_reasons(
-        penetrating, quality
+        penetrating, quality, knee_pole=GMR_KNEE_POLE
     )
     discontinuous = {name: value.copy() for name, value in arrays.items()}
     discontinuous["qpos"][50:, 7] = 0.3
-    discontinuity_reasons = clip_quality_reasons(discontinuous, quality)
+    discontinuity_reasons = clip_quality_reasons(
+        discontinuous, quality, knee_pole=GMR_KNEE_POLE
+    )
     assert "joint trajectory contains a discontinuous frame step" in (
         discontinuity_reasons
     )
@@ -919,7 +896,7 @@ def test_qc_rejects_persistent_hip_and_waist_limit_saturation() -> None:
         "joint_upper": upper,
     }
 
-    reasons = clip_quality_reasons(arrays, quality)
+    reasons = clip_quality_reasons(arrays, quality, knee_pole=GMR_KNEE_POLE)
 
     assert any(
         "persistent hip/waist joint-limit saturation" in item for item in reasons
@@ -954,16 +931,17 @@ def test_knee_pole_qc_ignores_the_undefined_near_extension_plane() -> None:
             np.asarray(((0.0, 1.0, 0.0), (0.0, 1.0, 0.0)), dtype=np.float32),
             (frames, 1, 1),
         ),
+        "knee_pole_sides": np.asarray(("left", "right")),
     }
     quality = QualityConfig()
 
-    assert _knee_pole_quality_reasons(arrays, quality) == []
+    assert _knee_pole_quality_reasons(arrays, quality, GMR_KNEE_POLE) == []
 
     bent = {name: value.copy() for name, value in arrays.items()}
     for side in ("left", "right"):
         index = JOINT_NAMES.index(f"{side}_knee_joint")
         bent["qpos"][:, 7 + index] = np.deg2rad(20.0)
-    reasons = _knee_pole_quality_reasons(bent, quality)
+    reasons = _knee_pole_quality_reasons(bent, quality, GMR_KNEE_POLE)
     assert "left knee follows the opposite bend branch" in reasons
     assert "right knee follows the opposite bend branch" in reasons
 
@@ -1267,7 +1245,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
             timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_timestamp_seconds=np.arange(frames, dtype=np.float64) / 50.0,
             source_sha256=np.asarray(source_digest),
-            retarget_format_version=np.asarray(9, dtype=np.int32),
+            retarget_format_version=np.asarray(10, dtype=np.int32),
             qpos=qpos,
             qvel=np.zeros((frames, 31), dtype=np.float32),
             body_pos=body_position,
@@ -1298,16 +1276,16 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
         manifest_path,
         retargeted,
         tmp_path / "packed_first",
+        asset="full_body",
         body_model_root=None,
-        robot_model_path=robot_path,
         gmr_root=gmr_root,
     )
     second = build_packed_dataset(
         manifest_path,
         retargeted,
         tmp_path / "packed_second",
+        asset="full_body",
         body_model_root=None,
-        robot_model_path=robot_path,
         gmr_root=gmr_root,
     )
 

@@ -20,11 +20,14 @@ from typing import Any, Callable, Literal
 import numpy as np
 from omegaconf import OmegaConf
 
+from bello_mujoco.assets_pipeline import robot_descriptions_root
 from bello_mujoco.configuration import dataclass_from_dict
+from bello_mujoco.robot import AssetName, robot_definition
+from bello_mujoco.robot_tasks import GmrKneePoleDefinition, motion_task_definition
 
 TWIST_SOURCE_MANIFEST_SCHEMA_VERSION = 1
 TWIST_DATASET_SCHEMA_VERSION = 3
-TWIST_RETARGET_FORMAT_VERSION = 9
+TWIST_RETARGET_FORMAT_VERSION = 10
 TWIST_SOURCE_CURATION_SCHEMA_VERSION = 1
 TWIST_POLICY_FPS = 50.0
 TWIST_TRAIN_SAMPLING = "frame_count_times_manifest_weight"
@@ -721,9 +724,9 @@ def build_packed_dataset(
     retargeted_root: Path,
     output_root: Path,
     *,
+    asset: AssetName,
     body_model_root: Path | None,
     quality: QualityConfig = QualityConfig(),
-    robot_model_path: Path,
     gmr_root: Path,
 ) -> dict[str, Any]:
     """Validate, normalize, and pack retargeted clips by split."""
@@ -739,17 +742,15 @@ def build_packed_dataset(
             f"TWIST dataset output is not empty: {output_root}; builds never overwrite"
         )
     output_root.mkdir(parents=True, exist_ok=True)
-    robot_model_path = Path(robot_model_path).resolve()
+    robot_model_path = robot_definition(asset).source_urdf_path(
+        robot_descriptions_root()
+    )
     if not robot_model_path.is_file():
-        raise FileNotFoundError(f"canonical Bello model not found: {robot_model_path}")
+        raise FileNotFoundError(f"canonical robot model not found: {robot_model_path}")
     gmr_revision = _git_revision(gmr_root)
     robot_fingerprint = f"sha256:{_file_sha256(robot_model_path)}"
-    gmr_config_path = (
-        Path(gmr_root).resolve()
-        / "general_motion_retargeting"
-        / "ik_configs"
-        / "smplx_to_bello.json"
-    )
+    gmr_profile = motion_task_definition(asset).gmr
+    gmr_config_path = gmr_profile.config_path(Path(gmr_root).resolve())
     gmr_config_fingerprint = f"sha256:{_file_sha256(gmr_config_path)}"
     decisions: list[ClipDecision] = []
     # Keep only compact metadata here. Retaining every normalized motion array
@@ -777,7 +778,9 @@ def build_packed_dataset(
                 gmr_config_fingerprint=gmr_config_fingerprint,
                 robot_fingerprint=robot_fingerprint,
             )
-            reasons = clip_quality_reasons(arrays, quality)
+            reasons = clip_quality_reasons(
+                arrays, quality, knee_pole=gmr_profile.knee_pole
+            )
         except (OSError, ValueError, KeyError) as error:
             decisions.append(
                 ClipDecision(
@@ -853,9 +856,7 @@ def build_packed_dataset(
         "portable_manifest_fingerprint": _json_fingerprint(manifest_portable),
         "robot_fingerprint": robot_fingerprint,
         "gmr_revision": gmr_revision,
-        "gmr_configuration": (
-            "general_motion_retargeting/ik_configs/smplx_to_bello.json"
-        ),
+        "gmr_configuration": gmr_profile.ik_config.as_posix(),
         "gmr_config_fingerprint": gmr_config_fingerprint,
         "policy_fps": quality.policy_fps,
         "future_offsets": list(TWIST_FUTURE_OFFSETS),
@@ -1121,7 +1122,9 @@ def load_and_normalize_retargeted_clip(
     knee_pole_world = np.asarray(arrays["knee_pole_world_direction"], dtype=np.float64)
     expected_pole_shape = (frames, 2, 3)
     if (
-        knee_pole_sides != ("left", "right")
+        len(knee_pole_sides) != 2
+        or len(set(knee_pole_sides)) != 2
+        or any(not side for side in knee_pole_sides)
         or knee_pole_axes.shape != expected_pole_shape
         or knee_pole_world.shape != expected_pole_shape
     ):
@@ -1171,7 +1174,10 @@ def load_and_normalize_retargeted_clip(
 
 
 def clip_quality_reasons(
-    arrays: dict[str, np.ndarray], quality: QualityConfig
+    arrays: dict[str, np.ndarray],
+    quality: QualityConfig,
+    *,
+    knee_pole: GmrKneePoleDefinition,
 ) -> list[str]:
     reasons = []
     numeric_names = (
@@ -1257,7 +1263,7 @@ def clip_quality_reasons(
         reasons.append("root height exceeds configured limit")
     if arrays["foot_sole_z"].min() < -quality.max_floor_penetration:
         reasons.append("foot sole penetration exceeds configured limit")
-    reasons.extend(_knee_pole_quality_reasons(arrays, quality))
+    reasons.extend(_knee_pole_quality_reasons(arrays, quality, knee_pole))
     if {"joint_lower", "joint_upper"} <= arrays.keys():
         joint = arrays["qpos"][:, 7:]
         lower = np.asarray(arrays["joint_lower"])
@@ -1292,7 +1298,9 @@ def clip_quality_reasons(
 
 
 def _knee_pole_quality_reasons(
-    arrays: dict[str, np.ndarray], quality: QualityConfig
+    arrays: dict[str, np.ndarray],
+    quality: QualityConfig,
+    knee_pole: GmrKneePoleDefinition,
 ) -> list[str]:
     if "knee_pole_world_direction" not in arrays:
         return []
@@ -1306,17 +1314,20 @@ def _knee_pole_quality_reasons(
         str(name) for name in np.asarray(arrays["qpos_joint_names"]).tolist()
     )
     qpos_joint_index = {name: index for index, name in enumerate(qpos_joint_names)}
+    sides = tuple(str(side) for side in np.asarray(arrays["knee_pole_sides"]).tolist())
+    expected_sides = tuple(leg.name for leg in knee_pole.legs)
+    if sides != expected_sides:
+        return [
+            "knee-pole sides differ from the robot motion profile: "
+            f"expected={expected_sides}, actual={sides}"
+        ]
     reasons = []
-    for side_index, side in enumerate(("left", "right")):
-        required = (
-            f"{side}_hip_roll_link",
-            f"{side}_knee_link",
-            f"{side}_ankle_roll_link",
-        )
+    for side_index, leg in enumerate(knee_pole.legs):
+        required = leg.target_body_names
         missing = [name for name in required if name not in body_index]
         if missing:
             return ["knee-pole QC bodies are missing: " + ", ".join(missing)]
-        knee_joint_name = f"{side}_knee_joint"
+        knee_joint_name = leg.target_knee_joint_name
         if knee_joint_name not in qpos_joint_index:
             return [f"knee-pole QC joint is missing: {knee_joint_name}"]
         hip, knee, foot = (positions[:, body_index[name]] for name in required)
@@ -1346,9 +1357,9 @@ def _knee_pole_quality_reasons(
         )
         angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
         if np.percentile(angles, 95) > quality.max_knee_pole_p95_degrees:
-            reasons.append(f"{side} knee bend-plane error exceeds configured limit")
+            reasons.append(f"{leg.name} knee bend-plane error exceeds configured limit")
         if np.mean(angles > 90.0) > quality.max_knee_pole_opposite_fraction:
-            reasons.append(f"{side} knee follows the opposite bend branch")
+            reasons.append(f"{leg.name} knee follows the opposite bend branch")
     return reasons
 
 

@@ -14,7 +14,8 @@ The robot contract owns:
 - the default IMU body, ordered foot bodies, and foot-forward axes;
 - the complete actuator joint order, policy/hold partition, neutral positions,
   soft limits, gains, and effort limits;
-- bodies used by model randomization and optional payload attachment points; and
+- base, torso, and central bodies used by model randomization, plus optional
+  payload attachment points; and
 - coupled actuator coordinates such as Bello's ankle differentials.
 
 These values are not Hydra options. Runtime experiments may deliberately override
@@ -31,11 +32,13 @@ retained as the public Bello asset name.
 
 Motion-capable robots also have a strict `<asset>_motion.yaml` contract beside the
 static robot file. It owns legacy import joint schemas, fixed joints, tracked-body
-sets, end effectors, the reference root, and ordered TWIST key bodies. Motion import,
-tracking termination, and TWIST training all resolve these semantics from the same
-selected asset. Hydra still records the key-body order because it is part of the
-checkpoint observation contract, and training validates it against the robot's
-motion profile.
+sets, end effectors, the reference root, ordered TWIST key bodies, and the robot's
+GMR boundary. The GMR section selects its source and target types, pinned IK config,
+task profile, source landmarks and feet, output bodies, standing joints, and
+knee-pole diagnostics. Motion import, live/offline retargeting, tracking termination,
+and TWIST training all resolve these semantics from the same selected asset. Hydra
+still records the key-body order because it is part of the checkpoint observation
+contract, and training validates it against the robot's motion profile.
 
 ## Adding a humanoid
 
@@ -44,8 +47,8 @@ motion profile.
 2. Add a robot YAML beside `full_body.yaml` and register its asset identifier in
    `robot.py`. Do not add aliases or fallback paths.
 3. If the robot supports motion tracking, add its strict `<asset>_motion.yaml`
-   profile. A morphology without that file remains valid for other tasks, but motion
-   workflows fail explicitly.
+   profile and a compatible IK config in pinned GMR. A morphology without that file
+   remains valid for other tasks, but motion workflows fail explicitly.
 4. Point the robot YAML at its hardware description and motor-model catalog, or set
    those fields to `null` when physical/emulated hardware is unsupported.
 5. Extend the wheel's explicit description includes in `pyproject.toml` when the
@@ -64,10 +67,10 @@ profiles for the workflows it supports.
 
 ## Remaining cleanup boundary
 
-The robot and motion profile boundaries now cover asset generation, GMR import,
-tracked bodies, TWIST key bodies, and emulator topology selection. The largest
-remaining multi-robot work is the live SMPL-X/GMR retarget map, which is still a
-pinned Bello solver contract, followed by task reward assumptions and public
-model/environment APIs that still carry Bello-specific class names. Renaming those
-APIs is intentionally separate because it would be a breaking public change rather
-than a configuration cleanup.
+The robot and motion profile boundaries now cover asset generation, live and offline
+GMR selection, tracked bodies, TWIST key bodies, and emulator topology selection.
+New robots still need an upstream GMR IK mapping and explicit compatibility with any
+physical hardware adapter. The main remaining multi-robot work is task-specific
+reward and termination assumptions plus public model/environment APIs that still
+carry Bello-specific class names. Renaming those APIs is intentionally separate
+because it would be a breaking public change rather than a configuration cleanup.
