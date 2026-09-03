@@ -473,6 +473,8 @@ def test_geometry_reviewer_exposes_fk_joint_controls() -> None:
         "Visual mesh load failed",
     ):
         assert required in html
+    assert "const axisLabel=this.selected" in html
+    assert "basis[axisIndex]=1,label=" not in html
 
 
 def test_astra_optical_frames_use_exact_rep_103_rotation() -> None:
