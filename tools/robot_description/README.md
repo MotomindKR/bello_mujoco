@@ -205,6 +205,11 @@ forward of depth. These are nominal mechanical approximations, not runtime
 parameters or factory calibration. If the camera driver publishes factory
 sensor extrinsics, disable the URDF sensor-frame broadcaster for that subtree;
 the two sources must not publish duplicate TFs.
+The massless `imu_link` is a fixed identity child of `pelvis_link`, with +X
+forward, +Y left, and +Z up. This deliberately reproduces original Bello's
+pelvis-frame IMU convention. No recognizable IMU component or mounting datum
+exists in the reviewed STEP, so both its zero translation and orientation are
+documented nominal values rather than CAD-derived placement.
 The generated MuJoCo compiler extension disables geometry-derived inertia, so
 the two fixed anonymous sphere links remain massless when the URDF is loaded
 directly and cannot silently increase the robot mass.

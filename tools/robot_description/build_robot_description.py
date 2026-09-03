@@ -156,8 +156,27 @@ def add_origin(
     )
 
 
+def nominal_imu_frame() -> dict[str, Any]:
+    return {
+        "link_name": "imu_link",
+        "joint_name": "imu_joint",
+        "parent_link": "pelvis_link",
+        "origin_xyz_parent_m": [0.0, 0.0, 0.0],
+        "origin_rpy_parent_rad": [0.0, 0.0, 0.0],
+        "rotation_parent_from_frame": np.eye(3).tolist(),
+        "origin_xyz_pelvis_m": [0.0, 0.0, 0.0],
+        "rotation_pelvis_from_frame": np.eye(3).tolist(),
+        "frame_convention": "+X forward, +Y left, +Z up",
+        "datum": (
+            "nominal identity pose matching the original Bello pelvis IMU frame; "
+            "the STEP contains no reviewed IMU component or mounting datum"
+        ),
+        "mass_policy": "massless fixed sensor frame",
+    }
+
+
 def fixed_sensor_frames(ownership: dict[str, Any]) -> list[dict[str, Any]]:
-    return camera_frames(ownership, CAD_TO_URDF)
+    return [nominal_imu_frame(), *camera_frames(ownership, CAD_TO_URDF)]
 
 
 def validate_inputs(
@@ -535,6 +554,12 @@ def build_urdf(
         ET.Comment(
             "Publish camera sensor TFs from this URDF or from the Orbbec driver, "
             "never from both sources simultaneously."
+        )
+    )
+    root.append(
+        ET.Comment(
+            "imu_link is a nominal identity child of pelvis_link, matching the "
+            "original Bello pelvis-frame IMU convention; no IMU CAD datum was found."
         )
     )
     mujoco_extension = ET.SubElement(root, "mujoco")

@@ -258,7 +258,11 @@ def camera_ownership() -> dict:
 
 
 def test_astra_mount_uses_cad_pose_without_moving_mass_from_pelvis() -> None:
-    frame = MODULE.fixed_sensor_frames(camera_ownership())[0]
+    frame = next(
+        frame
+        for frame in MODULE.fixed_sensor_frames(camera_ownership())
+        if frame["link_name"] == "astra_mount_frame"
+    )
     angle = np.deg2rad(67.34999621943078)
 
     assert frame["parent_link"] == "pelvis_link"
@@ -306,7 +310,7 @@ def test_astra_sensor_tree_uses_hard_coded_nominal_offsets() -> None:
     frames = MODULE.fixed_sensor_frames(camera_ownership())
     by_name = {frame["link_name"]: frame for frame in frames}
 
-    assert len(frames) == 10
+    assert len(frames) == 11
     assert by_name["camera_link"]["parent_link"] == "astra_mount_frame"
     assert by_name["camera_link"]["origin_xyz_parent_m"] == [0.0043, 0.02, 0.0]
     assert by_name["camera_depth_frame"]["origin_xyz_parent_m"] == [0.0] * 3
@@ -321,6 +325,36 @@ def test_astra_sensor_tree_uses_hard_coded_nominal_offsets() -> None:
         -0.01,
         0.0,
     ]
+
+
+def test_nominal_imu_frame_matches_original_bello_pelvis_convention() -> None:
+    frame = MODULE.nominal_imu_frame()
+
+    assert frame["link_name"] == "imu_link"
+    assert frame["joint_name"] == "imu_joint"
+    assert frame["parent_link"] == "pelvis_link"
+    assert frame["origin_xyz_parent_m"] == [0.0, 0.0, 0.0]
+    assert frame["origin_rpy_parent_rad"] == [0.0, 0.0, 0.0]
+    np.testing.assert_array_equal(frame["rotation_parent_from_frame"], np.eye(3))
+    assert frame["origin_xyz_pelvis_m"] == [0.0, 0.0, 0.0]
+    np.testing.assert_array_equal(frame["rotation_pelvis_from_frame"], np.eye(3))
+    assert "no reviewed IMU component" in frame["datum"]
+
+    root = ET.Element("robot")
+    MODULE.add_fixed_sensor_frame(
+        root,
+        frame,
+        geometry=None,
+        mesh=None,
+        urdf_path=Path("/tmp/bello_mini.urdf"),
+    )
+    link = root.find("./link[@name='imu_link']")
+    joint = root.find("./joint[@name='imu_joint']")
+    assert link is not None and link.find("inertial") is None
+    assert joint is not None
+    assert joint.find("parent").attrib["link"] == "pelvis_link"
+    assert joint.find("child").attrib["link"] == "imu_link"
+    assert joint.find("origin").attrib == {"xyz": "0 0 0", "rpy": "0 0 0"}
 
 
 def test_astra_optical_frames_use_exact_rep_103_rotation() -> None:
