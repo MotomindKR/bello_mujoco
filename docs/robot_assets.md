@@ -40,12 +40,31 @@ and TWIST training all resolve these semantics from the same selected asset. Hyd
 still records the key-body order because it is part of the checkpoint observation
 contract, and training validates it against the robot's motion profile.
 
+## Registered assets
+
+- `full_body` is the production Bello morphology with maintained motion,
+  differential-ankle, emulator, and physical-hardware contracts.
+- `bello_mini` is the reviewed 43.503025 kg Bello Mini morphology. Its all-zero
+  joint pose uses a root height of 0.8731232537850352 m so both sole surfaces
+  are exactly at `z=0`. The static contract exposes all 28 movable joints and
+  keeps waist roll and both seven-DoF arms in hold mode by default. Its logical
+  ankle pitch/roll joints are simulated directly because the physical
+  differential coefficients have not been calibrated.
+
+The Bello Mini source directory includes `motor_topology.yaml` as a
+calibration manifest, not as a `bello-hardwared` configuration. Its null CAN
+bindings, directions, encoder zeros, and ankle coefficient matrices are
+intentional blockers. Consequently, the robot contract has
+`hardware_description: null`; hardware and emulator entrypoints fail explicitly
+instead of borrowing the production Bello topology. A Bello Mini motion/GMR
+profile is also intentionally absent until it is tuned.
+
 ## Adding a humanoid
 
 1. Add or update the canonical URDF and meshes in `bello-stack`, then deliberately
    advance this repository's pinned submodule gitlink.
-2. Add a robot YAML beside `full_body.yaml` and register its asset identifier in
-   `robot.py`. Do not add aliases or fallback paths.
+2. Add a robot YAML beside the existing robot files and register its asset
+   identifier in `robot.py`. Do not add aliases or fallback paths.
 3. If the robot supports motion tracking, add its strict `<asset>_motion.yaml`
    profile and a compatible IK config in pinned GMR. A morphology without that file
    remains valid for other tasks, but motion workflows fail explicitly.

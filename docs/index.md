@@ -38,11 +38,16 @@ src/bello_mujoco/
 tests/                     contract and integration tests
 ```
 
-The supported prepared asset is `full_body`. Its canonical URDF is
-`deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`,
-which directly references the lower- and upper-body meshes in that submodule.
-The same gitlink pins the hardware topology, RobStride model catalog, and
-Python hardware client used by source-checkout workflows.
+The supported prepared assets are `full_body` and `bello_mini`. Their canonical
+URDFs are respectively
+`deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf` and
+`deps/bello-stack/descriptions/bello_mini/urdf/bello_mini.urdf`; both reference
+meshes stored in the same pinned submodule. The `full_body` asset retains its
+motion and hardware profiles. `bello_mini` currently supports strict robot
+contract loading and asset preparation only; its GMR/motion and deployable
+hardware profiles remain deliberately absent until tuning and bench calibration.
+The same gitlink pins the RobStride model catalog and Python hardware client
+used by source-checkout workflows.
 
 Each asset identifier resolves one packaged contract under
 `src/bello_mujoco/robots/`. The contract declares source, generated, and hardware paths,

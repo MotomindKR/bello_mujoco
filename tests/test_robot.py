@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -51,6 +52,54 @@ def test_asset_config_resolves_actuators_from_selected_robot() -> None:
     config = AssetPrepConfig()
 
     assert config.actuator_config == ActuatorConfig.for_asset("full_body")
+
+
+def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
+    robot = robot_definition("bello_mini")
+
+    assert robot.source_urdf == Path("bello_mini/urdf/bello_mini.urdf")
+    assert robot.source_urdf_path(robot_descriptions_root()).is_file()
+    assert robot.hardware_description is None
+    with pytest.raises(ValueError, match="has no hardware description"):
+        robot.hardware_description_path(robot_descriptions_root())
+    assert robot.motor_model_catalog_path(robot_descriptions_root()).is_file()
+    assert robot.root_body_name == "bello_mini_root"
+    assert robot.default_root_position == (0.0, 0.0, 0.8731232537850352)
+    assert robot.foot_body_names == (
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+    )
+    assert robot.foot_forward_axes == (
+        ("left_ankle_roll_link", (1.0, 0.0, 0.0)),
+        ("right_ankle_roll_link", (1.0, 0.0, 0.0)),
+    )
+    assert len(robot.actuators) == 28
+    assert sum(actuator.mode == "policy" for actuator in robot.actuators) == 13
+    assert sum(actuator.mode == "hold" for actuator in robot.actuators) == 15
+    assert not robot.coupled_actuator_groups
+    assert tuple(item.link_name for item in robot.payload_attachments) == (
+        "left_end_effector_sphere_link",
+        "right_end_effector_sphere_link",
+    )
+    source_urdf = robot.source_urdf_path(robot_descriptions_root())
+    source_root = ET.parse(source_urdf).getroot()
+    movable_joint_names = {
+        joint.attrib["name"]
+        for joint in source_root.findall("joint")
+        if joint.attrib["type"] != "fixed"
+    }
+    assert {actuator.joint_name for actuator in robot.actuators} == (
+        movable_joint_names
+    )
+    validate_robot_source_urdf(
+        robot,
+        source_urdf,
+    )
+
+
+def test_bello_mini_motion_profile_is_explicitly_deferred() -> None:
+    with pytest.raises(ValueError, match="has no motion task profile"):
+        motion_task_definition("bello_mini")
 
 
 def test_asset_config_can_explicitly_promote_every_robot_joint_to_policy() -> None:

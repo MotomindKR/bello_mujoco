@@ -144,3 +144,14 @@ def full_body_asset() -> Iterator[PreparedAsset]:
         yield prepare_asset(AssetPrepConfig(output_root=output_root))
     finally:
         shutil.rmtree(output_root, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def bello_mini_asset() -> Iterator[PreparedAsset]:
+    output_root = Path(tempfile.mkdtemp(prefix="bello-mini-test-assets-"))
+    try:
+        yield prepare_asset(
+            AssetPrepConfig(asset="bello_mini", output_root=output_root)
+        )
+    finally:
+        shutil.rmtree(output_root, ignore_errors=True)

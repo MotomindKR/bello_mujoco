@@ -71,6 +71,30 @@ def test_full_body_model_uses_canonical_policy_partition_by_default(
     )
 
 
+def test_bello_mini_model_uses_calibration_gated_partition(
+    bello_mini_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(bello_mini_asset, load_mjx=False)
+
+    assert model.mj_model.nq == 35
+    assert model.mj_model.nv == 34
+    assert model.mj_model.nu == 28
+    assert model.robot.asset == "bello_mini"
+    assert model.mj_model.ntendon == 0
+    policy_joint_names = {
+        model.actuator_joint_names[index] for index in model.policy_ctrl_indices
+    }
+    hold_joint_names = {
+        model.actuator_joint_names[index] for index in model.hold_ctrl_indices
+    }
+    assert len(policy_joint_names) == 13
+    assert len(hold_joint_names) == 15
+    assert "waist_yaw_joint" in policy_joint_names
+    assert "waist_roll_joint" in hold_joint_names
+    assert "left_wrist_roll_joint" in hold_joint_names
+    assert "right_wrist_roll_joint" in hold_joint_names
+
+
 def test_policy_action_endpoints_reach_logical_soft_limits(
     full_body_asset: PreparedAsset,
 ) -> None:

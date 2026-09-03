@@ -29,6 +29,7 @@ from bello_mujoco.assets_pipeline.prepare import (
 from bello_mujoco.robot import robot_definition
 
 CANONICAL_TOTAL_MASS_KG = 55.0683575411785
+BELLO_MINI_TOTAL_MASS_KG = 43.503025077021036
 FULL_BODY_DEFINITION = robot_definition("full_body")
 
 
@@ -55,6 +56,41 @@ def test_prepared_full_body_preserves_pelvis_body(
     )
     assert sensor_id >= 0
     assert model.sensor_type[sensor_id] == mujoco.mjtSensor.mjSENS_ACCELEROMETER
+
+
+def test_prepared_bello_mini_preserves_reviewed_morphology(
+    bello_mini_asset: PreparedAsset,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(str(bello_mini_asset.mjcf_path))
+
+    assert bello_mini_asset.name == "bello_mini"
+    assert bello_mini_asset.collision_mesh_count == 0
+    assert bello_mini_asset.visual_mesh_count == 28
+    assert model.nu == 28
+    assert model.ntendon == 0
+    assert np.sum(model.body_mass) == pytest.approx(
+        BELLO_MINI_TOTAL_MASS_KG, abs=1.0e-5
+    )
+    for body_name in (
+        "pelvis_link",
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+        "left_end_effector_sphere_link",
+        "right_end_effector_sphere_link",
+        "astra_mount_frame",
+        "camera_depth_optical_frame",
+        "camera_color_optical_frame",
+    ):
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name) >= 0
+
+    actuator_names = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
+        for index in range(model.nu)
+    }
+    assert "waist_yaw_joint_pos" in actuator_names
+    assert "waist_roll_joint_hold" in actuator_names
+    assert "left_wrist_roll_joint_hold" in actuator_names
+    assert "right_wrist_roll_joint_hold" in actuator_names
 
 
 def test_prepared_asset_has_canonical_fixed_sphere_hands(

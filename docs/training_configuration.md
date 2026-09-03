@@ -119,7 +119,7 @@ The asset section selects a deterministic prepared morphology.
 
 | Field | Locomotion baseline | Meaning |
 | --- | --- | --- |
-| `asset` | `full_body` | The only supported prepared asset. |
+| `asset` | `full_body` | Selects a registered robot contract. `full_body` is the maintained training asset; `bello_mini` currently supports static preparation/model loading but has no maintained motion, GMR, emulator, hardware, or training profile. |
 | `output_root` | `null` | Optional prepared-asset destination for standalone preparation. Training requires `null` so an exact source revision regenerates through the canonical content-addressed cache. |
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
