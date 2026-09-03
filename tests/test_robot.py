@@ -1,4 +1,5 @@
 from dataclasses import replace
+import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -101,6 +102,55 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
     assert {actuator.joint_name for actuator in robot.actuators} == (
         movable_joint_names
     )
+    assert "left_wrist_yaw_joint" in movable_joint_names
+    assert "right_wrist_yaw_joint" in movable_joint_names
+    assert "left_elbow_yaw_joint" not in movable_joint_names
+    assert "right_elbow_yaw_joint" not in movable_joint_names
+
+    expected_limit_degrees = {
+        "waist_yaw_joint": (-90.0, 90.0),
+        "waist_roll_joint": (-25.0, 25.0),
+        "left_hip_pitch_joint": (-90.0, 180.0),
+        "right_hip_pitch_joint": (-90.0, 180.0),
+        "left_hip_roll_joint": (-121.0, 31.0),
+        "right_hip_roll_joint": (-31.0, 121.0),
+        "left_hip_yaw_joint": (-90.0, 90.0),
+        "right_hip_yaw_joint": (-90.0, 90.0),
+        "left_knee_joint": (0.0, 145.0),
+        "right_knee_joint": (0.0, 145.0),
+        "left_ankle_pitch_joint": (-45.0, 45.0),
+        "right_ankle_pitch_joint": (-45.0, 45.0),
+        "left_ankle_roll_joint": (-35.0, 35.0),
+        "right_ankle_roll_joint": (-35.0, 35.0),
+        "left_shoulder_pitch_joint": (-225.0, 45.0),
+        "right_shoulder_pitch_joint": (-225.0, 45.0),
+        "left_shoulder_roll_joint": (-180.0, 15.0),
+        "right_shoulder_roll_joint": (-15.0, 180.0),
+        "left_shoulder_yaw_joint": (-90.0, 90.0),
+        "right_shoulder_yaw_joint": (-90.0, 90.0),
+        "left_elbow_pitch_joint": (-15.0, 130.0),
+        "right_elbow_pitch_joint": (-15.0, 130.0),
+        "left_wrist_yaw_joint": (-116.8, 116.8),
+        "right_wrist_yaw_joint": (-116.8, 116.8),
+        "left_wrist_pitch_joint": (-90.0, 90.0),
+        "right_wrist_pitch_joint": (-90.0, 90.0),
+        "left_wrist_roll_joint": (-90.0, 90.0),
+        "right_wrist_roll_joint": (-90.0, 90.0),
+    }
+    actual_limits = {}
+    for joint in source_root.findall("joint"):
+        limit = joint.find("limit")
+        if limit is None:
+            continue
+        actual_limits[joint.attrib["name"]] = (
+            float(limit.attrib["lower"]),
+            float(limit.attrib["upper"]),
+        )
+    assert actual_limits.keys() == expected_limit_degrees.keys()
+    for joint_name, degrees in expected_limit_degrees.items():
+        assert actual_limits[joint_name] == pytest.approx(
+            tuple(math.radians(value) for value in degrees), abs=1e-14
+        )
     validate_robot_source_urdf(
         robot,
         source_urdf,
@@ -135,14 +185,14 @@ def test_bello_mini_can_topology_is_monotonic_and_calibration_gated() -> None:
         ("left_shoulder_roll_motor", "can1", 32, 1),
         ("left_shoulder_yaw_motor", "can1", 33, 1),
         ("left_elbow_pitch_motor", "can1", 34, -1),
-        ("left_elbow_yaw_motor", "can1", 35, 1),
+        ("left_wrist_yaw_motor", "can1", 35, 1),
         ("left_wrist_pitch_motor", "can1", 36, 1),
         ("left_wrist_roll_motor", "can1", 37, -1),
         ("right_shoulder_pitch_motor", "can1", 41, -1),
         ("right_shoulder_roll_motor", "can1", 42, -1),
         ("right_shoulder_yaw_motor", "can1", 43, 1),
         ("right_elbow_pitch_motor", "can1", 44, -1),
-        ("right_elbow_yaw_motor", "can1", 45, 1),
+        ("right_wrist_yaw_motor", "can1", 45, 1),
         ("right_wrist_pitch_motor", "can1", 46, -1),
         ("right_wrist_roll_motor", "can1", 47, 1),
     )

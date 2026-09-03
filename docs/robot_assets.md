@@ -55,6 +55,13 @@ contract, and training validates it against the robot's motion profile.
   It is yawed `-pi/2` from the Mini pelvis so its +X-right, +Y-forward, +Z-up
   axes reproduce original Bello's pelvis/IMU-axis convention.
 
+  Joint travel ranges come from the designer's left-side nominal mechanical
+  ranges. The current review mapping treats those signs as the Mini URDF signs
+  on the left and geometrically mirrors the right side across `y=0`; pitch keeps
+  its sign while roll/yaw reverse. Sign and zero correspondence still require
+  visual and physical confirmation. IDs 35/45 are named `wrist_yaw`, matching
+  the designer's seven-DoF arm terminology.
+
 The Bello Mini source directory includes `motor_topology.yaml` as a
 calibration manifest, not as a `bello-hardwared` configuration. CAN IDs increase
 along each kinematic chain: left/right arms use `31..37` / `41..47` on `can1`,

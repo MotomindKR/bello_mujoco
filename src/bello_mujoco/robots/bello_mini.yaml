@@ -137,7 +137,7 @@ actuators:
     soft_limit: null
     gains: [40.0, 2.0]
     effort_limit: 36.0
-  - joint_name: right_elbow_yaw_joint
+  - joint_name: right_wrist_yaw_joint
     mode: hold
     default_pos: 0.0
     soft_limit: null
@@ -179,7 +179,7 @@ actuators:
     soft_limit: null
     gains: [40.0, 2.0]
     effort_limit: 36.0
-  - joint_name: left_elbow_yaw_joint
+  - joint_name: left_wrist_yaw_joint
     mode: hold
     default_pos: 0.0
     soft_limit: null
