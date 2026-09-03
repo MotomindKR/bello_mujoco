@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bello Mini joint and link review</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; background: #0b0d10; color: #eef1f5; }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 1720px; padding: 26px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin-top: 0; }
+    code { color: #b9d1ff; }
+    .muted { color: #aab2bf; }
+    .warning { color: #ffd37a; }
+    .good { color: #73e2a7; }
+    .bad { color: #ff8d8d; }
+    .card { background: #151920; border: 1px solid #2a313b; border-radius: 12px; padding: 18px; margin: 18px 0; }
+    .stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .stat { background: #10141a; padding: 12px; border-radius: 8px; }
+    .stat strong { display: block; font-size: 22px; }
+    .viewer { border: 1px solid #2a313b; border-radius: 8px; overflow: hidden; background: #06080b; }
+    .viewer-stage { position: relative; }
+    .viewer canvas { display: block; width: 100%; height: min(68vh, 680px); touch-action: none; }
+    .viewer svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+    .viewer .motor-marker { pointer-events: all; cursor: pointer; }
+    .viewer-status { padding: 8px 10px; color: #aab2bf; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    button, select, input { background: #0f1318; color: #eef1f5; border: 1px solid #3a4553; border-radius: 6px; padding: 7px; }
+    button { cursor: pointer; background: #2b65d9; border-color: #4380f5; font-weight: 700; }
+    button.secondary { background: #202630; border-color: #4d5b6e; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    input[type="search"] { width: min(440px, 100%); }
+    .scroll { max-height: 670px; overflow: auto; border: 1px solid #2a313b; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { position: sticky; top: 0; background: #202630; text-align: left; z-index: 1; }
+    th, td { border-bottom: 1px solid #2a313b; padding: 8px; vertical-align: top; }
+    tr.inspected { background: #273141; }
+    tr.resolved { background: rgba(44, 129, 84, .11); }
+    tr.flip { background: rgba(202, 138, 4, .16); }
+    tr.correction { background: rgba(180, 65, 65, .14); }
+    .nowrap { white-space: nowrap; }
+    .pill { display: inline-block; padding: 2px 7px; border: 1px solid #3a4553; border-radius: 999px; margin: 1px; color: #c9d1dc; }
+    .gate label { display: block; margin: 9px 0; }
+    .tree { white-space: pre; overflow: auto; background: #0d1117; border-radius: 8px; padding: 14px; color: #d6deeb; line-height: 1.6; }
+    @media (min-width: 1200px) {
+      body { margin: 0; max-width: none; padding: 22px calc(47vw + 36px) 28px 28px; }
+      #viewer-card { position: fixed; z-index: 20; top: 14px; right: 18px; width: 47vw; max-height: calc(100vh - 28px); margin: 0; overflow: auto; box-shadow: 0 16px 50px rgba(0, 0, 0, .42); }
+      #viewer-card .viewer canvas { height: min(72vh, 700px); }
+    }
+    @media (max-width: 760px) { .viewer canvas { height: 460px; } }
+  </style>
+</head>
+<body>
+  <h1 id="page-title">Bello Mini joint and link review</h1>
+  <p class="warning" id="stage-warning">This gate approves semantic names and the parent/child tree only. The four bottom RS02 motors are remote transmission actuators: no URDF joint exists at any of their motor shafts. Exact direct-drive shaft origins, axis signs, limits, encoder zeros, CAN IDs, and ankle mixing remain separate reviews.</p>
+
+  <section class="card" id="morphology-card">
+    <h2>Proposed morphology</h2>
+    <div class="stats" id="stats"></div>
+    <p class="muted" id="source"></p>
+    <p class="good" id="detected-topology">Detected topology: two 7-DoF arms, two 6-DoF legs, and a 2-DoF waist. The seventh arm joint is wrist roll.</p>
+  </section>
+
+  <section class="card" id="viewer-card">
+    <h2>3D motor topology</h2>
+    <p id="selection-title" class="warning">Select a motor row or marker. Solid colored lines trace each kinematic chain to the lower ankle pivot; dashed lines connect the remote ankle motors to that pivot. Short white segments mark only direct-drive joint axes.</p>
+    <div class="controls">
+      <select id="chain-filter"><option value="all">All chains</option></select>
+      <button class="secondary" id="reset-view">Reset view</button>
+    </div>
+    <div class="viewer">
+      <div class="viewer-stage">
+        <canvas id="topology-viewer"></canvas>
+        <svg id="topology-overlay" aria-label="Motor topology overlay"></svg>
+      </div>
+      <div class="viewer-status" id="viewer-status">Loading robot context…</div>
+    </div>
+    <div id="chain-legend" class="controls"></div>
+  </section>
+
+  <section class="card gate" id="topology-gate">
+    <h2>Gate A — high-level topology</h2>
+    <label><input type="checkbox" data-gate="arms"> Both arms have seven movable joints: shoulder pitch/roll/yaw, elbow pitch/yaw, wrist pitch, and wrist roll.</label>
+    <label><input type="checkbox" data-gate="legs"> Each leg has hip pitch/roll/yaw and knee pitch; its two remote ankle motors drive pitch/roll through linkages whose actual axes intersect at the lower orthogonal-bearing pivot.</label>
+    <label><input type="checkbox" data-gate="waist"> The center chain has waist yaw followed by waist roll.</label>
+    <label><input type="checkbox" data-gate="hands"> Detailed CAD hands remain excluded; each wrist-roll link ends in one fixed anonymous sphere link.</label>
+  </section>
+
+  <section class="card" id="motor-gate">
+    <h2>Gate B — name all 28 motors</h2>
+    <p>Motor names identify physical actuators. The four ankle RS02s are transmission inputs only: their shafts create no joint or link in the URDF, and each left/right motor pair controls the two logical ankle coordinates through a 2×2 linkage map.</p>
+    <div class="controls">
+      <button id="confirm-visible-motors">Confirm visible motor names</button>
+      <input id="motor-filter" type="search" placeholder="Filter motor, joint, model, or CAD label">
+      <select id="motor-region"><option value="all">All regions</option><option value="center">Waist</option><option value="left">Left side</option><option value="right">Right side</option></select>
+    </div>
+    <p id="motor-progress" class="warning"></p>
+    <div class="scroll"><table><thead><tr><th>3D</th><th>CAD</th><th>Permanent motor name</th><th>Model</th><th>Logical binding</th><th>Center (mm)</th><th>Review</th></tr></thead><tbody id="motors"></tbody></table></div>
+  </section>
+
+  <section class="card" id="joint-gate">
+    <h2 id="joint-gate-title">Gate C — name all joints and links</h2>
+    <p id="joint-gate-description">The tree contains 28 movable joints plus two fixed sphere joints. Direct-drive shaft centers remain pending. The ankle pitch/roll origin is independently located at the lower intersection of four orthogonal bearing occurrences.</p>
+    <div class="controls">
+      <button id="confirm-visible-joints">Confirm visible joint/link rows</button>
+      <input id="joint-filter" type="search" placeholder="Filter joint, link, station, or motor">
+      <select id="joint-region"><option value="all">All regions</option><option value="center">Waist</option><option value="left">Left side</option><option value="right">Right side</option></select>
+    </div>
+    <p id="joint-progress" class="warning"></p>
+    <div class="scroll"><table><thead><tr><th>3D</th><th>Joint</th><th>Parent → child link</th><th>Type</th><th>Motor binding</th><th>Nominal CAD axis</th><th>Origin evidence</th><th>Review</th></tr></thead><tbody id="joints"></tbody></table></div>
+  </section>
+
+  <section class="card" id="link-tree-card">
+    <h2>Proposed link tree</h2>
+    <div id="link-tree" class="tree"></div>
+  </section>
+
+  <section class="card">
+    <h2>Export review</h2>
+    <p id="export-status" class="warning"></p>
+    <button id="export-review" disabled>Export source-bound joint/link review</button>
+    <label class="pill">Resume exported review <input id="import-review" type="file" accept="application/json"></label>
+  </section>
+
+  <script>
+  (() => {
+    const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    const vertexSource = `#version 300 es
+      layout(location=0) in vec3 a_position;
+      layout(location=1) in vec3 a_normal;
+      uniform mat4 u_view_projection;
+      uniform mat4 u_model;
+      out vec3 v_normal;
+      void main() { gl_Position = u_view_projection * u_model * vec4(a_position, 1.0); v_normal = mat3(u_model) * a_normal; }`;
+    const fragmentSource = `#version 300 es
+      precision highp float;
+      in vec3 v_normal;
+      uniform vec4 u_color;
+      out vec4 out_color;
+      void main() { vec3 n = normalize(v_normal); float d = 0.28 + 0.72 * abs(dot(n, normalize(vec3(0.3, 0.8, 0.45)))); out_color = vec4(u_color.rgb * d, u_color.a); }`;
+    const compile = (gl, type, source) => { const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader); if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader)); return shader; };
+    const makeProgram = gl => { const value = gl.createProgram(); gl.attachShader(value, compile(gl, gl.VERTEX_SHADER, vertexSource)); gl.attachShader(value, compile(gl, gl.FRAGMENT_SHADER, fragmentSource)); gl.linkProgram(value); if (!gl.getProgramParameter(value, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(value)); return value; };
+    const subtract = (a, b) => a.map((value, index) => value - b[index]);
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const normalize = value => { const length = Math.hypot(...value) || 1; return value.map(component => component / length); };
+    const dot = (a, b) => a.reduce((sum, value, index) => sum + value * b[index], 0);
+    const lookAt = (eye, target, up) => { const z = normalize(subtract(eye, target)); const x = normalize(cross(up, z)); const y = cross(z, x); return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1]); };
+    const perspective = (fov, aspect, near, far) => { const scale = 1 / Math.tan(fov / 2); const range = 1 / (near - far); return new Float32Array([scale / aspect, 0, 0, 0, 0, scale, 0, 0, 0, 0, (far + near) * range, -1, 0, 0, 2 * far * near * range, 0]); };
+    const multiply = (a, b) => { const result = new Float32Array(16); for (let column = 0; column < 4; column += 1) for (let row = 0; row < 4; row += 1) result[column * 4 + row] = a[row] * b[column * 4] + a[4 + row] * b[column * 4 + 1] + a[8 + row] * b[column * 4 + 2] + a[12 + row] * b[column * 4 + 3]; return result; };
+    const svgElement = (name, attrs) => { const value = document.createElementNS('http://www.w3.org/2000/svg', name); for (const [key, item] of Object.entries(attrs)) value.setAttribute(key, item); return value; };
+
+    class TopologyViewer {
+      constructor(canvas, overlay, status, context) {
+        this.canvas = canvas; this.overlay = overlay; this.status = status; this.context = context;
+        this.gl = canvas.getContext('webgl2', {antialias: true, alpha: false});
+        if (!this.gl) throw new Error('WebGL 2 is required.');
+        this.program = makeProgram(this.gl); this.matrixUniform = this.gl.getUniformLocation(this.program, 'u_view_projection'); this.modelUniform = this.gl.getUniformLocation(this.program, 'u_model'); this.colorUniform = this.gl.getUniformLocation(this.program, 'u_color');
+        this.cache = new Map(); this.contextMesh = null; this.selectionMesh = null; this.selection = null; this.data = null; this.chainFilter = 'all'; this.onMotor = null;
+        this.target = [0, -250, 20]; this.distance = 1500; this.yaw = 0.62; this.pitch = 0.08; this.drag = null; this.viewProjection = identity;
+        this.bind(); this.load(context.context_mesh.url).then(mesh => { this.contextMesh = mesh; this.fit(context.bounds_mm); this.status.textContent = `${context.context_mesh.triangle_count.toLocaleString()}-triangle hand-excluded CAD context`; });
+      }
+      bind() {
+        this.canvas.addEventListener('pointerdown', event => { this.drag = [event.clientX, event.clientY]; this.canvas.setPointerCapture(event.pointerId); });
+        this.canvas.addEventListener('pointermove', event => { if (!this.drag) return; this.yaw -= (event.clientX - this.drag[0]) * .007; this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch + (event.clientY - this.drag[1]) * .007)); this.drag = [event.clientX, event.clientY]; this.render(); });
+        this.canvas.addEventListener('pointerup', () => { this.drag = null; });
+        this.canvas.addEventListener('wheel', event => { event.preventDefault(); this.distance *= Math.exp(event.deltaY * .001); this.render(); }, {passive: false});
+        this.canvas.addEventListener('dblclick', () => this.fit(this.context.bounds_mm));
+        new ResizeObserver(() => this.render()).observe(this.canvas);
+      }
+      async load(url) {
+        if (this.cache.has(url)) return this.cache.get(url);
+        const pending = fetch(url).then(async response => {
+          if (!response.ok) throw new Error(`mesh request failed: ${response.status} ${url}`);
+          const bytes = await response.arrayBuffer(); if (new TextDecoder().decode(bytes.slice(0, 8)) !== 'BELLO3D1') throw new Error(`invalid review mesh: ${url}`);
+          const header = new DataView(bytes, 8, 8); const vertexCount = header.getUint32(0, true); const indexCount = header.getUint32(4, true); let offset = 16;
+          const positions = new Float32Array(bytes, offset, vertexCount * 3); offset += vertexCount * 12; const normals = new Float32Array(bytes, offset, vertexCount * 3); offset += vertexCount * 12; const indices = new Uint32Array(bytes, offset, indexCount);
+          const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao); const positionBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer); gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0); const normalBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer); gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0); const indexBuffer = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW); gl.bindVertexArray(null); return {vao, count: indexCount};
+        });
+        this.cache.set(url, pending); return pending;
+      }
+      async select(motor) { this.selection = motor; this.status.textContent = `Loading ${motor.motor_name}…`; this.selectionMesh = await this.load(motor.mesh.url); this.status.textContent = `${motor.motor_name} · ${motor.model} · ${motor.mesh.triangle_count.toLocaleString()} triangles`; this.render(); }
+      fit(bounds) { this.target = bounds.min.map((value, index) => (value + bounds.max[index]) / 2); const diagonal = Math.hypot(...bounds.max.map((value, index) => value - bounds.min[index])); this.distance = Math.max(diagonal * 1.18, 20); this.render(); }
+      draw(mesh, color, model = identity) { if (!mesh) return; const gl = this.gl; gl.uniform4fv(this.colorUniform, color); gl.uniformMatrix4fv(this.modelUniform, false, model); gl.bindVertexArray(mesh.vao); gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0); }
+      project(point) { const m = this.viewProjection; const clip = [0, 1, 2, 3].map(row => m[row] * point[0] + m[4 + row] * point[1] + m[8 + row] * point[2] + m[12 + row]); if (clip[3] <= 0) return null; const x = clip[0] / clip[3]; const y = clip[1] / clip[3]; return [(x * .5 + .5) * this.canvas.clientWidth, (1 - (y * .5 + .5)) * this.canvas.clientHeight]; }
+      drawOverlay() {
+        if (!this.data) return; this.overlay.replaceChildren(); this.overlay.setAttribute('viewBox', `0 0 ${this.canvas.clientWidth} ${this.canvas.clientHeight}`); const byId = new Map(this.data.motors.map(motor => [motor.id, motor]));
+        for (const chain of this.data.chains) {
+          if (this.chainFilter !== 'all' && this.chainFilter !== chain.id) continue;
+          let chainPoints = chain.motor_ids.map(id => byId.get(id).center_mm);
+          if (chain.id.endsWith('_leg')) {
+            const side = chain.id.replace('_leg', '');
+            const anklePitch = this.data.joints.find(joint => joint.side === side && joint.station === 'ankle_pitch');
+            chainPoints = [...chain.motor_ids.slice(0, 4).map(id => byId.get(id).center_mm), anklePitch.origin_cad_mm];
+          }
+          const points = chainPoints.map(point => this.project(point)).filter(Boolean);
+          if (points.length > 1) this.overlay.append(svgElement('polyline', {points: points.map(point => point.join(',')).join(' '), fill: 'none', stroke: chain.color, 'stroke-width': 3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: .92}));
+        }
+        for (const joint of this.data.joints.filter(value => value.station === 'ankle_pitch')) {
+          const chain = this.data.chains.find(value => value.id === `${joint.side}_leg`); if (this.chainFilter !== 'all' && this.chainFilter !== chain.id) continue; const pivot = this.project(joint.origin_cad_mm); if (!pivot) continue; for (const motorId of joint.motor_ids) { const motor = this.project(byId.get(motorId).center_mm); if (motor) this.overlay.append(svgElement('line', {x1: motor[0], y1: motor[1], x2: pivot[0], y2: pivot[1], stroke: chain.color, 'stroke-width': 2, 'stroke-dasharray': '6 5', opacity: .95})); }
+        }
+        for (const motor of this.data.motors) {
+          const chain = this.data.chains.find(value => value.motor_ids.includes(motor.id)); if (this.chainFilter !== 'all' && this.chainFilter !== chain.id) continue; const center = this.project(motor.center_mm); if (!center) continue; if (motor.creates_joint_at_motor_center) { const scale = 38; const axisA = this.project(motor.center_mm.map((value, i) => value - motor.output_axis_cad[i] * scale)); const axisB = this.project(motor.center_mm.map((value, i) => value + motor.output_axis_cad[i] * scale)); if (axisA && axisB) this.overlay.append(svgElement('line', {x1: axisA[0], y1: axisA[1], x2: axisB[0], y2: axisB[1], stroke: '#f4f7fb', 'stroke-width': 2, opacity: .9})); } const selected = this.selection?.id === motor.id; const remote = !motor.creates_joint_at_motor_center; const marker = svgElement('circle', {cx: center[0], cy: center[1], r: selected ? 8 : 5, fill: selected ? '#ff7a18' : chain.color, stroke: selected ? '#fff' : remote ? '#ffd37a' : '#111', 'stroke-width': remote ? 3 : 2, class: 'motor-marker'}); marker.addEventListener('click', () => this.onMotor?.(motor)); this.overlay.append(marker); if (selected) { const label = svgElement('text', {x: center[0] + 11, y: center[1] - 10, fill: '#fff', 'font-size': 13, 'font-family': 'ui-monospace, monospace', 'paint-order': 'stroke', stroke: '#080a0e', 'stroke-width': 4}); label.textContent = remote ? `${motor.motor_name} (remote; no joint here)` : motor.motor_name; this.overlay.append(label); }
+        }
+        const visibleJoints = this.selectionJoint ? [this.selectionJoint] : this.data.joints.filter(value => value.origin_cad_mm);
+        for (const joint of visibleJoints) { if (!joint.origin_cad_mm) continue; const center = this.project(joint.origin_cad_mm); if (!center) continue; const axis = joint.axis_cad || joint.nominal_axis_cad; const scale = 52; const signed = Boolean(this.selectionJoint); const startPoint = signed ? joint.origin_cad_mm : joint.origin_cad_mm.map((value, i) => value - axis[i] * scale); const endPoint = joint.origin_cad_mm.map((value, i) => value + axis[i] * scale); const a = this.project(startPoint); const b = this.project(endPoint); const color = joint.station === 'ankle_pitch' ? '#35d9ff' : joint.station === 'ankle_roll' ? '#c084fc' : '#ffd166'; if (a && b) this.overlay.append(svgElement('line', {x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: color, 'stroke-width': 4, opacity: .95})); this.overlay.append(svgElement('circle', {cx: center[0], cy: center[1], r: 8, fill: 'none', stroke: color, 'stroke-width': 3})); if (signed && b) { const plus = svgElement('text', {x: b[0] + 6, y: b[1] - 6, fill: color, 'font-size': 18, 'font-weight': 800, 'font-family': 'ui-monospace, monospace', 'paint-order': 'stroke', stroke: '#080a0e', 'stroke-width': 4}); plus.textContent = '+'; this.overlay.append(plus); } const shouldLabel = signed || joint.station === 'ankle_pitch'; if (shouldLabel) { const label = svgElement('text', {x: center[0] + 12, y: center[1] + 20, fill: '#fff', 'font-size': 12, 'font-family': 'ui-monospace, monospace', 'paint-order': 'stroke', stroke: '#080a0e', 'stroke-width': 4}); label.textContent = signed ? joint.name : `${joint.side} ankle pivot`; this.overlay.append(label); } }
+      }
+      render() {
+        const gl = this.gl; const ratio = Math.min(devicePixelRatio || 1, 2); const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio)); const height = Math.max(1, Math.round(this.canvas.clientHeight * ratio)); if (this.canvas.width !== width || this.canvas.height !== height) { this.canvas.width = width; this.canvas.height = height; }
+        gl.viewport(0, 0, width, height); gl.clearColor(.025, .033, .045, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.useProgram(this.program); const horizontal = Math.cos(this.pitch) * this.distance; const eye = [this.target[0] + Math.sin(this.yaw) * horizontal, this.target[1] + Math.sin(this.pitch) * this.distance, this.target[2] + Math.cos(this.yaw) * horizontal]; this.viewProjection = multiply(perspective(Math.PI / 4, width / height, Math.max(this.distance / 500, .1), this.distance * 20), lookAt(eye, this.target, [0, 1, 0])); gl.uniformMatrix4fv(this.matrixUniform, false, this.viewProjection); this.draw(this.contextMesh, [.28, .34, .42, .22]); if (this.contextMesh && this.selectionMesh && this.selection) gl.clear(gl.DEPTH_BUFFER_BIT); if (this.selectionMesh && this.selection) this.draw(this.selectionMesh, [1, .43, .08, 1], new Float32Array(this.selection.shape_transform)); gl.bindVertexArray(null); this.drawOverlay();
+      }
+    }
+
+    const manifestUrl = new URLSearchParams(location.search).get('manifest') || '/artifacts/bello_mini_cad/joint_review_manifest.json';
+    fetch(manifestUrl).then(response => { if (!response.ok) throw new Error(`${response.status} loading ${manifestUrl}`); return response.json(); }).then(start).catch(error => document.body.insertAdjacentHTML('afterbegin', `<p class="bad">${error.message}</p>`));
+
+    function start(data) {
+      if (data.review_stage === 'joint_frames') { startFrameReview(data); return; }
+      const storageKey = `bello-mini-joint-review:${data.source.sha256}:${data.review_contract}`; const state = JSON.parse(localStorage.getItem(storageKey) || '{"motors":{},"joints":{},"gates":{}}'); const save = () => localStorage.setItem(storageKey, JSON.stringify(state));
+      const byMotor = new Map(data.motors.map(motor => [motor.id, motor])); let inspected = null;
+      document.getElementById('stats').innerHTML = [['Physical motors', data.summary.motor_count], ['Movable joints', data.summary.movable_joint_count], ['Direct-drive joints', data.summary.direct_drive_joint_count], ['Linkage-driven joints', data.summary.linkage_driven_joint_count], ['Remote ankle motors', data.summary.remote_transmission_motor_count], ['Links', data.summary.link_count], ['Arm DoF / side', data.summary.arm_dof_per_side], ['Leg DoF / side', data.summary.leg_dof_per_side], ['Waist DoF', data.summary.waist_dof]].map(([label, value]) => `<div class="stat"><strong>${value}</strong>${label}</div>`).join('');
+      document.getElementById('source').textContent = `${data.source.path} · SHA-256 ${data.source.sha256}`;
+      const viewer = new TopologyViewer(document.getElementById('topology-viewer'), document.getElementById('topology-overlay'), document.getElementById('viewer-status'), data.root); viewer.data = data; viewer.onMotor = selectMotor;
+      const chainFilter = document.getElementById('chain-filter'); const legend = document.getElementById('chain-legend'); for (const chain of data.chains) { const option = document.createElement('option'); option.value = chain.id; option.textContent = chain.label; chainFilter.append(option); legend.insertAdjacentHTML('beforeend', `<span class="pill" style="border-color:${chain.color};color:${chain.color}">${chain.label}</span>`); } legend.insertAdjacentHTML('beforeend', '<span class="pill" style="border-color:#35d9ff;color:#35d9ff">ankle pitch axis</span><span class="pill" style="border-color:#c084fc;color:#c084fc">ankle roll axis</span>'); chainFilter.addEventListener('change', () => { viewer.chainFilter = chainFilter.value; viewer.render(); }); document.getElementById('reset-view').addEventListener('click', () => viewer.fit(data.root.bounds_mm));
+      function selectMotor(motor) { inspected = motor.id; const binding = motor.creates_joint_at_motor_center ? motor.joint_names.join(' + ') : `remote transmission actuator; no URDF joint at this motor — controls ${motor.joint_names.join(' + ')}`; document.getElementById('selection-title').textContent = `${motor.motor_name} — ${motor.model} — ${binding}`; viewer.select(motor); renderMotors(); }
+
+      for (const box of document.querySelectorAll('[data-gate]')) { const key = box.dataset.gate; box.checked = Boolean(state.gates[key]); box.addEventListener('change', () => { state.gates[key] = box.checked; save(); updateCompletion(); }); }
+      const motorFilter = document.getElementById('motor-filter'); const motorRegion = document.getElementById('motor-region'); const motorBody = document.getElementById('motors');
+      const visibleMotors = () => { const needle = motorFilter.value.toLowerCase(); return data.motors.filter(motor => (motorRegion.value === 'all' || motor.side === motorRegion.value) && `${motor.id} ${motor.motor_name} ${motor.model} ${motor.cad_label} ${motor.joint_names.join(' ')}`.toLowerCase().includes(needle)); };
+      function renderMotors() { motorBody.innerHTML = ''; for (const motor of visibleMotors()) { const status = state.motors[motor.id] || 'pending'; const row = document.createElement('tr'); if (motor.id === inspected) row.classList.add('inspected'); if (status === 'confirmed') row.classList.add('resolved'); if (status === 'correction') row.classList.add('correction'); const role = motor.creates_joint_at_motor_center ? '<span class="pill">direct joint actuator</span>' : '<span class="pill warning">remote transmission; no joint here</span>'; row.innerHTML = `<td><button class="secondary inspect">Inspect</button></td><td><code>${motor.id}</code><br><span class="muted">${motor.cad_label}</span></td><td><code>${motor.motor_name}</code><br>${role}</td><td>${motor.model}</td><td>${motor.joint_names.map(name => `<code>${name}</code>`).join('<br>')}<br><span class="pill">${motor.coupling}</span></td><td class="nowrap">${motor.center_mm.map(value => value.toFixed(1)).join(', ')}</td><td><select class="decision"><option value="pending">Pending</option><option value="confirmed">Confirm</option><option value="correction">Needs correction</option></select></td>`; row.querySelector('.decision').value = status; row.querySelector('.decision').addEventListener('change', event => { state.motors[motor.id] = event.target.value; save(); renderMotors(); updateCompletion(); }); row.querySelector('.inspect').addEventListener('click', () => selectMotor(motor)); motorBody.append(row); } document.getElementById('motor-progress').textContent = `${data.motors.filter(motor => state.motors[motor.id] === 'confirmed').length}/${data.motors.length} motor names confirmed.`; }
+      motorFilter.addEventListener('input', renderMotors); motorRegion.addEventListener('change', renderMotors); document.getElementById('confirm-visible-motors').addEventListener('click', () => { for (const motor of visibleMotors()) state.motors[motor.id] = 'confirmed'; save(); renderMotors(); updateCompletion(); });
+
+      const jointFilter = document.getElementById('joint-filter'); const jointRegion = document.getElementById('joint-region'); const jointBody = document.getElementById('joints');
+      const visibleJoints = () => { const needle = jointFilter.value.toLowerCase(); return data.joints.filter(joint => (jointRegion.value === 'all' || joint.side === jointRegion.value) && `${joint.name} ${joint.parent_link} ${joint.child_link} ${joint.station} ${joint.motor_ids.join(' ')}`.toLowerCase().includes(needle)); };
+      function renderJoints() { jointBody.innerHTML = ''; for (const joint of visibleJoints()) { const status = state.joints[joint.name] || 'pending'; const row = document.createElement('tr'); if (status === 'confirmed') row.classList.add('resolved'); if (status === 'correction') row.classList.add('correction'); const bindings = joint.motor_ids.length ? joint.motor_ids.map(id => `<code>${byMotor.get(id).motor_name}</code>`).join('<br>') : 'none'; const origin = joint.origin_cad_mm ? `${joint.origin_cad_mm.map(value => value.toFixed(2)).join(', ')} mm<br><span class="good">${joint.origin_status.replaceAll('_', ' ')}</span>` : joint.origin_status.replaceAll('_', ' '); row.innerHTML = `<td>—</td><td><code>${joint.name}</code><br><span class="muted">${joint.station}</span></td><td><code>${joint.parent_link}</code><br>→ <code>${joint.child_link}</code></td><td>${joint.type}<br><span class="pill">${joint.coupling}</span></td><td>${bindings}</td><td class="nowrap">${joint.nominal_axis_cad.join(', ')}</td><td>${origin}</td><td><select class="decision"><option value="pending">Pending</option><option value="confirmed">Confirm</option><option value="correction">Needs correction</option></select></td>`; row.querySelector('.decision').value = status; row.querySelector('.decision').addEventListener('change', event => { state.joints[joint.name] = event.target.value; save(); renderJoints(); updateCompletion(); }); jointBody.append(row); } document.getElementById('joint-progress').textContent = `${data.joints.filter(joint => state.joints[joint.name] === 'confirmed').length}/${data.joints.length} joint/link rows confirmed.`; }
+      jointFilter.addEventListener('input', renderJoints); jointRegion.addEventListener('change', renderJoints); document.getElementById('confirm-visible-joints').addEventListener('click', () => { for (const joint of visibleJoints()) state.joints[joint.name] = 'confirmed'; save(); renderJoints(); updateCompletion(); });
+
+      const children = new Map(); for (const joint of data.joints) { if (!children.has(joint.parent_link)) children.set(joint.parent_link, []); children.get(joint.parent_link).push(joint); }
+      const treeLines = []; function appendTree(link, prefix = '', edge = '') { treeLines.push(`${prefix}${edge}${link}`); const items = children.get(link) || []; items.forEach((joint, index) => { const last = index === items.length - 1; treeLines.push(`${prefix}${last ? '   ' : '│  '}  ↳ ${joint.name} [${joint.type}]`); appendTree(joint.child_link, `${prefix}${last ? '   ' : '│  '}`, last ? '└─ ' : '├─ '); }); } appendTree('pelvis_link'); document.getElementById('link-tree').textContent = treeLines.join('\n');
+
+      const exportButton = document.getElementById('export-review'); function updateCompletion() { const motorCount = data.motors.filter(motor => state.motors[motor.id] === 'confirmed').length; const jointCount = data.joints.filter(joint => state.joints[joint.name] === 'confirmed').length; const gates = ['arms', 'legs', 'waist', 'hands']; const gateCount = gates.filter(key => state.gates[key]).length; const ready = motorCount === data.motors.length && jointCount === data.joints.length && gateCount === gates.length; const corrections = Object.values(state.motors).filter(value => value === 'correction').length + Object.values(state.joints).filter(value => value === 'correction').length; document.getElementById('export-status').textContent = `${motorCount}/${data.motors.length} motors, ${jointCount}/${data.joints.length} joint/link rows, ${gateCount}/${gates.length} topology gates confirmed${corrections ? `; ${corrections} correction(s) requested` : ''}.`; document.getElementById('export-status').className = ready ? 'good' : corrections ? 'bad' : 'warning'; exportButton.disabled = !ready; }
+      exportButton.addEventListener('click', () => { const payload = {schema_version: 1, review_contract: data.review_contract, source: data.source, classification_review: data.classification_review, gate_decisions: state.gates, motor_name_decisions: state.motors, joint_link_decisions: state.joints}; const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type: 'application/json'}); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'bello_mini_joint_link_review.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); });
+      document.getElementById('import-review').addEventListener('change', async event => { const file = event.target.files[0]; if (!file) return; try { const payload = JSON.parse(await file.text()); if (payload.review_contract !== data.review_contract) throw new Error(`review contract mismatch: ${payload.review_contract}`); if (payload.source?.sha256 !== data.source.sha256) throw new Error('STEP SHA-256 mismatch'); state.gates = payload.gate_decisions || {}; state.motors = payload.motor_name_decisions || {}; state.joints = payload.joint_link_decisions || {}; save(); for (const box of document.querySelectorAll('[data-gate]')) box.checked = Boolean(state.gates[box.dataset.gate]); renderMotors(); renderJoints(); updateCompletion(); event.target.value = ''; } catch (error) { alert(`Could not import review: ${error.message}`); } });
+      renderMotors(); renderJoints(); updateCompletion(); viewer.render();
+    }
+
+    function startFrameReview(data) {
+      document.getElementById('page-title').textContent = 'Bello Mini joint-frame review';
+      document.getElementById('stage-warning').textContent = 'Approve the physical axis line and the displayed semantic + direction for each movable joint. The four bottom RS02 motors remain remote transmission inputs and create no joints at their shafts.';
+      document.getElementById('detected-topology').textContent = 'CAD evidence: 24 direct-drive axes from concentric motor circles and four ankle axes from orthogonal lower bearings. Points along each axis are symmetrized frame gauges; the physical axis lines are unchanged.';
+      document.getElementById('topology-gate').hidden = true;
+      document.getElementById('motor-gate').hidden = true;
+      document.getElementById('link-tree-card').hidden = true;
+      document.getElementById('joint-gate-title').textContent = 'Gate — approve all 28 movable joint frames';
+      document.getElementById('joint-gate-description').textContent = 'Inspect every row in 3D. Choose Confirm when both the axis location and displayed + direction are correct; choose Flip + axis when only the sign should reverse.';
+      document.getElementById('confirm-visible-joints').textContent = 'Confirm visible joint frames';
+      document.querySelector('#joint-gate thead tr').innerHTML = '<th>3D</th><th>Joint</th><th>Parent → child link</th><th>Drive</th><th>CAD origin (mm)</th><th>Displayed + axis</th><th>Evidence</th><th>Review</th>';
+
+      document.getElementById('stats').innerHTML = [
+        ['Movable joints', data.summary.movable_joint_count],
+        ['Circle-derived axes', data.summary.direct_cad_circle_axis_count],
+        ['Bearing-derived axes', data.summary.linkage_bearing_axis_count],
+        ['Bilateral pairs', data.summary.bilateral_pair_count],
+        ['Max symmetry residual (mm)', data.summary.maximum_bilateral_axis_residual_mm.toExponential(2)],
+      ].map(([label, value]) => `<div class="stat"><strong>${value}</strong>${label}</div>`).join('');
+      document.getElementById('source').textContent = `${data.source.path} · SHA-256 ${data.source.sha256}`;
+
+      const byMotor = new Map(data.motors.map(motor => [motor.id, motor]));
+      const storageKey = `bello-mini-frame-review:${data.source.sha256}:${data.review_contract}`;
+      const state = JSON.parse(localStorage.getItem(storageKey) || '{"frames":{}}');
+      const save = () => localStorage.setItem(storageKey, JSON.stringify(state));
+      let inspected = null;
+      const viewer = new TopologyViewer(document.getElementById('topology-viewer'), document.getElementById('topology-overlay'), document.getElementById('viewer-status'), data.root);
+      viewer.data = data;
+
+      const chainFilter = document.getElementById('chain-filter');
+      const legend = document.getElementById('chain-legend');
+      for (const chain of data.chains) {
+        const option = document.createElement('option'); option.value = chain.id; option.textContent = chain.label; chainFilter.append(option);
+        legend.insertAdjacentHTML('beforeend', `<span class="pill" style="border-color:${chain.color};color:${chain.color}">${chain.label}</span>`);
+      }
+      legend.insertAdjacentHTML('beforeend', '<span class="pill" style="border-color:#ffd166;color:#ffd166">selected positive axis</span><span class="pill warning">gold-ring motor = remote; no joint there</span>');
+      chainFilter.addEventListener('change', () => { viewer.chainFilter = chainFilter.value; viewer.render(); });
+      document.getElementById('reset-view').addEventListener('click', () => viewer.fit(data.root.bounds_mm));
+
+      const jointFilter = document.getElementById('joint-filter');
+      const jointRegion = document.getElementById('joint-region');
+      const jointBody = document.getElementById('joints');
+      const visibleJoints = () => {
+        const needle = jointFilter.value.toLowerCase();
+        return data.joints.filter(joint => (jointRegion.value === 'all' || joint.side === jointRegion.value) && `${joint.name} ${joint.parent_link} ${joint.child_link} ${joint.station} ${joint.motor_ids.join(' ')}`.toLowerCase().includes(needle));
+      };
+      function evidenceText(joint) {
+        if (joint.origin_status === 'cad_concentric_motor_circles') return `${joint.evidence.cluster_circle_count}/${joint.evidence.aligned_circle_count} aligned circles<br>${joint.evidence.unique_radius_count} unique radii<br><span class="good">${joint.origin_status.replaceAll('_', ' ')}</span>`;
+        return `<span class="good">${joint.origin_status.replaceAll('_', ' ')}</span><br>remote motors: ${joint.motor_ids.map(id => `<code>${byMotor.get(id).motor_name}</code>`).join('<br>')}`;
+      }
+      function selectFrame(joint) {
+        inspected = joint.name;
+        viewer.selectionJoint = joint;
+        const motors = joint.motor_ids.map(id => byMotor.get(id));
+        const drive = joint.coupling === 'direct' ? motors[0].motor_name : `${motors.map(motor => motor.motor_name).join(' + ')} (remote linkage)`;
+        document.getElementById('selection-title').textContent = `${joint.name} — ${drive} — + axis [${joint.axis_cad.join(', ')}]`;
+        viewer.render();
+        if (motors.length) viewer.select(motors[0]);
+        renderJoints();
+      }
+      viewer.onMotor = motor => {
+        const joint = data.joints.find(value => value.motor_ids.includes(motor.id));
+        if (joint) selectFrame(joint);
+      };
+      function renderJoints() {
+        jointBody.innerHTML = '';
+        for (const joint of visibleJoints()) {
+          const status = state.frames[joint.name] || 'pending';
+          const row = document.createElement('tr');
+          if (joint.name === inspected) row.classList.add('inspected');
+          if (status === 'confirmed') row.classList.add('resolved');
+          if (status === 'flip') row.classList.add('flip');
+          if (status === 'correction') row.classList.add('correction');
+          const drive = joint.coupling === 'direct' ? `<code>${byMotor.get(joint.motor_ids[0]).motor_name}</code>` : `${joint.motor_ids.map(id => `<code>${byMotor.get(id).motor_name}</code>`).join('<br>')}<br><span class="pill warning">remote 2×2 linkage</span>`;
+          row.innerHTML = `<td><button class="secondary inspect">Inspect</button></td><td><code>${joint.name}</code><br><span class="muted">${joint.station}</span></td><td><code>${joint.parent_link}</code><br>→ <code>${joint.child_link}</code></td><td>${drive}</td><td class="nowrap">${joint.origin_cad_mm.map(value => value.toFixed(3)).join(', ')}</td><td class="nowrap">${joint.axis_cad.join(', ')}</td><td>${evidenceText(joint)}</td><td><select class="decision"><option value="pending">Pending</option><option value="confirmed">Confirm</option><option value="flip">Flip + axis</option><option value="correction">Needs correction</option></select></td>`;
+          row.querySelector('.decision').value = status;
+          row.querySelector('.decision').addEventListener('change', event => { state.frames[joint.name] = event.target.value; save(); renderJoints(); updateCompletion(); });
+          row.querySelector('.inspect').addEventListener('click', () => selectFrame(joint));
+          jointBody.append(row);
+        }
+        const resolved = data.joints.filter(joint => ['confirmed', 'flip'].includes(state.frames[joint.name])).length;
+        const flipped = data.joints.filter(joint => state.frames[joint.name] === 'flip').length;
+        document.getElementById('joint-progress').textContent = `${resolved}/${data.joints.length} joint frames resolved${flipped ? `; ${flipped} axis sign(s) flipped` : ''}.`;
+      }
+      jointFilter.addEventListener('input', renderJoints);
+      jointRegion.addEventListener('change', renderJoints);
+      document.getElementById('confirm-visible-joints').addEventListener('click', () => { for (const joint of visibleJoints()) state.frames[joint.name] = 'confirmed'; save(); renderJoints(); updateCompletion(); });
+
+      const exportButton = document.getElementById('export-review');
+      exportButton.textContent = 'Export source-bound joint-frame review';
+      function updateCompletion() {
+        const resolved = data.joints.filter(joint => ['confirmed', 'flip'].includes(state.frames[joint.name])).length;
+        const corrections = data.joints.filter(joint => state.frames[joint.name] === 'correction').length;
+        const ready = resolved === data.joints.length && corrections === 0;
+        document.getElementById('export-status').textContent = `${resolved}/${data.joints.length} joint frames resolved${corrections ? `; ${corrections} correction(s) requested` : ''}.`;
+        document.getElementById('export-status').className = ready ? 'good' : corrections ? 'bad' : 'warning';
+        exportButton.disabled = !ready;
+      }
+      exportButton.addEventListener('click', () => {
+        const payload = {schema_version: 1, review_contract: data.review_contract, source: data.source, approved_joint_link_review: data.approved_joint_link_review, joint_frame_decisions: state.frames};
+        const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type: 'application/json'});
+        const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'bello_mini_joint_frame_review.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      });
+      document.getElementById('import-review').addEventListener('change', async event => {
+        const file = event.target.files[0]; if (!file) return;
+        try {
+          const payload = JSON.parse(await file.text());
+          if (payload.review_contract !== data.review_contract) throw new Error(`review contract mismatch: ${payload.review_contract}`);
+          if (payload.source?.sha256 !== data.source.sha256) throw new Error('STEP SHA-256 mismatch');
+          state.frames = payload.joint_frame_decisions || {}; save(); renderJoints(); updateCompletion(); event.target.value = '';
+        } catch (error) { alert(`Could not import review: ${error.message}`); }
+      });
+
+      renderJoints(); updateCompletion(); viewer.render(); selectFrame(data.joints[0]);
+    }
+  })();
+  </script>
+</body>
+</html>

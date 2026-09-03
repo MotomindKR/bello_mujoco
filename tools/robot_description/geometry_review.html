@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bello Mini generated geometry review</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; background: #0b0d10; color: #eef1f5; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 22px calc(48vw + 36px) 28px 28px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin-top: 0; }
+    .muted { color: #aab2bf; }
+    .warning { color: #ffd37a; }
+    .good { color: #73e2a7; }
+    .bad { color: #ff8d8d; }
+    .card { background: #151920; border: 1px solid #2a313b; border-radius: 12px; padding: 18px; margin: 18px 0; }
+    .stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+    .stat { background: #10141a; padding: 11px; border-radius: 8px; }
+    .stat strong { display: block; font-size: 21px; }
+    #viewer-card { position: fixed; z-index: 20; top: 14px; right: 18px; width: 48vw; max-height: calc(100vh - 28px); margin: 0; overflow: auto; box-shadow: 0 16px 50px rgba(0, 0, 0, .42); }
+    .viewer { border: 1px solid #2a313b; border-radius: 8px; overflow: hidden; background: #06080b; }
+    .viewer-stage { position: relative; }
+    canvas { display: block; width: 100%; height: min(72vh, 760px); touch-action: none; }
+    svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+    .viewer-status { padding: 8px 10px; color: #aab2bf; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    button, select, input { background: #0f1318; color: #eef1f5; border: 1px solid #3a4553; border-radius: 6px; padding: 7px; }
+    button { cursor: pointer; background: #2b65d9; border-color: #4380f5; font-weight: 700; }
+    label { white-space: nowrap; }
+    .pill { display: inline-block; padding: 2px 7px; border: 1px solid #3a4553; border-radius: 999px; color: #c9d1dc; }
+    .scroll { max-height: 620px; overflow: auto; border: 1px solid #2a313b; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { position: sticky; top: 0; background: #202630; text-align: left; z-index: 1; }
+    th, td { border-bottom: 1px solid #2a313b; padding: 8px; vertical-align: top; }
+    tr.selected { background: #273141; }
+    @media (max-width: 1100px) {
+      body { padding: 18px; }
+      #viewer-card { position: static; width: auto; max-height: none; }
+      canvas { height: 600px; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Bello Mini generated geometry review</h1>
+  <p class="warning">Approval gate: exterior rendering meshes are separate from physics. Collision uses only MuJoCo-compatible boxes, cylinders, and spheres. Detailed hands are absent and replaced by compact anonymous 25 mm spheres at the wrist mounting planes.</p>
+
+  <section class="card">
+    <h2>Build summary</h2>
+    <div class="stats" id="stats"></div>
+    <p id="source" class="muted"></p>
+  </section>
+
+  <section class="card" id="viewer-card">
+    <h2>3D visual / collision overlay</h2>
+    <div class="controls">
+      <button id="fit">Fit robot</button>
+      <button id="fit-fov">Fit camera FoV</button>
+      <select id="link-select"><option value="all">All links</option></select>
+      <label class="pill"><input id="show-visual" type="checkbox" checked> exterior meshes</label>
+      <label class="pill"><input id="show-collision" type="checkbox" checked> collision primitives</label>
+      <label class="pill"><input id="show-axes" type="checkbox" checked> joint / sensor axes</label>
+      <label class="pill"><input id="show-fov" type="checkbox" checked> camera FoV</label>
+    </div>
+    <div class="viewer">
+      <div class="viewer-stage">
+        <canvas id="viewer"></canvas>
+        <svg id="overlay" aria-label="Joint and sensor-frame axes"></svg>
+      </div>
+      <div class="viewer-status" id="status">Loading generated link meshes…</div>
+    </div>
+    <div class="controls">
+      <span class="pill" style="border-color:#39d0ff;color:#39d0ff">primitive collision</span>
+      <span class="pill" style="border-color:#a16eff;color:#a16eff">joint / wrist sphere</span>
+      <span class="pill" style="border-color:#ff59bd;color:#ff59bd">anonymous hand sphere</span>
+      <span class="pill" style="border-color:#ffd166;color:#ffd166">joint +axis</span>
+      <span class="pill" style="border-color:#ff5e57;color:#ff5e57">frame +X</span>
+      <span class="pill" style="border-color:#55d187;color:#55d187">frame +Y</span>
+      <span class="pill" style="border-color:#4d96ff;color:#4d96ff">frame +Z</span>
+      <span class="pill" style="border-color:#34c9ff;color:#34c9ff">depth FoV 67.9° × 45.3°</span>
+      <span class="pill" style="border-color:#ff9c45;color:#ff9c45">RGB FoV 71.5° × 56.7°</span>
+      <span class="pill" style="border-color:#f4a261;color:#f4a261">selected link</span>
+    </div>
+    <p class="muted">Drag to rotate, use the wheel to zoom, and choose a camera frame to inspect its labeled axes. The cyan depth frustum uses the published 0.25–2.5 m operating range; the orange RGB frustum is shown to 2.5 m only for angular comparison. Body-style frames use +X forward, +Y camera-left, +Z up; optical frames use +X image-right, +Y image-down, +Z optical-forward. All camera links are massless; the 30 g camera mass and CAD-positioned inertia remain in the pelvis.</p>
+  </section>
+
+  <section class="card">
+    <h2>What was omitted visually</h2>
+    <p>Omitted parts remain fully represented by the mass, center of mass, and inertia tensor. This list changes rendering only.</p>
+    <div id="omissions"></div>
+  </section>
+
+  <section class="card">
+    <h2>Per-link audit</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Link</th><th>Mass</th><th>Visual mesh</th><th>Collision</th><th>Frame / incoming joint</th></tr></thead>
+      <tbody id="links"></tbody>
+    </table></div>
+  </section>
+
+  <script>
+  (() => {
+    const params = new URLSearchParams(location.search);
+    const base = (params.get('base') || '/artifacts/bello_mini_cad').replace(/\/$/, '');
+    const paths = {
+      ownership: `${base}/resolved_link_ownership.json`,
+      inertials: `${base}/inertial_manifest.json`,
+      geometry: `${base}/geometry_manifest.json`,
+      meshes: `${base}/visual_mesh_manifest.json`,
+      report: `${base}/generated/build_report.json`,
+    };
+    const vertexSource = `#version 300 es
+      layout(location=0) in vec3 a_position;
+      layout(location=1) in vec3 a_normal;
+      uniform mat4 u_view_projection;
+      uniform mat4 u_model;
+      out vec3 v_normal;
+      void main() { gl_Position = u_view_projection * u_model * vec4(a_position, 1.0); v_normal = mat3(u_model) * a_normal; }`;
+    const fragmentSource = `#version 300 es
+      precision highp float;
+      in vec3 v_normal;
+      uniform vec4 u_color;
+      out vec4 out_color;
+      void main() { vec3 n = normalize(v_normal); float d = 0.30 + 0.70 * abs(dot(n, normalize(vec3(.4, .7, .55)))); out_color = vec4(u_color.rgb * d, u_color.a); }`;
+    const compile = (gl, type, source) => { const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader); if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader)); return shader; };
+    const makeProgram = gl => { const value = gl.createProgram(); gl.attachShader(value, compile(gl, gl.VERTEX_SHADER, vertexSource)); gl.attachShader(value, compile(gl, gl.FRAGMENT_SHADER, fragmentSource)); gl.linkProgram(value); if (!gl.getProgramParameter(value, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(value)); return value; };
+    const subtract = (a, b) => a.map((value, index) => value - b[index]);
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const normalize = value => { const length = Math.hypot(...value) || 1; return value.map(component => component / length); };
+    const dot = (a, b) => a.reduce((sum, value, index) => sum + value * b[index], 0);
+    const lookAt = (eye, target, up) => { const z = normalize(subtract(eye, target)); const x = normalize(cross(up, z)); const y = cross(z, x); return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1]); };
+    const perspective = (fov, aspect, near, far) => { const scale = 1 / Math.tan(fov / 2); const range = 1 / (near - far); return new Float32Array([scale / aspect, 0, 0, 0, 0, scale, 0, 0, 0, 0, (far + near) * range, -1, 0, 0, 2 * far * near * range, 0]); };
+    const multiply = (a, b) => { const result = new Float32Array(16); for (let column = 0; column < 4; column += 1) for (let row = 0; row < 4; row += 1) result[column * 4 + row] = a[row] * b[column * 4] + a[4 + row] * b[column * 4 + 1] + a[8 + row] * b[column * 4 + 2] + a[12 + row] * b[column * 4 + 3]; return result; };
+    const translation = value => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, value[0], value[1], value[2], 1]);
+    const modelMatrix = (position, rpy, scale) => {
+      const [rx, ry, rz] = rpy; const [sx, sy, sz] = scale;
+      const cx = Math.cos(rx), sxr = Math.sin(rx), cy = Math.cos(ry), syr = Math.sin(ry), cz = Math.cos(rz), szr = Math.sin(rz);
+      const r00 = cz * cy, r01 = cz * syr * sxr - szr * cx, r02 = cz * syr * cx + szr * sxr;
+      const r10 = szr * cy, r11 = szr * syr * sxr + cz * cx, r12 = szr * syr * cx - cz * sxr;
+      const r20 = -syr, r21 = cy * sxr, r22 = cy * cx;
+      return new Float32Array([r00*sx,r10*sx,r20*sx,0,r01*sy,r11*sy,r21*sy,0,r02*sz,r12*sz,r22*sz,0,position[0],position[1],position[2],1]);
+    };
+    const frameMatrix = (position, rotation) => new Float32Array([
+      rotation[0][0], rotation[1][0], rotation[2][0], 0,
+      rotation[0][1], rotation[1][1], rotation[2][1], 0,
+      rotation[0][2], rotation[1][2], rotation[2][2], 0,
+      position[0], position[1], position[2], 1,
+    ]);
+    const svgElement = (name, attrs) => { const value = document.createElementNS('http://www.w3.org/2000/svg', name); for (const [key, item] of Object.entries(attrs)) value.setAttribute(key, item); return value; };
+
+    class Viewer {
+      constructor(canvas, overlay, status, data) {
+        this.canvas = canvas; this.overlay = overlay; this.status = status; this.data = data;
+        this.gl = canvas.getContext('webgl2', {antialias: true, alpha: false}); if (!this.gl) throw new Error('WebGL 2 is required.');
+        this.program = makeProgram(this.gl); this.matrixUniform = this.gl.getUniformLocation(this.program, 'u_view_projection'); this.modelUniform = this.gl.getUniformLocation(this.program, 'u_model'); this.colorUniform = this.gl.getUniformLocation(this.program, 'u_color');
+        this.visuals = []; this.collisions = []; this.frusta = []; this.selected = 'all'; this.showVisual = true; this.showCollision = true; this.showAxes = true; this.showFov = true; this.drag = null; this.viewProjection = new Float32Array(16);
+        this.groundShiftMm = data.report.grounding.nominal_root_translation_m[2] * 1000;
+        const bounds = data.ownership.root.bounds_mm; this.robotBounds = {min: [bounds.min[2], bounds.min[0], bounds.min[1] + this.groundShiftMm], max: [bounds.max[2], bounds.max[0], bounds.max[1] + this.groundShiftMm]};
+        this.target = [0, 0, -250]; this.distance = 1600; this.yaw = -.72; this.pitch = -.08;
+        this.unitMeshes = {box: this.makeBox(), cylinder: this.makeCylinder(28), sphere: this.makeSphere(18, 28)};
+        this.ground = {mesh:this.unitMeshes.box,model:modelMatrix([0,0,-1],[0,0,0],[1400,1000,2])};
+        this.bind(); this.buildCollisions(); this.buildFov(); this.loadVisuals(); this.fit();
+      }
+      bind() {
+        this.canvas.addEventListener('pointerdown', event => { this.drag = [event.clientX, event.clientY]; this.canvas.setPointerCapture(event.pointerId); });
+        this.canvas.addEventListener('pointermove', event => { if (!this.drag) return; this.yaw -= (event.clientX - this.drag[0]) * .007; this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch + (event.clientY - this.drag[1]) * .007)); this.drag = [event.clientX, event.clientY]; this.render(); });
+        this.canvas.addEventListener('pointerup', () => { this.drag = null; });
+        this.canvas.addEventListener('wheel', event => { event.preventDefault(); this.distance *= Math.exp(event.deltaY * .001); this.render(); }, {passive: false});
+        this.canvas.addEventListener('dblclick', () => this.fit());
+        new ResizeObserver(() => this.render()).observe(this.canvas);
+      }
+      fit() { this.target = this.robotBounds.min.map((value, index) => (value + this.robotBounds.max[index]) / 2); this.distance = Math.hypot(...this.robotBounds.max.map((value, index) => value - this.robotBounds.min[index])) * 1.22; this.render(); }
+      fitFov() { const depth=this.frusta.find(value=>value.kind==='depth'&&value.label);if(!depth)return;this.target=depth.origin.map((value,index)=>value+(depth.farCenter[index]-value)*.48);this.distance=3600;this.render(); }
+      focus(linkName) { const frame=this.data.report.fixed_sensor_frames.find(value=>value.link_name===linkName);if(!frame)return;this.target=frame.origin_xyz_pelvis_m.map(value=>value*1000);this.target[2]+=this.groundShiftMm;this.distance=145;this.render(); }
+      bufferMesh(positions, normals, indices) {
+        const gl = this.gl, vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+        const nb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+        const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(indices), gl.STATIC_DRAW); gl.bindVertexArray(null); return {vao, count: indices.length};
+      }
+      makeBox() {
+        const p=[], n=[], i=[]; const faces=[[[1,0,0],[[.5,-.5,-.5],[.5,.5,-.5],[.5,.5,.5],[.5,-.5,.5]]],[[-1,0,0],[[-.5,.5,-.5],[-.5,-.5,-.5],[-.5,-.5,.5],[-.5,.5,.5]]],[[0,1,0],[[-.5,.5,-.5],[.5,.5,-.5],[.5,.5,.5],[-.5,.5,.5]]],[[0,-1,0],[[.5,-.5,-.5],[-.5,-.5,-.5],[-.5,-.5,.5],[.5,-.5,.5]]],[[0,0,1],[[-.5,-.5,.5],[.5,-.5,.5],[.5,.5,.5],[-.5,.5,.5]]],[[0,0,-1],[[-.5,.5,-.5],[.5,.5,-.5],[.5,-.5,-.5],[-.5,-.5,-.5]]]];
+        for (const [normal, vertices] of faces) { const start=p.length/3; vertices.forEach(v=>{p.push(...v);n.push(...normal)}); i.push(start,start+1,start+2,start,start+2,start+3); } return this.bufferMesh(p,n,i);
+      }
+      makeCylinder(segments) {
+        const p=[],n=[],i=[]; for(let k=0;k<segments;k++){const a=2*Math.PI*k/segments,b=2*Math.PI*(k+1)/segments,c=Math.cos(a),s=Math.sin(a),d=Math.cos(b),t=Math.sin(b),q=p.length/3;p.push(c,s,-.5,d,t,-.5,d,t,.5,c,s,.5);n.push(c,s,0,d,t,0,d,t,0,c,s,0);i.push(q,q+1,q+2,q,q+2,q+3);for(const z of [-.5,.5]){const r=p.length/3;p.push(0,0,z,c,s,z,d,t,z);n.push(0,0,Math.sign(z),0,0,Math.sign(z),0,0,Math.sign(z));if(z>0)i.push(r,r+1,r+2);else i.push(r,r+2,r+1);}} return this.bufferMesh(p,n,i);
+      }
+      makeSphere(latitudes, longitudes) {
+        const p=[],n=[],i=[]; for(let a=0;a<=latitudes;a++){const phi=Math.PI*a/latitudes,sp=Math.sin(phi),cp=Math.cos(phi);for(let b=0;b<=longitudes;b++){const theta=2*Math.PI*b/longitudes,x=sp*Math.cos(theta),y=sp*Math.sin(theta),z=cp;p.push(x,y,z);n.push(x,y,z);}} for(let a=0;a<latitudes;a++)for(let b=0;b<longitudes;b++){const q=a*(longitudes+1)+b,r=q+longitudes+1;i.push(q,r,q+1,q+1,r,r+1);} return this.bufferMesh(p,n,i);
+      }
+      makeFrustum(horizontalDeg, verticalDeg, nearM, farM) {
+        const halfWidth=z=>z*Math.tan(horizontalDeg*Math.PI/360),halfHeight=z=>z*Math.tan(verticalDeg*Math.PI/360),corners=z=>{const x=halfWidth(z),y=halfHeight(z);return[[-x,-y,z],[x,-y,z],[x,y,z],[-x,y,z]];},p=[],n=[],i=[];
+        const triangle=(a,b,c)=>{const normal=normalize(cross(subtract(b,a),subtract(c,a))),start=p.length/3;for(const point of [a,b,c]){p.push(...point);n.push(...normal);}i.push(start,start+1,start+2);};
+        const far=corners(farM*1000);
+        if(nearM<=0){const apex=[0,0,0];triangle(apex,far[0],far[1]);triangle(apex,far[1],far[2]);triangle(apex,far[2],far[3]);triangle(apex,far[3],far[0]);triangle(far[0],far[3],far[2]);triangle(far[0],far[2],far[1]);}
+        else{const near=corners(nearM*1000);for(let side=0;side<4;side++){const next=(side+1)%4;triangle(near[side],far[side],far[next]);triangle(near[side],far[next],near[next]);}triangle(near[0],near[1],near[2]);triangle(near[0],near[2],near[3]);triangle(far[0],far[3],far[2]);triangle(far[0],far[2],far[1]);}
+        return this.bufferMesh(p,n,i);
+      }
+      async loadStl(url) {
+        const response=await fetch(url); if(!response.ok) throw new Error(`${response.status} loading ${url}`); const bytes=await response.arrayBuffer(), view=new DataView(bytes), count=view.getUint32(80,true), p=[],n=[],i=[]; let offset=84;
+        for(let face=0;face<count;face++){const normal=[view.getFloat32(offset,true),view.getFloat32(offset+4,true),view.getFloat32(offset+8,true)];offset+=12;for(let vertex=0;vertex<3;vertex++){p.push(view.getFloat32(offset,true),view.getFloat32(offset+4,true),view.getFloat32(offset+8,true));n.push(...normal);i.push(i.length);offset+=12;}offset+=2;} return this.bufferMesh(p,n,i);
+      }
+      async loadVisuals() {
+        const models=Object.fromEntries(this.data.inertials.links.map(link=>{const origin=link.frame_origin_urdf_world_m.map(value=>value*1000);origin[2]+=this.groundShiftMm;return[link.name,translation(origin)];}));
+        for(const fixed of this.data.geometry.fixed_geometry){const origin=fixed.frame_origin_urdf_world_m.map(value=>value*1000);origin[2]+=this.groundShiftMm;models[fixed.name]=frameMatrix(origin,fixed.rotation_urdf_world_from_frame);}
+        await Promise.all(this.data.meshes.meshes.map(async record=>{const url=`${base}/generated/meshes/${record.link}.stl`;const mesh=await this.loadStl(url);this.visuals.push({link:record.link,mesh,model:models[record.link]});}));
+        this.status.textContent=`${this.visuals.length} exterior link meshes · ${this.data.meshes.summary.output_face_count.toLocaleString()} triangles · ${this.collisions.length} collision primitives`; this.render();
+      }
+      buildCollisions() {
+        const origins=Object.fromEntries(this.data.inertials.links.map(link=>{const origin=link.frame_origin_urdf_world_m.map(value=>value*1000);origin[2]+=this.groundShiftMm;return[link.name,origin];}));
+        for(const link of this.data.geometry.links) for(const primitive of link.collision_primitives){const frame=origins[link.name],position=primitive.origin_xyz_m.map((v,k)=>frame[k]+v*1000);let scale;if(primitive.type==='box')scale=primitive.size_m.map(v=>v*1000);else if(primitive.type==='cylinder')scale=[primitive.radius_m*1000,primitive.radius_m*1000,primitive.length_m*1000];else scale=[primitive.radius_m*1000,primitive.radius_m*1000,primitive.radius_m*1000];this.collisions.push({link:link.name,mesh:this.unitMeshes[primitive.type],model:modelMatrix(position,primitive.origin_rpy_rad,scale),role:primitive.role});}
+        for(const fixed of this.data.geometry.fixed_geometry){const origin=fixed.frame_origin_urdf_world_m.map(value=>value*1000);origin[2]+=this.groundShiftMm;const frame=frameMatrix(origin,fixed.rotation_urdf_world_from_frame);for(const primitive of fixed.collision_primitives){let scale;if(primitive.type==='box')scale=primitive.size_m.map(v=>v*1000);else if(primitive.type==='cylinder')scale=[primitive.radius_m*1000,primitive.radius_m*1000,primitive.length_m*1000];else scale=[primitive.radius_m*1000,primitive.radius_m*1000,primitive.radius_m*1000];const local=modelMatrix(primitive.origin_xyz_m.map(v=>v*1000),primitive.origin_rpy_rad,scale);this.collisions.push({link:fixed.name,mesh:this.unitMeshes[primitive.type],model:multiply(frame,local),role:primitive.role});}}
+        for(const endpoint of this.data.geometry.anonymous_end_effectors){const parent=origins[endpoint.parent_link],position=endpoint.origin_xyz_parent_m.map((v,k)=>parent[k]+(v+endpoint.sphere_center_xyz_link_m[k])*1000),radius=endpoint.radius_m*1000;this.collisions.push({link:endpoint.link_name,mesh:this.unitMeshes.sphere,model:modelMatrix(position,[0,0,0],[radius,radius,radius]),role:'anonymous_end_effector'});}
+      }
+      buildFov() {
+        const specs=this.data.report.astra_stereo_s_u3.field_of_view,frames=Object.fromEntries(this.data.report.fixed_sensor_frames.map(value=>[value.link_name,value]));
+        for(const kind of ['depth','color']){const spec=specs[kind],frame=frames[spec.frame],origin=frame.origin_xyz_pelvis_m.map(value=>value*1000);origin[2]+=this.groundShiftMm;const rotation=frame.rotation_pelvis_from_frame,lengthM=spec.maximum_range_m||spec.visualization_length_m,nearM=kind==='depth'?spec.minimum_range_m:0,forward=rotation.map(row=>row[2]),imageRight=rotation.map(row=>row[0]),farCenter=origin.map((value,index)=>value+forward[index]*lengthM*1000),labelPoint=origin.map((value,index)=>value+forward[index]*lengthM*520+imageRight[index]*(kind==='depth'?-180:180)),color=kind==='depth'?[.12,.76,1,.095]:[1,.52,.16,.075];this.frusta.push({kind,label:kind==='depth'?`Depth FoV ${spec.horizontal_deg}° × ${spec.vertical_deg}° · ${spec.minimum_range_m}–${spec.maximum_range_m} m`:`RGB FoV ${spec.horizontal_deg}° × ${spec.vertical_deg}° · shown to ${lengthM} m`,mesh:this.makeFrustum(spec.horizontal_deg,spec.vertical_deg,nearM,lengthM),model:frameMatrix(origin,rotation),color,origin,farCenter,labelPoint});if(kind==='depth'){const half=.003;this.frusta.push({kind:'depth-minimum',label:null,mesh:this.makeFrustum(spec.horizontal_deg,spec.vertical_deg,spec.minimum_range_m-half,spec.minimum_range_m+half),model:frameMatrix(origin,rotation),color:[.25,.9,1,.28]});}}
+      }
+      draw(item, color) { const gl=this.gl;gl.uniformMatrix4fv(this.modelUniform,false,item.model);gl.uniform4fv(this.colorUniform,color);gl.bindVertexArray(item.mesh.vao);gl.drawElements(gl.TRIANGLES,item.mesh.count,gl.UNSIGNED_INT,0); }
+      render() {
+        const gl=this.gl,width=Math.max(1,Math.round(this.canvas.clientWidth*devicePixelRatio)),height=Math.max(1,Math.round(this.canvas.clientHeight*devicePixelRatio));if(this.canvas.width!==width||this.canvas.height!==height){this.canvas.width=width;this.canvas.height=height;}gl.viewport(0,0,width,height);gl.clearColor(.025,.032,.044,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+        const cp=Math.cos(this.pitch),eye=[this.target[0]+this.distance*cp*Math.cos(this.yaw),this.target[1]+this.distance*cp*Math.sin(this.yaw),this.target[2]+this.distance*Math.sin(this.pitch)];this.viewProjection=multiply(perspective(Math.PI/4,width/height,1,10000),lookAt(eye,this.target,[0,0,1]));gl.useProgram(this.program);gl.uniformMatrix4fv(this.matrixUniform,false,this.viewProjection);
+        this.draw(this.ground,[.16,.19,.22,1]);
+        const cameraSelected=this.data.report.fixed_sensor_frames.some(value=>value.link_name===this.selected);
+        if(this.showVisual){for(const item of this.visuals){const selected=this.selected==='all'||item.link===this.selected||(cameraSelected&&item.link==='astra_mount_frame');const side=item.link.startsWith('left_')?[.20,.50,.82]:item.link.startsWith('right_')?[.92,.38,.20]:[.45,.49,.56];this.draw(item,[...(selected&&this.selected!=='all'?[1,.46,.16]:side),selected?.9:.11]);}}
+        if(this.showFov){gl.depthMask(false);for(const item of this.frusta)this.draw(item,item.color);gl.depthMask(true);}
+        if(this.showCollision){gl.depthMask(false);for(const item of this.collisions){const selected=this.selected==='all'||item.link===this.selected||(cameraSelected&&item.link==='astra_mount_frame');if(this.selected!=='all'&&!selected)continue;const rgb=item.role==='anonymous_end_effector'?[.96,.35,.75]:item.role.includes('joint')||item.role.includes('wrist')?[.63,.43,1]:item.role.includes('contact')||item.role.includes('central')?[.26,1,.56]:[.18,.82,1];this.draw(item,[...rgb,this.showVisual?.32:.68]);}gl.depthMask(true);}this.drawAxes();
+      }
+      project(point){const m=this.viewProjection,clip=[0,1,2,3].map(row=>m[row]*point[0]+m[4+row]*point[1]+m[8+row]*point[2]+m[12+row]);if(clip[3]<=0)return null;return[(clip[0]/clip[3]*.5+.5)*this.canvas.clientWidth,(1-(clip[1]/clip[3]*.5+.5))*this.canvas.clientHeight];}
+      drawAxes(){
+        this.overlay.replaceChildren();this.overlay.setAttribute('viewBox',`0 0 ${this.canvas.clientWidth} ${this.canvas.clientHeight}`);if(this.showFov){for(const item of this.frusta){if(!item.label)continue;const point=this.project(item.labelPoint);if(!point)continue;const color=item.kind==='depth'?'#34c9ff':'#ff9c45',label=svgElement('text',{x:point[0],y:point[1],fill:color,'font-size':13,'font-weight':700,'paint-order':'stroke',stroke:'#080a0e','stroke-width':4});label.textContent=item.label;this.overlay.append(label);}}if(!this.showAxes)return;
+        const drawAxis=(origin,axis,color,text,width)=>{const start=this.project(origin),end=this.project(origin.map((v,k)=>v+axis[k]*75));if(!start||!end)return;this.overlay.append(svgElement('line',{x1:start[0],y1:start[1],x2:end[0],y2:end[1],stroke:color,'stroke-width':width,'stroke-linecap':'round'}));const label=svgElement('text',{x:end[0]+5,y:end[1]-5,fill:color,'font-size':width>2?15:10,'font-weight':700,'paint-order':'stroke',stroke:'#080a0e','stroke-width':3});label.textContent=text;this.overlay.append(label);};
+        for(const joint of this.data.ownership.joints){if(this.selected!=='all'&&joint.child_link!==this.selected)continue;const origin=[joint.origin_cad_mm[2],joint.origin_cad_mm[0],joint.origin_cad_mm[1]+this.groundShiftMm],axis=[joint.axis_cad[2],joint.axis_cad[0],joint.axis_cad[1]];drawAxis(origin,axis,'#ffd166',this.selected==='all'?'+':`${joint.name} +`,this.selected==='all'?2:5);}
+        for(const frame of this.data.report.fixed_sensor_frames){if(this.selected!=='all'&&frame.link_name!==this.selected)continue;const origin=frame.origin_xyz_pelvis_m.map(value=>value*1000);origin[2]+=this.groundShiftMm;const rotation=frame.rotation_pelvis_from_frame,colors=['#ff5e57','#55d187','#4d96ff'],names=frame.link_name.endsWith('_optical_frame')?['+X image right','+Y image down','+Z optical forward']:['+X forward','+Y camera left','+Z up'];for(let axisIndex=0;axisIndex<3;axisIndex+=1){const axis=rotation.map(row=>row[axisIndex]);drawAxis(origin,axis,colors[axisIndex],`${frame.link_name} ${names[axisIndex]}`,this.selected==='all'?2:5);}}
+      }
+    }
+
+    Promise.all(Object.entries(paths).map(async ([name,path])=>{const response=await fetch(path);if(!response.ok)throw new Error(`${response.status} loading ${path}`);return[name,await response.json()];})).then(entries=>start(Object.fromEntries(entries))).catch(error=>document.body.insertAdjacentHTML('afterbegin',`<p class="bad">${error.message}</p>`));
+    function start(data){
+      const viewer=new Viewer(document.getElementById('viewer'),document.getElementById('overlay'),document.getElementById('status'),data);
+      const stats=[['Robot mass',`${data.inertials.summary.total_mass_kg.toFixed(3)} kg`],['Nominal root Z',`${data.report.grounding.nominal_root_translation_m[2].toFixed(6)} m`],['Sole plane','z = 0 exactly'],['Visual links',data.meshes.summary.mesh_count],['Visual triangles',data.meshes.summary.output_face_count.toLocaleString()],['Source triangles',data.meshes.summary.input_face_count.toLocaleString()],['Collision primitives',data.geometry.summary.collision_primitive_count],['Movable joints',data.ownership.joints.length]];
+      document.getElementById('stats').innerHTML=stats.map(([label,value])=>`<div class="stat"><span class="muted">${label}</span><strong>${value}</strong></div>`).join('');const fov=data.report.astra_stereo_s_u3.field_of_view;document.getElementById('source').innerHTML=`STEP SHA-256 ${data.ownership.source.sha256} · ${data.ownership.source.path}<br>Camera FoV: <a href="${fov.source}" target="_blank" rel="noreferrer">Orbbec Astra Stereo S U3 specifications</a>`;
+      document.getElementById('omissions').innerHTML=`<ul>${Object.entries(data.geometry.summary.excluded_visual_instance_counts).map(([reason,count])=>`<li>${count.toLocaleString()} occurrence(s): ${reason}</li>`).join('')}</ul><p class="good">${data.geometry.summary.visually_omitted_structure_mass_kg.toFixed(3)} kg is omitted from rendering only; physical mass remains unchanged.</p>`;
+      const meshByLink=Object.fromEntries(data.meshes.meshes.map(value=>[value.link,value])),geometryByLink=Object.fromEntries([...data.geometry.links,...data.geometry.fixed_geometry].map(value=>[value.name,value])),jointByChild=Object.fromEntries(data.ownership.joints.map(value=>[value.child_link,value]));
+      const select=document.getElementById('link-select'),tbody=document.getElementById('links');for(const link of data.inertials.links){const option=document.createElement('option');option.value=link.name;option.textContent=link.name;select.append(option);const mesh=meshByLink[link.name],geoms=geometryByLink[link.name].collision_primitives,joint=jointByChild[link.name],row=document.createElement('tr');row.dataset.link=link.name;row.innerHTML=`<td>${link.name}</td><td>${link.mass_kg.toFixed(4)} kg</td><td>${mesh?`${mesh.output_face_count.toLocaleString()} tris`:'virtual / none'}</td><td>${geoms.length?geoms.map(g=>`${g.type}: ${g.role.replaceAll('_',' ')}`).join('<br>'):'none'}</td><td>${joint?`${joint.name}<br><span class="muted">CAD ${joint.origin_cad_mm.map(v=>v.toFixed(1)).join(', ')} mm</span>`:'pelvis root'}</td>`;row.addEventListener('click',()=>{select.value=link.name;select.dispatchEvent(new Event('change'));});tbody.append(row);}
+      for(const frame of data.report.fixed_sensor_frames){const option=document.createElement('option');option.value=frame.link_name;option.textContent=frame.link_name;select.append(option);const geometry=geometryByLink[frame.link_name],mesh=meshByLink[frame.link_name],row=document.createElement('tr');row.dataset.link=frame.link_name;row.innerHTML=`<td>${frame.link_name}</td><td>0 kg<br><span class="muted">camera mass remains in pelvis at CAD pose</span></td><td>${mesh?`${mesh.output_face_count.toLocaleString()} tris`:'frame only'}</td><td>${geometry?geometry.collision_primitives.map(g=>`${g.type}: ${g.role.replaceAll('_',' ')}`).join('<br>'):'none'}</td><td>${frame.joint_name}<br><span class="muted">${frame.frame_convention}</span></td>`;row.addEventListener('click',()=>{select.value=frame.link_name;select.dispatchEvent(new Event('change'));});tbody.append(row);}
+      for(const endpoint of data.geometry.anonymous_end_effectors){const option=document.createElement('option');option.value=endpoint.link_name;option.textContent=endpoint.link_name;select.append(option);}
+      select.addEventListener('change',()=>{viewer.selected=select.value;for(const row of tbody.rows)row.classList.toggle('selected',row.dataset.link===select.value);if(select.value==='all')viewer.fit();else if(data.report.fixed_sensor_frames.some(value=>value.link_name===select.value))viewer.focus(select.value);else viewer.render();});document.getElementById('fit').addEventListener('click',()=>viewer.fit());document.getElementById('fit-fov').addEventListener('click',()=>viewer.fitFov());document.getElementById('show-visual').addEventListener('change',event=>{viewer.showVisual=event.target.checked;viewer.render();});document.getElementById('show-collision').addEventListener('change',event=>{viewer.showCollision=event.target.checked;viewer.render();});document.getElementById('show-axes').addEventListener('change',event=>{viewer.showAxes=event.target.checked;viewer.render();});document.getElementById('show-fov').addEventListener('change',event=>{viewer.showFov=event.target.checked;viewer.render();});
+    }
+  })();
+  </script>
+</body>
+</html>

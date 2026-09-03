@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bello Mini link ownership review</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; background: #0b0d10; color: #eef1f5; }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 1720px; padding: 26px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin-top: 0; }
+    code { color: #b9d1ff; }
+    .muted { color: #aab2bf; }
+    .warning { color: #ffd37a; }
+    .good { color: #73e2a7; }
+    .bad { color: #ff8d8d; }
+    .card { background: #151920; border: 1px solid #2a313b; border-radius: 12px; padding: 18px; margin: 18px 0; }
+    .stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .stat { background: #10141a; padding: 12px; border-radius: 8px; }
+    .stat strong { display: block; font-size: 22px; }
+    .viewer { border: 1px solid #2a313b; border-radius: 8px; overflow: hidden; background: #06080b; }
+    .viewer-stage { position: relative; }
+    .viewer canvas { display: block; width: 100%; height: min(68vh, 680px); touch-action: none; }
+    .viewer svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+    .viewer-status { padding: 8px 10px; color: #aab2bf; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    button, select, input { background: #0f1318; color: #eef1f5; border: 1px solid #3a4553; border-radius: 6px; padding: 7px; }
+    button { cursor: pointer; background: #2b65d9; border-color: #4380f5; font-weight: 700; }
+    button.secondary { background: #202630; border-color: #4d5b6e; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    input[type="search"] { width: min(420px, 100%); }
+    .scroll { max-height: 680px; overflow: auto; border: 1px solid #2a313b; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { position: sticky; top: 0; background: #202630; text-align: left; z-index: 1; }
+    th, td { border-bottom: 1px solid #2a313b; padding: 8px; vertical-align: top; }
+    tr.inspected { background: #273141; }
+    tr.resolved { background: rgba(44, 129, 84, .11); }
+    tr.correction { background: rgba(180, 65, 65, .14); }
+    .nowrap { white-space: nowrap; }
+    .pill { display: inline-block; padding: 2px 7px; border: 1px solid #3a4553; border-radius: 999px; margin: 1px; color: #c9d1dc; }
+    .ownership-link { min-width: 230px; }
+    @media (min-width: 1200px) {
+      body { margin: 0; max-width: none; padding: 22px calc(47vw + 36px) 28px 28px; }
+      #viewer-card { position: fixed; z-index: 20; top: 14px; right: 18px; width: 47vw; max-height: calc(100vh - 28px); margin: 0; overflow: auto; box-shadow: 0 16px 50px rgba(0, 0, 0, .42); }
+      #viewer-card .viewer canvas { height: min(70vh, 700px); }
+    }
+    @media (max-width: 760px) { .viewer canvas { height: 460px; } }
+  </style>
+</head>
+<body>
+  <h1>Bello Mini rigid-link ownership review</h1>
+  <p class="warning">This is the mass-ownership gate. Confirm which rigid URDF link owns each highlighted CAD group. Detailed CAD hands are excluded; the anonymous spheres are added later. The ankle-pitch links are intentionally virtual and massless.</p>
+
+  <section class="card">
+    <h2>Coverage</h2>
+    <div class="stats" id="stats"></div>
+    <p id="source" class="muted"></p>
+  </section>
+
+  <section class="card" id="viewer-card">
+    <h2>3D ownership inspection</h2>
+    <p id="selection-title" class="warning">Select a group. The selected physical geometry becomes solid orange; every unselected retained part stays translucent so its location remains visible.</p>
+    <div class="controls">
+      <button class="secondary" id="fit-robot">Fit robot</button>
+      <button class="secondary" id="fit-selection" disabled>Fit selected group / pair</button>
+      <label class="pill"><input id="show-link-positions" type="checkbox" checked> All link positions</label>
+      <label class="pill"><input id="show-joint-axes" type="checkbox" checked> All joint axes</label>
+      <span class="pill" style="border-color:#ff7a18;color:#ff9b54">selected group</span>
+      <span class="pill" style="border-color:#c084fc;color:#c084fc">bilateral counterpart</span>
+      <span class="pill">translucent retained context</span>
+    </div>
+    <div class="viewer">
+      <div class="viewer-stage">
+        <canvas id="ownership-viewer"></canvas>
+        <svg id="ownership-overlay" aria-label="Link positions and approved joint axes"></svg>
+      </div>
+      <div class="viewer-status" id="viewer-status">Loading hand-excluded robot context…</div>
+    </div>
+    <div class="controls">
+      <span class="pill" style="border-color:#ffd166;color:#ffd166">reviewed joint axes</span>
+      <span class="pill" style="border-color:#35d9ff;color:#35d9ff">selected owner frame / + axis</span>
+      <span class="pill" style="border-color:#c084fc;color:#c084fc">counterpart owner frame / + axis</span>
+      <span class="pill">link positions</span>
+    </div>
+    <p id="selection-detail" class="muted">Child-link positions use their approved incoming-joint origins. The pelvis root marker uses the CAD assembly origin pending the final full-frame convention. Rotate by dragging, zoom with the wheel, and double-click to refit.</p>
+  </section>
+
+  <section class="card">
+    <h2>Decision symmetry audit</h2>
+    <p id="symmetry-progress" class="warning"></p>
+    <p class="muted">These are geometry-matched bilateral pairs whose currently selected owner links are not mirror-equivalent. Compare renders both parts together: orange on the left/right row you selected and purple on its counterpart.</p>
+    <div class="scroll"><table><thead><tr><th>Compare</th><th>Left group</th><th>Left owner</th><th>Right group</th><th>Right owner</th><th>CAD match</th></tr></thead><tbody id="symmetry-decisions"></tbody></table></div>
+  </section>
+
+  <section class="card" id="completion-card" hidden>
+    <h2>Applied CAD symmetry completion</h2>
+    <p class="good">These source-linked synthetic groups complete CAD geometry that was absent on the right side. Compare shows the source in orange and the generated right-side result in purple.</p>
+    <div class="scroll"><table><thead><tr><th>3D</th><th>Source</th><th>Operation</th><th>Placement</th><th>Destination owner</th></tr></thead><tbody id="completion-operations"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Gate — assign every retained CAD group</h2>
+    <p>Catalog motors are proposed on their stator/parent side. Both remote ankle motors stay on the knee link and do not create joints at their shafts. Changing a link resets that row to Pending so the correction must be explicitly confirmed.</p>
+    <div class="controls">
+      <button id="confirm-visible">Confirm visible assignments</button>
+      <input id="group-filter" type="search" placeholder="Filter group, source, motor, material, or link">
+      <select id="kind-filter"><option value="all">All group types</option><option value="structure">Structure</option><option value="catalog_motor">Catalog motors</option><option value="measured_assembly">Measured assemblies</option></select>
+      <select id="link-filter"><option value="all">All proposed links</option></select>
+      <select id="symmetry-filter"><option value="all">All symmetry states</option><option value="mismatch">Decision mismatches only</option><option value="unpaired">No exact pair candidate</option></select>
+    </div>
+    <p id="progress" class="warning"></p>
+    <div class="scroll"><table>
+      <thead><tr><th>3D</th><th>CAD group</th><th>Type / contents</th><th>Rigid owner link</th><th>Location / mass</th><th>Review</th></tr></thead>
+      <tbody id="groups"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <h2>Current per-link non-motor mass</h2>
+    <p class="muted">Material-derived CAD structure plus measured battery/electronics only. RobStride catalog masses are deliberately excluded from this table until the catalog-inertia gate.</p>
+    <div class="scroll"><table><thead><tr><th>Link</th><th>Groups</th><th>Material / measured mass (kg)</th></tr></thead><tbody id="link-summary"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2 id="bilateral-title">Bilateral proposal audit</h2>
+    <p class="warning">Rows over 0.01 kg are flags for visual confirmation, not automatic failures. They may indicate actual asymmetric CAD, different materials, or a group proposed on the wrong link.</p>
+    <div class="scroll"><table><thead><tr><th>Left link</th><th>Left kg</th><th>Right link</th><th>Right kg</th><th>|Δ| kg</th></tr></thead><tbody id="bilateral-summary"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Export review</h2>
+    <p id="export-status" class="warning"></p>
+    <button id="export-review" disabled>Export source-bound link ownership review</button>
+    <label class="pill">Resume exported review <input id="import-review" type="file" accept="application/json"></label>
+  </section>
+
+  <script>
+  (() => {
+    const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    const vertexSource = `#version 300 es
+      layout(location=0) in vec3 a_position;
+      layout(location=1) in vec3 a_normal;
+      uniform mat4 u_view_projection;
+      uniform mat4 u_model;
+      out vec3 v_normal;
+      void main() { gl_Position = u_view_projection * u_model * vec4(a_position, 1.0); v_normal = mat3(u_model) * a_normal; }`;
+    const fragmentSource = `#version 300 es
+      precision highp float;
+      in vec3 v_normal;
+      uniform vec4 u_color;
+      out vec4 out_color;
+      void main() { vec3 n = normalize(v_normal); float d = 0.28 + 0.72 * abs(dot(n, normalize(vec3(0.3, 0.8, 0.45)))); out_color = vec4(u_color.rgb * d, u_color.a); }`;
+    const compile = (gl, type, source) => { const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader); if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader)); return shader; };
+    const makeProgram = gl => { const value = gl.createProgram(); gl.attachShader(value, compile(gl, gl.VERTEX_SHADER, vertexSource)); gl.attachShader(value, compile(gl, gl.FRAGMENT_SHADER, fragmentSource)); gl.linkProgram(value); if (!gl.getProgramParameter(value, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(value)); return value; };
+    const subtract = (a, b) => a.map((value, index) => value - b[index]);
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const normalize = value => { const length = Math.hypot(...value) || 1; return value.map(component => component / length); };
+    const dot = (a, b) => a.reduce((sum, value, index) => sum + value * b[index], 0);
+    const lookAt = (eye, target, up) => { const z = normalize(subtract(eye, target)); const x = normalize(cross(up, z)); const y = cross(z, x); return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1]); };
+    const perspective = (fov, aspect, near, far) => { const scale = 1 / Math.tan(fov / 2); const range = 1 / (near - far); return new Float32Array([scale / aspect, 0, 0, 0, 0, scale, 0, 0, 0, 0, (far + near) * range, -1, 0, 0, 2 * far * near * range, 0]); };
+    const multiply = (a, b) => { const result = new Float32Array(16); for (let column = 0; column < 4; column += 1) for (let row = 0; row < 4; row += 1) result[column * 4 + row] = a[row] * b[column * 4] + a[4 + row] * b[column * 4 + 1] + a[8 + row] * b[column * 4 + 2] + a[12 + row] * b[column * 4 + 3]; return result; };
+    const svgElement = (name, attrs) => { const value = document.createElementNS('http://www.w3.org/2000/svg', name); for (const [key, item] of Object.entries(attrs)) value.setAttribute(key, item); return value; };
+
+    class OwnershipViewer {
+      constructor(canvas, overlay, status, data) {
+        this.canvas = canvas; this.overlay = overlay; this.status = status; this.data = data; this.context = data.root;
+        this.gl = canvas.getContext('webgl2', {antialias: true, alpha: false});
+        if (!this.gl) throw new Error('WebGL 2 is required.');
+        this.program = makeProgram(this.gl); this.matrixUniform = this.gl.getUniformLocation(this.program, 'u_view_projection'); this.modelUniform = this.gl.getUniformLocation(this.program, 'u_model'); this.colorUniform = this.gl.getUniformLocation(this.program, 'u_color');
+        this.cache = new Map(); this.contextMesh = null; this.selection = null; this.selectionMeshes = []; this.comparison = null; this.comparisonMeshes = []; this.selectionToken = 0; this.ownerLink = null; this.comparisonOwnerLink = null;
+        this.showLinkPositions = true; this.showJointAxes = true; this.viewProjection = identity;
+        this.target = [0, -250, 20]; this.distance = 1500; this.yaw = .62; this.pitch = .08; this.drag = null;
+        this.bind();
+        this.load(this.context.context_mesh.url).then(mesh => { this.contextMesh = mesh; this.fit(this.context.bounds_mm); this.status.textContent = `${this.context.context_mesh.triangle_count.toLocaleString()}-triangle hand-excluded CAD context`; });
+      }
+      bind() {
+        this.canvas.addEventListener('pointerdown', event => { this.drag = [event.clientX, event.clientY]; this.canvas.setPointerCapture(event.pointerId); });
+        this.canvas.addEventListener('pointermove', event => { if (!this.drag) return; this.yaw -= (event.clientX - this.drag[0]) * .007; this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch + (event.clientY - this.drag[1]) * .007)); this.drag = [event.clientX, event.clientY]; this.render(); });
+        this.canvas.addEventListener('pointerup', () => { this.drag = null; });
+        this.canvas.addEventListener('wheel', event => { event.preventDefault(); this.distance *= Math.exp(event.deltaY * .001); this.render(); }, {passive: false});
+        this.canvas.addEventListener('dblclick', () => this.fit(this.context.bounds_mm));
+        new ResizeObserver(() => this.render()).observe(this.canvas);
+      }
+      async load(url) {
+        if (this.cache.has(url)) return this.cache.get(url);
+        const pending = fetch(url).then(async response => {
+          if (!response.ok) throw new Error(`mesh request failed: ${response.status} ${url}`);
+          const bytes = await response.arrayBuffer(); if (new TextDecoder().decode(bytes.slice(0, 8)) !== 'BELLO3D1') throw new Error(`invalid review mesh: ${url}`);
+          const header = new DataView(bytes, 8, 8); const vertexCount = header.getUint32(0, true); const indexCount = header.getUint32(4, true); let offset = 16;
+          const positions = new Float32Array(bytes, offset, vertexCount * 3); offset += vertexCount * 12; const normals = new Float32Array(bytes, offset, vertexCount * 3); offset += vertexCount * 12; const indices = new Uint32Array(bytes, offset, indexCount);
+          const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao); const positionBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer); gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0); const normalBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer); gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0); const indexBuffer = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW); gl.bindVertexArray(null); return {vao, count: indexCount};
+        });
+        this.cache.set(url, pending); return pending;
+      }
+      async loadGroup(group) {
+        const instances = group.selection_instances || group.occurrences.map(occurrence => ({mesh: occurrence.mesh, transform: occurrence.transform}));
+        return Promise.all(instances.map(async instance => ({mesh: await this.load(instance.mesh.url), transform: new Float32Array(instance.transform), triangles: instance.mesh.triangle_count})));
+      }
+      async select(group, ownerLink, comparison = null, comparisonOwnerLink = null) {
+        this.selection = group; this.ownerLink = ownerLink; this.comparison = comparison; this.comparisonOwnerLink = comparisonOwnerLink; this.selectionMeshes = []; this.comparisonMeshes = []; const token = ++this.selectionToken; this.status.textContent = `Loading ${group.label}${comparison ? ` and ${comparison.label}` : ''}…`; this.render();
+        const [loaded, comparisonLoaded] = await Promise.all([this.loadGroup(group), comparison ? this.loadGroup(comparison) : Promise.resolve([])]);
+        if (token !== this.selectionToken) return;
+        this.selectionMeshes = loaded; this.comparisonMeshes = comparisonLoaded; const triangles = loaded.reduce((sum, value) => sum + value.triangles, 0); const comparisonTriangles = comparisonLoaded.reduce((sum, value) => sum + value.triangles, 0);
+        this.status.textContent = comparison ? `${group.label} ↔ ${comparison.label} · ${(triangles + comparisonTriangles).toLocaleString()} comparison triangles` : `${group.label} · ${group.occurrence_count.toLocaleString()} physical occurrence(s) · ${triangles.toLocaleString()} selection triangles`; this.render();
+      }
+      setReviewedLink(groupId, ownerLink) { if (this.selection?.id === groupId) this.ownerLink = ownerLink; if (this.comparison?.id === groupId) this.comparisonOwnerLink = ownerLink; this.render(); }
+      fit(bounds) { this.target = bounds.min.map((value, index) => (value + bounds.max[index]) / 2); const diagonal = Math.hypot(...bounds.max.map((value, index) => value - bounds.min[index])); this.distance = Math.max(diagonal * 1.3, 20); this.render(); }
+      draw(mesh, color, model = identity) { if (!mesh) return; const gl = this.gl; gl.uniformMatrix4fv(this.modelUniform, false, model); gl.uniform4fv(this.colorUniform, color); gl.bindVertexArray(mesh.vao); gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0); }
+      project(point) { const matrix = this.viewProjection; const clip = [0, 1, 2, 3].map(row => matrix[row] * point[0] + matrix[4 + row] * point[1] + matrix[8 + row] * point[2] + matrix[12 + row]); if (clip[3] <= 0) return null; const x = clip[0] / clip[3]; const y = clip[1] / clip[3]; return [(x * .5 + .5) * this.canvas.clientWidth, (1 - (y * .5 + .5)) * this.canvas.clientHeight]; }
+      incomingJoint(linkName) { return this.data.joints.find(joint => joint.child_link === linkName) || null; }
+      linkPosition(linkName) { const joint = this.incomingJoint(linkName); return joint ? joint.origin_cad_mm : linkName === 'pelvis_link' ? [0, 0, 0] : null; }
+      drawOverlay() {
+        this.overlay.replaceChildren(); this.overlay.setAttribute('viewBox', `0 0 ${this.canvas.clientWidth} ${this.canvas.clientHeight}`);
+        const selectedJoint = this.incomingJoint(this.ownerLink); const comparisonJoint = this.incomingJoint(this.comparisonOwnerLink); const joints = this.showJointAxes ? this.data.joints : [selectedJoint, comparisonJoint].filter(Boolean);
+        for (const joint of joints) {
+          const selected = joint === selectedJoint; const counterpart = joint === comparisonJoint; const emphasized = selected || counterpart; const axis = joint.axis_cad; const scale = emphasized ? 72 : 42; const start = joint.origin_cad_mm.map((value, index) => value - axis[index] * scale); const end = joint.origin_cad_mm.map((value, index) => value + axis[index] * scale); const a = this.project(start); const b = this.project(end); const center = this.project(joint.origin_cad_mm); if (!a || !b || !center) continue; const color = selected ? '#35d9ff' : counterpart ? '#c084fc' : '#ffd166';
+          this.overlay.append(svgElement('line', {x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: color, 'stroke-width': emphasized ? 5 : 2, opacity: emphasized ? 1 : .7, 'stroke-linecap': 'round'}));
+          if (emphasized) { const plus = svgElement('text', {x: b[0] + 6, y: b[1] - 6, fill: color, 'font-size': 18, 'font-weight': 800, 'font-family': 'ui-monospace, monospace', 'paint-order': 'stroke', stroke: '#080a0e', 'stroke-width': 4}); plus.textContent = '+'; this.overlay.append(plus); }
+        }
+        const visibleLinks = this.showLinkPositions ? this.data.links.map(link => link.name) : [this.ownerLink, this.comparisonOwnerLink].filter(Boolean);
+        for (const linkName of visibleLinks) { const position = this.linkPosition(linkName); const point = position && this.project(position); if (!point) continue; const selected = linkName === this.ownerLink; const counterpart = linkName === this.comparisonOwnerLink; const emphasized = selected || counterpart; const color = selected ? '#35d9ff' : counterpart ? '#c084fc' : '#f4f7fb'; this.overlay.append(svgElement('circle', {cx: point[0], cy: point[1], r: emphasized ? 8 : 3, fill: color, stroke: emphasized ? '#fff' : '#111', 'stroke-width': emphasized ? 3 : 1, opacity: emphasized ? 1 : .75})); }
+        if (!this.selection || !this.ownerLink) return;
+        const groupCenter = this.project(this.selection.center_mm); const ownerPosition = this.linkPosition(this.ownerLink); const ownerPoint = ownerPosition && this.project(ownerPosition);
+        if (groupCenter) this.overlay.append(svgElement('circle', {cx: groupCenter[0], cy: groupCenter[1], r: 6, fill: '#ff7a18', stroke: '#fff', 'stroke-width': 2}));
+        if (groupCenter && ownerPoint) this.overlay.append(svgElement('line', {x1: groupCenter[0], y1: groupCenter[1], x2: ownerPoint[0], y2: ownerPoint[1], stroke: '#35d9ff', 'stroke-width': 2, 'stroke-dasharray': '6 5', opacity: .9}));
+        if (ownerPoint) { const label = svgElement('text', {x: ownerPoint[0] + 12, y: ownerPoint[1] - 12, fill: '#fff', 'font-size': 13, 'font-family': 'ui-monospace, monospace', 'paint-order': 'stroke', stroke: '#080a0e', 'stroke-width': 4}); label.textContent = selectedJoint ? `${this.ownerLink} · ${selectedJoint.name}` : `${this.ownerLink} · CAD root origin`; this.overlay.append(label); }
+        if (this.comparison && this.comparisonOwnerLink) { const comparisonCenter = this.project(this.comparison.center_mm); const comparisonPosition = this.linkPosition(this.comparisonOwnerLink); const comparisonPoint = comparisonPosition && this.project(comparisonPosition); if (comparisonCenter) this.overlay.append(svgElement('circle', {cx: comparisonCenter[0], cy: comparisonCenter[1], r: 6, fill: '#c084fc', stroke: '#fff', 'stroke-width': 2})); if (comparisonCenter && comparisonPoint) this.overlay.append(svgElement('line', {x1: comparisonCenter[0], y1: comparisonCenter[1], x2: comparisonPoint[0], y2: comparisonPoint[1], stroke: '#c084fc', 'stroke-width': 2, 'stroke-dasharray': '6 5', opacity: .9})); if (comparisonPoint) { const label = svgElement('text', {x: comparisonPoint[0] + 12, y: comparisonPoint[1] + 20, fill: '#c084fc', 'font-size': 13, 'font-family': 'ui-monospace, monospace', 'paint-order': 'stroke', stroke: '#080a0e', 'stroke-width': 4}); label.textContent = comparisonJoint ? `${this.comparisonOwnerLink} · ${comparisonJoint.name}` : `${this.comparisonOwnerLink} · CAD root origin`; this.overlay.append(label); } }
+      }
+      render() {
+        const gl = this.gl; const ratio = Math.min(devicePixelRatio || 1, 2); const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio)); const height = Math.max(1, Math.round(this.canvas.clientHeight * ratio)); if (this.canvas.width !== width || this.canvas.height !== height) { this.canvas.width = width; this.canvas.height = height; }
+        gl.viewport(0, 0, width, height); gl.clearColor(.025, .033, .045, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.useProgram(this.program);
+        const horizontal = Math.cos(this.pitch) * this.distance; const eye = [this.target[0] + Math.sin(this.yaw) * horizontal, this.target[1] + Math.sin(this.pitch) * this.distance, this.target[2] + Math.cos(this.yaw) * horizontal]; this.viewProjection = multiply(perspective(Math.PI / 4, width / height, Math.max(this.distance / 500, .1), this.distance * 20), lookAt(eye, this.target, [0, 1, 0])); gl.uniformMatrix4fv(this.matrixUniform, false, this.viewProjection);
+        this.draw(this.contextMesh, [.28, .34, .42, .18]);
+        if (this.contextMesh && (this.selectionMeshes.length || this.comparisonMeshes.length)) gl.clear(gl.DEPTH_BUFFER_BIT);
+        for (const instance of this.selectionMeshes) this.draw(instance.mesh, [1, .43, .08, 1], instance.transform);
+        for (const instance of this.comparisonMeshes) this.draw(instance.mesh, [.75, .28, 1, 1], instance.transform);
+        gl.bindVertexArray(null); this.drawOverlay();
+      }
+    }
+
+    const manifestUrl = new URLSearchParams(location.search).get('manifest') || '/artifacts/bello_mini_cad/link_ownership_review_manifest.json';
+    fetch(manifestUrl).then(response => { if (!response.ok) throw new Error(`${response.status} loading ${manifestUrl}`); return response.json(); }).then(start).catch(error => document.body.insertAdjacentHTML('afterbegin', `<p class="bad">${error.message}</p>`));
+
+    function start(data) {
+      if (!['link_ownership', 'resolved_link_ownership'].includes(data.review_stage)) throw new Error(`expected link ownership manifest, got ${data.review_stage}`);
+      const resolvedMode = data.review_stage === 'resolved_link_ownership';
+      const storageKey = `bello-mini-link-ownership:${data.source.sha256}:${data.review_contract}`;
+      const state = JSON.parse(localStorage.getItem(storageKey) || '{"groups":{}}');
+      const save = () => localStorage.setItem(storageKey, JSON.stringify(state));
+      const physicalLinks = data.links.filter(link => link.physical_geometry_policy !== 'virtual_massless_serial_coordinate').map(link => link.name);
+      const virtualLinks = data.links.filter(link => link.physical_geometry_policy === 'virtual_massless_serial_coordinate').map(link => link.name);
+      const decisionFor = group => state.groups[group.id] || {status: resolvedMode ? 'confirmed' : 'pending', link: group.reviewed_link || group.proposed_link};
+      const byGroup = new Map(data.groups.map(group => [group.id, group]));
+      const pairByGroup = new Map(); for (const pair of data.bilateral_group_pairs || []) { pairByGroup.set(pair.left_group_id, pair); pairByGroup.set(pair.right_group_id, pair); }
+      const unpairedGroups = new Set(data.unpaired_bilateral_group_ids || []);
+      const mirrorLink = link => link.startsWith('left_') ? `right_${link.slice(5)}` : link.startsWith('right_') ? `left_${link.slice(6)}` : link;
+      const pairMismatch = pair => mirrorLink(decisionFor(byGroup.get(pair.left_group_id)).link) !== decisionFor(byGroup.get(pair.right_group_id)).link;
+      const mismatchedPairs = () => (data.bilateral_group_pairs || []).filter(pairMismatch);
+      let inspected = null;
+
+      document.getElementById('stats').innerHTML = [
+        ['Modeled occurrences', (data.summary.modeled_occurrence_count || data.summary.included_occurrence_count).toLocaleString()],
+        ['Review groups', data.summary.ownership_group_count],
+        ['Catalog motors', data.summary.catalog_motor_group_count],
+        ['Measured assemblies', data.summary.measured_assembly_group_count],
+        ['Excluded hand parts', data.summary.excluded_hand_occurrence_count],
+        ['Material mass (kg)', data.summary.estimated_material_mass_kg.toFixed(3)],
+        ['Measured mass (kg)', data.summary.measured_assembly_mass_kg.toFixed(3)],
+        ['Virtual massless links', virtualLinks.length],
+        ['Bilateral flags', data.summary.bilateral_link_pairs_requiring_review ?? 0],
+        ['Max bilateral |Δ| kg', data.summary.maximum_bilateral_non_motor_mass_residual_kg.toFixed(3)],
+        ['Geometry-matched pairs', data.summary.bilateral_group_pair_count],
+        ['No exact pair match', data.summary.unpaired_bilateral_group_count],
+      ].map(([label, value]) => `<div class="stat"><strong>${value}</strong>${label}</div>`).join('');
+      document.getElementById('source').textContent = `${data.source.path} · SHA-256 ${data.source.sha256}`;
+      document.getElementById('bilateral-summary').innerHTML = data.bilateral_non_motor_mass_audit.map(pair => `<tr class="${pair.status === 'review' ? 'correction' : 'resolved'}"><td><code>${pair.left_link}</code></td><td>${pair.left_mass_kg.toFixed(6)}</td><td><code>${pair.right_link}</code></td><td>${pair.right_mass_kg.toFixed(6)}</td><td>${pair.absolute_residual_kg.toFixed(6)}</td></tr>`).join('');
+      if (resolvedMode) { document.querySelector('h1').textContent = 'Bello Mini resolved ownership confirmation'; document.querySelector('body > p.warning').textContent = 'Read-only confirmation of reviewed ownership and explicit CAD symmetry completion. Detailed hands remain excluded and ankle-pitch links remain virtual/massless.'; document.getElementById('bilateral-title').textContent = 'Resolved bilateral mass audit'; }
+
+      const viewer = new OwnershipViewer(document.getElementById('ownership-viewer'), document.getElementById('ownership-overlay'), document.getElementById('viewer-status'), data);
+      document.getElementById('fit-robot').addEventListener('click', () => viewer.fit(data.root.bounds_mm));
+      document.getElementById('fit-selection').addEventListener('click', () => { if (!inspected) return; const group = byGroup.get(inspected); const pair = pairByGroup.get(inspected); const counterpartId = pair && (pair.left_group_id === inspected ? pair.right_group_id : pair.left_group_id); const counterpart = counterpartId && byGroup.get(counterpartId); if (!counterpart) { viewer.fit(group.bounds_mm); return; } viewer.fit({min: group.bounds_mm.min.map((value, index) => Math.min(value, counterpart.bounds_mm.min[index])), max: group.bounds_mm.max.map((value, index) => Math.max(value, counterpart.bounds_mm.max[index]))}); });
+      document.getElementById('show-link-positions').addEventListener('change', event => { viewer.showLinkPositions = event.target.checked; viewer.render(); });
+      document.getElementById('show-joint-axes').addEventListener('change', event => { viewer.showJointAxes = event.target.checked; viewer.render(); });
+      function selectGroup(group) {
+        inspected = group.id; const decision = decisionFor(group); document.getElementById('fit-selection').disabled = false;
+        const pair = pairByGroup.get(group.id); const counterpartId = pair && (pair.left_group_id === group.id ? pair.right_group_id : pair.left_group_id); const counterpart = counterpartId && byGroup.get(counterpartId); const counterpartDecision = counterpart && decisionFor(counterpart);
+        document.getElementById('selection-title').textContent = counterpart ? `${group.label} → ${decision.link} ↔ ${counterpart.label} → ${counterpartDecision.link}` : `${group.label} → ${decision.link}`;
+        const center = group.center_mm.map(value => value.toFixed(1)).join(', '); const incoming = data.joints.find(joint => joint.child_link === decision.link); const ownerPosition = incoming?.origin_cad_mm || (decision.link === 'pelvis_link' ? [0, 0, 0] : null); const ownerDescription = ownerPosition ? `owner position ${ownerPosition.map(value => value.toFixed(1)).join(', ')} mm${incoming ? ` · +axis ${incoming.axis_cad.join(', ')} · ${incoming.name}` : ' · CAD root origin'}` : 'owner position unavailable'; document.getElementById('selection-detail').textContent = `${group.kind.replaceAll('_', ' ')} · ${group.occurrence_count.toLocaleString()} occurrence(s) · CAD center ${center} mm · ${ownerDescription} · ${group.proposal_reason}`;
+        viewer.select(group, decision.link, counterpart, counterpartDecision?.link).catch(error => { document.getElementById('viewer-status').textContent = error.message; }); renderGroups();
+      }
+
+      const groupFilter = document.getElementById('group-filter'); const kindFilter = document.getElementById('kind-filter'); const linkFilter = document.getElementById('link-filter'); const symmetryFilter = document.getElementById('symmetry-filter'); const groupBody = document.getElementById('groups');
+      for (const linkName of physicalLinks) { const option = document.createElement('option'); option.value = linkName; option.textContent = linkName; linkFilter.append(option); }
+      const visibleGroups = () => { const needle = groupFilter.value.toLowerCase(); const mismatchIds = new Set(mismatchedPairs().flatMap(pair => [pair.left_group_id, pair.right_group_id])); return data.groups.filter(group => { const decision = decisionFor(group); const haystack = `${group.id} ${group.label} ${group.kind} ${group.path_prefix} ${group.motor_name || ''} ${group.motor_model || ''} ${Object.keys(group.material_occurrence_counts).join(' ')} ${decision.link}`.toLowerCase(); const symmetryVisible = symmetryFilter.value === 'all' || (symmetryFilter.value === 'mismatch' && mismatchIds.has(group.id)) || (symmetryFilter.value === 'unpaired' && unpairedGroups.has(group.id)); return symmetryVisible && (kindFilter.value === 'all' || group.kind === kindFilter.value) && (linkFilter.value === 'all' || decision.link === linkFilter.value) && haystack.includes(needle); }); };
+      function linkOptions(selected) { return physicalLinks.map(link => `<option value="${link}"${link === selected ? ' selected' : ''}>${link}</option>`).join(''); }
+      function renderGroups() {
+        groupBody.innerHTML = '';
+        for (const group of visibleGroups()) {
+          const decision = decisionFor(group); const row = document.createElement('tr'); if (group.id === inspected) row.classList.add('inspected'); if (decision.status === 'confirmed') row.classList.add('resolved'); if (decision.status === 'correction') row.classList.add('correction');
+          const contents = group.kind === 'catalog_motor' ? `${group.motor_model}<br><span class="muted">${group.coupling}; whole housing</span>` : group.kind === 'measured_assembly' ? `${group.measured_kind}<br><span class="muted">measured assembly</span>` : Object.entries(group.material_occurrence_counts).map(([material, count]) => `<span class="pill">${material} × ${count}</span>`).join(' ');
+          const mass = group.kind === 'catalog_motor' ? 'catalog mass pending' : `${((group.estimated_material_mass_kg || 0) + (group.measured_mass_kg || 0)).toFixed(4)} kg`;
+          row.innerHTML = `<td><button class="secondary inspect">Inspect</button></td><td><code>${group.id}</code><br>${group.label}<br><span class="muted">${group.occurrence_count.toLocaleString()} occurrence(s)</span></td><td><span class="pill">${group.kind.replaceAll('_', ' ')}</span><br>${contents}</td><td><select class="ownership-link">${linkOptions(decision.link)}</select><br><span class="muted">proposed: ${group.proposed_link}</span></td><td class="nowrap">${group.center_mm.map(value => value.toFixed(1)).join(', ')} mm<br>${mass}</td><td><select class="decision"><option value="pending">Pending</option><option value="confirmed">Confirm</option><option value="correction">Needs correction</option></select></td>`;
+          row.querySelector('.decision').value = decision.status; row.querySelector('.inspect').addEventListener('click', () => selectGroup(group));
+          if (resolvedMode) { row.querySelector('.ownership-link').disabled = true; row.querySelector('.decision').disabled = true; }
+          row.querySelector('.ownership-link').addEventListener('change', event => { state.groups[group.id] = {status: 'pending', link: event.target.value}; save(); viewer.setReviewedLink(group.id, event.target.value); renderGroups(); renderLinkSummary(); renderSymmetryAudit(); updateCompletion(); if (group.id === inspected) { const pair = pairByGroup.get(group.id); const counterpartId = pair && (pair.left_group_id === group.id ? pair.right_group_id : pair.left_group_id); const counterpart = counterpartId && byGroup.get(counterpartId); document.getElementById('selection-title').textContent = counterpart ? `${group.label} → ${event.target.value} ↔ ${counterpart.label} → ${decisionFor(counterpart).link}` : `${group.label} → ${event.target.value}`; const incoming = data.joints.find(joint => joint.child_link === event.target.value); const ownerPosition = incoming?.origin_cad_mm || (event.target.value === 'pelvis_link' ? [0, 0, 0] : null); const center = group.center_mm.map(value => value.toFixed(1)).join(', '); const ownerDescription = ownerPosition ? `owner position ${ownerPosition.map(value => value.toFixed(1)).join(', ')} mm${incoming ? ` · +axis ${incoming.axis_cad.join(', ')} · ${incoming.name}` : ' · CAD root origin'}` : 'owner position unavailable'; document.getElementById('selection-detail').textContent = `${group.kind.replaceAll('_', ' ')} · ${group.occurrence_count.toLocaleString()} occurrence(s) · CAD center ${center} mm · ${ownerDescription} · ${group.proposal_reason}`; } });
+          row.querySelector('.decision').addEventListener('change', event => { state.groups[group.id] = {status: event.target.value, link: row.querySelector('.ownership-link').value}; save(); renderGroups(); renderSymmetryAudit(); updateCompletion(); });
+          groupBody.append(row);
+        }
+        const confirmed = data.groups.filter(group => decisionFor(group).status === 'confirmed').length; document.getElementById('progress').textContent = `${confirmed}/${data.groups.length} rigid ownership groups confirmed.`;
+      }
+      groupFilter.addEventListener('input', renderGroups); kindFilter.addEventListener('change', renderGroups); linkFilter.addEventListener('change', renderGroups); symmetryFilter.addEventListener('change', renderGroups);
+      document.getElementById('confirm-visible').addEventListener('click', () => { for (const group of visibleGroups()) { const decision = decisionFor(group); state.groups[group.id] = {status: 'confirmed', link: decision.link}; } save(); renderGroups(); renderSymmetryAudit(); updateCompletion(); });
+
+      function renderSymmetryAudit() {
+        const mismatches = mismatchedPairs(); const body = document.getElementById('symmetry-decisions'); body.innerHTML = '';
+        for (const pair of mismatches) { const left = byGroup.get(pair.left_group_id); const right = byGroup.get(pair.right_group_id); const leftDecision = decisionFor(left); const rightDecision = decisionFor(right); const row = document.createElement('tr'); row.classList.add('correction'); row.innerHTML = `<td><button class="secondary compare">Compare</button></td><td><code>${left.id}</code><br>${left.label}</td><td><code>${leftDecision.link}</code></td><td><code>${right.id}</code><br>${right.label}</td><td><code>${rightDecision.link}</code></td><td>${pair.spatial_residual_mm.toFixed(4)} mm<br><span class="muted">${pair.evidence}</span></td>`; row.querySelector('.compare').addEventListener('click', () => selectGroup(left)); body.append(row); }
+        document.getElementById('symmetry-progress').textContent = mismatches.length ? `${mismatches.length} geometry-matched bilateral pair(s) currently have different owner-link decisions. These must be reviewed before the export is treated as final.` : 'All geometry-matched bilateral pairs currently use mirror-equivalent owner links.';
+        document.getElementById('symmetry-progress').className = mismatches.length ? 'bad' : 'good';
+      }
+
+      function renderCompletion() {
+        if (!data.symmetry_completion) return; document.getElementById('completion-card').hidden = false; const body = document.getElementById('completion-operations'); body.innerHTML = '';
+        for (const operation of data.symmetry_completion.operations) { const source = byGroup.get(operation.source_group_id); const row = document.createElement('tr'); const placement = operation.mode === 'reflect' ? operation.plane : `${operation.translation_cad_mm.map(value => value.toFixed(3)).join(', ')} mm (${operation.distance_mm.toFixed(3)} mm foot spacing)`; row.innerHTML = `<td><button class="secondary compare">Compare</button></td><td><code>${source.id}</code><br>${source.label}</td><td>${operation.mode.replaceAll('_', ' ')}<br><span class="muted">handedness ${operation.preserves_handedness ? 'preserved' : 'reflected'}</span></td><td>${placement}</td><td><code>${operation.destination_link}</code></td>`; row.querySelector('.compare').addEventListener('click', () => selectGroup(source)); body.append(row); }
+      }
+
+      function renderLinkSummary() {
+        const totals = new Map(physicalLinks.map(link => [link, {groups: 0, mass: 0}]));
+        for (const group of data.groups) { const decision = decisionFor(group); const total = totals.get(decision.link); total.groups += 1; total.mass += (group.estimated_material_mass_kg || 0) + (group.measured_mass_kg || 0); }
+        document.getElementById('link-summary').innerHTML = [...totals.entries()].filter(([, value]) => value.groups).map(([link, value]) => `<tr><td><code>${link}</code></td><td>${value.groups}</td><td>${value.mass.toFixed(6)}</td></tr>`).join('');
+      }
+
+      const exportButton = document.getElementById('export-review');
+      function updateCompletion() {
+        if (resolvedMode) { document.getElementById('export-status').textContent = `Resolved read-only result: ${data.summary.synthetic_group_count} synthetic groups, ${data.summary.synthetic_occurrence_count} synthetic occurrences, ${data.summary.maximum_bilateral_non_motor_mass_residual_kg.toFixed(6)} kg maximum bilateral non-motor residual.`; document.getElementById('export-status').className = 'good'; exportButton.hidden = true; document.getElementById('import-review').closest('label').hidden = true; document.getElementById('confirm-visible').hidden = true; return; }
+        const confirmed = data.groups.filter(group => decisionFor(group).status === 'confirmed').length; const corrections = data.groups.filter(group => decisionFor(group).status === 'correction').length; const symmetryMismatchCount = mismatchedPairs().length; const ready = confirmed === data.groups.length && symmetryMismatchCount === 0;
+        document.getElementById('export-status').textContent = `${confirmed}/${data.groups.length} groups confirmed${corrections ? `; ${corrections} correction(s) still requested` : ''}${symmetryMismatchCount ? `; ${symmetryMismatchCount} bilateral ownership mismatch(es)` : ''}. CAD hands remain excluded and ${virtualLinks.join(', ')} remain massless.`;
+        document.getElementById('export-status').className = ready ? 'good' : corrections ? 'bad' : 'warning'; exportButton.disabled = !ready;
+      }
+      exportButton.addEventListener('click', () => {
+        const decisions = Object.fromEntries(data.groups.map(group => { const decision = decisionFor(group); return [group.id, {status: decision.status, link: decision.link}]; }));
+        const payload = {schema_version: 1, review_contract: data.review_contract, source: data.source, source_manifests: data.source_manifests, ownership_decisions: decisions};
+        const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type: 'application/json'}); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'bello_mini_link_ownership_review.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      });
+      document.getElementById('import-review').addEventListener('change', async event => {
+        const file = event.target.files[0]; if (!file) return;
+        try {
+          const payload = JSON.parse(await file.text()); if (payload.review_contract !== data.review_contract) throw new Error(`review contract mismatch: ${payload.review_contract}`); if (payload.source?.sha256 !== data.source.sha256) throw new Error('STEP SHA-256 mismatch'); if (JSON.stringify(payload.source_manifests) !== JSON.stringify(data.source_manifests)) throw new Error('upstream manifest checksum mismatch');
+          const expected = new Set(data.groups.map(group => group.id)); const received = new Set(Object.keys(payload.ownership_decisions || {})); if (expected.size !== received.size || [...expected].some(id => !received.has(id))) throw new Error('ownership group inventory mismatch');
+          for (const [id, decision] of Object.entries(payload.ownership_decisions)) { if (!physicalLinks.includes(decision.link)) throw new Error(`invalid physical link for ${id}: ${decision.link}`); state.groups[id] = decision; }
+          save(); renderGroups(); renderLinkSummary(); renderSymmetryAudit(); updateCompletion(); event.target.value = '';
+        } catch (error) { alert(`Could not import review: ${error.message}`); }
+      });
+
+      renderGroups(); renderLinkSummary(); renderSymmetryAudit(); renderCompletion(); updateCompletion(); viewer.render(); selectGroup(data.groups[0]);
+    }
+  })();
+  </script>
+</body>
+</html>

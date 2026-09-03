@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bello Mini CAD review</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; background: #0b0d10; color: #eef1f5; }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 1680px; padding: 26px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin-top: 0; }
+    h3 { margin-bottom: 6px; }
+    code { color: #b9d1ff; }
+    .muted { color: #aab2bf; }
+    .warning { color: #ffd37a; }
+    .good { color: #73e2a7; }
+    .bad { color: #ff8d8d; }
+    .card { background: #151920; border: 1px solid #2a313b; border-radius: 12px; padding: 18px; margin: 18px 0; }
+    .stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+    .stat { background: #10141a; padding: 12px; border-radius: 8px; }
+    .stat strong { display: block; font-size: 22px; }
+    .viewers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .viewer { margin: 0; border: 1px solid #2a313b; border-radius: 8px; overflow: hidden; background: #06080b; }
+    .viewer canvas { display: block; width: 100%; height: 460px; touch-action: none; }
+    .viewer figcaption { padding: 8px 10px; color: #aab2bf; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    button, select, input { background: #0f1318; color: #eef1f5; border: 1px solid #3a4553; border-radius: 6px; padding: 7px; }
+    button { cursor: pointer; background: #2b65d9; border-color: #4380f5; font-weight: 700; }
+    button.secondary { background: #202630; border-color: #4d5b6e; }
+    input[type="search"] { width: min(480px, 100%); }
+    input[type="number"] { width: 90px; }
+    .scroll { max-height: 680px; overflow: auto; border: 1px solid #2a313b; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { position: sticky; top: 0; background: #202630; text-align: left; z-index: 1; }
+    th, td { border-bottom: 1px solid #2a313b; padding: 8px; vertical-align: top; }
+    tr.inspected { background: #273141; }
+    tr.resolved { background: rgba(44, 129, 84, .11); }
+    .nowrap { white-space: nowrap; }
+    .pill { display: inline-block; padding: 2px 7px; border: 1px solid #3a4553; border-radius: 999px; margin: 1px; color: #c9d1dc; }
+    @media (min-width: 1200px) {
+      body { margin: 0; max-width: none; padding: 22px calc(45vw + 36px) 28px 28px; }
+      #inspection-card { position: fixed; z-index: 20; top: 14px; right: 18px; width: 45vw; max-height: calc(100vh - 28px); margin: 0; overflow: auto; box-shadow: 0 16px 50px rgba(0, 0, 0, .42); }
+      #inspection-card .viewers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #inspection-card .viewer canvas { height: min(54vh, 520px); }
+    }
+    @media (max-width: 960px) { .viewers { grid-template-columns: 1fr; } .viewer canvas { height: 360px; } }
+  </style>
+</head>
+<body>
+  <h1>Bello Mini CAD review</h1>
+  <p class="warning">Review gate only. Decisions on this page cannot modify the URDF or hardware config; they must be exported and validated separately.</p>
+
+  <section class="card">
+    <h2>Source evidence</h2>
+    <div class="stats" id="stats"></div>
+    <p class="muted" id="source"></p>
+    <p class="good" id="end-effector-policy"></p>
+  </section>
+
+  <section class="card" id="inspection-card">
+    <h2>3D inspection</h2>
+    <p id="selection-title" class="warning">Select a motor, assembly, or source part below. Orange shows the selected physical occurrence(s).</p>
+    <div class="viewers">
+      <figure class="viewer"><canvas id="location-viewer"></canvas><figcaption>Location in complete CAD assembly — drag to orbit, wheel to zoom, double-click to reset<br><span id="location-status">Loading robot context…</span></figcaption></figure>
+      <figure class="viewer"><canvas id="part-viewer"></canvas><figcaption>Selected geometry — all repeated locations are listed below<br><span id="part-status">Select a row…</span></figcaption></figure>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Gate A — actuator candidates</h2>
+    <p>The model suggestion comes only from the CAD label. Confirming a motor does not yet confirm its joint axis, sign, limit, gear convention, CAN ID, or encoder zero.</p>
+    <p id="motor-progress" class="warning"></p>
+    <div class="scroll"><table><thead><tr><th>3D</th><th>Candidate</th><th>CAD label</th><th>Location (mm)</th><th>Suggested model</th><th>Decision</th></tr></thead><tbody id="motors"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Gate B — batteries and electronics</h2>
+    <p>These assemblies should normally use measured/catalog mass rather than a fictitious homogeneous density. “Explode” returns their internal parts to material/component review.</p>
+    <div class="scroll"><table><thead><tr><th>3D</th><th>Assembly</th><th>Kind</th><th>Treatment</th><th>Measured mass (kg)</th></tr></thead><tbody id="assemblies"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Gate C — source-part classification</h2>
+    <p>One source decision applies to every listed physical occurrence. Catalog motor internals and measured-assembly internals are kept out of density-derived mass to prevent double counting.</p>
+    <div class="controls">
+      <button id="apply-suggestions">Apply visible recommendations</button>
+      <button id="clear-decisions" class="secondary">Clear all local decisions</button>
+      <input id="component-filter" type="search" placeholder="Filter source name, CAD label, or branch">
+      <select id="component-mode">
+        <option value="review">Needs material/component review</option>
+        <option value="unresolved">Unresolved only</option>
+        <option value="motor">Catalog actuator internals</option>
+        <option value="measured">Measured assembly internals</option>
+        <option value="end-effector">Excluded CAD hands</option>
+        <option value="all">All source geometry</option>
+      </select>
+    </div>
+    <p id="component-progress" class="warning"></p>
+    <div class="scroll"><table><thead><tr><th>3D</th><th>CAD source</th><th>Physical qty.</th><th>Volume / source</th><th>Top-level location</th><th>Recommendation</th><th>Approved treatment</th><th>Material</th><th>Mass scale</th></tr></thead><tbody id="components"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Export review</h2>
+    <p id="export-status" class="warning"></p>
+    <button id="export-review" disabled>Export source-bound review JSON</button>
+    <label class="pill">Resume exported review <input id="import-review" type="file" accept="application/json"></label>
+  </section>
+
+  <script>
+  (() => {
+    const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    const vertexSource = `#version 300 es
+      layout(location=0) in vec3 a_position;
+      layout(location=1) in vec3 a_normal;
+      uniform mat4 u_view_projection;
+      uniform mat4 u_model;
+      out vec3 v_normal;
+      void main() {
+        gl_Position = u_view_projection * u_model * vec4(a_position, 1.0);
+        v_normal = mat3(u_model) * a_normal;
+      }`;
+    const fragmentSource = `#version 300 es
+      precision highp float;
+      in vec3 v_normal;
+      uniform vec4 u_color;
+      out vec4 out_color;
+      void main() {
+        vec3 n = normalize(v_normal);
+        float diffuse = 0.28 + 0.72 * abs(dot(n, normalize(vec3(0.3, 0.8, 0.45))));
+        out_color = vec4(u_color.rgb * diffuse, u_color.a);
+      }`;
+
+    const compile = (gl, type, source) => {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+      return shader;
+    };
+    const makeProgram = gl => {
+      const value = gl.createProgram();
+      gl.attachShader(value, compile(gl, gl.VERTEX_SHADER, vertexSource));
+      gl.attachShader(value, compile(gl, gl.FRAGMENT_SHADER, fragmentSource));
+      gl.linkProgram(value);
+      if (!gl.getProgramParameter(value, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(value));
+      return value;
+    };
+    const subtract = (a, b) => a.map((value, index) => value - b[index]);
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const normalize = value => { const length = Math.hypot(...value) || 1; return value.map(component => component / length); };
+    const dot = (a, b) => a.reduce((sum, value, index) => sum + value * b[index], 0);
+    const lookAt = (eye, target, up) => {
+      const z = normalize(subtract(eye, target));
+      const x = normalize(cross(up, z));
+      const y = cross(z, x);
+      return new Float32Array([
+        x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0,
+        -dot(x, eye), -dot(y, eye), -dot(z, eye), 1,
+      ]);
+    };
+    const perspective = (fov, aspect, near, far) => {
+      const scale = 1 / Math.tan(fov / 2); const range = 1 / (near - far);
+      return new Float32Array([scale / aspect, 0, 0, 0, 0, scale, 0, 0, 0, 0, (far + near) * range, -1, 0, 0, 2 * far * near * range, 0]);
+    };
+    const multiply = (a, b) => {
+      const result = new Float32Array(16);
+      for (let column = 0; column < 4; column += 1) for (let row = 0; row < 4; row += 1) {
+        result[column * 4 + row] = a[row] * b[column * 4] + a[4 + row] * b[column * 4 + 1] + a[8 + row] * b[column * 4 + 2] + a[12 + row] * b[column * 4 + 3];
+      }
+      return result;
+    };
+    const mergeBounds = values => {
+      if (!values.length) return null;
+      return {
+        min: [0, 1, 2].map(axis => Math.min(...values.map(value => value.min[axis]))),
+        max: [0, 1, 2].map(axis => Math.max(...values.map(value => value.max[axis]))),
+      };
+    };
+
+    class ReviewViewer {
+      constructor(canvas, status, context = null) {
+        this.canvas = canvas; this.status = status; this.context = context;
+        this.gl = canvas.getContext('webgl2', {antialias: true, alpha: false});
+        if (!this.gl) throw new Error('WebGL 2 is required.');
+        this.program = makeProgram(this.gl);
+        this.matrixUniform = this.gl.getUniformLocation(this.program, 'u_view_projection');
+        this.modelUniform = this.gl.getUniformLocation(this.program, 'u_model');
+        this.colorUniform = this.gl.getUniformLocation(this.program, 'u_color');
+        this.cache = new Map(); this.contextMesh = null; this.selectionMesh = null; this.selection = null;
+        this.target = [0, 0, 0]; this.distance = 1000; this.yaw = 0.65; this.pitch = 0.12; this.drag = null;
+        this.bind();
+        if (context) this.load(context.url).then(mesh => { this.contextMesh = mesh; this.fit(context.bounds_mm); this.status.textContent = `${context.triangle_count.toLocaleString()}-triangle robot context`; });
+      }
+      bind() {
+        this.canvas.addEventListener('pointerdown', event => { this.drag = [event.clientX, event.clientY]; this.canvas.setPointerCapture(event.pointerId); });
+        this.canvas.addEventListener('pointermove', event => {
+          if (!this.drag) return;
+          this.yaw -= (event.clientX - this.drag[0]) * 0.007; this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch + (event.clientY - this.drag[1]) * 0.007)); this.drag = [event.clientX, event.clientY]; this.render();
+        });
+        this.canvas.addEventListener('pointerup', () => { this.drag = null; });
+        this.canvas.addEventListener('wheel', event => { event.preventDefault(); this.distance *= Math.exp(event.deltaY * 0.001); this.render(); }, {passive: false});
+        this.canvas.addEventListener('dblclick', () => this.fit(this.context ? this.context.bounds_mm : this.selection?.fitBounds));
+        new ResizeObserver(() => this.render()).observe(this.canvas);
+      }
+      async load(url) {
+        if (this.cache.has(url)) return this.cache.get(url);
+        const pending = fetch(url).then(async response => {
+          if (!response.ok) throw new Error(`mesh request failed: ${response.status} ${url}`);
+          const bytes = await response.arrayBuffer();
+          if (new TextDecoder().decode(bytes.slice(0, 8)) !== 'BELLO3D1') throw new Error(`invalid review mesh: ${url}`);
+          const header = new DataView(bytes, 8, 8); const vertexCount = header.getUint32(0, true); const indexCount = header.getUint32(4, true); let offset = 16;
+          const positions = new Float32Array(bytes, offset, vertexCount * 3); offset += vertexCount * 12;
+          const normals = new Float32Array(bytes, offset, vertexCount * 3); offset += vertexCount * 12;
+          const indices = new Uint32Array(bytes, offset, indexCount);
+          const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+          const positionBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer); gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+          const normalBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer); gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+          const indexBuffer = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW); gl.bindVertexArray(null);
+          return {vao, count: indexCount};
+        });
+        this.cache.set(url, pending); return pending;
+      }
+      async select(spec) {
+        this.selection = spec; this.status.textContent = `Loading ${spec.label}…`;
+        try {
+          this.selectionMesh = await this.load(spec.url); this.status.textContent = `${spec.label} · ${spec.triangle_count.toLocaleString()} triangles · ${spec.transforms.length} location(s)`;
+          if (!this.context) this.fit(spec.fitBounds); else this.render();
+        } catch (error) { this.status.textContent = error.message; throw error; }
+      }
+      fit(bounds) {
+        if (!bounds) return;
+        this.target = bounds.min.map((value, index) => (value + bounds.max[index]) / 2);
+        const diagonal = Math.hypot(...bounds.max.map((value, index) => value - bounds.min[index])); this.distance = Math.max(diagonal * 1.25, 20); this.render();
+      }
+      draw(mesh, color, model = identity) {
+        if (!mesh) return; const gl = this.gl; gl.uniform4fv(this.colorUniform, color); gl.uniformMatrix4fv(this.modelUniform, false, model); gl.bindVertexArray(mesh.vao); gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
+      }
+      render() {
+        const gl = this.gl; const ratio = Math.min(devicePixelRatio || 1, 2); const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio)); const height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
+        if (this.canvas.width !== width || this.canvas.height !== height) { this.canvas.width = width; this.canvas.height = height; }
+        gl.viewport(0, 0, width, height); gl.clearColor(0.025, 0.033, 0.045, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.useProgram(this.program);
+        const horizontal = Math.cos(this.pitch) * this.distance; const eye = [this.target[0] + Math.sin(this.yaw) * horizontal, this.target[1] + Math.sin(this.pitch) * this.distance, this.target[2] + Math.cos(this.yaw) * horizontal];
+        const viewProjection = multiply(perspective(Math.PI / 4, width / height, Math.max(this.distance / 500, .1), this.distance * 20), lookAt(eye, this.target, [0, 1, 0])); gl.uniformMatrix4fv(this.matrixUniform, false, viewProjection);
+        this.draw(this.contextMesh, [0.28, 0.34, 0.42, 0.18]);
+        if (this.contextMesh && this.selectionMesh && this.selection) gl.clear(gl.DEPTH_BUFFER_BIT);
+        if (this.selectionMesh && this.selection) for (const transform of this.selection.transforms) this.draw(this.selectionMesh, [1.0, 0.43, 0.08, 1], transform);
+        gl.bindVertexArray(null);
+      }
+    }
+
+    const manifestUrl = new URLSearchParams(location.search).get('manifest') || '/artifacts/bello_mini_cad/review_manifest.json';
+    fetch(manifestUrl).then(response => { if (!response.ok) throw new Error(`${response.status} loading ${manifestUrl}`); return response.json(); }).then(start).catch(error => { document.body.insertAdjacentHTML('afterbegin', `<p class="bad">${error.message}</p>`); });
+
+    function start(data) {
+      const storageKey = `bello-mini-review:${data.source.sha256}`;
+      const state = JSON.parse(localStorage.getItem(storageKey) || '{"motors":{},"assemblies":{},"components":{}}');
+      const save = () => localStorage.setItem(storageKey, JSON.stringify(state));
+      for (const component of data.components) if (component.end_effector_excluded) {
+        state.components[component.source_name] = {classification: 'exclude', material: '', mass_scale: 0, policy: 'anonymous_end_effector'};
+      }
+      save();
+      const componentRequired = component => component.occurrences.some(occurrence => {
+        if (occurrence.anonymous_end_effector !== null) return true;
+        if (occurrence.motor_assembly === null && occurrence.measured_assembly === null) return true;
+        if (occurrence.motor_assembly !== null) {
+          const motor = data.motor_assemblies[occurrence.motor_assembly];
+          return state.motors[motor.id] === 'not_motor';
+        }
+        const assembly = data.measured_assemblies[occurrence.measured_assembly];
+        return state.assemblies[assembly.id]?.treatment === 'explode';
+      });
+      const componentResolved = component => {
+        const decision = state.components[component.source_name];
+        if (!decision || decision.classification === 'pending') return false;
+        if (decision.classification === 'material') {
+          return data.materials.some(material => material.id === decision.material)
+            && Number.isFinite(decision.mass_scale) && decision.mass_scale > 0;
+        }
+        return decision.classification !== 'catalog_actuator_internal'
+          && decision.classification !== 'measured_assembly_internal';
+      };
+      const updateCompletion = () => {
+        const motors = data.motor_assemblies.filter(motor => {
+          const decision = state.motors[motor.id];
+          return decision && decision !== 'pending' && decision !== 'different_motor';
+        }).length;
+        const assemblies = data.measured_assemblies.filter(assembly => {
+          const decision = state.assemblies[assembly.id];
+          if (!decision || decision.treatment === 'pending') return false;
+          if (decision.treatment === 'measured_assembly') return Number(decision.mass_kg) > 0;
+          return true;
+        }).length;
+        const required = data.components.filter(componentRequired);
+        const components = required.filter(componentResolved).length;
+        const ready = motors === data.motor_assemblies.length
+          && assemblies === data.measured_assemblies.length
+          && components === required.length;
+        document.getElementById('export-status').textContent = `${motors}/${data.motor_assemblies.length} motors, ${assemblies}/${data.measured_assemblies.length} measured assemblies, and ${components}/${required.length} required source geometries fully resolved.`;
+        document.getElementById('export-status').className = ready ? 'good' : 'warning';
+        document.getElementById('export-review').disabled = !ready;
+      };
+      const bounds = data.root.bounds_mm;
+      const context = {url: data.root.context_mesh.url, triangle_count: data.root.context_mesh.triangle_count, bounds_mm: bounds};
+      const locationViewer = new ReviewViewer(document.getElementById('location-viewer'), document.getElementById('location-status'), context);
+      const partViewer = new ReviewViewer(document.getElementById('part-viewer'), document.getElementById('part-status'));
+      const select = (label, mesh, transforms, physicalBounds) => {
+        document.getElementById('selection-title').textContent = `${label} — ${transforms.length} physical location(s)`;
+        const spec = {label, url: mesh.url, triangle_count: mesh.triangle_count, transforms: transforms.map(value => new Float32Array(value)), fitBounds: mergeBounds(physicalBounds)};
+        locationViewer.select(spec); partViewer.select({...spec, transforms: [identity], fitBounds: mesh.bounds_mm});
+      };
+
+      document.getElementById('stats').innerHTML = [
+        ['CAD objects', data.summary.cad_object_count.toLocaleString()], ['Physical occurrences', data.summary.physical_occurrence_count.toLocaleString()],
+        ['Unique source geometry', data.summary.unique_source_geometry_count.toLocaleString()], ['Actuator candidates', data.summary.candidate_motor_count.toLocaleString()],
+        ['Electronics/battery assemblies', data.summary.candidate_measured_assembly_count.toLocaleString()], ['Occurrence/root bounds error', `${data.summary.expanded_bounds_max_error_mm.toFixed(3)} mm`],
+        ['Excluded CAD hands', `${data.summary.excluded_cad_hand_count} / ${data.summary.excluded_cad_hand_occurrence_count.toLocaleString()} occurrences`],
+      ].map(([label, value]) => `<div class="stat"><strong>${value}</strong>${label}</div>`).join('');
+      document.getElementById('source').textContent = `${data.source.path} · SHA-256 ${data.source.sha256} · ${data.source.units}`;
+      document.getElementById('end-effector-policy').textContent = 'End-effector policy: both detailed CAD hands and their mass are excluded. Each wrist will terminate in an anonymous sphere; sphere radius, mass, and mount frame remain pending joint review.';
+
+      const motorBody = document.getElementById('motors');
+      const renderMotors = () => {
+        motorBody.innerHTML = '';
+        for (const motor of data.motor_assemblies) {
+          const row = document.createElement('tr'); const decision = state.motors[motor.id] || 'pending'; if (decision !== 'pending') row.classList.add('resolved');
+          const xyz = motor.center_mm ? motor.center_mm.map(value => value.toFixed(1)).join(', ') : 'n/a';
+          row.innerHTML = `<td><button class="secondary inspect">Inspect</button></td><td class="nowrap"><code>${motor.id}</code></td><td>${motor.cad_label}<br><span class="muted"><code>${motor.cad_object}</code></span></td><td class="nowrap">${xyz}</td><td>${motor.suggested_model}</td><td><select class="decision"><option value="pending">Pending</option><option value="${motor.suggested_model}">Confirm ${motor.suggested_model}</option><option value="different_motor">Motor, different model</option><option value="not_motor">Not a physical motor</option></select></td>`;
+          row.querySelector('.decision').value = decision;
+          row.querySelector('.decision').addEventListener('change', event => { state.motors[motor.id] = event.target.value; save(); renderMotors(); });
+          row.querySelector('.inspect').addEventListener('click', () => select(`${motor.id}: ${motor.cad_label}`, motor.mesh, [motor.shape_transform], [motor.bounds_mm]));
+          motorBody.append(row);
+        }
+        const resolved = data.motor_assemblies.filter(motor => (state.motors[motor.id] || 'pending') !== 'pending').length;
+        document.getElementById('motor-progress').textContent = `${resolved}/${data.motor_assemblies.length} actuator candidates reviewed.`;
+        updateCompletion();
+      };
+
+      const assemblyBody = document.getElementById('assemblies');
+      const renderAssemblies = () => {
+        assemblyBody.innerHTML = '';
+        for (const assembly of data.measured_assemblies) {
+          const value = state.assemblies[assembly.id] || {treatment: 'pending', mass_kg: ''}; const row = document.createElement('tr'); if (value.treatment !== 'pending') row.classList.add('resolved');
+          row.innerHTML = `<td><button class="secondary inspect">Inspect</button></td><td>${assembly.cad_label}<br><code>${assembly.id}</code></td><td>${assembly.kind}</td><td><select class="treatment"><option value="pending">Pending</option><option value="measured_assembly">Measured/catalog assembly</option><option value="explode">Explode into internal parts</option><option value="exclude">Not physically present</option></select></td><td><input class="mass" type="number" min="0" step="0.001" placeholder="unknown" value="${value.mass_kg}"></td>`;
+          row.querySelector('.treatment').value = value.treatment;
+          row.querySelector('.treatment').addEventListener('change', event => { value.treatment = event.target.value; state.assemblies[assembly.id] = value; save(); renderAssemblies(); });
+          row.querySelector('.mass').addEventListener('input', event => { value.mass_kg = event.target.value; state.assemblies[assembly.id] = value; save(); updateCompletion(); });
+          row.querySelector('.inspect').addEventListener('click', () => select(`${assembly.id}: ${assembly.cad_label}`, assembly.mesh, [assembly.shape_transform], [assembly.bounds_mm]));
+          assemblyBody.append(row);
+        }
+        updateCompletion();
+      };
+
+      const treatmentOptions = [
+        ['pending', 'Pending'], ['material', 'Density-derived material'], ['measured_component', 'Measured/catalog component'],
+        ['catalog_actuator_internal', 'Catalog actuator internal'], ['measured_assembly_internal', 'Measured assembly internal'], ['exclude', 'Not physically present'],
+      ];
+      const materialOptions = [['', 'Select material'], ...data.materials.map(material => [material.id, material.label])];
+      const componentBody = document.getElementById('components'); const filter = document.getElementById('component-filter'); const mode = document.getElementById('component-mode'); let inspected = null;
+      const visibleComponents = () => {
+        const needle = filter.value.toLowerCase();
+        return data.components.filter(component => {
+          const decision = state.components[component.source_name];
+          if (mode.value === 'review' && (component.motor_internal || component.measured_assembly_internal)) return false;
+          if (mode.value === 'review' && component.end_effector_excluded) return false;
+          if (mode.value === 'unresolved' && componentResolved(component)) return false;
+          if (mode.value === 'motor' && !component.motor_internal) return false;
+          if (mode.value === 'measured' && !component.measured_assembly_internal) return false;
+          if (mode.value === 'end-effector' && !component.end_effector_excluded) return false;
+          const text = `${component.source_name} ${component.source_label} ${component.top_branches.map(branch => branch.label).join(' ')}`.toLowerCase(); return !needle || text.includes(needle);
+        });
+      };
+      const renderComponents = () => {
+        componentBody.innerHTML = ''; const visible = visibleComponents();
+        for (const component of visible) {
+          const decision = state.components[component.source_name] || {classification: 'pending', material: '', mass_scale: 1};
+          const row = document.createElement('tr'); if (component.source_name === inspected) row.classList.add('inspected'); if (componentResolved(component)) row.classList.add('resolved');
+          const branches = component.top_branches.map(branch => `<span class="pill">${branch.label} × ${branch.count}</span>`).join('');
+          const recommendation = component.recommendation; const confidenceClass = recommendation.confidence === 'high' ? 'good' : recommendation.confidence === 'low' ? 'warning' : '';
+          row.innerHTML = `<td><button class="secondary inspect">Inspect</button></td><td>${component.source_label}<br><span class="muted"><code>${component.source_name}</code> · ${component.shape_type}</span></td><td>${component.occurrence_count}</td><td class="nowrap">${(component.volume_mm3 / 1000).toFixed(3)} cm³</td><td>${branches}</td><td><span class="${confidenceClass}">${recommendation.classification}${recommendation.material ? ` / ${recommendation.material}` : ''}</span><br><span class="muted">${recommendation.reason}</span></td><td><select class="classification">${treatmentOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></td><td><select class="material">${materialOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></td><td><input class="scale" type="number" min="0" step="0.05" value="${decision.mass_scale ?? 1}"></td>`;
+          const classification = row.querySelector('.classification'); const material = row.querySelector('.material'); const scale = row.querySelector('.scale'); classification.value = decision.classification; material.value = decision.material || ''; material.disabled = decision.classification !== 'material'; scale.disabled = decision.classification !== 'material';
+          classification.addEventListener('change', event => { decision.classification = event.target.value; if (decision.classification !== 'material') decision.material = ''; state.components[component.source_name] = decision; save(); renderComponents(); });
+          material.addEventListener('change', event => { decision.material = event.target.value; state.components[component.source_name] = decision; save(); });
+          scale.addEventListener('change', event => { decision.mass_scale = Number(event.target.value); state.components[component.source_name] = decision; save(); });
+          row.querySelector('.inspect').addEventListener('click', () => { inspected = component.source_name; select(`${component.source_label} (${component.source_name})`, component.mesh, component.occurrences.map(value => value.transform), component.occurrences.map(value => value.bounds_mm)); renderComponents(); });
+          componentBody.append(row);
+        }
+        const required = data.components.filter(componentRequired);
+        const resolved = required.filter(componentResolved).length;
+        document.getElementById('component-progress').textContent = `${resolved}/${required.length} required source geometries fully resolved; ${visible.length} shown.`;
+        updateCompletion();
+      };
+      filter.addEventListener('input', renderComponents); mode.addEventListener('change', renderComponents);
+      document.getElementById('apply-suggestions').addEventListener('click', () => { for (const component of visibleComponents()) if (!state.components[component.source_name] || state.components[component.source_name].classification === 'pending') state.components[component.source_name] = {classification: component.recommendation.classification, material: component.recommendation.material || '', mass_scale: 1}; save(); renderComponents(); });
+      document.getElementById('clear-decisions').addEventListener('click', () => { if (!confirm('Clear all local Bello Mini review decisions for this STEP checksum?')) return; state.motors = {}; state.assemblies = {}; state.components = {}; save(); renderMotors(); renderAssemblies(); renderComponents(); });
+      document.getElementById('export-review').addEventListener('click', () => {
+        const payload = {schema_version: 1, review_contract: data.review_contract, source: data.source, end_effector_policy: data.end_effector_policy, motor_decisions: state.motors, measured_assembly_decisions: state.assemblies, component_decisions: state.components};
+        const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type: 'application/json'}); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'bello_mini_cad_review.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      });
+      document.getElementById('import-review').addEventListener('change', async event => {
+        const file = event.target.files[0]; if (!file) return;
+        try {
+          const payload = JSON.parse(await file.text());
+          if (payload.review_contract !== data.review_contract) throw new Error(`review contract mismatch: ${payload.review_contract}`);
+          if (payload.source?.sha256 !== data.source.sha256) throw new Error('STEP SHA-256 mismatch');
+          state.motors = payload.motor_decisions || {}; state.assemblies = payload.measured_assembly_decisions || {}; state.components = payload.component_decisions || {};
+          for (const component of data.components) if (component.end_effector_excluded) state.components[component.source_name] = {classification: 'exclude', material: '', mass_scale: 0, policy: 'anonymous_end_effector'};
+          save(); renderMotors(); renderAssemblies(); renderComponents(); event.target.value = '';
+        } catch (error) { alert(`Could not import review: ${error.message}`); }
+      });
+      renderMotors(); renderAssemblies(); renderComponents();
+    }
+  })();
+  </script>
+</body>
+</html>
