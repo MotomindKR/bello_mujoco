@@ -218,11 +218,11 @@ def motor_specs() -> tuple[MotorSpec, ...]:
         ),
         MotorSpec(
             "motor-27",
-            "left_elbow_yaw_motor",
+            "left_wrist_yaw_motor",
             "ROBSTRIDE_00",
             "left",
-            "elbow_yaw",
-            ("left_elbow_yaw_joint",),
+            "wrist_yaw",
+            ("left_wrist_yaw_joint",),
         ),
         MotorSpec(
             "motor-28",
@@ -274,11 +274,11 @@ def motor_specs() -> tuple[MotorSpec, ...]:
         ),
         MotorSpec(
             "motor-21",
-            "right_elbow_yaw_motor",
+            "right_wrist_yaw_motor",
             "ROBSTRIDE_00",
             "right",
-            "elbow_yaw",
-            ("right_elbow_yaw_joint",),
+            "wrist_yaw",
+            ("right_wrist_yaw_joint",),
         ),
         MotorSpec(
             "motor-22",
@@ -421,11 +421,11 @@ def arm_joint_specs(side: str) -> tuple[JointSpec, ...]:
             (1.0, 0.0, 0.0),
         ),
         JointSpec(
-            f"{prefix}elbow_yaw_joint",
+            f"{prefix}wrist_yaw_joint",
             f"{prefix}elbow_link",
             f"{prefix}lower_arm_link",
             side,
-            "elbow_yaw",
+            "wrist_yaw",
             (ids[4],),
             (0.0, 1.0, 0.0),
         ),

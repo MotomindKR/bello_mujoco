@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
@@ -132,14 +133,14 @@ def test_bello_mini_can_ids_preserve_original_bello_station_ranges() -> None:
         "left_shoulder_roll_motor": ("can1", 32),
         "left_shoulder_yaw_motor": ("can1", 33),
         "left_elbow_pitch_motor": ("can1", 34),
-        "left_elbow_yaw_motor": ("can1", 35),
+        "left_wrist_yaw_motor": ("can1", 35),
         "left_wrist_pitch_motor": ("can1", 36),
         "left_wrist_roll_motor": ("can1", 37),
         "right_shoulder_pitch_motor": ("can1", 41),
         "right_shoulder_roll_motor": ("can1", 42),
         "right_shoulder_yaw_motor": ("can1", 43),
         "right_elbow_pitch_motor": ("can1", 44),
-        "right_elbow_yaw_motor": ("can1", 45),
+        "right_wrist_yaw_motor": ("can1", 45),
         "right_wrist_pitch_motor": ("can1", 46),
         "right_wrist_roll_motor": ("can1", 47),
     }
@@ -183,6 +184,51 @@ def test_cad_direction_inference_never_claims_calibrated_protocol_polarity() -> 
         "candidate_command_direction": None,
         "status": "cad_pitch_projection_only_differential_unresolved",
     }
+
+
+@pytest.mark.parametrize(
+    ("side", "station", "expected_deg"),
+    (
+        ("center", "waist_roll", (-25.0, 25.0)),
+        ("center", "waist_yaw", (-90.0, 90.0)),
+        ("left", "hip_pitch", (-90.0, 180.0)),
+        ("right", "hip_pitch", (-90.0, 180.0)),
+        ("left", "hip_roll", (-121.0, 31.0)),
+        ("right", "hip_roll", (-31.0, 121.0)),
+        ("left", "hip_yaw", (-90.0, 90.0)),
+        ("right", "hip_yaw", (-90.0, 90.0)),
+        ("left", "knee", (0.0, 145.0)),
+        ("right", "knee", (0.0, 145.0)),
+        ("left", "ankle_roll", (-35.0, 35.0)),
+        ("right", "ankle_roll", (-35.0, 35.0)),
+        ("left", "ankle_pitch", (-45.0, 45.0)),
+        ("right", "ankle_pitch", (-45.0, 45.0)),
+        ("left", "shoulder_pitch", (-225.0, 45.0)),
+        ("right", "shoulder_pitch", (-225.0, 45.0)),
+        ("left", "shoulder_roll", (-180.0, 15.0)),
+        ("right", "shoulder_roll", (-15.0, 180.0)),
+        ("left", "shoulder_yaw", (-90.0, 90.0)),
+        ("right", "shoulder_yaw", (-90.0, 90.0)),
+        ("left", "elbow_pitch", (-15.0, 130.0)),
+        ("right", "elbow_pitch", (-15.0, 130.0)),
+        ("left", "wrist_yaw", (-116.8, 116.8)),
+        ("right", "wrist_yaw", (-116.8, 116.8)),
+        ("left", "wrist_pitch", (-90.0, 90.0)),
+        ("right", "wrist_pitch", (-90.0, 90.0)),
+        ("left", "wrist_roll", (-90.0, 90.0)),
+        ("right", "wrist_roll", (-90.0, 90.0)),
+    ),
+)
+def test_designer_joint_limits_use_provisional_left_sign_and_geometric_mirror(
+    side: str, station: str, expected_deg: tuple[float, float]
+) -> None:
+    limits = MODULE.joint_limit(
+        {"side": side, "station": station, "motor_ids": ["motor"], "name": "joint"},
+        {"motor": {"model": "ROBSTRIDE_03"}},
+    )
+
+    actual_deg = tuple(math.degrees(float(limits[key])) for key in ("lower", "upper"))
+    assert actual_deg == pytest.approx(expected_deg)
 
 
 def test_collision_geometry_accepts_only_mujoco_compatible_primitives() -> None:
@@ -439,14 +485,59 @@ def test_kinematic_report_matches_urdf_joint_transform_and_limits() -> None:
             "origin_rpy_parent_rad": [0.0, 0.0, 0.0],
             "axis_xyz_joint": [0.0, 0.0, 1.0],
             "limits": {
-                "lower_rad": -0.5,
-                "upper_rad": 0.5,
+                "lower_rad": -np.pi / 2.0,
+                "upper_rad": np.pi / 2.0,
                 "effort_nm": 60.0,
                 "velocity_rad_s": 20.0,
-                "status": "provisional_hardware_validation_required",
+                "status": "designer_provided_sign_review_pending",
             },
         }
     ]
+
+
+def test_build_report_records_joint_limit_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(MODULE, "kinematic_joint_records", lambda *_: [])
+    monkeypatch.setattr(MODULE, "nominal_grounding", lambda *_: {})
+    monkeypatch.setattr(MODULE, "camera_cad_report", lambda: {})
+    report = MODULE.build_report(
+        ownership={"source": {}, "joints": []},
+        inertials={"summary": {}, "component_catalog": {}, "groups": []},
+        geometry={
+            "anonymous_end_effectors": [],
+            "visual_policy": {},
+            "collision_policy": {},
+            "summary": {
+                "excluded_visual_instance_counts": {},
+                "visually_omitted_structure_mass_kg": 0.0,
+                "collision_primitive_count": 0,
+                "collision_primitive_role_counts": {},
+            },
+        },
+        meshes={"summary": {}},
+        adjustments=[],
+        sensor_frames=[],
+        motor_topology={
+            "deployment_status": "calibration_required",
+            "deployment_blockers": [],
+            "can_topology": {},
+            "direction_inference_policy": {},
+            "motors": [],
+            "differential_groups": [],
+        },
+        source_hashes={},
+    )
+
+    assert report["kinematics"]["joint_limit_provenance"] == {
+        "source": "designer_provided_2026-09-03",
+        "source_units": "degrees",
+        "reference_side": "left",
+        "left_sign_mapping": "current_urdf_positive_provisional",
+        "right_sign_derivation": "geometric_mirror_across_y_zero",
+        "sign_status": "pending_user_review",
+        "physical_stop_status": "pending_validation",
+    }
 
 
 def test_geometry_reviewer_exposes_fk_joint_controls() -> None:
@@ -466,6 +557,7 @@ def test_geometry_reviewer_exposes_fk_joint_controls() -> None:
         "axisAngleMatrix",
         "updateKinematics",
         "Mirror refused; pose is unchanged",
+        "provisionally mapped to current URDF axes",
         "if(violations.length)return{applied:false,violations}",
         "selectedVisuals",
         "unselectedVisuals",

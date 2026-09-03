@@ -53,13 +53,18 @@ def test_bello_mini_joint_tree_has_seven_dof_arms() -> None:
                 "shoulder_roll",
                 "shoulder_yaw",
                 "elbow_pitch",
-                "elbow_yaw",
+                "wrist_yaw",
                 "wrist_pitch",
                 "wrist_roll",
             }
         ]
         assert len(arm) == 7
+        assert f"{side}_wrist_yaw_joint" in {joint.name for joint in arm}
         assert arm[-1].name == f"{side}_wrist_roll_joint"
+
+    motor_names = {spec.motor_name for spec in MODULE.motor_specs()}
+    assert {"left_wrist_yaw_motor", "right_wrist_yaw_motor"} <= motor_names
+    assert not {"left_elbow_yaw_motor", "right_elbow_yaw_motor"} & motor_names
 
 
 def test_ankle_motors_are_differential_bindings() -> None:

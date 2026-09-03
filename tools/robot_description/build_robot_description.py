@@ -33,25 +33,36 @@ CAD_TO_URDF = np.asarray(
     dtype=np.float64,
 )
 
-# A STEP assembly does not encode usable joint travel. These ranges are an
-# explicit, provisional starting point inherited from the prior Bello model.
-# They must be checked against the Mini hardware before motion is enabled.
-PROVISIONAL_LIMITS_RAD = {
-    "waist_yaw": (-0.5, 0.5),
-    "waist_roll": (-0.5, 0.5),
-    "hip_pitch": (-1.5708, 1.5708),
-    "hip_roll": (-1.5708, 1.5708),
-    "hip_yaw": (-1.5708, 1.5708),
-    "knee": (0.0, 2.0944),
-    "ankle_pitch": (-0.5236, 1.0472),
-    "ankle_roll": (-0.1745, 0.1745),
-    "shoulder_pitch": (-1.5, 0.5),
-    "shoulder_roll": (-0.2, 2.0),
-    "shoulder_yaw": (-1.5, 2.0),
-    "elbow_pitch": (-1.5, 2.4),
-    "elbow_yaw": (-2.0943951, 0.523598776),
-    "wrist_pitch": (-1.5, 1.5),
-    "wrist_roll": (-math.pi, math.pi),
+# Designer-provided left-side signs are provisionally mapped to the current
+# URDF positive axes pending user review. Right-side roll/yaw limits are then
+# derived by geometric reflection across y=0.
+JOINT_LIMIT_SOURCE = "designer_provided_2026-09-03"
+JOINT_LIMIT_SIGN_STATUS = "pending_user_review"
+DESIGNER_LIMITS_DEG = {
+    "waist_yaw": (-90.0, 90.0),
+    "waist_roll": (-25.0, 25.0),
+    "hip_pitch": (-90.0, 180.0),
+    "hip_roll": (-121.0, 31.0),
+    "hip_yaw": (-90.0, 90.0),
+    "knee": (0.0, 145.0),
+    "ankle_pitch": (-45.0, 45.0),
+    "ankle_roll": (-35.0, 35.0),
+    "shoulder_pitch": (-225.0, 45.0),
+    "shoulder_roll": (-180.0, 15.0),
+    "shoulder_yaw": (-90.0, 90.0),
+    "elbow_pitch": (-15.0, 130.0),
+    "wrist_yaw": (-116.8, 116.8),
+    "wrist_pitch": (-90.0, 90.0),
+    "wrist_roll": (-90.0, 90.0),
+}
+RIGHT_MIRRORED_SIGN_STATIONS = {
+    "hip_roll",
+    "hip_yaw",
+    "ankle_roll",
+    "shoulder_roll",
+    "shoulder_yaw",
+    "wrist_yaw",
+    "wrist_roll",
 }
 MOTOR_RATINGS = {
     "ROBSTRIDE_00": {"peak_torque_nm": 14.0, "maximum_speed_rad_s": 33.0},
@@ -79,14 +90,14 @@ MOTOR_CAN_BINDINGS = {
     "left_shoulder_roll_motor": ("can1", 32),
     "left_shoulder_yaw_motor": ("can1", 33),
     "left_elbow_pitch_motor": ("can1", 34),
-    "left_elbow_yaw_motor": ("can1", 35),
+    "left_wrist_yaw_motor": ("can1", 35),
     "left_wrist_pitch_motor": ("can1", 36),
     "left_wrist_roll_motor": ("can1", 37),
     "right_shoulder_pitch_motor": ("can1", 41),
     "right_shoulder_roll_motor": ("can1", 42),
     "right_shoulder_yaw_motor": ("can1", 43),
     "right_elbow_pitch_motor": ("can1", 44),
-    "right_elbow_yaw_motor": ("can1", 45),
+    "right_wrist_yaw_motor": ("can1", 45),
     "right_wrist_pitch_motor": ("can1", 46),
     "right_wrist_roll_motor": ("can1", 47),
 }
@@ -418,7 +429,10 @@ def add_link(
 def joint_limit(
     joint: dict[str, Any], motors: dict[str, dict[str, Any]]
 ) -> dict[str, str]:
-    lower, upper = PROVISIONAL_LIMITS_RAD[joint["station"]]
+    lower_deg, upper_deg = DESIGNER_LIMITS_DEG[joint["station"]]
+    if joint["side"] == "right" and joint["station"] in RIGHT_MIRRORED_SIGN_STATIONS:
+        lower_deg, upper_deg = -upper_deg, -lower_deg
+    lower, upper = math.radians(lower_deg), math.radians(upper_deg)
     models = {motors[motor_id]["model"] for motor_id in joint["motor_ids"]}
     if len(models) != 1:
         raise ValueError(f"joint {joint['name']} has inconsistent motor models")
@@ -463,7 +477,7 @@ def kinematic_joint_records(
                     "upper_rad": float(limits["upper"]),
                     "effort_nm": float(limits["effort"]),
                     "velocity_rad_s": float(limits["velocity"]),
-                    "status": "provisional_hardware_validation_required",
+                    "status": "designer_provided_sign_review_pending",
                 },
             }
         )
@@ -618,7 +632,8 @@ def build_urdf(
     root = ET.Element("robot", {"name": "bello_mini"})
     root.append(
         ET.Comment(
-            "Joint ranges are provisional and must be hardware-validated before motion."
+            "Designer-provided joint ranges use a provisional left-sign mapping; "
+            "right roll/yaw signs are mirrored and all signs/stops require review."
         )
     )
     root.append(
@@ -812,7 +827,8 @@ def build_motor_topology(
             "RobStride command directions require raw encoder/low-current bench validation",
             "encoder zero positions are uncalibrated",
             "ankle differential coefficients/signs are unvalidated",
-            "joint travel limits are provisional and require physical stop checks",
+            "designer-provided left sign mapping and mirrored right signs require "
+            "user review and physical stop checks",
         ],
         "can_topology": {
             "logical_buses": {
@@ -878,7 +894,16 @@ def build_report(
             "movable_joint_count": len(ownership["joints"]),
             "fixed_anonymous_endpoint_count": len(geometry["anonymous_end_effectors"]),
             "fixed_sensor_frame_count": len(sensor_frames),
-            "joint_limit_status": "provisional_hardware_validation_required",
+            "joint_limit_status": "designer_provided_sign_review_pending",
+            "joint_limit_provenance": {
+                "source": JOINT_LIMIT_SOURCE,
+                "source_units": "degrees",
+                "reference_side": "left",
+                "left_sign_mapping": "current_urdf_positive_provisional",
+                "right_sign_derivation": "geometric_mirror_across_y_zero",
+                "sign_status": JOINT_LIMIT_SIGN_STATUS,
+                "physical_stop_status": "pending_validation",
+            },
             "joints": kinematic_joint_records(ownership, inertials),
         },
         "fixed_sensor_frames": sensor_frames,

@@ -217,6 +217,37 @@ The generated MuJoCo compiler extension disables geometry-derived inertia, so
 the two fixed anonymous sphere links remain massless when the URDF is loaded
 directly and cannot silently increase the robot mass.
 
+Joint ranges come from the designer's 2026-09-03 values. Source values are in
+degrees and the generated URDF stores radians. The left-side signs are
+**provisionally** mapped to the current URDF positive axes pending user review;
+right-side pitch ranges are copied and right-side roll/yaw ranges are reflected
+across Mini `y=0`. Symmetric ranges are unchanged by that reflection.
+
+| Station | Left / body range (deg) | Derived right range (deg) |
+| --- | ---: | ---: |
+| waist roll | -25 .. +25 | body joint |
+| waist yaw | -90 .. +90 | body joint |
+| hip pitch | -90 .. +180 | -90 .. +180 |
+| hip roll | -121 .. +31 | -31 .. +121 |
+| hip yaw | -90 .. +90 | -90 .. +90 |
+| knee | 0 .. +145 | 0 .. +145 |
+| ankle roll | -35 .. +35 | -35 .. +35 |
+| ankle pitch | -45 .. +45 | -45 .. +45 |
+| shoulder pitch | -225 .. +45 | -225 .. +45 |
+| shoulder roll | -180 .. +15 | -15 .. +180 |
+| shoulder yaw | -90 .. +90 | -90 .. +90 |
+| elbow pitch | -15 .. +130 | -15 .. +130 |
+| wrist yaw | -116.8 .. +116.8 | -116.8 .. +116.8 |
+| wrist pitch | -90 .. +90 | -90 .. +90 |
+| wrist roll | -90 .. +90 | -90 .. +90 |
+
+These values still require user sign review and physical-stop validation before
+motion. The axial arm coordinate between `elbow_link` and `lower_arm_link` is
+named `wrist_yaw_joint`; its physical actuator is `wrist_yaw_motor`. This is a
+naming correction only: chain placement is unchanged and the left/right CAN IDs
+remain 35/45. Motor `command_direction` remains null because protocol polarity
+is a separate hardware-calibration question.
+
 Generate the source-bound URDF, calibration-gated motor topology, build report,
 and visual confirmation assets:
 
@@ -246,16 +277,16 @@ Open
 `http://127.0.0.1:8765/tools/robot_description/geometry_review.html?base=/artifacts/bello_mini_cad`
 for the final visual/collision gate. The fixed viewer can isolate a link, make
 all other links translucent, toggle collision primitives, and display the
-approved positive joint axes. Sliders cover all 28 revolute joints using the
-exact generated URDF tree and provisional limits; the reset and left/right
-mirror controls support pose and symmetry review. Mirroring is atomic: if any
-reflected target would exceed its provisional (and sometimes asymmetric)
-bilateral limit, the viewer leaves the entire pose unchanged and lists every
-offending target. Link meshes, collision primitives, anonymous end effectors,
-joint axes, sensor frames, motor markers, and camera FoV volumes all follow the
-same browser-side forward kinematics. A separate link-frame overlay draws
-compact RGB axes for all physical links and expands them with labels when one
-link is selected.
+current positive joint axes. Sliders cover all 28 revolute joints using the
+exact generated URDF tree and designer-provided, sign-review-pending limits;
+the reset and left/right mirror controls support pose and symmetry review.
+Mirroring is atomic: if any reflected target would exceed its derived target
+limit, the viewer leaves the entire pose unchanged and lists every offending
+target. This intentionally exposes asymmetric bilateral limits for review.
+Link meshes, collision primitives, anonymous end effectors, joint axes, sensor
+frames, motor markers, and camera FoV volumes all follow the same browser-side
+forward kinematics. A separate link-frame overlay draws compact RGB axes for
+all physical links and expands them with labels when one link is selected.
 The motor audit overlays every CAD motor-frame `+Z` shaft axis at the
 corresponding actuator location and lists the assigned CAN bus/ID beside the
 CAD-only joint-axis alignment estimate. These estimates are geometric review

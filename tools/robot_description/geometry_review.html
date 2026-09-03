@@ -108,7 +108,7 @@
       <span class="pill" id="pose-status">28 joints · zero pose</span>
     </div>
     <p class="bad" id="mirror-warning" hidden></p>
-    <p class="warning">Slider ranges are provisional URDF limits, not verified mechanical stops. Ankle pitch/roll are logical serial coordinates for geometry review; they are not calibrated differential motor commands.</p>
+    <p class="warning">Slider ranges are designer-provided. Left-side positive angles are provisionally mapped to current URDF axes; right-side roll/yaw ranges are geometrically mirrored across y=0. User sign review and physical-stop validation remain pending. Ankle pitch/roll are logical serial coordinates, not calibrated differential motor commands.</p>
     <div class="joint-controls" id="joint-controls"></div>
   </section>
 
@@ -376,7 +376,7 @@
       const mirrorWarning=document.getElementById('mirror-warning'),clearMirrorWarning=()=>{mirrorWarning.hidden=true;mirrorWarning.textContent='';};
       const syncJointControls=()=>{for(const joint of viewer.joints){const input=sliders[joint.name],value=viewer.jointValues[joint.name];input.value=value;input.parentElement.querySelector('output').value=`${(value*180/Math.PI).toFixed(1)}°`;}updatePoseStatus();};
       for(const joint of viewer.joints){const row=document.createElement('label');row.className='joint-row';const lowerDeg=joint.limits.lower_rad*180/Math.PI,upperDeg=joint.limits.upper_rad*180/Math.PI;row.innerHTML=`<span>${joint.name.replaceAll('_',' ')}<small class="joint-limit">${lowerDeg.toFixed(1)}° … ${upperDeg.toFixed(1)}° · ${joint.coupling}</small></span><input type="range" min="${joint.limits.lower_rad}" max="${joint.limits.upper_rad}" step="0.001" value="0" aria-label="${joint.name}"><output>0.0°</output>`;const input=row.querySelector('input');sliders[joint.name]=input;input.addEventListener('input',()=>{viewer.setJoint(joint.name,input.value);row.querySelector('output').value=`${(viewer.jointValues[joint.name]*180/Math.PI).toFixed(1)}°`;updatePoseStatus();});groupBodies[groupFor(joint)].append(row);}
-      const mirrorPose=(source,target)=>{const result=viewer.mirrorPose(source,target);if(result.applied){clearMirrorWarning();syncJointControls();return;}mirrorWarning.hidden=false;mirrorWarning.textContent=`Mirror refused; pose is unchanged. Reflected values exceed provisional target limits: ${result.violations.map(value=>`${value.name} ${(value.value*180/Math.PI).toFixed(1)}° (allowed ${(value.lower*180/Math.PI).toFixed(1)}°…${(value.upper*180/Math.PI).toFixed(1)}°)`).join('; ')}`;};
+      const mirrorPose=(source,target)=>{const result=viewer.mirrorPose(source,target);if(result.applied){clearMirrorWarning();syncJointControls();return;}mirrorWarning.hidden=false;mirrorWarning.textContent=`Mirror refused; pose is unchanged. Reflected values exceed designer-provided pending-review target limits: ${result.violations.map(value=>`${value.name} ${(value.value*180/Math.PI).toFixed(1)}° (allowed ${(value.lower*180/Math.PI).toFixed(1)}°…${(value.upper*180/Math.PI).toFixed(1)}°)`).join('; ')}`;};
       document.getElementById('reset-pose').addEventListener('click',()=>{viewer.resetPose();clearMirrorWarning();syncJointControls();});
       document.getElementById('mirror-left-to-right').addEventListener('click',()=>mirrorPose('left','right'));
       document.getElementById('mirror-right-to-left').addEventListener('click',()=>mirrorPose('right','left'));
