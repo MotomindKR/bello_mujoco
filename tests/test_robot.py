@@ -89,7 +89,10 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
     assert imu_joint is not None and imu_joint.attrib["type"] == "fixed"
     assert imu_joint.find("parent").attrib["link"] == "pelvis_link"
     assert imu_joint.find("child").attrib["link"] == "imu_link"
-    assert imu_joint.find("origin").attrib == {"xyz": "0 0 0", "rpy": "0 0 0"}
+    assert imu_joint.find("origin").attrib == {
+        "xyz": "-0.0099999999999894115 0 -0.230000001143162",
+        "rpy": "0 0 -1.5707963267948966",
+    }
     movable_joint_names = {
         joint.attrib["name"]
         for joint in source_root.findall("joint")

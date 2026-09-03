@@ -50,9 +50,10 @@ contract, and training validates it against the robot's motion profile.
   keeps waist roll and both seven-DoF arms in hold mode by default. Its logical
   ankle pitch/roll joints are simulated directly because the physical
   differential coefficients have not been calibrated. Its massless fixed
-  `imu_link` is coincident and axis-aligned with `pelvis_link`, preserving the
-  original Bello pelvis-frame IMU convention while giving sensor consumers an
-  explicit frame name.
+  `imu_link` is 50 mm below the midpoint between the reviewed left/right
+  hip-pitch joint origins (`[-0.01, 0, -0.2300000011]` m in pelvis coordinates).
+  It is yawed `-pi/2` from the Mini pelvis so its +X-right, +Y-forward, +Z-up
+  axes reproduce original Bello's pelvis/IMU-axis convention.
 
 The Bello Mini source directory includes `motor_topology.yaml` as a
 calibration manifest, not as a `bello-hardwared` configuration. CAN IDs increase
