@@ -264,6 +264,13 @@ class GmrLiveRetargetConfig:
     settling_rounds: int = 10
     convergence_tolerance: float = 1.0e-4
     max_source_interval_seconds: float = 0.2
+    max_joint_velocity_rps: float = 3.0 * math.pi
+    max_joint_acceleration_rps2: float = 200.0
+    knee_pole_reference_flexion_radians: float = math.radians(50.0)
+    knee_target_minimum_flexion_radians: float = math.radians(5.0)
+    knee_pole_sample_minimum_flexion_radians: float = math.radians(20.0)
+    knee_pole_sample_minimum_distance_meters: float = 0.04
+    knee_pole_smoothing_frames: int = 5
     contact_max_speed_mps: float = 0.2
     contact_height_margin_m: float = 0.03
 
@@ -272,6 +279,20 @@ class GmrLiveRetargetConfig:
             "human_height_m": self.human_height_m,
             "convergence_tolerance": self.convergence_tolerance,
             "max_source_interval_seconds": self.max_source_interval_seconds,
+            "max_joint_velocity_rps": self.max_joint_velocity_rps,
+            "max_joint_acceleration_rps2": self.max_joint_acceleration_rps2,
+            "knee_pole_reference_flexion_radians": (
+                self.knee_pole_reference_flexion_radians
+            ),
+            "knee_target_minimum_flexion_radians": (
+                self.knee_target_minimum_flexion_radians
+            ),
+            "knee_pole_sample_minimum_flexion_radians": (
+                self.knee_pole_sample_minimum_flexion_radians
+            ),
+            "knee_pole_sample_minimum_distance_meters": (
+                self.knee_pole_sample_minimum_distance_meters
+            ),
             "contact_max_speed_mps": self.contact_max_speed_mps,
             "contact_height_margin_m": self.contact_height_margin_m,
         }
@@ -280,6 +301,12 @@ class GmrLiveRetargetConfig:
                 raise ValueError(f"{name} must be positive and finite")
         if self.settling_rounds < 1:
             raise ValueError("GMR settling_rounds must be positive")
+        if (
+            not isinstance(self.knee_pole_smoothing_frames, int)
+            or self.knee_pole_smoothing_frames < 1
+            or self.knee_pole_smoothing_frames % 2 == 0
+        ):
+            raise ValueError("GMR knee smoothing window must be positive and odd")
 
 
 @dataclass(frozen=True)
@@ -295,7 +322,10 @@ class _GmrSolverSettings:
     ground_clearance_geoms: tuple[str, str]
 
 
-def _load_gmr_solver_settings(path: Path) -> _GmrSolverSettings:
+def _load_gmr_solver_settings(
+    path: Path,
+    live: GmrLiveRetargetConfig,
+) -> _GmrSolverSettings:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
         solver = document["offline_solver"]
@@ -305,40 +335,37 @@ def _load_gmr_solver_settings(path: Path) -> _GmrSolverSettings:
             f"invalid pinned Bello GMR configuration {path}: {error}"
         ) from error
     expected = {
+        "use_velocity_limit",
         "passes_per_frame",
-        "max_joint_velocity_radians_per_second",
-        "max_joint_acceleration_radians_per_second_squared",
-        "knee_pole_reference_flexion_radians",
-        "knee_target_minimum_flexion_radians",
-        "knee_pole_sample_minimum_flexion_radians",
-        "knee_pole_sample_minimum_distance_meters",
-        "knee_pole_smoothing_frames",
+        "initial_settle_passes",
+        "joint_smoothing_kernel",
+        "root_orientation_smoothing_kernel",
+        "joint_smoothing_passes",
+        "max_additional_collision_penetration",
+        "maximum_collision_penetration",
+        "protected_bodies",
     }
     if not isinstance(solver, dict) or set(solver) != expected:
         raise ValueError("pinned Bello GMR offline_solver fields are incompatible")
+    if solver["use_velocity_limit"] is not True:
+        raise ValueError("pinned Bello GMR must enable its joint velocity limit")
     if len(ground_geoms) != 2 or not all(
         isinstance(name, str) and name for name in ground_geoms
     ):
         raise ValueError("pinned Bello GMR must configure two foot clearance geoms")
     settings = _GmrSolverSettings(
         passes_per_frame=solver["passes_per_frame"],
-        max_joint_velocity_rps=solver["max_joint_velocity_radians_per_second"],
-        max_joint_acceleration_rps2=solver[
-            "max_joint_acceleration_radians_per_second_squared"
-        ],
-        knee_pole_reference_flexion_radians=solver[
-            "knee_pole_reference_flexion_radians"
-        ],
-        knee_target_minimum_flexion_radians=solver[
-            "knee_target_minimum_flexion_radians"
-        ],
-        knee_pole_sample_minimum_flexion_radians=solver[
-            "knee_pole_sample_minimum_flexion_radians"
-        ],
-        knee_pole_sample_minimum_distance_meters=solver[
-            "knee_pole_sample_minimum_distance_meters"
-        ],
-        knee_pole_smoothing_frames=solver["knee_pole_smoothing_frames"],
+        max_joint_velocity_rps=live.max_joint_velocity_rps,
+        max_joint_acceleration_rps2=live.max_joint_acceleration_rps2,
+        knee_pole_reference_flexion_radians=(live.knee_pole_reference_flexion_radians),
+        knee_target_minimum_flexion_radians=(live.knee_target_minimum_flexion_radians),
+        knee_pole_sample_minimum_flexion_radians=(
+            live.knee_pole_sample_minimum_flexion_radians
+        ),
+        knee_pole_sample_minimum_distance_meters=(
+            live.knee_pole_sample_minimum_distance_meters
+        ),
+        knee_pole_smoothing_frames=live.knee_pole_smoothing_frames,
         ground_clearance_geoms=ground_geoms,
     )
     if not isinstance(settings.passes_per_frame, int) or settings.passes_per_frame < 1:
@@ -668,7 +695,7 @@ class GmrBelloRetargeter:
             / "ik_configs"
             / "smplx_to_bello.json"
         )
-        solver_settings = _load_gmr_solver_settings(solver_path)
+        solver_settings = _load_gmr_solver_settings(solver_path, config)
         retargeter_type = import_pinned_gmr_retargeter()
         with redirect_stdout(io.StringIO()):
             retargeter = retargeter_type(

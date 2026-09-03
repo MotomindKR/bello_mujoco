@@ -18,6 +18,16 @@ status_interval_seconds: null
 policy_log_path: null
 arm: false
 upper_body_tracking_enabled: true
+rtmw_pose_path: /tmp/rtmw-smplx-teleop/latest.json
+rtmw_reference_ready_timeout_seconds: 15.0
+rtmw_reference_qualification_frames: 5
+rtmw_min_joint_confidence: 0.25
+rtmw_min_rotation_confidence: 0.10
+rtmw_max_pipeline_latency_ms: 250.0
+rtmw_camera_to_world_quaternion_xyzw: [0.5, -0.5, 0.5, -0.5]
+rtmw_align_initial_heading: true
+rtmw_align_initial_floor: true
+rtmw_human_height_m: 1.75
 fastsam_endpoint: 127.0.0.1:50055
 fastsam_tls_root_certificate_path: null
 fastsam_tls_server_name_override: null

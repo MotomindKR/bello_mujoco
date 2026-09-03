@@ -8,7 +8,7 @@ The runner has three task modes:
 
 | Task | Policy input | External services |
 | --- | --- | --- |
-| Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent; live GMR pose targets the upper body outside the policy | `bello-hardwared`, the visualizer's RemoteCommandService, and `fastsam3dbody-serve` |
+| Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent; live GMR pose targets the upper body outside the policy | `bello-hardwared`, the visualizer's RemoteCommandService, and a local RTMW-SMPLX-Teleop latest-JSON stream |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
 | TWIST2 | Motor state, pelvis IMU, current and historical proprioception, and a live retargeted pose | `bello-hardwared` plus `fastsam3dbody-serve` |
 
@@ -47,7 +47,7 @@ safety fix is not inherited automatically by a historical checkpoint.
 4. reconstructs observation, action, and physical-coordinate layouts;
 5. compiles policy inference;
 6. requires a fresh sample from the visualizer's remote-command service and five
-   qualified live Fast-SAM/GMR poses for locomotion, then connects to the hardware
+   qualified live RTMW/GMR poses for locomotion, then connects to the hardware
    daemon without acquiring a control lease;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite complete state frames;
@@ -171,28 +171,43 @@ Locomotion checkpoints must use the sphere-hand physical morphology, active
 waist yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy.
 The joystick command path remains unchanged: RemoteCommandService supplies
 forward, lateral, and yaw intent to the locomotion actor, which remains
-authoritative over its 13 waist and leg coordinates. The same Fast-SAM -> SMPL-X
--> pinned GMR pipeline used by TWIST2 supplies only the other 12 coordinates:
-the bilateral shoulder, elbow, and wrist joints. The live pose does not enter
-the locomotion actor observation and cannot replace joystick intent or any
-policy coordinate.
+authoritative over its 13 waist and leg coordinates. RTMW-SMPLX-Teleop's
+`smplx52_landmark_fit` output passes through the pinned GMR solver and supplies
+only the other 12 coordinates: the bilateral shoulder, elbow, and wrist joints.
+The live pose does not enter the locomotion actor observation and cannot replace
+joystick intent or any policy coordinate. Fast-SAM is not a supported locomotion
+pose source; it remains specific to TWIST2.
 
-Live locomotion upper-body tracking also requires the pinned
-`deps/Fast-SAM-3D-Body` and `deps/GMR` revisions and an operator-supplied
-licensed `SMPLX_NEUTRAL.npz`.
-Start and calibrate the server as described under [TWIST2 mode](#twist2-mode),
-then include the model path in locomotion preflight:
+Run RTMW-SMPLX-Teleop and `bello-run-hardware` on the same host. The consumer
+uses the producer's monotonic capture timestamp to measure complete source age,
+so copying or serving the latest file across hosts is rejected rather than
+hiding an unknown clock offset. The hardware daemon may still run remotely.
+Both processes must use the same licensed neutral SMPL-X model, and
+`rtmw_human_height_m` must equal RTMW's configured
+`reconstruction.subject_height_m` (both default to 1.75 m):
 
 ```text
+mkdir -p /tmp/rtmw-smplx-teleop
+cd ~/RTMW-SMPLX-Teleop
+uv run rtmw-teleop \
+  --latest-json /tmp/rtmw-smplx-teleop/latest.json
+```
+
+Then run locomotion from the same host:
+
+```text
+cd ~/bello_mujoco
 uv run bello-run-hardware \
   task=locomotion \
   checkpoint_path=checkpoints/hardware_locomotion \
+  endpoint=http://robot-host:50051 \
   remote_endpoint=http://visualizer-host:50054 \
+  rtmw_pose_path=/tmp/rtmw-smplx-teleop/latest.json \
   smplx_neutral_model_path=/absolute/path/to/SMPLX_NEUTRAL.npz
 ```
 
 To run locomotion with fixed upper-body targets instead, disable tracking. This
-skips Fast-SAM, SMPL-X, and GMR pose setup and holds the 12 arm joints at the
+skips RTMW, SMPL-X, and GMR pose setup and holds the 12 arm joints at the
 checkpoint's nominal training targets:
 
 ```text
@@ -203,9 +218,13 @@ uv run bello-run-hardware \
   upper_body_tracking_enabled=false
 ```
 
-With tracking enabled, preflight requires five distinct fresh confidence-,
-latency-, GMR-, and upper-body-limit-qualified poses by default before
-contacting `bello-hardwared`.
+With tracking enabled, preflight requires five distinct fresh schema-,
+confidence-, derived-rotation-, latency-, GMR-, and
+upper-body-limit-qualified poses by default before contacting
+`bello-hardwared`. The consumer accepts only RTMW schema 1,
+`smplx52_landmark_fit`, the exact face-free 52-joint hierarchy, calibrated
+metric OpenCV camera coordinates, and tree-consistent derived rotations.
+Root-relative/uncalibrated output and prerecorded video timestamps are rejected.
 The supported ramp and `RUN` hold use canonical GMR standing arms. After `RUN`,
 upper-body tracking begins automatically while joystick commands continue to
 control the trained gait. No separate `MOTION` confirmation is used.
@@ -224,8 +243,8 @@ last safe reference usable
 until its total age reaches 1000 ms. When no fresh safe pose remains, the runner
 reports the loss and returns only the arms toward GMR standing at the same
 bounded rate; joystick locomotion continues. A later safe pose resumes arm
-following. A terminal gRPC/GMR worker failure still causes fail-closed damped
-shutdown.
+following. A malformed RTMW record or terminal GMR worker failure still causes
+fail-closed damped shutdown.
 
 The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
@@ -372,10 +391,11 @@ transmitting a qualified person target. The live gRPC consumer and GMR solver
 run in background threads with capacity-one/latest-only semantics; the 50 Hz
 control loop never blocks on either service. Frame age is the server's complete
 pipeline latency plus the configured transport budget and local time since
-receipt. Live targets use the same pinned knee-pole thresholds, reachability
-constraint, joint velocity/acceleration bounds, and foot-clearance geometry as
-offline retargeting. The shared root estimator's causal contact state grounds
-supporting feet while preserving airborne vertical motion.
+receipt. Live targets use the pinned GMR universal task and collision profile,
+plus the runner's explicit causal knee-pole thresholds, joint
+velocity/acceleration bounds, and foot-clearance geometry. The shared root
+estimator's causal contact state grounds supporting feet while preserving
+airborne vertical motion.
 
 Armed operation follows `HOLD`, a ten-second ramp to the hybrid normal-standing
 target described above, and `RUN`; that target is held while waiting for `RUN`.
@@ -422,11 +442,13 @@ Motion adds pose age/frame/source-time validation, pose/IMU agreement,
 estimator-provided base-velocity bounds,
 reference completion, and raw-versus-applied action bounds.
 
-Locomotion adds exact Fast-SAM stream semantics, tracking and required-joint
-confidence, pipeline/reference age, source sequence and timestamp monotonicity,
-SMPL-X quaternion validity, GMR joint velocity/acceleration and hard upper-body
-joint limits, and a fixed upper-body target slew bound. These checks affect only
-the 12 arm targets; the joystick-conditioned locomotion policy continues
+Locomotion adds exact RTMW latest-JSON schema and same-host clock semantics,
+tracking and required-joint confidence, derived-rotation confidence and tree
+consistency, pipeline/reference age, source sequence and timestamp monotonicity,
+GMR joint velocity/acceleration and hard upper-body joint limits, and a fixed
+upper-body target slew bound. Invalid terminal-joint rotations use the nearest
+valid ancestor only outside the required upper-body chain. These checks affect
+only the 12 arm targets; the joystick-conditioned locomotion policy continues
 controlling the waist and legs. A temporarily unavailable or stale reference
 blends the arms back to GMR standing over
 `upper_body_follow.connection_transition_duration_seconds`; a recovered

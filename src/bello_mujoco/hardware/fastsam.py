@@ -34,7 +34,6 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
     load_smplx_standing_sample,
-    repository_gmr_source_identity,
 )
 from bello_mujoco.hardware.twist2 import (
     HardwareTwist2Config,
@@ -581,23 +580,6 @@ def fastsam_reference_source(
             reference, adapter.env, config
         ),
         live_target_check="deferred_until_MOTION",
-    ) as source:
-        yield source
-
-
-@contextmanager
-def fastsam_locomotion_reference_source(
-    adapter: Any,
-    config: Any,
-) -> Iterator[LiveGmrReferenceSource]:
-    """Construct the repository-pinned live upper-body source for locomotion."""
-
-    with _fastsam_reference_source(
-        adapter,
-        config,
-        repository_gmr_source_identity(),
-        validate_reference=adapter.validate_upper_body_reference,
-        live_target_check="required_before_hardware_connection",
     ) as source:
         yield source
 

@@ -345,23 +345,33 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
-| `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips Fast-SAM, SMPL-X, and GMR and actively holds the 12 arm joints at the locomotion checkpoint's nominal targets. |
-| `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion, twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
-| `fastsam_tls_root_certificate_path` | path or `null`; `null` | locomotion, twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
-| `fastsam_tls_server_name_override` | string or `null`; `null` | locomotion, twist2 | TLS certificate name override. It is rejected without a CA certificate. |
-| `fastsam_connect_timeout_seconds` | positive float; `5.0` | locomotion, twist2 | Deadline for establishing the gRPC channel. |
-| `fastsam_rpc_timeout_seconds` | positive float; `2.0` | locomotion, twist2 | Deadline for stream-info and status RPCs. |
-| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | locomotion, twist2 | Locomotion requires a qualified pose before hardware connection. TWIST2 applies this timeout after each `MOTION` confirmation while normal-standing commands continue. |
-| `fastsam_reference_qualification_frames` | positive integer; `5` | locomotion, twist2 | Number of distinct, successively received safe references required before locomotion preflight or TWIST2 live tracking. Re-reading one cached frame does not satisfy the gate. |
-| `fastsam_min_tracking_confidence` | float in `[0,1]`; `0.5` | locomotion, twist2 | Minimum whole-person confidence. |
-| `fastsam_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion, twist2 | Minimum confidence for every GMR target joint. |
-| `fastsam_max_pipeline_latency_ms` | positive float; `120.0` | locomotion, twist2 | Maximum server-reported submission-to-output latency. |
-| `fastsam_transport_latency_budget_ms` | nonnegative float; `10.0` | locomotion, twist2 | Conservative transport contribution added to every reference age because server and robot hosts need not share a monotonic clock. |
-| `fastsam_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion, twist2 | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
-| `fastsam_align_initial_heading` | boolean; `true` | locomotion, twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
-| `fastsam_align_initial_floor` | boolean; `true` | locomotion, twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
+| `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the 12 arm joints at the locomotion checkpoint's nominal targets. |
+| `rtmw_pose_path` | path; `/tmp/rtmw-smplx-teleop/latest.json` | locomotion | Atomic latest-JSON file written by a same-host `rtmw-teleop --latest-json` process. |
+| `rtmw_reference_ready_timeout_seconds` | positive float; `15.0` | locomotion | Time allowed for the initial sequence of qualified RTMW/GMR references before hardware connection. |
+| `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Number of distinct, successive safe references required during preflight. Re-reading one latest file does not advance the gate. |
+| `rtmw_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion | Minimum position confidence for every GMR target joint. |
+| `rtmw_min_rotation_confidence` | float in `[0,1]`; `0.10` | locomotion | Minimum derived-rotation confidence for pelvis, spine, shoulder, elbow, and wrist targets. |
+| `rtmw_max_pipeline_latency_ms` | positive float; `250.0` | locomotion | Maximum accepted RTMW capture-to-output processing latency. |
+| `rtmw_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
+| `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial pelvis heading to world forward. |
+| `rtmw_align_initial_floor` | boolean; `true` | locomotion | Use the acquired target's initial lower foot as the fixed world floor. |
+| `rtmw_human_height_m` | positive float; `1.75` | locomotion | Human height supplied to pinned GMR; it must equal RTMW's `reconstruction.subject_height_m`. |
+| `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
+| `fastsam_tls_root_certificate_path` | path or `null`; `null` | twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
+| `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |
+| `fastsam_connect_timeout_seconds` | positive float; `5.0` | twist2 | Deadline for establishing the gRPC channel. |
+| `fastsam_rpc_timeout_seconds` | positive float; `2.0` | twist2 | Deadline for stream-info and status RPCs. |
+| `fastsam_reference_ready_timeout_seconds` | positive float; `15.0` | twist2 | Time allowed after each `MOTION` confirmation while normal-standing commands continue. |
+| `fastsam_reference_qualification_frames` | positive integer; `5` | twist2 | Number of distinct, successively received safe references required for live tracking. |
+| `fastsam_min_tracking_confidence` | float in `[0,1]`; `0.5` | twist2 | Minimum whole-person confidence. |
+| `fastsam_min_joint_confidence` | float in `[0,1]`; `0.25` | twist2 | Minimum confidence for every GMR target joint. |
+| `fastsam_max_pipeline_latency_ms` | positive float; `120.0` | twist2 | Maximum server-reported submission-to-output latency. |
+| `fastsam_transport_latency_budget_ms` | nonnegative float; `10.0` | twist2 | Conservative transport contribution added to every reference age because server and robot hosts need not share a monotonic clock. |
+| `fastsam_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | twist2 | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
+| `fastsam_align_initial_heading` | boolean; `true` | twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
+| `fastsam_align_initial_floor` | boolean; `true` | twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
 | `smplx_neutral_model_path` | path or `null`; `null` | locomotion, twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
-| `smplx_human_height_m` | positive float; `1.66` | locomotion, twist2 | Human height supplied to the pinned GMR scale table. |
+| `smplx_human_height_m` | positive float; `1.66` | twist2 | Human height supplied to the pinned GMR scale table. |
 | `left_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Offset added to the left GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. |
 | `right_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Offset added to the right GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. |
 
@@ -375,11 +385,11 @@ visualizer-hosted physical controller uses the same stick mapping as
 automatically, and requires a neutral controller before accepting nonzero
 intent again. The visualizer service must produce a fresh sample before the
 hardware daemon is contacted. The joystick continues to command the
-13-coordinate locomotion policy while Fast-SAM/GMR targets only the 12 arm
-coordinates. Hardware locomotion has no native-controller or fixed-command
-mode.
+13-coordinate locomotion policy while the same-host RTMW latest-JSON stream
+and GMR target only the 12 arm coordinates. Hardware locomotion has no
+native-controller or fixed-command mode.
 
-With `upper_body_tracking_enabled=false`, explicit Fast-SAM and SMPL-X/GMR
+With `upper_body_tracking_enabled=false`, explicit RTMW and SMPL-X/GMR
 overrides must not be supplied. The runner uses the checkpoint's nominal
 targets for all 12 arm coordinates while the joystick continues to command
 locomotion:

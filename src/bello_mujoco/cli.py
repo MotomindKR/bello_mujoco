@@ -167,6 +167,16 @@ class HardwareCommandConfig:
     policy_log_path: Path | None
     arm: bool
     upper_body_tracking_enabled: bool
+    rtmw_pose_path: Path
+    rtmw_reference_ready_timeout_seconds: float
+    rtmw_reference_qualification_frames: int
+    rtmw_min_joint_confidence: float
+    rtmw_min_rotation_confidence: float
+    rtmw_max_pipeline_latency_ms: float
+    rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
+    rtmw_align_initial_heading: bool
+    rtmw_align_initial_floor: bool
+    rtmw_human_height_m: float
     fastsam_endpoint: str
     fastsam_tls_root_certificate_path: Path | None
     fastsam_tls_server_name_override: str | None
@@ -892,6 +902,7 @@ def hardware_entrypoint() -> None:
             "standing_checkpoint_path=",
             "motion_path=",
             "policy_log_path=",
+            "rtmw_pose_path=",
             "fastsam_tls_root_certificate_path=",
             "smplx_neutral_model_path=",
         )
@@ -923,9 +934,20 @@ def _hardware_hydra(config: DictConfig) -> None:
         "fastsam_camera_to_world_quaternion_xyzw",
         "fastsam_align_initial_heading",
         "fastsam_align_initial_floor",
-        "smplx_neutral_model_path",
-        "smplx_human_height_m",
     )
+    rtmw_fields = (
+        "rtmw_pose_path",
+        "rtmw_reference_ready_timeout_seconds",
+        "rtmw_reference_qualification_frames",
+        "rtmw_min_joint_confidence",
+        "rtmw_min_rotation_confidence",
+        "rtmw_max_pipeline_latency_ms",
+        "rtmw_camera_to_world_quaternion_xyzw",
+        "rtmw_align_initial_heading",
+        "rtmw_align_initial_floor",
+        "rtmw_human_height_m",
+    )
+    smplx_fields = ("smplx_neutral_model_path", "smplx_human_height_m")
     locomotion_upper_body_adjustment_fields = (
         "left_elbow_yaw_offset_radians",
         "right_elbow_yaw_offset_radians",
@@ -941,6 +963,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 "remote_staleness_ms",
                 "motion_path",
                 "standing_checkpoint_path",
+                *rtmw_fields,
                 *locomotion_upper_body_fields,
             ),
             context="task=twist2",
@@ -1028,6 +1051,8 @@ def _hardware_hydra(config: DictConfig) -> None:
                 "remote_endpoint",
                 "remote_staleness_ms",
                 *fastsam_fields,
+                *rtmw_fields,
+                *smplx_fields,
                 *locomotion_upper_body_fields,
             ),
             context="task=motion",
@@ -1093,6 +1118,8 @@ def _hardware_hydra(config: DictConfig) -> None:
             "policy_transition_seconds",
             "max_motion_tilt_radians",
             "action_lpf_cutoff_hz",
+            *fastsam_fields,
+            "smplx_human_height_m",
         ),
         context="task=locomotion",
     )
@@ -1100,7 +1127,11 @@ def _hardware_hydra(config: DictConfig) -> None:
         raise ValueError("remote_endpoint is required for task=locomotion")
     if not command.upper_body_tracking_enabled:
         _reject_explicit_fields(
-            (*fastsam_fields, *locomotion_upper_body_adjustment_fields),
+            (
+                *rtmw_fields,
+                "smplx_neutral_model_path",
+                *locomotion_upper_body_adjustment_fields,
+            ),
             context="upper_body_tracking_enabled=false",
         )
     from bello_mujoco.hardware.locomotion import (
@@ -1131,30 +1162,21 @@ def _hardware_hydra(config: DictConfig) -> None:
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
             upper_body_tracking_enabled=command.upper_body_tracking_enabled,
-            fastsam_endpoint=command.fastsam_endpoint,
-            fastsam_tls_root_certificate_path=(
-                command.fastsam_tls_root_certificate_path
+            rtmw_pose_path=command.rtmw_pose_path,
+            rtmw_reference_ready_timeout_seconds=(
+                command.rtmw_reference_ready_timeout_seconds
             ),
-            fastsam_tls_server_name_override=(command.fastsam_tls_server_name_override),
-            fastsam_connect_timeout_seconds=(command.fastsam_connect_timeout_seconds),
-            fastsam_rpc_timeout_seconds=command.fastsam_rpc_timeout_seconds,
-            fastsam_reference_ready_timeout_seconds=(
-                command.fastsam_reference_ready_timeout_seconds
+            rtmw_reference_qualification_frames=(
+                command.rtmw_reference_qualification_frames
             ),
-            fastsam_reference_qualification_frames=(
-                command.fastsam_reference_qualification_frames
+            rtmw_min_joint_confidence=command.rtmw_min_joint_confidence,
+            rtmw_min_rotation_confidence=command.rtmw_min_rotation_confidence,
+            rtmw_max_pipeline_latency_ms=command.rtmw_max_pipeline_latency_ms,
+            rtmw_camera_to_world_quaternion_xyzw=(
+                command.rtmw_camera_to_world_quaternion_xyzw
             ),
-            fastsam_min_tracking_confidence=(command.fastsam_min_tracking_confidence),
-            fastsam_min_joint_confidence=command.fastsam_min_joint_confidence,
-            fastsam_max_pipeline_latency_ms=(command.fastsam_max_pipeline_latency_ms),
-            fastsam_transport_latency_budget_ms=(
-                command.fastsam_transport_latency_budget_ms
-            ),
-            fastsam_camera_to_world_quaternion_xyzw=(
-                command.fastsam_camera_to_world_quaternion_xyzw
-            ),
-            fastsam_align_initial_heading=command.fastsam_align_initial_heading,
-            fastsam_align_initial_floor=command.fastsam_align_initial_floor,
+            rtmw_align_initial_heading=command.rtmw_align_initial_heading,
+            rtmw_align_initial_floor=command.rtmw_align_initial_floor,
             smplx_neutral_model_path=(
                 _required_path(
                     command.smplx_neutral_model_path,
@@ -1163,7 +1185,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 if command.upper_body_tracking_enabled
                 else None
             ),
-            smplx_human_height_m=command.smplx_human_height_m,
+            rtmw_human_height_m=command.rtmw_human_height_m,
             upper_body_follow=replace(
                 base.upper_body_follow,
                 left_elbow_yaw_offset_radians=(command.left_elbow_yaw_offset_radians),

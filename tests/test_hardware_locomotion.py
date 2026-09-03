@@ -1133,7 +1133,7 @@ def test_remote_abort_around_hold_never_acquires_control(
         pose_hardware_config(
             arm=True,
             allow_git_commit_mismatch=True,
-            fastsam_reference_qualification_frames=1,
+            rtmw_reference_qualification_frames=1,
         ),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: remote,
@@ -1497,7 +1497,7 @@ def test_read_only_preflight_never_acquires_control(
         Path("unused"),
         pose_hardware_config(
             allow_git_commit_mismatch=True,
-            fastsam_reference_qualification_frames=1,
+            rtmw_reference_qualification_frames=1,
         ),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: SimpleNamespace(

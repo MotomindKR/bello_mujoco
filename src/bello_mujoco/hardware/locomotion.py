@@ -169,27 +169,22 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     client_name: str = "bello-locomotion-policy"
     remote: RemoteCommandConfig = RemoteCommandConfig()
     upper_body_tracking_enabled: bool = True
-    fastsam_endpoint: str = "127.0.0.1:50055"
-    fastsam_tls_root_certificate_path: Path | None = None
-    fastsam_tls_server_name_override: str | None = None
-    fastsam_connect_timeout_seconds: float = 5.0
-    fastsam_rpc_timeout_seconds: float = 2.0
-    fastsam_reference_ready_timeout_seconds: float = 15.0
-    fastsam_reference_qualification_frames: int = 5
-    fastsam_min_tracking_confidence: float = 0.5
-    fastsam_min_joint_confidence: float = 0.25
-    fastsam_max_pipeline_latency_ms: float = 120.0
-    fastsam_transport_latency_budget_ms: float = 10.0
-    fastsam_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
+    rtmw_pose_path: Path = Path("/tmp/rtmw-smplx-teleop/latest.json")
+    rtmw_reference_ready_timeout_seconds: float = 15.0
+    rtmw_reference_qualification_frames: int = 5
+    rtmw_min_joint_confidence: float = 0.25
+    rtmw_min_rotation_confidence: float = 0.10
+    rtmw_max_pipeline_latency_ms: float = 250.0
+    rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
         0.5,
         -0.5,
         0.5,
         -0.5,
     )
-    fastsam_align_initial_heading: bool = True
-    fastsam_align_initial_floor: bool = True
+    rtmw_align_initial_heading: bool = True
+    rtmw_align_initial_floor: bool = True
     smplx_neutral_model_path: Path | None = None
-    smplx_human_height_m: float = 1.66
+    rtmw_human_height_m: float = 1.75
     upper_body_follow: UpperBodyFollowConfig = UpperBodyFollowConfig()
 
 
@@ -721,18 +716,18 @@ def validate_hardware_config(
     if config.remote.staleness_ms <= 0:
         raise ValueError("remote.staleness_ms must be positive")
     if config.upper_body_tracking_enabled:
-        from bello_mujoco.hardware.fastsam import FastSamGrpcConfig
+        from bello_mujoco.hardware.rtmw import RtmwLatestJsonConfig
 
-        FastSamGrpcConfig.from_hardware(config)
+        RtmwLatestJsonConfig.from_hardware(config)
         if (
-            not math.isfinite(config.fastsam_reference_ready_timeout_seconds)
-            or config.fastsam_reference_ready_timeout_seconds <= 0.0
+            not math.isfinite(config.rtmw_reference_ready_timeout_seconds)
+            or config.rtmw_reference_ready_timeout_seconds <= 0.0
         ):
             raise ValueError(
-                "fastsam_reference_ready_timeout_seconds must be positive and finite"
+                "rtmw_reference_ready_timeout_seconds must be positive and finite"
             )
-        if config.fastsam_reference_qualification_frames < 1:
-            raise ValueError("fastsam_reference_qualification_frames must be positive")
+        if config.rtmw_reference_qualification_frames < 1:
+            raise ValueError("rtmw_reference_qualification_frames must be positive")
     upper = config.upper_body_follow
     positive = {
         "max_reference_joint_speed_rps": upper.max_reference_joint_speed_rps,
@@ -751,11 +746,6 @@ def validate_hardware_config(
     for name, value in finite.items():
         if not math.isfinite(value):
             raise ValueError(f"upper_body_follow.{name} must be finite")
-    if config.upper_body_tracking_enabled and (
-        not math.isfinite(config.smplx_human_height_m)
-        or config.smplx_human_height_m <= 0.0
-    ):
-        raise ValueError("smplx_human_height_m must be positive and finite")
     if upper.max_reference_age_ms <= 0:
         raise ValueError("upper_body_follow.max_reference_age_ms must be positive")
     if (
@@ -766,16 +756,14 @@ def validate_hardware_config(
             "upper_body_follow.max_reference_joint_limit_violation_radians must be "
             "finite and nonnegative"
         )
-    if config.upper_body_tracking_enabled:
-        minimum_age_budget = (
-            config.fastsam_max_pipeline_latency_ms
-            + config.fastsam_transport_latency_budget_ms
+    if (
+        config.upper_body_tracking_enabled
+        and upper.max_reference_age_ms <= config.rtmw_max_pipeline_latency_ms
+    ):
+        raise ValueError(
+            "upper_body_follow.max_reference_age_ms must exceed the RTMW "
+            "pipeline latency limit"
         )
-        if upper.max_reference_age_ms <= minimum_age_budget:
-            raise ValueError(
-                "upper_body_follow.max_reference_age_ms must exceed the Fast-SAM "
-                "pipeline and transport latency budget"
-            )
     if metadata is not None:
         command_ranges(metadata)
         command_minimum_moving_speeds(metadata)
@@ -908,11 +896,11 @@ def run_hardware_locomotion(
         live_reference = None
         if config.upper_body_tracking_enabled:
             if reference_source_factory is None:
-                from bello_mujoco.hardware.fastsam import (
-                    fastsam_locomotion_reference_source,
+                from bello_mujoco.hardware.rtmw import (
+                    rtmw_locomotion_reference_source,
                 )
 
-                reference_source_factory = fastsam_locomotion_reference_source
+                reference_source_factory = rtmw_locomotion_reference_source
             references = resources.enter_context(
                 reference_source_factory(adapter, config)
             )
@@ -976,7 +964,7 @@ def run_hardware_locomotion(
                 "remote_intent_armed": remote_input.intent_armed,
                 "command": tuple(float(value) for value in command),
                 "upper_body_pose_source": (
-                    "fastsam_smplx_gmr"
+                    "rtmw_smplx52_gmr"
                     if config.upper_body_tracking_enabled
                     else "checkpoint_nominal"
                 ),
@@ -1256,7 +1244,7 @@ def wait_for_qualified_upper_body_reference(
 ) -> Twist2ReferenceFrame | None:
     """Require distinct fresh live poses while preserving the remote abort path."""
 
-    deadline = time.monotonic() + config.fastsam_reference_ready_timeout_seconds
+    deadline = time.monotonic() + config.rtmw_reference_ready_timeout_seconds
     last_sequence: int | None = None
     qualified_frames = 0
     last_error: ReferenceUnavailable | None = None
@@ -1274,7 +1262,7 @@ def wait_for_qualified_upper_body_reference(
             elif reference.sequence < last_sequence:
                 qualified_frames = 0
                 last_sequence = None
-            if qualified_frames >= config.fastsam_reference_qualification_frames:
+            if qualified_frames >= config.rtmw_reference_qualification_frames:
                 return reference
         except ReferenceUnavailable as error:
             last_error = error

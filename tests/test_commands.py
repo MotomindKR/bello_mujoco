@@ -175,6 +175,8 @@ def test_hardware_upper_body_tracking_is_an_explicit_boolean() -> None:
         )
 
     assert default.upper_body_tracking_enabled
+    assert default.rtmw_pose_path == Path("/tmp/rtmw-smplx-teleop/latest.json")
+    assert default.rtmw_human_height_m == pytest.approx(1.75)
     assert not disabled.upper_body_tracking_enabled
 
 
