@@ -191,10 +191,10 @@ def test_cad_direction_inference_never_claims_calibrated_protocol_polarity() -> 
     (
         ("center", "waist_roll", (-25.0, 25.0)),
         ("center", "waist_yaw", (-90.0, 90.0)),
-        ("left", "hip_pitch", (-90.0, 180.0)),
-        ("right", "hip_pitch", (-90.0, 180.0)),
-        ("left", "hip_roll", (-121.0, 31.0)),
-        ("right", "hip_roll", (-31.0, 121.0)),
+        ("left", "hip_pitch", (-180.0, 90.0)),
+        ("right", "hip_pitch", (-180.0, 90.0)),
+        ("left", "hip_roll", (-31.0, 121.0)),
+        ("right", "hip_roll", (-121.0, 31.0)),
         ("left", "hip_yaw", (-90.0, 90.0)),
         ("right", "hip_yaw", (-90.0, 90.0)),
         ("left", "knee", (0.0, 145.0)),
@@ -205,12 +205,12 @@ def test_cad_direction_inference_never_claims_calibrated_protocol_polarity() -> 
         ("right", "ankle_pitch", (-45.0, 45.0)),
         ("left", "shoulder_pitch", (-225.0, 45.0)),
         ("right", "shoulder_pitch", (-225.0, 45.0)),
-        ("left", "shoulder_roll", (-180.0, 15.0)),
-        ("right", "shoulder_roll", (-15.0, 180.0)),
+        ("left", "shoulder_roll", (-15.0, 180.0)),
+        ("right", "shoulder_roll", (-180.0, 15.0)),
         ("left", "shoulder_yaw", (-90.0, 90.0)),
         ("right", "shoulder_yaw", (-90.0, 90.0)),
-        ("left", "elbow_pitch", (-15.0, 130.0)),
-        ("right", "elbow_pitch", (-15.0, 130.0)),
+        ("left", "elbow_pitch", (-130.0, 15.0)),
+        ("right", "elbow_pitch", (-130.0, 15.0)),
         ("left", "wrist_yaw", (-116.8, 116.8)),
         ("right", "wrist_yaw", (-116.8, 116.8)),
         ("left", "wrist_pitch", (-90.0, 90.0)),
@@ -219,7 +219,7 @@ def test_cad_direction_inference_never_claims_calibrated_protocol_polarity() -> 
         ("right", "wrist_roll", (-90.0, 90.0)),
     ),
 )
-def test_designer_joint_limits_use_provisional_left_sign_and_geometric_mirror(
+def test_designer_joint_limits_use_reviewed_left_signs_and_geometric_mirror(
     side: str, station: str, expected_deg: tuple[float, float]
 ) -> None:
     limits = MODULE.joint_limit(
@@ -489,7 +489,7 @@ def test_kinematic_report_matches_urdf_joint_transform_and_limits() -> None:
                 "upper_rad": np.pi / 2.0,
                 "effort_nm": 60.0,
                 "velocity_rad_s": 20.0,
-                "status": "designer_provided_sign_review_pending",
+                "status": "designer_provided_user_reviewed_signs",
             },
         }
     ]
@@ -533,9 +533,16 @@ def test_build_report_records_joint_limit_provenance(
         "source": "designer_provided_2026-09-03",
         "source_units": "degrees",
         "reference_side": "left",
-        "left_sign_mapping": "current_urdf_positive_provisional",
+        "left_sign_mapping": "user_reviewed_per_station",
+        "reversed_sign_stations": [
+            "elbow_pitch",
+            "hip_pitch",
+            "hip_roll",
+            "shoulder_roll",
+        ],
         "right_sign_derivation": "geometric_mirror_across_y_zero",
-        "sign_status": "pending_user_review",
+        "sign_status": "user_reviewed",
+        "encoder_zero_status": "pending_validation",
         "physical_stop_status": "pending_validation",
     }
 
@@ -557,7 +564,7 @@ def test_geometry_reviewer_exposes_fk_joint_controls() -> None:
         "axisAngleMatrix",
         "updateKinematics",
         "Mirror refused; pose is unchanged",
-        "provisionally mapped to current URDF axes",
+        "user-reviewed URDF sign mapping",
         "if(violations.length)return{applied:false,violations}",
         "selectedVisuals",
         "unselectedVisuals",

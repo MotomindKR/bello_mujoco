@@ -218,30 +218,33 @@ the two fixed anonymous sphere links remain massless when the URDF is loaded
 directly and cannot silently increase the robot mass.
 
 Joint ranges come from the designer's 2026-09-03 values. Source values are in
-degrees and the generated URDF stores radians. The left-side signs are
-**provisionally** mapped to the current URDF positive axes pending user review;
-right-side pitch ranges are copied and right-side roll/yaw ranges are reflected
-across Mini `y=0`. Symmetric ranges are unchanged by that reflection.
+degrees and the generated URDF stores radians. User review found that hip
+pitch, hip roll, shoulder roll, and elbow pitch have the opposite sign from the
+reported left-side convention when expressed on the current URDF axes. All
+other reported signs retain their direct mapping. Right-side pitch ranges are
+copied and right-side roll/yaw ranges are reflected across Mini `y=0`.
+Symmetric ranges are unchanged by that reflection.
 
 | Station | Left / body range (deg) | Derived right range (deg) |
 | --- | ---: | ---: |
 | waist roll | -25 .. +25 | body joint |
 | waist yaw | -90 .. +90 | body joint |
-| hip pitch | -90 .. +180 | -90 .. +180 |
-| hip roll | -121 .. +31 | -31 .. +121 |
+| hip pitch | -180 .. +90 | -180 .. +90 |
+| hip roll | -31 .. +121 | -121 .. +31 |
 | hip yaw | -90 .. +90 | -90 .. +90 |
 | knee | 0 .. +145 | 0 .. +145 |
 | ankle roll | -35 .. +35 | -35 .. +35 |
 | ankle pitch | -45 .. +45 | -45 .. +45 |
 | shoulder pitch | -225 .. +45 | -225 .. +45 |
-| shoulder roll | -180 .. +15 | -15 .. +180 |
+| shoulder roll | -15 .. +180 | -180 .. +15 |
 | shoulder yaw | -90 .. +90 | -90 .. +90 |
-| elbow pitch | -15 .. +130 | -15 .. +130 |
+| elbow pitch | -130 .. +15 | -130 .. +15 |
 | wrist yaw | -116.8 .. +116.8 | -116.8 .. +116.8 |
 | wrist pitch | -90 .. +90 | -90 .. +90 |
 | wrist roll | -90 .. +90 | -90 .. +90 |
 
-These values still require user sign review and physical-stop validation before
+Sign mapping has been user-reviewed; physical stops and the correspondence of
+the designer's zero pose to encoder zero still require validation before
 motion. The axial arm coordinate between `elbow_link` and `lower_arm_link` is
 named `wrist_yaw_joint`; its physical actuator is `wrist_yaw_motor`. This is a
 naming correction only: chain placement is unchanged and the left/right CAN IDs
@@ -278,7 +281,7 @@ Open
 for the final visual/collision gate. The fixed viewer can isolate a link, make
 all other links translucent, toggle collision primitives, and display the
 current positive joint axes. Sliders cover all 28 revolute joints using the
-exact generated URDF tree and designer-provided, sign-review-pending limits;
+exact generated URDF tree and designer-provided, user-reviewed-sign limits;
 the reset and left/right mirror controls support pose and symmetry review.
 Mirroring is atomic: if any reflected target would exceed its derived target
 limit, the viewer leaves the entire pose unchanged and lists every offending
