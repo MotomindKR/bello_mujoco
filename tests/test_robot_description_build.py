@@ -112,6 +112,79 @@ def test_cad_to_urdf_axes_are_right_handed_and_canonical() -> None:
     )
 
 
+def test_bello_mini_can_ids_preserve_original_bello_station_ranges() -> None:
+    assert MODULE.MOTOR_CAN_BINDINGS == {
+        "waist_yaw_motor": ("can1", 51),
+        "waist_roll_motor": ("can1", 52),
+        "left_hip_pitch_motor": ("can0", 61),
+        "left_hip_roll_motor": ("can0", 62),
+        "left_hip_yaw_motor": ("can0", 63),
+        "left_knee_motor": ("can0", 64),
+        "left_ankle_motor_1": ("can0", 65),
+        "left_ankle_motor_2": ("can0", 66),
+        "right_hip_pitch_motor": ("can0", 71),
+        "right_hip_roll_motor": ("can0", 72),
+        "right_hip_yaw_motor": ("can0", 73),
+        "right_knee_motor": ("can0", 74),
+        "right_ankle_motor_1": ("can0", 75),
+        "right_ankle_motor_2": ("can0", 76),
+        "left_shoulder_pitch_motor": ("can1", 31),
+        "left_shoulder_roll_motor": ("can1", 32),
+        "left_shoulder_yaw_motor": ("can1", 33),
+        "left_elbow_pitch_motor": ("can1", 34),
+        "left_elbow_yaw_motor": ("can1", 35),
+        "left_wrist_pitch_motor": ("can1", 36),
+        "left_wrist_roll_motor": ("can1", 37),
+        "right_shoulder_pitch_motor": ("can1", 41),
+        "right_shoulder_roll_motor": ("can1", 42),
+        "right_shoulder_yaw_motor": ("can1", 43),
+        "right_elbow_pitch_motor": ("can1", 44),
+        "right_elbow_yaw_motor": ("can1", 45),
+        "right_wrist_pitch_motor": ("can1", 46),
+        "right_wrist_roll_motor": ("can1", 47),
+    }
+    assert len(set(MODULE.MOTOR_CAN_BINDINGS.values())) == 28
+
+
+def test_cad_direction_inference_never_claims_calibrated_protocol_polarity() -> None:
+    direct = MODULE.cad_direction_inference(
+        {
+            "motor_name": "direct_motor",
+            "joint_names": ["joint"],
+            "coupling": "direct",
+        },
+        np.asarray([0.0, -1.0, 0.0]),
+        {"joint": [0.0, 1.0, 0.0]},
+    )
+    differential = MODULE.cad_direction_inference(
+        {
+            "motor_name": "differential_motor",
+            "joint_names": ["ankle_pitch_joint", "ankle_roll_joint"],
+            "coupling": "differential",
+        },
+        np.asarray([0.0, 1.0, 0.0]),
+        {
+            "ankle_pitch_joint": [0.0, 1.0, 0.0],
+            "ankle_roll_joint": [1.0, 0.0, 0.0],
+        },
+    )
+
+    assert direct == {
+        "reference_joint": "joint",
+        "axis_dot": -1.0,
+        "axis_alignment_sign": -1,
+        "candidate_command_direction": -1,
+        "status": "cad_geometry_only_protocol_sign_unverified",
+    }
+    assert differential == {
+        "reference_joint": "ankle_pitch_joint",
+        "axis_dot": 1.0,
+        "axis_alignment_sign": 1,
+        "candidate_command_direction": None,
+        "status": "cad_pitch_projection_only_differential_unresolved",
+    }
+
+
 def test_collision_geometry_accepts_only_mujoco_compatible_primitives() -> None:
     for primitive in (
         {"type": "box", "size_m": [1.0, 2.0, 3.0]},

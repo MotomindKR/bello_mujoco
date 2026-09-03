@@ -238,14 +238,29 @@ Open
 `http://127.0.0.1:8765/tools/robot_description/geometry_review.html?base=/artifacts/bello_mini_cad`
 for the final visual/collision gate. The fixed viewer can isolate a link, make
 all other links translucent, toggle collision primitives, and display the
-approved positive joint axes. The viewer applies the build report's nominal
-root translation and draws the ground plane at `z=0`, so both sole contact
-surfaces can be checked in their final zero-joint deployment pose. The URDF
-keeps `pelvis_link` as its physical floating root; the robot definition must use
-the report's exact `grounding.nominal_root_translation_m` as its default root
-position rather than adding a synthetic ground-root link. The generated motor
-topology deliberately leaves CAN IDs, encoder zeros, command directions, and
-ankle differential signs null until bench calibration. The dedicated
+approved positive joint axes. Its motor audit overlays every CAD motor-frame
+`+Z` shaft axis at the corresponding actuator location and lists the assigned
+CAN bus/ID beside the CAD-only joint-axis alignment estimate. These estimates
+are geometric review evidence, not calibrated RobStride wire polarity.
+
+The CAN layout retains Bello's body ranges while increasing IDs outward along
+each kinematic chain: left/right arms are `31..37` / `41..47`, waist yaw/roll
+are `51,52`, and left/right legs are `61..66` / `71..76`. Legs use `can0`;
+waist and arms use `can1`; both are nominally 1 Mbps. The generated topology
+keeps every live `command_direction` and encoder zero null because RobStride's
+published documentation does not tie protocol-positive rotation to STEP-frame
+`+Z`. Direct-drive rows include the conditional placeholder
+`sign(dot(CAD motor +Z, reviewed joint +axis))`; ankle rows expose only their
+pitch-axis projection and retain null differential matrices. Validate raw
+feedback and low-current motion on a restrained robot before creating a live
+hardware description.
+
+The viewer applies the build report's nominal root translation and draws the
+ground plane at `z=0`, so both sole contact surfaces can be checked in their
+final zero-joint deployment pose. The URDF keeps `pelvis_link` as its physical
+floating root; the robot definition must use the report's exact
+`grounding.nominal_root_translation_m` as its default root position rather than
+adding a synthetic ground-root link. The dedicated
 bottom-view audit checks each five-piece sole fit against the corresponding STL
 slice, including footprint overlap and the exact lowest contact plane.
 

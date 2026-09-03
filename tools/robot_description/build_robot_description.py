@@ -60,6 +60,36 @@ MOTOR_RATINGS = {
     "ROBSTRIDE_04": {"peak_torque_nm": 120.0, "maximum_speed_rad_s": 15.0},
     "ROBSTRIDE_06": {"peak_torque_nm": 36.0, "maximum_speed_rad_s": 50.0},
 }
+MOTOR_CAN_BINDINGS = {
+    "waist_yaw_motor": ("can1", 51),
+    "waist_roll_motor": ("can1", 52),
+    "left_hip_pitch_motor": ("can0", 61),
+    "left_hip_roll_motor": ("can0", 62),
+    "left_hip_yaw_motor": ("can0", 63),
+    "left_knee_motor": ("can0", 64),
+    "left_ankle_motor_1": ("can0", 65),
+    "left_ankle_motor_2": ("can0", 66),
+    "right_hip_pitch_motor": ("can0", 71),
+    "right_hip_roll_motor": ("can0", 72),
+    "right_hip_yaw_motor": ("can0", 73),
+    "right_knee_motor": ("can0", 74),
+    "right_ankle_motor_1": ("can0", 75),
+    "right_ankle_motor_2": ("can0", 76),
+    "left_shoulder_pitch_motor": ("can1", 31),
+    "left_shoulder_roll_motor": ("can1", 32),
+    "left_shoulder_yaw_motor": ("can1", 33),
+    "left_elbow_pitch_motor": ("can1", 34),
+    "left_elbow_yaw_motor": ("can1", 35),
+    "left_wrist_pitch_motor": ("can1", 36),
+    "left_wrist_roll_motor": ("can1", 37),
+    "right_shoulder_pitch_motor": ("can1", 41),
+    "right_shoulder_roll_motor": ("can1", 42),
+    "right_shoulder_yaw_motor": ("can1", 43),
+    "right_elbow_pitch_motor": ("can1", 44),
+    "right_elbow_yaw_motor": ("can1", 45),
+    "right_wrist_pitch_motor": ("can1", 46),
+    "right_wrist_roll_motor": ("can1", 47),
+}
 FOOT_LINK_NAMES = ("left_ankle_roll_link", "right_ankle_roll_link")
 FOOT_CONTACT_ROLE = "foot_contact_envelope"
 LINK_COLORS = {
@@ -146,8 +176,7 @@ def validate_inputs(
         if manifest.get("review_contract") != contract:
             raise ValueError(f"{label} input has not passed its review/build gate")
     source_hashes = {
-        manifest.get("source", {}).get("sha256")
-        for manifest, _, _ in contracts
+        manifest.get("source", {}).get("sha256") for manifest, _, _ in contracts
     }
     if None in source_hashes or len(source_hashes) != 1:
         raise ValueError("robot-description inputs refer to different STEP sources")
@@ -280,9 +309,13 @@ def add_primitive_geometry(parent: ET.Element, primitive: dict[str, Any]) -> Non
 
 
 def mesh_reference(urdf_path: Path, mesh_path: Path) -> str:
-    return Path("..").joinpath(
-        Path(mesh_path).resolve().relative_to(urdf_path.parent.parent.resolve())
-    ).as_posix()
+    return (
+        Path("..")
+        .joinpath(
+            Path(mesh_path).resolve().relative_to(urdf_path.parent.parent.resolve())
+        )
+        .as_posix()
+    )
 
 
 def add_link_geometry(
@@ -307,9 +340,7 @@ def add_link_geometry(
         )
         ET.SubElement(visual, "material", {"name": f"{link_side(name)}_links"})
     for primitive_value in geometry["collision_primitives"]:
-        collision = ET.SubElement(
-            link, "collision", {"name": primitive_value["name"]}
-        )
+        collision = ET.SubElement(link, "collision", {"name": primitive_value["name"]})
         add_origin(
             collision,
             primitive_value["origin_xyz_m"],
@@ -338,7 +369,9 @@ def add_link(
     )
 
 
-def joint_limit(joint: dict[str, Any], motors: dict[str, dict[str, Any]]) -> dict[str, str]:
+def joint_limit(
+    joint: dict[str, Any], motors: dict[str, dict[str, Any]]
+) -> dict[str, str]:
     lower, upper = PROVISIONAL_LIMITS_RAD[joint["station"]]
     models = {motors[motor_id]["model"] for motor_id in joint["motor_ids"]}
     if len(models) != 1:
@@ -361,9 +394,9 @@ def add_joint(
     element = ET.SubElement(root, "joint", {"name": joint["name"], "type": "revolute"})
     ET.SubElement(element, "parent", {"link": joint["parent_link"]})
     ET.SubElement(element, "child", {"link": joint["child_link"]})
-    relative_origin = frame_origins[joint["child_link"]] - frame_origins[
-        joint["parent_link"]
-    ]
+    relative_origin = (
+        frame_origins[joint["child_link"]] - frame_origins[joint["parent_link"]]
+    )
     add_origin(element, clean_vector(relative_origin))
     axis = clean_vector(CAD_TO_URDF @ np.asarray(joint["axis_cad"], dtype=np.float64))
     ET.SubElement(element, "axis", {"xyz": format_vector(axis)})
@@ -375,9 +408,7 @@ def add_anonymous_endpoint(
     endpoint: dict[str, Any],
 ) -> None:
     link = ET.SubElement(root, "link", {"name": endpoint["link_name"]})
-    visual = ET.SubElement(
-        link, "visual", {"name": f"{endpoint['link_name']}_visual"}
-    )
+    visual = ET.SubElement(link, "visual", {"name": f"{endpoint['link_name']}_visual"})
     add_origin(visual, endpoint["sphere_center_xyz_link_m"])
     add_primitive_geometry(visual, {"type": "sphere", **endpoint})
     ET.SubElement(visual, "material", {"name": "anonymous_end_effector"})
@@ -454,9 +485,7 @@ def nominal_grounding(
                 raise ValueError(
                     f"unsupported foot contact primitive {primitive['type']}"
                 )
-            bottoms.append(
-                frame_z + float(primitive["origin_xyz_m"][2]) - half_height
-            )
+            bottoms.append(frame_z + float(primitive["origin_xyz_m"][2]) - half_height)
         if max(bottoms) - min(bottoms) > 1e-12:
             raise ValueError(f"{link_name} contact primitives are not coplanar")
         sole_heights[link_name] = min(bottoms)
@@ -563,11 +592,56 @@ def build_urdf(
     return ET.ElementTree(root), adjustments, sensor_frames
 
 
+def validate_motor_can_bindings(motors: list[dict[str, Any]]) -> None:
+    motor_names = {motor["motor_name"] for motor in motors}
+    binding_names = set(MOTOR_CAN_BINDINGS)
+    if motor_names != binding_names:
+        missing = sorted(motor_names - binding_names)
+        extra = sorted(binding_names - motor_names)
+        raise ValueError(
+            f"motor CAN binding mismatch: missing={missing}, unexpected={extra}"
+        )
+    addresses = list(MOTOR_CAN_BINDINGS.values())
+    if len(addresses) != len(set(addresses)):
+        raise ValueError("motor CAN bindings contain duplicate bus/ID addresses")
+    for motor_name, (bus, can_id) in MOTOR_CAN_BINDINGS.items():
+        if bus not in {"can0", "can1"} or not 0 <= can_id <= 127:
+            raise ValueError(f"invalid CAN binding for {motor_name}: {bus}/{can_id}")
+
+
+def cad_direction_inference(
+    motor: dict[str, Any],
+    output_axis: np.ndarray,
+    joint_axes: dict[str, list[float]],
+) -> dict[str, Any]:
+    reference_joint = motor["joint_names"][0]
+    axis_dot = float(np.dot(output_axis, np.asarray(joint_axes[reference_joint])))
+    if not math.isclose(abs(axis_dot), 1.0, abs_tol=1e-6):
+        raise ValueError(
+            f"motor {motor['motor_name']} CAD axis is not parallel to its "
+            f"reference joint {reference_joint}: dot={axis_dot}"
+        )
+    alignment_sign = 1 if axis_dot > 0.0 else -1
+    differential = motor["coupling"] == "differential"
+    return {
+        "reference_joint": reference_joint,
+        "axis_dot": float(alignment_sign),
+        "axis_alignment_sign": alignment_sign,
+        "candidate_command_direction": None if differential else alignment_sign,
+        "status": (
+            "cad_pitch_projection_only_differential_unresolved"
+            if differential
+            else "cad_geometry_only_protocol_sign_unverified"
+        ),
+    }
+
+
 def build_motor_topology(
     ownership: dict[str, Any], inertials: dict[str, Any]
 ) -> dict[str, Any]:
     joint_by_name = {joint["name"]: joint for joint in ownership["joints"]}
     catalog = inertials["motor_catalog"]
+    validate_motor_can_bindings(ownership["motors"])
     motors = []
     for motor in ownership["motors"]:
         output_axis = clean_vector(
@@ -580,6 +654,11 @@ def build_motor_topology(
             ).tolist()
             for joint_name in motor["joint_names"]
         }
+        bus, can_id = MOTOR_CAN_BINDINGS[motor["motor_name"]]
+        direction_inference = cad_direction_inference(motor, output_axis, joint_axes)
+        center_urdf_world_m = clean_vector(
+            CAD_TO_URDF @ np.asarray(motor["center_mm"], dtype=np.float64) / 1000.0
+        )
         motors.append(
             {
                 "name": motor["motor_name"],
@@ -589,14 +668,16 @@ def build_motor_topology(
                 "station": motor["station"],
                 "coupling": motor["coupling"],
                 "logical_joints": motor["joint_names"],
+                "cad_center_urdf_world_m": center_urdf_world_m.tolist(),
                 "cad_motor_frame_output_axis_urdf": output_axis.tolist(),
                 "logical_joint_axes_urdf": joint_axes,
+                "cad_direction_inference": direction_inference,
                 "hardware_binding": {
-                    "bus": None,
-                    "can_id": None,
+                    "bus": bus,
+                    "can_id": can_id,
                     "command_direction": None,
                     "encoder_zero_offset_rad": None,
-                    "status": "calibration_required",
+                    "status": "can_assigned_direction_calibration_required",
                 },
             }
         )
@@ -620,15 +701,46 @@ def build_motor_topology(
             }
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "robot": "bello_mini",
         "deployment_status": "calibration_required",
         "deployment_blockers": [
-            "CAN bus and IDs are unassigned",
-            "command directions and encoder zeros are uncalibrated",
+            "RobStride command directions require raw encoder/low-current bench validation",
+            "encoder zero positions are uncalibrated",
             "ankle differential coefficients/signs are unvalidated",
             "joint travel limits are provisional and require physical stop checks",
         ],
+        "can_topology": {
+            "logical_buses": {
+                "can0": "left and right legs",
+                "can1": "waist and left/right arms",
+            },
+            "bitrate_bps": 1_000_000,
+            "id_policy": (
+                "original Bello body ranges with IDs increasing along each kinematic "
+                "chain; waist yaw/roll use 51/52"
+            ),
+        },
+        "direction_inference_policy": {
+            "cad_positive_axis": (
+                "motor occurrence local +Z transformed into the URDF frame"
+            ),
+            "axis_alignment_sign": (
+                "sign(dot(CAD positive motor axis, reviewed logical joint positive axis))"
+            ),
+            "candidate_command_direction": (
+                "direct-drive geometric placeholder only, conditional on RobStride raw "
+                "positive matching CAD local +Z"
+            ),
+            "protocol_limitation": (
+                "RobStride documentation does not bind raw-positive rotation to the STEP "
+                "frame; hardware command_direction remains null until bench validation"
+            ),
+            "differential_limitation": (
+                "ankle alignment is a pitch-axis projection, not a standalone motor "
+                "direction or calibrated differential row"
+            ),
+        },
         "motor_model_catalog": {
             "source": catalog["source"],
             "models": {
@@ -648,6 +760,7 @@ def build_report(
     meshes: dict[str, Any],
     adjustments: list[dict[str, Any]],
     sensor_frames: list[dict[str, Any]],
+    motor_topology: dict[str, Any],
     *,
     source_hashes: dict[str, str],
 ) -> dict[str, Any]:
@@ -659,9 +772,7 @@ def build_report(
         "kinematics": {
             "root_link": "pelvis_link",
             "movable_joint_count": len(ownership["joints"]),
-            "fixed_anonymous_endpoint_count": len(
-                geometry["anonymous_end_effectors"]
-            ),
+            "fixed_anonymous_endpoint_count": len(geometry["anonymous_end_effectors"]),
             "fixed_sensor_frame_count": len(sensor_frames),
             "joint_limit_status": "provisional_hardware_validation_required",
         },
@@ -700,14 +811,23 @@ def build_report(
         },
         "collision_geometry": {
             "primitive_count": geometry["summary"]["collision_primitive_count"],
-            "role_counts": geometry["summary"][
-                "collision_primitive_role_counts"
-            ],
+            "role_counts": geometry["summary"]["collision_primitive_role_counts"],
             "policy": geometry["collision_policy"],
         },
         "anonymous_end_effectors": geometry["anonymous_end_effectors"],
         "numerical_inertial_adjustments": adjustments,
         "motor_configuration_status": "calibration_required",
+        "motor_topology": {
+            key: motor_topology[key]
+            for key in (
+                "deployment_status",
+                "deployment_blockers",
+                "can_topology",
+                "direction_inference_policy",
+                "motors",
+                "differential_groups",
+            )
+        },
     }
 
 
@@ -740,6 +860,7 @@ def main() -> None:
         **manifests,
         adjustments=adjustments,
         sensor_frames=sensor_frames,
+        motor_topology=topology,
         source_hashes=source_hashes,
     )
     atomic_write_text(
