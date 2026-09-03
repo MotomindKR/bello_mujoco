@@ -2,6 +2,7 @@ from dataclasses import replace
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+from omegaconf import OmegaConf
 import pytest
 
 from bello_mujoco.actuators import ActuatorConfig, default_joint_configs
@@ -64,6 +65,7 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
         robot.hardware_description_path(robot_descriptions_root())
     assert robot.motor_model_catalog_path(robot_descriptions_root()).is_file()
     assert robot.root_body_name == "bello_mini_root"
+    assert robot.default_imu_body_name == "imu_link"
     assert robot.default_root_position == (0.0, 0.0, 0.8731232537850352)
     assert robot.foot_body_names == (
         "left_ankle_roll_link",
@@ -83,6 +85,11 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
     )
     source_urdf = robot.source_urdf_path(robot_descriptions_root())
     source_root = ET.parse(source_urdf).getroot()
+    imu_joint = source_root.find("./joint[@name='imu_joint']")
+    assert imu_joint is not None and imu_joint.attrib["type"] == "fixed"
+    assert imu_joint.find("parent").attrib["link"] == "pelvis_link"
+    assert imu_joint.find("child").attrib["link"] == "imu_link"
+    assert imu_joint.find("origin").attrib == {"xyz": "0 0 0", "rpy": "0 0 0"}
     movable_joint_names = {
         joint.attrib["name"]
         for joint in source_root.findall("joint")
@@ -100,6 +107,65 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
 def test_bello_mini_motion_profile_is_explicitly_deferred() -> None:
     with pytest.raises(ValueError, match="has no motion task profile"):
         motion_task_definition("bello_mini")
+
+
+def test_bello_mini_can_topology_is_monotonic_and_calibration_gated() -> None:
+    topology = OmegaConf.load(
+        robot_descriptions_root() / "bello_mini" / "motor_topology.yaml"
+    )
+    expected = (
+        ("waist_yaw_motor", "can1", 51, 1),
+        ("waist_roll_motor", "can1", 52, 1),
+        ("left_hip_pitch_motor", "can0", 61, 1),
+        ("left_hip_roll_motor", "can0", 62, 1),
+        ("left_hip_yaw_motor", "can0", 63, 1),
+        ("left_knee_motor", "can0", 64, -1),
+        ("left_ankle_motor_1", "can0", 65, -1),
+        ("left_ankle_motor_2", "can0", 66, 1),
+        ("right_hip_pitch_motor", "can0", 71, -1),
+        ("right_hip_roll_motor", "can0", 72, 1),
+        ("right_hip_yaw_motor", "can0", 73, 1),
+        ("right_knee_motor", "can0", 74, -1),
+        ("right_ankle_motor_1", "can0", 75, -1),
+        ("right_ankle_motor_2", "can0", 76, 1),
+        ("left_shoulder_pitch_motor", "can1", 31, 1),
+        ("left_shoulder_roll_motor", "can1", 32, 1),
+        ("left_shoulder_yaw_motor", "can1", 33, 1),
+        ("left_elbow_pitch_motor", "can1", 34, -1),
+        ("left_elbow_yaw_motor", "can1", 35, 1),
+        ("left_wrist_pitch_motor", "can1", 36, 1),
+        ("left_wrist_roll_motor", "can1", 37, -1),
+        ("right_shoulder_pitch_motor", "can1", 41, -1),
+        ("right_shoulder_roll_motor", "can1", 42, -1),
+        ("right_shoulder_yaw_motor", "can1", 43, 1),
+        ("right_elbow_pitch_motor", "can1", 44, -1),
+        ("right_elbow_yaw_motor", "can1", 45, 1),
+        ("right_wrist_pitch_motor", "can1", 46, -1),
+        ("right_wrist_roll_motor", "can1", 47, 1),
+    )
+
+    assert topology.schema_version == 2
+    assert topology.deployment_status == "calibration_required"
+    actual = tuple(
+        (
+            motor.name,
+            motor.hardware_binding.bus,
+            motor.hardware_binding.can_id,
+            motor.cad_direction_inference.axis_alignment_sign,
+        )
+        for motor in topology.motors
+    )
+    assert actual == expected
+    assert len({(bus, can_id) for _, bus, can_id, _ in actual}) == len(actual)
+    assert all(
+        motor.hardware_binding.command_direction is None
+        and motor.hardware_binding.encoder_zero_offset_rad is None
+        for motor in topology.motors
+    )
+    assert all(
+        group.motor_from_joint_coefficients is None
+        for group in topology.differential_groups
+    )
 
 
 def test_asset_config_can_explicitly_promote_every_robot_joint_to_policy() -> None:

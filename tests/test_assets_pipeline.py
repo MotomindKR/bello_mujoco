@@ -73,6 +73,7 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
     )
     for body_name in (
         "pelvis_link",
+        "imu_link",
         "left_ankle_roll_link",
         "right_ankle_roll_link",
         "left_end_effector_sphere_link",
@@ -82,6 +83,11 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
         "camera_color_optical_frame",
     ):
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name) >= 0
+    pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link")
+    imu_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "imu_link")
+    assert model.body_parentid[imu_id] == pelvis_id
+    np.testing.assert_array_equal(model.body_pos[imu_id], [0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(model.body_quat[imu_id], [1.0, 0.0, 0.0, 0.0])
 
     actuator_names = {
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)

@@ -13,7 +13,7 @@ root_body_name: bello_mini_root
 root_joint_name: root_free
 default_root_position: [0.0, 0.0, 0.8731232537850352]
 default_root_quaternion: [1.0, 0.0, 0.0, 0.0]
-default_imu_body_name: pelvis_link
+default_imu_body_name: imu_link
 foot_body_names:
   - left_ankle_roll_link
   - right_ankle_roll_link

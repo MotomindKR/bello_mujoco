@@ -49,12 +49,18 @@ contract, and training validates it against the robot's motion profile.
   are exactly at `z=0`. The static contract exposes all 28 movable joints and
   keeps waist roll and both seven-DoF arms in hold mode by default. Its logical
   ankle pitch/roll joints are simulated directly because the physical
-  differential coefficients have not been calibrated.
+  differential coefficients have not been calibrated. Its massless fixed
+  `imu_link` is coincident and axis-aligned with `pelvis_link`, preserving the
+  original Bello pelvis-frame IMU convention while giving sensor consumers an
+  explicit frame name.
 
 The Bello Mini source directory includes `motor_topology.yaml` as a
-calibration manifest, not as a `bello-hardwared` configuration. Its null CAN
-bindings, directions, encoder zeros, and ankle coefficient matrices are
-intentional blockers. Consequently, the robot contract has
+calibration manifest, not as a `bello-hardwared` configuration. CAN IDs increase
+along each kinematic chain: left/right arms use `31..37` / `41..47` on `can1`,
+waist yaw/roll use `51,52` on `can1`, and left/right legs use `61..66` /
+`71..76` on `can0`. The recorded CAD-axis signs are geometric estimates only;
+live RobStride command directions, encoder zeros, and ankle coefficient matrices
+remain null until bench calibration. Consequently, the robot contract has
 `hardware_description: null`; hardware and emulator entrypoints fail explicitly
 instead of borrowing the production Bello topology. A Bello Mini motion/GMR
 profile is also intentionally absent until it is tuned.

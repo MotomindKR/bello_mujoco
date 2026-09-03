@@ -80,6 +80,7 @@ def test_bello_mini_model_uses_calibration_gated_partition(
     assert model.mj_model.nv == 34
     assert model.mj_model.nu == 28
     assert model.robot.asset == "bello_mini"
+    assert model.imu_body_name == "imu_link"
     assert model.mj_model.ntendon == 0
     policy_joint_names = {
         model.actuator_joint_names[index] for index in model.policy_ctrl_indices
