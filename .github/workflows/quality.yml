@@ -126,7 +126,7 @@ jobs:
 
           from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
 
-          for asset in ("full_body", "bello_mini"):
+          for asset in ("bello", "bello_mini"):
               prepared = prepare_asset(
                   AssetPrepConfig(
                       asset=asset,
