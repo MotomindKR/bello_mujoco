@@ -5,7 +5,7 @@ from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 
 
 def test_public_actuator_defaults_use_canonical_policy_partition() -> None:
-    config = ActuatorConfig.for_asset("full_body")
+    config = ActuatorConfig.for_asset("bello")
 
     assert len(config.policy_joint_names) == 13
     assert config.policy_joint_names == {
@@ -38,7 +38,7 @@ def test_actuator_config_rejects_invalid_mode() -> None:
 
 
 def test_asset_config_requires_robot_effort_limits_in_joint_overrides() -> None:
-    defaults = ActuatorConfig.for_asset("full_body")
+    defaults = ActuatorConfig.for_asset("bello")
     joints = dict(defaults.joints)
     joints["left_hip_pitch_joint"] = JointActuatorConfig()
 
@@ -49,9 +49,9 @@ def test_asset_config_requires_robot_effort_limits_in_joint_overrides() -> None:
 def test_asset_config_rejects_conflicting_mode_and_joint_map() -> None:
     with pytest.raises(ValueError, match="must match actuator_mode"):
         AssetPrepConfig(
-            asset="full_body",
+            asset="bello",
             actuator_mode="policy",
-            actuator_config=ActuatorConfig.for_asset("full_body"),
+            actuator_config=ActuatorConfig.for_asset("bello"),
         )
 
 

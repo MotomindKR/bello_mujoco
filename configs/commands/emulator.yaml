@@ -1,4 +1,4 @@
-asset: full_body
+asset: bello
 bus_interfaces: [can0=vcan0, can1=vcan1]
 command_latency_seconds: 0.01
 motor_kp_scale: 1.0

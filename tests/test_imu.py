@@ -17,7 +17,7 @@ from bello_mujoco.terrain import ROBOT_ONLY_TERRAIN
 def test_generated_mujoco_imu_is_bound_to_pelvis(tmp_path: Path) -> None:
     prepared = prepare_asset(
         AssetPrepConfig(
-            asset="full_body",
+            asset="bello",
             output_root=tmp_path,
             mesh_face_budget=100,
             visual_mesh_face_budget=100,
@@ -124,7 +124,7 @@ def test_invalid_imu_noise_config_is_rejected(config: ImuNoiseConfig) -> None:
 def test_model_imu_frame_is_derived_from_generated_sensor_site(tmp_path: Path) -> None:
     prepared = prepare_asset(
         AssetPrepConfig(
-            asset="full_body",
+            asset="bello",
             output_root=tmp_path / "generated-sensor",
             imu_config=ImuSensorConfig(enabled=True, body_name="torso_link"),
         )
@@ -143,7 +143,7 @@ def test_model_imu_frame_is_derived_from_generated_sensor_site(tmp_path: Path) -
 def test_disabled_sensor_carries_asset_configured_imu_frame(tmp_path: Path) -> None:
     env = BelloLocomotionEnv.load(
         AssetPrepConfig(
-            asset="full_body",
+            asset="bello",
             output_root=tmp_path / "disabled-sensor",
             imu_config=ImuSensorConfig(enabled=False, body_name="torso_link"),
         ),

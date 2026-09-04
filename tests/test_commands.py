@@ -254,13 +254,13 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.checkpoint_config.allow_git_commit_mismatch is False
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
-    assert smoke.asset_config.asset == "full_body"
-    assert locomotion.asset_config.asset == "full_body"
-    assert hardware.asset_config.asset == "full_body"
-    assert motion.asset_config.asset == "full_body"
-    assert twist_teacher.asset_config.asset == "full_body"
-    assert twist_student.asset_config.asset == "full_body"
-    assert twist2.asset_config.asset == "full_body"
+    assert smoke.asset_config.asset == "bello"
+    assert locomotion.asset_config.asset == "bello"
+    assert hardware.asset_config.asset == "bello"
+    assert motion.asset_config.asset == "bello"
+    assert twist_teacher.asset_config.asset == "bello"
+    assert twist_student.asset_config.asset == "bello"
+    assert twist2.asset_config.asset == "bello"
     assert motion.asset_config.actuator_mode == "policy"
     assert twist_teacher.asset_config.actuator_mode == "policy"
     assert twist2.asset_config.actuator_mode == "policy"

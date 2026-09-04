@@ -83,7 +83,7 @@ from bello_mujoco.training.twist import (
     upload_twist_checkpoint,
 )
 
-MOTION_PROFILE = motion_task_definition("full_body")
+MOTION_PROFILE = motion_task_definition("bello")
 JOINT_NAMES = MOTION_PROFILE.imported_actuator_joint_names
 GMR_KNEE_POLE = MOTION_PROFILE.gmr.knee_pole
 
@@ -453,10 +453,7 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
             config = repository / (
                 "deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello.json"
             )
-            robot = repository / (
-                "deps/bello-stack/descriptions/bello/full_body/urdf/"
-                "bello_full_body.urdf"
-            )
+            robot = repository / ("deps/bello-stack/descriptions/bello/urdf/bello.urdf")
             revision = subprocess.run(
                 ["git", "-C", str(repository / "deps/GMR"), "rev-parse", "HEAD"],
                 check=True,
@@ -478,7 +475,7 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     options = {
-        "asset": "full_body",
+        "asset": "bello",
         "body_model_root": body_model_root,
         "robot_xml": robot_xml,
         "output_root": tmp_path / "retargeted",
@@ -509,23 +506,23 @@ def test_batch_retarget_is_atomic_and_resumes_matching_outputs(
 
 
 def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
-    full_body_asset,
+    bello_asset,
 ) -> None:
     tool_path = Path(__file__).resolve().parents[1] / "tools/twist_gmr_retarget.py"
     spec = importlib.util.spec_from_file_location("twist_gmr_retarget", tool_path)
     assert spec is not None and spec.loader is not None
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
 
-    names = logical_actuator_joint_names(model, robot_definition("full_body"))
+    names = logical_actuator_joint_names(model, robot_definition("bello"))
     qpos_names = tool._qpos_ordered_joint_names(model, names)
     ranges = tool._qpos_ordered_joint_ranges(model, names)
     qpos_joint_ids = sorted(
         range(1, model.njnt), key=lambda joint_id: int(model.jnt_qposadr[joint_id])
     )
 
-    assert names == logical_actuator_joint_names(model, robot_definition("full_body"))
+    assert names == logical_actuator_joint_names(model, robot_definition("bello"))
     assert qpos_names == tuple(
         model.joint(joint_id).name for joint_id in qpos_joint_ids
     )
@@ -535,7 +532,7 @@ def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
 
 def test_gmr_profile_uses_current_pinned_offline_solver_contract() -> None:
     root = Path(__file__).resolve().parents[1]
-    profile = motion_task_definition("full_body").gmr
+    profile = motion_task_definition("bello").gmr
     document = json.loads(profile.config_path(root / "deps/GMR").read_text())
 
     assert profile.task_profile == document["default_task_profile"] == "universal"
@@ -554,7 +551,7 @@ def test_gmr_knee_pole_uses_positive_flexion_through_hyperextension() -> None:
     assert spec is not None and spec.loader is not None
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
-    config = motion_task_definition("full_body").gmr.knee_pole
+    config = motion_task_definition("bello").gmr.knee_pole
     leg = config.legs[0]
     thigh = np.asarray((0.0, -0.4, 0.0))
     shin = np.asarray((0.0, -0.4, 0.0))
@@ -608,18 +605,18 @@ def test_gmr_knee_pole_uses_positive_flexion_through_hyperextension() -> None:
 
 
 def test_gmr_retarget_measures_canonical_sole_collision_height(
-    full_body_asset,
+    bello_asset,
 ) -> None:
     tool_path = Path(__file__).resolve().parents[1] / "tools/twist_gmr_retarget.py"
     spec = importlib.util.spec_from_file_location("twist_gmr_retarget", tool_path)
     assert spec is not None and spec.loader is not None
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
     qpos = np.repeat(model.qpos0[None, :], 2, axis=0)
     qpos[1, 2] += 0.125
 
-    profile = motion_task_definition("full_body").gmr
+    profile = motion_task_definition("bello").gmr
     config = json.loads(
         profile.config_path(
             Path(__file__).resolve().parents[1] / "deps/GMR"
@@ -1148,10 +1145,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
     tmp_path: Path,
 ) -> None:
     repository = Path(__file__).resolve().parents[1]
-    robot_path = (
-        repository
-        / "deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf"
-    )
+    robot_path = repository / "deps/bello-stack/descriptions/bello/urdf/bello.urdf"
     gmr_root = repository / "deps/GMR"
     config_path = repository / (
         "deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello.json"
@@ -1276,7 +1270,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
         manifest_path,
         retargeted,
         tmp_path / "packed_first",
-        asset="full_body",
+        asset="bello",
         body_model_root=None,
         gmr_root=gmr_root,
     )
@@ -1284,7 +1278,7 @@ def test_packed_build_fingerprint_and_heldout_manifest_are_reproducible(
         manifest_path,
         retargeted,
         tmp_path / "packed_second",
-        asset="full_body",
+        asset="bello",
         body_model_root=None,
         gmr_root=gmr_root,
     )

@@ -64,7 +64,7 @@ TWIST_DECIMATION = TWIST_SIMULATION_HZ // TWIST_POLICY_HZ
 TWIST_EPISODE_STEPS = 10 * TWIST_POLICY_HZ
 TWIST_HISTORY_FRAMES = 11
 
-DEFAULT_KEY_BODY_NAMES = motion_task_definition("full_body").twist_key_body_names
+DEFAULT_KEY_BODY_NAMES = motion_task_definition("bello").twist_key_body_names
 
 
 @dataclass(frozen=True)

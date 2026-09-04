@@ -28,7 +28,7 @@ from bello_mujoco.hardware.twist2 import (
 from bello_mujoco.robot_tasks import motion_task_definition
 
 
-GMR_SOURCE_BODY_NAMES = motion_task_definition("full_body").gmr.source_body_names
+GMR_SOURCE_BODY_NAMES = motion_task_definition("bello").gmr.source_body_names
 
 
 def neutral_model(tmp_path: Path) -> Path:
@@ -272,7 +272,7 @@ def test_reference_factory_defers_live_target_check_until_motion(
 
     adapter = SimpleNamespace(
         env=SimpleNamespace(
-            model=SimpleNamespace(robot=SimpleNamespace(asset="full_body"))
+            model=SimpleNamespace(robot=SimpleNamespace(asset="bello"))
         ),
         metadata=SimpleNamespace(
             dataset=SimpleNamespace(gmr_revision="a" * 40),

@@ -1,13 +1,13 @@
-asset: full_body
-source_urdf: bello/full_body/urdf/bello_full_body.urdf
+asset: bello
+source_urdf: bello/urdf/bello.urdf
 source_directories:
-  - bello/full_body/urdf
+  - bello/urdf
   - bello/lower_body/meshes
   - bello/upper_body/meshes
 hardware_description: bello/hardware.yaml
 motor_model_catalog: robstride/models.yaml
-output_directory: full_body
-output_stem: bello_full_body
+output_directory: bello
+output_stem: bello
 root_body_name: bello_root
 root_joint_name: root_free
 default_root_position: [0.0, 0.0, 0.91]

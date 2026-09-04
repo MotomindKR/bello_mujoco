@@ -210,7 +210,7 @@ class MotionTaskDefinition:
 
 
 _MOTION_TASK_CONFIG_FILES: dict[AssetName, str] = {
-    "full_body": "full_body_motion.yaml",
+    "bello": "bello_motion.yaml",
 }
 _MOTION_TASK_FIELDS = frozenset(
     {

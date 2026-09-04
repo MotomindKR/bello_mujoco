@@ -138,7 +138,7 @@ def hardware_preflight_factory():
 
 
 @pytest.fixture(scope="session")
-def full_body_asset() -> Iterator[PreparedAsset]:
+def bello_asset() -> Iterator[PreparedAsset]:
     output_root = Path(tempfile.mkdtemp(prefix="bello-mujoco-test-assets-"))
     try:
         yield prepare_asset(AssetPrepConfig(output_root=output_root))

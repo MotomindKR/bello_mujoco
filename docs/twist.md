@@ -113,7 +113,7 @@ git submodule update --init --recursive
 Prepare the selected robot's fixed-joint model:
 
 ```bash
-uv run python tools/prepare_twist_model.py --asset full_body
+uv run python tools/prepare_twist_model.py --asset bello
 ```
 
 Install GMR's optional dependencies in a separate environment following
@@ -141,7 +141,7 @@ when its source, GMR, robot, and configuration fingerprints still match:
 
 ```bash
 uv run python tools/twist_batch_retarget.py \
-  --asset full_body \
+  --asset bello \
   --manifest ~/amass/source_manifest.yaml \
   --body-model-root ~/body_models \
   --normalized-root ~/amass/twist_work/normalized \
@@ -166,7 +166,7 @@ environment. Use the stable manifest identifiers in the output filename:
 
 ```bash
 python tools/twist_gmr_retarget.py \
-  --asset full_body \
+  --asset bello \
   --source /operator/work/normalized/source.npz \
   --provenance-source /operator/data/amass/source.npz \
   --body-model-root /operator/models/body_models \

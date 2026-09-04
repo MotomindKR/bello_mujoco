@@ -90,10 +90,10 @@ def dropped_native_rollout(model: BelloModel) -> np.ndarray:
 
 @pytest.mark.parametrize("terrain_mode", ["plane", "rough"])
 def test_native_rollout_limits_geometric_sole_penetration(
-    full_body_asset: PreparedAsset, terrain_mode: str
+    bello_asset: PreparedAsset, terrain_mode: str
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=terrain_config(terrain_mode),
         simulation_physics=contact_physics(),
         load_mjx=False,
@@ -109,10 +109,10 @@ def test_native_rollout_limits_geometric_sole_penetration(
 @pytest.mark.integration
 @pytest.mark.parametrize("terrain_mode", ["plane", "rough"])
 def test_mjx_warp_rollout_limits_geometric_sole_penetration(
-    full_body_asset: PreparedAsset, terrain_mode: str
+    bello_asset: PreparedAsset, terrain_mode: str
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(
-        full_body_asset,
+        bello_asset,
         warp=WarpConfig(contact_budget_per_env=64, njmax=2048),
         env_config=BelloEnvConfig(
             decimation=4,

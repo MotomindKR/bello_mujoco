@@ -3,7 +3,7 @@
 Simulation, reinforcement learning, evaluation, hardware emulation, and robot
 deployment for the Bello humanoid. The repository supports locomotion and
 motion-tracking policies built from the robot descriptions pinned through
-`deps/bello-stack`. Registered static assets are `full_body` and `bello_mini`;
+`deps/bello-stack`. Registered static assets are `bello` and `bello_mini`;
 the latter is currently calibration-gated and is not yet a maintained training
 or hardware target.
 

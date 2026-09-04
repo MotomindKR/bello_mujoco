@@ -16,10 +16,10 @@ from bello_mujoco.robot_tasks import (
 )
 
 
-def test_full_body_robot_config_declares_asset_topology() -> None:
-    robot = robot_definition("full_body")
+def test_bello_robot_config_declares_asset_topology() -> None:
+    robot = robot_definition("bello")
 
-    assert robot.source_urdf == Path("bello/full_body/urdf/bello_full_body.urdf")
+    assert robot.source_urdf == Path("bello/urdf/bello.urdf")
     assert robot.source_urdf_path(robot_descriptions_root()).is_file()
     assert robot.hardware_description_path(robot_descriptions_root()).is_file()
     assert robot.motor_model_catalog_path(robot_descriptions_root()).is_file()
@@ -31,7 +31,7 @@ def test_full_body_robot_config_declares_asset_topology() -> None:
         "left_ankle_roll_link",
         "right_ankle_roll_link",
     )
-    assert tuple(default_joint_configs("full_body")) == tuple(
+    assert tuple(default_joint_configs("bello")) == tuple(
         actuator.joint_name for actuator in robot.actuators
     )
     assert len(robot.actuators) == 25
@@ -53,7 +53,7 @@ def test_full_body_robot_config_declares_asset_topology() -> None:
 def test_asset_config_resolves_actuators_from_selected_robot() -> None:
     config = AssetPrepConfig()
 
-    assert config.actuator_config == ActuatorConfig.for_asset("full_body")
+    assert config.actuator_config == ActuatorConfig.for_asset("bello")
 
 
 def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
@@ -222,17 +222,15 @@ def test_bello_mini_can_topology_is_monotonic_and_calibration_gated() -> None:
 
 
 def test_asset_config_can_explicitly_promote_every_robot_joint_to_policy() -> None:
-    config = AssetPrepConfig(asset="full_body", actuator_mode="policy")
+    config = AssetPrepConfig(asset="bello", actuator_mode="policy")
 
-    assert config.actuator_config == ActuatorConfig.for_asset(
-        "full_body", mode="policy"
-    )
+    assert config.actuator_config == ActuatorConfig.for_asset("bello", mode="policy")
     assert not config.actuator_config.hold_joint_names
 
 
-def test_full_body_motion_task_profile_matches_robot_source() -> None:
-    robot = robot_definition("full_body")
-    task = motion_task_definition("full_body")
+def test_bello_motion_task_profile_matches_robot_source() -> None:
+    robot = robot_definition("bello")
+    task = motion_task_definition("bello")
 
     assert task.imported_actuator_joint_names == tuple(
         name
@@ -265,7 +263,7 @@ def test_full_body_motion_task_profile_matches_robot_source() -> None:
 
 
 def test_robot_source_validation_rejects_unknown_configured_link() -> None:
-    robot = robot_definition("full_body")
+    robot = robot_definition("bello")
     invalid = replace(robot, default_imu_body_name="missing_imu_link")
 
     with pytest.raises(ValueError, match="missing_imu_link"):
@@ -278,3 +276,8 @@ def test_robot_source_validation_rejects_unknown_configured_link() -> None:
 def test_robot_config_rejects_unknown_asset_without_alias() -> None:
     with pytest.raises(ValueError, match="unsupported robot asset 'typo'"):
         robot_definition("typo")
+
+
+def test_robot_config_rejects_removed_full_body_asset_name() -> None:
+    with pytest.raises(ValueError, match="unsupported robot asset 'full_body'"):
+        robot_definition("full_body")

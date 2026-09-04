@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from omegaconf import OmegaConf
 
-AssetName = Literal["bello_mini", "full_body"]
+AssetName = Literal["bello", "bello_mini"]
 
 
 @dataclass(frozen=True)
@@ -377,8 +377,8 @@ def validate_robot_source_urdf(
 
 
 _ROBOT_CONFIG_FILES: dict[AssetName, str] = {
+    "bello": "bello.yaml",
     "bello_mini": "bello_mini.yaml",
-    "full_body": "full_body.yaml",
 }
 _ROBOT_CONFIG_FIELDS = frozenset(
     {

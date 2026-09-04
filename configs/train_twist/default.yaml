@@ -3,7 +3,7 @@ dataset_index: datasets/twist/index.json
 teacher_checkpoint_path: null
 
 asset_config:
-  asset: full_body
+  asset: bello
   collision_mode: box
   target_total_mass_kg: null
   enforce_policy_effort_limits: false

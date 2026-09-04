@@ -45,14 +45,14 @@ requires_warp_gpu = pytest.mark.skipif(
     jax.default_backend() != "gpu",
     reason="compiled MJX-Warp integration requires a GPU backend",
 )
-MOTION_TASK = motion_task_definition("full_body")
+MOTION_TASK = motion_task_definition("bello")
 
 
 @pytest.fixture(scope="module")
 def fixed_waist_asset(tmp_path_factory) -> PreparedAsset:
     return prepare_asset(
         motion_tracking_asset_config(
-            asset="full_body",
+            asset="bello",
             output_root=tmp_path_factory.mktemp("fixed-waist-asset"),
         )
     )
@@ -63,7 +63,7 @@ def fixed_waist_motion(fixed_waist_asset: PreparedAsset, tmp_path_factory) -> Pa
     path = tmp_path_factory.mktemp("fixed-waist-motion") / "test_motion.npz"
     model = load_prepared_bello_model(
         fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config(asset="full_body").actuator_config,
+        actuator_config=motion_tracking_asset_config(asset="bello").actuator_config,
         load_mjx=False,
     )
     mj_model = model.mj_model
@@ -227,7 +227,7 @@ def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
 def test_default_motion_profile_uses_tracked_fixed_joint_clip() -> None:
     config = motion_training_profile()
 
-    assert config.asset_config.asset == "full_body"
+    assert config.asset_config.asset == "bello"
     assert config.asset_config.actuator_mode == "policy"
     assert not config.asset_config.joint_availability.disabled_joint_names
     assert not config.asset_config.enforce_policy_effort_limits
@@ -244,7 +244,7 @@ def test_gmr_joint_columns_are_remapped_by_name(
 ) -> None:
     model = load_prepared_bello_model(
         fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config(asset="full_body").actuator_config,
+        actuator_config=motion_tracking_asset_config(asset="bello").actuator_config,
         load_mjx=False,
     )
     source_joint_pos = np.arange(
@@ -272,7 +272,7 @@ def test_motion_loader_and_shortest_arc_interpolation(
 ) -> None:
     model = load_prepared_bello_model(
         fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config(asset="full_body").actuator_config,
+        actuator_config=motion_tracking_asset_config(asset="bello").actuator_config,
         load_mjx=False,
     )
     clip = load_motion_clip(fixed_waist_motion, model)

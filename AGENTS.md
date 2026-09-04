@@ -45,7 +45,7 @@ follow the linked docs for repository behavior and user-facing contracts.
 ## Repository Rules
 
 - The asset pipeline's canonical robot input is
-  `deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`.
+  `deps/bello-stack/descriptions/bello/urdf/bello.urdf`.
   Treat the submodule as read-only here: change descriptions in `bello-stack`,
   then advance the pinned gitlink deliberately.
 - Do not add asset aliases. Valid asset names are documented in

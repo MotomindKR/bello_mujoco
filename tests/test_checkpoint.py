@@ -880,7 +880,7 @@ def test_motion_contract_allows_relocation_and_rejects_content_or_schema_tamperi
 
 
 def test_checkpoint_round_trips_real_mjx_continuation_state(
-    tmp_path: Path, full_body_asset: PreparedAsset
+    tmp_path: Path, bello_asset: PreparedAsset
 ) -> None:
     config = ppo_config()
     asset_config = AssetPrepConfig()
@@ -890,7 +890,7 @@ def test_checkpoint_round_trips_real_mjx_continuation_state(
     done_config = DoneConfig()
     warp_config = WarpConfig()
     env = BelloLocomotionEnv.load_prepared(
-        full_body_asset,
+        bello_asset,
         batch_size=config.num_envs,
         env_config=env_config,
         reward_config=reward_config,

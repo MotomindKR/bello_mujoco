@@ -1,4 +1,4 @@
-asset: full_body
+asset: bello
 legacy_import_joint_names:
   - left_hip_pitch_joint
   - left_hip_roll_joint

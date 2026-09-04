@@ -45,15 +45,15 @@ def observation_component_slice(env: BelloLocomotionEnv, component_name: str) ->
     raise AssertionError(f"observation component not found: {component_name}")
 
 
-def test_full_body_model_uses_canonical_policy_partition_by_default(
-    full_body_asset: PreparedAsset,
+def test_bello_model_uses_canonical_policy_partition_by_default(
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset)
+    model = load_prepared_bello_model(bello_asset)
 
     assert model.mj_model.nq == 32
     assert model.mj_model.nv == 31
     assert model.mj_model.nu == 25
-    assert model.robot.asset == "full_body"
+    assert model.robot.asset == "bello"
     assert model.policy_ctrl_indices.tolist() == list(range(13))
     assert model.hold_ctrl_indices.tolist() == list(range(13, 25))
     expected_range = []
@@ -61,7 +61,7 @@ def test_full_body_model_uses_canonical_policy_partition_by_default(
         low, high = configured_actuator_joint_range(
             model.mj_model,
             joint_name,
-            ActuatorConfig.for_asset("full_body"),
+            ActuatorConfig.for_asset("bello"),
             model.robot,
         )
         expected_range.append((low, high))
@@ -106,9 +106,9 @@ def test_bello_mini_model_loads_mjx(bello_mini_asset: PreparedAsset) -> None:
 
 
 def test_policy_action_endpoints_reach_logical_soft_limits(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(full_body_asset)
+    env = BelloLocomotionEnv.load_prepared(bello_asset)
     policy_indices = env.model.policy_ctrl_indices
 
     low_target = np.asarray(env.action_to_joint_target(-np.ones(env.action_size)))
@@ -129,10 +129,10 @@ def test_policy_action_endpoints_reach_logical_soft_limits(
 
 
 def test_differential_ankle_joint_targets_map_to_both_motors(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
     )
     env = BelloLocomotionEnv(model)
@@ -172,11 +172,11 @@ def test_differential_ankle_joint_targets_map_to_both_motors(
     [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)],
 )
 def test_differential_ankle_soft_limit_corners_fit_motor_ranges(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
     pitch_action_value: float,
     roll_action_value: float,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    model = load_prepared_bello_model(bello_asset, terrain=FLAT_TERRAIN)
     env = BelloLocomotionEnv(model)
     action = np.zeros(env.action_size, dtype=np.float32)
     action[env.action_layout.names.index("left_ankle_pitch_joint")] = pitch_action_value
@@ -203,10 +203,10 @@ def test_differential_ankle_soft_limit_corners_fit_motor_ranges(
 
 
 def test_differential_ankle_observations_use_joint_coordinates(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
     )
     env = BelloLocomotionEnv(model)
@@ -242,10 +242,10 @@ def test_differential_ankle_observations_use_joint_coordinates(
 
 
 def test_differential_control_matches_native_mujoco(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
     )
     env = BelloLocomotionEnv(model)
@@ -259,10 +259,10 @@ def test_differential_control_matches_native_mujoco(
 
 
 def test_differential_joint_observation_matches_native_mujoco(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
     )
     env = BelloLocomotionEnv(model)
@@ -303,9 +303,9 @@ def test_differential_joint_observation_matches_native_mujoco(
 
 
 def test_model_can_load_without_mjx_for_cpu_only_viewers(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    model = load_prepared_bello_model(bello_asset, load_mjx=False)
 
     assert model.mjx_model is None
     with pytest.raises(RuntimeError, match="loaded without MJX"):
@@ -313,7 +313,7 @@ def test_model_can_load_without_mjx_for_cpu_only_viewers(
 
 
 def test_runtime_simulation_physics_are_applied_before_mjx_conversion(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     physics = SimulationPhysicsConfig(
         timestep=0.002,
@@ -322,7 +322,7 @@ def test_runtime_simulation_physics_are_applied_before_mjx_conversion(
         foot_terrain_solimp=(0.98, 0.999, 0.001, 0.5, 2.0),
     )
     scene = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
         simulation_physics=physics,
     )
@@ -365,13 +365,13 @@ def test_simulation_physics_rejects_invalid_values(kwargs: dict, message: str) -
 
 
 def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     nominal = load_prepared_bello_model(
-        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+        bello_asset, terrain=FLAT_TERRAIN, load_mjx=False
     )
     randomized = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
         batch_size=4,
         model_randomization=ModelRandomizationConfig(
@@ -432,7 +432,7 @@ def test_model_randomization_batches_world_parameters_and_mirrors_first_sample(
 
 
 def test_model_randomization_is_prefix_invariant_across_batch_sizes(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     config = ModelRandomizationConfig(
         enabled=True,
@@ -442,13 +442,13 @@ def test_model_randomization_is_prefix_invariant_across_batch_sizes(
         joint_inertia_scale_range=(0.95, 1.05),
     )
     one = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
         batch_size=1,
         model_randomization=config,
     )
     four = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
         batch_size=4,
         model_randomization=config,
@@ -462,13 +462,13 @@ def test_model_randomization_is_prefix_invariant_across_batch_sizes(
 
 
 def test_model_randomization_applies_twist_physical_ranges(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     nominal = load_prepared_bello_model(
-        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+        bello_asset, terrain=FLAT_TERRAIN, load_mjx=False
     )
     randomized = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
         batch_size=4,
         model_randomization=ModelRandomizationConfig(
@@ -497,13 +497,13 @@ def test_model_randomization_applies_twist_physical_ranges(
 
 
 def test_model_randomization_scales_torso_mass_inertia_and_com(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     nominal = load_prepared_bello_model(
-        full_body_asset, terrain=FLAT_TERRAIN, load_mjx=False
+        bello_asset, terrain=FLAT_TERRAIN, load_mjx=False
     )
     randomized = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=FLAT_TERRAIN,
         batch_size=4,
         model_randomization=ModelRandomizationConfig(
@@ -539,9 +539,9 @@ def test_model_randomization_scales_torso_mass_inertia_and_com(
 
 
 def test_native_episode_reset_clears_all_mujoco_solver_state(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(full_body_asset, load_mjx=False)
+    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
     data = mujoco.MjData(env.model.mj_model)
     reset_mujoco_data(env, data)
     data.time = 12.5
@@ -562,7 +562,7 @@ def test_native_episode_reset_clears_all_mujoco_solver_state(
 
 
 def test_plane_slope_stays_static_in_batched_warp_model(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     terrain = TerrainConfig(
         mode="plane",
@@ -570,7 +570,7 @@ def test_plane_slope_stays_static_in_batched_warp_model(
         slope_angle_range=(-np.deg2rad(2.0), np.deg2rad(2.0)),
     )
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         terrain=terrain,
         batch_size=4,
     )
@@ -615,15 +615,15 @@ def test_model_randomization_config_rejects_invalid_ranges(
 
 
 def test_joint_actuator_mode_controls_policy_action_partition(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    default_config = ActuatorConfig.for_asset("full_body")
+    default_config = ActuatorConfig.for_asset("bello")
     joints = {
         name: (replace(config, mode="hold") if name == "waist_yaw_joint" else config)
         for name, config in default_config.joints.items()
     }
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         actuator_config=ActuatorConfig(joints=joints),
     )
 
@@ -633,15 +633,15 @@ def test_joint_actuator_mode_controls_policy_action_partition(
 
 
 def test_policy_joint_angle_offsets_leave_hold_targets_unchanged(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    default_config = ActuatorConfig.for_asset("full_body")
+    default_config = ActuatorConfig.for_asset("bello")
     joints = {
         name: replace(config, mode="hold") if name == "waist_yaw_joint" else config
         for name, config in default_config.joints.items()
     }
     model = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         batch_size=4,
         actuator_config=ActuatorConfig(joints=joints),
         model_randomization=ModelRandomizationConfig(
@@ -657,10 +657,10 @@ def test_policy_joint_angle_offsets_leave_hold_targets_unchanged(
 
 
 def test_randomized_neutral_targets_preserve_action_soft_limit_endpoints(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(
-        full_body_asset,
+        bello_asset,
         batch_size=4,
         env_config=BelloEnvConfig(
             model_randomization=ModelRandomizationConfig(
@@ -703,22 +703,22 @@ def test_randomized_neutral_targets_preserve_action_soft_limit_endpoints(
 
 
 def test_model_partitions_actuators_by_joint_not_actuator_name(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    xml = full_body_asset.mjcf_path.read_text()
+    xml = bello_asset.mjcf_path.read_text()
     xml = xml.replace("_pos", "_motor")
     xml = xml.replace("_hold", "_target")
-    path = full_body_asset.mjcf_path.with_name("renamed_actuators.xml")
+    path = bello_asset.mjcf_path.with_name("renamed_actuators.xml")
     path.write_text(xml)
 
     model = load_prepared_bello_model(
         PreparedAsset(
-            name="full_body",
-            urdf_path=full_body_asset.urdf_path,
+            name="bello",
+            urdf_path=bello_asset.urdf_path,
             mjcf_path=path,
-            viewer_mjcf_path=full_body_asset.viewer_mjcf_path,
-            collision_mesh_count=full_body_asset.collision_mesh_count,
-            visual_mesh_count=full_body_asset.visual_mesh_count,
+            viewer_mjcf_path=bello_asset.viewer_mjcf_path,
+            collision_mesh_count=bello_asset.collision_mesh_count,
+            visual_mesh_count=bello_asset.visual_mesh_count,
         )
     )
 
@@ -727,9 +727,9 @@ def test_model_partitions_actuators_by_joint_not_actuator_name(
 
 
 def test_training_model_uses_simplified_mesh_collision_profile(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset).mj_model
+    model = load_prepared_bello_model(bello_asset).mj_model
     mesh_geoms = [
         geom_id
         for geom_id, geom_type in enumerate(model.geom_type)
@@ -772,9 +772,9 @@ def test_training_model_uses_simplified_mesh_collision_profile(
 
 
 def test_viewer_model_adds_non_colliding_visual_meshes(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.viewer_mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.viewer_mjcf_path))
     visual_mesh_geoms = [
         geom_id
         for geom_id, geom_type in enumerate(model.geom_type)
@@ -788,12 +788,12 @@ def test_viewer_model_adds_non_colliding_visual_meshes(
 
 
 def test_loading_viewer_model_preserves_policy_contract(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    sim_model = load_prepared_bello_model(full_body_asset)
-    viewer_model = load_prepared_bello_model(full_body_asset, use_viewer_model=True)
+    sim_model = load_prepared_bello_model(bello_asset)
+    viewer_model = load_prepared_bello_model(bello_asset, use_viewer_model=True)
 
-    assert viewer_model.xml_path == full_body_asset.viewer_mjcf_path
+    assert viewer_model.xml_path == bello_asset.viewer_mjcf_path
     assert viewer_model.mj_model.ngeom == sim_model.mj_model.ngeom + 30
     assert viewer_model.mj_model.nq == sim_model.mj_model.nq
     assert viewer_model.mj_model.nv == sim_model.mj_model.nv
@@ -815,12 +815,12 @@ def test_loading_viewer_model_preserves_policy_contract(
 
 
 def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     robot_model = load_prepared_bello_model(
-        full_body_asset, terrain=ROBOT_ONLY_TERRAIN
+        bello_asset, terrain=ROBOT_ONLY_TERRAIN
     ).mj_model
-    scene = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    scene = load_prepared_bello_model(bello_asset, terrain=FLAT_TERRAIN)
     scene_model = scene.mj_model
     plane_geoms = [
         geom_id
@@ -828,8 +828,8 @@ def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
         if geom_type == mujoco.mjtGeom.mjGEOM_PLANE
     ]
 
-    assert scene.xml_path != full_body_asset.mjcf_path
-    assert full_body_asset.mjcf_path.exists()
+    assert scene.xml_path != bello_asset.mjcf_path
+    assert bello_asset.mjcf_path.exists()
     assert scene_model.ngeom == robot_model.ngeom + 1
     assert len(plane_geoms) == 1
     assert (
@@ -837,7 +837,7 @@ def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
         == "ground"
     )
     scene.xml_path.write_text("<mujoco />", encoding="utf-8")
-    regenerated = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    regenerated = load_prepared_bello_model(bello_asset, terrain=FLAT_TERRAIN)
     assert (
         mujoco.mj_name2id(
             regenerated.mj_model,
@@ -849,10 +849,10 @@ def test_runtime_plane_terrain_adds_ground_without_changing_robot_asset(
 
 
 def test_runtime_rough_terrain_uses_heightfield(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     rough_terrain = TerrainConfig(mode="rough")
-    scene = load_prepared_bello_model(full_body_asset, terrain=rough_terrain)
+    scene = load_prepared_bello_model(bello_asset, terrain=rough_terrain)
     model = scene.mj_model
     hfield_geoms = [
         geom_id
@@ -860,7 +860,7 @@ def test_runtime_rough_terrain_uses_heightfield(
         if geom_type == mujoco.mjtGeom.mjGEOM_HFIELD
     ]
 
-    assert scene.xml_path != full_body_asset.mjcf_path
+    assert scene.xml_path != bello_asset.mjcf_path
     assert model.nhfield == 1
     assert len(hfield_geoms) == 1
     assert (
@@ -874,12 +874,12 @@ def test_runtime_rough_terrain_uses_heightfield(
 
 
 def test_runtime_rough_terrain_seed_changes_scene(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     terrain_a = TerrainConfig(mode="rough", seed=1, hfield_resolution=17)
     terrain_b = TerrainConfig(mode="rough", seed=2, hfield_resolution=17)
-    scene_a = load_prepared_bello_model(full_body_asset, terrain=terrain_a)
-    scene_b = load_prepared_bello_model(full_body_asset, terrain=terrain_b)
+    scene_a = load_prepared_bello_model(bello_asset, terrain=terrain_a)
+    scene_b = load_prepared_bello_model(bello_asset, terrain=terrain_b)
 
     assert scene_a.xml_path != scene_b.xml_path
     assert rough_height_data(terrain_a) == rough_height_data(terrain_a)
@@ -887,7 +887,7 @@ def test_runtime_rough_terrain_seed_changes_scene(
 
 
 def test_runtime_rough_terrain_applies_seeded_slight_slope(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     terrain = TerrainConfig(
         mode="rough",
@@ -895,7 +895,7 @@ def test_runtime_rough_terrain_applies_seeded_slight_slope(
         hfield_resolution=17,
         slope_angle_range=(-0.005, 0.005),
     )
-    scene = load_prepared_bello_model(full_body_asset, terrain=terrain)
+    scene = load_prepared_bello_model(bello_asset, terrain=terrain)
     ground_id = mujoco.mj_name2id(
         scene.mj_model, mujoco.mjtObj.mjOBJ_GEOM, terrain.name
     )
@@ -943,9 +943,9 @@ def test_terrain_rejects_invalid_slope_range(
 
 
 def test_default_spawn_pose_starts_above_flat_terrain(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    model = load_prepared_bello_model(bello_asset, terrain=FLAT_TERRAIN)
     min_robot_z = robot_geom_min_z(model.mj_model, model.default_qpos)
     ground_id = int(model.terrain_geom_ids[0])
     root_xy = model.default_qpos[model.root_qpos_adr : model.root_qpos_adr + 2]
@@ -959,15 +959,15 @@ def test_default_spawn_pose_starts_above_flat_terrain(
 
 
 def test_spawn_pose_lifts_for_high_rough_terrain(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    flat_model = load_prepared_bello_model(full_body_asset, terrain=FLAT_TERRAIN)
+    flat_model = load_prepared_bello_model(bello_asset, terrain=FLAT_TERRAIN)
     rough_terrain = TerrainConfig(
         mode="rough",
         hfield_resolution=17,
         hfield_amplitude=0.25,
     )
-    rough_model = load_prepared_bello_model(full_body_asset, terrain=rough_terrain)
+    rough_model = load_prepared_bello_model(bello_asset, terrain=rough_terrain)
     min_robot_z = robot_geom_min_z(rough_model.mj_model, rough_model.default_qpos)
     ground_id = int(rough_model.terrain_geom_ids[0])
     root_xy = rough_model.default_qpos[

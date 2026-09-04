@@ -26,9 +26,9 @@ standalone actuator configs do not silently select Bello.
 
 Training selects the contract through `asset_config.asset`. Every maintained base
 training document makes that selection explicitly; experiment files under
-`configs/profiles/train/` only override task-specific values. New robot identifiers
-should be globally descriptive, even though the existing `full_body` identifier is
-retained as the public Bello asset name.
+`configs/profiles/train/` only override task-specific values. Robot identifiers
+must be globally descriptive; the production robot is `bello`, paired with
+`bello_mini` for the smaller morphology.
 
 Motion-capable robots also have a strict `<asset>_motion.yaml` contract beside the
 static robot file. It owns legacy import joint schemas, fixed joints, tracked-body
@@ -42,7 +42,7 @@ contract, and training validates it against the robot's motion profile.
 
 ## Registered assets
 
-- `full_body` is the production Bello morphology with maintained motion,
+- `bello` is the production Bello morphology with maintained motion,
   differential-ankle, emulator, and physical-hardware contracts.
 - `bello_mini` is the reviewed 43.503025 kg Bello Mini morphology. Its all-zero
   joint pose uses a root height of 0.8731232537850352 m so both sole surfaces

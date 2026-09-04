@@ -42,7 +42,7 @@ config:
     action_distribution: tanh_gaussian
     action_limit: 1.0
 asset_config:
-  asset: full_body
+  asset: bello
   collision_mode: box
   mesh_face_budget: 1000
   visual_mesh_face_budget: 200000

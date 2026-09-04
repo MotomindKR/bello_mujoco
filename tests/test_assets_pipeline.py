@@ -30,7 +30,7 @@ from bello_mujoco.robot import robot_definition
 
 CANONICAL_TOTAL_MASS_KG = 55.0683575411785
 BELLO_MINI_TOTAL_MASS_KG = 43.503025077021036
-FULL_BODY_DEFINITION = robot_definition("full_body")
+BELLO_DEFINITION = robot_definition("bello")
 
 
 def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
@@ -43,10 +43,10 @@ def test_mujoco_urdf_preserves_fixed_link_bodies() -> None:
     assert compiler.attrib["fusestatic"] == "false"
 
 
-def test_prepared_full_body_preserves_pelvis_body(
-    full_body_asset: PreparedAsset,
+def test_prepared_bello_preserves_pelvis_body(
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
 
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link") >= 0
     sensor_id = mujoco.mj_name2id(
@@ -216,9 +216,9 @@ def test_actuator_contract_rejects_missing_and_unknown_joint_configs() -> None:
 
 
 def test_prepared_asset_always_has_ankle_differential_tendons(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
 
     assert model.ntendon == 4
     assert {
@@ -231,7 +231,7 @@ def test_prepared_asset_always_has_ankle_differential_tendons(
         "right_ankle_motor_2",
     }
 
-    root = ET.parse(full_body_asset.mjcf_path).getroot()
+    root = ET.parse(bello_asset.mjcf_path).getroot()
     expected_coefficients = {
         "left_ankle_motor_1": (-1.0, 1.0),
         "left_ankle_motor_2": (1.0, 1.0),
@@ -251,7 +251,7 @@ def test_visualizer_recipe_produces_loadable_flattened_viewer_mjcf(
     tmp_path: Path,
 ) -> None:
     recipe = replace(
-        canonical_physical_asset_config(asset="full_body"),
+        canonical_physical_asset_config(asset="bello"),
         output_root=tmp_path,
         visual_mesh_face_budget=20_000,
     )
@@ -271,9 +271,9 @@ def test_visualizer_recipe_produces_loadable_flattened_viewer_mjcf(
 
 
 def test_prepared_asset_always_actuates_ankle_tendons(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
     actuator_names = {
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
         for index in range(model.nu)
@@ -346,9 +346,9 @@ def test_urdf_mass_scaling_keeps_fixed_massless_links_massless(
 
 
 def test_canonical_bilateral_link_inertias_are_symmetric(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    root = ET.parse(full_body_asset.urdf_path).getroot()
+    root = ET.parse(bello_asset.urdf_path).getroot()
     pairs = {
         ("left_hip_pitch_link", "right_hip_pitch_link"): (-1, -1, 1),
         ("left_hip_roll_link", "right_hip_roll_link"): (-1, -1, 1),
@@ -446,7 +446,7 @@ def test_default_output_root_is_deterministic_bounded_user_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    config = AssetPrepConfig(asset="full_body")
+    config = AssetPrepConfig(asset="bello")
 
     assert resolved_output_root(config) == resolved_output_root(config)
     assert resolved_output_root(config).parent == tmp_path / "bello-mujoco" / "assets"
@@ -478,16 +478,16 @@ def test_default_asset_cache_prunes_inactive_variants_and_keeps_leases(
 
 
 def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
-    asset_dir = tmp_path / "full_body"
+    asset_dir = tmp_path / "bello"
     mesh_dir = asset_dir / "meshes"
     mjcf_dir = asset_dir / "mjcf"
     urdf_dir = asset_dir / "urdf"
     mesh_dir.mkdir(parents=True)
     mjcf_dir.mkdir(parents=True)
     urdf_dir.mkdir(parents=True)
-    urdf_path = urdf_dir / "bello_full_body.urdf"
-    mjcf_path = mjcf_dir / "bello_full_body.xml"
-    viewer_mjcf_path = mjcf_dir / "bello_full_body_viewer.xml"
+    urdf_path = urdf_dir / "bello.urdf"
+    mjcf_path = mjcf_dir / "bello.xml"
+    viewer_mjcf_path = mjcf_dir / "bello_viewer.xml"
     manifest_path = asset_dir / "asset_manifest.json"
     urdf_path.write_text("<robot />")
     mjcf_path.write_text(
@@ -497,7 +497,7 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
     mesh_path = mesh_dir / "body.stl"
     mesh_path.write_bytes(b"mesh")
     write_prepared_asset_manifest(
-        PreparedAsset("full_body", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
+        PreparedAsset("bello", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
         manifest_path,
         "cache-a",
     )
@@ -508,7 +508,7 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
-            FULL_BODY_DEFINITION,
+            BELLO_DEFINITION,
             "cache-a",
         )
         is None
@@ -518,20 +518,20 @@ def test_cached_manifest_requires_referenced_mesh_files(tmp_path: Path) -> None:
 def test_cached_manifest_requires_matching_cache_key_and_content(
     tmp_path: Path,
 ) -> None:
-    asset_dir = tmp_path / "full_body"
+    asset_dir = tmp_path / "bello"
     mjcf_dir = asset_dir / "mjcf"
     urdf_dir = asset_dir / "urdf"
     mjcf_dir.mkdir(parents=True)
     urdf_dir.mkdir(parents=True)
-    urdf_path = urdf_dir / "bello_full_body.urdf"
-    mjcf_path = mjcf_dir / "bello_full_body.xml"
-    viewer_mjcf_path = mjcf_dir / "bello_full_body_viewer.xml"
+    urdf_path = urdf_dir / "bello.urdf"
+    mjcf_path = mjcf_dir / "bello.xml"
+    viewer_mjcf_path = mjcf_dir / "bello_viewer.xml"
     manifest_path = asset_dir / "asset_manifest.json"
     urdf_path.write_text("<robot />")
     mjcf_path.write_text("<mujoco><asset /></mujoco>")
     viewer_mjcf_path.write_text("<mujoco><asset /></mujoco>")
     write_prepared_asset_manifest(
-        PreparedAsset("full_body", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
+        PreparedAsset("bello", urdf_path, mjcf_path, viewer_mjcf_path, 1, 1),
         manifest_path,
         "cache-a",
     )
@@ -542,7 +542,7 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
-            FULL_BODY_DEFINITION,
+            BELLO_DEFINITION,
             "cache-b",
         )
         is None
@@ -553,19 +553,19 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
-            FULL_BODY_DEFINITION,
+            BELLO_DEFINITION,
             "cache-a",
         )
         is not None
     )
-    (mjcf_dir / "bello_full_body.scene.runtime.xml").write_text("<mujoco />")
+    (mjcf_dir / "bello.scene.runtime.xml").write_text("<mujoco />")
     assert (
         read_prepared_asset_manifest(
             urdf_path,
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
-            FULL_BODY_DEFINITION,
+            BELLO_DEFINITION,
             "cache-a",
         )
         is not None
@@ -577,7 +577,7 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
             mjcf_path,
             viewer_mjcf_path,
             manifest_path,
-            FULL_BODY_DEFINITION,
+            BELLO_DEFINITION,
             "cache-a",
         )
         is None
@@ -585,24 +585,24 @@ def test_cached_manifest_requires_matching_cache_key_and_content(
 
 
 def test_asset_cache_key_tracks_prep_config() -> None:
-    base = AssetPrepConfig(asset="full_body", mesh_face_budget=1000)
-    changed = AssetPrepConfig(asset="full_body", mesh_face_budget=500)
+    base = AssetPrepConfig(asset="bello", mesh_face_budget=1000)
+    changed = AssetPrepConfig(asset="bello", mesh_face_budget=500)
 
     assert asset_config_hash(base) != asset_config_hash(changed)
     assert asset_config_hash(base) != asset_config_hash(
-        AssetPrepConfig(asset="full_body", target_total_mass_kg=60.0)
+        AssetPrepConfig(asset="bello", target_total_mass_kg=60.0)
     )
     assert asset_config_hash(base) != asset_config_hash(
-        AssetPrepConfig(asset="full_body", end_effector_payload_mass_kg=4.5359237)
+        AssetPrepConfig(asset="bello", end_effector_payload_mass_kg=4.5359237)
     )
     assert asset_config_hash(base) != asset_config_hash(
-        AssetPrepConfig(asset="full_body", enforce_policy_effort_limits=False)
+        AssetPrepConfig(asset="bello", enforce_policy_effort_limits=False)
     )
     assert asset_config_hash(base) != asset_config_hash(
-        AssetPrepConfig(asset="full_body", actuator_mode="policy")
+        AssetPrepConfig(asset="bello", actuator_mode="policy")
     )
     fixed_waist = AssetPrepConfig(
-        asset="full_body",
+        asset="bello",
         mesh_face_budget=1000,
         joint_availability=JointAvailabilityConfig(
             disabled_joint_names=("waist_yaw_joint",)
@@ -612,9 +612,9 @@ def test_asset_cache_key_tracks_prep_config() -> None:
 
 
 def test_generated_actuators_leave_control_unlimited_and_limit_force_from_effort(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
 
     assert not np.any(model.actuator_ctrllimited)
     assert np.all(model.actuator_ctrlrange[:, 0] < model.actuator_ctrlrange[:, 1])
@@ -681,9 +681,9 @@ def test_fix_disabled_joints_rejects_missing_source_joint() -> None:
 
 
 def test_actuator_force_observation_is_clamped_by_force_range(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
     data = mujoco.MjData(model)
     joint_id = mujoco.mj_name2id(
         model, mujoco.mjtObj.mjOBJ_JOINT, "right_wrist_pitch_joint"
@@ -704,9 +704,9 @@ def test_actuator_force_observation_is_clamped_by_force_range(
     assert data.qfrc_actuator[dof_id] == pytest.approx(14.0)
 
 
-def test_foot_collision_uses_urdf_primitives(full_body_asset: PreparedAsset) -> None:
-    root = ET.parse(full_body_asset.urdf_path).getroot()
-    model = mujoco.MjModel.from_xml_path(str(full_body_asset.mjcf_path))
+def test_foot_collision_uses_urdf_primitives(bello_asset: PreparedAsset) -> None:
+    root = ET.parse(bello_asset.urdf_path).getroot()
+    model = mujoco.MjModel.from_xml_path(str(bello_asset.mjcf_path))
     expected = {
         "box_1": (
             mujoco.mjtGeom.mjGEOM_BOX,

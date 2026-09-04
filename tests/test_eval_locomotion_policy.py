@@ -30,9 +30,9 @@ def component_slice(env: BelloLocomotionEnv, name: str) -> slice:
 
 def test_gamepad_command_is_used_by_same_step_policy_and_log(
     monkeypatch,
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(full_body_asset, load_mjx=False)
+    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
     commands = [
         np.zeros(3, dtype=np.float32),
         np.asarray((0.4, 0.0, 0.0), dtype=np.float32),

@@ -3,7 +3,7 @@ motion:
   sequence: video_single_foot_balance_level1_filter_amass
 
 asset_config:
-  asset: full_body
+  asset: bello
   collision_mode: box
   target_total_mass_kg: null
   enforce_policy_effort_limits: false

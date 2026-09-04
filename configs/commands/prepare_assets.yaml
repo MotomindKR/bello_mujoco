@@ -1,5 +1,5 @@
 profile: physical
-asset: full_body
+asset: bello
 output_root: null
 hydra:
   job:

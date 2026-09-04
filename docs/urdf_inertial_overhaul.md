@@ -155,6 +155,6 @@ COM is link-local. Inertia order is `ixx, iyy, izz, ixy, ixz, iyz` in kg m^2.
 - Material density remains sensitive to actual stock, fabrication, and infill. TPU has the explicit 50% calibration; other printed parts use reviewed bulk densities.
 - The CAD file contained no native material designations; all material assignments were explicitly reviewed.
 
-The final source of truth is `deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`. Audit artifacts and one-off extraction tools are not runtime dependencies.
+The final source of truth is `deps/bello-stack/descriptions/bello/urdf/bello.urdf`. Audit artifacts and one-off extraction tools are not runtime dependencies.
 
 The temporary CAD extraction, browser-review, and URDF-writing tools were deleted after this report and the source URDF were finalized. The hardware Rust checks require the submodule's Linux-only Nix development shell and were not executable on the aarch64 macOS audit host; the Python teleoperation tests and linters were run locally.

@@ -61,7 +61,7 @@ def motor_spec(
 ) -> MotorSpec:
     motor_model = next(
         candidate
-        for candidate in load_motor_models(default_motor_model_catalog("full_body"))
+        for candidate in load_motor_models(default_motor_model_catalog("bello"))
         if candidate.name == model
     )
     if "_ankle_" in name:
@@ -131,7 +131,7 @@ def test_model_protocol_ranges_match_platform_driver(
 ) -> None:
     limits = next(
         candidate.protocol
-        for candidate in load_motor_models(default_motor_model_catalog("full_body"))
+        for candidate in load_motor_models(default_motor_model_catalog("bello"))
         if candidate.name == model
     )
 
@@ -274,11 +274,11 @@ def test_emulator_defaults_to_current_firmware_feedback_rate() -> None:
 
 
 def test_emulator_video_capture_samples_only_free_torso_state(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     from bello_mujoco.robstride.emulator import EmulatorVideoCapture
 
-    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    model = load_prepared_bello_model(bello_asset, load_mjx=False)
     data = mujoco.MjData(model.mj_model)
     capture = EmulatorVideoCapture(fps=20)
 
@@ -340,12 +340,10 @@ def test_float_encoding_clamps_and_round_trips() -> None:
 
 
 def test_canonical_hardware_description_drives_emulator_inventory() -> None:
-    targets = load_urdf_motor_targets(
-        stack_description_path("bello/full_body/urdf/bello_full_body.urdf")
-    )
+    targets = load_urdf_motor_targets(stack_description_path("bello/urdf/bello.urdf"))
     config = load_robstride_description(
-        default_hardware_description("full_body"),
-        default_motor_model_catalog("full_body"),
+        default_hardware_description("bello"),
+        default_motor_model_catalog("bello"),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     motors = {motor.name: motor for motor in config.motors}
@@ -372,7 +370,7 @@ def test_canonical_hardware_description_drives_emulator_inventory() -> None:
 
 
 def test_hardware_description_requires_existing_robot_description(tmp_path) -> None:
-    description = OmegaConf.load(default_hardware_description("full_body"))
+    description = OmegaConf.load(default_hardware_description("bello"))
     description.robot_description = "missing.urdf"
     hardware_path = tmp_path / "hardware.yaml"
     OmegaConf.save(description, hardware_path)
@@ -380,26 +378,26 @@ def test_hardware_description_requires_existing_robot_description(tmp_path) -> N
     with pytest.raises(ValueError, match="must reference an existing file"):
         load_robstride_description(
             hardware_path,
-            default_motor_model_catalog("full_body"),
+            default_motor_model_catalog("bello"),
             {"can0": "vcan0", "can1": "vcan1"},
         )
 
 
 def test_emulator_robot_joints_require_matching_motor_assignments() -> None:
     config = load_robstride_description(
-        default_hardware_description("full_body"),
-        default_motor_model_catalog("full_body"),
+        default_hardware_description("bello"),
+        default_motor_model_catalog("bello"),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     validate_motor_coverage(
-        "full_body",
+        "bello",
         JointAvailabilityConfig(),
         config.motors,
     )
 
     with pytest.raises(ValueError, match="require RobStride motor mappings"):
         validate_motor_coverage(
-            "full_body",
+            "bello",
             JointAvailabilityConfig(),
             tuple(
                 motor
@@ -412,7 +410,7 @@ def test_emulator_robot_joints_require_matching_motor_assignments() -> None:
         )
     with pytest.raises(ValueError, match="fixed by joint availability"):
         validate_motor_coverage(
-            "full_body",
+            "bello",
             JointAvailabilityConfig(disabled_joint_names=("waist_yaw_joint",)),
             config.motors,
         )
@@ -422,8 +420,8 @@ def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
     config = EmulatorConfig()
     assert config.asset_config.end_effector_payload_mass_kg == 0.0
     robstride = load_robstride_description(
-        default_hardware_description("full_body"),
-        default_motor_model_catalog("full_body"),
+        default_hardware_description("bello"),
+        default_motor_model_catalog("bello"),
         {"can0": "vcan0", "can1": "vcan1"},
     )
     prepared = prepare_asset(config.asset_config)
@@ -497,10 +495,10 @@ def test_emulator_end_effector_payload_is_configurable_per_hand() -> None:
 
 
 def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     original = load_prepared_bello_model(
-        full_body_asset,
+        bello_asset,
         simulation_physics=SimulationPhysicsConfig(timestep=0.0025),
         load_mjx=False,
     )
@@ -555,9 +553,9 @@ def test_terminal_enter_is_detected_without_blocking() -> None:
 
 
 def test_bello_transmission_maps_knee_and_differential_ankle(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    model = load_prepared_bello_model(bello_asset, load_mjx=False)
     specs = (
         motor_spec("left_knee_mix_1", motor_id=64, direction=1),
         motor_spec("left_ankle_1", motor_id=67, model="ROBSTRIDE_06"),
@@ -623,9 +621,9 @@ def test_bello_transmission_maps_knee_and_differential_ankle(
 
 
 def test_bello_transmission_scales_effective_mit_gains(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    model = load_prepared_bello_model(bello_asset, load_mjx=False)
     motor = RobstrideMotor(motor_spec())
     model = configure_robstride_actuators(model, (motor.spec,))
     transmission = BelloRobstrideTransmission(model, (motor,))
@@ -649,9 +647,9 @@ def test_bello_transmission_scales_effective_mit_gains(
 
 
 def test_ankle_motors_require_configured_native_actuator_banks(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    model = load_prepared_bello_model(bello_asset, load_mjx=False)
     motors = tuple(
         RobstrideMotor(spec)
         for spec in (
@@ -665,9 +663,9 @@ def test_ankle_motors_require_configured_native_actuator_banks(
 
 
 def test_native_actuator_triple_uses_one_common_dynamic_torque_limit(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
-    model = load_prepared_bello_model(full_body_asset, load_mjx=False)
+    model = load_prepared_bello_model(bello_asset, load_mjx=False)
     motor = RobstrideMotor(motor_spec())
     original_nu = model.mj_model.nu
     other_actuator_name = "left_hip_pitch_joint_pos"

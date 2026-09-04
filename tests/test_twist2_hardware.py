@@ -72,12 +72,12 @@ from bello_mujoco.training.ppo import (
 
 
 FINGERPRINT = "sha256:" + "a" * 64
-GMR_SOURCE_BODY_NAMES = motion_task_definition("full_body").gmr.source_body_names
+GMR_SOURCE_BODY_NAMES = motion_task_definition("bello").gmr.source_body_names
 
 
 @pytest.fixture(scope="module")
 def twist2_hardware_adapter() -> HardwareTwist2PolicyAdapter:
-    asset = default_twist2_asset_config("full_body")
+    asset = default_twist2_asset_config("bello")
     simulation = TwistSimulationConfig()
     model = load_bello_model(
         asset,
@@ -605,9 +605,7 @@ def test_pinned_gmr_produces_finite_standing_reference(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    robot_source = robot_definition("full_body").source_urdf_path(
-        robot_descriptions_root()
-    )
+    robot_source = robot_definition("bello").source_urdf_path(robot_descriptions_root())
     fingerprint = "sha256:" + hashlib.sha256(robot_source.read_bytes()).hexdigest()
     retargeter = GmrRetargeter(
         adapter.env,

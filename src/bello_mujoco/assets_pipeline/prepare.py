@@ -82,7 +82,7 @@ atexit.register(_close_default_asset_cache_leases)
 
 @dataclass(frozen=True)
 class AssetPrepConfig:
-    asset: AssetName = "full_body"
+    asset: AssetName = "bello"
     output_root: Path | None = None
     mesh_face_budget: int = 1_000
     visual_mesh_face_budget: int = 200_000

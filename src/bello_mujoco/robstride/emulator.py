@@ -62,7 +62,7 @@ def default_motor_model_catalog(asset: AssetName) -> Path:
     return robot_definition(asset).motor_model_catalog_path(robot_descriptions_root())
 
 
-def default_emulator_asset_config(asset: AssetName = "full_body") -> AssetPrepConfig:
+def default_emulator_asset_config(asset: AssetName = "bello") -> AssetPrepConfig:
     return canonical_physical_asset_config(asset=asset, imu_enabled=True)
 
 

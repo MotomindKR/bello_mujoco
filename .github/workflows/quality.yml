@@ -88,8 +88,8 @@ jobs:
 
           urdf_names = (
               (
-                  "bello_mujoco/descriptions/bello/full_body/urdf/"
-                  "bello_full_body.urdf"
+                  "bello_mujoco/descriptions/bello/urdf/"
+                  "bello.urdf"
               ),
               (
                   "bello_mujoco/descriptions/bello_mini/urdf/"

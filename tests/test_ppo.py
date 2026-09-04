@@ -408,11 +408,11 @@ def test_disabled_normalization_preserves_locomotion_values() -> None:
 
 
 def test_staggered_initial_step_counts_match_actor_and_critic_observations(
-    full_body_asset: PreparedAsset,
+    bello_asset: PreparedAsset,
 ) -> None:
     num_envs = 4
     env = BelloLocomotionEnv.load_prepared(
-        full_body_asset,
+        bello_asset,
         batch_size=num_envs,
         env_config=replace(
             BelloEnvConfig(),
