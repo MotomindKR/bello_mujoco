@@ -352,12 +352,17 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
 | `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the 12 arm joints at the locomotion checkpoint's nominal targets. |
-| `rtmw_pose_path` | path; `/tmp/rtmw-smplx-teleop/latest.json` | locomotion | Atomic latest-JSON file written by a same-host `deps/RTMW-SMPLX-Teleop` process at the pinned protocol revision. |
+| `rtmw_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion | Pinned RTMW-SMPLX-Teleop `SkeletonService` endpoint. |
+| `rtmw_tls_root_certificate_path` | path or `null`; `null` | locomotion | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
+| `rtmw_tls_server_name_override` | string or `null`; `null` | locomotion | TLS certificate name override. It is rejected without a CA certificate. |
+| `rtmw_connect_timeout_seconds` | positive float; `5.0` | locomotion | Deadline for establishing the RTMW gRPC channel. |
+| `rtmw_rpc_timeout_seconds` | positive float; `2.0` | locomotion | Deadline for stream-info and status RPCs. |
 | `rtmw_reference_ready_timeout_seconds` | positive float; `15.0` | locomotion | Time allowed for the initial sequence of qualified RTMW/GMR references before hardware connection. |
-| `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Number of distinct, successive safe references required during preflight. Re-reading one latest file does not advance the gate. |
+| `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Number of distinct, successive safe references required during preflight. Receiving a repeated or non-advancing frame does not advance the gate. |
 | `rtmw_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion | Minimum position confidence for every GMR target joint. |
 | `rtmw_min_rotation_confidence` | float in `[0,1]`; `0.10` | locomotion | Minimum derived-rotation confidence for pelvis, spine, shoulder, elbow, and wrist targets. |
 | `rtmw_max_pipeline_latency_ms` | positive float; `250.0` | locomotion | Maximum accepted RTMW capture-to-output processing latency. |
+| `rtmw_transport_latency_budget_ms` | nonnegative float; `10.0` | locomotion | Conservative transport contribution added to reference age because producer and robot hosts need not share a monotonic clock. |
 | `rtmw_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
 | `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial pelvis heading to world forward. |
 | `rtmw_align_initial_floor` | boolean; `true` | locomotion | Use the acquired target's initial lower foot as the fixed world floor. |
@@ -391,8 +396,8 @@ visualizer-hosted physical controller uses the same stick mapping as
 automatically, and requires a neutral controller before accepting nonzero
 intent again. The visualizer service must produce a fresh sample before the
 hardware daemon is contacted. The joystick continues to command the
-13-coordinate locomotion policy while the same-host RTMW latest-JSON stream
-and GMR target only the 12 arm coordinates. Hardware locomotion has no
+13-coordinate locomotion policy while the RTMW gRPC stream and GMR target only
+the 12 arm coordinates. Hardware locomotion has no
 native-controller or fixed-command mode.
 
 With `upper_body_tracking_enabled=false`, explicit RTMW and SMPL-X/GMR
