@@ -23,9 +23,9 @@ twist2
 `bello_mini_locomotion` select their respective robot contracts after composing
 the same production PPO, reward, command, randomization, and observation
 recipe. The Mini profile changes only its asset, rounded height thresholds,
-gait frequency, and output names; the selected robot contract supplies its
-planar tracking frame. Their periodic and final evaluation videos command 0.5
-m/s forward motion. `motion` is bounded
+gait frequency, exact-pose reset, and output names; the selected robot contract
+supplies its planar tracking frame and crouched joint defaults. Their periodic
+and final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
 BeyondMimic tracking; the TWIST experiments are documented separately. The
 shared `configs/train/locomotion.yaml` layer is internal and is not a public
 experiment name.
@@ -85,8 +85,10 @@ weights are defined in
 overrides in
 [`configs/train/locomotion.yaml`](../configs/train/locomotion.yaml), and are explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
-Both profiles use the same production reward weights and randomization. Bello
-Mini's canonical 43.50 kg inertials automatically feed the
+Both profiles use the same production reward weights and randomization, except
+that Mini keeps its coordinated flat-sole joint pose fixed during reset instead
+of scaling each default joint independently. Bello Mini's canonical 43.50 kg
+inertials automatically feed the
 body-weight-normalized force and impact terms; those reward weights are not
 manually rescaled. The
 rounded height settings are a 0.88 m pelvis target and 0.56 m termination floor,

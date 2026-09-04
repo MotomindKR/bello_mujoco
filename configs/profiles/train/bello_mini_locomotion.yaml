@@ -1,11 +1,11 @@
-# Rounded from the canonical pelvis-to-sole height ratio (0.873 m / 0.853 m).
+# Mini gait scales Bello's 0.90 Hz by sqrt(0.853 m / 0.865 m), then rounds.
 asset_config:
   asset: bello_mini
 env_config:
   gait:
     frequency_hz: 0.89
   spawn:
-    # Mini's reviewed nominal targets are all zero, so scaling them is inert.
+    # Independent scaling would break the coordinated flat-sole crouch.
     joint_pos_scale_range: [1.0, 1.0]
 reward_config:
   limits_pose:

@@ -11,7 +11,7 @@ output_directory: bello_mini
 output_stem: bello_mini
 root_body_name: bello_mini_root
 root_joint_name: root_free
-default_root_position: [0.0, 0.0, 0.8731232537850352]
+default_root_position: [0.0, 0.0, 0.865]
 default_root_quaternion: [1.0, 0.0, 0.0, 0.0]
 default_imu_body_name: imu_link
 locomotion_command_frame_body_name: imu_link
@@ -47,13 +47,13 @@ randomization_central_body_names:
 actuators:
   - joint_name: left_hip_pitch_joint
     mode: policy
-    default_pos: 0.0
+    default_pos: -0.15
     soft_limit: null
     gains: [200.0, 5.0]
     effort_limit: 120.0
   - joint_name: right_hip_pitch_joint
     mode: policy
-    default_pos: 0.0
+    default_pos: -0.15
     soft_limit: null
     gains: [200.0, 5.0]
     effort_limit: 120.0
@@ -83,25 +83,25 @@ actuators:
     effort_limit: 60.0
   - joint_name: left_knee_joint
     mode: policy
-    default_pos: 0.0
+    default_pos: 0.30
     soft_limit: null
     gains: [220.0, 6.0]
     effort_limit: 120.0
   - joint_name: right_knee_joint
     mode: policy
-    default_pos: 0.0
+    default_pos: 0.30
     soft_limit: null
     gains: [220.0, 6.0]
     effort_limit: 120.0
   - joint_name: left_ankle_pitch_joint
     mode: policy
-    default_pos: 0.0
+    default_pos: -0.15
     soft_limit: null
     gains: [22.0, 1.0]
     effort_limit: 17.0
   - joint_name: right_ankle_pitch_joint
     mode: policy
-    default_pos: 0.0
+    default_pos: -0.15
     soft_limit: null
     gains: [22.0, 1.0]
     effort_limit: 17.0

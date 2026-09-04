@@ -45,9 +45,11 @@ contract, and training validates it against the robot's motion profile.
 
 - `bello` is the production Bello morphology with maintained motion,
   differential-ankle, emulator, and physical-hardware contracts.
-- `bello_mini` is the reviewed 43.50 kg Bello Mini morphology. Its all-zero
-  joint pose uses a root height of about 0.873 m so both sole surfaces are at
-  `z=0`. The static contract exposes all 28 movable joints: waist yaw, waist
+- `bello_mini` is the reviewed 43.50 kg Bello Mini morphology. Its nominal
+  locomotion pose uses `-0.15` rad hip pitch, `0.30` rad knee flexion, and
+  `-0.15` rad ankle pitch on both legs. The pitch sum is zero, so both soles
+  remain flat, and the rounded 0.865 m root height places them at `z=0`. The
+  static contract exposes all 28 movable joints: waist yaw, waist
   roll, and the 12 leg joints are policy-controlled, while both seven-DoF arms
   are held. Its logical
   ankle pitch/roll joints are simulated directly because the physical
@@ -62,13 +64,13 @@ contract, and training validates it against the robot's motion profile.
   physical geometry; in particular, Mini hip pitch keeps sign across sides
   while Mini hip roll changes sign.
 
-  A reviewed nonzero locomotion pose and narrower policy soft limits are not yet
-  available from the source description. Mini therefore still starts from its
-  all-zero pose; its experiment explicitly disables the otherwise-inert
-  multiplicative joint-position reset range, and the knees begin at their hard
-  lower limit. Other model, observation, velocity, terrain, and push
-  randomization remains active. This is a tuning limitation for the first
-  locomotion run, not a hidden fallback.
+  Mini starts from the coordinated nominal crouch above instead of placing its
+  knees at their hard lower limit. Its experiment disables independent
+  multiplicative joint-position reset scaling because scaling the three pitch
+  joints separately would tilt the soles. Other model, observation, velocity,
+  terrain, and push randomization remains active. Reviewed narrower policy soft
+  limits are still unavailable, so the policy action range uses the URDF joint
+  limits.
 
   Joint travel ranges come from the designer's left-side nominal mechanical
   ranges. User visual review reversed the Mini URDF signs for hip pitch, hip

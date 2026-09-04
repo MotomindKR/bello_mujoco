@@ -95,6 +95,20 @@ def test_bello_mini_model_uses_locomotion_partition(
     assert "left_wrist_roll_joint" in hold_joint_names
     assert "right_wrist_roll_joint" in hold_joint_names
 
+    data = mujoco.MjData(model.mj_model)
+    data.qpos[:] = model.default_qpos
+    mujoco.mj_forward(model.mj_model, data)
+    foot_ids = [
+        mujoco.mj_name2id(model.mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+        for name in model.robot.foot_body_names
+    ]
+    assert np.ptp(data.xpos[foot_ids, 2]) == pytest.approx(0.0, abs=1.0e-7)
+    for body_id in foot_ids:
+        foot_up = data.xmat[body_id].reshape(3, 3)[:, 2]
+        np.testing.assert_allclose(foot_up, [0.0, 0.0, 1.0], atol=1.0e-7)
+    raw_home_min_z = robot_geom_min_z(model.mj_model, model.default_qpos)
+    assert raw_home_min_z == pytest.approx(0.0, abs=2.0e-4)
+
 
 def test_bello_mini_model_loads_mjx(bello_mini_asset: PreparedAsset) -> None:
     model = load_prepared_bello_model(bello_mini_asset)
