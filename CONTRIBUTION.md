@@ -9,7 +9,7 @@
 - Initialize dependencies with `git submodule update --init --recursive`.
 - Change canonical robot or hardware descriptions in `bello-stack`; update the
   `deps/bello-stack` gitlink here only after that stack commit is available.
-- Change the locomotion pose producer or JSON contract in
+- Change the locomotion pose producer or protobuf contract in
   `RTMW-SMPLX-Teleop`; update the `deps/RTMW-SMPLX-Teleop` gitlink and Bello
   consumer validation together only after that producer commit is available.
 

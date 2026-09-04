@@ -1,21 +1,23 @@
-"""RTMW-SMPLX-Teleop latest-JSON source for locomotion upper-body control."""
+"""Pinned RTMW gRPC source for locomotion upper-body control."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
+import importlib
 import importlib.util
-import json
 import math
-import os
 from pathlib import Path
+import string
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, Iterator
 
+import grpc
+from google.protobuf import empty_pb2
 import numpy as np
 
 from bello_mujoco.fastsam_conditioning import (
@@ -41,7 +43,7 @@ from bello_mujoco.repository import repository_root
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "acd87081a5884757352c4be8ddb706e98b6effa7"
+RTMW_REVISION = "026536040645c24ddc676d80d1d0da188f4021e8"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
@@ -118,41 +120,49 @@ _REQUIRED_ROTATION_NAMES = (
     "right_elbow",
     "right_wrist",
 )
-_MAX_RECORD_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
-class RtmwLatestJsonConfig:
-    """Strict RTMW latest-file contract and live-pose qualification limits."""
+class RtmwGrpcConfig:
+    """Transport, semantics, and freshness checks for the RTMW stream."""
 
-    pose_path: Path
+    endpoint: str
     neutral_model_path: Path
+    tls_root_certificate_path: Path | None
+    tls_server_name_override: str | None
+    connect_timeout_seconds: float
+    rpc_timeout_seconds: float
     human_height_m: float
     min_joint_confidence: float
     min_rotation_confidence: float
     max_pipeline_latency_ms: float
+    transport_latency_budget_ms: float
     max_source_age_ms: int
     camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
     align_initial_heading: bool
     align_initial_floor: bool
-    poll_interval_seconds: float = 0.01
     root_conditioning: FootConditionedRootConfig = field(
         default_factory=FootConditionedRootConfig
     )
 
     @classmethod
-    def from_hardware(cls, config: Any) -> RtmwLatestJsonConfig:
+    def from_hardware(cls, config: Any) -> RtmwGrpcConfig:
         if config.smplx_neutral_model_path is None:
             raise ValueError(
                 "smplx_neutral_model_path is required for live RTMW hardware pose"
             )
         return cls(
-            pose_path=config.rtmw_pose_path,
+            endpoint=config.rtmw_endpoint,
             neutral_model_path=config.smplx_neutral_model_path,
+            tls_root_certificate_path=config.rtmw_tls_root_certificate_path,
+            tls_server_name_override=config.rtmw_tls_server_name_override,
+            connect_timeout_seconds=config.rtmw_connect_timeout_seconds,
+            rpc_timeout_seconds=config.rtmw_rpc_timeout_seconds,
             human_height_m=config.rtmw_human_height_m,
             min_joint_confidence=config.rtmw_min_joint_confidence,
             min_rotation_confidence=config.rtmw_min_rotation_confidence,
             max_pipeline_latency_ms=config.rtmw_max_pipeline_latency_ms,
+            transport_latency_budget_ms=config.rtmw_transport_latency_budget_ms,
             max_source_age_ms=config.upper_body_follow.max_reference_age_ms,
             camera_to_world_quaternion_xyzw=(
                 config.rtmw_camera_to_world_quaternion_xyzw
@@ -162,14 +172,15 @@ class RtmwLatestJsonConfig:
         )
 
     def __post_init__(self) -> None:
-        if not isinstance(self.pose_path, Path):
-            raise TypeError("RTMW pose_path must be a pathlib.Path")
+        if not self.endpoint or "://" in self.endpoint:
+            raise ValueError("RTMW endpoint must be a gRPC host:port target")
         if not isinstance(self.neutral_model_path, Path):
             raise TypeError("RTMW neutral_model_path must be a pathlib.Path")
         for name, value in (
+            ("connect_timeout_seconds", self.connect_timeout_seconds),
+            ("rpc_timeout_seconds", self.rpc_timeout_seconds),
             ("human_height_m", self.human_height_m),
             ("max_pipeline_latency_ms", self.max_pipeline_latency_ms),
-            ("poll_interval_seconds", self.poll_interval_seconds),
         ):
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"RTMW {name} must be positive and finite")
@@ -181,17 +192,28 @@ class RtmwLatestJsonConfig:
                 raise ValueError(f"RTMW {name} must be finite and in [0, 1]")
         if self.max_source_age_ms <= 0:
             raise ValueError("RTMW max_source_age_ms must be positive")
+        if (
+            not math.isfinite(self.transport_latency_budget_ms)
+            or self.transport_latency_budget_ms < 0.0
+        ):
+            raise ValueError(
+                "RTMW transport_latency_budget_ms must be finite and nonnegative"
+            )
         quaternion = np.asarray(self.camera_to_world_quaternion_xyzw)
         if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
             raise ValueError("RTMW camera rotation must be a finite quaternion")
         if not 0.999 <= float(np.linalg.norm(quaternion)) <= 1.001:
             raise ValueError("RTMW camera rotation quaternion must be normalized")
+        if self.tls_server_name_override is not None and (
+            self.tls_root_certificate_path is None
+        ):
+            raise ValueError("RTMW TLS server-name override requires a CA file")
 
 
 class RtmwCoordinateAdapter:
     """Map RTMW OpenCV camera poses into Bello's z-up world frame."""
 
-    def __init__(self, config: RtmwLatestJsonConfig) -> None:
+    def __init__(self, config: RtmwGrpcConfig) -> None:
         xyzw = np.asarray(config.camera_to_world_quaternion_xyzw, dtype=np.float64)
         self._camera_to_world = xyzw[[3, 0, 1, 2]]
         self._align_heading = config.align_initial_heading
@@ -243,31 +265,91 @@ class RtmwCoordinateAdapter:
         return positions, quaternions
 
 
-class RtmwLatestJsonStream:
-    """Poll RTMW's atomic latest-JSON output with latest-only semantics."""
+class RtmwSmplxStream:
+    """Latest-only, validated RTMW SMPL-X stream backed by gRPC."""
 
     def __init__(
         self,
-        config: RtmwLatestJsonConfig,
+        config: RtmwGrpcConfig,
         *,
-        clock_ns: Callable[[], int] = time.monotonic_ns,
         standing_sample_loader: Callable[[Path], SmplxTargetFrame] = (
             load_smplx_standing_sample
         ),
     ) -> None:
         self.config = config
-        self.pose_path = config.pose_path.expanduser().absolute()
-        self._clock_ns = clock_ns
         self._standing_sample = standing_sample_loader(config.neutral_model_path)
         self.neutral_model_sha256 = _file_sha256(config.neutral_model_path)
         self._coordinates = RtmwCoordinateAdapter(config)
         self._root_conditioner = CausalFootConditionedRoot(
             RTMW_SMPLX52_NAMES, config.root_conditioning
         )
-        self._last_signature: tuple[int, int, int] | None = None
+        self._condition = threading.Condition()
+        self._stop = threading.Event()
+        self._generation = 0
+        self._consumed_generation = 0
+        self._payload: SmplxTargetFrame | BaseException | None = None
+        self._terminal_error: BaseException | None = None
+        self._thread: threading.Thread | None = None
+        self._channel: grpc.Channel | None = None
+        self._call: Any | None = None
+        self._stub: Any | None = None
+        self._proto: Any | None = None
+        self.stream_instance_id: str | None = None
+        self.stream_config_sha256: str | None = None
+        self.depth_provenance: str | None = None
         self._last_frame_id: int | None = None
         self._last_source_timestamp_ns: int | None = None
-        self._active_track_id: int | str | None = None
+        self._active_track_id: str | None = None
+
+    def __enter__(self) -> RtmwSmplxStream:
+        if self._thread is not None:
+            raise RuntimeError("RTMW stream is already running")
+        skeleton_pb2, skeleton_pb2_grpc = import_pinned_rtmw_proto()
+        self._proto = skeleton_pb2
+        self._stop.clear()
+        self._channel = self._create_channel()
+        try:
+            grpc.channel_ready_future(self._channel).result(
+                timeout=self.config.connect_timeout_seconds
+            )
+            self._stub = skeleton_pb2_grpc.SkeletonServiceStub(self._channel)
+            info = self._stub.GetStreamInfo(
+                empty_pb2.Empty(), timeout=self.config.rpc_timeout_seconds
+            )
+            _validate_stream_info(info, self.config)
+            self.stream_instance_id = info.stream_instance_id
+            self.stream_config_sha256 = info.config_sha256
+            self.depth_provenance = info.depth_provenance
+            status = self._stub.GetStatus(
+                empty_pb2.Empty(), timeout=self.config.rpc_timeout_seconds
+            )
+            _validate_service_status(status)
+            self._call = self._stub.Subscribe(skeleton_pb2.SubscribeRequest())
+            self._thread = threading.Thread(
+                target=self._consume,
+                name="bello-rtmw-grpc",
+                daemon=True,
+            )
+            self._thread.start()
+        except BaseException:
+            self._close_transport()
+            raise
+        return self
+
+    def __exit__(self, *_exception: object) -> bool:
+        self._stop.set()
+        call = self._call
+        if call is not None:
+            call.cancel()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                self._close_transport()
+                raise RuntimeError("RTMW gRPC worker did not stop")
+        self._thread = None
+        self._close_transport()
+        return False
 
     def standing_sample(self) -> SmplxTargetFrame:
         return self._standing_sample
@@ -281,123 +363,98 @@ class RtmwLatestJsonStream:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
             raise ValueError("RTMW poll timeout must be positive and finite")
         deadline = time.monotonic() + timeout_seconds
-        while True:
-            document = self._read_new_document()
-            if document is not None:
-                frame = self._parse_record(document)
-                if after_sequence is not None and frame.sequence <= after_sequence:
-                    self._reset_tracking_epoch(self._active_track_id)
-                    raise ReferenceDiscontinuity(
-                        "RTMW frame sequence did not advance: "
-                        f"{frame.sequence} <= {after_sequence}"
+        with self._condition:
+            while self._generation <= self._consumed_generation:
+                if self._terminal_error is not None:
+                    raise RuntimeError("RTMW gRPC stream failed") from (
+                        self._terminal_error
                     )
-                return frame
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.0:
-                return None
-            time.sleep(min(self.config.poll_interval_seconds, remaining))
-
-    def _read_new_document(self) -> Mapping[str, Any] | None:
-        try:
-            with self.pose_path.open("rb") as stream:
-                stat = os.fstat(stream.fileno())
-                signature = (int(stat.st_ino), int(stat.st_mtime_ns), int(stat.st_size))
-                if signature == self._last_signature:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
                     return None
-                if stat.st_size <= 0 or stat.st_size > _MAX_RECORD_BYTES:
-                    raise ValueError(
-                        "RTMW latest-JSON record size must be between 1 byte and "
-                        f"{_MAX_RECORD_BYTES} bytes"
-                    )
-                payload = stream.read(_MAX_RECORD_BYTES + 1)
-        except FileNotFoundError:
-            return None
-        self._last_signature = signature
-        if len(payload) > _MAX_RECORD_BYTES:
-            raise ValueError("RTMW latest-JSON record exceeds the size limit")
-        try:
-            document = json.loads(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError(
-                "RTMW latest-JSON record is not valid UTF-8 JSON"
-            ) from error
-        if not isinstance(document, Mapping):
-            raise ValueError("RTMW latest-JSON record must be an object")
-        return document
+                self._condition.wait(remaining)
+            self._consumed_generation = self._generation
+            payload = self._payload
+        if isinstance(payload, (ReferenceDiscontinuity, ReferenceUnavailable)):
+            raise payload
+        if isinstance(payload, BaseException):
+            raise RuntimeError("RTMW gRPC stream failed") from payload
+        if payload is None:
+            raise RuntimeError("RTMW stream published an empty frame")
+        if after_sequence is not None and payload.sequence <= after_sequence:
+            self._reset_tracking_epoch(self._active_track_id)
+            raise ReferenceDiscontinuity(
+                "RTMW frame sequence did not advance: "
+                f"{payload.sequence} <= {after_sequence}"
+            )
+        return payload
 
-    def _parse_record(self, document: Mapping[str, Any]) -> SmplxTargetFrame:
-        if (
-            _integer(document.get("schema_version"), "schema_version")
-            != RTMW_SCHEMA_VERSION
-        ):
-            raise ValueError(f"RTMW schema_version must be {RTMW_SCHEMA_VERSION}")
-        frame_id = _nonnegative_integer(document.get("frame_id"), "frame_id")
-        captured_at_ns = _positive_integer(
-            document.get("captured_at_ns"), "captured_at_ns"
+    def _create_channel(self) -> grpc.Channel:
+        options: list[tuple[str, int | str]] = [
+            ("grpc.max_receive_message_length", 4 * 1024 * 1024),
+            ("grpc.max_send_message_length", 1024 * 1024),
+            ("grpc.keepalive_time_ms", 10_000),
+            ("grpc.keepalive_timeout_ms", 3_000),
+            ("grpc.keepalive_permit_without_calls", 1),
+        ]
+        certificate_path = self.config.tls_root_certificate_path
+        if certificate_path is None:
+            return grpc.insecure_channel(self.config.endpoint, options=options)
+        certificate = certificate_path.expanduser().resolve()
+        if not certificate.is_file():
+            raise FileNotFoundError(f"RTMW TLS CA file does not exist: {certificate}")
+        override = self.config.tls_server_name_override
+        if override is not None:
+            options.append(("grpc.ssl_target_name_override", override))
+        credentials = grpc.ssl_channel_credentials(
+            root_certificates=certificate.read_bytes()
         )
-        source_timestamp_ns = _positive_integer(
-            document.get("source_timestamp_ns"), "source_timestamp_ns"
-        )
-        inferred_at_ns = _positive_integer(
-            document.get("inferred_at_ns"), "inferred_at_ns"
-        )
-        if source_timestamp_ns != captured_at_ns:
+        return grpc.secure_channel(self.config.endpoint, credentials, options=options)
+
+    def _consume(self) -> None:
+        try:
+            assert self._call is not None
+            for message in self._call:
+                if self._stop.is_set():
+                    return
+                try:
+                    frame = self._parse_frame(message)
+                except (ReferenceDiscontinuity, ReferenceUnavailable) as error:
+                    self._publish(error)
+                else:
+                    self._publish(frame)
+            if not self._stop.is_set():
+                raise RuntimeError("RTMW gRPC stream ended")
+        except grpc.RpcError as error:
+            if not self._stop.is_set():
+                detail = error.details() or "RPC failed"
+                self._set_terminal(
+                    RuntimeError(f"RTMW gRPC {error.code().name}: {detail}")
+                )
+        except BaseException as error:
+            if not self._stop.is_set():
+                self._set_terminal(error)
+
+    def _parse_frame(self, message: Any) -> SmplxTargetFrame:
+        received_at = time.monotonic()
+        frame_id = int(message.frame_id)
+        source_timestamp_ns = int(message.source_timestamp_ns)
+        captured_ns = int(message.captured_monotonic_ns)
+        output_ns = int(message.output_monotonic_ns)
+        if source_timestamp_ns <= 0 or captured_ns <= 0 or output_ns < captured_ns:
+            raise ReferenceDiscontinuity("RTMW frame timestamps are invalid")
+        if source_timestamp_ns != captured_ns:
             raise ValueError(
                 "RTMW hardware input must come from a live camera whose source and "
                 "capture timestamps are identical"
             )
-        if inferred_at_ns < captured_at_ns:
-            raise ValueError("RTMW inferred_at_ns precedes captured_at_ns")
-        pipeline_latency_ms = _finite_scalar(document.get("latency_ms"), "latency_ms")
-        if pipeline_latency_ms < 0.0:
-            raise ValueError("RTMW latency_ms must be nonnegative")
-        timestamp_latency_ms = (inferred_at_ns - captured_at_ns) / 1.0e6
-        if abs(timestamp_latency_ms - pipeline_latency_ms) > 1.0:
-            raise ValueError("RTMW latency_ms disagrees with its timestamps")
-        if pipeline_latency_ms > self.config.max_pipeline_latency_ms:
-            raise ReferenceUnavailable(
-                f"RTMW pipeline latency is too high: {pipeline_latency_ms:.1f} ms"
-            )
-        age_ms = (self._clock_ns() - captured_at_ns) / 1.0e6
-        if age_ms < -1.0:
-            raise ValueError(
-                "RTMW capture timestamp is from a different monotonic clock; run "
-                "RTMW and bello-run-hardware on the same host"
-            )
-        age_ms = max(0.0, age_ms)
-        if age_ms + 1.0 < pipeline_latency_ms:
-            raise ValueError("RTMW source age is smaller than its pipeline latency")
-        if age_ms > self.config.max_source_age_ms:
-            raise ReferenceUnavailable(
-                f"RTMW source frame is stale: {age_ms:.1f} ms exceeds "
-                f"{self.config.max_source_age_ms} ms"
-            )
-
-        tracking = _mapping(document.get("tracking"), "tracking")
-        if tracking.get("state") != "tracked":
+        if message.stream_instance_id != self.stream_instance_id:
+            raise ReferenceDiscontinuity("RTMW frame belongs to another stream")
+        if message.tracking_state != "tracked":
             raise ReferenceUnavailable("RTMW tracking state is not 'tracked'")
-        track_id = _track_id(tracking.get("track_id"), "tracking.track_id")
-        body = _mapping(document.get("smplx52_landmark_fit"), "smplx52_landmark_fit")
-        body_track_id = _track_id(body.get("track_id"), "smplx52.track_id")
-        if body_track_id != track_id:
-            raise ValueError("RTMW tracking and SMPL-X track ids differ")
-        if _nonnegative_integer(body.get("frame_id"), "smplx52.frame_id") != frame_id:
-            raise ValueError("RTMW record and SMPL-X frame ids differ")
-        if (
-            _positive_integer(body.get("captured_at_ns"), "smplx52.captured_at_ns")
-            != captured_at_ns
-        ):
-            raise ValueError("RTMW record and SMPL-X capture timestamps differ")
-        body_inferred_at_ns = _positive_integer(
-            body.get("inferred_at_ns"), "smplx52.inferred_at_ns"
-        )
-        if not captured_at_ns <= body_inferred_at_ns <= inferred_at_ns:
-            raise ValueError(
-                "RTMW SMPL-X inference timestamp is outside the record's processing "
-                "interval"
-            )
-        self._validate_body_contract(body)
-
+        track_id = message.track_id
+        if not track_id:
+            raise ReferenceUnavailable("RTMW tracked frame has no track id")
         if self._active_track_id is not None and track_id != self._active_track_id:
             previous = self._active_track_id
             self._reset_tracking_epoch(track_id)
@@ -416,27 +473,20 @@ class RtmwLatestJsonStream:
         self._active_track_id = track_id
 
         positions = _finite_array(
-            body.get("positions_m"), (len(RTMW_SMPLX52_NAMES), 3), "positions_m"
-        )
-        joint_positions = _finite_array(
-            body.get("joint_positions"),
+            message.joint_positions,
             (len(RTMW_SMPLX52_NAMES), 3),
-            "joint_positions",
+            "joint positions",
         )
-        if not np.allclose(positions, joint_positions, atol=1.0e-6, rtol=0.0):
-            raise ValueError("RTMW position aliases differ")
+        root = _finite_array(message.root_translation, (3,), "root translation")
+        if not np.allclose(root, positions[0], atol=1.0e-5, rtol=0.0):
+            raise ValueError("RTMW root translation differs from its pelvis position")
         confidence = _confidence_array(
-            body.get("confidence"), len(RTMW_SMPLX52_NAMES), "confidence"
-        )
-        joint_confidence = _confidence_array(
-            body.get("joint_confidence"),
+            message.joint_confidence,
             len(RTMW_SMPLX52_NAMES),
-            "joint_confidence",
+            "joint confidence",
         )
-        if not np.allclose(confidence, joint_confidence, atol=1.0e-6, rtol=0.0):
-            raise ValueError("RTMW confidence aliases differ")
         valid_mask = _boolean_array(
-            body.get("valid_mask"), len(RTMW_SMPLX52_NAMES), "valid_mask"
+            message.joint_valid, len(RTMW_SMPLX52_NAMES), "joint validity"
         )
         required = np.asarray(
             [RTMW_SMPLX52_NAMES.index(name) for name in SMPLX_GMR_BODY_NAMES]
@@ -452,21 +502,21 @@ class RtmwLatestJsonStream:
             )
 
         local_quaternions = _normalized_quaternions(
-            body.get("local_joint_quaternions"), "local_joint_quaternions"
+            message.local_joint_quaternions, "local joint quaternions"
         )
         global_quaternions = _normalized_quaternions(
-            body.get("global_joint_quaternions"), "global_joint_quaternions"
+            message.global_joint_quaternions, "global joint quaternions"
         )
         _validate_tree_consistency(local_quaternions, global_quaternions)
         rotation_valid = _boolean_array(
-            body.get("rotation_valid_mask"),
+            message.rotation_valid,
             len(RTMW_SMPLX52_NAMES),
-            "rotation_valid_mask",
+            "rotation validity",
         )
         rotation_confidence = _confidence_array(
-            body.get("rotation_confidence"),
+            message.rotation_confidence,
             len(RTMW_SMPLX52_NAMES),
-            "rotation_confidence",
+            "rotation confidence",
         )
         for name in _REQUIRED_ROTATION_NAMES:
             index = RTMW_SMPLX52_NAMES.index(name)
@@ -493,9 +543,25 @@ class RtmwLatestJsonStream:
                 )
             source_quaternions[index] = global_quaternions[ancestor]
 
-        root = _finite_array(body.get("root_translation_m"), (3,), "root_translation")
-        if not np.allclose(root, positions[0], atol=1.0e-6, rtol=0.0):
-            raise ValueError("RTMW root translation differs from its pelvis position")
+        pipeline_latency_ms = float(message.pipeline_latency_ms)
+        if not math.isfinite(pipeline_latency_ms) or pipeline_latency_ms < 0.0:
+            raise ReferenceUnavailable("RTMW pipeline latency is invalid")
+        if pipeline_latency_ms > self.config.max_pipeline_latency_ms:
+            raise ReferenceUnavailable(
+                f"RTMW pipeline latency is too high: {pipeline_latency_ms:.1f} ms"
+            )
+        timestamp_latency_ms = (output_ns - captured_ns) / 1.0e6
+        if abs(timestamp_latency_ms - pipeline_latency_ms) > 1.0:
+            raise ReferenceUnavailable(
+                "RTMW latency scalar disagrees with its monotonic timestamps"
+            )
+        source_age_ms = math.ceil(
+            pipeline_latency_ms + self.config.transport_latency_budget_ms
+        )
+        if source_age_ms > self.config.max_source_age_ms:
+            raise ReferenceUnavailable(
+                f"RTMW source age budget is too high: {source_age_ms} ms"
+            )
         positions, quaternions = self._coordinates.transform(
             positions, source_quaternions, track_id=track_id
         )
@@ -519,61 +585,38 @@ class RtmwLatestJsonStream:
             },
             sequence=frame_id,
             source_timestamp_ns=source_timestamp_ns,
-            source_age_ms=math.ceil(age_ms),
-            received_at=time.monotonic(),
+            source_age_ms=source_age_ms,
+            received_at=received_at,
             foot_contacts=foot_contacts,
         )
 
-    def _validate_body_contract(self, body: Mapping[str, Any]) -> None:
-        exact = {
-            "representation": (body.get("representation"), RTMW_REPRESENTATION),
-            "schema_id": (body.get("schema_id"), RTMW_SCHEMA_ID),
-            "coordinate_space": (
-                body.get("coordinate_space"),
-                RTMW_COORDINATE_SPACE,
-            ),
-            "quaternion_order": (body.get("quaternion_order"), "xyzw"),
-            "position_units": (body.get("position_units"), "meters"),
-            "rotation_semantics": (
-                body.get("rotation_semantics"),
-                RTMW_ROTATION_SEMANTICS,
-            ),
-        }
-        for name, (actual, expected) in exact.items():
-            if actual != expected:
-                raise ValueError(f"RTMW {name} is {actual!r}; expected {expected!r}")
-        if body.get("metric_scale") is not True:
-            raise ValueError("RTMW hardware pose must have metric_scale=true")
-        if body.get("global_translation") is not True:
-            raise ValueError("RTMW hardware pose must have global_translation=true")
-        if body.get("depth_provenance") not in {
-            "calibrated_camera+assumed_subject_height",
-            "fixed_root_depth_assumption",
-        }:
-            raise ValueError(
-                "RTMW hardware pose must use calibrated height-prior or fixed-depth "
-                "reconstruction"
-            )
-        if body.get("global_depth_is_measured") is not False:
-            raise ValueError(
-                "RTMW monocular hardware pose must declare "
-                "global_depth_is_measured=false"
-            )
-        if _integer(body.get("root_index"), "root_index") != 0:
-            raise ValueError("RTMW root_index must be 0")
-        names = body.get("joint_names")
-        if not isinstance(names, list) or tuple(names) != RTMW_SMPLX52_NAMES:
-            raise ValueError("RTMW stream has an unexpected SMPL-X joint order")
-        parents = body.get("joint_parents")
-        if not isinstance(parents, list) or tuple(parents) != RTMW_SMPLX52_PARENTS:
-            raise ValueError("RTMW stream has an unexpected SMPL-X hierarchy")
-
-    def _reset_tracking_epoch(self, track_id: int | str | None) -> None:
+    def _reset_tracking_epoch(self, track_id: str | None) -> None:
         self._coordinates.reset()
         self._root_conditioner.reset()
         self._active_track_id = track_id
         self._last_frame_id = None
         self._last_source_timestamp_ns = None
+
+    def _publish(self, payload: SmplxTargetFrame | BaseException) -> None:
+        with self._condition:
+            self._payload = payload
+            self._generation += 1
+            self._condition.notify_all()
+
+    def _set_terminal(self, error: BaseException) -> None:
+        with self._condition:
+            self._terminal_error = error
+            self._payload = error
+            self._generation += 1
+            self._condition.notify_all()
+
+    def _close_transport(self) -> None:
+        channel = self._channel
+        self._call = None
+        self._stub = None
+        self._channel = None
+        if channel is not None:
+            channel.close()
 
 
 @contextmanager
@@ -581,32 +624,36 @@ def rtmw_locomotion_reference_source(
     adapter: Any,
     config: Any,
 ) -> Iterator[LiveGmrReferenceSource]:
-    """Construct RTMW latest-JSON -> pinned GMR locomotion references."""
+    """Construct pinned RTMW gRPC -> GMR locomotion references."""
 
     rtmw_root = require_pinned_rtmw_revision()
     validate_pinned_rtmw_contract(rtmw_root)
-    source_config = RtmwLatestJsonConfig.from_hardware(config)
-    stream = RtmwLatestJsonStream(source_config)
-    retargeter = GmrBelloRetargeter(
-        adapter.env,
-        repository_gmr_source_identity(),
-        GmrLiveRetargetConfig(human_height_m=source_config.human_height_m),
-        validate_reference=adapter.validate_upper_body_reference,
-    )
-    with LiveGmrReferenceSource(stream, retargeter) as source:
-        print(
-            {
-                "rtmw_source_preflight": "passed",
-                "pose_path": str(stream.pose_path),
-                "rtmw_revision": RTMW_REVISION,
-                "schema_version": RTMW_SCHEMA_VERSION,
-                "representation": RTMW_REPRESENTATION,
-                "neutral_model_sha256": stream.neutral_model_sha256,
-                "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
-                "live_target_check": "required_before_hardware_connection",
-            }
+    source_config = RtmwGrpcConfig.from_hardware(config)
+    stream = RtmwSmplxStream(source_config)
+    with stream:
+        retargeter = GmrBelloRetargeter(
+            adapter.env,
+            repository_gmr_source_identity(),
+            GmrLiveRetargetConfig(human_height_m=source_config.human_height_m),
+            validate_reference=adapter.validate_upper_body_reference,
         )
-        yield source
+        with LiveGmrReferenceSource(stream, retargeter) as source:
+            print(
+                {
+                    "rtmw_connection_preflight": "passed",
+                    "endpoint": source_config.endpoint,
+                    "stream_instance_id": stream.stream_instance_id,
+                    "stream_config_sha256": stream.stream_config_sha256,
+                    "depth_provenance": stream.depth_provenance,
+                    "rtmw_revision": RTMW_REVISION,
+                    "schema_version": RTMW_SCHEMA_VERSION,
+                    "representation": RTMW_REPRESENTATION,
+                    "neutral_model_sha256": stream.neutral_model_sha256,
+                    "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
+                    "live_target_check": "required_before_hardware_connection",
+                }
+            )
+            yield source
 
 
 def require_pinned_rtmw_revision() -> Path:
@@ -649,52 +696,88 @@ def validate_pinned_rtmw_contract(submodule: Path) -> None:
         raise ValueError("pinned RTMW SMPL-X hierarchy is incompatible")
 
 
-def _mapping(value: Any, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"RTMW {label} must be an object")
-    return value
+def import_pinned_rtmw_proto() -> tuple[Any, Any]:
+    """Import generated protobuf modules only from the reviewed submodule."""
+
+    submodule = require_pinned_rtmw_revision()
+    source_root = submodule / "src"
+    source_string = str(source_root)
+    if source_string not in sys.path:
+        sys.path.insert(0, source_string)
+    skeleton_pb2 = importlib.import_module("rtmw_teleop.proto.skeleton_pb2")
+    skeleton_pb2_grpc = importlib.import_module("rtmw_teleop.proto.skeleton_pb2_grpc")
+    for module in (skeleton_pb2, skeleton_pb2_grpc):
+        path = Path(module.__file__).resolve()
+        try:
+            path.relative_to(submodule.resolve())
+        except ValueError as error:
+            raise RuntimeError(
+                "RTMW protobuf module was not imported from the pinned submodule"
+            ) from error
+    return skeleton_pb2, skeleton_pb2_grpc
 
 
-def _integer(value: Any, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"RTMW {label} must be an integer")
-    return value
+def _validate_stream_info(message: Any, config: RtmwGrpcConfig) -> None:
+    if int(message.schema_version) != RTMW_SCHEMA_VERSION:
+        raise ValueError(f"RTMW schema_version must be {RTMW_SCHEMA_VERSION}")
+    if not message.stream_instance_id:
+        raise ValueError("RTMW stream has no instance id")
+    if len(message.config_sha256) != 64 or any(
+        character not in string.hexdigits.lower() for character in message.config_sha256
+    ):
+        raise ValueError("RTMW stream has an invalid config SHA-256")
+    if tuple(message.joint_names) != RTMW_SMPLX52_NAMES:
+        raise ValueError("RTMW stream has an unexpected SMPL-X joint order")
+    if tuple(message.joint_parents) != RTMW_SMPLX52_PARENTS:
+        raise ValueError("RTMW stream has an unexpected SMPL-X hierarchy")
+    exact = {
+        "root_index": (int(message.root_index), 0),
+        "coordinate_space": (message.coordinate_space, RTMW_COORDINATE_SPACE),
+        "quaternion_order": (message.quaternion_order, "xyzw"),
+        "rotation_semantics": (
+            message.rotation_semantics,
+            RTMW_ROTATION_SEMANTICS,
+        ),
+        "position_units": (message.position_units, "meters"),
+        "representation": (message.representation, RTMW_REPRESENTATION),
+        "schema_id": (message.schema_id, RTMW_SCHEMA_ID),
+    }
+    for name, (actual, expected) in exact.items():
+        if actual != expected:
+            raise ValueError(f"RTMW {name} is {actual!r}; expected {expected!r}")
+    if not message.metric_scale:
+        raise ValueError("RTMW hardware pose must have metric_scale=true")
+    if not message.global_translation:
+        raise ValueError("RTMW hardware pose must have global_translation=true")
+    if message.global_depth_is_measured:
+        raise ValueError(
+            "RTMW monocular hardware pose must declare global_depth_is_measured=false"
+        )
+    if message.depth_provenance not in {
+        "calibrated_camera+assumed_subject_height",
+        "fixed_root_depth_assumption",
+    }:
+        raise ValueError(
+            "RTMW hardware pose must use calibrated height-prior or fixed-depth "
+            "reconstruction"
+        )
+    subject_height_m = float(message.subject_height_m)
+    if not math.isfinite(subject_height_m) or not math.isclose(
+        subject_height_m, config.human_height_m, abs_tol=1.0e-6
+    ):
+        raise ValueError(
+            "RTMW producer subject height does not match rtmw_human_height_m: "
+            f"{subject_height_m!r} != {config.human_height_m!r}"
+        )
 
 
-def _nonnegative_integer(value: Any, label: str) -> int:
-    result = _integer(value, label)
-    if result < 0:
-        raise ValueError(f"RTMW {label} must be nonnegative")
-    return result
-
-
-def _positive_integer(value: Any, label: str) -> int:
-    result = _integer(value, label)
-    if result <= 0:
-        raise ValueError(f"RTMW {label} must be positive")
-    return result
-
-
-def _finite_scalar(value: Any, label: str) -> float:
-    if isinstance(value, bool):
-        raise ValueError(f"RTMW {label} must be finite")
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"RTMW {label} must be finite") from error
-    if not math.isfinite(result):
-        raise ValueError(f"RTMW {label} must be finite")
-    return result
-
-
-def _track_id(value: Any, label: str) -> int | str:
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ValueError(f"RTMW {label} must be an integer or string")
-    if isinstance(value, int) and value < 0:
-        raise ValueError(f"RTMW {label} must be nonnegative")
-    if isinstance(value, str) and not value:
-        raise ValueError(f"RTMW {label} must not be empty")
-    return value
+def _validate_service_status(message: Any) -> None:
+    if message.terminal_failure:
+        raise RuntimeError(f"RTMW service failed: {message.terminal_failure}")
+    if not message.ready:
+        raise RuntimeError("RTMW service is not ready")
+    if not message.source_running or not message.inference_running:
+        raise RuntimeError("RTMW source or inference worker is not running")
 
 
 def _finite_array(value: Any, shape: tuple[int, ...], label: str) -> np.ndarray:
@@ -702,9 +785,14 @@ def _finite_array(value: Any, shape: tuple[int, ...], label: str) -> np.ndarray:
         array = np.asarray(value, dtype=np.float64)
     except (TypeError, ValueError) as error:
         raise ValueError(f"RTMW {label} must contain finite numbers") from error
-    if array.shape != shape or not np.all(np.isfinite(array)):
-        raise ValueError(f"RTMW {label} must have finite shape {shape}")
-    return np.array(array, copy=True, order="C")
+    if array.size != math.prod(shape):
+        raise ValueError(
+            f"RTMW {label} has {array.size} values; expected {math.prod(shape)}"
+        )
+    result = np.array(array.reshape(shape), copy=True, order="C")
+    if not np.all(np.isfinite(result)):
+        raise ValueError(f"RTMW {label} must contain finite numbers")
+    return result
 
 
 def _confidence_array(value: Any, count: int, label: str) -> np.ndarray:

@@ -8,7 +8,7 @@ The runner has three task modes:
 
 | Task | Policy input | External services |
 | --- | --- | --- |
-| Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent; live GMR pose targets the upper body outside the policy | `bello-hardwared`, the visualizer's RemoteCommandService, and a local RTMW-SMPLX-Teleop latest-JSON stream |
+| Locomotion | Motor state, pelvis IMU, previous action, and normalized remote velocity intent; live GMR pose targets the upper body outside the policy | `bello-hardwared`, the visualizer's RemoteCommandService, and the RTMW-SMPLX-Teleop gRPC service |
 | Motion | Motor state, pelvis IMU, absolute pelvis pose, reference motion, and previous action | `bello-hardwared` plus `bello-state-estimatord` PoseService |
 | TWIST2 | Motor state, pelvis IMU, current and historical proprioception, and a live retargeted pose | `bello-hardwared` plus `fastsam3dbody-serve` |
 
@@ -178,26 +178,24 @@ The live pose does not enter the locomotion actor observation and cannot replace
 joystick intent or any policy coordinate. Fast-SAM is not a supported locomotion
 pose source; it remains specific to TWIST2.
 
-Run the pinned `deps/RTMW-SMPLX-Teleop` producer and `bello-run-hardware` on the
-same host. Preflight requires that submodule to be clean and exactly at the
-reviewed gitlink, then checks the consumer's 52-joint order and hierarchy
-against its source contract. The JSON record's schema version provides the
-wire-format gate. The consumer uses the producer's monotonic capture timestamp
-to measure complete source age, so copying or serving the latest file across
-hosts is rejected rather than hiding an unknown clock offset. The hardware
-daemon may still run remotely. Both processes must use the same licensed
-neutral SMPL-X model, and
+Run the pinned `deps/RTMW-SMPLX-Teleop` producer with its gRPC service enabled.
+Preflight requires that submodule to be clean and exactly at the reviewed
+gitlink, then checks the protobuf schema, 52-joint order, hierarchy, coordinate
+semantics, stream instance, and producer configuration hash. Slow consumers
+skip intermediate frames instead of accumulating transport latency. Producer
+monotonic timestamps are checked against one another; receipt age is measured
+on the runner's local clock, so the producer and runner may use different
+hosts. Both processes must use the same licensed neutral SMPL-X model, and
 `rtmw_human_height_m` must equal RTMW's configured
 `reconstruction.subject_height_m` (both default to 1.75 m):
 
 ```text
-mkdir -p /tmp/rtmw-smplx-teleop
 cd ~/bello_mujoco/deps/RTMW-SMPLX-Teleop
 uv run rtmw-teleop \
-  --latest-json /tmp/rtmw-smplx-teleop/latest.json
+  --grpc-listen 0.0.0.0:50055
 ```
 
-Then run locomotion from the same host:
+Then run locomotion, pointing `rtmw_endpoint` at that producer:
 
 ```text
 cd ~/bello_mujoco
@@ -206,7 +204,7 @@ uv run bello-run-hardware \
   checkpoint_path=checkpoints/hardware_locomotion \
   endpoint=http://robot-host:50051 \
   remote_endpoint=http://visualizer-host:50054 \
-  rtmw_pose_path=/tmp/rtmw-smplx-teleop/latest.json \
+  rtmw_endpoint=rtmw-host:50055 \
   smplx_neutral_model_path=/absolute/path/to/SMPLX_NEUTRAL.npz
 ```
 
@@ -446,9 +444,9 @@ Motion adds pose age/frame/source-time validation, pose/IMU agreement,
 estimator-provided base-velocity bounds,
 reference completion, and raw-versus-applied action bounds.
 
-Locomotion adds exact RTMW latest-JSON schema and same-host clock semantics,
-tracking and required-joint confidence, derived-rotation confidence and tree
-consistency, pipeline/reference age, source sequence and timestamp monotonicity,
+Locomotion adds exact RTMW protobuf and stream metadata checks, tracking and
+required-joint confidence, derived-rotation confidence and tree consistency,
+pipeline/transport/reference age, source sequence and timestamp monotonicity,
 GMR joint velocity/acceleration and hard upper-body joint limits, and a fixed
 upper-body target slew bound. Invalid terminal-joint rotations use the nearest
 valid ancestor only outside the required upper-body chain. These checks affect

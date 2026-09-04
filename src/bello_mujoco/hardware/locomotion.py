@@ -169,12 +169,17 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     client_name: str = "bello-locomotion-policy"
     remote: RemoteCommandConfig = RemoteCommandConfig()
     upper_body_tracking_enabled: bool = True
-    rtmw_pose_path: Path = Path("/tmp/rtmw-smplx-teleop/latest.json")
+    rtmw_endpoint: str = "127.0.0.1:50055"
+    rtmw_tls_root_certificate_path: Path | None = None
+    rtmw_tls_server_name_override: str | None = None
+    rtmw_connect_timeout_seconds: float = 5.0
+    rtmw_rpc_timeout_seconds: float = 2.0
     rtmw_reference_ready_timeout_seconds: float = 15.0
     rtmw_reference_qualification_frames: int = 5
     rtmw_min_joint_confidence: float = 0.25
     rtmw_min_rotation_confidence: float = 0.10
     rtmw_max_pipeline_latency_ms: float = 250.0
+    rtmw_transport_latency_budget_ms: float = 10.0
     rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
         0.5,
         -0.5,
@@ -716,9 +721,9 @@ def validate_hardware_config(
     if config.remote.staleness_ms <= 0:
         raise ValueError("remote.staleness_ms must be positive")
     if config.upper_body_tracking_enabled:
-        from bello_mujoco.hardware.rtmw import RtmwLatestJsonConfig
+        from bello_mujoco.hardware.rtmw import RtmwGrpcConfig
 
-        RtmwLatestJsonConfig.from_hardware(config)
+        RtmwGrpcConfig.from_hardware(config)
         if (
             not math.isfinite(config.rtmw_reference_ready_timeout_seconds)
             or config.rtmw_reference_ready_timeout_seconds <= 0.0
@@ -758,7 +763,11 @@ def validate_hardware_config(
         )
     if (
         config.upper_body_tracking_enabled
-        and upper.max_reference_age_ms <= config.rtmw_max_pipeline_latency_ms
+        and upper.max_reference_age_ms
+        <= (
+            config.rtmw_max_pipeline_latency_ms
+            + config.rtmw_transport_latency_budget_ms
+        )
     ):
         raise ValueError(
             "upper_body_follow.max_reference_age_ms must exceed the RTMW "

@@ -167,12 +167,17 @@ class HardwareCommandConfig:
     policy_log_path: Path | None
     arm: bool
     upper_body_tracking_enabled: bool
-    rtmw_pose_path: Path
+    rtmw_endpoint: str
+    rtmw_tls_root_certificate_path: Path | None
+    rtmw_tls_server_name_override: str | None
+    rtmw_connect_timeout_seconds: float
+    rtmw_rpc_timeout_seconds: float
     rtmw_reference_ready_timeout_seconds: float
     rtmw_reference_qualification_frames: int
     rtmw_min_joint_confidence: float
     rtmw_min_rotation_confidence: float
     rtmw_max_pipeline_latency_ms: float
+    rtmw_transport_latency_budget_ms: float
     rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
     rtmw_align_initial_heading: bool
     rtmw_align_initial_floor: bool
@@ -902,7 +907,7 @@ def hardware_entrypoint() -> None:
             "standing_checkpoint_path=",
             "motion_path=",
             "policy_log_path=",
-            "rtmw_pose_path=",
+            "rtmw_tls_root_certificate_path=",
             "fastsam_tls_root_certificate_path=",
             "smplx_neutral_model_path=",
         )
@@ -936,12 +941,17 @@ def _hardware_hydra(config: DictConfig) -> None:
         "fastsam_align_initial_floor",
     )
     rtmw_fields = (
-        "rtmw_pose_path",
+        "rtmw_endpoint",
+        "rtmw_tls_root_certificate_path",
+        "rtmw_tls_server_name_override",
+        "rtmw_connect_timeout_seconds",
+        "rtmw_rpc_timeout_seconds",
         "rtmw_reference_ready_timeout_seconds",
         "rtmw_reference_qualification_frames",
         "rtmw_min_joint_confidence",
         "rtmw_min_rotation_confidence",
         "rtmw_max_pipeline_latency_ms",
+        "rtmw_transport_latency_budget_ms",
         "rtmw_camera_to_world_quaternion_xyzw",
         "rtmw_align_initial_heading",
         "rtmw_align_initial_floor",
@@ -1162,7 +1172,11 @@ def _hardware_hydra(config: DictConfig) -> None:
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
             upper_body_tracking_enabled=command.upper_body_tracking_enabled,
-            rtmw_pose_path=command.rtmw_pose_path,
+            rtmw_endpoint=command.rtmw_endpoint,
+            rtmw_tls_root_certificate_path=command.rtmw_tls_root_certificate_path,
+            rtmw_tls_server_name_override=command.rtmw_tls_server_name_override,
+            rtmw_connect_timeout_seconds=command.rtmw_connect_timeout_seconds,
+            rtmw_rpc_timeout_seconds=command.rtmw_rpc_timeout_seconds,
             rtmw_reference_ready_timeout_seconds=(
                 command.rtmw_reference_ready_timeout_seconds
             ),
@@ -1172,6 +1186,9 @@ def _hardware_hydra(config: DictConfig) -> None:
             rtmw_min_joint_confidence=command.rtmw_min_joint_confidence,
             rtmw_min_rotation_confidence=command.rtmw_min_rotation_confidence,
             rtmw_max_pipeline_latency_ms=command.rtmw_max_pipeline_latency_ms,
+            rtmw_transport_latency_budget_ms=(
+                command.rtmw_transport_latency_budget_ms
+            ),
             rtmw_camera_to_world_quaternion_xyzw=(
                 command.rtmw_camera_to_world_quaternion_xyzw
             ),
