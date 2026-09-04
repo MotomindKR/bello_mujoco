@@ -210,7 +210,7 @@ learning_rate="${14}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libgl1 libglib2.0-0 libxrender1 python3 python3-pip rsync
+apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libgl1 libglib2.0-0 libosmesa6 libxrender1 python3 python3-pip rsync
 
 python3 -m pip install --break-system-packages --disable-pip-version-check uv==0.11.25
 command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
@@ -247,7 +247,8 @@ fi
 export UV_CACHE_DIR="$PWD/.uv-cache"
 export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
 export WARP_CACHE_PATH="$PWD/.warp-cache"
-export MUJOCO_GL=egl
+export MUJOCO_GL=osmesa
+export PYOPENGL_PLATFORM=osmesa
 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
 export TF_GPU_ALLOCATOR=cuda_malloc_async
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
@@ -256,6 +257,34 @@ export JAX_DEFAULT_MATMUL_PRECISION=highest
 uv python install
 uv sync --frozen
 uv run python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
+uv run python - <<'PY'
+from contextlib import ExitStack
+from pathlib import Path
+
+import mujoco
+
+from bello_mujoco.evaluation.render import VideoWriter
+
+output_path = Path("/tmp/bello-render-smoke.mp4")
+output_path.unlink(missing_ok=True)
+model = mujoco.MjModel.from_xml_string(
+    '<mujoco><visual><global offwidth="64" offheight="64"/></visual>'
+    '<worldbody><geom type="sphere" size="0.1"/></worldbody></mujoco>'
+)
+data = mujoco.MjData(model)
+with ExitStack() as resources:
+    renderer = mujoco.Renderer(model, width=64, height=64)
+    resources.callback(renderer.close)
+    renderer.update_scene(data)
+    frame = renderer.render()
+    writer = VideoWriter(output_path, width=64, height=64, fps=1)
+    resources.callback(writer.close)
+    writer.append_data(frame)
+if frame.shape != (64, 64, 3) or not output_path.is_file():
+    raise RuntimeError("headless render-and-encode preflight produced no video")
+print({"render_backend": "osmesa", "frame_shape": frame.shape})
+output_path.unlink()
+PY
 
 training_overrides=("experiment=$experiment")
 if [ -n "$motion_path" ]; then

@@ -632,7 +632,10 @@ tracking and does not accept a locomotion command or camera override.
 
 Training video generation uses native MuJoCo outside the JAX rollout hot path.
 Locomotion renders in the host training process; motion uses a spawned CPU
-evaluation worker.
+evaluation worker. A locomotion video failure emits an explicit warning and
+disables later videos for that run without terminating PPO. Vast jobs use the
+software OSMesa backend and validate rendering plus MP4 encoding before the
+training preflight; MJX-Warp training remains on the selected GPU.
 
 ## Warp capacity: `warp`
 

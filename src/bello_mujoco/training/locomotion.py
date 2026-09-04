@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+import warnings
 
 import jax
 
@@ -330,8 +331,9 @@ def train_update_loop(
 
     update_fn = jax.jit(update_fn)
     last_metrics = None
-    if video_config.render_initial and start_update == 0:
-        render_training_video(
+    video_available = video_config.enabled
+    if video_available and video_config.render_initial and start_update == 0:
+        video_available = try_render_training_video(
             render_env,
             runner_state,
             static_policy,
@@ -363,8 +365,10 @@ def train_update_loop(
             )
         ):
             checkpoint_callback(runner_state)
-        if should_render_training_video(update, config.num_updates, video_config):
-            render_training_video(
+        if video_available and should_render_training_video(
+            update, config.num_updates, video_config
+        ):
+            video_available = try_render_training_video(
                 render_env,
                 runner_state,
                 static_policy,
@@ -430,6 +434,40 @@ def render_training_video(
             caption=video_rollout_caption(update, rollout_stats),
         )
     return output_path
+
+
+def try_render_training_video(
+    env: BelloLocomotionEnv,
+    runner_state: RunnerState,
+    static_policy,
+    config: TrainingVideoConfig,
+    run,
+    *,
+    env_steps: int,
+    ppo_config: PPOConfig,
+    obs_stack_size: int = 1,
+) -> bool:
+    update = int(jax.device_get(runner_state.update))
+    try:
+        render_training_video(
+            env,
+            runner_state,
+            static_policy,
+            config,
+            run,
+            env_steps=env_steps,
+            ppo_config=ppo_config,
+            obs_stack_size=obs_stack_size,
+        )
+    except Exception as error:  # noqa: BLE001 - evaluation video is noncritical
+        warnings.warn(
+            f"locomotion evaluation video failed at update {update}; "
+            f"disabling later videos: {error}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return False
+    return True
 
 
 def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:

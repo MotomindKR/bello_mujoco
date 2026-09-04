@@ -71,6 +71,38 @@ jobs:
       - run: uv python install
       - run: uv lock --check
       - run: uv sync --frozen
+      - name: Headless render and encode smoke test
+        env:
+          MUJOCO_GL: osmesa
+          PYOPENGL_PLATFORM: osmesa
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libosmesa6
+          uv run --no-sync python - <<'PY'
+          from contextlib import ExitStack
+          from pathlib import Path
+
+          import mujoco
+
+          from bello_mujoco.evaluation.render import VideoWriter
+
+          output_path = Path("/tmp/bello-render-smoke.mp4")
+          model = mujoco.MjModel.from_xml_string(
+              '<mujoco><visual><global offwidth="64" offheight="64"/></visual>'
+              '<worldbody><geom type="sphere" size="0.1"/></worldbody></mujoco>'
+          )
+          data = mujoco.MjData(model)
+          with ExitStack() as resources:
+              renderer = mujoco.Renderer(model, width=64, height=64)
+              resources.callback(renderer.close)
+              renderer.update_scene(data)
+              frame = renderer.render()
+              writer = VideoWriter(output_path, width=64, height=64, fps=1)
+              resources.callback(writer.close)
+              writer.append_data(frame)
+          assert frame.shape == (64, 64, 3)
+          assert output_path.is_file()
+          PY
       - name: Build wheel
         run: uv build --wheel
       - name: Installed wheel smoke test

@@ -256,3 +256,30 @@ def test_training_video_passes_runner_normalization_to_rollout(monkeypatch) -> N
 
     assert rollout_calls[0]["ppo_config"] is ppo_config
     assert rollout_calls[0]["observation_norm_state"] is normalization
+
+
+def test_training_video_failure_is_nonfatal(monkeypatch) -> None:
+    runner_state = SimpleNamespace(update=jnp.asarray(512))
+    monkeypatch.setattr(
+        training,
+        "render_training_video",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("framebuffer unavailable")
+        ),
+    )
+
+    with pytest.warns(
+        RuntimeWarning,
+        match="evaluation video failed at update 512.*disabling later videos",
+    ):
+        available = training.try_render_training_video(
+            object(),
+            runner_state,
+            object(),
+            TrainingVideoConfig(),
+            None,
+            env_steps=0,
+            ppo_config=PPOConfig(),
+        )
+
+    assert available is False

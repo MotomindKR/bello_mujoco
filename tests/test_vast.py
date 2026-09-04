@@ -938,6 +938,17 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
     assert user_index < forced_index < checkpoint_index
 
 
+def test_remote_command_preflights_software_rendering() -> None:
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+
+    assert "libosmesa6" in script
+    assert "export MUJOCO_GL=osmesa" in script
+    assert "export PYOPENGL_PLATFORM=osmesa" in script
+    assert "mujoco.Renderer" in script
+    assert "VideoWriter" in script
+    assert script.index("mujoco.Renderer") < script.index("total_timesteps=768")
+
+
 def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
     command = vast_remote.remote_start_command(
         "/workspace/.bello-vast-jobs/twist",

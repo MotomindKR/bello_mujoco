@@ -44,7 +44,7 @@ Non-dry execution:
    verifies every file's SHA-256 on the instance;
 7. recursively clones the exact root commit and pinned submodules, then performs
    a frozen workspace dependency sync;
-8. verifies the JAX GPU backend;
+8. verifies the JAX GPU backend and a headless render-and-encode path;
 9. runs a bounded training preflight;
 10. starts the real job in a detached process, records PID/status/log files, and
    streams bounded log/status updates;
@@ -53,8 +53,11 @@ Non-dry execution:
     handled interruption; unconfirmed destruction retains durable state and
     fails closed.
 
-The preflight uses a small fixed rollout and disables W&B. Non-TWIST preflights
-also disable video; TWIST does not expose that setting. The real job forces W&B
+The remote bootstrap uses OSMesa for native diagnostic videos so rendering does
+not depend on a provider's NVIDIA EGL stack or consume training VRAM. Before the
+bounded rollout, it renders one frame and encodes it to MP4. The rollout disables
+W&B; non-TWIST preflights also disable their longer configured videos because the
+dedicated render probe has already exercised that path. The real job forces W&B
 on and assigns the resolved run/checkpoint names. Every produced
 checkpoint records the same full commit selected by the launcher, and W&B logs
 that commit with the run configuration.
