@@ -104,6 +104,8 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
         )
         assert leg_pitch == pytest.approx((-0.10, 0.30, -0.20))
         assert sum(leg_pitch) == pytest.approx(0.0)
+    assert default_pos["left_shoulder_roll_joint"] == pytest.approx(0.15)
+    assert default_pos["right_shoulder_roll_joint"] == pytest.approx(-0.15)
     assert (
         next(
             actuator

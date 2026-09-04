@@ -98,6 +98,13 @@ def test_bello_mini_model_uses_locomotion_partition(
     data = mujoco.MjData(model.mj_model)
     data.qpos[:] = model.default_qpos
     mujoco.mj_forward(model.mj_model, data)
+    robot_geom_ids = set(model.robot_geom_ids.tolist())
+    self_contacts = [
+        contact
+        for contact in data.contact
+        if contact.geom1 in robot_geom_ids and contact.geom2 in robot_geom_ids
+    ]
+    assert not self_contacts
     foot_ids = [
         mujoco.mj_name2id(model.mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
         for name in model.robot.foot_body_names

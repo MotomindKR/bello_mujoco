@@ -137,7 +137,7 @@ actuators:
     effort_limit: 60.0
   - joint_name: right_shoulder_roll_joint
     mode: hold
-    default_pos: 0.0
+    default_pos: -0.15
     soft_limit: null
     gains: [70.0, 2.0]
     effort_limit: 60.0
@@ -179,7 +179,7 @@ actuators:
     effort_limit: 60.0
   - joint_name: left_shoulder_roll_joint
     mode: hold
-    default_pos: 0.0
+    default_pos: 0.15
     soft_limit: null
     gains: [70.0, 2.0]
     effort_limit: 60.0
