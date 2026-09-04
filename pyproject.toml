@@ -91,6 +91,7 @@ bello-hardware = { workspace = true }
 members = ["deps/bello-stack/components/bello-hardware-python"]
 
 [tool.pytest.ini_options]
+tmp_path_retention_policy = "failed"
 markers = [
   "integration: slower end-to-end tests that compile and run training loops",
 ]

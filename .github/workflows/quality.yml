@@ -135,6 +135,8 @@ jobs:
               mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
               mujoco.MjModel.from_xml_path(str(prepared.viewer_mjcf_path))
           PY
+      - name: Reclaim dependency cache space
+        run: uv cache clean
       - run: uv run --no-sync python -m compileall -q src tests
       - run: uv run --no-sync ruff format --check src tests
       - run: uv run --no-sync ruff check src tests
