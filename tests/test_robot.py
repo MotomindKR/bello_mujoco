@@ -26,6 +26,13 @@ def test_bello_robot_config_declares_asset_topology() -> None:
     assert robot.root_body_name == "bello_root"
     assert robot.root_joint_name == "root_free"
     assert robot.default_imu_body_name == "pelvis_link"
+    assert robot.locomotion_command_frame_body_name == "pelvis_link"
+    mirror = {
+        item.joint_name: (item.counterpart_joint_name, item.sign)
+        for item in robot.locomotion_action_mirror
+    }
+    assert mirror["left_hip_pitch_joint"] == ("right_hip_pitch_joint", -1.0)
+    assert mirror["left_hip_roll_joint"] == ("right_hip_roll_joint", 1.0)
     assert robot.randomization_torso_body_name == "torso_link"
     assert robot.foot_body_names == (
         "left_ankle_roll_link",
@@ -56,7 +63,7 @@ def test_asset_config_resolves_actuators_from_selected_robot() -> None:
     assert config.actuator_config == ActuatorConfig.for_asset("bello")
 
 
-def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
+def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
     robot = robot_definition("bello_mini")
 
     assert robot.source_urdf == Path("bello_mini/urdf/bello_mini.urdf")
@@ -67,6 +74,13 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
     assert robot.motor_model_catalog_path(robot_descriptions_root()).is_file()
     assert robot.root_body_name == "bello_mini_root"
     assert robot.default_imu_body_name == "imu_link"
+    assert robot.locomotion_command_frame_body_name == "imu_link"
+    mirror = {
+        item.joint_name: (item.counterpart_joint_name, item.sign)
+        for item in robot.locomotion_action_mirror
+    }
+    assert mirror["left_hip_pitch_joint"] == ("right_hip_pitch_joint", 1.0)
+    assert mirror["left_hip_roll_joint"] == ("right_hip_roll_joint", -1.0)
     assert robot.default_root_position == (0.0, 0.0, 0.8731232537850352)
     assert robot.foot_body_names == (
         "left_ankle_roll_link",
@@ -77,8 +91,16 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
         ("right_ankle_roll_link", (1.0, 0.0, 0.0)),
     )
     assert len(robot.actuators) == 28
-    assert sum(actuator.mode == "policy" for actuator in robot.actuators) == 13
-    assert sum(actuator.mode == "hold" for actuator in robot.actuators) == 15
+    assert sum(actuator.mode == "policy" for actuator in robot.actuators) == 14
+    assert sum(actuator.mode == "hold" for actuator in robot.actuators) == 14
+    assert (
+        next(
+            actuator
+            for actuator in robot.actuators
+            if actuator.joint_name == "waist_roll_joint"
+        ).mode
+        == "policy"
+    )
     assert not robot.coupled_actuator_groups
     assert tuple(item.link_name for item in robot.payload_attachments) == (
         "left_end_effector_sphere_link",
@@ -155,6 +177,16 @@ def test_bello_mini_robot_config_declares_reviewed_static_topology() -> None:
         robot,
         source_urdf,
     )
+
+
+def test_locomotion_action_mirror_must_cover_policy_joints_exactly() -> None:
+    robot = robot_definition("bello_mini")
+
+    with pytest.raises(ValueError, match="cover the policy joints exactly"):
+        replace(
+            robot,
+            locomotion_action_mirror=robot.locomotion_action_mirror[:-1],
+        )
 
 
 def test_bello_mini_motion_profile_is_explicitly_deferred() -> None:

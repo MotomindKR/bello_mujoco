@@ -31,7 +31,7 @@ from bello_mujoco.repository import repository_root
 from bello_mujoco.robot_tasks import motion_task_definition
 
 
-GMR_SOURCE_BODY_NAMES = motion_task_definition("full_body").gmr.source_body_names
+GMR_SOURCE_BODY_NAMES = motion_task_definition("bello").gmr.source_body_names
 
 
 def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwGrpcConfig:
@@ -257,9 +257,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     monkeypatch.setattr(rtmw, "LiveGmrReferenceSource", FakeSource)
 
     validation = object()
-    env = SimpleNamespace(
-        model=SimpleNamespace(robot=SimpleNamespace(asset="full_body"))
-    )
+    env = SimpleNamespace(model=SimpleNamespace(robot=SimpleNamespace(asset="bello")))
     adapter = SimpleNamespace(
         env=env,
         validate_upper_body_reference=validation,
@@ -268,7 +266,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         assert isinstance(result, FakeSource)
 
     assert calls["stream"] == (source_config, GMR_SOURCE_BODY_NAMES)
-    assert calls["identity_asset"] == "full_body"
+    assert calls["identity_asset"] == "bello"
     retargeter_call = calls["retargeter"]
     assert isinstance(retargeter_call, tuple)
     assert retargeter_call[0] is env

@@ -9,13 +9,14 @@ construction.
 This document describes the nested configuration. The checked-in YAML remains
 the source of maintained experiment overrides:
 
-- [Locomotion defaults](../configs/train/default.yaml)
+- [Locomotion base defaults](../configs/train/default.yaml)
+- [Shared production locomotion recipe](../configs/train/locomotion.yaml)
 - [Motion defaults](../configs/train_motion/default.yaml)
 - [TWIST defaults](../configs/train_twist/default.yaml)
 - [TWIST2 defaults](../configs/train_twist2/default.yaml)
 - [Smoke profile](../configs/profiles/train/smoke.yaml)
-- [Locomotion profile](../configs/profiles/train/locomotion.yaml)
-- [Hardware-locomotion profile](../configs/profiles/train/hardware_locomotion.yaml)
+- [Bello locomotion profile](../configs/profiles/train/bello_locomotion.yaml)
+- [Bello Mini locomotion profile](../configs/profiles/train/bello_mini_locomotion.yaml)
 - [Motion profile](../configs/profiles/train/motion.yaml)
 - [TWIST teacher profile](../configs/profiles/train/twist_teacher.yaml)
 - [TWIST student profile](../configs/profiles/train/twist_student.yaml)
@@ -30,11 +31,14 @@ keys. The narrow fields documented under
 
 Do not add a second recipe in a script or command wrapper. Change:
 
-- `configs/train/default.yaml` for shared locomotion contracts;
+- `configs/train/default.yaml` for locomotion base contracts;
+- `configs/train/locomotion.yaml` for the production recipe shared by both
+  locomotion robots;
 - `configs/train_motion/default.yaml` for shared motion contracts;
 - `configs/train_twist/default.yaml` for shared TWIST contracts;
 - `configs/train_twist2/default.yaml` for the one-stage TWIST2 contract;
-- `configs/profiles/train/*.yaml` for maintained experiment numerics;
+- `configs/profiles/train/*.yaml` for robot selection, dimensioned locomotion
+  settings, and other maintained experiment numerics;
 - Python dataclasses only when the configuration schema or validation changes.
 
 ## PPO: `config`
@@ -119,21 +123,21 @@ The asset section selects a deterministic prepared morphology.
 
 | Field | Locomotion baseline | Meaning |
 | --- | --- | --- |
-| `asset` | `bello` | Selects a registered robot contract. `bello` is the maintained training asset; `bello_mini` currently supports static preparation/model loading but has no maintained motion, GMR, emulator, hardware, or training profile. |
+| `asset` | `bello` | Selects a registered robot contract. `bello` and `bello_mini` have maintained locomotion profiles; Mini motion, GMR, emulator, and hardware remain calibration-gated. |
 | `output_root` | `null` | Optional prepared-asset destination for standalone preparation. Training requires `null` so an exact source revision regenerates through the canonical content-addressed cache. |
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
 | `visual_mesh_face_budget` | `200000` | Per-mesh viewer simplification budget. |
-| `target_total_mass_kg` | `null` | Optional experimental uniform rescaling. Maintained policies use the canonical 55.068 kg physical inertials without rescaling. |
+| `target_total_mass_kg` | `null` | Optional experimental uniform rescaling. Maintained locomotion uses each asset's canonical inertials without rescaling: about 55.07 kg for Bello and 43.50 kg for Bello Mini. |
 | `end_effector_payload_mass_kg` | `0` | Equal payload mass attached at each sphere-hand center. This is a per-hand mass; it is added after any robot-mass rescaling and becomes part of the asset/checkpoint fingerprint. |
 | `neighbor_exclusion_depth` | `2` | Exclude nearby kinematic neighbors from generated self-collision pairs. |
 | `enforce_policy_effort_limits` | `true` | Enforce the same physical actuator-force saturation used by hardware. Locomotion separately reconstructs the unclipped servo demand for the over-peak reward. |
 | `imu_config` | disabled | Optional generated IMU site/sensors. Its `enabled` field controls generation and `body_name` selects the instrumented body. Training observations derive simulated IMU features without requiring this native sensor block. |
 | `ankle_differential_config.motor_gain_scale` | `0.5` | Gain multiplier applied to each differential-ankle motor. |
 | `ankle_differential_config.motor_effort_limit_scale` | `1` | Motor effort-limit multiplier. |
-| `joint_availability.disabled_joint_names` | `[]` | Explicit configured actuator joints to fix at asset-generation time. Unknown and duplicate names are rejected. Waist roll/pitch and neck/head joints are already fixed in the canonical URDF. |
+| `joint_availability.disabled_joint_names` | `[]` | Explicit configured actuator joints to fix at asset-generation time. Unknown and duplicate names are rejected. Bello's waist roll/pitch and neck/head joints are already fixed in its URDF; Bello Mini's waist roll remains movable and policy-controlled. |
 | `actuator_mode` | `null` | Optional mode applied to every robot actuator before explicit actuator validation. Motion/TWIST profiles set `policy`; locomotion uses the robot profile's policy/hold partition. |
-| `actuator_config` | canonical Bello map | Its `joints` mapping assigns a `JointActuatorConfig` to each joint. |
+| `actuator_config` | selected robot map | Its `joints` mapping assigns a `JointActuatorConfig` to each joint. Bello Mini locomotion exposes waist yaw, waist roll, and its 12 leg joints to the policy. |
 
 The `ankle_differential_config` fields are `motor_gain_scale` and
 `motor_effort_limit_scale`. `joint_availability.disabled_joint_names` is decoded
@@ -150,14 +154,15 @@ a checkpoint runs from its exact clean Git revision, so its source descriptions
 and asset-generation implementation come from that revision. Training rejects
 a custom `output_root`.
 
-Every maintained training YAML now selects `asset_config.asset` explicitly.
+Every public maintained experiment resolves `asset_config.asset` explicitly.
 Motion, TWIST, and TWIST2 also set `actuator_mode: policy`; the selected robot
 profile still supplies joint order, neutral positions, gains, limits, and effort
-limits. Their fixed tracking contract is the canonical box-collision asset with no
-actuator joints disabled. Waist roll/pitch and neck/head joints are fixed in the
-source URDF, and all 25 remaining coordinates are policy-controlled. A symmetric
-sphere-hand payload may be added without changing the joint or observation
-contract. Initialization rejects other deviations from this contract.
+limits. Those maintained profiles currently select Bello. Their fixed tracking
+contract is the canonical box-collision asset with no actuator joints disabled;
+Bello's waist roll/pitch and neck/head joints are fixed in its source URDF, and
+all 25 remaining coordinates are policy-controlled. A symmetric sphere-hand
+payload may be added without changing the joint or observation contract.
+Initialization rejects other deviations from this contract.
 
 ## Locomotion environment: `env_config`
 
@@ -254,13 +259,14 @@ Scale and noise fields are `base_lin_vel`, `base_lin_acc`, `base_ang_vel`,
 noise values are ordered uniform ranges applied before stacking.
 
 With commands enabled, the actor and critic both receive a three-value gait
-component: sine phase, cosine phase, and a gait-active bit. The default 0.9 Hz
-per-leg clock has a 60% stance fraction and a half-cycle offset between the two
-feet. Standing resets its phase and makes the complete component exactly zero.
-`frequency_hz` is the complete cycle frequency of each leg, so the default
-repeats each leg about every 1.11 seconds and offsets nominal left/right
-footfalls by about 0.56 seconds: 1.8 total footfalls per second, or 108 steps
-per minute. `stance_fraction` must be in `[0.5, 1.0)`.
+component: sine phase, cosine phase, and a gait-active bit. The maintained
+per-leg frequency is 0.90 Hz for Bello and a rounded 0.89 Hz for Bello Mini;
+both use a 60% stance fraction and a half-cycle offset between the feet. A
+standing request during gait preserves phase until the active swing reaches the
+next double-support boundary. The effective command and complete gait component
+become zero only at that boundary. An environment initialized in standing uses
+zero immediately. `frequency_hz` is the complete cycle frequency of each leg,
+and `stance_fraction` must be in `[0.5, 1.0)`.
 
 Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
@@ -285,8 +291,8 @@ reaches each world's complete sampled offset, retaining the full configured
 plus-or-minus 10 cm per-axis envelope for the final 45,312 updates.
 
 The `observation_latency` section contains `enabled` and `delay_steps`, an
-inclusive integer lower/upper range. The maintained locomotion and
-hardware-locomotion profiles sample a fixed delay of 0, 1, or 2 policy steps
+inclusive integer lower/upper range. The maintained Bello and Bello Mini
+locomotion profiles sample a fixed delay of 0, 1, or 2 policy steps
 per episode, corresponding to 0--40 ms at 50 Hz. The delayed terms are IMU
 linear acceleration, angular velocity, projected gravity, and joint
 position/velocity. Command and previous action remain current, and the
@@ -313,7 +319,7 @@ filter to training, native evaluation, or the hardware runner.
 | `minimum_moving_linear_speed` | `0.2` | A selected moving linear axis is sampled outside this magnitude. |
 | `minimum_moving_yaw_speed` | `0.2` | A selected moving yaw axis is sampled outside this magnitude. |
 | `resample_seconds` | `10` | Interval between command samples. |
-| `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling to train standing-to-moving and moving-to-standing transitions. |
+| `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling. Moving-to-standing requests finish the current swing before changing effective mode at double support. |
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
@@ -323,8 +329,12 @@ preserve each environment's standing or moving mode so short standing episodes
 cannot reduce standing's share of rollout frames. When
 `standing_transitions_enabled` is true, periodic command resampling independently
 reassigns the exact standing cohort, exposing both standing-to-moving and
-moving-to-standing transitions. Training telemetry reports mode-specific mean
-reward, completed-episode return and length, and completed-episode count under
+moving-to-standing transitions. A zero request during active gait is pending
+until the next phase-defined double-support boundary: the moving command, gait
+phase, and moving rewards remain active while the current step finishes, and
+standing rewards begin only after the transition. Training telemetry reports
+mode-specific mean reward, completed-episode return and length, and
+completed-episode count under
 the `command/standing_*`, `command/moving_*`, and
 `episode/{standing,moving}_*` names.
 
@@ -339,7 +349,9 @@ yaw velocity; standing-command tolerances remain `0.25 m/s` and `0.20 rad/s`.
 
 Every term is computed independently and multiplied by its configured weight.
 The `weights` section is listed below; a zero weight disables metadata and
-computation where possible.
+computation where possible. In this table, "standing command" means the
+effective standing mode. A raw zero request made during gait does not activate
+standing rewards until the current swing finishes at double support.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
@@ -360,7 +372,7 @@ computation where possible.
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
-| `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize bounded left/right foot heading error outside the configured deadband relative to pelvis forward. The weighted cost is capped below `0.01` per control step and is inactive during recovery, termination, and moving commands. |
+| `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize bounded left/right foot heading error outside the configured deadband relative to the robot command-frame forward axis. The weighted cost is capped below `0.01` per control step and is inactive during recovery, termination, and moving commands. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `stand_upright` | `-8.0` | At standing command, apply an additional gravity-vector tilt penalty so a deeply leaned pose cannot retain most of the standing reward. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation during standing or when a lateral command is active. |
@@ -382,8 +394,12 @@ without changing the bounded touchdown formulation.
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and
 `base_height`; `track_lin_vel_xy_frame` optionally selects a separate velocity
-frame. The maintained locomotion profile uses pelvis velocity/yaw and height,
-with torso angular velocity and orientation.
+frame. When that override is `null`, planar tracking uses the selected robot
+contract's canonical locomotion command frame. Both maintained profiles use
+pelvis velocity/yaw and height, with torso angular velocity and orientation.
+Bello resolves planar velocity in the pelvis frame. Bello Mini resolves it in
+`imu_link`, which turns the Mini's physical pelvis `+X` forward direction into
+the same public `+Y`-forward command convention used by Bello.
 
 Supporting fields are:
 
@@ -417,8 +433,9 @@ actions or the commanded yaw rate.
 | `timeout` | `enabled`; mark `max_episode_steps` as truncation rather than physical failure. |
 | `nonfinite` | `enabled`; terminate finite-state or solver-reward violations. |
 
-The maintained locomotion profile uses a 0.55 m pelvis minimum and a 0.80 rad
-torso orientation limit.
+The maintained Bello profile uses a 0.55 m pelvis minimum; Bello Mini uses the
+rounded 0.56 m minimum. Both use a 0.80 rad torso orientation limit. Their base
+height reward targets are respectively 0.86 m and 0.88 m.
 
 ## Motion selection and environment
 
@@ -630,8 +647,8 @@ TWIST uses 32 contacts per environment and logs
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `locomotion` | 2,048-environment clean-baseline gait training with full planar/yaw commands, standing/moving transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
-| `hardware_locomotion` | Locomotion plus longer `gamma`/GAE credit assignment and hardware-specific naming. |
+| `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
+| `bello_mini_locomotion` | The same configured production PPO, reward, command, randomization, and observation recipe for Bello Mini's 14-action locomotion contract, with the Mini asset and its canonical command frame, rounded 0.88 m height target, 0.56 m termination floor, 0.89 Hz gait, and output names. Because the source currently has an all-zero nominal pose, the profile explicitly disables its otherwise-inert multiplicative joint-position reset component; the remaining randomization is active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |
@@ -642,8 +659,8 @@ Headline resolved PPO values are:
 | Profile | Timesteps | Envs × steps | Epochs × minibatches | Learning rate | Gamma / GAE | Policy |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | `smoke` | 4 | 2 × 2 | 1 × 1 | 0.001 | 0.99 / 0.95 | 256-256 tanh |
-| `locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.97 / 0.95 | 512-256-128 swish |
-| `hardware_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
+| `bello_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
+| `bello_mini_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |

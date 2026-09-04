@@ -11,7 +11,8 @@ The robot contract owns:
 - source URDF and mesh directories, plus generated output paths;
 - the platform hardware description and motor-model catalog, when available;
 - generated floating-base body and joint names and the default root pose;
-- the default IMU body, ordered foot bodies, and foot-forward axes;
+- the default IMU body, locomotion command frame, explicit sagittal action
+  mirror, ordered foot bodies, and foot-forward axes;
 - the complete actuator joint order, policy/hold partition, neutral positions,
   soft limits, gains, and effort limits;
 - base, torso, and central bodies used by model randomization, plus optional
@@ -24,11 +25,11 @@ canonical default and defines which joints belong to the morphology.
 `ActuatorConfig.for_asset(...)` is the explicit way to materialize those defaults;
 standalone actuator configs do not silently select Bello.
 
-Training selects the contract through `asset_config.asset`. Every maintained base
-training document makes that selection explicitly; experiment files under
-`configs/profiles/train/` only override task-specific values. Robot identifiers
-must be globally descriptive; the production robot is `bello`, paired with
-`bello_mini` for the smaller morphology.
+Training selects the contract through `asset_config.asset`. The maintained
+`bello_locomotion` and `bello_mini_locomotion` experiment profiles make that
+selection explicitly after inheriting the shared locomotion recipe. Robot
+identifiers must be globally descriptive; the production robot is `bello`,
+paired with `bello_mini` for the smaller morphology.
 
 Motion-capable robots also have a strict `<asset>_motion.yaml` contract beside the
 static robot file. It owns legacy import joint schemas, fixed joints, tracked-body
@@ -44,16 +45,30 @@ contract, and training validates it against the robot's motion profile.
 
 - `bello` is the production Bello morphology with maintained motion,
   differential-ankle, emulator, and physical-hardware contracts.
-- `bello_mini` is the reviewed 43.503025 kg Bello Mini morphology. Its all-zero
-  joint pose uses a root height of 0.8731232537850352 m so both sole surfaces
-  are exactly at `z=0`. The static contract exposes all 28 movable joints and
-  keeps waist roll and both seven-DoF arms in hold mode by default. Its logical
+- `bello_mini` is the reviewed 43.50 kg Bello Mini morphology. Its all-zero
+  joint pose uses a root height of about 0.873 m so both sole surfaces are at
+  `z=0`. The static contract exposes all 28 movable joints: waist yaw, waist
+  roll, and the 12 leg joints are policy-controlled, while both seven-DoF arms
+  are held. Its logical
   ankle pitch/roll joints are simulated directly because the physical
   differential coefficients have not been calibrated. Its massless fixed
   `imu_link` is 50 mm below the midpoint between the reviewed left/right
-  hip-pitch joint origins (`[-0.01, 0, -0.2300000011]` m in pelvis coordinates).
-  It is yawed `-pi/2` from the Mini pelvis so its +X-right, +Y-forward, +Z-up
-  axes reproduce original Bello's pelvis/IMU-axis convention.
+  hip-pitch joint origins (`[-0.01, 0, -0.23]` m in pelvis coordinates).
+  Bello is physically forward along pelvis `+Y`; Bello Mini is physically
+  forward along pelvis `+X`. The Mini locomotion profile therefore measures
+  planar tracking in the yaw-aligned `imu_link` frame, preserving the public
+  command convention of `+X` right and `+Y` forward for both robots. Each
+  robot's configured action mirror and foot-forward axes likewise encode its
+  physical geometry; in particular, Mini hip pitch keeps sign across sides
+  while Mini hip roll changes sign.
+
+  A reviewed nonzero locomotion pose and narrower policy soft limits are not yet
+  available from the source description. Mini therefore still starts from its
+  all-zero pose; its experiment explicitly disables the otherwise-inert
+  multiplicative joint-position reset range, and the knees begin at their hard
+  lower limit. Other model, observation, velocity, terrain, and push
+  randomization remains active. This is a tuning limitation for the first
+  locomotion run, not a hidden fallback.
 
   Joint travel ranges come from the designer's left-side nominal mechanical
   ranges. User visual review reversed the Mini URDF signs for hip pitch, hip
@@ -72,7 +87,8 @@ live RobStride command directions, encoder zeros, and ankle coefficient matrices
 remain null until bench calibration. Consequently, the robot contract has
 `hardware_description: null`; hardware and emulator entrypoints fail explicitly
 instead of borrowing the production Bello topology. A Bello Mini motion/GMR
-profile is also intentionally absent until it is tuned.
+profile is also intentionally absent until it is tuned. These gates do not
+prevent simulation locomotion training with `bello_mini_locomotion`.
 
 ## Adding a humanoid
 

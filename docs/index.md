@@ -43,17 +43,19 @@ The supported prepared assets are `bello` and `bello_mini`. Their canonical
 URDFs are respectively
 `deps/bello-stack/descriptions/bello/urdf/bello.urdf` and
 `deps/bello-stack/descriptions/bello_mini/urdf/bello_mini.urdf`; both reference
-meshes stored in the same pinned submodule. The `bello` asset retains its
-motion and hardware profiles. `bello_mini` currently supports strict robot
-contract loading and asset preparation only; its GMR/motion and deployable
-hardware profiles remain deliberately absent until tuning and bench calibration.
+meshes stored in the same pinned submodule. Both assets have maintained
+locomotion-training profiles. The `bello` asset also retains its motion and
+hardware profiles; Bello Mini GMR/motion, emulator, and deployable-hardware
+profiles remain deliberately absent until tuning and bench calibration.
 The same gitlink pins the RobStride model catalog and Python hardware client
 used by source-checkout workflows.
 
 Each asset identifier resolves one packaged contract under
 `src/bello_mujoco/robots/`. The contract declares source, generated, and hardware paths,
-floating-base and IMU bodies, ordered feet and forward axes, the actuator joint
-partition and defaults, payload attachment links, randomization bodies, and
+floating-base and IMU bodies, locomotion command frame, sagittal action mirror,
+ordered feet and forward axes, the actuator joint partition and defaults,
+payload attachment links,
+randomization bodies, and
 coupled actuator coordinates. These files are strictly decoded internal topology;
 they are not Hydra override surfaces.
 
@@ -70,9 +72,12 @@ policy-contract reconstruction without stepping simulated dynamics. Host-side
 Python handles setup, assets, logging, checkpoints, and services; rollout and
 reward math remains JAX compatible.
 
-The public configuration is profile-oriented. Internal topology, link names,
-coordinate partitions, numerical guardrails, and safety limits are validated
-contracts rather than user-selectable Hydra branches.
+The public configuration is profile-oriented. Locomotion is selected with the
+robot-specific `bello_locomotion` or `bello_mini_locomotion` experiment; runtime
+evaluation and deployment continue to use the generic `task=locomotion`
+interface and recover the robot contract from checkpoint metadata. Internal
+topology, link names, coordinate partitions, numerical guardrails, and safety
+limits are validated contracts rather than user-selectable Hydra branches.
 
 Generated paths include `.venv/`, `.uv-python/`, `.warp-cache/`, `.wandb/`,
 `.vast/`, `assets/generated/`, `artifacts/`, `outputs/`, and `checkpoints/`.

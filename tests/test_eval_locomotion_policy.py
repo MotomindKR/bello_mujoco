@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,7 +7,7 @@ import numpy as np
 import pytest
 
 from bello_mujoco.assets_pipeline.prepare import PreparedAsset
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
 from bello_mujoco.evaluation import locomotion as evaluation
 from bello_mujoco.evaluation import render
 from bello_mujoco.gamepad import GamepadInput
@@ -79,6 +80,7 @@ def test_gamepad_command_is_used_by_same_step_policy_and_log(
     monkeypatch.setattr(evaluation, "RerunEvaluationLogger", Logger)
     monkeypatch.setattr(evaluation, "infer_policy_action", infer_policy_action)
     monkeypatch.setattr(evaluation.eqx, "filter_jit", lambda function: function)
+    monkeypatch.setattr(evaluation, "mujoco_eval_info", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(evaluation.time, "sleep", lambda _seconds: None)
 
     evaluation.run_rerun_evaluation(
@@ -102,6 +104,85 @@ def test_gamepad_command_is_used_by_same_step_policy_and_log(
     )
     assert logged_steps[1]["command"] == pytest.approx(commands[1])
     assert logged_steps[1]["action"][0] == pytest.approx(inferred_commands[1][0])
+
+
+def test_gamepad_standing_waits_for_double_support_and_logs_effective_command(
+    monkeypatch,
+    bello_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = replace(
+        env,
+        config=replace(env.config, gait=GaitConfig(frequency_hz=12.5)),
+        command_config=replace(
+            env.command_config,
+            standing_transitions_enabled=True,
+        ),
+    )
+    moving = np.asarray((0.4, 0.0, 0.0), dtype=np.float32)
+    commands = [moving, np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)]
+    inferred_commands = []
+    logged_commands = []
+    command_indices = component_slice(env, "command")
+
+    class Gamepad:
+        def __init__(self, *_args):
+            self.poll_count = 0
+
+        def poll(self):
+            command = commands[self.poll_count]
+            self.poll_count += 1
+            return GamepadInput(command, connected=True)
+
+        def close(self):
+            pass
+
+    class Logger:
+        def __init__(self, *_args):
+            pass
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+        def log_event(self, _message):
+            pass
+
+        def log_step(self, **values):
+            logged_commands.append(values["command"].copy())
+
+    def infer_policy_action(_policy, observation, *_args, **_kwargs):
+        inferred_commands.append(np.asarray(observation[command_indices]))
+        action = jnp.zeros(env.action_size, dtype=jnp.float32)
+        return PolicyInferenceStep(action, action, action)
+
+    monkeypatch.setattr(evaluation, "GamepadCommandSource", Gamepad)
+    monkeypatch.setattr(evaluation, "RerunEvaluationLogger", Logger)
+    monkeypatch.setattr(evaluation, "infer_policy_action", infer_policy_action)
+    monkeypatch.setattr(evaluation.eqx, "filter_jit", lambda function: function)
+    monkeypatch.setattr(evaluation, "mujoco_eval_info", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(evaluation.time, "sleep", lambda _seconds: None)
+
+    evaluation.run_rerun_evaluation(
+        env,
+        object(),
+        normalization=init_observation_norm_state(env.observation_size),
+        ppo_config=PPOConfig(),
+        urdf_path=Path("unused.urdf"),
+        command=(0.0, 0.0, 0.0),
+        gamepad_config=evaluation.GamepadConfig(enabled=True),
+        steps=3,
+        stop_on_done=False,
+        obs_stack_size=1,
+        stochastic_actions=False,
+        action_seed=0,
+    )
+
+    expected = np.asarray((moving, moving, np.zeros(3)), dtype=np.float32)
+    assert np.asarray(inferred_commands) == pytest.approx(expected)
+    assert np.asarray(logged_commands) == pytest.approx(expected)
 
 
 def test_rollout_action_applies_observation_normalization(monkeypatch) -> None:

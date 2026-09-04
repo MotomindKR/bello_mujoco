@@ -1,4 +1,4 @@
-experiment: hardware_locomotion
+experiment: bello_locomotion
 motion_path: null
 dataset_path: null
 teacher_checkpoint_path: null

@@ -109,15 +109,7 @@ class TwistDataCommandConfig:
 
 @dataclass(frozen=True)
 class VastTrainCommandConfig:
-    experiment: Literal[
-        "smoke",
-        "locomotion",
-        "hardware_locomotion",
-        "motion",
-        "twist_teacher",
-        "twist_student",
-        "twist2",
-    ]
+    experiment: ExperimentName
     motion_path: Path | None
     dataset_path: Path | None
     teacher_checkpoint_path: Path | None

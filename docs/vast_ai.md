@@ -26,6 +26,11 @@ least 64 GB CPU RAM, 80 GB disk, 0.98 reliability, CUDA 13, verification,
 rentability, and direct SSH. `max_price` is a required upper bound on total
 hourly price.
 
+The default training experiment is `bello_locomotion`. Select
+`experiment=bello_mini_locomotion` to train the Mini. Both resolve the shared
+production locomotion recipe plus one robot-specific profile; the Mini profile
+does not imply emulator or physical-hardware support.
+
 ## Lifecycle
 
 Non-dry execution:

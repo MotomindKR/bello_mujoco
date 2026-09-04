@@ -43,7 +43,7 @@ MAX_END_FREQUENCY_RATE_FRACTION = 0.4
 @dataclass(frozen=True)
 class JointChirpConfig:
     joint: str
-    asset: AssetName = "full_body"
+    asset: AssetName = "bello"
     rate_hz: float = 50.0
     amplitude_radians: float = 0.02
     start_frequency_hz: float = 0.5
@@ -792,7 +792,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--asset",
         choices=get_args(AssetName),
-        default="full_body",
+        default="bello",
         help="robot definition used for joint and coupling contracts",
     )
     parser.add_argument(

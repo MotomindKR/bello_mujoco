@@ -132,6 +132,19 @@ class JointActuatorDefinition:
 
 
 @dataclass(frozen=True)
+class JointMirrorDefinition:
+    joint_name: str
+    counterpart_joint_name: str
+    sign: float
+
+    def __post_init__(self) -> None:
+        if not self.joint_name or not self.counterpart_joint_name:
+            raise ValueError("joint mirror names must not be empty")
+        if self.sign not in {-1.0, 1.0}:
+            raise ValueError("joint mirror sign must be -1 or 1")
+
+
+@dataclass(frozen=True)
 class RobotDefinition:
     asset: AssetName
     source_urdf: Path
@@ -145,6 +158,8 @@ class RobotDefinition:
     default_root_position: tuple[float, float, float]
     default_root_quaternion: tuple[float, float, float, float]
     default_imu_body_name: str
+    locomotion_command_frame_body_name: str
+    locomotion_action_mirror: tuple[JointMirrorDefinition, ...]
     foot_body_names: tuple[str, str]
     foot_forward_axes: tuple[
         tuple[str, tuple[float, float, float]],
@@ -177,6 +192,7 @@ class RobotDefinition:
             self.root_body_name,
             self.root_joint_name,
             self.default_imu_body_name,
+            self.locomotion_command_frame_body_name,
             self.randomization_base_body_name,
             self.randomization_torso_body_name,
         )
@@ -238,6 +254,45 @@ class RobotDefinition:
             actuator_joint_names
         ):
             raise ValueError("actuator joint names must be nonempty and unique")
+        policy_joint_names = {
+            actuator.joint_name
+            for actuator in self.actuators
+            if actuator.mode == "policy"
+        }
+        mirror_by_name = {
+            mirror.joint_name: mirror for mirror in self.locomotion_action_mirror
+        }
+        if len(mirror_by_name) != len(self.locomotion_action_mirror):
+            raise ValueError("locomotion action mirror joint names must be unique")
+        if set(mirror_by_name) != policy_joint_names:
+            missing = sorted(policy_joint_names - set(mirror_by_name))
+            unknown = sorted(set(mirror_by_name) - policy_joint_names)
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unknown:
+                details.append("non-policy " + ", ".join(unknown))
+            raise ValueError(
+                "locomotion action mirror must cover the policy joints exactly: "
+                + "; ".join(details)
+            )
+        for joint_name, mirror in mirror_by_name.items():
+            counterpart = mirror_by_name.get(mirror.counterpart_joint_name)
+            if counterpart is None:
+                raise ValueError(
+                    "locomotion action mirror references a missing counterpart: "
+                    f"{joint_name!r} -> {mirror.counterpart_joint_name!r}"
+                )
+            if counterpart.counterpart_joint_name != joint_name:
+                raise ValueError(
+                    "locomotion action mirror counterparts must be involutive: "
+                    f"{joint_name!r} -> {mirror.counterpart_joint_name!r}"
+                )
+            if mirror.sign * counterpart.sign != 1.0:
+                raise ValueError(
+                    "locomotion action mirror signs must be involutive: "
+                    f"{joint_name!r} and {mirror.counterpart_joint_name!r}"
+                )
         payload_link_names = tuple(
             attachment.link_name for attachment in self.payload_attachments
         )
@@ -349,6 +404,7 @@ def validate_robot_source_urdf(
     }
     required_link_names = {
         definition.default_imu_body_name,
+        definition.locomotion_command_frame_body_name,
         *definition.foot_body_names,
         definition.randomization_base_body_name,
         definition.randomization_torso_body_name,
@@ -394,6 +450,8 @@ _ROBOT_CONFIG_FIELDS = frozenset(
         "default_root_position",
         "default_root_quaternion",
         "default_imu_body_name",
+        "locomotion_command_frame_body_name",
+        "locomotion_action_mirror",
         "foot_body_names",
         "foot_forward_axes",
         "randomization_base_body_name",
@@ -453,6 +511,13 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
         ),
         default_imu_body_name=_string(
             data["default_imu_body_name"], "default_imu_body_name"
+        ),
+        locomotion_command_frame_body_name=_string(
+            data["locomotion_command_frame_body_name"],
+            "locomotion_command_frame_body_name",
+        ),
+        locomotion_action_mirror=_locomotion_action_mirror(
+            data["locomotion_action_mirror"]
         ),
         foot_body_names=_string_tuple(data["foot_body_names"], 2, "foot_body_names"),
         foot_forward_axes=_foot_forward_axes(data["foot_forward_axes"]),
@@ -571,6 +636,32 @@ def _foot_forward_axes(
             (
                 _string(data["body_name"], f"{path}.body_name"),
                 _float_tuple(data["axis"], 3, f"{path}.axis"),
+            )
+        )
+    return tuple(result)
+
+
+def _locomotion_action_mirror(value: Any) -> tuple[JointMirrorDefinition, ...]:
+    items = _mapping(value, path="locomotion_action_mirror")
+    result = []
+    for joint_name, item in items.items():
+        path = f"locomotion_action_mirror.{joint_name}"
+        data = _mapping(item, path=path)
+        _require_exact_fields(
+            data,
+            frozenset({"counterpart", "sign"}),
+            path=path,
+        )
+        sign = data["sign"]
+        if isinstance(sign, bool) or not isinstance(sign, (int, float)):
+            raise TypeError(f"{path}.sign must be -1 or 1")
+        result.append(
+            JointMirrorDefinition(
+                joint_name=_string(joint_name, f"{path}.joint_name"),
+                counterpart_joint_name=_string(
+                    data["counterpart"], f"{path}.counterpart"
+                ),
+                sign=float(sign),
             )
         )
     return tuple(result)

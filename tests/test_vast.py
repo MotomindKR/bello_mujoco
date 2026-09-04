@@ -82,7 +82,7 @@ class LifecycleApi:
 
 
 def valid_config(**kwargs) -> VastTrainConfig:
-    kwargs.setdefault("experiment", "locomotion")
+    kwargs.setdefault("experiment", "bello_locomotion")
     return VastTrainConfig(
         max_price=1.25,
         branch="main",
@@ -127,7 +127,7 @@ def selection() -> GitSelection:
     return GitSelection(
         branch="main",
         commit="a" * 40,
-        config_path=PurePosixPath("configs/profiles/train/locomotion.yaml"),
+        config_path=PurePosixPath("configs/profiles/train/bello_locomotion.yaml"),
         repo_url="https://github.com/MotomindKR/bello_mujoco.git",
     )
 
@@ -199,11 +199,17 @@ def test_validate_config_requires_finite_positive_price(max_price) -> None:
         validate_config(VastTrainConfig(max_price=max_price, branch="main"))
 
 
-def test_vast_experiment_rejects_unknown_values() -> None:
+@pytest.mark.parametrize(
+    "experiment", ("unsupported", "locomotion", "hardware_locomotion")
+)
+def test_vast_experiment_rejects_unknown_and_retired_values(experiment: str) -> None:
     with pytest.raises(ValueError, match="--experiment"):
-        validate_config(
-            valid_config(experiment="unsupported")  # type: ignore[arg-type]
-        )
+        validate_config(valid_config(experiment=experiment))  # type: ignore[arg-type]
+
+
+def test_vast_defaults_to_bello_and_accepts_mini_locomotion() -> None:
+    assert VastTrainConfig().experiment == "bello_locomotion"
+    validate_config(valid_config(experiment="bello_mini_locomotion"))
 
 
 def test_twist_vast_config_requires_explicit_stage_inputs(tmp_path: Path) -> None:

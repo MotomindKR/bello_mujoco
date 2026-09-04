@@ -1,0 +1,26 @@
+# Rounded from the canonical pelvis-to-sole height ratio (0.873 m / 0.853 m).
+asset_config:
+  asset: bello_mini
+env_config:
+  gait:
+    frequency_hz: 0.89
+  spawn:
+    # Mini's reviewed nominal targets are all zero, so scaling them is inert.
+    joint_pos_scale_range: [1.0, 1.0]
+reward_config:
+  limits_pose:
+    base_height_target: 0.88
+done_config:
+  base_height:
+    min_height: 0.56
+checkpoint_config:
+  name: bello_mini_locomotion_seed0
+  wandb_artifact_name: bello_mini_locomotion_seed0
+wandb_config:
+  group: bello-mini-locomotion
+  run_name: bello_mini_locomotion_seed0
+  tags: [locomotion, bello-mini, direct-ankle, seeded-plane-slope]
+video_config:
+  filename_prefix: bello_mini_locomotion
+  command: [0.0, 0.5, 0.0]
+  steps: 500

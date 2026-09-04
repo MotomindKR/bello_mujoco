@@ -9,7 +9,8 @@ config:
   adaptive_kl_statistic: mean
   target_kl: 0.03
   max_learning_rate: 0.0001
-  gamma: 0.97
+  gamma: 0.995
+  gae_lambda: 0.98
   ent_coef: 0.005
   symmetry_loss_coef: 0.0
   policy:
@@ -73,10 +74,9 @@ reward_config:
     ankle_action_weight: 1.0
     waist_action_weight: 1.0
   limits_pose:
-    hip_lateral_command_index: 1
+    hip_lateral_command_index: 0
   links:
     track_lin_vel_xy: pelvis_link
-    track_lin_vel_xy_frame: pelvis_link
     track_ang_vel_z: pelvis_link
     ang_vel_xy: torso_link
     flat_orientation: torso_link
@@ -90,18 +90,12 @@ done_config:
     link: torso_link
 checkpoint_config:
   enabled: true
-  name: locomotion_seed0
   every_updates: 512
-  wandb_artifact_name: locomotion_seed0
 wandb_config:
   enabled: true
-  group: locomotion
-  run_name: locomotion_seed0
-  tags: [locomotion, physical-ankle, seeded-plane-slope]
 video_config:
   enabled: true
   every_updates: 512
-  filename_prefix: locomotion
   command: [0.0, 0.5, 0.0]
   steps: 1000
 warp:

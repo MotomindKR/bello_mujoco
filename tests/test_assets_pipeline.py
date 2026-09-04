@@ -99,7 +99,7 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
         for index in range(model.nu)
     }
     assert "waist_yaw_joint_pos" in actuator_names
-    assert "waist_roll_joint_hold" in actuator_names
+    assert "waist_roll_joint_pos" in actuator_names
     assert "left_wrist_roll_joint_hold" in actuator_names
     assert "right_wrist_roll_joint_hold" in actuator_names
 

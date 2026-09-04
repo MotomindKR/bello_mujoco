@@ -60,6 +60,7 @@ class BelloState:
     last_foot_contact: jax.Array
     command: jax.Array
     gait_phase: jax.Array
+    standing_transition_pending: jax.Array
     step_count: jax.Array
     episode_return: jax.Array
     episode_track_lin_vel_xy: jax.Array
@@ -230,6 +231,68 @@ def desired_gait_foot_contact(
     offsets = jnp.asarray((0.0, 0.5), dtype=jnp.float32)
     foot_phase = jnp.mod(phase[..., None] + offsets, 1.0)
     return (foot_phase < gait_config.stance_fraction).astype(jnp.float32)
+
+
+def resolve_gait_command_transition(
+    command: jax.Array,
+    requested_command: jax.Array,
+    previous_phase: jax.Array,
+    next_phase: jax.Array,
+    standing_transition_pending: jax.Array,
+    command_config: CommandConfig,
+    gait_config: GaitConfig,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Resolve a command request without interrupting an active gait step.
+
+    Standing requests remain pending through single support and become effective
+    at the next phase-defined double-support boundary. Moving requests replace
+    the effective command immediately.
+    """
+
+    command = jnp.asarray(command, dtype=jnp.float32)
+    requested_command = jnp.asarray(requested_command, dtype=jnp.float32)
+    previous_phase = jnp.asarray(previous_phase, dtype=jnp.float32)
+    next_phase = jnp.asarray(next_phase, dtype=jnp.float32)
+    pending = jnp.asarray(standing_transition_pending, dtype=bool)
+    requested_standing = command_is_standing(requested_command, command_config)
+    command_standing = command_is_standing(command, command_config)
+
+    if not command_config.standing_transitions_enabled:
+        reset_phase = requested_standing | command_standing
+        return (
+            jnp.where(
+                requested_standing[..., None],
+                jnp.zeros_like(requested_command),
+                requested_command,
+            ),
+            jnp.where(reset_phase, 0.0, next_phase),
+            jnp.zeros_like(pending),
+        )
+
+    desired_contact = desired_gait_foot_contact(next_phase, gait_config).astype(bool)
+    in_double_support = jnp.all(desired_contact, axis=-1)
+    crossed_half_cycle = (previous_phase < 0.5) & (next_phase >= 0.5)
+    crossed_cycle = next_phase < previous_phase
+    reached_double_support = in_double_support | (
+        pending & (crossed_half_cycle | crossed_cycle)
+    )
+    finish_standing_transition = (
+        requested_standing & ~command_standing & reached_double_support
+    )
+    keep_moving_until_boundary = (
+        requested_standing & ~command_standing & ~finish_standing_transition
+    )
+    effective_command = jnp.where(
+        keep_moving_until_boundary[..., None], command, requested_command
+    )
+    effective_command = jnp.where(
+        requested_standing[..., None] & ~keep_moving_until_boundary[..., None],
+        jnp.zeros_like(effective_command),
+        effective_command,
+    )
+    reset_phase = finish_standing_transition | command_standing
+    effective_phase = jnp.where(reset_phase, 0.0, next_phase)
+    return effective_command, effective_phase, keep_moving_until_boundary
 
 
 @dataclass(frozen=True)
@@ -751,6 +814,22 @@ class BelloLocomotionEnv:
                 f"exactly once, got {model.policy_ctrl_indices.size} policy and "
                 f"{model.hold_ctrl_indices.size} hold controls for nu={mj_model.nu}"
             )
+        mirror_joint_names = {
+            mirror.joint_name for mirror in model.robot.locomotion_action_mirror
+        }
+        action_joint_names = set(self.action_layout.names)
+        if mirror_joint_names != action_joint_names:
+            missing = sorted(action_joint_names - mirror_joint_names)
+            unknown = sorted(mirror_joint_names - action_joint_names)
+            details = []
+            if missing:
+                details.append(f"missing={missing}")
+            if unknown:
+                details.append(f"unknown={unknown}")
+            raise ValueError(
+                "locomotion action mirror must match the environment action layout: "
+                + ", ".join(details)
+            )
         policy_peak_force = model.actuator_peak_force[model.policy_ctrl_indices]
         if not np.all(np.isfinite(policy_peak_force)) or np.any(
             policy_peak_force <= 0.0
@@ -800,6 +879,7 @@ class BelloLocomotionEnv:
             required_link_names = {
                 self.root_link_name,
                 model.imu_body_name,
+                model.robot.locomotion_command_frame_body_name,
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
             }
@@ -936,6 +1016,7 @@ class BelloLocomotionEnv:
             last_foot_contact=jnp.zeros(self.model.foot_body_ids.size, dtype=bool),
             command=command,
             gait_phase=gait_phase,
+            standing_transition_pending=jnp.asarray(False),
             step_count=jnp.asarray(0, dtype=jnp.int32),
             episode_return=jnp.asarray(0.0, dtype=jnp.float32),
             episode_track_lin_vel_xy=jnp.asarray(0.0, dtype=jnp.float32),
@@ -1289,7 +1370,14 @@ class BelloLocomotionEnv:
             requested_actuator_force,
         ) = self._step_physics_with_impacts(state, data)
         next_data_state = state.replace(data=data)
-        next_state = BelloState(
+        next_gait_phase = advance_gait_phase(
+            state.gait_phase,
+            state.command,
+            self.command_config,
+            self.config.gait,
+            self.control_timestep,
+        )
+        reward_state = BelloState(
             data=data,
             last_action=action,
             last_action_delta=action_delta,
@@ -1304,13 +1392,8 @@ class BelloLocomotionEnv:
             foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
-            gait_phase=advance_gait_phase(
-                state.gait_phase,
-                state.command,
-                self.command_config,
-                self.config.gait,
-                self.control_timestep,
-            ),
+            gait_phase=next_gait_phase,
+            standing_transition_pending=state.standing_transition_pending,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
             episode_track_lin_vel_xy=state.episode_track_lin_vel_xy,
@@ -1319,7 +1402,7 @@ class BelloLocomotionEnv:
             last_episode_track_lin_vel_xy=state.last_episode_track_lin_vel_xy,
             last_episode_length=state.last_episode_length,
         )
-        done_flags = self.done_flags(next_state)
+        done_flags = self.done_flags(reward_state)
         done = done_flags["done/any"]
         terminal = done_flags["done/terminal"]
         (
@@ -1329,13 +1412,13 @@ class BelloLocomotionEnv:
             foot_angular_speed,
             undesired_contact,
             self_collision,
-        ) = self._contact_terms(next_state, 0)
+        ) = self._contact_terms(reward_state, 0)
         foot_contact, foot_contact_debounce_time = self.debounce_foot_contact(
-            next_state, raw_foot_contact, done
+            reward_state, raw_foot_contact, done
         )
         reward, reward_info = self.reward(
             state,
-            next_state,
+            reward_state,
             action,
             requested_action,
             terminal,
@@ -1358,18 +1441,35 @@ class BelloLocomotionEnv:
             state.episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
         )
         episode_length = state.episode_length + 1
+        pending_command = jnp.where(
+            reward_state.standing_transition_pending[..., None],
+            jnp.zeros_like(reward_state.command),
+            reward_state.command,
+        )
+        next_command, next_gait_phase, standing_transition_pending = (
+            resolve_gait_command_transition(
+                reward_state.command,
+                pending_command,
+                state.gait_phase,
+                reward_state.gait_phase,
+                reward_state.standing_transition_pending,
+                self.command_config,
+                self.config.gait,
+            )
+        )
         next_state = BelloState(
-            data=next_state.data,
-            last_action=next_state.last_action,
-            last_action_delta=next_state.last_action_delta,
-            tracking_ang_vel_z=next_state.tracking_ang_vel_z,
-            actor_feedback_history=next_state.actor_feedback_history,
-            actor_feedback_delay_steps=next_state.actor_feedback_delay_steps,
+            data=reward_state.data,
+            last_action=reward_state.last_action,
+            last_action_delta=reward_state.last_action_delta,
+            tracking_ang_vel_z=reward_state.tracking_ang_vel_z,
+            actor_feedback_history=reward_state.actor_feedback_history,
+            actor_feedback_delay_steps=reward_state.actor_feedback_delay_steps,
             foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=foot_contact.astype(bool),
-            command=next_state.command,
-            gait_phase=next_state.gait_phase,
-            step_count=next_state.step_count,
+            command=next_command,
+            gait_phase=next_gait_phase,
+            standing_transition_pending=standing_transition_pending,
+            step_count=reward_state.step_count,
             episode_return=episode_return,
             episode_track_lin_vel_xy=episode_track_lin_vel_xy,
             episode_length=episode_length,
@@ -1400,10 +1500,10 @@ class BelloLocomotionEnv:
             "latency/observation_steps": (
                 next_state.actor_feedback_delay_steps.astype(jnp.float32)
             ),
-            **self._command_diagnostics(state.command),
+            **self._command_diagnostics(reward_state.command),
             **self._gait_diagnostics(
                 state,
-                next_state,
+                reward_state,
                 foot_contact,
                 foot_touchdown,
                 foot_normal_impulse,
@@ -1470,6 +1570,13 @@ class BelloLocomotionEnv:
             actor_feedback_history = jax.vmap(self._advance_actor_feedback_history)(
                 state.actor_feedback_history, next_data_state, feedback_keys
             )
+        next_gait_phase = advance_gait_phase(
+            state.gait_phase,
+            state.command,
+            self.command_config,
+            self.config.gait,
+            self.control_timestep,
+        )
         stepped_state = BelloState(
             data=data,
             last_action=action,
@@ -1483,13 +1590,8 @@ class BelloLocomotionEnv:
             foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
-            gait_phase=advance_gait_phase(
-                state.gait_phase,
-                state.command,
-                self.command_config,
-                self.config.gait,
-                self.control_timestep,
-            ),
+            gait_phase=next_gait_phase,
+            standing_transition_pending=state.standing_transition_pending,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
             episode_track_lin_vel_xy=state.episode_track_lin_vel_xy,
@@ -1540,21 +1642,50 @@ class BelloLocomotionEnv:
             state.episode_track_lin_vel_xy + reward_info["reward/track_lin_vel_xy"]
         )
         episode_length = state.episode_length + 1
-        next_command, next_gait_phase = self._maybe_resample_batch_command_and_phase(
-            stepped_state, done, resample_rng
+        reward_state = stepped_state
+        pending_command = jnp.where(
+            reward_state.standing_transition_pending[:, None],
+            jnp.zeros_like(reward_state.command),
+            reward_state.command,
+        )
+        (
+            transitioned_command,
+            transitioned_gait_phase,
+            transitioned_standing_pending,
+        ) = resolve_gait_command_transition(
+            reward_state.command,
+            pending_command,
+            state.gait_phase,
+            reward_state.gait_phase,
+            reward_state.standing_transition_pending,
+            self.command_config,
+            self.config.gait,
+        )
+        transitioned_state = reward_state.replace(
+            command=transitioned_command,
+            gait_phase=transitioned_gait_phase,
+            standing_transition_pending=transitioned_standing_pending,
+        )
+        (
+            next_command,
+            next_gait_phase,
+            standing_transition_pending,
+        ) = self._maybe_resample_batch_command_and_phase(
+            transitioned_state, done, resample_rng
         )
         stepped_state = BelloState(
-            data=stepped_state.data,
-            last_action=stepped_state.last_action,
-            last_action_delta=stepped_state.last_action_delta,
-            tracking_ang_vel_z=stepped_state.tracking_ang_vel_z,
-            actor_feedback_history=stepped_state.actor_feedback_history,
-            actor_feedback_delay_steps=stepped_state.actor_feedback_delay_steps,
+            data=reward_state.data,
+            last_action=reward_state.last_action,
+            last_action_delta=reward_state.last_action_delta,
+            tracking_ang_vel_z=reward_state.tracking_ang_vel_z,
+            actor_feedback_history=reward_state.actor_feedback_history,
+            actor_feedback_delay_steps=reward_state.actor_feedback_delay_steps,
             foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=foot_contact.astype(bool),
             command=next_command,
             gait_phase=next_gait_phase,
-            step_count=stepped_state.step_count,
+            standing_transition_pending=standing_transition_pending,
+            step_count=reward_state.step_count,
             episode_return=episode_return,
             episode_track_lin_vel_xy=episode_track_lin_vel_xy,
             episode_length=episode_length,
@@ -1589,7 +1720,7 @@ class BelloLocomotionEnv:
             ),
             **jax.vmap(self._gait_diagnostics)(
                 state,
-                stepped_state,
+                reward_state,
                 foot_contact,
                 foot_touchdown,
                 foot_normal_impulse,
@@ -1598,15 +1729,20 @@ class BelloLocomotionEnv:
             "random_push/applied": push_applied,
             "random_push/lin_vel_x": push_velocity[:, 0],
             "random_push/lin_vel_y": push_velocity[:, 1],
-            **self._command_diagnostics(state.command),
+            **self._command_diagnostics(reward_state.command),
             "returned_episode": done,
             **done_flags,
             **reward_info,
         }
 
         def reset_terminated_worlds(_):
+            reset_source_command = jnp.where(
+                stepped_state.standing_transition_pending[:, None],
+                jnp.zeros_like(stepped_state.command),
+                stepped_state.command,
+            )
             reset_command = self._reset_batch_command(
-                stepped_state.command, batch_size, reset_command_rng
+                reset_source_command, batch_size, reset_command_rng
             )
             reset_state, reset_obs = self.reset_batch(
                 batch_size, command=reset_command, rng=reset_obs_rng
@@ -1966,35 +2102,20 @@ class BelloLocomotionEnv:
         return ctrl
 
     def mirror_action(self, action: jax.Array) -> jax.Array:
-        """Reflect logical policy actions across Bello's sagittal plane."""
+        """Reflect logical policy actions across the robot's sagittal plane."""
 
         index_by_name = {
             name: index for index, name in enumerate(self.action_layout.names)
         }
-        source_indices = []
-        signs = []
-        for name in self.action_layout.names:
-            if name.startswith("left_"):
-                counterpart = f"right_{name.removeprefix('left_')}"
-            elif name.startswith("right_"):
-                counterpart = f"left_{name.removeprefix('right_')}"
-            elif name == "waist_yaw_joint":
-                counterpart = name
-            else:
-                raise ValueError(f"unsupported locomotion symmetry action: {name!r}")
-            source_indices.append(index_by_name[counterpart])
-            signs.append(
-                -1.0
-                if name.endswith(
-                    (
-                        "hip_pitch_joint",
-                        "hip_yaw_joint",
-                        "ankle_roll_joint",
-                        "waist_yaw_joint",
-                    )
-                )
-                else 1.0
-            )
+        mirror_by_name = {
+            mirror.joint_name: mirror
+            for mirror in self.model.robot.locomotion_action_mirror
+        }
+        source_indices = [
+            index_by_name[mirror_by_name[name].counterpart_joint_name]
+            for name in self.action_layout.names
+        ]
+        signs = [mirror_by_name[name].sign for name in self.action_layout.names]
         return action[..., jnp.asarray(source_indices, dtype=jnp.int32)] * jnp.asarray(
             signs, dtype=action.dtype
         )
@@ -2181,9 +2302,13 @@ class BelloLocomotionEnv:
         state: BelloState,
         done: jax.Array,
         rng: jax.Array | None,
-    ) -> tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         if rng is None or not self.command_config.enabled:
-            return state.command, state.gait_phase
+            return (
+                state.command,
+                state.gait_phase,
+                state.standing_transition_pending,
+            )
         resample_steps = max(
             1, int(round(self.command_config.resample_seconds / self.control_timestep))
         )
@@ -2191,12 +2316,21 @@ class BelloLocomotionEnv:
         sampled = self._resample_batch_command(
             state.command, int(state.command.shape[0]), rng
         )
-        command = jnp.where(resample[:, None], sampled, state.command)
-        old_standing = command_is_standing(state.command, self.command_config)
-        new_standing = command_is_standing(command, self.command_config)
-        reset_phase = new_standing | (resample & old_standing)
-        phase = jnp.where(reset_phase, 0.0, state.gait_phase)
-        return command, phase
+        pending_command = jnp.where(
+            state.standing_transition_pending[:, None],
+            jnp.zeros_like(state.command),
+            state.command,
+        )
+        requested_command = jnp.where(resample[:, None], sampled, pending_command)
+        return resolve_gait_command_transition(
+            state.command,
+            requested_command,
+            state.gait_phase,
+            state.gait_phase,
+            state.standing_transition_pending,
+            self.command_config,
+            self.config.gait,
+        )
 
     def _resample_batch_command(
         self,
@@ -2376,7 +2510,7 @@ class BelloLocomotionEnv:
                     self.reward_config.smoothness.ankle_action_weight
                     if "_ankle_" in name
                     else self.reward_config.smoothness.waist_action_weight
-                    if name == "waist_yaw_joint"
+                    if name in {"waist_yaw_joint", "waist_roll_joint"}
                     else 1.0
                 )
                 for name in names
@@ -2808,6 +2942,8 @@ class BelloLocomotionEnv:
         )
         if self.reward_config.enabled(term_name) and frame_link is not None:
             return frame_link
+        if term_name == "track_lin_vel_xy":
+            return self.model.robot.locomotion_command_frame_body_name
         return velocity_link
 
     def _done_link(self, term) -> str:
@@ -3087,11 +3223,11 @@ class BelloLocomotionEnv:
         return jnp.linalg.norm(foot_ang_vel, axis=1)
 
     def _foot_heading_error(self, state: BelloState) -> jax.Array:
-        pelvis_forward = quat_rotate(
-            self._link_quat(state, self.root_link_name),
+        command_forward = quat_rotate(
+            self._link_quat(state, self._reward_frame_link("track_lin_vel_xy")),
             jnp.asarray((0.0, 1.0, 0.0), dtype=jnp.float32),
         )[:2]
-        pelvis_forward /= jnp.maximum(jnp.linalg.norm(pelvis_forward), 1.0e-6)
+        command_forward /= jnp.maximum(jnp.linalg.norm(command_forward), 1.0e-6)
         errors = []
         for link_name, local_forward in self.model.robot.foot_forward_axes:
             foot_forward = quat_rotate(
@@ -3100,10 +3236,10 @@ class BelloLocomotionEnv:
             )[:2]
             foot_forward /= jnp.maximum(jnp.linalg.norm(foot_forward), 1.0e-6)
             cross_z = (
-                pelvis_forward[0] * foot_forward[1]
-                - pelvis_forward[1] * foot_forward[0]
+                command_forward[0] * foot_forward[1]
+                - command_forward[1] * foot_forward[0]
             )
-            dot = jnp.dot(pelvis_forward, foot_forward)
+            dot = jnp.dot(command_forward, foot_forward)
             errors.append(jnp.arctan2(cross_z, dot))
         return jnp.stack(errors)
 
@@ -3114,7 +3250,7 @@ class BelloLocomotionEnv:
         foot_delta = foot_position[0] - foot_position[1]
         frame_yaw = yaw_quat(self._link_quat(state, frame_link_name))
         frame_delta = quat_rotate_inverse(frame_yaw, foot_delta)
-        return jnp.abs(frame_delta[1])
+        return jnp.abs(frame_delta[0])
 
     def _gait_diagnostics(
         self,
@@ -3130,7 +3266,7 @@ class BelloLocomotionEnv:
         initialized = state.step_count > 0
         touchdown = foot_touchdown.astype(bool)
         liftoff = jnp.where(initialized, ~contact & previous, False)
-        moving = command_is_moving(state.command, self.command_config)
+        moving = command_is_moving(next_state.command, self.command_config)
         desired_contact = desired_gait_foot_contact(
             next_state.gait_phase, self.config.gait
         ).astype(bool)
@@ -3153,7 +3289,9 @@ class BelloLocomotionEnv:
             jnp.abs(self._foot_heading_error(next_state)) * 180.0 / jnp.pi
         )
         return {
-            "gait/stance_width": self._stance_width(next_state, self.root_link_name),
+            "gait/stance_width": self._stance_width(
+                next_state, self._reward_frame_link("track_lin_vel_xy")
+            ),
             "gait/foot_heading_error_mean_deg": jnp.mean(foot_heading_error_deg),
             "gait/foot_heading_error_max_deg": jnp.max(foot_heading_error_deg),
             "gait/active": moving.astype(jnp.float32),

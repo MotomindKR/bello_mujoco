@@ -17,7 +17,11 @@ import rerun as rr
 import rerun.blueprint as rrb
 from rerun.urdf import UrdfTree
 
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, advance_gait_phase
+from bello_mujoco.envs.locomotion import (
+    BelloLocomotionEnv,
+    advance_gait_phase,
+    resolve_gait_command_transition,
+)
 from bello_mujoco.gamepad import GamepadCommandSource, GamepadConfig
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.policy import (
@@ -482,7 +486,8 @@ def run_rerun_evaluation(
     global_step = 0
     episode = 0
     fixed_command = np.asarray(command, dtype=np.float32)
-    current_command = np.zeros(3, dtype=np.float32)
+    requested_command = np.zeros(3, dtype=np.float32)
+    effective_command = np.zeros(3, dtype=np.float32)
 
     last_action = np.zeros(env.action_size, dtype=np.float32)
     last_action_delta = np.zeros(env.action_size, dtype=np.float32)
@@ -495,15 +500,35 @@ def run_rerun_evaluation(
     episode_length = jnp.asarray(0, dtype=jnp.int32)
     episode_step_count = 0
     gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
+    standing_transition_pending = jnp.asarray(False)
     tracking_ang_vel_z = jnp.asarray(0.0, dtype=jnp.float32)
     obs_stack = init_observation_stack(
         jnp.zeros(env.observation_size, dtype=jnp.float32), obs_stack_size
     )
 
+    def resolve_requested_command(
+        previous_phase: jax.Array,
+        next_phase: jax.Array,
+    ) -> None:
+        nonlocal effective_command, gait_phase, standing_transition_pending
+        command, phase, pending = resolve_gait_command_transition(
+            jnp.asarray(effective_command, dtype=jnp.float32),
+            jnp.asarray(requested_command, dtype=jnp.float32),
+            previous_phase,
+            next_phase,
+            standing_transition_pending,
+            env.command_config,
+            env.config.gait,
+        )
+        effective_command = np.asarray(command, dtype=np.float32)
+        gait_phase = phase
+        standing_transition_pending = pending
+
     def reset_episode() -> None:
         nonlocal last_action, last_action_delta, foot_contact_debounce_time
         nonlocal last_foot_contact, episode_return, episode_track_lin_vel_xy
         nonlocal episode_length, episode_step_count, gait_phase
+        nonlocal effective_command, standing_transition_pending
         nonlocal tracking_ang_vel_z, obs_stack
         reset_mujoco_data(env, mj_data)
         last_action = np.zeros(env.action_size, dtype=np.float32)
@@ -517,6 +542,9 @@ def run_rerun_evaluation(
         episode_length = jnp.asarray(0, dtype=jnp.int32)
         episode_step_count = 0
         gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
+        standing_transition_pending = jnp.asarray(False)
+        effective_command = np.zeros(3, dtype=np.float32)
+        resolve_requested_command(gait_phase, gait_phase)
         tracking_ang_vel_z = jnp.asarray(
             mujoco_link_ang_vel(env, mj_data, env._reward_link("track_ang_vel_z"))[2],
             dtype=jnp.float32,
@@ -524,7 +552,7 @@ def run_rerun_evaluation(
         obs = mujoco_policy_observation(
             env,
             mj_data,
-            command=current_command,
+            command=effective_command,
             last_action=last_action,
             step_count=episode_step_count,
             gait_phase=gait_phase,
@@ -553,11 +581,11 @@ def run_rerun_evaluation(
     try:
         logger.start()
         initial_input = gamepad.poll()
-        current_command = (
+        requested_command = (
             initial_input.command if gamepad_config.enabled else fixed_command.copy()
         )
         if not env.command_config.enabled:
-            current_command[:] = 0.0
+            requested_command[:] = 0.0
         reset_episode()
         pending_input = initial_input
         while steps is None or global_step < steps:
@@ -565,11 +593,11 @@ def run_rerun_evaluation(
             gamepad_input = pending_input or gamepad.poll()
             pending_input = None
             if gamepad_config.enabled:
-                current_command = gamepad_input.command
+                requested_command = gamepad_input.command
             else:
-                current_command = fixed_command.copy()
+                requested_command = fixed_command.copy()
             if not env.command_config.enabled:
-                current_command[:] = 0.0
+                requested_command[:] = 0.0
             if gamepad_input.connection_changed:
                 state = "connected" if gamepad_input.connected else "disconnected"
                 suffix = (
@@ -586,10 +614,12 @@ def run_rerun_evaluation(
                 reset_episode()
                 logger.log_event("episode reset requested by gamepad")
 
+            resolve_requested_command(gait_phase, gait_phase)
+
             current_observation = mujoco_policy_observation(
                 env,
                 mj_data,
-                command=current_command,
+                command=effective_command,
                 last_action=last_action,
                 step_count=episode_step_count,
                 gait_phase=gait_phase,
@@ -614,7 +644,7 @@ def run_rerun_evaluation(
             state = mujoco_eval_state(
                 env,
                 mj_data,
-                command=current_command,
+                command=effective_command,
                 last_action=last_action,
                 last_action_delta=last_action_delta,
                 foot_contact_debounce_time=foot_contact_debounce_time,
@@ -624,6 +654,7 @@ def run_rerun_evaluation(
                 episode_track_lin_vel_xy=episode_track_lin_vel_xy,
                 episode_length=episode_length,
                 gait_phase=gait_phase,
+                standing_transition_pending=standing_transition_pending,
                 tracking_ang_vel_z=tracking_ang_vel_z,
             )
             mj_data.ctrl[:] = ctrl
@@ -667,9 +698,10 @@ def run_rerun_evaluation(
             last_action = action_np
             last_action_delta = action_delta
             episode_step_count += 1
+            previous_gait_phase = gait_phase
             gait_phase = advance_gait_phase(
-                gait_phase,
-                jnp.asarray(current_command, dtype=jnp.float32),
+                previous_gait_phase,
+                jnp.asarray(effective_command, dtype=jnp.float32),
                 env.command_config,
                 env.config.gait,
                 env.control_timestep,
@@ -688,7 +720,7 @@ def run_rerun_evaluation(
             next_state = mujoco_eval_state(
                 env,
                 mj_data,
-                command=current_command,
+                command=effective_command,
                 last_action=last_action,
                 last_action_delta=last_action_delta,
                 foot_contact_debounce_time=foot_contact_debounce_time,
@@ -698,6 +730,7 @@ def run_rerun_evaluation(
                 episode_track_lin_vel_xy=episode_track_lin_vel_xy,
                 episode_length=episode_length,
                 gait_phase=gait_phase,
+                standing_transition_pending=standing_transition_pending,
                 tracking_ang_vel_z=next_tracking_ang_vel_z,
             )
             (
@@ -741,7 +774,7 @@ def run_rerun_evaluation(
             tracking_ang_vel_z = next_tracking_ang_vel_z
             last_foot_contact = foot_contact.astype(bool)
             info = {
-                **mujoco_eval_info(env, mj_data, command=current_command),
+                **mujoco_eval_info(env, mj_data, command=effective_command),
                 **done_info,
                 **reward_info,
             }
@@ -754,7 +787,7 @@ def run_rerun_evaluation(
                 global_step=global_step,
                 episode=episode,
                 mj_data=mj_data,
-                command=current_command,
+                command=effective_command,
                 connected=gamepad_input.connected,
                 action_mean=action_mean_np,
                 action=action_np,
@@ -774,10 +807,11 @@ def run_rerun_evaluation(
                 episode += 1
                 reset_episode()
             else:
+                resolve_requested_command(previous_gait_phase, gait_phase)
                 obs = mujoco_policy_observation(
                     env,
                     mj_data,
-                    command=current_command,
+                    command=effective_command,
                     last_action=last_action,
                     step_count=episode_step_count,
                     gait_phase=gait_phase,

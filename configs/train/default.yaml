@@ -1,5 +1,5 @@
-# Canonical 13-joint Bello locomotion contract. Experiment recipes override only
-# task-specific training, randomization, reward-link, and output settings.
+# Shared locomotion contract. Maintained experiment profiles select one robot and
+# override only morphology-dependent physical quantities and output identity.
 config:
   seed: 0
   total_timesteps: 1000000

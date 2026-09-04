@@ -9,10 +9,10 @@ import threading
 import time
 from types import SimpleNamespace
 
-import numpy as np
-import pytest
 import jax
 import mujoco
+import numpy as np
+import pytest
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.training.checkpoint import CheckpointNormalizationState
@@ -118,7 +118,7 @@ def remote_input(
 
 
 def compose_hardware_training_config() -> TrainingRunConfig:
-    return locomotion_training_profile("hardware_locomotion")
+    return locomotion_training_profile("bello_locomotion")
 
 
 def compose_hardware_runner_config() -> SimpleNamespace:
@@ -273,13 +273,13 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
 ) -> None:
     config = compose_hardware_training_config()
     prepared = prepare_asset(config.asset_config)
-    nominal_model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
+    canonical_model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
 
     assert config.asset_config.target_total_mass_kg is None
     assert not config.asset_config.joint_availability.disabled_joint_names
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
-    assert np.sum(nominal_model.body_mass) == pytest.approx(55.0683575411785)
+    assert np.sum(canonical_model.body_mass) == pytest.approx(55.0683575411785)
 
     metadata = SimpleNamespace(
         task="locomotion",
@@ -415,6 +415,42 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
         np.asarray(hardware_env.action_to_ctrl(result.action, np.zeros(25))),
         abs=1.0e-6,
     )
+
+
+def test_hardware_adapter_finishes_gait_step_before_standing(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    assert adapter.env.command_config.standing_transitions_enabled
+    nominal = adapter.nominal_physical_target
+    frame = HardwareFrame(
+        positions=nominal,
+        velocities=np.zeros_like(nominal),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=("RUNNING", "RUNNING"),
+        group_causes=("START", "START"),
+        group_details=("", ""),
+    )
+    moving = np.asarray((0.2, 0.0, 0.0), dtype=np.float32)
+    standing = np.zeros(3, dtype=np.float32)
+    adapter._effective_command = moving.copy()
+    adapter._gait_phase = 0.49
+
+    finishing_step = adapter.step(frame, standing)
+    standing_step = adapter.step(frame, standing)
+
+    assert finishing_step.effective_command == pytest.approx(moving)
+    assert finishing_step.observation[9:12] == pytest.approx(moving)
+    assert standing_step.effective_command == pytest.approx(standing)
+    assert standing_step.observation[9:12] == pytest.approx(standing)
+    assert adapter._gait_phase == pytest.approx(0.0)
 
 
 def test_locomotion_overlays_only_slew_limited_upper_body_reference(
@@ -1092,6 +1128,7 @@ def test_remote_abort_around_hold_never_acquires_control(
         reset=lambda: None,
         step=lambda _frame, _command, reference: SimpleNamespace(
             action=np.zeros(13),
+            effective_command=np.zeros(3),
             tilt_radians=0.0,
             reference_sequence=reference.sequence,
             reference_age_ms=reference.age_ms(),
@@ -1473,6 +1510,7 @@ def test_read_only_preflight_never_acquires_control(
         preview_calls.append(("step", frame, command.copy()))
         return SimpleNamespace(
             action=np.asarray((0.25, -0.5)),
+            effective_command=command.copy(),
             tilt_radians=0.0,
             reference_sequence=reference.sequence,
             reference_age_ms=reference.age_ms(),
@@ -1554,10 +1592,11 @@ def test_fixed_upper_body_preflight_skips_pose_source(
         reset=lambda: None,
     )
 
-    def preview(_frame, _command, reference):
+    def preview(_frame, command, reference):
         preview_calls.append(reference)
         return SimpleNamespace(
             action=np.zeros(13),
+            effective_command=command.copy(),
             tilt_radians=0.0,
             reference_sequence=None,
             reference_age_ms=None,

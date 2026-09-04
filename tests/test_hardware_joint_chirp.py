@@ -24,7 +24,7 @@ from bello_mujoco.robot import (
 )
 
 
-FULL_BODY = robot_definition("full_body")
+BELLO = robot_definition("bello")
 
 
 def test_joint_chirp_layout_round_trips_logical_ankle_coordinates() -> None:
@@ -33,7 +33,7 @@ def test_joint_chirp_layout_round_trips_logical_ankle_coordinates() -> None:
         "left_ankle_motor_1",
         "left_ankle_motor_2",
     )
-    logical_names, transform = actuator_layout(physical_names, FULL_BODY)
+    logical_names, transform = actuator_layout(physical_names, BELLO)
     logical = np.asarray((0.1, 0.3, -0.05))
 
     physical = transform @ logical
@@ -71,7 +71,7 @@ def test_joint_chirp_layout_uses_selected_robot_coupling_coefficients() -> None:
     )
     logical_names, transform = actuator_layout(
         ("custom_motor_1", "custom_motor_2"),
-        replace(FULL_BODY, coupled_actuator_groups=(custom_group,)),
+        replace(BELLO, coupled_actuator_groups=(custom_group,)),
     )
 
     assert logical_names == (
@@ -93,14 +93,14 @@ def test_joint_chirp_rejects_incomplete_or_logical_coupled_inventory(
     physical_names,
 ) -> None:
     with pytest.raises(ValueError, match="coupled actuator group"):
-        actuator_layout(physical_names, FULL_BODY)
+        actuator_layout(physical_names, BELLO)
 
 
 def test_joint_chirp_adapter_uses_generated_differential_motor_gains() -> None:
     adapter = build_hardware_adapter(
         ("left_ankle_motor_1", "left_ankle_motor_2"),
         50.0,
-        FULL_BODY,
+        BELLO,
     )
 
     assert adapter.kp == pytest.approx((11.0, 11.0))
@@ -112,7 +112,7 @@ def test_joint_chirp_configuration_records_selected_asset() -> None:
     adapter = build_hardware_adapter(
         ("left_ankle_motor_1", "left_ankle_motor_2"),
         50.0,
-        FULL_BODY,
+        BELLO,
     )
     record = _config_record(
         HardwareControlConfig(),
@@ -122,7 +122,7 @@ def test_joint_chirp_configuration_records_selected_asset() -> None:
         np.zeros(2),
     )
 
-    assert record["asset"] == "full_body"
+    assert record["asset"] == "bello"
 
 
 def test_joint_chirp_profile_has_hold_segments_and_smooth_envelope() -> None:
@@ -163,7 +163,7 @@ def test_joint_chirp_validates_logical_soft_limit_after_differential_mapping() -
     adapter = build_hardware_adapter(
         ("left_ankle_motor_1", "left_ankle_motor_2"),
         50.0,
-        FULL_BODY,
+        BELLO,
     )
     limits = SimpleNamespace(
         position_min=-2.0,
@@ -198,7 +198,7 @@ def test_joint_chirp_cli_defaults_to_read_only() -> None:
     args = parse_args(("--joint", "left_hip_roll_joint"))
 
     assert args.arm is False
-    assert args.asset == "full_body"
+    assert args.asset == "bello"
     assert args.groups == ["lower_body", "upper_body"]
     assert args.rate == pytest.approx(50.0)
 

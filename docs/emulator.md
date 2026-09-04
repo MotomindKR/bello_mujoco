@@ -41,8 +41,10 @@ groups, URDF transmission ownership, and torque enforcement. The command
 requires a source checkout because the wheel intentionally omits hardware
 topology and model catalogs.
 
-The command always uses the canonical physical asset with a generated pelvis
-IMU. It publishes 100 Hz motor feedback, a 200 Hz EBIMU stream at
+The command defaults to the canonical physical `bello` asset with a generated
+pelvis IMU. Its public asset selector rejects `bello_mini` explicitly because
+Mini has no calibrated hardware description yet. Bello publishes 100 Hz motor
+feedback, a 200 Hz EBIMU stream at
 `/dev/ttyIMU-mujoco`, and PoseService on port 50052.
 
 The public `command_latency_seconds` option delays only MIT motor-control

@@ -624,6 +624,7 @@ def mujoco_eval_state(
     episode_track_lin_vel_xy: jax.Array,
     episode_length: jax.Array,
     gait_phase: float | jax.Array | None = None,
+    standing_transition_pending: bool | jax.Array = False,
     last_action_delta: np.ndarray | None = None,
     tracking_ang_vel_z: float | jax.Array | None = None,
 ) -> BelloState:
@@ -697,6 +698,9 @@ def mujoco_eval_state(
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
         gait_phase=jnp.asarray(gait_phase, dtype=jnp.float32),
+        standing_transition_pending=jnp.asarray(
+            standing_transition_pending, dtype=bool
+        ),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,

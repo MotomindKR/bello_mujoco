@@ -24,7 +24,11 @@ from bello_mujoco.training.checkpoint import (
     CheckpointNormalizationState,
     LocomotionCheckpointMetadata,
 )
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion import (
+    BelloLocomotionEnv,
+    advance_gait_phase,
+    resolve_gait_command_transition,
+)
 from bello_mujoco.gamepad import axis_to_range
 from bello_mujoco.hardware.config import HardwareControlConfig
 from bello_mujoco.hardware.policy_log import PolicyStepLogger, policy_phase_schema
@@ -200,6 +204,7 @@ class HardwarePolicyStep:
     physical_target: np.ndarray
     observation: np.ndarray
     policy_observation: np.ndarray
+    effective_command: np.ndarray
     tilt_radians: float
     reference_sequence: int | None
     reference_age_ms: float | None
@@ -302,7 +307,40 @@ class HardwarePolicyAdapter:
         )
         self._obs_stack: np.ndarray | None = None
         self._last_action = np.zeros(env.action_size, dtype=np.float32)
+        self._effective_command = np.zeros(3, dtype=np.float32)
         self._gait_phase = 0.0
+        self._standing_transition_pending = False
+        self._advance_gait_phase_before_step = False
+
+        def resolve_transition(
+            current_command,
+            requested_command,
+            gait_phase,
+            standing_transition_pending,
+            advance_phase,
+        ):
+            next_phase = jnp.where(
+                advance_phase,
+                advance_gait_phase(
+                    gait_phase,
+                    current_command,
+                    env.command_config,
+                    env.config.gait,
+                    env.control_timestep,
+                ),
+                gait_phase,
+            )
+            return resolve_gait_command_transition(
+                current_command,
+                requested_command,
+                gait_phase,
+                next_phase,
+                standing_transition_pending,
+                env.command_config,
+                env.config.gait,
+            )
+
+        self._resolve_gait_transition = jax.jit(resolve_transition)
         self._standing_reference: Twist2ReferenceFrame | None = None
         self._upper_body_target: np.ndarray | None = None
         self._upper_body_reference_live = False
@@ -367,7 +405,10 @@ class HardwarePolicyAdapter:
     def reset(self) -> None:
         self._obs_stack = None
         self._last_action = np.zeros(self.env.action_size, dtype=np.float32)
+        self._effective_command = np.zeros(3, dtype=np.float32)
         self._gait_phase = 0.0
+        self._standing_transition_pending = False
+        self._advance_gait_phase_before_step = False
         self._upper_body_target = None
         self._upper_body_reference_live = False
         self._upper_body_transition_start = None
@@ -447,7 +488,8 @@ class HardwarePolicyAdapter:
         command: np.ndarray,
         reference: Twist2ReferenceFrame | None = None,
     ) -> HardwarePolicyStep:
-        observation = self.observation(frame, command)
+        effective_command = self._resolve_effective_command(command)
+        observation = self.observation(frame, effective_command)
         stack_size = self.metadata.ppo.policy.obs_stack_size
         if self._obs_stack is None:
             self._obs_stack = np.repeat(observation[None, :], stack_size, axis=0)
@@ -496,24 +538,35 @@ class HardwarePolicyAdapter:
         if not np.all(np.isfinite(physical_target)):
             raise RuntimeError("policy produced non-finite physical motor targets")
         self._last_action = action
-        if self._command_is_moving(command):
-            self._gait_phase = (
-                self._gait_phase
-                + self.env.config.gait.frequency_hz * self.control_timestep
-            ) % 1.0
-        else:
-            self._gait_phase = 0.0
+        self._advance_gait_phase_before_step = True
         return HardwarePolicyStep(
             action=action,
             raw_action=raw_action,
             physical_target=physical_target,
             observation=observation,
             policy_observation=policy_observation,
+            effective_command=effective_command,
             tilt_radians=tilt_from_xyzw(frame.orientation_xyzw),
             reference_sequence=(None if reference is None else reference.sequence),
             reference_age_ms=(None if reference is None else reference.age_ms()),
             upper_body_following=reference is not None,
         )
+
+    def _resolve_effective_command(
+        self,
+        requested_command: np.ndarray,
+    ) -> np.ndarray:
+        command, phase, pending = self._resolve_gait_transition(
+            jnp.asarray(self._effective_command, dtype=jnp.float32),
+            jnp.asarray(requested_command, dtype=jnp.float32),
+            jnp.asarray(self._gait_phase, dtype=jnp.float32),
+            jnp.asarray(self._standing_transition_pending),
+            jnp.asarray(self._advance_gait_phase_before_step),
+        )
+        self._effective_command = np.asarray(command, dtype=np.float32)
+        self._gait_phase = float(phase)
+        self._standing_transition_pending = bool(pending)
+        return self._effective_command.copy()
 
     def validate_upper_body_reference(
         self,
@@ -966,7 +1019,7 @@ def run_hardware_locomotion(
                 "remote_service_connected": remote_input.service_connected,
                 "remote_controller_connected": remote_input.controller_connected,
                 "remote_intent_armed": remote_input.intent_armed,
-                "command": tuple(float(value) for value in command),
+                "command": tuple(float(value) for value in preview.effective_command),
                 "upper_body_pose_source": (
                     "rtmw_smplx52_gmr"
                     if config.upper_body_tracking_enabled
@@ -1185,7 +1238,7 @@ def control_physical_robot(
                         raw_action=policy_step.raw_action,
                         action=policy_step.action,
                         physical_target=policy_step.physical_target,
-                        command=command,
+                        command=policy_step.effective_command,
                     )
                 log_finished = time.monotonic()
                 if next_status is not None and now >= next_status:
@@ -1195,7 +1248,9 @@ def control_physical_robot(
                             "elapsed_seconds": now - start_time,
                             "tilt_radians": policy_step.tilt_radians,
                             "action_abs_max": float(np.max(np.abs(policy_step.action))),
-                            "command": tuple(float(value) for value in command),
+                            "command": tuple(
+                                float(value) for value in policy_step.effective_command
+                            ),
                             "remote_service_connected": remote_input.service_connected,
                             "remote_controller_connected": remote_input.controller_connected,
                             "remote_intent_armed": remote_input.intent_armed,

@@ -28,6 +28,7 @@ from bello_mujoco.configuration import (
     coerce_value,
     locomotion_training_profile,
     motion_training_profile,
+    profile_config_relative_path,
     structured_config,
     twist2_training_profile,
     twist_training_profile,
@@ -229,8 +230,8 @@ def test_irrelevant_explicit_override_is_rejected_even_at_default(
 
 def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     smoke = locomotion_training_profile("smoke")
-    locomotion = locomotion_training_profile("locomotion")
-    hardware = locomotion_training_profile("hardware_locomotion")
+    bello = locomotion_training_profile("bello_locomotion")
+    mini = locomotion_training_profile("bello_mini_locomotion")
     motion = motion_training_profile()
     twist_teacher = twist_training_profile("teacher")
     twist_student = twist_training_profile("student")
@@ -240,8 +241,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         profile.config.num_updates > 0
         for profile in (
             smoke,
-            locomotion,
-            hardware,
+            bello,
+            mini,
             motion,
             twist_teacher,
             twist_student,
@@ -255,8 +256,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
     assert smoke.asset_config.asset == "bello"
-    assert locomotion.asset_config.asset == "bello"
-    assert hardware.asset_config.asset == "bello"
+    assert bello.asset_config.asset == "bello"
+    assert mini.asset_config.asset == "bello_mini"
     assert motion.asset_config.asset == "bello"
     assert twist_teacher.asset_config.asset == "bello"
     assert twist_student.asset_config.asset == "bello"
@@ -264,68 +265,95 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert motion.asset_config.actuator_mode == "policy"
     assert twist_teacher.asset_config.actuator_mode == "policy"
     assert twist2.asset_config.actuator_mode == "policy"
-    assert locomotion.checkpoint_config.every_updates == 512
-    assert locomotion.config.total_timesteps == 8_000_000_000
-    assert locomotion.config.symmetry_loss_coef == pytest.approx(0.0)
-    assert hardware.checkpoint_config.every_updates == 512
-    assert hardware.config.total_timesteps == 8_000_000_000
-    assert not hardware.asset_config.enforce_policy_effort_limits
-    assert hardware.config.learning_rate == pytest.approx(1.0e-4)
-    assert hardware.config.min_learning_rate == pytest.approx(3.0e-5)
-    assert hardware.config.adaptive_kl_statistic == "mean"
-    assert hardware.reward_config.weights.healthy_survival == pytest.approx(1.5)
-    assert hardware.reward_config.weights.touchdown_impact == pytest.approx(-8.0)
-    assert hardware.reward_config.weights.action_rate == pytest.approx(-0.01)
-    assert hardware.reward_config.weights.action_acceleration == pytest.approx(0.0)
-    assert hardware.reward_config.weights.stand_still == pytest.approx(1.0)
-    assert hardware.reward_config.weights.stand_foot_motion == pytest.approx(-1.0)
-    assert hardware.reward_config.weights.stand_foot_heading == pytest.approx(-0.5)
-    assert hardware.reward_config.weights.stand_upright == pytest.approx(-8.0)
-    assert hardware.reward_config.tracking.lin_vel_xy_moving_std == pytest.approx(0.3)
-    assert hardware.reward_config.tracking.ang_vel_z_lpf_cutoff_hz == pytest.approx(5.0)
-    assert hardware.reward_config.standing.foot_heading_deadband == pytest.approx(
+    assert bello.config == mini.config
+    assert bello.config.total_timesteps == 8_000_000_000
+    assert bello.config.gamma == pytest.approx(0.995)
+    assert bello.config.gae_lambda == pytest.approx(0.98)
+    assert bello.config.symmetry_loss_coef == pytest.approx(0.0)
+    assert bello.config.learning_rate == pytest.approx(1.0e-4)
+    assert bello.config.min_learning_rate == pytest.approx(3.0e-5)
+    assert bello.config.adaptive_kl_statistic == "mean"
+    assert bello.checkpoint_config.every_updates == 512
+    assert mini.checkpoint_config.every_updates == 512
+    assert not bello.asset_config.enforce_policy_effort_limits
+    assert not mini.asset_config.enforce_policy_effort_limits
+    assert len(bello.asset_config.actuator_config.policy_joint_names) == 13
+    assert len(mini.asset_config.actuator_config.policy_joint_names) == 14
+    assert len(mini.asset_config.actuator_config.hold_joint_names) == 14
+    assert "waist_roll_joint" in mini.asset_config.actuator_config.policy_joint_names
+    assert bello.reward_config.weights == mini.reward_config.weights
+    assert bello.reward_config.tracking == mini.reward_config.tracking
+    assert bello.reward_config.standing == mini.reward_config.standing
+    assert bello.reward_config.gait == mini.reward_config.gait
+    assert bello.reward_config.smoothness == mini.reward_config.smoothness
+    assert bello.reward_config.weights.healthy_survival == pytest.approx(1.5)
+    assert bello.reward_config.weights.touchdown_impact == pytest.approx(-8.0)
+    assert bello.reward_config.weights.action_acceleration == pytest.approx(0.0)
+    assert bello.reward_config.weights.stand_upright == pytest.approx(-8.0)
+    assert bello.reward_config.standing.foot_heading_deadband == pytest.approx(
         0.0872664626
     )
-    assert hardware.reward_config.weights.stand_contact == pytest.approx(-0.5)
-    assert hardware.reward_config.tracking.ang_vel_z_moving_std == pytest.approx(0.25)
-    assert hardware.command_config.lin_vel_x == (-1.0, 1.0)
-    assert hardware.command_config.lin_vel_y == (-1.0, 1.0)
-    assert hardware.command_config.ang_vel_yaw == (-1.0, 1.0)
-    assert hardware.command_config.resample_seconds == pytest.approx(10.0)
-    assert hardware.command_config.standing_probability == pytest.approx(0.25)
-    assert hardware.command_config.standing_transitions_enabled
-    assert hardware.env_config.random_push.enabled
-    assert not hardware.reward_config.gait.joint_force_apply_while_standing
-    assert hardware.reward_config.gait.touchdown_force_soft_limit_body_weights == (
+    assert bello.command_config == mini.command_config
+    assert bello.command_config.lin_vel_x == (-1.0, 1.0)
+    assert bello.command_config.lin_vel_y == (-1.0, 1.0)
+    assert bello.command_config.ang_vel_yaw == (-1.0, 1.0)
+    assert bello.command_config.standing_probability == pytest.approx(0.25)
+    assert bello.command_config.standing_transitions_enabled
+    assert bello.env_config.random_push.enabled
+    assert not bello.reward_config.gait.joint_force_apply_while_standing
+    assert bello.reward_config.gait.touchdown_force_soft_limit_body_weights == (
         pytest.approx(1.0)
     )
-    assert hardware.reward_config.smoothness.ankle_action_weight == pytest.approx(1.0)
-    assert hardware.reward_config.smoothness.waist_action_weight == pytest.approx(1.0)
-    assert hardware.reward_config.limits_pose.hip_lateral_command_index == 1
-    assert hardware.video_config.command == (0.0, 0.5, 0.0)
-    assert locomotion.env_config.observation_latency.enabled
-    assert locomotion.env_config.observation_latency.delay_steps == (0, 2)
-    assert locomotion.env_config.observation_low_pass_filter.enabled
-    assert locomotion.env_config.observation_low_pass_filter.cutoff_hz == pytest.approx(
-        10.0
+    assert bello.reward_config.smoothness.ankle_action_weight == pytest.approx(1.0)
+    assert bello.reward_config.smoothness.waist_action_weight == pytest.approx(1.0)
+    assert bello.reward_config.limits_pose.hip_lateral_command_index == 0
+    assert mini.reward_config.limits_pose.hip_lateral_command_index == 0
+    assert bello.reward_config.links.track_lin_vel_xy_frame is None
+    assert mini.reward_config.links.track_lin_vel_xy_frame is None
+    for profile in (bello, mini):
+        assert profile.reward_config.links.flat_orientation == "torso_link"
+        assert profile.reward_config.links.base_height == "pelvis_link"
+        assert profile.done_config.bad_orientation.link == "torso_link"
+        assert profile.done_config.base_height.link == "pelvis_link"
+    assert bello.reward_config.limits_pose.base_height_target == pytest.approx(0.86)
+    assert mini.reward_config.limits_pose.base_height_target == pytest.approx(0.88)
+    assert bello.done_config.base_height.min_height == pytest.approx(0.55)
+    assert mini.done_config.base_height.min_height == pytest.approx(0.56)
+    assert bello.env_config.gait.frequency_hz == pytest.approx(0.9)
+    assert mini.env_config.gait.frequency_hz == pytest.approx(0.89)
+    assert mini.env_config.spawn == replace(
+        bello.env_config.spawn,
+        joint_pos_scale_range=(1.0, 1.0),
     )
-    assert locomotion.env_config.observation_low_pass_filter.noise_before_filter
-    assert locomotion.env_config.observation_low_pass_filter.residual_noise_scale == (
+    assert (
+        replace(
+            mini.env_config,
+            gait=bello.env_config.gait,
+            spawn=bello.env_config.spawn,
+        )
+        == bello.env_config
+    )
+    assert bello.video_config.command == mini.video_config.command == (0.0, 0.5, 0.0)
+    assert bello.env_config.observation_latency.enabled
+    assert bello.env_config.observation_latency.delay_steps == (0, 2)
+    assert bello.env_config.observation_low_pass_filter.enabled
+    assert bello.env_config.observation_low_pass_filter.cutoff_hz == pytest.approx(10.0)
+    assert bello.env_config.observation_low_pass_filter.noise_before_filter
+    assert bello.env_config.observation_low_pass_filter.residual_noise_scale == (
         pytest.approx(0.1)
     )
-    assert locomotion.env_config.torso_com_curriculum.enabled
-    assert locomotion.env_config.torso_com_curriculum.ramp_steps == 3_000_000
-    assert locomotion.env_config.model_randomization.torso_mass_scale_range == (
+    assert bello.env_config.torso_com_curriculum.enabled
+    assert bello.env_config.torso_com_curriculum.ramp_steps == 3_000_000
+    assert bello.env_config.model_randomization.torso_mass_scale_range == (
         0.8,
         1.2,
     )
-    assert locomotion.env_config.model_randomization.torso_com_offset_range == (
+    assert bello.env_config.model_randomization.torso_com_offset_range == (
         -0.1,
         0.1,
     )
-    assert hardware.env_config.observation_latency.enabled
-    assert hardware.env_config.observation_latency.delay_steps == (0, 2)
-    assert hardware.env_config.observation_low_pass_filter.enabled
+    assert bello.checkpoint_config.name == "bello_locomotion_seed0"
+    assert mini.checkpoint_config.name == "bello_mini_locomotion_seed0"
     assert motion.checkpoint_config.every_updates == 500
     assert twist_teacher.config.num_updates == 30_002
     assert twist_teacher.config.policy.architecture == "twist_teacher"
@@ -341,6 +369,21 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert twist2.config.observation_norm_epsilon_mode == "std_offset"
     assert twist2.sampling.base_distribution == "manifest_weight"
     assert twist2.sampling.curriculum_max_difficulty == 10.0
+
+
+def test_retired_generic_locomotion_experiments_have_no_aliases() -> None:
+    for name in ("locomotion", "hardware_locomotion"):
+        with pytest.raises(ValueError, match="not a locomotion experiment"):
+            locomotion_training_profile(name)  # type: ignore[arg-type]
+
+
+def test_robot_locomotion_profile_paths_are_public_and_explicit() -> None:
+    assert profile_config_relative_path("bello_locomotion") == Path(
+        "configs/profiles/train/bello_locomotion.yaml"
+    )
+    assert profile_config_relative_path("bello_mini_locomotion") == Path(
+        "configs/profiles/train/bello_mini_locomotion.yaml"
+    )
 
 
 def test_contact_budget_command_override_is_explicit_and_positive() -> None:

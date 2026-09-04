@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 ExperimentName = Literal[
     "smoke",
-    "locomotion",
-    "hardware_locomotion",
+    "bello_locomotion",
+    "bello_mini_locomotion",
     "motion",
     "twist_teacher",
     "twist_student",
@@ -37,8 +37,8 @@ ExperimentName = Literal[
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "smoke": Path("profiles/train/smoke.yaml"),
-    "locomotion": Path("profiles/train/locomotion.yaml"),
-    "hardware_locomotion": Path("profiles/train/hardware_locomotion.yaml"),
+    "bello_locomotion": Path("profiles/train/bello_locomotion.yaml"),
+    "bello_mini_locomotion": Path("profiles/train/bello_mini_locomotion.yaml"),
     "motion": Path("profiles/train/motion.yaml"),
     "twist_teacher": Path("profiles/train/twist_teacher.yaml"),
     "twist_student": Path("profiles/train/twist_student.yaml"),
@@ -229,13 +229,17 @@ def command_config(cls: type[T], config: DictConfig) -> T:
 def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
     from bello_mujoco.training.locomotion import TrainingRunConfig
 
-    if name not in {"smoke", "locomotion", "hardware_locomotion"}:
+    locomotion_experiments = {"bello_locomotion", "bello_mini_locomotion"}
+    if name != "smoke" and name not in locomotion_experiments:
         raise ValueError(f"{name!r} is not a locomotion experiment")
     paths = [_config("train/default.yaml")]
-    if name in {"locomotion", "hardware_locomotion"}:
-        paths.append(_config("profiles/train/locomotion.yaml"))
-    if name == "hardware_locomotion":
-        paths.append(_config("profiles/train/hardware_locomotion.yaml"))
+    if name in locomotion_experiments:
+        paths.extend(
+            (
+                _config("train/locomotion.yaml"),
+                _config(f"profiles/train/{name}.yaml"),
+            )
+        )
     if name == "smoke":
         paths.append(_config("profiles/train/smoke.yaml"))
     return structured_config(TrainingRunConfig, _merged_profile(paths))

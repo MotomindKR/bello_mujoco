@@ -23,6 +23,11 @@ description. The root Git commit pins the stack gitlink, and exact-source checks
 require the recursive submodule checkout to be initialized, clean, and at that
 commit. The checkpoint does not record daemon or firmware revisions.
 
+Physical deployment currently supports `bello` only. Bello Mini locomotion can
+be trained in simulation, but its hardware description, motor directions,
+encoder zeros, and ankle transmission remain calibration-gated; preflight
+rejects a Bello Mini checkpoint rather than borrowing Bello's topology.
+
 The runner requires the pinned daemon and Python binding's synchronous hardware
 states API. Each policy iteration requests one complete frame containing the
 latest motor, pelvis IMU, and group samples. It does not build observations by
@@ -123,7 +128,7 @@ deadlines, and damped cleanup as the policy runner. Ankle pitch and roll are
 translated through the two-motor differential; the script never treats one
 ankle motor as an independently movable joint.
 
-Select the robot contract with `--asset`. The default `full_body` profile has a
+Select the robot contract with `--asset`. The default `bello` profile has a
 calibrated hardware description. `bello_mini` is rejected before the hardware
 binding is imported or a daemon connection is opened because its motor
 directions, zeros, ankle mapping, and limits are not yet calibrated.
@@ -135,7 +140,7 @@ limits, and sends no command:
 
 ```text
 uv run python scripts/joint_chirp.py \
-  --asset full_body \
+  --asset bello \
   --joint left_hip_roll_joint \
   --endpoint http://127.0.0.1:50051
 ```
@@ -146,7 +151,7 @@ joint or load:
 
 ```text
 uv run python scripts/joint_chirp.py \
-  --asset full_body \
+  --asset bello \
   --joint left_hip_roll_joint \
   --amplitude 0.01 \
   --start-frequency 0.5 \
@@ -208,7 +213,7 @@ Then run locomotion, pointing `rtmw_endpoint` at that producer:
 cd ~/bello_mujoco
 uv run bello-run-hardware \
   task=locomotion \
-  checkpoint_path=checkpoints/hardware_locomotion \
+  checkpoint_path=checkpoints/bello_locomotion \
   endpoint=http://robot-host:50051 \
   remote_endpoint=http://visualizer-host:50054 \
   rtmw_endpoint=rtmw-host:50055 \
@@ -222,7 +227,7 @@ checkpoint's nominal training targets:
 ```text
 uv run bello-run-hardware \
   task=locomotion \
-  checkpoint_path=checkpoints/hardware_locomotion \
+  checkpoint_path=checkpoints/bello_locomotion \
   remote_endpoint=http://visualizer-host:50054 \
   upper_body_tracking_enabled=false
 ```
@@ -261,9 +266,10 @@ the hardware runner scales that intent through the checkpoint's command bounds
 and minimum speeds, mapping lateral to `lin_vel_x` and forward to `lin_vel_y`.
 In Bello's locomotion frame, `+X` is lateral/right and `+Y` is forward.
 The runner advances the same checkpointed gait clock used by training and
-native evaluation. A standing command resets it and supplies a zero-valued
-three-component gait observation in the current actor frame; older moving
-frames age out of the configured observation stack normally. Each policy
+native evaluation. A standing request lets the active swing finish, then
+switches the effective command and three-component gait observation to zero at
+the next phase-defined double-support boundary; older moving frames age out of
+the configured observation stack normally. Each policy
 sample is clipped to the checkpoint action bound, converted directly to motor
 targets, and fed back as `last_action`, matching training and native evaluation
 exactly. Smoothness comes from the trained action-rate and action-acceleration

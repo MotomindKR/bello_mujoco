@@ -7,20 +7,34 @@ asset, and output fields are in the
 
 ## Profiles
 
-`bello-train` exposes four profiles:
+`bello-train` exposes seven maintained experiments:
 
 ```text
 smoke
-locomotion
-hardware_locomotion
+bello_locomotion
+bello_mini_locomotion
 motion
+twist_teacher
+twist_student
+twist2
 ```
 
-`smoke` runs a real, minimal MJX-Warp PPO update. `locomotion` is the canonical
-gait baseline. `hardware_locomotion` uses the same reward and policy contract
-with the longer credit horizon used by the physical policy. Its periodic and
-final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
-BeyondMimic tracking.
+`smoke` runs a real, minimal MJX-Warp PPO update. `bello_locomotion` and
+`bello_mini_locomotion` select their respective robot contracts after composing
+the same production PPO, reward, command, randomization, and observation
+recipe. The Mini profile changes only its asset, rounded height thresholds,
+gait frequency, and output names; the selected robot contract supplies its
+planar tracking frame. Their periodic and final evaluation videos command 0.5
+m/s forward motion. `motion` is bounded
+BeyondMimic tracking; the TWIST experiments are documented separately. The
+shared `configs/train/locomotion.yaml` layer is internal and is not a public
+experiment name.
+
+Train the Mini production profile with:
+
+```bash
+uv run bello-train experiment=bello_mini_locomotion
+```
 
 The public command can override seed, total timesteps, environment count,
 motion path, resume path, checkpoint destination/name, W&B enablement/run name,
@@ -28,40 +42,56 @@ and video enablement. Other task numerics are maintained in
 `configs/profiles/train/`; arbitrary nested profile keys are not part of the
 public command.
 
-## Locomotion baseline
+## Locomotion recipe
 
-The physical profile is a 55.068 kg sphere-hand robot with 13 policy joints and 12
-held arm joints. Commands contain `+X` lateral/right, `+Y` forward, and `+Z`
-yaw velocity. Ten percent of batched environments form an exact-zero standing
+The Bello profile uses 13 policy joints and holds 12 arm joints. Bello Mini uses
+14 policy joints (waist yaw, waist roll, and 12 leg joints) and holds its 14 arm
+joints. Commands always contain `+X` lateral/right, `+Y` forward, and `+Z` yaw
+velocity. Bello measures them in `pelvis_link`; Bello Mini uses its yaw-aligned
+`imu_link` because physical forward is pelvis `+X`, rather than Bello's pelvis
+`+Y`. Twenty-five percent of batched environments form an exact-zero standing
 cohort; moving samples are conditioned outside the shared standing deadbands.
 Failure resets preserve command mode so failed standing episodes cannot starve
 standing frames out of later rollouts. Periodic resampling reassigns the cohort
 to train transitions in both directions between standing and moving commands.
 
-Moving commands activate a fixed 0.9 Hz per-leg gait clock, producing 1.8
-alternating footfalls per second. The legs are offset by half a cycle and use a
-60% stance fraction, which provides short double-support intervals. The actor
-receives sine/cosine phase and a gait-active bit. An exact standing command
-resets the clock, supplies three zero gait inputs, and makes every moving-gait
-reward exactly zero.
+Moving commands activate a fixed per-leg gait clock: 0.90 Hz for Bello and the
+rounded 0.89 Hz Mini setting. The legs are offset by half a cycle and use a 60%
+stance fraction, which provides short double-support intervals. The actor
+receives sine/cosine phase and a gait-active bit. A standing request during gait
+does not reset the clock in single support. The current step finishes, and the
+environment enters standing at the next phase-defined double-support boundary;
+only then do the effective command and gait inputs become zero and the standing
+rewards take over. Environments initialized in standing start there directly.
+Training, native evaluation, and the hardware runner use the same transition
+semantics from the checkpoint environment contract.
 
 The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body
 joint reaction-force peaks, standing foot motion, phase contact matching,
 stance-foot slip, swing clearance, bounded substep-integrated touchdown impact, and
-termination cost. During healthy double support, standing frames also apply a
-bounded physical foot-heading cost relative to the pelvis. Its 5-degree
+termination cost. Uprightness and orientation termination are measured on
+`torso_link`; pelvis velocity and base height remain separate measurements.
+During healthy double support, standing frames also apply a bounded physical
+foot-heading cost relative to the robot command frame. Its 5-degree
 deadband and `0.01` per-step cap discourage learned toe-in without overwhelming
-balance acquisition or constraining commanded turns. The maintained clean
-locomotion profile disables the optional left/right actor-consistency and action
+balance acquisition or constraining commanded turns. Both maintained robot
+profiles disable the optional left/right actor-consistency and action
 acceleration losses; action smoothness uses the original uniform action-rate
 cost rather than a stateful command filter.
 Yaw-rate tracking uses a 5 Hz low-pass-filtered measurement. Exact terms and
 weights are defined in
-[`configs/train/default.yaml`](../configs/train/default.yaml) and explained in
+[`configs/train/default.yaml`](../configs/train/default.yaml), with maintained
+overrides in
+[`configs/train/locomotion.yaml`](../configs/train/locomotion.yaml), and are explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
-The maintained clean locomotion profile preserves the successful baseline's
-unclipped policy-effort dynamics. The over-peak torque term still uses the
+Both profiles use the same production reward weights and randomization. Bello
+Mini's canonical 43.50 kg inertials automatically feed the
+body-weight-normalized force and impact terms; those reward weights are not
+manually rescaled. The
+rounded height settings are a 0.88 m pelvis target and 0.56 m termination floor,
+versus 0.86 m and 0.55 m for Bello. Both profiles preserve the successful
+baseline's unclipped policy-effort dynamics. The over-peak torque term still uses the
 reconstructed servo demand to expose infeasible policy requests. Emulator and
 hardware execution continue to enforce physical motor effort limits.
 
@@ -114,8 +144,9 @@ integrity, and runtime validation remain active. It cannot load older
 checkpoint envelopes that do not contain `git_commit`.
 
 Locomotion checkpoints created before the gait-phase observation contract are
-also rejected explicitly. Their 51-value actor frame cannot be adapted to the
-new 54-value frame without retraining.
+also rejected explicitly. Their historical 51-value Bello actor frame cannot
+be adapted to the current 54-value Bello frame without retraining. Bello Mini's
+14 policy joints produce a separate 57-value actor frame and checkpoint layout.
 
 Checkpoint output must be outside the source repository or covered by a Git
 ignore rule. The default `checkpoints/` directory is ignored. A checkpoint name

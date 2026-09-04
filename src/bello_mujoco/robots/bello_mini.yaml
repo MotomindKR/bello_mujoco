@@ -1,6 +1,6 @@
 asset: bello_mini
-# Static simulation contract only. The zero pose, provisional URDF ranges, and
-# conservative policy/hold partition are not a tuned training or hardware map.
+# Maintained locomotion simulation contract. Physical deployment remains blocked
+# until the motor and differential calibration is complete.
 source_urdf: bello_mini/urdf/bello_mini.urdf
 source_directories:
   - bello_mini/urdf
@@ -14,6 +14,22 @@ root_joint_name: root_free
 default_root_position: [0.0, 0.0, 0.8731232537850352]
 default_root_quaternion: [1.0, 0.0, 0.0, 0.0]
 default_imu_body_name: imu_link
+locomotion_command_frame_body_name: imu_link
+locomotion_action_mirror:
+  left_hip_pitch_joint: {counterpart: right_hip_pitch_joint, sign: 1}
+  right_hip_pitch_joint: {counterpart: left_hip_pitch_joint, sign: 1}
+  left_hip_roll_joint: {counterpart: right_hip_roll_joint, sign: -1}
+  right_hip_roll_joint: {counterpart: left_hip_roll_joint, sign: -1}
+  left_hip_yaw_joint: {counterpart: right_hip_yaw_joint, sign: -1}
+  right_hip_yaw_joint: {counterpart: left_hip_yaw_joint, sign: -1}
+  left_knee_joint: {counterpart: right_knee_joint, sign: 1}
+  right_knee_joint: {counterpart: left_knee_joint, sign: 1}
+  left_ankle_pitch_joint: {counterpart: right_ankle_pitch_joint, sign: 1}
+  right_ankle_pitch_joint: {counterpart: left_ankle_pitch_joint, sign: 1}
+  left_ankle_roll_joint: {counterpart: right_ankle_roll_joint, sign: -1}
+  right_ankle_roll_joint: {counterpart: left_ankle_roll_joint, sign: -1}
+  waist_yaw_joint: {counterpart: waist_yaw_joint, sign: -1}
+  waist_roll_joint: {counterpart: waist_roll_joint, sign: -1}
 foot_body_names:
   - left_ankle_roll_link
   - right_ankle_roll_link
@@ -108,7 +124,7 @@ actuators:
     gains: [180.0, 12.0]
     effort_limit: 60.0
   - joint_name: waist_roll_joint
-    mode: hold
+    mode: policy
     default_pos: 0.0
     soft_limit: null
     gains: [150.0, 5.0]

@@ -71,7 +71,7 @@ def test_bello_model_uses_canonical_policy_partition_by_default(
     )
 
 
-def test_bello_mini_model_uses_calibration_gated_partition(
+def test_bello_mini_model_uses_locomotion_partition(
     bello_mini_asset: PreparedAsset,
 ) -> None:
     model = load_prepared_bello_model(bello_mini_asset, load_mjx=False)
@@ -88,10 +88,10 @@ def test_bello_mini_model_uses_calibration_gated_partition(
     hold_joint_names = {
         model.actuator_joint_names[index] for index in model.hold_ctrl_indices
     }
-    assert len(policy_joint_names) == 13
-    assert len(hold_joint_names) == 15
+    assert len(policy_joint_names) == 14
+    assert len(hold_joint_names) == 14
     assert "waist_yaw_joint" in policy_joint_names
-    assert "waist_roll_joint" in hold_joint_names
+    assert "waist_roll_joint" in policy_joint_names
     assert "left_wrist_roll_joint" in hold_joint_names
     assert "right_wrist_roll_joint" in hold_joint_names
 

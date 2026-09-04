@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import FrameType
-from typing import Literal
+from typing import Literal, get_args
 from urllib.parse import urlparse
 
 import keyring
@@ -66,7 +66,7 @@ class VastOfferConfig:
 class VastTrainConfig:
     """Resolved configuration for one complete Vast training lifecycle."""
 
-    experiment: ExperimentName = "hardware_locomotion"
+    experiment: ExperimentName = "bello_locomotion"
     motion_path: Path | None = None
     dataset_path: Path | None = None
     teacher_checkpoint_path: Path | None = None
@@ -142,15 +142,7 @@ def credential(env_name: str, service: str, username: str, *, required: bool) ->
 
 
 def validate_config(config: VastTrainConfig) -> None:
-    if config.experiment not in {
-        "smoke",
-        "locomotion",
-        "hardware_locomotion",
-        "motion",
-        "twist_teacher",
-        "twist_student",
-        "twist2",
-    }:
+    if config.experiment not in get_args(ExperimentName):
         raise ValueError("--experiment is invalid")
     if config.experiment == "motion":
         if config.motion_path is None:

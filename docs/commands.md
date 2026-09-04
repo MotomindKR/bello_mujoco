@@ -46,11 +46,11 @@ Configuration source: `configs/commands/prepare_assets.yaml`.
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `profile` | `physical` or `visualizer`; `physical` | Select the canonical physical recipe or the lower-resolution persistent viewer recipe. |
-| `asset` | `full_body` or `bello_mini`; `full_body` | Select the registered robot contract to prepare. |
+| `asset` | `bello` or `bello_mini`; `bello` | Select the registered robot contract to prepare. |
 | `output_root` | path or `null`; `null` | Override the generated-asset root. `~` is expanded. With the physical profile, `null` uses the content-addressed user cache at `$XDG_CACHE_HOME/bello-mujoco/assets` (or `~/.cache/bello-mujoco/assets`) and retains the eight most recently used variants. The visualizer profile defaults to `assets/generated/visualizer`. |
 
 The selected robot contract determines morphology, mass, joint partition, and
-payload attachment points. `full_body` remains the maintained 55.068 kg default;
+payload attachment points. `bello` remains the maintained 55.068 kg default;
 `bello_mini` prepares its reviewed 43.503 kg static morphology. The physical
 profile keeps a 200,000-face visual budget; the visualizer profile uses 20,000.
 The collision budget remains 1,000 faces. Both standalone profiles omit generated
@@ -68,7 +68,7 @@ Configuration source: `configs/commands/train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `smoke` | Select the maintained profile stack. |
+| `experiment` | `smoke`, `bello_locomotion`, `bello_mini_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `smoke` | Select the maintained profile stack. The shared locomotion recipe is internal; `locomotion` remains a runtime task, not a training experiment. |
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
@@ -92,8 +92,8 @@ Profile composition is deterministic:
 | Experiment | Configuration layers, lowest to highest precedence |
 | --- | --- |
 | `smoke` | `configs/train/default.yaml`, then `configs/profiles/train/smoke.yaml` |
-| `locomotion` | `configs/train/default.yaml`, then `configs/profiles/train/locomotion.yaml` |
-| `hardware_locomotion` | locomotion layers, then `configs/profiles/train/hardware_locomotion.yaml` |
+| `bello_locomotion` | `configs/train/default.yaml`, `configs/train/locomotion.yaml`, then `configs/profiles/train/bello_locomotion.yaml` |
+| `bello_mini_locomotion` | `configs/train/default.yaml`, `configs/train/locomotion.yaml`, then `configs/profiles/train/bello_mini_locomotion.yaml` |
 | `motion` | `configs/train_motion/default.yaml`, then `configs/profiles/train/motion.yaml` |
 | `twist_teacher` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_teacher.yaml` |
 | `twist_student` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_student.yaml` |
@@ -136,12 +136,17 @@ have no effect.
 The locomotion gamepad maps left-stick vertical to forward velocity,
 left-stick horizontal to lateral velocity, and right-stick horizontal to yaw.
 A/Cross requests an episode reset and Start/Options exits. Stick values are
-dead-zoned at the fixed value 0.1. Neutral remains the exact standing command;
-each supported nonzero direction starts at the checkpoint's minimum moving
-speed and scales to its command bound. The controller index is fixed at zero. A
+dead-zoned at the fixed value 0.1. Neutral requests standing; a moving policy
+finishes its current gait step and enters standing at the next phase-defined
+double-support boundary. Each supported nonzero direction starts at the
+checkpoint's minimum moving speed and scales to its command bound. The
+controller index is fixed at zero. A
 fixed `command` uses `[lin_vel_x, lin_vel_y, ang_vel_yaw]`, with `+X`
 lateral/right and `+Y` forward. It is passed through without clipping or range
-validation, so it should remain within the checkpoint's trained bounds.
+validation, so it should remain within the checkpoint's trained bounds. These
+are logical command coordinates: Bello tracks them in `pelvis_link`, while
+Bello Mini tracks them in its yaw-aligned `imu_link` because the two pelvis
+models have different physical forward axes.
 
 Evaluation validates the checkpoint task, policy and critic observation
 sizes/layouts, action size/layout, asset configuration, and environment
@@ -166,7 +171,7 @@ Configuration source: `configs/commands/motion.yaml`.
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
 | `operation` | `import`, `import_dataset`, `inspect`, or `render`; `inspect` | all | Select the offline motion operation. |
-| `asset` | `full_body` or `bello_mini`; `full_body` | all | Select the robot contract. Import operations also require that robot to provide a motion/GMR profile; Bello Mini does not provide one yet. |
+| `asset` | `bello` or `bello_mini`; `bello` | all | Select the robot contract. Import operations also require that robot to provide a motion/GMR profile; Bello Mini does not provide one yet. |
 | `source` | path or `null`; `null` | all | Required input file or directory. |
 | `output` | path or `null`; `null` | import, import_dataset, render; optional for inspect | Destination archive, dataset directory, report file, or video. |
 | `jobs` | positive integer; `8` | import_dataset | Maximum parallel legacy imports. |
@@ -242,7 +247,7 @@ Configuration source: `configs/commands/vast_train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `locomotion`, `hardware_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `hardware_locomotion` | Select the same maintained profile used by `bello-train`. |
+| `experiment` | `smoke`, `bello_locomotion`, `bello_mini_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `bello_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
 | `dataset_path` | path or `null`; `null` | Required local schema-3 `index.json` for TWIST or TWIST2. Its five portable dataset files are transferred with resumable `rsync` and verified remotely. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |
@@ -282,15 +287,15 @@ recorded instance.
 
 ## `bello-run-emulator`
 
-Run the headless native-MuJoCo RobStride hardware-interface emulator. It always
-exposes the configured SocketCAN buses, pelvis EBIMU stream, and PoseService
+Run the headless native-MuJoCo RobStride hardware-interface emulator. It exposes
+the selected robot's configured SocketCAN buses, EBIMU stream, and PoseService
 while stepping the canonical model in real time. It opens no graphical windows.
 
 Configuration source: `configs/commands/emulator.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `asset` | `full_body` or `bello_mini`; `full_body` | Select the robot and its hardware topology. Bello Mini currently fails explicitly because its topology is calibration-gated rather than deployable. |
+| `asset` | `bello` or `bello_mini`; `bello` | Select the robot contract. Only `bello` currently has a hardware description; selecting `bello_mini` fails explicitly until its motor and differential calibration is complete. |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
 | `command_latency_seconds` | nonnegative float; `0.01` | Delay MIT motor-control frames before applying them to MuJoCo. Lifecycle, parameter, and stop traffic remains immediate; use `0` to disable the delay. |
 | `motor_kp_scale` | positive float; `1` | Emulator-only multiplier on decoded MIT position gains. Use controlled sweeps to diagnose effective stiffness mismatch; `1` preserves the canonical plant. |
@@ -298,13 +303,15 @@ Configuration source: `configs/commands/emulator.yaml`.
 | `video_path` | path or `null`; `null` | Capture free-torso emulator state at 30 FPS and render it to MP4 when the emulator exits. Guided setup is omitted so recording does not disturb the real-time loop. |
 | `end_effector_payload_mass_kg` | nonnegative float; `0` | Add this many kilograms to each sphere hand. Use the payload recorded by the motion-policy checkpoint when emulating a weighted policy. |
 
-The emulator is checkout-only. It resolves hardware groups and the RobStride
-model catalog from the selected robot contract, then derives direct and
-differential transmissions from that robot's canonical URDF. Only `full_body`
-currently has a deployable hardware description; selecting `bello_mini` fails
-until motor directions, encoder zeros, and ankle coefficients are calibrated.
-Only the logical-to-SocketCAN interface mapping is local. The emulator applies
-MIT impedance control, publishes the configured IMU serial stream and
+The emulator is checkout-only. For the supported `bello` asset it selects the
+canonical `lower_body` and `upper_body` groups from
+`deps/bello-stack/descriptions/bello/hardware.yaml`, uses
+`deps/bello-stack/descriptions/robstride/models.yaml` for protocol and hardware
+limits, and derives direct and differential transmissions from the canonical
+URDF. Selecting `bello_mini` fails until its motor directions, encoder zeros,
+and ankle coefficients are calibrated. Only the logical-to-SocketCAN interface
+mapping is local. The emulator applies MIT impedance control, publishes the
+configured IMU serial stream and
 PoseService, and paces simulation against wall-clock time. Its torso guide is
 always engaged at startup; Enter releases it, and another Enter resets the robot
 and re-engages the guide.
@@ -395,10 +402,11 @@ visualizer-hosted physical controller uses the same stick mapping as
 `bello-eval`; R1 aborts. Controller or service loss commands zero, reconnects
 automatically, and requires a neutral controller before accepting nonzero
 intent again. The visualizer service must produce a fresh sample before the
-hardware daemon is contacted. The joystick continues to command the
-13-coordinate locomotion policy while the RTMW gRPC stream and GMR target only
-the 12 arm coordinates. Hardware locomotion has no
-native-controller or fixed-command mode.
+hardware daemon is contacted. The joystick continues to command the production
+Bello 13-coordinate locomotion policy while the RTMW gRPC stream and GMR target
+only the 12 arm coordinates. Bello Mini checkpoints remain unsupported by the
+hardware runner until their hardware calibration and topology are complete.
+Hardware locomotion has no native-controller or fixed-command mode.
 
 With `upper_body_tracking_enabled=false`, explicit RTMW and SMPL-X/GMR
 overrides must not be supplied. The runner uses the checkpoint's nominal
@@ -408,7 +416,7 @@ locomotion:
 ```text
 uv run bello-run-hardware \
   task=locomotion \
-  checkpoint_path=checkpoints/hardware_locomotion \
+  checkpoint_path=checkpoints/bello_locomotion \
   remote_endpoint=http://visualizer-host:50054 \
   upper_body_tracking_enabled=false
 ```

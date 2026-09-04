@@ -4,8 +4,8 @@ Simulation, reinforcement learning, evaluation, hardware emulation, and robot
 deployment for the Bello humanoid. The repository supports locomotion and
 motion-tracking policies built from the robot descriptions pinned through
 `deps/bello-stack`. Registered static assets are `bello` and `bello_mini`;
-the latter is currently calibration-gated and is not yet a maintained training
-or hardware target.
+both have maintained locomotion-training profiles. Bello Mini motion/GMR,
+emulator, and physical-hardware support remain calibration-gated.
 
 ## Setup
 
@@ -28,7 +28,7 @@ Invoke commands as `uv run <command> field=value`.
 | Command | Purpose |
 | --- | --- |
 | `bello-prepare-assets` | Generate the Bello URDF and MuJoCo models. |
-| `bello-train` | Train smoke, locomotion, hardware-locomotion, motion, TWIST, or one-stage TWIST2 policies. |
+| `bello-train` | Train Bello or Bello Mini locomotion, motion, TWIST, or one-stage TWIST2 policies. |
 | `bello-eval` | Evaluate locomotion, render motion tracking, or score and render TWIST/TWIST2 policies. |
 | `bello-motion` | Import, inspect, validate, and render motion data. |
 | `bello-twist-data` | Validate licensed manifests and build packed TWIST datasets. |
