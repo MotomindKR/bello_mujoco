@@ -518,7 +518,6 @@ def run_rerun_evaluation(
             next_phase,
             standing_transition_pending,
             env.command_config,
-            env.config.gait,
         )
         effective_command = np.asarray(command, dtype=np.float32)
         gait_phase = phase

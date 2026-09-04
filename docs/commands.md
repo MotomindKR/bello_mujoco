@@ -136,11 +136,13 @@ have no effect.
 The locomotion gamepad maps left-stick vertical to forward velocity,
 left-stick horizontal to lateral velocity, and right-stick horizontal to yaw.
 A/Cross requests an episode reset and Start/Options exits. Stick values are
-dead-zoned at the fixed value 0.1. Neutral requests standing; a moving policy
-finishes its current gait step and enters standing at the next phase-defined
-double-support boundary. Each supported nonzero direction starts at the
-checkpoint's minimum moving speed and scales to its command bound. The
-controller index is fixed at zero. A
+dead-zoned at the fixed value 0.1. Every evaluation rollout initializes the gait
+clock at phase zero. Neutral supplies a zero standing request, but the effective
+policy command remains moving until the next scheduled half-cycle boundary,
+even if neutral is requested during double support. The boundary step remains a
+gait step; standing begins on the following step. Each supported nonzero
+direction starts at the checkpoint's minimum moving speed and scales to its
+command bound. The controller index is fixed at zero. A
 fixed `command` uses `[lin_vel_x, lin_vel_y, ang_vel_yaw]`, with `+X`
 lateral/right and `+Y` forward. It is passed through without clipping or range
 validation, so it should remain within the checkpoint's trained bounds. These
@@ -355,7 +357,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 normal-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
 | `max_motion_tilt_radians` | positive float or `null`; `null` | motion, twist2 | Maximum robot tilt during transitions and active motion. `null` uses 70 degrees (approximately 1.222 radians); standing keeps its 0.70-radian limit. |
 | `action_lpf_cutoff_hz` | positive float or `null`; `null` | motion | First-order low-pass cutoff for the motion action sent to the motors and fed back as `last_action`. `null` uses 15 Hz. |
-| `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. `null` prints only preflight, phase changes, and summaries. |
+| `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. Locomotion status reports the effective `command` and `standing_transition_pending`. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
 | `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the 12 arm joints at the locomotion checkpoint's nominal targets. |
@@ -452,7 +454,7 @@ sizes, action names, and physical target names. Every following record contains
 one executed policy step with wall and monotonic timestamps, phase, step,
 unstacked observation, normalized stacked policy observation, raw and applied
 action, and physical target. Locomotion
-records include the velocity command. Motion records cover the standing
+records include the effective velocity command. Motion records cover the standing
 policy, both policy transitions, and motion tracking; transition records contain
 both the policy target and the blended target actually sent. File encoding and
 flushing run on a dedicated background thread so normal disk I/O does not block

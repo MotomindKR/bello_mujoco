@@ -205,6 +205,7 @@ class HardwarePolicyStep:
     observation: np.ndarray
     policy_observation: np.ndarray
     effective_command: np.ndarray
+    standing_transition_pending: bool
     tilt_radians: float
     reference_sequence: int | None
     reference_age_ms: float | None
@@ -337,7 +338,6 @@ class HardwarePolicyAdapter:
                 next_phase,
                 standing_transition_pending,
                 env.command_config,
-                env.config.gait,
             )
 
         self._resolve_gait_transition = jax.jit(resolve_transition)
@@ -546,6 +546,7 @@ class HardwarePolicyAdapter:
             observation=observation,
             policy_observation=policy_observation,
             effective_command=effective_command,
+            standing_transition_pending=self._standing_transition_pending,
             tilt_radians=tilt_from_xyzw(frame.orientation_xyzw),
             reference_sequence=(None if reference is None else reference.sequence),
             reference_age_ms=(None if reference is None else reference.age_ms()),
@@ -906,7 +907,10 @@ def hardware_command(
 def report_remote_connection(remote_input: RemoteCommandInput) -> None:
     if remote_input.service_connection_changed:
         state = "connected" if remote_input.service_connected else "disconnected"
-        print(f"Visualizer remote service {state}; command is zero while disconnected.")
+        print(
+            f"Visualizer remote service {state}; requested command is zero while "
+            "disconnected."
+        )
     if remote_input.controller_connection_changed:
         state = "connected" if remote_input.controller_connected else "disconnected"
         suffix = (
@@ -914,13 +918,19 @@ def report_remote_connection(remote_input: RemoteCommandInput) -> None:
             if remote_input.controller_name is not None
             else ""
         )
-        print(f"Remote controller {state}{suffix}; command is zero while disconnected.")
+        print(
+            f"Remote controller {state}{suffix}; requested command is zero while "
+            "disconnected."
+        )
     if (
         remote_input.controller_connection_changed
         and remote_input.controller_connected
         and not remote_input.intent_armed
     ):
-        print("Remote controller is waiting for neutral sticks; command is zero.")
+        print(
+            "Remote controller is waiting for neutral sticks; requested command is "
+            "zero."
+        )
 
 
 def run_hardware_locomotion(
@@ -1250,6 +1260,9 @@ def control_physical_robot(
                             "action_abs_max": float(np.max(np.abs(policy_step.action))),
                             "command": tuple(
                                 float(value) for value in policy_step.effective_command
+                            ),
+                            "standing_transition_pending": (
+                                policy_step.standing_transition_pending
                             ),
                             "remote_service_connected": remote_input.service_connected,
                             "remote_controller_connected": remote_input.controller_connected,

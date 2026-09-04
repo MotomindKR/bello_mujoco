@@ -106,7 +106,7 @@ def test_gamepad_command_is_used_by_same_step_policy_and_log(
     assert logged_steps[1]["action"][0] == pytest.approx(inferred_commands[1][0])
 
 
-def test_gamepad_standing_waits_for_double_support_and_logs_effective_command(
+def test_gamepad_standing_waits_for_next_gait_boundary_and_logs_effective_command(
     monkeypatch,
     bello_asset: PreparedAsset,
 ) -> None:
@@ -122,8 +122,10 @@ def test_gamepad_standing_waits_for_double_support_and_logs_effective_command(
     moving = np.asarray((0.4, 0.0, 0.0), dtype=np.float32)
     commands = [moving, np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)]
     inferred_commands = []
+    inferred_gait_phases = []
     logged_commands = []
     command_indices = component_slice(env, "command")
+    gait_phase_indices = component_slice(env, "gait_phase")
 
     class Gamepad:
         def __init__(self, *_args):
@@ -155,6 +157,7 @@ def test_gamepad_standing_waits_for_double_support_and_logs_effective_command(
 
     def infer_policy_action(_policy, observation, *_args, **_kwargs):
         inferred_commands.append(np.asarray(observation[command_indices]))
+        inferred_gait_phases.append(np.asarray(observation[gait_phase_indices]))
         action = jnp.zeros(env.action_size, dtype=jnp.float32)
         return PolicyInferenceStep(action, action, action)
 
@@ -183,6 +186,13 @@ def test_gamepad_standing_waits_for_double_support_and_logs_effective_command(
     expected = np.asarray((moving, moving, np.zeros(3)), dtype=np.float32)
     assert np.asarray(inferred_commands) == pytest.approx(expected)
     assert np.asarray(logged_commands) == pytest.approx(expected)
+    assert np.asarray(inferred_gait_phases) == pytest.approx(
+        np.asarray(
+            ((0.0, 1.0, 1.0), (1.0, 0.0, 1.0), (0.0, 0.0, 0.0)),
+            dtype=np.float32,
+        ),
+        abs=1.0e-6,
+    )
 
 
 def test_rollout_action_applies_observation_normalization(monkeypatch) -> None:

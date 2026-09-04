@@ -240,13 +240,11 @@ def resolve_gait_command_transition(
     next_phase: jax.Array,
     standing_transition_pending: jax.Array,
     command_config: CommandConfig,
-    gait_config: GaitConfig,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Resolve a command request without interrupting an active gait step.
 
-    Standing requests remain pending through single support and become effective
-    at the next phase-defined double-support boundary. Moving requests replace
-    the effective command immediately.
+    Standing requests remain pending until the next half-cycle phase boundary.
+    Moving requests replace the effective command immediately.
     """
 
     command = jnp.asarray(command, dtype=jnp.float32)
@@ -269,15 +267,11 @@ def resolve_gait_command_transition(
             jnp.zeros_like(pending),
         )
 
-    desired_contact = desired_gait_foot_contact(next_phase, gait_config).astype(bool)
-    in_double_support = jnp.all(desired_contact, axis=-1)
     crossed_half_cycle = (previous_phase < 0.5) & (next_phase >= 0.5)
     crossed_cycle = next_phase < previous_phase
-    reached_double_support = in_double_support | (
-        pending & (crossed_half_cycle | crossed_cycle)
-    )
+    reached_next_pattern = pending & (crossed_half_cycle | crossed_cycle)
     finish_standing_transition = (
-        requested_standing & ~command_standing & reached_double_support
+        requested_standing & ~command_standing & reached_next_pattern
     )
     keep_moving_until_boundary = (
         requested_standing & ~command_standing & ~finish_standing_transition
@@ -399,6 +393,12 @@ class BelloLocomotionEnv:
     def _validate_config(self) -> None:
         if self.decimation <= 0:
             raise ValueError(f"decimation must be positive, got {self.decimation}")
+        gait_phase_advance = self.config.gait.frequency_hz * self.control_timestep
+        if gait_phase_advance >= 0.5:
+            raise ValueError(
+                "gait.frequency_hz must advance the gait by less than half a cycle "
+                f"per control step, got {gait_phase_advance} cycles"
+            )
         if self.max_episode_steps <= 0:
             raise ValueError(
                 f"max_episode_steps must be positive, got {self.max_episode_steps}"
@@ -971,24 +971,20 @@ class BelloLocomotionEnv:
         forward: bool = True,
         align_clearance: bool = True,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = reset_rng = feedback_rng = obs_rng = latency_rng = gait_rng = rng
+        command_rng = reset_rng = feedback_rng = obs_rng = latency_rng = rng
         if rng is not None:
+            # Preserve the other reset streams after removing randomized gait startup.
             (
                 command_rng,
                 reset_rng,
                 obs_rng,
                 latency_rng,
-                gait_rng,
+                _,
             ) = jax.random.split(rng, 5)
             feedback_rng = jax.random.fold_in(obs_rng, 1)
             obs_rng = jax.random.fold_in(obs_rng, 2)
         command = self._resolve_command(command, command_rng)
         gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
-        if gait_rng is not None:
-            sampled_phase = jax.random.uniform(gait_rng, (), dtype=jnp.float32)
-            gait_phase = jnp.where(
-                command_is_moving(command, self.command_config), sampled_phase, 0.0
-            )
         data = self.model.make_data()
         data = data.replace(
             qpos=jnp.asarray(self.model.default_qpos),
@@ -1454,7 +1450,6 @@ class BelloLocomotionEnv:
                 reward_state.gait_phase,
                 reward_state.standing_transition_pending,
                 self.command_config,
-                self.config.gait,
             )
         )
         next_state = BelloState(
@@ -1659,7 +1654,6 @@ class BelloLocomotionEnv:
             reward_state.gait_phase,
             reward_state.standing_transition_pending,
             self.command_config,
-            self.config.gait,
         )
         transitioned_state = reward_state.replace(
             command=transitioned_command,
@@ -2329,7 +2323,6 @@ class BelloLocomotionEnv:
             state.gait_phase,
             state.standing_transition_pending,
             self.command_config,
-            self.config.gait,
         )
 
     def _resample_batch_command(

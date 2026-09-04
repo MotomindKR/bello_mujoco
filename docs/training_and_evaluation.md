@@ -58,13 +58,15 @@ to train transitions in both directions between standing and moving commands.
 Moving commands activate a fixed per-leg gait clock: 0.90 Hz for Bello and the
 rounded 0.89 Hz Mini setting. The legs are offset by half a cycle and use a 60%
 stance fraction, which provides short double-support intervals. The actor
-receives sine/cosine phase and a gait-active bit. A standing request during gait
-does not reset the clock in single support. The current step finishes, and the
-environment enters standing at the next phase-defined double-support boundary;
-only then do the effective command and gait inputs become zero and the standing
-rewards take over. Environments initialized in standing start there directly.
-Training, native evaluation, and the hardware runner use the same transition
-semantics from the checkpoint environment contract.
+receives sine/cosine phase and a gait-active bit. Training resets, native
+evaluation, and the hardware runner all initialize this clock at phase zero.
+Once gait is active, zero is a standing request rather than an immediate policy
+command. The effective moving command remains active until the next scheduled
+half-cycle boundary, even when the request arrives during double support. The
+step that reaches the boundary still receives gait rewards; the following
+policy step observes a zero command and inactive gait component and begins
+receiving standing rewards. Environments initialized in standing start there
+directly.
 
 The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body

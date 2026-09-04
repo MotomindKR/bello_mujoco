@@ -261,12 +261,18 @@ noise values are ordered uniform ranges applied before stacking.
 With commands enabled, the actor and critic both receive a three-value gait
 component: sine phase, cosine phase, and a gait-active bit. The maintained
 per-leg frequency is 0.90 Hz for Bello and a rounded 0.89 Hz for Bello Mini;
-both use a 60% stance fraction and a half-cycle offset between the feet. A
-standing request during gait preserves phase until the active swing reaches the
-next double-support boundary. The effective command and complete gait component
-become zero only at that boundary. An environment initialized in standing uses
-zero immediately. `frequency_hz` is the complete cycle frequency of each leg,
-and `stance_fraction` must be in `[0.5, 1.0)`.
+both use a 60% stance fraction and a half-cycle offset between the feet. Every
+training reset, native-evaluation rollout, and hardware-policy run initializes
+the gait clock at phase zero. During active gait, a zero input is only a standing
+request. The effective command and gait component remain moving until the next
+scheduled half-cycle boundary, including when the request arrives during double
+support. The boundary step still receives gait rewards; the following step uses
+the zero effective command, zero gait component, and standing rewards. An
+environment initialized in standing uses zero immediately. `frequency_hz` is
+the complete cycle frequency of each leg, and `stance_fraction` must be in
+`[0.5, 1.0)`. The configured frequency and control timestep must advance the
+clock by less than half a cycle per policy step so no gait boundary can be
+skipped.
 
 Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
@@ -319,7 +325,7 @@ filter to training, native evaluation, or the hardware runner.
 | `minimum_moving_linear_speed` | `0.2` | A selected moving linear axis is sampled outside this magnitude. |
 | `minimum_moving_yaw_speed` | `0.2` | A selected moving yaw axis is sampled outside this magnitude. |
 | `resample_seconds` | `10` | Interval between command samples. |
-| `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling. Moving-to-standing requests finish the current swing before changing effective mode at double support. |
+| `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling. During gait, latch a zero request until the next scheduled half-cycle boundary before changing effective mode. |
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
@@ -330,9 +336,10 @@ cannot reduce standing's share of rollout frames. When
 `standing_transitions_enabled` is true, periodic command resampling independently
 reassigns the exact standing cohort, exposing both standing-to-moving and
 moving-to-standing transitions. A zero request during active gait is pending
-until the next phase-defined double-support boundary: the moving command, gait
-phase, and moving rewards remain active while the current step finishes, and
-standing rewards begin only after the transition. Training telemetry reports
+until the next scheduled half-cycle boundary, even when it arrives during double
+support. The effective moving command, gait phase, and moving rewards remain
+active through the boundary step; zero becomes effective and standing rewards
+begin on the following step. Training telemetry reports
 mode-specific mean reward, completed-episode return and length, and
 completed-episode count under
 the `command/standing_*`, `command/moving_*`, and
@@ -351,7 +358,8 @@ Every term is computed independently and multiplied by its configured weight.
 The `weights` section is listed below; a zero weight disables metadata and
 computation where possible. In this table, "standing command" means the
 effective standing mode. A raw zero request made during gait does not activate
-standing rewards until the current swing finishes at double support.
+standing rewards until the policy step after the next scheduled half-cycle
+boundary.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |

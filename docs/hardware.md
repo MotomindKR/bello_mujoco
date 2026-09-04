@@ -266,10 +266,15 @@ the hardware runner scales that intent through the checkpoint's command bounds
 and minimum speeds, mapping lateral to `lin_vel_x` and forward to `lin_vel_y`.
 In Bello's locomotion frame, `+X` is lateral/right and `+Y` is forward.
 The runner advances the same checkpointed gait clock used by training and
-native evaluation. A standing request lets the active swing finish, then
-switches the effective command and three-component gait observation to zero at
-the next phase-defined double-support boundary; older moving frames age out of
-the configured observation stack normally. Each policy
+native evaluation, initialized at phase zero. Neutral or stale remote input
+supplies a zero standing request, not an immediate zero policy command. The
+effective moving command remains active until the next scheduled half-cycle
+boundary, even if the request arrives during double support. The boundary step
+remains a gait step; on the following step the effective command and
+three-component gait observation become zero and older moving frames age out of
+the configured observation stack normally. Periodic status reports the
+effective `command` and the `standing_transition_pending` latch so this interval
+is visible to the operator. Each policy
 sample is clipped to the checkpoint action bound, converted directly to motor
 targets, and fed back as `last_action`, matching training and native evaluation
 exactly. Smoothness comes from the trained action-rate and action-acceleration

@@ -29,6 +29,7 @@ from bello_mujoco.hardware.locomotion import (
     command_ranges,
     control_physical_robot,
     hardware_command,
+    report_remote_connection,
     run_hardware_locomotion,
     validate_command,
     validate_hardware_checkpoint,
@@ -407,6 +408,7 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
     assert result.observation[6:9] == pytest.approx((0.0, 0.0, -1.0))
     assert result.observation[9:12] == pytest.approx(command)
     assert result.observation[12:15] == pytest.approx((0.0, 1.0, 1.0))
+    assert not result.standing_transition_pending
     assert result.action.shape == (13,)
     assert result.action == pytest.approx(np.clip(result.raw_action, -1.0, 1.0))
     assert result.physical_target.shape == (25,)
@@ -448,8 +450,66 @@ def test_hardware_adapter_finishes_gait_step_before_standing(
 
     assert finishing_step.effective_command == pytest.approx(moving)
     assert finishing_step.observation[9:12] == pytest.approx(moving)
+    assert finishing_step.standing_transition_pending
     assert standing_step.effective_command == pytest.approx(standing)
     assert standing_step.observation[9:12] == pytest.approx(standing)
+    assert not standing_step.standing_transition_pending
+    assert adapter._gait_phase == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("request_phase", "next_boundary", "advance_before_request"),
+    ((0.05, 0.5, False), (0.55, 1.0, False), (0.49, 1.0, True)),
+)
+def test_hardware_adapter_defers_stop_requested_inside_double_support(
+    hardware_env: BelloLocomotionEnv,
+    request_phase: float,
+    next_boundary: float,
+    advance_before_request: bool,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    assert adapter.env.command_config.standing_transitions_enabled
+    nominal = adapter.nominal_physical_target
+    frame = HardwareFrame(
+        positions=nominal,
+        velocities=np.zeros_like(nominal),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=("RUNNING", "RUNNING"),
+        group_causes=("START", "START"),
+        group_details=("", ""),
+    )
+    moving = np.asarray((0.2, 0.0, 0.0), dtype=np.float32)
+    standing = np.zeros(3, dtype=np.float32)
+    adapter._effective_command = moving.copy()
+    adapter._gait_phase = request_phase
+    adapter._advance_gait_phase_before_step = advance_before_request
+
+    step = adapter.step(frame, standing)
+
+    assert step.effective_command == pytest.approx(moving)
+    assert step.observation[9:12] == pytest.approx(moving)
+    assert step.standing_transition_pending
+    pending_phases = [adapter._gait_phase]
+    for _ in range(100):
+        step = adapter.step(frame, standing)
+        if not step.standing_transition_pending:
+            break
+        pending_phases.append(adapter._gait_phase)
+    else:
+        pytest.fail("standing transition did not finish at the next gait boundary")
+
+    phase_increment = adapter.env.config.gait.frequency_hz * adapter.control_timestep
+    assert pending_phases[-1] >= next_boundary - phase_increment - 1.0e-6
+    assert pending_phases[-1] < next_boundary
+    assert step.effective_command == pytest.approx(standing)
+    assert step.observation[9:12] == pytest.approx(standing)
     assert adapter._gait_phase == pytest.approx(0.0)
 
 
@@ -1029,6 +1089,26 @@ def test_hardware_remote_commands_fail_closed_and_use_checkpoint_bounds() -> Non
         metadata,
         remote_input((0.8, -0.1, 0.4)),
     ) == pytest.approx((-0.23, 0.28, 0.36))
+
+
+def test_remote_disconnect_reports_zero_requested_command(capsys) -> None:
+    report_remote_connection(
+        RemoteCommandInput(
+            normalized_command=(0.0, 0.0, 0.0),
+            service_connected=False,
+            controller_connected=False,
+            intent_armed=False,
+            abort_active=False,
+            service_connection_changed=True,
+            controller_connection_changed=True,
+        )
+    )
+
+    assert capsys.readouterr().out.splitlines() == [
+        "Visualizer remote service disconnected; requested command is zero while "
+        "disconnected.",
+        "Remote controller disconnected; requested command is zero while disconnected.",
+    ]
 
 
 def test_normalized_axis_mapping_preserves_standing_and_conditioned_ranges() -> None:

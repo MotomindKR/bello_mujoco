@@ -132,6 +132,22 @@ def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> No
     )
 
 
+def test_gait_clock_requires_multiple_control_steps_per_half_cycle(
+    bello_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    invalid_frequency = 0.5 / env.control_timestep
+
+    with pytest.raises(ValueError, match="less than half a cycle"):
+        replace(
+            env,
+            config=replace(
+                env.config,
+                gait=GaitConfig(frequency_hz=invalid_frequency),
+            ),
+        )
+
+
 def test_bilateral_mirrors_are_explicit_and_involutive(
     bello_asset: PreparedAsset,
 ) -> None:
@@ -824,11 +840,37 @@ def test_batch_command_mode_cohort_survives_resampling(
     assert jnp.all(command_is_moving(next_state.command[~standing], command_config))
 
 
+def test_training_reset_starts_moving_commands_at_phase_zero(
+    bello_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(bello_asset, batch_size=4)
+    moving = jnp.asarray([0.5, -0.1, 0.2], dtype=jnp.float32)
+
+    state, observation = env.reset_batch(
+        4,
+        command=moving,
+        rng=jax.random.PRNGKey(20),
+    )
+
+    assert state.gait_phase == pytest.approx(jnp.zeros(4))
+    assert desired_gait_foot_contact(state.gait_phase, env.config.gait) == (
+        pytest.approx(jnp.ones((4, 2)))
+    )
+    assert observation[:, observation_component_slice(env, "gait_phase")] == (
+        pytest.approx(jnp.tile(jnp.asarray([0.0, 1.0, 1.0]), (4, 1)))
+    )
+
+
 @pytest.mark.parametrize(
     ("request_phase", "boundary_previous", "boundary_next"),
-    ((0.3, 0.49, 0.51), (0.8, 0.99, 0.01)),
+    (
+        (0.05, 0.49, 0.51),
+        (0.3, 0.49, 0.51),
+        (0.55, 0.99, 0.01),
+        (0.8, 0.99, 0.01),
+    ),
 )
-def test_standing_transition_finishes_the_current_gait_step(
+def test_standing_transition_waits_for_the_next_gait_boundary(
     request_phase: float,
     boundary_previous: float,
     boundary_next: float,
@@ -836,7 +878,6 @@ def test_standing_transition_finishes_the_current_gait_step(
     command_config = CommandConfig(
         standing_transitions_enabled=True,
     )
-    gait_config = GaitConfig(frequency_hz=0.9, stance_fraction=0.6)
     moving = jnp.asarray([0.5, -0.1, 0.2], dtype=jnp.float32)
     standing = jnp.zeros(3, dtype=jnp.float32)
     resolve_transition = jax.jit(
@@ -848,7 +889,6 @@ def test_standing_transition_finishes_the_current_gait_step(
                 next_,
                 pending,
                 command_config,
-                gait_config,
             )
         )
     )
@@ -882,7 +922,6 @@ def test_standing_transition_finishes_the_current_gait_step(
 
 def test_moving_request_cancels_pending_standing_transition() -> None:
     command_config = CommandConfig(standing_transitions_enabled=True)
-    gait_config = GaitConfig(frequency_hz=0.9, stance_fraction=0.6)
     moving = jnp.asarray([0.5, 0.0, 0.0], dtype=jnp.float32)
     replacement = jnp.asarray([-0.3, 0.2, -0.1], dtype=jnp.float32)
 
@@ -893,7 +932,6 @@ def test_moving_request_cancels_pending_standing_transition() -> None:
         jnp.asarray(0.35),
         jnp.asarray(True),
         command_config,
-        gait_config,
     )
 
     assert command == pytest.approx(replacement)
@@ -903,7 +941,6 @@ def test_moving_request_cancels_pending_standing_transition() -> None:
 
 def test_standing_transition_resolver_vectorizes_over_worlds() -> None:
     command_config = CommandConfig(standing_transitions_enabled=True)
-    gait_config = GaitConfig(frequency_hz=0.9, stance_fraction=0.6)
     moving = jnp.asarray([[0.5, 0.0, 0.0], [0.4, 0.1, 0.0]], dtype=jnp.float32)
 
     command, phase, pending = resolve_gait_command_transition(
@@ -913,7 +950,6 @@ def test_standing_transition_resolver_vectorizes_over_worlds() -> None:
         jnp.asarray([0.51, 0.32]),
         jnp.asarray([True, True]),
         command_config,
-        gait_config,
     )
 
     assert command[0] == pytest.approx(jnp.zeros(3))
@@ -946,8 +982,14 @@ def test_boundary_step_keeps_moving_reward_then_returns_standing_observation(
     assert not bool(done)
     assert info["command/moving"] == pytest.approx(1.0)
     assert info["gait/active"] == pytest.approx(1.0)
-    assert info["reward/stand_foot_motion"] == pytest.approx(0.0)
-    assert info["reward/stand_upright"] == pytest.approx(0.0)
+    for name in (
+        "stand_still",
+        "stand_foot_motion",
+        "stand_foot_heading",
+        "stand_contact",
+        "stand_upright",
+    ):
+        assert info[f"reward/{name}"] == pytest.approx(0.0)
     assert command_is_standing(next_state.command, command_config)
     assert next_state.gait_phase == pytest.approx(0.0)
     assert not bool(next_state.standing_transition_pending)
@@ -956,6 +998,56 @@ def test_boundary_step_keeps_moving_reward_then_returns_standing_observation(
     )
     assert observation[observation_component_slice(env, "gait_phase")] == pytest.approx(
         jnp.zeros(3)
+    )
+
+    following_state, _, _, following_done, following_info = env.step(
+        next_state, jnp.zeros(env.action_size, dtype=jnp.float32)
+    )
+
+    assert not bool(following_done)
+    assert following_info["command/standing"] == pytest.approx(1.0)
+    assert following_info["gait/active"] == pytest.approx(0.0)
+    for name in ("gait_contact", "gait_stance_slip", "gait_swing_clearance"):
+        assert following_info[f"reward/{name}"] == pytest.approx(0.0)
+    assert command_is_standing(following_state.command, command_config)
+
+
+def test_moving_resample_cancels_pending_stop_at_boundary(
+    bello_asset: PreparedAsset,
+) -> None:
+    command_config = CommandConfig(
+        standing_probability=0.0,
+        resample_seconds=0.02,
+        standing_transitions_enabled=True,
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        bello_asset,
+        batch_size=1,
+        command_config=command_config,
+    )
+    moving = jnp.asarray([[0.5, 0.0, 0.0]], dtype=jnp.float32)
+    state, _ = env.reset_batch(1, command=moving)
+    state = state.replace(
+        gait_phase=jnp.asarray([0.49], dtype=jnp.float32),
+        standing_transition_pending=jnp.asarray([True]),
+    )
+
+    next_state, observation, _, done, info = env.step_batch(
+        state,
+        jnp.zeros((1, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(21),
+    )
+
+    assert not bool(done[0])
+    assert info["command/moving"][0] == pytest.approx(1.0)
+    assert command_is_moving(next_state.command[0], command_config)
+    assert next_state.gait_phase[0] == pytest.approx(0.0)
+    assert not bool(next_state.standing_transition_pending[0])
+    assert observation[0, observation_component_slice(env, "command")] == (
+        pytest.approx(next_state.command[0])
+    )
+    assert observation[0, observation_component_slice(env, "gait_phase")] == (
+        pytest.approx(jnp.asarray([0.0, 1.0, 1.0]))
     )
 
 
