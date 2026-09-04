@@ -1,4 +1,4 @@
-# Mini gait scales Bello's 0.90 Hz by sqrt(0.853 m / 0.865 m), then rounds.
+# Mini gait scales Bello's 0.90 Hz by sqrt(0.853 m / 0.868 m), then rounds.
 asset_config:
   asset: bello_mini
 env_config:

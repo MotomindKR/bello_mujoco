@@ -46,9 +46,9 @@ contract, and training validates it against the robot's motion profile.
 - `bello` is the production Bello morphology with maintained motion,
   differential-ankle, emulator, and physical-hardware contracts.
 - `bello_mini` is the reviewed 43.50 kg Bello Mini morphology. Its nominal
-  locomotion pose uses `-0.15` rad hip pitch, `0.30` rad knee flexion, and
-  `-0.15` rad ankle pitch on both legs. The pitch sum is zero, so both soles
-  remain flat, and the rounded 0.865 m root height places them at `z=0`. The
+  locomotion pose uses `-0.10` rad hip pitch, `0.30` rad knee flexion, and
+  `-0.20` rad ankle pitch on both legs. The pitch sum is zero, so both soles
+  remain flat, and the rounded 0.868 m root height places them at `z=0`. The
   static contract exposes all 28 movable joints: waist yaw, waist
   roll, and the 12 leg joints are policy-controlled, while both seven-DoF arms
   are held. Its logical

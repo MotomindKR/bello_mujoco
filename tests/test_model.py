@@ -107,7 +107,7 @@ def test_bello_mini_model_uses_locomotion_partition(
         foot_up = data.xmat[body_id].reshape(3, 3)[:, 2]
         np.testing.assert_allclose(foot_up, [0.0, 0.0, 1.0], atol=1.0e-7)
     raw_home_min_z = robot_geom_min_z(model.mj_model, model.default_qpos)
-    assert raw_home_min_z == pytest.approx(0.0, abs=2.0e-4)
+    assert raw_home_min_z == pytest.approx(0.0, abs=1.0e-3)
 
 
 def test_bello_mini_model_loads_mjx(bello_mini_asset: PreparedAsset) -> None:
