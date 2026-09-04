@@ -10,6 +10,7 @@ guides define the supported interfaces and contracts:
 - [TWIST teacher, student, and dataset pipeline](twist.md)
 - [One-stage TWIST2](twist2.md)
 - [Physical hardware](hardware.md)
+- [Robot asset contracts](robot_assets.md)
 - [URDF inertial overhaul](urdf_inertial_overhaul.md)
 - [RobStride emulator](emulator.md)
 - [Vast.ai lifecycle](vast_ai.md)
@@ -30,17 +31,36 @@ src/bello_mujoco/
   evaluation/              native rendering and policy evaluation
   hardware/                physical runners, IMU/pose services, and live GMR
   motion/                  motion clips, import, and feasibility tools
+  robots/                  packaged, validated robot topology contracts
   robstride/               CAN protocol, transmission, and hardware emulator
   training/                PPO, checkpoints, tracking, and Vast orchestration
   configuration.py         config decoding and maintained profiles
+  robot.py                 robot-contract schema and strict loader
 tests/                     contract and integration tests
 ```
 
-The supported prepared asset is `full_body`. Its canonical URDF is
-`deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf`,
-which directly references the lower- and upper-body meshes in that submodule.
-The same gitlink pins the hardware topology, RobStride model catalog, and
-Python hardware client used by source-checkout workflows.
+The supported prepared assets are `full_body` and `bello_mini`. Their canonical
+URDFs are respectively
+`deps/bello-stack/descriptions/bello/full_body/urdf/bello_full_body.urdf` and
+`deps/bello-stack/descriptions/bello_mini/urdf/bello_mini.urdf`; both reference
+meshes stored in the same pinned submodule. The `full_body` asset retains its
+motion and hardware profiles. `bello_mini` currently supports strict robot
+contract loading and asset preparation only; its GMR/motion and deployable
+hardware profiles remain deliberately absent until tuning and bench calibration.
+The same gitlink pins the RobStride model catalog and Python hardware client
+used by source-checkout workflows.
+
+Each asset identifier resolves one packaged contract under
+`src/bello_mujoco/robots/`. The contract declares source, generated, and hardware paths,
+floating-base and IMU bodies, ordered feet and forward axes, the actuator joint
+partition and defaults, payload attachment links, randomization bodies, and
+coupled actuator coordinates. These files are strictly decoded internal topology;
+they are not Hydra override surfaces.
+
+Motion-capable assets add a strict `<asset>_motion.yaml` profile in the same
+directory. It is the source of import joint schemas, tracked bodies, end effectors,
+and TWIST key-body order; training configs select the asset explicitly and preserve
+the resulting observation order in checkpoints.
 
 ## Runtime boundaries
 
@@ -52,7 +72,7 @@ reward math remains JAX compatible.
 
 The public configuration is profile-oriented. Internal topology, link names,
 coordinate partitions, numerical guardrails, and safety limits are validated
-constants rather than user-selectable Hydra branches.
+contracts rather than user-selectable Hydra branches.
 
 Generated paths include `.venv/`, `.uv-python/`, `.warp-cache/`, `.wandb/`,
 `.vast/`, `assets/generated/`, `artifacts/`, `outputs/`, and `checkpoints/`.

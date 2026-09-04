@@ -341,6 +341,7 @@ def install_native_rollout_fakes(monkeypatch):
     env = SimpleNamespace(
         model=SimpleNamespace(
             mj_model=object(),
+            robot=SimpleNamespace(root_body_name="pelvis_link"),
             root_qpos_adr=0,
             policy_qpos_indices=np.asarray([7, 8]),
         ),

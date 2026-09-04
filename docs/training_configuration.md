@@ -119,7 +119,7 @@ The asset section selects a deterministic prepared morphology.
 
 | Field | Locomotion baseline | Meaning |
 | --- | --- | --- |
-| `asset` | `full_body` | The only supported prepared asset. |
+| `asset` | `full_body` | Selects a registered robot contract. `full_body` is the maintained training asset; `bello_mini` currently supports static preparation/model loading but has no maintained motion, GMR, emulator, hardware, or training profile. |
 | `output_root` | `null` | Optional prepared-asset destination for standalone preparation. Training requires `null` so an exact source revision regenerates through the canonical content-addressed cache. |
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
@@ -131,13 +131,17 @@ The asset section selects a deterministic prepared morphology.
 | `imu_config` | disabled | Optional generated IMU site/sensors. Its `enabled` field controls generation and `body_name` selects the instrumented body. Training observations derive simulated IMU features without requiring this native sensor block. |
 | `ankle_differential_config.motor_gain_scale` | `0.5` | Gain multiplier applied to each differential-ankle motor. |
 | `ankle_differential_config.motor_effort_limit_scale` | `1` | Motor effort-limit multiplier. |
-| `joint_availability.waist_yaw` | `true` | Optionally fix the physical waist-yaw joint at asset-generation time. Waist roll/pitch and neck/head joints are fixed in the canonical URDF. |
+| `joint_availability.disabled_joint_names` | `[]` | Explicit configured actuator joints to fix at asset-generation time. Unknown and duplicate names are rejected. Waist roll/pitch and neck/head joints are already fixed in the canonical URDF. |
+| `actuator_mode` | `null` | Optional mode applied to every robot actuator before explicit actuator validation. Motion/TWIST profiles set `policy`; locomotion uses the robot profile's policy/hold partition. |
 | `actuator_config` | canonical Bello map | Its `joints` mapping assigns a `JointActuatorConfig` to each joint. |
 
 The `ankle_differential_config` fields are `motor_gain_scale` and
-`motor_effort_limit_scale`. `joint_availability` has only the `waist_yaw`
-boolean field.
-Each `actuator_config.joints` entry has a `mode` (`policy` or `hold`),
+`motor_effort_limit_scale`. `joint_availability.disabled_joint_names` is decoded
+from the YAML list into a canonical sorted tuple. Every name must belong to the
+selected robot's configured actuator set.
+When `actuator_mode` is set together with `actuator_config`, the explicit joint
+map must exactly match the derived robot map. Each `actuator_config.joints` entry
+has a `mode` (`policy` or `hold`),
 `default_pos`, optional `soft_limit`, `[kp, kd]` `gains`, and optional
 `effort_limit`.
 
@@ -146,13 +150,14 @@ a checkpoint runs from its exact clean Git revision, so its source descriptions
 and asset-generation implementation come from that revision. Training rejects
 a custom `output_root`.
 
-Motion training supplies its `asset_config` from the
-`MotionTrainingRunConfig` default factory rather than its YAML. The fixed
-tracking contract is the canonical 55.068 kg, box-collision, sphere-hand asset with
-waist yaw enabled; waist roll/pitch and neck/head joints are fixed, and all 25
-remaining coordinates are policy-controlled. A symmetric sphere-hand payload
-may be added without changing the joint or observation contract. Motion
-initialization rejects other deviations from this contract.
+Every maintained training YAML now selects `asset_config.asset` explicitly.
+Motion, TWIST, and TWIST2 also set `actuator_mode: policy`; the selected robot
+profile still supplies joint order, neutral positions, gains, limits, and effort
+limits. Their fixed tracking contract is the canonical box-collision asset with no
+actuator joints disabled. Waist roll/pitch and neck/head joints are fixed in the
+source URDF, and all 25 remaining coordinates are policy-controlled. A symmetric
+sphere-hand payload may be added without changing the joint or observation
+contract. Initialization rejects other deviations from this contract.
 
 ## Locomotion environment: `env_config`
 
@@ -161,7 +166,7 @@ initialization rejects other deviations from this contract.
 | `decimation` | Physics steps per policy step. The control period is `simulation_physics.timestep * decimation`. |
 | `max_episode_steps` | Timeout horizon in policy steps. |
 | `action_clip` | Environment action bound; must match a bounded policy's `action_limit`. |
-| `root_link` | Floating-base link used by environment indexing. |
+| `root_link` | Body used by environment indexing. `null` resolves to the selected robot contract's generated root body; maintained locomotion profiles explicitly use `pelvis_link`. |
 | `simulation_physics` | Runtime timestep and optional foot/terrain contact overrides. |
 | `terrain` | Plane, rough heightfield, or robot-only scene parameters. |
 | `model_randomization` | Per-environment joint, torso inertial, and other physical variation. |

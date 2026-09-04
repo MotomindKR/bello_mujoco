@@ -48,12 +48,6 @@ from bello_mujoco.terrain import (
 )
 
 
-_FOOT_FORWARD_AXES = (
-    ("left_ankle_roll_link", (0.0, 1.0, 0.0)),
-    ("right_ankle_roll_link", (0.0, -1.0, 0.0)),
-)
-
-
 @chex.dataclass(frozen=True)
 class BelloState:
     data: mjx.Data
@@ -295,7 +289,7 @@ class BelloEnvConfig:
     decimation: int = CONTROL_DECIMATION
     max_episode_steps: int = MAX_EPISODE_STEPS
     action_clip: float = BELLO_ACTION_CLIP
-    root_link: str = "bello_root"
+    root_link: str | None = None
     terrain: TerrainConfig = FLAT_TERRAIN
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig()
     model_randomization: ModelRandomizationConfig = ModelRandomizationConfig()
@@ -335,6 +329,10 @@ class BelloLocomotionEnv:
     def task(self) -> Literal["locomotion"]:
         return "locomotion"
 
+    @property
+    def root_link_name(self) -> str:
+        return self.config.root_link or self.model.robot.root_body_name
+
     def _validate_config(self) -> None:
         if self.decimation <= 0:
             raise ValueError(f"decimation must be positive, got {self.decimation}")
@@ -347,8 +345,14 @@ class BelloLocomotionEnv:
                 "action_clip must be a positive finite value, got "
                 f"{self.config.action_clip}"
             )
-        if not self.config.root_link:
-            raise ValueError("root_link must be a non-empty body name")
+        if self.config.root_link is not None and (
+            not self.config.root_link
+            or self.config.root_link != self.config.root_link.strip()
+        ):
+            raise ValueError(
+                "root_link must be null or a non-empty body name without "
+                "surrounding whitespace"
+            )
         if (
             not math.isfinite(self.config.spawn.clearance)
             or self.config.spawn.clearance < 0.0
@@ -558,7 +562,7 @@ class BelloLocomotionEnv:
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         env_config: BelloEnvConfig = BelloEnvConfig(),
-        actuator_config: ActuatorConfig = ActuatorConfig(),
+        actuator_config: ActuatorConfig | None = None,
         reward_config: RewardConfig = RewardConfig(),
         command_config: CommandConfig = CommandConfig(),
         done_config: DoneConfig = DoneConfig(),
@@ -794,13 +798,15 @@ class BelloLocomotionEnv:
         )
         if isinstance(mj_model, mujoco.MjModel):
             required_link_names = {
-                self.config.root_link,
+                self.root_link_name,
                 model.imu_body_name,
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
             }
             if self.reward_config.enabled("stand_foot_heading"):
-                required_link_names.update(name for name, _ in _FOOT_FORWARD_AXES)
+                required_link_names.update(
+                    name for name, _ in self.model.robot.foot_forward_axes
+                )
             for link_name in required_link_names:
                 if self._link_body_id(link_name) < 0:
                     raise ValueError(f"configured link/body not found: {link_name!r}")
@@ -2290,11 +2296,11 @@ class BelloLocomotionEnv:
         )
         joint_vel = data.qvel[qvel_idx]
         actuator_force = data.actuator_force[policy_idx]
-        base_lin_vel = self._link_lin_vel(state, self.config.root_link)
+        base_lin_vel = self._link_lin_vel(state, self.root_link_name)
         imu_lin_acc = self._imu_linear_acceleration(state)
         imu_ang_vel = self._imu_angular_velocity(state)
         base_height = jnp.asarray(
-            [self._link_clearance(state, self.config.root_link, world_id)],
+            [self._link_clearance(state, self.root_link_name, world_id)],
             dtype=jnp.float32,
         )
         projected_gravity = self._link_projected_gravity(
@@ -2408,13 +2414,13 @@ class BelloLocomotionEnv:
         )
 
     def _link_quat(self, state: BelloState, link_name: str) -> jax.Array:
-        if link_name == "bello_root":
+        if link_name == self.model.robot.root_body_name:
             root_qpos = int(self.model.root_qpos_adr)
             return state.data.qpos[root_qpos + 3 : root_qpos + 7]
         return state.data.xquat[self._link_body_id(link_name)]
 
     def _link_position(self, state: BelloState, link_name: str) -> jax.Array:
-        if link_name == "bello_root":
+        if link_name == self.model.robot.root_body_name:
             root_qpos = int(self.model.root_qpos_adr)
             return state.data.qpos[root_qpos : root_qpos + 3]
         return state.data.xpos[self._link_body_id(link_name)]
@@ -2432,7 +2438,7 @@ class BelloLocomotionEnv:
         return self._link_body_lin_vel(state, link_name)
 
     def _link_body_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
-        if link_name == "bello_root":
+        if link_name == self.model.robot.root_body_name:
             root_qpos = int(self.model.root_qpos_adr)
             root_qvel = int(self.model.root_qvel_adr)
             return quat_rotate_inverse(
@@ -2466,7 +2472,7 @@ class BelloLocomotionEnv:
         return self._link_body_ang_vel(state, self.model.imu_body_name)
 
     def _link_world_lin_vel(self, state: BelloState, link_name: str) -> jax.Array:
-        if link_name == "bello_root":
+        if link_name == self.model.robot.root_body_name:
             root_qvel = int(self.model.root_qvel_adr)
             return state.data.qvel[root_qvel : root_qvel + 3]
         return self._body_world_lin_vel(
@@ -2496,7 +2502,7 @@ class BelloLocomotionEnv:
         )
 
     def _link_body_ang_vel(self, state: BelloState, link_name: str) -> jax.Array:
-        if link_name == "bello_root":
+        if link_name == self.model.robot.root_body_name:
             root_qvel = int(self.model.root_qvel_adr)
             return state.data.qvel[root_qvel + 3 : root_qvel + 6]
         body_id = self._link_body_id(link_name)
@@ -2613,7 +2619,7 @@ class BelloLocomotionEnv:
     def _base_height(
         self, state: BelloState, world_id: jax.Array | int = 0
     ) -> jax.Array:
-        return self._link_clearance(state, self.config.root_link, world_id)
+        return self._link_clearance(state, self.root_link_name, world_id)
 
     def reward(
         self,
@@ -2791,7 +2797,7 @@ class BelloLocomotionEnv:
         link = getattr(self.reward_config.links, term_name)
         if self.reward_config.enabled(term_name) and link is not None:
             return link
-        return self.config.root_link
+        return self.root_link_name
 
     def _reward_frame_link(self, term_name: str) -> str:
         velocity_link = self._reward_link(term_name)
@@ -2807,7 +2813,7 @@ class BelloLocomotionEnv:
     def _done_link(self, term) -> str:
         if term.enabled and term.link is not None:
             return term.link
-        return self.config.root_link
+        return self.root_link_name
 
     def _contact_terms(
         self, state: BelloState, world_id: jax.Array
@@ -3082,12 +3088,12 @@ class BelloLocomotionEnv:
 
     def _foot_heading_error(self, state: BelloState) -> jax.Array:
         pelvis_forward = quat_rotate(
-            self._link_quat(state, self.config.root_link),
+            self._link_quat(state, self.root_link_name),
             jnp.asarray((0.0, 1.0, 0.0), dtype=jnp.float32),
         )[:2]
         pelvis_forward /= jnp.maximum(jnp.linalg.norm(pelvis_forward), 1.0e-6)
         errors = []
-        for link_name, local_forward in _FOOT_FORWARD_AXES:
+        for link_name, local_forward in self.model.robot.foot_forward_axes:
             foot_forward = quat_rotate(
                 self._link_quat(state, link_name),
                 jnp.asarray(local_forward, dtype=jnp.float32),
@@ -3147,7 +3153,7 @@ class BelloLocomotionEnv:
             jnp.abs(self._foot_heading_error(next_state)) * 180.0 / jnp.pi
         )
         return {
-            "gait/stance_width": self._stance_width(next_state, self.config.root_link),
+            "gait/stance_width": self._stance_width(next_state, self.root_link_name),
             "gait/foot_heading_error_mean_deg": jnp.mean(foot_heading_error_deg),
             "gait/foot_heading_error_max_deg": jnp.max(foot_heading_error_deg),
             "gait/active": moving.astype(jnp.float32),

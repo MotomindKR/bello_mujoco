@@ -688,10 +688,8 @@ def validate_hardware_twist2_checkpoint(
         raise ValueError("TWIST2 hardware requires the released Gaussian actor")
     if metadata.ppo.policy.obs_stack_size != 1:
         raise ValueError("TWIST2 hardware requires PPO observation stack size one")
-    if metadata.asset.joint_availability.enabled_joint_names != {"waist_yaw_joint"}:
-        raise ValueError(
-            "TWIST2 hardware requires only waist yaw among optional joints"
-        )
+    if metadata.asset.joint_availability.disabled_joint_names:
+        raise ValueError("TWIST2 hardware requires every configured actuator joint")
     if env.action_size != 25 or env.model.mj_model.nu != 25:
         raise ValueError("TWIST2 hardware requires 25 policy and physical coordinates")
     if not math.isclose(env.action_clip, TWIST2_RAW_ACTION_CLIP):

@@ -19,13 +19,16 @@ from bello_mujoco.hardware.fastsam import (
 from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
-    SMPLX_GMR_BODY_NAMES,
     load_smplx_standing_sample,
 )
 from bello_mujoco.hardware.twist2 import (
     ReferenceDiscontinuity,
     ReferenceUnavailable,
 )
+from bello_mujoco.robot_tasks import motion_task_definition
+
+
+GMR_SOURCE_BODY_NAMES = motion_task_definition("full_body").gmr.source_body_names
 
 
 def neutral_model(tmp_path: Path) -> Path:
@@ -147,9 +150,9 @@ def frame_message(**overrides: object) -> FrameMessage:
 
 
 def test_smplx_standing_sample_is_derived_from_model(tmp_path: Path) -> None:
-    frame = load_smplx_standing_sample(neutral_model(tmp_path))
+    frame = load_smplx_standing_sample(neutral_model(tmp_path), GMR_SOURCE_BODY_NAMES)
 
-    assert tuple(frame.transforms) == SMPLX_GMR_BODY_NAMES
+    assert tuple(frame.transforms) == GMR_SOURCE_BODY_NAMES
     assert frame.source_timestamp_ns == 0
     assert frame.source_age_ms == 0
     feet = [frame.transforms[name][0][2] for name in ("left_foot", "right_foot")]
@@ -257,10 +260,10 @@ def test_reference_factory_defers_live_target_check_until_motion(
         "from_hardware",
         classmethod(lambda _cls, _config: grpc_config),
     )
-    monkeypatch.setattr(fastsam, "FastSamSmplxStream", lambda _config: stream)
     monkeypatch.setattr(
-        fastsam, "GmrBelloRetargeter", lambda *_args, **_kwargs: object()
+        fastsam, "FastSamSmplxStream", lambda _config, _body_names: stream
     )
+    monkeypatch.setattr(fastsam, "GmrRetargeter", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         fastsam,
         "LiveGmrReferenceSource",
@@ -268,7 +271,9 @@ def test_reference_factory_defers_live_target_check_until_motion(
     )
 
     adapter = SimpleNamespace(
-        env=SimpleNamespace(),
+        env=SimpleNamespace(
+            model=SimpleNamespace(robot=SimpleNamespace(asset="full_body"))
+        ),
         metadata=SimpleNamespace(
             dataset=SimpleNamespace(gmr_revision="a" * 40),
             robot_fingerprint="sha256:" + "b" * 64,
@@ -299,23 +304,23 @@ def test_camera_adapter_preserves_live_translation_after_initial_alignment(
 def test_frame_validation_maps_camera_pose_and_accounts_for_latency(
     tmp_path: Path,
 ) -> None:
-    stream = FastSamSmplxStream(grpc_config(tmp_path))
+    stream = FastSamSmplxStream(grpc_config(tmp_path), GMR_SOURCE_BODY_NAMES)
     frame = stream._parse_frame(frame_message())
 
     assert frame.sequence == 1
     assert frame.source_age_ms == 15
-    assert tuple(frame.transforms) == SMPLX_GMR_BODY_NAMES
+    assert tuple(frame.transforms) == GMR_SOURCE_BODY_NAMES
     assert np.all(np.isfinite(frame.transforms["pelvis"][0]))
 
     low_confidence = np.ones(len(SMPLX_BODY_JOINT_NAMES))
     low_confidence[SMPLX_BODY_JOINT_NAMES.index("left_wrist")] = 0.1
     with pytest.raises(ReferenceUnavailable, match="left_wrist") as low_error:
-        FastSamSmplxStream(grpc_config(tmp_path))._parse_frame(
+        FastSamSmplxStream(grpc_config(tmp_path), GMR_SOURCE_BODY_NAMES)._parse_frame(
             frame_message(joint_confidence=low_confidence)
         )
     assert not isinstance(low_error.value, ReferenceDiscontinuity)
     with pytest.raises(ReferenceUnavailable, match="latency is too high"):
-        FastSamSmplxStream(grpc_config(tmp_path))._parse_frame(
+        FastSamSmplxStream(grpc_config(tmp_path), GMR_SOURCE_BODY_NAMES)._parse_frame(
             frame_message(
                 output_monotonic_ns=2_030_000_000,
                 pipeline_latency_ms=30.0,
@@ -324,7 +329,7 @@ def test_frame_validation_maps_camera_pose_and_accounts_for_latency(
 
 
 def test_track_identity_change_is_a_retargeting_discontinuity(tmp_path: Path) -> None:
-    stream = FastSamSmplxStream(grpc_config(tmp_path))
+    stream = FastSamSmplxStream(grpc_config(tmp_path), GMR_SOURCE_BODY_NAMES)
     stream._parse_frame(frame_message())
 
     with pytest.raises(ReferenceDiscontinuity, match="track changed"):

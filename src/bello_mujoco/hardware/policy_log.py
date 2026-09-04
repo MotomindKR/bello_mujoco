@@ -88,7 +88,7 @@ class PolicyStepLogger:
         }
         self._socket, child_socket = socket.socketpair(
             socket.AF_UNIX,
-            socket.SOCK_SEQPACKET,
+            socket.SOCK_DGRAM,
         )
         try:
             child_fd = child_socket.fileno()

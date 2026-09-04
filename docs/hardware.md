@@ -123,6 +123,11 @@ deadlines, and damped cleanup as the policy runner. Ankle pitch and roll are
 translated through the two-motor differential; the script never treats one
 ankle motor as an independently movable joint.
 
+Select the robot contract with `--asset`. The default `full_body` profile has a
+calibrated hardware description. `bello_mini` is rejected before the hardware
+binding is imported or a daemon connection is opened because its motor
+directions, zeros, ankle mapping, and limits are not yet calibrated.
+
 Run the read-only preflight first. It connects to either physical
 `bello-hardwared` or the VCAN emulator, verifies that both groups are `IDLE`,
 checks the selected joint and complete proposed sweep against logical and motor
@@ -130,6 +135,7 @@ limits, and sends no command:
 
 ```text
 uv run python scripts/joint_chirp.py \
+  --asset full_body \
   --joint left_hip_roll_joint \
   --endpoint http://127.0.0.1:50051
 ```
@@ -140,6 +146,7 @@ joint or load:
 
 ```text
 uv run python scripts/joint_chirp.py \
+  --asset full_body \
   --joint left_hip_roll_joint \
   --amplitude 0.01 \
   --start-frequency 0.5 \
@@ -291,6 +298,11 @@ locomotion checkpoint in `standing_checkpoint_path`. The locomotion checkpoint
 runs with a zero command before and after motion tracking. Both checkpoints must
 use the same ordered physical-coordinate mapping.
 
+Hardware and emulator topology is resolved from the robot selected by checkpoint or
+command configuration. The robot contract points at the pinned bello-stack hardware
+description and motor-model catalog; startup validates that every enabled robot
+actuator has a compatible physical mapping.
+
 The motion checkpoint restores the reference contract.
 `motion_path=null` reuses the saved path; a relocated archive is accepted only
 when its schema and content identity match.
@@ -330,13 +342,12 @@ licensed `SMPLX_NEUTRAL.npz`. The neutral model is read locally only to derive
 and validate the server's exact SMPL-X body-joint contract; it is never copied
 into a checkpoint or Git. Normal standing applies a small repository-owned,
 hand-authored relaxed-standing pose to that skeleton and retargets it through
-the same pinned GMR solver as live motion. The result uses the dataset builder's
-positive-flex knee treatment to solve the whole body, then retains the relaxed
-GMR upper body while replacing the legs with the policy checkpoint's canonical
-Bello stance, levels the root, and places the lower sole on the floor. This
-keeps normal standing inside the stance distribution learned by the policy and
-avoids persistent stepping. It does not use SMPL-X's mathematical zero pose,
-whose arms extend sideways.
+the same robot-profiled pinned GMR solver as live motion. The configured standing
+joints are then replaced with the policy checkpoint's canonical stance before the
+root is leveled and the lower sole is placed on the floor. This keeps normal
+standing inside the stance distribution learned by the policy and avoids persistent
+stepping. It does not use SMPL-X's mathematical zero pose, whose arms extend
+sideways.
 The live server must advertise schema 1,
 `smplx_body_22`, the exact standard 22-joint order and hierarchy, OpenCV camera
 coordinates, `xyzw` quaternions, and the reviewed learned converter. A legacy
@@ -395,11 +406,13 @@ transmitting a qualified person target. The live gRPC consumer and GMR solver
 run in background threads with capacity-one/latest-only semantics; the 50 Hz
 control loop never blocks on either service. Frame age is the server's complete
 pipeline latency plus the configured transport budget and local time since
-receipt. Live targets use the pinned GMR universal task and collision profile,
-plus the runner's explicit causal knee-pole thresholds, joint
-velocity/acceleration bounds, and foot-clearance geometry. The shared root
-estimator's causal contact state grounds supporting feet while preserving
-airborne vertical motion.
+receipt. The selected robot motion profile supplies GMR's source, target, task,
+IK configuration, landmark set, feet, and output-body order. Velocity limiting,
+solver passes, collision geometry, and foot clearance remain owned by the pinned
+GMR configuration; offline conversion additionally uses its versioned smoothing
+and protected-body settings. Knee-pole data emitted offline is quality-control
+metadata, not a second target transformation. The shared root estimator's causal
+contact state grounds supporting feet while preserving airborne vertical motion.
 
 Armed operation follows `HOLD`, a ten-second ramp to the hybrid normal-standing
 target described above, and `RUN`; that target is held while waiting for `RUN`.
@@ -449,7 +462,7 @@ reference completion, and raw-versus-applied action bounds.
 Locomotion adds exact RTMW latest-JSON schema and same-host clock semantics,
 tracking and required-joint confidence, derived-rotation confidence and tree
 consistency, pipeline/reference age, source sequence and timestamp monotonicity,
-GMR joint velocity/acceleration and hard upper-body joint limits, and a fixed
+reference joint speed and hard upper-body joint limits, and a fixed
 upper-body target slew bound. Invalid terminal-joint rotations use the nearest
 valid ancestor only outside the required upper-body chain. These checks affect
 only the 12 arm targets; the joystick-conditioned locomotion policy continues
@@ -462,8 +475,8 @@ fatal.
 
 TWIST2 adds exact Fast-SAM stream semantics, tracking and required-joint
 confidence, pipeline/reference age, source sequence and timestamp monotonicity,
-SMPL-X quaternion validity, GMR joint velocity/acceleration and hard URDF joint
-limits, retargeted root/body velocity, and raw Gaussian action bounds. Reference
+SMPL-X quaternion validity, reference joint speed and hard URDF joint limits,
+retargeted root/body velocity, and raw Gaussian action bounds. Reference
 poses are observations and may use the full hard joint range seen in the packed
 training data; outgoing policy targets remain bounded by the narrower actuator
 and live-daemon command ranges. The body-frame IMU gyro is passed directly into

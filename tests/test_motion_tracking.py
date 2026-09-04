@@ -29,15 +29,12 @@ from bello_mujoco.envs.motion_tracking import (
 )
 from bello_mujoco.configuration import motion_training_profile
 from bello_mujoco.motion.clip import (
-    DEFAULT_TRACKED_BODY_NAMES,
-    FIXED_TRACKING_JOINT_AVAILABILITY,
-    FIXED_TRACKING_JOINT_NAMES,
-    GMR_BELLO_JOINT_NAMES,
     MOTION_FORMAT_VERSION,
     load_motion_clip,
     motion_tracking_asset_config,
     sample_motion,
 )
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.motion.import_gmr import (
     _build_qpos,
@@ -48,12 +45,14 @@ requires_warp_gpu = pytest.mark.skipif(
     jax.default_backend() != "gpu",
     reason="compiled MJX-Warp integration requires a GPU backend",
 )
+MOTION_TASK = motion_task_definition("full_body")
 
 
 @pytest.fixture(scope="module")
 def fixed_waist_asset(tmp_path_factory) -> PreparedAsset:
     return prepare_asset(
         motion_tracking_asset_config(
+            asset="full_body",
             output_root=tmp_path_factory.mktemp("fixed-waist-asset"),
         )
     )
@@ -64,7 +63,7 @@ def fixed_waist_motion(fixed_waist_asset: PreparedAsset, tmp_path_factory) -> Pa
     path = tmp_path_factory.mktemp("fixed-waist-motion") / "test_motion.npz"
     model = load_prepared_bello_model(
         fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config().actuator_config,
+        actuator_config=motion_tracking_asset_config(asset="full_body").actuator_config,
         load_mjx=False,
     )
     mj_model = model.mj_model
@@ -74,7 +73,7 @@ def fixed_waist_motion(fixed_waist_asset: PreparedAsset, tmp_path_factory) -> Pa
     qvel = np.zeros((frame_count, mj_model.nv), dtype=np.float64)
     qvel[:, 1] = 0.6
     body_ids = np.asarray(
-        [mj_model.body(name).id for name in DEFAULT_TRACKED_BODY_NAMES]
+        [mj_model.body(name).id for name in MOTION_TASK.default_tracked_body_names]
     )
     body_pos = np.empty((frame_count, len(body_ids), 3))
     body_quat = np.empty((frame_count, len(body_ids), 4))
@@ -104,7 +103,7 @@ def fixed_waist_motion(fixed_waist_asset: PreparedAsset, tmp_path_factory) -> Pa
         format_version=np.asarray(MOTION_FORMAT_VERSION),
         fps=np.asarray(10.0),
         joint_names=np.asarray(model.actuator_joint_names),
-        body_names=np.asarray(DEFAULT_TRACKED_BODY_NAMES),
+        body_names=np.asarray(MOTION_TASK.default_tracked_body_names),
         source_sha256=np.asarray("synthetic"),
         qpos=qpos,
         qvel=qvel,
@@ -196,8 +195,11 @@ def test_legacy_gmr_import_defaults_missing_foot_contacts() -> None:
             "fps": 30.0,
             "root_pos": np.zeros((frame_count, 3)),
             "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
-            "dof_pos": np.zeros((frame_count, len(GMR_BELLO_JOINT_NAMES))),
-        }
+            "dof_pos": np.zeros(
+                (frame_count, len(MOTION_TASK.legacy_import_joint_names))
+            ),
+        },
+        MOTION_TASK,
     )
 
     np.testing.assert_array_equal(
@@ -207,9 +209,7 @@ def test_legacy_gmr_import_defaults_missing_foot_contacts() -> None:
 
 def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
     frame_count = 2
-    fixed_head_joint_count = sum(
-        name not in FIXED_TRACKING_JOINT_NAMES for name in GMR_BELLO_JOINT_NAMES
-    )
+    fixed_head_joint_count = len(MOTION_TASK.imported_actuator_joint_names)
 
     arrays = _validate_legacy_motion(
         {
@@ -217,7 +217,8 @@ def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
             "root_pos": np.zeros((frame_count, 3)),
             "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
             "dof_pos": np.zeros((frame_count, fixed_head_joint_count)),
-        }
+        },
+        MOTION_TASK,
     )
 
     assert arrays["dof_pos"].shape == (frame_count, 25)
@@ -226,7 +227,9 @@ def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
 def test_default_motion_profile_uses_tracked_fixed_joint_clip() -> None:
     config = motion_training_profile()
 
-    assert config.asset_config.joint_availability == FIXED_TRACKING_JOINT_AVAILABILITY
+    assert config.asset_config.asset == "full_body"
+    assert config.asset_config.actuator_mode == "policy"
+    assert not config.asset_config.joint_availability.disabled_joint_names
     assert not config.asset_config.enforce_policy_effort_limits
     assert config.env_config.reward.torque_l1_weight == -1.2
     assert config.env_config.reward.torque_peak_weight == -12.0
@@ -241,18 +244,23 @@ def test_gmr_joint_columns_are_remapped_by_name(
 ) -> None:
     model = load_prepared_bello_model(
         fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config().actuator_config,
+        actuator_config=motion_tracking_asset_config(asset="full_body").actuator_config,
         load_mjx=False,
     )
-    source_joint_pos = np.arange(len(GMR_BELLO_JOINT_NAMES), dtype=np.float64)[None, :]
+    source_joint_pos = np.arange(
+        len(MOTION_TASK.legacy_import_joint_names), dtype=np.float64
+    )[None, :]
     qpos = _build_qpos(
         model,
+        MOTION_TASK,
         np.asarray([[0.0, 0.0, 1.0]]),
         np.asarray([[0.0, 0.0, 0.0, 1.0]]),
         source_joint_pos,
     )
 
-    source_index = {name: index for index, name in enumerate(GMR_BELLO_JOINT_NAMES)}
+    source_index = {
+        name: index for index, name in enumerate(MOTION_TASK.legacy_import_joint_names)
+    }
     for name, address in zip(
         model.actuator_joint_names, model.actuator_qpos_indices, strict=True
     ):
@@ -264,7 +272,7 @@ def test_motion_loader_and_shortest_arc_interpolation(
 ) -> None:
     model = load_prepared_bello_model(
         fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config().actuator_config,
+        actuator_config=motion_tracking_asset_config(asset="full_body").actuator_config,
         load_mjx=False,
     )
     clip = load_motion_clip(fixed_waist_motion, model)

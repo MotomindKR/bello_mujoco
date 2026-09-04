@@ -15,8 +15,14 @@ trajectories were subsequently replaced with a constant carrying pose: 0.20 rad
 shoulder roll, 0.15 rad elbow pitch, and zero shoulder pitch/yaw, elbow yaw,
 and wrist pitch. This holds the arms downward with a small symmetric outward
 offset. Derived velocities and tracked-body kinematics were regenerated. The
-edited reference has zero box-model self-collision frames; edit provenance and
-the pre-edit archive checksum are embedded in the NPZ.
+embedded provenance records zero box-model self-collision frames against the
+generation-time `bello-stack` revision `4c9b724`. Replaying the unchanged clip
+against the current pinned conservative box model reports 17 contact frames,
+with a maximum 12.206 mm penetration between `pelvis_link_collision` and
+`right_hip_yaw_link_collision`; the simplified mesh collision model reports no
+contacts. Refine those box primitives before using this clip for training that
+requires a collision-free conservative model. Edit provenance and the pre-edit
+archive checksum remain embedded in the NPZ.
 
 The intended load-training configuration is `end_effector_payload_mass_kg=4.5359237`,
 which represents 10 lb attached to each sphere hand (9.0718474 kg total

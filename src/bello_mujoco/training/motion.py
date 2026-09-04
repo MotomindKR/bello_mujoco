@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import warnings
 
@@ -89,8 +89,8 @@ class MotionEvalVideoConfig:
 
 @dataclass(frozen=True)
 class MotionTrainingRunConfig:
+    asset_config: AssetPrepConfig
     config: PPOConfig = PPOConfig()
-    asset_config: AssetPrepConfig = field(default_factory=motion_tracking_asset_config)
     env_config: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
     motion: MotionSelectionConfig = MotionSelectionConfig()
     checkpoint_config: CheckpointConfig = CheckpointConfig()
@@ -643,18 +643,13 @@ def validate_motion_checkpoint_config(config: CheckpointConfig) -> None:
 
 
 def _validate_fixed_tracking_asset(config: AssetPrepConfig) -> None:
-    expected = motion_tracking_asset_config(output_root=config.output_root)
-    if config.collision_mode != "box":
-        raise ValueError("motion tracking requires collision_mode='box'")
-    if config.joint_availability != expected.joint_availability:
+    expected = motion_tracking_asset_config(
+        asset=config.asset,
+        output_root=config.output_root,
+        end_effector_payload_mass_kg=config.end_effector_payload_mass_kg,
+    )
+    if config != expected:
         raise ValueError(
-            "motion tracking requires fixed waist roll/pitch and neck/head joints"
-        )
-    if config.actuator_config != expected.actuator_config:
-        raise ValueError(
-            "motion tracking requires the canonical all-policy actuator contract"
-        )
-    if config.ankle_differential_config != expected.ankle_differential_config:
-        raise ValueError(
-            "motion tracking requires the canonical differential-ankle contract"
+            "motion tracking asset_config must match the selected robot's "
+            "canonical all-policy motion asset"
         )

@@ -15,6 +15,7 @@ from bello_mujoco.motion.clip import (
     load_motion_clip,
     motion_tracking_asset_config,
 )
+from bello_mujoco.robot import AssetName
 from bello_mujoco.sim import BelloModel, load_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 
@@ -40,9 +41,9 @@ class MotionFeasibilityReport:
     nonfinite: bool
 
 
-def load_feasibility_model() -> BelloModel:
+def load_feasibility_model(asset: AssetName) -> BelloModel:
     return load_bello_model(
-        motion_tracking_asset_config(),
+        motion_tracking_asset_config(asset=asset),
         terrain=FLAT_TERRAIN,
         load_mjx=False,
     )
@@ -51,11 +52,12 @@ def load_feasibility_model() -> BelloModel:
 def replay_motion_reference(
     motion_path: Path,
     *,
+    asset: AssetName,
     decimation: int = CONTROL_DECIMATION,
 ) -> MotionFeasibilityReport:
     if decimation <= 0:
         raise ValueError("decimation must be positive")
-    model = load_feasibility_model()
+    model = load_feasibility_model(asset)
     motion = load_motion_clip(motion_path, model)
     mj_model = model.mj_model
     data = mujoco.MjData(mj_model)

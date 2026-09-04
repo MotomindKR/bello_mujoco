@@ -2,6 +2,13 @@ motion:
   directory: motions/asap_fixed_head
   sequence: video_single_foot_balance_level1_filter_amass
 
+asset_config:
+  asset: full_body
+  collision_mode: box
+  target_total_mass_kg: null
+  enforce_policy_effort_limits: false
+  actuator_mode: policy
+
 config:
   seed: 0
   total_timesteps: 100000000

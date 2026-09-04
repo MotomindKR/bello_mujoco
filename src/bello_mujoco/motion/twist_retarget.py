@@ -14,11 +14,17 @@ from typing import Callable
 
 import numpy as np
 
-from bello_mujoco.motion.twist_dataset import SourceSequence, load_source_manifest
+from bello_mujoco.motion.twist_dataset import (
+    SourceSequence,
+    TWIST_RETARGET_FORMAT_VERSION,
+    load_source_manifest,
+)
+from bello_mujoco.robot import AssetName, robot_definition
+from bello_mujoco.robot_tasks import motion_task_definition
+from bello_mujoco.assets_pipeline import robot_descriptions_root
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
-RETARGET_FORMAT_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,7 @@ class RetargetDecision:
 
 @dataclass(frozen=True)
 class BatchRetargetReport:
+    asset: AssetName
     manifest_path: str
     output_root: str
     normalized_root: str
@@ -47,6 +54,7 @@ class BatchRetargetReport:
 def batch_retarget_manifest(
     manifest_path: Path,
     *,
+    asset: AssetName,
     body_model_root: Path,
     robot_xml: Path,
     output_root: Path,
@@ -78,7 +86,7 @@ def batch_retarget_manifest(
     if limit is not None and limit < 1:
         raise ValueError("limit must be positive when provided")
     if not robot_xml.is_file():
-        raise FileNotFoundError(f"canonical Bello MJCF not found: {robot_xml}")
+        raise FileNotFoundError(f"canonical robot MJCF not found: {robot_xml}")
     if not gmr_python.is_file():
         raise FileNotFoundError(
             f"GMR Python interpreter not found: {gmr_python}; initialize it with "
@@ -107,26 +115,17 @@ def batch_retarget_manifest(
 
     repository = Path(__file__).resolve().parents[3]
     gmr_root = repository / "deps" / "GMR"
+    robot = robot_definition(asset)
+    profile = motion_task_definition(asset).gmr
     if gmr_environment is None:
         gmr_environment = _nix_develop_environment(gmr_root)
     normalize_tool = repository / "tools" / "twist_normalize_smpl.py"
     retarget_tool = repository / "tools" / "twist_gmr_retarget.py"
-    config_path = (
-        gmr_root / "general_motion_retargeting" / "ik_configs" / "smplx_to_bello.json"
-    )
-    robot_source = (
-        repository
-        / "deps"
-        / "bello-stack"
-        / "descriptions"
-        / "bello"
-        / "full_body"
-        / "urdf"
-        / "bello_full_body.urdf"
-    )
+    config_path = profile.config_path(gmr_root)
+    robot_source = robot.source_urdf_path(robot_descriptions_root())
     gmr_revision = _git_revision(gmr_root)
     expected = {
-        "retarget_format_version": str(RETARGET_FORMAT_VERSION),
+        "retarget_format_version": str(TWIST_RETARGET_FORMAT_VERSION),
         "gmr_revision": gmr_revision,
         "gmr_config_sha256": _sha256(config_path),
         "robot_fingerprint": "sha256:" + _sha256(robot_source),
@@ -188,6 +187,8 @@ def batch_retarget_manifest(
                     str(body_model_root),
                     "--robot-xml",
                     str(robot_xml),
+                    "--asset",
+                    asset,
                 ],
                 check=True,
                 capture_output=True,
@@ -233,6 +234,7 @@ def batch_retarget_manifest(
         sorted(decisions, key=lambda item: (item.source_id, item.sequence_id))
     )
     report = BatchRetargetReport(
+        asset=asset,
         manifest_path=str(manifest_path),
         output_root=str(output_root),
         normalized_root=str(normalized_root),

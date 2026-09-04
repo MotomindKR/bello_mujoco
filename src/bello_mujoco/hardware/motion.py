@@ -770,9 +770,9 @@ def validate_hardware_motion_checkpoint(
             "'tanh_gaussian' policy actions"
         )
     availability = metadata.asset.joint_availability
-    if availability.enabled_joint_names != {"waist_yaw_joint"}:
+    if availability.disabled_joint_names:
         raise ValueError(
-            "motion hardware runner requires only waist yaw among optional joints"
+            "motion hardware runner requires every configured actuator joint"
         )
     if env.action_size != 25:
         raise ValueError(

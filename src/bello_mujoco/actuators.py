@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 from typing import Literal
+
+from bello_mujoco.robot import AssetName, robot_definition
 
 ActuatorMode = Literal["policy", "hold"]
 VALID_ACTUATOR_MODES = {"policy", "hold"}
@@ -32,149 +34,47 @@ class JointActuatorConfig:
     effort_limit: float | None = None
 
 
-def default_joint_configs() -> dict[str, JointActuatorConfig]:
+def default_joint_configs(
+    asset: AssetName,
+) -> dict[str, JointActuatorConfig]:
     return {
-        "left_hip_pitch_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=-0.325,
-            soft_limit=(-1.41372, 1.41372),
-            gains=(200.0, 5.0),
-            effort_limit=120.0,
-        ),
-        "right_hip_pitch_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.325,
-            soft_limit=(-1.41372, 1.41372),
-            gains=(200.0, 5.0),
-            effort_limit=120.0,
-        ),
-        "left_hip_roll_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.0,
-            soft_limit=(-1.41372, 1.41372),
-            gains=(150.0, 5.0),
-            effort_limit=60.0,
-        ),
-        "right_hip_roll_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.0,
-            soft_limit=(-1.41372, 1.41372),
-            gains=(150.0, 5.0),
-            effort_limit=60.0,
-        ),
-        "left_hip_yaw_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.125,
-            soft_limit=(-1.41372, 1.41372),
-            gains=(150.0, 5.0),
-            effort_limit=60.0,
-        ),
-        "right_hip_yaw_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=-0.125,
-            soft_limit=(-1.41372, 1.41372),
-            gains=(150.0, 5.0),
-            effort_limit=60.0,
-        ),
-        "left_knee_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.45,
-            soft_limit=(0.0, 1.98968),
-            gains=(220.0, 6.0),
-            effort_limit=120.0,
-        ),
-        "right_knee_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.45,
-            soft_limit=(0.0, 1.98968),
-            gains=(220.0, 6.0),
-            effort_limit=120.0,
-        ),
-        "left_ankle_pitch_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.30,
-            soft_limit=(-0.44506, 0.96866),
-            gains=(22.0, 1.0),
-            effort_limit=36.0,
-        ),
-        "right_ankle_pitch_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.30,
-            soft_limit=(-0.44506, 0.96866),
-            gains=(22.0, 1.0),
-            effort_limit=36.0,
-        ),
-        "left_ankle_roll_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.0,
-            soft_limit=(-0.07857, 0.07857),
-            gains=(22.0, 1.0),
-            effort_limit=36.0,
-        ),
-        "right_ankle_roll_joint": JointActuatorConfig(
-            mode="policy",
-            default_pos=0.0,
-            soft_limit=(-0.07857, 0.07857),
-            gains=(22.0, 1.0),
-            effort_limit=36.0,
-        ),
-        "waist_yaw_joint": JointActuatorConfig(
-            mode="policy",
-            soft_limit=(-0.45, 0.45),
-            gains=(180.0, 12.0),
-            effort_limit=120.0,
-        ),
-        "right_shoulder_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(70.0, 2.0), effort_limit=120.0
-        ),
-        "right_shoulder_roll_joint": JointActuatorConfig(
-            mode="hold", gains=(70.0, 2.0), effort_limit=60.0
-        ),
-        "right_shoulder_yaw_joint": JointActuatorConfig(
-            mode="hold", gains=(20.0, 1.0), effort_limit=36.0
-        ),
-        "right_elbow_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(40.0, 2.0), effort_limit=36.0
-        ),
-        "right_elbow_yaw_joint": JointActuatorConfig(
-            mode="hold", gains=(20.0, 1.0), effort_limit=14.0
-        ),
-        "right_wrist_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(10.0, 1.0), effort_limit=14.0
-        ),
-        "left_shoulder_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(70.0, 2.0), effort_limit=120.0
-        ),
-        "left_shoulder_roll_joint": JointActuatorConfig(
-            mode="hold", gains=(70.0, 2.0), effort_limit=60.0
-        ),
-        "left_shoulder_yaw_joint": JointActuatorConfig(
-            mode="hold", gains=(20.0, 1.0), effort_limit=36.0
-        ),
-        "left_elbow_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(40.0, 2.0), effort_limit=36.0
-        ),
-        "left_elbow_yaw_joint": JointActuatorConfig(
-            mode="hold", gains=(20.0, 1.0), effort_limit=14.0
-        ),
-        "left_wrist_pitch_joint": JointActuatorConfig(
-            mode="hold", gains=(10.0, 1.0), effort_limit=14.0
-        ),
+        actuator.joint_name: JointActuatorConfig(
+            mode=actuator.mode,
+            default_pos=actuator.default_pos,
+            soft_limit=actuator.soft_limit,
+            gains=actuator.gains,
+            effort_limit=actuator.effort_limit,
+        )
+        for actuator in robot_definition(asset).actuators
     }
 
 
 @dataclass(frozen=True)
 class ActuatorConfig:
-    joints: dict[str, JointActuatorConfig] = field(
-        default_factory=default_joint_configs
-    )
+    joints: dict[str, JointActuatorConfig]
+
+    @classmethod
+    def for_asset(
+        cls,
+        asset: AssetName,
+        *,
+        mode: ActuatorMode | None = None,
+    ) -> ActuatorConfig:
+        joints = default_joint_configs(asset)
+        if mode is not None:
+            joints = {
+                name: JointActuatorConfig(
+                    mode=mode,
+                    default_pos=config.default_pos,
+                    soft_limit=config.soft_limit,
+                    gains=config.gains,
+                    effort_limit=config.effort_limit,
+                )
+                for name, config in joints.items()
+            }
+        return cls(joints=joints)
 
     def __post_init__(self) -> None:
-        default_effort_limits = {
-            name: config.effort_limit
-            for name, config in default_joint_configs().items()
-            if config.effort_limit is not None
-        }
         for name, config in self.joints.items():
             if config.mode not in VALID_ACTUATOR_MODES:
                 raise ValueError(
@@ -211,12 +111,6 @@ class ActuatorConfig:
                 raise ValueError(
                     f"actuator config for joint {name!r} has invalid effort_limit "
                     f"{config.effort_limit}; expected a positive finite value"
-                )
-            if name in default_effort_limits and config.effort_limit is None:
-                raise ValueError(
-                    f"actuator config for known Bello joint {name!r} must provide "
-                    "effort_limit; joint overrides replace default actuator "
-                    "settings"
                 )
         object.__setattr__(self, "joints", FrozenDict(self.joints))
 

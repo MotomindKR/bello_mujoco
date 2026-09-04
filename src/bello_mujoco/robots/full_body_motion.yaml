@@ -1,0 +1,153 @@
+asset: full_body
+legacy_import_joint_names:
+  - left_hip_pitch_joint
+  - left_hip_roll_joint
+  - left_hip_yaw_joint
+  - left_knee_joint
+  - left_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_hip_pitch_joint
+  - right_hip_roll_joint
+  - right_hip_yaw_joint
+  - right_knee_joint
+  - right_ankle_pitch_joint
+  - right_ankle_roll_joint
+  - waist_yaw_joint
+  - neck_yaw_joint
+  - head_pitch_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_shoulder_yaw_joint
+  - right_elbow_pitch_joint
+  - right_elbow_yaw_joint
+  - right_wrist_pitch_joint
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_pitch_joint
+  - left_elbow_yaw_joint
+  - left_wrist_pitch_joint
+fixed_joint_names:
+  - waist_roll_joint
+  - waist_pitch_joint
+  - neck_yaw_joint
+  - head_pitch_joint
+reference_root_body_name: pelvis_link
+default_tracked_body_names:
+  - pelvis_link
+  - torso_link
+  - left_ankle_roll_link
+  - right_ankle_roll_link
+  - l_wrist_link
+  - r_wrist_link
+  - left_knee_link
+  - right_knee_link
+  - l_elbow_link
+  - r_elbow_link
+beyondmimic_tracked_body_names:
+  - pelvis_link
+  - left_hip_roll_link
+  - left_knee_link
+  - left_ankle_roll_link
+  - right_hip_roll_link
+  - right_knee_link
+  - right_ankle_roll_link
+  - torso_link
+  - l_shoulder_roll_link
+  - l_elbow_link
+  - l_wrist_link
+  - r_shoulder_roll_link
+  - r_elbow_link
+  - r_wrist_link
+default_end_effector_body_names:
+  - l_wrist_link
+  - r_wrist_link
+beyondmimic_end_effector_body_names:
+  - left_ankle_roll_link
+  - right_ankle_roll_link
+  - l_wrist_link
+  - r_wrist_link
+twist_key_body_names:
+  - l_wrist_link
+  - r_wrist_link
+  - left_ankle_roll_link
+  - right_ankle_roll_link
+  - left_knee_link
+  - right_knee_link
+  - l_elbow_link
+  - r_elbow_link
+  - head_link
+gmr:
+  source_human: smplx
+  target_robot: bello
+  ik_config: general_motion_retargeting/ik_configs/smplx_to_bello.json
+  task_profile: universal
+  source_body_names:
+    - pelvis
+    - spine3
+    - left_hip
+    - left_knee
+    - left_foot
+    - right_hip
+    - right_knee
+    - right_foot
+    - left_shoulder
+    - left_elbow
+    - left_wrist
+    - right_shoulder
+    - right_elbow
+    - right_wrist
+  source_foot_body_names:
+    - left_foot
+    - right_foot
+  output_body_names:
+    - pelvis_link
+    - left_hip_roll_link
+    - left_knee_link
+    - left_ankle_roll_link
+    - right_hip_roll_link
+    - right_knee_link
+    - right_ankle_roll_link
+    - torso_link
+    - l_shoulder_roll_link
+    - l_elbow_link
+    - l_wrist_link
+    - r_shoulder_roll_link
+    - r_elbow_link
+    - r_wrist_link
+    - head_link
+  standing_default_joint_names:
+    - left_hip_pitch_joint
+    - left_hip_roll_joint
+    - left_hip_yaw_joint
+    - left_knee_joint
+    - left_ankle_pitch_joint
+    - left_ankle_roll_joint
+    - right_hip_pitch_joint
+    - right_hip_roll_joint
+    - right_hip_yaw_joint
+    - right_knee_joint
+    - right_ankle_pitch_joint
+    - right_ankle_roll_joint
+  knee_pole:
+    reference_flexion_radians: 0.8726646259971648
+    sample_minimum_flexion_radians: 0.3490658503988659
+    sample_minimum_distance_meters: 0.04
+    smoothing_frames: 5
+    legs:
+      - name: left
+        source_hip_body_name: left_hip
+        source_knee_body_name: left_knee
+        source_foot_body_name: left_foot
+        target_hip_body_name: left_hip_roll_link
+        target_knee_body_name: left_knee_link
+        target_foot_body_name: left_ankle_roll_link
+        target_knee_joint_name: left_knee_joint
+      - name: right
+        source_hip_body_name: right_hip
+        source_knee_body_name: right_knee
+        source_foot_body_name: right_foot
+        target_hip_body_name: right_hip_roll_link
+        target_knee_body_name: right_knee_link
+        target_foot_body_name: right_ankle_roll_link
+        target_knee_joint_name: right_knee_joint

@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 import sys
 import time
-from typing import IO, Any, Sequence
+from typing import IO, Any, Sequence, get_args
 
 import numpy as np
 
@@ -33,7 +33,7 @@ from bello_mujoco.hardware.runtime import (
     wait_for_hardware_frame,
     wait_for_operator_confirmation_while_holding,
 )
-from bello_mujoco.sim import ANKLE_TENDON_LOGICAL_JOINT
+from bello_mujoco.robot import AssetName, RobotDefinition, robot_definition
 
 CHIRP_CONFIRMATION = "CHIRP"
 MAX_AMPLITUDE_RADIANS = 0.05
@@ -43,6 +43,7 @@ MAX_END_FREQUENCY_RATE_FRACTION = 0.4
 @dataclass(frozen=True)
 class JointChirpConfig:
     joint: str
+    asset: AssetName = "full_body"
     rate_hz: float = 50.0
     amplitude_radians: float = 0.02
     start_frequency_hz: float = 0.5
@@ -53,6 +54,7 @@ class JointChirpConfig:
     envelope_seconds: float = 1.0
 
     def __post_init__(self) -> None:
+        robot_definition(self.asset)
         if not self.joint.strip():
             raise ValueError("joint must not be empty")
         positive = {
@@ -108,6 +110,7 @@ class ChirpPoint:
 
 @dataclass(frozen=True)
 class ChirpHardwareAdapter:
+    asset: AssetName
     physical_coordinate_names: tuple[str, ...]
     logical_joint_names: tuple[str, ...]
     transform: np.ndarray
@@ -133,32 +136,60 @@ class ChirpHardwareAdapter:
 
 def actuator_layout(
     physical_coordinate_names: tuple[str, ...],
+    robot: RobotDefinition,
 ) -> tuple[tuple[str, ...], np.ndarray]:
     if not physical_coordinate_names:
         raise ValueError("hardware groups do not contain any coordinates")
     if len(set(physical_coordinate_names)) != len(physical_coordinate_names):
         raise ValueError("hardware groups contain duplicate coordinates")
 
+    physical_coordinates = set(physical_coordinate_names)
+    for group in robot.coupled_actuator_groups:
+        tendon_names = {actuator.tendon_name for actuator in group.actuators}
+        logical_names = set(group.joint_names)
+        selected_logical_names = physical_coordinates & logical_names
+        if selected_logical_names:
+            raise ValueError(
+                f"hardware inventory exposes logical joints for coupled actuator "
+                f"group {group.name!r}: {', '.join(sorted(selected_logical_names))}"
+            )
+        selected_tendon_names = physical_coordinates & tendon_names
+        if selected_tendon_names and selected_tendon_names != tendon_names:
+            missing = tendon_names - selected_tendon_names
+            raise ValueError(
+                f"hardware inventory contains incomplete coupled actuator group "
+                f"{group.name!r}; missing physical coordinates: "
+                f"{', '.join(sorted(missing))}"
+            )
+
+    coupled_by_coordinate = {
+        actuator.tendon_name: actuator for actuator in robot.coupled_actuators
+    }
     logical_joint_names = tuple(
-        ANKLE_TENDON_LOGICAL_JOINT.get(name, name) for name in physical_coordinate_names
+        coupled_by_coordinate[name].logical_joint_name
+        if name in coupled_by_coordinate
+        else name
+        for name in physical_coordinate_names
     )
     if len(set(logical_joint_names)) != len(logical_joint_names):
         raise ValueError("hardware coordinates do not have a unique logical layout")
     logical_index = {name: index for index, name in enumerate(logical_joint_names)}
     transform = np.eye(len(physical_coordinate_names), dtype=np.float64)
     for row, coordinate in enumerate(physical_coordinate_names):
-        if coordinate not in ANKLE_TENDON_LOGICAL_JOINT:
+        coupled = coupled_by_coordinate.get(coordinate)
+        if coupled is None:
             continue
-        side, _, _, motor_index = coordinate.split("_")
-        pitch_name = f"{side}_ankle_pitch_joint"
-        roll_name = f"{side}_ankle_roll_joint"
-        if pitch_name not in logical_index or roll_name not in logical_index:
+        missing = [
+            name for name, _ in coupled.joint_coefficients if name not in logical_index
+        ]
+        if missing:
             raise ValueError(
-                f"hardware coordinate {coordinate!r} requires both {side} ankle motors"
+                f"hardware coordinate {coordinate!r} requires coupled logical "
+                f"joints: {', '.join(missing)}"
             )
         transform[row] = 0.0
-        transform[row, logical_index[pitch_name]] = -1.0 if motor_index == "1" else 1.0
-        transform[row, logical_index[roll_name]] = 1.0
+        for joint_name, coefficient in coupled.joint_coefficients:
+            transform[row, logical_index[joint_name]] = coefficient
     if not np.all(np.isfinite(transform)) or np.linalg.matrix_rank(transform) != len(
         physical_coordinate_names
     ):
@@ -167,26 +198,32 @@ def actuator_layout(
 
 
 def build_hardware_adapter(
-    physical_coordinate_names: tuple[str, ...], rate_hz: float
+    physical_coordinate_names: tuple[str, ...],
+    rate_hz: float,
+    robot: RobotDefinition,
 ) -> ChirpHardwareAdapter:
-    logical_joint_names, transform = actuator_layout(physical_coordinate_names)
-    joint_configs = default_joint_configs()
+    logical_joint_names, transform = actuator_layout(physical_coordinate_names, robot)
+    joint_configs = default_joint_configs(robot.asset)
     unknown = sorted(set(logical_joint_names) - set(joint_configs))
     if unknown:
         raise ValueError(f"hardware inventory contains unknown joints: {unknown}")
 
     ankle_gain_scale = AnkleDifferentialConfig().motor_gain_scale
+    coupled_coordinate_names = {
+        actuator.tendon_name for actuator in robot.coupled_actuators
+    }
     gains = []
     for physical_name, logical_name in zip(
         physical_coordinate_names, logical_joint_names, strict=True
     ):
-        scale = ankle_gain_scale if physical_name in ANKLE_TENDON_LOGICAL_JOINT else 1.0
+        scale = ankle_gain_scale if physical_name in coupled_coordinate_names else 1.0
         gains.append(
             tuple(scale * value for value in joint_configs[logical_name].gains)
         )
     kp = np.asarray([gain[0] for gain in gains], dtype=np.float64)
     kd = np.asarray([gain[1] for gain in gains], dtype=np.float64)
     return ChirpHardwareAdapter(
+        asset=robot.asset,
         physical_coordinate_names=physical_coordinate_names,
         logical_joint_names=logical_joint_names,
         transform=transform,
@@ -253,7 +290,7 @@ def validate_experiment(
     initial_logical = adapter.inverse_transform @ initial_physical
     selected_index = adapter.logical_joint_names.index(chirp.joint)
     selected_initial = float(initial_logical[selected_index])
-    selected_config = default_joint_configs()[chirp.joint]
+    selected_config = default_joint_configs(adapter.asset)[chirp.joint]
     if selected_config.soft_limit is not None:
         low, high = selected_config.soft_limit
         if (
@@ -515,6 +552,7 @@ def _config_record(
     return {
         "record": "chirp_configuration",
         "schema_version": 1,
+        "asset": adapter.asset,
         "logged_at": datetime.now(timezone.utc).isoformat(),
         "sample_relation": "each state frame is read after submission of the target in the same record is scheduled and its control deadline passes; group command_count reports daemon application",
         "hardware": {
@@ -626,6 +664,12 @@ def run(
     output_path: Path,
 ) -> int:
     validate_hardware_control_config(hardware)
+    robot_definition_config = robot_definition(chirp.asset)
+    if robot_definition_config.hardware_description is None:
+        raise ValueError(
+            "joint chirp requires a calibrated hardware description; "
+            f"robot asset {chirp.asset!r} has none"
+        )
     binding = import_hardware_binding()
     require_state_frame_binding(binding)
     if hardware.arm:
@@ -642,7 +686,11 @@ def run(
             for group_name in hardware.groups
             for coordinate in robot.group(group_name).coordinates
         )
-        adapter = build_hardware_adapter(physical_names, chirp.rate_hz)
+        adapter = build_hardware_adapter(
+            physical_names,
+            chirp.rate_hz,
+            robot_definition_config,
+        )
         groups = validate_hardware_inventory(robot, adapter, hardware, binding)
         state_reader = robot.states(groups=hardware.groups, imus=(hardware.imu_name,))
         initial_frame = wait_for_hardware_frame(
@@ -665,6 +713,7 @@ def run(
             json.dumps(
                 {
                     "joint_chirp_preflight": "passed",
+                    "asset": adapter.asset,
                     "endpoint": hardware.endpoint,
                     "groups": hardware.groups,
                     "joint": chirp.joint,
@@ -741,6 +790,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--joint", required=True, help="logical joint to excite")
     parser.add_argument(
+        "--asset",
+        choices=get_args(AssetName),
+        default="full_body",
+        help="robot definition used for joint and coupling contracts",
+    )
+    parser.add_argument(
         "--endpoint",
         default="http://127.0.0.1:50051",
         help="bello-hardwared endpoint (default: %(default)s)",
@@ -776,6 +831,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     try:
         JointChirpConfig(
             joint=args.joint,
+            asset=args.asset,
             rate_hz=args.rate,
             amplitude_radians=args.amplitude,
             start_frequency_hz=args.start_frequency,
@@ -804,6 +860,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     chirp = JointChirpConfig(
         joint=args.joint,
+        asset=args.asset,
         rate_hz=args.rate,
         amplitude_radians=args.amplitude,
         start_frequency_hz=args.start_frequency,

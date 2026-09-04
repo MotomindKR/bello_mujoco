@@ -820,10 +820,11 @@ def _with_checkpoint_metadata_defaults(
         normalized["ppo"] = normalized_ppo
         value = normalized
     asset = value.get("asset")
-    if isinstance(asset, dict) and "end_effector_payload_mass_kg" not in asset:
+    if isinstance(asset, dict):
         normalized = dict(value)
         normalized_asset = dict(asset)
-        normalized_asset["end_effector_payload_mass_kg"] = 0.0
+        normalized_asset.setdefault("end_effector_payload_mass_kg", 0.0)
+        normalized_asset.setdefault("actuator_mode", None)
         normalized["asset"] = normalized_asset
         value = normalized
     if value.get("task") == "locomotion":
@@ -953,6 +954,21 @@ def _without_retired_asset_schema(value: dict[str, Any]) -> dict[str, Any]:
     availability = normalized_asset.get("joint_availability")
     if isinstance(availability, dict):
         normalized_availability = dict(availability)
+        if "waist_yaw" in normalized_availability:
+            if "disabled_joint_names" in normalized_availability:
+                raise ValueError(
+                    "metadata.asset.joint_availability must not contain both "
+                    "waist_yaw and disabled_joint_names"
+                )
+            legacy_waist_yaw = normalized_availability.pop("waist_yaw")
+            if type(legacy_waist_yaw) is not bool:
+                raise TypeError(
+                    "metadata.asset.joint_availability.waist_yaw must be a boolean"
+                )
+            normalized_availability["disabled_joint_names"] = (
+                [] if legacy_waist_yaw else ["waist_yaw_joint"]
+            )
+            changed = True
         for name in ("waist_roll", "waist_pitch", "neck_yaw", "head_pitch"):
             if name not in normalized_availability:
                 continue

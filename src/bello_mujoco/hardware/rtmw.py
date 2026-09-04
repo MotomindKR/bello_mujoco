@@ -24,11 +24,10 @@ from bello_mujoco.fastsam_conditioning import (
     FootConditionedRootConfig,
 )
 from bello_mujoco.hardware.smplx_retarget import (
-    GmrBelloRetargeter,
     GmrLiveRetargetConfig,
+    GmrRetargeter,
     LiveGmrReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
-    SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
     load_smplx_standing_sample,
     repository_gmr_source_identity,
@@ -38,6 +37,7 @@ from bello_mujoco.hardware.twist2 import (
     ReferenceUnavailable,
 )
 from bello_mujoco.repository import repository_root
+from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
@@ -249,16 +249,29 @@ class RtmwLatestJsonStream:
     def __init__(
         self,
         config: RtmwLatestJsonConfig,
+        source_body_names: tuple[str, ...],
         *,
         clock_ns: Callable[[], int] = time.monotonic_ns,
-        standing_sample_loader: Callable[[Path], SmplxTargetFrame] = (
-            load_smplx_standing_sample
-        ),
+        standing_sample_loader: Callable[
+            [Path, tuple[str, ...]], SmplxTargetFrame
+        ] = load_smplx_standing_sample,
     ) -> None:
         self.config = config
+        if not source_body_names or len(set(source_body_names)) != len(
+            source_body_names
+        ):
+            raise ValueError("RTMW source body names must be nonempty and unique")
+        unknown = sorted(set(source_body_names) - set(RTMW_SMPLX52_NAMES))
+        if unknown:
+            raise ValueError(
+                "RTMW source body names are absent from SMPL-X: " + ", ".join(unknown)
+            )
+        self.source_body_names = source_body_names
         self.pose_path = config.pose_path.expanduser().absolute()
         self._clock_ns = clock_ns
-        self._standing_sample = standing_sample_loader(config.neutral_model_path)
+        self._standing_sample = standing_sample_loader(
+            config.neutral_model_path, source_body_names
+        )
         self.neutral_model_sha256 = _file_sha256(config.neutral_model_path)
         self._coordinates = RtmwCoordinateAdapter(config)
         self._root_conditioner = CausalFootConditionedRoot(
@@ -439,14 +452,14 @@ class RtmwLatestJsonStream:
             body.get("valid_mask"), len(RTMW_SMPLX52_NAMES), "valid_mask"
         )
         required = np.asarray(
-            [RTMW_SMPLX52_NAMES.index(name) for name in SMPLX_GMR_BODY_NAMES]
+            [RTMW_SMPLX52_NAMES.index(name) for name in self.source_body_names]
         )
         if not np.all(valid_mask[required]):
-            name = SMPLX_GMR_BODY_NAMES[int(np.flatnonzero(~valid_mask[required])[0])]
+            name = self.source_body_names[int(np.flatnonzero(~valid_mask[required])[0])]
             raise ReferenceUnavailable(f"RTMW joint {name!r} has no valid position")
         minimum = float(np.min(confidence[required]))
         if minimum < self.config.min_joint_confidence:
-            name = SMPLX_GMR_BODY_NAMES[int(np.argmin(confidence[required]))]
+            name = self.source_body_names[int(np.argmin(confidence[required]))]
             raise ReferenceUnavailable(
                 f"RTMW joint {name!r} confidence is too low: {minimum:.3f}"
             )
@@ -515,7 +528,7 @@ class RtmwLatestJsonStream:
         return SmplxTargetFrame(
             transforms={
                 name: (lookup[name].copy(), quaternion_lookup[name].copy())
-                for name in SMPLX_GMR_BODY_NAMES
+                for name in self.source_body_names
             },
             sequence=frame_id,
             source_timestamp_ns=source_timestamp_ns,
@@ -586,10 +599,12 @@ def rtmw_locomotion_reference_source(
     rtmw_root = require_pinned_rtmw_revision()
     validate_pinned_rtmw_contract(rtmw_root)
     source_config = RtmwLatestJsonConfig.from_hardware(config)
-    stream = RtmwLatestJsonStream(source_config)
-    retargeter = GmrBelloRetargeter(
+    asset = adapter.env.model.robot.asset
+    profile = motion_task_definition(asset).gmr
+    stream = RtmwLatestJsonStream(source_config, profile.source_body_names)
+    retargeter = GmrRetargeter(
         adapter.env,
-        repository_gmr_source_identity(),
+        repository_gmr_source_identity(asset),
         GmrLiveRetargetConfig(human_height_m=source_config.human_height_m),
         validate_reference=adapter.validate_upper_body_reference,
     )

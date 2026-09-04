@@ -33,6 +33,7 @@ from bello_mujoco.envs.twist import (
 )
 from bello_mujoco.motion.clip import MotionSample, load_motion_clip
 from bello_mujoco.motion.twist_dataset import PackedReferenceBank
+from bello_mujoco.robot import AssetName
 from bello_mujoco.sim import (
     ModelRandomizationConfig,
     WarpConfig,
@@ -949,8 +950,8 @@ class BelloTwist2Env(BelloTwistEnv):
         return data.replace(qvel=qvel)
 
 
-def default_twist2_asset_config() -> AssetPrepConfig:
-    return default_twist_asset_config()
+def default_twist2_asset_config(asset: AssetName) -> AssetPrepConfig:
+    return default_twist_asset_config(asset)
 
 
 def _quat_conjugate(quaternion: jax.Array) -> jax.Array:

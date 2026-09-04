@@ -1,4 +1,5 @@
 operation: inspect
+asset: full_body
 source: null
 output: null
 jobs: 8

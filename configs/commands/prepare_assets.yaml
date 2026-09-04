@@ -1,4 +1,5 @@
 profile: physical
+asset: full_body
 output_root: null
 hydra:
   job:

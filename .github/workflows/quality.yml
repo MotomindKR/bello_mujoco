@@ -12,26 +12,61 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - name: Resolve pinned Bello stack revision
-        id: bello_stack
+      - name: Resolve pinned dependency revisions
+        id: dependencies
         run: |
           git submodule init
-          echo "commit=$(git rev-parse HEAD:deps/bello-stack)" >> "$GITHUB_OUTPUT"
+          echo "bello_stack=$(git rev-parse HEAD:deps/bello-stack)" >> "$GITHUB_OUTPUT"
+          echo "gmr=$(git rev-parse HEAD:deps/GMR)" >> "$GITHUB_OUTPUT"
+          echo "fast_sam=$(git rev-parse HEAD:deps/Fast-SAM-3D-Body)" >> "$GITHUB_OUTPUT"
+          echo "rtmw=$(git rev-parse HEAD:deps/RTMW-SMPLX-Teleop)" >> "$GITHUB_OUTPUT"
       - name: Check out pinned Bello stack revision
         uses: actions/checkout@v6
         with:
           repository: MotomindKR/bello-stack
-          ref: ${{ steps.bello_stack.outputs.commit }}
+          ref: ${{ steps.dependencies.outputs.bello_stack }}
           path: deps/bello-stack
-          # Fine-grained token with read-only Contents access to bello-stack.
+          # Fine-grained token with read-only Contents access to private dependencies.
           token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
           persist-credentials: false
-      - name: Register Bello stack checkout as the pinned submodule
+      - name: Check out pinned GMR revision
+        uses: actions/checkout@v6
+        with:
+          repository: MotomindKR/GMR
+          ref: ${{ steps.dependencies.outputs.gmr }}
+          path: deps/GMR
+          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
+          persist-credentials: false
+      - name: Check out pinned Fast-SAM revision
+        uses: actions/checkout@v6
+        with:
+          repository: MotomindKR/Fast-SAM-3D-Body
+          ref: ${{ steps.dependencies.outputs.fast_sam }}
+          path: deps/Fast-SAM-3D-Body
+          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
+          persist-credentials: false
+      - name: Check out pinned RTMW revision
+        uses: actions/checkout@v6
+        with:
+          repository: MotomindKR/RTMW-SMPLX-Teleop
+          ref: ${{ steps.dependencies.outputs.rtmw }}
+          path: deps/RTMW-SMPLX-Teleop
+          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
+          persist-credentials: false
+      - name: Register dependency checkouts as pinned submodules
         run: |
-          git submodule absorbgitdirs deps/bello-stack
-          test "$(git rev-parse HEAD:deps/bello-stack)" = \
-            "$(git -C deps/bello-stack rev-parse HEAD)"
-          test "$(git submodule status --recursive | cut -c1)" = " "
+          git submodule absorbgitdirs
+          for submodule_path in \
+            deps/bello-stack \
+            deps/GMR \
+            deps/Fast-SAM-3D-Body \
+            deps/RTMW-SMPLX-Teleop
+          do
+            test "$(git rev-parse "HEAD:$submodule_path")" = \
+              "$(git -C "$submodule_path" rev-parse HEAD)"
+          done
+          git submodule status --recursive | \
+            awk 'substr($0, 1, 1) != " " { bad = 1 } END { exit bad }'
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.25"
@@ -51,20 +86,29 @@ jobs:
           from posixpath import dirname, join, normpath
           from zipfile import ZipFile
 
-          urdf_name = (
-              "bello_mujoco/descriptions/bello/full_body/urdf/"
-              "bello_full_body.urdf"
+          urdf_names = (
+              (
+                  "bello_mujoco/descriptions/bello/full_body/urdf/"
+                  "bello_full_body.urdf"
+              ),
+              (
+                  "bello_mujoco/descriptions/bello_mini/urdf/"
+                  "bello_mini.urdf"
+              ),
           )
           with ZipFile(sys.argv[1]) as wheel:
               names = set(wheel.namelist())
-              assert urdf_name in names
-              urdf = ET.fromstring(wheel.read(urdf_name))
-              mesh_names = {
-                  normpath(join(dirname(urdf_name), mesh.attrib["filename"]))
-                  for mesh in urdf.iter("mesh")
-              }
-              missing = sorted(mesh_names - names)
-              assert not missing, f"wheel is missing URDF meshes: {missing}"
+              for urdf_name in urdf_names:
+                  assert urdf_name in names
+                  urdf = ET.fromstring(wheel.read(urdf_name))
+                  mesh_names = {
+                      normpath(join(dirname(urdf_name), mesh.attrib["filename"]))
+                      for mesh in urdf.iter("mesh")
+                  }
+                  missing = sorted(mesh_names - names)
+                  assert not missing, (
+                      f"wheel is missing meshes for {urdf_name}: {missing}"
+                  )
               license_names = [
                   name for name in names if name.endswith(".dist-info/licenses/LICENSE")
               ]
@@ -82,15 +126,17 @@ jobs:
 
           from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
 
-          prepared = prepare_asset(
-              AssetPrepConfig(
-                  output_root=Path(sys.argv[1]),
-                  mesh_face_budget=50,
-                  visual_mesh_face_budget=50,
+          for asset in ("full_body", "bello_mini"):
+              prepared = prepare_asset(
+                  AssetPrepConfig(
+                      asset=asset,
+                      output_root=Path(sys.argv[1]),
+                      mesh_face_budget=50,
+                      visual_mesh_face_budget=50,
+                  )
               )
-          )
-          mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
-          mujoco.MjModel.from_xml_path(str(prepared.viewer_mjcf_path))
+              mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
+              mujoco.MjModel.from_xml_path(str(prepared.viewer_mjcf_path))
           PY
       - run: uv run --no-sync python -m compileall -q src tests
       - run: uv run --no-sync ruff format --check src tests

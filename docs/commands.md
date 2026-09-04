@@ -35,25 +35,28 @@ directories are written below `outputs/hydra/<command>/`.
 
 ## `bello-prepare-assets`
 
-Build the canonical Bello URDF, runtime MJCF, and viewer MJCF from
-`deps/bello-stack/descriptions/bello/`. Installed wheels carry the pinned URDF
-and meshes, so standalone asset preparation does not require a source checkout.
-Meshes and XML are validated before the prepared asset is returned.
+Build the selected robot's canonical URDF, runtime MJCF, and viewer MJCF from
+the pinned descriptions in `deps/bello-stack`. Installed wheels carry the
+registered URDFs and meshes, so standalone asset preparation does not require a
+source checkout. Meshes and XML are validated before the prepared asset is
+returned.
 
 Configuration source: `configs/commands/prepare_assets.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `profile` | `physical` or `visualizer`; `physical` | Select the canonical physical recipe or the lower-resolution persistent viewer recipe. |
+| `asset` | `full_body` or `bello_mini`; `full_body` | Select the registered robot contract to prepare. |
 | `output_root` | path or `null`; `null` | Override the generated-asset root. `~` is expanded. With the physical profile, `null` uses the content-addressed user cache at `$XDG_CACHE_HOME/bello-mujoco/assets` (or `~/.cache/bello-mujoco/assets`) and retains the eight most recently used variants. The visualizer profile defaults to `assets/generated/visualizer`. |
 
-Both profiles use the 55.068 kg, box-collision, sphere-hand morphology with active
-waist yaw and fixed waist roll/pitch, neck yaw, and head pitch. The physical
+The selected robot contract determines morphology, mass, joint partition, and
+payload attachment points. `full_body` remains the maintained 55.068 kg default;
+`bello_mini` prepares its reviewed 43.503 kg static morphology. The physical
 profile keeps a 200,000-face visual budget; the visualizer profile uses 20,000.
-The collision budget remains 1,000 faces. Both standalone profiles omit
-generated IMU sensors and enforce policy effort limits. The emulator and
-checkpoint-bound runtimes prepare their own explicitly configured variants
-rather than assuming this standalone output is interchangeable.
+The collision budget remains 1,000 faces. Both standalone profiles omit generated
+IMU sensors and enforce policy effort limits. The emulator and checkpoint-bound
+runtimes prepare their own explicitly configured variants rather than assuming
+this standalone output is interchangeable.
 
 ## `bello-train`
 
@@ -163,6 +166,7 @@ Configuration source: `configs/commands/motion.yaml`.
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
 | `operation` | `import`, `import_dataset`, `inspect`, or `render`; `inspect` | all | Select the offline motion operation. |
+| `asset` | `full_body` or `bello_mini`; `full_body` | all | Select the robot contract. Import operations also require that robot to provide a motion/GMR profile; Bello Mini does not provide one yet. |
 | `source` | path or `null`; `null` | all | Required input file or directory. |
 | `output` | path or `null`; `null` | import, import_dataset, render; optional for inspect | Destination archive, dataset directory, report file, or video. |
 | `jobs` | positive integer; `8` | import_dataset | Maximum parallel legacy imports. |
@@ -208,6 +212,7 @@ It never downloads datasets or body models. Configuration source:
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `operation` | `scan_amass`, `validate`, or `build`; `validate` | Generate an AMASS manifest, validate the source boundary, or build split files and an index. |
+| `asset` | robot asset; `full_body` | Select the robot and its motion/GMR profile for provenance validation and packing. |
 | `manifest` | path or `null`; `null` | Output path for `scan_amass`; required input manifest otherwise. |
 | `source_root` | path or `null`; `null` | Aggregated AMASS root for `scan_amass`; only `*_stageii.npz` motion archives are included. |
 | `dataset_release` | string or `null`; `null` | Required operator-supplied AMASS release identifier for `scan_amass`. |
@@ -218,7 +223,6 @@ It never downloads datasets or body models. Configuration source:
 | `body_model_root` | path or `null`; `null` | Required for SMPL-H/SMPL-X and checked for the three SMPL-X NPZ model files. |
 | `retargeted_root` | path or `null`; `null` | Required only for build; clips use `<source_id>__<sequence_id>.npz`. |
 | `output_root` | path or `null`; `null` | Required only for build and must be empty. |
-| `robot_model_path` | canonical Bello URDF path | Robot content used in provenance validation and the dataset fingerprint. |
 | `gmr_root` | `deps/GMR` | Clean pinned GMR checkout whose exact commit enters the fingerprint. |
 | `quality_config` | `configs/twist/quality.yaml` | Versioned rejection and quarantine thresholds. |
 | `curation_config` | `configs/twist/amass_flat_ground.yaml` | Versioned pre-split exclusions for generated outputs and motions requiring unsupported terrain; used only by `scan_amass`. |
@@ -286,6 +290,7 @@ Configuration source: `configs/commands/emulator.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
+| `asset` | `full_body` or `bello_mini`; `full_body` | Select the robot and its hardware topology. Bello Mini currently fails explicitly because its topology is calibration-gated rather than deployable. |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
 | `command_latency_seconds` | nonnegative float; `0.01` | Delay MIT motor-control frames before applying them to MuJoCo. Lifecycle, parameter, and stop traffic remains immediate; use `0` to disable the delay. |
 | `motor_kp_scale` | positive float; `1` | Emulator-only multiplier on decoded MIT position gains. Use controlled sweeps to diagnose effective stiffness mismatch; `1` preserves the canonical plant. |
@@ -293,12 +298,13 @@ Configuration source: `configs/commands/emulator.yaml`.
 | `video_path` | path or `null`; `null` | Capture free-torso emulator state at 30 FPS and render it to MP4 when the emulator exits. Guided setup is omitted so recording does not disturb the real-time loop. |
 | `end_effector_payload_mass_kg` | nonnegative float; `0` | Add this many kilograms to each sphere hand. Use the payload recorded by the motion-policy checkpoint when emulating a weighted policy. |
 
-The emulator is checkout-only. It selects the canonical `lower_body` and
-`upper_body` groups from `deps/bello-stack/descriptions/bello/hardware.yaml`,
-uses `deps/bello-stack/descriptions/robstride/models.yaml` for protocol and
-hardware limits, and derives direct and differential transmissions from the
-canonical URDF. Only the logical-to-SocketCAN interface mapping is local. It
-applies MIT impedance control, publishes the pelvis IMU serial stream and
+The emulator is checkout-only. It resolves hardware groups and the RobStride
+model catalog from the selected robot contract, then derives direct and
+differential transmissions from that robot's canonical URDF. Only `full_body`
+currently has a deployable hardware description; selecting `bello_mini` fails
+until motor directions, encoder zeros, and ankle coefficients are calibrated.
+Only the logical-to-SocketCAN interface mapping is local. The emulator applies
+MIT impedance control, publishes the configured IMU serial stream and
 PoseService, and paces simulation against wall-clock time. Its torso guide is
 always engaged at startup; Enter releases it, and another Enter resets the robot
 and re-engages the guide.

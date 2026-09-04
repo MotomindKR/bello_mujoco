@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import bello_mujoco.hardware.rtmw as rtmw_module
 from bello_mujoco.hardware.rtmw import (
     RTMW_COORDINATE_SPACE,
     RTMW_REPRESENTATION,
@@ -20,11 +22,14 @@ from bello_mujoco.hardware.rtmw import (
     validate_pinned_rtmw_contract,
 )
 from bello_mujoco.hardware.smplx_retarget import (
-    SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
 )
 from bello_mujoco.hardware.twist2 import ReferenceUnavailable
 from bello_mujoco.repository import repository_root
+from bello_mujoco.robot_tasks import motion_task_definition
+
+
+GMR_SOURCE_BODY_NAMES = motion_task_definition("full_body").gmr.source_body_names
 
 
 def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwLatestJsonConfig:
@@ -44,12 +49,12 @@ def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwLatestJsonConfig:
     return RtmwLatestJsonConfig(**values)
 
 
-def standing_sample(_path: Path) -> SmplxTargetFrame:
+def standing_sample(
+    _path: Path, source_body_names: tuple[str, ...]
+) -> SmplxTargetFrame:
     identity = np.asarray((1.0, 0.0, 0.0, 0.0))
     return SmplxTargetFrame(
-        transforms={
-            name: (np.zeros(3), identity.copy()) for name in SMPLX_GMR_BODY_NAMES
-        },
+        transforms={name: (np.zeros(3), identity.copy()) for name in source_body_names},
         sequence=0,
         source_timestamp_ns=0,
         source_age_ms=0,
@@ -146,6 +151,7 @@ def make_stream(
     config.pose_path.write_text(json.dumps(record), encoding="utf-8")
     return RtmwLatestJsonStream(
         config,
+        GMR_SOURCE_BODY_NAMES,
         clock_ns=lambda: clock_ns,
         standing_sample_loader=standing_sample,
     )
@@ -165,7 +171,7 @@ def test_rtmw_latest_json_accepts_the_published_schema(tmp_path: Path) -> None:
     assert frame.sequence == 7
     assert frame.source_timestamp_ns == captured_at_ns
     assert frame.source_age_ms == 12
-    assert tuple(frame.transforms) == SMPLX_GMR_BODY_NAMES
+    assert tuple(frame.transforms) == GMR_SOURCE_BODY_NAMES
     assert frame.transforms["pelvis"][0] == pytest.approx((0.0, 0.0, 1.0))
     assert frame.transforms["pelvis"][1] == pytest.approx((1.0, 0.0, 0.0, 0.0))
     assert frame.foot_contacts is not None
@@ -174,6 +180,89 @@ def test_rtmw_latest_json_accepts_the_published_schema(tmp_path: Path) -> None:
 
 def test_pinned_rtmw_contract_matches_consumer() -> None:
     validate_pinned_rtmw_contract(repository_root() / "deps" / "RTMW-SMPLX-Teleop")
+
+
+def test_rtmw_reference_source_uses_selected_robot_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source_config = SimpleNamespace(human_height_m=1.75)
+    stream = SimpleNamespace(
+        pose_path=tmp_path / "latest.json",
+        neutral_model_sha256="a" * 64,
+    )
+    identity = object()
+    calls: dict[str, object] = {}
+
+    class FakeSource:
+        def __init__(self, actual_stream: object, retargeter: object) -> None:
+            calls["source"] = (actual_stream, retargeter)
+
+        def __enter__(self) -> FakeSource:
+            return self
+
+        def __exit__(self, *_exception: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        rtmw_module.RtmwLatestJsonConfig,
+        "from_hardware",
+        classmethod(lambda _cls, _config: source_config),
+    )
+    monkeypatch.setattr(rtmw_module, "require_pinned_rtmw_revision", lambda: tmp_path)
+    monkeypatch.setattr(
+        rtmw_module, "validate_pinned_rtmw_contract", lambda _root: None
+    )
+
+    def make_stream(actual_config: object, source_body_names: tuple[str, ...]):
+        calls["stream"] = (actual_config, source_body_names)
+        return stream
+
+    def source_identity(asset: str) -> object:
+        calls["identity_asset"] = asset
+        return identity
+
+    def make_retargeter(
+        env: object,
+        actual_identity: object,
+        config: object,
+        *,
+        validate_reference: object,
+    ) -> object:
+        retargeter = object()
+        calls["retargeter"] = (
+            env,
+            actual_identity,
+            config,
+            validate_reference,
+            retargeter,
+        )
+        return retargeter
+
+    monkeypatch.setattr(rtmw_module, "RtmwLatestJsonStream", make_stream)
+    monkeypatch.setattr(rtmw_module, "repository_gmr_source_identity", source_identity)
+    monkeypatch.setattr(rtmw_module, "GmrRetargeter", make_retargeter)
+    monkeypatch.setattr(rtmw_module, "LiveGmrReferenceSource", FakeSource)
+
+    validation = object()
+    env = SimpleNamespace(
+        model=SimpleNamespace(robot=SimpleNamespace(asset="full_body"))
+    )
+    adapter = SimpleNamespace(
+        env=env,
+        validate_upper_body_reference=validation,
+    )
+    with rtmw_module.rtmw_locomotion_reference_source(adapter, object()) as result:
+        assert isinstance(result, FakeSource)
+
+    assert calls["stream"] == (source_config, GMR_SOURCE_BODY_NAMES)
+    assert calls["identity_asset"] == "full_body"
+    retargeter_call = calls["retargeter"]
+    assert isinstance(retargeter_call, tuple)
+    assert retargeter_call[0] is env
+    assert retargeter_call[1] is identity
+    assert retargeter_call[2].human_height_m == pytest.approx(1.75)
+    assert retargeter_call[3] is validation
+    assert calls["source"] == (stream, retargeter_call[4])
 
 
 def test_rtmw_rejects_an_invalid_required_rotation(tmp_path: Path) -> None:

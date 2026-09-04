@@ -253,6 +253,16 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert smoke.checkpoint_config.allow_git_commit_mismatch is False
     assert smoke.wandb_config.enabled is False
     assert smoke.video_config.enabled is False
+    assert smoke.asset_config.asset == "full_body"
+    assert locomotion.asset_config.asset == "full_body"
+    assert hardware.asset_config.asset == "full_body"
+    assert motion.asset_config.asset == "full_body"
+    assert twist_teacher.asset_config.asset == "full_body"
+    assert twist_student.asset_config.asset == "full_body"
+    assert twist2.asset_config.asset == "full_body"
+    assert motion.asset_config.actuator_mode == "policy"
+    assert twist_teacher.asset_config.actuator_mode == "policy"
+    assert twist2.asset_config.actuator_mode == "policy"
     assert locomotion.checkpoint_config.every_updates == 512
     assert locomotion.config.total_timesteps == 8_000_000_000
     assert locomotion.config.symmetry_loss_coef == pytest.approx(0.0)

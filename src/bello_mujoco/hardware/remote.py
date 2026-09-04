@@ -164,9 +164,7 @@ class RemoteCommandSource:
         self._thread.join(timeout=2.0)
 
     def _run(self) -> None:
-        channel = grpc.insecure_channel(
-            self.config.endpoint.removeprefix("http://")
-        )
+        channel = grpc.insecure_channel(self.config.endpoint.removeprefix("http://"))
         method = channel.unary_stream(
             "/bello.remote.v1.RemoteCommandService/WatchCommand",
             request_serializer=_remote_pb2.WatchCommandRequest.SerializeToString,
@@ -209,9 +207,7 @@ class RemoteCommandSource:
                                 and normalized == (0.0, 0.0, 0.0)
                             ):
                                 client_armed = True
-                            effective = (
-                                normalized if client_armed else (0.0, 0.0, 0.0)
-                            )
+                            effective = normalized if client_armed else (0.0, 0.0, 0.0)
                             if response.abort_active:
                                 self._abort_latched = True
                             self._received = _ReceivedCommand(

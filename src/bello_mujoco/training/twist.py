@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -24,6 +24,7 @@ from bello_mujoco.motion.twist_dataset import (
     load_packed_reference_bank,
     materialize_packed_clip,
 )
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.repository import (
     capture_repository_commit,
     require_checkpoint_output_directory,
@@ -65,10 +66,10 @@ from bello_mujoco.training.tracking import (
 @dataclass(frozen=True)
 class TwistTrainingRunConfig:
     stage: TwistStage
+    asset_config: AssetPrepConfig
     dataset_index: Path = Path("datasets/twist/index.json")
     teacher_checkpoint_path: Path | None = None
     config: PPOConfig = PPOConfig()
-    asset_config: AssetPrepConfig = field(default_factory=default_twist_asset_config)
     simulation: TwistSimulationConfig = TwistSimulationConfig()
     twist_env: TwistEnvConfig = TwistEnvConfig()
     sampling: TwistSamplingConfig = TwistSamplingConfig()
@@ -231,6 +232,14 @@ def run_training(run_config: TwistTrainingRunConfig) -> None:
 def validate_twist_training_config(config: TwistTrainingRunConfig) -> None:
     validate_ppo_config(config.config)
     validate_checkpoint_options(config.checkpoint_config)
+    validate_twist_asset_config(config.asset_config)
+    expected_key_bodies = motion_task_definition(
+        config.asset_config.asset
+    ).twist_key_body_names
+    if config.twist_env.key_body_names != expected_key_bodies:
+        raise ValueError(
+            "TWIST key bodies differ from the selected robot's motion profile"
+        )
     expected_architecture = f"twist_{config.stage}"
     if config.config.policy.architecture != expected_architecture:
         raise ValueError(
@@ -259,6 +268,18 @@ def validate_twist_training_config(config: TwistTrainingRunConfig) -> None:
         or sampling.curriculum_max_difficulty <= sampling.curriculum_min_difficulty
     ):
         raise ValueError("TWIST curriculum bounds and gamma must be positive")
+
+
+def validate_twist_asset_config(config: AssetPrepConfig) -> None:
+    expected = replace(
+        default_twist_asset_config(config.asset),
+        end_effector_payload_mass_kg=config.end_effector_payload_mass_kg,
+    )
+    if config != expected:
+        raise ValueError(
+            "TWIST asset_config must match the selected robot's canonical "
+            "all-policy motion asset"
+        )
 
 
 _REFERENCE_BANK_ARRAY_FIELDS = (

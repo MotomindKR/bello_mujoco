@@ -11,13 +11,11 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.motion.clip import (
-    BEYONDMIMIC_TRACKED_BODY_NAMES,
-    DEFAULT_TRACKED_BODY_NAMES,
-    FIXED_TRACKING_JOINT_NAMES,
-    GMR_BELLO_JOINT_NAMES,
     MOTION_FORMAT_VERSION,
     motion_tracking_asset_config,
 )
+from bello_mujoco.robot import AssetName
+from bello_mujoco.robot_tasks import MotionTaskDefinition, motion_task_definition
 from bello_mujoco.sim import load_bello_model
 
 
@@ -25,8 +23,9 @@ def import_gmr_motion(
     source: Path,
     output: Path,
     *,
+    asset: AssetName,
     collision_mode: str = "box",
-    tracked_body_names: tuple[str, ...] = DEFAULT_TRACKED_BODY_NAMES,
+    tracked_body_names: tuple[str, ...] | None = None,
     reject_self_collisions: bool = True,
 ) -> Path:
     source = source.resolve()
@@ -35,18 +34,28 @@ def import_gmr_motion(
     with source.open("rb") as source_file:
         motion = pickle.load(source_file)  # noqa: S301 - explicit trusted local input
 
+    task = motion_task_definition(asset)
+    if tracked_body_names is None:
+        tracked_body_names = task.default_tracked_body_names
     model = load_bello_model(
-        motion_tracking_asset_config(collision_mode=collision_mode),
+        motion_tracking_asset_config(asset=asset, collision_mode=collision_mode),
         load_mjx=False,
     )
-    expected_joint_names = set(GMR_BELLO_JOINT_NAMES) - set(FIXED_TRACKING_JOINT_NAMES)
+    expected_joint_names = set(task.imported_actuator_joint_names)
     if set(model.actuator_joint_names) != expected_joint_names:
         raise ValueError(
-            "fixed-joint Bello model has drifted from the legacy GMR schema:\n"
-            f"model={model.actuator_joint_names}\nGMR={GMR_BELLO_JOINT_NAMES}"
+            "motion model has drifted from its legacy import schema:\n"
+            f"model={model.actuator_joint_names}\n"
+            f"import={task.legacy_import_joint_names}"
         )
-    arrays = _validate_legacy_motion(motion)
-    qpos = _build_qpos(model, arrays["root_pos"], arrays["root_rot"], arrays["dof_pos"])
+    arrays = _validate_legacy_motion(motion, task)
+    qpos = _build_qpos(
+        model,
+        task,
+        arrays["root_pos"],
+        arrays["root_rot"],
+        arrays["dof_pos"],
+    )
     _validate_joint_ranges(model.mj_model, qpos)
     collision_report = _self_collision_report(model, qpos)
     if reject_self_collisions:
@@ -95,7 +104,10 @@ def import_gmr_motion(
     return output
 
 
-def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
+def _validate_legacy_motion(
+    motion: object,
+    task: MotionTaskDefinition,
+) -> dict[str, np.ndarray]:
     if not isinstance(motion, dict):
         raise ValueError(f"expected legacy motion dict, got {type(motion).__name__}")
     for key in ("fps", "root_pos", "root_rot", "dof_pos"):
@@ -123,7 +135,7 @@ def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
             )
         if not np.all(np.isfinite(arrays[name])):
             raise ValueError(f"legacy {name} contains nonfinite values")
-    _source_joint_names(arrays["dof_pos"].shape, frames)
+    _source_joint_names(arrays["dof_pos"].shape, frames, task)
     if not np.all(np.isfinite(arrays["dof_pos"])):
         raise ValueError("legacy dof_pos contains nonfinite values")
     contacts = motion.get("foot_contacts")
@@ -145,7 +157,7 @@ def _validate_legacy_motion(motion: object) -> dict[str, np.ndarray]:
     return arrays
 
 
-def _build_qpos(model, root_pos, root_quat_xyzw, joint_pos) -> np.ndarray:
+def _build_qpos(model, task, root_pos, root_quat_xyzw, joint_pos) -> np.ndarray:
     frames = root_pos.shape[0]
     qpos = np.repeat(model.default_qpos[None, :], frames, axis=0)
     root = model.root_qpos_adr
@@ -156,7 +168,7 @@ def _build_qpos(model, root_pos, root_quat_xyzw, joint_pos) -> np.ndarray:
         if np.dot(root_quat[frame - 1], root_quat[frame]) < 0.0:
             root_quat[frame] *= -1.0
     qpos[:, root + 3 : root + 7] = root_quat
-    source_joint_names = _source_joint_names(joint_pos.shape, frames)
+    source_joint_names = _source_joint_names(joint_pos.shape, frames, task)
     source_column = {name: index for index, name in enumerate(source_joint_names)}
     reordered_joint_pos = np.stack(
         [joint_pos[:, source_column[name]] for name in model.actuator_joint_names],
@@ -166,13 +178,15 @@ def _build_qpos(model, root_pos, root_quat_xyzw, joint_pos) -> np.ndarray:
     return qpos
 
 
-def _source_joint_names(shape: tuple[int, ...], frames: int) -> tuple[str, ...]:
-    fixed_head_joint_names = tuple(
-        name for name in GMR_BELLO_JOINT_NAMES if name not in FIXED_TRACKING_JOINT_NAMES
-    )
+def _source_joint_names(
+    shape: tuple[int, ...],
+    frames: int,
+    task: MotionTaskDefinition,
+) -> tuple[str, ...]:
+    imported_actuator_joint_names = task.imported_actuator_joint_names
     schemas = {
-        len(GMR_BELLO_JOINT_NAMES): GMR_BELLO_JOINT_NAMES,
-        len(fixed_head_joint_names): fixed_head_joint_names,
+        len(task.legacy_import_joint_names): task.legacy_import_joint_names,
+        len(imported_actuator_joint_names): imported_actuator_joint_names,
     }
     if len(shape) != 2 or shape[0] != frames or shape[1] not in schemas:
         expected = [(frames, columns) for columns in sorted(schemas)]
@@ -283,15 +297,23 @@ def _body_trajectories(mj_model, qpos, qvel, body_ids):
     return pos, quat, lin_vel, ang_vel
 
 
-def _import_one(source: str, output: str, overwrite: bool) -> dict:
+def _import_one(
+    source: str,
+    output: str,
+    overwrite: bool,
+    asset: AssetName,
+) -> dict:
     source_path = Path(source)
     output_path = Path(output)
     if overwrite or not output_path.exists():
         import_gmr_motion(
             source_path,
             output_path,
+            asset=asset,
             collision_mode="box",
-            tracked_body_names=BEYONDMIMIC_TRACKED_BODY_NAMES,
+            tracked_body_names=(
+                motion_task_definition(asset).beyondmimic_tracked_body_names
+            ),
             reject_self_collisions=False,
         )
     with np.load(output_path) as motion:
@@ -322,6 +344,7 @@ def import_dataset(
     source_dir: Path,
     output_dir: Path,
     *,
+    asset: AssetName,
     jobs: int,
     overwrite: bool,
 ) -> tuple[list[dict], list[dict]]:
@@ -340,6 +363,7 @@ def import_dataset(
                 str(source),
                 str((output_dir / f"{source.stem}.npz").resolve()),
                 overwrite,
+                asset,
             ): source
             for source in sources
         }

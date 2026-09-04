@@ -166,7 +166,13 @@ def _render_twist2_rollout(
                 jax.device_get(state.motion_state.data.qvel), dtype=np.float64
             )
             mujoco.mj_forward(mj_model, mj_data)
-            update_camera(camera, mj_model, mj_data, config.camera)
+            update_camera(
+                camera,
+                mj_model,
+                mj_data,
+                config.camera,
+                root_body_name=env.model.robot.root_body_name,
+            )
             renderer.update_scene(mj_data, camera=camera)
             writer.append_data(renderer.render())
             policy_observation = normalize_observation(

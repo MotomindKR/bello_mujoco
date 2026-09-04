@@ -675,7 +675,7 @@ def validate_hardware_checkpoint(
     if metadata.task != "locomotion":
         raise ValueError("hardware locomotion requires a locomotion checkpoint")
     availability = metadata.asset.joint_availability
-    if not availability.waist_yaw:
+    if "waist_yaw_joint" in availability.disabled_joint_names:
         raise ValueError("hardware locomotion requires waist_yaw_joint")
     if env.config.observation.privileged:
         raise ValueError("hardware actor observation must not be privileged")

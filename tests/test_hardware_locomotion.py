@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import jax
+import mujoco
 
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.training.checkpoint import CheckpointNormalizationState
@@ -271,16 +272,14 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
     config = compose_hardware_training_config()
+    prepared = prepare_asset(config.asset_config)
+    nominal_model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
 
     assert config.asset_config.target_total_mass_kg is None
-    assert config.asset_config.joint_availability.enabled_joint_names == {
-        "waist_yaw_joint"
-    }
+    assert not config.asset_config.joint_availability.disabled_joint_names
     assert hardware_env.action_size == 13
     assert hardware_env.model.mj_model.nu == 25
-    assert np.sum(hardware_env.model.mj_model.body_mass) == pytest.approx(
-        55.0683575411785
-    )
+    assert np.sum(nominal_model.body_mass) == pytest.approx(55.0683575411785)
 
     metadata = SimpleNamespace(
         task="locomotion",

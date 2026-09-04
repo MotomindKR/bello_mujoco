@@ -1,0 +1,207 @@
+asset: bello_mini
+# Static simulation contract only. The zero pose, provisional URDF ranges, and
+# conservative policy/hold partition are not a tuned training or hardware map.
+source_urdf: bello_mini/urdf/bello_mini.urdf
+source_directories:
+  - bello_mini/urdf
+  - bello_mini/meshes
+hardware_description: null
+motor_model_catalog: robstride/models.yaml
+output_directory: bello_mini
+output_stem: bello_mini
+root_body_name: bello_mini_root
+root_joint_name: root_free
+default_root_position: [0.0, 0.0, 0.8731232537850352]
+default_root_quaternion: [1.0, 0.0, 0.0, 0.0]
+default_imu_body_name: imu_link
+foot_body_names:
+  - left_ankle_roll_link
+  - right_ankle_roll_link
+foot_forward_axes:
+  - body_name: left_ankle_roll_link
+    axis: [1.0, 0.0, 0.0]
+  - body_name: right_ankle_roll_link
+    axis: [1.0, 0.0, 0.0]
+randomization_base_body_name: pelvis_link
+randomization_torso_body_name: torso_link
+randomization_central_body_names:
+  - pelvis_link
+  - waist_yaw_link
+  - torso_link
+actuators:
+  - joint_name: left_hip_pitch_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [200.0, 5.0]
+    effort_limit: 120.0
+  - joint_name: right_hip_pitch_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [200.0, 5.0]
+    effort_limit: 120.0
+  - joint_name: left_hip_roll_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [150.0, 5.0]
+    effort_limit: 60.0
+  - joint_name: right_hip_roll_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [150.0, 5.0]
+    effort_limit: 60.0
+  - joint_name: left_hip_yaw_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [150.0, 5.0]
+    effort_limit: 60.0
+  - joint_name: right_hip_yaw_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [150.0, 5.0]
+    effort_limit: 60.0
+  - joint_name: left_knee_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [220.0, 6.0]
+    effort_limit: 120.0
+  - joint_name: right_knee_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [220.0, 6.0]
+    effort_limit: 120.0
+  - joint_name: left_ankle_pitch_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [22.0, 1.0]
+    effort_limit: 17.0
+  - joint_name: right_ankle_pitch_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [22.0, 1.0]
+    effort_limit: 17.0
+  - joint_name: left_ankle_roll_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [22.0, 1.0]
+    effort_limit: 17.0
+  - joint_name: right_ankle_roll_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [22.0, 1.0]
+    effort_limit: 17.0
+  - joint_name: waist_yaw_joint
+    mode: policy
+    default_pos: 0.0
+    soft_limit: null
+    gains: [180.0, 12.0]
+    effort_limit: 60.0
+  - joint_name: waist_roll_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [150.0, 5.0]
+    effort_limit: 60.0
+  - joint_name: right_shoulder_pitch_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [70.0, 2.0]
+    effort_limit: 60.0
+  - joint_name: right_shoulder_roll_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [70.0, 2.0]
+    effort_limit: 60.0
+  - joint_name: right_shoulder_yaw_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [20.0, 1.0]
+    effort_limit: 36.0
+  - joint_name: right_elbow_pitch_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [40.0, 2.0]
+    effort_limit: 36.0
+  - joint_name: right_wrist_yaw_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [20.0, 1.0]
+    effort_limit: 14.0
+  - joint_name: right_wrist_pitch_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [10.0, 1.0]
+    effort_limit: 14.0
+  - joint_name: right_wrist_roll_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [10.0, 1.0]
+    effort_limit: 14.0
+  - joint_name: left_shoulder_pitch_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [70.0, 2.0]
+    effort_limit: 60.0
+  - joint_name: left_shoulder_roll_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [70.0, 2.0]
+    effort_limit: 60.0
+  - joint_name: left_shoulder_yaw_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [20.0, 1.0]
+    effort_limit: 36.0
+  - joint_name: left_elbow_pitch_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [40.0, 2.0]
+    effort_limit: 36.0
+  - joint_name: left_wrist_yaw_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [20.0, 1.0]
+    effort_limit: 14.0
+  - joint_name: left_wrist_pitch_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [10.0, 1.0]
+    effort_limit: 14.0
+  - joint_name: left_wrist_roll_joint
+    mode: hold
+    default_pos: 0.0
+    soft_limit: null
+    gains: [10.0, 1.0]
+    effort_limit: 14.0
+payload_attachments:
+  - link_name: left_end_effector_sphere_link
+    radius_m: 0.025
+    center_m: [0.0, 0.0, -0.025]
+  - link_name: right_end_effector_sphere_link
+    radius_m: 0.025
+    center_m: [0.0, 0.0, -0.025]
+coupled_actuator_groups: []
