@@ -26,8 +26,7 @@ jobs:
           repository: MotomindKR/bello-stack
           ref: ${{ steps.dependencies.outputs.bello_stack }}
           path: deps/bello-stack
-          # Fine-grained token with read-only Contents access to private dependencies.
-          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
+          ssh-key: ${{ secrets.BELLO_STACK_DEPLOY_KEY }}
           persist-credentials: false
       - name: Check out pinned GMR revision
         uses: actions/checkout@v6
@@ -35,7 +34,6 @@ jobs:
           repository: MotomindKR/GMR
           ref: ${{ steps.dependencies.outputs.gmr }}
           path: deps/GMR
-          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
           persist-credentials: false
       - name: Check out pinned Fast-SAM revision
         uses: actions/checkout@v6
@@ -43,7 +41,6 @@ jobs:
           repository: MotomindKR/Fast-SAM-3D-Body
           ref: ${{ steps.dependencies.outputs.fast_sam }}
           path: deps/Fast-SAM-3D-Body
-          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
           persist-credentials: false
       - name: Check out pinned RTMW revision
         uses: actions/checkout@v6
@@ -51,7 +48,7 @@ jobs:
           repository: MotomindKR/RTMW-SMPLX-Teleop
           ref: ${{ steps.dependencies.outputs.rtmw }}
           path: deps/RTMW-SMPLX-Teleop
-          token: ${{ secrets.BELLO_STACK_READ_TOKEN }}
+          ssh-key: ${{ secrets.RTMW_DEPLOY_KEY }}
           persist-credentials: false
       - name: Register dependency checkouts as pinned submodules
         run: |
