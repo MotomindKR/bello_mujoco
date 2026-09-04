@@ -178,17 +178,21 @@ The live pose does not enter the locomotion actor observation and cannot replace
 joystick intent or any policy coordinate. Fast-SAM is not a supported locomotion
 pose source; it remains specific to TWIST2.
 
-Run RTMW-SMPLX-Teleop and `bello-run-hardware` on the same host. The consumer
-uses the producer's monotonic capture timestamp to measure complete source age,
-so copying or serving the latest file across hosts is rejected rather than
-hiding an unknown clock offset. The hardware daemon may still run remotely.
-Both processes must use the same licensed neutral SMPL-X model, and
+Run the pinned `deps/RTMW-SMPLX-Teleop` producer and `bello-run-hardware` on the
+same host. Preflight requires that submodule to be clean and exactly at the
+reviewed gitlink, then checks the consumer's 52-joint order and hierarchy
+against its source contract. The JSON record's schema version provides the
+wire-format gate. The consumer uses the producer's monotonic capture timestamp
+to measure complete source age, so copying or serving the latest file across
+hosts is rejected rather than hiding an unknown clock offset. The hardware
+daemon may still run remotely. Both processes must use the same licensed
+neutral SMPL-X model, and
 `rtmw_human_height_m` must equal RTMW's configured
 `reconstruction.subject_height_m` (both default to 1.75 m):
 
 ```text
 mkdir -p /tmp/rtmw-smplx-teleop
-cd ~/RTMW-SMPLX-Teleop
+cd ~/bello_mujoco/deps/RTMW-SMPLX-Teleop
 uv run rtmw-teleop \
   --latest-json /tmp/rtmw-smplx-teleop/latest.json
 ```

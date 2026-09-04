@@ -6,10 +6,13 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
+import subprocess
+import sys
 import time
 from typing import Any, Callable, Iterator
 
@@ -34,9 +37,11 @@ from bello_mujoco.hardware.twist2 import (
     ReferenceDiscontinuity,
     ReferenceUnavailable,
 )
+from bello_mujoco.repository import repository_root
 
 
 RTMW_SCHEMA_VERSION = 1
+RTMW_REVISION = "acd87081a5884757352c4be8ddb706e98b6effa7"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
@@ -578,6 +583,8 @@ def rtmw_locomotion_reference_source(
 ) -> Iterator[LiveGmrReferenceSource]:
     """Construct RTMW latest-JSON -> pinned GMR locomotion references."""
 
+    rtmw_root = require_pinned_rtmw_revision()
+    validate_pinned_rtmw_contract(rtmw_root)
     source_config = RtmwLatestJsonConfig.from_hardware(config)
     stream = RtmwLatestJsonStream(source_config)
     retargeter = GmrBelloRetargeter(
@@ -591,6 +598,7 @@ def rtmw_locomotion_reference_source(
             {
                 "rtmw_source_preflight": "passed",
                 "pose_path": str(stream.pose_path),
+                "rtmw_revision": RTMW_REVISION,
                 "schema_version": RTMW_SCHEMA_VERSION,
                 "representation": RTMW_REPRESENTATION,
                 "neutral_model_sha256": stream.neutral_model_sha256,
@@ -599,6 +607,46 @@ def rtmw_locomotion_reference_source(
             }
         )
         yield source
+
+
+def require_pinned_rtmw_revision() -> Path:
+    """Require the reviewed RTMW source checkout pinned by this repository."""
+
+    root = repository_root()
+    relative = "deps/RTMW-SMPLX-Teleop"
+    submodule = root / relative
+    gitlink = _git_output(root, "ls-tree", "HEAD", "--", relative).split()
+    if len(gitlink) < 3 or gitlink[1] != "commit":
+        raise RuntimeError(f"{relative} is not a pinned Git submodule")
+    current = _git_output(submodule, "rev-parse", "HEAD")
+    if gitlink[2] != RTMW_REVISION or current != RTMW_REVISION:
+        raise ValueError(
+            "RTMW gitlink and checkout must both equal the reviewed protocol "
+            f"revision {RTMW_REVISION}"
+        )
+    if _git_output(submodule, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise RuntimeError("hardware RTMW submodule must be clean")
+    return submodule
+
+
+def validate_pinned_rtmw_contract(submodule: Path) -> None:
+    """Match the consumer's structural constants to the pinned producer source."""
+
+    module_name = "_bello_pinned_rtmw_contracts"
+    contract_path = submodule / "src" / "rtmw_teleop" / "contracts.py"
+    spec = importlib.util.spec_from_file_location(module_name, contract_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load the pinned RTMW contract module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+    if tuple(module.SMPLX52_NAMES) != RTMW_SMPLX52_NAMES:
+        raise ValueError("pinned RTMW SMPL-X joint order is incompatible")
+    if tuple(int(value) for value in module.SMPLX52_PARENTS) != RTMW_SMPLX52_PARENTS:
+        raise ValueError("pinned RTMW SMPL-X hierarchy is incompatible")
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -748,3 +796,19 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _git_output(root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ("git", "-C", str(root), *arguments),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(
+            f"git {' '.join(arguments)} failed" + (f": {detail}" if detail else "")
+        )
+    return result.stdout.strip()

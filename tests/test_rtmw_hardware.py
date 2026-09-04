@@ -17,12 +17,14 @@ from bello_mujoco.hardware.rtmw import (
     RtmwCoordinateAdapter,
     RtmwLatestJsonConfig,
     RtmwLatestJsonStream,
+    validate_pinned_rtmw_contract,
 )
 from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_GMR_BODY_NAMES,
     SmplxTargetFrame,
 )
 from bello_mujoco.hardware.twist2 import ReferenceUnavailable
+from bello_mujoco.repository import repository_root
 
 
 def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwLatestJsonConfig:
@@ -168,6 +170,10 @@ def test_rtmw_latest_json_accepts_the_published_schema(tmp_path: Path) -> None:
     assert frame.transforms["pelvis"][1] == pytest.approx((1.0, 0.0, 0.0, 0.0))
     assert frame.foot_contacts is not None
     assert stream.wait_next(after_sequence=7, timeout_seconds=0.001) is None
+
+
+def test_pinned_rtmw_contract_matches_consumer() -> None:
+    validate_pinned_rtmw_contract(repository_root() / "deps" / "RTMW-SMPLX-Teleop")
 
 
 def test_rtmw_rejects_an_invalid_required_rotation(tmp_path: Path) -> None:

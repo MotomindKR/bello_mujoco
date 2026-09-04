@@ -346,7 +346,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
 | `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the 12 arm joints at the locomotion checkpoint's nominal targets. |
-| `rtmw_pose_path` | path; `/tmp/rtmw-smplx-teleop/latest.json` | locomotion | Atomic latest-JSON file written by a same-host `rtmw-teleop --latest-json` process. |
+| `rtmw_pose_path` | path; `/tmp/rtmw-smplx-teleop/latest.json` | locomotion | Atomic latest-JSON file written by a same-host `deps/RTMW-SMPLX-Teleop` process at the pinned protocol revision. |
 | `rtmw_reference_ready_timeout_seconds` | positive float; `15.0` | locomotion | Time allowed for the initial sequence of qualified RTMW/GMR references before hardware connection. |
 | `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Number of distinct, successive safe references required during preflight. Re-reading one latest file does not advance the gate. |
 | `rtmw_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion | Minimum position confidence for every GMR target joint. |
