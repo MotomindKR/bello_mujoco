@@ -399,18 +399,16 @@ boundary.
 The maintained locomotion profiles override `touchdown_impact` to `-8.0` while
 retaining their `1.0` body-weight touchdown-force soft limit. This restores the
 impact-to-tracking balance after the profile's tracking rewards were doubled,
-without changing the bounded touchdown formulation. Bello Mini additionally
-uses `gait_contact: -4.0`, `gait_swing_clearance: -1.5`, and a `0.07` m swing
-clearance target. These Mini-only settings make persistent double support during
-a commanded gait substantially more expensive while leaving impact and torque
-safeguards unchanged.
+without changing the bounded touchdown formulation. Bello Mini inherits the same
+reward weights and rounded `0.08` m swing-clearance target. Joint, contact, and
+touchdown loads already normalize by each robot's weight or actuator limits, so
+the smaller morphology does not require separate force-related coefficients.
 
-The Bello profile applies moving hip-deviation shaping to its forward `+Y`
-command axis and enables `knee_deviation_apply_while_moving`, preserving the
-successful profile's exact moving-pose gates without mislabeling forward as
-lateral. The Mini profile applies hip shaping to lateral `+X` and leaves the
-knee switch disabled so its knees remain free to form gait while the term still
-regularizes standing.
+Both profiles apply moving hip-deviation shaping to canonical forward command
+`+Y`. Mini's yaw-rotated `imu_link` maps that command to its physical pelvis `+X`
+direction. Bello enables `knee_deviation_apply_while_moving`, preserving the
+successful profile's moving-pose gate; Mini leaves the switch disabled so its
+knees remain free to form gait while the term still regularizes standing.
 
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and
@@ -672,7 +670,7 @@ TWIST uses 32 contacts per environment and logs
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
-| `bello_mini_locomotion` | The production PPO, command, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with the Mini asset and its canonical command frame, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, strong Mini-specific contact/clearance shaping, and output names. The profile disables independent multiplicative joint-position reset scaling so it cannot break the coordinated hip/knee/ankle pose; the remaining randomization is active. |
+| `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with the Mini asset and canonical command frame, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, 64-contact-per-environment Warp budget, and output names. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |

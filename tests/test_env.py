@@ -182,6 +182,16 @@ def test_robot_specific_locomotion_action_and_command_frame_contracts(
     assert mini.action_size == 14
     assert "waist_roll_joint" in mini.action_layout.names
 
+    mini_data = mujoco.MjData(mini.model.mj_model)
+    reset_mujoco_data(mini, mini_data)
+    command_frame_id = mujoco.mj_name2id(
+        mini.model.mj_model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        mini.model.robot.locomotion_command_frame_body_name,
+    )
+    command_frame_rotation = mini_data.xmat[command_frame_id].reshape(3, 3)
+    assert command_frame_rotation[:, 1] == pytest.approx((1.0, 0.0, 0.0))
+
     action = jnp.linspace(-0.9, 0.9, mini.action_size)
     mirrored = mini.mirror_action(action)
     names = mini.action_layout.names
