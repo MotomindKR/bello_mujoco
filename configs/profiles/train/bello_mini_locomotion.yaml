@@ -8,11 +8,6 @@ env_config:
     # Independent scaling would break the coordinated flat-sole crouch.
     joint_pos_scale_range: [1.0, 1.0]
 reward_config:
-  weights:
-    gait_contact: -4.0
-    gait_swing_clearance: -1.5
-  gait:
-    swing_clearance_target: 0.07
   limits_pose:
     base_height_target: 0.88
 done_config:
@@ -24,7 +19,12 @@ checkpoint_config:
 wandb_config:
   group: bello-mini-locomotion
   run_name: bello_mini_locomotion_seed0
-  tags: [locomotion, bello-mini, ideal-differential-ankle, seeded-plane-slope]
+  tags:
+    - locomotion
+    - bello-mini
+    - ideal-differential-ankle
+    - original-gait-reward
+    - seeded-plane-slope
 video_config:
   filename_prefix: bello_mini_locomotion
   command: [0.0, 0.5, 0.0]
