@@ -81,7 +81,7 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
     }
     assert mirror["left_hip_pitch_joint"] == ("right_hip_pitch_joint", 1.0)
     assert mirror["left_hip_roll_joint"] == ("right_hip_roll_joint", -1.0)
-    assert robot.default_root_position == (0.0, 0.0, 0.868)
+    assert robot.default_root_position == (0.0, 0.0, 0.859)
     assert robot.foot_body_names == (
         "left_ankle_roll_link",
         "right_ankle_roll_link",
@@ -96,14 +96,18 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
     default_pos = {
         actuator.joint_name: actuator.default_pos for actuator in robot.actuators
     }
+    soft_limits = {
+        actuator.joint_name: actuator.soft_limit for actuator in robot.actuators
+    }
     for side in ("left", "right"):
         leg_pitch = (
             default_pos[f"{side}_hip_pitch_joint"],
             default_pos[f"{side}_knee_joint"],
             default_pos[f"{side}_ankle_pitch_joint"],
         )
-        assert leg_pitch == pytest.approx((-0.10, 0.30, -0.20))
+        assert leg_pitch == pytest.approx((-0.15, 0.45, -0.30))
         assert sum(leg_pitch) == pytest.approx(0.0)
+        assert soft_limits[f"{side}_knee_joint"] == pytest.approx((0.0, 1.2))
     assert default_pos["left_shoulder_roll_joint"] == pytest.approx(0.15)
     assert default_pos["right_shoulder_roll_joint"] == pytest.approx(-0.15)
     assert (

@@ -1,9 +1,9 @@
-# Mini gait scales Bello's 0.90 Hz by sqrt(0.853 m / 0.868 m), then rounds.
+# Mini gait scales Bello's 0.90 Hz by sqrt(0.853 m / 0.859 m), then rounds.
 asset_config:
   asset: bello_mini
 env_config:
   gait:
-    frequency_hz: 0.89
+    frequency_hz: 0.90
   spawn:
     # Independent scaling would break the coordinated flat-sole crouch.
     joint_pos_scale_range: [1.0, 1.0]
@@ -14,7 +14,7 @@ reward_config:
   gait:
     swing_clearance_target: 0.07
   limits_pose:
-    base_height_target: 0.88
+    base_height_target: 0.87
 done_config:
   base_height:
     min_height: 0.56

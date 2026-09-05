@@ -57,8 +57,8 @@ Failure resets preserve command mode so failed standing episodes cannot starve
 standing frames out of later rollouts. Periodic resampling reassigns the cohort
 to train transitions in both directions between standing and moving commands.
 
-Moving commands activate a fixed per-leg gait clock: 0.90 Hz for Bello and the
-rounded 0.89 Hz Mini setting. The legs are offset by half a cycle and use a 60%
+Moving commands activate a fixed per-leg gait clock: 0.90 Hz for both Bello and
+the rounded Mini setting. The legs are offset by half a cycle and use a 60%
 stance fraction, which provides short double-support intervals. The actor
 receives sine/cosine phase and a gait-active bit. Training resets, native
 evaluation, and the hardware runner all initialize this clock at phase zero.
@@ -73,8 +73,8 @@ directly.
 The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body
 joint reaction-force peaks, standing foot motion, phase contact matching,
-stance-foot slip, swing clearance, bounded substep-integrated touchdown impact, and
-termination cost. Uprightness and orientation termination are measured on
+stance-foot slip, swing clearance, bounded substep-integrated touchdown impact,
+and termination cost. Uprightness and orientation termination are measured on
 `torso_link`; pelvis velocity and base height remain separate measurements.
 During healthy double support, standing frames also apply a bounded physical
 foot-heading cost relative to the robot command frame. Its 5-degree
@@ -89,13 +89,12 @@ weights are defined in
 overrides in
 [`configs/train/locomotion.yaml`](../configs/train/locomotion.yaml), and are explained in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
-Both profiles use the same production reward weights and randomization, except
-that Mini keeps its coordinated flat-sole joint pose fixed during reset instead
-of scaling each default joint independently. Bello Mini's canonical 43.50 kg
+Mini keeps its coordinated flat-sole joint pose fixed during reset instead of
+scaling each default joint independently. Bello Mini's canonical 43.50 kg
 inertials automatically feed the
 body-weight-normalized force and impact terms; those reward weights are not
 manually rescaled. The
-rounded height settings are a 0.88 m pelvis target and 0.56 m termination floor,
+rounded height settings are a 0.87 m pelvis target and 0.56 m termination floor,
 versus 0.86 m and 0.55 m for Bello. Both profiles preserve the successful
 baseline's unclipped policy-effort dynamics. The over-peak torque term still uses the
 reconstructed servo demand to expose infeasible policy requests. Emulator and

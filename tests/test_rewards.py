@@ -321,6 +321,26 @@ def test_hip_deviation_uses_lateral_command_axis() -> None:
     assert standing["reward/hip_deviation"] == pytest.approx(-0.01)
 
 
+def test_knee_deviation_is_standing_only() -> None:
+    config = reward_config(knee_deviation=-1.0)
+    inputs = reward_inputs(
+        joint_pos_rel=jnp.asarray([0.2, -0.3]),
+        knee_joint_indices=jnp.asarray([0, 1], dtype=jnp.int32),
+    )
+
+    _, standing = compute_locomotion_reward(config, inputs)
+    _, moving = compute_locomotion_reward(
+        config,
+        inputs.replace(
+            command=jnp.asarray([0.0, 0.5, 0.0]),
+            gait_active=jnp.asarray(True),
+        ),
+    )
+
+    assert standing["reward/knee_deviation"] == pytest.approx(-0.01)
+    assert moving["reward/knee_deviation"] == pytest.approx(0.0)
+
+
 def test_stand_upright_penalty_is_gated_by_standing_command() -> None:
     config = reward_config(stand_upright=-8.0)
     inputs = reward_inputs(

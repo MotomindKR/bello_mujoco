@@ -326,11 +326,11 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         assert profile.done_config.bad_orientation.link == "torso_link"
         assert profile.done_config.base_height.link == "pelvis_link"
     assert bello.reward_config.limits_pose.base_height_target == pytest.approx(0.86)
-    assert mini.reward_config.limits_pose.base_height_target == pytest.approx(0.88)
+    assert mini.reward_config.limits_pose.base_height_target == pytest.approx(0.87)
     assert bello.done_config.base_height.min_height == pytest.approx(0.55)
     assert mini.done_config.base_height.min_height == pytest.approx(0.56)
     assert bello.env_config.gait.frequency_hz == pytest.approx(0.9)
-    assert mini.env_config.gait.frequency_hz == pytest.approx(0.89)
+    assert mini.env_config.gait.frequency_hz == pytest.approx(0.90)
     assert mini.env_config.spawn == replace(
         bello.env_config.spawn,
         joint_pos_scale_range=(1.0, 1.0),

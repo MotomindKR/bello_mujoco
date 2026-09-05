@@ -51,9 +51,9 @@ contract, and training validates it against the robot's motion profile.
 - `bello` is the production Bello morphology with maintained motion,
   differential-ankle, emulator, and physical-hardware contracts.
 - `bello_mini` is the reviewed 43.50 kg Bello Mini morphology. Its nominal
-  locomotion pose uses `-0.10` rad hip pitch, `0.30` rad knee flexion, and
-  `-0.20` rad ankle pitch on both legs. The pitch sum is zero, so both soles
-  remain flat, and the rounded 0.868 m root height places them at `z=0`. Its
+  locomotion pose uses `-0.15` rad hip pitch, `0.45` rad knee flexion, and
+  `-0.30` rad ankle pitch on both legs. The pitch sum is zero, so both soles
+  remain flat, and the rounded 0.859 m root height places them at `z=0`. Its
   held shoulder rolls use left `+0.15` rad and right `-0.15` rad so the wrists
   remain clear of the pelvis collision envelopes. The
   static contract exposes all 28 movable joints: waist yaw, waist
@@ -77,9 +77,10 @@ contract, and training validates it against the robot's motion profile.
   knees at their hard lower limit. Its experiment disables independent
   multiplicative joint-position reset scaling because scaling the three pitch
   joints separately would tilt the soles. Other model, observation, velocity,
-  terrain, and push randomization remains active. Reviewed narrower policy soft
-  limits are still unavailable, so the policy action range uses the URDF joint
-  limits.
+  terrain, and push randomization remains active. The locomotion policy limits
+  each knee target to `[0.0, 1.2]` rad instead of exposing the full mechanical
+  range. This is a simulation policy range, not a physical calibration; the
+  remaining Mini joints continue to use their URDF limits.
 
   Joint travel ranges come from the designer's left-side nominal mechanical
   ranges. User visual review reversed the Mini URDF signs for hip pitch, hip

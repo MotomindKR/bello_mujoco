@@ -94,6 +94,10 @@ def test_bello_mini_model_uses_locomotion_partition(
     assert "waist_roll_joint" in policy_joint_names
     assert "left_wrist_roll_joint" in hold_joint_names
     assert "right_wrist_roll_joint" in hold_joint_names
+    for joint_name in ("left_knee_joint", "right_knee_joint"):
+        actuator_index = model.actuator_joint_names.index(joint_name)
+        assert model.joint_target_low[actuator_index] == pytest.approx(0.0)
+        assert model.joint_target_high[actuator_index] == pytest.approx(1.2)
 
     data = mujoco.MjData(model.mj_model)
     data.qpos[:] = model.default_qpos

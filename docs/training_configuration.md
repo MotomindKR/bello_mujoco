@@ -260,7 +260,7 @@ noise values are ordered uniform ranges applied before stacking.
 
 With commands enabled, the actor and critic both receive a three-value gait
 component: sine phase, cosine phase, and a gait-active bit. The maintained
-per-leg frequency is 0.90 Hz for Bello and a rounded 0.89 Hz for Bello Mini;
+per-leg frequency is 0.90 Hz for both Bello and the rounded Bello Mini setting;
 both use a 60% stance fraction and a half-cycle offset between the feet. Every
 training reset, native-evaluation rollout, and hardware-policy run initializes
 the gait clock at phase zero. During active gait, a zero input is only a standing
@@ -384,7 +384,7 @@ boundary.
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `stand_upright` | `-8.0` | At standing command, apply an additional gravity-vector tilt penalty so a deeply leaned pose cannot retain most of the standing reward. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation during standing or when a lateral command is active. |
-| `knee_deviation` | `-0.1` | Penalize knee deviation from nominal. |
+| `knee_deviation` | `-0.1` | During effective standing, penalize knee deviation from nominal. A pending zero request does not activate this term until the gait scheduler completes the current step. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
 | `invalid_action` | `0.0` | Optional penalty for invalid/nonfinite requested action. |
 | `gait_contact` | `-1.0` | Penalize disagreement between measured foot contact and the phase-conditioned stance schedule. |
@@ -400,8 +400,8 @@ impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini additionally
 uses `gait_contact: -4.0`, `gait_swing_clearance: -1.5`, and a `0.07` m swing
 clearance target. These Mini-only settings make persistent double support during
-a commanded gait substantially more expensive while leaving standing rewards
-and impact/torque safeguards unchanged.
+a commanded gait substantially more expensive while leaving impact and torque
+safeguards unchanged.
 
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and
@@ -447,7 +447,7 @@ actions or the commanded yaw rate.
 
 The maintained Bello profile uses a 0.55 m pelvis minimum; Bello Mini uses the
 rounded 0.56 m minimum. Both use a 0.80 rad torso orientation limit. Their base
-height reward targets are respectively 0.86 m and 0.88 m.
+height reward targets are respectively 0.86 m and 0.87 m.
 
 ## Motion selection and environment
 
@@ -663,7 +663,7 @@ TWIST uses 32 contacts per environment and logs
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
-| `bello_mini_locomotion` | The production PPO, command, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with the Mini asset and its canonical command frame, flat-sole nominal crouch, outward held shoulder-roll pose, rounded 0.88 m height target, 0.56 m termination floor, 0.89 Hz gait, strong Mini-specific gait-contact and swing-clearance shaping, and output names. The profile disables independent multiplicative joint-position reset scaling so it cannot break the coordinated hip/knee/ankle pose; the remaining randomization is active. |
+| `bello_mini_locomotion` | The production PPO, command, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with the Mini asset and its canonical command frame, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, strong Mini-specific contact/clearance shaping, and output names. The profile disables independent multiplicative joint-position reset scaling so it cannot break the coordinated hip/knee/ankle pose; the remaining randomization is active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |

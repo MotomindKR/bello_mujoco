@@ -542,7 +542,11 @@ def compute_locomotion_reward(
     hip_deviation *= standing_command | (
         jnp.abs(lateral_command) > config.limits_pose.hip_lateral_command_threshold
     )
-    knee_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.knee_joint_indices]))
+    knee_deviation = jnp.where(
+        standing_command,
+        jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.knee_joint_indices])),
+        0.0,
+    )
 
     joint_limit_center = 0.5 * (inputs.joint_limit_low + inputs.joint_limit_high)
     joint_limit_radius = (
