@@ -12,7 +12,7 @@ The robot contract owns:
 - the platform hardware description and motor-model catalog, when available;
 - generated floating-base body and joint names and the default root pose;
 - the default IMU body, locomotion command frame, explicit sagittal action
-  mirror, ordered foot bodies, explicit sole collision geometries, and
+  mirror, ordered foot bodies, explicit support collision geometries, and
   foot-forward axes;
 - the complete actuator joint order, policy/hold partition, neutral positions,
   soft limits, gains, and effort limits;
@@ -26,9 +26,12 @@ canonical default and defines which joints belong to the morphology.
 `ActuatorConfig.for_asset(...)` is the explicit way to materialize those defaults;
 standalone actuator configs do not silently select Bello.
 
-Only the configured sole geometries count as valid foot support or define swing
-clearance. Other collision geometry on a foot body, such as an ankle casing,
-remains part of the physical model but counts as non-foot contact with terrain.
+Only the collision geometries explicitly listed under `foot_support_geometries`
+count as valid foot support or define swing clearance. Bello lists every
+collision geometry on each ankle-roll foot body to preserve its established
+locomotion reward contract. Bello Mini lists only its five sole segments per
+foot; its ankle housing remains part of the physical model but counts as
+non-foot contact with terrain.
 
 Training selects the contract through `asset_config.asset`. The maintained
 `bello_locomotion` and `bello_mini_locomotion` experiment profiles make that

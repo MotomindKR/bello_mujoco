@@ -51,14 +51,12 @@ The same gitlink pins the RobStride model catalog and Python hardware client
 used by source-checkout workflows.
 
 Each asset identifier resolves one packaged contract under
-`src/bello_mujoco/robots/`. The contract declares source, generated, and hardware paths,
-floating-base and IMU bodies, locomotion command frame, sagittal action mirror,
-ordered feet, explicit sole collision geometries and forward axes, the actuator
-joint partition and defaults,
-payload attachment links,
-randomization bodies, and
-coupled actuator coordinates. These files are strictly decoded internal topology;
-they are not Hydra override surfaces.
+`src/bello_mujoco/robots/`. The contract declares source, generated, and hardware
+paths, floating-base and IMU bodies, locomotion command frame, sagittal action
+mirror, ordered feet, explicit support collision geometries and forward axes,
+the actuator joint partition and defaults, payload attachment links,
+randomization bodies, and coupled actuator coordinates. These files are strictly
+decoded internal topology; they are not Hydra override surfaces.
 
 Motion-capable assets add a strict `<asset>_motion.yaml` profile in the same
 directory. It is the source of import joint schemas, tracked bodies, end effectors,

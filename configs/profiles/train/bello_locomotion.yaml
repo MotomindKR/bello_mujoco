@@ -1,5 +1,9 @@
 asset_config:
   asset: bello
+reward_config:
+  limits_pose:
+    hip_deviation_command_indices: [1]
+    knee_deviation_apply_while_moving: true
 checkpoint_config:
   name: bello_locomotion_seed0
   wandb_artifact_name: bello_locomotion_seed0

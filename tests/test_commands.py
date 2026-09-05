@@ -316,8 +316,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     )
     assert bello.reward_config.smoothness.ankle_action_weight == pytest.approx(1.0)
     assert bello.reward_config.smoothness.waist_action_weight == pytest.approx(1.0)
-    assert bello.reward_config.limits_pose.hip_lateral_command_index == 0
-    assert mini.reward_config.limits_pose.hip_lateral_command_index == 0
+    assert bello.reward_config.limits_pose.hip_deviation_command_indices == (1,)
+    assert mini.reward_config.limits_pose.hip_deviation_command_indices == (0,)
+    assert bello.reward_config.limits_pose.knee_deviation_apply_while_moving
+    assert not mini.reward_config.limits_pose.knee_deviation_apply_while_moving
     assert bello.reward_config.links.track_lin_vel_xy_frame is None
     assert mini.reward_config.links.track_lin_vel_xy_frame is None
     for profile in (bello, mini):

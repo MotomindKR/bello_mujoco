@@ -278,8 +278,9 @@ class LimitsPoseRewardConfig:
     base_height_target: float = 0.86
     action_soft_limit_ratio: float = 0.8
     joint_soft_limit_factor: float = 0.9
-    hip_lateral_command_index: int = 0
-    hip_lateral_command_threshold: float = 0.1
+    hip_deviation_command_indices: tuple[int, ...] = (0,)
+    hip_deviation_command_threshold: float = 0.1
+    knee_deviation_apply_while_moving: bool = False
 
 
 @dataclass(frozen=True)
@@ -538,12 +539,15 @@ def compute_locomotion_reward(
         0.0,
     )
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
-    lateral_command = inputs.command[config.limits_pose.hip_lateral_command_index]
-    hip_deviation *= standing_command | (
-        jnp.abs(lateral_command) > config.limits_pose.hip_lateral_command_threshold
+    hip_deviation_commands = inputs.command[
+        jnp.asarray(config.limits_pose.hip_deviation_command_indices, dtype=jnp.int32)
+    ]
+    hip_deviation *= standing_command | jnp.any(
+        jnp.abs(hip_deviation_commands)
+        > config.limits_pose.hip_deviation_command_threshold
     )
     knee_deviation = jnp.where(
-        standing_command,
+        standing_command | config.limits_pose.knee_deviation_apply_while_moving,
         jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.knee_joint_indices])),
         0.0,
     )
@@ -713,8 +717,27 @@ def validate_reward_config(config: RewardConfig) -> None:
         raise ValueError("limits_pose.action_soft_limit_ratio must be in [0, 1)")
     if not 0.0 < config.limits_pose.joint_soft_limit_factor <= 1.0:
         raise ValueError("limits_pose.joint_soft_limit_factor must be in (0, 1]")
-    if config.limits_pose.hip_lateral_command_index not in {0, 1}:
-        raise ValueError("limits_pose.hip_lateral_command_index must be 0 or 1")
+    hip_command_indices = config.limits_pose.hip_deviation_command_indices
+    if type(hip_command_indices) is not tuple:
+        raise TypeError("limits_pose.hip_deviation_command_indices must be a tuple")
+    if not hip_command_indices:
+        raise ValueError("limits_pose.hip_deviation_command_indices must not be empty")
+    if any(
+        type(index) is not int or index not in {0, 1, 2}
+        for index in hip_command_indices
+    ):
+        raise ValueError(
+            "limits_pose.hip_deviation_command_indices must contain command "
+            "indices 0, 1, or 2"
+        )
+    if len(set(hip_command_indices)) != len(hip_command_indices):
+        raise ValueError(
+            "limits_pose.hip_deviation_command_indices must not contain duplicates"
+        )
+    if type(config.limits_pose.knee_deviation_apply_while_moving) is not bool:
+        raise TypeError(
+            "limits_pose.knee_deviation_apply_while_moving must be a boolean"
+        )
     nonnegative = {
         "gait.stance_slip_angular_speed_scale": (
             config.gait.stance_slip_angular_speed_scale
@@ -723,8 +746,8 @@ def validate_reward_config(config: RewardConfig) -> None:
         "standing.foot_heading_deadband": config.standing.foot_heading_deadband,
         "smoothness.ankle_action_weight": config.smoothness.ankle_action_weight,
         "smoothness.waist_action_weight": config.smoothness.waist_action_weight,
-        "limits_pose.hip_lateral_command_threshold": (
-            config.limits_pose.hip_lateral_command_threshold
+        "limits_pose.hip_deviation_command_threshold": (
+            config.limits_pose.hip_deviation_command_threshold
         ),
     }
     for name, value in nonnegative.items():

@@ -31,13 +31,21 @@ locomotion_action_mirror:
 foot_body_names:
   - left_ankle_roll_link
   - right_ankle_roll_link
-foot_sole_geometries:
+foot_support_geometries:
   - body_name: left_ankle_roll_link
     geom_names:
       - left_ankle_roll_link_collision_box_1
+      - left_ankle_roll_link_collision_box_2
+      - left_ankle_roll_link_collision_box_3
+      - left_ankle_roll_link_collision_cylinder_1
+      - left_ankle_roll_link_collision_cylinder_2
   - body_name: right_ankle_roll_link
     geom_names:
       - right_ankle_roll_link_collision_box_1
+      - right_ankle_roll_link_collision_box_2
+      - right_ankle_roll_link_collision_box_3
+      - right_ankle_roll_link_collision_cylinder_1
+      - right_ankle_roll_link_collision_cylinder_2
 foot_forward_axes:
   - body_name: left_ankle_roll_link
     axis: [0.0, 1.0, 0.0]

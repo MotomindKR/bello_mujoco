@@ -74,7 +74,7 @@ reward_config:
     ankle_action_weight: 1.0
     waist_action_weight: 1.0
   limits_pose:
-    hip_lateral_command_index: 0
+    hip_deviation_command_indices: [0]
   links:
     track_lin_vel_xy: pelvis_link
     track_ang_vel_z: pelvis_link

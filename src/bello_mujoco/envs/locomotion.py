@@ -971,20 +971,24 @@ class BelloLocomotionEnv:
         forward: bool = True,
         align_clearance: bool = True,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = reset_rng = feedback_rng = obs_rng = latency_rng = rng
+        command_rng = reset_rng = feedback_rng = obs_rng = latency_rng = gait_rng = rng
         if rng is not None:
-            # Preserve the other reset streams after removing randomized gait startup.
             (
                 command_rng,
                 reset_rng,
                 obs_rng,
                 latency_rng,
-                _,
+                gait_rng,
             ) = jax.random.split(rng, 5)
             feedback_rng = jax.random.fold_in(obs_rng, 1)
             obs_rng = jax.random.fold_in(obs_rng, 2)
         command = self._resolve_command(command, command_rng)
         gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
+        if gait_rng is not None:
+            sampled_phase = 0.5 * jax.random.bernoulli(gait_rng).astype(jnp.float32)
+            gait_phase = jnp.where(
+                command_is_moving(command, self.command_config), sampled_phase, 0.0
+            )
         data = self.model.make_data()
         data = data.replace(
             qpos=jnp.asarray(self.model.default_qpos),

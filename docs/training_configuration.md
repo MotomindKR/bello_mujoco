@@ -261,9 +261,11 @@ noise values are ordered uniform ranges applied before stacking.
 With commands enabled, the actor and critic both receive a three-value gait
 component: sine phase, cosine phase, and a gait-active bit. The maintained
 per-leg frequency is 0.90 Hz for both Bello and the rounded Bello Mini setting;
-both use a 60% stance fraction and a half-cycle offset between the feet. Every
-training reset, native-evaluation rollout, and hardware-policy run initializes
-the gait clock at phase zero. During active gait, a zero input is only a standing
+both use a 60% stance fraction and a half-cycle offset between the feet. Moving
+training resets randomly initialize the clock at phase zero or one half, the two
+equivalent double-support boundaries, so either leg can begin the first step
+without spawning in the middle of a swing. Native evaluation and hardware runs
+initialize it at phase zero. During active gait, a zero input is only a standing
 request. The effective command and gait component remain moving until the next
 scheduled half-cycle boundary, including when the request arrives during double
 support. The boundary step still receives gait rewards; the following step uses
@@ -383,8 +385,8 @@ boundary.
 | `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize bounded left/right foot heading error outside the configured deadband relative to the robot command-frame forward axis. The weighted cost is capped below `0.01` per control step and is inactive during recovery, termination, and moving commands. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `stand_upright` | `-8.0` | At standing command, apply an additional gravity-vector tilt penalty so a deeply leaned pose cannot retain most of the standing reward. |
-| `hip_deviation` | `-0.25` | Penalize hip deviation during standing or when a lateral command is active. |
-| `knee_deviation` | `-0.1` | During effective standing, penalize knee deviation from nominal. A pending zero request does not activate this term until the gait scheduler completes the current step. |
+| `hip_deviation` | `-0.25` | Penalize hip deviation during standing or when any configured command axis is active. |
+| `knee_deviation` | `-0.1` | Penalize knee deviation during effective standing; a profile can explicitly retain it while moving. A pending zero request does not activate standing-only shaping until the gait scheduler completes the current step. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
 | `invalid_action` | `0.0` | Optional penalty for invalid/nonfinite requested action. |
 | `gait_contact` | `-1.0` | Penalize disagreement between measured foot contact and the phase-conditioned stance schedule. |
@@ -402,6 +404,13 @@ uses `gait_contact: -4.0`, `gait_swing_clearance: -1.5`, and a `0.07` m swing
 clearance target. These Mini-only settings make persistent double support during
 a commanded gait substantially more expensive while leaving impact and torque
 safeguards unchanged.
+
+The Bello profile applies moving hip-deviation shaping to its forward `+Y`
+command axis and enables `knee_deviation_apply_while_moving`, preserving the
+successful profile's exact moving-pose gates without mislabeling forward as
+lateral. The Mini profile applies hip shaping to lateral `+X` and leaves the
+knee switch disabled so its knees remain free to form gait while the term still
+regularizes standing.
 
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and
@@ -421,7 +430,7 @@ Supporting fields are:
 | `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `smoothness` | `ankle_action_weight`, `waist_action_weight` |
-| `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_lateral_command_index`, `hip_lateral_command_threshold` |
+| `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_deviation_command_indices`, `hip_deviation_command_threshold`, `knee_deviation_apply_while_moving` |
 
 Rollout telemetry reports the mean, p95, p99, and worst normalized joint-force,
 foot-contact peak, and control-interval impulse maxima. The tail metrics are named

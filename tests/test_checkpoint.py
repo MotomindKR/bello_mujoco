@@ -714,7 +714,7 @@ def test_checkpoint_without_symmetry_loss_loads_with_loss_disabled(
     assert restored.ppo.symmetry_loss_coef == 0.0
 
 
-def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
+def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     tmp_path: Path,
 ) -> None:
     config = ppo_config()
@@ -747,6 +747,15 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
         "touchdown_vertical_speed_scale",
     ):
         document["metadata"]["reward"]["gait"].pop(name)
+    legacy_limits_pose = document["metadata"]["reward"]["limits_pose"]
+    legacy_hip_command_indices = legacy_limits_pose.pop("hip_deviation_command_indices")
+    legacy_limits_pose["hip_lateral_command_index"] = legacy_hip_command_indices[0]
+    legacy_limits_pose["hip_lateral_command_threshold"] = legacy_limits_pose.pop(
+        "hip_deviation_command_threshold"
+    )
+    document["metadata"]["reward"]["limits_pose"].pop(
+        "knee_deviation_apply_while_moving"
+    )
     document["metadata_sha256"] = checkpoint._fingerprint(document["metadata"])
     metadata_path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -771,6 +780,8 @@ def test_locomotion_checkpoint_without_joint_force_reward_loads_as_disabled(
     assert restored.reward.standing.foot_heading_scale == pytest.approx(
         np.deg2rad(15.0)
     )
+    assert restored.reward.limits_pose.hip_deviation_command_indices == (0,)
+    assert restored.reward.limits_pose.knee_deviation_apply_while_moving
 
 
 def test_locomotion_checkpoint_without_standing_transitions_loads_as_disabled(

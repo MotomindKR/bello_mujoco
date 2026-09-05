@@ -840,24 +840,29 @@ def test_batch_command_mode_cohort_survives_resampling(
     assert jnp.all(command_is_moving(next_state.command[~standing], command_config))
 
 
-def test_training_reset_starts_moving_commands_at_phase_zero(
+def test_training_reset_starts_moving_commands_at_natural_gait_boundaries(
     bello_asset: PreparedAsset,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, batch_size=4)
+    env = BelloLocomotionEnv.load_prepared(bello_asset, batch_size=64)
     moving = jnp.asarray([0.5, -0.1, 0.2], dtype=jnp.float32)
 
     state, observation = env.reset_batch(
-        4,
+        64,
         command=moving,
         rng=jax.random.PRNGKey(20),
     )
 
-    assert state.gait_phase == pytest.approx(jnp.zeros(4))
+    assert jnp.unique(state.gait_phase) == pytest.approx(jnp.asarray([0.0, 0.5]))
     assert desired_gait_foot_contact(state.gait_phase, env.config.gait) == (
-        pytest.approx(jnp.ones((4, 2)))
+        pytest.approx(jnp.ones((64, 2)))
+    )
+    expected_phase_features = gait_phase_features(
+        state.gait_phase,
+        state.command,
+        env.command_config,
     )
     assert observation[:, observation_component_slice(env, "gait_phase")] == (
-        pytest.approx(jnp.tile(jnp.asarray([0.0, 1.0, 1.0]), (4, 1)))
+        pytest.approx(expected_phase_features)
     )
 
 

@@ -19,7 +19,7 @@ from bello_mujoco.evaluation.render import (
     mujoco_undesired_contact,
 )
 from bello_mujoco.robot import (
-    FootSoleGeometry,
+    FootSupportGeometry,
     robot_definition,
     validate_robot_source_urdf,
 )
@@ -27,10 +27,18 @@ from bello_mujoco.sim import load_prepared_bello_model
 from bello_mujoco.terrain import TerrainConfig
 
 
-SOLE_GEOM_NAMES = {
+SUPPORT_GEOM_NAMES = {
     "bello": (
         "left_ankle_roll_link_collision_box_1",
+        "left_ankle_roll_link_collision_box_2",
+        "left_ankle_roll_link_collision_box_3",
+        "left_ankle_roll_link_collision_cylinder_1",
+        "left_ankle_roll_link_collision_cylinder_2",
         "right_ankle_roll_link_collision_box_1",
+        "right_ankle_roll_link_collision_box_2",
+        "right_ankle_roll_link_collision_box_3",
+        "right_ankle_roll_link_collision_cylinder_1",
+        "right_ankle_roll_link_collision_cylinder_2",
     ),
     "bello_mini": (
         "left_ankle_roll_link_sole_heel_center",
@@ -48,21 +56,12 @@ SOLE_GEOM_NAMES = {
 
 
 @pytest.mark.parametrize(
-    ("fixture_name", "asset", "housing_geom_names"),
+    ("fixture_name", "asset", "non_support_geom_names"),
     [
         (
             "bello_asset",
             "bello",
-            (
-                "left_ankle_roll_link_collision_box_2",
-                "left_ankle_roll_link_collision_box_3",
-                "left_ankle_roll_link_collision_cylinder_1",
-                "left_ankle_roll_link_collision_cylinder_2",
-                "right_ankle_roll_link_collision_box_2",
-                "right_ankle_roll_link_collision_box_3",
-                "right_ankle_roll_link_collision_cylinder_1",
-                "right_ankle_roll_link_collision_cylinder_2",
-            ),
+            (),
         ),
         (
             "bello_mini_asset",
@@ -74,11 +73,11 @@ SOLE_GEOM_NAMES = {
         ),
     ],
 )
-def test_model_resolves_only_configured_sole_geometries(
+def test_model_resolves_configured_support_geometries(
     request: pytest.FixtureRequest,
     fixture_name: str,
     asset: str,
-    housing_geom_names: tuple[str, ...],
+    non_support_geom_names: tuple[str, ...],
 ) -> None:
     prepared: PreparedAsset = request.getfixturevalue(fixture_name)
     scene = load_prepared_bello_model(prepared, load_mjx=False)
@@ -89,27 +88,27 @@ def test_model_resolves_only_configured_sole_geometries(
     )
     nonfoot_geom_ids = set(int(geom_id) for geom_id in scene.nonfoot_robot_geom_ids)
 
-    assert resolved_names == SOLE_GEOM_NAMES[asset]
-    for name in housing_geom_names:
+    assert resolved_names == SUPPORT_GEOM_NAMES[asset]
+    for name in non_support_geom_names:
         geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
         assert geom_id not in scene.foot_geom_ids
         assert geom_id in nonfoot_geom_ids
 
 
-def test_robot_source_validation_rejects_missing_sole_geometry() -> None:
+def test_robot_source_validation_rejects_missing_support_geometry() -> None:
     robot = robot_definition("bello_mini")
     invalid = replace(
         robot,
-        foot_sole_geometries=(
-            FootSoleGeometry(
+        foot_support_geometries=(
+            FootSupportGeometry(
                 body_name=robot.foot_body_names[0],
-                geom_names=("missing_left_sole",),
+                geom_names=("missing_left_support",),
             ),
-            robot.foot_sole_geometries[1],
+            robot.foot_support_geometries[1],
         ),
     )
 
-    with pytest.raises(ValueError, match="missing_left_sole"):
+    with pytest.raises(ValueError, match="missing_left_support"):
         validate_robot_source_urdf(
             invalid,
             robot.source_urdf_path(robot_descriptions_root()),
@@ -151,19 +150,19 @@ def test_foot_terrain_membership_rejects_housing_and_nonterrain_contacts() -> No
 
 
 @pytest.mark.parametrize(
-    ("fixture_name", "geom_name", "is_sole"),
+    ("fixture_name", "geom_name", "is_support"),
     [
         ("bello_asset", "left_ankle_roll_link_collision_box_1", True),
-        ("bello_asset", "left_ankle_roll_link_collision_box_2", False),
+        ("bello_asset", "left_ankle_roll_link_collision_box_2", True),
         ("bello_mini_asset", "left_ankle_roll_link_sole_main", True),
         ("bello_mini_asset", "left_ankle_roll_link_ankle_housing", False),
     ],
 )
-def test_native_contact_classification_uses_sole_geometry(
+def test_native_contact_classification_uses_robot_support_geometry(
     request: pytest.FixtureRequest,
     fixture_name: str,
     geom_name: str,
-    is_sole: bool,
+    is_support: bool,
 ) -> None:
     prepared: PreparedAsset = request.getfixturevalue(fixture_name)
     env = BelloLocomotionEnv.load_prepared(
@@ -194,7 +193,7 @@ def test_native_contact_classification_uses_sole_geometry(
     foot_contact, foot_force = mujoco_foot_contact_and_normal_force(env, data)
     undesired_contact = mujoco_undesired_contact(env, data)
 
-    if is_sole:
+    if is_support:
         np.testing.assert_array_equal(foot_contact, [1.0, 0.0])
         assert foot_force[0] > env.config.contact.foot_contact_force_threshold
         assert undesired_contact == pytest.approx(0.0)

@@ -301,10 +301,13 @@ def test_healthy_survival_reward_excludes_terminal_step() -> None:
     assert terminal == pytest.approx(0.0)
 
 
-def test_hip_deviation_uses_lateral_command_axis() -> None:
+def test_hip_deviation_uses_configured_command_axes() -> None:
     config = reward_config(
         hip_deviation=-1.0,
-        limits_pose=LimitsPoseRewardConfig(hip_lateral_command_threshold=0.1),
+        limits_pose=LimitsPoseRewardConfig(
+            hip_deviation_command_indices=(0, 2),
+            hip_deviation_command_threshold=0.1,
+        ),
     )
     inputs = reward_inputs(joint_pos_rel=jnp.asarray([0.5, 0.0]))
 
@@ -314,15 +317,25 @@ def test_hip_deviation_uses_lateral_command_axis() -> None:
     _, forward = compute_locomotion_reward(
         config, inputs.replace(command=jnp.asarray([0.0, 0.5, 0.0]))
     )
+    _, yaw = compute_locomotion_reward(
+        config, inputs.replace(command=jnp.asarray([0.0, 0.0, 0.5]))
+    )
     _, standing = compute_locomotion_reward(config, inputs)
 
     assert forward["reward/hip_deviation"] == pytest.approx(0.0)
     assert lateral["reward/hip_deviation"] == pytest.approx(-0.01)
+    assert yaw["reward/hip_deviation"] == pytest.approx(-0.01)
     assert standing["reward/hip_deviation"] == pytest.approx(-0.01)
 
 
-def test_knee_deviation_is_standing_only() -> None:
-    config = reward_config(knee_deviation=-1.0)
+@pytest.mark.parametrize("apply_while_moving", (False, True))
+def test_knee_deviation_moving_gate_is_explicit(apply_while_moving: bool) -> None:
+    config = reward_config(
+        knee_deviation=-1.0,
+        limits_pose=LimitsPoseRewardConfig(
+            knee_deviation_apply_while_moving=apply_while_moving,
+        ),
+    )
     inputs = reward_inputs(
         joint_pos_rel=jnp.asarray([0.2, -0.3]),
         knee_joint_indices=jnp.asarray([0, 1], dtype=jnp.int32),
@@ -338,7 +351,9 @@ def test_knee_deviation_is_standing_only() -> None:
     )
 
     assert standing["reward/knee_deviation"] == pytest.approx(-0.01)
-    assert moving["reward/knee_deviation"] == pytest.approx(0.0)
+    assert moving["reward/knee_deviation"] == pytest.approx(
+        -0.01 if apply_while_moving else 0.0
+    )
 
 
 def test_stand_upright_penalty_is_gated_by_standing_command() -> None:
@@ -830,6 +845,18 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
         RewardConfig(limits_pose=LimitsPoseRewardConfig(joint_soft_limit_factor=0.0))
     with pytest.raises(ValueError, match="base_height_target"):
         RewardConfig(limits_pose=LimitsPoseRewardConfig(base_height_target=0.0))
+    with pytest.raises(ValueError, match="hip_deviation_command_indices"):
+        RewardConfig(
+            limits_pose=LimitsPoseRewardConfig(
+                hip_deviation_command_indices=(3,),
+            )
+        )
+    with pytest.raises(TypeError, match="knee_deviation_apply_while_moving"):
+        RewardConfig(
+            limits_pose=LimitsPoseRewardConfig(
+                knee_deviation_apply_while_moving=1,  # type: ignore[arg-type]
+            )
+        )
     with pytest.raises(ValueError, match="foot_linear_speed_scale"):
         RewardConfig(standing=StandingRewardConfig(foot_linear_speed_scale=0.0))
     with pytest.raises(ValueError, match="ang_vel_z_lpf_cutoff_hz"):

@@ -921,6 +921,33 @@ def _with_checkpoint_metadata_defaults(
                     if name not in normalized_gait:
                         normalized_gait[name] = default
                 normalized_reward["gait"] = normalized_gait
+            limits_pose = reward.get("limits_pose")
+            if isinstance(limits_pose, dict):
+                normalized_limits_pose = dict(limits_pose)
+                if "hip_lateral_command_index" in normalized_limits_pose:
+                    if "hip_deviation_command_indices" in normalized_limits_pose:
+                        raise ValueError(
+                            "checkpoint reward.limits_pose contains both legacy "
+                            "hip_lateral_command_index and "
+                            "hip_deviation_command_indices"
+                        )
+                    normalized_limits_pose["hip_deviation_command_indices"] = [
+                        normalized_limits_pose.pop("hip_lateral_command_index")
+                    ]
+                if "hip_lateral_command_threshold" in normalized_limits_pose:
+                    if "hip_deviation_command_threshold" in normalized_limits_pose:
+                        raise ValueError(
+                            "checkpoint reward.limits_pose contains both legacy "
+                            "hip_lateral_command_threshold and "
+                            "hip_deviation_command_threshold"
+                        )
+                    normalized_limits_pose["hip_deviation_command_threshold"] = (
+                        normalized_limits_pose.pop("hip_lateral_command_threshold")
+                    )
+                normalized_limits_pose.setdefault(
+                    "knee_deviation_apply_while_moving", True
+                )
+                normalized_reward["limits_pose"] = normalized_limits_pose
             normalized["reward"] = normalized_reward
         return normalized
     if value.get("task") != "motion_tracking":

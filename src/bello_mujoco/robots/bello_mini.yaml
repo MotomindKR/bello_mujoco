@@ -33,7 +33,7 @@ locomotion_action_mirror:
 foot_body_names:
   - left_ankle_roll_link
   - right_ankle_roll_link
-foot_sole_geometries:
+foot_support_geometries:
   - body_name: left_ankle_roll_link
     geom_names:
       - left_ankle_roll_link_sole_heel_center
