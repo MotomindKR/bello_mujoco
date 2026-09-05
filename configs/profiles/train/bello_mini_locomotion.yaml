@@ -9,10 +9,10 @@ env_config:
     joint_pos_scale_range: [1.0, 1.0]
 reward_config:
   weights:
-    gait_contact: -4.0
-    gait_swing_clearance: -1.5
+    gait_contact: -2.5
+    gait_swing_clearance: -1.0
   gait:
-    swing_clearance_target: 0.07
+    swing_clearance_target: 0.075
   limits_pose:
     base_height_target: 0.88
 done_config:

@@ -24,8 +24,8 @@ twist2
 the same production PPO, command, randomization, and observation recipe. The
 Mini profile changes its asset, rounded height thresholds, gait frequency,
 exact-pose reset, output names, and gait shaping: contact mismatch is weighted
-`-4.0`, swing-clearance shortfall is weighted `-1.5`, and target clearance is
-`0.07` m. The selected robot contract supplies its planar tracking frame and
+`-2.5`, swing-clearance shortfall is weighted `-1.0`, and target clearance is
+`0.075` m. The selected robot contract supplies its planar tracking frame and
 crouched joint defaults. Their periodic
 and final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
 BeyondMimic tracking; the TWIST experiments are documented separately. The

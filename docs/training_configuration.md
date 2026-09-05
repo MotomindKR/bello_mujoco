@@ -398,10 +398,10 @@ The maintained locomotion profiles override `touchdown_impact` to `-8.0` while
 retaining their `1.0` body-weight touchdown-force soft limit. This restores the
 impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini additionally
-uses `gait_contact: -4.0`, `gait_swing_clearance: -1.5`, and a `0.07` m swing
+uses `gait_contact: -2.5`, `gait_swing_clearance: -1.0`, and a `0.075` m swing
 clearance target. These Mini-only settings make persistent double support during
-a commanded gait substantially more expensive while leaving standing rewards
-and impact/torque safeguards unchanged.
+a commanded gait more expensive while leaving standing rewards and
+impact/torque safeguards unchanged.
 
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and
@@ -663,7 +663,7 @@ TWIST uses 32 contacts per environment and logs
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
-| `bello_mini_locomotion` | The production PPO, command, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with the Mini asset and its canonical command frame, flat-sole nominal crouch, outward held shoulder-roll pose, rounded 0.88 m height target, 0.56 m termination floor, 0.89 Hz gait, strong Mini-specific gait-contact and swing-clearance shaping, and output names. The profile disables independent multiplicative joint-position reset scaling so it cannot break the coordinated hip/knee/ankle pose; the remaining randomization is active. |
+| `bello_mini_locomotion` | The production PPO, command, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with the Mini asset and its canonical command frame, flat-sole nominal crouch, outward held shoulder-roll pose, rounded 0.88 m height target, 0.56 m termination floor, 0.89 Hz gait, moderate Mini-specific gait-contact and swing-clearance shaping, and output names. The profile disables independent multiplicative joint-position reset scaling so it cannot break the coordinated hip/knee/ankle pose; the remaining randomization is active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |
