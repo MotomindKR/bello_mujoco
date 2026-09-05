@@ -12,18 +12,23 @@ The robot contract owns:
 - the platform hardware description and motor-model catalog, when available;
 - generated floating-base body and joint names and the default root pose;
 - the default IMU body, locomotion command frame, explicit sagittal action
-  mirror, ordered foot bodies, and foot-forward axes;
+  mirror, ordered foot bodies, explicit sole collision geometries, and
+  foot-forward axes;
 - the complete actuator joint order, policy/hold partition, neutral positions,
   soft limits, gains, and effort limits;
 - base, torso, and central bodies used by model randomization, plus optional
   payload attachment points; and
-- coupled actuator coordinates such as Bello's ankle differentials.
+- coupled actuator coordinates such as the Bello-style ankle differentials.
 
 These values are not Hydra options. Runtime experiments may deliberately override
 actuator modes or gains with `ActuatorConfig`, but the robot file remains the
 canonical default and defines which joints belong to the morphology.
 `ActuatorConfig.for_asset(...)` is the explicit way to materialize those defaults;
 standalone actuator configs do not silently select Bello.
+
+Only the configured sole geometries count as valid foot support or define swing
+clearance. Other collision geometry on a foot body, such as an ankle casing,
+remains part of the physical model but counts as non-foot contact with terrain.
 
 Training selects the contract through `asset_config.asset`. The maintained
 `bello_locomotion` and `bello_mini_locomotion` experiment profiles make that
@@ -53,9 +58,11 @@ contract, and training validates it against the robot's motion profile.
   remain clear of the pelvis collision envelopes. The
   static contract exposes all 28 movable joints: waist yaw, waist
   roll, and the 12 leg joints are policy-controlled, while both seven-DoF arms
-  are held. Its logical
-  ankle pitch/roll joints are simulated directly because the physical
-  differential coefficients have not been calibrated. Its massless fixed
+  are held. Simulation maps its logical ankle pitch/roll coordinates through
+  the same ideal `[-pitch + roll, +pitch + roll]` differential convention as
+  Bello. This is a simulation model, not a hardware calibration: the physical
+  Mini coefficient matrices, command directions, and encoder zeros remain
+  unknown. Its massless fixed
   `imu_link` is 50 mm below the midpoint between the reviewed left/right
   hip-pitch joint origins (`[-0.01, 0, -0.23]` m in pelvis coordinates).
   Bello is physically forward along pelvis `+Y`; Bello Mini is physically

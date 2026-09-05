@@ -455,11 +455,11 @@ def _load_bello_model_from_path(
     terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
     foot_body_ids = foot_body_indices(mj_model, robot)
     robot_geom_ids = robot_collision_geom_indices(mj_model)
-    foot_geom_ids = robot_collision_geom_indices(
-        mj_model, body_ids=set(foot_body_ids.tolist())
-    )
-    nonfoot_robot_geom_ids = robot_collision_geom_indices(
-        mj_model, excluded_body_ids=set(foot_body_ids.tolist())
+    foot_geom_ids = foot_sole_geom_indices(mj_model, robot, foot_body_ids)
+    foot_geom_id_set = set(foot_geom_ids.tolist())
+    nonfoot_robot_geom_ids = np.asarray(
+        [geom_id for geom_id in robot_geom_ids if geom_id not in foot_geom_id_set],
+        dtype=np.int32,
     )
     nonfoot_robot_body_ids = np.unique(
         np.asarray(mj_model.geom_bodyid[nonfoot_robot_geom_ids], dtype=np.int32)
@@ -1046,6 +1046,37 @@ def foot_body_indices(
         ]
         raise ValueError(f"model is missing configured foot bodies: {missing}")
     return ids
+
+
+def foot_sole_geom_indices(
+    mj_model: mujoco.MjModel,
+    robot: RobotDefinition,
+    foot_body_ids: np.ndarray,
+) -> np.ndarray:
+    ids: list[int] = []
+    for sole, body_id in zip(robot.foot_sole_geometries, foot_body_ids, strict=True):
+        for name in sole.geom_names:
+            geom_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            if geom_id < 0:
+                raise ValueError(f"model is missing configured foot sole geom {name!r}")
+            actual_body_id = int(mj_model.geom_bodyid[geom_id])
+            if actual_body_id != int(body_id):
+                actual_body_name = mujoco.mj_id2name(
+                    mj_model, mujoco.mjtObj.mjOBJ_BODY, actual_body_id
+                )
+                raise ValueError(
+                    f"configured foot sole geom {name!r} belongs to body "
+                    f"{actual_body_name!r}, expected {sole.body_name!r}"
+                )
+            if (
+                mj_model.geom_contype[geom_id] == 0
+                and mj_model.geom_conaffinity[geom_id] == 0
+            ):
+                raise ValueError(
+                    f"configured foot sole geom {name!r} is not collision-enabled"
+                )
+            ids.append(geom_id)
+    return np.asarray(ids, dtype=np.int32)
 
 
 def named_geom_indices(mj_model: mujoco.MjModel, name: str) -> np.ndarray:

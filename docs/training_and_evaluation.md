@@ -21,10 +21,12 @@ twist2
 
 `smoke` runs a real, minimal MJX-Warp PPO update. `bello_locomotion` and
 `bello_mini_locomotion` select their respective robot contracts after composing
-the same production PPO, reward, command, randomization, and observation
-recipe. The Mini profile changes only its asset, rounded height thresholds,
-gait frequency, exact-pose reset, and output names; the selected robot contract
-supplies its planar tracking frame and crouched joint defaults. Their periodic
+the same production PPO, command, randomization, and observation recipe. The
+Mini profile changes its asset, rounded height thresholds, gait frequency,
+exact-pose reset, output names, and gait shaping: contact mismatch is weighted
+`-4.0`, swing-clearance shortfall is weighted `-1.5`, and target clearance is
+`0.07` m. The selected robot contract supplies its planar tracking frame and
+crouched joint defaults. Their periodic
 and final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
 BeyondMimic tracking; the TWIST experiments are documented separately. The
 shared `configs/train/locomotion.yaml` layer is internal and is not a public

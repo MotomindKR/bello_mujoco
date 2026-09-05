@@ -281,13 +281,23 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert len(mini.asset_config.actuator_config.policy_joint_names) == 14
     assert len(mini.asset_config.actuator_config.hold_joint_names) == 14
     assert "waist_roll_joint" in mini.asset_config.actuator_config.policy_joint_names
-    assert bello.reward_config.weights == mini.reward_config.weights
+    assert mini.reward_config.weights == replace(
+        bello.reward_config.weights,
+        gait_contact=-4.0,
+        gait_swing_clearance=-1.5,
+    )
     assert bello.reward_config.tracking == mini.reward_config.tracking
     assert bello.reward_config.standing == mini.reward_config.standing
-    assert bello.reward_config.gait == mini.reward_config.gait
+    assert mini.reward_config.gait == replace(
+        bello.reward_config.gait,
+        swing_clearance_target=0.07,
+    )
     assert bello.reward_config.smoothness == mini.reward_config.smoothness
     assert bello.reward_config.weights.healthy_survival == pytest.approx(1.5)
     assert bello.reward_config.weights.touchdown_impact == pytest.approx(-8.0)
+    assert mini.reward_config.weights.touchdown_impact == pytest.approx(-8.0)
+    assert bello.reward_config.weights.gait_contact == pytest.approx(-1.0)
+    assert bello.reward_config.weights.gait_swing_clearance == pytest.approx(-0.5)
     assert bello.reward_config.weights.action_acceleration == pytest.approx(0.0)
     assert bello.reward_config.weights.stand_upright == pytest.approx(-8.0)
     assert bello.reward_config.standing.foot_heading_deadband == pytest.approx(

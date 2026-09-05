@@ -53,7 +53,8 @@ used by source-checkout workflows.
 Each asset identifier resolves one packaged contract under
 `src/bello_mujoco/robots/`. The contract declares source, generated, and hardware paths,
 floating-base and IMU bodies, locomotion command frame, sagittal action mirror,
-ordered feet and forward axes, the actuator joint partition and defaults,
+ordered feet, explicit sole collision geometries and forward axes, the actuator
+joint partition and defaults,
 payload attachment links,
 randomization bodies, and
 coupled actuator coordinates. These files are strictly decoded internal topology;

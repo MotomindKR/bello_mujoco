@@ -3004,12 +3004,14 @@ class BelloLocomotionEnv:
             & self_collision_forceful_contact
             & pair_both_contained(contact_geom, self.model.robot_geom_ids)
         )
-        foot_terrain_contact_slot = (
-            active
-            & terrain_contact
-            & pair_contains(contact_body, self.model.foot_body_ids)
+        foot_membership = foot_terrain_contact_membership(
+            contact_geom,
+            self.model.geom_body_ids,
+            self.model.foot_body_ids,
+            self.model.foot_geom_ids,
+            self.model.terrain_geom_ids,
         )
-        foot_membership = pair_contains_each(contact_body, self.model.foot_body_ids)
+        foot_terrain_contact_slot = active & jnp.any(foot_membership, axis=1)
         foot_contact_slot = foot_terrain_contact_slot & foot_forceful_contact
         foot_contact = jnp.any(
             foot_contact_slot[:, None] & foot_membership,
@@ -3417,6 +3419,23 @@ def pair_contains_each(pair: jax.Array, candidates) -> jax.Array:
     if candidates.size == 0:
         return jnp.zeros((pair.shape[0], 0), dtype=bool)
     return jnp.any(pair[:, :, None] == candidates[None, None, :], axis=1)
+
+
+def foot_terrain_contact_membership(
+    contact_geom: jax.Array,
+    geom_body_ids,
+    foot_body_ids,
+    foot_geom_ids,
+    terrain_geom_ids,
+) -> jax.Array:
+    """Map sole-terrain contact pairs to their configured left/right foot."""
+
+    contact_geom = jnp.asarray(contact_geom, dtype=jnp.int32)
+    contact_body = jnp.asarray(geom_body_ids, dtype=jnp.int32)[contact_geom]
+    sole_terrain = pair_contains(contact_geom, foot_geom_ids) & pair_contains(
+        contact_geom, terrain_geom_ids
+    )
+    return sole_terrain[:, None] & pair_contains_each(contact_body, foot_body_ids)
 
 
 def pair_both_contained(pair: jax.Array, candidates) -> jax.Array:

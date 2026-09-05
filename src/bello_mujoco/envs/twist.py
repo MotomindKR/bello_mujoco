@@ -16,7 +16,7 @@ from mujoco import mjx
 from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.locomotion import (
-    pair_contains_each,
+    foot_terrain_contact_membership,
     quat_rotate,
     quat_rotate_inverse,
     tree_where,
@@ -1613,10 +1613,19 @@ class BelloTwistEnv:
         return data.replace(qvel=qvel, xfrc_applied=xfrc), root_due | force_due
 
     def _foot_contact_forces(self, state, world_id):
-        contact_world, active, bodies, normal, tangent = self._contact_force_data(state)
+        contact_world, active, geom, _, normal, tangent = self._contact_force_data(
+            state
+        )
         selected = active & (contact_world == jnp.asarray(world_id))
         membership = (
-            pair_contains_each(bodies, self.model.foot_body_ids) & selected[:, None]
+            foot_terrain_contact_membership(
+                geom,
+                self.model.geom_body_ids,
+                self.model.foot_body_ids,
+                self.model.foot_geom_ids,
+                self.model.terrain_geom_ids,
+            )
+            & selected[:, None]
         )
         return (
             jnp.max(jnp.where(membership, normal[:, None], 0.0), axis=0),
@@ -1624,10 +1633,18 @@ class BelloTwistEnv:
         )
 
     def _foot_contact_forces_batch(self, state, batch_size: int):
-        contact_world, active, bodies, normal, tangent = self._contact_force_data(state)
+        contact_world, active, geom, _, normal, tangent = self._contact_force_data(
+            state
+        )
         valid_world = active & (contact_world >= 0) & (contact_world < batch_size)
         safe_world = jnp.clip(contact_world, 0, batch_size - 1)
-        membership = pair_contains_each(bodies, self.model.foot_body_ids)
+        membership = foot_terrain_contact_membership(
+            geom,
+            self.model.geom_body_ids,
+            self.model.foot_body_ids,
+            self.model.foot_geom_ids,
+            self.model.terrain_geom_ids,
+        )
         normal_values = jnp.where(
             membership & valid_world[:, None], normal[:, None], 0.0
         )
@@ -1668,10 +1685,10 @@ class BelloTwistEnv:
         )
         bodies = jnp.asarray(self.model.geom_body_ids)[geom]
         tangent = jnp.sqrt(tangent1**2 + tangent2**2)
-        return contact_world, active & (address >= 0), bodies, normal, tangent
+        return contact_world, active & (address >= 0), geom, bodies, normal, tangent
 
     def _body_has_forceful_contact(self, state, body_id, threshold, world_id):
-        contact_world, active, bodies, normal, _ = self._contact_force_data(state)
+        contact_world, active, _, bodies, normal, _ = self._contact_force_data(state)
         return jnp.any(
             active
             & (contact_world == jnp.asarray(world_id))
@@ -1682,7 +1699,7 @@ class BelloTwistEnv:
     def _body_has_forceful_contact_batch(
         self, state, body_id: int, threshold: float, batch_size: int
     ) -> jax.Array:
-        contact_world, active, bodies, normal, _ = self._contact_force_data(state)
+        contact_world, active, _, bodies, normal, _ = self._contact_force_data(state)
         valid_world = active & (contact_world >= 0) & (contact_world < batch_size)
         safe_world = jnp.clip(contact_world, 0, batch_size - 1)
         values = jnp.where(

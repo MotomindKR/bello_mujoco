@@ -771,6 +771,7 @@ def mujoco_foot_contact_and_normal_force(
         return foot_contact, foot_normal_force
     force_threshold = float(env.config.contact.foot_contact_force_threshold)
     terrain_geom_ids = set(int(geom_id) for geom_id in env.model.terrain_geom_ids)
+    foot_geom_ids = set(int(geom_id) for geom_id in env.model.foot_geom_ids)
     foot_body_ids = np.asarray(env.model.foot_body_ids, dtype=np.int32)
     foot_body_index = {
         int(body_id): foot_index for foot_index, body_id in enumerate(foot_body_ids)
@@ -786,7 +787,7 @@ def mujoco_foot_contact_and_normal_force(
             other_geom = geom1
         else:
             continue
-        if other_geom < 0 or other_geom >= geom_body_ids.shape[0]:
+        if other_geom not in foot_geom_ids:
             continue
         normal_force = mujoco_contact_normal_force(
             env.model.mj_model, mj_data, contact_index

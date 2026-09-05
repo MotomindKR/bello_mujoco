@@ -33,6 +33,21 @@ locomotion_action_mirror:
 foot_body_names:
   - left_ankle_roll_link
   - right_ankle_roll_link
+foot_sole_geometries:
+  - body_name: left_ankle_roll_link
+    geom_names:
+      - left_ankle_roll_link_sole_heel_center
+      - left_ankle_roll_link_sole_main
+      - left_ankle_roll_link_sole_heel_negative_y
+      - left_ankle_roll_link_sole_heel_positive_y
+      - left_ankle_roll_link_sole_toe
+  - body_name: right_ankle_roll_link
+    geom_names:
+      - right_ankle_roll_link_sole_heel_center
+      - right_ankle_roll_link_sole_main
+      - right_ankle_roll_link_sole_heel_negative_y
+      - right_ankle_roll_link_sole_heel_positive_y
+      - right_ankle_roll_link_sole_toe
 foot_forward_axes:
   - body_name: left_ankle_roll_link
     axis: [1.0, 0.0, 0.0]
@@ -220,4 +235,38 @@ payload_attachments:
   - link_name: right_end_effector_sphere_link
     radius_m: 0.025
     center_m: [0.0, 0.0, -0.025]
-coupled_actuator_groups: []
+# Ideal Bello-style differential used only by the simulation model. These
+# coefficients do not represent calibrated Bello Mini hardware.
+coupled_actuator_groups:
+  - name: left_ankle_differential
+    actuators:
+      - tendon_name: left_ankle_motor_1
+        logical_joint_name: left_ankle_pitch_joint
+        joint_coefficients:
+          - joint_name: left_ankle_pitch_joint
+            coefficient: -1.0
+          - joint_name: left_ankle_roll_joint
+            coefficient: 1.0
+      - tendon_name: left_ankle_motor_2
+        logical_joint_name: left_ankle_roll_joint
+        joint_coefficients:
+          - joint_name: left_ankle_pitch_joint
+            coefficient: 1.0
+          - joint_name: left_ankle_roll_joint
+            coefficient: 1.0
+  - name: right_ankle_differential
+    actuators:
+      - tendon_name: right_ankle_motor_1
+        logical_joint_name: right_ankle_pitch_joint
+        joint_coefficients:
+          - joint_name: right_ankle_pitch_joint
+            coefficient: -1.0
+          - joint_name: right_ankle_roll_joint
+            coefficient: 1.0
+      - tendon_name: right_ankle_motor_2
+        logical_joint_name: right_ankle_roll_joint
+        joint_coefficients:
+          - joint_name: right_ankle_pitch_joint
+            coefficient: 1.0
+          - joint_name: right_ankle_roll_joint
+            coefficient: 1.0

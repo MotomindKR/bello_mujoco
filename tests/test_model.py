@@ -81,7 +81,7 @@ def test_bello_mini_model_uses_locomotion_partition(
     assert model.mj_model.nu == 28
     assert model.robot.asset == "bello_mini"
     assert model.imu_body_name == "imu_link"
-    assert model.mj_model.ntendon == 0
+    assert model.mj_model.ntendon == 4
     policy_joint_names = {
         model.actuator_joint_names[index] for index in model.policy_ctrl_indices
     }
@@ -115,6 +115,40 @@ def test_bello_mini_model_uses_locomotion_partition(
         np.testing.assert_allclose(foot_up, [0.0, 0.0, 1.0], atol=1.0e-7)
     raw_home_min_z = robot_geom_min_z(model.mj_model, model.default_qpos)
     assert raw_home_min_z == pytest.approx(0.0, abs=1.0e-3)
+
+
+def test_bello_mini_ideal_differential_maps_logical_ankle_targets(
+    bello_mini_asset: PreparedAsset,
+) -> None:
+    model = load_prepared_bello_model(
+        bello_mini_asset,
+        terrain=FLAT_TERRAIN,
+        load_mjx=False,
+    )
+    env = BelloLocomotionEnv(model)
+    action = np.zeros(env.action_size, dtype=np.float32)
+    pitch_action = env.action_layout.names.index("left_ankle_pitch_joint")
+    roll_action = env.action_layout.names.index("left_ankle_roll_joint")
+    action[pitch_action] = 0.5
+    action[roll_action] = -0.25
+
+    logical_targets = np.asarray(env.action_to_joint_target(action))
+    ctrl = np.asarray(env.action_to_ctrl(action))
+    pitch_target = logical_targets[model.policy_ctrl_indices[pitch_action]]
+    roll_target = logical_targets[model.policy_ctrl_indices[roll_action]]
+    motor_1_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_1_pos",
+    )
+    motor_2_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_ACTUATOR,
+        "left_ankle_motor_2_pos",
+    )
+
+    assert ctrl[motor_1_id] == pytest.approx(-pitch_target + roll_target)
+    assert ctrl[motor_2_id] == pytest.approx(pitch_target + roll_target)
 
 
 def test_bello_mini_model_loads_mjx(bello_mini_asset: PreparedAsset) -> None:

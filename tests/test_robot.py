@@ -114,7 +114,31 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
         ).mode
         == "policy"
     )
-    assert not robot.coupled_actuator_groups
+    assert tuple(group.name for group in robot.coupled_actuator_groups) == (
+        "left_ankle_differential",
+        "right_ankle_differential",
+    )
+    assert {
+        actuator.tendon_name: actuator.joint_coefficients
+        for actuator in robot.coupled_actuators
+    } == {
+        "left_ankle_motor_1": (
+            ("left_ankle_pitch_joint", -1.0),
+            ("left_ankle_roll_joint", 1.0),
+        ),
+        "left_ankle_motor_2": (
+            ("left_ankle_pitch_joint", 1.0),
+            ("left_ankle_roll_joint", 1.0),
+        ),
+        "right_ankle_motor_1": (
+            ("right_ankle_pitch_joint", -1.0),
+            ("right_ankle_roll_joint", 1.0),
+        ),
+        "right_ankle_motor_2": (
+            ("right_ankle_pitch_joint", 1.0),
+            ("right_ankle_roll_joint", 1.0),
+        ),
+    }
     assert tuple(item.link_name for item in robot.payload_attachments) == (
         "left_end_effector_sphere_link",
         "right_end_effector_sphere_link",

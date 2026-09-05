@@ -145,6 +145,20 @@ class JointMirrorDefinition:
 
 
 @dataclass(frozen=True)
+class FootSoleGeometry:
+    body_name: str
+    geom_names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.body_name:
+            raise ValueError("foot sole body_name must not be empty")
+        if not self.geom_names or any(not name for name in self.geom_names):
+            raise ValueError("foot sole geom_names must be nonempty")
+        if len(set(self.geom_names)) != len(self.geom_names):
+            raise ValueError("foot sole geom_names must be unique")
+
+
+@dataclass(frozen=True)
 class RobotDefinition:
     asset: AssetName
     source_urdf: Path
@@ -161,6 +175,7 @@ class RobotDefinition:
     locomotion_command_frame_body_name: str
     locomotion_action_mirror: tuple[JointMirrorDefinition, ...]
     foot_body_names: tuple[str, str]
+    foot_sole_geometries: tuple[FootSoleGeometry, FootSoleGeometry]
     foot_forward_axes: tuple[
         tuple[str, tuple[float, float, float]],
         tuple[str, tuple[float, float, float]],
@@ -215,6 +230,16 @@ class RobotDefinition:
             not name for name in self.foot_body_names
         ):
             raise ValueError("foot_body_names must contain two unique names")
+        sole_body_names = tuple(item.body_name for item in self.foot_sole_geometries)
+        if sole_body_names != self.foot_body_names:
+            raise ValueError(
+                "foot_sole_geometries must follow the declared foot_body_names order"
+            )
+        sole_geom_names = tuple(
+            name for item in self.foot_sole_geometries for name in item.geom_names
+        )
+        if len(set(sole_geom_names)) != len(sole_geom_names):
+            raise ValueError("foot sole geometry names must be globally unique")
         forward_body_names = tuple(name for name, _ in self.foot_forward_axes)
         if forward_body_names != self.foot_body_names:
             raise ValueError(
@@ -418,6 +443,24 @@ def validate_robot_source_urdf(
             + ", ".join(missing_links)
         )
 
+    links_by_name = {
+        name: link
+        for link in root.findall("link")
+        if (name := link.get("name")) is not None
+    }
+    for sole in definition.foot_sole_geometries:
+        collision_names = {
+            name
+            for collision in links_by_name[sole.body_name].findall("collision")
+            if (name := collision.get("name")) is not None
+        }
+        missing_geoms = sorted(set(sole.geom_names) - collision_names)
+        if missing_geoms:
+            raise ValueError(
+                f"foot sole geometries for {sole.body_name!r} are absent from the "
+                "source URDF link: " + ", ".join(missing_geoms)
+            )
+
     joint_names = {
         name
         for joint in root.findall("joint")
@@ -453,6 +496,7 @@ _ROBOT_CONFIG_FIELDS = frozenset(
         "locomotion_command_frame_body_name",
         "locomotion_action_mirror",
         "foot_body_names",
+        "foot_sole_geometries",
         "foot_forward_axes",
         "randomization_base_body_name",
         "randomization_torso_body_name",
@@ -520,6 +564,7 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
             data["locomotion_action_mirror"]
         ),
         foot_body_names=_string_tuple(data["foot_body_names"], 2, "foot_body_names"),
+        foot_sole_geometries=_foot_sole_geometries(data["foot_sole_geometries"]),
         foot_forward_axes=_foot_forward_axes(data["foot_forward_axes"]),
         randomization_base_body_name=_string(
             data["randomization_base_body_name"],
@@ -636,6 +681,32 @@ def _foot_forward_axes(
             (
                 _string(data["body_name"], f"{path}.body_name"),
                 _float_tuple(data["axis"], 3, f"{path}.axis"),
+            )
+        )
+    return tuple(result)
+
+
+def _foot_sole_geometries(
+    value: Any,
+) -> tuple[FootSoleGeometry, FootSoleGeometry]:
+    items = _list(value, "foot_sole_geometries")
+    if len(items) != 2:
+        raise ValueError("foot_sole_geometries must contain exactly two entries")
+    result = []
+    for index, item in enumerate(items):
+        path = f"foot_sole_geometries[{index}]"
+        data = _mapping(item, path=path)
+        _require_exact_fields(
+            data,
+            frozenset({"body_name", "geom_names"}),
+            path=path,
+        )
+        result.append(
+            FootSoleGeometry(
+                body_name=_string(data["body_name"], f"{path}.body_name"),
+                geom_names=_string_tuple(
+                    data["geom_names"], None, f"{path}.geom_names"
+                ),
             )
         )
     return tuple(result)

@@ -67,7 +67,7 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
     assert bello_mini_asset.collision_mesh_count == 0
     assert bello_mini_asset.visual_mesh_count == 28
     assert model.nu == 28
-    assert model.ntendon == 0
+    assert model.ntendon == 4
     assert np.sum(model.body_mass) == pytest.approx(
         BELLO_MINI_TOTAL_MASS_KG, abs=1.0e-5
     )
@@ -102,6 +102,22 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
     assert "waist_roll_joint_pos" in actuator_names
     assert "left_wrist_roll_joint_hold" in actuator_names
     assert "right_wrist_roll_joint_hold" in actuator_names
+    for side in ("left", "right"):
+        assert f"{side}_ankle_pitch_joint_pos" not in actuator_names
+        assert f"{side}_ankle_roll_joint_pos" not in actuator_names
+        for motor_index in (1, 2):
+            actuator_id = mujoco.mj_name2id(
+                model,
+                mujoco.mjtObj.mjOBJ_ACTUATOR,
+                f"{side}_ankle_motor_{motor_index}_pos",
+            )
+            assert actuator_id >= 0
+            assert model.actuator_trntype[actuator_id] == mujoco.mjtTrn.mjTRN_TENDON
+            np.testing.assert_allclose(
+                model.actuator_forcerange[actuator_id], [-17.0, 17.0]
+            )
+            assert model.actuator_gainprm[actuator_id, 0] == pytest.approx(11.0)
+            assert model.actuator_biasprm[actuator_id, 2] == pytest.approx(-0.5)
 
 
 def test_prepared_asset_has_canonical_fixed_sphere_hands(
