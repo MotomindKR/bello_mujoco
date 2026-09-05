@@ -941,6 +941,9 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
 def test_remote_command_preflights_software_rendering() -> None:
     script = vast_remote.REMOTE_TRAIN_SCRIPT
 
+    sync_index = script.index("uv sync --frozen")
+    assert script.index("export UV_HTTP_TIMEOUT=600") < sync_index
+    assert script.index("export UV_HTTP_RETRIES=5") < sync_index
     assert "libosmesa6" in script
     assert "export MUJOCO_GL=osmesa" in script
     assert "export PYOPENGL_PLATFORM=osmesa" in script

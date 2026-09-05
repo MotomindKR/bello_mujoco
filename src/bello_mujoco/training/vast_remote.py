@@ -246,6 +246,8 @@ fi
 
 export UV_CACHE_DIR="$PWD/.uv-cache"
 export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+export UV_HTTP_TIMEOUT=600
+export UV_HTTP_RETRIES=5
 export WARP_CACHE_PATH="$PWD/.warp-cache"
 export MUJOCO_GL=osmesa
 export PYOPENGL_PLATFORM=osmesa
