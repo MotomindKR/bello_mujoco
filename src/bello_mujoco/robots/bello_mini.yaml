@@ -14,7 +14,8 @@ root_joint_name: root_free
 default_root_position: [0.0, 0.0, 0.859]
 default_root_quaternion: [1.0, 0.0, 0.0, 0.0]
 default_imu_body_name: imu_link
-locomotion_command_frame_body_name: imu_link
+locomotion_command_frame_body_name: pelvis_link
+locomotion_forward_axis: [1.0, 0.0, 0.0]
 locomotion_action_mirror:
   left_hip_pitch_joint: {counterpart: right_hip_pitch_joint, sign: 1}
   right_hip_pitch_joint: {counterpart: left_hip_pitch_joint, sign: 1}

@@ -68,13 +68,16 @@ contract, and training validates it against the robot's motion profile.
   unknown. Its massless fixed
   `imu_link` is 50 mm below the midpoint between the reviewed left/right
   hip-pitch joint origins (`[-0.01, 0, -0.23]` m in pelvis coordinates).
-  Bello is physically forward along pelvis `+Y`; Bello Mini is physically
-  forward along pelvis `+X`. The Mini locomotion profile therefore measures
-  planar tracking in the yaw-aligned `imu_link` frame, preserving the public
-  command convention of `+X` right and `+Y` forward for both robots. Each
-  robot's configured action mirror and foot-forward axes likewise encode its
-  physical geometry; in particular, Mini hip pitch keeps sign across sides
-  while Mini hip roll changes sign.
+  Bello is physically forward along pelvis `+Y`, with pelvis `+X` to the right;
+  Bello Mini is physically forward along pelvis `+X`, with pelvis `-Y` to the
+  right. Locomotion commands and planar tracking use each robot's pelvis axes,
+  so a fixed forward command is `[0, +v, 0]` for Bello and `[+v, 0, 0]` for
+  Mini. The Mini locomotion policy also selects `pelvis_link` as its simulated
+  IMU observation body. Its physical `imu_link` remains the robot's default
+  sensor link and must be calibrated into policy coordinates before Mini
+  hardware support is enabled. Each robot's configured action mirror and
+  foot-forward axes likewise encode its physical geometry; in particular,
+  Mini hip pitch keeps sign across sides while Mini hip roll changes sign.
 
   Mini starts from the coordinated nominal crouch above instead of placing its
   knees at their hard lower limit. Its experiment disables independent

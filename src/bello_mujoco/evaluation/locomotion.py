@@ -569,6 +569,7 @@ def run_rerun_evaluation(
             gamepad_config,
             command_ranges,
             minimum_moving_speeds,
+            env.model.robot.locomotion_forward_axis,
         )
         resources.callback(gamepad.close)
         logger = RerunEvaluationLogger(env, urdf_path)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import cached_property
 import math
 from typing import Literal
 
@@ -626,6 +627,7 @@ class BelloLocomotionEnv:
         batch_size: int = 1,
         env_config: BelloEnvConfig = BelloEnvConfig(),
         actuator_config: ActuatorConfig | None = None,
+        imu_body_name: str | None = None,
         reward_config: RewardConfig = RewardConfig(),
         command_config: CommandConfig = CommandConfig(),
         done_config: DoneConfig = DoneConfig(),
@@ -641,6 +643,7 @@ class BelloLocomotionEnv:
                 simulation_physics=env_config.simulation_physics,
                 model_randomization=env_config.model_randomization,
                 actuator_config=actuator_config,
+                imu_body_name=imu_body_name,
                 spawn_clearance=env_config.spawn.clearance,
                 use_viewer_model=use_viewer_model,
                 load_mjx=load_mjx,
@@ -2099,6 +2102,54 @@ class BelloLocomotionEnv:
         ctrl, _, _ = self._action_target_details(action, joint_angle_offset)
         return ctrl
 
+    def _locomotion_right_axis(self) -> jax.Array:
+        forward_x, forward_y, _ = self.model.robot.locomotion_forward_axis
+        return jnp.asarray((forward_y, -forward_x, 0.0), dtype=jnp.float32)
+
+    def _sagittal_reflection(self) -> jax.Array:
+        forward = jnp.asarray(
+            self.model.robot.locomotion_forward_axis, dtype=jnp.float32
+        )
+        right = self._locomotion_right_axis()
+        up = jnp.asarray((0.0, 0.0, 1.0), dtype=jnp.float32)
+        return jnp.outer(forward, forward) - jnp.outer(right, right) + jnp.outer(up, up)
+
+    @cached_property
+    def _imu_sagittal_reflection(self) -> np.ndarray:
+        command_frame_name = self.model.robot.locomotion_command_frame_body_name
+        if self.model.imu_body_name == command_frame_name:
+            forward = np.asarray(
+                self.model.robot.locomotion_forward_axis, dtype=np.float64
+            )
+            right = np.asarray((forward[1], -forward[0], 0.0), dtype=np.float64)
+            up = np.asarray((0.0, 0.0, 1.0), dtype=np.float64)
+            return (
+                np.outer(forward, forward) - np.outer(right, right) + np.outer(up, up)
+            ).astype(np.float32)
+
+        data = mujoco.MjData(self.model.mj_model)
+        data.qpos[:] = self.model.default_qpos
+        data.qvel[:] = self.model.default_qvel
+        mujoco.mj_forward(self.model.mj_model, data)
+        command_frame_id = self._link_body_id(command_frame_name)
+        imu_frame_id = self._link_body_id(self.model.imu_body_name)
+        command_rotation = data.xmat[command_frame_id].reshape(3, 3)
+        imu_rotation = data.xmat[imu_frame_id].reshape(3, 3)
+        command_forward = np.asarray(
+            self.model.robot.locomotion_forward_axis, dtype=np.float64
+        )
+        command_right = np.asarray(
+            (command_forward[1], -command_forward[0], 0.0), dtype=np.float64
+        )
+        forward = imu_rotation.T @ command_rotation @ command_forward
+        right = imu_rotation.T @ command_rotation @ command_right
+        up = np.cross(right, forward)
+        reflection = (
+            np.outer(forward, forward) - np.outer(right, right) + np.outer(up, up)
+        )
+        reflection[np.abs(reflection) < 1.0e-7] = 0.0
+        return reflection.astype(np.float32)
+
     def mirror_action(self, action: jax.Array) -> jax.Array:
         """Reflect logical policy actions across the robot's sagittal plane."""
 
@@ -2135,11 +2186,20 @@ class BelloLocomotionEnv:
         for name, size in self.observation_layout.components:
             value = frames[..., offset : offset + size]
             if name in {"imu_linear_acceleration", "projected_gravity"}:
-                value = value * jnp.asarray((-1.0, 1.0, 1.0), dtype=value.dtype)
+                value = jnp.matmul(
+                    value,
+                    jnp.asarray(self._imu_sagittal_reflection, dtype=value.dtype).T,
+                )
             elif name == "imu_angular_velocity":
-                value = value * jnp.asarray((1.0, -1.0, -1.0), dtype=value.dtype)
+                value = -jnp.matmul(
+                    value,
+                    jnp.asarray(self._imu_sagittal_reflection, dtype=value.dtype).T,
+                )
             elif name == "command":
-                value = value * jnp.asarray((-1.0, 1.0, -1.0), dtype=value.dtype)
+                planar = jnp.matmul(
+                    value[..., :2], self._sagittal_reflection()[:2, :2].T
+                )
+                value = jnp.concatenate((planar, -value[..., 2:3]), axis=-1)
             elif name == "gait_phase":
                 value = value * jnp.asarray((-1.0, -1.0, 1.0), dtype=value.dtype)
             elif name in {"joint_position", "joint_velocity", "last_action"}:
@@ -3224,7 +3284,7 @@ class BelloLocomotionEnv:
     def _foot_heading_error(self, state: BelloState) -> jax.Array:
         command_forward = quat_rotate(
             self._link_quat(state, self._reward_frame_link("track_lin_vel_xy")),
-            jnp.asarray((0.0, 1.0, 0.0), dtype=jnp.float32),
+            jnp.asarray(self.model.robot.locomotion_forward_axis, dtype=jnp.float32),
         )[:2]
         command_forward /= jnp.maximum(jnp.linalg.norm(command_forward), 1.0e-6)
         errors = []
@@ -3249,7 +3309,7 @@ class BelloLocomotionEnv:
         foot_delta = foot_position[0] - foot_position[1]
         frame_yaw = yaw_quat(self._link_quat(state, frame_link_name))
         frame_delta = quat_rotate_inverse(frame_yaw, foot_delta)
-        return jnp.abs(frame_delta[0])
+        return jnp.abs(jnp.dot(frame_delta, self._locomotion_right_axis()))
 
     def _gait_diagnostics(
         self,

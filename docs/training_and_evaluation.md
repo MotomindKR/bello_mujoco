@@ -48,11 +48,12 @@ public command.
 
 The Bello profile uses 13 policy joints and holds 12 arm joints. Bello Mini uses
 14 policy joints (waist yaw, waist roll, and 12 leg joints) and holds its 14 arm
-joints. Commands always contain `+X` lateral/right, `+Y` forward, and `+Z` yaw
-velocity. Bello measures them in `pelvis_link`; Bello Mini uses its yaw-aligned
-`imu_link` because physical forward is pelvis `+X`, rather than Bello's pelvis
-`+Y`. Twenty-five percent of batched environments form an exact-zero standing
-cohort; moving samples are conditioned outside the shared standing deadbands.
+joints. Commands contain pelvis-frame `[lin_vel_x, lin_vel_y, ang_vel_yaw]`.
+Bello forward is pelvis `+Y`; Bello Mini forward is pelvis `+X`. Gamepad and
+hardware-remote inputs remain semantic forward/right/yaw intent and are mapped
+through that robot-specific axis contract. Twenty-five percent of batched
+environments form an exact-zero standing cohort; moving samples are conditioned
+outside the shared standing deadbands.
 Failure resets preserve command mode so failed standing episodes cannot starve
 standing frames out of later rollouts. Periodic resampling reassigns the cohort
 to train transitions in both directions between standing and moving commands.

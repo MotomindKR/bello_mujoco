@@ -119,7 +119,7 @@ Configuration source: `configs/commands/eval.yaml`.
 | `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | motion | Explicit native-simulation load ablation, in kilograms per hand. `null` uses the checkpoint's trained payload. |
 | `output_path` | path; `outputs/evaluation/motion.mp4` | motion, twist_student, twist2 | Video destination for motion. TWIST and TWIST2 write JSON and select task-specific `.json` defaults when this field was not explicitly overridden. |
 | `video_path` | path or `null`; `null` | twist2 | TWIST2 representative-video destination. When omitted, TWIST2 writes `outputs/evaluation/twist2.mp4`; explicitly set `video_path=null` to score without rendering. |
-| `command` | three floats; `[0,0,0]` | locomotion | Fixed `+X` lateral/right, `+Y` forward, and `+Z` yaw velocity command. |
+| `command` | three floats; `[0,0,0]` | locomotion | Fixed pelvis-frame `[lin_vel_x, lin_vel_y, ang_vel_yaw]` command. Bello forward is `+Y`; Bello Mini forward is `+X`. |
 | `steps` | positive integer or `null`; `null` | locomotion, motion, twist2 | Bound rollout steps. It limits only the representative video for TWIST2 and is rejected for `twist_student`. |
 | `stop_on_done` | boolean; `false` | locomotion, motion, twist_student | Stop at the first done/terminal state. TWIST2 always stops terminal clips so its held-out metrics cannot cross an automatic reset, and rejects this override. |
 | `stochastic_actions` | boolean; `false` | locomotion | Sample from the checkpoint policy instead of using its deterministic mean. |
@@ -142,13 +142,13 @@ policy command remains moving until the next scheduled half-cycle boundary,
 even if neutral is requested during double support. The boundary step remains a
 gait step; standing begins on the following step. Each supported nonzero
 direction starts at the checkpoint's minimum moving speed and scales to its
-command bound. The controller index is fixed at zero. A
-fixed `command` uses `[lin_vel_x, lin_vel_y, ang_vel_yaw]`, with `+X`
-lateral/right and `+Y` forward. It is passed through without clipping or range
-validation, so it should remain within the checkpoint's trained bounds. These
-are logical command coordinates: Bello tracks them in `pelvis_link`, while
-Bello Mini tracks them in its yaw-aligned `imu_link` because the two pelvis
-models have different physical forward axes.
+command bound. The controller index is fixed at zero. A fixed `command` uses
+pelvis-frame `[lin_vel_x, lin_vel_y, ang_vel_yaw]`. Bello forward/right is
+`+Y`/`+X`, while Bello Mini forward/right is `+X`/`-Y`; use `[0, +v, 0]` and
+`[+v, 0, 0]`, respectively, for straight forward evaluation. The command is
+passed through without clipping or range validation, so it should remain within
+the checkpoint's trained bounds. Gamepad motion remains semantic
+forward/right/yaw and is projected into the selected robot's pelvis axes.
 
 Evaluation validates the checkpoint task, policy and critic observation
 sizes/layouts, action size/layout, asset configuration, and environment

@@ -1,6 +1,9 @@
 # Mini gait scales Bello's 0.90 Hz by sqrt(0.853 m / 0.859 m), then rounds.
 asset_config:
   asset: bello_mini
+  imu_config:
+    enabled: false
+    body_name: pelvis_link
 env_config:
   gait:
     frequency_hz: 0.90
@@ -15,7 +18,7 @@ reward_config:
     swing_clearance_target: 0.075
   limits_pose:
     base_height_target: 0.87
-    hip_deviation_command_indices: [1]
+    hip_deviation_command_indices: [0]
     knee_deviation_apply_while_moving: false
 done_config:
   base_height:
@@ -29,5 +32,5 @@ wandb_config:
   tags: [locomotion, bello-mini, ideal-differential-ankle, seeded-plane-slope]
 video_config:
   filename_prefix: bello_mini_locomotion
-  command: [0.0, 0.5, 0.0]
+  command: [0.5, 0.0, 0.0]
   steps: 500

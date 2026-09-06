@@ -178,7 +178,7 @@ def test_robot_specific_locomotion_action_and_command_frame_contracts(
     assert bello.reward_config.links.track_lin_vel_xy_frame is None
     assert mini.reward_config.links.track_lin_vel_xy_frame is None
     assert bello._reward_frame_link("track_lin_vel_xy") == "pelvis_link"
-    assert mini._reward_frame_link("track_lin_vel_xy") == "imu_link"
+    assert mini._reward_frame_link("track_lin_vel_xy") == "pelvis_link"
     assert mini.action_size == 14
     assert "waist_roll_joint" in mini.action_layout.names
 
@@ -190,7 +190,11 @@ def test_robot_specific_locomotion_action_and_command_frame_contracts(
         mini.model.robot.locomotion_command_frame_body_name,
     )
     command_frame_rotation = mini_data.xmat[command_frame_id].reshape(3, 3)
-    assert command_frame_rotation[:, 1] == pytest.approx((1.0, 0.0, 0.0))
+    assert command_frame_rotation @ mini.model.robot.locomotion_forward_axis == (
+        pytest.approx((1.0, 0.0, 0.0))
+    )
+    assert bello._sagittal_reflection() == pytest.approx(np.diag((-1.0, 1.0, 1.0)))
+    assert mini._sagittal_reflection() == pytest.approx(np.diag((1.0, -1.0, 1.0)))
 
     action = jnp.linspace(-0.9, 0.9, mini.action_size)
     mirrored = mini.mirror_action(action)
@@ -224,7 +228,7 @@ def test_foot_heading_uses_each_mirrored_foot_forward_axis(
     assert heading_error_degrees[0] == pytest.approx(-heading_error_degrees[1], abs=0.1)
 
 
-def test_bello_mini_foot_heading_uses_its_rotated_command_frame(
+def test_bello_mini_foot_heading_uses_pelvis_forward_axis(
     bello_mini_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(bello_mini_asset, load_mjx=False)
@@ -247,6 +251,51 @@ def test_bello_mini_foot_heading_uses_its_rotated_command_frame(
     heading_error_degrees = np.degrees(np.asarray(env._foot_heading_error(state)))
 
     assert np.all(np.abs(heading_error_degrees) < 5.0)
+
+
+def test_bello_mini_training_observation_and_velocity_use_pelvis_axes(
+    bello_mini_asset: PreparedAsset,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(
+        bello_mini_asset,
+        env_config=replace(BelloEnvConfig(), root_link="pelvis_link"),
+        imu_body_name="pelvis_link",
+        load_mjx=False,
+    )
+    mj_data = mujoco.MjData(env.model.mj_model)
+    reset_mujoco_data(env, mj_data)
+    mj_data.qvel[env.model.root_qvel_adr] = 0.5
+    mujoco.mj_forward(env.model.mj_model, mj_data)
+    zeros = jnp.zeros(2, dtype=jnp.float32)
+    state = mujoco_eval_state(
+        env,
+        mj_data,
+        command=np.asarray((0.5, 0.0, 0.0), dtype=np.float32),
+        last_action=np.zeros(env.action_size, dtype=np.float32),
+        foot_contact_debounce_time=zeros,
+        last_foot_contact=zeros,
+        step_count=0,
+        episode_return=jnp.asarray(0.0),
+        episode_track_lin_vel_xy=jnp.asarray(0.0),
+        episode_length=jnp.asarray(0),
+    )
+
+    critic_velocity = env._frame_terms(state)[0]
+    tracking_velocity = env._link_yaw_frame_lin_vel(
+        state,
+        env._reward_link("track_lin_vel_xy"),
+        env._reward_frame_link("track_lin_vel_xy"),
+    )
+    assert env.model.imu_body_name == "pelvis_link"
+    assert env._imu_sagittal_reflection == pytest.approx(np.diag((1.0, -1.0, 1.0)))
+    mirrored = jax.jit(lambda observation: env.mirror_actor_observation(observation))(
+        jnp.linspace(-1.0, 1.0, env.observation_size)
+    )
+    assert env.mirror_actor_observation(mirrored) == pytest.approx(
+        jnp.linspace(-1.0, 1.0, env.observation_size)
+    )
+    assert critic_velocity == pytest.approx((0.5, 0.0, 0.0), abs=1.0e-5)
+    assert tracking_velocity == pytest.approx((0.5, 0.0, 0.0), abs=1.0e-5)
 
 
 def test_native_data_adapter_uses_shared_observation_function(
@@ -1443,15 +1492,27 @@ def test_large_or_nonfinite_constraint_force_terminates_episode(
     assert bool(env.done_flags(nonfinite_contact_force)["done/nonfinite"])
 
 
-def test_stance_width_uses_lateral_frame_axis(bello_asset: PreparedAsset) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+@pytest.mark.parametrize(
+    ("asset_fixture", "left_position", "right_position"),
+    [
+        ("bello_asset", (0.2, 5.0, 0.0), (0.0, -5.0, 0.0)),
+        ("bello_mini_asset", (5.0, -0.2, 0.0), (-5.0, 0.0, 0.0)),
+    ],
+)
+def test_stance_width_uses_robot_lateral_frame_axis(
+    asset_fixture: str,
+    left_position: tuple[float, float, float],
+    right_position: tuple[float, float, float],
+    request: pytest.FixtureRequest,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(request.getfixturevalue(asset_fixture))
     state, _ = env.reset()
     left, right = env.model.foot_body_ids
     xpos = (
         state.data.xpos.at[left]
-        .set(jnp.asarray([0.2, 5.0, 0.0]))
+        .set(jnp.asarray(left_position))
         .at[right]
-        .set(jnp.asarray([0.0, -5.0, 0.0]))
+        .set(jnp.asarray(right_position))
     )
     state = state.replace(data=state.data.replace(xpos=xpos))
 

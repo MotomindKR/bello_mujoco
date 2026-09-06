@@ -280,6 +280,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert len(bello.asset_config.actuator_config.policy_joint_names) == 13
     assert len(mini.asset_config.actuator_config.policy_joint_names) == 14
     assert len(mini.asset_config.actuator_config.hold_joint_names) == 14
+    assert mini.asset_config.imu_config.body_name == "pelvis_link"
     assert "waist_roll_joint" in mini.asset_config.actuator_config.policy_joint_names
     assert mini.reward_config.weights == replace(
         bello.reward_config.weights,
@@ -320,7 +321,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.reward_config.smoothness.ankle_action_weight == pytest.approx(1.0)
     assert bello.reward_config.smoothness.waist_action_weight == pytest.approx(1.0)
     assert bello.reward_config.limits_pose.hip_deviation_command_indices == (1,)
-    assert mini.reward_config.limits_pose.hip_deviation_command_indices == (1,)
+    assert mini.reward_config.limits_pose.hip_deviation_command_indices == (0,)
     assert bello.reward_config.limits_pose.knee_deviation_apply_while_moving
     assert not mini.reward_config.limits_pose.knee_deviation_apply_while_moving
     assert bello.reward_config.links.track_lin_vel_xy_frame is None
@@ -350,7 +351,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         )
         == bello.env_config
     )
-    assert bello.video_config.command == mini.video_config.command == (0.0, 0.5, 0.0)
+    assert bello.video_config.command == (0.0, 0.5, 0.0)
+    assert mini.video_config.command == (0.5, 0.0, 0.0)
     assert bello.env_config.observation_latency.enabled
     assert bello.env_config.observation_latency.delay_steps == (0, 2)
     assert bello.env_config.observation_low_pass_filter.enabled

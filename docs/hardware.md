@@ -263,8 +263,10 @@ fail-closed damped shutdown.
 The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
 the hardware runner scales that intent through the checkpoint's command bounds
-and minimum speeds, mapping lateral to `lin_vel_x` and forward to `lin_vel_y`.
-In Bello's locomotion frame, `+X` is lateral/right and `+Y` is forward.
+and minimum speeds after mapping it into the selected robot's pelvis frame.
+Bello maps right/forward to `+X`/`+Y`. Future Bello Mini hardware support maps
+right/forward to `-Y`/`+X`; its physical IMU telemetry must first be calibrated
+into the pelvis-frame policy observation contract.
 The runner advances the same checkpointed gait clock used by training and
 native evaluation, initialized at phase zero. Neutral or stale remote input
 supplies a zero standing request, not an immediate zero policy command. The

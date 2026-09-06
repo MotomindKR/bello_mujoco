@@ -173,6 +173,7 @@ class RobotDefinition:
     default_root_quaternion: tuple[float, float, float, float]
     default_imu_body_name: str
     locomotion_command_frame_body_name: str
+    locomotion_forward_axis: tuple[float, float, float]
     locomotion_action_mirror: tuple[JointMirrorDefinition, ...]
     foot_body_names: tuple[str, str]
     foot_support_geometries: tuple[FootSupportGeometry, FootSupportGeometry]
@@ -226,6 +227,18 @@ class RobotDefinition:
         )
         if not math.isclose(quaternion_norm, 1.0, abs_tol=1.0e-6):
             raise ValueError("default_root_quaternion must be normalized")
+        if len(self.locomotion_forward_axis) != 3 or not all(
+            math.isfinite(value) for value in self.locomotion_forward_axis
+        ):
+            raise ValueError("locomotion_forward_axis must contain three finite values")
+        if not math.isclose(self.locomotion_forward_axis[2], 0.0, abs_tol=1.0e-6):
+            raise ValueError("locomotion_forward_axis must be horizontal")
+        if not math.isclose(
+            math.sqrt(sum(value * value for value in self.locomotion_forward_axis)),
+            1.0,
+            abs_tol=1.0e-6,
+        ):
+            raise ValueError("locomotion_forward_axis must be normalized")
         if len(set(self.foot_body_names)) != 2 or any(
             not name for name in self.foot_body_names
         ):
@@ -496,6 +509,7 @@ _ROBOT_CONFIG_FIELDS = frozenset(
         "default_root_quaternion",
         "default_imu_body_name",
         "locomotion_command_frame_body_name",
+        "locomotion_forward_axis",
         "locomotion_action_mirror",
         "foot_body_names",
         "foot_support_geometries",
@@ -561,6 +575,9 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
         locomotion_command_frame_body_name=_string(
             data["locomotion_command_frame_body_name"],
             "locomotion_command_frame_body_name",
+        ),
+        locomotion_forward_axis=_float_tuple(
+            data["locomotion_forward_axis"], 3, "locomotion_forward_axis"
         ),
         locomotion_action_mirror=_locomotion_action_mirror(
             data["locomotion_action_mirror"]

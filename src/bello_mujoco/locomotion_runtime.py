@@ -46,6 +46,7 @@ def load_locomotion_policy_runtime(
         batch_size=1,
         env_config=metadata.env,
         actuator_config=metadata.asset.actuator_config,
+        imu_body_name=metadata.asset.imu_config.body_name,
         reward_config=metadata.reward,
         command_config=metadata.command,
         done_config=metadata.done,

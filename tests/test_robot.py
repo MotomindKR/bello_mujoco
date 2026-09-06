@@ -27,6 +27,7 @@ def test_bello_robot_config_declares_asset_topology() -> None:
     assert robot.root_joint_name == "root_free"
     assert robot.default_imu_body_name == "pelvis_link"
     assert robot.locomotion_command_frame_body_name == "pelvis_link"
+    assert robot.locomotion_forward_axis == (0.0, 1.0, 0.0)
     mirror = {
         item.joint_name: (item.counterpart_joint_name, item.sign)
         for item in robot.locomotion_action_mirror
@@ -74,7 +75,8 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
     assert robot.motor_model_catalog_path(robot_descriptions_root()).is_file()
     assert robot.root_body_name == "bello_mini_root"
     assert robot.default_imu_body_name == "imu_link"
-    assert robot.locomotion_command_frame_body_name == "imu_link"
+    assert robot.locomotion_command_frame_body_name == "pelvis_link"
+    assert robot.locomotion_forward_axis == (1.0, 0.0, 0.0)
     mirror = {
         item.joint_name: (item.counterpart_joint_name, item.sign)
         for item in robot.locomotion_action_mirror

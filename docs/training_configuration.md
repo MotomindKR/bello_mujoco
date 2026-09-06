@@ -404,11 +404,11 @@ reward configuration except for midpoint gait shaping: `gait_contact: -2.5`,
 Mini-specific terms more strongly discourage persistent double support without
 changing the body-weight-normalized force and touchdown safeguards.
 
-Both profiles apply moving hip-deviation shaping to canonical forward command
-`+Y`. Mini's yaw-rotated `imu_link` maps that command to its physical pelvis `+X`
-direction. Bello enables `knee_deviation_apply_while_moving`, preserving the
-successful profile's moving-pose gate; Mini leaves the switch disabled so its
-knees remain free to form gait while the term still regularizes standing.
+Both profiles apply moving hip-deviation shaping on their pelvis-frame forward
+axis: command index 1 for Bello (`+Y`) and index 0 for Mini (`+X`). Bello enables
+`knee_deviation_apply_while_moving`, preserving the successful profile's
+moving-pose gate; Mini leaves the switch disabled so its knees remain free to
+form gait while the term still regularizes standing.
 
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and
@@ -416,9 +416,11 @@ The `links` section selects the measured link for `track_lin_vel_xy`,
 frame. When that override is `null`, planar tracking uses the selected robot
 contract's canonical locomotion command frame. Both maintained profiles use
 pelvis velocity/yaw and height, with torso angular velocity and orientation.
-Bello resolves planar velocity in the pelvis frame. Bello Mini resolves it in
-`imu_link`, which turns the Mini's physical pelvis `+X` forward direction into
-the same public `+Y`-forward command convention used by Bello.
+Both maintained profiles resolve planar velocity in `pelvis_link`. Their
+robot-specific forward axes differ: Bello uses pelvis `+Y`, while Mini uses
+pelvis `+X`. Mini also configures the simulated actor IMU source as
+`pelvis_link`, aligning actor feedback, critic velocity, command, and reward
+axes for training.
 
 Supporting fields are:
 
@@ -670,7 +672,7 @@ TWIST uses 32 contacts per environment and logs
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
-| `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with the Mini asset and canonical command frame, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, and output names. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
+| `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with pelvis-frame `+X` forward command/reward/actor feedback, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, and output names. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |

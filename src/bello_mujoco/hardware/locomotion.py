@@ -29,7 +29,7 @@ from bello_mujoco.envs.locomotion import (
     advance_gait_phase,
     resolve_gait_command_transition,
 )
-from bello_mujoco.gamepad import axis_to_range
+from bello_mujoco.gamepad import axis_to_range, forward_lateral_to_command_axes
 from bello_mujoco.hardware.config import HardwareControlConfig
 from bello_mujoco.hardware.policy_log import PolicyStepLogger, policy_phase_schema
 from bello_mujoco.hardware.remote import (
@@ -59,6 +59,7 @@ from bello_mujoco.hardware.runtime import (
 from bello_mujoco.hardware.twist2 import ReferenceUnavailable, Twist2ReferenceFrame
 from bello_mujoco.policy import infer_policy_action
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
+from bello_mujoco.robot import robot_definition
 from bello_mujoco.training.ppo import normalize_observation
 
 
@@ -887,7 +888,15 @@ def hardware_command(
     ):
         raise RuntimeError("remote service produced an invalid normalized command")
     forward, lateral, yaw = remote_axes
-    normalized = np.asarray((lateral, forward, yaw), dtype=np.float64)
+    normalized = np.asarray(
+        forward_lateral_to_command_axes(
+            forward,
+            lateral,
+            yaw,
+            robot_definition(metadata.asset.asset).locomotion_forward_axis,
+        ),
+        dtype=np.float64,
+    )
     command = np.asarray(
         [
             axis_to_range(value, bounds, minimum)

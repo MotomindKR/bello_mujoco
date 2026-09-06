@@ -1073,11 +1073,12 @@ def test_hardware_command_limits() -> None:
 
 def test_hardware_remote_commands_fail_closed_and_use_checkpoint_bounds() -> None:
     metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello"),
         command=CommandConfig(
             lin_vel_x=(-0.5, 1.0),
             lin_vel_y=(-0.2, 0.3),
             ang_vel_yaw=(-0.4, 0.6),
-        )
+        ),
     )
     assert command_ranges(metadata) == ((-0.5, 1.0), (-0.2, 0.3), (-0.4, 0.6))
     assert command_minimum_moving_speeds(metadata) == (0.2, 0.2, 0.2)
@@ -1089,6 +1090,15 @@ def test_hardware_remote_commands_fail_closed_and_use_checkpoint_bounds() -> Non
         metadata,
         remote_input((0.8, -0.1, 0.4)),
     ) == pytest.approx((-0.23, 0.28, 0.36))
+
+    mini_metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello_mini"),
+        command=metadata.command,
+    )
+    assert hardware_command(
+        mini_metadata,
+        remote_input((0.8, -0.1, 0.4)),
+    ) == pytest.approx((0.84, 0.21, 0.36))
 
 
 def test_remote_disconnect_reports_zero_requested_command(capsys) -> None:
@@ -1122,7 +1132,9 @@ def test_normalized_axis_mapping_preserves_standing_and_conditioned_ranges() -> 
 
 def test_hardware_honors_held_remote_abort_before_connect(monkeypatch) -> None:
     adapter = SimpleNamespace(precompile=lambda: None)
-    metadata = SimpleNamespace(command=CommandConfig())
+    metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello"), command=CommandConfig()
+    )
     monkeypatch.setattr(
         "bello_mujoco.hardware.locomotion.load_hardware_policy",
         lambda *_args, **_kwargs: (adapter, metadata),
@@ -1156,7 +1168,9 @@ def test_hardware_honors_held_remote_abort_before_connect(monkeypatch) -> None:
 
 def test_hardware_requires_remote_sample_before_connect(monkeypatch) -> None:
     adapter = SimpleNamespace(precompile=lambda: None)
-    metadata = SimpleNamespace(command=CommandConfig())
+    metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello"), command=CommandConfig()
+    )
     monkeypatch.setattr(
         "bello_mujoco.hardware.locomotion.load_hardware_policy",
         lambda *_args, **_kwargs: (adapter, metadata),
@@ -1214,7 +1228,9 @@ def test_remote_abort_around_hold_never_acquires_control(
             reference_age_ms=reference.age_ms(),
         ),
     )
-    metadata = SimpleNamespace(command=CommandConfig())
+    metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello"), command=CommandConfig()
+    )
     monkeypatch.setattr(
         "bello_mujoco.hardware.locomotion.load_hardware_policy",
         lambda *_args, **_kwargs: (adapter, metadata),
@@ -1598,7 +1614,9 @@ def test_read_only_preflight_never_acquires_control(
 
     adapter.step = preview
     adapter.reset = lambda: preview_calls.append(("reset",))
-    metadata = SimpleNamespace(command=CommandConfig())
+    metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello"), command=CommandConfig()
+    )
     load_calls = []
 
     def load_policy(path, **kwargs):
@@ -1684,7 +1702,9 @@ def test_fixed_upper_body_preflight_skips_pose_source(
         )
 
     adapter.step = preview
-    metadata = SimpleNamespace(command=CommandConfig())
+    metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello"), command=CommandConfig()
+    )
     monkeypatch.setattr(
         "bello_mujoco.hardware.locomotion.load_hardware_policy",
         lambda *_args, **_kwargs: (adapter, metadata),

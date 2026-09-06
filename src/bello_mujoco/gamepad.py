@@ -44,14 +44,37 @@ def gamepad_axes_to_command_axes(
     left_y: float,
     right_x: float,
     deadzone: float,
+    forward_axis: tuple[float, float, float],
 ) -> tuple[float, float, float]:
-    """Map SDL axes to Bello's +X lateral, +Y forward, +Z yaw command frame."""
+    """Map semantic SDL motion axes into the selected robot's command frame."""
 
-    return (
-        apply_deadzone(left_x, deadzone),
+    return forward_lateral_to_command_axes(
         apply_deadzone(-left_y, deadzone),
+        apply_deadzone(left_x, deadzone),
         apply_deadzone(-right_x, deadzone),
+        forward_axis,
     )
+
+
+def forward_lateral_to_command_axes(
+    forward: float,
+    lateral: float,
+    yaw: float,
+    forward_axis: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Project semantic forward/right intent into a horizontal command frame."""
+
+    axis = np.asarray(forward_axis, dtype=np.float64)
+    if (
+        axis.shape != (3,)
+        or not np.all(np.isfinite(axis))
+        or not np.isclose(axis[2], 0.0, rtol=0.0, atol=1.0e-6)
+        or not np.isclose(np.linalg.norm(axis), 1.0, rtol=0.0, atol=1.0e-6)
+    ):
+        raise ValueError("forward_axis must be a normalized horizontal vector")
+    right_axis = np.asarray((axis[1], -axis[0]), dtype=np.float64)
+    planar = float(forward) * axis[:2] + float(lateral) * right_axis
+    return (float(planar[0]), float(planar[1]), float(yaw))
 
 
 def axis_to_range(
@@ -84,6 +107,7 @@ class GamepadCommandSource:
             tuple[float, float], tuple[float, float], tuple[float, float]
         ],
         minimum_moving_speeds: tuple[float, float, float],
+        forward_axis: tuple[float, float, float],
         *,
         controller_module=None,
         event_module=None,
@@ -113,6 +137,7 @@ class GamepadCommandSource:
         self.config = config
         self.command_ranges = command_ranges
         self.minimum_moving_speeds = minimum_moving_speeds
+        self.forward_axis = forward_axis
         self.controller_module = controller_module
         self.event_module = event_module
         self.constants = constants_module
@@ -168,6 +193,7 @@ class GamepadCommandSource:
                 left_y,
                 right_x,
                 self.config.deadzone,
+                self.forward_axis,
             )
             command = np.asarray(
                 [
