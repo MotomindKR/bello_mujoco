@@ -55,9 +55,10 @@ environments form an exact-zero standing cohort; moving samples are conditioned
 outside the shared standing deadbands.
 Failure resets preserve the exact command request. Command resampling uses a
 separate control-step clock that survives episode resets, so repeated early
-failures cannot trap an environment in one mode. Each scheduled resample
-reassigns the cohort to train transitions in both directions between standing
-and moving commands.
+failures cannot trap an environment in one mode. Initial clock ages are evenly
+staggered across the batch, so only a small fraction resamples on each control
+step instead of changing the whole cohort every ten seconds. Each resample can
+train a transition in either direction between standing and moving commands.
 
 Moving commands activate a fixed per-leg gait clock: 0.90 Hz for both Bello and
 the rounded Mini setting. The legs are offset by half a cycle and use a 60%

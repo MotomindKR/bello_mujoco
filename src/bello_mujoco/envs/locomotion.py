@@ -1057,9 +1057,10 @@ class BelloLocomotionEnv:
         command: jax.Array | None = None,
         rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array]:
-        command_rng = reset_rng = feedback_rng = obs_rng = rng
+        command_rng = reset_rng = feedback_rng = obs_rng = command_clock_rng = rng
         if rng is not None:
             command_rng, reset_rng, obs_rng = jax.random.split(rng, 3)
+            command_clock_rng = jax.random.fold_in(rng, 3)
             feedback_rng = jax.random.fold_in(obs_rng, 1)
             obs_rng = jax.random.fold_in(obs_rng, 2)
         command = self._resolve_batch_command(batch_size, command, command_rng)
@@ -1120,7 +1121,10 @@ class BelloLocomotionEnv:
                 actor_feedback[:, None, :],
                 self.maximum_observation_delay_steps + 1,
                 axis=1,
-            )
+            ),
+            command_resample_step_count=(
+                self.initial_command_resample_step_counts(batch_size, command_clock_rng)
+            ),
         )
         return state, self.observation_batch(state, obs_rng)
 
@@ -1155,6 +1159,26 @@ class BelloLocomotionEnv:
             minval=0,
             maxval=self.max_episode_steps,
             dtype=jnp.int32,
+        )
+
+    def initial_command_resample_step_counts(
+        self, batch_size: int, rng: jax.Array | None = None
+    ) -> jax.Array:
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        if rng is None or not self.command_config.enabled:
+            return jnp.zeros((batch_size,), dtype=jnp.int32)
+
+        resample_steps = self._command_resample_steps()
+        permutation_key, shift_key = jax.random.split(rng)
+        evenly_spaced = (
+            jnp.arange(batch_size, dtype=jnp.int32) * resample_steps // batch_size
+        )
+        shift = jax.random.randint(
+            shift_key, (), minval=0, maxval=resample_steps, dtype=jnp.int32
+        )
+        return jax.random.permutation(
+            permutation_key, jnp.mod(evenly_spaced + shift, resample_steps)
         )
 
     def _apply_reset_randomization(
@@ -1677,6 +1701,7 @@ class BelloLocomotionEnv:
             next_gait_phase,
             standing_transition_pending,
             command_resample_step_count,
+            command_resampled,
         ) = self._maybe_resample_batch_command_and_phase(
             transitioned_state, resample_rng
         )
@@ -1737,6 +1762,7 @@ class BelloLocomotionEnv:
             "random_push/applied": push_applied,
             "random_push/lin_vel_x": push_velocity[:, 0],
             "random_push/lin_vel_y": push_velocity[:, 1],
+            "command/resampled": command_resampled.astype(jnp.float32),
             **self._command_diagnostics(reward_state.command),
             "returned_episode": done,
             **done_flags,
@@ -2364,16 +2390,15 @@ class BelloLocomotionEnv:
         self,
         state: BelloState,
         rng: jax.Array | None,
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        resample_steps = max(
-            1, int(round(self.command_config.resample_seconds / self.control_timestep))
-        )
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        resample_steps = self._command_resample_steps()
         if rng is None or not self.command_config.enabled:
             return (
                 state.command,
                 state.gait_phase,
                 state.standing_transition_pending,
                 jnp.minimum(state.command_resample_step_count, resample_steps),
+                jnp.zeros_like(state.command_resample_step_count, dtype=bool),
             )
         resample = state.command_resample_step_count >= resample_steps
         sampled = self._resample_batch_command(
@@ -2400,6 +2425,12 @@ class BelloLocomotionEnv:
             gait_phase,
             standing_transition_pending,
             jnp.where(resample, 0, state.command_resample_step_count),
+            resample,
+        )
+
+    def _command_resample_steps(self) -> int:
+        return max(
+            1, int(round(self.command_config.resample_seconds / self.control_timestep))
         )
 
     def _resample_batch_command(

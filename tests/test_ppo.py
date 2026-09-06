@@ -94,6 +94,7 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     info = {
         "command/standing": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
         "command/moving": jnp.asarray([[0.0, 1.0, 0.0, 1.0]]),
+        "command/resampled": jnp.asarray([[0.0, 1.0, 0.0, 1.0]]),
         "returned_episode": jnp.asarray([[1.0, 1.0, 0.0, 1.0]]),
         "episode_return": jnp.asarray([[10.0, 20.0, 0.0, 40.0]]),
         "episode_length": jnp.asarray([[5.0, 6.0, 0.0, 8.0]]),
@@ -111,6 +112,7 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
 
     assert command_metrics["command/standing_fraction"] == pytest.approx(0.5)
     assert command_metrics["command/moving_fraction"] == pytest.approx(0.5)
+    assert command_metrics["command/resampled_fraction"] == pytest.approx(0.5)
     assert conditioned["command/standing_mean_reward"] == pytest.approx(2.0)
     assert conditioned["command/standing_positive_reward_fraction"] == pytest.approx(
         1.0
@@ -438,7 +440,7 @@ def test_staggered_initial_step_counts_match_actor_and_critic_observations(
     expected_critic = env.critic_observation_batch(runner.env_state)
 
     assert jnp.any(runner.env_state.step_count > 0)
-    assert jnp.all(runner.env_state.command_resample_step_count == 0)
+    assert jnp.unique(runner.env_state.command_resample_step_count).size == num_envs
     assert runner.obs_stack[:, 0] == pytest.approx(expected_actor)
     assert runner.obs_stack[:, 1] == pytest.approx(expected_actor)
     assert runner.critic_obs_stack[:, 0] == pytest.approx(expected_critic)

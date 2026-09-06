@@ -873,6 +873,73 @@ def test_command_sampling_and_periodic_resampling_are_bounded(
     assert not jnp.allclose(next_state.command, state.command)
 
 
+def test_batch_command_resampling_clocks_are_evenly_staggered(
+    bello_asset: PreparedAsset,
+) -> None:
+    command_config = CommandConfig(
+        standing_probability=0.25,
+        resample_seconds=10.0,
+        standing_transitions_enabled=True,
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        bello_asset, batch_size=8, command_config=command_config
+    )
+    state, _ = env.reset_batch(8, rng=jax.random.PRNGKey(2))
+    counts = np.sort(np.asarray(state.command_resample_step_count))
+    resample_steps = env._command_resample_steps()
+    cyclic_gaps = np.diff(np.concatenate((counts, counts[:1] + resample_steps)))
+
+    assert jnp.sum(command_is_standing(state.command, command_config)) == 2
+    assert np.unique(counts).size == 8
+    assert cyclic_gaps.max() - cyclic_gaps.min() <= 1
+
+    production_counts = np.asarray(
+        env.initial_command_resample_step_counts(2048, jax.random.PRNGKey(3))
+    )
+    histogram = np.bincount(production_counts, minlength=resample_steps)
+    assert production_counts.min() == 0
+    assert production_counts.max() == resample_steps - 1
+    assert histogram.min() == 4
+    assert histogram.max() == 5
+    rollout_expirations = np.convolve(
+        np.concatenate((histogram, histogram[:19])),
+        np.ones(20, dtype=np.int32),
+        mode="valid",
+    )
+    assert rollout_expirations.min() == 81
+    assert rollout_expirations.max() == 82
+
+
+def test_only_expired_command_clocks_resample(
+    bello_asset: PreparedAsset,
+) -> None:
+    command_config = CommandConfig(
+        lin_vel_x=(0.2, 0.4),
+        lin_vel_y=(0.0, 0.0),
+        ang_vel_yaw=(0.0, 0.0),
+        standing_probability=0.0,
+        resample_seconds=0.08,
+        standing_transitions_enabled=True,
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        bello_asset, batch_size=4, command_config=command_config
+    )
+    command = jnp.asarray([0.5, 0.0, 0.0], dtype=jnp.float32)
+    state, _ = env.reset_batch(4, command=command)
+    state = state.replace(
+        command_resample_step_count=jnp.asarray([4, 3, 2, 1], dtype=jnp.int32)
+    )
+
+    next_command, _, _, next_count, resampled = (
+        env._maybe_resample_batch_command_and_phase(state, jax.random.PRNGKey(4))
+    )
+
+    assert jnp.array_equal(resampled, jnp.asarray([True, False, False, False]))
+    assert next_count == pytest.approx(jnp.asarray([0, 3, 2, 1]))
+    assert 0.2 <= next_command[0, 0] <= 0.4
+    assert next_command[1:] == pytest.approx(state.command[1:])
+
+
 def test_batch_command_mode_cohort_survives_resampling(
     bello_asset: PreparedAsset,
 ) -> None:
@@ -1174,6 +1241,7 @@ def test_episode_reset_honors_a_pending_standing_request(
     state = state.replace(
         gait_phase=jnp.full(2, 0.3, dtype=jnp.float32),
         standing_transition_pending=jnp.asarray([True, False]),
+        command_resample_step_count=jnp.asarray([17, 29], dtype=jnp.int32),
         step_count=jnp.full(2, env.max_episode_steps, dtype=jnp.int32),
     )
 
@@ -1188,7 +1256,9 @@ def test_episode_reset_honors_a_pending_standing_request(
     assert command_is_moving(next_state.command[1], command_config)
     assert next_state.command[1] == pytest.approx(moving[1])
     assert not jnp.any(next_state.standing_transition_pending)
-    assert jnp.all(next_state.command_resample_step_count == 1)
+    assert next_state.command_resample_step_count == pytest.approx(
+        jnp.asarray([18, 30])
+    )
 
 
 def test_random_push_overwrites_root_xy_velocity_on_interval(

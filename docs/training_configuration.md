@@ -333,17 +333,23 @@ minimum moving speed. The minimums must exceed their respective deadbands.
 The maintained locomotion profiles override `standing_probability` to `0.25`.
 Training assigns an exact standing cohort at batch reset. Failure resets
 preserve the exact command request. A separate command-resampling clock survives
-episode resets, so short episodes cannot trap an environment in one mode. When
-`standing_transitions_enabled` is true, each scheduled command sample
-independently reassigns the exact standing cohort, exposing both
-standing-to-moving and moving-to-standing transitions. A zero request during
-active gait is pending until the next scheduled half-cycle boundary, even when
-it arrives during double support. The effective moving command, gait phase, and
-moving rewards remain active through the boundary step; zero becomes effective
-and standing rewards begin on the following step. Training telemetry reports
+episode resets, so short episodes cannot trap an environment in one mode. Its
+initial ages are randomly assigned from an evenly spaced batch distribution;
+the maintained 2,048-environment profile therefore resamples four or five worlds
+per control step instead of all worlds every ten seconds. Subsequent samples use
+`standing_probability` for each expiring world's new request, while batch
+initialization retains its exact standing count. When
+`standing_transitions_enabled` is true, this exposes
+both standing-to-moving and moving-to-standing transitions without a periodic
+batch-wide mode pulse. A zero request during active gait is pending until the
+next scheduled half-cycle boundary, even when it arrives during double support.
+The effective moving command, gait phase, and moving rewards remain active
+through the boundary step; zero becomes effective and standing rewards begin on
+the following step. Training telemetry reports the resampled fraction,
 mode-specific mean reward and planar tracking reward, completed-episode return
-and length, and completed-episode count under the `command/standing_*`,
-`command/moving_*`, and `episode/{standing,moving}_*` names.
+and length, and completed-episode count under the `command/resampled_fraction`,
+`command/standing_*`, `command/moving_*`, and `episode/{standing,moving}_*`
+names.
 
 The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
 The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
