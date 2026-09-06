@@ -12,8 +12,10 @@ env_config:
     joint_pos_scale_range: [1.0, 1.0]
 reward_config:
   weights:
-    healthy_survival: 2.5
+    healthy_survival: 4.0
     moving_lin_vel_xy_error: -1.0
+    track_ang_vel_z: 4.0
+    moving_ang_vel_z_error: -1.0
     gait_contact: -2.5
     gait_swing_clearance: -1.0
   gait:

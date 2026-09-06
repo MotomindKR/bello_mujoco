@@ -1690,6 +1690,30 @@ def test_environment_rejects_missing_reward_link(
         BelloLocomotionEnv.load_prepared(bello_asset, reward_config=reward)
 
 
+def test_angular_error_only_uses_configured_tracking_link(
+    bello_asset: PreparedAsset,
+) -> None:
+    default = RewardConfig()
+    reward = replace(
+        default,
+        weights=replace(
+            default.weights,
+            track_ang_vel_z=0.0,
+            moving_ang_vel_z_error=-1.0,
+        ),
+        links=replace(default.links, track_ang_vel_z="torso_link"),
+    )
+
+    env = BelloLocomotionEnv.load_prepared(
+        bello_asset,
+        reward_config=reward,
+        load_mjx=False,
+    )
+
+    assert reward.uses_yaw_velocity
+    assert env._reward_link("track_ang_vel_z") == "torso_link"
+
+
 def test_environment_rejects_missing_robot_command_frame(
     bello_asset: PreparedAsset,
 ) -> None:

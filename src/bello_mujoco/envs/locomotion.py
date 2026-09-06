@@ -3033,6 +3033,8 @@ class BelloLocomotionEnv:
         enabled = self.reward_config.enabled(term_name)
         if term_name == "track_lin_vel_xy":
             enabled = self.reward_config.uses_planar_velocity
+        elif term_name == "track_ang_vel_z":
+            enabled = self.reward_config.uses_yaw_velocity
         if enabled and link is not None:
             return link
         return self.root_link_name

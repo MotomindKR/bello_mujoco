@@ -728,6 +728,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
     for name in (
         "moving_lin_vel_xy_error",
+        "moving_ang_vel_z_error",
         "action_acceleration",
         "joint_force_peak",
         "touchdown_impact",
@@ -739,6 +740,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
         document["metadata"]["reward"]["weights"].pop(name)
     document["metadata"]["reward"].pop("smoothness")
     document["metadata"]["reward"]["tracking"].pop("lin_vel_xy_error_delta")
+    document["metadata"]["reward"]["tracking"].pop("ang_vel_z_error_delta")
     document["metadata"]["reward"]["tracking"].pop("ang_vel_z_lpf_cutoff_hz")
     document["metadata"]["reward"]["standing"].pop("foot_heading_deadband")
     document["metadata"]["reward"]["standing"].pop("foot_heading_scale")
@@ -766,6 +768,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
 
     assert restored.reward.weights.action_acceleration == 0.0
     assert restored.reward.weights.moving_lin_vel_xy_error == 0.0
+    assert restored.reward.weights.moving_ang_vel_z_error == 0.0
     assert restored.reward.weights.joint_force_peak == 0.0
     assert restored.reward.weights.touchdown_impact == 0.0
     assert restored.reward.weights.stand_still == 0.0
@@ -779,6 +782,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     assert restored.reward.smoothness.waist_action_weight == 1.0
     assert restored.reward.tracking.ang_vel_z_lpf_cutoff_hz == pytest.approx(5.0)
     assert restored.reward.tracking.lin_vel_xy_error_delta == pytest.approx(0.25)
+    assert restored.reward.tracking.ang_vel_z_error_delta == pytest.approx(0.25)
     assert restored.reward.standing.foot_heading_deadband == pytest.approx(
         np.deg2rad(5.0)
     )

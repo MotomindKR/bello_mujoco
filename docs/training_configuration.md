@@ -371,8 +371,9 @@ boundary.
 | --- | ---: | --- |
 | `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. At a standing command it is awarded only in double support. |
 | `moving_lin_vel_xy_error` | `0.0` | Moving-only smooth-L1 error between signed planar velocity and command. Its constant far-field gradient remains corrective after the Gaussian tracker saturates. Bello Mini sets this to `-1.0`; Bello leaves it disabled. |
-| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. At a standing command it is awarded only in double support. |
-| `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. Bello Mini sets this to `2.5`, or `+0.05` per healthy 50 Hz step, to offset its additional dense moving penalties. |
+| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. At a standing command it is awarded only in double support. Bello Mini sets this to `4.0`. |
+| `moving_ang_vel_z_error` | `0.0` | Moving-only smooth-L1 error between signed yaw velocity and command. It uses the same non-saturating far-field behavior as the planar error term. Bello Mini sets this to `-1.0`; Bello leaves it disabled. |
+| `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. Bello Mini sets this to `4.0`, or `+0.08` per healthy 50 Hz step, to offset its additional dense moving penalties. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
 | `ang_vel_xy` | `-0.15` | Penalize roll/pitch angular velocity. |
 | `flat_orientation` | `-2.0` | Penalize gravity-vector tilt. |
@@ -434,7 +435,7 @@ Supporting fields are:
 
 | Section | Fields |
 | --- | --- |
-| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `lin_vel_xy_error_delta`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_lpf_cutoff_hz` |
+| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `lin_vel_xy_error_delta`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_error_delta`, `ang_vel_z_lpf_cutoff_hz` |
 | `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `smoothness` | `ankle_action_weight`, `waist_action_weight` |
@@ -680,7 +681,7 @@ TWIST uses 32 contacts per environment and logs
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
-| `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with pelvis-frame `+X` forward command/reward/actor feedback, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, a `2.5` healthy-survival weight that offsets Mini's additional dense moving penalties, and output names. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
+| `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with pelvis-frame `+X` forward command/reward/actor feedback, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, `4.0` healthy-survival and `4.0` Gaussian yaw-tracking weights, non-saturating moving linear/yaw velocity-error shaping, and output names. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |

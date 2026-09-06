@@ -196,6 +196,7 @@ class RewardWeights:
     track_lin_vel_xy: float = 2.0
     moving_lin_vel_xy_error: float = 0.0
     track_ang_vel_z: float = 2.0
+    moving_ang_vel_z_error: float = 0.0
     healthy_survival: float = 1.5
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.15
@@ -246,6 +247,7 @@ class TrackingRewardConfig:
     lin_vel_xy_error_delta: float = 0.25
     ang_vel_z_moving_std: float = 0.25
     ang_vel_z_still_std: float = 0.20
+    ang_vel_z_error_delta: float = 0.25
     ang_vel_z_lpf_cutoff_hz: float = 5.0
 
 
@@ -310,6 +312,10 @@ class RewardConfig:
         )
 
     @property
+    def uses_yaw_velocity(self) -> bool:
+        return self.enabled("track_ang_vel_z") or self.enabled("moving_ang_vel_z_error")
+
+    @property
     def uses_foot_contact_metadata(self) -> bool:
         return any(
             self.enabled(name)
@@ -344,11 +350,12 @@ class RewardConfig:
         )
         links = set()
         for name in term_names:
-            enabled = (
-                self.uses_planar_velocity
-                if name == "track_lin_vel_xy"
-                else self.enabled(name)
-            )
+            if name == "track_lin_vel_xy":
+                enabled = self.uses_planar_velocity
+            elif name == "track_ang_vel_z":
+                enabled = self.uses_yaw_velocity
+            else:
+                enabled = self.enabled(name)
             if enabled and (link := getattr(self.links, name)):
                 links.add(link)
         if self.enabled("stand_upright") and self.links.flat_orientation:
@@ -446,6 +453,14 @@ def compute_locomotion_reward(
         config.tracking.ang_vel_z_moving_std,
     )
     yaw_vel_error = ((inputs.yaw_vel_z - yaw_target) / yaw_std) ** 2
+    angular_error_abs = jnp.abs(inputs.yaw_vel_z - yaw_target)
+    angular_error_delta = config.tracking.ang_vel_z_error_delta
+    moving_ang_vel_z_error = jnp.where(
+        angular_error_abs <= angular_error_delta,
+        0.5 * angular_error_abs**2 / angular_error_delta,
+        angular_error_abs - 0.5 * angular_error_delta,
+    )
+    moving_ang_vel_z_error = jnp.where(standing_command, 0.0, moving_ang_vel_z_error)
     track_lin_vel_xy = jnp.exp(-lin_vel_error)
     track_ang_vel_z = jnp.exp(-yaw_vel_error)
     tracking_supported = ~standing_command | standing_double_support
@@ -634,6 +649,7 @@ def compute_locomotion_reward(
         "track_lin_vel_xy": track_lin_vel_xy,
         "moving_lin_vel_xy_error": moving_lin_vel_xy_error,
         "track_ang_vel_z": track_ang_vel_z,
+        "moving_ang_vel_z_error": moving_ang_vel_z_error,
         "healthy_survival": (~inputs.done).astype(jnp.float32),
         "lin_vel_z": lin_vel_z,
         "ang_vel_xy": ang_vel_xy,
@@ -704,6 +720,10 @@ def validate_reward_config(config: RewardConfig) -> None:
         (
             "tracking.ang_vel_z_still_std",
             config.tracking.ang_vel_z_still_std,
+        ),
+        (
+            "tracking.ang_vel_z_error_delta",
+            config.tracking.ang_vel_z_error_delta,
         ),
         (
             "tracking.ang_vel_z_lpf_cutoff_hz",

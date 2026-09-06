@@ -99,7 +99,9 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
         "episode_return": jnp.asarray([[10.0, 20.0, 0.0, 40.0]]),
         "episode_length": jnp.asarray([[5.0, 6.0, 0.0, 8.0]]),
         "reward/track_lin_vel_xy": jnp.asarray([[0.04, 0.01, 0.02, 0.03]]),
+        "reward/track_ang_vel_z": jnp.asarray([[0.03, 0.02, 0.01, 0.04]]),
         "reward/moving_lin_vel_xy_error": jnp.asarray([[0.0, -0.02, 0.0, -0.04]]),
+        "reward/moving_ang_vel_z_error": jnp.asarray([[0.0, -0.01, 0.0, -0.03]]),
         "gait/touchdown": jnp.asarray([[2.0, 1.0, 0.0, 1.0]]),
         "gait/double_support": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
         "gait/joint_force_max_body_weight": jnp.asarray([[0.5, 1.0, 1.5, 2.0]]),
@@ -120,7 +122,10 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     assert conditioned["command/moving_mean_reward"] == pytest.approx(3.0)
     assert conditioned["command/standing_track_lin_vel_xy"] == pytest.approx(0.03)
     assert conditioned["command/moving_track_lin_vel_xy"] == pytest.approx(0.02)
+    assert conditioned["command/standing_track_ang_vel_z"] == pytest.approx(0.02)
+    assert conditioned["command/moving_track_ang_vel_z"] == pytest.approx(0.03)
     assert conditioned["command/moving_lin_vel_xy_error"] == pytest.approx(-0.03)
+    assert conditioned["command/moving_ang_vel_z_error"] == pytest.approx(-0.02)
     assert conditioned["episode/standing_count"] == pytest.approx(1.0)
     assert conditioned["episode/standing_return"] == pytest.approx(10.0)
     assert conditioned["episode/standing_length"] == pytest.approx(5.0)

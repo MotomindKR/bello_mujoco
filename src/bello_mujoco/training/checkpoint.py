@@ -879,6 +879,7 @@ def _with_checkpoint_metadata_defaults(
                 normalized_weights = dict(weights)
                 for name in (
                     "moving_lin_vel_xy_error",
+                    "moving_ang_vel_z_error",
                     "action_acceleration",
                     "joint_force_peak",
                     "touchdown_impact",
@@ -898,10 +899,12 @@ def _with_checkpoint_metadata_defaults(
             tracking = reward.get("tracking")
             if isinstance(tracking, dict) and (
                 "lin_vel_xy_error_delta" not in tracking
+                or "ang_vel_z_error_delta" not in tracking
                 or "ang_vel_z_lpf_cutoff_hz" not in tracking
             ):
                 normalized_tracking = dict(tracking)
                 normalized_tracking.setdefault("lin_vel_xy_error_delta", 0.25)
+                normalized_tracking.setdefault("ang_vel_z_error_delta", 0.25)
                 normalized_tracking.setdefault("ang_vel_z_lpf_cutoff_hz", 5.0)
                 normalized_reward["tracking"] = normalized_tracking
             standing = reward.get("standing")
