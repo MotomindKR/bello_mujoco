@@ -399,9 +399,10 @@ The maintained locomotion profiles override `touchdown_impact` to `-8.0` while
 retaining their `1.0` body-weight touchdown-force soft limit. This restores the
 impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini inherits the same
-reward weights and rounded `0.08` m swing-clearance target. Joint, contact, and
-touchdown loads already normalize by each robot's weight or actuator limits, so
-the smaller morphology does not require separate force-related coefficients.
+reward configuration except for midpoint gait shaping: `gait_contact: -2.5`,
+`gait_swing_clearance: -1.0`, and a `0.075` m swing-clearance target. These
+Mini-specific terms more strongly discourage persistent double support without
+changing the body-weight-normalized force and touchdown safeguards.
 
 Both profiles apply moving hip-deviation shaping to canonical forward command
 `+Y`. Mini's yaw-rotated `imu_link` maps that command to its physical pelvis `+X`

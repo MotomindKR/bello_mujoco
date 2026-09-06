@@ -8,6 +8,11 @@ env_config:
     # Independent scaling would break the coordinated flat-sole crouch.
     joint_pos_scale_range: [1.0, 1.0]
 reward_config:
+  weights:
+    gait_contact: -2.5
+    gait_swing_clearance: -1.0
+  gait:
+    swing_clearance_target: 0.075
   limits_pose:
     base_height_target: 0.87
     hip_deviation_command_indices: [1]

@@ -60,10 +60,10 @@ to train transitions in both directions between standing and moving commands.
 Moving commands activate a fixed per-leg gait clock: 0.90 Hz for both Bello and
 the rounded Mini setting. The legs are offset by half a cycle and use a 60%
 stance fraction, which provides short double-support intervals. The actor
-receives sine/cosine phase and a gait-active bit. Moving training resets choose
-phase zero or one half, both double-support boundaries, so either leg starts the
-first step without initializing in mid-swing. Native evaluation and the hardware
-runner initialize this clock at phase zero. Once gait is active, zero is a
+receives sine/cosine phase and a gait-active bit. Moving training resets sample
+uniformly across the full gait cycle to keep parallel environments phase-diverse.
+Native evaluation and the hardware runner initialize this clock at phase zero.
+Once gait is active, zero is a
 standing request rather than an immediate policy command. The effective moving
 command remains active until the next scheduled half-cycle boundary, even when
 the request arrives during double support. The step that reaches the boundary
@@ -92,9 +92,10 @@ overrides in
 the [training configuration reference](training_configuration.md#locomotion-reward-reward_config).
 Mini keeps its coordinated flat-sole joint pose fixed during reset instead of
 scaling each default joint independently. Bello Mini's canonical 43.50 kg
-inertials automatically feed the
-body-weight-normalized force and impact terms; those reward weights are not
-manually rescaled. The
+inertials automatically feed the body-weight-normalized force and impact terms;
+those reward weights are not manually rescaled. Mini separately uses midpoint
+gait shaping (`gait_contact: -2.5`, `gait_swing_clearance: -1.0`, and a `0.075` m
+swing-clearance target) to discourage persistent double support. The
 rounded height settings are a 0.87 m pelvis target and 0.56 m termination floor,
 versus 0.86 m and 0.55 m for Bello. Both profiles preserve the successful
 baseline's unclipped policy-effort dynamics. The over-peak torque term still uses the
