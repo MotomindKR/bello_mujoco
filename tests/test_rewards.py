@@ -166,6 +166,43 @@ def test_tracking_reward_is_maximal_at_command_and_scales_with_timestep() -> Non
     assert worse < reward
 
 
+def test_moving_velocity_error_has_a_non_saturating_signed_gradient() -> None:
+    config = reward_config(
+        moving_lin_vel_xy_error=-1.0,
+        tracking=TrackingRewardConfig(lin_vel_xy_error_delta=0.25),
+    )
+
+    def velocity_error_reward(
+        velocity_x: jax.Array, command_x: float = 0.5
+    ) -> jax.Array:
+        _, terms = compute_locomotion_reward(
+            config,
+            reward_inputs(
+                command=jnp.asarray([command_x, 0.0, 0.0]),
+                lin_vel_xy=jnp.asarray([velocity_x, 0.0]),
+            ),
+        )
+        return terms["reward/moving_lin_vel_xy_error"]
+
+    assert velocity_error_reward(jnp.asarray(0.5)) == pytest.approx(0.0)
+    assert velocity_error_reward(jnp.asarray(0.0)) == pytest.approx(-0.0075)
+    assert velocity_error_reward(jnp.asarray(-0.5)) == pytest.approx(-0.0175)
+    assert jax.grad(velocity_error_reward)(jnp.asarray(-0.5)) == pytest.approx(0.02)
+    assert jax.grad(velocity_error_reward)(jnp.asarray(-5.0)) == pytest.approx(0.02)
+    assert jax.grad(lambda velocity: velocity_error_reward(velocity, -0.5))(
+        jnp.asarray(0.5)
+    ) == pytest.approx(-0.02)
+
+    _, standing_terms = compute_locomotion_reward(
+        config,
+        reward_inputs(
+            command=jnp.zeros(3),
+            lin_vel_xy=jnp.asarray([1.0, -1.0]),
+        ),
+    )
+    assert standing_terms["reward/moving_lin_vel_xy_error"] == pytest.approx(0.0)
+
+
 def test_default_tracking_weights_are_doubled() -> None:
     config = RewardConfig()
 
@@ -861,6 +898,8 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
         RewardConfig(standing=StandingRewardConfig(foot_linear_speed_scale=0.0))
     with pytest.raises(ValueError, match="ang_vel_z_lpf_cutoff_hz"):
         RewardConfig(tracking=TrackingRewardConfig(ang_vel_z_lpf_cutoff_hz=0.0))
+    with pytest.raises(ValueError, match="lin_vel_xy_error_delta"):
+        RewardConfig(tracking=TrackingRewardConfig(lin_vel_xy_error_delta=0.0))
     with pytest.raises(ValueError, match="foot_angular_speed_scale"):
         RewardConfig(
             standing=StandingRewardConfig(foot_angular_speed_scale=float("nan"))

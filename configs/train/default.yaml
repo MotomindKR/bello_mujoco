@@ -149,6 +149,7 @@ env_config:
 reward_config:
   weights:
     track_lin_vel_xy: 2.0
+    moving_lin_vel_xy_error: 0.0
     track_ang_vel_z: 2.0
     healthy_survival: 1.5
     lin_vel_z: -2.0
@@ -189,6 +190,7 @@ reward_config:
   tracking:
     lin_vel_xy_moving_std: 0.3
     lin_vel_xy_still_std: 0.25
+    lin_vel_xy_error_delta: 0.25
     ang_vel_z_moving_std: 0.25
     ang_vel_z_still_std: 0.2
     ang_vel_z_lpf_cutoff_hz: 5.0

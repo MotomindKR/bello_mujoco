@@ -2999,7 +2999,10 @@ class BelloLocomotionEnv:
 
     def _reward_link(self, term_name: str) -> str:
         link = getattr(self.reward_config.links, term_name)
-        if self.reward_config.enabled(term_name) and link is not None:
+        enabled = self.reward_config.enabled(term_name)
+        if term_name == "track_lin_vel_xy":
+            enabled = self.reward_config.uses_planar_velocity
+        if enabled and link is not None:
             return link
         return self.root_link_name
 
@@ -3010,7 +3013,10 @@ class BelloLocomotionEnv:
             if term_name == "track_lin_vel_xy"
             else None
         )
-        if self.reward_config.enabled(term_name) and frame_link is not None:
+        enabled = self.reward_config.enabled(term_name)
+        if term_name == "track_lin_vel_xy":
+            enabled = self.reward_config.uses_planar_velocity
+        if enabled and frame_link is not None:
             return frame_link
         if term_name == "track_lin_vel_xy":
             return self.model.robot.locomotion_command_frame_body_name

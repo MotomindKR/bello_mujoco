@@ -23,11 +23,10 @@ twist2
 `bello_mini_locomotion` select their respective robot contracts after composing
 the same production PPO, command, randomization, and observation recipe. The
 Mini profile changes its asset, rounded height thresholds, exact-pose reset,
-and output names while retaining Bello's
-reward weights and `0.08` m swing-clearance target. Force and impact terms scale
-automatically by robot weight or actuator limit. The selected robot contract
-supplies its planar tracking frame and crouched joint defaults. Their periodic
-and final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
+gait shaping, and output names, and adds moving velocity-error shaping. Force and
+impact terms scale automatically by robot weight or actuator limit. The selected
+robot contract supplies its planar tracking frame and crouched joint defaults. Their
+periodic and final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
 BeyondMimic tracking; the TWIST experiments are documented separately. The
 shared `configs/train/locomotion.yaml` layer is internal and is not a public
 experiment name.
@@ -98,9 +97,12 @@ scaling each default joint independently. Bello Mini's canonical 43.50 kg
 inertials automatically feed the body-weight-normalized force and impact terms;
 those reward weights are not manually rescaled. Mini separately uses midpoint
 gait shaping (`gait_contact: -2.5`, `gait_swing_clearance: -1.0`, and a `0.075` m
-swing-clearance target) to discourage persistent double support. The
-rounded height settings are a 0.87 m pelvis target and 0.56 m termination floor,
-versus 0.86 m and 0.55 m for Bello. Both profiles preserve the successful
+swing-clearance target) to discourage persistent double support. It also adds a
+moving-only smooth-L1 planar velocity-error penalty with weight `-1.0` and a
+`0.25 m/s` Huber delta. Unlike the Gaussian tracker, this retains a signed,
+nonzero corrective gradient when velocity is far from or opposite the command.
+The rounded height settings are a 0.87 m pelvis target and 0.56 m termination
+floor, versus 0.86 m and 0.55 m for Bello. Both profiles preserve the successful
 baseline's unclipped policy-effort dynamics. The over-peak torque term still uses the
 reconstructed servo demand to expose infeasible policy requests. Emulator and
 hardware execution continue to enforce physical motor effort limits.

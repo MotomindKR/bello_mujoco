@@ -284,6 +284,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert "waist_roll_joint" in mini.asset_config.actuator_config.policy_joint_names
     assert mini.reward_config.weights == replace(
         bello.reward_config.weights,
+        moving_lin_vel_xy_error=-1.0,
         gait_contact=-2.5,
         gait_swing_clearance=-1.0,
     )
@@ -299,6 +300,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert mini.reward_config.weights.touchdown_impact == pytest.approx(-8.0)
     assert bello.reward_config.weights.gait_contact == pytest.approx(-1.0)
     assert bello.reward_config.weights.gait_swing_clearance == pytest.approx(-0.5)
+    assert bello.reward_config.weights.moving_lin_vel_xy_error == pytest.approx(0.0)
+    assert mini.reward_config.weights.moving_lin_vel_xy_error == pytest.approx(-1.0)
     assert mini.reward_config.weights.gait_contact == pytest.approx(-2.5)
     assert mini.reward_config.weights.gait_swing_clearance == pytest.approx(-1.0)
     assert mini.reward_config.gait.swing_clearance_target == pytest.approx(0.075)

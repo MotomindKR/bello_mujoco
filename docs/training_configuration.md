@@ -364,6 +364,7 @@ boundary.
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
 | `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. At a standing command it is awarded only in double support. |
+| `moving_lin_vel_xy_error` | `0.0` | Moving-only smooth-L1 error between signed planar velocity and command. Its constant far-field gradient remains corrective after the Gaussian tracker saturates. Bello Mini sets this to `-1.0`; Bello leaves it disabled. |
 | `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. At a standing command it is awarded only in double support. |
 | `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
@@ -398,10 +399,12 @@ The maintained locomotion profiles override `touchdown_impact` to `-8.0` while
 retaining their `1.0` body-weight touchdown-force soft limit. This restores the
 impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini inherits the same
-reward configuration except for midpoint gait shaping: `gait_contact: -2.5`,
-`gait_swing_clearance: -1.0`, and a `0.075` m swing-clearance target. These
-Mini-specific terms more strongly discourage persistent double support without
-changing the body-weight-normalized force and touchdown safeguards.
+reward configuration except for a `-1.0` moving planar smooth-L1 error penalty
+and midpoint gait shaping: `gait_contact: -2.5`, `gait_swing_clearance: -1.0`,
+and a `0.075` m swing-clearance target. The error penalty uses a `0.25 m/s`
+Huber delta and preserves a signed corrective gradient when the Mini moves in
+the opposite direction, while the gait terms more strongly discourage
+persistent double support.
 
 Both profiles apply moving hip-deviation shaping on their pelvis-frame forward
 axis: command index 1 for Bello (`+Y`) and index 0 for Mini (`+X`). Bello enables
@@ -425,7 +428,7 @@ Supporting fields are:
 
 | Section | Fields |
 | --- | --- |
-| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_lpf_cutoff_hz` |
+| `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `lin_vel_xy_error_delta`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_lpf_cutoff_hz` |
 | `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `smoothness` | `ankle_action_weight`, `waist_action_weight` |

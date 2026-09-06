@@ -194,6 +194,7 @@ class RewardWeights:
     """Scalar weights for the stable locomotion reward term names."""
 
     track_lin_vel_xy: float = 2.0
+    moving_lin_vel_xy_error: float = 0.0
     track_ang_vel_z: float = 2.0
     healthy_survival: float = 1.5
     lin_vel_z: float = -2.0
@@ -242,6 +243,7 @@ class RewardLinks:
 class TrackingRewardConfig:
     lin_vel_xy_moving_std: float = 0.30
     lin_vel_xy_still_std: float = 0.25
+    lin_vel_xy_error_delta: float = 0.25
     ang_vel_z_moving_std: float = 0.25
     ang_vel_z_still_std: float = 0.20
     ang_vel_z_lpf_cutoff_hz: float = 5.0
@@ -302,6 +304,12 @@ class RewardConfig:
         return getattr(self.weights, term_name) != 0.0
 
     @property
+    def uses_planar_velocity(self) -> bool:
+        return self.enabled("track_lin_vel_xy") or self.enabled(
+            "moving_lin_vel_xy_error"
+        )
+
+    @property
     def uses_foot_contact_metadata(self) -> bool:
         return any(
             self.enabled(name)
@@ -334,14 +342,18 @@ class RewardConfig:
             "flat_orientation",
             "base_height",
         )
-        links = {
-            link
-            for name in term_names
-            if self.enabled(name) and (link := getattr(self.links, name))
-        }
+        links = set()
+        for name in term_names:
+            enabled = (
+                self.uses_planar_velocity
+                if name == "track_lin_vel_xy"
+                else self.enabled(name)
+            )
+            if enabled and (link := getattr(self.links, name)):
+                links.add(link)
         if self.enabled("stand_upright") and self.links.flat_orientation:
             links.add(self.links.flat_orientation)
-        if self.enabled("track_lin_vel_xy") and self.links.track_lin_vel_xy_frame:
+        if self.uses_planar_velocity and self.links.track_lin_vel_xy_frame:
             links.add(self.links.track_lin_vel_xy_frame)
         return tuple(sorted(links))
 
@@ -416,6 +428,16 @@ def compute_locomotion_reward(
         config.tracking.lin_vel_xy_moving_std,
     )
     lin_vel_error = jnp.sum(((inputs.lin_vel_xy - linear_target) / linear_std) ** 2)
+    linear_error_abs = jnp.abs(inputs.lin_vel_xy - linear_target)
+    linear_error_delta = config.tracking.lin_vel_xy_error_delta
+    moving_lin_vel_xy_error = jnp.sum(
+        jnp.where(
+            linear_error_abs <= linear_error_delta,
+            0.5 * linear_error_abs**2 / linear_error_delta,
+            linear_error_abs - 0.5 * linear_error_delta,
+        )
+    )
+    moving_lin_vel_xy_error = jnp.where(standing_command, 0.0, moving_lin_vel_xy_error)
     yaw_still = jnp.abs(inputs.command[2]) < command_config.yaw_deadband
     yaw_target = jnp.where(yaw_still, 0.0, inputs.command[2])
     yaw_std = jnp.where(
@@ -610,6 +632,7 @@ def compute_locomotion_reward(
 
     values = {
         "track_lin_vel_xy": track_lin_vel_xy,
+        "moving_lin_vel_xy_error": moving_lin_vel_xy_error,
         "track_ang_vel_z": track_ang_vel_z,
         "healthy_survival": (~inputs.done).astype(jnp.float32),
         "lin_vel_z": lin_vel_z,
@@ -669,6 +692,10 @@ def validate_reward_config(config: RewardConfig) -> None:
         (
             "tracking.lin_vel_xy_still_std",
             config.tracking.lin_vel_xy_still_std,
+        ),
+        (
+            "tracking.lin_vel_xy_error_delta",
+            config.tracking.lin_vel_xy_error_delta,
         ),
         (
             "tracking.ang_vel_z_moving_std",
