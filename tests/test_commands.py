@@ -327,7 +327,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.env_config.gait.frequency_hz == pytest.approx(0.9)
     assert mini.env_config.gait.frequency_hz == pytest.approx(0.90)
     assert bello.warp.contact_budget_per_env == 40
-    assert mini.warp.contact_budget_per_env == 64
+    assert mini.warp.contact_budget_per_env == 40
     assert mini.env_config.spawn == replace(
         bello.env_config.spawn,
         joint_pos_scale_range=(1.0, 1.0),

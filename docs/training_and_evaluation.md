@@ -23,7 +23,7 @@ twist2
 `bello_mini_locomotion` select their respective robot contracts after composing
 the same production PPO, command, randomization, and observation recipe. The
 Mini profile changes its asset, rounded height thresholds, exact-pose reset,
-contact capacity, and output names while retaining Bello's
+and output names while retaining Bello's
 reward weights and `0.08` m swing-clearance target. Force and impact terms scale
 automatically by robot weight or actuator limit. The selected robot contract
 supplies its planar tracking frame and crouched joint defaults. Their periodic

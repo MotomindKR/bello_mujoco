@@ -15,8 +15,6 @@ reward_config:
 done_config:
   base_height:
     min_height: 0.56
-warp:
-  contact_budget_per_env: 64
 checkpoint_config:
   name: bello_mini_locomotion_seed0
   wandb_artifact_name: bello_mini_locomotion_seed0

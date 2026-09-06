@@ -985,7 +985,7 @@ class BelloLocomotionEnv:
         command = self._resolve_command(command, command_rng)
         gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
         if gait_rng is not None:
-            sampled_phase = 0.5 * jax.random.bernoulli(gait_rng).astype(jnp.float32)
+            sampled_phase = jax.random.uniform(gait_rng, (), dtype=jnp.float32)
             gait_phase = jnp.where(
                 command_is_moving(command, self.command_config), sampled_phase, 0.0
             )
