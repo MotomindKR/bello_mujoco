@@ -325,26 +325,25 @@ filter to training, native evaluation, or the hardware runner.
 | `yaw_deadband` | `0.1` | Standing threshold for yaw command. |
 | `minimum_moving_linear_speed` | `0.2` | A selected moving linear axis is sampled outside this magnitude. |
 | `minimum_moving_yaw_speed` | `0.2` | A selected moving yaw axis is sampled outside this magnitude. |
-| `resample_seconds` | `10` | Interval between command samples. |
+| `resample_seconds` | `10` | Control-time interval between command samples; episode resets do not restart it. |
 | `standing_transitions_enabled` | `false` | Reassign the standing cohort during periodic resampling. During gait, latch a zero request until the next scheduled half-cycle boundary before changing effective mode. |
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
 The maintained locomotion profiles override `standing_probability` to `0.25`.
 Training assigns an exact standing cohort at batch reset. Failure resets
-preserve each environment's standing or moving mode so short standing episodes
-cannot reduce standing's share of rollout frames. When
-`standing_transitions_enabled` is true, periodic command resampling independently
-reassigns the exact standing cohort, exposing both standing-to-moving and
-moving-to-standing transitions. A zero request during active gait is pending
-until the next scheduled half-cycle boundary, even when it arrives during double
-support. The effective moving command, gait phase, and moving rewards remain
-active through the boundary step; zero becomes effective and standing rewards
-begin on the following step. Training telemetry reports
-mode-specific mean reward, completed-episode return and length, and
-completed-episode count under
-the `command/standing_*`, `command/moving_*`, and
-`episode/{standing,moving}_*` names.
+preserve the exact command request. A separate command-resampling clock survives
+episode resets, so short episodes cannot trap an environment in one mode. When
+`standing_transitions_enabled` is true, each scheduled command sample
+independently reassigns the exact standing cohort, exposing both
+standing-to-moving and moving-to-standing transitions. A zero request during
+active gait is pending until the next scheduled half-cycle boundary, even when
+it arrives during double support. The effective moving command, gait phase, and
+moving rewards remain active through the boundary step; zero becomes effective
+and standing rewards begin on the following step. Training telemetry reports
+mode-specific mean reward and planar tracking reward, completed-episode return
+and length, and completed-episode count under the `command/standing_*`,
+`command/moving_*`, and `episode/{standing,moving}_*` names.
 
 The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
 The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU

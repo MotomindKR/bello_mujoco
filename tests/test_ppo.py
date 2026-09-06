@@ -97,6 +97,7 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
         "returned_episode": jnp.asarray([[1.0, 1.0, 0.0, 1.0]]),
         "episode_return": jnp.asarray([[10.0, 20.0, 0.0, 40.0]]),
         "episode_length": jnp.asarray([[5.0, 6.0, 0.0, 8.0]]),
+        "reward/track_lin_vel_xy": jnp.asarray([[0.04, 0.01, 0.02, 0.03]]),
         "gait/touchdown": jnp.asarray([[2.0, 1.0, 0.0, 1.0]]),
         "gait/double_support": jnp.asarray([[1.0, 0.0, 1.0, 0.0]]),
         "gait/joint_force_max_body_weight": jnp.asarray([[0.5, 1.0, 1.5, 2.0]]),
@@ -114,6 +115,8 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
         1.0
     )
     assert conditioned["command/moving_mean_reward"] == pytest.approx(3.0)
+    assert conditioned["command/standing_track_lin_vel_xy"] == pytest.approx(0.03)
+    assert conditioned["command/moving_track_lin_vel_xy"] == pytest.approx(0.02)
     assert conditioned["episode/standing_count"] == pytest.approx(1.0)
     assert conditioned["episode/standing_return"] == pytest.approx(10.0)
     assert conditioned["episode/standing_length"] == pytest.approx(5.0)
@@ -433,6 +436,7 @@ def test_staggered_initial_step_counts_match_actor_and_critic_observations(
     expected_critic = env.critic_observation_batch(runner.env_state)
 
     assert jnp.any(runner.env_state.step_count > 0)
+    assert jnp.all(runner.env_state.command_resample_step_count == 0)
     assert runner.obs_stack[:, 0] == pytest.approx(expected_actor)
     assert runner.obs_stack[:, 1] == pytest.approx(expected_actor)
     assert runner.critic_obs_stack[:, 0] == pytest.approx(expected_critic)

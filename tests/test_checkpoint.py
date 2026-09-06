@@ -121,6 +121,7 @@ class FakeEnv:
             command=jnp.zeros((batch_size, 3), dtype=jnp.float32),
             gait_phase=zeros,
             standing_transition_pending=jnp.zeros((batch_size,), dtype=bool),
+            command_resample_step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
             step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
             episode_return=zeros,
             episode_track_lin_vel_xy=zeros,

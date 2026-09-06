@@ -701,6 +701,7 @@ def mujoco_eval_state(
         standing_transition_pending=jnp.asarray(
             standing_transition_pending, dtype=bool
         ),
+        command_resample_step_count=jnp.asarray(step_count, dtype=jnp.int32),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,

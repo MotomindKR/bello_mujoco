@@ -62,6 +62,7 @@ class BelloState:
     command: jax.Array
     gait_phase: jax.Array
     standing_transition_pending: jax.Array
+    command_resample_step_count: jax.Array
     step_count: jax.Array
     episode_return: jax.Array
     episode_track_lin_vel_xy: jax.Array
@@ -1020,6 +1021,7 @@ class BelloLocomotionEnv:
             command=command,
             gait_phase=gait_phase,
             standing_transition_pending=jnp.asarray(False),
+            command_resample_step_count=jnp.asarray(0, dtype=jnp.int32),
             step_count=jnp.asarray(0, dtype=jnp.int32),
             episode_return=jnp.asarray(0.0, dtype=jnp.float32),
             episode_track_lin_vel_xy=jnp.asarray(0.0, dtype=jnp.float32),
@@ -1397,6 +1399,7 @@ class BelloLocomotionEnv:
             command=state.command,
             gait_phase=next_gait_phase,
             standing_transition_pending=state.standing_transition_pending,
+            command_resample_step_count=state.command_resample_step_count + 1,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
             episode_track_lin_vel_xy=state.episode_track_lin_vel_xy,
@@ -1471,6 +1474,7 @@ class BelloLocomotionEnv:
             command=next_command,
             gait_phase=next_gait_phase,
             standing_transition_pending=standing_transition_pending,
+            command_resample_step_count=reward_state.command_resample_step_count,
             step_count=reward_state.step_count,
             episode_return=episode_return,
             episode_track_lin_vel_xy=episode_track_lin_vel_xy,
@@ -1524,12 +1528,12 @@ class BelloLocomotionEnv:
         rng: jax.Array | None = None,
     ) -> tuple[BelloState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
         batch_size = int(action.shape[0])
-        resample_rng = reset_command_rng = reset_obs_rng = None
+        resample_rng = reset_obs_rng = None
         push_rng = feedback_rng = obs_rng = None
         if rng is not None:
             (
                 resample_rng,
-                reset_command_rng,
+                _,
                 reset_obs_rng,
                 push_rng,
                 obs_rng,
@@ -1594,6 +1598,7 @@ class BelloLocomotionEnv:
             command=state.command,
             gait_phase=next_gait_phase,
             standing_transition_pending=state.standing_transition_pending,
+            command_resample_step_count=state.command_resample_step_count + 1,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
             episode_track_lin_vel_xy=state.episode_track_lin_vel_xy,
@@ -1671,8 +1676,9 @@ class BelloLocomotionEnv:
             next_command,
             next_gait_phase,
             standing_transition_pending,
+            command_resample_step_count,
         ) = self._maybe_resample_batch_command_and_phase(
-            transitioned_state, done, resample_rng
+            transitioned_state, resample_rng
         )
         stepped_state = BelloState(
             data=reward_state.data,
@@ -1686,6 +1692,7 @@ class BelloLocomotionEnv:
             command=next_command,
             gait_phase=next_gait_phase,
             standing_transition_pending=standing_transition_pending,
+            command_resample_step_count=command_resample_step_count,
             step_count=reward_state.step_count,
             episode_return=episode_return,
             episode_track_lin_vel_xy=episode_track_lin_vel_xy,
@@ -1742,13 +1749,11 @@ class BelloLocomotionEnv:
                 jnp.zeros_like(stepped_state.command),
                 stepped_state.command,
             )
-            reset_command = self._reset_batch_command(
-                reset_source_command, batch_size, reset_command_rng
-            )
             reset_state, reset_obs = self.reset_batch(
-                batch_size, command=reset_command, rng=reset_obs_rng
+                batch_size, command=reset_source_command, rng=reset_obs_rng
             )
             reset_state = reset_state.replace(
+                command_resample_step_count=(stepped_state.command_resample_step_count),
                 last_episode_return=stepped_state.last_episode_return,
                 last_episode_track_lin_vel_xy=(
                     stepped_state.last_episode_track_lin_vel_xy
@@ -2358,19 +2363,19 @@ class BelloLocomotionEnv:
     def _maybe_resample_batch_command_and_phase(
         self,
         state: BelloState,
-        done: jax.Array,
         rng: jax.Array | None,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        resample_steps = max(
+            1, int(round(self.command_config.resample_seconds / self.control_timestep))
+        )
         if rng is None or not self.command_config.enabled:
             return (
                 state.command,
                 state.gait_phase,
                 state.standing_transition_pending,
+                jnp.minimum(state.command_resample_step_count, resample_steps),
             )
-        resample_steps = max(
-            1, int(round(self.command_config.resample_seconds / self.control_timestep))
-        )
-        resample = (state.step_count % resample_steps == 0) & ~done
+        resample = state.command_resample_step_count >= resample_steps
         sampled = self._resample_batch_command(
             state.command, int(state.command.shape[0]), rng
         )
@@ -2380,13 +2385,21 @@ class BelloLocomotionEnv:
             state.command,
         )
         requested_command = jnp.where(resample[:, None], sampled, pending_command)
-        return resolve_gait_command_transition(
-            state.command,
-            requested_command,
-            state.gait_phase,
-            state.gait_phase,
-            state.standing_transition_pending,
-            self.command_config,
+        command, gait_phase, standing_transition_pending = (
+            resolve_gait_command_transition(
+                state.command,
+                requested_command,
+                state.gait_phase,
+                state.gait_phase,
+                state.standing_transition_pending,
+                self.command_config,
+            )
+        )
+        return (
+            command,
+            gait_phase,
+            standing_transition_pending,
+            jnp.where(resample, 0, state.command_resample_step_count),
         )
 
     def _resample_batch_command(

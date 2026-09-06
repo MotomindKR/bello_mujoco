@@ -54,9 +54,11 @@ hardware-remote inputs remain semantic forward/right/yaw intent and are mapped
 through that robot-specific axis contract. Twenty-five percent of batched
 environments form an exact-zero standing cohort; moving samples are conditioned
 outside the shared standing deadbands.
-Failure resets preserve command mode so failed standing episodes cannot starve
-standing frames out of later rollouts. Periodic resampling reassigns the cohort
-to train transitions in both directions between standing and moving commands.
+Failure resets preserve the exact command request. Command resampling uses a
+separate control-step clock that survives episode resets, so repeated early
+failures cannot trap an environment in one mode. Each scheduled resample
+reassigns the cohort to train transitions in both directions between standing
+and moving commands.
 
 Moving commands activate a fixed per-leg gait clock: 0.90 Hz for both Bello and
 the rounded Mini setting. The legs are offset by half a cycle and use a 60%

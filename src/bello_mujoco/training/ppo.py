@@ -1085,6 +1085,14 @@ def command_conditioned_metrics(
         ),
         "command/moving_mean_reward": masked_mean_or_zero(reward, moving),
     }
+    track_lin_vel_xy = info.get("reward/track_lin_vel_xy")
+    if track_lin_vel_xy is not None:
+        metrics["command/standing_track_lin_vel_xy"] = masked_mean_or_zero(
+            track_lin_vel_xy, standing
+        )
+        metrics["command/moving_track_lin_vel_xy"] = masked_mean_or_zero(
+            track_lin_vel_xy, moving
+        )
     returned = info.get("returned_episode")
     episode_return = info.get("episode_return")
     episode_length = info.get("episode_length")

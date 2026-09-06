@@ -522,6 +522,7 @@ def test_timeout_auto_reset_preserves_terminal_diagnostics(
     assert bool(info["done/timeout"][0])
     assert not bool(info["done/terminal"][0])
     assert int(next_state.step_count[0]) == 0
+    assert int(next_state.command_resample_step_count[0]) == 1
     assert int(info["episode_length"][0]) == 1
 
 
@@ -899,6 +900,46 @@ def test_batch_command_mode_cohort_survives_resampling(
     assert jnp.all(command_is_moving(next_state.command[~standing], command_config))
 
 
+def test_command_resampling_clock_survives_episode_resets(
+    bello_asset: PreparedAsset,
+) -> None:
+    command_config = CommandConfig(
+        standing_probability=0.0,
+        resample_seconds=0.04,
+        standing_transitions_enabled=True,
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        bello_asset,
+        batch_size=1,
+        env_config=BelloEnvConfig(max_episode_steps=1),
+        command_config=command_config,
+    )
+    standing = jnp.zeros((1, 3), dtype=jnp.float32)
+    state, _ = env.reset_batch(1, command=standing)
+
+    first_state, _, _, first_done, _ = env.step_batch(
+        state,
+        jnp.zeros((1, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(30),
+    )
+
+    assert bool(first_done[0])
+    assert int(first_state.step_count[0]) == 0
+    assert int(first_state.command_resample_step_count[0]) == 1
+    assert command_is_standing(first_state.command[0], command_config)
+
+    second_state, _, _, second_done, _ = env.step_batch(
+        first_state,
+        jnp.zeros((1, env.action_size), dtype=jnp.float32),
+        rng=jax.random.PRNGKey(31),
+    )
+
+    assert bool(second_done[0])
+    assert int(second_state.step_count[0]) == 0
+    assert int(second_state.command_resample_step_count[0]) == 0
+    assert command_is_moving(second_state.command[0], command_config)
+
+
 def test_training_reset_samples_moving_commands_across_the_gait_cycle(
     bello_asset: PreparedAsset,
 ) -> None:
@@ -1145,7 +1186,9 @@ def test_episode_reset_honors_a_pending_standing_request(
     assert jnp.all(done)
     assert command_is_standing(next_state.command[0], command_config)
     assert command_is_moving(next_state.command[1], command_config)
+    assert next_state.command[1] == pytest.approx(moving[1])
     assert not jnp.any(next_state.standing_transition_pending)
+    assert jnp.all(next_state.command_resample_step_count == 1)
 
 
 def test_random_push_overwrites_root_xy_velocity_on_interval(
