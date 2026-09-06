@@ -24,7 +24,7 @@ twist2
 the same production PPO, command, randomization, and observation recipe. The
 Mini profile changes its asset, rounded height thresholds, exact-pose reset,
 gait shaping, and output names, adds moving velocity-error shaping, and raises
-the healthy-survival weight from `1.5` to `2.25` so the added dense penalties do
+the healthy-survival weight from `1.5` to `2.5` so the added dense penalties do
 not erase the early survival margin. Force and impact terms scale automatically
 by robot weight or actuator limit. The selected robot contract supplies its
 planar tracking frame and crouched joint defaults. Their periodic and final
