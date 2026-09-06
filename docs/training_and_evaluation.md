@@ -23,11 +23,13 @@ twist2
 `bello_mini_locomotion` select their respective robot contracts after composing
 the same production PPO, command, randomization, and observation recipe. The
 Mini profile changes its asset, rounded height thresholds, exact-pose reset,
-gait shaping, and output names, and adds moving velocity-error shaping. Force and
-impact terms scale automatically by robot weight or actuator limit. The selected
-robot contract supplies its planar tracking frame and crouched joint defaults. Their
-periodic and final evaluation videos command 0.5 m/s forward motion. `motion` is bounded
-BeyondMimic tracking; the TWIST experiments are documented separately. The
+gait shaping, and output names, adds moving velocity-error shaping, and raises
+the healthy-survival weight from `1.5` to `2.0` so the added dense penalties do
+not erase the early survival margin. Force and impact terms scale automatically
+by robot weight or actuator limit. The selected robot contract supplies its
+planar tracking frame and crouched joint defaults. Their periodic and final
+evaluation videos command 0.5 m/s forward motion. `motion` is bounded BeyondMimic
+tracking; the TWIST experiments are documented separately. The
 shared `configs/train/locomotion.yaml` layer is internal and is not a public
 experiment name.
 
