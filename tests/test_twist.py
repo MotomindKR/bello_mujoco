@@ -559,6 +559,127 @@ def test_gmr_profile_uses_current_pinned_offline_solver_contract(
     )
 
 
+def test_bello_mini_gmr_live_upper_body_profile_is_position_led() -> None:
+    root = Path(__file__).resolve().parents[1]
+    profile = motion_task_definition("bello_mini").gmr
+    document = json.loads(profile.config_path(root / "deps/GMR").read_text())
+
+    assert profile.task_profile == document["default_task_profile"] == "universal"
+    assert document["task_profiles"] == {
+        "universal": {
+            "ik_match_table2": {
+                "left_wrist_roll_link": {
+                    "position_cost": 30,
+                    "orientation_cost": 10,
+                },
+                "right_wrist_roll_link": {
+                    "position_cost": 30,
+                    "orientation_cost": 10,
+                },
+            }
+        },
+        "live_upper_body": {
+            "ik_match_table1": {
+                "left_upper_arm_link": {"orientation_cost": 0},
+                "right_upper_arm_link": {"orientation_cost": 0},
+            },
+            "ik_match_table2": {
+                "left_upper_arm_link": {
+                    "position_cost": 10,
+                    "orientation_cost": 0,
+                },
+                "left_elbow_link": {
+                    "position_cost": 30,
+                    "orientation_cost": 0,
+                },
+                "left_wrist_roll_link": {
+                    "position_cost": 50,
+                    "orientation_cost": 0,
+                },
+                "right_upper_arm_link": {
+                    "position_cost": 10,
+                    "orientation_cost": 0,
+                },
+                "right_elbow_link": {
+                    "position_cost": 30,
+                    "orientation_cost": 0,
+                },
+                "right_wrist_roll_link": {
+                    "position_cost": 50,
+                    "orientation_cost": 0,
+                },
+            },
+            "posture_costs": {
+                "left_shoulder_yaw_joint": 10,
+                "left_wrist_yaw_joint": 10,
+                "left_wrist_roll_joint": 10,
+                "right_shoulder_yaw_joint": 10,
+                "right_wrist_yaw_joint": 10,
+                "right_wrist_roll_joint": 10,
+            },
+        },
+    }
+
+
+def test_bello_mini_live_upper_body_profile_loads_generated_model(
+    bello_mini_asset,
+) -> None:
+    from bello_mujoco.hardware.smplx_retarget import (
+        _configure_pinned_gmr_profile,
+        import_pinned_gmr_retargeter,
+    )
+
+    root = Path(__file__).resolve().parents[1]
+    profile = motion_task_definition("bello_mini").gmr
+    _configure_pinned_gmr_profile(profile, root / "deps/GMR")
+    retargeter_type = import_pinned_gmr_retargeter()
+    retargeter = retargeter_type(
+        src_human=profile.source_human,
+        tgt_robot=profile.target_robot,
+        actual_human_height=1.75,
+        solver="daqp",
+        damping=5.0e-1,
+        verbose=False,
+        use_velocity_limit=None,
+        robot_xml_path=bello_mini_asset.mjcf_path,
+        task_profile="live_upper_body",
+    )
+
+    assert retargeter.task_profile == "live_upper_body"
+    for side in ("left", "right"):
+        assert f"{side}_shoulder" not in retargeter.human_body_to_task1
+        np.testing.assert_array_equal(
+            retargeter.human_body_to_task2[f"{side}_shoulder"].cost,
+            [10, 10, 10, 0, 0, 0],
+        )
+        np.testing.assert_array_equal(
+            retargeter.human_body_to_task2[f"{side}_elbow"].cost,
+            [30, 30, 30, 0, 0, 0],
+        )
+        np.testing.assert_array_equal(
+            retargeter.human_body_to_task2[f"{side}_wrist"].cost,
+            [50, 50, 50, 0, 0, 0],
+        )
+    np.testing.assert_array_equal(
+        retargeter.profile_posture_task.target_q,
+        retargeter.model.qpos0,
+    )
+    expected_posture_cost = np.zeros(retargeter.model.nv)
+    for joint_name in (
+        "left_shoulder_yaw_joint",
+        "left_wrist_yaw_joint",
+        "left_wrist_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_wrist_yaw_joint",
+        "right_wrist_roll_joint",
+    ):
+        expected_posture_cost[retargeter.model.joint(joint_name).dofadr[0]] = 10
+    np.testing.assert_array_equal(
+        retargeter.profile_posture_task.cost,
+        expected_posture_cost,
+    )
+
+
 def test_bello_mini_gmr_follows_unitree_g1_task_schedule() -> None:
     root = Path(__file__).resolve().parents[1] / "deps/GMR"
     mini = json.loads(
@@ -713,6 +834,8 @@ def test_bello_mini_gmr_profile_references_generated_model(
         *profile.standing_default_joint_names,
         *(leg.target_knee_joint_name for leg in profile.knee_pole.legs),
     }
+    for task_profile in document["task_profiles"].values():
+        referenced_joint_names.update(task_profile.get("posture_costs", ()))
     assert set(profile.standing_default_joint_names).issubset(actuator_by_joint)
     for joint_name in referenced_joint_names:
         assert model.joint(joint_name).id >= 0

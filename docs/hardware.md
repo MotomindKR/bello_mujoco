@@ -25,9 +25,8 @@ commit. The checkpoint does not record daemon or firmware revisions.
 
 Physical locomotion deployment supports `bello` and `bello_mini`. The runner
 reconstructs Mini checkpoints against Mini's own reviewed 28-motor description;
-it never borrows Bello's topology. Mini's arm topology does not yet implement
-the live RTMW/GMR follow contract, so Mini locomotion must set
-`upper_body_tracking_enabled=false` and hold the checkpoint's nominal arm pose.
+it never borrows Bello's topology or GMR profile. Live RTMW/GMR follows the 12
+held arm coordinates on Bello or all 14 held arm coordinates on Mini.
 
 The runner requires the pinned daemon and Python binding's synchronous hardware
 states API. Each policy iteration requests one complete frame containing the
@@ -184,23 +183,24 @@ rather than JSONL row number alone, when estimating command/response delay.
 Locomotion checkpoints must use a registered hardware morphology, active waist
 yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy. The
 joystick command path remains unchanged: RemoteCommandService supplies forward,
-lateral, and yaw intent to the locomotion actor. Bello's actor remains
-authoritative over its 13 waist and leg coordinates. RTMW-SMPLX-Teleop's
-`smplx52_landmark_fit` output passes through the pinned GMR solver and supplies
-only the other 12 coordinates: the bilateral shoulder, elbow, and wrist joints.
-The live pose does not enter the locomotion actor observation and cannot replace
-joystick intent or any policy coordinate. Fast-SAM is not a supported locomotion
-pose source; it remains specific to TWIST2.
+lateral, and yaw intent to the locomotion actor. The actor remains authoritative
+over Bello's 13 or Mini's 14 waist and leg coordinates. RTMW-SMPLX-Teleop's
+`smplx52_landmark_fit` output passes through the selected robot's pinned GMR
+profile and supplies only the held arm coordinates: 12 on Bello or all 14 on
+Mini. The live pose does not enter the locomotion actor observation and cannot
+replace joystick intent or any policy coordinate. Fast-SAM is not a supported
+locomotion pose source; it remains specific to TWIST2.
 
-Bello Mini uses 14 policy coordinates, including waist roll, and 14 held arm
-coordinates. Its seven-DoF arms do not match Bello's current GMR output, so Mini
-requires `upper_body_tracking_enabled=false`. Hardwared first applies the
-canonical URDF rotation from the upside-down physical `imu_sensor_link` into
-the logical `imu_link`; the runner then rotates that logical sample into the
-checkpoint's pelvis observation frame. The sensor origin is offset from the
-pelvis origin, so existing checkpoints retain an unmodeled lever-arm
-acceleration residual. This remains a known limitation of the current Mini
-checkpoint rather than a deployment gate.
+Bello Mini's live profile maps its complete seven-DoF arms and anchors the
+position-only solver's weak or unobservable shoulder-yaw, wrist-yaw, and
+wrist-roll coordinates to the nominal posture. Mini has no elbow-yaw joints, so
+the Bello-only elbow-yaw offsets and terminal keyboard jog are unavailable.
+Hardwared first applies the canonical URDF rotation from the upside-down
+physical `imu_sensor_link` into the logical `imu_link`; the runner then rotates
+that logical sample into the checkpoint's pelvis observation frame. The sensor
+origin is offset from the pelvis origin, so existing checkpoints retain an
+unmodeled lever-arm acceleration residual. This remains a known limitation of
+the current Mini checkpoint rather than a deployment gate.
 
 Run the pinned `deps/RTMW-SMPLX-Teleop` producer with its gRPC service enabled.
 Preflight requires that submodule to be clean and exactly at the reviewed
@@ -279,7 +279,7 @@ frame; this preserves its configured joint-velocity meaning when camera delivery
 is slower than the model's 5 ms timestep. Live upper-body changes are limited to
 `3*pi` rad/s at the 50 Hz control rate, including the first pose and source
 recovery, and outgoing targets remain inside the model actuator range.
-Locomotion adds the independently configurable
+On Bello, locomotion adds the independently configurable
 `left_elbow_yaw_offset_radians` and `right_elbow_yaw_offset_radians` to their
 respective GMR targets, then clips the adjusted values to the corresponding
 target ranges; both offsets default to zero. After `RUN`, the terminal also
@@ -513,10 +513,9 @@ required rank-two rotation observability and residual, reference joint speed
 and hard upper-body joint limits with a nonzero live solver-boundary margin,
 and a fixed upper-body target slew bound. Invalid terminal-joint rotations use
 the nearest valid ancestor only outside the required upper-body chain. These
-checks affect only the 12 arm targets; the joystick-conditioned locomotion
-policy continues controlling the waist and legs. A temporarily unavailable or
-stale reference
-blends the arms back to their checkpoint-nominal pose over
+checks affect only the 12 Bello or 14 Mini arm targets; the joystick-conditioned
+locomotion policy continues controlling the waist and legs. A temporarily
+unavailable or stale reference blends the arms back to their checkpoint-nominal pose over
 `upper_body_follow.connection_transition_duration_seconds`; a recovered
 reference uses the same blend before resuming direct tracking. Locomotion
 continues throughout either transition, while a terminal source failure remains

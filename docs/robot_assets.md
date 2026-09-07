@@ -128,6 +128,12 @@ contract, and training validates it against the robot's motion profile.
   mapping: 20 initial settle passes, 14 passes of five-tap trajectory
   smoothing, protected wrist-roll, ankle, and torso poses, sole-ground
   clearance, collision avoidance, and versioned universal quality thresholds.
+  Its opt-in `live_upper_body` profile keeps observable shoulder positions,
+  raises elbow and terminal-wrist position costs to `30` and `50`, disables
+  unreliable live arm-orientation targets, and anchors shoulder yaw, wrist yaw,
+  and wrist roll to the nominal posture. The locomotion hardware runner uses
+  that profile to target all 14 held Mini arm coordinates without giving GMR
+  authority over the 14 policy-controlled waist and leg coordinates.
   GMR's native velocity limit is disabled because the stock solver's tendon
   mapping is Bello-specific; the repository wrapper derives Mini's logical
   joint order from the robot contract and the output quality checks still bound

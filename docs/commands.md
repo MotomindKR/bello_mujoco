@@ -365,7 +365,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
 | `allow_provisional_hardware` | boolean; `false` | locomotion | Explicit acknowledgement for a robot contract marked provisional. It is rejected for the reviewed Bello and Bello Mini contracts. |
-| `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the checkpoint's arm joints at their nominal targets. Mini requires `false`. |
+| `upper_body_tracking_enabled` | boolean; `true` | locomotion | Live RTMW/GMR targets every held arm coordinate on Bello or Bello Mini. `false` skips RTMW, SMPL-X, and GMR and actively holds those joints at their nominal targets. |
 | `rtmw_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion | Pinned RTMW-SMPLX-Teleop `SkeletonService` endpoint. |
 | `rtmw_tls_root_certificate_path` | path or `null`; `null` | locomotion | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `rtmw_tls_server_name_override` | string or `null`; `null` | locomotion | TLS certificate name override. It is rejected without a CA certificate. |
@@ -398,8 +398,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `fastsam_align_initial_floor` | boolean; `true` | twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
 | `smplx_neutral_model_path` | path or `null`; `null` | locomotion, twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
 | `smplx_human_height_m` | positive float; `1.66` | twist2 | Human height supplied to the pinned GMR scale table. |
-| `left_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Offset added to the left GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. |
-| `right_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Offset added to the right GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. |
+| `left_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Bello-only offset added to the left GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. Mini rejects nonzero elbow-yaw offsets. |
+| `right_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Bello-only offset added to the right GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. Mini rejects nonzero elbow-yaw offsets. |
 
 Task-specific fields must not be explicitly supplied to an inapplicable task,
 even if the supplied value equals the documented default.
@@ -411,10 +411,9 @@ visualizer-hosted physical controller uses the same stick mapping as
 automatically, and requires a neutral controller before accepting nonzero
 intent again. The visualizer service must produce a fresh sample before the
 hardware daemon is contacted. The joystick commands Bello's 13-coordinate or
-Mini's 14-coordinate locomotion policy. For Bello, the RTMW gRPC stream and GMR
-can target the other 12 arm coordinates. Mini holds its 14 arm coordinates at
-the checkpoint nominal pose and requires `upper_body_tracking_enabled=false`.
-Hardware locomotion has no native-controller or fixed-command mode.
+Mini's 14-coordinate locomotion policy. The selected robot's RTMW/GMR profile
+targets the other 12 Bello or 14 Mini arm coordinates. Hardware locomotion has
+no native-controller or fixed-command mode.
 
 With `upper_body_tracking_enabled=false`, explicit RTMW and SMPL-X/GMR
 overrides must not be supplied. The runner uses the checkpoint's nominal

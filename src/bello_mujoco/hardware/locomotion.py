@@ -73,18 +73,39 @@ _ELBOW_YAW_JOG_DELTAS = {
     "d": (0.0, -ELBOW_YAW_JOG_STEP_RADIANS),
 }
 
-_UPPER_BODY_FOLLOW_JOINT_NAMES = frozenset(
-    f"{side}_{joint}_joint"
-    for side in ("left", "right")
-    for joint in (
-        "shoulder_pitch",
-        "shoulder_roll",
-        "shoulder_yaw",
-        "elbow_pitch",
-        "elbow_yaw",
-        "wrist_pitch",
-    )
-)
+_ELBOW_YAW_JOINT_NAMES = tuple(f"{side}_elbow_yaw_joint" for side in ("left", "right"))
+_UPPER_BODY_FOLLOW_JOINT_NAMES_BY_ASSET = {
+    "bello": frozenset(
+        f"{side}_{joint}_joint"
+        for side in ("left", "right")
+        for joint in (
+            "shoulder_pitch",
+            "shoulder_roll",
+            "shoulder_yaw",
+            "elbow_pitch",
+            "elbow_yaw",
+            "wrist_pitch",
+        )
+    ),
+    "bello_mini": frozenset(
+        f"{side}_{joint}_joint"
+        for side in ("left", "right")
+        for joint in (
+            "shoulder_pitch",
+            "shoulder_roll",
+            "shoulder_yaw",
+            "elbow_pitch",
+            "wrist_yaw",
+            "wrist_pitch",
+            "wrist_roll",
+        )
+    ),
+}
+
+
+def _upper_body_follow_supported(asset: str, joint_names: frozenset[str]) -> bool:
+    expected = _UPPER_BODY_FOLLOW_JOINT_NAMES_BY_ASSET.get(asset)
+    return expected is not None and joint_names == expected
 
 
 def _hardware_imu_to_policy_rotation(env: BelloLocomotionEnv) -> np.ndarray:
@@ -346,14 +367,17 @@ class HardwarePolicyAdapter:
             env.model.actuator_joint_names[int(actuator_index)]: upper_index
             for upper_index, actuator_index in enumerate(self.upper_body_indices)
         }
-        elbow_yaw_names = tuple(f"{side}_elbow_yaw_joint" for side in ("left", "right"))
-        self.upper_body_follow_supported = (
-            frozenset(upper_body_index_by_name) == _UPPER_BODY_FOLLOW_JOINT_NAMES
+        self.upper_body_follow_supported = _upper_body_follow_supported(
+            env.model.robot.asset,
+            frozenset(upper_body_index_by_name),
         )
         self.upper_body_elbow_yaw_indices = np.asarray(
             (
-                [upper_body_index_by_name[name] for name in elbow_yaw_names]
+                [upper_body_index_by_name[name] for name in _ELBOW_YAW_JOINT_NAMES]
                 if self.upper_body_follow_supported
+                and all(
+                    name in upper_body_index_by_name for name in _ELBOW_YAW_JOINT_NAMES
+                )
                 else []
             ),
             dtype=np.int32,
@@ -438,6 +462,10 @@ class HardwarePolicyAdapter:
         return self.env.control_timestep
 
     @property
+    def elbow_yaw_jog_supported(self) -> bool:
+        return self.upper_body_elbow_yaw_indices.shape == (2,)
+
+    @property
     def nominal_physical_target(self) -> np.ndarray:
         target = np.asarray(
             jax.device_get(
@@ -479,10 +507,10 @@ class HardwarePolicyAdapter:
     ) -> tuple[float, float]:
         """Adjust the runtime elbow-yaw offsets and return their new values."""
 
-        if not self.upper_body_follow_supported:
+        if not self.elbow_yaw_jog_supported:
             raise ValueError(
-                "upper-body pose following and elbow-yaw jogging are not supported "
-                f"for robot asset {self.env.model.robot.asset!r}"
+                "elbow-yaw jogging is not supported for robot asset "
+                f"{self.env.model.robot.asset!r}"
             )
 
         deltas = np.asarray((left_delta_radians, right_delta_radians), dtype=np.float64)
@@ -768,7 +796,7 @@ class HardwarePolicyAdapter:
         desired = np.asarray(reference.qpos, dtype=np.float64)[
             self.upper_body_qpos_indices
         ].copy()
-        if live:
+        if live and self.elbow_yaw_jog_supported:
             desired[self.upper_body_elbow_yaw_indices] += np.asarray(
                 (
                     self.upper_body_follow.left_elbow_yaw_offset_radians,
@@ -940,7 +968,13 @@ def validate_hardware_config(
             for actuator in definition.actuators
             if actuator.mode == "hold"
         )
-        follow_supported = hold_names == _UPPER_BODY_FOLLOW_JOINT_NAMES
+        follow_supported = _upper_body_follow_supported(
+            definition.asset,
+            hold_names,
+        )
+        elbow_yaw_supported = follow_supported and frozenset(
+            _ELBOW_YAW_JOINT_NAMES
+        ).issubset(hold_names)
         if definition.physical_hardware_ready and config.allow_provisional_hardware:
             raise ValueError(
                 "allow_provisional_hardware is only valid for a provisional robot"
@@ -960,7 +994,7 @@ def validate_hardware_config(
                 "upper-body pose following is not supported for robot asset "
                 f"{definition.asset!r}; set upper_body_tracking_enabled=false"
             )
-        if not follow_supported and (
+        if not elbow_yaw_supported and (
             config.upper_body_follow.left_elbow_yaw_offset_radians != 0.0
             or config.upper_body_follow.right_elbow_yaw_offset_radians != 0.0
         ):
@@ -1375,7 +1409,11 @@ def control_physical_robot(
         jog_input = TerminalElbowYawJogInput(
             enabled=(
                 False
-                if operator_input is not None or not config.upper_body_tracking_enabled
+                if (
+                    operator_input is not None
+                    or not config.upper_body_tracking_enabled
+                    or not adapter.elbow_yaw_jog_supported
+                )
                 else None
             )
         )

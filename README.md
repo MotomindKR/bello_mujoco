@@ -4,8 +4,9 @@ Simulation, reinforcement learning, evaluation, hardware emulation, and robot
 deployment for the Bello humanoid. The repository supports locomotion and
 motion-tracking policies built from the robot descriptions pinned through
 `deps/bello-stack`. Registered static assets are `bello` and `bello_mini`;
-both have maintained locomotion-training profiles. Bello Mini also has a
-calibrated offline SMPL-X GMR and motion-import profile for repository tooling.
+both have maintained locomotion-training profiles. Bello Mini also has
+calibrated offline and live-upper-body SMPL-X GMR profiles for repository
+tooling and locomotion deployment.
 The reviewed Mini hardware description supports both the vCAN emulator and
 physical locomotion deployment; maintained Mini motion/TWIST training remains
 task-tuning-gated.

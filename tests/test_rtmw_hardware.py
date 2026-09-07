@@ -261,9 +261,17 @@ def test_pinned_rtmw_contract_and_protobuf_match_consumer(monkeypatch) -> None:
     assert hasattr(skeleton_pb2_grpc, "SkeletonServiceStub")
 
 
+@pytest.mark.parametrize(
+    "asset",
+    (
+        pytest.param("bello", id="bello"),
+        pytest.param("bello_mini", id="bello-mini"),
+    ),
+)
 def test_rtmw_reference_source_uses_selected_robot_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    asset: str,
 ) -> None:
     source_config = SimpleNamespace(
         endpoint="127.0.0.1:50055",
@@ -335,7 +343,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     monkeypatch.setattr(rtmw, "LiveGmrReferenceSource", FakeSource)
 
     validation = object()
-    env = SimpleNamespace(model=SimpleNamespace(robot=SimpleNamespace(asset="bello")))
+    env = SimpleNamespace(model=SimpleNamespace(robot=SimpleNamespace(asset=asset)))
     adapter = SimpleNamespace(
         env=env,
         validate_upper_body_reference=validation,
@@ -344,8 +352,11 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     with rtmw.rtmw_locomotion_reference_source(adapter, hardware_config) as result:
         assert isinstance(result, FakeSource)
 
-    assert calls["stream"] == (source_config, GMR_SOURCE_BODY_NAMES)
-    assert calls["identity_asset"] == "bello"
+    assert calls["stream"] == (
+        source_config,
+        motion_task_definition(asset).gmr.source_body_names,
+    )
+    assert calls["identity_asset"] == asset
     retargeter_call = calls["retargeter"]
     assert isinstance(retargeter_call, tuple)
     assert retargeter_call[0] is env

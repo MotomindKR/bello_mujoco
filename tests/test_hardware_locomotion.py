@@ -357,6 +357,7 @@ def test_hardware_checkpoint_accepts_bello_mini_robot_layout(
     assert mini_hardware_env.model.mj_model.nu == 28
     assert len(mini_hardware_env.model.hold_ctrl_indices) == 14
     validate_hardware_checkpoint(mini_hardware_env, metadata)
+    validate_hardware_config(pose_hardware_config(), metadata)
     validate_hardware_config(
         HardwareLocomotionConfig(upper_body_tracking_enabled=False),
         metadata,
@@ -364,7 +365,7 @@ def test_hardware_checkpoint_accepts_bello_mini_robot_layout(
     validate_hardware_config(
         HardwareLocomotionConfig(
             arm=True,
-            upper_body_tracking_enabled=False,
+            smplx_neutral_model_path=_TEST_SMPLX_MODEL,
         ),
         metadata,
     )
@@ -377,11 +378,6 @@ def test_hardware_checkpoint_accepts_bello_mini_robot_layout(
             ),
             metadata,
         )
-    with pytest.raises(
-        ValueError,
-        match="upper_body_tracking_enabled=false",
-    ):
-        validate_hardware_config(pose_hardware_config(), metadata)
     with pytest.raises(ValueError, match="elbow-yaw offsets"):
         validate_hardware_config(
             HardwareLocomotionConfig(
@@ -523,7 +519,7 @@ def make_hardware_adapter(
     return HardwarePolicyAdapter(hardware_env, policy, metadata, normalization)
 
 
-def test_bello_mini_adapter_runs_with_fixed_upper_body(
+def test_bello_mini_adapter_supports_live_upper_body(
     mini_hardware_env: BelloLocomotionEnv,
 ) -> None:
     config = compose_mini_hardware_training_config()
@@ -555,12 +551,56 @@ def test_bello_mini_adapter_runs_with_fixed_upper_body(
         np.asarray(((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
         atol=1.0e-8,
     )
-    assert not adapter.upper_body_follow_supported
+    assert adapter.upper_body_follow_supported
+    assert not adapter.elbow_yaw_jog_supported
     assert adapter.upper_body_elbow_yaw_indices.size == 0
     assert result.action.shape == (14,)
     assert result.physical_target.shape == (28,)
     assert np.all(np.isfinite(result.physical_target))
     assert not result.upper_body_following
+
+    upper = adapter.upper_body_indices
+    default_upper = adapter.default_joint_target[upper]
+    low = mini_hardware_env.model.joint_target_low[upper]
+    high = mini_hardware_env.model.joint_target_high[upper]
+    desired_upper = np.clip(
+        default_upper + np.linspace(-0.07, 0.07, len(upper)),
+        low + 0.01,
+        high - 0.01,
+    )
+    live = hardware_reference(adapter, desired_upper)
+    live_target = adapter._reference_upper_body_target(live, live=True)
+    live_step = adapter.step(frame, np.zeros(3, dtype=np.float32), live)
+    logical_target = adapter.inverse_transform @ live_step.physical_target
+    policy_only = np.asarray(
+        mini_hardware_env.action_to_ctrl(
+            live_step.action,
+            np.zeros(mini_hardware_env.model.mj_model.nu),
+        ),
+        dtype=np.float64,
+    )
+    policy_logical_target = adapter.inverse_transform @ policy_only
+    transition_step = (
+        adapter.control_timestep
+        / adapter.upper_body_follow.connection_transition_duration_seconds
+    )
+    expected_upper = default_upper + transition_step * (desired_upper - default_upper)
+
+    assert live_target == pytest.approx(desired_upper)
+    assert logical_target[adapter.policy_indices] == pytest.approx(
+        policy_logical_target[adapter.policy_indices], abs=1.0e-6
+    )
+    assert logical_target[upper] == pytest.approx(expected_upper, abs=1.0e-6)
+    assert live_step.upper_body_following
+    for side in ("left", "right"):
+        for joint in ("wrist_yaw", "wrist_pitch", "wrist_roll"):
+            actuator_index = mini_hardware_env.model.actuator_joint_names.index(
+                f"{side}_{joint}_joint"
+            )
+            upper_index = int(np.flatnonzero(upper == actuator_index)[0])
+            assert live_target[upper_index] == pytest.approx(desired_upper[upper_index])
+    with pytest.raises(ValueError, match="elbow-yaw jogging"):
+        adapter.jog_elbow_yaw_offsets(left_delta_radians=0.1)
 
 
 def test_bello_mini_adapter_rotates_physical_imu_into_policy_pelvis(
@@ -1394,6 +1434,7 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
         physical_coordinate_names=("left", "right"),
         nominal_physical_target=nominal,
         control_timestep=0.02,
+        elbow_yaw_jog_supported=False,
         reset=lambda: None,
     )
     control_physical_robot(
