@@ -25,6 +25,7 @@ from bello_mujoco.hardware.locomotion import (
     HardwarePolicyAdapter,
     TerminalElbowYawJogInput,
     UpperBodyFollowConfig,
+    _UpperBodyReferenceQualifier,
     command_minimum_moving_speeds,
     command_ranges,
     control_physical_robot,
@@ -99,6 +100,23 @@ class FakeReferences:
     def latest(self):
         self.sequence += 1
         return SimpleNamespace(sequence=self.sequence, age_ms=lambda: 0.0)
+
+
+def test_live_upper_body_reference_qualification_is_deferred_and_resettable() -> None:
+    qualifier = _UpperBodyReferenceQualifier(required_frames=3)
+    references = [SimpleNamespace(sequence=sequence) for sequence in (1, 2, 3)]
+
+    assert qualifier.accept(references[0]) is None
+    assert qualifier.accept(references[0]) is None
+    assert qualifier.accept(references[1]) is None
+    assert qualifier.accept(references[2]) is references[2]
+    assert qualifier.accept(references[2]) is references[2]
+
+    qualifier.reset()
+    assert qualifier.accept(SimpleNamespace(sequence=8)) is None
+    assert qualifier.accept(SimpleNamespace(sequence=7)) is None
+    assert qualifier.qualified_frames == 0
+    assert not qualifier.active
 
 
 def remote_input(
@@ -1443,8 +1461,9 @@ def test_remote_abort_around_hold_never_acquires_control(
             action=np.zeros(13),
             effective_command=np.zeros(3),
             tilt_radians=0.0,
-            reference_sequence=reference.sequence,
-            reference_age_ms=reference.age_ms(),
+            reference_sequence=None if reference is None else reference.sequence,
+            reference_age_ms=None if reference is None else reference.age_ms(),
+            upper_body_following=reference is not None,
         ),
     )
     metadata = SimpleNamespace(
@@ -1467,8 +1486,6 @@ def test_remote_abort_around_hold_never_acquires_control(
     inputs = iter(
         (
             remote_input(),
-            remote_input(),
-            remote_input(),
             remote_input(abort_active=abort_during_prompt),
             remote_input(abort_active=True),
         )
@@ -1481,11 +1498,7 @@ def test_remote_abort_around_hold_never_acquires_control(
 
     run_hardware_locomotion(
         Path("unused"),
-        pose_hardware_config(
-            arm=True,
-            allow_git_commit_mismatch=True,
-            rtmw_reference_qualification_frames=1,
-        ),
+        pose_hardware_config(arm=True, allow_git_commit_mismatch=True),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: remote,
         reference_source_factory=lambda *_args: FakeReferences(),
@@ -1810,25 +1823,30 @@ def test_read_only_preflight_never_acquires_control(
         coordinates,
         (2.014, 2.014),
     )
+    precompile_calls = []
+    standing_calls = []
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
         nominal_physical_target=np.zeros(2),
         env=SimpleNamespace(action_size=13),
         control_timestep=0.02,
-        precompile=lambda _reference: None,
-        set_upper_body_standing_reference=lambda _reference: None,
+        precompile=lambda reference: precompile_calls.append(reference),
+        set_upper_body_standing_reference=lambda reference: standing_calls.append(
+            reference
+        ),
         validate_upper_body_reference=lambda _reference: None,
     )
     preview_calls = []
 
     def preview(frame, command, reference):
-        preview_calls.append(("step", frame, command.copy()))
+        preview_calls.append(("step", frame, command.copy(), reference))
         return SimpleNamespace(
             action=np.asarray((0.25, -0.5)),
             effective_command=command.copy(),
             tilt_radians=0.0,
-            reference_sequence=reference.sequence,
-            reference_age_ms=reference.age_ms(),
+            reference_sequence=None,
+            reference_age_ms=None,
+            upper_body_following=False,
         )
 
     adapter.step = preview
@@ -1847,12 +1865,13 @@ def test_read_only_preflight_never_acquires_control(
         load_policy,
     )
 
+    references = FakeReferences()
+    references.latest = lambda: pytest.fail(
+        "startup must not require a live upper-body pose"
+    )
     run_hardware_locomotion(
         Path("unused"),
-        pose_hardware_config(
-            allow_git_commit_mismatch=True,
-            rtmw_reference_qualification_frames=1,
-        ),
+        pose_hardware_config(allow_git_commit_mismatch=True),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: SimpleNamespace(
             wait_until_ready=lambda _timeout: remote_input(
@@ -1867,7 +1886,7 @@ def test_read_only_preflight_never_acquires_control(
             ),
             close=lambda: None,
         ),
-        reference_source_factory=lambda *_args: FakeReferences(),
+        reference_source_factory=lambda *_args: references,
     )
 
     output = capsys.readouterr().out
@@ -1881,10 +1900,13 @@ def test_read_only_preflight_never_acquires_control(
         ),
     ]
     assert not hardware.control_requests
+    assert len(standing_calls) == 1
+    assert precompile_calls == [None]
     assert len(preview_calls) == 2
     assert preview_calls[0][0] == "step"
     assert preview_calls[0][1].positions == pytest.approx((2.014, 2.014))
     assert preview_calls[0][2] == pytest.approx(np.zeros(3))
+    assert preview_calls[0][3] is None
     assert preview_calls[1] == ("reset",)
     assert "'initial_pose_error_max': 2.014" in output
     assert "'preview_action_abs_max': 0.5" in output

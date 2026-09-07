@@ -56,14 +56,14 @@ safety fix is not inherited automatically by a historical checkpoint.
 4. reconstructs observation, action, and physical-coordinate layouts;
 5. compiles policy inference;
 6. requires a fresh sample from the visualizer's remote-command service and,
-   when upper-body tracking is enabled, five qualified live RTMW/GMR poses for
-   locomotion, then connects to the hardware daemon without acquiring a control
-   lease;
+   when upper-body tracking is enabled, validates the RTMW service contract and
+   prepares the offline GMR standing pose, then connects to the hardware daemon
+   without acquiring a control lease; no tracked person is required yet;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite complete state frames;
-8. evaluates a lower-body-policy preview with either live upper-body pose or
-   checkpoint-nominal arms for locomotion, or a standing-policy preview for
-   motion, and reports the resolved configuration.
+8. evaluates a lower-body-policy preview with GMR-standing or checkpoint-nominal
+   arms for locomotion, or a standing-policy preview for motion, and reports the
+   resolved configuration.
    Motion-reference alignment and termination checks begin only when
    transitioning from the active standing policy into motion tracking.
 
@@ -248,16 +248,18 @@ uv run bello-run-hardware \
   upper_body_tracking_enabled=false
 ```
 
-With tracking enabled, preflight requires five distinct fresh schema-,
-confidence-, derived-rotation-, latency-, GMR-, and
-upper-body-limit-qualified poses by default before contacting
-`bello-hardwared`. The consumer accepts only RTMW schema 1,
+With tracking enabled, startup requires a compatible running RTMW service but
+does not require a tracked person or live pose before contacting
+`bello-hardwared`. The ramp and `RUN` hold use canonical GMR standing arms.
+After `RUN`, the arms remain at GMR standing until five distinct fresh schema-,
+confidence-, derived-rotation-, latency-, GMR-, and upper-body-limit-qualified
+poses arrive by default. Tracking loss resets that qualification and returns the
+arms toward GMR standing through the same bounded transition. The consumer
+accepts only RTMW schema 1,
 `smplx52_landmark_fit`, the exact face-free 52-joint hierarchy, calibrated
 metric OpenCV camera coordinates, and tree-consistent derived rotations.
 Root-relative/uncalibrated output and prerecorded video timestamps are rejected.
-The supported ramp and `RUN` hold use canonical GMR standing arms. After `RUN`,
-upper-body tracking begins automatically while joystick commands continue to
-control the trained gait. No separate `MOTION` confirmation is used.
+No separate `MOTION` confirmation is used.
 
 Live upper-body changes are limited to `3*pi` rad/s at the 50 Hz control rate,
 including the first pose and source recovery, and outgoing targets remain inside

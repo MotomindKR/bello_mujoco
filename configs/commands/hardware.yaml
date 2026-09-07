@@ -24,7 +24,6 @@ rtmw_tls_root_certificate_path: null
 rtmw_tls_server_name_override: null
 rtmw_connect_timeout_seconds: 5.0
 rtmw_rpc_timeout_seconds: 2.0
-rtmw_reference_ready_timeout_seconds: 15.0
 rtmw_reference_qualification_frames: 5
 rtmw_min_joint_confidence: 0.25
 rtmw_min_rotation_confidence: 0.10

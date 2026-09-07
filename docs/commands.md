@@ -372,8 +372,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `rtmw_tls_server_name_override` | string or `null`; `null` | locomotion | TLS certificate name override. It is rejected without a CA certificate. |
 | `rtmw_connect_timeout_seconds` | positive float; `5.0` | locomotion | Deadline for establishing the RTMW gRPC channel. |
 | `rtmw_rpc_timeout_seconds` | positive float; `2.0` | locomotion | Deadline for stream-info and status RPCs. |
-| `rtmw_reference_ready_timeout_seconds` | positive float; `15.0` | locomotion | Time allowed for the initial sequence of qualified RTMW/GMR references before hardware connection. |
-| `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Number of distinct, successive safe references required during preflight. Receiving a repeated or non-advancing frame does not advance the gate. |
+| `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Distinct successive safe references required after `RUN` before starting or resuming live arm tracking. Until then, the arms remain at GMR standing. |
 | `rtmw_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion | Minimum position confidence for every GMR target joint. |
 | `rtmw_min_rotation_confidence` | float in `[0,1]`; `0.10` | locomotion | Minimum derived-rotation confidence for pelvis, spine, shoulder, elbow, and wrist targets. |
 | `rtmw_max_pipeline_latency_ms` | positive float; `250.0` | locomotion | Maximum accepted RTMW capture-to-output processing latency. |

@@ -257,7 +257,6 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     rtmw_tls_server_name_override: str | None = None
     rtmw_connect_timeout_seconds: float = 5.0
     rtmw_rpc_timeout_seconds: float = 2.0
-    rtmw_reference_ready_timeout_seconds: float = 15.0
     rtmw_reference_qualification_frames: int = 5
     rtmw_min_joint_confidence: float = 0.25
     rtmw_min_rotation_confidence: float = 0.10
@@ -944,13 +943,6 @@ def validate_hardware_config(
         from bello_mujoco.hardware.rtmw import RtmwGrpcConfig
 
         RtmwGrpcConfig.from_hardware(config)
-        if (
-            not math.isfinite(config.rtmw_reference_ready_timeout_seconds)
-            or config.rtmw_reference_ready_timeout_seconds <= 0.0
-        ):
-            raise ValueError(
-                "rtmw_reference_ready_timeout_seconds must be positive and finite"
-            )
         if config.rtmw_reference_qualification_frames < 1:
             raise ValueError("rtmw_reference_qualification_frames must be positive")
     upper = config.upper_body_follow
@@ -1147,21 +1139,6 @@ def run_hardware_locomotion(
             )
             standing = references.standing()
             adapter.set_upper_body_standing_reference(standing)
-            live_reference = wait_for_qualified_upper_body_reference(
-                references,
-                adapter,
-                config,
-                remote,
-            )
-            if live_reference is None:
-                print("Remote controller requested exit during pose preflight.")
-                return
-            remote_input = remote.poll()
-            report_remote_connection(remote_input)
-            if remote_input.abort_active:
-                print("Remote controller requested exit during pose preflight.")
-                return
-            command = hardware_command(metadata, remote_input)
         adapter.precompile(live_reference)
         require_state_frame_binding(binding)
         if config.arm:
@@ -1350,6 +1327,9 @@ def control_physical_robot(
         control.reset_deadline()
         step = 0
         pose_following: bool | None = None
+        reference_qualifier = _UpperBodyReferenceQualifier(
+            config.rtmw_reference_qualification_frames
+        )
         jog_input = TerminalElbowYawJogInput(
             enabled=(
                 False
@@ -1392,9 +1372,17 @@ def control_physical_robot(
                 if references is not None:
                     reference_error: ReferenceUnavailable | None = None
                     try:
-                        reference = references.latest()
-                        adapter.validate_upper_body_reference(reference)
+                        candidate = references.latest()
+                        adapter.validate_upper_body_reference(candidate)
+                        reference = reference_qualifier.accept(candidate)
+                        if reference is None:
+                            reference_error = ReferenceUnavailable(
+                                "qualifying live upper-body pose: "
+                                f"{reference_qualifier.qualified_frames}/"
+                                f"{reference_qualifier.required_frames} distinct frames"
+                            )
                     except ReferenceUnavailable as error:
+                        reference_qualifier.reset()
                         reference_error = error
                     following = reference is not None
                     if following != pose_following:
@@ -1482,38 +1470,29 @@ def control_physical_robot(
             jog_input.close()
 
 
-def wait_for_qualified_upper_body_reference(
-    references: Any,
-    adapter: HardwarePolicyAdapter,
-    config: HardwareLocomotionConfig,
-    remote: RemoteCommandSource,
-) -> Twist2ReferenceFrame | None:
-    """Require distinct fresh live poses while preserving the remote abort path."""
-
-    deadline = time.monotonic() + config.rtmw_reference_ready_timeout_seconds
+@dataclass
+class _UpperBodyReferenceQualifier:
+    required_frames: int
+    qualified_frames: int = 0
     last_sequence: int | None = None
-    qualified_frames = 0
-    last_error: ReferenceUnavailable | None = None
-    while time.monotonic() < deadline:
-        remote_input = remote.poll()
-        report_remote_connection(remote_input)
-        if remote_input.abort_active:
+    active: bool = False
+
+    def accept(self, reference: Twist2ReferenceFrame) -> Twist2ReferenceFrame | None:
+        sequence = reference.sequence
+        if self.last_sequence is None:
+            self.qualified_frames = 1
+            self.last_sequence = sequence
+        elif sequence < self.last_sequence:
+            self.reset()
             return None
-        try:
-            reference = references.latest()
-            adapter.validate_upper_body_reference(reference)
-            if last_sequence is None or reference.sequence > last_sequence:
-                qualified_frames += 1
-                last_sequence = reference.sequence
-            elif reference.sequence < last_sequence:
-                qualified_frames = 0
-                last_sequence = None
-            if qualified_frames >= config.rtmw_reference_qualification_frames:
-                return reference
-        except ReferenceUnavailable as error:
-            last_error = error
-            qualified_frames = 0
-            last_sequence = None
-        time.sleep(adapter.control_timestep)
-    detail = f": {last_error}" if last_error is not None else ""
-    raise TimeoutError(f"timed out waiting for a qualified upper-body pose{detail}")
+        elif sequence > self.last_sequence:
+            self.qualified_frames += 1
+            self.last_sequence = sequence
+        if self.qualified_frames >= self.required_frames:
+            self.active = True
+        return reference if self.active else None
+
+    def reset(self) -> None:
+        self.qualified_frames = 0
+        self.last_sequence = None
+        self.active = False

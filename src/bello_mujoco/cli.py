@@ -169,7 +169,6 @@ class HardwareCommandConfig:
     rtmw_tls_server_name_override: str | None
     rtmw_connect_timeout_seconds: float
     rtmw_rpc_timeout_seconds: float
-    rtmw_reference_ready_timeout_seconds: float
     rtmw_reference_qualification_frames: int
     rtmw_min_joint_confidence: float
     rtmw_min_rotation_confidence: float
@@ -944,7 +943,6 @@ def _hardware_hydra(config: DictConfig) -> None:
         "rtmw_tls_server_name_override",
         "rtmw_connect_timeout_seconds",
         "rtmw_rpc_timeout_seconds",
-        "rtmw_reference_ready_timeout_seconds",
         "rtmw_reference_qualification_frames",
         "rtmw_min_joint_confidence",
         "rtmw_min_rotation_confidence",
@@ -1178,9 +1176,6 @@ def _hardware_hydra(config: DictConfig) -> None:
             rtmw_tls_server_name_override=command.rtmw_tls_server_name_override,
             rtmw_connect_timeout_seconds=command.rtmw_connect_timeout_seconds,
             rtmw_rpc_timeout_seconds=command.rtmw_rpc_timeout_seconds,
-            rtmw_reference_ready_timeout_seconds=(
-                command.rtmw_reference_ready_timeout_seconds
-            ),
             rtmw_reference_qualification_frames=(
                 command.rtmw_reference_qualification_frames
             ),

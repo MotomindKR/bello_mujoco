@@ -665,7 +665,7 @@ def rtmw_locomotion_reference_source(
                     "representation": RTMW_REPRESENTATION,
                     "neutral_model_sha256": stream.neutral_model_sha256,
                     "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
-                    "live_target_check": "required_before_hardware_connection",
+                    "live_target_check": "deferred_until_after_RUN",
                 }
             )
             yield source
