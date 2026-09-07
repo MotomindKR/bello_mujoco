@@ -161,7 +161,7 @@ reward_config:
     action_acceleration: -0.005
     action_limit: -1.0
     torque_l1: -1.2
-    stand_hip_roll_torque_squared: 0.0
+    stand_hip_roll_continuous_torque_excess: 0.0
     torque_peak: -12.0
     joint_force_peak: -4.0
     touchdown_impact: -4.0
@@ -171,6 +171,7 @@ reward_config:
     stand_foot_heading: -0.5
     stand_contact: -0.5
     stand_upright: -8.0
+    stand_waist_deviation: 0.0
     hip_deviation: -0.25
     knee_deviation: -0.1
     joint_limit: -1.0
@@ -203,6 +204,7 @@ reward_config:
     foot_angular_weight: 0.25
     foot_heading_deadband: 0.0872664626
     foot_heading_scale: 0.2617993878
+    hip_roll_continuous_torque_limit: 20.0
   gait:
     stance_slip_angular_speed_scale: 0.0
     swing_clearance_target: 0.08

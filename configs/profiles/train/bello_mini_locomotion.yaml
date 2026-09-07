@@ -18,7 +18,8 @@ reward_config:
     healthy_survival: 2.25
     moving_lin_vel_xy_error: -1.0
     moving_ang_vel_z_error: -1.0
-    stand_hip_roll_torque_squared: -4.0
+    stand_hip_roll_continuous_torque_excess: -8.0
+    stand_waist_deviation: -4.0
     gait_contact: -2.5
     gait_swing_clearance: -1.0
   gait:

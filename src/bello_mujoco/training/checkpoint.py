@@ -881,13 +881,14 @@ def _with_checkpoint_metadata_defaults(
                     "moving_lin_vel_xy_error",
                     "moving_ang_vel_z_error",
                     "action_acceleration",
-                    "stand_hip_roll_torque_squared",
+                    "stand_hip_roll_continuous_torque_excess",
                     "joint_force_peak",
                     "touchdown_impact",
                     "stand_still",
                     "stand_contact",
                     "stand_foot_heading",
                     "stand_upright",
+                    "stand_waist_deviation",
                 ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
@@ -915,6 +916,7 @@ def _with_checkpoint_metadata_defaults(
                     "foot_heading_deadband", math.radians(5.0)
                 )
                 normalized_standing.setdefault("foot_heading_scale", math.radians(15.0))
+                normalized_standing.setdefault("hip_roll_continuous_torque_limit", 20.0)
                 normalized_reward["standing"] = normalized_standing
             gait = reward.get("gait")
             if isinstance(gait, dict):

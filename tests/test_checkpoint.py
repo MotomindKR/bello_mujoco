@@ -730,13 +730,14 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
         "moving_lin_vel_xy_error",
         "moving_ang_vel_z_error",
         "action_acceleration",
-        "stand_hip_roll_torque_squared",
+        "stand_hip_roll_continuous_torque_excess",
         "joint_force_peak",
         "touchdown_impact",
         "stand_still",
         "stand_contact",
         "stand_foot_heading",
         "stand_upright",
+        "stand_waist_deviation",
     ):
         document["metadata"]["reward"]["weights"].pop(name)
     document["metadata"]["reward"].pop("smoothness")
@@ -745,6 +746,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     document["metadata"]["reward"]["tracking"].pop("ang_vel_z_lpf_cutoff_hz")
     document["metadata"]["reward"]["standing"].pop("foot_heading_deadband")
     document["metadata"]["reward"]["standing"].pop("foot_heading_scale")
+    document["metadata"]["reward"]["standing"].pop("hip_roll_continuous_torque_limit")
     for name in (
         "joint_force_soft_limit_body_weights",
         "joint_force_top_k",
@@ -770,19 +772,23 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     assert restored.reward.weights.action_acceleration == 0.0
     assert restored.reward.weights.moving_lin_vel_xy_error == 0.0
     assert restored.reward.weights.moving_ang_vel_z_error == 0.0
-    assert restored.reward.weights.stand_hip_roll_torque_squared == 0.0
+    assert restored.reward.weights.stand_hip_roll_continuous_torque_excess == 0.0
     assert restored.reward.weights.joint_force_peak == 0.0
     assert restored.reward.weights.touchdown_impact == 0.0
     assert restored.reward.weights.stand_still == 0.0
     assert restored.reward.weights.stand_contact == 0.0
     assert restored.reward.weights.stand_foot_heading == 0.0
     assert restored.reward.weights.stand_upright == 0.0
+    assert restored.reward.weights.stand_waist_deviation == 0.0
     assert restored.reward.gait.joint_force_soft_limit_body_weights == 1.0
     assert restored.reward.gait.joint_force_top_k == 12
     assert not restored.reward.gait.joint_force_apply_while_standing
     assert restored.reward.smoothness.ankle_action_weight == 1.0
     assert restored.reward.smoothness.waist_action_weight == 1.0
     assert restored.reward.tracking.ang_vel_z_lpf_cutoff_hz == pytest.approx(5.0)
+    assert restored.reward.standing.hip_roll_continuous_torque_limit == pytest.approx(
+        20.0
+    )
     assert restored.reward.tracking.lin_vel_xy_error_delta == pytest.approx(0.25)
     assert restored.reward.tracking.ang_vel_z_error_delta == pytest.approx(0.25)
     assert restored.reward.standing.foot_heading_deadband == pytest.approx(

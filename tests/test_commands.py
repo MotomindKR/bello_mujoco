@@ -289,7 +289,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         healthy_survival=2.25,
         moving_lin_vel_xy_error=-1.0,
         moving_ang_vel_z_error=-1.0,
-        stand_hip_roll_torque_squared=-4.0,
+        stand_hip_roll_continuous_torque_excess=-8.0,
+        stand_waist_deviation=-4.0,
         gait_contact=-2.5,
         gait_swing_clearance=-1.0,
     )
@@ -310,9 +311,15 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert mini.reward_config.weights.moving_lin_vel_xy_error == pytest.approx(-1.0)
     assert bello.reward_config.weights.moving_ang_vel_z_error == pytest.approx(0.0)
     assert mini.reward_config.weights.moving_ang_vel_z_error == pytest.approx(-1.0)
-    assert mini.reward_config.weights.stand_hip_roll_torque_squared == pytest.approx(
-        -4.0
+    assert (
+        mini.reward_config.weights.stand_hip_roll_continuous_torque_excess
+        == pytest.approx(-8.0)
     )
+    assert (
+        mini.reward_config.standing.hip_roll_continuous_torque_limit
+        == pytest.approx(20.0)
+    )
+    assert mini.reward_config.weights.stand_waist_deviation == pytest.approx(-4.0)
     assert mini.reward_config.weights.gait_contact == pytest.approx(-2.5)
     assert mini.reward_config.weights.gait_swing_clearance == pytest.approx(-1.0)
     assert mini.reward_config.gait.swing_clearance_target == pytest.approx(0.075)
@@ -381,14 +388,14 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         pytest.approx(0.1)
     )
     assert bello.env_config.torso_com_curriculum.enabled
-    assert bello.env_config.torso_com_curriculum.ramp_steps == 3_000_000
+    assert bello.env_config.torso_com_curriculum.ramp_steps == 488_281
     assert bello.env_config.model_randomization.torso_mass_scale_range == (
         0.8,
         1.2,
     )
     assert bello.env_config.model_randomization.torso_com_offset_range == (
-        -0.1,
-        0.1,
+        -0.15,
+        0.15,
     )
     assert bello.checkpoint_config.name == "bello_locomotion_seed0"
     assert mini.checkpoint_config.name == "bello_mini_locomotion_seed0"

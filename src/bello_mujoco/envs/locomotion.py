@@ -841,15 +841,27 @@ class BelloLocomotionEnv:
             raise ValueError(
                 "policy actuators require positive finite peak-force metadata"
             )
-        if self.reward_config.enabled("stand_hip_roll_torque_squared"):
+        if self.reward_config.enabled("stand_hip_roll_continuous_torque_excess"):
             hip_roll_indices = self._actuator_indices_named("hip_roll_joint")
             policy_indices = np.asarray(model.policy_ctrl_indices, dtype=np.int32)
             if hip_roll_indices.shape != (2,) or not np.all(
                 np.isin(hip_roll_indices, policy_indices, assume_unique=True)
             ):
                 raise ValueError(
-                    "stand_hip_roll_torque_squared requires exactly two "
+                    "stand_hip_roll_continuous_torque_excess requires exactly two "
                     "policy-controlled hip-roll actuators"
+                )
+        if self.reward_config.enabled("stand_waist_deviation"):
+            waist_indices = self._actuator_indices_named(
+                "waist_yaw_joint", "waist_roll_joint"
+            )
+            policy_indices = np.asarray(model.policy_ctrl_indices, dtype=np.int32)
+            if waist_indices.shape != (2,) or not np.all(
+                np.isin(waist_indices, policy_indices, assume_unique=True)
+            ):
+                raise ValueError(
+                    "stand_waist_deviation requires policy-controlled waist yaw "
+                    "and waist roll actuators"
                 )
         if self.reward_config.enabled("torque_peak") and (
             np.any(mj_model.actuator_gaintype != mujoco.mjtGain.mjGAIN_FIXED)
@@ -2955,6 +2967,9 @@ class BelloLocomotionEnv:
                 ),
                 joint_pose_weights=self._joint_pose_weights(),
                 hip_roll_joint_indices=self._actuator_indices_named("hip_roll_joint"),
+                waist_joint_indices=self._actuator_indices_named(
+                    "waist_yaw_joint", "waist_roll_joint"
+                ),
                 hip_joint_indices=self._actuator_indices_named(
                     "hip_roll_joint", "hip_yaw_joint"
                 ),

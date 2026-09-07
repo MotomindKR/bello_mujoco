@@ -206,7 +206,7 @@ class RewardWeights:
     action_acceleration: float = -0.005
     action_limit: float = -1.0
     torque_l1: float = -1.2
-    stand_hip_roll_torque_squared: float = 0.0
+    stand_hip_roll_continuous_torque_excess: float = 0.0
     torque_peak: float = -12.0
     joint_force_peak: float = -4.0
     touchdown_impact: float = -4.0
@@ -216,6 +216,7 @@ class RewardWeights:
     stand_foot_heading: float = -0.5
     stand_contact: float = -0.5
     stand_upright: float = -8.0
+    stand_waist_deviation: float = 0.0
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
     joint_limit: float = -1.0
@@ -259,6 +260,7 @@ class StandingRewardConfig:
     foot_angular_weight: float = 0.25
     foot_heading_deadband: float = math.radians(5.0)
     foot_heading_scale: float = math.radians(15.0)
+    hip_roll_continuous_torque_limit: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -408,6 +410,7 @@ class RewardInputs:
     desired_foot_contact: jax.Array
     joint_pose_weights: jax.Array
     hip_roll_joint_indices: jax.Array
+    waist_joint_indices: jax.Array
     hip_joint_indices: jax.Array
     knee_joint_indices: jax.Array
     undesired_contact: jax.Array
@@ -495,11 +498,14 @@ def compute_locomotion_reward(
     policy_peak_force = inputs.actuator_peak_force[inputs.policy_joint_indices]
     normalized_torque = policy_force / policy_peak_force
     torque_l1 = jnp.mean(normalized_torque)
-    hip_roll_force = inputs.actuator_force[inputs.hip_roll_joint_indices]
-    hip_roll_peak_force = inputs.actuator_peak_force[inputs.hip_roll_joint_indices]
-    stand_hip_roll_torque_squared = jnp.where(
+    hip_roll_force = jnp.abs(inputs.actuator_force[inputs.hip_roll_joint_indices])
+    hip_roll_continuous_torque_excess = jnp.maximum(
+        hip_roll_force / config.standing.hip_roll_continuous_torque_limit - 1.0,
+        0.0,
+    )
+    stand_hip_roll_continuous_torque_excess = jnp.where(
         standing_command,
-        jnp.mean((hip_roll_force / hip_roll_peak_force) ** 2),
+        jnp.mean(hip_roll_continuous_torque_excess),
         0.0,
     )
     requested_policy_force = jnp.abs(
@@ -597,6 +603,11 @@ def compute_locomotion_reward(
         jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.knee_joint_indices])),
         0.0,
     )
+    stand_waist_deviation = jnp.where(
+        standing_command,
+        jnp.sum(inputs.joint_pos_rel[inputs.waist_joint_indices] ** 2),
+        0.0,
+    )
 
     joint_limit_center = 0.5 * (inputs.joint_limit_low + inputs.joint_limit_high)
     joint_limit_radius = (
@@ -668,7 +679,9 @@ def compute_locomotion_reward(
         "action_acceleration": action_acceleration,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
-        "stand_hip_roll_torque_squared": stand_hip_roll_torque_squared,
+        "stand_hip_roll_continuous_torque_excess": (
+            stand_hip_roll_continuous_torque_excess
+        ),
         "torque_peak": torque_peak,
         "joint_force_peak": joint_force_peak,
         "touchdown_impact": touchdown_impact,
@@ -678,6 +691,7 @@ def compute_locomotion_reward(
         "stand_foot_heading": stand_foot_heading,
         "stand_contact": stand_contact,
         "stand_upright": stand_upright,
+        "stand_waist_deviation": stand_waist_deviation,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
@@ -750,6 +764,10 @@ def validate_reward_config(config: RewardConfig) -> None:
         (
             "standing.foot_heading_scale",
             config.standing.foot_heading_scale,
+        ),
+        (
+            "standing.hip_roll_continuous_torque_limit",
+            config.standing.hip_roll_continuous_torque_limit,
         ),
         (
             "gait.swing_clearance_target",

@@ -295,10 +295,12 @@ not filtered or duplicated afterward. Older checkpoints load with this
 training-side filter and pre-filter noise path disabled.
 
 The `torso_com_curriculum` section contains `enabled` and positive integer
-`ramp_steps`. A value of 3,000,000 corresponds to 150,000 PPO updates for the
-maintained 20-step rollout. It starts from the nominal torso COM and linearly
-reaches each world's complete sampled offset, retaining the full configured
-plus-or-minus 10 cm per-axis envelope for the final 45,312 updates.
+`ramp_steps`. The maintained value of 488,281 spans approximately one billion
+sampled transitions with 2,048 environments, or about 24,415 PPO updates for
+the 20-step rollout. It starts from the nominal torso COM and linearly reaches
+each world's complete sampled offset, retaining the full configured
+plus-or-minus 15 cm per-axis envelope for the remaining seven billion
+transitions.
 
 The `observation_latency` section contains `enabled` and `delay_steps`, an
 inclusive integer lower/upper range. The maintained Bello and Bello Mini
@@ -388,7 +390,7 @@ boundary.
 | `action_acceleration` | `-0.005` | Penalize change in applied action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
-| `stand_hip_roll_torque_squared` | `0.0` | During standing commands, penalize the mean squared applied hip-roll torque normalized by each motor's peak torque. Bello Mini sets this to `-4.0` as a cumulative current-squared heating proxy without diluting the cost across unrelated actuators. |
+| `stand_hip_roll_continuous_torque_excess` | `0.0` | During standing commands, penalize the mean applied hip-roll torque above `standing.hip_roll_continuous_torque_limit`, normalized by that limit. Bello Mini uses the RS03 continuous rating of `20 Nm` and sets this weight to `-8.0`; both hip rolls holding `30 Nm` cost `0.08` per 50 Hz step. Moving commands do not activate this term. |
 | `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
 | `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Bounded squared `tanh` shaping limits isolated impacts from dominating an update. |
@@ -398,6 +400,7 @@ boundary.
 | `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize bounded left/right foot heading error outside the configured deadband relative to the robot command-frame forward axis. The weighted cost is capped below `0.01` per control step and is inactive during recovery, termination, and moving commands. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `stand_upright` | `-8.0` | At standing command, apply an additional gravity-vector tilt penalty so a deeply leaned pose cannot retain most of the standing reward. |
+| `stand_waist_deviation` | `0.0` | At standing command, penalize squared waist yaw and roll deviation from their straight default pose. Bello Mini sets this to `-4.0`; moving commands do not activate it. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation during standing or when any configured command axis is active. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation during effective standing; a profile can explicitly retain it while moving. A pending zero request does not activate standing-only shaping until the gait scheduler completes the current step. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
@@ -415,9 +418,10 @@ impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini inherits the same
 reward configuration except for a `-1.0` moving planar smooth-L1 error penalty
 and midpoint gait shaping: `gait_contact: -2.5`, `gait_swing_clearance: -1.0`,
-and a `0.075` m swing-clearance target. Mini also applies a `-4.0`
-standing hip-roll squared-torque penalty, which makes continuous bracing costly
-while leaving moving-command lateral authority to the existing torque terms.
+and a `0.075` m swing-clearance target. Mini also applies a `-8.0` standing
+hip-roll continuous-torque-excess penalty above the RS03's `20 Nm` rating and a
+`-4.0` standing waist-deviation penalty. These leave moving-command lateral and
+waist authority to the existing general reward terms.
 The error penalty uses a `0.25 m/s`
 Huber delta and preserves a signed corrective gradient when the Mini moves in
 the opposite direction, while the gait terms more strongly discourage
@@ -446,7 +450,7 @@ Supporting fields are:
 | Section | Fields |
 | --- | --- |
 | `tracking` | `lin_vel_xy_moving_std`, `lin_vel_xy_still_std`, `lin_vel_xy_error_delta`, `ang_vel_z_moving_std`, `ang_vel_z_still_std`, `ang_vel_z_error_delta`, `ang_vel_z_lpf_cutoff_hz` |
-| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale` |
+| `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale`, `hip_roll_continuous_torque_limit` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `smoothness` | `ankle_action_weight`, `waist_action_weight` |
 | `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_deviation_command_indices`, `hip_deviation_command_threshold`, `knee_deviation_apply_while_moving` |
@@ -690,7 +694,7 @@ TWIST uses 32 contacts per environment and logs
 | Profile | Intent |
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
-| `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
+| `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 15 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
 | `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with pelvis-frame `+X` forward command/reward/actor feedback, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, `2.25` healthy-survival weight, non-saturating moving linear/yaw velocity-error shaping, and independent additive planar velocity pushes from `[-0.5, 0.5]` m/s every five seconds. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
 | `bello_mini_standing` | The complete Bello Mini locomotion profile plus a standing-only overlay. Command sampling and accepted command ranges are exactly zero, standing probability is `1.0`, and standing transitions are disabled. Command and gait-phase observation slots remain present and zero-valued, preserving the Mini locomotion policy dimensions. Moving velocity-error, joint-force-peak, and gait-pattern rewards are disabled; zero-velocity tracking, standing/stability rewards, bounded touchdown impact, randomization, pushes, and the `2.25` survival weight remain active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |

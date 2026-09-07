@@ -82,6 +82,7 @@ def reward_inputs(**updates) -> RewardInputs:
         desired_foot_contact=jnp.ones(2, dtype=jnp.float32),
         joint_pose_weights=jnp.ones(2, dtype=jnp.float32),
         hip_roll_joint_indices=jnp.asarray([0], dtype=jnp.int32),
+        waist_joint_indices=jnp.asarray([0], dtype=jnp.int32),
         hip_joint_indices=jnp.asarray([0], dtype=jnp.int32),
         knee_joint_indices=jnp.asarray([1], dtype=jnp.int32),
         undesired_contact=jnp.asarray(0.0, dtype=jnp.float32),
@@ -440,6 +441,31 @@ def test_knee_deviation_moving_gate_is_explicit(apply_while_moving: bool) -> Non
     )
 
 
+def test_waist_deviation_penalty_applies_only_while_standing() -> None:
+    config = reward_config(stand_waist_deviation=-4.0)
+    inputs = reward_inputs(
+        joint_pos_rel=jnp.asarray([-0.2, 9.0, 0.3]),
+        joint_pose_weights=jnp.ones(3),
+        waist_joint_indices=jnp.asarray([0, 2], dtype=jnp.int32),
+    )
+
+    _, standing = compute_locomotion_reward(config, inputs)
+    _, moving = compute_locomotion_reward(
+        config,
+        inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0])),
+    )
+    _, mirrored = compute_locomotion_reward(
+        config,
+        inputs.replace(joint_pos_rel=jnp.asarray([0.2, 9.0, -0.3])),
+    )
+
+    assert standing["reward/stand_waist_deviation"] == pytest.approx(-0.0104)
+    assert mirrored["reward/stand_waist_deviation"] == pytest.approx(
+        standing["reward/stand_waist_deviation"]
+    )
+    assert moving["reward/stand_waist_deviation"] == pytest.approx(0.0)
+
+
 def test_stand_upright_penalty_is_gated_by_standing_command() -> None:
     config = reward_config(stand_upright=-8.0)
     inputs = reward_inputs(
@@ -511,8 +537,11 @@ def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> N
     assert over_peak["reward/torque_peak"] == pytest.approx(-0.1)
 
 
-def test_standing_hip_roll_torque_penalty_is_joint_specific_and_quadratic() -> None:
-    config = reward_config(stand_hip_roll_torque_squared=-4.0)
+def test_standing_hip_roll_continuous_torque_penalty_is_joint_specific() -> None:
+    config = reward_config(
+        stand_hip_roll_continuous_torque_excess=-8.0,
+        standing=StandingRewardConfig(hip_roll_continuous_torque_limit=20.0),
+    )
     inputs = reward_inputs(
         actuator_force=jnp.asarray([30.0, 500.0, 30.0]),
         requested_actuator_force=jnp.zeros(3),
@@ -523,18 +552,24 @@ def test_standing_hip_roll_torque_penalty_is_joint_specific_and_quadratic() -> N
     )
 
     _, standing = compute_locomotion_reward(config, inputs)
-    _, quarter_load = compute_locomotion_reward(
+    _, at_limit = compute_locomotion_reward(
         config,
-        inputs.replace(actuator_force=jnp.asarray([15.0, 500.0, 15.0])),
+        inputs.replace(actuator_force=jnp.asarray([-20.0, 500.0, 20.0])),
+    )
+    _, one_motor_over = compute_locomotion_reward(
+        config,
+        inputs.replace(actuator_force=jnp.asarray([-30.0, 500.0, 10.0])),
     )
     _, moving = compute_locomotion_reward(
         config,
         inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0])),
     )
 
-    assert standing["reward/stand_hip_roll_torque_squared"] == pytest.approx(-0.02)
-    assert quarter_load["reward/stand_hip_roll_torque_squared"] == pytest.approx(-0.005)
-    assert moving["reward/stand_hip_roll_torque_squared"] == pytest.approx(0.0)
+    term = "reward/stand_hip_roll_continuous_torque_excess"
+    assert standing[term] == pytest.approx(-0.08)
+    assert at_limit[term] == pytest.approx(0.0)
+    assert one_motor_over[term] == pytest.approx(-0.04)
+    assert moving[term] == pytest.approx(0.0)
 
 
 def test_joint_force_peak_uses_top_loads_only_during_commanded_gait() -> None:
@@ -864,6 +899,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
     )
     standing_inputs = moving_inputs.replace(
         command=jnp.zeros(3),
+        actuator_force=jnp.asarray([30.0, 2.0]),
         gait_active=jnp.asarray(False),
         foot_contact=jnp.asarray([1.0, 0.0]),
         foot_heading_error=jnp.asarray([0.2, -0.1]),
@@ -969,6 +1005,10 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
         )
     with pytest.raises(ValueError, match="foot_linear_speed_scale"):
         RewardConfig(standing=StandingRewardConfig(foot_linear_speed_scale=0.0))
+    with pytest.raises(ValueError, match="hip_roll_continuous_torque_limit"):
+        RewardConfig(
+            standing=StandingRewardConfig(hip_roll_continuous_torque_limit=0.0)
+        )
     with pytest.raises(ValueError, match="ang_vel_z_lpf_cutoff_hz"):
         RewardConfig(tracking=TrackingRewardConfig(ang_vel_z_lpf_cutoff_hz=0.0))
     with pytest.raises(ValueError, match="lin_vel_xy_error_delta"):
