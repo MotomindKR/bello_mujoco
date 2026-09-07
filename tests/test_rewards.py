@@ -81,6 +81,7 @@ def reward_inputs(**updates) -> RewardInputs:
         gait_active=jnp.asarray(False),
         desired_foot_contact=jnp.ones(2, dtype=jnp.float32),
         joint_pose_weights=jnp.ones(2, dtype=jnp.float32),
+        hip_roll_joint_indices=jnp.asarray([0], dtype=jnp.int32),
         hip_joint_indices=jnp.asarray([0], dtype=jnp.int32),
         knee_joint_indices=jnp.asarray([1], dtype=jnp.int32),
         undesired_contact=jnp.asarray(0.0, dtype=jnp.float32),
@@ -508,6 +509,32 @@ def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> N
     assert at_or_below_peak["reward/torque_peak"] == pytest.approx(0.0)
     assert over_peak["reward/torque_l1"] == pytest.approx(-0.02)
     assert over_peak["reward/torque_peak"] == pytest.approx(-0.1)
+
+
+def test_standing_hip_roll_torque_penalty_is_joint_specific_and_quadratic() -> None:
+    config = reward_config(stand_hip_roll_torque_squared=-4.0)
+    inputs = reward_inputs(
+        actuator_force=jnp.asarray([30.0, 500.0, 30.0]),
+        requested_actuator_force=jnp.zeros(3),
+        actuator_peak_force=jnp.asarray([60.0, 1.0, 60.0]),
+        policy_joint_indices=jnp.asarray([0, 2], dtype=jnp.int32),
+        hip_roll_joint_indices=jnp.asarray([0, 2], dtype=jnp.int32),
+        foot_contact=jnp.asarray([1.0, 0.0]),
+    )
+
+    _, standing = compute_locomotion_reward(config, inputs)
+    _, quarter_load = compute_locomotion_reward(
+        config,
+        inputs.replace(actuator_force=jnp.asarray([15.0, 500.0, 15.0])),
+    )
+    _, moving = compute_locomotion_reward(
+        config,
+        inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0])),
+    )
+
+    assert standing["reward/stand_hip_roll_torque_squared"] == pytest.approx(-0.02)
+    assert quarter_load["reward/stand_hip_roll_torque_squared"] == pytest.approx(-0.005)
+    assert moving["reward/stand_hip_roll_torque_squared"] == pytest.approx(0.0)
 
 
 def test_joint_force_peak_uses_top_loads_only_during_commanded_gait() -> None:

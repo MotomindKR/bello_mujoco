@@ -388,6 +388,7 @@ boundary.
 | `action_acceleration` | `-0.005` | Penalize change in applied action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
+| `stand_hip_roll_torque_squared` | `0.0` | During standing commands, penalize the mean squared applied hip-roll torque normalized by each motor's peak torque. Bello Mini sets this to `-4.0` as a cumulative current-squared heating proxy without diluting the cost across unrelated actuators. |
 | `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
 | `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Bounded squared `tanh` shaping limits isolated impacts from dominating an update. |
@@ -414,7 +415,10 @@ impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini inherits the same
 reward configuration except for a `-1.0` moving planar smooth-L1 error penalty
 and midpoint gait shaping: `gait_contact: -2.5`, `gait_swing_clearance: -1.0`,
-and a `0.075` m swing-clearance target. The error penalty uses a `0.25 m/s`
+and a `0.075` m swing-clearance target. Mini also applies a `-4.0`
+standing hip-roll squared-torque penalty, which makes continuous bracing costly
+while leaving moving-command lateral authority to the existing torque terms.
+The error penalty uses a `0.25 m/s`
 Huber delta and preserves a signed corrective gradient when the Mini moves in
 the opposite direction, while the gait terms more strongly discourage
 persistent double support.

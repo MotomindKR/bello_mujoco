@@ -730,6 +730,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
         "moving_lin_vel_xy_error",
         "moving_ang_vel_z_error",
         "action_acceleration",
+        "stand_hip_roll_torque_squared",
         "joint_force_peak",
         "touchdown_impact",
         "stand_still",
@@ -769,6 +770,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     assert restored.reward.weights.action_acceleration == 0.0
     assert restored.reward.weights.moving_lin_vel_xy_error == 0.0
     assert restored.reward.weights.moving_ang_vel_z_error == 0.0
+    assert restored.reward.weights.stand_hip_roll_torque_squared == 0.0
     assert restored.reward.weights.joint_force_peak == 0.0
     assert restored.reward.weights.touchdown_impact == 0.0
     assert restored.reward.weights.stand_still == 0.0

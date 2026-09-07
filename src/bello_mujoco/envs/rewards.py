@@ -206,6 +206,7 @@ class RewardWeights:
     action_acceleration: float = -0.005
     action_limit: float = -1.0
     torque_l1: float = -1.2
+    stand_hip_roll_torque_squared: float = 0.0
     torque_peak: float = -12.0
     joint_force_peak: float = -4.0
     touchdown_impact: float = -4.0
@@ -406,6 +407,7 @@ class RewardInputs:
     gait_active: jax.Array
     desired_foot_contact: jax.Array
     joint_pose_weights: jax.Array
+    hip_roll_joint_indices: jax.Array
     hip_joint_indices: jax.Array
     knee_joint_indices: jax.Array
     undesired_contact: jax.Array
@@ -493,6 +495,13 @@ def compute_locomotion_reward(
     policy_peak_force = inputs.actuator_peak_force[inputs.policy_joint_indices]
     normalized_torque = policy_force / policy_peak_force
     torque_l1 = jnp.mean(normalized_torque)
+    hip_roll_force = inputs.actuator_force[inputs.hip_roll_joint_indices]
+    hip_roll_peak_force = inputs.actuator_peak_force[inputs.hip_roll_joint_indices]
+    stand_hip_roll_torque_squared = jnp.where(
+        standing_command,
+        jnp.mean((hip_roll_force / hip_roll_peak_force) ** 2),
+        0.0,
+    )
     requested_policy_force = jnp.abs(
         inputs.requested_actuator_force[inputs.policy_joint_indices]
     )
@@ -659,6 +668,7 @@ def compute_locomotion_reward(
         "action_acceleration": action_acceleration,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
+        "stand_hip_roll_torque_squared": stand_hip_roll_torque_squared,
         "torque_peak": torque_peak,
         "joint_force_peak": joint_force_peak,
         "touchdown_impact": touchdown_impact,

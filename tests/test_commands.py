@@ -289,6 +289,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         healthy_survival=2.25,
         moving_lin_vel_xy_error=-1.0,
         moving_ang_vel_z_error=-1.0,
+        stand_hip_roll_torque_squared=-4.0,
         gait_contact=-2.5,
         gait_swing_clearance=-1.0,
     )
@@ -309,6 +310,9 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert mini.reward_config.weights.moving_lin_vel_xy_error == pytest.approx(-1.0)
     assert bello.reward_config.weights.moving_ang_vel_z_error == pytest.approx(0.0)
     assert mini.reward_config.weights.moving_ang_vel_z_error == pytest.approx(-1.0)
+    assert mini.reward_config.weights.stand_hip_roll_torque_squared == pytest.approx(
+        -4.0
+    )
     assert mini.reward_config.weights.gait_contact == pytest.approx(-2.5)
     assert mini.reward_config.weights.gait_swing_clearance == pytest.approx(-1.0)
     assert mini.reward_config.gait.swing_clearance_target == pytest.approx(0.075)

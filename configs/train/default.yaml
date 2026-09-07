@@ -161,6 +161,7 @@ reward_config:
     action_acceleration: -0.005
     action_limit: -1.0
     torque_l1: -1.2
+    stand_hip_roll_torque_squared: 0.0
     torque_peak: -12.0
     joint_force_peak: -4.0
     touchdown_impact: -4.0

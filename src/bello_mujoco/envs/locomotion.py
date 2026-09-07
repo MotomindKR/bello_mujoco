@@ -841,6 +841,16 @@ class BelloLocomotionEnv:
             raise ValueError(
                 "policy actuators require positive finite peak-force metadata"
             )
+        if self.reward_config.enabled("stand_hip_roll_torque_squared"):
+            hip_roll_indices = self._actuator_indices_named("hip_roll_joint")
+            policy_indices = np.asarray(model.policy_ctrl_indices, dtype=np.int32)
+            if hip_roll_indices.shape != (2,) or not np.all(
+                np.isin(hip_roll_indices, policy_indices, assume_unique=True)
+            ):
+                raise ValueError(
+                    "stand_hip_roll_torque_squared requires exactly two "
+                    "policy-controlled hip-roll actuators"
+                )
         if self.reward_config.enabled("torque_peak") and (
             np.any(mj_model.actuator_gaintype != mujoco.mjtGain.mjGAIN_FIXED)
             or np.any(mj_model.actuator_biastype != mujoco.mjtBias.mjBIAS_AFFINE)
@@ -2944,6 +2954,7 @@ class BelloLocomotionEnv:
                     next_state.gait_phase, self.config.gait
                 ),
                 joint_pose_weights=self._joint_pose_weights(),
+                hip_roll_joint_indices=self._actuator_indices_named("hip_roll_joint"),
                 hip_joint_indices=self._actuator_indices_named(
                     "hip_roll_joint", "hip_yaw_joint"
                 ),
