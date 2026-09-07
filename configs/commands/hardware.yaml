@@ -27,12 +27,14 @@ rtmw_rpc_timeout_seconds: 2.0
 rtmw_reference_qualification_frames: 5
 rtmw_min_joint_confidence: 0.25
 rtmw_min_rotation_confidence: 0.10
+rtmw_max_required_rotation_residual_degrees: 30.0
 rtmw_max_pipeline_latency_ms: 250.0
 rtmw_transport_latency_budget_ms: 10.0
 rtmw_camera_to_world_quaternion_xyzw: [0.5, -0.5, 0.5, -0.5]
 rtmw_align_initial_heading: true
 rtmw_align_initial_floor: true
 rtmw_human_height_m: 1.75
+rtmw_gmr_task_profile: live_upper_body
 fastsam_endpoint: 127.0.0.1:50055
 fastsam_tls_root_certificate_path: null
 fastsam_tls_server_name_override: null

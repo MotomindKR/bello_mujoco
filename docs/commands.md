@@ -356,7 +356,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | motion | Declare the physical mass carried by each hand. `null` uses the checkpoint value; an explicit mismatch is rejected before control is acquired. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |
-| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. Tracking-enabled locomotion and TWIST2 combine the repository-owned relaxed-standing SMPL-X upper-body retarget with the checkpoint's canonical Bello leg stance; tracking-disabled locomotion and motion use their checkpoint nominal poses. |
+| `ramp_seconds` | positive float or `null`; `null` | all | Override the initial supported-pose ramp time. `null` uses 10 seconds. Locomotion always uses the checkpoint's nominal arm pose during ramp and hold; TWIST2 combines the repository-owned relaxed-standing SMPL-X retarget with its canonical Bello stance. |
 | `gain_scale` | float in `(0, 1]`; `1.0` | all | Multiply every commanded motor `kp` and `kd` by this value during start, ramp, and policy control. Fault damping is unchanged. |
 | `max_linear_acceleration` | positive float or `null`; `null` | all | Override the IMU acceleration-norm safety limit in m/s². `null` uses 100 m/s². Exceeding the limit immediately enters damped shutdown. |
 | `policy_transition_seconds` | positive float or `null`; `null` | motion, twist2 | Duration of each policy-target transition, including the TWIST2 normal-hold-to-standing-policy handoff. `null` uses 0.2 seconds. |
@@ -372,15 +372,17 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `rtmw_tls_server_name_override` | string or `null`; `null` | locomotion | TLS certificate name override. It is rejected without a CA certificate. |
 | `rtmw_connect_timeout_seconds` | positive float; `5.0` | locomotion | Deadline for establishing the RTMW gRPC channel. |
 | `rtmw_rpc_timeout_seconds` | positive float; `2.0` | locomotion | Deadline for stream-info and status RPCs. |
-| `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Distinct successive safe references required after `RUN` before starting or resuming live arm tracking. Until then, the arms remain at GMR standing. |
+| `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Distinct successive safe references required after `RUN` before starting or resuming live arm tracking. Until then, the arms remain at their nominal pose. |
 | `rtmw_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion | Minimum position confidence for every GMR target joint. |
-| `rtmw_min_rotation_confidence` | float in `[0,1]`; `0.10` | locomotion | Minimum derived-rotation confidence for pelvis, spine, shoulder, elbow, and wrist targets. |
+| `rtmw_min_rotation_confidence` | float in `[0,1]`; `0.10` | locomotion | Minimum derived-rotation confidence for the pelvis, spine3, and palm-constrained wrist rotations used by live GMR. |
+| `rtmw_max_required_rotation_residual_degrees` | float in `(0,180]`; `30.0` | locomotion | Maximum fit residual for pelvis, spine3, and palm-constrained wrist rotations. Each must also have rank 2; rank-one shoulder/elbow rotations are not used as orientation targets. |
 | `rtmw_max_pipeline_latency_ms` | positive float; `250.0` | locomotion | Maximum accepted RTMW capture-to-output processing latency. |
 | `rtmw_transport_latency_budget_ms` | nonnegative float; `10.0` | locomotion | Conservative transport contribution added to reference age because producer and robot hosts need not share a monotonic clock. |
 | `rtmw_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
 | `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial pelvis heading to world forward. |
 | `rtmw_align_initial_floor` | boolean; `true` | locomotion | Use the acquired target's initial lower foot as the fixed world floor. |
 | `rtmw_human_height_m` | positive float; `1.75` | locomotion | Human height supplied to pinned GMR; it must equal RTMW's `reconstruction.subject_height_m`. |
+| `rtmw_gmr_task_profile` | string; `live_upper_body` | locomotion | Position-led GMR task profile for RTMW arm tracking. This is currently the only accepted value so an orientation-led offline profile cannot be selected accidentally. |
 | `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
 | `fastsam_tls_root_certificate_path` | path or `null`; `null` | twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |

@@ -45,6 +45,7 @@ def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwGrpcConfig:
         "human_height_m": 1.75,
         "min_joint_confidence": 0.25,
         "min_rotation_confidence": 0.10,
+        "max_required_rotation_residual_degrees": 30.0,
         "max_pipeline_latency_ms": 250.0,
         "transport_latency_budget_ms": 10.0,
         "max_source_age_ms": 1_000,
@@ -87,6 +88,8 @@ def rtmw_frame(
     identity = np.tile(np.asarray((0.0, 0.0, 0.0, 1.0)), (count, 1))
     confidence = np.full(count, 0.9)
     rotation_valid = np.zeros(count, dtype=bool)
+    rotation_residual = np.full(count, np.nan)
+    rotation_rank = np.zeros(count, dtype=np.uint8)
     for name in (
         "pelvis",
         "spine3",
@@ -97,7 +100,10 @@ def rtmw_frame(
         "right_elbow",
         "right_wrist",
     ):
-        rotation_valid[RTMW_SMPLX52_NAMES.index(name)] = True
+        index = RTMW_SMPLX52_NAMES.index(name)
+        rotation_valid[index] = True
+        rotation_residual[index] = 0.0
+        rotation_rank[index] = 2
     return SimpleNamespace(
         frame_id=frame_id,
         source_timestamp_ns=captured_at_ns,
@@ -114,6 +120,8 @@ def rtmw_frame(
         joint_valid=np.ones(count, dtype=bool).tolist(),
         rotation_valid=rotation_valid.tolist(),
         rotation_confidence=np.where(rotation_valid, 0.8, 0.0).tolist(),
+        rotation_residual_degrees=rotation_residual.tolist(),
+        rotation_constraint_rank=rotation_rank.tolist(),
         pipeline_latency_ms=10.0,
     )
 
@@ -262,7 +270,8 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         env=env,
         validate_upper_body_reference=validation,
     )
-    with rtmw.rtmw_locomotion_reference_source(adapter, object()) as result:
+    hardware_config = SimpleNamespace(rtmw_gmr_task_profile="live_upper_body")
+    with rtmw.rtmw_locomotion_reference_source(adapter, hardware_config) as result:
         assert isinstance(result, FakeSource)
 
     assert calls["stream"] == (source_config, GMR_SOURCE_BODY_NAMES)
@@ -272,6 +281,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     assert retargeter_call[0] is env
     assert retargeter_call[1] is identity
     assert retargeter_call[2].human_height_m == pytest.approx(1.75)
+    assert retargeter_call[2].task_profile == "live_upper_body"
     assert retargeter_call[3] is validation
     assert calls["source"] == (stream, retargeter_call[4])
 
@@ -279,11 +289,39 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
 def test_rtmw_rejects_an_invalid_required_rotation(tmp_path: Path) -> None:
     stream = make_stream(tmp_path)
     message = rtmw_frame(8_000_000_000)
-    index = RTMW_SMPLX52_NAMES.index("left_shoulder")
+    index = RTMW_SMPLX52_NAMES.index("left_wrist")
     message.rotation_valid[index] = False
 
-    with pytest.raises(ReferenceUnavailable, match="left_shoulder"):
+    with pytest.raises(ReferenceUnavailable, match="left_wrist"):
         stream._parse_frame(message)
+
+
+def test_rtmw_requires_observable_low_residual_wrist_rotation(tmp_path: Path) -> None:
+    stream = make_stream(tmp_path)
+    rank_one = rtmw_frame(8_000_000_000)
+    wrist = RTMW_SMPLX52_NAMES.index("right_wrist")
+    rank_one.rotation_constraint_rank[wrist] = 1
+    with pytest.raises(ReferenceUnavailable, match="right_wrist.*rank 1"):
+        stream._parse_frame(rank_one)
+
+    stream = make_stream(tmp_path)
+    high_residual = rtmw_frame(9_000_000_000)
+    high_residual.rotation_residual_degrees[wrist] = 30.1
+    with pytest.raises(ReferenceUnavailable, match="right_wrist.*residual"):
+        stream._parse_frame(high_residual)
+
+
+def test_rtmw_accepts_rank_one_elbow_for_position_only_live_profile(
+    tmp_path: Path,
+) -> None:
+    stream = make_stream(tmp_path)
+    message = rtmw_frame(8_000_000_000)
+    elbow = RTMW_SMPLX52_NAMES.index("left_elbow")
+    message.rotation_constraint_rank[elbow] = 1
+
+    frame = stream._parse_frame(message)
+
+    assert frame.sequence == message.frame_id
 
 
 def test_rtmw_rejects_root_relative_or_uncalibrated_stream(tmp_path: Path) -> None:
@@ -297,6 +335,26 @@ def test_rtmw_rejects_root_relative_or_uncalibrated_stream(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="coordinate_space"):
         _validate_stream_info(info, config)
+
+
+def test_rtmw_requires_versioned_palm_frame_rotation_semantics(
+    tmp_path: Path,
+) -> None:
+    config = rtmw_config(tmp_path)
+    assert RTMW_ROTATION_SEMANTICS == (
+        "derived_tree_consistent_landmark_ik;palm_frame_forearm_twist_v1;"
+        "bone_length_shape_and_unobserved_axial_twist_approximate"
+    )
+    _validate_stream_info(stream_info(), config)
+
+    legacy = stream_info(
+        rotation_semantics=(
+            "derived_tree_consistent_landmark_ik;"
+            "bone_length_shape_and_axial_twist_approximate"
+        )
+    )
+    with pytest.raises(ValueError, match="rotation_semantics"):
+        _validate_stream_info(legacy, config)
 
 
 def test_rtmw_rejects_latency_mismatch_or_excess(tmp_path: Path) -> None:

@@ -854,6 +854,58 @@ def test_locomotion_overlays_only_slew_limited_upper_body_reference(
     assert recovered.reference_sequence == 3
 
 
+def test_locomotion_standing_fallback_uses_nominal_arms_and_keeps_full_frame(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    adapter.upper_body_follow = replace(
+        adapter.upper_body_follow,
+        left_elbow_yaw_offset_radians=0.3,
+        right_elbow_yaw_offset_radians=-0.3,
+    )
+    model = hardware_env.model.mj_model
+    qpos = np.asarray(hardware_env.model.default_qpos, dtype=np.float64).copy()
+    qvel = np.linspace(-0.2, 0.2, model.nv)
+    non_arm_qpos = next(
+        index
+        for index in range(model.nq)
+        if index not in set(adapter.upper_body_qpos_indices.tolist())
+    )
+    non_arm_qvel = next(
+        index
+        for index in range(model.nv)
+        if index not in set(adapter.upper_body_qvel_indices.tolist())
+    )
+    qpos[non_arm_qpos] += 0.123
+    qvel[non_arm_qvel] = 0.321
+    qpos[adapter.upper_body_qpos_indices] += 0.2
+    reference = Twist2ReferenceFrame(
+        qpos=qpos,
+        qvel=qvel,
+        sequence=0,
+        source_age_ms=None,
+        received_at=time.monotonic(),
+    )
+
+    adapter.set_upper_body_standing_reference(reference)
+
+    fallback = adapter._standing_reference
+    assert fallback is not None
+    assert fallback is not reference
+    assert fallback.qpos[adapter.upper_body_qpos_indices] == pytest.approx(
+        hardware_env.model.default_qpos[adapter.upper_body_qpos_indices]
+    )
+    assert fallback.qvel[adapter.upper_body_qvel_indices] == pytest.approx(0.0)
+    assert adapter._reference_upper_body_target(fallback, live=False) == pytest.approx(
+        adapter.default_joint_target[adapter.upper_body_indices]
+    )
+    assert fallback.qpos[non_arm_qpos] == pytest.approx(qpos[non_arm_qpos])
+    assert fallback.qvel[non_arm_qvel] == pytest.approx(qvel[non_arm_qvel])
+    assert reference.qpos[adapter.upper_body_qpos_indices] == pytest.approx(
+        qpos[adapter.upper_body_qpos_indices]
+    )
+
+
 def test_locomotion_applies_configured_and_clipped_elbow_yaw_offset(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
@@ -961,6 +1013,7 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.remote.staleness_ms == 200
     assert config.hardware.upper_body_follow.left_elbow_yaw_offset_radians == 0.0
     assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
+    assert config.hardware.rtmw_gmr_task_profile == "live_upper_body"
     validate_hardware_config(config.hardware)
     validate_hardware_config(pose_hardware_config(arm=True))
     validate_hardware_config(
@@ -1002,6 +1055,14 @@ def test_hardware_runner_defaults_to_read_only() -> None:
                     UpperBodyFollowConfig(),
                     left_elbow_yaw_offset_radians=np.nan,
                 )
+            )
+        )
+    with pytest.raises(ValueError, match="rtmw_gmr_task_profile"):
+        validate_hardware_config(pose_hardware_config(rtmw_gmr_task_profile=""))
+    with pytest.raises(ValueError, match="rotation_residual"):
+        validate_hardware_config(
+            pose_hardware_config(
+                rtmw_max_required_rotation_residual_degrees=181.0,
             )
         )
 

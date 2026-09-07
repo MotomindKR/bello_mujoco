@@ -172,12 +172,14 @@ class HardwareCommandConfig:
     rtmw_reference_qualification_frames: int
     rtmw_min_joint_confidence: float
     rtmw_min_rotation_confidence: float
+    rtmw_max_required_rotation_residual_degrees: float
     rtmw_max_pipeline_latency_ms: float
     rtmw_transport_latency_budget_ms: float
     rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
     rtmw_align_initial_heading: bool
     rtmw_align_initial_floor: bool
     rtmw_human_height_m: float
+    rtmw_gmr_task_profile: str
     fastsam_endpoint: str
     fastsam_tls_root_certificate_path: Path | None
     fastsam_tls_server_name_override: str | None
@@ -946,12 +948,14 @@ def _hardware_hydra(config: DictConfig) -> None:
         "rtmw_reference_qualification_frames",
         "rtmw_min_joint_confidence",
         "rtmw_min_rotation_confidence",
+        "rtmw_max_required_rotation_residual_degrees",
         "rtmw_max_pipeline_latency_ms",
         "rtmw_transport_latency_budget_ms",
         "rtmw_camera_to_world_quaternion_xyzw",
         "rtmw_align_initial_heading",
         "rtmw_align_initial_floor",
         "rtmw_human_height_m",
+        "rtmw_gmr_task_profile",
     )
     smplx_fields = ("smplx_neutral_model_path", "smplx_human_height_m")
     locomotion_upper_body_adjustment_fields = (
@@ -1181,6 +1185,9 @@ def _hardware_hydra(config: DictConfig) -> None:
             ),
             rtmw_min_joint_confidence=command.rtmw_min_joint_confidence,
             rtmw_min_rotation_confidence=command.rtmw_min_rotation_confidence,
+            rtmw_max_required_rotation_residual_degrees=(
+                command.rtmw_max_required_rotation_residual_degrees
+            ),
             rtmw_max_pipeline_latency_ms=command.rtmw_max_pipeline_latency_ms,
             rtmw_transport_latency_budget_ms=(command.rtmw_transport_latency_budget_ms),
             rtmw_camera_to_world_quaternion_xyzw=(
@@ -1197,6 +1204,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 else None
             ),
             rtmw_human_height_m=command.rtmw_human_height_m,
+            rtmw_gmr_task_profile=command.rtmw_gmr_task_profile,
             upper_body_follow=replace(
                 base.upper_body_follow,
                 left_elbow_yaw_offset_radians=(command.left_elbow_yaw_offset_radians),

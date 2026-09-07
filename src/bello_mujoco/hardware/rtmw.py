@@ -43,11 +43,12 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "026536040645c24ddc676d80d1d0da188f4021e8"
+RTMW_REVISION = "2a1a0948e23860a9d2f08c7d2a80f2688b604791"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
-    "derived_tree_consistent_landmark_ik;bone_length_shape_and_axial_twist_approximate"
+    "derived_tree_consistent_landmark_ik;palm_frame_forearm_twist_v1;"
+    "bone_length_shape_and_unobserved_axial_twist_approximate"
 )
 RTMW_COORDINATE_SPACE = "camera_opencv_x_right_y_down_z_forward"
 RTMW_SMPLX52_NAMES = SMPLX_BODY_JOINT_NAMES + tuple(
@@ -110,14 +111,10 @@ RTMW_SMPLX52_PARENTS = (
     49,
     50,
 )
-_REQUIRED_ROTATION_NAMES = (
+_FULLY_OBSERVED_ROTATION_NAMES = (
     "pelvis",
     "spine3",
-    "left_shoulder",
-    "left_elbow",
     "left_wrist",
-    "right_shoulder",
-    "right_elbow",
     "right_wrist",
 )
 
@@ -135,6 +132,7 @@ class RtmwGrpcConfig:
     human_height_m: float
     min_joint_confidence: float
     min_rotation_confidence: float
+    max_required_rotation_residual_degrees: float
     max_pipeline_latency_ms: float
     transport_latency_budget_ms: float
     max_source_age_ms: int
@@ -161,6 +159,9 @@ class RtmwGrpcConfig:
             human_height_m=config.rtmw_human_height_m,
             min_joint_confidence=config.rtmw_min_joint_confidence,
             min_rotation_confidence=config.rtmw_min_rotation_confidence,
+            max_required_rotation_residual_degrees=(
+                config.rtmw_max_required_rotation_residual_degrees
+            ),
             max_pipeline_latency_ms=config.rtmw_max_pipeline_latency_ms,
             transport_latency_budget_ms=config.rtmw_transport_latency_budget_ms,
             max_source_age_ms=config.upper_body_follow.max_reference_age_ms,
@@ -180,10 +181,18 @@ class RtmwGrpcConfig:
             ("connect_timeout_seconds", self.connect_timeout_seconds),
             ("rpc_timeout_seconds", self.rpc_timeout_seconds),
             ("human_height_m", self.human_height_m),
+            (
+                "max_required_rotation_residual_degrees",
+                self.max_required_rotation_residual_degrees,
+            ),
             ("max_pipeline_latency_ms", self.max_pipeline_latency_ms),
         ):
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"RTMW {name} must be positive and finite")
+        if self.max_required_rotation_residual_degrees > 180.0:
+            raise ValueError(
+                "RTMW max_required_rotation_residual_degrees must not exceed 180"
+            )
         for name, value in (
             ("min_joint_confidence", self.min_joint_confidence),
             ("min_rotation_confidence", self.min_rotation_confidence),
@@ -531,7 +540,15 @@ class RtmwSmplxStream:
             len(RTMW_SMPLX52_NAMES),
             "rotation confidence",
         )
-        for name in _REQUIRED_ROTATION_NAMES:
+        rotation_residual = _rotation_residual_array(
+            message.rotation_residual_degrees,
+            len(RTMW_SMPLX52_NAMES),
+        )
+        rotation_rank = _rotation_rank_array(
+            message.rotation_constraint_rank,
+            len(RTMW_SMPLX52_NAMES),
+        )
+        for name in _FULLY_OBSERVED_ROTATION_NAMES:
             index = RTMW_SMPLX52_NAMES.index(name)
             if not rotation_valid[index]:
                 raise ReferenceUnavailable(
@@ -541,6 +558,21 @@ class RtmwSmplxStream:
                 raise ReferenceUnavailable(
                     f"RTMW joint {name!r} rotation confidence is too low: "
                     f"{rotation_confidence[index]:.3f}"
+                )
+            if rotation_rank[index] != 2:
+                raise ReferenceUnavailable(
+                    f"RTMW joint {name!r} rotation has constraint rank "
+                    f"{rotation_rank[index]}; expected 2"
+                )
+            residual = float(rotation_residual[index])
+            if not math.isfinite(residual):
+                raise ReferenceUnavailable(
+                    f"RTMW joint {name!r} rotation has no finite residual"
+                )
+            if residual > self.config.max_required_rotation_residual_degrees:
+                raise ReferenceUnavailable(
+                    f"RTMW joint {name!r} rotation residual is too high: "
+                    f"{residual:.1f} degrees"
                 )
         source_quaternions = global_quaternions.copy()
         for index in required:
@@ -649,7 +681,10 @@ def rtmw_locomotion_reference_source(
         retargeter = GmrRetargeter(
             adapter.env,
             repository_gmr_source_identity(asset),
-            GmrLiveRetargetConfig(human_height_m=source_config.human_height_m),
+            GmrLiveRetargetConfig(
+                human_height_m=source_config.human_height_m,
+                task_profile=config.rtmw_gmr_task_profile,
+            ),
             validate_reference=adapter.validate_upper_body_reference,
         )
         with LiveGmrReferenceSource(stream, retargeter) as source:
@@ -663,6 +698,7 @@ def rtmw_locomotion_reference_source(
                     "rtmw_revision": RTMW_REVISION,
                     "schema_version": RTMW_SCHEMA_VERSION,
                     "representation": RTMW_REPRESENTATION,
+                    "gmr_task_profile": config.rtmw_gmr_task_profile,
                     "neutral_model_sha256": stream.neutral_model_sha256,
                     "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
                     "live_target_check": "deferred_until_after_RUN",
@@ -815,6 +851,32 @@ def _confidence_array(value: Any, count: int, label: str) -> np.ndarray:
     if np.any((result < 0.0) | (result > 1.0)):
         raise ValueError(f"RTMW {label} must be in [0, 1]")
     return result
+
+
+def _rotation_residual_array(value: Any, count: int) -> np.ndarray:
+    try:
+        array = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise ValueError("RTMW rotation residuals must contain numbers") from error
+    if (
+        array.shape != (count,)
+        or np.any(np.isinf(array))
+        or np.any(array < 0.0)
+        or np.any(array > 180.0)
+    ):
+        raise ValueError(
+            f"RTMW rotation residuals must contain {count} values in [0, 180] or NaN"
+        )
+    return np.array(array, copy=True)
+
+
+def _rotation_rank_array(value: Any, count: int) -> np.ndarray:
+    array = np.asarray(value)
+    if array.shape != (count,) or array.dtype.kind not in "iu":
+        raise ValueError(f"RTMW rotation ranks must contain {count} integers")
+    if np.any((array < 0) | (array > 2)):
+        raise ValueError("RTMW rotation ranks must be 0, 1, or 2")
+    return np.asarray(array, dtype=np.uint8).copy()
 
 
 def _boolean_array(value: Any, count: int, label: str) -> np.ndarray:

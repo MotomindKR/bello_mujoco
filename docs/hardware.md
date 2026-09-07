@@ -57,12 +57,13 @@ safety fix is not inherited automatically by a historical checkpoint.
 5. compiles policy inference;
 6. requires a fresh sample from the visualizer's remote-command service and,
    when upper-body tracking is enabled, validates the RTMW service contract and
-   prepares the offline GMR standing pose, then connects to the hardware daemon
-   without acquiring a control lease; no tracked person is required yet;
+   initializes GMR from an offline standing sample, then connects to the
+   hardware daemon without acquiring a control lease; no tracked person is
+   required yet;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite complete state frames;
-8. evaluates a lower-body-policy preview with GMR-standing or checkpoint-nominal
-   arms for locomotion, or a standing-policy preview for motion, and reports the
+8. evaluates a lower-body-policy preview with checkpoint-nominal arms for
+   locomotion, or a standing-policy preview for motion, and reports the
    resolved configuration.
    Motion-reference alignment and termination checks begin only when
    transitioning from the active standing policy into motion tracking.
@@ -91,9 +92,8 @@ After preflight, all task modes begin with the same interactive sequence:
 1. The operator supports the robot and types the exact word `HOLD`. The remote
    abort remains active while the runner waits and prevents control acquisition.
 2. The runner acquires control and ramps to the task's standing target over ten
-   seconds by default. Tracking-enabled Bello locomotion combines the checkpoint
-   nominal lower body with the repository-owned GMR standing arms; fixed-arm
-   locomotion uses the checkpoint's complete nominal pose.
+   seconds by default. Bello locomotion uses the checkpoint's complete nominal
+   pose regardless of whether live upper-body tracking is enabled.
 3. The runner continuously refreshes the nominal target and checks telemetry
    and nominal-pose error bounds while the operator releases external support
    and lets the robot settle. Direct coordinates use 0.25 rad; the
@@ -250,14 +250,23 @@ uv run bello-run-hardware \
 
 With tracking enabled, startup requires a compatible running RTMW service but
 does not require a tracked person or live pose before contacting
-`bello-hardwared`. The ramp and `RUN` hold use canonical GMR standing arms.
-After `RUN`, the arms remain at GMR standing until five distinct fresh schema-,
-confidence-, derived-rotation-, latency-, GMR-, and upper-body-limit-qualified
-poses arrive by default. Tracking loss resets that qualification and returns the
-arms toward GMR standing through the same bounded transition. The consumer
-accepts only RTMW schema 1,
-`smplx52_landmark_fit`, the exact face-free 52-joint hierarchy, calibrated
-metric OpenCV camera coordinates, and tree-consistent derived rotations.
+`bello-hardwared`. The ramp, `RUN` hold, and tracking-loss fallback use the
+robot's nominal arm pose; a GMR-retargeted standing sample cannot redefine that
+safety pose. After `RUN`, the arms remain nominal until five distinct fresh
+schema-, confidence-, rotation-observability-, latency-, GMR-, and
+upper-body-limit-qualified poses arrive by default. Tracking loss resets that
+qualification and returns the arms toward nominal through the same bounded
+transition. The consumer accepts only RTMW schema 1, `smplx52_landmark_fit`,
+the exact face-free 52-joint hierarchy, calibrated metric OpenCV camera
+coordinates, and the versioned rotation semantics
+`derived_tree_consistent_landmark_ik;palm_frame_forearm_twist_v1;bone_length_shape_and_unobserved_axial_twist_approximate`.
+This rejects an older running producer that does not infer the palm-constrained
+forearm frame even if its protobuf schema is otherwise compatible.
+The fixed `live_upper_body` GMR task profile is position-led. Pelvis, spine3,
+and wrist rotations must nevertheless have two-vector constraint rank and a
+residual no greater than 30 degrees because GMR rotates their configured local
+position offsets. Rank-one shoulder and elbow rotations are allowed because
+their axial component is not used by this profile.
 Root-relative/uncalibrated output and prerecorded video timestamps are rejected.
 No separate `MOTION` confirmation is used.
 
@@ -273,7 +282,7 @@ starting values, and each jogged target uses the same clipping and slew-rate
 limits. Briefly rejected frames leave the
 last safe reference usable
 until its total age reaches 1000 ms. When no fresh safe pose remains, the runner
-reports the loss and returns only the arms toward GMR standing at the same
+reports the loss and returns only the arms toward their nominal pose at the same
 bounded rate; joystick locomotion continues. A later safe pose resumes arm
 following. A malformed RTMW record or terminal GMR worker failure still causes
 fail-closed damped shutdown.
@@ -491,12 +500,13 @@ reference completion, and raw-versus-applied action bounds.
 Locomotion adds exact RTMW protobuf and stream metadata checks, tracking and
 required-joint confidence, derived-rotation confidence and tree consistency,
 pipeline/transport/reference age, source sequence and timestamp monotonicity,
-reference joint speed and hard upper-body joint limits, and a fixed
+required rank-two rotation observability and residual, reference joint speed
+and hard upper-body joint limits, and a fixed
 upper-body target slew bound. Invalid terminal-joint rotations use the nearest
 valid ancestor only outside the required upper-body chain. These checks affect
 only the 12 arm targets; the joystick-conditioned locomotion policy continues
 controlling the waist and legs. A temporarily unavailable or stale reference
-blends the arms back to GMR standing over
+blends the arms back to their checkpoint-nominal pose over
 `upper_body_follow.connection_transition_duration_seconds`; a recovered
 reference uses the same blend before resuming direct tracking. Locomotion
 continues throughout either transition, while a terminal source failure remains

@@ -260,6 +260,7 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     rtmw_reference_qualification_frames: int = 5
     rtmw_min_joint_confidence: float = 0.25
     rtmw_min_rotation_confidence: float = 0.10
+    rtmw_max_required_rotation_residual_degrees: float = 30.0
     rtmw_max_pipeline_latency_ms: float = 250.0
     rtmw_transport_latency_budget_ms: float = 10.0
     rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
@@ -272,6 +273,7 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     rtmw_align_initial_floor: bool = True
     smplx_neutral_model_path: Path | None = None
     rtmw_human_height_m: float = 1.75
+    rtmw_gmr_task_profile: str = "live_upper_body"
     upper_body_follow: UpperBodyFollowConfig = UpperBodyFollowConfig()
 
 
@@ -453,10 +455,19 @@ class HardwarePolicyAdapter:
     def set_upper_body_standing_reference(
         self, reference: Twist2ReferenceFrame
     ) -> None:
-        """Bind the GMR standing arms used by ramp, hold, and pose fallback."""
+        """Bind a full fallback frame whose arm joints use the robot nominal pose."""
 
-        self.validate_upper_body_reference(reference, live=False)
-        self._standing_reference = reference
+        qpos = np.asarray(reference.qpos, dtype=np.float64).copy()
+        qvel = np.asarray(reference.qvel, dtype=np.float64).copy()
+        if qpos.shape == (self.env.model.mj_model.nq,):
+            qpos[self.upper_body_qpos_indices] = np.asarray(
+                self.env.model.default_qpos, dtype=np.float64
+            )[self.upper_body_qpos_indices]
+        if qvel.shape == (self.env.model.mj_model.nv,):
+            qvel[self.upper_body_qvel_indices] = 0.0
+        fallback = replace(reference, qpos=qpos, qvel=qvel)
+        self.validate_upper_body_reference(fallback, live=False)
+        self._standing_reference = fallback
 
     def jog_elbow_yaw_offsets(
         self,
@@ -740,12 +751,13 @@ class HardwarePolicyAdapter:
         desired = np.asarray(reference.qpos, dtype=np.float64)[
             self.upper_body_qpos_indices
         ].copy()
-        desired[self.upper_body_elbow_yaw_indices] += np.asarray(
-            (
-                self.upper_body_follow.left_elbow_yaw_offset_radians,
-                self.upper_body_follow.right_elbow_yaw_offset_radians,
+        if live:
+            desired[self.upper_body_elbow_yaw_indices] += np.asarray(
+                (
+                    self.upper_body_follow.left_elbow_yaw_offset_radians,
+                    self.upper_body_follow.right_elbow_yaw_offset_radians,
+                )
             )
-        )
         low = self.env.model.joint_target_low[self.upper_body_indices]
         high = self.env.model.joint_target_high[self.upper_body_indices]
         return np.clip(desired, low, high)
@@ -943,6 +955,11 @@ def validate_hardware_config(
         from bello_mujoco.hardware.rtmw import RtmwGrpcConfig
 
         RtmwGrpcConfig.from_hardware(config)
+        if config.rtmw_gmr_task_profile != "live_upper_body":
+            raise ValueError(
+                "rtmw_gmr_task_profile must be 'live_upper_body' for safe RTMW "
+                "locomotion tracking"
+            )
         if config.rtmw_reference_qualification_frames < 1:
             raise ValueError("rtmw_reference_qualification_frames must be positive")
     upper = config.upper_body_follow
@@ -1391,7 +1408,7 @@ def control_physical_robot(
                         else:
                             print(
                                 "Live upper-body pose is unavailable; returning the "
-                                f"arms to GMR standing: {reference_error}"
+                                f"arms to their nominal pose: {reference_error}"
                             )
                         pose_following = following
                 policy_step = adapter.step(frame, command, reference)

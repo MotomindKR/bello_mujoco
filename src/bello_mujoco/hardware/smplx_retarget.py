@@ -249,12 +249,21 @@ class GmrLiveRetargetConfig:
     """Real-time settings layered on a robot's pinned GMR contract."""
 
     human_height_m: float = 1.66
+    task_profile: str | None = None
     convergence_tolerance: float = 1.0e-4
     max_source_interval_seconds: float = 0.2
     contact_max_speed_mps: float = 0.2
     contact_height_margin_m: float = 0.03
 
     def __post_init__(self) -> None:
+        if self.task_profile is not None and (
+            not isinstance(self.task_profile, str)
+            or not self.task_profile
+            or self.task_profile.strip() != self.task_profile
+        ):
+            raise ValueError(
+                "GMR task_profile must be null or a nonempty trimmed string"
+            )
         positive = {
             "human_height_m": self.human_height_m,
             "convergence_tolerance": self.convergence_tolerance,
@@ -293,7 +302,7 @@ class GmrRetargeter:
                 verbose=False,
                 use_velocity_limit=None,
                 robot_xml_path=env.model.xml_path,
-                task_profile=profile.task_profile,
+                task_profile=config.task_profile or profile.task_profile,
             )
         retargeter.max_iter = 0
         self.passes_per_frame = _positive_solver_count(
@@ -814,7 +823,10 @@ def import_pinned_gmr_retargeter() -> type[Any]:
     return module.GeneralMotionRetargeting
 
 
-def _validate_model_identity(gmr_model: mujoco.MjModel, model: mujoco.MjModel) -> None:
+def _validate_model_identity(
+    gmr_model: mujoco.MjModel,
+    model: mujoco.MjModel,
+) -> None:
     fields = ("nq", "nv", "nu", "njnt", "nbody")
     mismatched = [
         name for name in fields if getattr(gmr_model, name) != getattr(model, name)
@@ -837,6 +849,37 @@ def _validate_model_identity(gmr_model: mujoco.MjModel, model: mujoco.MjModel) -
         )
         if left != right:
             raise ValueError("GMR and runtime robot model ordering differs")
+
+    if not np.array_equal(gmr_model.jnt_type, model.jnt_type):
+        raise ValueError("GMR and runtime robot joint types differ")
+    if not np.array_equal(gmr_model.jnt_limited, model.jnt_limited):
+        raise ValueError("GMR and runtime robot joint limit declarations differ")
+    if not np.allclose(gmr_model.jnt_axis, model.jnt_axis, atol=1.0e-9, rtol=0.0):
+        raise ValueError("GMR and runtime robot joint axes differ")
+    limited = np.asarray(model.jnt_limited, dtype=bool)
+    if not np.allclose(
+        gmr_model.jnt_range[limited],
+        model.jnt_range[limited],
+        atol=1.0e-9,
+        rtol=0.0,
+    ):
+        raise ValueError("GMR and runtime robot joint ranges differ")
+
+    if not np.array_equal(gmr_model.body_parentid, model.body_parentid):
+        raise ValueError("GMR and runtime robot body parent frames differ")
+    position_match = np.all(
+        np.isclose(gmr_model.body_pos, model.body_pos, atol=1.0e-9, rtol=0.0),
+        axis=1,
+    )
+    quaternion_dot = np.abs(np.sum(gmr_model.body_quat * model.body_quat, axis=1))
+    orientation_match = np.isclose(quaternion_dot, 1.0, atol=1.0e-9, rtol=0.0)
+    frame_match = position_match & orientation_match
+    if not np.all(frame_match):
+        body_id = int(np.flatnonzero(~frame_match)[0])
+        body_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+        raise ValueError(
+            f"GMR and runtime robot body {body_name!r} local frames differ"
+        )
 
 
 def _copy_targets(

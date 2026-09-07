@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
+import mujoco
 import numpy as np
 import pytest
 
@@ -48,6 +49,7 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     SmplxTargetFrame,
+    _validate_model_identity,
     import_pinned_gmr_retargeter,
     load_smplx_standing_sample,
     validate_smplx_target_frame,
@@ -572,6 +574,33 @@ def test_pinned_gmr_import_avoids_optional_ui_and_torch_dependencies() -> None:
     assert retargeter_type.__name__ == "GeneralMotionRetargeting"
     assert "torch" not in sys.modules
     assert "_bello_pinned_gmr.robot_motion_viewer" not in sys.modules
+
+
+def test_live_gmr_model_identity_checks_axes_ranges_and_task_frames(
+    twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
+) -> None:
+    runtime = twist2_hardware_adapter.env.model.mj_model
+    path = twist2_hardware_adapter.env.model.xml_path
+    joint_name = "left_shoulder_pitch_joint"
+    task_body = "l_end_effector_sphere_link"
+
+    solver = mujoco.MjModel.from_xml_path(str(path))
+    _validate_model_identity(solver, runtime)
+
+    solver = mujoco.MjModel.from_xml_path(str(path))
+    solver.joint(joint_name).axis[:] = (0.0, 1.0, 0.0)
+    with pytest.raises(ValueError, match="joint axes"):
+        _validate_model_identity(solver, runtime)
+
+    solver = mujoco.MjModel.from_xml_path(str(path))
+    solver.joint(joint_name).range[1] -= 0.1
+    with pytest.raises(ValueError, match="joint ranges"):
+        _validate_model_identity(solver, runtime)
+
+    solver = mujoco.MjModel.from_xml_path(str(path))
+    solver.body(task_body).pos[0] += 0.01
+    with pytest.raises(ValueError, match="end_effector_sphere.*local frames"):
+        _validate_model_identity(solver, runtime)
 
 
 def test_smplx_target_contract_requires_complete_global_transforms() -> None:
