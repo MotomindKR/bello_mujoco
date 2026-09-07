@@ -262,17 +262,19 @@ qualification and returns the arms toward nominal through the same bounded
 transition. The consumer accepts only RTMW schema 1, `smplx52_landmark_fit`,
 the exact face-free 52-joint hierarchy, calibrated metric OpenCV camera
 coordinates, and the versioned rotation semantics
-`derived_tree_consistent_landmark_ik;anthropometric_upper_body_projection_v1;anatomical_elbow_hinge_upper_arm_frame_v1;palm_frame_forearm_twist_v1;lower_body_hand_shape_and_unobserved_axial_twist_approximate`.
-The producer projects its smoothed upper-body tree to subject-scaled neutral
-SMPL-X bone lengths before deriving rotations, while moving each hand rigidly
-with its corrected wrist. This rejects older running producers that lack the
-same geometry, anatomical arm-frame, and palm-frame contracts even if their
-protobuf schema is otherwise compatible.
-The fixed `live_upper_body` GMR task profile gives the arm positions the larger
-costs while also constraining their orientations. The shoulder and elbow frames
-use the observed shoulder-elbow-wrist chain, with the elbow and wrist twist
-derived from palm landmarks. This keeps elbow and wrist pitch away from spurious
-IK branches instead of allowing position-only null-space drift.
+`derived_tree_consistent_landmark_ik;canonical_smplx_upper_body_projection_v1;anatomical_elbow_hinge_arm_chain_v2;palm_frame_wrist_orientation_v2;lower_body_hand_shape_and_unobserved_axial_twist_approximate`.
+The producer projects its smoothed upper-body tree to canonical neutral-SMPL-X
+bone lengths before deriving rotations, while moving each hand rigidly with its
+corrected wrist. This rejects older running producers that lack the same
+geometry, anatomical arm-frame, and palm-frame contracts even if their protobuf
+schema is otherwise compatible.
+The fixed `live_upper_body` GMR task profile disables the independent arm
+position costs and constrains the shoulder, elbow, and terminal wrist
+orientations. The shoulder and elbow frames use the observed
+shoulder-elbow-wrist chain and an anatomical elbow hinge; palm landmarks define
+only the terminal wrist orientation. Fixed robot links therefore determine arm
+positions without an infeasible position target competing with palm
+orientation or duplicated palm twist at the elbow.
 Pelvis, spine3, and wrist rotations must have two-vector constraint rank and a
 residual no greater than 30 degrees. Shoulder frames use a side-specific
 anatomical elbow-hinge prior when the arm is bent far enough; nearly straight or
@@ -288,12 +290,13 @@ is not mistaken for subject heading.
 
 RTMW accepts source intervals through the configurable
 `rtmw_max_source_interval_seconds` limit (500 ms by default). Live GMR uses the
-profile's fixed solver-pass count for each accepted source frame. It does not
-convert wall-clock gaps into repeated IK solves, so solver work cannot create a
-feedback loop that reduces the consumed RTMW frame rate. Live upper-body changes
-are limited to `3*pi` rad/s at the 50 Hz control rate, including the first pose
-and source recovery, and outgoing targets remain inside the model actuator
-range.
+profile's fixed solver-pass count for each accepted source frame: Mini uses
+three passes to converge its orientation-only arm tasks, while the universal
+offline profile remains at one. The pass count does not depend on wall-clock
+gaps, so solver work cannot create a feedback loop that reduces the consumed
+RTMW frame rate. Live upper-body changes are limited to `3*pi` rad/s at the 50
+Hz control rate, including the first pose and source recovery, and outgoing
+targets remain inside the model actuator range.
 On Bello, locomotion adds the independently configurable
 `left_elbow_yaw_offset_radians` and `right_elbow_yaw_offset_radians` to their
 respective GMR targets, then clips the adjusted values to the corresponding

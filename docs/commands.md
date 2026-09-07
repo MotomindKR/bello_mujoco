@@ -382,7 +382,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial anatomical heading to world forward, relative to the canonical SMPL-X-to-world pelvis basis. |
 | `rtmw_align_initial_floor` | boolean; `true` | locomotion | Use the acquired target's initial lower foot as the fixed world floor. |
 | `rtmw_human_height_m` | positive float; `1.75` | locomotion | Subject height used and advertised by RTMW's metric depth reconstruction; it must equal RTMW's `reconstruction.subject_height_m`. Published upper-body articulation is normalized to the neutral SMPL-X model rather than this height. |
-| `rtmw_gmr_task_profile` | string; `live_upper_body` | locomotion | Orientation-led GMR task profile for RTMW arm tracking. This is currently the only accepted value; Mini uses shoulder, elbow, and palm frames while fixed robot links determine arm positions. |
+| `rtmw_gmr_task_profile` | string; `live_upper_body` | locomotion | Orientation-led GMR task profile for RTMW arm tracking. This is currently the only accepted value; Mini uses shoulder, elbow, and palm frames over three fixed solver passes while fixed robot links determine arm positions. |
 | `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
 | `fastsam_tls_root_certificate_path` | path or `null`; `null` | twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |

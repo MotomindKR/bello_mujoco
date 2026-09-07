@@ -579,6 +579,9 @@ def test_bello_mini_gmr_live_upper_body_profile_uses_observable_arm_frames() -> 
             }
         },
         "live_upper_body": {
+            "solver": {
+                "passes_per_frame": 3,
+            },
             "ik_match_table2": {
                 "left_upper_arm_link": {
                     "position_cost": 0,
@@ -630,6 +633,7 @@ def test_bello_mini_live_upper_body_profile_loads_generated_model(
     )
 
     assert retargeter.task_profile == "live_upper_body"
+    assert retargeter.offline_solver_config["passes_per_frame"] == 3
     for side in ("left", "right"):
         np.testing.assert_array_equal(
             retargeter.human_body_to_task1[f"{side}_shoulder"].cost,

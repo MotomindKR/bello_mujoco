@@ -44,13 +44,13 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "2a569b3303a2a07dcb072b11e8f1a3dd4160dc82"
+RTMW_REVISION = "7b4b45ca4badcfc196e9ef3aa57b949b1b2377db"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
     "derived_tree_consistent_landmark_ik;canonical_smplx_upper_body_projection_v1;"
-    "anatomical_elbow_hinge_upper_arm_frame_v1;"
-    "palm_frame_forearm_twist_v1;"
+    "anatomical_elbow_hinge_arm_chain_v2;"
+    "palm_frame_wrist_orientation_v2;"
     "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
 )
 RTMW_COORDINATE_SPACE = "camera_opencv_x_right_y_down_z_forward"

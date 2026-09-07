@@ -472,8 +472,8 @@ def test_rtmw_requires_versioned_anatomical_arm_and_palm_rotation_semantics(
     assert RTMW_ROTATION_SEMANTICS == (
         "derived_tree_consistent_landmark_ik;"
         "canonical_smplx_upper_body_projection_v1;"
-        "anatomical_elbow_hinge_upper_arm_frame_v1;"
-        "palm_frame_forearm_twist_v1;"
+        "anatomical_elbow_hinge_arm_chain_v2;"
+        "palm_frame_wrist_orientation_v2;"
         "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
     )
     _validate_stream_info(stream_info(), config)
@@ -482,6 +482,7 @@ def test_rtmw_requires_versioned_anatomical_arm_and_palm_rotation_semantics(
         rotation_semantics=(
             "derived_tree_consistent_landmark_ik;"
             "canonical_smplx_upper_body_projection_v1;"
+            "anatomical_elbow_hinge_upper_arm_frame_v1;"
             "palm_frame_forearm_twist_v1;"
             "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
         )

@@ -732,6 +732,7 @@ def test_bello_mini_live_gmr_static_pose_does_not_drift_to_arm_limits(
             max_source_interval_seconds=0.5,
         ),
     )
+    assert retargeter.passes_per_frame == 3
     source = load_smplx_standing_sample(
         synthetic_smplx_model(tmp_path), profile.source_body_names
     )
