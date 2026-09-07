@@ -2501,10 +2501,11 @@ class BelloLocomotionEnv:
             axis=1,
         )
         root_qvel = int(self.model.root_qvel_adr)
+        current_qvel_xy = data.qvel[:, root_qvel : root_qvel + 2]
         qvel_xy = jnp.where(
             push_applied[:, None],
-            push_velocity,
-            data.qvel[:, root_qvel : root_qvel + 2],
+            current_qvel_xy + push_velocity,
+            current_qvel_xy,
         )
         data = data.replace(
             qvel=data.qvel.at[:, root_qvel : root_qvel + 2].set(qvel_xy)

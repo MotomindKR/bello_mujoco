@@ -1261,7 +1261,7 @@ def test_episode_reset_honors_a_pending_standing_request(
     )
 
 
-def test_random_push_overwrites_root_xy_velocity_on_interval(
+def test_random_push_adds_root_xy_velocity_on_interval(
     bello_asset: PreparedAsset,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(
@@ -1277,16 +1277,22 @@ def test_random_push_overwrites_root_xy_velocity_on_interval(
         ),
     )
     state, _ = env.reset_batch(2)
+    root_qvel = env.model.root_qvel_adr
+    initial_velocity = jnp.asarray([[0.25, 0.5], [-0.75, 1.0]])
+    data = state.data.replace(
+        qvel=state.data.qvel.at[:, root_qvel : root_qvel + 2].set(initial_velocity)
+    )
     data, applied, velocity = env._maybe_apply_random_push_batch(
-        state.data,
+        data,
         jnp.ones(2, dtype=jnp.int32),
         jax.random.PRNGKey(0),
     )
-    root_qvel = env.model.root_qvel_adr
 
     assert applied.tolist() == [True, True]
     assert velocity == pytest.approx(jnp.asarray([[0.5, -0.25]] * 2))
-    assert data.qvel[:, root_qvel : root_qvel + 2] == pytest.approx(velocity)
+    assert data.qvel[:, root_qvel : root_qvel + 2] == pytest.approx(
+        initial_velocity + velocity
+    )
 
 
 def test_rough_terrain_foot_height_queries_local_elevation(

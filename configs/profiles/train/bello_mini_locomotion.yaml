@@ -7,6 +7,9 @@ asset_config:
 env_config:
   gait:
     frequency_hz: 0.90
+  random_push:
+    lin_vel_x: [-0.5, 0.5]
+    lin_vel_y: [-0.5, 0.5]
   spawn:
     # Independent scaling would break the coordinated flat-sole crouch.
     joint_pos_scale_range: [1.0, 1.0]
@@ -32,7 +35,7 @@ checkpoint_config:
 wandb_config:
   group: bello-mini-locomotion
   run_name: bello_mini_locomotion_seed0
-  tags: [locomotion, bello-mini, ideal-differential-ankle, seeded-plane-slope]
+  tags: [locomotion, bello-mini, ideal-differential-ankle, seeded-plane-slope, additive-push-xy05]
 video_config:
   filename_prefix: bello_mini_locomotion
   command: [0.5, 0.0, 0.0]

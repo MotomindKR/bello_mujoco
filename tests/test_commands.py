@@ -324,6 +324,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.command_config.standing_probability == pytest.approx(0.25)
     assert bello.command_config.standing_transitions_enabled
     assert bello.env_config.random_push.enabled
+    assert bello.env_config.random_push.lin_vel_x == (-2.0, 2.0)
+    assert bello.env_config.random_push.lin_vel_y == (-2.0, 2.0)
+    assert mini.env_config.random_push.lin_vel_x == (-0.5, 0.5)
+    assert mini.env_config.random_push.lin_vel_y == (-0.5, 0.5)
     assert not bello.reward_config.gait.joint_force_apply_while_standing
     assert bello.reward_config.gait.touchdown_force_soft_limit_body_weights == (
         pytest.approx(1.0)
@@ -357,6 +361,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         replace(
             mini.env_config,
             gait=bello.env_config.gait,
+            random_push=bello.env_config.random_push,
             spawn=bello.env_config.spawn,
         )
         == bello.env_config
