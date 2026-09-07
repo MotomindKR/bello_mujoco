@@ -255,17 +255,20 @@ qualification and returns the arms toward nominal through the same bounded
 transition. The consumer accepts only RTMW schema 1, `smplx52_landmark_fit`,
 the exact face-free 52-joint hierarchy, calibrated metric OpenCV camera
 coordinates, and the versioned rotation semantics
-`derived_tree_consistent_landmark_ik;anthropometric_upper_body_projection_v1;palm_frame_forearm_twist_v1;lower_body_hand_shape_and_unobserved_axial_twist_approximate`.
+`derived_tree_consistent_landmark_ik;anthropometric_upper_body_projection_v1;anatomical_elbow_hinge_upper_arm_frame_v1;palm_frame_forearm_twist_v1;lower_body_hand_shape_and_unobserved_axial_twist_approximate`.
 The producer projects its smoothed upper-body tree to subject-scaled neutral
 SMPL-X bone lengths before deriving rotations, while moving each hand rigidly
 with its corrected wrist. This rejects older running producers that lack the
-same geometry and palm-frame contracts even if their protobuf schema is
-otherwise compatible.
+same geometry, anatomical arm-frame, and palm-frame contracts even if their
+protobuf schema is otherwise compatible.
 The fixed `live_upper_body` GMR task profile is position-led. Pelvis, spine3,
 and wrist rotations must nevertheless have two-vector constraint rank and a
 residual no greater than 30 degrees because GMR rotates their configured local
-position offsets. Rank-one shoulder and elbow rotations are allowed because
-their axial component is not used by this profile.
+position offsets. Shoulder frames use a side-specific anatomical elbow-hinge
+prior when the arm is bent far enough; nearly straight or folded arms remain
+rank one and transport their preceding twist. Optional joint rotations outside
+the configured confidence or residual limits fall back to the nearest usable
+ancestor.
 Root-relative/uncalibrated output and prerecorded video timestamps are rejected.
 No separate `MOTION` confirmation is used.
 

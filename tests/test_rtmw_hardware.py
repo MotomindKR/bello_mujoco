@@ -405,6 +405,47 @@ def test_rtmw_accepts_rank_one_elbow_for_position_only_live_profile(
     assert frame.sequence == message.frame_id
 
 
+@pytest.mark.parametrize(
+    ("rotation_confidence", "rotation_residual"),
+    [(0.05, 0.0), (0.8, 30.1)],
+)
+def test_rtmw_low_quality_optional_rotation_uses_ancestor(
+    tmp_path: Path,
+    rotation_confidence: float,
+    rotation_residual: float,
+) -> None:
+    stream = make_stream(tmp_path)
+    message = rtmw_frame(8_000_000_000)
+    shoulder = RTMW_SMPLX52_NAMES.index("left_shoulder")
+    turn_xyzw = np.asarray((0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)))
+    local = np.asarray(message.local_joint_quaternions).reshape(-1, 4)
+    global_ = np.asarray(message.global_joint_quaternions).reshape(-1, 4)
+    local[shoulder] = turn_xyzw
+    for index in range(len(RTMW_SMPLX52_NAMES)):
+        ancestor = index
+        while ancestor >= 0 and ancestor != shoulder:
+            ancestor = RTMW_SMPLX52_PARENTS[ancestor]
+        if ancestor == shoulder:
+            global_[index] = turn_xyzw
+    message.local_joint_quaternions = local.reshape(-1).tolist()
+    message.global_joint_quaternions = global_.reshape(-1).tolist()
+    message.rotation_confidence[shoulder] = rotation_confidence
+    message.rotation_residual_degrees[shoulder] = rotation_residual
+
+    frame = stream._parse_frame(message)
+
+    np.testing.assert_allclose(
+        frame.transforms["left_shoulder"][1],
+        (1.0, 0.0, 0.0, 0.0),
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        frame.transforms["left_elbow"][1],
+        (np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)),
+        atol=1e-7,
+    )
+
+
 def test_rtmw_rejects_root_relative_or_uncalibrated_stream(tmp_path: Path) -> None:
     config = rtmw_config(tmp_path)
     info = stream_info(
@@ -418,26 +459,29 @@ def test_rtmw_rejects_root_relative_or_uncalibrated_stream(tmp_path: Path) -> No
         _validate_stream_info(info, config)
 
 
-def test_rtmw_requires_versioned_palm_frame_rotation_semantics(
+def test_rtmw_requires_versioned_anatomical_arm_and_palm_rotation_semantics(
     tmp_path: Path,
 ) -> None:
     config = rtmw_config(tmp_path)
     assert RTMW_ROTATION_SEMANTICS == (
         "derived_tree_consistent_landmark_ik;"
         "anthropometric_upper_body_projection_v1;"
+        "anatomical_elbow_hinge_upper_arm_frame_v1;"
         "palm_frame_forearm_twist_v1;"
         "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
     )
     _validate_stream_info(stream_info(), config)
 
-    legacy = stream_info(
+    previous = stream_info(
         rotation_semantics=(
             "derived_tree_consistent_landmark_ik;"
-            "bone_length_shape_and_axial_twist_approximate"
+            "anthropometric_upper_body_projection_v1;"
+            "palm_frame_forearm_twist_v1;"
+            "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
         )
     )
     with pytest.raises(ValueError, match="rotation_semantics"):
-        _validate_stream_info(legacy, config)
+        _validate_stream_info(previous, config)
 
 
 def test_rtmw_rejects_latency_mismatch_or_excess(tmp_path: Path) -> None:

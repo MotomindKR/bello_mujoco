@@ -44,11 +44,12 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "fdaa892bcf22bdfab002f57cf1525ddc3e1ec63f"
+RTMW_REVISION = "2f15f96fb9a9f803dde662664bef05d4d419ca87"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
     "derived_tree_consistent_landmark_ik;anthropometric_upper_body_projection_v1;"
+    "anatomical_elbow_hinge_upper_arm_frame_v1;"
     "palm_frame_forearm_twist_v1;"
     "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
 )
@@ -580,12 +581,21 @@ class RtmwSmplxStream:
                     f"RTMW joint {name!r} rotation residual is too high: "
                     f"{residual:.1f} degrees"
                 )
+        usable_rotation = (
+            rotation_valid
+            & (rotation_confidence >= self.config.min_rotation_confidence)
+            & np.isfinite(rotation_residual)
+            & (
+                rotation_residual
+                <= self.config.max_required_rotation_residual_degrees
+            )
+        )
         source_quaternions = global_quaternions.copy()
         for index in required:
-            if rotation_valid[index]:
+            if usable_rotation[index]:
                 continue
             ancestor = RTMW_SMPLX52_PARENTS[index]
-            while ancestor >= 0 and not rotation_valid[ancestor]:
+            while ancestor >= 0 and not usable_rotation[ancestor]:
                 ancestor = RTMW_SMPLX52_PARENTS[ancestor]
             if ancestor < 0:
                 name = RTMW_SMPLX52_NAMES[index]
