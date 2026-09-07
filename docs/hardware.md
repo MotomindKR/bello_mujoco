@@ -23,14 +23,11 @@ description. The root Git commit pins the stack gitlink, and exact-source checks
 require the recursive submodule checkout to be initialized, clean, and at that
 commit. The checkpoint does not record daemon or firmware revisions.
 
-Calibrated physical deployment supports `bello`. The runner also reconstructs
-Bello Mini checkpoints against Mini's own 28-motor description for vCAN
-emulation; it never borrows Bello's topology. Mini encoder zeros and ankle
-reductions remain provisional, so an armed Mini run is rejected unless the
-operator supplies the explicit emulator-only
-`allow_provisional_hardware=true` acknowledgement.
-The runner cannot attest that an endpoint is an emulator, so that override must
-never be used with a physical Mini daemon.
+Physical locomotion deployment supports `bello` and `bello_mini`. The runner
+reconstructs Mini checkpoints against Mini's own reviewed 28-motor description;
+it never borrows Bello's topology. Mini's arm topology does not yet implement
+the live RTMW/GMR follow contract, so Mini locomotion must set
+`upper_body_tracking_enabled=false` and hold the checkpoint's nominal arm pose.
 
 The runner requires the pinned daemon and Python binding's synchronous hardware
 states API. Each policy iteration requests one complete frame containing the
@@ -135,11 +132,8 @@ deadlines, and damped cleanup as the policy runner. Ankle pitch and roll are
 translated through the two-motor differential; the script never treats one
 ankle motor as an independently movable joint.
 
-Select the robot contract with `--asset`. The default `bello` profile has a
-calibrated hardware description. `bello_mini` is rejected before the hardware
-binding is imported or a daemon connection is opened because its profile is
-still marked provisional; use the policy runner, not the chirp tool, for vCAN
-Mini integration testing.
+Select the reviewed robot contract with `--asset`. Both `bello` and
+`bello_mini` support read-only preflight and armed joint-chirp diagnostics.
 
 Run the read-only preflight first. It connects to either physical
 `bello-hardwared` or the VCAN emulator, verifies that both groups are `IDLE`,
@@ -204,7 +198,8 @@ requires `upper_body_tracking_enabled=false`. Raw Mini IMU orientation, angular
 velocity, and acceleration axes are rotated from the physical `imu_link` frame
 into the checkpoint's pelvis observation frame. The physical IMU origin is
 offset from the pelvis origin, so existing checkpoints retain an unmodeled
-lever-arm acceleration residual; physical deployment remains calibration-gated.
+lever-arm acceleration residual. This remains a known limitation of the current
+Mini checkpoint rather than a deployment gate.
 
 Run the pinned `deps/RTMW-SMPLX-Teleop` producer with its gRPC service enabled.
 Preflight requires that submodule to be clean and exactly at the reviewed

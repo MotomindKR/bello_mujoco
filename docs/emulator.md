@@ -1,7 +1,7 @@
 # RobStride emulator
 
 The RobStride emulator presents either the canonical 55.068 kg sphere-hand
-Bello or the provisional Bello Mini hardware contract through the same motor,
+Bello or the reviewed Bello Mini hardware contract through the same motor,
 IMU, and pose interfaces used around physical hardware, while native MuJoCo
 supplies real-time dynamics. An optional symmetric hand payload is available
 for either asset.
@@ -46,11 +46,10 @@ The command defaults to `asset=bello`; select Mini with
 `asset=bello_mini`. Both publish 100 Hz motor feedback, a 200 Hz EBIMU stream at
 `/dev/ttyIMU-mujoco`, and PoseService on port 50052.
 
-Mini uses the 28-motor description and reviewed directions pinned from
-`bello-stack`. Its encoder zeros and ankle reductions remain provisional. The
-ROBSTRIDE_02 ankle entry currently has protocol limits but no electrical model,
-so its unavailable current-limit and bus-voltage parameter telemetry is reported
-as zero rather than fabricated.
+Mini uses the 28-motor description, reviewed directions, and differential
+mapping pinned from `bello-stack`. The ROBSTRIDE_02 ankle entry currently has
+protocol limits but no electrical model, so its unavailable current-limit and
+bus-voltage parameter telemetry is reported as zero rather than fabricated.
 
 ## Bello Mini vCAN stack
 
@@ -88,10 +87,9 @@ uv run bello-run-hardware \
 ```
 
 The Mini policy controls 14 waist/leg joints and holds all 14 arm joints at its
-checkpoint nominal pose. Add `arm=true allow_provisional_hardware=true` only to
-drive the vCAN emulator after reviewing the normal interactive HOLD/RUN safety
-sequence. The runner cannot cryptographically distinguish vCAN from a physical
-daemon, so this acknowledgement must never be used with physical Mini hardware.
+checkpoint nominal pose. Add `arm=true` only after reviewing the normal
+interactive HOLD/RUN safety sequence. The same command contract applies to vCAN
+and physical hardware.
 
 The public `command_latency_seconds` option delays only MIT motor-control
 frames before they affect MuJoCo. Motor enable/stop, parameter access, and

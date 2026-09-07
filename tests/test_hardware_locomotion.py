@@ -361,22 +361,22 @@ def test_hardware_checkpoint_accepts_bello_mini_robot_layout(
         HardwareLocomotionConfig(upper_body_tracking_enabled=False),
         metadata,
     )
-    with pytest.raises(ValueError, match="not approved for physical deployment"):
-        validate_hardware_config(
-            HardwareLocomotionConfig(
-                arm=True,
-                upper_body_tracking_enabled=False,
-            ),
-            metadata,
-        )
     validate_hardware_config(
         HardwareLocomotionConfig(
             arm=True,
-            allow_provisional_hardware=True,
             upper_body_tracking_enabled=False,
         ),
         metadata,
     )
+    with pytest.raises(ValueError, match="only valid for a provisional robot"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(
+                arm=True,
+                allow_provisional_hardware=True,
+                upper_body_tracking_enabled=False,
+            ),
+            metadata,
+        )
     with pytest.raises(
         ValueError,
         match="upper_body_tracking_enabled=false",

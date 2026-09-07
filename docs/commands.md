@@ -303,7 +303,7 @@ Configuration source: `configs/commands/emulator.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `asset` | `bello` or `bello_mini`; `bello` | Select the robot contract. Mini uses its provisional 28-motor vCAN description; physical calibration is not implied. |
+| `asset` | `bello` or `bello_mini`; `bello` | Select the reviewed robot contract. Mini uses its own 28-motor physical/vCAN description. |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
 | `command_latency_seconds` | nonnegative float; `0.01` | Delay MIT motor-control frames before applying them to MuJoCo. Lifecycle, parameter, and stop traffic remains immediate; use `0` to disable the delay. |
 | `motor_kp_scale` | positive float; `1` | Emulator-only multiplier on decoded MIT position gains. Use controlled sweeps to diagnose effective stiffness mismatch; `1` preserves the canonical plant. |
@@ -315,13 +315,12 @@ The emulator is checkout-only. It selects the canonical `lower_body` and
 `upper_body` groups from the chosen asset's hardware description, uses
 `deps/bello-stack/descriptions/robstride/models.yaml` for protocol and hardware
 limits when present, and derives direct and differential transmissions from the
-canonical URDF. Mini's encoder zeros and ankle reductions remain provisional;
-ROBSTRIDE_02 electrical telemetry that is absent from the catalog is reported
-as zero. Only the logical-to-SocketCAN interface mapping is local. The emulator
-applies MIT impedance control, publishes the configured IMU serial stream and
-PoseService, and paces simulation against wall-clock time. Its torso guide is
-always engaged at startup; Enter releases it, and another Enter resets the robot
-and re-engages the guide.
+canonical URDF. ROBSTRIDE_02 electrical telemetry that is absent from the
+catalog is reported as zero. Only the logical-to-SocketCAN interface mapping is
+local. The emulator applies MIT impedance control, publishes the configured IMU
+serial stream and PoseService, and paces simulation against wall-clock time. Its
+torso guide is always engaged at startup; Enter releases it, and another Enter
+resets the robot and re-engages the guide.
 
 ## `bello-run-hardware`
 
@@ -365,7 +364,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. Locomotion status reports the effective `command` and `standing_transition_pending`. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
-| `allow_provisional_hardware` | boolean; `false` | locomotion | Required together with `arm=true` for a provisional Mini vCAN run. The runner cannot identify a physical endpoint, so never use this override with physical Mini hardware. |
+| `allow_provisional_hardware` | boolean; `false` | locomotion | Explicit acknowledgement for a robot contract marked provisional. It is rejected for the reviewed Bello and Bello Mini contracts. |
 | `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the checkpoint's arm joints at their nominal targets. Mini requires `false`. |
 | `rtmw_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion | Pinned RTMW-SMPLX-Teleop `SkeletonService` endpoint. |
 | `rtmw_tls_root_certificate_path` | path or `null`; `null` | locomotion | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |

@@ -48,9 +48,9 @@ locomotion-training profiles. Bello Mini also provides a calibrated offline
 SMPL-X GMR and motion-import profile. Repository retargeting tools prepare and
 inject its generated MJCF at runtime; the pinned GMR submodule does not carry a
 generated Mini robot bundle for standalone use. Maintained Mini motion/TWIST
-training and deployable-hardware profiles remain deliberately absent pending
-task tuning and bench calibration. Mini's provisional hardware description is
-available to the vCAN emulator; `bello` retains the calibrated physical profile.
+training remains deliberately absent pending task tuning. Mini's reviewed
+hardware description supports both the vCAN emulator and physical locomotion
+deployment.
 The same gitlink pins the RobStride model catalog and Python hardware client
 used by source-checkout workflows.
 

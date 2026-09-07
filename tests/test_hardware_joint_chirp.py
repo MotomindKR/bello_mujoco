@@ -209,19 +209,19 @@ def test_joint_chirp_cli_accepts_known_robot_asset() -> None:
     assert args.asset == "bello_mini"
 
 
-def test_joint_chirp_rejects_provisional_robot_before_hardware_import(
+def test_joint_chirp_accepts_hardware_ready_mini(
     monkeypatch,
     tmp_path,
 ) -> None:
-    def unexpected_import():
-        pytest.fail("hardware binding must not be imported for a provisional robot")
+    def expected_import():
+        raise RuntimeError("hardware binding reached")
 
     monkeypatch.setattr(
         "bello_mujoco.hardware.joint_chirp.import_hardware_binding",
-        unexpected_import,
+        expected_import,
     )
 
-    with pytest.raises(ValueError, match="bello_mini.*not approved"):
+    with pytest.raises(RuntimeError, match="hardware binding reached"):
         run(
             HardwareControlConfig(),
             JointChirpConfig(

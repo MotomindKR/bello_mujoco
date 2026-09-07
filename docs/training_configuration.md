@@ -124,7 +124,7 @@ The asset section selects a deterministic prepared morphology.
 
 | Field | Locomotion baseline | Meaning |
 | --- | --- | --- |
-| `asset` | `bello` | Selects a registered robot contract. `bello` and `bello_mini` have maintained locomotion profiles and offline motion/GMR import contracts. Mini vCAN emulation uses a provisional hardware profile; physical deployment remains calibration-gated. |
+| `asset` | `bello` | Selects a registered robot contract. `bello` and `bello_mini` have maintained locomotion profiles, offline motion/GMR import contracts, and reviewed physical/vCAN hardware descriptions. |
 | `output_root` | `null` | Optional prepared-asset destination for standalone preparation. Training requires `null` so an exact source revision regenerates through the canonical content-addressed cache. |
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |

@@ -6,9 +6,9 @@ motion-tracking policies built from the robot descriptions pinned through
 `deps/bello-stack`. Registered static assets are `bello` and `bello_mini`;
 both have maintained locomotion-training profiles. Bello Mini also has a
 calibrated offline SMPL-X GMR and motion-import profile for repository tooling.
-The provisional Mini hardware description is supported by the vCAN emulator;
-maintained Mini motion/TWIST training and physical deployment remain
-calibration-gated.
+The reviewed Mini hardware description supports both the vCAN emulator and
+physical locomotion deployment; maintained Mini motion/TWIST training remains
+task-tuning-gated.
 
 ## Setup
 

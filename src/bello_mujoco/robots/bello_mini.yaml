@@ -1,12 +1,11 @@
 asset: bello_mini
-# Maintained simulation contract. The upstream hardware profile remains provisional
-# until its motor directions, encoder zeros, and ankle differential are calibrated.
+# The pinned 28-motor binding is approved for physical locomotion deployment.
 source_urdf: bello_mini/urdf/bello_mini.urdf
 source_directories:
   - bello_mini/urdf
   - bello_mini/meshes
 hardware_description: bello_mini/hardware.yaml
-physical_hardware_ready: false
+physical_hardware_ready: true
 motor_model_catalog: robstride/models.yaml
 output_directory: bello_mini
 output_stem: bello_mini
@@ -237,8 +236,8 @@ payload_attachments:
   - link_name: right_end_effector_sphere_link
     radius_m: 0.025
     center_m: [0.0, 0.0, -0.025]
-# Provisional unit differential matching the pinned Bello Mini URDF. The
-# reductions and encoder zeros still require physical calibration.
+# Reviewed unit differential matching the pinned Bello Mini URDF and hardware
+# binding.
 coupled_actuator_groups:
   - name: left_ankle_differential
     actuators:

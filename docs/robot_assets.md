@@ -63,9 +63,8 @@ contract, and training validates it against the robot's motion profile.
   static contract exposes all 28 movable joints: waist yaw, waist
   roll, and the 12 leg joints are policy-controlled, while both seven-DoF arms
   are held. Simulation and vCAN map its logical ankle pitch/roll coordinates
-  through the pinned URDF's provisional `[pitch + roll, pitch - roll]`
-  differential. The unit reductions and encoder zeros remain uncalibrated. Its
-  massless fixed
+  through the pinned URDF's reviewed `[pitch + roll, pitch - roll]`
+  differential. Its massless fixed
   `imu_link` is 50 mm below the midpoint between the reviewed left/right
   hip-pitch joint origins (`[-0.01, 0, -0.23]` m in pelvis coordinates).
   Bello is physically forward along pelvis `+Y`, with pelvis `+X` to the right;
@@ -75,12 +74,12 @@ contract, and training validates it against the robot's motion profile.
   Mini. The Mini locomotion policy also selects `pelvis_link` as its simulated
   IMU observation body. Its physical `imu_link` remains the robot's default
   sensor link, yawed -90 degrees from the pelvis axes. The hardware runner
-  applies that fixed axis rotation for vCAN policy observations, but cannot
+  applies that fixed axis rotation for hardware policy observations, but cannot
   remove acceleration caused by the sensor's offset from the pelvis origin.
-  Physical deployment therefore remains calibration-gated. Each robot's
+  That lever-arm residual remains a known deployment limitation. Each robot's
   configured action mirror and foot-forward axes likewise encode its physical
-  geometry; in particular, Mini hip pitch keeps sign across sides while Mini
-  hip roll changes sign.
+  geometry; in particular, Mini hip pitch keeps sign across sides while Mini hip
+  roll changes sign.
 
   Mini starts from the coordinated nominal crouch above instead of placing its
   knees at their hard lower limit. Its experiment disables independent
@@ -132,19 +131,18 @@ contract, and training validates it against the robot's motion profile.
   committed to the GMR submodule, so this does not add standalone upstream GMR
   CLI support.
 
-The Bello Mini source directory includes `motor_topology.yaml` as its calibration
-manifest. CAN IDs increase along each kinematic chain: left/right arms use
-`31..37` / `41..47` on `can1`, while waist yaw/roll use `51,52` and left/right
-legs use `61..66` / `71..76` on `can0`. The pinned
+The Bello Mini source directory includes `motor_topology.yaml` as its hardware
+provenance manifest. CAN IDs increase along each kinematic chain: left/right
+arms use `31..37` / `41..47` on `can1`, while waist yaw/roll use `51,52` and
+left/right legs use `61..66` / `71..76` on `can0`. The pinned
 `bello_mini/hardware.yaml` carries the reviewed command directions and
-provisional unit ankle differential for vCAN emulation. Encoder zeros and ankle
-reductions still require bench calibration, so the packaged robot contract sets
-`physical_hardware_ready: false`. Read-only policy preflight remains available;
-armed Mini policy control requires an explicit emulator-only acknowledgement,
-and the joint-chirp tool remains blocked. These gates do not prevent offline
-Mini GMR/import or simulation locomotion training with
-`bello_mini_locomotion`. Maintained Mini motion/TWIST training profiles remain a
-separate task-tuning gate.
+unit ankle differential used by physical deployment and vCAN emulation. The
+topology manifest retains the design-time calibration record; runtime approval
+of the reviewed binding is explicit in the packaged robot contract's
+`physical_hardware_ready: true`. This enables normal read-only preflight, armed
+Mini locomotion, and joint-chirp diagnostics. Mini GMR/import and simulation
+locomotion training remain available through `bello_mini_locomotion`; maintained
+Mini motion/TWIST training profiles remain a separate task-tuning gate.
 
 ## Adding a humanoid
 

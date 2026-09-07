@@ -72,7 +72,7 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
     assert robot.source_urdf_path(robot_descriptions_root()).is_file()
     assert robot.hardware_description == Path("bello_mini/hardware.yaml")
     assert robot.hardware_description_path(robot_descriptions_root()).is_file()
-    assert not robot.physical_hardware_ready
+    assert robot.physical_hardware_ready
     assert robot.motor_model_catalog_path(robot_descriptions_root()).is_file()
     assert robot.root_body_name == "bello_mini_root"
     assert robot.default_imu_body_name == "imu_link"
@@ -308,7 +308,7 @@ def test_bello_mini_motion_task_profile_matches_robot_source() -> None:
     )
 
 
-def test_bello_mini_can_topology_is_monotonic_and_calibration_gated() -> None:
+def test_bello_mini_can_topology_preserves_design_provenance() -> None:
     topology = OmegaConf.load(
         robot_descriptions_root() / "bello_mini" / "motor_topology.yaml"
     )

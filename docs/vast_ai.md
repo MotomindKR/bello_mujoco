@@ -30,8 +30,8 @@ The default training experiment is `bello_locomotion`. Select
 `experiment=bello_mini_locomotion` to train Mini locomotion, or
 `experiment=bello_mini_standing` for its standing-only policy. The standing
 experiment composes the shared production recipe, Mini robot profile, and
-standing overlay. Mini checkpoints can use the provisional vCAN emulator, but
-the training profiles do not imply approval for physical deployment.
+standing overlay. Mini checkpoints can use the vCAN emulator or physical
+locomotion runner, subject to the runner's normal checkpoint and safety gates.
 
 ## Lifecycle
 
