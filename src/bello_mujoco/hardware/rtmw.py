@@ -44,11 +44,11 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "6fd2e282b8af29a8ab7644e30f108f37dd7a684b"
+RTMW_REVISION = "2a569b3303a2a07dcb072b11e8f1a3dd4160dc82"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
-    "derived_tree_consistent_landmark_ik;anthropometric_upper_body_projection_v1;"
+    "derived_tree_consistent_landmark_ik;canonical_smplx_upper_body_projection_v1;"
     "anatomical_elbow_hinge_upper_arm_frame_v1;"
     "palm_frame_forearm_twist_v1;"
     "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
@@ -698,7 +698,7 @@ def rtmw_locomotion_reference_source(
             adapter.env,
             repository_gmr_source_identity(asset),
             GmrLiveRetargetConfig(
-                human_height_m=source_config.human_height_m,
+                human_height_m=config.smplx_human_height_m,
                 task_profile=config.rtmw_gmr_task_profile,
                 max_source_interval_seconds=source_config.max_source_interval_seconds,
             ),

@@ -727,7 +727,7 @@ def test_bello_mini_live_gmr_static_pose_does_not_drift_to_arm_limits(
         env,
         repository_gmr_source_identity("bello_mini"),
         GmrLiveRetargetConfig(
-            human_height_m=1.75,
+            human_height_m=1.66,
             task_profile="live_upper_body",
             max_source_interval_seconds=0.5,
         ),

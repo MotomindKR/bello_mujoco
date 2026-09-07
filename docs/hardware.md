@@ -191,10 +191,12 @@ Mini. The live pose does not enter the locomotion actor observation and cannot
 replace joystick intent or any policy coordinate. Fast-SAM is not a supported
 locomotion pose source; it remains specific to TWIST2.
 
-Bello Mini's live profile maps its complete seven-DoF arms and anchors the
-position-only solver's weak or unobservable shoulder-yaw, wrist-yaw, and
-wrist-roll coordinates to the nominal posture. Mini has no elbow-yaw joints, so
-the Bello-only elbow-yaw offsets and terminal keyboard jog are unavailable.
+Bello Mini's live profile maps its complete seven-DoF arms from the derived
+shoulder, elbow, and palm orientations. Its arm position costs are disabled:
+the robot's fixed links determine elbow and wrist positions, avoiding
+infeasible landmark-offset lengths. Palm orientation directly drives the wrist
+yaw, pitch, and roll targets. Mini has no elbow-yaw joints, so the Bello-only
+elbow-yaw offsets and terminal keyboard jog are unavailable.
 Hardwared first applies the canonical URDF rotation from the upside-down
 physical `imu_sensor_link` into the logical `imu_link`; the runner then rotates
 that logical sample into the checkpoint's pelvis observation frame. The sensor
@@ -209,9 +211,14 @@ semantics, stream instance, and producer configuration hash. Slow consumers
 skip intermediate frames instead of accumulating transport latency. Producer
 monotonic timestamps are checked against one another; receipt age is measured
 on the runner's local clock, so the producer and runner may use different
-hosts. Both processes must use the same licensed neutral SMPL-X model, and
-`rtmw_human_height_m` must equal RTMW's configured
-`reconstruction.subject_height_m` (both default to 1.75 m):
+hosts. Both processes must use the same licensed neutral SMPL-X model. RTMW
+projects reconstructed upper-body directions onto that model's canonical bone
+lengths before publishing, matching native neutral-SMPL-X clips. The measured
+person height remains a depth-reconstruction parameter only:
+`rtmw_human_height_m` must equal RTMW's
+`reconstruction.subject_height_m` (both default to 1.75 m), while
+`smplx_human_height_m` independently remains at GMR's calibrated 1.66 m
+neutral-source convention:
 
 ```text
 cd ~/bello_mujoco/deps/RTMW-SMPLX-Teleop

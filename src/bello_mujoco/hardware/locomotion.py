@@ -295,6 +295,7 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     rtmw_align_initial_heading: bool = True
     rtmw_align_initial_floor: bool = True
     smplx_neutral_model_path: Path | None = None
+    smplx_human_height_m: float = 1.66
     rtmw_human_height_m: float = 1.75
     rtmw_gmr_task_profile: str = "live_upper_body"
     upper_body_follow: UpperBodyFollowConfig = UpperBodyFollowConfig()
@@ -1007,6 +1008,11 @@ def validate_hardware_config(
         from bello_mujoco.hardware.rtmw import RtmwGrpcConfig
 
         RtmwGrpcConfig.from_hardware(config)
+        if (
+            not math.isfinite(config.smplx_human_height_m)
+            or config.smplx_human_height_m <= 0.0
+        ):
+            raise ValueError("smplx_human_height_m must be positive and finite")
         if config.rtmw_gmr_task_profile != "live_upper_body":
             raise ValueError(
                 "rtmw_gmr_task_profile must be 'live_upper_body' for safe RTMW "

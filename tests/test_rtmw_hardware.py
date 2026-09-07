@@ -350,7 +350,10 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         env=env,
         validate_upper_body_reference=validation,
     )
-    hardware_config = SimpleNamespace(rtmw_gmr_task_profile="live_upper_body")
+    hardware_config = SimpleNamespace(
+        rtmw_gmr_task_profile="live_upper_body",
+        smplx_human_height_m=1.66,
+    )
     with rtmw.rtmw_locomotion_reference_source(adapter, hardware_config) as result:
         assert isinstance(result, FakeSource)
 
@@ -363,7 +366,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     assert isinstance(retargeter_call, tuple)
     assert retargeter_call[0] is env
     assert retargeter_call[1] is identity
-    assert retargeter_call[2].human_height_m == pytest.approx(1.75)
+    assert retargeter_call[2].human_height_m == pytest.approx(1.66)
     assert retargeter_call[2].task_profile == "live_upper_body"
     assert retargeter_call[2].max_source_interval_seconds == pytest.approx(0.50)
     assert retargeter_call[3] is validation
@@ -468,7 +471,7 @@ def test_rtmw_requires_versioned_anatomical_arm_and_palm_rotation_semantics(
     config = rtmw_config(tmp_path)
     assert RTMW_ROTATION_SEMANTICS == (
         "derived_tree_consistent_landmark_ik;"
-        "anthropometric_upper_body_projection_v1;"
+        "canonical_smplx_upper_body_projection_v1;"
         "anatomical_elbow_hinge_upper_arm_frame_v1;"
         "palm_frame_forearm_twist_v1;"
         "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
@@ -478,7 +481,7 @@ def test_rtmw_requires_versioned_anatomical_arm_and_palm_rotation_semantics(
     previous = stream_info(
         rotation_semantics=(
             "derived_tree_consistent_landmark_ik;"
-            "anthropometric_upper_body_projection_v1;"
+            "canonical_smplx_upper_body_projection_v1;"
             "palm_frame_forearm_twist_v1;"
             "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
         )

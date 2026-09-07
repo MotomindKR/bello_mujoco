@@ -580,28 +580,26 @@ def test_bello_mini_gmr_live_upper_body_profile_uses_observable_arm_frames() -> 
         },
         "live_upper_body": {
             "ik_match_table2": {
+                "left_upper_arm_link": {
+                    "position_cost": 0,
+                },
                 "left_elbow_link": {
-                    "position_cost": 30,
+                    "position_cost": 0,
                 },
                 "left_wrist_roll_link": {
-                    "position_cost": 50,
+                    "position_cost": 0,
                     "orientation_cost": 10,
+                },
+                "right_upper_arm_link": {
+                    "position_cost": 0,
                 },
                 "right_elbow_link": {
-                    "position_cost": 30,
+                    "position_cost": 0,
                 },
                 "right_wrist_roll_link": {
-                    "position_cost": 50,
+                    "position_cost": 0,
                     "orientation_cost": 10,
                 },
-            },
-            "posture_costs": {
-                "left_shoulder_yaw_joint": 10,
-                "left_wrist_yaw_joint": 10,
-                "left_wrist_roll_joint": 10,
-                "right_shoulder_yaw_joint": 10,
-                "right_wrist_yaw_joint": 10,
-                "right_wrist_roll_joint": 10,
             },
         },
     }
@@ -639,34 +637,17 @@ def test_bello_mini_live_upper_body_profile_loads_generated_model(
         )
         np.testing.assert_array_equal(
             retargeter.human_body_to_task2[f"{side}_shoulder"].cost,
-            [10, 10, 10, 5, 5, 5],
+            [0, 0, 0, 5, 5, 5],
         )
         np.testing.assert_array_equal(
             retargeter.human_body_to_task2[f"{side}_elbow"].cost,
-            [30, 30, 30, 5, 5, 5],
+            [0, 0, 0, 5, 5, 5],
         )
         np.testing.assert_array_equal(
             retargeter.human_body_to_task2[f"{side}_wrist"].cost,
-            [50, 50, 50, 10, 10, 10],
+            [0, 0, 0, 10, 10, 10],
         )
-    np.testing.assert_array_equal(
-        retargeter.profile_posture_task.target_q,
-        retargeter.model.qpos0,
-    )
-    expected_posture_cost = np.zeros(retargeter.model.nv)
-    for joint_name in (
-        "left_shoulder_yaw_joint",
-        "left_wrist_yaw_joint",
-        "left_wrist_roll_joint",
-        "right_shoulder_yaw_joint",
-        "right_wrist_yaw_joint",
-        "right_wrist_roll_joint",
-    ):
-        expected_posture_cost[retargeter.model.joint(joint_name).dofadr[0]] = 10
-    np.testing.assert_array_equal(
-        retargeter.profile_posture_task.cost,
-        expected_posture_cost,
-    )
+    assert retargeter.profile_posture_task is None
 
 
 def test_bello_mini_gmr_follows_unitree_g1_task_schedule() -> None:

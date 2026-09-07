@@ -1133,7 +1133,6 @@ def _hardware_hydra(config: DictConfig) -> None:
             "max_motion_tilt_radians",
             "action_lpf_cutoff_hz",
             *fastsam_fields,
-            "smplx_human_height_m",
         ),
         context="task=locomotion",
     )
@@ -1143,7 +1142,7 @@ def _hardware_hydra(config: DictConfig) -> None:
         _reject_explicit_fields(
             (
                 *rtmw_fields,
-                "smplx_neutral_model_path",
+                *smplx_fields,
                 *locomotion_upper_body_adjustment_fields,
             ),
             context="upper_body_tracking_enabled=false",
@@ -1206,6 +1205,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 if command.upper_body_tracking_enabled
                 else None
             ),
+            smplx_human_height_m=command.smplx_human_height_m,
             rtmw_human_height_m=command.rtmw_human_height_m,
             rtmw_gmr_task_profile=command.rtmw_gmr_task_profile,
             upper_body_follow=replace(

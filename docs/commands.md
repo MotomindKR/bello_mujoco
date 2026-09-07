@@ -381,8 +381,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `rtmw_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
 | `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial anatomical heading to world forward, relative to the canonical SMPL-X-to-world pelvis basis. |
 | `rtmw_align_initial_floor` | boolean; `true` | locomotion | Use the acquired target's initial lower foot as the fixed world floor. |
-| `rtmw_human_height_m` | positive float; `1.75` | locomotion | Human height supplied to pinned GMR; it must equal RTMW's `reconstruction.subject_height_m`. |
-| `rtmw_gmr_task_profile` | string; `live_upper_body` | locomotion | Position-led GMR task profile for RTMW arm tracking. This is currently the only accepted value so an orientation-led offline profile cannot be selected accidentally. |
+| `rtmw_human_height_m` | positive float; `1.75` | locomotion | Subject height used and advertised by RTMW's metric depth reconstruction; it must equal RTMW's `reconstruction.subject_height_m`. Published upper-body articulation is normalized to the neutral SMPL-X model rather than this height. |
+| `rtmw_gmr_task_profile` | string; `live_upper_body` | locomotion | Orientation-led GMR task profile for RTMW arm tracking. This is currently the only accepted value; Mini uses shoulder, elbow, and palm frames while fixed robot links determine arm positions. |
 | `fastsam_endpoint` | gRPC host:port; `127.0.0.1:50055` | twist2 | Corrected `fastsam3dbody-serve` endpoint, after the local hardware, emulator, pose, and visualization service ports. |
 | `fastsam_tls_root_certificate_path` | path or `null`; `null` | twist2 | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `fastsam_tls_server_name_override` | string or `null`; `null` | twist2 | TLS certificate name override. It is rejected without a CA certificate. |
@@ -398,7 +398,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `fastsam_align_initial_heading` | boolean; `true` | twist2 | Rotate the acquired target's initial pelvis heading to world forward. |
 | `fastsam_align_initial_floor` | boolean; `true` | twist2 | Use the acquired target's initial lower foot as the fixed world floor. |
 | `smplx_neutral_model_path` | path or `null`; `null` | locomotion, twist2 | Required licensed `SMPLX_NEUTRAL.npz`, used locally to validate the body-joint contract and pose its skeleton with the repository-owned relaxed-standing sample. |
-| `smplx_human_height_m` | positive float; `1.66` | twist2 | Human height supplied to the pinned GMR scale table. |
+| `smplx_human_height_m` | positive float; `1.66` | locomotion, twist2 | Canonical SMPL-X source height supplied to the pinned GMR scale table. For RTMW this stays independent of the measured subject height. |
 | `left_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Bello-only offset added to the left GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. Mini rejects nonzero elbow-yaw offsets. |
 | `right_elbow_yaw_offset_radians` | finite float; `0.0` | locomotion | Bello-only offset added to the right GMR elbow-yaw target before clipping. Set `1.57079632679` for positive 90 degrees. Mini rejects nonzero elbow-yaw offsets. |
 
