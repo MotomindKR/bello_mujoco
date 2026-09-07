@@ -68,7 +68,7 @@ Configuration source: `configs/commands/train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `bello_locomotion`, `bello_mini_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `smoke` | Select the maintained profile stack. The shared locomotion recipe is internal; `locomotion` remains a runtime task, not a training experiment. |
+| `experiment` | `smoke`, `bello_locomotion`, `bello_mini_locomotion`, `bello_mini_standing`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `smoke` | Select the maintained profile stack. The shared locomotion recipe is internal; `locomotion` remains a runtime task, not a training experiment. |
 | `seed` | integer or `null`; `null` | Override the profile's PPO and rollout seed. |
 | `total_timesteps` | integer or `null`; `null` | Override the transition budget. It must cover at least one rollout batch; a remainder smaller than one batch is not sampled. |
 | `num_envs` | integer or `null`; `null` | Override the batched environment count. It must be positive and compatible with the minibatch count. |
@@ -94,6 +94,7 @@ Profile composition is deterministic:
 | `smoke` | `configs/train/default.yaml`, then `configs/profiles/train/smoke.yaml` |
 | `bello_locomotion` | `configs/train/default.yaml`, `configs/train/locomotion.yaml`, then `configs/profiles/train/bello_locomotion.yaml` |
 | `bello_mini_locomotion` | `configs/train/default.yaml`, `configs/train/locomotion.yaml`, then `configs/profiles/train/bello_mini_locomotion.yaml` |
+| `bello_mini_standing` | `configs/train/default.yaml`, `configs/train/locomotion.yaml`, `configs/profiles/train/bello_mini_locomotion.yaml`, then `configs/profiles/train/bello_mini_standing.yaml` |
 | `motion` | `configs/train_motion/default.yaml`, then `configs/profiles/train/motion.yaml` |
 | `twist_teacher` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_teacher.yaml` |
 | `twist_student` | `configs/train_twist/default.yaml`, then `configs/profiles/train/twist_student.yaml` |
@@ -249,7 +250,7 @@ Configuration source: `configs/commands/vast_train.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `experiment` | `smoke`, `bello_locomotion`, `bello_mini_locomotion`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `bello_locomotion` | Select the same maintained profile used by `bello-train`. |
+| `experiment` | `smoke`, `bello_locomotion`, `bello_mini_locomotion`, `bello_mini_standing`, `motion`, `twist_teacher`, `twist_student`, or `twist2`; `bello_locomotion` | Select the same maintained profile used by `bello-train`. |
 | `motion_path` | path or `null`; `null` | Required for motion jobs. Do not supply this field for other jobs. The clip must exist in the selected remote commit. |
 | `dataset_path` | path or `null`; `null` | Required local schema-3 `index.json` for TWIST or TWIST2. Its five portable dataset files are transferred with resumable `rsync` and verified remotely. |
 | `teacher_checkpoint_path` | path or `null`; `null` | Required local typed teacher checkpoint for `twist_student`; rejected by every other stage. |

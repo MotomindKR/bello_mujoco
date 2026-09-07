@@ -17,6 +17,7 @@ the source of maintained experiment overrides:
 - [Smoke profile](../configs/profiles/train/smoke.yaml)
 - [Bello locomotion profile](../configs/profiles/train/bello_locomotion.yaml)
 - [Bello Mini locomotion profile](../configs/profiles/train/bello_mini_locomotion.yaml)
+- [Bello Mini standing overlay](../configs/profiles/train/bello_mini_standing.yaml)
 - [Motion profile](../configs/profiles/train/motion.yaml)
 - [TWIST teacher profile](../configs/profiles/train/twist_teacher.yaml)
 - [TWIST student profile](../configs/profiles/train/twist_student.yaml)
@@ -316,7 +317,7 @@ filter to training, native evaluation, or the hardware runner.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `true` | Disable to train only on zero command. |
+| `enabled` | `true` | Include command and gait-phase observations and command sampling. Disabling it removes those six observation values; the standing-only profile therefore keeps it enabled. |
 | `lin_vel_x` | `[-0.5,0.5]` | Lateral/right velocity sampling range. |
 | `lin_vel_y` | `[-0.5,0.5]` | Forward velocity sampling range. |
 | `ang_vel_yaw` | `[-0.5,0.5]` | Yaw-rate sampling range. |
@@ -330,7 +331,10 @@ filter to training, native evaluation, or the hardware runner.
 
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
-The maintained locomotion profiles override `standing_probability` to `0.25`.
+The gait-capable maintained locomotion profiles override `standing_probability`
+to `0.25`. `bello_mini_standing` instead sets it to `1.0` and fixes every
+command range to zero, so gait probability is exactly zero without changing the
+observation layout.
 Training assigns an exact standing cohort at batch reset. Failure resets
 preserve the exact command request. A separate command-resampling clock survives
 episode resets, so short episodes cannot trap an environment in one mode. Its
@@ -682,6 +686,7 @@ TWIST uses 32 contacts per environment and logs
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 10 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
 | `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with pelvis-frame `+X` forward command/reward/actor feedback, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, `2.25` healthy-survival weight, non-saturating moving linear/yaw velocity-error shaping, and output names. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
+| `bello_mini_standing` | The complete Bello Mini locomotion profile plus a standing-only overlay. Command sampling and accepted command ranges are exactly zero, standing probability is `1.0`, and standing transitions are disabled. Command and gait-phase observation slots remain present and zero-valued, preserving the Mini locomotion policy dimensions. Moving velocity-error, joint-force-peak, and gait-pattern rewards are disabled; zero-velocity tracking, standing/stability rewards, bounded touchdown impact, randomization, pushes, and the `2.25` survival weight remain active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |
 | `twist_student` | The same dynamics and critic contract with current-reference/history actor input and frozen-teacher distillation. |
@@ -694,6 +699,7 @@ Headline resolved PPO values are:
 | `smoke` | 4 | 2 × 2 | 1 × 1 | 0.001 | 0.99 / 0.95 | 256-256 tanh |
 | `bello_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
 | `bello_mini_locomotion` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
+| `bello_mini_standing` | 8,000,000,000 | 2,048 × 20 | 4 × 32 | 0.0001 adaptive, 0.00003 floor | 0.995 / 0.98 | 512-256-128 swish |
 | `motion` | 2,949,120,000 | 3,072 × 24 | 5 × 4 | 0.001 adaptive | 0.99 / 0.95 | 512-256-128 ELU |
 | `twist_teacher` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |
 | `twist_student` | 2,949,316,608 | 4,096 × 24 | 5 × 4 | 0.0002 adaptive | 0.99 / 0.95 | 512-512-256-128 SiLU + LN |

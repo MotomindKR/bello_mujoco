@@ -99,11 +99,16 @@ def test_command_sampler_respects_ranges_and_exact_standing_probability() -> Non
         ang_vel_yaw=(0.4, 0.4),
         standing_probability=0.0,
     ).sample(jax.random.PRNGKey(0), (4,))
-    standing = CommandConfig(standing_probability=1.0).sample(
-        jax.random.PRNGKey(1), (4,)
-    )
+    standing_config = CommandConfig(standing_probability=1.0)
+    standing = standing_config.sample(jax.random.PRNGKey(1), (4,))
     assert moving == pytest.approx(jnp.tile(jnp.asarray([0.2, -0.3, 0.4]), (4, 1)))
     assert standing == pytest.approx(jnp.zeros((4, 3)))
+    assert standing_config.sample_moving(jax.random.PRNGKey(2), (4,)) == pytest.approx(
+        jnp.zeros((4, 3))
+    )
+    assert standing_config.sample_stratified_batch(
+        jax.random.PRNGKey(3), 4
+    ) == pytest.approx(jnp.zeros((4, 3)))
 
 
 def test_command_sampler_produces_only_explicit_standing_commands() -> None:

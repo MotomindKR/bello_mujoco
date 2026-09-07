@@ -27,9 +27,11 @@ rentability, and direct SSH. `max_price` is a required upper bound on total
 hourly price.
 
 The default training experiment is `bello_locomotion`. Select
-`experiment=bello_mini_locomotion` to train the Mini. Both resolve the shared
-production locomotion recipe plus one robot-specific profile; the Mini profile
-does not imply emulator or physical-hardware support.
+`experiment=bello_mini_locomotion` to train Mini locomotion, or
+`experiment=bello_mini_standing` for its standing-only policy. The standing
+experiment composes the shared production recipe, Mini robot profile, and
+standing overlay; the Mini profiles do not imply emulator or physical-hardware
+support.
 
 ## Lifecycle
 

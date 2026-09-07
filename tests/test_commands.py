@@ -411,6 +411,43 @@ def test_robot_locomotion_profile_paths_are_public_and_explicit() -> None:
     assert profile_config_relative_path("bello_mini_locomotion") == Path(
         "configs/profiles/train/bello_mini_locomotion.yaml"
     )
+    assert profile_config_relative_path("bello_mini_standing") == Path(
+        "configs/profiles/train/bello_mini_standing.yaml"
+    )
+
+
+def test_bello_mini_standing_profile_keeps_locomotion_plumbing() -> None:
+    locomotion = locomotion_training_profile("bello_mini_locomotion")
+    standing = locomotion_training_profile("bello_mini_standing")
+
+    assert standing.config == locomotion.config
+    assert standing.asset_config == locomotion.asset_config
+    assert standing.env_config == locomotion.env_config
+    assert standing.done_config == locomotion.done_config
+    assert standing.warp == locomotion.warp
+    assert standing.command_config.enabled
+    assert standing.command_config.lin_vel_x == (0.0, 0.0)
+    assert standing.command_config.lin_vel_y == (0.0, 0.0)
+    assert standing.command_config.ang_vel_yaw == (0.0, 0.0)
+    assert standing.command_config.standing_probability == pytest.approx(1.0)
+    assert not standing.command_config.standing_transitions_enabled
+    assert standing.reward_config.weights == replace(
+        locomotion.reward_config.weights,
+        moving_lin_vel_xy_error=0.0,
+        moving_ang_vel_z_error=0.0,
+        joint_force_peak=0.0,
+        gait_contact=0.0,
+        gait_stance_slip=0.0,
+        gait_swing_clearance=0.0,
+    )
+    assert standing.reward_config.tracking == locomotion.reward_config.tracking
+    assert standing.reward_config.standing == locomotion.reward_config.standing
+    assert standing.checkpoint_config.name == "bello_mini_standing_seed0"
+    assert standing.checkpoint_config.wandb_artifact_name == (
+        "bello_mini_standing_seed0"
+    )
+    assert standing.wandb_config.group == "bello-mini-standing"
+    assert standing.video_config.command == (0.0, 0.0, 0.0)
 
 
 def test_contact_budget_command_override_is_explicit_and_positive() -> None:

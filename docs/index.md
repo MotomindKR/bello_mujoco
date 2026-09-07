@@ -72,7 +72,8 @@ Python handles setup, assets, logging, checkpoints, and services; rollout and
 reward math remains JAX compatible.
 
 The public configuration is profile-oriented. Locomotion is selected with the
-robot-specific `bello_locomotion` or `bello_mini_locomotion` experiment; runtime
+robot-specific `bello_locomotion` or `bello_mini_locomotion` experiment; training
+can additionally select the compatible `bello_mini_standing` overlay. Runtime
 evaluation and deployment continue to use the generic `task=locomotion`
 interface and recover the robot contract from checkpoint metadata. Internal
 topology, link names, coordinate partitions, numerical guardrails, and safety

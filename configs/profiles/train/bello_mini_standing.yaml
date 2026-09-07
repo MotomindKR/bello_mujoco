@@ -1,0 +1,27 @@
+# Standing-only overlay for the Bello Mini locomotion policy contract.
+command_config:
+  enabled: true
+  lin_vel_x: [0.0, 0.0]
+  lin_vel_y: [0.0, 0.0]
+  ang_vel_yaw: [0.0, 0.0]
+  standing_probability: 1.0
+  standing_transitions_enabled: false
+reward_config:
+  weights:
+    moving_lin_vel_xy_error: 0.0
+    moving_ang_vel_z_error: 0.0
+    joint_force_peak: 0.0
+    gait_contact: 0.0
+    gait_stance_slip: 0.0
+    gait_swing_clearance: 0.0
+checkpoint_config:
+  name: bello_mini_standing_seed0
+  wandb_artifact_name: bello_mini_standing_seed0
+wandb_config:
+  group: bello-mini-standing
+  run_name: bello_mini_standing_seed0
+  tags: [standing, bello-mini, ideal-differential-ankle, seeded-plane-slope]
+video_config:
+  filename_prefix: bello_mini_standing
+  command: [0.0, 0.0, 0.0]
+  steps: 500

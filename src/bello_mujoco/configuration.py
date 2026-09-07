@@ -29,6 +29,7 @@ ExperimentName = Literal[
     "smoke",
     "bello_locomotion",
     "bello_mini_locomotion",
+    "bello_mini_standing",
     "motion",
     "twist_teacher",
     "twist_student",
@@ -39,6 +40,7 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "smoke": Path("profiles/train/smoke.yaml"),
     "bello_locomotion": Path("profiles/train/bello_locomotion.yaml"),
     "bello_mini_locomotion": Path("profiles/train/bello_mini_locomotion.yaml"),
+    "bello_mini_standing": Path("profiles/train/bello_mini_standing.yaml"),
     "motion": Path("profiles/train/motion.yaml"),
     "twist_teacher": Path("profiles/train/twist_teacher.yaml"),
     "twist_student": Path("profiles/train/twist_student.yaml"),
@@ -229,16 +231,18 @@ def command_config(cls: type[T], config: DictConfig) -> T:
 def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
     from bello_mujoco.training.locomotion import TrainingRunConfig
 
-    locomotion_experiments = {"bello_locomotion", "bello_mini_locomotion"}
-    if name != "smoke" and name not in locomotion_experiments:
+    profile_layers = {
+        "bello_locomotion": ("bello_locomotion",),
+        "bello_mini_locomotion": ("bello_mini_locomotion",),
+        "bello_mini_standing": ("bello_mini_locomotion", "bello_mini_standing"),
+    }
+    if name != "smoke" and name not in profile_layers:
         raise ValueError(f"{name!r} is not a locomotion experiment")
     paths = [_config("train/default.yaml")]
-    if name in locomotion_experiments:
+    if name in profile_layers:
+        paths.append(_config("train/locomotion.yaml"))
         paths.extend(
-            (
-                _config("train/locomotion.yaml"),
-                _config(f"profiles/train/{name}.yaml"),
-            )
+            _config(f"profiles/train/{layer}.yaml") for layer in profile_layers[name]
         )
     if name == "smoke":
         paths.append(_config("profiles/train/smoke.yaml"))

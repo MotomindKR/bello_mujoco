@@ -1173,8 +1173,8 @@ def gait_diagnostics(
             if not name.startswith("gait/"):
                 continue
             suffix = name.removeprefix("gait/")
-            metrics[f"gait/standing_{suffix}"] = masked_mean(value, standing)
-            metrics[f"gait/moving_{suffix}"] = masked_mean(value, moving)
+            metrics[f"gait/standing_{suffix}"] = masked_mean_or_zero(value, standing)
+            metrics[f"gait/moving_{suffix}"] = masked_mean_or_zero(value, moving)
 
     touchdown = info.get("gait/touchdown")
     liftoff = info.get("gait/liftoff")
@@ -1184,10 +1184,10 @@ def gait_diagnostics(
         )
         if standing is not None and moving is not None:
             metrics["gait/standing_footfalls_per_second"] = (
-                masked_mean(touchdown, standing) / control_timestep
+                masked_mean_or_zero(touchdown, standing) / control_timestep
             )
             metrics["gait/moving_footfalls_per_second"] = (
-                masked_mean(touchdown, moving) / control_timestep
+                masked_mean_or_zero(touchdown, moving) / control_timestep
             )
     if liftoff is not None:
         metrics["gait/liftoffs_per_second"] = (
@@ -1202,13 +1202,6 @@ def gait_diagnostics(
         metrics[f"gait/{force_name}_p99_body_weight"] = jnp.quantile(rollout_max, 0.99)
         metrics[f"gait/{force_name}_worst_body_weight"] = jnp.max(rollout_max)
     return metrics
-
-
-def masked_mean(value: jax.Array, mask: jax.Array) -> jax.Array:
-    value = value.astype(jnp.float32)
-    mask = mask.astype(jnp.float32)
-    count = jnp.sum(mask)
-    return jnp.where(count > 0, jnp.sum(value * mask) / count, jnp.nan)
 
 
 def masked_mean_or_zero(value: jax.Array, mask: jax.Array) -> jax.Array:

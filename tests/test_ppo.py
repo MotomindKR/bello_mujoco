@@ -146,6 +146,22 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
     assert gait_metrics["gait/contact_force_worst_body_weight"] == pytest.approx(1.6)
 
 
+def test_gait_metrics_are_finite_without_moving_samples() -> None:
+    info = {
+        "command/standing": jnp.ones((1, 4), dtype=jnp.float32),
+        "command/moving": jnp.zeros((1, 4), dtype=jnp.float32),
+        "gait/touchdown": jnp.zeros((1, 4), dtype=jnp.float32),
+        "gait/double_support": jnp.ones((1, 4), dtype=jnp.float32),
+    }
+
+    metrics = gait_diagnostics(info, control_timestep=0.02)
+
+    assert metrics["gait/moving_touchdown"] == pytest.approx(0.0)
+    assert metrics["gait/moving_double_support"] == pytest.approx(0.0)
+    assert metrics["gait/moving_footfalls_per_second"] == pytest.approx(0.0)
+    assert all(bool(jnp.isfinite(value)) for value in metrics.values())
+
+
 def test_action_limit_contract_rejects_environment_mismatch() -> None:
     with pytest.raises(ValueError, match="action_limit must equal.*action_clip"):
         validate_action_limit_contract(small_config(), env_action_clip=0.5)

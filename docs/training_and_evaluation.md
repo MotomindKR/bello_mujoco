@@ -7,12 +7,13 @@ asset, and output fields are in the
 
 ## Profiles
 
-`bello-train` exposes seven maintained experiments:
+`bello-train` exposes eight maintained experiments:
 
 ```text
 smoke
 bello_locomotion
 bello_mini_locomotion
+bello_mini_standing
 motion
 twist_teacher
 twist_student
@@ -34,10 +35,23 @@ separately. The
 shared `configs/train/locomotion.yaml` layer is internal and is not a public
 experiment name.
 
+`bello_mini_standing` adds a standing-only overlay to the complete Mini
+locomotion profile. It keeps the same action, command, and gait-observation
+layout, but fixes every command range to zero and sets standing probability to
+one, making gait probability exactly zero. Moving-only and gait-pattern reward
+weights are disabled; zero-velocity tracking, standing balance, smoothness,
+termination, randomization, and pushes remain active.
+
 Train the Mini production profile with:
 
 ```bash
 uv run bello-train experiment=bello_mini_locomotion
+```
+
+Train the compatible standing-only policy with:
+
+```bash
+uv run bello-train experiment=bello_mini_standing
 ```
 
 The public command can override seed, total timesteps, environment count,
@@ -56,6 +70,9 @@ hardware-remote inputs remain semantic forward/right/yaw intent and are mapped
 through that robot-specific axis contract. Twenty-five percent of batched
 environments form an exact-zero standing cohort; moving samples are conditioned
 outside the shared standing deadbands.
+The standing-only Mini profile instead assigns every environment to the exact-zero
+cohort. Its command and gait-phase observation slots remain present and are all
+zero, including after startup, periodic resampling, and failure reset.
 Failure resets preserve the exact command request. Command resampling uses a
 separate control-step clock that survives episode resets, so repeated early
 failures cannot trap an environment in one mode. Initial clock ages are evenly

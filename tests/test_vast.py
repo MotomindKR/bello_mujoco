@@ -207,9 +207,10 @@ def test_vast_experiment_rejects_unknown_and_retired_values(experiment: str) -> 
         validate_config(valid_config(experiment=experiment))  # type: ignore[arg-type]
 
 
-def test_vast_defaults_to_bello_and_accepts_mini_locomotion() -> None:
+def test_vast_defaults_to_bello_and_accepts_mini_locomotion_profiles() -> None:
     assert VastTrainConfig().experiment == "bello_locomotion"
     validate_config(valid_config(experiment="bello_mini_locomotion"))
+    validate_config(valid_config(experiment="bello_mini_standing"))
 
 
 def test_twist_vast_config_requires_explicit_stage_inputs(tmp_path: Path) -> None:
