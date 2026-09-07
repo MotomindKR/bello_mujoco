@@ -204,7 +204,7 @@ reward_config:
     foot_angular_weight: 0.25
     foot_heading_deadband: 0.0872664626
     foot_heading_scale: 0.2617993878
-    hip_roll_continuous_torque_limit: 20.0
+    hip_roll_continuous_torque_limit: 10.0
   gait:
     stance_slip_angular_speed_scale: 0.0
     swing_clearance_target: 0.08

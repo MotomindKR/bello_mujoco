@@ -390,7 +390,7 @@ boundary.
 | `action_acceleration` | `-0.005` | Penalize change in applied action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
-| `stand_hip_roll_continuous_torque_excess` | `0.0` | During standing commands, penalize the mean applied hip-roll torque above `standing.hip_roll_continuous_torque_limit`, normalized by that limit. Bello Mini uses the RS03 continuous rating of `20 Nm` and sets this weight to `-8.0`; both hip rolls holding `30 Nm` cost `0.08` per 50 Hz step. Moving commands do not activate this term. |
+| `stand_hip_roll_continuous_torque_excess` | `0.0` | During standing commands, penalize the mean applied hip-roll torque above `standing.hip_roll_continuous_torque_limit`, normalized by that limit. The threshold is `10 Nm`, half the RS03's `20 Nm` continuous rating. Bello Mini sets this weight to `-8.0`; both hip rolls holding `15 Nm` cost `0.08` per 50 Hz step. Moving commands do not activate this term. |
 | `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
 | `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Bounded squared `tanh` shaping limits isolated impacts from dominating an update. |
@@ -419,9 +419,10 @@ without changing the bounded touchdown formulation. Bello Mini inherits the same
 reward configuration except for a `-1.0` moving planar smooth-L1 error penalty
 and midpoint gait shaping: `gait_contact: -2.5`, `gait_swing_clearance: -1.0`,
 and a `0.075` m swing-clearance target. Mini also applies a `-8.0` standing
-hip-roll continuous-torque-excess penalty above the RS03's `20 Nm` rating and a
-`-4.0` standing waist-deviation penalty. These leave moving-command lateral and
-waist authority to the existing general reward terms.
+hip-roll torque-excess penalty above `10 Nm`, half the RS03's `20 Nm` continuous
+rating, and a `-4.0` standing waist-deviation penalty. These leave
+moving-command lateral and waist authority to the existing general reward
+terms.
 The error penalty uses a `0.25 m/s`
 Huber delta and preserves a signed corrective gradient when the Mini moves in
 the opposite direction, while the gait terms more strongly discourage

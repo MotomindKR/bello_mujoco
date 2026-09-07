@@ -540,10 +540,10 @@ def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> N
 def test_standing_hip_roll_continuous_torque_penalty_is_joint_specific() -> None:
     config = reward_config(
         stand_hip_roll_continuous_torque_excess=-8.0,
-        standing=StandingRewardConfig(hip_roll_continuous_torque_limit=20.0),
+        standing=StandingRewardConfig(hip_roll_continuous_torque_limit=10.0),
     )
     inputs = reward_inputs(
-        actuator_force=jnp.asarray([30.0, 500.0, 30.0]),
+        actuator_force=jnp.asarray([15.0, 500.0, 15.0]),
         requested_actuator_force=jnp.zeros(3),
         actuator_peak_force=jnp.asarray([60.0, 1.0, 60.0]),
         policy_joint_indices=jnp.asarray([0, 2], dtype=jnp.int32),
@@ -554,11 +554,11 @@ def test_standing_hip_roll_continuous_torque_penalty_is_joint_specific() -> None
     _, standing = compute_locomotion_reward(config, inputs)
     _, at_limit = compute_locomotion_reward(
         config,
-        inputs.replace(actuator_force=jnp.asarray([-20.0, 500.0, 20.0])),
+        inputs.replace(actuator_force=jnp.asarray([-10.0, 500.0, 10.0])),
     )
     _, one_motor_over = compute_locomotion_reward(
         config,
-        inputs.replace(actuator_force=jnp.asarray([-30.0, 500.0, 10.0])),
+        inputs.replace(actuator_force=jnp.asarray([-15.0, 500.0, 5.0])),
     )
     _, moving = compute_locomotion_reward(
         config,

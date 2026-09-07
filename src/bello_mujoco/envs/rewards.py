@@ -260,7 +260,7 @@ class StandingRewardConfig:
     foot_angular_weight: float = 0.25
     foot_heading_deadband: float = math.radians(5.0)
     foot_heading_scale: float = math.radians(15.0)
-    hip_roll_continuous_torque_limit: float = 20.0
+    hip_roll_continuous_torque_limit: float = 10.0
 
 
 @dataclass(frozen=True)

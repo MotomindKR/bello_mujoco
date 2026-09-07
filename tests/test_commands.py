@@ -317,7 +317,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     )
     assert (
         mini.reward_config.standing.hip_roll_continuous_torque_limit
-        == pytest.approx(20.0)
+        == pytest.approx(10.0)
     )
     assert mini.reward_config.weights.stand_waist_deviation == pytest.approx(-4.0)
     assert mini.reward_config.weights.gait_contact == pytest.approx(-2.5)
