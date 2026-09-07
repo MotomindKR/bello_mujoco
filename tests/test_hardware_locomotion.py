@@ -30,6 +30,7 @@ from bello_mujoco.hardware.locomotion import (
     command_ranges,
     control_physical_robot,
     hardware_command,
+    joystick_command_ranges,
     report_remote_connection,
     run_hardware_locomotion,
     validate_command,
@@ -490,6 +491,8 @@ def test_hardware_uses_generated_motor_impedance_gains(
 def make_hardware_adapter(
     hardware_env: BelloLocomotionEnv,
     config: TrainingRunConfig | None = None,
+    *,
+    command_slew_rates: tuple[float, float] | None = None,
 ) -> HardwarePolicyAdapter:
     config = config or compose_hardware_training_config()
     actor_size = policy_observation_size(
@@ -516,7 +519,13 @@ def make_hardware_adapter(
         observation=init_observation_norm_state(actor_size),
         critic_observation=init_observation_norm_state(critic_size),
     )
-    return HardwarePolicyAdapter(hardware_env, policy, metadata, normalization)
+    return HardwarePolicyAdapter(
+        hardware_env,
+        policy,
+        metadata,
+        normalization,
+        command_slew_rates=command_slew_rates,
+    )
 
 
 def test_bello_mini_adapter_supports_live_upper_body(
@@ -817,6 +826,107 @@ def test_hardware_adapter_defers_stop_requested_inside_double_support(
     assert adapter._gait_phase == pytest.approx(0.0)
 
 
+def test_hardware_adapter_slew_limits_the_policy_observed_command(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(
+        hardware_env,
+        command_slew_rates=(1.0, 1.0),
+    )
+    adapter._advance_gait_phase_before_step = True
+    timestep = adapter.control_timestep
+
+    def advance(target: tuple[float, float, float]) -> np.ndarray:
+        previous = adapter._effective_command.copy()
+        command = adapter._resolve_effective_command(
+            np.asarray(target, dtype=np.float32)
+        )
+        assert np.linalg.norm(command[:2] - previous[:2]) <= timestep + 1.0e-6
+        assert abs(float(command[2] - previous[2])) <= timestep + 1.0e-6
+        return command
+
+    for _ in range(50):
+        command = advance((0.6, 0.6, 0.6))
+    assert command == pytest.approx((0.6, 0.6, 0.6))
+
+    for _ in range(100):
+        command = advance((-0.6, -0.6, -0.6))
+        if np.linalg.norm(command[:2]) < hardware_env.command_config.linear_deadband:
+            assert adapter._gait_active
+    assert command == pytest.approx((-0.6, -0.6, -0.6))
+
+    saw_zero_slew = False
+    for _ in range(150):
+        previous = command
+        command = advance((0.0, 0.0, 0.0))
+        saw_zero_slew |= adapter._standing_slew_active
+        if np.array_equal(command, np.zeros(3, dtype=np.float32)):
+            break
+        assert adapter._standing_transition_pending
+        if saw_zero_slew:
+            assert not np.array_equal(command, previous)
+    else:
+        pytest.fail("slew-limited standing transition did not finish")
+    assert saw_zero_slew
+    assert not adapter._standing_transition_pending
+    assert adapter._gait_phase == pytest.approx(0.0)
+
+
+def test_hardware_adapter_precompile_warms_slew_gait_transition(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(
+        hardware_env,
+        command_slew_rates=(1.0, 1.0),
+    )
+    resolve_gait_transition = adapter._resolve_gait_transition
+    calls = []
+
+    def tracked_resolve_gait_transition(*args):
+        calls.append(args)
+        return resolve_gait_transition(*args)
+
+    adapter._resolve_gait_transition = tracked_resolve_gait_transition
+    adapter.precompile()
+
+    assert len(calls) == 1
+
+
+def test_hardware_adapter_defers_neutral_during_reversal_deadband(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(
+        hardware_env,
+        command_slew_rates=(1.0, 1.0),
+    )
+    adapter._advance_gait_phase_before_step = True
+    positive = np.asarray((0.4, 0.0, 0.0), dtype=np.float32)
+    negative = -positive
+
+    for _ in range(30):
+        command = adapter._resolve_effective_command(positive)
+    assert command == pytest.approx(positive)
+    assert adapter._gait_active
+
+    for _ in range(30):
+        command = adapter._resolve_effective_command(negative)
+        if not adapter._command_is_moving(command):
+            break
+    else:
+        pytest.fail("reversal never crossed the command deadband")
+
+    assert adapter._gait_active
+    adapter._gait_phase = 0.1
+    for _ in range(5):
+        stopped = adapter._resolve_effective_command(np.zeros(3, dtype=np.float32))
+        assert adapter._standing_transition_pending
+        assert adapter._gait_active
+        assert adapter._command_is_moving(adapter._gait_target_command)
+        assert stopped == pytest.approx(command)
+
+    assert adapter._gait_target_command[0] > 0.0
+
+
 def test_locomotion_overlays_only_slew_limited_upper_body_reference(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
@@ -1098,6 +1208,9 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.acknowledgement_timeout_seconds == pytest.approx(0.5)
     assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
     assert config.hardware.remote.staleness_ms == 200
+    assert config.hardware.joystick_command_scale == pytest.approx(0.6)
+    assert config.hardware.joystick_linear_slew_rate_mps2 == pytest.approx(1.0)
+    assert config.hardware.joystick_yaw_slew_rate_rps2 == pytest.approx(1.0)
     assert config.hardware.upper_body_follow.left_elbow_yaw_offset_radians == 0.0
     assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
     assert config.hardware.rtmw_gmr_task_profile == "live_upper_body"
@@ -1124,6 +1237,16 @@ def test_hardware_runner_defaults_to_read_only() -> None:
         validate_hardware_config(pose_hardware_config(gain_scale=0.0))
     with pytest.raises(ValueError, match="gain_scale"):
         validate_hardware_config(pose_hardware_config(gain_scale=1.01))
+    with pytest.raises(ValueError, match="joystick_command_scale"):
+        validate_hardware_config(pose_hardware_config(joystick_command_scale=0.0))
+    with pytest.raises(ValueError, match="joystick_linear_slew_rate_mps2"):
+        validate_hardware_config(
+            pose_hardware_config(joystick_linear_slew_rate_mps2=0.0)
+        )
+    with pytest.raises(ValueError, match="joystick_yaw_slew_rate_rps2"):
+        validate_hardware_config(
+            pose_hardware_config(joystick_yaw_slew_rate_rps2=float("nan"))
+        )
     with pytest.raises(ValueError, match="acknowledgement_timeout_seconds"):
         validate_hardware_config(
             pose_hardware_config(acknowledgement_timeout_seconds=0.08)
@@ -1492,10 +1615,12 @@ def test_hardware_remote_commands_fail_closed_and_use_checkpoint_bounds() -> Non
     assert hardware_command(
         metadata,
         remote_input(service_connected=False, controller_connected=False),
+        joystick_command_scale=1.0,
     ) == pytest.approx(np.zeros(3))
     assert hardware_command(
         metadata,
         remote_input((0.8, -0.1, 0.4)),
+        joystick_command_scale=1.0,
     ) == pytest.approx((-0.23, 0.28, 0.36))
 
     mini_metadata = SimpleNamespace(
@@ -1505,7 +1630,60 @@ def test_hardware_remote_commands_fail_closed_and_use_checkpoint_bounds() -> Non
     assert hardware_command(
         mini_metadata,
         remote_input((0.8, -0.1, 0.4)),
+        joystick_command_scale=1.0,
     ) == pytest.approx((0.84, 0.21, 0.36))
+
+
+def test_hardware_remote_command_scale_caps_checkpoint_velocity_ranges() -> None:
+    metadata = SimpleNamespace(
+        asset=SimpleNamespace(asset="bello_mini"),
+        command=CommandConfig(
+            lin_vel_x=(-1.0, 1.0),
+            lin_vel_y=(-1.0, 1.0),
+            ang_vel_yaw=(-1.0, 1.0),
+        ),
+    )
+
+    assert joystick_command_ranges(metadata, 0.6) == (
+        (-0.6, 0.6),
+        (-0.6, 0.6),
+        (-0.6, 0.6),
+    )
+    assert hardware_command(
+        metadata,
+        remote_input((1.0, 1.0, 1.0)),
+        joystick_command_scale=0.6,
+    ) == pytest.approx((0.6, -0.6, 0.6))
+    assert hardware_command(
+        metadata,
+        remote_input((0.5, 0.0, 0.0)),
+        joystick_command_scale=0.6,
+    ) == pytest.approx((0.4, 0.0, 0.0))
+
+    narrow = SimpleNamespace(
+        command=CommandConfig(
+            lin_vel_x=(-0.2, 1.0),
+            lin_vel_y=(-1.0, 1.0),
+            ang_vel_yaw=(-1.0, 1.0),
+        )
+    )
+    with pytest.raises(ValueError, match="trained negative lin_vel_x"):
+        joystick_command_ranges(narrow, 0.6)
+
+    one_sided = SimpleNamespace(
+        command=CommandConfig(
+            lin_vel_x=(0.3, 1.0),
+            lin_vel_y=(-1.0, -0.3),
+            ang_vel_yaw=(-1.0, 1.0),
+        )
+    )
+    assert joystick_command_ranges(one_sided, 0.6) == (
+        (0.3, 0.6),
+        (-0.6, -0.3),
+        (-0.6, 0.6),
+    )
+    with pytest.raises(ValueError, match="leaves no lin_vel_x range"):
+        joystick_command_ranges(one_sided, 0.2)
 
 
 def test_remote_disconnect_reports_zero_requested_command(capsys) -> None:
@@ -2068,6 +2246,7 @@ def test_read_only_preflight_never_acquires_control(
             {
                 "allow_git_commit_mismatch": True,
                 "upper_body_follow": UpperBodyFollowConfig(),
+                "command_slew_rates": (1.0, 1.0),
             },
         ),
     ]

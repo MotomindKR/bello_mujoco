@@ -150,6 +150,9 @@ class HardwareCommandConfig:
     endpoint: str
     remote_endpoint: str | None
     remote_staleness_ms: int
+    joystick_command_scale: float
+    joystick_linear_slew_rate_mps2: float
+    joystick_yaw_slew_rate_rps2: float
     motion_path: Path | None
     end_effector_payload_mass_kg: float | None
     duration_seconds: float | None
@@ -960,6 +963,11 @@ def _hardware_hydra(config: DictConfig) -> None:
         "rtmw_gmr_task_profile",
     )
     smplx_fields = ("smplx_neutral_model_path", "smplx_human_height_m")
+    locomotion_joystick_fields = (
+        "joystick_command_scale",
+        "joystick_linear_slew_rate_mps2",
+        "joystick_yaw_slew_rate_rps2",
+    )
     locomotion_upper_body_adjustment_fields = (
         "left_elbow_yaw_offset_radians",
         "right_elbow_yaw_offset_radians",
@@ -973,6 +981,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             (
                 "remote_endpoint",
                 "remote_staleness_ms",
+                *locomotion_joystick_fields,
                 "motion_path",
                 "standing_checkpoint_path",
                 "allow_provisional_hardware",
@@ -1063,6 +1072,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             (
                 "remote_endpoint",
                 "remote_staleness_ms",
+                *locomotion_joystick_fields,
                 *fastsam_fields,
                 *rtmw_fields,
                 *smplx_fields,
@@ -1163,6 +1173,9 @@ def _hardware_hydra(config: DictConfig) -> None:
                 endpoint=command.remote_endpoint,
                 staleness_ms=command.remote_staleness_ms,
             ),
+            joystick_command_scale=command.joystick_command_scale,
+            joystick_linear_slew_rate_mps2=(command.joystick_linear_slew_rate_mps2),
+            joystick_yaw_slew_rate_rps2=command.joystick_yaw_slew_rate_rps2,
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
             gain_scale=command.gain_scale,

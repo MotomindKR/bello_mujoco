@@ -323,26 +323,30 @@ following resumes.
 
 The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
-the hardware runner scales that intent through the checkpoint's command bounds
-and minimum speeds after mapping it into the selected robot's pelvis frame.
+the hardware runner maps that intent into the selected robot's pelvis frame and
+caps each supported direction at `joystick_command_scale` times its checkpoint
+outer limit while preserving trained inner bounds and minimum moving speeds.
+The resulting planar and yaw requests are slew-limited at
+`joystick_linear_slew_rate_mps2` and
+`joystick_yaw_slew_rate_rps2`, respectively. The defaults cap full stick at 60%
+of each trained outer limit and change commands at 1.0 m/s² or 1.0 rad/s².
 Bello maps right/forward to `+X`/`+Y`; Bello Mini maps right/forward to
 `-Y`/`+X`. Hardwared publishes Mini's calibrated logical `imu_link` frame, and
 the runner performs only its fixed logical-IMU-to-pelvis rotation before
 constructing the policy observation.
 The runner advances the same checkpointed gait clock used by training and
-native evaluation, initialized at phase zero. Neutral or stale remote input
-supplies a zero standing request, not an immediate zero policy command. The
-effective moving command remains active until the next scheduled half-cycle
-boundary, even if the request arrives during double support. The boundary step
-remains a gait step; on the following step the effective command and
-three-component gait observation become zero and older moving frames age out of
-the configured observation stack normally. Periodic status reports the
-effective `command` and the `standing_transition_pending` latch so this interval
-is visible to the operator. Each policy
+native evaluation, initialized at phase zero. A neutral stick, stale service,
+disconnected controller, or unarmed intent supplies a zero standing target. The
+current gait target remains active until the next scheduled half-cycle boundary,
+then the effective command slews to zero. Moving requests, including direction
+reversals, slew from the actual effective command while the active gait phase is
+preserved through the artificial near-zero crossing. Periodic status
+reports the effective `command` and keeps `standing_transition_pending` active
+while either the gait boundary or the final ramp to zero is pending. Each policy
 sample is clipped to the checkpoint action bound, converted directly to motor
 targets, and fed back as `last_action`, matching training and native evaluation
-exactly. Smoothness comes from the trained action-rate and action-acceleration
-objectives rather than a deployment-only command filter.
+exactly. The joystick slew limiter changes only the velocity command in the
+policy observation; motor targets remain unfiltered.
 
 The deployed `bello-hardwared` applies each canonical URDF source-to-output IMU
 rotation before filtering orientation, angular velocity, and linear

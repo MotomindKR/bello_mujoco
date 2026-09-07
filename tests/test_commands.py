@@ -158,6 +158,26 @@ def test_hardware_elbow_yaw_offsets_are_flat_overrides() -> None:
     assert command.right_elbow_yaw_offset_radians == pytest.approx(-1.57079632679)
 
 
+def test_hardware_joystick_limits_are_flat_overrides() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        config = compose(
+            config_name="hardware",
+            overrides=(
+                "joystick_command_scale=0.4",
+                "joystick_linear_slew_rate_mps2=0.8",
+                "joystick_yaw_slew_rate_rps2=1.2",
+            ),
+        )
+
+    command = command_config(HardwareCommandConfig, config)
+    assert command.joystick_command_scale == pytest.approx(0.4)
+    assert command.joystick_linear_slew_rate_mps2 == pytest.approx(0.8)
+    assert command.joystick_yaw_slew_rate_rps2 == pytest.approx(1.2)
+
+
 def test_hardware_upper_body_tracking_is_an_explicit_boolean() -> None:
     with initialize_config_dir(
         version_base=None,
@@ -509,6 +529,9 @@ def test_public_command_configs_are_strict() -> None:
         (HardwareCommandConfig, {"arm": 1}),
         (HardwareCommandConfig, {"duration_seconds": True}),
         (HardwareCommandConfig, {"remote_staleness_ms": True}),
+        (HardwareCommandConfig, {"joystick_command_scale": True}),
+        (HardwareCommandConfig, {"joystick_linear_slew_rate_mps2": True}),
+        (HardwareCommandConfig, {"joystick_yaw_slew_rate_rps2": True}),
         (EvalCommandConfig, {"allow_git_commit_mismatch": 1}),
         (TrainCommandConfig, {"allow_git_commit_mismatch": 1}),
     ):

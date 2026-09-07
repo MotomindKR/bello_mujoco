@@ -5,6 +5,9 @@ allow_git_commit_mismatch: false
 endpoint: http://127.0.0.1:50051
 remote_endpoint: null
 remote_staleness_ms: 200
+joystick_command_scale: 0.6
+joystick_linear_slew_rate_mps2: 1.0
+joystick_yaw_slew_rate_rps2: 1.0
 motion_path: null
 end_effector_payload_mass_kg: null
 duration_seconds: null
