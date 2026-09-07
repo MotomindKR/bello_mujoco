@@ -523,6 +523,7 @@ def test_bello_mini_adapter_runs_with_fixed_upper_body(
 
     assert mini_hardware_env.model.imu_body_name == "pelvis_link"
     assert mini_hardware_env.model.robot.default_imu_body_name == "imu_link"
+    assert adapter.hardware_imu_frame_name == "imu_link"
     assert np.allclose(
         adapter.hardware_imu_to_policy_rotation,
         np.asarray(((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
@@ -1540,6 +1541,7 @@ def test_remote_abort_around_hold_never_acquires_control(
     hardware.binding.ControlState = SimpleNamespace(RUNNING="running")
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
+        hardware_imu_frame_name="pelvis_link",
         nominal_physical_target=np.zeros(2),
         env=SimpleNamespace(action_size=13),
         control_timestep=0.02,
@@ -1917,6 +1919,7 @@ def test_read_only_preflight_never_acquires_control(
     standing_calls = []
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
+        hardware_imu_frame_name="pelvis_link",
         nominal_physical_target=np.zeros(2),
         env=SimpleNamespace(action_size=13),
         control_timestep=0.02,
@@ -2014,6 +2017,7 @@ def test_fixed_upper_body_preflight_skips_pose_source(
     preview_calls = []
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
+        hardware_imu_frame_name="pelvis_link",
         nominal_physical_target=np.zeros(2),
         env=SimpleNamespace(action_size=13),
         control_timestep=0.02,
@@ -2083,6 +2087,7 @@ def test_inventory_rejects_coordinate_mismatch(hardware_preflight_factory) -> No
             imus=(
                 SimpleNamespace(
                     name="imu",
+                    output_frame="pelvis_link",
                     status=SimpleNamespace(state=binding.DeviceState.ONLINE),
                 ),
             )
@@ -2090,10 +2095,52 @@ def test_inventory_rejects_coordinate_mismatch(hardware_preflight_factory) -> No
     )
     adapter = SimpleNamespace(
         physical_coordinate_names=("expected",),
+        hardware_imu_frame_name="pelvis_link",
         control_timestep=0.02,
     )
 
     with pytest.raises(ValueError, match="coordinate mismatch"):
+        validate_hardware_inventory(
+            robot,
+            adapter,
+            HardwareLocomotionConfig(groups=("lower_body",)),
+            binding,
+        )
+
+
+def test_inventory_rejects_imu_output_frame_mismatch(
+    hardware_preflight_factory,
+) -> None:
+    binding = hardware_preflight_factory(("left", "right"), (0.0, 0.0)).binding
+    group = SimpleNamespace(
+        name="lower_body",
+        coordinates=("expected",),
+        control_rate_hz=100.0,
+        initial_state=binding.GroupState.IDLE,
+        motors=(),
+    )
+    robot = SimpleNamespace(
+        group_names=("lower_body",),
+        group=lambda _name: group,
+        inventory=SimpleNamespace(
+            imus=(
+                SimpleNamespace(
+                    name="imu",
+                    output_frame="imu_link",
+                    status=SimpleNamespace(state=binding.DeviceState.ONLINE),
+                ),
+            )
+        ),
+    )
+    adapter = SimpleNamespace(
+        physical_coordinate_names=("expected",),
+        hardware_imu_frame_name="pelvis_link",
+        control_timestep=0.02,
+    )
+
+    with pytest.raises(
+        ValueError, match="publishes output frame 'imu_link'.*'pelvis_link'"
+    ):
         validate_hardware_inventory(
             robot,
             adapter,

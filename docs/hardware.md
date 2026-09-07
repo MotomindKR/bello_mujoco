@@ -57,8 +57,8 @@ safety fix is not inherited automatically by a historical checkpoint.
    initializes GMR from an offline standing sample, then connects to the
    hardware daemon without acquiring a control lease; no tracked person is
    required yet;
-7. validates motor groups, coordinate ownership, IMU presence, group state, and
-   fresh finite complete state frames;
+7. validates motor groups, coordinate ownership, the hardwared IMU output
+   frame, group state, and fresh finite complete state frames;
 8. evaluates a lower-body-policy preview with checkpoint-nominal arms for
    locomotion, or a standing-policy preview for motion, and reports the
    resolved configuration.
@@ -194,12 +194,13 @@ pose source; it remains specific to TWIST2.
 
 Bello Mini uses 14 policy coordinates, including waist roll, and 14 held arm
 coordinates. Its seven-DoF arms do not match Bello's current GMR output, so Mini
-requires `upper_body_tracking_enabled=false`. Raw Mini IMU orientation, angular
-velocity, and acceleration axes are rotated from the physical `imu_link` frame
-into the checkpoint's pelvis observation frame. The physical IMU origin is
-offset from the pelvis origin, so existing checkpoints retain an unmodeled
-lever-arm acceleration residual. This remains a known limitation of the current
-Mini checkpoint rather than a deployment gate.
+requires `upper_body_tracking_enabled=false`. Hardwared first applies the
+canonical URDF rotation from the upside-down physical `imu_sensor_link` into
+the logical `imu_link`; the runner then rotates that logical sample into the
+checkpoint's pelvis observation frame. The sensor origin is offset from the
+pelvis origin, so existing checkpoints retain an unmodeled lever-arm
+acceleration residual. This remains a known limitation of the current Mini
+checkpoint rather than a deployment gate.
 
 Run the pinned `deps/RTMW-SMPLX-Teleop` producer with its gRPC service enabled.
 Preflight requires that submodule to be clean and exactly at the reviewed
@@ -298,8 +299,9 @@ Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
 the hardware runner scales that intent through the checkpoint's command bounds
 and minimum speeds after mapping it into the selected robot's pelvis frame.
 Bello maps right/forward to `+X`/`+Y`; Bello Mini maps right/forward to
-`-Y`/`+X`. The runner performs Mini's fixed IMU-axis rotation before constructing
-the pelvis-frame policy observation.
+`-Y`/`+X`. Hardwared publishes Mini's calibrated logical `imu_link` frame, and
+the runner performs only its fixed logical-IMU-to-pelvis rotation before
+constructing the policy observation.
 The runner advances the same checkpointed gait clock used by training and
 native evaluation, initialized at phase zero. Neutral or stale remote input
 supplies a zero standing request, not an immediate zero policy command. The
@@ -315,11 +317,12 @@ targets, and fed back as `last_action`, matching training and native evaluation
 exactly. Smoothness comes from the trained action-rate and action-acceleration
 objectives rather than a deployment-only command filter.
 
-The deployed `bello-hardwared` filters every 200 Hz EBIMU orientation, angular
-velocity, and linear-acceleration sample with timestamp-aware 10 Hz first-order
-low-pass filters before the locomotion runner samples its latest state at 50 Hz.
-Motor velocity is independently filtered at 10 Hz. Joint position and
-locomotion action targets remain unfiltered.
+The deployed `bello-hardwared` applies each canonical URDF source-to-output IMU
+rotation before filtering orientation, angular velocity, and linear
+acceleration with timestamp-aware 10 Hz first-order low-pass filters. Bello
+uses 200 Hz EBIMU output and Mini uses 100 Hz; the locomotion runner samples the
+latest state at 50 Hz. Motor velocity is independently filtered at 10 Hz. Joint
+position and locomotion action targets remain unfiltered.
 Configure the visualizer to listen on port 50054 and supply its plaintext URL
 as `remote_endpoint`, for example
 `remote_endpoint=http://visualizer-host:50054`.

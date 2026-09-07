@@ -111,6 +111,7 @@ class ChirpPoint:
 @dataclass(frozen=True)
 class ChirpHardwareAdapter:
     asset: AssetName
+    hardware_imu_frame_name: str
     physical_coordinate_names: tuple[str, ...]
     logical_joint_names: tuple[str, ...]
     transform: np.ndarray
@@ -224,6 +225,7 @@ def build_hardware_adapter(
     kd = np.asarray([gain[1] for gain in gains], dtype=np.float64)
     return ChirpHardwareAdapter(
         asset=robot.asset,
+        hardware_imu_frame_name=robot.default_imu_body_name,
         physical_coordinate_names=physical_coordinate_names,
         logical_joint_names=logical_joint_names,
         transform=transform,

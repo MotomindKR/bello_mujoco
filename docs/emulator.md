@@ -27,8 +27,8 @@ testing. Policy checkpoints are evaluated with `bello-eval`.
 The emulated motor contract is:
 
 - the selected asset's `deps/bello-stack/descriptions/<asset>/hardware.yaml`:
-  logical buses, motors, coordinates, directions, group membership, and the
-  canonical robot-description reference;
+  logical buses, motors, coordinates, directions, group membership, IMU source
+  and output frames, and the canonical robot-description reference;
 - `deps/bello-stack/descriptions/robstride/models.yaml`: protocol ranges and the
   voltage, current, and speed values reported through parameter registers;
 - the URDF referenced by the hardware description: direct joints and
@@ -148,8 +148,9 @@ The emulator publishes:
 
 - active RobStride feedback with simulated position, velocity, torque,
   temperature, and fault state;
-- configured IMU-body orientation and specific force through the EBIMU serial
-  protocol;
+- raw `source_frame` IMU orientation and specific force through the EBIMU serial
+  protocol; hardwared applies the URDF transform and publishes the configured
+  `output_frame`;
 - world-frame pelvis translation/orientation through PoseService.
 
 The default IMU model uses seed 0 and adds independent Gaussian noise with

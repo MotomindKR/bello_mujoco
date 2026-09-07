@@ -433,6 +433,7 @@ def test_read_only_preflight_never_acquires_control(
     hardware = hardware_preflight_factory(coordinates, (2.0, 2.0))
     adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
+        hardware_imu_frame_name="pelvis_link",
         coordinate_index={"left": 0, "right": 1},
         nominal_physical_target=np.zeros(2),
         kp=np.ones(2),
@@ -452,6 +453,7 @@ def test_read_only_preflight_never_acquires_control(
     standing_preview = SimpleNamespace(action=np.zeros(2))
     standing_adapter = SimpleNamespace(
         physical_coordinate_names=coordinates,
+        hardware_imu_frame_name="pelvis_link",
         coordinate_index={"left": 0, "right": 1},
         nominal_physical_target=np.zeros(2),
         kp=np.ones(2),

@@ -61,6 +61,7 @@ class HardwareFrame:
 class HardwarePolicyAdapter(Protocol):
     physical_coordinate_names: tuple[str, ...]
     coordinate_index: dict[str, int]
+    hardware_imu_frame_name: str
     kp: np.ndarray
     kd: np.ndarray
 
@@ -417,6 +418,11 @@ def validate_hardware_inventory(
     if imu.status is None or imu.status.state != binding.DeviceState.ONLINE:
         state = "missing" if imu.status is None else imu.status.state.name
         raise RuntimeError(f"IMU {config.imu_name!r} is not online: {state}")
+    if imu.output_frame != adapter.hardware_imu_frame_name:
+        raise ValueError(
+            f"hardware IMU {config.imu_name!r} publishes output frame "
+            f"{imu.output_frame!r}, policy expects {adapter.hardware_imu_frame_name!r}"
+        )
     return groups
 
 

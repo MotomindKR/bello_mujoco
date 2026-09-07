@@ -118,6 +118,7 @@ def hardware_preflight_factory():
                 imus=(
                     SimpleNamespace(
                         name="imu",
+                        output_frame="pelvis_link",
                         status=SimpleNamespace(state=FakeDeviceState.ONLINE),
                     ),
                 )

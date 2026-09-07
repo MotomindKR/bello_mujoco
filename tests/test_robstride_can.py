@@ -15,6 +15,7 @@ from bello_mujoco.robstride.can import (
     BusSpec,
     CanFrame,
     CommType,
+    ImuSpec,
     MotorCommand,
     MotorSpec,
     MotorTargetSpec,
@@ -43,6 +44,7 @@ from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.robstride.emulator import (
     _CommandLatencyQueue,
+    _configure_imu_source,
     EmulatorConfig,
     TerminalEnterInput,
     add_torso_hold,
@@ -365,6 +367,13 @@ def test_canonical_hardware_description_drives_emulator_inventory() -> None:
         BusSpec("can0", "vcan0", 0),
         BusSpec("can1", "vcan1", 0),
     )
+    assert config.imus == (
+        ImuSpec(
+            name="imu",
+            source_frame="pelvis_link",
+            output_frame="pelvis_link",
+        ),
+    )
     assert motors["waist_yaw"].bus == "can1"
     assert motors["waist_yaw"].target == MotorTargetSpec(
         type="joint", name="waist_yaw_joint"
@@ -394,6 +403,15 @@ def test_bello_mini_hardware_description_drives_emulator_inventory() -> None:
     assert asset_config.asset == "bello_mini"
     assert asset_config.imu_config.enabled
     assert asset_config.imu_config.body_name == "imu_link"
+    assert robstride.imus == (
+        ImuSpec(
+            name="imu",
+            source_frame="imu_sensor_link",
+            output_frame="imu_link",
+        ),
+    )
+    emulator_config = _configure_imu_source(config, robstride)
+    assert emulator_config.asset_config.imu_config.body_name == "imu_sensor_link"
     assert config.pose_service.tracked_frame == "pelvis_link"
     assert len(robstride.motors) == 28
     assert sum(motor.target.type == "joint" for motor in robstride.motors) == 24
@@ -437,12 +455,12 @@ def test_bello_mini_hardware_description_drives_emulator_inventory() -> None:
         robstride.motors,
     )
 
-    prepared = prepare_asset(asset_config)
+    prepared = prepare_asset(emulator_config.asset_config)
     model = load_prepared_bello_model(
         prepared,
         terrain=FLAT_TERRAIN,
-        simulation_physics=config.simulation_physics,
-        actuator_config=asset_config.actuator_config,
+        simulation_physics=emulator_config.simulation_physics,
+        actuator_config=emulator_config.asset_config.actuator_config,
         load_mjx=False,
     )
     configured = configure_robstride_actuators(model, robstride.motors)
@@ -451,7 +469,20 @@ def test_bello_mini_hardware_description_drives_emulator_inventory() -> None:
         tuple(RobstrideMotor(spec) for spec in robstride.motors),
     )
 
-    assert model.imu_body_name == "imu_link"
+    assert model.imu_body_name == "imu_sensor_link"
+    imu_site_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_SITE,
+        "bello_imu_site",
+    )
+    imu_source_id = mujoco.mj_name2id(
+        model.mj_model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "imu_sensor_link",
+    )
+    assert imu_site_id >= 0
+    assert imu_source_id >= 0
+    assert model.mj_model.site_bodyid[imu_site_id] == imu_source_id
     assert (
         mujoco.mj_name2id(
             model.mj_model,
@@ -474,6 +505,26 @@ def test_hardware_description_requires_existing_robot_description(tmp_path) -> N
         load_robstride_description(
             hardware_path,
             default_motor_model_catalog("bello"),
+            {"can0": "vcan0", "can1": "vcan1"},
+        )
+
+
+def test_hardware_description_rejects_unknown_imu_source_frame(tmp_path) -> None:
+    description = OmegaConf.load(default_hardware_description("bello_mini"))
+    description.robot_description = str(
+        stack_description_path("bello_mini/urdf/bello_mini.urdf")
+    )
+    description.imus[0].source_frame = "missing_imu_sensor_link"
+    hardware_path = tmp_path / "hardware.yaml"
+    OmegaConf.save(description, hardware_path)
+
+    with pytest.raises(
+        ValueError,
+        match="source_frame 'missing_imu_sensor_link' is absent",
+    ):
+        load_robstride_description(
+            hardware_path,
+            default_motor_model_catalog("bello_mini"),
             {"can0": "vcan0", "can1": "vcan1"},
         )
 

@@ -74,6 +74,7 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
     for body_name in (
         "pelvis_link",
         "imu_link",
+        "imu_sensor_link",
         "left_ankle_roll_link",
         "right_ankle_roll_link",
         "left_end_effector_sphere_link",
@@ -85,6 +86,9 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name) >= 0
     pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis_link")
     imu_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "imu_link")
+    imu_sensor_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, "imu_sensor_link"
+    )
     assert model.body_parentid[imu_id] == pelvis_id
     np.testing.assert_allclose(
         model.body_pos[imu_id], [-0.0099999999999894115, 0.0, -0.230000001143162]
@@ -93,6 +97,9 @@ def test_prepared_bello_mini_preserves_reviewed_morphology(
         model.body_quat[imu_id],
         [0.7071067811865476, 0.0, 0.0, -0.7071067811865475],
     )
+    assert model.body_parentid[imu_sensor_id] == imu_id
+    np.testing.assert_allclose(model.body_pos[imu_sensor_id], [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(model.body_quat[imu_sensor_id], [0.0, 1.0, 0.0, 0.0])
 
     actuator_names = {
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)

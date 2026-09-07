@@ -212,9 +212,17 @@ class BusSpec:
 
 
 @dataclass(frozen=True)
+class ImuSpec:
+    name: str
+    source_frame: str
+    output_frame: str
+
+
+@dataclass(frozen=True)
 class RobstrideConfig:
     buses: tuple[BusSpec, ...]
     motors: tuple[MotorSpec, ...]
+    imus: tuple[ImuSpec, ...]
 
 
 def load_robstride_description(
@@ -243,9 +251,11 @@ def load_robstride_description(
             raise ValueError(f"Bello {section} must be a nonempty list")
     models = load_motor_models(model_path)
     models_by_name = {model.name: model for model in models}
-    targets = load_urdf_motor_targets(
-        _robot_description_path(hardware_path, hardware["robot_description"])
+    robot_description_path = _robot_description_path(
+        hardware_path, hardware["robot_description"]
     )
+    targets = load_urdf_motor_targets(robot_description_path)
+    imus = _imu_specs(hardware["imus"], load_urdf_link_names(robot_description_path))
 
     bus_descriptions = hardware["logical_buses"]
     if not isinstance(bus_descriptions, list) or not bus_descriptions:
@@ -332,7 +342,7 @@ def load_robstride_description(
     motors = tuple(motor for motor in all_motors if motor.name in selected_motor_names)
     _validate_coupling_groups(all_motors)
     _validate_coupling_groups(motors)
-    return RobstrideConfig(buses, motors)
+    return RobstrideConfig(buses, motors, imus)
 
 
 def _robot_description_path(hardware_path: Path, value: Any) -> Path:
@@ -532,6 +542,66 @@ def load_urdf_motor_targets(path: Path) -> dict[str, MotorTargetSpec]:
                 coupling_size=len(actuator_names),
             )
     return targets
+
+
+def load_urdf_link_names(path: Path) -> frozenset[str]:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    root = ET.parse(path).getroot()
+    if root.tag != "robot":
+        raise ValueError(f"canonical robot description is not a URDF: {path}")
+    names = [link.get("name", "") for link in root.findall("link")]
+    if any(not name for name in names) or len(set(names)) != len(names):
+        raise ValueError("canonical URDF links must have unique nonempty names")
+    return frozenset(names)
+
+
+def _imu_specs(raw: Any, link_names: frozenset[str]) -> tuple[ImuSpec, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Bello hardware imus must be a nonempty list")
+    required = {
+        "name",
+        "serial_device",
+        "source_frame",
+        "output_frame",
+        "stale_timeout_ms",
+        "output_rate_hz",
+    }
+    specs = []
+    names: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ValueError("Bello hardware IMU entries must be mappings")
+        if set(entry) != required:
+            raise ValueError(
+                "Bello hardware IMU keys must be exactly " + ", ".join(sorted(required))
+            )
+        name = entry["name"]
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError(f"invalid or duplicate Bello hardware IMU name {name!r}")
+        frames = {}
+        for frame_field in ("source_frame", "output_frame"):
+            frame = entry[frame_field]
+            if not isinstance(frame, str) or not frame:
+                raise ValueError(
+                    f"Bello hardware IMU {name!r} {frame_field} must be nonempty"
+                )
+            if frame not in link_names:
+                raise ValueError(
+                    f"Bello hardware IMU {name!r} {frame_field} {frame!r} "
+                    "is absent from the canonical URDF"
+                )
+            frames[frame_field] = frame
+        specs.append(
+            ImuSpec(
+                name=name,
+                source_frame=frames["source_frame"],
+                output_frame=frames["output_frame"],
+            )
+        )
+        names.add(name)
+    return tuple(specs)
 
 
 def _load_mapping(path: Path, description: str) -> dict[str, Any]:

@@ -35,6 +35,7 @@ from bello_mujoco.robstride.can import (
     CanFrame,
     CommType,
     MotorSpec,
+    RobstrideConfig,
     RobstrideBusEmulator,
     SocketCanEndpoint,
     comm_type,
@@ -236,6 +237,7 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
         default_motor_model_catalog(config.asset_config.asset),
         overrides,
     )
+    config = _configure_imu_source(config, robstride)
     validate_motor_coverage(
         config.asset_config.asset,
         config.asset_config.joint_availability,
@@ -273,6 +275,27 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
         ),
     )
     run_simulation(model, emulators, transmission, config, torso_hold)
+
+
+def _configure_imu_source(
+    config: EmulatorConfig,
+    hardware: RobstrideConfig,
+) -> EmulatorConfig:
+    if len(hardware.imus) != 1:
+        raise ValueError(
+            "the emulator requires exactly one IMU in the hardware description"
+        )
+    source_frame = hardware.imus[0].source_frame
+    return replace(
+        config,
+        asset_config=replace(
+            config.asset_config,
+            imu_config=replace(
+                config.asset_config.imu_config,
+                body_name=source_frame,
+            ),
+        ),
+    )
 
 
 @contextmanager

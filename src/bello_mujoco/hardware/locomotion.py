@@ -307,6 +307,7 @@ class HardwarePolicyAdapter:
         validate_hardware_checkpoint(env, metadata)
         self.env = env
         self.metadata = metadata
+        self.hardware_imu_frame_name = env.model.robot.default_imu_body_name
         self.hardware_imu_to_policy_rotation = _hardware_imu_to_policy_rotation(env)
         self.physical_coordinate_names = actuator_coordinate_names(env)
         self.coordinate_index = {

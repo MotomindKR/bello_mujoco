@@ -160,6 +160,14 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
         "xyz": "-0.0099999999999894115 0 -0.230000001143162",
         "rpy": "0 0 -1.5707963267948966",
     }
+    imu_sensor_joint = source_root.find("./joint[@name='imu_sensor_joint']")
+    assert imu_sensor_joint is not None and imu_sensor_joint.attrib["type"] == "fixed"
+    assert imu_sensor_joint.find("parent").attrib["link"] == "imu_link"
+    assert imu_sensor_joint.find("child").attrib["link"] == "imu_sensor_link"
+    assert imu_sensor_joint.find("origin").attrib == {
+        "xyz": "0 0 0",
+        "rpy": "3.141592653589793 0 0",
+    }
     movable_joint_names = {
         joint.attrib["name"]
         for joint in source_root.findall("joint")

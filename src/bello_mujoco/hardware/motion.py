@@ -511,6 +511,7 @@ class HardwareMotionPolicyAdapter:
         self.env = env
         self.metadata = metadata
         self.config = config
+        self.hardware_imu_frame_name = env.model.robot.default_imu_body_name
         self.physical_coordinate_names = actuator_coordinate_names(env)
         self.coordinate_index = {
             name: index for index, name in enumerate(self.physical_coordinate_names)

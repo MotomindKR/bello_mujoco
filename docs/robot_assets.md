@@ -64,22 +64,25 @@ contract, and training validates it against the robot's motion profile.
   roll, and the 12 leg joints are policy-controlled, while both seven-DoF arms
   are held. Simulation and vCAN map its logical ankle pitch/roll coordinates
   through the pinned URDF's reviewed `[pitch + roll, pitch - roll]`
-  differential. Its massless fixed
-  `imu_link` is 50 mm below the midpoint between the reviewed left/right
-  hip-pitch joint origins (`[-0.01, 0, -0.23]` m in pelvis coordinates).
+  differential. Its massless fixed logical `imu_link` is 50 mm below the
+  midpoint between the reviewed left/right hip-pitch joint origins
+  (`[-0.01, 0, -0.23]` m in pelvis coordinates). A coincident
+  `imu_sensor_link` records the installed EBIMU's upside-down local-X mounting;
+  hardwared rotates samples from that physical frame into `imu_link` before
+  publication.
   Bello is physically forward along pelvis `+Y`, with pelvis `+X` to the right;
   Bello Mini is physically forward along pelvis `+X`, with pelvis `-Y` to the
   right. Locomotion commands and planar tracking use each robot's pelvis axes,
   so a fixed forward command is `[0, +v, 0]` for Bello and `[+v, 0, 0]` for
   Mini. The Mini locomotion policy also selects `pelvis_link` as its simulated
-  IMU observation body. Its physical `imu_link` remains the robot's default
-  sensor link, yawed -90 degrees from the pelvis axes. The hardware runner
-  applies that fixed axis rotation for hardware policy observations, but cannot
-  remove acceleration caused by the sensor's offset from the pelvis origin.
-  That lever-arm residual remains a known deployment limitation. Each robot's
-  configured action mirror and foot-forward axes likewise encode its physical
-  geometry; in particular, Mini hip pitch keeps sign across sides while Mini hip
-  roll changes sign.
+  IMU observation body. Its published `imu_link` remains the robot's default
+  hardware sensor frame, yawed -90 degrees from the pelvis axes. The hardware
+  runner applies that fixed logical-frame rotation for policy observations, but
+  cannot remove acceleration caused by the sensor's offset from the pelvis
+  origin. That lever-arm residual remains a known deployment limitation. Each
+  robot's configured action mirror and foot-forward axes likewise encode its
+  physical geometry; in particular, Mini hip pitch keeps sign across sides
+  while Mini hip roll changes sign.
 
   Mini starts from the coordinated nominal crouch above instead of placing its
   knees at their hard lower limit. Its experiment disables independent
