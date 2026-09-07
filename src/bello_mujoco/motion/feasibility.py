@@ -1,4 +1,4 @@
-"""Replay a reference through Bello's PD actuators and report feasibility."""
+"""Replay a reference through the selected robot's PD actuators."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from bello_mujoco.motion.clip import (
     motion_tracking_asset_config,
 )
 from bello_mujoco.robot import AssetName
+from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import BelloModel, load_bello_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 
@@ -250,7 +251,10 @@ def tracked_end_effector_error(
 ) -> float:
     frame = min(int(round(time * motion.fps)), motion.num_frames - 1)
     names = motion.body_names
-    body_indices = [names.index("l_wrist_link"), names.index("r_wrist_link")]
+    end_effector_names = motion_task_definition(
+        model.robot.asset
+    ).default_end_effector_body_names
+    body_indices = [names.index(name) for name in end_effector_names]
     body_ids = [
         mujoco.mj_name2id(model.mj_model, mujoco.mjtObj.mjOBJ_BODY, names[index])
         for index in body_indices

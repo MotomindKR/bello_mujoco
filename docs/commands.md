@@ -174,7 +174,7 @@ Configuration source: `configs/commands/motion.yaml`.
 | Field | Type and default | Applies to | Meaning |
 | --- | --- | --- | --- |
 | `operation` | `import`, `import_dataset`, `inspect`, or `render`; `inspect` | all | Select the offline motion operation. |
-| `asset` | `bello` or `bello_mini`; `bello` | all | Select the robot contract. Import operations also require that robot to provide a motion/GMR profile; Bello Mini does not provide one yet. |
+| `asset` | `bello` or `bello_mini`; `bello` | all | Select the robot contract. Import operations require its motion/GMR profile; both registered assets provide one. |
 | `source` | path or `null`; `null` | all | Required input file or directory. |
 | `output` | path or `null`; `null` | import, import_dataset, render; optional for inspect | Destination archive, dataset directory, report file, or video. |
 | `jobs` | positive integer; `8` | import_dataset | Maximum parallel legacy imports. |
@@ -194,6 +194,11 @@ sequence makes the overall command fail after the manifest is recorded.
 Single-file import obeys `reject_self_collisions` using a per-frame native
 forward/collision check. Dataset import always records self-collision
 diagnostics instead of rejecting a sequence on that basis.
+
+For direct SMPL-X conversion, use the repository wrappers documented under
+[Clean GMR conversion](twist.md#clean-gmr-conversion). Those wrappers prepare
+and inject the selected generated robot model; standalone GMR robot selection
+does not include Bello Mini.
 
 `inspect` replays the archive through the canonical native model and reports
 completion/failure reason, root and joint tracking errors, peak actuator-force

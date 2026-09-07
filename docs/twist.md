@@ -110,7 +110,15 @@ and is not imported by Bello training. Initialize it with:
 git submodule update --init --recursive
 ```
 
-Prepare the selected robot's fixed-joint model:
+Offline conversion accepts `bello` and `bello_mini`. For Mini, the repository
+wrapper prepares its MJCF and injects that generated model together with the
+calibrated IK configuration into GMR at runtime. The pinned submodule does not
+contain a generated Mini model for its standalone CLI. The maintained TWIST,
+TWIST2, and single-motion training profiles still select Bello; Mini support in
+this section is an offline retargeting/import boundary.
+
+Prepare the selected robot's motion model (the examples use Bello; substitute
+`--asset bello_mini` for Mini conversion):
 
 ```bash
 uv run python tools/prepare_twist_model.py --asset bello
@@ -162,7 +170,7 @@ uv run python tools/twist_normalize_smpl.py \
 ```
 
 The underlying single-clip retargeter can likewise be run in the GMR
-environment. Use the stable manifest identifiers in the output filename:
+environment. Use stable manifest identifiers in the output filename:
 
 ```bash
 python tools/twist_gmr_retarget.py \

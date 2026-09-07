@@ -44,10 +44,13 @@ URDFs are respectively
 `deps/bello-stack/descriptions/bello/urdf/bello.urdf` and
 `deps/bello-stack/descriptions/bello_mini/urdf/bello_mini.urdf`; both reference
 meshes stored in the same pinned submodule. Both assets have maintained
-locomotion-training profiles. The `bello` asset also retains its motion and
-calibrated physical-hardware profiles. Bello Mini GMR/motion and deployable-
-hardware profiles remain deliberately absent until tuning and bench calibration.
-Its provisional hardware description is available to the vCAN emulator.
+locomotion-training profiles. Bello Mini also provides a calibrated offline
+SMPL-X GMR and motion-import profile. Repository retargeting tools prepare and
+inject its generated MJCF at runtime; the pinned GMR submodule does not carry a
+generated Mini robot bundle for standalone use. Maintained Mini motion/TWIST
+training and deployable-hardware profiles remain deliberately absent pending
+task tuning and bench calibration. Mini's provisional hardware description is
+available to the vCAN emulator; `bello` retains the calibrated physical profile.
 The same gitlink pins the RobStride model catalog and Python hardware client
 used by source-checkout workflows.
 

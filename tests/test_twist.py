@@ -530,18 +530,247 @@ def test_gmr_retarget_metadata_separates_actuator_and_qpos_order(
     np.testing.assert_array_equal(ranges, model.jnt_range[qpos_joint_ids])
 
 
-def test_gmr_profile_uses_current_pinned_offline_solver_contract() -> None:
+@pytest.mark.parametrize(
+    ("asset", "use_velocity_limit", "joint_smoothing_passes"),
+    (
+        pytest.param("bello", True, 3, id="bello"),
+        pytest.param("bello_mini", False, 14, id="bello-mini"),
+    ),
+)
+def test_gmr_profile_uses_current_pinned_offline_solver_contract(
+    asset: str,
+    use_velocity_limit: bool,
+    joint_smoothing_passes: int,
+) -> None:
     root = Path(__file__).resolve().parents[1]
-    profile = motion_task_definition("bello").gmr
+    profile = motion_task_definition(asset).gmr
     document = json.loads(profile.config_path(root / "deps/GMR").read_text())
 
     assert profile.task_profile == document["default_task_profile"] == "universal"
-    assert document["offline_solver"]["use_velocity_limit"] is True
+    assert document["offline_solver"]["use_velocity_limit"] is use_velocity_limit
     assert document["offline_solver"]["passes_per_frame"] == 1
     assert document["offline_solver"]["initial_settle_passes"] == 20
     assert (
+        document["offline_solver"]["joint_smoothing_passes"] == joint_smoothing_passes
+    )
+    assert (
         "max_joint_acceleration_radians_per_second_squared"
         not in document["offline_solver"]
+    )
+
+
+def test_bello_mini_gmr_follows_unitree_g1_task_schedule() -> None:
+    root = Path(__file__).resolve().parents[1] / "deps/GMR"
+    mini = json.loads(
+        (
+            root / "general_motion_retargeting/ik_configs/smplx_to_bello_mini.json"
+        ).read_text()
+    )
+    g1 = json.loads(
+        (root / "general_motion_retargeting/ik_configs/smplx_to_g1.json").read_text()
+    )
+
+    expected_scales = {
+        "pelvis": 0.9,
+        "spine3": 0.9,
+        "left_hip": 0.9,
+        "right_hip": 0.9,
+        "left_knee": 0.9,
+        "right_knee": 0.9,
+        "left_foot": 0.9,
+        "right_foot": 0.9,
+        "left_shoulder": 0.8,
+        "right_shoulder": 0.8,
+        "left_elbow": 0.8,
+        "right_elbow": 0.8,
+        "left_wrist": 0.8,
+        "right_wrist": 0.8,
+    }
+    assert mini["human_height_assumption"] == g1["human_height_assumption"] == 1.8
+    assert mini["human_scale_table"] == g1["human_scale_table"] == expected_scales
+    assert "initial_joint_positions" not in mini
+    assert "velocity_limit_tendon_joint_names" not in mini
+
+    corresponding_frames = {
+        "bello_mini_root": "pelvis",
+        "left_hip_roll_link": "left_hip_roll_link",
+        "left_knee_link": "left_knee_link",
+        "left_ankle_roll_link": "left_toe_link",
+        "right_hip_roll_link": "right_hip_roll_link",
+        "right_knee_link": "right_knee_link",
+        "right_ankle_roll_link": "right_toe_link",
+        "torso_link": "torso_link",
+        "left_upper_arm_link": "left_shoulder_yaw_link",
+        "left_elbow_link": "left_elbow_link",
+        "left_wrist_roll_link": "left_wrist_yaw_link",
+        "right_upper_arm_link": "right_shoulder_yaw_link",
+        "right_elbow_link": "right_elbow_link",
+        "right_wrist_roll_link": "right_wrist_yaw_link",
+    }
+    stage2 = mini["ik_match_table2"]
+    g1_stage2 = g1["ik_match_table2"]
+    assert set(stage2) == set(corresponding_frames)
+    for mini_frame, g1_frame in corresponding_frames.items():
+        assert stage2[mini_frame][:3] == g1_stage2[g1_frame][:3]
+
+    for side in ("left", "right"):
+        wrist_frame = f"{side}_wrist_roll_link"
+        assert mini["ik_match_table1"][wrist_frame][0] == f"{side}_wrist"
+        assert stage2[wrist_frame][0] == f"{side}_wrist"
+        assert f"{side}_end_effector_sphere_link" not in mini["ik_match_table1"]
+        assert f"{side}_end_effector_sphere_link" not in stage2
+
+    stage1 = mini["ik_match_table1"]
+    g1_stage1 = g1["ik_match_table1"]
+    g1_aligned_stage1_frames = {
+        "left_hip_roll_link",
+        "left_knee_link",
+        "left_ankle_roll_link",
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
+    }
+    branch_stability_exceptions = {
+        "bello_mini_root": ["pelvis", 100, 20],
+        "torso_link": ["spine3", 0, [25, 25, 0]],
+        "left_upper_arm_link": ["left_shoulder", 0, 5],
+        "left_elbow_link": ["left_elbow", 0, 0],
+        "left_wrist_roll_link": ["left_wrist", 0, 0],
+        "right_upper_arm_link": ["right_shoulder", 0, 5],
+        "right_elbow_link": ["right_elbow", 0, 0],
+        "right_wrist_roll_link": ["right_wrist", 0, 0],
+    }
+    assert set(stage1) == set(corresponding_frames)
+    assert set(corresponding_frames) == (
+        g1_aligned_stage1_frames | set(branch_stability_exceptions)
+    )
+    for mini_frame in g1_aligned_stage1_frames:
+        g1_frame = corresponding_frames[mini_frame]
+        assert stage1[mini_frame][:3] == g1_stage1[g1_frame][:3]
+    for mini_frame, expected in branch_stability_exceptions.items():
+        assert stage1[mini_frame][:3] == expected
+        g1_frame = corresponding_frames[mini_frame]
+        assert stage1[mini_frame][:3] != g1_stage1[g1_frame][:3]
+
+
+def test_bello_mini_gmr_profile_references_generated_model(
+    bello_mini_asset,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    profile = motion_task_definition("bello_mini").gmr
+    document = json.loads(profile.config_path(root / "deps/GMR").read_text())
+    model = mujoco.MjModel.from_xml_path(str(bello_mini_asset.mjcf_path))
+    robot = robot_definition("bello_mini")
+
+    assert profile.target_robot == robot.asset == "bello_mini"
+    assert document["robot_root_name"] == robot.root_body_name
+    assert document["human_root_name"] in profile.source_body_names
+    assert set(document["human_scale_table"]) == set(profile.source_body_names)
+
+    referenced_body_names = {
+        document["robot_root_name"],
+        *profile.output_body_names,
+    }
+    for table_name in ("ik_match_table1", "ik_match_table2"):
+        table = document[table_name]
+        assert {match[0] for match in table.values()} == set(profile.source_body_names)
+        referenced_body_names.update(table)
+        for match in table.values():
+            assert len(match) == 5
+            _, position_cost, orientation_cost, position_offset, quaternion = match
+            for cost in (position_cost, orientation_cost):
+                cost_array = np.asarray(cost, dtype=float)
+                assert cost_array.shape in ((), (3,))
+                assert np.all(np.isfinite(cost_array))
+                assert np.all(cost_array >= 0.0)
+            assert np.asarray(position_offset).shape == (3,)
+            assert np.all(np.isfinite(position_offset))
+            assert np.asarray(quaternion).shape == (4,)
+            np.testing.assert_allclose(np.linalg.norm(quaternion), 1.0, atol=1.0e-6)
+
+    protected_bodies = document["offline_solver"]["protected_bodies"]
+    referenced_body_names.update(item["body_name"] for item in protected_bodies)
+
+    collision = document["collision_avoidance"]
+    assert collision["enabled"] is True
+    for selector_pair in collision["geom_pairs"]:
+        assert len(selector_pair) == 2
+        for selectors in selector_pair:
+            assert selectors
+            for selector in selectors:
+                selector_type, separator, body_name = selector.partition(":")
+                assert (selector_type, separator) == ("body", ":")
+                assert body_name
+                referenced_body_names.add(body_name)
+
+    assert "planar_relative_yaw_task" not in document
+
+    for body_name in referenced_body_names:
+        assert model.body(body_name).id >= 0
+
+    actuator_by_joint = {actuator.joint_name: actuator for actuator in robot.actuators}
+    referenced_joint_names = {
+        *profile.standing_default_joint_names,
+        *(leg.target_knee_joint_name for leg in profile.knee_pole.legs),
+    }
+    assert set(profile.standing_default_joint_names).issubset(actuator_by_joint)
+    for joint_name in referenced_joint_names:
+        assert model.joint(joint_name).id >= 0
+
+    ground_geoms = tuple(document["ground_clearance_geoms"])
+    assert len(ground_geoms) == len(robot.foot_support_geometries)
+    for geom_name, support in zip(
+        ground_geoms, robot.foot_support_geometries, strict=True
+    ):
+        assert geom_name in support.geom_names
+        geom_id = model.geom(geom_name).id
+        assert model.geom_bodyid[geom_id] == model.body(support.body_name).id
+
+
+def test_bello_mini_gmr_default_stance_places_soles_on_ground(
+    bello_mini_asset,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    profile = motion_task_definition("bello_mini").gmr
+    document = json.loads(profile.config_path(root / "deps/GMR").read_text())
+    model = mujoco.MjModel.from_xml_path(str(bello_mini_asset.mjcf_path))
+    robot = robot_definition("bello_mini")
+    data = mujoco.MjData(model)
+    data.qpos[:] = model.qpos0
+
+    root_joint = model.joint(robot.root_joint_name)
+    root_qpos_address = int(root_joint.qposadr[0])
+    data.qpos[root_qpos_address : root_qpos_address + 3] = robot.default_root_position
+    data.qpos[root_qpos_address + 3 : root_qpos_address + 7] = (
+        robot.default_root_quaternion
+    )
+    for actuator in robot.actuators:
+        joint = model.joint(actuator.joint_name)
+        joint_id = joint.id
+        data.qpos[int(joint.qposadr[0])] = actuator.default_pos
+        if model.jnt_limited[joint_id]:
+            lower, upper = model.jnt_range[joint_id]
+            assert lower <= actuator.default_pos <= upper
+    mujoco.mj_forward(model, data)
+    sole_clearances = []
+    sole_up_axes = []
+    for geom_name in document["ground_clearance_geoms"]:
+        geom_id = model.geom(geom_name).id
+        assert model.geom_type[geom_id] == mujoco.mjtGeom.mjGEOM_BOX
+        rotation = data.geom_xmat[geom_id].reshape(3, 3)
+        vertical_half_extent = np.abs(rotation[2]) @ model.geom_size[geom_id]
+        sole_clearances.append(data.geom_xpos[geom_id, 2] - vertical_half_extent)
+        sole_up_axes.append(rotation[:, 2])
+
+    np.testing.assert_allclose(
+        sole_clearances,
+        document["ground_height"],
+        atol=5.0e-6,
+    )
+    np.testing.assert_allclose(
+        sole_up_axes,
+        np.tile((0.0, 0.0, 1.0), (len(sole_up_axes), 1)),
+        atol=1.0e-6,
     )
 
 

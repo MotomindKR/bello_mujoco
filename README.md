@@ -4,9 +4,11 @@ Simulation, reinforcement learning, evaluation, hardware emulation, and robot
 deployment for the Bello humanoid. The repository supports locomotion and
 motion-tracking policies built from the robot descriptions pinned through
 `deps/bello-stack`. Registered static assets are `bello` and `bello_mini`;
-both have maintained locomotion-training profiles. Bello Mini motion/GMR and
-physical deployment remain calibration-gated. Its provisional hardware
-description is supported by the vCAN emulator.
+both have maintained locomotion-training profiles. Bello Mini also has a
+calibrated offline SMPL-X GMR and motion-import profile for repository tooling.
+The provisional Mini hardware description is supported by the vCAN emulator;
+maintained Mini motion/TWIST training and physical deployment remain
+calibration-gated.
 
 ## Setup
 
@@ -29,8 +31,8 @@ Invoke commands as `uv run <command> field=value`.
 | Command | Purpose |
 | --- | --- |
 | `bello-prepare-assets` | Generate the Bello URDF and MuJoCo models. |
-| `bello-train` | Train Bello or Bello Mini locomotion, motion, TWIST, or one-stage TWIST2 policies. |
-| `bello-eval` | Evaluate locomotion, render motion tracking, or score and render TWIST/TWIST2 policies. |
+| `bello-train` | Train maintained Bello or Bello Mini locomotion, or Bello motion, TWIST, and one-stage TWIST2 policies. |
+| `bello-eval` | Evaluate maintained Bello or Bello Mini locomotion, or Bello motion and TWIST/TWIST2 policies. |
 | `bello-motion` | Import, inspect, validate, and render motion data. |
 | `bello-twist-data` | Validate licensed manifests and build packed TWIST datasets. |
 | `bello-vast-train` | Run a bounded Vast.ai training job. |

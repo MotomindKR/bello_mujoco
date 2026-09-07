@@ -154,13 +154,17 @@ class MotionTaskDefinition:
             "twist_key_body_names",
         ):
             values = getattr(self, field_name)
-            if not values or any(not value for value in values):
+            if (field_name != "fixed_joint_names" and not values) or any(
+                not value for value in values
+            ):
                 raise ValueError(f"motion task {field_name} must be nonempty")
             if len(set(values)) != len(values):
                 raise ValueError(f"motion task {field_name} must contain unique names")
         if not self.reference_root_body_name:
             raise ValueError("motion task reference_root_body_name must not be empty")
-        if not set(self.fixed_joint_names) & set(self.legacy_import_joint_names):
+        if self.fixed_joint_names and not set(self.fixed_joint_names) & set(
+            self.legacy_import_joint_names
+        ):
             raise ValueError(
                 "motion task fixed_joint_names must include a legacy import joint"
             )
@@ -211,6 +215,7 @@ class MotionTaskDefinition:
 
 _MOTION_TASK_CONFIG_FILES: dict[AssetName, str] = {
     "bello": "bello_motion.yaml",
+    "bello_mini": "bello_mini_motion.yaml",
 }
 _MOTION_TASK_FIELDS = frozenset(
     {

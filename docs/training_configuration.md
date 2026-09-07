@@ -124,7 +124,7 @@ The asset section selects a deterministic prepared morphology.
 
 | Field | Locomotion baseline | Meaning |
 | --- | --- | --- |
-| `asset` | `bello` | Selects a registered robot contract. `bello` and `bello_mini` have maintained locomotion profiles; Mini motion, GMR, and physical hardware remain calibration-gated. Mini vCAN emulation uses a provisional hardware profile. |
+| `asset` | `bello` | Selects a registered robot contract. `bello` and `bello_mini` have maintained locomotion profiles and offline motion/GMR import contracts. Mini vCAN emulation uses a provisional hardware profile; physical deployment remains calibration-gated. |
 | `output_root` | `null` | Optional prepared-asset destination for standalone preparation. Training requires `null` so an exact source revision regenerates through the canonical content-addressed cache. |
 | `collision_mode` | `box` | `box` or simplified `mesh` collisions. Maintained policies use boxes. |
 | `mesh_face_budget` | `1000` | Per-mesh collision simplification budget. |
@@ -161,9 +161,11 @@ profile still supplies joint order, neutral positions, gains, limits, and effort
 limits. Those maintained profiles currently select Bello. Their fixed tracking
 contract is the canonical box-collision asset with no actuator joints disabled;
 Bello's waist roll/pitch and neck/head joints are fixed in its source URDF, and
-all 25 remaining coordinates are policy-controlled. A symmetric sphere-hand
-payload may be added without changing the joint or observation contract.
-Initialization rejects other deviations from this contract.
+all 25 remaining coordinates are policy-controlled. Mini's 28-coordinate motion
+profile supports offline GMR/import, but no maintained motion, TWIST, or TWIST2
+training profile selects it. A symmetric sphere-hand payload may be added
+without changing the Bello joint or observation contract. Initialization rejects
+other deviations from that contract.
 
 ## Locomotion environment: `env_config`
 

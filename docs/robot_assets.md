@@ -99,6 +99,39 @@ contract, and training validates it against the robot's motion profile.
   physical stops still require confirmation. IDs 35/45 are named `wrist_yaw`,
   matching the designer's seven-DoF arm terminology.
 
+  Mini's motion profile exposes all 28 movable coordinates with no imported
+  fixed joints. Its SMPL-X preset follows the Unitree G1 source scaling: a
+  1.8 m assumed human height, `0.9` scaling for the pelvis, spine, hips, knees,
+  and feet, and `0.8` scaling for the shoulders, elbows, and wrists. Mini's
+  robot-frame offsets and rotations are calibrated at its coordinated home
+  pose. The retargeter maps the human wrist to Mini's terminal
+  `left_wrist_roll_link` and `right_wrist_roll_link`; those frames are the
+  kinematic equivalents of G1's terminal wrist-yaw frames despite the robots'
+  different wrist-joint ordering.
+
+  The second IK pass reproduces the G1 position/orientation balance exactly on
+  those equivalent frames: `100/5` at the root, `10/5` at hips and knees,
+  `100/50` at the feet, `0/10` at the torso, and `10/5` at shoulders, elbows,
+  and wrists. The first pass keeps G1's root position and leg costs but raises
+  root orientation from `10` to `20` to avoid Mini's inverted IK branch. It
+  further conditions the branch with torso orientation cost `[25,25,0]`,
+  upper-arm orientation cost `5`, and disabled elbow and wrist tasks. The
+  calibrated neutral target converges to the maintained Mini home pose,
+  including shoulder roll `+0.15` rad on the left and `-0.15` rad on the right.
+
+  Mini layers its own JSON-only safety conditioning over that G1-aligned task
+  mapping: 20 initial settle passes, 14 passes of five-tap trajectory
+  smoothing, protected wrist-roll, ankle, and torso poses, sole-ground
+  clearance, collision avoidance, and versioned universal quality thresholds.
+  GMR's native velocity limit is disabled because the stock solver's tendon
+  mapping is Bello-specific; the repository wrapper derives Mini's logical
+  joint order from the robot contract and the output quality checks still bound
+  joint speed. No generic GMR solver code is changed. Offline repository
+  retargeting prepares the Mini MJCF and injects that generated model and the
+  pinned IK configuration into GMR at runtime. Generated Mini assets are not
+  committed to the GMR submodule, so this does not add standalone upstream GMR
+  CLI support.
+
 The Bello Mini source directory includes `motor_topology.yaml` as its calibration
 manifest. CAN IDs increase along each kinematic chain: left/right arms use
 `31..37` / `41..47` on `can1`, while waist yaw/roll use `51,52` and left/right
@@ -106,12 +139,12 @@ legs use `61..66` / `71..76` on `can0`. The pinned
 `bello_mini/hardware.yaml` carries the reviewed command directions and
 provisional unit ankle differential for vCAN emulation. Encoder zeros and ankle
 reductions still require bench calibration, so the packaged robot contract sets
-`physical_hardware_ready: false`; the vCAN emulator and read-only policy preflight
-remain available. Armed Mini policy control requires an explicit emulator-only
-acknowledgement, and the joint-chirp tool remains blocked. A Bello Mini
-motion/GMR profile is also intentionally absent until it is tuned. These gates
-do not prevent simulation locomotion training with
-`bello_mini_locomotion`.
+`physical_hardware_ready: false`. Read-only policy preflight remains available;
+armed Mini policy control requires an explicit emulator-only acknowledgement,
+and the joint-chirp tool remains blocked. These gates do not prevent offline
+Mini GMR/import or simulation locomotion training with
+`bello_mini_locomotion`. Maintained Mini motion/TWIST training profiles remain a
+separate task-tuning gate.
 
 ## Adding a humanoid
 

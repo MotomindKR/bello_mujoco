@@ -1,9 +1,13 @@
 # Motion data and tracking
 
-The supported motion schema is the 25-coordinate, fixed-waist/fixed-head,
-sphere-hand Bello layout. Motion archives are canonical NPZ files with explicit
-format version, frame rate, joint/body names, kinematics, and source identity.
-Repository importers additionally emit self-collision diagnostics.
+Offline motion schemas are selected by robot profile. Bello uses its
+25-coordinate, fixed-waist/fixed-head, sphere-hand layout; Bello Mini exposes
+all 28 movable coordinates with no imported fixed joints. Motion archives are
+canonical NPZ files with explicit format version, frame rate, joint/body names,
+kinematics, and source identity. Repository importers additionally emit
+self-collision diagnostics. Import, inspection, and reference rendering support
+both profiles. The maintained single-motion training, policy-evaluation, and
+deployment contracts described below remain Bello-only.
 
 The full offline command surface is documented under
 [`bello-motion`](commands.md#bello-motion); training and evaluation fields are
@@ -18,8 +22,8 @@ documented under [`bello-train`](commands.md#bello-train) and
 | Dataset import | Process a nonrecursive directory of GMR pickles in parallel, reuse or overwrite existing outputs, and write a manifest containing successes and failures. |
 | Inspect | Replay a canonical archive through native MuJoCo and report completion, errors, force ratios, contacts, and foot slip. |
 | Reference render | Render the archive itself without loading a policy. |
-| Training | Bind one archive into the motion environment and learn its tracking policy with MJX-Warp PPO. |
-| Policy evaluation | Restore a checkpoint, validate its bound archive, run deterministic native MuJoCo tracking, and emit video plus RMS metrics. |
+| Maintained training (Bello) | Bind one archive into the motion environment and learn its tracking policy with MJX-Warp PPO. |
+| Maintained policy evaluation (Bello) | Restore a checkpoint, validate its bound archive, run deterministic native MuJoCo tracking, and emit video plus RMS metrics. |
 
 Legacy pickle input is executable Python serialization and is accepted only as
 trusted local data. LAFAN1-derived outputs remain local because of their source
@@ -104,3 +108,5 @@ load and refuses a value that differs from the checkpoint.
 Physical motion deployment adds absolute pelvis PoseService input and validates
 Pose/IMU agreement, nominal-pose arrival, action bounds, and reference
 completion. See [Physical hardware](hardware.md) for that safety boundary.
+Bello Mini has no physical motion-deployment contract until its motor and
+differential calibration is complete.

@@ -233,9 +233,79 @@ def test_locomotion_action_mirror_must_cover_policy_joints_exactly() -> None:
         )
 
 
-def test_bello_mini_motion_profile_is_explicitly_deferred() -> None:
-    with pytest.raises(ValueError, match="has no motion task profile"):
-        motion_task_definition("bello_mini")
+def test_bello_mini_motion_task_profile_matches_robot_source() -> None:
+    robot = robot_definition("bello_mini")
+    task = motion_task_definition("bello_mini")
+    expected_joint_names = (
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_pitch_joint",
+        "left_wrist_yaw_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_roll_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_pitch_joint",
+        "right_wrist_yaw_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_roll_joint",
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+    )
+
+    assert task.legacy_import_joint_names == expected_joint_names
+    assert task.fixed_joint_names == ()
+    assert task.imported_actuator_joint_names == expected_joint_names
+    assert set(task.imported_actuator_joint_names) == {
+        actuator.joint_name for actuator in robot.actuators
+    }
+    assert task.default_end_effector_body_names == (
+        "left_wrist_roll_link",
+        "right_wrist_roll_link",
+    )
+    assert task.twist_key_body_names[-1] == "torso_link"
+    assert task.gmr.source_human == "smplx"
+    assert task.gmr.target_robot == "bello_mini"
+    assert task.gmr.task_profile == "universal"
+    assert task.gmr.config_path(Path("deps/GMR")) == Path(
+        "deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello_mini.json"
+    )
+    assert task.gmr.output_body_names == (
+        "pelvis_link",
+        "left_hip_roll_link",
+        "left_knee_link",
+        "left_ankle_roll_link",
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
+        "torso_link",
+        "left_shoulder_roll_link",
+        "left_elbow_link",
+        "left_wrist_roll_link",
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+        "right_wrist_roll_link",
+    )
+    assert len(task.gmr.standing_default_joint_names) == 12
+    assert task.gmr.knee_pole == motion_task_definition("bello").gmr.knee_pole
+    validate_motion_task_source_urdf(
+        task,
+        robot.source_urdf_path(robot_descriptions_root()),
+    )
 
 
 def test_bello_mini_can_topology_is_monotonic_and_calibration_gated() -> None:
@@ -243,8 +313,8 @@ def test_bello_mini_can_topology_is_monotonic_and_calibration_gated() -> None:
         robot_descriptions_root() / "bello_mini" / "motor_topology.yaml"
     )
     expected = (
-        ("waist_yaw_motor", "can1", 51, 1),
-        ("waist_roll_motor", "can1", 52, 1),
+        ("waist_yaw_motor", "can0", 51, 1),
+        ("waist_roll_motor", "can0", 52, 1),
         ("left_hip_pitch_motor", "can0", 61, 1),
         ("left_hip_roll_motor", "can0", 62, 1),
         ("left_hip_yaw_motor", "can0", 63, 1),
@@ -287,8 +357,27 @@ def test_bello_mini_can_topology_is_monotonic_and_calibration_gated() -> None:
     assert actual == expected
     assert len({(bus, can_id) for _, bus, can_id, _ in actual}) == len(actual)
     assert all(
-        motor.hardware_binding.command_direction is None
-        and motor.hardware_binding.encoder_zero_offset_rad is None
+        motor.hardware_binding.encoder_zero_offset_rad is None
+        for motor in topology.motors
+    )
+    confirmed_directions = tuple(
+        motor.hardware_binding.command_direction
+        for motor in topology.motors
+        if motor.hardware_binding.command_direction is not None
+    )
+    assert confirmed_directions
+    assert len(confirmed_directions) < len(topology.motors)
+    assert all(direction in (-1, 1) for direction in confirmed_directions)
+    assert all(
+        (
+            motor.hardware_binding.command_direction is None
+            and motor.hardware_binding.status
+            == "can_assigned_direction_calibration_required"
+        )
+        or (
+            motor.hardware_binding.command_direction in (-1, 1)
+            and motor.hardware_binding.status == "direction_confirmed_by_operator"
+        )
         for motor in topology.motors
     )
     assert all(
