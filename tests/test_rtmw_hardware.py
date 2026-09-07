@@ -24,6 +24,7 @@ from bello_mujoco.hardware.rtmw import (
     validate_pinned_rtmw_contract,
 )
 from bello_mujoco.hardware.smplx_retarget import (
+    SMPLX_MODEL_TO_WORLD_WXYZ,
     SmplxTargetFrame,
 )
 from bello_mujoco.hardware.twist2 import ReferenceUnavailable
@@ -175,6 +176,75 @@ def test_rtmw_grpc_accepts_the_published_schema(tmp_path: Path) -> None:
     assert frame.transforms["pelvis"][0] == pytest.approx((0.0, 0.0, 1.0))
     assert frame.transforms["pelvis"][1] == pytest.approx((1.0, 0.0, 0.0, 0.0))
     assert frame.foot_contacts is not None
+
+
+def test_initial_heading_is_relative_to_the_smplx_world_basis(tmp_path: Path) -> None:
+    camera_to_world_xyzw = (0.5, -0.5, 0.5, -0.5)
+    base = rtmw_config(
+        tmp_path,
+        camera_to_world_quaternion_xyzw=camera_to_world_xyzw,
+        align_initial_heading=False,
+    )
+    aligned = rtmw_config(
+        tmp_path,
+        camera_to_world_quaternion_xyzw=camera_to_world_xyzw,
+        align_initial_heading=True,
+    )
+    positions = np.zeros((len(RTMW_SMPLX52_NAMES), 3), dtype=np.float64)
+    positions[:, 2] = 2.0
+    positions[RTMW_SMPLX52_NAMES.index("left_shoulder"), 0] = 0.3
+    positions[RTMW_SMPLX52_NAMES.index("right_shoulder"), 0] = -0.3
+    # A front-facing neutral SMPL-X frame maps model axes into OpenCV camera
+    # axes with a 180-degree rotation around camera X.
+    quaternions_xyzw = np.tile(
+        np.asarray((1.0, 0.0, 0.0, 0.0)),
+        (len(RTMW_SMPLX52_NAMES), 1),
+    )
+
+    expected_positions, expected_quaternions = RtmwCoordinateAdapter(base).transform(
+        positions, quaternions_xyzw, track_id="neutral"
+    )
+    actual_positions, actual_quaternions = RtmwCoordinateAdapter(aligned).transform(
+        positions, quaternions_xyzw, track_id="neutral"
+    )
+
+    assert actual_positions == pytest.approx(expected_positions)
+    assert actual_quaternions == pytest.approx(expected_quaternions)
+    shoulder_delta = (
+        actual_positions[RTMW_SMPLX52_NAMES.index("left_shoulder")]
+        - actual_positions[RTMW_SMPLX52_NAMES.index("right_shoulder")]
+    )
+    assert abs(shoulder_delta[1]) == pytest.approx(0.6)
+    assert shoulder_delta[0] == pytest.approx(0.0)
+
+
+def test_initial_heading_removes_nonzero_subject_yaw(tmp_path: Path) -> None:
+    camera_to_world_xyzw = (0.5, -0.5, 0.5, -0.5)
+    config = rtmw_config(
+        tmp_path,
+        camera_to_world_quaternion_xyzw=camera_to_world_xyzw,
+        align_initial_heading=True,
+    )
+    yaw = 0.4
+    yaw_quaternion = np.asarray((np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)))
+    canonical = np.asarray(SMPLX_MODEL_TO_WORLD_WXYZ, dtype=np.float64)
+    pelvis_world = rtmw._quat_multiply(yaw_quaternion, canonical)
+    camera_to_world = np.asarray(camera_to_world_xyzw)[[3, 0, 1, 2]]
+    pelvis_camera = rtmw._quat_multiply(
+        rtmw._quat_conjugate(camera_to_world), pelvis_world
+    )
+    quaternions_xyzw = np.tile(
+        pelvis_camera[[1, 2, 3, 0]],
+        (len(RTMW_SMPLX52_NAMES), 1),
+    )
+    positions = np.zeros((len(RTMW_SMPLX52_NAMES), 3), dtype=np.float64)
+
+    _, aligned_quaternions = RtmwCoordinateAdapter(config).transform(
+        positions, quaternions_xyzw, track_id="yawed"
+    )
+
+    pelvis = RTMW_SMPLX52_NAMES.index("pelvis")
+    assert aligned_quaternions[pelvis] == pytest.approx(canonical)
 
 
 def test_pinned_rtmw_contract_and_protobuf_match_consumer(monkeypatch) -> None:
@@ -342,8 +412,10 @@ def test_rtmw_requires_versioned_palm_frame_rotation_semantics(
 ) -> None:
     config = rtmw_config(tmp_path)
     assert RTMW_ROTATION_SEMANTICS == (
-        "derived_tree_consistent_landmark_ik;palm_frame_forearm_twist_v1;"
-        "bone_length_shape_and_unobserved_axial_twist_approximate"
+        "derived_tree_consistent_landmark_ik;"
+        "anthropometric_upper_body_projection_v1;"
+        "palm_frame_forearm_twist_v1;"
+        "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
     )
     _validate_stream_info(stream_info(), config)
 

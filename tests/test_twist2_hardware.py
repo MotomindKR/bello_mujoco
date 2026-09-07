@@ -576,6 +576,24 @@ def test_pinned_gmr_import_avoids_optional_ui_and_torch_dependencies() -> None:
     assert "_bello_pinned_gmr.robot_motion_viewer" not in sys.modules
 
 
+def test_live_gmr_solver_passes_cover_the_source_interval() -> None:
+    retargeter = object.__new__(GmrRetargeter)
+    retargeter.passes_per_frame = 1
+    retargeter.config = GmrLiveRetargetConfig(max_solver_passes_per_frame=64)
+    retargeter.model = SimpleNamespace(opt=SimpleNamespace(timestep=0.005))
+
+    assert retargeter._live_solver_passes(None) == 1
+    assert retargeter._live_solver_passes(0.004) == 1
+    assert retargeter._live_solver_passes(0.2) == 40
+    assert retargeter._live_solver_passes(0.35) == 64
+
+
+@pytest.mark.parametrize("passes", (True, 0, -1, 1.5))
+def test_live_gmr_solver_pass_limit_must_be_a_positive_integer(passes: object) -> None:
+    with pytest.raises(ValueError, match="max_solver_passes_per_frame"):
+        GmrLiveRetargetConfig(max_solver_passes_per_frame=passes)  # type: ignore[arg-type]
+
+
 def test_live_gmr_model_identity_checks_axes_ranges_and_task_frames(
     twist2_hardware_adapter: HardwareTwist2PolicyAdapter,
 ) -> None:

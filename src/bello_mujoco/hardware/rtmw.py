@@ -29,6 +29,7 @@ from bello_mujoco.hardware.smplx_retarget import (
     GmrLiveRetargetConfig,
     GmrRetargeter,
     LiveGmrReferenceSource,
+    SMPLX_MODEL_TO_WORLD_WXYZ,
     SMPLX_BODY_JOINT_NAMES,
     SmplxTargetFrame,
     load_smplx_standing_sample,
@@ -43,12 +44,13 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "2a1a0948e23860a9d2f08c7d2a80f2688b604791"
+RTMW_REVISION = "fdaa892bcf22bdfab002f57cf1525ddc3e1ec63f"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
-    "derived_tree_consistent_landmark_ik;palm_frame_forearm_twist_v1;"
-    "bone_length_shape_and_unobserved_axial_twist_approximate"
+    "derived_tree_consistent_landmark_ik;anthropometric_upper_body_projection_v1;"
+    "palm_frame_forearm_twist_v1;"
+    "lower_body_hand_shape_and_unobserved_axial_twist_approximate"
 )
 RTMW_COORDINATE_SPACE = "camera_opencv_x_right_y_down_z_forward"
 RTMW_SMPLX52_NAMES = SMPLX_BODY_JOINT_NAMES + tuple(
@@ -259,7 +261,14 @@ class RtmwCoordinateAdapter:
                 ]
                 origin[2] = float(np.min(positions[feet, 2]))
             self._origin = origin
-            yaw = _yaw_wxyz(quaternions[pelvis]) if self._align_heading else 0.0
+            if self._align_heading:
+                canonical = np.asarray(SMPLX_MODEL_TO_WORLD_WXYZ, dtype=np.float64)
+                relative = _quat_multiply(
+                    quaternions[pelvis], _quat_conjugate(canonical)
+                )
+                yaw = _yaw_wxyz(relative)
+            else:
+                yaw = 0.0
             self._heading = np.asarray(
                 (math.cos(-0.5 * yaw), 0.0, 0.0, math.sin(-0.5 * yaw)),
                 dtype=np.float64,
@@ -415,9 +424,6 @@ class RtmwSmplxStream:
         options: list[tuple[str, int | str]] = [
             ("grpc.max_receive_message_length", 4 * 1024 * 1024),
             ("grpc.max_send_message_length", 1024 * 1024),
-            ("grpc.keepalive_time_ms", 10_000),
-            ("grpc.keepalive_timeout_ms", 3_000),
-            ("grpc.keepalive_permit_without_calls", 1),
         ]
         certificate_path = self.config.tls_root_certificate_path
         if certificate_path is None:
@@ -684,6 +690,7 @@ def rtmw_locomotion_reference_source(
             GmrLiveRetargetConfig(
                 human_height_m=source_config.human_height_m,
                 task_profile=config.rtmw_gmr_task_profile,
+                max_source_interval_seconds=0.35,
             ),
             validate_reference=adapter.validate_upper_body_reference,
         )
@@ -745,6 +752,8 @@ def validate_pinned_rtmw_contract(submodule: Path) -> None:
         raise ValueError("pinned RTMW SMPL-X joint order is incompatible")
     if tuple(int(value) for value in module.SMPLX52_PARENTS) != RTMW_SMPLX52_PARENTS:
         raise ValueError("pinned RTMW SMPL-X hierarchy is incompatible")
+    if module.DERIVED_ROTATION_SEMANTICS != RTMW_ROTATION_SEMANTICS:
+        raise ValueError("pinned RTMW rotation semantics are incompatible")
 
 
 def import_pinned_rtmw_proto() -> tuple[Any, Any]:
@@ -945,6 +954,12 @@ def _quat_rotate(quaternion: np.ndarray, vectors: np.ndarray) -> np.ndarray:
     vector = quaternion[1:]
     cross = np.cross(vector, vectors)
     return vectors + 2.0 * (quaternion[0] * cross + np.cross(vector, cross))
+
+
+def _quat_conjugate(quaternion: np.ndarray) -> np.ndarray:
+    result = np.asarray(quaternion, dtype=np.float64).copy()
+    result[1:] *= -1.0
+    return result
 
 
 def _yaw_wxyz(quaternion: np.ndarray) -> float:

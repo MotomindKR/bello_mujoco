@@ -238,6 +238,7 @@ class UpperBodyFollowConfig:
     max_reference_age_ms: int = 1_000
     max_reference_joint_speed_rps: float = 25.0
     max_reference_joint_limit_violation_radians: float = 0.01
+    min_live_joint_limit_margin_radians: float = 1.0e-3
     max_target_speed_rps: float = 3.0 * math.pi
     left_elbow_yaw_offset_radians: float = 0.0
     right_elbow_yaw_offset_radians: float = 0.0
@@ -740,6 +741,21 @@ class HardwarePolicyAdapter:
                 f"upper-body reference joint {name!r} exceeds its limit by "
                 f"{violation[index]:.3f} rad"
             )
+        if live:
+            margins = np.minimum(
+                positions - ranges[:, 0],
+                ranges[:, 1] - positions,
+            )
+            index = int(np.argmin(margins))
+            minimum = self.upper_body_follow.min_live_joint_limit_margin_radians
+            if margins[index] <= minimum:
+                logical_index = int(self.upper_body_indices[index])
+                name = self.env.model.actuator_joint_names[logical_index]
+                raise ReferenceUnavailable(
+                    f"live upper-body reference joint {name!r} has only "
+                    f"{margins[index]:.6f} rad of joint-limit margin; requires "
+                    f"more than {minimum:.6f} rad"
+                )
 
     def _reference_upper_body_target(
         self,
@@ -989,6 +1005,14 @@ def validate_hardware_config(
         raise ValueError(
             "upper_body_follow.max_reference_joint_limit_violation_radians must be "
             "finite and nonnegative"
+        )
+    if (
+        not math.isfinite(upper.min_live_joint_limit_margin_radians)
+        or upper.min_live_joint_limit_margin_radians <= 0.0
+    ):
+        raise ValueError(
+            "upper_body_follow.min_live_joint_limit_margin_radians must be "
+            "positive and finite"
         )
     if config.upper_body_tracking_enabled and upper.max_reference_age_ms <= (
         config.rtmw_max_pipeline_latency_ms + config.rtmw_transport_latency_budget_ms

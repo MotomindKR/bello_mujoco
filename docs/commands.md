@@ -379,7 +379,7 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `rtmw_max_pipeline_latency_ms` | positive float; `250.0` | locomotion | Maximum accepted RTMW capture-to-output processing latency. |
 | `rtmw_transport_latency_budget_ms` | nonnegative float; `10.0` | locomotion | Conservative transport contribution added to reference age because producer and robot hosts need not share a monotonic clock. |
 | `rtmw_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
-| `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial pelvis heading to world forward. |
+| `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial anatomical heading to world forward, relative to the canonical SMPL-X-to-world pelvis basis. |
 | `rtmw_align_initial_floor` | boolean; `true` | locomotion | Use the acquired target's initial lower foot as the fixed world floor. |
 | `rtmw_human_height_m` | positive float; `1.75` | locomotion | Human height supplied to pinned GMR; it must equal RTMW's `reconstruction.subject_height_m`. |
 | `rtmw_gmr_task_profile` | string; `live_upper_body` | locomotion | Position-led GMR task profile for RTMW arm tracking. This is currently the only accepted value so an orientation-led offline profile cannot be selected accidentally. |

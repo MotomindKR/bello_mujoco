@@ -67,7 +67,7 @@ _SMPLX_MODEL_TO_WORLD = np.asarray(
     ((0.0, 0.0, -1.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
     dtype=np.float64,
 )
-_SMPLX_MODEL_TO_WORLD_WXYZ = np.asarray((0.5, 0.5, -0.5, -0.5))
+SMPLX_MODEL_TO_WORLD_WXYZ = (0.5, 0.5, -0.5, -0.5)
 
 # Repository-owned, hand-authored relaxed stand in SMPL-X body-pose order.
 # This is deliberately independent of licensed motion datasets.
@@ -183,7 +183,9 @@ def load_smplx_standing_sample(
     positions = positions @ _SMPLX_MODEL_TO_WORLD.T
     quaternions = np.stack(
         [
-            _quaternion_multiply(_SMPLX_MODEL_TO_WORLD_WXYZ, quaternion)
+            _quaternion_multiply(
+                np.asarray(SMPLX_MODEL_TO_WORLD_WXYZ, dtype=np.float64), quaternion
+            )
             for quaternion in quaternions
         ]
     )
@@ -252,6 +254,7 @@ class GmrLiveRetargetConfig:
     task_profile: str | None = None
     convergence_tolerance: float = 1.0e-4
     max_source_interval_seconds: float = 0.2
+    max_solver_passes_per_frame: int = 64
     contact_max_speed_mps: float = 0.2
     contact_height_margin_m: float = 0.03
 
@@ -274,6 +277,12 @@ class GmrLiveRetargetConfig:
         for name, value in positive.items():
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
+        if (
+            not isinstance(self.max_solver_passes_per_frame, int)
+            or isinstance(self.max_solver_passes_per_frame, bool)
+            or self.max_solver_passes_per_frame < 1
+        ):
+            raise ValueError("max_solver_passes_per_frame must be a positive integer")
 
 
 class GmrRetargeter:
@@ -399,7 +408,10 @@ class GmrRetargeter:
         live_ground_offset = self._live_ground_offset
         try:
             qpos = self._ground_live(
-                self._solve(source_targets),
+                self._solve(
+                    source_targets,
+                    passes=self._live_solver_passes(dt),
+                ),
                 source_targets,
                 dt=dt,
                 source_contacts=frame.foot_contacts,
@@ -444,9 +456,26 @@ class GmrRetargeter:
         self.retargeter.configuration.update(self._standing_qpos)
         self._reset_live_state()
 
-    def _solve(self, targets: dict[str, tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+    def _live_solver_passes(self, dt: float | None) -> int:
+        if dt is None:
+            return self.passes_per_frame
+        timestep = float(self.model.opt.timestep)
+        if not math.isfinite(timestep) or timestep <= 0.0:
+            raise RuntimeError("GMR model timestep must be positive and finite")
+        elapsed_passes = math.ceil(dt / timestep)
+        return min(
+            self.config.max_solver_passes_per_frame,
+            max(self.passes_per_frame, elapsed_passes),
+        )
+
+    def _solve(
+        self,
+        targets: dict[str, tuple[np.ndarray, np.ndarray]],
+        *,
+        passes: int | None = None,
+    ) -> np.ndarray:
         qpos = None
-        for _ in range(self.passes_per_frame):
+        for _ in range(self.passes_per_frame if passes is None else passes):
             qpos = self.retargeter.retarget(_copy_targets(targets))
         assert qpos is not None
         result = np.asarray(qpos, dtype=np.float64)

@@ -984,6 +984,26 @@ def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
         adapter.validate_upper_body_reference(unsafe)
 
 
+def test_locomotion_rejects_only_live_upper_body_solver_boundary_pose(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    adapter = make_hardware_adapter(hardware_env)
+    joint_ids = np.asarray(hardware_env.model.actuator_joint_ids)[
+        adapter.upper_body_indices
+    ]
+    ranges = np.asarray(hardware_env.model.mj_model.jnt_range)[joint_ids]
+    upper_positions = adapter.default_joint_target[adapter.upper_body_indices].copy()
+    joint_index = int(np.argmax(ranges[:, 1] - ranges[:, 0]))
+    margin = adapter.upper_body_follow.min_live_joint_limit_margin_radians
+    upper_positions[joint_index] = ranges[joint_index, 1] - 0.5 * margin
+    boundary_reference = hardware_reference(adapter, upper_positions)
+
+    with pytest.raises(ReferenceUnavailable, match="joint-limit margin"):
+        adapter.validate_upper_body_reference(boundary_reference, live=True)
+
+    adapter.validate_upper_body_reference(boundary_reference, live=False)
+
+
 def test_hardware_imu_terms_match_deployment_conventions() -> None:
     projected_gravity = projected_gravity_from_xyzw(np.asarray((0.0, 0.0, 0.0, 1.0)))
     assert projected_gravity == pytest.approx((0.0, 0.0, -1.0))
@@ -1045,6 +1065,15 @@ def test_hardware_runner_defaults_to_read_only() -> None:
                 upper_body_follow=replace(
                     UpperBodyFollowConfig(),
                     connection_transition_duration_seconds=0.0,
+                )
+            )
+        )
+    with pytest.raises(ValueError, match="min_live_joint_limit_margin_radians"):
+        validate_hardware_config(
+            pose_hardware_config(
+                upper_body_follow=replace(
+                    UpperBodyFollowConfig(),
+                    min_live_joint_limit_margin_radians=0.0,
                 )
             )
         )

@@ -259,9 +259,12 @@ qualification and returns the arms toward nominal through the same bounded
 transition. The consumer accepts only RTMW schema 1, `smplx52_landmark_fit`,
 the exact face-free 52-joint hierarchy, calibrated metric OpenCV camera
 coordinates, and the versioned rotation semantics
-`derived_tree_consistent_landmark_ik;palm_frame_forearm_twist_v1;bone_length_shape_and_unobserved_axial_twist_approximate`.
-This rejects an older running producer that does not infer the palm-constrained
-forearm frame even if its protobuf schema is otherwise compatible.
+`derived_tree_consistent_landmark_ik;anthropometric_upper_body_projection_v1;palm_frame_forearm_twist_v1;lower_body_hand_shape_and_unobserved_axial_twist_approximate`.
+The producer projects its smoothed upper-body tree to subject-scaled neutral
+SMPL-X bone lengths before deriving rotations, while moving each hand rigidly
+with its corrected wrist. This rejects older running producers that lack the
+same geometry and palm-frame contracts even if their protobuf schema is
+otherwise compatible.
 The fixed `live_upper_body` GMR task profile is position-led. Pelvis, spine3,
 and wrist rotations must nevertheless have two-vector constraint rank and a
 residual no greater than 30 degrees because GMR rotates their configured local
@@ -270,9 +273,17 @@ their axial component is not used by this profile.
 Root-relative/uncalibrated output and prerecorded video timestamps are rejected.
 No separate `MOTION` confirmation is used.
 
-Live upper-body changes are limited to `3*pi` rad/s at the 50 Hz control rate,
-including the first pose and source recovery, and outgoing targets remain inside
-the model actuator range. Locomotion adds the independently configurable
+Initial heading alignment removes only the subject's yaw relative to the
+canonical SMPL-X-to-world pelvis basis; the fixed SMPL-X frame rotation itself
+is not mistaken for subject heading.
+
+RTMW accepts source intervals through 350 ms. Live GMR advances by the model
+substeps covered by each accepted source interval, capped at 64 substeps per
+frame; this preserves its configured joint-velocity meaning when camera delivery
+is slower than the model's 5 ms timestep. Live upper-body changes are limited to
+`3*pi` rad/s at the 50 Hz control rate, including the first pose and source
+recovery, and outgoing targets remain inside the model actuator range.
+Locomotion adds the independently configurable
 `left_elbow_yaw_offset_radians` and `right_elbow_yaw_offset_radians` to their
 respective GMR targets, then clips the adjusted values to the corresponding
 target ranges; both offsets default to zero. After `RUN`, the terminal also
@@ -501,11 +512,12 @@ Locomotion adds exact RTMW protobuf and stream metadata checks, tracking and
 required-joint confidence, derived-rotation confidence and tree consistency,
 pipeline/transport/reference age, source sequence and timestamp monotonicity,
 required rank-two rotation observability and residual, reference joint speed
-and hard upper-body joint limits, and a fixed
-upper-body target slew bound. Invalid terminal-joint rotations use the nearest
-valid ancestor only outside the required upper-body chain. These checks affect
-only the 12 arm targets; the joystick-conditioned locomotion policy continues
-controlling the waist and legs. A temporarily unavailable or stale reference
+and hard upper-body joint limits with a nonzero live solver-boundary margin,
+and a fixed upper-body target slew bound. Invalid terminal-joint rotations use
+the nearest valid ancestor only outside the required upper-body chain. These
+checks affect only the 12 arm targets; the joystick-conditioned locomotion
+policy continues controlling the waist and legs. A temporarily unavailable or
+stale reference
 blends the arms back to their checkpoint-nominal pose over
 `upper_body_follow.connection_transition_duration_seconds`; a recovered
 reference uses the same blend before resuming direct tracking. Locomotion
