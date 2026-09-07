@@ -236,8 +236,8 @@ payload_attachments:
   - link_name: right_end_effector_sphere_link
     radius_m: 0.025
     center_m: [0.0, 0.0, -0.025]
-# Reviewed unit differential matching the pinned Bello Mini URDF and hardware
-# binding.
+# Observation-derived differential sign/order candidate matching the pinned
+# URDF; validate after this change. Reductions and encoder zeros are uncalibrated.
 coupled_actuator_groups:
   - name: left_ankle_differential
     actuators:
@@ -245,7 +245,7 @@ coupled_actuator_groups:
         logical_joint_name: left_ankle_pitch_joint
         joint_coefficients:
           - joint_name: left_ankle_pitch_joint
-            coefficient: 1.0
+            coefficient: -1.0
           - joint_name: left_ankle_roll_joint
             coefficient: 1.0
       - tendon_name: left_ankle_motor_2
@@ -254,14 +254,14 @@ coupled_actuator_groups:
           - joint_name: left_ankle_pitch_joint
             coefficient: 1.0
           - joint_name: left_ankle_roll_joint
-            coefficient: -1.0
+            coefficient: 1.0
   - name: right_ankle_differential
     actuators:
       - tendon_name: right_ankle_motor_1
         logical_joint_name: right_ankle_pitch_joint
         joint_coefficients:
           - joint_name: right_ankle_pitch_joint
-            coefficient: 1.0
+            coefficient: -1.0
           - joint_name: right_ankle_roll_joint
             coefficient: 1.0
       - tendon_name: right_ankle_motor_2
@@ -270,4 +270,4 @@ coupled_actuator_groups:
           - joint_name: right_ankle_pitch_joint
             coefficient: 1.0
           - joint_name: right_ankle_roll_joint
-            coefficient: -1.0
+            coefficient: 1.0

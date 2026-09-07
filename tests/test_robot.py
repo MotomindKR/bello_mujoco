@@ -130,20 +130,20 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
         for actuator in robot.coupled_actuators
     } == {
         "left_ankle_motor_1": (
-            ("left_ankle_pitch_joint", 1.0),
+            ("left_ankle_pitch_joint", -1.0),
             ("left_ankle_roll_joint", 1.0),
         ),
         "left_ankle_motor_2": (
             ("left_ankle_pitch_joint", 1.0),
-            ("left_ankle_roll_joint", -1.0),
+            ("left_ankle_roll_joint", 1.0),
         ),
         "right_ankle_motor_1": (
-            ("right_ankle_pitch_joint", 1.0),
+            ("right_ankle_pitch_joint", -1.0),
             ("right_ankle_roll_joint", 1.0),
         ),
         "right_ankle_motor_2": (
             ("right_ankle_pitch_joint", 1.0),
-            ("right_ankle_roll_joint", -1.0),
+            ("right_ankle_roll_joint", 1.0),
         ),
     }
     assert tuple(item.link_name for item in robot.payload_attachments) == (
@@ -388,9 +388,24 @@ def test_bello_mini_can_topology_preserves_design_provenance() -> None:
         )
         for motor in topology.motors
     )
-    assert all(
-        group.motor_from_joint_coefficients is None
+    assert tuple(
+        (
+            group.name,
+            tuple(tuple(row) for row in group.motor_from_joint_coefficients),
+            group.status,
+        )
         for group in topology.differential_groups
+    ) == (
+        (
+            "left_ankle_differential",
+            ((-1.0, 1.0), (1.0, 1.0)),
+            "normalized_signs_and_order_inferred_from_operator_observation_validation_required",
+        ),
+        (
+            "right_ankle_differential",
+            ((-1.0, 1.0), (1.0, 1.0)),
+            "normalized_signs_and_order_inferred_from_operator_observation_validation_required",
+        ),
     )
 
 

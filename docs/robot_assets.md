@@ -62,9 +62,12 @@ contract, and training validates it against the robot's motion profile.
   remain clear of the pelvis collision envelopes. The
   static contract exposes all 28 movable joints: waist yaw, waist
   roll, and the 12 leg joints are policy-controlled, while both seven-DoF arms
-  are held. Simulation and vCAN map its logical ankle pitch/roll coordinates
-  through the pinned URDF's reviewed `[pitch + roll, pitch - roll]`
-  differential. Its massless fixed logical `imu_link` is 50 mm below the
+  are held. Simulation, vCAN, and physical hardware map its logical ankle
+  pitch/roll coordinates through the pinned URDF's observation-derived
+  `[-pitch + roll, pitch + roll]` differential candidate. Both feet showed the
+  old mapping's predicted cross-axis error. Supported feedback and low-amplitude
+  command tests must confirm the correction; reduction magnitudes and encoder
+  zeros remain uncalibrated. Its massless fixed logical `imu_link` is 50 mm below the
   midpoint between the reviewed left/right hip-pitch joint origins
   (`[-0.01, 0, -0.23]` m in pelvis coordinates). A coincident
   `imu_sensor_link` records the installed EBIMU's upside-down local-X mounting;
@@ -139,7 +142,8 @@ provenance manifest. CAN IDs increase along each kinematic chain: left/right
 arms use `31..37` / `41..47` on `can1`, while waist yaw/roll use `51,52` and
 left/right legs use `61..66` / `71..76` on `can0`. The pinned
 `bello_mini/hardware.yaml` carries the reviewed command directions and
-unit ankle differential used by physical deployment and vCAN emulation. The
+normalized, observation-derived ankle differential candidate used by physical
+deployment and vCAN emulation. The
 topology manifest retains the design-time calibration record; runtime approval
 of the reviewed binding is explicit in the packaged robot contract's
 `physical_hardware_ready: true`. This enables normal read-only preflight, armed

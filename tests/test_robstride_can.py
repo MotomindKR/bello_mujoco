@@ -433,20 +433,20 @@ def test_bello_mini_hardware_description_drives_emulator_inventory() -> None:
         if motor.target.type == "tendon"
     } == {
         "left_ankle_motor_1": (
-            "left_ankle_pitch_joint",
             "left_ankle_roll_joint",
+            "left_ankle_pitch_joint",
         ),
         "left_ankle_motor_2": (
-            "left_ankle_pitch_joint",
             "left_ankle_roll_joint",
+            "left_ankle_pitch_joint",
         ),
         "right_ankle_motor_1": (
-            "right_ankle_pitch_joint",
             "right_ankle_roll_joint",
+            "right_ankle_pitch_joint",
         ),
         "right_ankle_motor_2": (
-            "right_ankle_pitch_joint",
             "right_ankle_roll_joint",
+            "right_ankle_pitch_joint",
         ),
     }
     validate_motor_coverage(

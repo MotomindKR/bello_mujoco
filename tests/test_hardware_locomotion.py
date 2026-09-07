@@ -448,6 +448,32 @@ def test_hardware_actuator_mapping_round_trips_differential_ankles(
     assert recovered == pytest.approx(logical)
 
 
+def test_bello_mini_hardware_mapping_uses_reviewed_ankle_axes(
+    mini_hardware_env: BelloLocomotionEnv,
+) -> None:
+    physical_names = actuator_coordinate_names(mini_hardware_env)
+    logical_names = mini_hardware_env.model.actuator_joint_names
+    transform = np.asarray(mini_hardware_env.model.actuator_coordinate_transform)
+    logical = np.zeros(len(logical_names))
+
+    for side in ("left", "right"):
+        logical[logical_names.index(f"{side}_ankle_pitch_joint")] = 0.3
+        logical[logical_names.index(f"{side}_ankle_roll_joint")] = -0.1
+
+    physical = transform @ logical
+    recovered = np.linalg.solve(transform, physical)
+
+    assert len(physical_names) == 28
+    for side in ("left", "right"):
+        assert physical[physical_names.index(f"{side}_ankle_motor_1")] == pytest.approx(
+            -0.4
+        )
+        assert physical[physical_names.index(f"{side}_ankle_motor_2")] == pytest.approx(
+            0.2
+        )
+    assert recovered == pytest.approx(logical)
+
+
 def test_hardware_uses_generated_motor_impedance_gains(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
