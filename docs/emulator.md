@@ -64,6 +64,10 @@ cargo run -p bello-hardwared -- \
   --config components/bello-hardwared/config/bello-mini-vcan.yaml
 
 cd deps/bello-stack
+cargo run -p bello-state-estimatord -- \
+  --config components/bello-state-estimatord/config/bello-mini-vcan.yaml
+
+cd deps/bello-stack
 cp components/bello-visualizer/config/bello-mini.example.yaml \
   components/bello-visualizer/config/bello-mini.yaml
 cargo run -p bello-visualizer -- \
@@ -71,8 +75,9 @@ cargo run -p bello-visualizer -- \
 ```
 
 The maintained visualizer example and ignored local `bello-mini.yaml` use the
-emulator's ground-truth PoseService on port 50052. The visualizer continues to
-publish joystick intent on port 50054.
+state estimator on port 50053. Emulator ground truth remains available on port
+50052 for pose-error measurement. The visualizer continues to publish joystick
+intent on port 50054.
 
 A Mini locomotion checkpoint can then perform read-only preflight through the
 emulated hardware stack:
@@ -184,8 +189,8 @@ cargo run -p bello-state-estimatord -- \
   --config components/bello-state-estimatord/config/bello-mini-vcan.yaml
 ```
 
-Mini visualizer runs still use emulator ground truth on port 50052 by default;
-point them at port 50053 only when inspecting estimator output. The Mini
+Mini visualizer runs use estimator output on port 50053 by default. Emulator
+ground truth on port 50052 remains independent for comparison. The Mini
 estimator resolves its offset, yawed IMU frame from the canonical URDF and
 publishes `odom_from_pelvis_link`. Its IMU pose, ankle reductions, motor
 directions, and encoder zeros remain physical-calibration requirements.
