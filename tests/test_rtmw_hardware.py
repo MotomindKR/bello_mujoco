@@ -49,6 +49,7 @@ def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwGrpcConfig:
         "max_required_rotation_residual_degrees": 30.0,
         "max_pipeline_latency_ms": 250.0,
         "transport_latency_budget_ms": 10.0,
+        "max_source_interval_seconds": 0.50,
         "max_source_age_ms": 1_000,
         "camera_to_world_quaternion_xyzw": (0.0, 0.0, 0.0, 1.0),
         "align_initial_heading": False,
@@ -276,6 +277,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     source_config = SimpleNamespace(
         endpoint="127.0.0.1:50055",
         human_height_m=1.75,
+        max_source_interval_seconds=0.50,
     )
     identity = object()
     calls: dict[str, object] = {}
@@ -363,6 +365,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     assert retargeter_call[1] is identity
     assert retargeter_call[2].human_height_m == pytest.approx(1.75)
     assert retargeter_call[2].task_profile == "live_upper_body"
+    assert retargeter_call[2].max_source_interval_seconds == pytest.approx(0.50)
     assert retargeter_call[3] is validation
     assert calls["source"] == (stream, retargeter_call[4])
 

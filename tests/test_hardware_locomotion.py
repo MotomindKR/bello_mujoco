@@ -1101,6 +1101,7 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.upper_body_follow.left_elbow_yaw_offset_radians == 0.0
     assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
     assert config.hardware.rtmw_gmr_task_profile == "live_upper_body"
+    assert config.hardware.rtmw_max_source_interval_seconds == pytest.approx(0.50)
     validate_hardware_config(config.hardware)
     validate_hardware_config(pose_hardware_config(arm=True))
     validate_hardware_config(
@@ -1160,6 +1161,14 @@ def test_hardware_runner_defaults_to_read_only() -> None:
             pose_hardware_config(
                 rtmw_max_required_rotation_residual_degrees=181.0,
             )
+        )
+    with pytest.raises(ValueError, match="max_source_interval_seconds"):
+        validate_hardware_config(
+            pose_hardware_config(rtmw_max_source_interval_seconds=0.0)
+        )
+    with pytest.raises(ValueError, match="source interval plus pipeline"):
+        validate_hardware_config(
+            pose_hardware_config(rtmw_max_source_interval_seconds=0.75)
         )
 
 

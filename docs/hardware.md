@@ -261,14 +261,17 @@ SMPL-X bone lengths before deriving rotations, while moving each hand rigidly
 with its corrected wrist. This rejects older running producers that lack the
 same geometry, anatomical arm-frame, and palm-frame contracts even if their
 protobuf schema is otherwise compatible.
-The fixed `live_upper_body` GMR task profile is position-led. Pelvis, spine3,
-and wrist rotations must nevertheless have two-vector constraint rank and a
-residual no greater than 30 degrees because GMR rotates their configured local
-position offsets. Shoulder frames use a side-specific anatomical elbow-hinge
-prior when the arm is bent far enough; nearly straight or folded arms remain
-rank one and transport their preceding twist. Optional joint rotations outside
-the configured confidence or residual limits fall back to the nearest usable
-ancestor.
+The fixed `live_upper_body` GMR task profile gives the arm positions the larger
+costs while also constraining their orientations. The shoulder and elbow frames
+use the observed shoulder-elbow-wrist chain, with the elbow and wrist twist
+derived from palm landmarks. This keeps elbow and wrist pitch away from spurious
+IK branches instead of allowing position-only null-space drift.
+Pelvis, spine3, and wrist rotations must have two-vector constraint rank and a
+residual no greater than 30 degrees. Shoulder frames use a side-specific
+anatomical elbow-hinge prior when the arm is bent far enough; nearly straight or
+folded arms remain rank one and transport their preceding twist. Optional joint
+rotations outside the configured confidence or residual limits fall back to the
+nearest usable ancestor.
 Root-relative/uncalibrated output and prerecorded video timestamps are rejected.
 No separate `MOTION` confirmation is used.
 
@@ -276,12 +279,14 @@ Initial heading alignment removes only the subject's yaw relative to the
 canonical SMPL-X-to-world pelvis basis; the fixed SMPL-X frame rotation itself
 is not mistaken for subject heading.
 
-RTMW accepts source intervals through 350 ms. Live GMR advances by the model
-substeps covered by each accepted source interval, capped at 64 substeps per
-frame; this preserves its configured joint-velocity meaning when camera delivery
-is slower than the model's 5 ms timestep. Live upper-body changes are limited to
-`3*pi` rad/s at the 50 Hz control rate, including the first pose and source
-recovery, and outgoing targets remain inside the model actuator range.
+RTMW accepts source intervals through the configurable
+`rtmw_max_source_interval_seconds` limit (500 ms by default). Live GMR uses the
+profile's fixed solver-pass count for each accepted source frame. It does not
+convert wall-clock gaps into repeated IK solves, so solver work cannot create a
+feedback loop that reduces the consumed RTMW frame rate. Live upper-body changes
+are limited to `3*pi` rad/s at the 50 Hz control rate, including the first pose
+and source recovery, and outgoing targets remain inside the model actuator
+range.
 On Bello, locomotion adds the independently configurable
 `left_elbow_yaw_offset_radians` and `right_elbow_yaw_offset_radians` to their
 respective GMR targets, then clips the adjusted values to the corresponding

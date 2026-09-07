@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from bello_mujoco.contracts import ActionLayout
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.twist import (
     TwistSamplingConfig,
     TwistSimulationConfig,
@@ -52,6 +53,7 @@ from bello_mujoco.hardware.smplx_retarget import (
     _validate_model_identity,
     import_pinned_gmr_retargeter,
     load_smplx_standing_sample,
+    repository_gmr_source_identity,
     validate_smplx_target_frame,
 )
 from bello_mujoco.repository import repository_root
@@ -576,22 +578,24 @@ def test_pinned_gmr_import_avoids_optional_ui_and_torch_dependencies() -> None:
     assert "_bello_pinned_gmr.robot_motion_viewer" not in sys.modules
 
 
-def test_live_gmr_solver_passes_cover_the_source_interval() -> None:
+def test_live_gmr_uses_the_profile_fixed_solver_pass_count() -> None:
     retargeter = object.__new__(GmrRetargeter)
-    retargeter.passes_per_frame = 1
-    retargeter.config = GmrLiveRetargetConfig(max_solver_passes_per_frame=64)
-    retargeter.model = SimpleNamespace(opt=SimpleNamespace(timestep=0.005))
+    retargeter.passes_per_frame = 2
+    calls: list[dict[str, tuple[np.ndarray, np.ndarray]]] = []
 
-    assert retargeter._live_solver_passes(None) == 1
-    assert retargeter._live_solver_passes(0.004) == 1
-    assert retargeter._live_solver_passes(0.2) == 40
-    assert retargeter._live_solver_passes(0.35) == 64
+    class Solver:
+        def retarget(self, targets):
+            calls.append(targets)
+            return np.asarray((float(len(calls)), 0.0, 0.0))
 
+    retargeter.retargeter = Solver()
+    retargeter.model = SimpleNamespace(nq=3)
+    targets = {"pelvis": (np.zeros(3), np.asarray((1.0, 0.0, 0.0, 0.0)))}
 
-@pytest.mark.parametrize("passes", (True, 0, -1, 1.5))
-def test_live_gmr_solver_pass_limit_must_be_a_positive_integer(passes: object) -> None:
-    with pytest.raises(ValueError, match="max_solver_passes_per_frame"):
-        GmrLiveRetargetConfig(max_solver_passes_per_frame=passes)  # type: ignore[arg-type]
+    result = retargeter._solve(targets)
+
+    assert len(calls) == 2
+    np.testing.assert_array_equal(result, (2.0, 0.0, 0.0))
 
 
 def test_live_gmr_model_identity_checks_axes_ranges_and_task_frames(
@@ -711,6 +715,62 @@ def test_pinned_gmr_produces_finite_standing_reference(
         retargeter.retargeter.configuration.data.qpos, solver_qpos
     )
     assert retargeter._last_sequence is None
+
+
+def test_bello_mini_live_gmr_static_pose_does_not_drift_to_arm_limits(
+    bello_mini_asset,
+    tmp_path: Path,
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(bello_mini_asset, load_mjx=False)
+    profile = motion_task_definition("bello_mini").gmr
+    retargeter = GmrRetargeter(
+        env,
+        repository_gmr_source_identity("bello_mini"),
+        GmrLiveRetargetConfig(
+            human_height_m=1.75,
+            task_profile="live_upper_body",
+            max_source_interval_seconds=0.5,
+        ),
+    )
+    source = load_smplx_standing_sample(
+        synthetic_smplx_model(tmp_path), profile.source_body_names
+    )
+    retargeter.standing(source)
+
+    arm_joint_names = tuple(
+        f"{side}_{joint}_joint"
+        for side in ("left", "right")
+        for joint in (
+            "shoulder_pitch",
+            "shoulder_roll",
+            "shoulder_yaw",
+            "elbow_pitch",
+            "wrist_yaw",
+            "wrist_pitch",
+            "wrist_roll",
+        )
+    )
+    model = env.model.mj_model
+    joint_ids = np.asarray([model.joint(name).id for name in arm_joint_names])
+    qpos_indices = np.asarray([model.jnt_qposadr[joint_id] for joint_id in joint_ids])
+    trajectory = []
+    for sequence in range(1, 301):
+        frame = replace(
+            source,
+            sequence=sequence,
+            source_timestamp_ns=sequence * 33_333_333,
+            source_age_ms=0,
+        )
+        trajectory.append(retargeter.retarget(frame).qpos[qpos_indices])
+
+    arm_qpos = np.asarray(trajectory)
+    ranges = model.jnt_range[joint_ids]
+    margins = np.minimum(
+        arm_qpos - ranges[:, 0],
+        ranges[:, 1] - arm_qpos,
+    )
+    assert np.min(margins) > np.deg2rad(1.0)
+    assert np.max(np.ptp(arm_qpos[-100:], axis=0)) < 0.02
 
 
 def test_live_gmr_source_runs_retargeting_outside_policy_thread() -> None:

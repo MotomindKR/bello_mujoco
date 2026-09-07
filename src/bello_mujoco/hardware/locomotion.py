@@ -285,6 +285,7 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     rtmw_max_required_rotation_residual_degrees: float = 30.0
     rtmw_max_pipeline_latency_ms: float = 250.0
     rtmw_transport_latency_budget_ms: float = 10.0
+    rtmw_max_source_interval_seconds: float = 0.50
     rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
         0.5,
         -0.5,
@@ -1049,12 +1050,18 @@ def validate_hardware_config(
             "upper_body_follow.min_live_joint_limit_margin_radians must be "
             "positive and finite"
         )
-    if config.upper_body_tracking_enabled and upper.max_reference_age_ms <= (
-        config.rtmw_max_pipeline_latency_ms + config.rtmw_transport_latency_budget_ms
+    maximum_rtmw_continuity_age_ms = (
+        config.rtmw_max_source_interval_seconds * 1_000.0
+        + config.rtmw_max_pipeline_latency_ms
+        + config.rtmw_transport_latency_budget_ms
+    )
+    if (
+        config.upper_body_tracking_enabled
+        and upper.max_reference_age_ms <= maximum_rtmw_continuity_age_ms
     ):
         raise ValueError(
-            "upper_body_follow.max_reference_age_ms must exceed the RTMW "
-            "pipeline latency limit"
+            "upper_body_follow.max_reference_age_ms must exceed the RTMW source "
+            "interval plus pipeline and transport latency limits"
         )
     if metadata is not None:
         command_ranges(metadata)

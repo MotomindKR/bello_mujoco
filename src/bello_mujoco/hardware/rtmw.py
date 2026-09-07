@@ -44,7 +44,7 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "2f15f96fb9a9f803dde662664bef05d4d419ca87"
+RTMW_REVISION = "6fd2e282b8af29a8ab7644e30f108f37dd7a684b"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
@@ -138,6 +138,7 @@ class RtmwGrpcConfig:
     max_required_rotation_residual_degrees: float
     max_pipeline_latency_ms: float
     transport_latency_budget_ms: float
+    max_source_interval_seconds: float
     max_source_age_ms: int
     camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
     align_initial_heading: bool
@@ -167,6 +168,7 @@ class RtmwGrpcConfig:
             ),
             max_pipeline_latency_ms=config.rtmw_max_pipeline_latency_ms,
             transport_latency_budget_ms=config.rtmw_transport_latency_budget_ms,
+            max_source_interval_seconds=config.rtmw_max_source_interval_seconds,
             max_source_age_ms=config.upper_body_follow.max_reference_age_ms,
             camera_to_world_quaternion_xyzw=(
                 config.rtmw_camera_to_world_quaternion_xyzw
@@ -184,6 +186,7 @@ class RtmwGrpcConfig:
             ("connect_timeout_seconds", self.connect_timeout_seconds),
             ("rpc_timeout_seconds", self.rpc_timeout_seconds),
             ("human_height_m", self.human_height_m),
+            ("max_source_interval_seconds", self.max_source_interval_seconds),
             (
                 "max_required_rotation_residual_degrees",
                 self.max_required_rotation_residual_degrees,
@@ -585,10 +588,7 @@ class RtmwSmplxStream:
             rotation_valid
             & (rotation_confidence >= self.config.min_rotation_confidence)
             & np.isfinite(rotation_residual)
-            & (
-                rotation_residual
-                <= self.config.max_required_rotation_residual_degrees
-            )
+            & (rotation_residual <= self.config.max_required_rotation_residual_degrees)
         )
         source_quaternions = global_quaternions.copy()
         for index in required:
@@ -700,7 +700,7 @@ def rtmw_locomotion_reference_source(
             GmrLiveRetargetConfig(
                 human_height_m=source_config.human_height_m,
                 task_profile=config.rtmw_gmr_task_profile,
-                max_source_interval_seconds=0.35,
+                max_source_interval_seconds=source_config.max_source_interval_seconds,
             ),
             validate_reference=adapter.validate_upper_body_reference,
         )

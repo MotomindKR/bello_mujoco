@@ -175,6 +175,7 @@ class HardwareCommandConfig:
     rtmw_max_required_rotation_residual_degrees: float
     rtmw_max_pipeline_latency_ms: float
     rtmw_transport_latency_budget_ms: float
+    rtmw_max_source_interval_seconds: float
     rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float]
     rtmw_align_initial_heading: bool
     rtmw_align_initial_floor: bool
@@ -951,6 +952,7 @@ def _hardware_hydra(config: DictConfig) -> None:
         "rtmw_max_required_rotation_residual_degrees",
         "rtmw_max_pipeline_latency_ms",
         "rtmw_transport_latency_budget_ms",
+        "rtmw_max_source_interval_seconds",
         "rtmw_camera_to_world_quaternion_xyzw",
         "rtmw_align_initial_heading",
         "rtmw_align_initial_floor",
@@ -1190,6 +1192,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             ),
             rtmw_max_pipeline_latency_ms=command.rtmw_max_pipeline_latency_ms,
             rtmw_transport_latency_budget_ms=(command.rtmw_transport_latency_budget_ms),
+            rtmw_max_source_interval_seconds=(command.rtmw_max_source_interval_seconds),
             rtmw_camera_to_world_quaternion_xyzw=(
                 command.rtmw_camera_to_world_quaternion_xyzw
             ),

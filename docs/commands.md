@@ -374,9 +374,10 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Distinct successive safe references required after `RUN` before starting or resuming live arm tracking. Until then, the arms remain at their nominal pose. |
 | `rtmw_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion | Minimum position confidence for every GMR target joint. |
 | `rtmw_min_rotation_confidence` | float in `[0,1]`; `0.10` | locomotion | Minimum derived-rotation confidence for the pelvis, spine3, and palm-constrained wrist rotations used by live GMR. |
-| `rtmw_max_required_rotation_residual_degrees` | float in `(0,180]`; `30.0` | locomotion | Maximum fit residual for pelvis, spine3, and palm-constrained wrist rotations. Each must also have rank 2; rank-one shoulder/elbow rotations are not used as orientation targets. |
+| `rtmw_max_required_rotation_residual_degrees` | float in `(0,180]`; `30.0` | locomotion | Maximum usable rotation-fit residual. Pelvis, spine3, and palm-constrained wrists must also have rank 2; rank-one shoulder and elbow frames retain their transported twist and remain usable. |
 | `rtmw_max_pipeline_latency_ms` | positive float; `250.0` | locomotion | Maximum accepted RTMW capture-to-output processing latency. |
 | `rtmw_transport_latency_budget_ms` | nonnegative float; `10.0` | locomotion | Conservative transport contribution added to reference age because producer and robot hosts need not share a monotonic clock. |
+| `rtmw_max_source_interval_seconds` | positive float; `0.50` | locomotion | Maximum interval between successive accepted RTMW source frames before live GMR is re-anchored. This tolerates brief confidence-gated gaps while remaining inside the separate 1-second reference-age envelope. |
 | `rtmw_camera_to_world_quaternion_xyzw` | normalized four-float tuple; `[0.5,-0.5,0.5,-0.5]` | locomotion | Calibrated camera-to-world rotation. The default maps OpenCV forward/right/down to Bello forward/right/down. |
 | `rtmw_align_initial_heading` | boolean; `true` | locomotion | Rotate the acquired target's initial anatomical heading to world forward, relative to the canonical SMPL-X-to-world pelvis basis. |
 | `rtmw_align_initial_floor` | boolean; `true` | locomotion | Use the acquired target's initial lower foot as the fixed world floor. |
