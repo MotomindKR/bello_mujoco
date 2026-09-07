@@ -120,6 +120,23 @@ _FULLY_OBSERVED_ROTATION_NAMES = (
     "left_wrist",
     "right_wrist",
 )
+_RETRYABLE_GRPC_CODES = frozenset(
+    (
+        grpc.StatusCode.CANCELLED,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        grpc.StatusCode.UNAVAILABLE,
+    )
+)
+_RECONNECT_INITIAL_BACKOFF_SECONDS = 0.1
+_RECONNECT_MAX_BACKOFF_SECONDS = 1.0
+
+
+class _RtmwServiceUnavailable(RuntimeError):
+    """The producer is reachable but not ready to stream yet."""
+
+
+class _RtmwStreamStopped(RuntimeError):
+    """Internal signal used to interrupt transport setup during cleanup."""
 
 
 @dataclass(frozen=True)
@@ -325,9 +342,12 @@ class RtmwSmplxStream:
         self._payload: SmplxTargetFrame | BaseException | None = None
         self._terminal_error: BaseException | None = None
         self._thread: threading.Thread | None = None
+        self._transport_lock = threading.Lock()
         self._channel: grpc.Channel | None = None
+        self._ready_future: Any | None = None
         self._call: Any | None = None
         self._stub: Any | None = None
+        self._stub_factory: Callable[[grpc.Channel], Any] | None = None
         self._proto: Any | None = None
         self.stream_instance_id: str | None = None
         self.stream_config_sha256: str | None = None
@@ -341,25 +361,10 @@ class RtmwSmplxStream:
             raise RuntimeError("RTMW stream is already running")
         skeleton_pb2, skeleton_pb2_grpc = import_pinned_rtmw_proto()
         self._proto = skeleton_pb2
+        self._stub_factory = skeleton_pb2_grpc.SkeletonServiceStub
         self._stop.clear()
-        self._channel = self._create_channel()
         try:
-            grpc.channel_ready_future(self._channel).result(
-                timeout=self.config.connect_timeout_seconds
-            )
-            self._stub = skeleton_pb2_grpc.SkeletonServiceStub(self._channel)
-            info = self._stub.GetStreamInfo(
-                empty_pb2.Empty(), timeout=self.config.rpc_timeout_seconds
-            )
-            _validate_stream_info(info, self.config)
-            self.stream_instance_id = info.stream_instance_id
-            self.stream_config_sha256 = info.config_sha256
-            self.depth_provenance = info.depth_provenance
-            status = self._stub.GetStatus(
-                empty_pb2.Empty(), timeout=self.config.rpc_timeout_seconds
-            )
-            _validate_service_status(status)
-            self._call = self._stub.Subscribe(skeleton_pb2.SubscribeRequest())
+            self._connect_transport()
             self._thread = threading.Thread(
                 target=self._consume,
                 name="bello-rtmw-grpc",
@@ -372,18 +377,17 @@ class RtmwSmplxStream:
         return self
 
     def __exit__(self, *_exception: object) -> bool:
-        self._stop.set()
-        call = self._call
-        if call is not None:
-            call.cancel()
+        with self._transport_lock:
+            self._stop.set()
+        with self._condition:
+            self._condition.notify_all()
+        self._close_transport()
         thread = self._thread
         if thread is not None:
             thread.join(timeout=3.0)
             if thread.is_alive():
-                self._close_transport()
                 raise RuntimeError("RTMW gRPC worker did not stop")
         self._thread = None
-        self._close_transport()
         return False
 
     def standing_sample(self) -> SmplxTargetFrame:
@@ -410,6 +414,7 @@ class RtmwSmplxStream:
                 self._condition.wait(remaining)
             self._consumed_generation = self._generation
             payload = self._payload
+            self._condition.notify_all()
         if isinstance(payload, (ReferenceDiscontinuity, ReferenceUnavailable)):
             raise payload
         if isinstance(payload, BaseException):
@@ -443,29 +448,143 @@ class RtmwSmplxStream:
         )
         return grpc.secure_channel(self.config.endpoint, credentials, options=options)
 
-    def _consume(self) -> None:
+    def _connect_transport(self) -> None:
+        if self._proto is None or self._stub_factory is None:
+            raise RuntimeError("RTMW protobuf transport is not initialized")
+        channel = self._create_channel()
+        with self._transport_lock:
+            if self._stop.is_set():
+                channel.close()
+                raise _RtmwStreamStopped("RTMW stream stopped during connection")
+            self._channel = channel
+        ready_future = grpc.channel_ready_future(channel)
+        with self._transport_lock:
+            if self._stop.is_set():
+                ready_future.cancel()
+                raise _RtmwStreamStopped("RTMW stream stopped during connection")
+            self._ready_future = ready_future
         try:
-            assert self._call is not None
-            for message in self._call:
+            ready_future.result(timeout=self.config.connect_timeout_seconds)
+        finally:
+            with self._transport_lock:
+                if self._ready_future is ready_future:
+                    self._ready_future = None
+        stub = self._stub_factory(channel)
+        info = stub.GetStreamInfo(
+            empty_pb2.Empty(), timeout=self.config.rpc_timeout_seconds
+        )
+        _validate_stream_info(info, self.config)
+        status = stub.GetStatus(
+            empty_pb2.Empty(), timeout=self.config.rpc_timeout_seconds
+        )
+        _validate_service_status(status)
+        call = stub.Subscribe(self._proto.SubscribeRequest())
+        with self._transport_lock:
+            if self._stop.is_set():
+                call.cancel()
+                raise _RtmwStreamStopped("RTMW stream stopped during connection")
+            self._stub = stub
+            self._call = call
+            self.stream_instance_id = info.stream_instance_id
+            self.stream_config_sha256 = info.config_sha256
+            self.depth_provenance = info.depth_provenance
+
+    def _consume(self) -> None:
+        outage_active = False
+        reconnect_immediately = True
+        reconnect_backoff_seconds = _RECONNECT_INITIAL_BACKOFF_SECONDS
+        while not self._stop.is_set():
+            try:
+                with self._transport_lock:
+                    call = self._call
+                if call is None:
+                    raise RuntimeError("RTMW gRPC stream has no active subscription")
+                for message in call:
+                    if self._stop.is_set():
+                        return
+                    try:
+                        frame = self._parse_frame(message)
+                    except (ReferenceDiscontinuity, ReferenceUnavailable) as error:
+                        if isinstance(error, ReferenceDiscontinuity):
+                            self._publish_discontinuity(error)
+                        else:
+                            self._publish(error)
+                    else:
+                        self._publish(frame)
+                        outage_active = False
+                        reconnect_immediately = True
+                        reconnect_backoff_seconds = _RECONNECT_INITIAL_BACKOFF_SECONDS
                 if self._stop.is_set():
                     return
-                try:
-                    frame = self._parse_frame(message)
-                except (ReferenceDiscontinuity, ReferenceUnavailable) as error:
-                    self._publish(error)
-                else:
-                    self._publish(frame)
-            if not self._stop.is_set():
-                raise RuntimeError("RTMW gRPC stream ended")
-        except grpc.RpcError as error:
-            if not self._stop.is_set():
-                detail = error.details() or "RPC failed"
-                self._set_terminal(
-                    RuntimeError(f"RTMW gRPC {error.code().name}: {detail}")
-                )
-        except BaseException as error:
-            if not self._stop.is_set():
+                failure = "RTMW gRPC stream ended"
+            except grpc.RpcError as error:
+                if self._stop.is_set():
+                    return
+                if error.code() not in _RETRYABLE_GRPC_CODES:
+                    self._set_terminal(_grpc_error(error))
+                    return
+                failure = str(_grpc_error(error))
+            except BaseException as error:
+                if self._stop.is_set():
+                    return
                 self._set_terminal(error)
+                return
+
+            self._close_transport()
+            if not outage_active:
+                self._reset_tracking_epoch(None)
+                self._publish_discontinuity(
+                    ReferenceDiscontinuity(f"{failure}; reconnecting to RTMW")
+                )
+                outage_active = True
+            reconnected, reconnect_backoff_seconds = self._reconnect(
+                reconnect_backoff_seconds,
+                immediately=reconnect_immediately,
+            )
+            if not reconnected:
+                return
+            reconnect_immediately = False
+
+    def _reconnect(
+        self,
+        backoff_seconds: float,
+        *,
+        immediately: bool,
+    ) -> tuple[bool, float]:
+        while not self._stop.is_set():
+            if not immediately:
+                if self._stop.wait(backoff_seconds):
+                    return False, backoff_seconds
+                backoff_seconds = min(
+                    _RECONNECT_MAX_BACKOFF_SECONDS,
+                    2.0 * backoff_seconds,
+                )
+            try:
+                self._connect_transport()
+            except _RtmwStreamStopped:
+                return False, backoff_seconds
+            except grpc.FutureTimeoutError:
+                if self._stop.is_set():
+                    return False, backoff_seconds
+            except _RtmwServiceUnavailable:
+                if self._stop.is_set():
+                    return False, backoff_seconds
+            except grpc.RpcError as error:
+                if self._stop.is_set():
+                    return False, backoff_seconds
+                if error.code() not in _RETRYABLE_GRPC_CODES:
+                    self._set_terminal(_grpc_error(error))
+                    return False, backoff_seconds
+            except BaseException as error:
+                if self._stop.is_set():
+                    return False, backoff_seconds
+                self._set_terminal(error)
+                return False, backoff_seconds
+            else:
+                return True, backoff_seconds
+            self._close_transport()
+            immediately = False
+        return False, backoff_seconds
 
     def _parse_frame(self, message: Any) -> SmplxTargetFrame:
         received_at = time.monotonic()
@@ -664,6 +783,15 @@ class RtmwSmplxStream:
             self._generation += 1
             self._condition.notify_all()
 
+    def _publish_discontinuity(self, error: ReferenceDiscontinuity) -> None:
+        with self._condition:
+            self._payload = error
+            self._generation += 1
+            generation = self._generation
+            self._condition.notify_all()
+            while self._consumed_generation < generation and not self._stop.is_set():
+                self._condition.wait(timeout=0.1)
+
     def _set_terminal(self, error: BaseException) -> None:
         with self._condition:
             self._terminal_error = error
@@ -672,10 +800,18 @@ class RtmwSmplxStream:
             self._condition.notify_all()
 
     def _close_transport(self) -> None:
-        channel = self._channel
-        self._call = None
-        self._stub = None
-        self._channel = None
+        with self._transport_lock:
+            call = self._call
+            ready_future = self._ready_future
+            channel = self._channel
+            self._call = None
+            self._ready_future = None
+            self._stub = None
+            self._channel = None
+        if call is not None:
+            call.cancel()
+        if ready_future is not None:
+            ready_future.cancel()
         if channel is not None:
             channel.close()
 
@@ -845,9 +981,14 @@ def _validate_service_status(message: Any) -> None:
     if message.terminal_failure:
         raise RuntimeError(f"RTMW service failed: {message.terminal_failure}")
     if not message.ready:
-        raise RuntimeError("RTMW service is not ready")
+        raise _RtmwServiceUnavailable("RTMW service is not ready")
     if not message.source_running or not message.inference_running:
-        raise RuntimeError("RTMW source or inference worker is not running")
+        raise _RtmwServiceUnavailable("RTMW source or inference worker is not running")
+
+
+def _grpc_error(error: grpc.RpcError) -> RuntimeError:
+    detail = error.details() or "RPC failed"
+    return RuntimeError(f"RTMW gRPC {error.code().name}: {detail}")
 
 
 def _finite_array(value: Any, shape: tuple[int, ...], label: str) -> np.ndarray:

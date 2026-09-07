@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import queue
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
+import grpc
 import numpy as np
 import pytest
 
@@ -27,12 +30,126 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_MODEL_TO_WORLD_WXYZ,
     SmplxTargetFrame,
 )
-from bello_mujoco.hardware.twist2 import ReferenceUnavailable
+from bello_mujoco.hardware.twist2 import (
+    ReferenceDiscontinuity,
+    ReferenceUnavailable,
+)
 from bello_mujoco.repository import repository_root
 from bello_mujoco.robot_tasks import motion_task_definition
 
 
 GMR_SOURCE_BODY_NAMES = motion_task_definition("bello").gmr.source_body_names
+_END_STREAM = object()
+
+
+class FakeRpcError(grpc.RpcError):
+    def __init__(self, code: grpc.StatusCode, detail: str) -> None:
+        self._code = code
+        self._detail = detail
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
+
+    def details(self) -> str:
+        return self._detail
+
+
+class FakeCall:
+    def __init__(self) -> None:
+        self._messages: queue.Queue[object] = queue.Queue()
+        self.read_started = threading.Event()
+        self.cancelled = False
+
+    def __iter__(self) -> FakeCall:
+        return self
+
+    def __next__(self) -> object:
+        self.read_started.set()
+        payload = self._messages.get()
+        if payload is _END_STREAM:
+            raise StopIteration
+        if isinstance(payload, BaseException):
+            raise payload
+        return payload
+
+    def send(self, payload: object) -> None:
+        self._messages.put(payload)
+
+    def end(self) -> None:
+        self._messages.put(_END_STREAM)
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        self._messages.put(FakeRpcError(grpc.StatusCode.CANCELLED, "cancelled"))
+
+
+class FakeReadyFuture:
+    def __init__(self, *, ready: bool = True) -> None:
+        self.started = threading.Event()
+        self.available = threading.Event()
+        self.cancelled = threading.Event()
+        if ready:
+            self.available.set()
+
+    def result(self, timeout: float) -> None:
+        self.started.set()
+        deadline = time.monotonic() + timeout
+        while not self.cancelled.is_set():
+            if self.available.wait(min(0.01, max(0.0, deadline - time.monotonic()))):
+                return
+            if time.monotonic() >= deadline:
+                raise grpc.FutureTimeoutError()
+        if self.cancelled.is_set():
+            raise grpc.FutureCancelledError()
+        if self.available.is_set():
+            return
+        raise grpc.FutureTimeoutError()
+
+    def make_ready(self) -> None:
+        self.available.set()
+
+    def cancel(self) -> bool:
+        self.cancelled.set()
+        return True
+
+
+class FakeChannel:
+    def __init__(self, stub: object, *, ready: bool = True) -> None:
+        self.stub = stub
+        self.ready_future = FakeReadyFuture(ready=ready)
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeStub:
+    def __init__(
+        self,
+        info: object,
+        call: FakeCall,
+        *,
+        status: object | None = None,
+    ) -> None:
+        self.info = info
+        self.call = call
+        self.status = status or SimpleNamespace(
+            terminal_failure="",
+            ready=True,
+            source_running=True,
+            inference_running=True,
+        )
+
+    def GetStreamInfo(self, _request: object, *, timeout: float) -> object:
+        del timeout
+        return self.info
+
+    def GetStatus(self, _request: object, *, timeout: float) -> object:
+        del timeout
+        return self.status
+
+    def Subscribe(self, _request: object) -> FakeCall:
+        return self.call
 
 
 def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwGrpcConfig:
@@ -164,6 +281,28 @@ def make_stream(tmp_path: Path, **config_overrides: object) -> RtmwSmplxStream:
     return stream
 
 
+def configure_fake_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    stream: RtmwSmplxStream,
+    channels: list[FakeChannel],
+) -> None:
+    pending_channels = iter(channels)
+    monkeypatch.setattr(
+        rtmw,
+        "import_pinned_rtmw_proto",
+        lambda: (
+            SimpleNamespace(SubscribeRequest=lambda: object()),
+            SimpleNamespace(SkeletonServiceStub=lambda channel: channel.stub),
+        ),
+    )
+    monkeypatch.setattr(
+        grpc,
+        "channel_ready_future",
+        lambda channel: channel.ready_future,
+    )
+    monkeypatch.setattr(stream, "_create_channel", lambda: next(pending_channels))
+
+
 def test_rtmw_grpc_accepts_the_published_schema(tmp_path: Path) -> None:
     captured_at_ns = 5_000_000_000
     stream = make_stream(tmp_path)
@@ -177,6 +316,329 @@ def test_rtmw_grpc_accepts_the_published_schema(tmp_path: Path) -> None:
     assert frame.transforms["pelvis"][0] == pytest.approx((0.0, 0.0, 1.0))
     assert frame.transforms["pelvis"][1] == pytest.approx((1.0, 0.0, 0.0, 0.0))
     assert frame.foot_contacts is not None
+
+
+@pytest.mark.parametrize("outage", ("unavailable", "clean-eof"))
+def test_rtmw_fast_reconnect_cannot_overwrite_outage_discontinuity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    outage: str,
+) -> None:
+    stream = make_stream(tmp_path, connect_timeout_seconds=0.2)
+    first_call = FakeCall()
+    second_call = FakeCall()
+    first_channel = FakeChannel(FakeStub(stream_info(), first_call))
+    second_channel = FakeChannel(
+        FakeStub(
+            stream_info(stream_instance_id="restarted-stream", config_sha256="2" * 64),
+            second_call,
+        )
+    )
+    configure_fake_transport(
+        monkeypatch,
+        stream,
+        [first_channel, second_channel],
+    )
+
+    with stream:
+        first_call.send(rtmw_frame(5_000_000_000, frame_id=21))
+        first = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+        assert first is not None
+        assert first.sequence == 21
+
+        restarted = rtmw_frame(6_000_000_000, frame_id=22, track_id="new-track")
+        restarted.stream_instance_id = "restarted-stream"
+        second_call.send(restarted)
+        if outage == "unavailable":
+            first_call.send(
+                FakeRpcError(grpc.StatusCode.UNAVAILABLE, "producer stopped")
+            )
+        else:
+            first_call.end()
+        deadline = time.monotonic() + 1.0
+        while not first_channel.closed:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        time.sleep(0.02)
+        assert not second_call.read_started.is_set()
+        with pytest.raises(ReferenceDiscontinuity, match="reconnecting to RTMW"):
+            stream.wait_next(after_sequence=first.sequence, timeout_seconds=1.0)
+
+        second = stream.wait_next(after_sequence=first.sequence, timeout_seconds=1.0)
+
+        assert second is not None
+        assert second.sequence == 22
+        assert stream.stream_instance_id == "restarted-stream"
+        assert stream.stream_config_sha256 == "2" * 64
+
+    assert first_channel.closed
+    assert second_channel.closed
+
+
+def test_rtmw_replacement_producer_can_reset_its_frame_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stream = make_stream(tmp_path)
+    first_call = FakeCall()
+    replacement_call = FakeCall()
+    configure_fake_transport(
+        monkeypatch,
+        stream,
+        [
+            FakeChannel(FakeStub(stream_info(), first_call)),
+            FakeChannel(
+                FakeStub(
+                    stream_info(stream_instance_id="replacement"),
+                    replacement_call,
+                )
+            ),
+        ],
+    )
+
+    with stream:
+        first_call.send(rtmw_frame(5_000_000_000, frame_id=21))
+        first = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+        assert first is not None
+        first_call.send(FakeRpcError(grpc.StatusCode.UNAVAILABLE, "restart"))
+        with pytest.raises(ReferenceDiscontinuity):
+            stream.wait_next(after_sequence=first.sequence, timeout_seconds=1.0)
+
+        replacement = rtmw_frame(
+            6_000_000_000,
+            frame_id=1,
+            track_id="replacement-track",
+        )
+        replacement.stream_instance_id = "replacement"
+        replacement_call.send(replacement)
+        resumed = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+        assert resumed is not None
+        assert resumed.sequence == 1
+        assert stream.stream_instance_id == "replacement"
+
+
+def test_rtmw_nonretryable_grpc_failure_remains_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stream = make_stream(tmp_path)
+    call = FakeCall()
+    channel = FakeChannel(FakeStub(stream_info(), call))
+    configure_fake_transport(monkeypatch, stream, [channel])
+
+    with stream:
+        call.send(FakeRpcError(grpc.StatusCode.DATA_LOSS, "corrupt stream"))
+        with pytest.raises(RuntimeError, match="RTMW gRPC stream failed") as raised:
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert "DATA_LOSS: corrupt stream" in str(raised.value.__cause__)
+
+
+def test_rtmw_reconnect_revalidates_the_producer_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stream = make_stream(tmp_path)
+    first_call = FakeCall()
+    incompatible_call = FakeCall()
+    channels = [
+        FakeChannel(FakeStub(stream_info(), first_call)),
+        FakeChannel(
+            FakeStub(
+                stream_info(
+                    stream_instance_id="incompatible",
+                    coordinate_space="root_relative",
+                ),
+                incompatible_call,
+            ),
+            ready=False,
+        ),
+    ]
+    configure_fake_transport(monkeypatch, stream, channels)
+
+    with stream:
+        first_call.send(FakeRpcError(grpc.StatusCode.UNAVAILABLE, "restart"))
+        with pytest.raises(ReferenceDiscontinuity):
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+        channels[1].ready_future.make_ready()
+        with pytest.raises(RuntimeError, match="RTMW gRPC stream failed") as raised:
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert "coordinate_space" in str(raised.value.__cause__)
+
+
+def test_rtmw_reconnect_retries_while_the_service_is_starting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stream = make_stream(tmp_path, connect_timeout_seconds=0.2)
+    first_call = FakeCall()
+    warming_call = FakeCall()
+    recovered_call = FakeCall()
+    warming_channel = FakeChannel(
+        FakeStub(
+            stream_info(stream_instance_id="warming"),
+            warming_call,
+            status=SimpleNamespace(
+                terminal_failure="",
+                ready=False,
+                source_running=False,
+                inference_running=False,
+            ),
+        )
+    )
+    recovered_channel = FakeChannel(
+        FakeStub(
+            stream_info(stream_instance_id="recovered"),
+            recovered_call,
+        )
+    )
+    configure_fake_transport(
+        monkeypatch,
+        stream,
+        [
+            FakeChannel(FakeStub(stream_info(), first_call)),
+            warming_channel,
+            recovered_channel,
+        ],
+    )
+
+    with stream:
+        first_call.send(FakeRpcError(grpc.StatusCode.UNAVAILABLE, "restart"))
+        with pytest.raises(ReferenceDiscontinuity):
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+        recovered = rtmw_frame(8_000_000_000, frame_id=1, track_id="recovered")
+        recovered.stream_instance_id = "recovered"
+        recovered_call.send(recovered)
+
+        frame = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+        assert frame is not None
+        assert frame.sequence == 1
+        assert stream.stream_instance_id == "recovered"
+
+    assert warming_channel.closed
+    assert recovered_channel.closed
+
+
+def test_rtmw_reconnect_backoff_persists_until_a_frame_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stream = make_stream(tmp_path)
+    waits: list[float] = []
+    monkeypatch.setattr(
+        stream._stop,
+        "wait",
+        lambda timeout: waits.append(timeout) or False,
+    )
+    first_call = FakeCall()
+    first_half_alive_call = FakeCall()
+    first_half_alive_call.end()
+    second_half_alive_call = FakeCall()
+    second_half_alive_call.end()
+    recovered_call = FakeCall()
+    recovered = rtmw_frame(9_000_000_000, frame_id=1, track_id="recovered")
+    recovered.stream_instance_id = "recovered"
+    recovered_call.send(recovered)
+    reset_half_alive_call = FakeCall()
+    reset_half_alive_call.end()
+    final_call = FakeCall()
+    final = rtmw_frame(10_000_000_000, frame_id=2, track_id="final")
+    final.stream_instance_id = "final"
+    final_call.send(final)
+    configure_fake_transport(
+        monkeypatch,
+        stream,
+        [
+            FakeChannel(FakeStub(stream_info(), first_call)),
+            FakeChannel(
+                FakeStub(
+                    stream_info(stream_instance_id="half-alive-1"),
+                    first_half_alive_call,
+                )
+            ),
+            FakeChannel(
+                FakeStub(
+                    stream_info(stream_instance_id="half-alive-2"),
+                    second_half_alive_call,
+                )
+            ),
+            FakeChannel(
+                FakeStub(
+                    stream_info(stream_instance_id="recovered"),
+                    recovered_call,
+                )
+            ),
+            FakeChannel(
+                FakeStub(
+                    stream_info(stream_instance_id="half-alive-after-frame"),
+                    reset_half_alive_call,
+                )
+            ),
+            FakeChannel(
+                FakeStub(
+                    stream_info(stream_instance_id="final"),
+                    final_call,
+                )
+            ),
+        ],
+    )
+
+    with stream:
+        first_call.send(FakeRpcError(grpc.StatusCode.UNAVAILABLE, "restart"))
+        with pytest.raises(ReferenceDiscontinuity):
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+        frame = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+        assert frame is not None
+        assert frame.sequence == 1
+        recovered_call.send(FakeRpcError(grpc.StatusCode.UNAVAILABLE, "restart again"))
+        with pytest.raises(ReferenceDiscontinuity):
+            stream.wait_next(after_sequence=frame.sequence, timeout_seconds=1.0)
+
+        final_frame = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+        assert final_frame is not None
+        assert final_frame.sequence == 2
+        assert waits == pytest.approx((0.1, 0.2, 0.1))
+
+
+def test_rtmw_cleanup_interrupts_an_in_progress_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stream = make_stream(tmp_path, connect_timeout_seconds=30.0)
+    first_call = FakeCall()
+    first_channel = FakeChannel(FakeStub(stream_info(), first_call))
+    reconnect_channel = FakeChannel(object(), ready=False)
+    configure_fake_transport(
+        monkeypatch,
+        stream,
+        [first_channel, reconnect_channel],
+    )
+
+    stream.__enter__()
+    try:
+        first_call.send(FakeRpcError(grpc.StatusCode.UNAVAILABLE, "restart"))
+        with pytest.raises(ReferenceDiscontinuity):
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+        assert reconnect_channel.ready_future.started.wait(timeout=1.0)
+
+        started = time.monotonic()
+        stream.__exit__(None, None, None)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 1.0
+        assert reconnect_channel.ready_future.cancelled.is_set()
+        assert reconnect_channel.closed
+    finally:
+        if stream._thread is not None:
+            stream.__exit__(None, None, None)
 
 
 def test_initial_heading_is_relative_to_the_smplx_world_basis(tmp_path: Path) -> None:

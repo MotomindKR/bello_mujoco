@@ -307,13 +307,19 @@ target ranges; both offsets default to zero. After `RUN`, the terminal also
 accepts nonblocking 5-degree jogs: `q`/`a` increase/decrease the left offset and
 `e`/`d` increase/decrease the right offset. The configured offsets are the
 starting values, and each jogged target uses the same clipping and slew-rate
-limits. Briefly rejected frames leave the
-last safe reference usable
-until its total age reaches 1000 ms. When no fresh safe pose remains, the runner
+limits. Briefly rejected frames leave the last safe reference usable until its
+total age reaches 1000 ms. When no fresh safe pose remains, the runner
 reports the loss and returns only the arms toward their nominal pose at the same
 bounded rate; joystick locomotion continues. A later safe pose resumes arm
 following. A malformed RTMW record or terminal GMR worker failure still causes
-fail-closed damped shutdown.
+fail-closed damped shutdown. A clean RTMW stream end or transient gRPC outage is
+instead a source discontinuity: the runner clears the live pose epoch, returns
+the arms toward nominal, and keeps locomotion active while reconnecting with
+bounded backoff. Every replacement producer is checked against the full stream
+contract and service status before its frames are accepted. A new stream
+instance and reset sequence are allowed only through that reconnect path, and
+the normal reference-qualification and transition limits apply before arm
+following resumes.
 
 The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
@@ -536,10 +542,13 @@ and a fixed upper-body target slew bound. Invalid terminal-joint rotations use
 the nearest valid ancestor only outside the required upper-body chain. These
 checks affect only the 12 Bello or 14 Mini arm targets; the joystick-conditioned
 locomotion policy continues controlling the waist and legs. A temporarily
-unavailable or stale reference blends the arms back to their checkpoint-nominal pose over
+unavailable or stale reference, including an RTMW transport outage, blends the
+arms back to their checkpoint-nominal pose over
 `upper_body_follow.connection_transition_duration_seconds`; a recovered
 reference uses the same blend before resuming direct tracking. Locomotion
-continues throughout either transition, while a terminal source failure remains
+continues throughout either transition. Reconnection does not relax source
+validation: incompatible stream metadata, malformed records, a
+producer-reported terminal failure, or a terminal GMR worker failure remains
 fatal.
 
 TWIST2 adds exact Fast-SAM stream semantics, tracking and required-joint

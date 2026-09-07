@@ -369,8 +369,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `rtmw_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion | Pinned RTMW-SMPLX-Teleop `SkeletonService` endpoint. |
 | `rtmw_tls_root_certificate_path` | path or `null`; `null` | locomotion | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `rtmw_tls_server_name_override` | string or `null`; `null` | locomotion | TLS certificate name override. It is rejected without a CA certificate. |
-| `rtmw_connect_timeout_seconds` | positive float; `5.0` | locomotion | Deadline for establishing the RTMW gRPC channel. |
-| `rtmw_rpc_timeout_seconds` | positive float; `2.0` | locomotion | Deadline for stream-info and status RPCs. |
+| `rtmw_connect_timeout_seconds` | positive float; `5.0` | locomotion | Deadline for initially establishing the RTMW gRPC channel and for each automatic reconnect attempt. A transient outage returns the arms toward nominal while locomotion continues. |
+| `rtmw_rpc_timeout_seconds` | positive float; `2.0` | locomotion | Deadline for stream-info and status RPCs at startup and after reconnecting. The exact producer contract is revalidated before pose following resumes. |
 | `rtmw_reference_qualification_frames` | positive integer; `5` | locomotion | Distinct successive safe references required after `RUN` before starting or resuming live arm tracking. Until then, the arms remain at their nominal pose. |
 | `rtmw_min_joint_confidence` | float in `[0,1]`; `0.25` | locomotion | Minimum position confidence for every GMR target joint. |
 | `rtmw_min_rotation_confidence` | float in `[0,1]`; `0.10` | locomotion | Minimum derived-rotation confidence for the pelvis, spine3, and palm-constrained wrist rotations used by live GMR. |
