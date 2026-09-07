@@ -268,6 +268,9 @@ bone lengths before deriving rotations, while moving each hand rigidly with its
 corrected wrist. This rejects older running producers that lack the same
 geometry, anatomical arm-frame, and palm-frame contracts even if their protobuf
 schema is otherwise compatible.
+The producer's confidence-aware SMPL-X landmark filter uses a 500 ms smoothing
+time constant by default and runs before canonical projection and orientation
+IK. Root-range filtering remains independently configured.
 The fixed `live_upper_body` GMR task profile disables the independent arm
 position costs and constrains the shoulder, elbow, and terminal wrist
 orientations. The shoulder and elbow frames use the observed

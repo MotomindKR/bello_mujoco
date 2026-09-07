@@ -44,7 +44,7 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "7b4b45ca4badcfc196e9ef3aa57b949b1b2377db"
+RTMW_REVISION = "fc70c084fe7da3b13b4621344468c5a1c680aff5"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
