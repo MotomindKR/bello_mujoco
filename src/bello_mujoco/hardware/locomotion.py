@@ -18,6 +18,7 @@ from typing import Any, TextIO
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import mujoco
 import numpy as np
 
 from bello_mujoco.training.checkpoint import (
@@ -44,6 +45,7 @@ from bello_mujoco.hardware.runtime import (
     actuator_impedance_gains,
     armed_control_session,
     import_hardware_binding,
+    normalized_quaternion_xyzw,
     projected_gravity_from_xyzw,
     require_async_hardware_binding,
     require_nominal_pose,
@@ -70,6 +72,81 @@ _ELBOW_YAW_JOG_DELTAS = {
     "e": (0.0, ELBOW_YAW_JOG_STEP_RADIANS),
     "d": (0.0, -ELBOW_YAW_JOG_STEP_RADIANS),
 }
+
+_UPPER_BODY_FOLLOW_JOINT_NAMES = frozenset(
+    f"{side}_{joint}_joint"
+    for side in ("left", "right")
+    for joint in (
+        "shoulder_pitch",
+        "shoulder_roll",
+        "shoulder_yaw",
+        "elbow_pitch",
+        "elbow_yaw",
+        "wrist_pitch",
+    )
+)
+
+
+def _hardware_imu_to_policy_rotation(env: BelloLocomotionEnv) -> np.ndarray:
+    model = env.model.mj_model
+    hardware_body_name = env.model.robot.default_imu_body_name
+    policy_body_name = env.model.imu_body_name
+    hardware_body_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, hardware_body_name
+    )
+    policy_body_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, policy_body_name
+    )
+    if hardware_body_id < 0 or policy_body_id < 0:
+        raise ValueError(
+            "hardware and policy IMU bodies must exist in the checkpoint model: "
+            f"hardware={hardware_body_name!r}, policy={policy_body_name!r}"
+        )
+    if model.body_weldid[hardware_body_id] != model.body_weldid[policy_body_id]:
+        raise ValueError(
+            "hardware and policy IMU frames must be rigidly attached: "
+            f"hardware={hardware_body_name!r}, policy={policy_body_name!r}"
+        )
+
+    data = mujoco.MjData(model)
+    data.qpos[:] = env.model.default_qpos
+    mujoco.mj_forward(model, data)
+    world_from_hardware = data.xmat[hardware_body_id].reshape(3, 3)
+    world_from_policy = data.xmat[policy_body_id].reshape(3, 3)
+    policy_from_hardware = world_from_policy.T @ world_from_hardware
+    if (
+        not np.all(np.isfinite(policy_from_hardware))
+        or not np.allclose(
+            policy_from_hardware.T @ policy_from_hardware,
+            np.eye(3),
+            atol=1.0e-8,
+        )
+        or not math.isclose(
+            float(np.linalg.det(policy_from_hardware)), 1.0, abs_tol=1.0e-8
+        )
+    ):
+        raise ValueError("hardware-to-policy IMU rotation is invalid")
+    return policy_from_hardware
+
+
+def _transform_hardware_imu_frame(
+    frame: HardwareFrame, policy_from_hardware: np.ndarray
+) -> HardwareFrame:
+    orientation_xyzw = normalized_quaternion_xyzw(frame.orientation_xyzw)
+    world_from_hardware = np.empty(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(
+        world_from_hardware,
+        orientation_xyzw[[3, 0, 1, 2]],
+    )
+    world_from_policy = world_from_hardware.reshape(3, 3) @ policy_from_hardware.T
+    policy_orientation_wxyz = np.empty(4, dtype=np.float64)
+    mujoco.mju_mat2Quat(policy_orientation_wxyz, world_from_policy.reshape(-1))
+    return replace(
+        frame,
+        orientation_xyzw=policy_orientation_wxyz[[1, 2, 3, 0]],
+        angular_velocity=policy_from_hardware @ frame.angular_velocity,
+        linear_acceleration=policy_from_hardware @ frame.linear_acceleration,
+    )
 
 
 class TerminalElbowYawJogInput:
@@ -173,6 +250,7 @@ class HardwareLocomotionConfig(HardwareControlConfig):
 
     client_name: str = "bello-locomotion-policy"
     remote: RemoteCommandConfig = RemoteCommandConfig()
+    allow_provisional_hardware: bool = False
     upper_body_tracking_enabled: bool = True
     rtmw_endpoint: str = "127.0.0.1:50055"
     rtmw_tls_root_certificate_path: Path | None = None
@@ -227,6 +305,7 @@ class HardwarePolicyAdapter:
         validate_hardware_checkpoint(env, metadata)
         self.env = env
         self.metadata = metadata
+        self.hardware_imu_to_policy_rotation = _hardware_imu_to_policy_rotation(env)
         self.physical_coordinate_names = actuator_coordinate_names(env)
         self.coordinate_index = {
             name: index for index, name in enumerate(self.physical_coordinate_names)
@@ -265,12 +344,15 @@ class HardwarePolicyAdapter:
             for upper_index, actuator_index in enumerate(self.upper_body_indices)
         }
         elbow_yaw_names = tuple(f"{side}_elbow_yaw_joint" for side in ("left", "right"))
-        if not all(name in upper_body_index_by_name for name in elbow_yaw_names):
-            raise ValueError(
-                "hardware upper body must contain exactly two elbow-yaw joints"
-            )
+        self.upper_body_follow_supported = (
+            frozenset(upper_body_index_by_name) == _UPPER_BODY_FOLLOW_JOINT_NAMES
+        )
         self.upper_body_elbow_yaw_indices = np.asarray(
-            [upper_body_index_by_name[name] for name in elbow_yaw_names],
+            (
+                [upper_body_index_by_name[name] for name in elbow_yaw_names]
+                if self.upper_body_follow_supported
+                else []
+            ),
             dtype=np.int32,
         )
         self.default_joint_target = np.asarray(
@@ -385,6 +467,12 @@ class HardwarePolicyAdapter:
     ) -> tuple[float, float]:
         """Adjust the runtime elbow-yaw offsets and return their new values."""
 
+        if not self.upper_body_follow_supported:
+            raise ValueError(
+                "upper-body pose following and elbow-yaw jogging are not supported "
+                f"for robot asset {self.env.model.robot.asset!r}"
+            )
+
         deltas = np.asarray((left_delta_radians, right_delta_radians), dtype=np.float64)
         if not np.all(np.isfinite(deltas)):
             raise ValueError("elbow-yaw jog deltas must be finite")
@@ -435,7 +523,17 @@ class HardwarePolicyAdapter:
         self.step(frame, np.zeros(3, dtype=np.float32), reference)
         self.reset()
 
+    def policy_imu_frame(self, frame: HardwareFrame) -> HardwareFrame:
+        return _transform_hardware_imu_frame(
+            frame, self.hardware_imu_to_policy_rotation
+        )
+
     def observation(self, frame: HardwareFrame, command: np.ndarray) -> np.ndarray:
+        return self._policy_frame_observation(self.policy_imu_frame(frame), command)
+
+    def _policy_frame_observation(
+        self, frame: HardwareFrame, command: np.ndarray
+    ) -> np.ndarray:
         logical_position = self.inverse_transform @ frame.positions
         logical_velocity = self.inverse_transform @ frame.velocities
         projected_gravity = projected_gravity_from_xyzw(frame.orientation_xyzw)
@@ -490,7 +588,8 @@ class HardwarePolicyAdapter:
         reference: Twist2ReferenceFrame | None = None,
     ) -> HardwarePolicyStep:
         effective_command = self._resolve_effective_command(command)
-        observation = self.observation(frame, effective_command)
+        policy_frame = self.policy_imu_frame(frame)
+        observation = self._policy_frame_observation(policy_frame, effective_command)
         stack_size = self.metadata.ppo.policy.obs_stack_size
         if self._obs_stack is None:
             self._obs_stack = np.repeat(observation[None, :], stack_size, axis=0)
@@ -548,7 +647,7 @@ class HardwarePolicyAdapter:
             policy_observation=policy_observation,
             effective_command=effective_command,
             standing_transition_pending=self._standing_transition_pending,
-            tilt_radians=tilt_from_xyzw(frame.orientation_xyzw),
+            tilt_radians=tilt_from_xyzw(policy_frame.orientation_xyzw),
             reference_sequence=(None if reference is None else reference.sequence),
             reference_age_ms=(None if reference is None else reference.age_ms()),
             upper_body_following=reference is not None,
@@ -576,6 +675,11 @@ class HardwarePolicyAdapter:
         *,
         live: bool = True,
     ) -> None:
+        if not self.upper_body_follow_supported:
+            raise ReferenceUnavailable(
+                "upper-body pose following is not supported for robot asset "
+                f"{self.env.model.robot.asset!r}"
+            )
         qpos = np.asarray(reference.qpos, dtype=np.float64)
         qvel = np.asarray(reference.qvel, dtype=np.float64)
         model = self.env.model.mj_model
@@ -739,31 +843,55 @@ def validate_hardware_checkpoint(
         raise ValueError("hardware locomotion requires waist_yaw_joint")
     if env.config.observation.privileged:
         raise ValueError("hardware actor observation must not be privileged")
-    if env.action_size != 13:
+
+    definition = robot_definition(metadata.asset.asset)
+    if env.model.robot.asset != definition.asset:
         raise ValueError(
-            f"hardware locomotion requires 13 policy joints, got {env.action_size}"
+            "checkpoint asset does not match the loaded hardware model: "
+            f"checkpoint={definition.asset!r}, model={env.model.robot.asset!r}"
+        )
+    configured_modes = {
+        actuator.joint_name: actuator.mode for actuator in definition.actuators
+    }
+    model_joint_names = tuple(env.model.actuator_joint_names)
+    configured_joint_names = frozenset(configured_modes)
+    model_joint_name_set = frozenset(model_joint_names)
+    if (
+        len(model_joint_names) != len(model_joint_name_set)
+        or model_joint_name_set != configured_joint_names
+    ):
+        raise ValueError(
+            "hardware locomotion actuator joints must match the robot-configured "
+            f"set exactly; expected {configured_joint_names}, got "
+            f"{model_joint_name_set}"
+        )
+
+    expected_policy_names = tuple(
+        name for name in model_joint_names if configured_modes[name] == "policy"
+    )
+    expected_hold_names = tuple(
+        name for name in model_joint_names if configured_modes[name] == "hold"
+    )
+    policy_names = tuple(
+        model_joint_names[int(index)] for index in env.model.policy_ctrl_indices
+    )
+    hold_names = tuple(
+        model_joint_names[int(index)] for index in env.model.hold_ctrl_indices
+    )
+    if policy_names != expected_policy_names or env.action_size != len(
+        expected_policy_names
+    ):
+        raise ValueError(
+            "hardware locomotion policy joints must match the robot-configured "
+            f"name/order exactly; expected {expected_policy_names}, got {policy_names}"
+        )
+    if hold_names != expected_hold_names:
+        raise ValueError(
+            "hardware locomotion hold joints must match the robot-configured "
+            f"name/order exactly; expected {expected_hold_names}, got {hold_names}"
         )
     if metadata.ppo.policy.action_distribution != "tanh_gaussian":
         raise ValueError("hardware locomotion requires a bounded tanh-Gaussian policy")
-    expected_upper_body = {
-        f"{side}_{joint}_joint"
-        for side in ("left", "right")
-        for joint in (
-            "shoulder_pitch",
-            "shoulder_roll",
-            "shoulder_yaw",
-            "elbow_pitch",
-            "elbow_yaw",
-            "wrist_pitch",
-        )
-    }
-    hold_names = {
-        env.model.actuator_joint_names[index] for index in env.model.hold_ctrl_indices
-    }
-    if hold_names != expected_upper_body:
-        raise ValueError(
-            "hardware locomotion hold coordinates must be exactly the 12 arm joints"
-        )
 
 
 def validate_hardware_config(
@@ -771,10 +899,47 @@ def validate_hardware_config(
     metadata: LocomotionCheckpointMetadata | None = None,
 ) -> None:
     validate_hardware_control_config(config)
+    if type(config.allow_provisional_hardware) is not bool:
+        raise ValueError("allow_provisional_hardware must be a boolean")
     if not config.remote.endpoint.startswith("http://"):
         raise ValueError("remote.endpoint must use plaintext http:// in protocol v1")
     if config.remote.staleness_ms <= 0:
         raise ValueError("remote.staleness_ms must be positive")
+    if metadata is not None:
+        definition = robot_definition(metadata.asset.asset)
+        hold_names = frozenset(
+            actuator.joint_name
+            for actuator in definition.actuators
+            if actuator.mode == "hold"
+        )
+        follow_supported = hold_names == _UPPER_BODY_FOLLOW_JOINT_NAMES
+        if definition.physical_hardware_ready and config.allow_provisional_hardware:
+            raise ValueError(
+                "allow_provisional_hardware is only valid for a provisional robot"
+            )
+        if (
+            config.arm
+            and not definition.physical_hardware_ready
+            and not config.allow_provisional_hardware
+        ):
+            raise ValueError(
+                f"robot asset {definition.asset!r} is not approved for physical "
+                "deployment; emulator-only armed runs require the explicit "
+                "allow_provisional_hardware=true acknowledgement"
+            )
+        if config.upper_body_tracking_enabled and not follow_supported:
+            raise ValueError(
+                "upper-body pose following is not supported for robot asset "
+                f"{definition.asset!r}; set upper_body_tracking_enabled=false"
+            )
+        if not follow_supported and (
+            config.upper_body_follow.left_elbow_yaw_offset_radians != 0.0
+            or config.upper_body_follow.right_elbow_yaw_offset_radians != 0.0
+        ):
+            raise ValueError(
+                "elbow-yaw offsets are not supported for robot asset "
+                f"{definition.asset!r}"
+            )
     if config.upper_body_tracking_enabled:
         from bello_mujoco.hardware.rtmw import RtmwGrpcConfig
 

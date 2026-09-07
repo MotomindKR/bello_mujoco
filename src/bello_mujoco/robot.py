@@ -164,6 +164,7 @@ class RobotDefinition:
     source_urdf: Path
     source_directories: tuple[Path, ...]
     hardware_description: Path | None
+    physical_hardware_ready: bool
     motor_model_catalog: Path | None
     output_directory: Path
     output_stem: str
@@ -203,6 +204,13 @@ class RobotDefinition:
             raise ValueError("robot definition paths must be relative and contained")
         if not self.source_urdf.name or not self.source_directories:
             raise ValueError("robot definition requires source paths")
+        if self.physical_hardware_ready and (
+            self.hardware_description is None or self.motor_model_catalog is None
+        ):
+            raise ValueError(
+                "physical_hardware_ready requires a hardware description and motor "
+                "model catalog"
+            )
         names = (
             self.output_stem,
             self.root_body_name,
@@ -489,6 +497,89 @@ def validate_robot_source_urdf(
             + ", ".join(missing_joints)
         )
 
+    source_couplings: dict[str, dict[str, dict[str, float]]] = {}
+    for transmission in root.findall("transmission"):
+        kind = transmission.findtext("type", default="")
+        if not kind.endswith("DifferentialTransmission"):
+            continue
+        name = transmission.get("name")
+        if not name or name in source_couplings:
+            raise ValueError(
+                "source URDF differential transmission names must be unique"
+            )
+
+        members: dict[str, tuple[str, float]] = {}
+        for tag, role_prefix in (("actuator", "actuator"), ("joint", "joint")):
+            for index in (1, 2):
+                role = f"{role_prefix}{index}"
+                member = transmission.find(f"{tag}[@role='{role}']")
+                if member is None or not member.get("name"):
+                    raise ValueError(
+                        f"source URDF transmission {name!r} is missing {role}"
+                    )
+                reduction_text = member.findtext("mechanical_reduction", default="1")
+                try:
+                    reduction = float(reduction_text)
+                except ValueError as error:
+                    raise ValueError(
+                        f"source URDF transmission {name!r} has invalid {role} "
+                        "mechanical_reduction"
+                    ) from error
+                if not math.isfinite(reduction) or reduction == 0.0:
+                    raise ValueError(
+                        f"source URDF transmission {name!r} has invalid {role} "
+                        "mechanical_reduction"
+                    )
+                members[role] = (member.get("name", ""), reduction)
+
+        actuator_1, actuator_1_reduction = members["actuator1"]
+        actuator_2, actuator_2_reduction = members["actuator2"]
+        joint_1, joint_1_reduction = members["joint1"]
+        joint_2, joint_2_reduction = members["joint2"]
+        source_couplings[name] = {
+            actuator_1: {
+                joint_1: actuator_1_reduction * joint_1_reduction,
+                joint_2: actuator_1_reduction * joint_2_reduction,
+            },
+            actuator_2: {
+                joint_1: actuator_2_reduction * joint_1_reduction,
+                joint_2: -actuator_2_reduction * joint_2_reduction,
+            },
+        }
+
+    configured_couplings = {
+        group.name: {
+            actuator.tendon_name: dict(actuator.joint_coefficients)
+            for actuator in group.actuators
+        }
+        for group in definition.coupled_actuator_groups
+    }
+    if source_couplings.keys() != configured_couplings.keys():
+        raise ValueError(
+            "robot definition differential transmissions do not match the source URDF"
+        )
+    for name, source_actuators in source_couplings.items():
+        configured_actuators = configured_couplings[name]
+        if source_actuators.keys() != configured_actuators.keys():
+            raise ValueError(
+                f"robot definition differential transmission {name!r} actuator "
+                "names do not match the source URDF"
+            )
+        for actuator_name, source_coefficients in source_actuators.items():
+            configured_coefficients = configured_actuators[actuator_name]
+            if source_coefficients.keys() != configured_coefficients.keys() or any(
+                not math.isclose(
+                    coefficient,
+                    configured_coefficients[joint_name],
+                    abs_tol=1.0e-9,
+                )
+                for joint_name, coefficient in source_coefficients.items()
+            ):
+                raise ValueError(
+                    f"robot definition differential actuator {actuator_name!r} "
+                    "coefficients do not match the source URDF"
+                )
+
 
 _ROBOT_CONFIG_FILES: dict[AssetName, str] = {
     "bello": "bello.yaml",
@@ -500,6 +591,7 @@ _ROBOT_CONFIG_FIELDS = frozenset(
         "source_urdf",
         "source_directories",
         "hardware_description",
+        "physical_hardware_ready",
         "motor_model_catalog",
         "output_directory",
         "output_stem",
@@ -555,6 +647,9 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
         ),
         hardware_description=_optional_path(
             data["hardware_description"], "hardware_description"
+        ),
+        physical_hardware_ready=_bool(
+            data["physical_hardware_ready"], "physical_hardware_ready"
         ),
         motor_model_catalog=_optional_path(
             data["motor_model_catalog"], "motor_model_catalog"
@@ -632,6 +727,12 @@ def _optional_path(value: Any, path: str) -> Path | None:
     if value is None:
         return None
     return Path(_string(value, path))
+
+
+def _bool(value: Any, path: str) -> bool:
+    if type(value) is not bool:
+        raise TypeError(f"{path} must be a boolean")
+    return value
 
 
 def _list(value: Any, path: str) -> list[Any]:

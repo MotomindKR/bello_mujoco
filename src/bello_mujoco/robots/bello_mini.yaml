@@ -1,11 +1,12 @@
 asset: bello_mini
-# Maintained locomotion simulation contract. Physical deployment remains blocked
-# until the motor and differential calibration is complete.
+# Maintained simulation contract. The upstream hardware profile remains provisional
+# until its motor directions, encoder zeros, and ankle differential are calibrated.
 source_urdf: bello_mini/urdf/bello_mini.urdf
 source_directories:
   - bello_mini/urdf
   - bello_mini/meshes
-hardware_description: null
+hardware_description: bello_mini/hardware.yaml
+physical_hardware_ready: false
 motor_model_catalog: robstride/models.yaml
 output_directory: bello_mini
 output_stem: bello_mini
@@ -236,8 +237,8 @@ payload_attachments:
   - link_name: right_end_effector_sphere_link
     radius_m: 0.025
     center_m: [0.0, 0.0, -0.025]
-# Ideal Bello-style differential used only by the simulation model. These
-# coefficients do not represent calibrated Bello Mini hardware.
+# Provisional unit differential matching the pinned Bello Mini URDF. The
+# reductions and encoder zeros still require physical calibration.
 coupled_actuator_groups:
   - name: left_ankle_differential
     actuators:
@@ -245,7 +246,7 @@ coupled_actuator_groups:
         logical_joint_name: left_ankle_pitch_joint
         joint_coefficients:
           - joint_name: left_ankle_pitch_joint
-            coefficient: -1.0
+            coefficient: 1.0
           - joint_name: left_ankle_roll_joint
             coefficient: 1.0
       - tendon_name: left_ankle_motor_2
@@ -254,14 +255,14 @@ coupled_actuator_groups:
           - joint_name: left_ankle_pitch_joint
             coefficient: 1.0
           - joint_name: left_ankle_roll_joint
-            coefficient: 1.0
+            coefficient: -1.0
   - name: right_ankle_differential
     actuators:
       - tendon_name: right_ankle_motor_1
         logical_joint_name: right_ankle_pitch_joint
         joint_coefficients:
           - joint_name: right_ankle_pitch_joint
-            coefficient: -1.0
+            coefficient: 1.0
           - joint_name: right_ankle_roll_joint
             coefficient: 1.0
       - tendon_name: right_ankle_motor_2
@@ -270,4 +271,4 @@ coupled_actuator_groups:
           - joint_name: right_ankle_pitch_joint
             coefficient: 1.0
           - joint_name: right_ankle_roll_joint
-            coefficient: 1.0
+            coefficient: -1.0

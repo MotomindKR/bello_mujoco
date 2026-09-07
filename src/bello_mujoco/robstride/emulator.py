@@ -830,7 +830,8 @@ def validate_motor_coverage(
 def print_emulator_summary(
     model: BelloModel, emulators: dict[str, RobstrideBusEmulator]
 ) -> None:
-    print("Bello RobStride MuJoCo emulator ready")
+    robot_name = {"bello": "Bello", "bello_mini": "Bello Mini"}[model.robot.asset]
+    print(f"{robot_name} RobStride MuJoCo emulator ready")
     print("  backend: MuJoCo CPU (mj_step; MJX/Warp disabled)")
     print(f"  timestep: {model.mj_model.opt.timestep:.6f} s")
     for name, emulator in emulators.items():

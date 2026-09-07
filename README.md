@@ -4,8 +4,9 @@ Simulation, reinforcement learning, evaluation, hardware emulation, and robot
 deployment for the Bello humanoid. The repository supports locomotion and
 motion-tracking policies built from the robot descriptions pinned through
 `deps/bello-stack`. Registered static assets are `bello` and `bello_mini`;
-both have maintained locomotion-training profiles. Bello Mini motion/GMR,
-emulator, and physical-hardware support remain calibration-gated.
+both have maintained locomotion-training profiles. Bello Mini motion/GMR and
+physical deployment remain calibration-gated. Its provisional hardware
+description is supported by the vCAN emulator.
 
 ## Setup
 

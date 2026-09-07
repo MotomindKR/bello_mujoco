@@ -162,6 +162,7 @@ class HardwareCommandConfig:
     status_interval_seconds: float | None
     policy_log_path: Path | None
     arm: bool
+    allow_provisional_hardware: bool
     upper_body_tracking_enabled: bool
     rtmw_endpoint: str
     rtmw_tls_root_certificate_path: Path | None
@@ -970,6 +971,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 "remote_staleness_ms",
                 "motion_path",
                 "standing_checkpoint_path",
+                "allow_provisional_hardware",
                 *rtmw_fields,
                 *locomotion_upper_body_fields,
             ),
@@ -1061,6 +1063,7 @@ def _hardware_hydra(config: DictConfig) -> None:
                 *rtmw_fields,
                 *smplx_fields,
                 *locomotion_upper_body_fields,
+                "allow_provisional_hardware",
             ),
             context="task=motion",
         )
@@ -1168,6 +1171,7 @@ def _hardware_hydra(config: DictConfig) -> None:
             policy_log_path=policy_log_path,
             arm=command.arm,
             allow_git_commit_mismatch=command.allow_git_commit_mismatch,
+            allow_provisional_hardware=command.allow_provisional_hardware,
             upper_body_tracking_enabled=command.upper_body_tracking_enabled,
             rtmw_endpoint=command.rtmw_endpoint,
             rtmw_tls_root_certificate_path=command.rtmw_tls_root_certificate_path,

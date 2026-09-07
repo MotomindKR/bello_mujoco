@@ -151,8 +151,8 @@ def test_bello_mini_ideal_differential_maps_logical_ankle_targets(
         "left_ankle_motor_2_pos",
     )
 
-    assert ctrl[motor_1_id] == pytest.approx(-pitch_target + roll_target)
-    assert ctrl[motor_2_id] == pytest.approx(pitch_target + roll_target)
+    assert ctrl[motor_1_id] == pytest.approx(pitch_target + roll_target)
+    assert ctrl[motor_2_id] == pytest.approx(pitch_target - roll_target)
 
 
 def test_bello_mini_model_loads_mjx(bello_mini_asset: PreparedAsset) -> None:

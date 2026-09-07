@@ -45,8 +45,9 @@ URDFs are respectively
 `deps/bello-stack/descriptions/bello_mini/urdf/bello_mini.urdf`; both reference
 meshes stored in the same pinned submodule. Both assets have maintained
 locomotion-training profiles. The `bello` asset also retains its motion and
-hardware profiles; Bello Mini GMR/motion, emulator, and deployable-hardware
-profiles remain deliberately absent until tuning and bench calibration.
+calibrated physical-hardware profiles. Bello Mini GMR/motion and deployable-
+hardware profiles remain deliberately absent until tuning and bench calibration.
+Its provisional hardware description is available to the vCAN emulator.
 The same gitlink pins the RobStride model catalog and Python hardware client
 used by source-checkout workflows.
 

@@ -5,6 +5,7 @@ source_directories:
   - bello/lower_body/meshes
   - bello/upper_body/meshes
 hardware_description: bello/hardware.yaml
+physical_hardware_ready: true
 motor_model_catalog: robstride/models.yaml
 output_directory: bello
 output_stem: bello

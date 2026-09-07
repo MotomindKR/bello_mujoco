@@ -665,10 +665,13 @@ def run(
 ) -> int:
     validate_hardware_control_config(hardware)
     robot_definition_config = robot_definition(chirp.asset)
-    if robot_definition_config.hardware_description is None:
+    if (
+        robot_definition_config.hardware_description is None
+        or not robot_definition_config.physical_hardware_ready
+    ):
         raise ValueError(
             "joint chirp requires a calibrated hardware description; "
-            f"robot asset {chirp.asset!r} has none"
+            f"robot asset {chirp.asset!r} is not approved for physical deployment"
         )
     binding = import_hardware_binding()
     require_state_frame_binding(binding)

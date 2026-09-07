@@ -122,6 +122,10 @@ def compose_hardware_training_config() -> TrainingRunConfig:
     return locomotion_training_profile("bello_locomotion")
 
 
+def compose_mini_hardware_training_config() -> TrainingRunConfig:
+    return locomotion_training_profile("bello_mini_locomotion")
+
+
 def compose_hardware_runner_config() -> SimpleNamespace:
     return SimpleNamespace(hardware=pose_hardware_config())
 
@@ -262,10 +266,45 @@ def hardware_env() -> BelloLocomotionEnv:
         batch_size=1,
         env_config=config.env_config,
         actuator_config=config.asset_config.actuator_config,
+        imu_body_name=config.asset_config.imu_config.body_name,
         reward_config=config.reward_config,
         command_config=config.command_config,
         done_config=config.done_config,
         load_mjx=False,
+    )
+
+
+@pytest.fixture(scope="module")
+def mini_hardware_env() -> BelloLocomotionEnv:
+    config = compose_mini_hardware_training_config()
+    prepared = prepare_asset(config.asset_config)
+    return BelloLocomotionEnv.load_prepared(
+        prepared,
+        warp=config.warp,
+        batch_size=1,
+        env_config=config.env_config,
+        actuator_config=config.asset_config.actuator_config,
+        imu_body_name=config.asset_config.imu_config.body_name,
+        reward_config=config.reward_config,
+        command_config=config.command_config,
+        done_config=config.done_config,
+        load_mjx=False,
+    )
+
+
+def hardware_metadata(
+    config: TrainingRunConfig,
+    env: BelloLocomotionEnv,
+):
+    actor_size = policy_observation_size(env.observation_size, config.config.policy)
+    critic_size = policy_observation_size(
+        env.critic_observation_size, config.config.policy
+    )
+    return checkpoint_metadata(
+        config,
+        env,
+        policy_obs_size=actor_size,
+        critic_policy_obs_size=critic_size,
     )
 
 
@@ -288,6 +327,84 @@ def test_hardware_training_recipe_matches_sphere_hand_inventory(
         ppo=config.config,
     )
     validate_hardware_checkpoint(hardware_env, metadata)
+
+
+def test_hardware_checkpoint_accepts_bello_mini_robot_layout(
+    mini_hardware_env: BelloLocomotionEnv,
+) -> None:
+    config = compose_mini_hardware_training_config()
+    metadata = hardware_metadata(config, mini_hardware_env)
+
+    assert mini_hardware_env.action_size == 14
+    assert mini_hardware_env.model.mj_model.nu == 28
+    assert len(mini_hardware_env.model.hold_ctrl_indices) == 14
+    validate_hardware_checkpoint(mini_hardware_env, metadata)
+    validate_hardware_config(
+        HardwareLocomotionConfig(upper_body_tracking_enabled=False),
+        metadata,
+    )
+    with pytest.raises(ValueError, match="not approved for physical deployment"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(
+                arm=True,
+                upper_body_tracking_enabled=False,
+            ),
+            metadata,
+        )
+    validate_hardware_config(
+        HardwareLocomotionConfig(
+            arm=True,
+            allow_provisional_hardware=True,
+            upper_body_tracking_enabled=False,
+        ),
+        metadata,
+    )
+    with pytest.raises(
+        ValueError,
+        match="upper_body_tracking_enabled=false",
+    ):
+        validate_hardware_config(pose_hardware_config(), metadata)
+    with pytest.raises(ValueError, match="elbow-yaw offsets"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(
+                upper_body_tracking_enabled=False,
+                upper_body_follow=UpperBodyFollowConfig(
+                    left_elbow_yaw_offset_radians=0.1
+                ),
+            ),
+            metadata,
+        )
+
+
+def test_hardware_checkpoint_requires_robot_configured_joint_order(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    config = compose_hardware_training_config()
+    metadata = hardware_metadata(config, hardware_env)
+    reversed_policy_model = replace(
+        hardware_env.model,
+        policy_ctrl_indices=hardware_env.model.policy_ctrl_indices[::-1],
+    )
+    invalid_env = SimpleNamespace(
+        model=reversed_policy_model,
+        config=hardware_env.config,
+        action_size=hardware_env.action_size,
+    )
+
+    with pytest.raises(ValueError, match="name/order exactly"):
+        validate_hardware_checkpoint(invalid_env, metadata)
+
+
+def test_calibrated_bello_rejects_provisional_hardware_acknowledgement(
+    hardware_env: BelloLocomotionEnv,
+) -> None:
+    config = compose_hardware_training_config()
+    metadata = hardware_metadata(config, hardware_env)
+
+    with pytest.raises(ValueError, match="only valid for a provisional robot"):
+        validate_hardware_config(
+            HardwareLocomotionConfig(allow_provisional_hardware=True), metadata
+        )
 
 
 def test_hardware_actuator_mapping_round_trips_differential_ankles(
@@ -330,8 +447,11 @@ def test_hardware_uses_generated_motor_impedance_gains(
         assert kd[index] == pytest.approx(0.5)
 
 
-def make_hardware_adapter(hardware_env: BelloLocomotionEnv) -> HardwarePolicyAdapter:
-    config = compose_hardware_training_config()
+def make_hardware_adapter(
+    hardware_env: BelloLocomotionEnv,
+    config: TrainingRunConfig | None = None,
+) -> HardwarePolicyAdapter:
+    config = config or compose_hardware_training_config()
     actor_size = policy_observation_size(
         hardware_env.observation_size, config.config.policy
     )
@@ -359,6 +479,104 @@ def make_hardware_adapter(hardware_env: BelloLocomotionEnv) -> HardwarePolicyAda
     return HardwarePolicyAdapter(hardware_env, policy, metadata, normalization)
 
 
+def test_bello_mini_adapter_runs_with_fixed_upper_body(
+    mini_hardware_env: BelloLocomotionEnv,
+) -> None:
+    config = compose_mini_hardware_training_config()
+    adapter = make_hardware_adapter(mini_hardware_env, config)
+    nominal = adapter.nominal_physical_target
+    frame = HardwareFrame(
+        positions=nominal,
+        velocities=np.zeros_like(nominal),
+        orientation_xyzw=np.asarray((0.0, 0.0, 0.0, 1.0)),
+        angular_velocity=np.zeros(3),
+        linear_acceleration=np.zeros(3),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=("RUNNING", "RUNNING"),
+        group_causes=("START", "START"),
+        group_details=("", ""),
+    )
+
+    result = adapter.step(frame, np.zeros(3, dtype=np.float32))
+
+    assert mini_hardware_env.model.imu_body_name == "pelvis_link"
+    assert mini_hardware_env.model.robot.default_imu_body_name == "imu_link"
+    assert np.allclose(
+        adapter.hardware_imu_to_policy_rotation,
+        np.asarray(((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        atol=1.0e-8,
+    )
+    assert not adapter.upper_body_follow_supported
+    assert adapter.upper_body_elbow_yaw_indices.size == 0
+    assert result.action.shape == (14,)
+    assert result.physical_target.shape == (28,)
+    assert np.all(np.isfinite(result.physical_target))
+    assert not result.upper_body_following
+
+
+def test_bello_mini_adapter_rotates_physical_imu_into_policy_pelvis(
+    mini_hardware_env: BelloLocomotionEnv,
+) -> None:
+    config = compose_mini_hardware_training_config()
+    adapter = make_hardware_adapter(mini_hardware_env, config)
+    policy_from_hardware = adapter.hardware_imu_to_policy_rotation
+
+    policy_orientation_wxyz = np.empty(4, dtype=np.float64)
+    mujoco.mju_axisAngle2Quat(
+        policy_orientation_wxyz,
+        np.asarray((1.0, 0.0, 0.0)),
+        0.35,
+    )
+    world_from_policy = np.empty(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(world_from_policy, policy_orientation_wxyz)
+    world_from_hardware = world_from_policy.reshape(3, 3) @ policy_from_hardware
+    hardware_orientation_wxyz = np.empty(4, dtype=np.float64)
+    mujoco.mju_mat2Quat(hardware_orientation_wxyz, world_from_hardware.reshape(-1))
+    policy_angular_velocity = np.asarray((2.0, -1.0, 3.0))
+    policy_linear_acceleration = np.asarray((0.4, -0.2, 9.5))
+    frame = HardwareFrame(
+        positions=adapter.nominal_physical_target,
+        velocities=np.zeros(28),
+        orientation_xyzw=hardware_orientation_wxyz[[1, 2, 3, 0]],
+        angular_velocity=policy_from_hardware.T @ policy_angular_velocity,
+        linear_acceleration=policy_from_hardware.T @ policy_linear_acceleration,
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=("RUNNING", "RUNNING"),
+        group_causes=("START", "START"),
+        group_details=("", ""),
+    )
+
+    policy_frame = adapter.policy_imu_frame(frame)
+    policy_orientation_actual_wxyz = policy_frame.orientation_xyzw[[3, 0, 1, 2]]
+    observation = adapter.observation(frame, np.zeros(3, dtype=np.float32))
+    projected_gravity = projected_gravity_from_xyzw(policy_frame.orientation_xyzw)
+    scale = mini_hardware_env.config.observation.scale
+
+    assert abs(
+        float(np.dot(policy_orientation_actual_wxyz, policy_orientation_wxyz))
+    ) == pytest.approx(1.0)
+    assert np.allclose(policy_frame.angular_velocity, policy_angular_velocity)
+    assert np.allclose(policy_frame.linear_acceleration, policy_linear_acceleration)
+    assert np.allclose(
+        observation[:3],
+        specific_force_from_gravity_removed_acceleration(
+            policy_linear_acceleration, projected_gravity
+        )
+        * scale.base_lin_acc,
+    )
+    assert np.allclose(observation[3:6], policy_angular_velocity * scale.base_ang_vel)
+    assert np.allclose(observation[6:9], projected_gravity * scale.projected_gravity)
+    assert tilt_from_xyzw(policy_frame.orientation_xyzw) == pytest.approx(0.35)
+
+
 def hardware_reference(
     adapter: HardwarePolicyAdapter,
     upper_body_positions: np.ndarray,
@@ -382,6 +600,7 @@ def test_hardware_adapter_reconstructs_actor_frame_and_targets(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
     adapter = make_hardware_adapter(hardware_env)
+    assert np.allclose(adapter.hardware_imu_to_policy_rotation, np.eye(3))
     nominal = adapter.nominal_physical_target
     frame = HardwareFrame(
         positions=nominal,

@@ -298,7 +298,7 @@ Configuration source: `configs/commands/emulator.yaml`.
 
 | Field | Type and default | Meaning |
 | --- | --- | --- |
-| `asset` | `bello` or `bello_mini`; `bello` | Select the robot contract. Only `bello` currently has a hardware description; selecting `bello_mini` fails explicitly until its motor and differential calibration is complete. |
+| `asset` | `bello` or `bello_mini`; `bello` | Select the robot contract. Mini uses its provisional 28-motor vCAN description; physical calibration is not implied. |
 | `bus_interfaces` | list of strings; `[can0=vcan0,can1=vcan1]` | Map configured logical bus names to Linux SocketCAN interfaces. Names must be unique and use `name=interface` form. |
 | `command_latency_seconds` | nonnegative float; `0.01` | Delay MIT motor-control frames before applying them to MuJoCo. Lifecycle, parameter, and stop traffic remains immediate; use `0` to disable the delay. |
 | `motor_kp_scale` | positive float; `1` | Emulator-only multiplier on decoded MIT position gains. Use controlled sweeps to diagnose effective stiffness mismatch; `1` preserves the canonical plant. |
@@ -306,15 +306,14 @@ Configuration source: `configs/commands/emulator.yaml`.
 | `video_path` | path or `null`; `null` | Capture free-torso emulator state at 30 FPS and render it to MP4 when the emulator exits. Guided setup is omitted so recording does not disturb the real-time loop. |
 | `end_effector_payload_mass_kg` | nonnegative float; `0` | Add this many kilograms to each sphere hand. Use the payload recorded by the motion-policy checkpoint when emulating a weighted policy. |
 
-The emulator is checkout-only. For the supported `bello` asset it selects the
-canonical `lower_body` and `upper_body` groups from
-`deps/bello-stack/descriptions/bello/hardware.yaml`, uses
+The emulator is checkout-only. It selects the canonical `lower_body` and
+`upper_body` groups from the chosen asset's hardware description, uses
 `deps/bello-stack/descriptions/robstride/models.yaml` for protocol and hardware
-limits, and derives direct and differential transmissions from the canonical
-URDF. Selecting `bello_mini` fails until its motor directions, encoder zeros,
-and ankle coefficients are calibrated. Only the logical-to-SocketCAN interface
-mapping is local. The emulator applies MIT impedance control, publishes the
-configured IMU serial stream and
+limits when present, and derives direct and differential transmissions from the
+canonical URDF. Mini's encoder zeros and ankle reductions remain provisional;
+ROBSTRIDE_02 electrical telemetry that is absent from the catalog is reported
+as zero. Only the logical-to-SocketCAN interface mapping is local. The emulator
+applies MIT impedance control, publishes the configured IMU serial stream and
 PoseService, and paces simulation against wall-clock time. Its torso guide is
 always engaged at startup; Enter releases it, and another Enter resets the robot
 and re-engages the guide.
@@ -361,7 +360,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `status_interval_seconds` | positive float or `null`; `null` | all | Emit periodic policy-state diagnostics at this interval. Locomotion status reports the effective `command` and `standing_transition_pending`. `null` prints only preflight, phase changes, and summaries. |
 | `policy_log_path` | path or `null`; `null` | all | JSONL destination for every executed policy observation and action. `null` selects `policy_steps.jsonl` inside the unique Hydra run directory. An explicit path must not already exist. |
 | `arm` | boolean; `false` | all | `false` performs read-only preflight and sends no command. |
-| `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the 12 arm joints at the locomotion checkpoint's nominal targets. |
+| `allow_provisional_hardware` | boolean; `false` | locomotion | Required together with `arm=true` for a provisional Mini vCAN run. The runner cannot identify a physical endpoint, so never use this override with physical Mini hardware. |
+| `upper_body_tracking_enabled` | boolean; `true` | locomotion | `false` skips RTMW, SMPL-X, and GMR and actively holds the checkpoint's arm joints at their nominal targets. Mini requires `false`. |
 | `rtmw_endpoint` | gRPC host:port; `127.0.0.1:50055` | locomotion | Pinned RTMW-SMPLX-Teleop `SkeletonService` endpoint. |
 | `rtmw_tls_root_certificate_path` | path or `null`; `null` | locomotion | CA certificate for one-way server TLS. `null` uses plaintext and is appropriate only on loopback or a trusted LAN. |
 | `rtmw_tls_server_name_override` | string or `null`; `null` | locomotion | TLS certificate name override. It is rejected without a CA certificate. |
@@ -405,16 +405,16 @@ visualizer-hosted physical controller uses the same stick mapping as
 `bello-eval`; R1 aborts. Controller or service loss commands zero, reconnects
 automatically, and requires a neutral controller before accepting nonzero
 intent again. The visualizer service must produce a fresh sample before the
-hardware daemon is contacted. The joystick continues to command the production
-Bello 13-coordinate locomotion policy while the RTMW gRPC stream and GMR target
-only the 12 arm coordinates. Bello Mini checkpoints remain unsupported by the
-hardware runner until their hardware calibration and topology are complete.
+hardware daemon is contacted. The joystick commands Bello's 13-coordinate or
+Mini's 14-coordinate locomotion policy. For Bello, the RTMW gRPC stream and GMR
+can target the other 12 arm coordinates. Mini holds its 14 arm coordinates at
+the checkpoint nominal pose and requires `upper_body_tracking_enabled=false`.
 Hardware locomotion has no native-controller or fixed-command mode.
 
 With `upper_body_tracking_enabled=false`, explicit RTMW and SMPL-X/GMR
 overrides must not be supplied. The runner uses the checkpoint's nominal
-targets for all 12 arm coordinates while the joystick continues to command
-locomotion:
+targets for every held arm coordinate (12 for Bello, 14 for Mini) while the
+joystick continues to command locomotion:
 
 ```text
 uv run bello-run-hardware \

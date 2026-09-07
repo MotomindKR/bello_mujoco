@@ -52,6 +52,7 @@ def test_bello_robot_config_declares_asset_topology() -> None:
         "right_ankle_motor_1",
         "right_ankle_motor_2",
     )
+    assert robot.physical_hardware_ready
     validate_robot_source_urdf(
         robot,
         robot.source_urdf_path(robot_descriptions_root()),
@@ -69,9 +70,9 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
 
     assert robot.source_urdf == Path("bello_mini/urdf/bello_mini.urdf")
     assert robot.source_urdf_path(robot_descriptions_root()).is_file()
-    assert robot.hardware_description is None
-    with pytest.raises(ValueError, match="has no hardware description"):
-        robot.hardware_description_path(robot_descriptions_root())
+    assert robot.hardware_description == Path("bello_mini/hardware.yaml")
+    assert robot.hardware_description_path(robot_descriptions_root()).is_file()
+    assert not robot.physical_hardware_ready
     assert robot.motor_model_catalog_path(robot_descriptions_root()).is_file()
     assert robot.root_body_name == "bello_mini_root"
     assert robot.default_imu_body_name == "imu_link"
@@ -129,20 +130,20 @@ def test_bello_mini_robot_config_declares_locomotion_topology() -> None:
         for actuator in robot.coupled_actuators
     } == {
         "left_ankle_motor_1": (
-            ("left_ankle_pitch_joint", -1.0),
+            ("left_ankle_pitch_joint", 1.0),
             ("left_ankle_roll_joint", 1.0),
         ),
         "left_ankle_motor_2": (
             ("left_ankle_pitch_joint", 1.0),
-            ("left_ankle_roll_joint", 1.0),
+            ("left_ankle_roll_joint", -1.0),
         ),
         "right_ankle_motor_1": (
-            ("right_ankle_pitch_joint", -1.0),
+            ("right_ankle_pitch_joint", 1.0),
             ("right_ankle_roll_joint", 1.0),
         ),
         "right_ankle_motor_2": (
             ("right_ankle_pitch_joint", 1.0),
-            ("right_ankle_roll_joint", 1.0),
+            ("right_ankle_roll_joint", -1.0),
         ),
     }
     assert tuple(item.link_name for item in robot.payload_attachments) == (

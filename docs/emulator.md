@@ -1,9 +1,10 @@
 # RobStride emulator
 
-The RobStride emulator presents the canonical 55.068 kg sphere-hand Bello
-morphology, plus an optional symmetric hand payload, through the same motor,
+The RobStride emulator presents either the canonical 55.068 kg sphere-hand
+Bello or the provisional Bello Mini hardware contract through the same motor,
 IMU, and pose interfaces used around physical hardware, while native MuJoCo
-supplies real-time dynamics.
+supplies real-time dynamics. An optional symmetric hand payload is available
+for either asset.
 
 Public controls are documented under
 [`bello-run-emulator`](commands.md#bello-run-emulator).
@@ -25,27 +26,72 @@ testing. Policy checkpoints are evaluated with `bello-eval`.
 
 The emulated motor contract is:
 
-- `deps/bello-stack/descriptions/bello/hardware.yaml`: logical buses, motors,
-  coordinates, directions, group membership, and the canonical robot-description
-  reference;
+- the selected asset's `deps/bello-stack/descriptions/<asset>/hardware.yaml`:
+  logical buses, motors, coordinates, directions, group membership, and the
+  canonical robot-description reference;
 - `deps/bello-stack/descriptions/robstride/models.yaml`: protocol ranges and the
   voltage, current, and speed values reported through parameter registers;
 - the URDF referenced by the hardware description: direct joints and
   differential-transmission ownership.
 
-The sphere-hand emulator selects the canonical `lower_body` and `upper_body`
-groups. Differential ankles remain two coupled tendon motors per side.
+The emulator selects the configured `lower_body` and `upper_body` groups.
+Differential ankles remain two coupled tendon motors per side.
 Initialization validates unique
 bus/CAN identities, model ranges, optional-joint coverage, complete coupling
 groups, URDF transmission ownership, and torque enforcement. The command
 requires a source checkout because the wheel intentionally omits hardware
 topology and model catalogs.
 
-The command defaults to the canonical physical `bello` asset with a generated
-pelvis IMU. Its public asset selector rejects `bello_mini` explicitly because
-Mini has no calibrated hardware description yet. Bello publishes 100 Hz motor
-feedback, a 200 Hz EBIMU stream at
+The command defaults to `asset=bello`; select Mini with
+`asset=bello_mini`. Both publish 100 Hz motor feedback, a 200 Hz EBIMU stream at
 `/dev/ttyIMU-mujoco`, and PoseService on port 50052.
+
+Mini uses the 28-motor description and reviewed directions pinned from
+`bello-stack`. Its encoder zeros and ankle reductions remain provisional. The
+ROBSTRIDE_02 ankle entry currently has protocol limits but no electrical model,
+so its unavailable current-limit and bus-voltage parameter telemetry is reported
+as zero rather than fabricated.
+
+## Bello Mini vCAN stack
+
+After creating the VCAN and pseudo-terminal interfaces, run these processes in
+separate terminals:
+
+```bash
+uv run bello-run-emulator asset=bello_mini
+
+cd deps/bello-stack
+cargo run -p bello-hardwared -- \
+  --config components/bello-hardwared/config/bello-mini-vcan.yaml
+
+cd deps/bello-stack
+cp components/bello-visualizer/config/bello-mini.example.yaml \
+  components/bello-visualizer/config/bello-mini.yaml
+cargo run -p bello-visualizer -- \
+  --config components/bello-visualizer/config/bello-mini.yaml
+```
+
+The maintained visualizer example and ignored local `bello-mini.yaml` use the
+emulator's ground-truth PoseService on port 50052. The visualizer continues to
+publish joystick intent on port 50054.
+
+A Mini locomotion checkpoint can then perform read-only preflight through the
+emulated hardware stack:
+
+```bash
+uv run bello-run-hardware \
+  task=locomotion \
+  checkpoint_path=/absolute/path/to/checkpoint \
+  endpoint=http://127.0.0.1:50051 \
+  remote_endpoint=http://127.0.0.1:50054 \
+  upper_body_tracking_enabled=false
+```
+
+The Mini policy controls 14 waist/leg joints and holds all 14 arm joints at its
+checkpoint nominal pose. Add `arm=true allow_provisional_hardware=true` only to
+drive the vCAN emulator after reviewing the normal interactive HOLD/RUN safety
+sequence. The runner cannot cryptographically distinguish vCAN from a physical
+daemon, so this acknowledgement must never be used with physical Mini hardware.
 
 The public `command_latency_seconds` option delays only MIT motor-control
 frames before they affect MuJoCo. Motor enable/stop, parameter access, and
@@ -99,7 +145,8 @@ The emulator publishes:
 
 - active RobStride feedback with simulated position, velocity, torque,
   temperature, and fault state;
-- pelvis orientation and specific force through the EBIMU serial protocol;
+- configured IMU-body orientation and specific force through the EBIMU serial
+  protocol;
 - world-frame pelvis translation/orientation through PoseService.
 
 The default IMU model uses seed 0 and adds independent Gaussian noise with
@@ -107,7 +154,7 @@ per-axis standard deviations of 0.005 rad for orientation and 0.1 m/s² for
 linear acceleration. PoseService remains ground-truth simulation state and is
 intentionally separate from the noisy IMU path.
 
-## Estimator comparison
+## Full-Bello estimator comparison
 
 With MuJoCo ground truth on port 50052 and `bello-state-estimatord` on port
 50053, collect time-aligned pose errors with:
@@ -124,3 +171,8 @@ final position error, raw absolute-Z RMSE, quaternion angular error, paired
 sample count, and maximum pairing-time error. Keep the robot guided for a
 stationary-noise baseline, then repeat while stepping to measure contact
 handoff behavior.
+
+This comparison currently applies only to full Bello. Mini visualizer runs use
+the emulator PoseService directly on port 50052. Do not point the full-Bello
+`bello-vcan.yaml` estimator profile at Mini: no validated Mini estimator config
+or IMU lever-arm extrinsic exists yet.

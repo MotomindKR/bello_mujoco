@@ -23,10 +23,14 @@ description. The root Git commit pins the stack gitlink, and exact-source checks
 require the recursive submodule checkout to be initialized, clean, and at that
 commit. The checkpoint does not record daemon or firmware revisions.
 
-Physical deployment currently supports `bello` only. Bello Mini locomotion can
-be trained in simulation, but its hardware description, motor directions,
-encoder zeros, and ankle transmission remain calibration-gated; preflight
-rejects a Bello Mini checkpoint rather than borrowing Bello's topology.
+Calibrated physical deployment supports `bello`. The runner also reconstructs
+Bello Mini checkpoints against Mini's own 28-motor description for vCAN
+emulation; it never borrows Bello's topology. Mini encoder zeros and ankle
+reductions remain provisional, so an armed Mini run is rejected unless the
+operator supplies the explicit emulator-only
+`allow_provisional_hardware=true` acknowledgement.
+The runner cannot attest that an endpoint is an emulator, so that override must
+never be used with a physical Mini daemon.
 
 The runner requires the pinned daemon and Python binding's synchronous hardware
 states API. Each policy iteration requests one complete frame containing the
@@ -51,13 +55,15 @@ safety fix is not inherited automatically by a historical checkpoint.
 3. prepares the robot asset described by checkpoint metadata;
 4. reconstructs observation, action, and physical-coordinate layouts;
 5. compiles policy inference;
-6. requires a fresh sample from the visualizer's remote-command service and five
-   qualified live RTMW/GMR poses for locomotion, then connects to the hardware
-   daemon without acquiring a control lease;
+6. requires a fresh sample from the visualizer's remote-command service and,
+   when upper-body tracking is enabled, five qualified live RTMW/GMR poses for
+   locomotion, then connects to the hardware daemon without acquiring a control
+   lease;
 7. validates motor groups, coordinate ownership, IMU presence, group state, and
    fresh finite complete state frames;
-8. evaluates a live lower-body-policy/upper-body-pose preview for locomotion, or
-   a standing-policy preview for motion, and reports the resolved configuration.
+8. evaluates a lower-body-policy preview with either live upper-body pose or
+   checkpoint-nominal arms for locomotion, or a standing-policy preview for
+   motion, and reports the resolved configuration.
    Motion-reference alignment and termination checks begin only when
    transitioning from the active standing policy into motion tracking.
 
@@ -85,8 +91,9 @@ After preflight, all task modes begin with the same interactive sequence:
 1. The operator supports the robot and types the exact word `HOLD`. The remote
    abort remains active while the runner waits and prevents control acquisition.
 2. The runner acquires control and ramps to the task's standing target over ten
-   seconds by default. Locomotion combines the checkpoint nominal lower body with
-   the repository-owned GMR standing arms.
+   seconds by default. Tracking-enabled Bello locomotion combines the checkpoint
+   nominal lower body with the repository-owned GMR standing arms; fixed-arm
+   locomotion uses the checkpoint's complete nominal pose.
 3. The runner continuously refreshes the nominal target and checks telemetry
    and nominal-pose error bounds while the operator releases external support
    and lets the robot settle. Direct coordinates use 0.25 rad; the
@@ -130,8 +137,9 @@ ankle motor as an independently movable joint.
 
 Select the robot contract with `--asset`. The default `bello` profile has a
 calibrated hardware description. `bello_mini` is rejected before the hardware
-binding is imported or a daemon connection is opened because its motor
-directions, zeros, ankle mapping, and limits are not yet calibrated.
+binding is imported or a daemon connection is opened because its profile is
+still marked provisional; use the policy runner, not the chirp tool, for vCAN
+Mini integration testing.
 
 Run the read-only preflight first. It connects to either physical
 `bello-hardwared` or the VCAN emulator, verifies that both groups are `IDLE`,
@@ -179,16 +187,24 @@ rather than JSONL row number alone, when estimating command/response delay.
 
 ## Locomotion mode
 
-Locomotion checkpoints must use the sphere-hand physical morphology, active
-waist yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy.
-The joystick command path remains unchanged: RemoteCommandService supplies
-forward, lateral, and yaw intent to the locomotion actor, which remains
+Locomotion checkpoints must use a registered hardware morphology, active waist
+yaw, nonprivileged actor observations, and a bounded tanh-Gaussian policy. The
+joystick command path remains unchanged: RemoteCommandService supplies forward,
+lateral, and yaw intent to the locomotion actor. Bello's actor remains
 authoritative over its 13 waist and leg coordinates. RTMW-SMPLX-Teleop's
 `smplx52_landmark_fit` output passes through the pinned GMR solver and supplies
 only the other 12 coordinates: the bilateral shoulder, elbow, and wrist joints.
 The live pose does not enter the locomotion actor observation and cannot replace
 joystick intent or any policy coordinate. Fast-SAM is not a supported locomotion
 pose source; it remains specific to TWIST2.
+
+Bello Mini uses 14 policy coordinates, including waist roll, and 14 held arm
+coordinates. Its seven-DoF arms do not match Bello's current GMR output, so Mini
+requires `upper_body_tracking_enabled=false`. Raw Mini IMU orientation, angular
+velocity, and acceleration axes are rotated from the physical `imu_link` frame
+into the checkpoint's pelvis observation frame. The physical IMU origin is
+offset from the pelvis origin, so existing checkpoints retain an unmodeled
+lever-arm acceleration residual; physical deployment remains calibration-gated.
 
 Run the pinned `deps/RTMW-SMPLX-Teleop` producer with its gRPC service enabled.
 Preflight requires that submodule to be clean and exactly at the reviewed
@@ -221,8 +237,8 @@ uv run bello-run-hardware \
 ```
 
 To run locomotion with fixed upper-body targets instead, disable tracking. This
-skips RTMW, SMPL-X, and GMR pose setup and holds the 12 arm joints at the
-checkpoint's nominal training targets:
+skips RTMW, SMPL-X, and GMR pose setup and holds every arm joint at the
+checkpoint's nominal training target (12 for Bello, 14 for Mini):
 
 ```text
 uv run bello-run-hardware \
@@ -264,9 +280,9 @@ The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;
 the hardware runner scales that intent through the checkpoint's command bounds
 and minimum speeds after mapping it into the selected robot's pelvis frame.
-Bello maps right/forward to `+X`/`+Y`. Future Bello Mini hardware support maps
-right/forward to `-Y`/`+X`; its physical IMU telemetry must first be calibrated
-into the pelvis-frame policy observation contract.
+Bello maps right/forward to `+X`/`+Y`; Bello Mini maps right/forward to
+`-Y`/`+X`. The runner performs Mini's fixed IMU-axis rotation before constructing
+the pelvis-frame policy observation.
 The runner advances the same checkpointed gait clock used by training and
 native evaluation, initialized at phase zero. Neutral or stale remote input
 supplies a zero standing request, not an immediate zero policy command. The

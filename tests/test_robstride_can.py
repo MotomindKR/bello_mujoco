@@ -18,6 +18,9 @@ from bello_mujoco.robstride.can import (
     MotorCommand,
     MotorSpec,
     MotorTargetSpec,
+    PARAM_BUS_VOLTAGE,
+    PARAM_LIMIT_CURRENT,
+    PARAM_LIMIT_SPEED,
     PARAM_LIMIT_TORQUE,
     PARAM_MECHANICAL_POSITION,
     RobstrideBusEmulator,
@@ -44,6 +47,7 @@ from bello_mujoco.robstride.emulator import (
     TerminalEnterInput,
     add_torso_hold,
     cycle_torso_release_reset,
+    default_emulator_asset_config,
     default_hardware_description,
     default_motor_model_catalog,
     reset_data,
@@ -273,6 +277,15 @@ def test_emulator_defaults_to_current_firmware_feedback_rate() -> None:
     assert EmulatorConfig().feedback_rate_hz == 100.0
 
 
+def test_protocol_only_motor_uses_known_limits() -> None:
+    motor = RobstrideMotor(motor_spec(model="ROBSTRIDE_02"))
+
+    assert motor.spec.model.hardware is None
+    assert motor.params[PARAM_LIMIT_SPEED] == pytest.approx(44.0)
+    assert motor.params[PARAM_LIMIT_CURRENT] == 0.0
+    assert motor.params[PARAM_BUS_VOLTAGE] == 0.0
+
+
 def test_emulator_video_capture_samples_only_free_torso_state(
     bello_asset: PreparedAsset,
 ) -> None:
@@ -367,6 +380,88 @@ def test_canonical_hardware_description_drives_emulator_inventory() -> None:
     assert "left_ankle_roll_joint" not in targets
     assert "left_arm_7" not in motors
     assert "right_arm_7" not in motors
+
+
+def test_bello_mini_hardware_description_drives_emulator_inventory() -> None:
+    asset_config = default_emulator_asset_config("bello_mini")
+    config = EmulatorConfig(asset_config=asset_config)
+    robstride = load_robstride_description(
+        default_hardware_description("bello_mini"),
+        default_motor_model_catalog("bello_mini"),
+        {"can0": "vcan0", "can1": "vcan1"},
+    )
+
+    assert asset_config.asset == "bello_mini"
+    assert asset_config.imu_config.enabled
+    assert asset_config.imu_config.body_name == "imu_link"
+    assert config.pose_service.tracked_frame == "pelvis_link"
+    assert len(robstride.motors) == 28
+    assert sum(motor.target.type == "joint" for motor in robstride.motors) == 24
+    assert sum(motor.target.type == "tendon" for motor in robstride.motors) == 4
+
+    mapped_joint_names = {
+        joint_name
+        for motor in robstride.motors
+        for joint_name in (
+            (motor.target.name,)
+            if motor.target.type == "joint"
+            else motor.target.owned_joints
+        )
+    }
+    assert mapped_joint_names == set(asset_config.actuator_config.joints)
+    assert {
+        motor.target.name: motor.target.owned_joints
+        for motor in robstride.motors
+        if motor.target.type == "tendon"
+    } == {
+        "left_ankle_motor_1": (
+            "left_ankle_pitch_joint",
+            "left_ankle_roll_joint",
+        ),
+        "left_ankle_motor_2": (
+            "left_ankle_pitch_joint",
+            "left_ankle_roll_joint",
+        ),
+        "right_ankle_motor_1": (
+            "right_ankle_pitch_joint",
+            "right_ankle_roll_joint",
+        ),
+        "right_ankle_motor_2": (
+            "right_ankle_pitch_joint",
+            "right_ankle_roll_joint",
+        ),
+    }
+    validate_motor_coverage(
+        "bello_mini",
+        asset_config.joint_availability,
+        robstride.motors,
+    )
+
+    prepared = prepare_asset(asset_config)
+    model = load_prepared_bello_model(
+        prepared,
+        terrain=FLAT_TERRAIN,
+        simulation_physics=config.simulation_physics,
+        actuator_config=asset_config.actuator_config,
+        load_mjx=False,
+    )
+    configured = configure_robstride_actuators(model, robstride.motors)
+    transmission = BelloRobstrideTransmission(
+        configured,
+        tuple(RobstrideMotor(spec) for spec in robstride.motors),
+    )
+
+    assert model.imu_body_name == "imu_link"
+    assert (
+        mujoco.mj_name2id(
+            model.mj_model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            config.pose_service.tracked_frame,
+        )
+        >= 0
+    )
+    assert len(transmission.actuators) == 28
+    assert transmission.mapped_joint_names == mapped_joint_names
 
 
 def test_hardware_description_requires_existing_robot_description(tmp_path) -> None:

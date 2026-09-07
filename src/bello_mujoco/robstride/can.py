@@ -725,10 +725,16 @@ class RobstrideMotor:
     def __post_init__(self) -> None:
         limits = self.spec.model.protocol
         hardware = self.spec.model.hardware
-        if hardware is None:
-            raise ValueError(
-                f"motor model {self.spec.model.name!r} lacks emulator hardware data"
+        maximum_speed = limits.velocity[1]
+        # Zero marks unavailable electrical telemetry for protocol-only models.
+        limit_current = 0.0
+        bus_voltage = 0.0
+        if hardware is not None:
+            maximum_speed = min(
+                maximum_speed, hardware.no_load_speed_rpm * math.tau / 60.0
             )
+            limit_current = hardware.peak_phase_current
+            bus_voltage = hardware.rated_voltage
         self.params.update(
             {
                 PARAM_RUN_MODE: 0,
@@ -739,11 +745,9 @@ class RobstrideMotor:
                 PARAM_CURRENT_KI: 0.012,
                 PARAM_CURRENT_FILTER_GAIN: 0.1,
                 PARAM_POSITION_REF: 0.0,
-                PARAM_LIMIT_SPEED: min(
-                    limits.velocity[1], hardware.no_load_speed_rpm * math.tau / 60.0
-                ),
-                PARAM_LIMIT_CURRENT: hardware.peak_phase_current,
-                PARAM_BUS_VOLTAGE: hardware.rated_voltage,
+                PARAM_LIMIT_SPEED: maximum_speed,
+                PARAM_LIMIT_CURRENT: limit_current,
+                PARAM_BUS_VOLTAGE: bus_voltage,
                 PARAM_POSITION_KP: 60.0,
                 PARAM_SPEED_KP: 6.0,
                 PARAM_SPEED_KI: 0.02,
