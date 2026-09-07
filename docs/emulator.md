@@ -152,7 +152,7 @@ per-axis standard deviations of 0.005 rad for orientation and 0.1 m/s² for
 linear acceleration. PoseService remains ground-truth simulation state and is
 intentionally separate from the noisy IMU path.
 
-## Full-Bello estimator comparison
+## State-estimator comparison
 
 With MuJoCo ground truth on port 50052 and `bello-state-estimatord` on port
 50053, collect time-aligned pose errors with:
@@ -170,7 +170,22 @@ sample count, and maximum pairing-time error. Keep the robot guided for a
 stationary-noise baseline, then repeat while stepping to measure contact
 handoff behavior.
 
-This comparison currently applies only to full Bello. Mini visualizer runs use
-the emulator PoseService directly on port 50052. Do not point the full-Bello
-`bello-vcan.yaml` estimator profile at Mini: no validated Mini estimator config
-or IMU lever-arm extrinsic exists yet.
+Use the estimator profile matching the emulated robot:
+
+```bash
+cd deps/bello-stack
+
+# Bello
+cargo run -p bello-state-estimatord -- \
+  --config components/bello-state-estimatord/config/bello-vcan.yaml
+
+# Bello Mini
+cargo run -p bello-state-estimatord -- \
+  --config components/bello-state-estimatord/config/bello-mini-vcan.yaml
+```
+
+Mini visualizer runs still use emulator ground truth on port 50052 by default;
+point them at port 50053 only when inspecting estimator output. The Mini
+estimator resolves its offset, yawed IMU frame from the canonical URDF and
+publishes `odom_from_pelvis_link`. Its IMU pose, ankle reductions, motor
+directions, and encoder zeros remain physical-calibration requirements.
