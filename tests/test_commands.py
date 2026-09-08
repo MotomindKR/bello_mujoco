@@ -198,11 +198,14 @@ def test_hardware_upper_body_tracking_is_an_explicit_boolean() -> None:
     assert default.upper_body_tracking_enabled
     assert default.rtmw_endpoint == "127.0.0.1:50055"
     assert default.rtmw_transport_latency_budget_ms == pytest.approx(10.0)
-    assert default.rtmw_max_source_interval_seconds == pytest.approx(0.50)
+    assert default.rtmw_reference_qualification_frames == 1
+    assert default.rtmw_min_joint_confidence == pytest.approx(0.0)
+    assert default.rtmw_min_rotation_confidence == pytest.approx(0.0)
+    assert default.rtmw_max_source_interval_seconds == pytest.approx(0.70)
     assert default.rtmw_human_height_m == pytest.approx(1.75)
     assert default.smplx_human_height_m == pytest.approx(1.66)
     assert default.rtmw_gmr_task_profile == "live_upper_body"
-    assert default.rtmw_max_required_rotation_residual_degrees == pytest.approx(30.0)
+    assert default.rtmw_max_required_rotation_residual_degrees == pytest.approx(35.0)
     assert not disabled.upper_body_tracking_enabled
 
 

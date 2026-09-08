@@ -282,13 +282,13 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     rtmw_tls_server_name_override: str | None = None
     rtmw_connect_timeout_seconds: float = 5.0
     rtmw_rpc_timeout_seconds: float = 2.0
-    rtmw_reference_qualification_frames: int = 5
-    rtmw_min_joint_confidence: float = 0.25
-    rtmw_min_rotation_confidence: float = 0.10
-    rtmw_max_required_rotation_residual_degrees: float = 30.0
+    rtmw_reference_qualification_frames: int = 1
+    rtmw_min_joint_confidence: float = 0.0
+    rtmw_min_rotation_confidence: float = 0.0
+    rtmw_max_required_rotation_residual_degrees: float = 35.0
     rtmw_max_pipeline_latency_ms: float = 250.0
     rtmw_transport_latency_budget_ms: float = 10.0
-    rtmw_max_source_interval_seconds: float = 0.50
+    rtmw_max_source_interval_seconds: float = 0.70
     rtmw_camera_to_world_quaternion_xyzw: tuple[float, float, float, float] = (
         0.5,
         -0.5,

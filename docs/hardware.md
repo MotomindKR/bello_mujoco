@@ -255,11 +255,11 @@ With tracking enabled, startup requires a compatible running RTMW service but
 does not require a tracked person or live pose before contacting
 `bello-hardwared`. The ramp, `RUN` hold, and tracking-loss fallback use the
 robot's nominal arm pose; a GMR-retargeted standing sample cannot redefine that
-safety pose. After `RUN`, the arms remain nominal until five distinct fresh
-schema-, confidence-, rotation-observability-, latency-, GMR-, and
-upper-body-limit-qualified poses arrive by default. Tracking loss resets that
-qualification and returns the arms toward nominal through the same bounded
-transition. The consumer accepts only RTMW schema 1, `smplx52_landmark_fit`,
+safety pose. After `RUN`, the first fresh schema-, validity-, latency-, GMR-,
+and upper-body-limit-qualified pose starts arm following by default. Tracking
+loss resets that qualification and returns the arms toward nominal through the
+same bounded transition. The consumer accepts only RTMW schema 1,
+`smplx52_landmark_fit`,
 the exact face-free 52-joint hierarchy, calibrated metric OpenCV camera
 coordinates, and the versioned rotation semantics
 `derived_tree_consistent_landmark_ik;canonical_smplx_upper_body_projection_v1;anatomical_elbow_hinge_arm_chain_v2;palm_frame_wrist_orientation_v2;lower_body_hand_shape_and_unobserved_axial_twist_approximate`.
@@ -270,7 +270,13 @@ geometry, anatomical arm-frame, and palm-frame contracts even if their protobuf
 schema is otherwise compatible.
 The producer's confidence-aware SMPL-X landmark filter uses a 500 ms smoothing
 time constant by default and runs before canonical projection and orientation
-IK. Root-range filtering remains independently configured.
+IK. Producer pose and height-anchor confidence gates default to 0.05. A missed
+detector update keeps the last associated box output-eligible for the tracker's
+configured grace period, while detection retries on every frame. Height-prior
+reconstruction holds the last valid same-track root depth for up to two seconds
+when its face or foot anchors disappear; a new track or an initially invalid
+depth still produces no output. Root-range filtering remains independently
+configured.
 The fixed `live_upper_body` GMR task profile disables the independent arm
 position costs and constrains the shoulder, elbow, and terminal wrist
 orientations. The shoulder and elbow frames use the observed
@@ -278,12 +284,13 @@ shoulder-elbow-wrist chain and an anatomical elbow hinge; palm landmarks define
 only the terminal wrist orientation. Fixed robot links therefore determine arm
 positions without an infeasible position target competing with palm
 orientation or duplicated palm twist at the elbow.
-Pelvis, spine3, and wrist rotations must have two-vector constraint rank and a
-residual no greater than 30 degrees. Shoulder frames use a side-specific
-anatomical elbow-hinge prior when the arm is bent far enough; nearly straight or
-folded arms remain rank one and transport their preceding twist. Optional joint
-rotations outside the configured confidence or residual limits fall back to the
-nearest usable ancestor.
+The pelvis rotation must have two-vector constraint rank and a residual no
+greater than 35 degrees. Shoulder frames use a side-specific anatomical
+elbow-hinge prior when the arm is bent far enough; nearly straight or folded
+arms remain rank one and transport their preceding twist. Unreliable spine,
+shoulder, elbow, and palm rotations fall back to the nearest usable ancestor
+instead of suppressing the entire pose. The default confidence thresholds are
+zero, so the producer's explicit validity masks remain authoritative.
 Root-relative/uncalibrated output and prerecorded video timestamps are rejected.
 No separate `MOTION` confirmation is used.
 
@@ -292,7 +299,7 @@ canonical SMPL-X-to-world pelvis basis; the fixed SMPL-X frame rotation itself
 is not mistaken for subject heading.
 
 RTMW accepts source intervals through the configurable
-`rtmw_max_source_interval_seconds` limit (500 ms by default). Live GMR uses the
+`rtmw_max_source_interval_seconds` limit (700 ms by default). Live GMR uses the
 profile's fixed solver-pass count for each accepted source frame: Mini uses
 three passes to converge its orientation-only arm tasks, while the universal
 offline profile remains at one. The pass count does not depend on wall-clock

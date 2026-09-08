@@ -161,12 +161,12 @@ def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwGrpcConfig:
         "connect_timeout_seconds": 5.0,
         "rpc_timeout_seconds": 2.0,
         "human_height_m": 1.75,
-        "min_joint_confidence": 0.25,
-        "min_rotation_confidence": 0.10,
-        "max_required_rotation_residual_degrees": 30.0,
+        "min_joint_confidence": 0.0,
+        "min_rotation_confidence": 0.0,
+        "max_required_rotation_residual_degrees": 35.0,
         "max_pipeline_latency_ms": 250.0,
         "transport_latency_budget_ms": 10.0,
-        "max_source_interval_seconds": 0.50,
+        "max_source_interval_seconds": 0.70,
         "max_source_age_ms": 1_000,
         "camera_to_world_quaternion_xyzw": (0.0, 0.0, 0.0, 1.0),
         "align_initial_heading": False,
@@ -739,7 +739,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     source_config = SimpleNamespace(
         endpoint="127.0.0.1:50055",
         human_height_m=1.75,
-        max_source_interval_seconds=0.50,
+        max_source_interval_seconds=0.70,
     )
     identity = object()
     calls: dict[str, object] = {}
@@ -830,7 +830,7 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
     assert retargeter_call[1] is identity
     assert retargeter_call[2].human_height_m == pytest.approx(1.66)
     assert retargeter_call[2].task_profile == "live_upper_body"
-    assert retargeter_call[2].max_source_interval_seconds == pytest.approx(0.50)
+    assert retargeter_call[2].max_source_interval_seconds == pytest.approx(0.70)
     assert retargeter_call[3] is validation
     assert calls["source"] == (stream, retargeter_call[4])
 
@@ -838,26 +838,55 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
 def test_rtmw_rejects_an_invalid_required_rotation(tmp_path: Path) -> None:
     stream = make_stream(tmp_path)
     message = rtmw_frame(8_000_000_000)
-    index = RTMW_SMPLX52_NAMES.index("left_wrist")
+    index = RTMW_SMPLX52_NAMES.index("pelvis")
     message.rotation_valid[index] = False
 
-    with pytest.raises(ReferenceUnavailable, match="left_wrist"):
+    with pytest.raises(ReferenceUnavailable, match="pelvis"):
         stream._parse_frame(message)
 
 
-def test_rtmw_requires_observable_low_residual_wrist_rotation(tmp_path: Path) -> None:
+def test_rtmw_requires_observable_low_residual_pelvis_rotation(tmp_path: Path) -> None:
     stream = make_stream(tmp_path)
     rank_one = rtmw_frame(8_000_000_000)
-    wrist = RTMW_SMPLX52_NAMES.index("right_wrist")
-    rank_one.rotation_constraint_rank[wrist] = 1
-    with pytest.raises(ReferenceUnavailable, match="right_wrist.*rank 1"):
+    pelvis = RTMW_SMPLX52_NAMES.index("pelvis")
+    rank_one.rotation_constraint_rank[pelvis] = 1
+    with pytest.raises(ReferenceUnavailable, match="pelvis.*rank 1"):
         stream._parse_frame(rank_one)
 
     stream = make_stream(tmp_path)
     high_residual = rtmw_frame(9_000_000_000)
-    high_residual.rotation_residual_degrees[wrist] = 30.1
-    with pytest.raises(ReferenceUnavailable, match="right_wrist.*residual"):
+    high_residual.rotation_residual_degrees[pelvis] = 35.1
+    with pytest.raises(ReferenceUnavailable, match="pelvis.*residual"):
         stream._parse_frame(high_residual)
+
+
+def test_rtmw_unreliable_wrist_rotation_uses_ancestor(tmp_path: Path) -> None:
+    stream = make_stream(tmp_path)
+    message = rtmw_frame(8_000_000_000)
+    wrist = RTMW_SMPLX52_NAMES.index("right_wrist")
+    turn_xyzw = np.asarray((0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)))
+    local = np.asarray(message.local_joint_quaternions).reshape(-1, 4)
+    global_ = np.asarray(message.global_joint_quaternions).reshape(-1, 4)
+    local[wrist] = turn_xyzw
+    for index in range(len(RTMW_SMPLX52_NAMES)):
+        ancestor = index
+        while ancestor >= 0 and ancestor != wrist:
+            ancestor = RTMW_SMPLX52_PARENTS[ancestor]
+        if ancestor == wrist:
+            global_[index] = turn_xyzw
+    message.local_joint_quaternions = local.reshape(-1).tolist()
+    message.global_joint_quaternions = global_.reshape(-1).tolist()
+    message.rotation_constraint_rank[wrist] = 1
+    message.rotation_residual_degrees[wrist] = 35.1
+
+    frame = stream._parse_frame(message)
+
+    assert frame.sequence == message.frame_id
+    np.testing.assert_allclose(
+        frame.transforms["right_wrist"][1],
+        (1.0, 0.0, 0.0, 0.0),
+        atol=1e-7,
+    )
 
 
 def test_rtmw_accepts_rank_one_elbow_for_position_only_live_profile(
@@ -882,7 +911,11 @@ def test_rtmw_low_quality_optional_rotation_uses_ancestor(
     rotation_confidence: float,
     rotation_residual: float,
 ) -> None:
-    stream = make_stream(tmp_path)
+    stream = make_stream(
+        tmp_path,
+        min_rotation_confidence=0.10,
+        max_required_rotation_residual_degrees=30.0,
+    )
     message = rtmw_frame(8_000_000_000)
     shoulder = RTMW_SMPLX52_NAMES.index("left_shoulder")
     turn_xyzw = np.asarray((0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)))

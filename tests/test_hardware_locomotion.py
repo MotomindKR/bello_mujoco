@@ -1214,7 +1214,13 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.upper_body_follow.left_elbow_yaw_offset_radians == 0.0
     assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
     assert config.hardware.rtmw_gmr_task_profile == "live_upper_body"
-    assert config.hardware.rtmw_max_source_interval_seconds == pytest.approx(0.50)
+    assert config.hardware.rtmw_reference_qualification_frames == 1
+    assert config.hardware.rtmw_min_joint_confidence == pytest.approx(0.0)
+    assert config.hardware.rtmw_min_rotation_confidence == pytest.approx(0.0)
+    assert config.hardware.rtmw_max_required_rotation_residual_degrees == pytest.approx(
+        35.0
+    )
+    assert config.hardware.rtmw_max_source_interval_seconds == pytest.approx(0.70)
     assert config.hardware.smplx_human_height_m == pytest.approx(1.66)
     validate_hardware_config(config.hardware)
     validate_hardware_config(pose_hardware_config(arm=True))

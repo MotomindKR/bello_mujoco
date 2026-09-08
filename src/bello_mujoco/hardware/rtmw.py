@@ -44,7 +44,7 @@ from bello_mujoco.robot_tasks import motion_task_definition
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "fc70c084fe7da3b13b4621344468c5a1c680aff5"
+RTMW_REVISION = "eb84c08b7e6547e06d6454b95ae318024e26aaf8"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
@@ -114,11 +114,8 @@ RTMW_SMPLX52_PARENTS = (
     49,
     50,
 )
-_FULLY_OBSERVED_ROTATION_NAMES = (
+_REQUIRED_RANK_TWO_ROTATION_NAMES = (
     "pelvis",
-    "spine3",
-    "left_wrist",
-    "right_wrist",
 )
 _RETRYABLE_GRPC_CODES = frozenset(
     (
@@ -677,7 +674,7 @@ class RtmwSmplxStream:
             message.rotation_constraint_rank,
             len(RTMW_SMPLX52_NAMES),
         )
-        for name in _FULLY_OBSERVED_ROTATION_NAMES:
+        for name in _REQUIRED_RANK_TWO_ROTATION_NAMES:
             index = RTMW_SMPLX52_NAMES.index(name)
             if not rotation_valid[index]:
                 raise ReferenceUnavailable(
