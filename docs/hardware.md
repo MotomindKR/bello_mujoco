@@ -105,34 +105,37 @@ power cutoff should the separate controller be armed:
 uv run bello-run-hands protocol=linker_o6 arm=true calibration_confirmed=true
 ```
 
-Armed startup validates RTMW first, then opens a filtered socket per enabled
-side and issues a one-byte, read-only position query to each hand. Position
-writes begin only after those probes answer. The first target is low-pass and
-slew limited from the measured starting positions. The default raw calibration
-follows Linker's convention of `255` for open/extended and `0` for closed;
-calibrate each of the six endpoints before relying on full-range tracking.
-Armed mode rejects `calibration_confirmed=false`; setting it to `true` asserts
-that the configured endpoints were checked on the actual model and side, but
-does not perform calibration automatically.
+Armed startup imports and validates the pinned RTMW protocol locally, opens a
+filtered socket per enabled side, and issues a one-byte, read-only position
+query to each hand. Position writes begin only after those probes answer. The
+controller immediately commands the calibrated open pose while RTMW connects
+or reconnects in the background. The default raw calibration follows Linker's
+convention of `255` for open/extended and `0` for closed; calibrate each of the
+six endpoints before arming. `calibration_confirmed=true` asserts that those
+endpoints were checked on the actual model and side; it does not perform
+calibration automatically.
 
-Fresh targets are written at no more than 30 Hz. Invalid landmarks are gated
-per side, so one reliable hand may continue while writes to the other stop. A
-tracking loss, stale target, RTMW outage, or invalid target never causes a
-disable, fully-open, fully-closed, or nominal command: the process simply stops
-new position writes for the unavailable side. The reviewed O6/L6 classic-CAN
-interface has no disable command equivalent to the HITBOT CAN-FD action code,
-so inventing one would be unsafe. Firmware behavior after command silence and
-the external hand power cutoff remain outside this controller.
+Fresh targets are written at no more than 5 Hz per enabled hand. Thumb flexion
+and the four finger-flexion axes are strictly binary: each command is exactly
+its calibrated open or closed endpoint. An open threshold of `0.35` and close
+threshold of `0.65` form a hysteresis band, so pose noise cannot produce
+intermediate flexion commands or chatter near one threshold. Thumb abduction
+remains continuous and uses the configured low-pass and slew limits.
 
-Retryable RTMW transport failures reconnect automatically, but only a newly
-accepted fresh frame can resume target writes. Before the first resumed write,
-the controller drains old feedback, performs a new read-only position probe,
-and reseeds its low-pass and slew limits from that physical position. Clicking
-**Stop stream** in the RTMW GUI pauses publication while camera capture,
-inference, visualization, gRPC, and existing subscriptions remain alive. Once
-the last received target exceeds `max_reference_age_ms`, the hand controller
-stops writing. Frames produced during the pause are discarded rather than
-queued; **Start stream** resumes with newly captured frames only.
+Missing or low-confidence landmarks open only the affected side. A complete
+tracking loss, stale target, paused stream, or retryable RTMW outage commands
+both hands open while the controller continues monitoring CAN feedback and
+reconnecting. The reviewed O6/L6 classic-CAN interface has no disable command
+equivalent to the HITBOT CAN-FD action code; the open fallback is a position
+command, not an emergency stop or torque-disable operation. Stale hand feedback
+still stops the controller before another write.
+
+Clicking **Stop stream** in the RTMW GUI pauses publication while camera
+capture, inference, visualization, gRPC, and existing subscriptions remain
+alive. Once the last received target exceeds `max_reference_age_ms`, the hand
+controller commands open targets. Frames produced during the pause are
+discarded rather than queued; **Start stream** resumes with newly captured
+frames only.
 
 Stopping `bello-run-hands` closes its own filtered sockets. It neither stops
 `bello-hardwared` nor damps, disables, or changes state of any RobStride group.

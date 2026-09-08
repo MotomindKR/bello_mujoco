@@ -140,6 +140,29 @@ def test_transport_polls_feedback_without_blocking_when_current() -> None:
     assert endpoints["left"].queries == 1
 
 
+def test_transport_drains_queued_feedback_before_stale_check() -> None:
+    clock = FakeClock()
+    config = replace(
+        LinkerHandsCanConfig(),
+        right_enabled=False,
+        feedback_poll_interval_seconds=0.2,
+        feedback_timeout_seconds=0.5,
+    )
+    transport, endpoints = make_transport(config, clock)
+
+    with transport:
+        clock.now += 0.6
+        endpoints["left"].responses.append(
+            LinkerHandPositionResponse(
+                endpoints["left"].address.command_id,
+                (10, 20, 30, 40, 50, 60),
+            )
+        )
+        transport.set_positions("left", (1, 2, 3, 4, 5, 6))
+
+    assert endpoints["left"].writes == [(1, 2, 3, 4, 5, 6)]
+
+
 def test_transport_refresh_returns_new_physical_position() -> None:
     clock = FakeClock()
     config = replace(LinkerHandsCanConfig(), right_enabled=False)

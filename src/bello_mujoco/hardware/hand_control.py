@@ -141,6 +141,7 @@ class LinkerHandsCanTransport:
         if endpoint is None:
             raise ValueError(f"hand side {side!r} is not enabled")
         now = self._clock()
+        self._drain_positions(side, endpoint, now)
         if now - self._last_feedback[side] > self.config.feedback_timeout_seconds:
             # A caller must explicitly refresh and reseed its command filter;
             # sending a target computed from the old state could jump a hand
@@ -149,7 +150,6 @@ class LinkerHandsCanTransport:
                 f"{side} Linker Hand feedback is stale; refresh and reseed before "
                 "writing"
             )
-        self._drain_positions(side, endpoint, now)
         if now - self._last_query[side] >= (self.config.feedback_poll_interval_seconds):
             self._stagger()
             endpoint.query_positions()

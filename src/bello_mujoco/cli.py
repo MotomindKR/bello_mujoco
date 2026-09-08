@@ -228,6 +228,8 @@ class HandsCommandConfig:
     control_rate_hz: float
     smoothing_time_constant_ms: float
     max_raw_rate_per_second: float
+    flexion_open_threshold: float
+    flexion_close_threshold: float
     finger_full_flex_degrees: float
     thumb_full_flex_degrees: float
     thumb_adduction_range_degrees: float
@@ -988,6 +990,8 @@ def _hands_hydra(config: DictConfig) -> None:
         control_rate_hz=command.control_rate_hz,
         smoothing_time_constant_ms=command.smoothing_time_constant_ms,
         max_raw_rate_per_second=command.max_raw_rate_per_second,
+        flexion_open_threshold=command.flexion_open_threshold,
+        flexion_close_threshold=command.flexion_close_threshold,
         max_duration_seconds=command.duration_seconds,
         left_enabled=command.left_hand_enabled,
         right_enabled=command.right_hand_enabled,

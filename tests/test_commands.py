@@ -239,10 +239,12 @@ def test_hands_command_defaults_are_disarmed_classic_can() -> None:
     assert command.protocol == "linker_o6"
     assert command.can_interface == "can1"
     assert command.left_hand_enabled and command.right_hand_enabled
-    assert command.control_rate_hz == pytest.approx(30.0)
+    assert command.control_rate_hz == pytest.approx(5.0)
     assert command.can_tx_spacing_seconds == pytest.approx(0.003)
     assert command.min_hand_confidence == pytest.approx(0.05)
     assert command.smoothing_time_constant_ms == pytest.approx(100.0)
+    assert command.flexion_open_threshold == pytest.approx(0.35)
+    assert command.flexion_close_threshold == pytest.approx(0.65)
     assert command.left_open_positions == (255, 255, 255, 255, 255, 255)
     assert command.left_closed_positions == (0, 0, 0, 0, 0, 0)
     assert not command.arm
@@ -279,6 +281,8 @@ def test_hands_command_wires_rtmw_mapping_and_l6_transport(
                 "arm=true",
                 "calibration_confirmed=true",
                 "duration_seconds=2.5",
+                "flexion_open_threshold=0.25",
+                "flexion_close_threshold=0.75",
                 "left_open_positions=[250,240,230,220,210,200]",
                 "left_closed_positions=[10,20,30,40,50,60]",
             ),
@@ -296,6 +300,8 @@ def test_hands_command_wires_rtmw_mapping_and_l6_transport(
     assert runtime.max_duration_seconds == pytest.approx(2.5)
     assert runtime.left_enabled and not runtime.right_enabled
     assert runtime.arm and runtime.calibration_confirmed
+    assert runtime.flexion_open_threshold == pytest.approx(0.25)
+    assert runtime.flexion_close_threshold == pytest.approx(0.75)
     assert runtime.left_calibration.open_positions == (
         250,
         240,

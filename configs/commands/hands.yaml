@@ -17,9 +17,11 @@ max_pipeline_latency_ms: 250.0
 transport_latency_budget_ms: 10.0
 max_reference_age_ms: 1000
 max_source_interval_seconds: 0.70
-control_rate_hz: 30.0
+control_rate_hz: 5.0
 smoothing_time_constant_ms: 100.0
 max_raw_rate_per_second: 510.0
+flexion_open_threshold: 0.35
+flexion_close_threshold: 0.65
 finger_full_flex_degrees: 180.0
 thumb_full_flex_degrees: 120.0
 thumb_adduction_range_degrees: 60.0

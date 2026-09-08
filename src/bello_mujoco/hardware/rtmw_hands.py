@@ -35,6 +35,7 @@ HAND_POSITION_ORDER = (
 
 _SIDES: tuple[HandSide, HandSide] = ("left", "right")
 _FINGERS = ("index", "middle", "ring", "pinky", "thumb")
+_FLEXION_AXES = (0, 2, 3, 4, 5)
 _RETRYABLE_GRPC_CODES = frozenset(
     (
         grpc.StatusCode.CANCELLED,
@@ -48,7 +49,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class RtmwHandsUnavailable(RuntimeError):
-    """No hand target may be sent until another accepted RTMW frame arrives."""
+    """No live RTMW hand target is available; the open fallback remains valid."""
 
 
 class RtmwHandsDiscontinuity(RtmwHandsUnavailable):
@@ -143,9 +144,11 @@ class RtmwHandsConfig:
     transport_latency_budget_ms: float = 10.0
     max_reference_age_ms: int = 1_000
     max_source_interval_seconds: float = 0.70
-    control_rate_hz: float = 30.0
+    control_rate_hz: float = 5.0
     smoothing_time_constant_ms: float = 100.0
     max_raw_rate_per_second: float = 510.0
+    flexion_open_threshold: float = 0.35
+    flexion_close_threshold: float = 0.65
     max_duration_seconds: float | None = None
     left_enabled: bool = True
     right_enabled: bool = True
@@ -176,6 +179,15 @@ class RtmwHandsConfig:
         ):
             raise ValueError(
                 "RTMW hands smoothing_time_constant_ms must be finite and nonnegative"
+            )
+        for name in ("flexion_open_threshold", "flexion_close_threshold"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"RTMW hands {name} must be finite and in [0, 1]")
+        if self.flexion_open_threshold >= self.flexion_close_threshold:
+            raise ValueError(
+                "RTMW hands flexion_open_threshold must be less than "
+                "flexion_close_threshold"
             )
         if self.max_duration_seconds is not None and (
             not math.isfinite(self.max_duration_seconds)
@@ -468,20 +480,23 @@ class RtmwHandLandmarkMapper:
 
 
 class RtmwHandCommandFilter:
-    """Causal low-pass and raw-position slew limiting for each hand."""
+    """Binary flexion hysteresis plus filtered thumb-abduction control."""
 
     def __init__(self, config: RtmwHandsConfig) -> None:
         self.config = config
         self._state: dict[HandSide, np.ndarray] = {}
         self._updated_at: dict[HandSide, float] = {}
+        self._flexion_closed: dict[HandSide, np.ndarray] = {}
 
     def reset(self, side: HandSide | None = None) -> None:
         if side is None:
             self._state.clear()
             self._updated_at.clear()
+            self._flexion_closed.clear()
             return
         self._state.pop(side, None)
         self._updated_at.pop(side, None)
+        self._flexion_closed.pop(side, None)
 
     def seed(
         self,
@@ -503,8 +518,18 @@ class RtmwHandCommandFilter:
             for value in positions
         ):
             raise ValueError("initial hand positions must be integers in [0, 255]")
-        self._state[side] = np.asarray(positions, dtype=np.float64)
+        measured = np.asarray(positions, dtype=np.float64)
+        self._state[side] = measured
         self._updated_at[side] = now
+        if side not in self._flexion_closed:
+            calibration = self.config.calibration(side)
+            opened = np.asarray(calibration.open_positions, dtype=np.float64)
+            closed = np.asarray(calibration.closed_positions, dtype=np.float64)
+            span = closed - opened
+            normalized = np.zeros(6, dtype=np.float64)
+            usable = np.abs(span) > np.finfo(np.float64).eps
+            normalized[usable] = (measured[usable] - opened[usable]) / span[usable]
+            self._flexion_closed[side] = normalized[list(_FLEXION_AXES)] >= 0.5
 
     def resume(self, side: HandSide, *, now: float) -> None:
         """Resume from the last command with one control period of authority."""
@@ -524,7 +549,41 @@ class RtmwHandCommandFilter:
         if not math.isfinite(now):
             raise ValueError("hand filter timestamp must be finite")
         side = target.side
-        desired = self.config.calibration(side).raw_target(target.normalized_positions)
+        normalized = np.asarray(target.normalized_positions, dtype=np.float64)
+        if normalized.shape != (6,) or not np.all(np.isfinite(normalized)):
+            raise ValueError("normalized hand target must contain six finite values")
+        if np.any((normalized < 0.0) | (normalized > 1.0)):
+            raise ValueError("normalized hand target values must be in [0, 1]")
+        closed = np.array(
+            self._flexion_closed.get(side, np.zeros(len(_FLEXION_AXES), dtype=bool)),
+            copy=True,
+        )
+        flexion = normalized[list(_FLEXION_AXES)]
+        closed[(~closed) & (flexion >= self.config.flexion_close_threshold)] = True
+        closed[closed & (flexion <= self.config.flexion_open_threshold)] = False
+        self._flexion_closed[side] = closed
+        binary = np.array(normalized, copy=True)
+        binary[list(_FLEXION_AXES)] = closed.astype(np.float64)
+        return self._filter_raw_target(side, binary, now=now)
+
+    def open(self, side: HandSide, *, now: float) -> RawHandPositions:
+        """Command calibrated open flexion and clear every flexion latch."""
+
+        if not math.isfinite(now):
+            raise ValueError("hand filter timestamp must be finite")
+        self._flexion_closed[side] = np.zeros(len(_FLEXION_AXES), dtype=bool)
+        return self._filter_raw_target(side, np.zeros(6, dtype=np.float64), now=now)
+
+    def _filter_raw_target(
+        self,
+        side: HandSide,
+        normalized: np.ndarray,
+        *,
+        now: float,
+    ) -> RawHandPositions:
+        desired = self.config.calibration(side).raw_target(
+            tuple(float(value) for value in normalized)  # type: ignore[arg-type]
+        )
         previous = self._state.get(side)
         previous_at = self._updated_at.get(side)
         if previous is None or previous_at is None:
@@ -540,6 +599,8 @@ class RtmwHandCommandFilter:
             filtered = previous + np.clip(
                 low_passed - previous, -maximum_delta, maximum_delta
             )
+        flexion_axes = list(_FLEXION_AXES)
+        filtered[flexion_axes] = desired[flexion_axes]
         filtered = np.clip(filtered, 0.0, 255.0)
         self._state[side] = filtered
         self._updated_at[side] = now
@@ -581,7 +642,8 @@ class RtmwHandsStream:
         self._stub_factory = skeleton_pb2_grpc.SkeletonServiceStub
         self._stop.clear()
         try:
-            self._connect_transport()
+            if not self.config.arm:
+                self._connect_transport()
             self._thread = threading.Thread(
                 target=self._consume,
                 name="bello-rtmw-hands-grpc",
@@ -707,40 +769,43 @@ class RtmwHandsStream:
         reconnect_immediately = True
         reconnect_backoff_seconds = _RECONNECT_INITIAL_BACKOFF_SECONDS
         while not self._stop.is_set():
-            try:
-                with self._transport_lock:
-                    call = self._call
-                if call is None:
-                    raise RuntimeError("RTMW hand stream has no active subscription")
-                for message in call:
+            with self._transport_lock:
+                call = self._call
+            if call is None:
+                failure = "RTMW hand stream is not connected"
+            else:
+                try:
+                    for message in call:
+                        if self._stop.is_set():
+                            return
+                        try:
+                            frame = self._parse_frame(message)
+                        except RtmwHandsDiscontinuity as error:
+                            self._publish_barrier(error)
+                        except RtmwHandsUnavailable as error:
+                            self._publish(error)
+                        else:
+                            self._publish(frame)
+                            outage_active = False
+                            reconnect_immediately = True
+                            reconnect_backoff_seconds = (
+                                _RECONNECT_INITIAL_BACKOFF_SECONDS
+                            )
                     if self._stop.is_set():
                         return
-                    try:
-                        frame = self._parse_frame(message)
-                    except RtmwHandsDiscontinuity as error:
-                        self._publish_barrier(error)
-                    except RtmwHandsUnavailable as error:
-                        self._publish(error)
-                    else:
-                        self._publish(frame)
-                        outage_active = False
-                        reconnect_immediately = True
-                        reconnect_backoff_seconds = _RECONNECT_INITIAL_BACKOFF_SECONDS
-                if self._stop.is_set():
+                    failure = "RTMW hand gRPC stream ended"
+                except grpc.RpcError as error:
+                    if self._stop.is_set():
+                        return
+                    if error.code() not in _RETRYABLE_GRPC_CODES:
+                        self._set_terminal(self._grpc_error(error))
+                        return
+                    failure = str(self._grpc_error(error))
+                except BaseException as error:
+                    if self._stop.is_set():
+                        return
+                    self._set_terminal(error)
                     return
-                failure = "RTMW hand gRPC stream ended"
-            except grpc.RpcError as error:
-                if self._stop.is_set():
-                    return
-                if error.code() not in _RETRYABLE_GRPC_CODES:
-                    self._set_terminal(self._grpc_error(error))
-                    return
-                failure = str(self._grpc_error(error))
-            except BaseException as error:
-                if self._stop.is_set():
-                    return
-                self._set_terminal(error)
-                return
 
             self._close_transport()
             if not outage_active:
@@ -1032,10 +1097,10 @@ def run_rtmw_hands(
 ) -> None:
     """Follow the latest fresh RTMW hand pose until stopped.
 
-    Tracking loss, a stale source, or a reconnect suspends smoothing and emits
-    no new hand targets. Recovery resumes from the last commanded position so
-    it cannot bypass the configured LPF or slew limit. Classic LinkerHand has
-    no reviewed disable command, so this layer deliberately does not invent one.
+    Missing, stale, or disconnected RTMW input commands calibrated open hand
+    targets. Flexion axes are binary; only thumb abduction uses the configured
+    low-pass and slew limits. Classic LinkerHand has no reviewed disable command,
+    so this layer deliberately does not invent one.
     """
 
     stop = stop_event if stop_event is not None else threading.Event()
@@ -1048,8 +1113,6 @@ def run_rtmw_hands(
     period = 1.0 / config.control_rate_hz
     latest: RtmwHandsFrame | None = None
     last_sequence: int | None = None
-    active_track_id: str | None = None
-    side_active = {side: False for side in _SIDES}
     next_command_at = time.monotonic()
     deadline = (
         None
@@ -1069,6 +1132,11 @@ def run_rtmw_hands(
                             f"hand transport did not probe enabled side {side!r}"
                         )
                     position_filter.seed(side, initial_positions[side], now=seeded_at)
+                    position_filter.resume(side, now=seeded_at)
+            for side in _SIDES:
+                if config.enabled(side):
+                    now = time.monotonic()
+                    transport.set_positions(side, position_filter.open(side, now=now))
         while not stop.is_set():
             now = time.monotonic()
             if deadline is not None and now >= deadline:
@@ -1090,19 +1158,11 @@ def run_rtmw_hands(
                     _LOGGER.warning("RTMW hand target unavailable: %s", error)
                 latest = None
                 last_sequence = None
-                active_track_id = None
-                side_active = {side: False for side in _SIDES}
                 stale = True
             else:
                 if frame is not None:
-                    if (
-                        active_track_id is not None
-                        and frame.track_id != active_track_id
-                    ):
-                        side_active = {side: False for side in _SIDES}
                     latest = frame
                     last_sequence = frame.sequence
-                    active_track_id = frame.track_id
                     stale = False
                     if not config.arm:
                         return
@@ -1112,10 +1172,11 @@ def run_rtmw_hands(
                 continue
             skipped = max(0, math.floor((now - next_command_at) / period))
             next_command_at += (skipped + 1) * period
-            if latest is None:
-                continue
-            age_ms = latest.source_age_ms + (now - latest.received_at) * 1_000.0
-            if age_ms > config.max_reference_age_ms:
+            if latest is not None:
+                age_ms = latest.source_age_ms + (now - latest.received_at) * 1_000.0
+            else:
+                age_ms = 0.0
+            if latest is not None and age_ms > config.max_reference_age_ms:
                 if not stale:
                     _LOGGER.warning(
                         "RTMW hand target became stale: %.1f ms > %d ms",
@@ -1123,31 +1184,16 @@ def run_rtmw_hands(
                         config.max_reference_age_ms,
                     )
                 latest = None
-                active_track_id = None
-                side_active = {side: False for side in _SIDES}
                 stale = True
-                continue
             for side in _SIDES:
-                target = latest.target(side)
-                if target is None:
-                    side_active[side] = False
+                if not config.enabled(side):
                     continue
-                if not side_active[side]:
-                    if transport is None:  # pragma: no cover - arm=false returns above
-                        raise RuntimeError("armed hand control has no CAN transport")
-                    measured = transport.refresh_positions(side)
-                    now = time.monotonic()
-                    age_ms = latest.source_age_ms + (now - latest.received_at) * 1_000.0
-                    if age_ms > config.max_reference_age_ms:
-                        latest = None
-                        active_track_id = None
-                        side_active = {candidate: False for candidate in _SIDES}
-                        stale = True
-                        break
-                    position_filter.seed(side, measured, now=now)
-                    position_filter.resume(side, now=now)
-                    side_active[side] = True
-                positions = position_filter.update(target, now=now)
+                target = None if latest is None else latest.target(side)
+                positions = (
+                    position_filter.open(side, now=now)
+                    if target is None
+                    else position_filter.update(target, now=now)
+                )
                 if transport is not None:
                     transport.set_positions(side, positions)
                 now = time.monotonic()
