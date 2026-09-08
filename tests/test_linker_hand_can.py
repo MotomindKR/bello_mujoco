@@ -12,6 +12,7 @@ from bello_mujoco.hardware.linker_hand import (
     CAN_FILTER,
     CAN_FRAME,
     CAN_RTR_FLAG,
+    CAN_SFF_MASK,
     EXACT_STANDARD_DATA_MASK,
     LEFT_CAN_ID,
     POSITION_OPCODE,
@@ -257,6 +258,8 @@ def test_socketcan_filters_match_only_exact_standard_data_ids() -> None:
     address = LinkerHandAddress("L6", "left")
     packed = socketcan_filter_bytes(address)
 
+    assert EXACT_STANDARD_DATA_MASK == CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG
+    assert EXACT_STANDARD_DATA_MASK & CAN_ERR_FLAG == 0
     assert len(packed) == 2 * CAN_FILTER.size
     filters = tuple(
         CAN_FILTER.unpack_from(packed, offset)

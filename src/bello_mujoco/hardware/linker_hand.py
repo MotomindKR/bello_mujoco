@@ -21,9 +21,11 @@ CAN_SFF_MASK = 0x7FF
 CAN_FRAME = struct.Struct("=IB3x8s")
 CAN_FILTER = struct.Struct("=II")
 
-# Include all frame-type flags in the mask so an extended, remote, or error
-# frame with matching low identifier bits cannot pass an endpoint filter.
-EXACT_STANDARD_DATA_MASK = CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG | CAN_ERR_FLAG
+# Match the complete standard identifier while excluding extended and remote
+# frames.  CAN_ERR_FLAG shares its value with CAN_INV_FILTER in ``can_filter``;
+# putting that bit in this mask prevents normal hand responses from matching.
+# Error frames are disabled separately by CAN_RAW_ERR_FILTER's default value.
+EXACT_STANDARD_DATA_MASK = CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG
 
 RIGHT_CAN_ID = 0x27
 LEFT_CAN_ID = 0x28
