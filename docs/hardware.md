@@ -1,8 +1,11 @@
 # Physical hardware
 
-`bello-run-hardware` is the sole physical policy deployment interface. Its
+`bello-run-hardware` is the sole physical **policy** deployment interface. Its
 complete public fields and defaults are in the
-[command reference](commands.md#bello-run-hardware).
+[command reference](commands.md#bello-run-hardware). The independent
+[`bello-run-hands`](commands.md#bello-run-hands) process can send RTMW-derived
+targets directly to Linker O6/L6 hands; it does not control robot joints or
+acquire a `bello-hardwared` lease.
 
 The runner has three task modes:
 
@@ -40,6 +43,101 @@ frame causes a fail-closed damped shutdown.
 An exact checkout also restores that revision's hardware runner and safety
 checks. Review old runner code and its guards before using `arm=true`; a later
 safety fix is not inherited automatically by a historical checkpoint.
+
+## Standalone Linker hand control
+
+`bello-run-hands` consumes the pinned RTMW service's 52 SMPL-X joint positions
+and ten fingertip positions. It constructs a handed palm-local frame for each
+side and maps the observed thumb and finger geometry directly to six controller
+axes. The target order is thumb flexion, thumb abduction, index, middle, ring,
+and pinky. This is a standalone landmark controller: it does not use GMR, a
+locomotion checkpoint, the policy process, or `bello-hardwared` command RPCs.
+
+The supported devices are Linker O6 and L6 hands using 11-bit **classic CAN**
+at 1 Mbit/s. Right and left commands use standard identifiers `0x27` and
+`0x28`. Do not connect this command to a HITBOT
+`eHand-6-R-CFD-N-8F`: that hand's documented interface is a different CAN-FD
+protocol with a 5 Mbit/s BRS data phase, 32-byte payloads, and identifiers
+`0x11`/`0x12`. The frame layout and actuator order are not interchangeable.
+The wire contract was reviewed against
+[`linker-bot/linkerhand-python-sdk`](https://github.com/linker-bot/linkerhand-python-sdk)
+at revision `0cc0585b97214b2cc4a9a5afcc84aee9f414e0e8`; this repository uses a
+small direct SocketCAN implementation and does not import or vendor that SDK.
+
+The hands share the existing `can1` upper-body network with RobStride motors.
+The pinned hardware daemon reads only extended RobStride frames, while each
+hand socket installs an exact standard-ID receive filter. The hand process does
+not create a CAN interface, call `ip link`, change bitrate or MTU, or bring a
+link up or down. Consequently it can be started and stopped without modifying
+the running policy or daemon. It does add its position writes and periodic
+read-only feedback queries to the physical bus; monitor CAN error counters when
+commissioning the combined network.
+
+Before arming, inspect the current configuration from the repository root:
+
+```text
+deps/bello-stack/scripts/setup-can.sh --check
+```
+
+This is a read-only check of both `can0` and `can1`. It requires the links to be
+up with classic-CAN MTU 16, CAN FD disabled, and a 1 Mbit/s bitrate. The normal
+`sudo deps/bello-stack/scripts/setup-can.sh` mode takes both links down while
+configuring them; never run normal mode while `bello-hardwared`, a hand
+controller, or the robot is operating.
+
+The default hand command is an RTMW-only preflight:
+
+```text
+uv run bello-run-hands
+```
+
+With `arm=false`, it validates the pinned protobuf and stream metadata, service
+status, height prior, timestamps, latency, tracking identity, confidence, and
+hand geometry, then returns after one acceptable frame. It never opens a CAN
+socket, sends a hand probe, or changes the hand. Therefore a successful
+unarmed preflight does not prove that either physical hand is present; use
+`setup-can.sh --check` for the non-mutating link check.
+
+Only after confirming the physical model, unobstructed motion, and a working
+power cutoff should the separate controller be armed:
+
+```text
+uv run bello-run-hands protocol=linker_o6 arm=true calibration_confirmed=true
+```
+
+Armed startup validates RTMW first, then opens a filtered socket per enabled
+side and issues a one-byte, read-only position query to each hand. Position
+writes begin only after those probes answer. The first target is low-pass and
+slew limited from the measured starting positions. The default raw calibration
+follows Linker's convention of `255` for open/extended and `0` for closed;
+calibrate each of the six endpoints before relying on full-range tracking.
+Armed mode rejects `calibration_confirmed=false`; setting it to `true` asserts
+that the configured endpoints were checked on the actual model and side, but
+does not perform calibration automatically.
+
+Fresh targets are written at no more than 30 Hz. Invalid landmarks are gated
+per side, so one reliable hand may continue while writes to the other stop. A
+tracking loss, stale target, RTMW outage, or invalid target never causes a
+disable, fully-open, fully-closed, or nominal command: the process simply stops
+new position writes for the unavailable side. The reviewed O6/L6 classic-CAN
+interface has no disable command equivalent to the HITBOT CAN-FD action code,
+so inventing one would be unsafe. Firmware behavior after command silence and
+the external hand power cutoff remain outside this controller.
+
+Retryable RTMW transport failures reconnect automatically, but only a newly
+accepted fresh frame can resume target writes. Before the first resumed write,
+the controller drains old feedback, performs a new read-only position probe,
+and reseeds its low-pass and slew limits from that physical position. Clicking
+**Stop stream** in the RTMW GUI pauses publication while camera capture,
+inference, visualization, gRPC, and existing subscriptions remain alive. Once
+the last received target exceeds `max_reference_age_ms`, the hand controller
+stops writing. Frames produced during the pause are discarded rather than
+queued; **Start stream** resumes with newly captured frames only.
+
+Stopping `bello-run-hands` closes its own filtered sockets. It neither stops
+`bello-hardwared` nor damps, disables, or changes state of any RobStride group.
+See the [command reference](commands.md#bello-run-hands) for every confidence,
+latency, filtering, calibration, side-selection, and duration field.
 
 ## Read-only preflight
 

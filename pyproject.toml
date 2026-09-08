@@ -44,6 +44,7 @@ bello-twist-data = "bello_mujoco.cli:twist_data_entrypoint"
 bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
 bello-run-emulator = "bello_mujoco.cli:emulator_entrypoint"
 bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
+bello-run-hands = "bello_mujoco.cli:hands_entrypoint"
 
 [dependency-groups]
 dev = [

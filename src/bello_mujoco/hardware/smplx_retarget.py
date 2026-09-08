@@ -21,6 +21,10 @@ import mujoco
 import numpy as np
 
 from bello_mujoco.assets_pipeline import robot_descriptions_root
+from bello_mujoco.hardware.smplx_contract import (
+    SMPLX_BODY_JOINT_NAMES,
+    SMPLX_BODY_JOINT_PARENTS,
+)
 from bello_mujoco.hardware.twist2 import (
     ReferenceDiscontinuity,
     ReferenceUnavailable,
@@ -29,37 +33,6 @@ from bello_mujoco.hardware.twist2 import (
 from bello_mujoco.repository import repository_root
 from bello_mujoco.robot import AssetName, robot_definition
 from bello_mujoco.robot_tasks import GmrRetargetDefinition, motion_task_definition
-
-
-SMPLX_BODY_JOINT_NAMES = (
-    "pelvis",
-    "left_hip",
-    "right_hip",
-    "spine1",
-    "left_knee",
-    "right_knee",
-    "spine2",
-    "left_ankle",
-    "right_ankle",
-    "spine3",
-    "left_foot",
-    "right_foot",
-    "neck",
-    "left_collar",
-    "right_collar",
-    "head",
-    "left_shoulder",
-    "right_shoulder",
-    "left_elbow",
-    "right_elbow",
-    "left_wrist",
-    "right_wrist",
-)
-
-SMPLX_BODY_JOINT_PARENTS = np.asarray(
-    (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19),
-    dtype=np.int32,
-)
 
 # SMPL-X's model frame has +y up. This proper rotation produces the same
 # z-up, x-forward, y-left convention used by the offline AMASS pipeline.

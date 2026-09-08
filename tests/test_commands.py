@@ -12,6 +12,7 @@ import pytest
 from bello_mujoco.cli import (
     EmulatorCommandConfig,
     EvalCommandConfig,
+    HandsCommandConfig,
     HardwareCommandConfig,
     MotionCommandConfig,
     PrepareAssetsCommandConfig,
@@ -43,6 +44,7 @@ COMMAND_SCHEMAS = {
     "vast_train": VastTrainCommandConfig,
     "emulator": EmulatorCommandConfig,
     "hardware": HardwareCommandConfig,
+    "hands": HandsCommandConfig,
 }
 
 
@@ -120,6 +122,21 @@ def test_hardware_entrypoint_forces_cpu_backend() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_hands_entrypoint_forces_cpu_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bello_mujoco.cli as cli
+
+    monkeypatch.setenv("JAX_PLATFORMS", "gpu")
+    monkeypatch.setenv("JAX_PLATFORM_NAME", "gpu")
+    monkeypatch.setattr(cli, "_hands_hydra", lambda: None)
+
+    cli.hands_entrypoint()
+
+    assert cli.os.environ["JAX_PLATFORMS"] == "cpu"
+    assert cli.os.environ["JAX_PLATFORM_NAME"] == "cpu"
 
 
 @pytest.mark.parametrize(("name", "schema"), COMMAND_SCHEMAS.items())
@@ -207,6 +224,88 @@ def test_hardware_upper_body_tracking_is_an_explicit_boolean() -> None:
     assert default.rtmw_gmr_task_profile == "live_upper_body"
     assert default.rtmw_max_required_rotation_residual_degrees == pytest.approx(35.0)
     assert not disabled.upper_body_tracking_enabled
+
+
+def test_hands_command_defaults_are_disarmed_classic_can() -> None:
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        command = command_config(
+            HandsCommandConfig,
+            compose(config_name="hands"),
+        )
+
+    assert command.protocol == "linker_o6"
+    assert command.can_interface == "can1"
+    assert command.left_hand_enabled and command.right_hand_enabled
+    assert command.control_rate_hz == pytest.approx(30.0)
+    assert command.can_tx_spacing_seconds == pytest.approx(0.003)
+    assert command.min_hand_confidence == pytest.approx(0.05)
+    assert command.smoothing_time_constant_ms == pytest.approx(100.0)
+    assert command.left_open_positions == (255, 255, 255, 255, 255, 255)
+    assert command.left_closed_positions == (0, 0, 0, 0, 0, 0)
+    assert not command.arm
+    assert not command.calibration_confirmed
+
+
+def test_hands_command_wires_rtmw_mapping_and_l6_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bello_mujoco.cli as cli
+    from bello_mujoco.hardware import hand_control, rtmw_hands
+
+    captured: dict[str, object] = {}
+
+    class FakeTransport:
+        def __init__(self, config: object) -> None:
+            captured["can"] = config
+
+    def fake_run(config: object, transport_factory: object) -> None:
+        captured["rtmw"] = config
+        captured["transport"] = transport_factory(config)  # type: ignore[operator]
+
+    monkeypatch.setattr(hand_control, "LinkerHandsCanTransport", FakeTransport)
+    monkeypatch.setattr(rtmw_hands, "run_rtmw_hands", fake_run)
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(CONFIG_ROOT / "commands"),
+    ):
+        config = compose(
+            config_name="hands",
+            overrides=(
+                "protocol=linker_l6",
+                "right_hand_enabled=false",
+                "arm=true",
+                "calibration_confirmed=true",
+                "duration_seconds=2.5",
+                "left_open_positions=[250,240,230,220,210,200]",
+                "left_closed_positions=[10,20,30,40,50,60]",
+            ),
+        )
+
+    cli._hands_hydra.__wrapped__(config)
+
+    can = captured["can"]
+    assert isinstance(can, hand_control.LinkerHandsCanConfig)
+    assert can.model == "L6"
+    assert can.interface == "can1"
+    assert can.left_enabled and not can.right_enabled
+    runtime = captured["rtmw"]
+    assert isinstance(runtime, rtmw_hands.RtmwHandsConfig)
+    assert runtime.max_duration_seconds == pytest.approx(2.5)
+    assert runtime.left_enabled and not runtime.right_enabled
+    assert runtime.arm and runtime.calibration_confirmed
+    assert runtime.left_calibration.open_positions == (
+        250,
+        240,
+        230,
+        220,
+        210,
+        200,
+    )
+    assert runtime.left_calibration.closed_positions == (10, 20, 30, 40, 50, 60)
+    assert runtime.geometry.thumb_adduction_range_degrees == pytest.approx(60.0)
 
 
 def test_hardware_policy_log_is_disabled_by_null() -> None:
@@ -535,6 +634,10 @@ def test_public_command_configs_are_strict() -> None:
         (HardwareCommandConfig, {"joystick_command_scale": True}),
         (HardwareCommandConfig, {"joystick_linear_slew_rate_mps2": True}),
         (HardwareCommandConfig, {"joystick_yaw_slew_rate_rps2": True}),
+        (HandsCommandConfig, {"arm": 1}),
+        (HandsCommandConfig, {"calibration_confirmed": 1}),
+        (HandsCommandConfig, {"control_rate_hz": True}),
+        (HandsCommandConfig, {"max_reference_age_ms": True}),
         (EvalCommandConfig, {"allow_git_commit_mismatch": 1}),
         (TrainCommandConfig, {"allow_git_commit_mismatch": 1}),
     ):

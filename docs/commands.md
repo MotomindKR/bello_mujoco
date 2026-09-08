@@ -1,6 +1,6 @@
 # Command reference
 
-The repository exposes eight public commands. Each command has a strict Hydra
+The repository exposes nine public commands. Each command has a strict Hydra
 key set: keys not declared by that command fail during decoding, and the
 resulting mapping is loaded into an immutable dataclass before the workflow
 starts. The command YAML is the sole owner of defaults; every schema field must
@@ -322,6 +322,100 @@ serial stream and PoseService, and paces simulation against wall-clock time. Its
 torso guide is always engaged at startup; Enter releases it, and another Enter
 resets the robot and re-engages the guide.
 
+## `bello-run-hands`
+
+Read the pinned RTMW hand landmarks and, when explicitly armed, send six-axis
+position targets directly to Linker O6 or L6 hands on a Linux SocketCAN
+interface. This path does not use GMR, a policy checkpoint, or
+`bello-hardwared`; it can run alongside the robot policy because it uses only
+the hands' standard CAN identifiers.
+
+This command implements the Linker O6/L6 **classic CAN** protocol: 1 Mbit/s,
+11-bit command identifiers `0x27` (right) and `0x28` (left), and seven-byte
+position frames ordered as thumb flexion, thumb abduction, index, middle, ring,
+and pinky. It does not implement the HITBOT `eHand-6-R-CFD-N-8F` protocol. That
+different device uses CAN FD with a 5 Mbit/s BRS data phase, 32-byte frames, and
+identifiers `0x11`/`0x12`; selecting `linker_o6` or `linker_l6` cannot make an
+eHand-6 compatible.
+
+The command requires a source checkout with the reviewed RTMW submodule at the
+pinned clean revision. Armed execution additionally requires Linux SocketCAN.
+O6 feedback uses the command identifier; L6 firmware may answer on that
+identifier or its `+0x08` response identifier, and the selected model installs
+the corresponding exact kernel filters.
+
+Configuration source: `configs/commands/hands.yaml`.
+
+| Field | Type and default | Meaning |
+| --- | --- | --- |
+| `protocol` | `linker_o6` or `linker_l6`; `linker_o6` | Select the reviewed Linker classic-CAN address/response behavior. This is not a CAN-FD selector. |
+| `can_interface` | string; `can1` | Existing Linux SocketCAN interface shared with the upper-body bus. The command never creates, brings down, or reconfigures this link. |
+| `left_hand_enabled` | boolean; `true` | Track and, when armed, open a filtered endpoint for the left hand. |
+| `right_hand_enabled` | boolean; `true` | Track and, when armed, open a filtered endpoint for the right hand. At least one side must be enabled. |
+| `can_probe_timeout_seconds` | positive float; `0.5` | Maximum wait for each read-only position probe performed before armed writes and after stale feedback. |
+| `can_feedback_poll_interval_seconds` | positive float; `0.2` | Minimum interval between nonblocking position-feedback queries while commands are being sent. |
+| `can_feedback_timeout_seconds` | positive float; `0.5` | Maximum accepted feedback age during continuous control. Exceeding it stops the process before another write; recovery after an RTMW pause uses an explicit fresh probe. It must be at least the poll interval. |
+| `can_tx_spacing_seconds` | nonnegative float; `0.003` | Minimum spacing between any two frames transmitted by this process, matching the reviewed SDK's position-command pacing. |
+| `rtmw_endpoint` | gRPC host:port; `127.0.0.1:50055` | Pinned RTMW-SMPLX-Teleop skeleton service. Do not include a URL scheme. |
+| `rtmw_tls_root_certificate_path` | path or `null`; `null` | CA certificate for a TLS RTMW endpoint. `null` uses plaintext on the trusted robot network. |
+| `rtmw_tls_server_name_override` | string or `null`; `null` | TLS certificate-name override; valid only with a CA path. |
+| `rtmw_connect_timeout_seconds` | positive float; `5.0` | Timeout for each RTMW connection attempt. Retryable outages reconnect with bounded backoff. |
+| `rtmw_rpc_timeout_seconds` | positive float; `2.0` | Timeout for RTMW stream-info and service-status preflight RPCs. |
+| `rtmw_human_height_m` | positive float; `1.75` | Required subject-height metadata; it must exactly match the running RTMW service configuration. Hand geometry itself is angle based. |
+| `min_hand_confidence` | float in `[0,1]`; `0.05` | Minimum valid joint and fingertip confidence independently required for each enabled side. |
+| `max_pipeline_latency_ms` | positive float; `250` | Maximum producer-reported capture-to-output latency. |
+| `transport_latency_budget_ms` | nonnegative float; `10` | Conservative network/dispatch age added to reported pipeline latency. |
+| `max_reference_age_ms` | positive integer; `1000` | Maximum total target age, including time since local receipt, before all writes for that target stop. |
+| `max_source_interval_seconds` | positive float; `0.70` | Largest accepted interval between consecutive source frames in one tracking epoch. |
+| `control_rate_hz` | positive float; `30` | Maximum rate at which the latest fresh hand targets are written. |
+| `smoothing_time_constant_ms` | nonnegative float; `100` | Additional first-order low-pass time constant applied to raw hand targets. Zero disables this filter; the slew bound still applies. |
+| `max_raw_rate_per_second` | positive float; `510` | Per-axis raw-position slew limit after low-pass filtering. Raw position spans 0 through 255. |
+| `finger_full_flex_degrees` | float in `(0,360]`; `180` | Human index/middle/ring/pinky aggregate flexion interpreted as a fully closed target. |
+| `thumb_full_flex_degrees` | float in `(0,360]`; `120` | Human aggregate thumb flexion interpreted as fully closed. |
+| `thumb_adduction_range_degrees` | float in `(0,360]`; `60` | Palm-plane thumb angle interpreted as the full abduction-axis travel. |
+| `minimum_segment_length_m` | positive float; `0.004` | Reject a side whose required palm/finger geometry is too short to define safely. |
+| `left_open_positions` | six integers in `[0,255]`; `[255,255,255,255,255,255]` | Left raw calibration at the open human-hand target, in controller axis order. |
+| `left_closed_positions` | six integers in `[0,255]`; `[0,0,0,0,0,0]` | Left raw calibration at the closed human-hand target. Per-axis inversion is allowed. |
+| `right_open_positions` | six integers in `[0,255]`; `[255,255,255,255,255,255]` | Right raw calibration at the open human-hand target. |
+| `right_closed_positions` | six integers in `[0,255]`; `[0,0,0,0,0,0]` | Right raw calibration at the closed human-hand target. |
+| `duration_seconds` | positive float or `null`; `null` | Runtime budget measured from before connection. Blocking connection and CAN probe operations retain their own shorter timeout fields. Unarmed mode returns earlier after its first accepted target. |
+| `arm` | boolean; `false` | `false` validates RTMW and receives one acceptable hand frame without opening SocketCAN. `true` probes each configured hand and then permits position writes. |
+| `calibration_confirmed` | boolean; `false` | Must be explicitly set to `true` with `arm=true` after checking the configured six-axis open/closed endpoints on the actual model and side. |
+
+Run the RTMW-only preflight first:
+
+```text
+uv run bello-run-hands
+```
+
+The success message explicitly confirms that SocketCAN was not opened. Before
+arming, separately inspect the already configured shared bus without changing
+it:
+
+```text
+deps/bello-stack/scripts/setup-can.sh --check
+```
+
+Then select the actual Linker model and arm deliberately, for example:
+
+```text
+uv run bello-run-hands protocol=linker_l6 arm=true calibration_confirmed=true
+```
+
+`arm=true` is not an emergency-stop contract. `calibration_confirmed=true` is
+an operator assertion, not automatic calibration. If RTMW tracking, a required
+side's landmarks, or the connection becomes unavailable, the controller stops
+issuing new position targets for the affected side; it does not send an
+unreviewed disable, open, or nominal-pose command. A reconnect accepts only a
+new fresh target, re-reads the physical position, and reseeds both limits before
+writing. The RTMW GUI's **Stop stream** button leaves gRPC connected
+but publishes no frames, so writes stop when the last target reaches
+`max_reference_age_ms`; frames captured during the pause are discarded and
+only newly captured frames are used after **Start stream**.
+
+See [Physical hardware](hardware.md#standalone-linker-hand-control) for shared
+bus setup, coexistence, and loss behavior.
+
 ## `bello-run-hardware`
 
 Validate or execute a policy through the `bello-hardware` Python binding. It is
@@ -512,7 +606,7 @@ an automatic disable.
 
 ## What is intentionally not public
 
-The seven command documents expose workflow choices and operator controls.
+The nine command documents expose workflow choices and operator controls.
 Robot topology, coordinate ownership, motor identities, checkpoint integrity
 rules, telemetry limits, control validity windows, pose frames, and other
 safety guardrails remain validated implementation constants. Changing those

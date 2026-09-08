@@ -9,7 +9,8 @@ calibrated offline and live-upper-body SMPL-X GMR profiles for repository
 tooling and locomotion deployment.
 The reviewed Mini hardware description supports both the vCAN emulator and
 physical locomotion deployment; maintained Mini motion/TWIST training remains
-task-tuning-gated.
+task-tuning-gated. A separate RTMW-driven command controls Linker O6/L6 hands
+over classic CAN without routing hand targets through `bello-hardwared`.
 
 ## Setup
 
@@ -39,6 +40,7 @@ Invoke commands as `uv run <command> field=value`.
 | `bello-vast-train` | Run a bounded Vast.ai training job. |
 | `bello-run-emulator` | Run the RobStride hardware-interface emulator. |
 | `bello-run-hardware` | Run checkpoint preflight or an armed robot policy. |
+| `bello-run-hands` | Validate RTMW hand tracking or directly control Linker O6/L6 hands over classic CAN. |
 
 Training profiles live under `configs/profiles/train/`; shared task settings
 live under `configs/train/`, `configs/train_motion/`, and

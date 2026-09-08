@@ -204,6 +204,43 @@ class HardwareCommandConfig:
     right_elbow_yaw_offset_radians: float
 
 
+@dataclass(frozen=True)
+class HandsCommandConfig:
+    protocol: Literal["linker_o6", "linker_l6"]
+    can_interface: str
+    left_hand_enabled: bool
+    right_hand_enabled: bool
+    can_probe_timeout_seconds: float
+    can_feedback_poll_interval_seconds: float
+    can_feedback_timeout_seconds: float
+    can_tx_spacing_seconds: float
+    rtmw_endpoint: str
+    rtmw_tls_root_certificate_path: Path | None
+    rtmw_tls_server_name_override: str | None
+    rtmw_connect_timeout_seconds: float
+    rtmw_rpc_timeout_seconds: float
+    rtmw_human_height_m: float
+    min_hand_confidence: float
+    max_pipeline_latency_ms: float
+    transport_latency_budget_ms: float
+    max_reference_age_ms: int
+    max_source_interval_seconds: float
+    control_rate_hz: float
+    smoothing_time_constant_ms: float
+    max_raw_rate_per_second: float
+    finger_full_flex_degrees: float
+    thumb_full_flex_degrees: float
+    thumb_adduction_range_degrees: float
+    minimum_segment_length_m: float
+    left_open_positions: tuple[int, int, int, int, int, int]
+    left_closed_positions: tuple[int, int, int, int, int, int]
+    right_open_positions: tuple[int, int, int, int, int, int]
+    right_closed_positions: tuple[int, int, int, int, int, int]
+    duration_seconds: float | None
+    arm: bool
+    calibration_confirmed: bool
+
+
 def prepare_assets_entrypoint() -> None:
     _prepare_assets_hydra()
 
@@ -899,6 +936,88 @@ def _emulator_hydra(config: DictConfig) -> None:
             ),
         )
     )
+
+
+def hands_entrypoint() -> None:
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ["JAX_PLATFORM_NAME"] = "cpu"
+    _expand_path_overrides(("rtmw_tls_root_certificate_path=",))
+    _hands_hydra()
+
+
+@hydra.main(
+    version_base=None,
+    config_path=config_path("commands"),
+    config_name="hands",
+)
+def _hands_hydra(config: DictConfig) -> None:
+    command = command_config(HandsCommandConfig, config)
+    from bello_mujoco.hardware.hand_control import (
+        LinkerHandsCanConfig,
+        LinkerHandsCanTransport,
+    )
+    from bello_mujoco.hardware.rtmw_hands import (
+        HandGeometryConfig,
+        HandRawCalibration,
+        RtmwHandsConfig,
+        run_rtmw_hands,
+    )
+
+    can_config = LinkerHandsCanConfig(
+        interface=command.can_interface,
+        model="O6" if command.protocol == "linker_o6" else "L6",
+        left_enabled=command.left_hand_enabled,
+        right_enabled=command.right_hand_enabled,
+        probe_timeout_seconds=command.can_probe_timeout_seconds,
+        feedback_poll_interval_seconds=(command.can_feedback_poll_interval_seconds),
+        feedback_timeout_seconds=command.can_feedback_timeout_seconds,
+        tx_spacing_seconds=command.can_tx_spacing_seconds,
+    )
+    hands_config = RtmwHandsConfig(
+        endpoint=command.rtmw_endpoint,
+        tls_root_certificate_path=command.rtmw_tls_root_certificate_path,
+        tls_server_name_override=command.rtmw_tls_server_name_override,
+        connect_timeout_seconds=command.rtmw_connect_timeout_seconds,
+        rpc_timeout_seconds=command.rtmw_rpc_timeout_seconds,
+        human_height_m=command.rtmw_human_height_m,
+        min_confidence=command.min_hand_confidence,
+        max_pipeline_latency_ms=command.max_pipeline_latency_ms,
+        transport_latency_budget_ms=command.transport_latency_budget_ms,
+        max_reference_age_ms=command.max_reference_age_ms,
+        max_source_interval_seconds=command.max_source_interval_seconds,
+        control_rate_hz=command.control_rate_hz,
+        smoothing_time_constant_ms=command.smoothing_time_constant_ms,
+        max_raw_rate_per_second=command.max_raw_rate_per_second,
+        max_duration_seconds=command.duration_seconds,
+        left_enabled=command.left_hand_enabled,
+        right_enabled=command.right_hand_enabled,
+        arm=command.arm,
+        calibration_confirmed=command.calibration_confirmed,
+        left_calibration=HandRawCalibration(
+            open_positions=command.left_open_positions,
+            closed_positions=command.left_closed_positions,
+        ),
+        right_calibration=HandRawCalibration(
+            open_positions=command.right_open_positions,
+            closed_positions=command.right_closed_positions,
+        ),
+        geometry=HandGeometryConfig(
+            finger_full_flex_degrees=command.finger_full_flex_degrees,
+            thumb_full_flex_degrees=command.thumb_full_flex_degrees,
+            thumb_adduction_range_degrees=(command.thumb_adduction_range_degrees),
+            minimum_segment_length_m=command.minimum_segment_length_m,
+        ),
+    )
+
+    def transport_factory(_config: RtmwHandsConfig) -> LinkerHandsCanTransport:
+        return LinkerHandsCanTransport(can_config)
+
+    run_rtmw_hands(hands_config, transport_factory)
+    if not command.arm:
+        print(
+            "RTMW hand preflight passed; SocketCAN was not opened and no hand "
+            "command was sent."
+        )
 
 
 def hardware_entrypoint() -> None:
