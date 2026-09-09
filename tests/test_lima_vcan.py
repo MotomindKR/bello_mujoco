@@ -106,6 +106,8 @@ def test_lima_helper_is_valid_bash_and_documents_all_actions() -> None:
     assert "setup_guest_nix" in helper
     assert 'guest_shell sudo -- "$guest_nix_setup"' in helper
     assert "Nix is not installed in Lima instance" in helper
+    assert "readonly nix_flake=path:.#lima-vcan" in helper
+    assert 'develop "$nix_flake"' in helper
 
 
 def test_lima_nix_setup_is_retry_safe_and_idempotent() -> None:
@@ -118,6 +120,7 @@ def test_lima_nix_setup_is_retry_safe_and_idempotent() -> None:
     assert "--retry-all-errors" in setup
     assert '--output "$installer_path"' in setup
     assert 'sh "$installer_path" --daemon --yes' in setup
+    assert "Nix installation completed without creating" in setup
     assert "experimental-features = nix-command flakes" in setup
     assert 'systemctl enable --now nix-daemon.socket' in setup
 

@@ -111,8 +111,9 @@ probes:
       test -L /dev/ttyIMU
       test -L /dev/ttyIMU-mujoco
     hint: |
-      Inspect /var/log/cloud-init-output.log. The VM needs the Ubuntu kernel's
-      matching linux-modules-extra package before the vcan module can load.
+      Inspect /var/log/cloud-init-output.log. Rerun bootstrap to repair a
+      transient Nix installer download failure. The VM also needs the Ubuntu
+      kernel's matching linux-modules-extra package before vcan can load.
 
 message: |
   Bello's Linux vCAN guest is ready.

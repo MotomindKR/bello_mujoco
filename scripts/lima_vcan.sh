@@ -7,6 +7,7 @@ readonly repo_dir=$(cd -- "$script_dir/.." && pwd -P)
 readonly template_path="$repo_dir/lima/bello-vcan.yaml"
 readonly guest_repo=/workspace/bello_mujoco
 readonly nix_bin=/nix/var/nix/profiles/default/bin/nix
+readonly nix_flake=path:.#lima-vcan
 readonly guest_nix_setup=$guest_repo/scripts/setup_lima_nix.sh
 readonly instance=${BELLO_LIMA_INSTANCE:-bello-vcan}
 readonly environment_token=bello-mujoco-vcan-v1
@@ -136,7 +137,7 @@ require_guest_nix() {
 
 run_in_nix() {
   require_guest_nix
-  guest_shell "$nix_bin" develop .#lima-vcan --command "$@"
+  guest_shell "$nix_bin" develop "$nix_flake" --command "$@"
 }
 
 start_instance() {
@@ -200,7 +201,7 @@ case $action in
     require_standalone_checkout
     require_running_instance
     require_guest_nix
-    guest_shell "$nix_bin" develop .#lima-vcan
+    guest_shell "$nix_bin" develop "$nix_flake"
     ;;
   run)
     (( $# >= 2 )) || fail "run requires a command"

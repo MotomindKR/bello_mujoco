@@ -27,6 +27,11 @@ if [[ ! -x $nix_bin ]]; then
   sh "$installer_path" --daemon --yes
 fi
 
+if [[ ! -x $nix_bin ]]; then
+  echo "error: Nix installation completed without creating $nix_bin" >&2
+  exit 1
+fi
+
 readonly nix_conf=/etc/nix/nix.conf
 install -d --mode=0755 /etc/nix
 touch "$nix_conf"
