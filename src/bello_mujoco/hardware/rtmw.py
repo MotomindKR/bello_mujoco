@@ -58,6 +58,9 @@ _RETRYABLE_GRPC_CODES = frozenset(
 )
 _RECONNECT_INITIAL_BACKOFF_SECONDS = 0.1
 _RECONNECT_MAX_BACKOFF_SECONDS = 1.0
+_LIVENESS_PROBE_INTERVAL_SECONDS = 0.5
+_LIVENESS_FAILURE_LIMIT = 2
+_LIVENESS_MISSED_DELIVERY_LIMIT = 2
 
 
 class _RtmwServiceUnavailable(RuntimeError):
@@ -271,6 +274,8 @@ class RtmwSmplxStream:
         self._payload: SmplxTargetFrame | BaseException | None = None
         self._terminal_error: BaseException | None = None
         self._thread: threading.Thread | None = None
+        self._liveness_thread: threading.Thread | None = None
+        self._liveness_stop = threading.Event()
         self._transport_lock = threading.Lock()
         self._channel: grpc.Channel | None = None
         self._ready_future: Any | None = None
@@ -284,6 +289,8 @@ class RtmwSmplxStream:
         self._last_frame_id: int | None = None
         self._last_source_timestamp_ns: int | None = None
         self._active_track_id: str | None = None
+        self._wire_generation = 0
+        self._last_wire_received_at = 0.0
 
     def __enter__(self) -> RtmwSmplxStream:
         if self._thread is not None:
@@ -292,6 +299,7 @@ class RtmwSmplxStream:
         self._proto = skeleton_pb2
         self._stub_factory = skeleton_pb2_grpc.SkeletonServiceStub
         self._stop.clear()
+        self._liveness_stop.clear()
         try:
             self._connect_transport()
             self._thread = threading.Thread(
@@ -300,14 +308,28 @@ class RtmwSmplxStream:
                 daemon=True,
             )
             self._thread.start()
+            self._liveness_thread = threading.Thread(
+                target=self._monitor_liveness,
+                name="bello-rtmw-liveness",
+                daemon=True,
+            )
+            self._liveness_thread.start()
         except BaseException:
+            self._stop.set()
+            self._liveness_stop.set()
             self._close_transport()
+            for thread in (self._thread, self._liveness_thread):
+                if thread is not None and thread.is_alive():
+                    thread.join(timeout=self.config.rpc_timeout_seconds + 1.0)
+            self._thread = None
+            self._liveness_thread = None
             raise
         return self
 
     def __exit__(self, *_exception: object) -> bool:
         with self._transport_lock:
             self._stop.set()
+            self._liveness_stop.set()
         with self._condition:
             self._condition.notify_all()
         self._close_transport()
@@ -317,6 +339,12 @@ class RtmwSmplxStream:
             if thread.is_alive():
                 raise RuntimeError("RTMW gRPC worker did not stop")
         self._thread = None
+        liveness_thread = self._liveness_thread
+        if liveness_thread is not None:
+            liveness_thread.join(timeout=self.config.rpc_timeout_seconds + 1.0)
+            if liveness_thread.is_alive():
+                raise RuntimeError("RTMW gRPC liveness worker did not stop")
+        self._liveness_thread = None
         return False
 
     def standing_sample(self) -> SmplxTargetFrame:
@@ -414,6 +442,8 @@ class RtmwSmplxStream:
                 raise _RtmwStreamStopped("RTMW stream stopped during connection")
             self._stub = stub
             self._call = call
+            self._wire_generation = 0
+            self._last_wire_received_at = time.monotonic()
             self.stream_instance_id = info.stream_instance_id
             self.stream_config_sha256 = info.config_sha256
             self.depth_provenance = info.depth_provenance
@@ -431,6 +461,10 @@ class RtmwSmplxStream:
                 for message in call:
                     if self._stop.is_set():
                         return
+                    with self._transport_lock:
+                        if self._call is call:
+                            self._wire_generation += 1
+                            self._last_wire_received_at = time.monotonic()
                     try:
                         frame = self._parse_frame(message)
                     except (ReferenceDiscontinuity, ReferenceUnavailable) as error:
@@ -473,6 +507,134 @@ class RtmwSmplxStream:
             if not reconnected:
                 return
             reconnect_immediately = False
+
+    def _monitor_liveness(self) -> None:
+        watched_call: Any | None = None
+        cancelled_call: Any | None = None
+        previous_status_frame_id: int | None = None
+        previous_wire_generation = 0
+        consecutive_failures = 0
+        missed_deliveries = 0
+        while not self._liveness_stop.wait(_LIVENESS_PROBE_INTERVAL_SECONDS):
+            with self._transport_lock:
+                stub = self._stub
+                call = self._call
+                expected_instance_id = self.stream_instance_id
+                wire_generation = self._wire_generation
+                last_wire_received_at = self._last_wire_received_at
+            if stub is None or call is None or call is cancelled_call:
+                continue
+            if call is not watched_call:
+                watched_call = call
+                previous_status_frame_id = None
+                previous_wire_generation = wire_generation
+                consecutive_failures = 0
+                missed_deliveries = 0
+            if (
+                time.monotonic() - last_wire_received_at
+                < _LIVENESS_PROBE_INTERVAL_SECONDS
+            ):
+                previous_status_frame_id = None
+                previous_wire_generation = wire_generation
+                consecutive_failures = 0
+                missed_deliveries = 0
+                continue
+            timeout_seconds = min(
+                self.config.rpc_timeout_seconds,
+                _LIVENESS_PROBE_INTERVAL_SECONDS,
+            )
+            try:
+                info = stub.GetStreamInfo(empty_pb2.Empty(), timeout=timeout_seconds)
+                status = stub.GetStatus(empty_pb2.Empty(), timeout=timeout_seconds)
+            except grpc.RpcError as error:
+                if self._stop.is_set():
+                    return
+                with self._transport_lock:
+                    if self._stub is not stub or self._call is not call:
+                        continue
+                    current_wire_generation = self._wire_generation
+                if current_wire_generation != previous_wire_generation:
+                    previous_status_frame_id = None
+                    previous_wire_generation = current_wire_generation
+                    consecutive_failures = 0
+                    missed_deliveries = 0
+                    continue
+                if error.code() not in _RETRYABLE_GRPC_CODES:
+                    self._stop.set()
+                    self._liveness_stop.set()
+                    self._set_terminal(_grpc_error(error))
+                    self._cancel_subscription(stub, call)
+                    return
+                consecutive_failures += 1
+                if consecutive_failures < _LIVENESS_FAILURE_LIMIT:
+                    continue
+                cancelled_call = call
+                self._cancel_subscription(stub, call)
+                continue
+            except BaseException as error:
+                if self._stop.is_set():
+                    return
+                self._stop.set()
+                self._liveness_stop.set()
+                self._set_terminal(error)
+                self._cancel_subscription(stub, call)
+                return
+
+            with self._transport_lock:
+                if self._stub is not stub or self._call is not call:
+                    continue
+                wire_generation = self._wire_generation
+            consecutive_failures = 0
+            try:
+                _validate_stream_info(info, self.config)
+                _validate_service_status(status)
+            except _RtmwServiceUnavailable:
+                cancelled_call = call
+                self._cancel_subscription(stub, call)
+                continue
+            except BaseException as error:
+                self._stop.set()
+                self._liveness_stop.set()
+                self._set_terminal(error)
+                self._cancel_subscription(stub, call)
+                return
+            if info.stream_instance_id != expected_instance_id:
+                cancelled_call = call
+                self._cancel_subscription(stub, call)
+                continue
+            status_frame_id = _optional_latest_frame_id(status)
+            subscriber_advanced = wire_generation != previous_wire_generation
+            if subscriber_advanced:
+                missed_deliveries = 0
+            elif missed_deliveries > 0:
+                missed_deliveries += 1
+            if previous_status_frame_id is not None:
+                producer_advanced = (
+                    status_frame_id is not None
+                    and status_frame_id > previous_status_frame_id
+                )
+                producer_regressed = (
+                    status_frame_id is None
+                    or status_frame_id < previous_status_frame_id
+                )
+                if producer_regressed:
+                    cancelled_call = call
+                    self._cancel_subscription(stub, call)
+                    continue
+                if producer_advanced and not subscriber_advanced:
+                    missed_deliveries = max(1, missed_deliveries)
+                if missed_deliveries >= _LIVENESS_MISSED_DELIVERY_LIMIT:
+                    cancelled_call = call
+                    self._cancel_subscription(stub, call)
+                    continue
+            previous_status_frame_id = status_frame_id
+            previous_wire_generation = wire_generation
+
+    def _cancel_subscription(self, stub: Any, call: Any) -> None:
+        with self._transport_lock:
+            current = self._stub is stub and self._call is call
+        if current:
+            call.cancel()
 
     def _reconnect(
         self,
@@ -804,6 +966,14 @@ def _validate_service_status(message: Any) -> None:
         raise _RtmwServiceUnavailable("RTMW service is not ready")
     if not message.source_running or not message.inference_running:
         raise _RtmwServiceUnavailable("RTMW source or inference worker is not running")
+
+
+def _optional_latest_frame_id(message: Any) -> int | None:
+    has_field = getattr(message, "HasField", None)
+    if has_field is not None and not has_field("latest_frame_id"):
+        return None
+    value = getattr(message, "latest_frame_id", None)
+    return None if value is None else int(value)
 
 
 def _grpc_error(error: grpc.RpcError) -> RuntimeError:

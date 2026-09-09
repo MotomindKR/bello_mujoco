@@ -433,7 +433,13 @@ bounded backoff. Every replacement producer is checked against the full stream
 contract and service status before its frames are accepted. A new stream
 instance and reset sequence are allowed only through that reconnect path, and
 the normal reference-qualification and transition limits apply before arm
-following resumes.
+following resumes. While the subscription is silent, a separate liveness worker
+probes stream info and service status without refreshing pose age. A responsive,
+paused or confidence-gated producer remains connected. Repeated probe failures,
+a changed producer instance, or advancing producer frame IDs without matching
+subscriber delivery cancel only the stale subscription and enter the same
+bounded reconnect path. A silent healthy producer and a silent stream cannot be
+distinguished until either a probe fails or the producer publishes again.
 
 The physical controller is attached to the host running `bello-visualizer`.
 Its RemoteCommandService streams normalized forward, lateral, and yaw intent;

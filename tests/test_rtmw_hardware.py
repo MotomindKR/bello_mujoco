@@ -139,17 +139,58 @@ class FakeStub:
             source_running=True,
             inference_running=True,
         )
+        self.info_requests = 0
+        self.status_requests = 0
 
     def GetStreamInfo(self, _request: object, *, timeout: float) -> object:
         del timeout
+        self.info_requests += 1
         return self.info
 
     def GetStatus(self, _request: object, *, timeout: float) -> object:
         del timeout
+        self.status_requests += 1
         return self.status
 
     def Subscribe(self, _request: object) -> FakeCall:
         return self.call
+
+
+class FailingLivenessStub(FakeStub):
+    def GetStatus(self, _request: object, *, timeout: float) -> object:
+        del timeout
+        self.status_requests += 1
+        if self.status_requests > 1:
+            raise FakeRpcError(grpc.StatusCode.DEADLINE_EXCEEDED, "half-open")
+        return self.status
+
+
+class AdvancingStatusStub(FakeStub):
+    def GetStatus(self, _request: object, *, timeout: float) -> object:
+        del timeout
+        self.status_requests += 1
+        return SimpleNamespace(
+            terminal_failure="",
+            ready=True,
+            source_running=True,
+            inference_running=True,
+            latest_frame_id=self.status_requests,
+        )
+
+
+class SparseAdvancingStatusStub(FakeStub):
+    def GetStatus(self, _request: object, *, timeout: float) -> object:
+        del timeout
+        self.status_requests += 1
+        frame_ids = (1, 2, 2, 3, 3)
+        frame_id = frame_ids[min(self.status_requests - 1, len(frame_ids) - 1)]
+        return SimpleNamespace(
+            terminal_failure="",
+            ready=True,
+            source_running=True,
+            inference_running=True,
+            latest_frame_id=frame_id,
+        )
 
 
 def rtmw_config(tmp_path: Path, **overrides: object) -> RtmwGrpcConfig:
@@ -316,6 +357,124 @@ def test_rtmw_grpc_accepts_the_published_schema(tmp_path: Path) -> None:
     assert frame.transforms["pelvis"][0] == pytest.approx((0.0, 0.0, 1.0))
     assert frame.transforms["pelvis"][1] == pytest.approx((1.0, 0.0, 0.0, 0.0))
     assert frame.foot_contacts is not None
+
+
+def test_rtmw_liveness_probe_preserves_a_healthy_idle_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(rtmw, "_LIVENESS_PROBE_INTERVAL_SECONDS", 0.01)
+    stream = make_stream(tmp_path)
+    call = FakeCall()
+    stub = FakeStub(stream_info(), call)
+    channel = FakeChannel(stub)
+    configure_fake_transport(monkeypatch, stream, [channel])
+
+    with stream:
+        deadline = time.monotonic() + 1.0
+        while stub.status_requests < 3:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+
+        assert not call.cancelled
+        assert not channel.closed
+        assert stream.wait_next(after_sequence=None, timeout_seconds=0.02) is None
+
+
+def test_rtmw_liveness_failure_cancels_and_reconnects_half_open_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(rtmw, "_LIVENESS_PROBE_INTERVAL_SECONDS", 0.01)
+    stream = make_stream(tmp_path)
+    stale_call = FakeCall()
+    stale_channel = FakeChannel(FailingLivenessStub(stream_info(), stale_call))
+    recovered_call = FakeCall()
+    recovered_channel = FakeChannel(
+        FakeStub(stream_info(stream_instance_id="recovered"), recovered_call)
+    )
+    configure_fake_transport(
+        monkeypatch,
+        stream,
+        [stale_channel, recovered_channel],
+    )
+
+    with stream:
+        with pytest.raises(ReferenceDiscontinuity, match="reconnecting to RTMW"):
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+        recovered = rtmw_frame(8_000_000_000, frame_id=1, track_id="recovered")
+        recovered.stream_instance_id = "recovered"
+        recovered_call.send(recovered)
+
+        frame = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+        assert frame is not None
+        assert frame.sequence == 1
+        assert stale_call.cancelled
+        assert stale_channel.closed
+
+
+def test_rtmw_liveness_probe_ignores_failures_while_frames_arrive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(rtmw, "_LIVENESS_PROBE_INTERVAL_SECONDS", 0.01)
+    stream = make_stream(tmp_path)
+    call = FakeCall()
+    stub = FailingLivenessStub(stream_info(), call)
+    channel = FakeChannel(stub)
+    configure_fake_transport(monkeypatch, stream, [channel])
+
+    with stream:
+        for frame_id in range(1, 51):
+            call.send(
+                rtmw_frame(
+                    5_000_000_000 + frame_id * 10_000_000,
+                    frame_id=frame_id,
+                )
+            )
+            time.sleep(0.002)
+
+        assert not call.cancelled
+        assert not channel.closed
+
+
+@pytest.mark.parametrize(
+    "stub_type",
+    (AdvancingStatusStub, SparseAdvancingStatusStub),
+)
+def test_rtmw_liveness_reconnects_when_producer_advances_but_stream_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stub_type: type[FakeStub],
+) -> None:
+    monkeypatch.setattr(rtmw, "_LIVENESS_PROBE_INTERVAL_SECONDS", 0.01)
+    stream = make_stream(tmp_path)
+    stale_call = FakeCall()
+    stale_channel = FakeChannel(stub_type(stream_info(), stale_call))
+    recovered_call = FakeCall()
+    recovered_channel = FakeChannel(
+        FakeStub(stream_info(stream_instance_id="recovered"), recovered_call)
+    )
+    configure_fake_transport(
+        monkeypatch,
+        stream,
+        [stale_channel, recovered_channel],
+    )
+
+    with stream:
+        with pytest.raises(ReferenceDiscontinuity, match="reconnecting to RTMW"):
+            stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+        recovered = rtmw_frame(8_000_000_000, frame_id=1, track_id="recovered")
+        recovered.stream_instance_id = "recovered"
+        recovered_call.send(recovered)
+
+        frame = stream.wait_next(after_sequence=None, timeout_seconds=1.0)
+
+        assert frame is not None
+        assert frame.sequence == 1
+        assert stale_call.cancelled
+        assert stale_channel.closed
 
 
 @pytest.mark.parametrize("outage", ("unavailable", "clean-eof"))
