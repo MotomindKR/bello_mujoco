@@ -53,6 +53,9 @@ bus-voltage parameter telemetry is reported as zero rather than fabricated.
 
 ## Bello Mini vCAN stack
 
+On macOS, run this entire Linux SocketCAN workflow in the documented
+[Lima vCAN environment](macos_vcan.md).
+
 After creating the VCAN and pseudo-terminal interfaces, run these processes in
 separate terminals:
 

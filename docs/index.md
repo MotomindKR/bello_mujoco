@@ -13,6 +13,7 @@ guides define the supported interfaces and contracts:
 - [Robot asset contracts](robot_assets.md)
 - [URDF inertial overhaul](urdf_inertial_overhaul.md)
 - [RobStride emulator](emulator.md)
+- [macOS Lima vCAN environment](macos_vcan.md)
 - [Vast.ai lifecycle](vast_ai.md)
 
 ## Repository shape

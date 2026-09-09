@@ -59,6 +59,7 @@ licensed datasets.
 - [One-stage TWIST2](docs/twist2.md)
 - [Hardware runner](docs/hardware.md)
 - [Emulator](docs/emulator.md)
+- [macOS Lima vCAN environment](docs/macos_vcan.md)
 - [Vast.ai training](docs/vast_ai.md)
 
 Contributor workflow is documented in

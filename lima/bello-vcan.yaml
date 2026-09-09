@@ -1,0 +1,120 @@
+minimumLimaVersion: 2.0.0
+
+base:
+  - template:_images/ubuntu-24.04
+
+vmType: vz
+arch: aarch64
+mountType: virtiofs
+cpus: 8
+memory: 12GiB
+disk: 80GiB
+
+param:
+  ENVIRONMENT: bello-mujoco-vcan-v1
+  REPO_DIR: /REPLACE/WHEN/CREATING/INSTANCE
+
+mounts:
+  - location: "{{.Param.REPO_DIR}}"
+    mountPoint: /workspace/bello_mujoco
+    writable: true
+
+containerd:
+  system: false
+  user: false
+
+hostResolver:
+  enabled: true
+  ipv6: false
+
+portForwards:
+  - guestPortRange: [50051, 50055]
+    hostPortRange: [50051, 50055]
+    hostIP: 127.0.0.1
+    proto: tcp
+  - guestPortRange: [1, 65535]
+    proto: any
+    ignore: true
+
+video:
+  display: none
+
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export HOME=/root
+      export USER=root
+      [[ '{{.Param.ENVIRONMENT}}' == bello-mujoco-vcan-v1 ]]
+
+      required_packages=(
+        ca-certificates
+        curl
+        git
+        iproute2
+        kmod
+        socat
+        xz-utils
+        "linux-modules-extra-$(uname -r)"
+      )
+      missing_packages=()
+      for package in "${required_packages[@]}"; do
+        if ! dpkg-query --show --showformat='${Status}' "$package" 2>/dev/null \
+          | grep -q '^install ok installed$'; then
+          missing_packages+=("$package")
+        fi
+      done
+      if (( ${#missing_packages[@]} )); then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install --yes --no-install-recommends "${missing_packages[@]}"
+      fi
+
+      if ! modinfo vcan >/dev/null 2>&1; then
+        echo "The vcan kernel module is unavailable for $(uname -r)." >&2
+        echo "Verify linux-modules-extra-$(uname -r) is installed, then reboot the VM." >&2
+        exit 1
+      fi
+
+      nix_bin=/nix/var/nix/profiles/default/bin/nix
+      if [[ ! -x $nix_bin ]]; then
+        curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+          --location https://nixos.org/nix/install \
+          | sh -s -- --daemon --yes
+      fi
+
+      nix_conf=/etc/nix/nix.conf
+      if ! grep -Eq '^[[:space:]]*experimental-features[[:space:]]*=.*\bflakes\b' \
+        "$nix_conf"; then
+        printf '\nexperimental-features = nix-command flakes\n' >> "$nix_conf"
+      fi
+      systemctl enable --now nix-daemon.socket
+
+      emulator_setup=/workspace/bello_mujoco/scripts/setup_emulator.sh
+      if [[ ! -x $emulator_setup ]]; then
+        echo "Bello repository is not mounted at /workspace/bello_mujoco." >&2
+        exit 1
+      fi
+      "$emulator_setup" start
+
+probes:
+  - mode: readiness
+    description: Nix, vCAN, and the emulated IMU endpoints to be ready
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      test -x /nix/var/nix/profiles/default/bin/nix
+      test -e /workspace/bello_mujoco/.git
+      ip -details -json link show dev vcan0 | grep -q '"info_kind":"vcan"'
+      ip -details -json link show dev vcan1 | grep -q '"info_kind":"vcan"'
+      test -L /dev/ttyIMU
+      test -L /dev/ttyIMU-mujoco
+    hint: |
+      Inspect /var/log/cloud-init-output.log. The VM needs the Ubuntu kernel's
+      matching linux-modules-extra package before the vcan module can load.
+
+message: |
+  Bello's Linux vCAN guest is ready.
+  Run: ./scripts/lima_vcan.sh bootstrap
+  Then open each process with: ./scripts/lima_vcan.sh run <command>
