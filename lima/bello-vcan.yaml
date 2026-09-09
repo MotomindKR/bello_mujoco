@@ -52,8 +52,6 @@ provision:
     script: |
       #!/usr/bin/env bash
       set -euo pipefail
-      export HOME=/root
-      export USER=root
       [[ '{{.Param.ENVIRONMENT}}' == bello-mujoco-vcan-v1 ]]
       [[ '{{.Param.NETWORKING_REVISION}}' == native-visualizer-v1 ]]
 
@@ -86,19 +84,12 @@ provision:
         exit 1
       fi
 
-      nix_bin=/nix/var/nix/profiles/default/bin/nix
-      if [[ ! -x $nix_bin ]]; then
-        curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-          --location https://nixos.org/nix/install \
-          | sh -s -- --daemon --yes
+      nix_setup=/workspace/bello_mujoco/scripts/setup_lima_nix.sh
+      if [[ ! -x $nix_setup ]]; then
+        echo "Bello Nix setup is unavailable at $nix_setup." >&2
+        exit 1
       fi
-
-      nix_conf=/etc/nix/nix.conf
-      if ! grep -Eq '^[[:space:]]*experimental-features[[:space:]]*=.*\bflakes\b' \
-        "$nix_conf"; then
-        printf '\nexperimental-features = nix-command flakes\n' >> "$nix_conf"
-      fi
-      systemctl enable --now nix-daemon.socket
+      "$nix_setup"
 
       emulator_setup=/workspace/bello_mujoco/scripts/setup_emulator.sh
       if [[ ! -x $emulator_setup ]]; then

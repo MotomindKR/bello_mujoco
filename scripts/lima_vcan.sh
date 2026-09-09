@@ -7,6 +7,7 @@ readonly repo_dir=$(cd -- "$script_dir/.." && pwd -P)
 readonly template_path="$repo_dir/lima/bello-vcan.yaml"
 readonly guest_repo=/workspace/bello_mujoco
 readonly nix_bin=/nix/var/nix/profiles/default/bin/nix
+readonly guest_nix_setup=$guest_repo/scripts/setup_lima_nix.sh
 readonly instance=${BELLO_LIMA_INSTANCE:-bello-vcan}
 readonly environment_token=bello-mujoco-vcan-v1
 readonly networking_revision_token=native-visualizer-v1
@@ -124,7 +125,17 @@ setup_emulator() {
   guest_shell sudo -- ./scripts/setup_emulator.sh "$1"
 }
 
+setup_guest_nix() {
+  guest_shell sudo -- "$guest_nix_setup"
+}
+
+require_guest_nix() {
+  guest_shell test -x "$nix_bin" >/dev/null 2>&1 || fail \
+    "Nix is not installed in Lima instance $instance; run: $0 bootstrap"
+}
+
 run_in_nix() {
+  require_guest_nix
   guest_shell "$nix_bin" develop .#lima-vcan --command "$@"
 }
 
@@ -178,6 +189,7 @@ case $action in
     require_standalone_checkout
     require_running_instance
     setup_emulator status
+    setup_guest_nix
     run_in_nix bash -c \
       'cd deps/bello-stack && cargo build --locked -p bello-hardwared -p bello-state-estimatord'
     echo "Bello Lima/Nix environment is synchronized."
@@ -187,6 +199,7 @@ case $action in
     require_host
     require_standalone_checkout
     require_running_instance
+    require_guest_nix
     guest_shell "$nix_bin" develop .#lima-vcan
     ;;
   run)
@@ -202,6 +215,7 @@ case $action in
     require_host
     require_standalone_checkout
     require_running_instance
+    require_guest_nix
     echo "Lima instance: $instance ($(instance_status))"
     guest_shell uname -a
     guest_shell "$nix_bin" --version

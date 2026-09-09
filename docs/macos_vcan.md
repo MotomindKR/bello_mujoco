@@ -39,10 +39,13 @@ Create the Ubuntu guest, build the Linux Nix environment, and verify it:
 ./scripts/lima_vcan.sh doctor
 ```
 
-The first `start` downloads the Ubuntu image and installs Nix in the guest;
-`bootstrap` downloads and builds the Rust/CAN and Python policy environment, so
-its first run can take several minutes. `doctor` must report both vCAN links,
-both IMU pseudo-terminals, and the JAX CPU backend before continuing.
+The first `start` downloads the Ubuntu image and installs Nix in the guest.
+`bootstrap` verifies or repairs that guest-local Nix installation, then downloads
+and builds the Rust/CAN and Python policy environment, so its first run can take
+several minutes. A transient installer download failure does not require deleting
+the VM: rerun `bootstrap`, which downloads the complete installer with retries
+before executing it. `doctor` must report both vCAN links, both IMU
+pseudo-terminals, and the JAX CPU backend before continuing.
 
 The networking contract is versioned in the Lima template. If `start` reports
 that an existing instance uses obsolete networking, recreate only the VM and

@@ -13,6 +13,7 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[1]
 _LIMA_TEMPLATE = _ROOT / "lima" / "bello-vcan.yaml"
 _LIMA_HELPER = _ROOT / "scripts" / "lima_vcan.sh"
+_LIMA_NIX_SETUP = _ROOT / "scripts" / "setup_lima_nix.sh"
 
 
 def test_lima_template_is_isolated_and_provisions_vcan() -> None:
@@ -58,12 +59,10 @@ def test_lima_template_is_isolated_and_provisions_vcan() -> None:
     ]
     assert len(system_provisions) == 1
     provision = system_provisions[0]
-    assert "export HOME=/root" in provision
-    assert "export USER=root" in provision
     assert "{{.Param.ENVIRONMENT}}" in provision
     assert "{{.Param.NETWORKING_REVISION}}" in provision
     assert "linux-modules-extra-$(uname -r)" in provision
-    assert "https://nixos.org/nix/install" in provision
+    assert '"$nix_setup"' in provision
     assert '"$emulator_setup" start' in provision
     assert "vcan0" in template["probes"][0]["script"]
     assert "vcan1" in template["probes"][0]["script"]
@@ -104,6 +103,23 @@ def test_lima_helper_is_valid_bash_and_documents_all_actions() -> None:
     assert "grep -Eq '^[^ ]'" in helper
     assert "cargo build --locked -p bello-hardwared -p bello-state-estimatord" in helper
     assert "rustc --version && cargo --version" in helper
+    assert "setup_guest_nix" in helper
+    assert 'guest_shell sudo -- "$guest_nix_setup"' in helper
+    assert "Nix is not installed in Lima instance" in helper
+
+
+def test_lima_nix_setup_is_retry_safe_and_idempotent() -> None:
+    assert _LIMA_NIX_SETUP.stat().st_mode & stat.S_IXUSR
+    subprocess.run(["bash", "-n", _LIMA_NIX_SETUP], check=True)
+    setup = _LIMA_NIX_SETUP.read_text()
+
+    assert "mktemp -d /tmp/bello-nix-installer.XXXXXX" in setup
+    assert "--retry 5" in setup
+    assert "--retry-all-errors" in setup
+    assert '--output "$installer_path"' in setup
+    assert 'sh "$installer_path" --daemon --yes' in setup
+    assert "experimental-features = nix-command flakes" in setup
+    assert 'systemctl enable --now nix-daemon.socket' in setup
 
 
 def test_legacy_networking_blocks_operations_but_allows_status_and_delete(
