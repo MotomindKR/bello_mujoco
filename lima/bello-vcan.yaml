@@ -12,6 +12,7 @@ disk: 80GiB
 
 param:
   ENVIRONMENT: bello-mujoco-vcan-v1
+  NETWORKING_REVISION: native-visualizer-v1
   REPO_DIR: /REPLACE/WHEN/CREATING/INSTANCE
 
 mounts:
@@ -28,8 +29,15 @@ hostResolver:
   ipv6: false
 
 portForwards:
-  - guestPortRange: [50051, 50055]
-    hostPortRange: [50051, 50055]
+  - guestPortRange: [50051, 50053]
+    hostPortRange: [50051, 50053]
+    hostIP: 127.0.0.1
+    proto: tcp
+  - guestPort: 50054
+    proto: tcp
+    ignore: true
+  - guestPort: 50055
+    hostPort: 50055
     hostIP: 127.0.0.1
     proto: tcp
   - guestPortRange: [1, 65535]
@@ -47,6 +55,7 @@ provision:
       export HOME=/root
       export USER=root
       [[ '{{.Param.ENVIRONMENT}}' == bello-mujoco-vcan-v1 ]]
+      [[ '{{.Param.NETWORKING_REVISION}}' == native-visualizer-v1 ]]
 
       required_packages=(
         ca-certificates

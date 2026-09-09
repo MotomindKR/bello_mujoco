@@ -67,6 +67,32 @@
               fi
             '';
           };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          macos-visualizer = pkgs.mkShell {
+            packages = with pkgs; [
+              cargo
+              clippy
+              git
+              protobuf
+              rustc
+              rustfmt
+            ];
+
+            RUST_BACKTRACE = "1";
+
+            shellHook = ''
+              if [ ! -f deps/bello-stack/components/bello-visualizer/Cargo.toml ]; then
+                echo "The pinned bello-stack submodule is not initialized." >&2
+                echo "Run: git submodule update --init --recursive" >&2
+                exit 1
+              fi
+
+              macos_visualizer_cache="''${XDG_CACHE_HOME:-$HOME/.cache}/bello-mujoco/macos-visualizer"
+              export CARGO_HOME="$macos_visualizer_cache/cargo-home"
+              export CARGO_TARGET_DIR="$macos_visualizer_cache/cargo-target"
+              mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+            '';
+          };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           lima-vcan = pkgs.mkShell {
             packages = with pkgs; [
@@ -108,6 +134,8 @@
               export JAX_PLATFORMS=cpu
               export XLA_PYTHON_CLIENT_PREALLOCATE=false
               export MUJOCO_GL=egl
+              export NO_PROXY="host.lima.internal,127.0.0.1,localhost''${NO_PROXY:+,$NO_PROXY}"
+              export no_proxy="$NO_PROXY"
 
               mkdir -p "$lima_state" "$lima_cache"
               uv python install

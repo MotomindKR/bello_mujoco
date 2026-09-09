@@ -9,6 +9,7 @@ readonly guest_repo=/workspace/bello_mujoco
 readonly nix_bin=/nix/var/nix/profiles/default/bin/nix
 readonly instance=${BELLO_LIMA_INSTANCE:-bello-vcan}
 readonly environment_token=bello-mujoco-vcan-v1
+readonly networking_revision_token=native-visualizer-v1
 readonly action=${1:-help}
 
 usage() {
@@ -73,12 +74,25 @@ instance_repo_mount() {
     2>/dev/null
 }
 
+instance_networking_revision() {
+  limactl list "$instance" \
+    --format '{{index .Config.Param "NETWORKING_REVISION"}}' 2>/dev/null
+}
+
 require_owned_instance() {
   local configured_environment
   configured_environment=$(instance_environment) \
     || fail "cannot inspect Lima instance $instance"
   [[ $configured_environment == "$environment_token" ]] || fail \
     "refusing to operate on unrelated Lima instance $instance"
+}
+
+require_current_networking_revision() {
+  local configured_networking_revision
+  configured_networking_revision=$(instance_networking_revision) \
+    || fail "cannot inspect Lima instance $instance networking"
+  [[ $configured_networking_revision == "$networking_revision_token" ]] || fail \
+    "Lima instance $instance uses obsolete networking; run: $0 delete, then: $0 start"
 }
 
 checkout_matches_instance() {
@@ -96,6 +110,7 @@ require_matching_checkout() {
 require_running_instance() {
   instance_exists || fail "Lima instance $instance does not exist; run: $0 start"
   require_owned_instance
+  require_current_networking_revision
   [[ $(instance_status) == Running ]] \
     || fail "Lima instance $instance is not running; run: $0 start"
   require_matching_checkout
@@ -118,6 +133,7 @@ start_instance() {
   if instance_exists; then
     require_owned_instance
     require_matching_checkout
+    require_current_networking_revision
     if [[ $(instance_status) == Running ]]; then
       echo "Lima instance $instance is already running."
     else
@@ -162,7 +178,8 @@ case $action in
     require_standalone_checkout
     require_running_instance
     setup_emulator status
-    run_in_nix true
+    run_in_nix bash -c \
+      'cd deps/bello-stack && cargo build --locked -p bello-hardwared -p bello-state-estimatord'
     echo "Bello Lima/Nix environment is synchronized."
     ;;
   shell)
@@ -189,6 +206,7 @@ case $action in
     guest_shell uname -a
     guest_shell "$nix_bin" --version
     setup_emulator status
+    run_in_nix bash -c 'rustc --version && cargo --version'
     run_in_nix python -c \
       'import jax, platform; print(f"Python platform: {platform.platform()}"); print(f"JAX backend: {jax.default_backend()}")'
     ;;
@@ -201,6 +219,9 @@ case $action in
     fi
     require_owned_instance
     limactl list "$instance"
+    if [[ $(instance_networking_revision) != "$networking_revision_token" ]]; then
+      echo "warning: Lima instance $instance uses obsolete networking; delete and recreate it." >&2
+    fi
     if [[ $(instance_status) == Running ]]; then
       if checkout_matches_instance; then
         setup_emulator status
