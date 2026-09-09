@@ -59,7 +59,7 @@
                 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
               ''}
 
-              uv python install
+              uv python install --no-bin
               uv sync --frozen
 
               if [ -f .venv/bin/activate ]; then
@@ -138,7 +138,7 @@
               export no_proxy="$NO_PROXY"
 
               mkdir -p "$lima_state" "$lima_cache"
-              uv python install
+              uv python install --no-bin
               uv sync --frozen
 
               if [ -f "$UV_PROJECT_ENVIRONMENT/bin/activate" ]; then

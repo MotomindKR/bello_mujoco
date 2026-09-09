@@ -180,6 +180,7 @@ exit 0
 def test_lima_nix_shell_keeps_platform_artifacts_off_the_host_mount() -> None:
     flake = (_ROOT / "flake.nix").read_text()
 
+    assert flake.count("uv python install --no-bin") == 2
     assert "lima-vcan = pkgs.mkShell" in flake
     assert 'export UV_PROJECT_ENVIRONMENT="$lima_state/venv"' in flake
     assert 'export UV_PYTHON_INSTALL_DIR="$lima_state/python"' in flake
