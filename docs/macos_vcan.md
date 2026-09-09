@@ -178,11 +178,15 @@ In `bello-mini.yaml`, change only the remote listener from
 `0.0.0.0:50054` to `127.0.0.1:50054`. Its hardware and external-pose endpoints
 already use Mac loopback ports 50051 and 50053. Then start the native binary:
 
+Run this command from the `bello_mujoco-vcan` repository root. Staying at the
+root avoids entering the submodule's Linux-only direnv shell:
+
 ```bash
-nix develop .#macos-visualizer
-cd deps/bello-stack
-cargo run --locked -p bello-visualizer -- \
-  --config components/bello-visualizer/config/bello-mini.yaml
+nix develop .#macos-visualizer --command \
+  cargo run --locked \
+  --manifest-path deps/bello-stack/Cargo.toml \
+  -p bello-visualizer -- \
+  --config deps/bello-stack/components/bello-visualizer/config/bello-mini.yaml
 ```
 
 The dedicated shell supplies Rust 1.95 and `protoc`, and keeps Cargo downloads
