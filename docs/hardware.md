@@ -105,15 +105,14 @@ power cutoff should the separate controller be armed:
 uv run bello-run-hands protocol=linker_o6 arm=true calibration_confirmed=true
 ```
 
-Armed startup imports and validates the pinned RTMW protocol locally, opens a
-filtered socket per enabled side, and issues a one-byte, read-only position
-query to each hand. Position writes begin only after those probes answer. The
-controller immediately commands the calibrated open pose while RTMW connects
-or reconnects in the background. The default raw calibration follows Linker's
-convention of `255` for open/extended and `0` for closed; calibrate each of the
-six endpoints before arming. `calibration_confirmed=true` asserts that those
-endpoints were checked on the actual model and side; it does not perform
-calibration automatically.
+Armed startup imports and validates the pinned RTMW protocol locally, starts
+the reconnecting RTMW client, opens a filtered socket per enabled side, and
+issues a one-byte, read-only position query to each hand. Those probes must
+answer, but position writes do not begin until a fresh RTMW target is available.
+The default raw calibration follows Linker's convention of `255` for
+open/extended and `0` for closed; calibrate each of the six endpoints before
+arming. `calibration_confirmed=true` asserts that those endpoints were checked
+on the actual model and side; it does not perform calibration automatically.
 
 Fresh targets are written at no more than 5 Hz per enabled hand. Thumb flexion
 and the four finger-flexion axes are strictly binary: each command is exactly
@@ -122,20 +121,27 @@ threshold of `0.65` form a hysteresis band, so pose noise cannot produce
 intermediate flexion commands or chatter near one threshold. Thumb abduction
 remains continuous and uses the configured low-pass and slew limits.
 
-Missing or low-confidence landmarks open only the affected side. A complete
-tracking loss, stale target, paused stream, or retryable RTMW outage commands
-both hands open while the controller continues monitoring CAN feedback and
+Missing or low-confidence landmarks stop position writes only for the affected
+side. A complete tracking loss, stale target, paused stream, or retryable RTMW
+outage stops new position writes to both hands while the RTMW client continues
 reconnecting. The reviewed O6/L6 classic-CAN interface has no disable command
-equivalent to the HITBOT CAN-FD action code; the open fallback is a position
-command, not an emergency stop or torque-disable operation. Stale hand feedback
-still stops the controller before another write.
+equivalent to the HITBOT CAN-FD action code, so this controller does not invent
+one. Firmware behavior after command silence and the external hand power cutoff
+remain outside this controller.
+
+Only a newly accepted fresh target resumes writes. Before the first resumed
+write for a side, the controller drains old feedback, performs a new read-only
+position probe, and reseeds thumb filtering and binary flexion hysteresis from
+that physical position. The probe only primes recovery; a strictly newer fresh
+RTMW frame must arrive after it before the next position write. Stale hand
+feedback during continuous control still stops the process before another
+write.
 
 Clicking **Stop stream** in the RTMW GUI pauses publication while camera
 capture, inference, visualization, gRPC, and existing subscriptions remain
 alive. Once the last received target exceeds `max_reference_age_ms`, the hand
-controller commands open targets. Frames produced during the pause are
-discarded rather than queued; **Start stream** resumes with newly captured
-frames only.
+controller stops writing. Frames produced during the pause are discarded rather
+than queued; **Start stream** resumes with newly captured frames only.
 
 Stopping `bello-run-hands` closes its own filtered sockets. It neither stops
 `bello-hardwared` nor damps, disables, or changes state of any RobStride group.

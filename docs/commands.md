@@ -352,9 +352,9 @@ Configuration source: `configs/commands/hands.yaml`.
 | `can_interface` | string; `can1` | Existing Linux SocketCAN interface shared with the upper-body bus. The command never creates, brings down, or reconfigures this link. |
 | `left_hand_enabled` | boolean; `true` | Track and, when armed, open a filtered endpoint for the left hand. |
 | `right_hand_enabled` | boolean; `true` | Track and, when armed, open a filtered endpoint for the right hand. At least one side must be enabled. |
-| `can_probe_timeout_seconds` | positive float; `0.5` | Maximum wait for each read-only position probe performed before armed writes. |
+| `can_probe_timeout_seconds` | positive float; `0.5` | Maximum wait for each read-only position probe performed before armed writes and when an unavailable side resumes. |
 | `can_feedback_poll_interval_seconds` | positive float; `0.2` | Minimum interval between nonblocking position-feedback queries while commands are being sent. |
-| `can_feedback_timeout_seconds` | positive float; `0.5` | Maximum accepted feedback age during continuous control. Exceeding it stops the process before another write. It must be at least the poll interval. |
+| `can_feedback_timeout_seconds` | positive float; `0.5` | Maximum accepted feedback age during continuous control. Exceeding it stops the process before another write; recovery after an RTMW pause uses an explicit fresh probe. It must be at least the poll interval. |
 | `can_tx_spacing_seconds` | nonnegative float; `0.003` | Minimum spacing between any two frames transmitted by this process, matching the reviewed SDK's position-command pacing. |
 | `rtmw_endpoint` | gRPC host:port; `127.0.0.1:50055` | Pinned RTMW-SMPLX-Teleop skeleton service. Do not include a URL scheme. |
 | `rtmw_tls_root_certificate_path` | path or `null`; `null` | CA certificate for a TLS RTMW endpoint. `null` uses plaintext on the trusted robot network. |
@@ -365,9 +365,9 @@ Configuration source: `configs/commands/hands.yaml`.
 | `min_hand_confidence` | float in `[0,1]`; `0.05` | Minimum valid joint and fingertip confidence independently required for each enabled side. |
 | `max_pipeline_latency_ms` | positive float; `250` | Maximum producer-reported capture-to-output latency. |
 | `transport_latency_budget_ms` | nonnegative float; `10` | Conservative network/dispatch age added to reported pipeline latency. |
-| `max_reference_age_ms` | positive integer; `1000` | Maximum total target age, including time since local receipt, before that target is replaced by calibrated open commands. |
+| `max_reference_age_ms` | positive integer; `1000` | Maximum total target age, including time since local receipt, before all writes for that target stop. |
 | `max_source_interval_seconds` | positive float; `0.70` | Largest accepted interval between consecutive source frames in one tracking epoch. |
-| `control_rate_hz` | positive float; `5` | Maximum rate at which the latest hand targets, including open fallbacks, are written per enabled hand. |
+| `control_rate_hz` | positive float; `5` | Maximum rate at which the latest fresh hand targets are written per enabled hand. |
 | `smoothing_time_constant_ms` | nonnegative float; `100` | First-order low-pass time constant applied only to continuous thumb abduction. Binary flexion axes bypass it. |
 | `max_raw_rate_per_second` | positive float; `510` | Raw-position slew limit applied only to continuous thumb abduction after low-pass filtering. Raw position spans 0 through 255. |
 | `flexion_open_threshold` | float in `[0,1]`; `0.35` | A closed flexion axis switches to its exact calibrated open endpoint at or below this normalized flexion. |
@@ -381,7 +381,7 @@ Configuration source: `configs/commands/hands.yaml`.
 | `right_open_positions` | six integers in `[0,255]`; `[255,255,255,255,255,255]` | Right raw calibration at the open human-hand target. |
 | `right_closed_positions` | six integers in `[0,255]`; `[0,0,0,0,0,0]` | Right raw calibration at the closed human-hand target. |
 | `duration_seconds` | positive float or `null`; `null` | Runtime budget measured from before connection. Blocking connection and CAN probe operations retain their own shorter timeout fields. Unarmed mode returns earlier after its first accepted target. |
-| `arm` | boolean; `false` | `false` validates RTMW and receives one acceptable hand frame without opening SocketCAN. `true` probes each configured hand, immediately commands open targets, and connects or reconnects to RTMW in the background. |
+| `arm` | boolean; `false` | `false` validates RTMW and receives one acceptable hand frame without opening SocketCAN. `true` probes each configured hand and connects or reconnects to RTMW in the background; writes require a fresh target. |
 | `calibration_confirmed` | boolean; `false` | Must be explicitly set to `true` with `arm=true` after checking the configured six-axis open/closed endpoints on the actual model and side. |
 
 Run the RTMW-only preflight first:
@@ -409,12 +409,15 @@ an operator assertion, not automatic calibration. Each thumb/finger flexion
 axis is commanded only at its calibrated open or closed endpoint, with
 configurable hysteresis between the states; thumb abduction remains continuous.
 If RTMW tracking, one side's landmarks, or the connection becomes unavailable,
-the affected hand receives calibrated open targets while RTMW reconnects. The
-RTMW GUI's **Stop stream** button leaves gRPC connected but publishes no frames,
-so both hands open when the last target reaches `max_reference_age_ms`; frames
-captured during the pause are discarded and only newly captured frames are used
-after **Start stream**. This open position fallback is not a torque disable or
-emergency stop, and loss of CAN feedback remains fatal.
+the controller stops issuing new position targets for the affected side; it
+does not send an unreviewed disable, open, or nominal-pose command. A reconnect
+accepts only a new fresh target, re-reads the physical position, and reseeds the
+thumb filter and binary flexion state. It then waits for a strictly newer fresh
+RTMW frame before writing. The RTMW GUI's **Stop stream** button leaves gRPC
+connected but publishes no frames, so writes stop when the last target reaches
+`max_reference_age_ms`; frames captured during the pause are discarded and only
+newly captured frames are used after **Start stream**. Loss of CAN feedback
+remains fatal during active control.
 
 See [Physical hardware](hardware.md#standalone-linker-hand-control) for shared
 bus setup, coexistence, and loss behavior.

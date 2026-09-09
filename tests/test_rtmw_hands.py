@@ -387,7 +387,7 @@ def test_command_filter_uses_binary_flexion_hysteresis() -> None:
     assert opened == (255,) * 6
 
 
-def test_command_filter_open_clears_closed_flexion_latches() -> None:
+def test_command_filter_reseed_resets_binary_flexion_latches() -> None:
     config = hands_config(
         smoothing_time_constant_ms=0.0,
         max_raw_rate_per_second=10_000.0,
@@ -397,7 +397,8 @@ def test_command_filter_open_clears_closed_flexion_latches() -> None:
     ambiguous = RtmwHandTarget("right", (0.5,) * 6, 1.0)
 
     assert command_filter.update(closed, now=1.0) == (0,) * 6
-    assert command_filter.open("right", now=1.1) == (255,) * 6
+    command_filter.seed("right", (255,) * 6, now=1.1)
+    command_filter.resume("right", now=1.2)
     assert command_filter.update(ambiguous, now=1.2) == (255, 128, 255, 255, 255, 255)
 
 
@@ -480,19 +481,21 @@ def test_armed_config_requires_explicit_calibration_confirmation() -> None:
         hands_config(arm=True)
 
 
-def test_armed_run_opens_both_sides_before_waiting_for_rtmw() -> None:
+def test_armed_run_sends_nothing_before_first_rtmw_target() -> None:
     stop = threading.Event()
     commands: list[tuple[str, tuple[int, ...]]] = []
+    refreshes: list[str] = []
 
-    class FakeStream:
-        def __enter__(self) -> FakeStream:
+    class EmptyStream:
+        def __enter__(self) -> EmptyStream:
             return self
 
         def __exit__(self, *_error: object) -> bool:
             return False
 
-        def wait_next(self, **_arguments: object) -> RtmwHandsFrame:
-            raise AssertionError("the initial open command must precede RTMW polling")
+        def wait_next(self, **_arguments: object) -> None:
+            stop.set()
+            return None
 
     class FakeTransport:
         initial_positions = {
@@ -502,8 +505,10 @@ def test_armed_run_opens_both_sides_before_waiting_for_rtmw() -> None:
 
         def set_positions(self, side: str, positions: tuple[int, ...]) -> None:
             commands.append((side, positions))
-            if side == "right":
-                stop.set()
+
+        def refresh_positions(self, side: str) -> tuple[int, ...]:
+            refreshes.append(side)
+            return self.initial_positions[side]
 
     @contextmanager
     def transport(_config: RtmwHandsConfig):
@@ -513,18 +518,70 @@ def test_armed_run_opens_both_sides_before_waiting_for_rtmw() -> None:
         hands_config(arm=True, calibration_confirmed=True),
         transport,  # type: ignore[arg-type]
         stop_event=stop,
+        stream_factory=lambda _config: EmptyStream(),  # type: ignore[arg-type]
+    )
+
+    assert commands == []
+    assert refreshes == []
+
+
+def test_outage_during_recovery_probe_prevents_obsolete_write() -> None:
+    stop = threading.Event()
+    commands: list[tuple[int, ...]] = []
+    outage_pending = False
+    calls = 0
+    frame = replace(target_frame(), right=None)
+
+    class FakeStream:
+        def __enter__(self) -> FakeStream:
+            return self
+
+        def __exit__(self, *_error: object) -> bool:
+            return False
+
+        def wait_next(self, **_arguments: object) -> RtmwHandsFrame | None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return frame
+            if outage_pending:
+                stop.set()
+                raise RtmwHandsDiscontinuity("outage published during probe")
+            raise AssertionError("the recovery probe must publish an outage")
+
+    class FakeTransport:
+        initial_positions = {"left": (255,) * 6}
+
+        def refresh_positions(self, _side: str) -> tuple[int, ...]:
+            nonlocal outage_pending
+            outage_pending = True
+            return (200,) * 6
+
+        def set_positions(self, _side: str, positions: tuple[int, ...]) -> None:
+            commands.append(positions)
+
+    @contextmanager
+    def transport(_config: RtmwHandsConfig):
+        yield FakeTransport()
+
+    run_rtmw_hands(
+        hands_config(
+            arm=True,
+            calibration_confirmed=True,
+            right_enabled=False,
+        ),
+        transport,  # type: ignore[arg-type]
+        stop_event=stop,
         stream_factory=lambda _config: FakeStream(),  # type: ignore[arg-type]
     )
 
-    assert commands == [
-        ("left", (255,) * 6),
-        ("right", (255,) * 6),
-    ]
+    assert commands == []
 
 
 def test_armed_run_emits_only_binary_flexion_for_live_target() -> None:
     stop = threading.Event()
     commands: list[tuple[int, ...]] = []
+    calls = 0
     target = replace(
         target_frame(),
         left=RtmwHandTarget("left", (0.8, 0.5, 0.8, 0.8, 0.8, 0.8), 0.9),
@@ -538,16 +595,25 @@ def test_armed_run_emits_only_binary_flexion_for_live_target() -> None:
         def __exit__(self, *_error: object) -> bool:
             return False
 
-        def wait_next(self, **_arguments: object) -> RtmwHandsFrame:
-            return target
+        def wait_next(self, *, timeout_seconds: float, **_arguments: object):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return target
+            if calls == 2:
+                return replace(target, sequence=2, received_at=time.monotonic())
+            time.sleep(timeout_seconds)
+            return None
 
     class FakeTransport:
         initial_positions = {"left": (255,) * 6}
 
+        def refresh_positions(self, _side: str) -> tuple[int, ...]:
+            return (255,) * 6
+
         def set_positions(self, _side: str, positions: tuple[int, ...]) -> None:
             commands.append(positions)
-            if len(commands) == 2:
-                stop.set()
+            stop.set()
 
     @contextmanager
     def transport(_config: RtmwHandsConfig):
@@ -566,12 +632,71 @@ def test_armed_run_emits_only_binary_flexion_for_live_target() -> None:
         stream_factory=lambda _config: FakeStream(),  # type: ignore[arg-type]
     )
 
-    assert commands == [(255,) * 6, (0, 128, 0, 0, 0, 0)]
+    assert commands == [(0, 128, 0, 0, 0, 0)]
 
 
-def test_rtmw_outage_commands_open_instead_of_holding_last_target() -> None:
+def test_target_expiring_during_recovery_probe_sends_no_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stop = threading.Event()
+    now = 100.0
+    commands: list[tuple[int, ...]] = []
+    calls = 0
+    frame = replace(target_frame(received_at=now), right=None)
+
+    def monotonic() -> float:
+        return now
+
+    monkeypatch.setattr(rtmw_hands, "time", SimpleNamespace(monotonic=monotonic))
+
+    class FakeStream:
+        def __enter__(self) -> FakeStream:
+            return self
+
+        def __exit__(self, *_error: object) -> bool:
+            return False
+
+        def wait_next(self, **_arguments: object) -> RtmwHandsFrame | None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return frame
+            stop.set()
+            return None
+
+    class FakeTransport:
+        initial_positions = {"left": (255,) * 6}
+
+        def refresh_positions(self, _side: str) -> tuple[int, ...]:
+            nonlocal now
+            now += 2.0
+            return (200,) * 6
+
+        def set_positions(self, _side: str, positions: tuple[int, ...]) -> None:
+            commands.append(positions)
+
+    @contextmanager
+    def transport(_config: RtmwHandsConfig):
+        yield FakeTransport()
+
+    run_rtmw_hands(
+        hands_config(
+            arm=True,
+            calibration_confirmed=True,
+            right_enabled=False,
+        ),
+        transport,  # type: ignore[arg-type]
+        stop_event=stop,
+        stream_factory=lambda _config: FakeStream(),  # type: ignore[arg-type]
+    )
+
+    assert commands == []
+
+
+def test_rtmw_outage_suspends_writes_and_recovery_refreshes_and_reseeds() -> None:
     stop = threading.Event()
     commands: list[tuple[int, ...]] = []
+    refreshes: list[tuple[int, ...]] = []
     calls = 0
     closed = replace(
         target_frame(),
@@ -592,16 +717,50 @@ def test_rtmw_outage_commands_open_instead_of_holding_last_target() -> None:
             if calls == 1:
                 return closed
             if calls == 2:
+                return replace(closed, sequence=2, received_at=time.monotonic())
+            if calls == 3:
+                time.sleep(timeout_seconds)
+                return None
+            if calls == 4:
+                time.sleep(timeout_seconds)
                 raise RtmwHandsUnavailable("test outage")
+            if calls == 5:
+                return replace(
+                    closed,
+                    sequence=3,
+                    received_at=time.monotonic(),
+                )
+            if calls == 6:
+                time.sleep(timeout_seconds)
+                return None
+            if calls == 7:
+                return replace(
+                    closed,
+                    sequence=4,
+                    received_at=time.monotonic(),
+                )
             time.sleep(timeout_seconds)
             return None
 
     class FakeTransport:
         initial_positions = {"left": (255,) * 6}
 
+        def __init__(self) -> None:
+            self.samples = iter(
+                (
+                    (255, 200, 255, 255, 255, 255),
+                    (255, 50, 255, 255, 255, 255),
+                )
+            )
+
+        def refresh_positions(self, _side: str) -> tuple[int, ...]:
+            sample = next(self.samples)
+            refreshes.append(sample)
+            return sample
+
         def set_positions(self, _side: str, positions: tuple[int, ...]) -> None:
             commands.append(positions)
-            if len(commands) == 3:
+            if len(commands) == 2:
                 stop.set()
 
     @contextmanager
@@ -614,17 +773,24 @@ def test_rtmw_outage_commands_open_instead_of_holding_last_target() -> None:
             calibration_confirmed=True,
             right_enabled=False,
             smoothing_time_constant_ms=0.0,
-            max_raw_rate_per_second=1.0e9,
+            max_raw_rate_per_second=100.0,
         ),
         transport,  # type: ignore[arg-type]
         stop_event=stop,
         stream_factory=lambda _config: FakeStream(),  # type: ignore[arg-type]
     )
 
-    assert commands == [(255,) * 6, (0,) * 6, (255,) * 6]
+    assert refreshes == [
+        (255, 200, 255, 255, 255, 255),
+        (255, 50, 255, 255, 255, 255),
+    ]
+    assert commands == [
+        (0, 180, 0, 0, 0, 0),
+        (0, 30, 0, 0, 0, 0),
+    ]
 
 
-def test_missing_rtmw_frames_keep_commanding_open() -> None:
+def test_missing_rtmw_frames_send_no_positions() -> None:
     stop = threading.Event()
     commands: list[tuple[int, ...]] = []
 
@@ -636,7 +802,8 @@ def test_missing_rtmw_frames_keep_commanding_open() -> None:
             return False
 
         def wait_next(self, *, timeout_seconds: float, **_arguments: object) -> None:
-            time.sleep(timeout_seconds)
+            del timeout_seconds
+            stop.set()
             return None
 
     class FakeTransport:
@@ -644,8 +811,9 @@ def test_missing_rtmw_frames_keep_commanding_open() -> None:
 
         def set_positions(self, _side: str, positions: tuple[int, ...]) -> None:
             commands.append(positions)
-            if len(commands) == 2:
-                stop.set()
+
+        def refresh_positions(self, _side: str) -> tuple[int, ...]:
+            raise AssertionError("missing RTMW data must not probe a hand")
 
     @contextmanager
     def transport(_config: RtmwHandsConfig):
@@ -662,10 +830,10 @@ def test_missing_rtmw_frames_keep_commanding_open() -> None:
         stream_factory=lambda _config: EmptyStream(),  # type: ignore[arg-type]
     )
 
-    assert commands == [(255,) * 6, (255,) * 6]
+    assert commands == []
 
 
-def test_stale_rtmw_target_is_replaced_by_open_command() -> None:
+def test_stale_rtmw_target_sends_no_positions() -> None:
     stop = threading.Event()
     commands: list[tuple[int, ...]] = []
     stale = replace(
@@ -682,6 +850,7 @@ def test_stale_rtmw_target_is_replaced_by_open_command() -> None:
             return False
 
         def wait_next(self, **_arguments: object) -> RtmwHandsFrame:
+            stop.set()
             return stale
 
     class FakeTransport:
@@ -689,8 +858,9 @@ def test_stale_rtmw_target_is_replaced_by_open_command() -> None:
 
         def set_positions(self, _side: str, positions: tuple[int, ...]) -> None:
             commands.append(positions)
-            if len(commands) == 2:
-                stop.set()
+
+        def refresh_positions(self, _side: str) -> tuple[int, ...]:
+            raise AssertionError("a stale target must not probe a hand")
 
     @contextmanager
     def transport(_config: RtmwHandsConfig):
@@ -707,18 +877,36 @@ def test_stale_rtmw_target_is_replaced_by_open_command() -> None:
         stream_factory=lambda _config: FakeStream(),  # type: ignore[arg-type]
     )
 
-    assert commands == [(255,) * 6, (255,) * 6]
+    assert commands == []
 
 
-def test_unavailable_side_opens_while_available_side_follows_rtmw() -> None:
+def test_side_missing_then_valid_before_tick_requires_probe_and_newer_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     stop = threading.Event()
     commands: list[tuple[str, tuple[int, ...]]] = []
-    frame = replace(
-        target_frame(),
-        left=RtmwHandTarget("left", (1.0,) * 6, 0.9),
-        right=None,
-        right_unavailable_reason="low confidence",
-    )
+    refreshes: list[str] = []
+    now = 100.0
+    calls = 0
+
+    def monotonic() -> float:
+        return now
+
+    def frame(sequence: int, *, right_available: bool = True) -> RtmwHandsFrame:
+        result = replace(
+            target_frame(received_at=now),
+            sequence=sequence,
+            left=RtmwHandTarget("left", (1.0,) * 6, 0.9),
+        )
+        if right_available:
+            return result
+        return replace(
+            result,
+            right=None,
+            right_unavailable_reason="low confidence",
+        )
+
+    monkeypatch.setattr(rtmw_hands, "time", SimpleNamespace(monotonic=monotonic))
 
     class FakeStream:
         def __enter__(self) -> FakeStream:
@@ -727,15 +915,45 @@ def test_unavailable_side_opens_while_available_side_follows_rtmw() -> None:
         def __exit__(self, *_error: object) -> bool:
             return False
 
-        def wait_next(self, **_arguments: object) -> RtmwHandsFrame:
-            return frame
+        def wait_next(self, *, timeout_seconds: float, **_arguments: object):
+            nonlocal calls, now
+            calls += 1
+            if calls == 1:
+                return frame(1)
+            if calls == 2:
+                return frame(2)
+            if calls == 3:
+                now += timeout_seconds
+                return None
+            if calls == 4:
+                return frame(3)
+            if calls == 5:
+                now += timeout_seconds
+                return None
+            if calls == 6:
+                return frame(4, right_available=False)
+            if calls == 7:
+                return frame(5)
+            if calls == 8:
+                now += timeout_seconds
+                return None
+            if calls == 9:
+                return frame(6)
+            if calls == 10:
+                now += timeout_seconds
+                return None
+            raise AssertionError("hand runner did not stop after recovered-side write")
 
     class FakeTransport:
         initial_positions = {"left": (255,) * 6, "right": (255,) * 6}
 
+        def refresh_positions(self, side: str) -> tuple[int, ...]:
+            refreshes.append(side)
+            return self.initial_positions[side]
+
         def set_positions(self, side: str, positions: tuple[int, ...]) -> None:
             commands.append((side, positions))
-            if len(commands) == 4:
+            if len(commands) == 6:
                 stop.set()
 
     @contextmanager
@@ -754,12 +972,15 @@ def test_unavailable_side_opens_while_available_side_follows_rtmw() -> None:
         stream_factory=lambda _config: FakeStream(),  # type: ignore[arg-type]
     )
 
-    assert commands == [
-        ("left", (255,) * 6),
-        ("right", (255,) * 6),
-        ("left", (0,) * 6),
-        ("right", (255,) * 6),
+    assert [side for side, _positions in commands] == [
+        "left",
+        "left",
+        "right",
+        "left",
+        "left",
+        "right",
     ]
+    assert refreshes == ["left", "right", "right"]
 
 
 class FakeRpcError(grpc.RpcError):
