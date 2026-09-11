@@ -3,11 +3,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import jax.numpy as jnp
+import mujoco
 import numpy as np
 import pytest
 
 from bello_mujoco.assets_pipeline.prepare import PreparedAsset
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, GaitConfig
+from bello_mujoco.envs.locomotion import (
+    BelloLocomotionEnv,
+    GaitConfig,
+    ObservationLatencyConfig,
+    ObservationLowPassFilterConfig,
+)
 from bello_mujoco.evaluation import locomotion as evaluation
 from bello_mujoco.evaluation import render
 from bello_mujoco.gamepad import GamepadInput
@@ -27,6 +33,161 @@ def component_slice(env: BelloLocomotionEnv, name: str) -> slice:
             return slice(offset, offset + size)
         offset += size
     raise AssertionError(f"missing observation component {name!r}")
+
+
+def test_native_feedback_retains_filter_delay_and_resets(bello_asset) -> None:
+    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = replace(
+        env,
+        config=replace(
+            env.config,
+            observation=replace(
+                env.config.observation,
+                noise=replace(env.config.observation.noise, enabled=False),
+            ),
+            observation_low_pass_filter=ObservationLowPassFilterConfig(enabled=True),
+            observation_latency=ObservationLatencyConfig(
+                enabled=True, delay_steps=(2, 2)
+            ),
+        ),
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    render.reset_mujoco_data(env, data)
+    feedback = render.NativeObservationPipeline(env, seed=7)
+    kwargs = dict(command=np.zeros(3), last_action=np.zeros(env.action_size))
+    initial = feedback.observe(data, step_count=0, **kwargs)
+    data.qvel[env.model.root_qvel_adr + 3] = 1.0
+    mujoco.mj_forward(env.model.mj_model, data)
+    raw = render.mujoco_policy_observation(env, data, step_count=1, **kwargs)
+    gyro = component_slice(env, "imu_angular_velocity")
+    assert not np.allclose(raw[gyro], initial[gyro])
+    for step in (1, 2):
+        delayed = feedback.observe(data, step_count=step, **kwargs)
+        np.testing.assert_allclose(delayed[gyro], initial[gyro], atol=1e-7)
+    filtered = feedback.observe(data, step_count=3, **kwargs)
+    alpha = 1.0 - np.exp(-2 * np.pi * 10.0 * env.control_timestep)
+    np.testing.assert_allclose(
+        filtered[gyro], initial[gyro] + alpha * (raw[gyro] - initial[gyro]), atol=1e-7
+    )
+    reread = feedback.observe(
+        data, step_count=3, **{**kwargs, "command": np.array([0.4, 0.0, 0.0])}
+    )
+    np.testing.assert_array_equal(reread[gyro], filtered[gyro])
+    assert reread[component_slice(env, "command")][0] == pytest.approx(0.4)
+    feedback.reset()
+    reset = feedback.observe(data, step_count=0, **kwargs)
+    np.testing.assert_allclose(reset[gyro], raw[gyro], atol=1e-7)
+    with pytest.raises(ValueError, match="expected step 1"):
+        feedback.observe(data, step_count=2, **kwargs)
+
+
+def test_native_feedback_noise_is_seeded_and_not_redrawn_on_reread(bello_asset) -> None:
+    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = replace(
+        env,
+        config=replace(
+            env.config,
+            observation_low_pass_filter=ObservationLowPassFilterConfig(
+                enabled=True, noise_before_filter=True, residual_noise_scale=0.1
+            ),
+            observation=replace(
+                env.config.observation,
+                noise=replace(env.config.observation.noise, enabled=True),
+            ),
+        ),
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    render.reset_mujoco_data(env, data)
+    kwargs = dict(command=np.zeros(3), last_action=np.zeros(env.action_size))
+    first = render.NativeObservationPipeline(env, seed=7)
+    same = render.NativeObservationPipeline(env, seed=7)
+    different = render.NativeObservationPipeline(env, seed=8)
+    initial = first.observe(data, step_count=0, **kwargs)
+    np.testing.assert_array_equal(initial, first.observe(data, step_count=0, **kwargs))
+    np.testing.assert_array_equal(initial, same.observe(data, step_count=0, **kwargs))
+    assert not np.allclose(initial, different.observe(data, step_count=0, **kwargs))
+    next_observation = first.observe(data, step_count=1, **kwargs)
+    np.testing.assert_array_equal(
+        next_observation, same.observe(data, step_count=1, **kwargs)
+    )
+    assert not np.allclose(initial, next_observation)
+
+
+@pytest.mark.parametrize("command_delay", [0.0, 0.01])
+def test_training_video_preserves_feedback_delay_across_physics_steps(
+    monkeypatch, bello_asset, tmp_path, command_delay
+) -> None:
+    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = replace(
+        env,
+        config=replace(
+            env.config,
+            command_delay_seconds=command_delay,
+            observation=replace(
+                env.config.observation,
+                noise=replace(env.config.observation.noise, enabled=False),
+            ),
+            observation_latency=ObservationLatencyConfig(
+                enabled=True, delay_steps=(2, 2)
+            ),
+        ),
+    )
+    captured = []
+    applied_controls = []
+    mj_step = render.mujoco.mj_step
+
+    def record_step(model, data):
+        applied_controls.append(data.ctrl.copy())
+        mj_step(model, data)
+
+    monkeypatch.setattr(render.mujoco, "mj_step", record_step)
+
+    def action(_policy, stack, **_kwargs):
+        captured.append(np.asarray(stack[-1]))
+        return jnp.full(env.action_size, 0.2)
+
+    monkeypatch.setattr(render, "rollout_policy_action", action)
+    monkeypatch.setattr(render, "mujoco_done_flags", lambda *_args: {"done/any": False})
+    monkeypatch.setattr(render, "update_camera", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        render,
+        "open_rollout_video_resources",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(close=lambda: None),
+            SimpleNamespace(
+                update_scene=lambda *_args, **_kwargs: None, render=lambda: None
+            ),
+            object(),
+            SimpleNamespace(append_data=lambda _frame: None),
+        ),
+    )
+    render.render_policy_rollout_mujoco(
+        env,
+        object(),
+        output_path=tmp_path / "unused.mp4",
+        command=(0.0, 0.0, 0.0),
+        steps=4,
+        width=2,
+        height=2,
+        fps=50,
+        stop_on_done=False,
+        camera_config=render.CameraConfig(),
+        ppo_config=PPOConfig(),
+        observation_norm_state=init_observation_norm_state(env.observation_size),
+    )
+    previous = render.mujoco_action_to_ctrl(env, np.zeros(env.action_size))
+    requested = render.mujoco_action_to_ctrl(env, np.full(env.action_size, 0.2))
+    for index in range(env.decimation):
+        expected = (
+            previous
+            if index * float(env.model.mj_model.opt.timestep) < command_delay
+            else requested
+        )
+        np.testing.assert_allclose(applied_controls[index], expected, atol=1e-6)
+    velocity = component_slice(env, "joint_velocity")
+    for observation in captured[:3]:
+        np.testing.assert_array_equal(observation[velocity], captured[0][velocity])
+    assert not np.allclose(captured[3][velocity], captured[0][velocity])
 
 
 def test_gamepad_command_is_used_by_same_step_policy_and_log(

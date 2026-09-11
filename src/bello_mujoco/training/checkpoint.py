@@ -842,6 +842,22 @@ def _with_checkpoint_metadata_defaults(
             )
         if isinstance(env, dict):
             normalized_env = dict(env)
+            normalized_env.setdefault("command_delay_seconds", 0.0)
+            gait_clock = dict(env["gait"])
+            for name, default in {
+                "speed_dependent": False,
+                "step_frequency_base": 1.6,
+                "step_frequency_speed_gain": 0.35,
+                "stop_extra_steps": 0,
+                "command_slew_enabled": False,
+                "command_linear_slew_rate": 1.0,
+                "command_yaw_slew_rate": 1.0,
+                "directional_start": False,
+                "lateral_start_deadband": 0.1,
+                "standing_reward_ramp_seconds": 0.0,
+            }.items():
+                gait_clock.setdefault(name, default)
+            normalized_env["gait"] = gait_clock
             if "observation_low_pass_filter" not in normalized_env:
                 normalized_env["observation_low_pass_filter"] = to_builtin(
                     ObservationLowPassFilterConfig()
@@ -889,6 +905,10 @@ def _with_checkpoint_metadata_defaults(
                     "stand_foot_heading",
                     "stand_upright",
                     "stand_waist_deviation",
+                    "stand_foot_foreaft",
+                    "stand_foot_width",
+                    "foot_crossing",
+                    "foot_stumble",
                 ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
@@ -917,11 +937,25 @@ def _with_checkpoint_metadata_defaults(
                 )
                 normalized_standing.setdefault("foot_heading_scale", math.radians(15.0))
                 normalized_standing.setdefault("hip_roll_continuous_torque_limit", 20.0)
+                for name, default in {
+                    "position_deadband": 0.02,
+                    "position_scale": 0.03,
+                    "recovery_relaxation": False,
+                    "recovery_speed": 0.25,
+                    "recovery_tilt": 0.15,
+                }.items():
+                    normalized_standing.setdefault(name, default)
                 normalized_reward["standing"] = normalized_standing
             gait = reward.get("gait")
             if isinstance(gait, dict):
                 normalized_gait = dict(gait)
                 legacy_gait_defaults = {
+                    "phase_shaped_clearance": False,
+                    "crossing_scale": 0.02,
+                    "sole_clearance_margin": 0.01,
+                    "stumble_grace_fraction": 0.15,
+                    "stumble_load_body_weights": 0.05,
+                    "stumble_speed_scale": 0.15,
                     "joint_force_soft_limit_body_weights": 1.0,
                     "joint_force_top_k": 12,
                     "joint_force_apply_while_standing": False,

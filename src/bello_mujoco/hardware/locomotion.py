@@ -28,6 +28,7 @@ from bello_mujoco.training.checkpoint import (
 from bello_mujoco.envs.locomotion import (
     BelloLocomotionEnv,
     advance_gait_phase,
+    gait_frequency,
     resolve_gait_command_transition,
 )
 from bello_mujoco.gamepad import axis_to_range, forward_lateral_to_command_axes
@@ -273,8 +274,8 @@ class HardwareLocomotionConfig(HardwareControlConfig):
     client_name: str = "bello-locomotion-policy"
     remote: RemoteCommandConfig = RemoteCommandConfig()
     joystick_command_scale: float = 0.6
-    joystick_linear_slew_rate_mps2: float = 1.0
-    joystick_yaw_slew_rate_rps2: float = 1.0
+    joystick_linear_slew_rate_mps2: float | None = 1.0
+    joystick_yaw_slew_rate_rps2: float | None = 1.0
     allow_provisional_hardware: bool = False
     upper_body_tracking_enabled: bool = True
     rtmw_endpoint: str = "127.0.0.1:50055"
@@ -442,7 +443,21 @@ class HardwarePolicyAdapter:
                     "rates"
                 )
         self._gait_phase = 0.0
-        self._standing_transition_pending = False
+        self._standing_transition_pending = 0
+        self._next_start_left = True
+        if env.config.gait.command_slew_enabled:
+            trained_rates = (
+                env.config.gait.command_linear_slew_rate,
+                env.config.gait.command_yaw_slew_rate,
+            )
+            if command_slew_rates is not None and not np.allclose(
+                command_slew_rates, trained_rates, rtol=0.0, atol=1e-8
+            ):
+                raise ValueError(
+                    "command_slew_rates must match checkpoint gait slew rates"
+                )
+            # The checkpoint scheduler owns the limiter; do not filter twice.
+            self._command_slew_rates = None
         self._advance_gait_phase_before_step = False
 
         def resolve_transition(
@@ -451,6 +466,7 @@ class HardwarePolicyAdapter:
             gait_phase,
             standing_transition_pending,
             advance_phase,
+            next_start_left,
         ):
             next_phase = jnp.where(
                 advance_phase,
@@ -460,6 +476,7 @@ class HardwarePolicyAdapter:
                     env.command_config,
                     env.config.gait,
                     env.control_timestep,
+                    standing_transition_pending,
                 ),
                 gait_phase,
             )
@@ -470,6 +487,10 @@ class HardwarePolicyAdapter:
                 next_phase,
                 standing_transition_pending,
                 env.command_config,
+                env.config.gait,
+                next_start_left,
+                -env._locomotion_right_axis()[:2],
+                jnp.where(advance_phase, env.control_timestep, 0.0),
             )
 
         self._resolve_gait_transition = jax.jit(resolve_transition)
@@ -562,7 +583,8 @@ class HardwarePolicyAdapter:
         self._gait_active = False
         self._standing_slew_active = False
         self._gait_phase = 0.0
-        self._standing_transition_pending = False
+        self._standing_transition_pending = 0
+        self._next_start_left = True
         self._advance_gait_phase_before_step = False
         self._upper_body_target = None
         self._upper_body_reference_live = False
@@ -577,8 +599,9 @@ class HardwarePolicyAdapter:
                     zero_command,
                     zero_command,
                     jnp.asarray(0.0, dtype=jnp.float32),
+                    jnp.asarray(0, dtype=jnp.int32),
                     jnp.asarray(False),
-                    jnp.asarray(False),
+                    jnp.asarray(True),
                 )
             )
         nominal = self.nominal_physical_target
@@ -623,7 +646,7 @@ class HardwarePolicyAdapter:
         )
         scale = self.env.config.observation.scale
         if gait_active is None:
-            gait_active = self._command_is_moving(command)
+            gait_active = self._gait_command_is_moving(command)
         gait_angle = 2.0 * np.pi * self._gait_phase
         gait_phase = (
             np.asarray((np.sin(gait_angle), np.cos(gait_angle), 1.0), dtype=np.float32)
@@ -675,7 +698,12 @@ class HardwarePolicyAdapter:
             policy_frame,
             effective_command,
             gait_active=(
-                self._gait_active if self._command_slew_rates is not None else None
+                self._gait_active
+                if self._command_slew_rates is not None
+                else (
+                    self._gait_command_is_moving(effective_command)
+                    or self._standing_transition_pending != 0
+                )
             ),
         )
         stack_size = self.metadata.ppo.policy.obs_stack_size
@@ -734,7 +762,7 @@ class HardwarePolicyAdapter:
             observation=observation,
             policy_observation=policy_observation,
             effective_command=effective_command,
-            standing_transition_pending=self._standing_transition_pending,
+            standing_transition_pending=bool(self._standing_transition_pending),
             tilt_radians=tilt_from_xyzw(policy_frame.orientation_xyzw),
             reference_sequence=(None if reference is None else reference.sequence),
             reference_age_ms=(None if reference is None else reference.age_ms()),
@@ -753,10 +781,16 @@ class HardwarePolicyAdapter:
             jnp.asarray(self._gait_phase, dtype=jnp.float32),
             jnp.asarray(self._standing_transition_pending),
             jnp.asarray(self._advance_gait_phase_before_step),
+            jnp.asarray(self._next_start_left),
         )
+        if not (
+            self._gait_command_is_moving(self._effective_command)
+            or self._standing_transition_pending != 0
+        ) and self._gait_command_is_moving(np.asarray(command)):
+            self._next_start_left = not self._next_start_left
         self._effective_command = np.asarray(command, dtype=np.float32)
         self._gait_phase = float(phase)
-        self._standing_transition_pending = bool(pending)
+        self._standing_transition_pending = int(pending)
         return self._effective_command.copy()
 
     def _resolve_slew_limited_command(
@@ -776,9 +810,10 @@ class HardwarePolicyAdapter:
                 jnp.asarray(self._gait_phase, dtype=jnp.float32),
                 jnp.asarray(self._standing_transition_pending),
                 jnp.asarray(self._advance_gait_phase_before_step),
+                jnp.asarray(self._next_start_left),
             )
             self._gait_target_command = np.asarray(command, dtype=np.float32)
-            self._standing_transition_pending = bool(pending)
+            self._standing_transition_pending = int(pending)
         elif not previous_gait_active:
             self._gait_target_command = np.zeros(3, dtype=np.float32)
             self._standing_transition_pending = False
@@ -792,9 +827,10 @@ class HardwarePolicyAdapter:
                 jnp.asarray(self._gait_phase, dtype=jnp.float32),
                 jnp.asarray(self._standing_transition_pending),
                 jnp.asarray(self._advance_gait_phase_before_step),
+                jnp.asarray(self._next_start_left),
             )
             self._gait_target_command = np.asarray(command, dtype=np.float32)
-            self._standing_transition_pending = bool(pending)
+            self._standing_transition_pending = int(pending)
             hold_effective_until_boundary = self._standing_transition_pending
             if not self._command_is_moving(self._gait_target_command):
                 self._standing_slew_active = True
@@ -814,7 +850,13 @@ class HardwarePolicyAdapter:
                 float(
                     np.mod(
                         self._gait_phase
-                        + self.env.config.gait.frequency_hz * self.control_timestep,
+                        + float(
+                            gait_frequency(
+                                jnp.asarray(self._effective_command),
+                                self.env.config.gait,
+                            )
+                        )
+                        * self.control_timestep,
                         1.0,
                     )
                 )
@@ -1021,6 +1063,11 @@ class HardwarePolicyAdapter:
             self._physical_target_limits[:, 1],
         )
 
+    def _gait_command_is_moving(self, command: np.ndarray) -> bool:
+        if self.env.config.gait.command_slew_enabled:
+            return bool(np.any(command != 0))
+        return self._command_is_moving(command)
+
     def _command_is_moving(self, command: np.ndarray) -> bool:
         command = np.asarray(command, dtype=np.float32)
         return bool(
@@ -1128,6 +1175,12 @@ def validate_hardware_config(
         or not 0.0 < config.joystick_command_scale <= 1.0
     ):
         raise ValueError("joystick_command_scale must be finite and in (0, 1]")
+    if (config.joystick_linear_slew_rate_mps2 is None) != (
+        config.joystick_yaw_slew_rate_rps2 is None
+    ):
+        raise ValueError(
+            "both joystick slew rates must be null to use checkpoint-only command scheduling"
+        )
     for name, value in (
         (
             "joystick_linear_slew_rate_mps2",
@@ -1135,7 +1188,9 @@ def validate_hardware_config(
         ),
         ("joystick_yaw_slew_rate_rps2", config.joystick_yaw_slew_rate_rps2),
     ):
-        if isinstance(value, bool) or not math.isfinite(value) or value <= 0.0:
+        if value is not None and (
+            isinstance(value, bool) or not math.isfinite(value) or value <= 0.0
+        ):
             raise ValueError(f"{name} must be positive and finite")
     if metadata is not None:
         definition = robot_definition(metadata.asset.asset)
@@ -1423,8 +1478,12 @@ def run_hardware_locomotion(
         allow_git_commit_mismatch=config.allow_git_commit_mismatch,
         upper_body_follow=config.upper_body_follow,
         command_slew_rates=(
-            config.joystick_linear_slew_rate_mps2,
-            config.joystick_yaw_slew_rate_rps2,
+            None
+            if config.joystick_linear_slew_rate_mps2 is None
+            else (
+                config.joystick_linear_slew_rate_mps2,
+                config.joystick_yaw_slew_rate_rps2,
+            )
         ),
     )
     validate_hardware_config(config, metadata)

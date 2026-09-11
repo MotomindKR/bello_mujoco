@@ -951,6 +951,11 @@ def test_remote_command_preflights_software_rendering() -> None:
     assert "mujoco.Renderer" in script
     assert "VideoWriter" in script
     assert script.index("mujoco.Renderer") < script.index("total_timesteps=768")
+    assert "load_locomotion_policy_runtime(checkpoint, use_viewer_model=True)" in script
+    assert "load_checkpoint_update(checkpoint) < 1" in script
+    assert script.index("preflight_checkpoint_restored") < script.rindex(
+        "uv run bello-train"
+    )
 
 
 def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:

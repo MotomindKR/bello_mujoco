@@ -323,9 +323,49 @@ preflight_overrides=(
 if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]; then
   preflight_overrides+=(video_enabled=false)
 fi
+if [[ "$experiment" == bello_* ]]; then
+  preflight_overrides+=("checkpoint_directory=checkpoints/vast-preflight-$run_name" checkpoint_name=smoke)
+fi
 
 uv run bello-train \
   "${preflight_overrides[@]}"
+
+if [[ "$experiment" == bello_* ]]; then
+  uv run python - "checkpoints/vast-preflight-$run_name" <<'PY'
+import sys
+from pathlib import Path
+
+import equinox as eqx
+import jax
+import numpy as np
+
+from bello_mujoco.evaluation.render import CameraConfig, render_policy_rollout
+from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
+from bello_mujoco.training.checkpoint import load_checkpoint_update
+
+paths = list(Path(sys.argv[1]).glob("smoke_*"))
+if len(paths) != 1:
+    raise RuntimeError(f"expected one preflight checkpoint, got {len(paths)}")
+checkpoint = paths[0]
+if load_checkpoint_update(checkpoint) < 1:
+    raise RuntimeError("preflight did not complete a PPO update")
+runtime = load_locomotion_policy_runtime(checkpoint, use_viewer_model=True)
+leaves = jax.tree_util.tree_leaves(eqx.filter(runtime.policy, eqx.is_array))
+if not all(np.all(np.isfinite(np.asarray(leaf))) for leaf in leaves):
+    raise RuntimeError("restored preflight policy contains nonfinite parameters")
+video = Path(sys.argv[1]) / "restored-policy.mp4"
+render_policy_rollout(
+    runtime.env, runtime.policy, output_path=video, command=(0.0, 0.0, 0.0),
+    steps=25, width=256, height=192, fps=50, stop_on_done=False,
+    camera_config=CameraConfig(), ppo_config=runtime.metadata.ppo,
+    observation_norm_state=runtime.normalization.observation,
+    obs_stack_size=runtime.metadata.ppo.policy.obs_stack_size,
+)
+if not video.is_file() or video.stat().st_size == 0:
+    raise RuntimeError("restored policy produced no video")
+print({"preflight_checkpoint_restored": str(checkpoint), "policy_video": str(video)})
+PY
+fi
 
 uv run bello-train \
   "${training_overrides[@]}" \

@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 
 import jax
+import jax.numpy as jnp
 import mujoco
 import numpy as np
 import pytest
@@ -17,6 +18,8 @@ import pytest
 from bello_mujoco.assets_pipeline.prepare import prepare_asset
 from bello_mujoco.training.checkpoint import CheckpointNormalizationState
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.evaluation.render import mujoco_policy_observation
+from bello_mujoco.imu import MujocoImu
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware import runtime as hardware_runtime
 from bello_mujoco.hardware.locomotion import (
@@ -528,6 +531,148 @@ def make_hardware_adapter(
     )
 
 
+def test_mini_scheduler_matches_hardware_through_stop_and_restart(mini_hardware_env):
+    from bello_mujoco.envs.locomotion import (
+        advance_gait_phase,
+        resolve_gait_command_transition,
+        next_start_preference,
+    )
+
+    env = mini_hardware_env
+    adapter = make_hardware_adapter(env, compose_mini_hardware_training_config())
+    command, phase, pending, preference = (
+        jnp.zeros(3),
+        jnp.asarray(0.0),
+        jnp.asarray(0),
+        jnp.asarray(True),
+    )
+    requests = (
+        [np.asarray([0.0, 0.4, 0.0])] * 15
+        + [np.zeros(3)] * 80
+        + [np.asarray([0.0, -0.4, 0.0])] * 15
+    )
+    saw_two_steps = False
+    for step, request in enumerate(requests):
+        next_phase = (
+            advance_gait_phase(
+                phase,
+                command,
+                env.command_config,
+                env.config.gait,
+                env.control_timestep,
+                pending,
+            )
+            if step
+            else phase
+        )
+        new_command, new_phase, new_pending = resolve_gait_command_transition(
+            command,
+            jnp.asarray(request),
+            phase,
+            next_phase,
+            pending,
+            env.command_config,
+            env.config.gait,
+            preference,
+            -env._locomotion_right_axis()[:2],
+            env.control_timestep if step else 0.0,
+        )
+        preference = next_start_preference(
+            command,
+            new_command,
+            pending,
+            preference,
+            env.command_config,
+            env.config.gait,
+        )
+        adapter._advance_gait_phase_before_step = step > 0
+        actual = adapter._resolve_effective_command(request)
+        np.testing.assert_allclose(actual, new_command, atol=2e-6)
+        assert adapter._gait_phase == pytest.approx(float(new_phase), abs=2e-6)
+        assert adapter._standing_transition_pending == int(new_pending)
+        saw_two_steps |= int(new_pending) == 2
+        command, phase, pending = new_command, new_phase, new_pending
+    assert saw_two_steps
+
+
+def test_mini_sole_geometry_and_substep_delay(mini_hardware_env):
+    from bello_mujoco.evaluation.render import mujoco_eval_state, reset_mujoco_data
+
+    env = mini_hardware_env
+    geometry = env._sole_reward_geometry
+    assert geometry.nominal_width > geometry.minimum_separation > 0.05
+    assert geometry.corners.shape == (2, 4, 3)
+    assert np.all(np.isfinite(geometry.corners))
+    old, new = jnp.zeros(env.model.mj_model.nu), jnp.ones(env.model.mj_model.nu)
+    for step in range(env.decimation):
+        np.testing.assert_array_equal(
+            env.delayed_ctrl(old, new, step), old if step < 2 else new
+        )
+    assert np.all(
+        env.model.mj_model.actuator_forcelimited[env.model.policy_ctrl_indices]
+    )
+    assert np.all(
+        np.asarray(env.model.actuator_peak_force)[env.model.policy_ctrl_indices] > 0
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    reset_mujoco_data(env, data)
+    state = mujoco_eval_state(
+        env,
+        data,
+        command=np.zeros(3),
+        last_action=np.zeros(env.action_size),
+        foot_contact_debounce_time=jnp.zeros(2),
+        last_foot_contact=jnp.ones(2, dtype=bool),
+        step_count=0,
+        episode_return=jnp.asarray(0.0),
+        episode_track_lin_vel_xy=jnp.asarray(0.0),
+        episode_length=jnp.asarray(0),
+    )
+    placement = env._foot_placement_inputs(state)
+    assert float(placement["foot_separation"]) == pytest.approx(
+        geometry.nominal_width, abs=1e-6
+    )
+    assert abs(float(placement["foot_foreaft"])) < 0.02
+    assert np.all(np.isfinite(placement["foot_clearance_samples"]))
+    foot_ids = jnp.asarray(env.model.foot_body_ids)
+
+    def separation(lateral_shift):
+        positions = state.data.xpos.at[foot_ids[0], 1].add(lateral_shift)
+        shifted = state.replace(data=replace(state.data, xpos=positions))
+        return env._foot_placement_inputs(shifted)["foot_separation"]
+
+    result = jax.jit(jax.vmap(separation))(
+        jnp.asarray([0.0, -2 * geometry.nominal_width])
+    )
+    np.testing.assert_allclose(
+        result, [geometry.nominal_width, -geometry.nominal_width], atol=1e-6
+    )
+
+
+def test_mini_uses_checkpoint_slew_and_rejects_mismatched_rates(mini_hardware_env):
+    adapter = make_hardware_adapter(
+        mini_hardware_env,
+        compose_mini_hardware_training_config(),
+        command_slew_rates=(1.0, 1.0),
+    )
+    assert adapter._command_slew_rates is None
+    with pytest.raises(ValueError, match="must match checkpoint"):
+        make_hardware_adapter(
+            mini_hardware_env,
+            compose_mini_hardware_training_config(),
+            command_slew_rates=(2.0, 1.0),
+        )
+    validate_hardware_config(
+        pose_hardware_config(
+            joystick_linear_slew_rate_mps2=None, joystick_yaw_slew_rate_rps2=None
+        )
+    )
+    with pytest.raises(ValueError, match="both joystick slew rates"):
+        validate_hardware_config(
+            pose_hardware_config(joystick_linear_slew_rate_mps2=None)
+        )
+
+
 def test_bello_mini_adapter_supports_live_upper_body(
     mini_hardware_env: BelloLocomotionEnv,
 ) -> None:
@@ -552,12 +697,12 @@ def test_bello_mini_adapter_supports_live_upper_body(
 
     result = adapter.step(frame, np.zeros(3, dtype=np.float32))
 
-    assert mini_hardware_env.model.imu_body_name == "pelvis_link"
+    assert mini_hardware_env.model.imu_body_name == "imu_link"
     assert mini_hardware_env.model.robot.default_imu_body_name == "imu_link"
     assert adapter.hardware_imu_frame_name == "imu_link"
     assert np.allclose(
         adapter.hardware_imu_to_policy_rotation,
-        np.asarray(((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        np.eye(3),
         atol=1.0e-8,
     )
     assert adapter.upper_body_follow_supported
@@ -612,7 +757,111 @@ def test_bello_mini_adapter_supports_live_upper_body(
         adapter.jog_elbow_yaw_offsets(left_delta_radians=0.1)
 
 
-def test_bello_mini_adapter_rotates_physical_imu_into_policy_pelvis(
+def test_bello_mini_training_matches_physical_accelerometer(mini_hardware_env) -> None:
+    env = mini_hardware_env
+    adapter = make_hardware_adapter(env, compose_mini_hardware_training_config())
+    spec = mujoco.MjSpec.from_file(str(env.model.xml_path))
+    site = spec.body("imu_sensor_link").add_site(
+        name="bello_imu_site", size=[0.001, 0.001, 0.001]
+    )
+    for name, kind in (
+        ("bello_imu_orientation", mujoco.mjtSensor.mjSENS_FRAMEQUAT),
+        ("bello_imu_gyro", mujoco.mjtSensor.mjSENS_GYRO),
+        ("bello_imu_accelerometer", mujoco.mjtSensor.mjSENS_ACCELEROMETER),
+    ):
+        spec.add_sensor(
+            name=name, type=kind, objtype=mujoco.mjtObj.mjOBJ_SITE, objname=site.name
+        )
+    model = spec.compile()
+    data = mujoco.MjData(model)
+    data.qpos[:] = env.model.default_qpos
+    data.qpos[env.model.root_qpos_adr + 2] += 0.3
+    data.qvel[env.model.root_qvel_adr + 3 : env.model.root_qvel_adr + 6] = (
+        0.5,
+        -0.7,
+        0.3,
+    )
+    data.qfrc_applied[env.model.root_qvel_adr + 4] = 2.0
+    data.ctrl[:] = adapter.nominal_physical_target
+    mujoco.mj_forward(model, data)
+    sample = MujocoImu.bind(model).sample(data)
+    source = model.body("imu_sensor_link").id
+    output = model.body("imu_link").id
+    pelvis = model.body("pelvis_link").id
+    np.testing.assert_allclose(data.xpos[source], data.xpos[output], atol=1e-9)
+    assert np.linalg.norm(data.xpos[source] - data.xpos[pelvis]) > 0.2
+    world_from_output = data.xmat[output].reshape(3, 3)
+    output_from_source = world_from_output.T @ data.xmat[source].reshape(3, 3)
+    frame = HardwareFrame(
+        positions=adapter.transform @ data.qpos[env.model.actuator_qpos_indices],
+        velocities=adapter.transform @ data.qvel[env.model.actuator_qvel_indices],
+        orientation_xyzw=data.xquat[output][[1, 2, 3, 0]],
+        angular_velocity=output_from_source @ sample.angular_velocity_xyz,
+        linear_acceleration=(
+            output_from_source @ sample.linear_acceleration_xyz
+            + world_from_output.T @ np.array([0.0, 0.0, -9.80665])
+        ),
+        max_motor_age_ms=0,
+        imu_age_ms=0,
+        max_group_age_ms=0,
+        sample_span_ms=0.0,
+        state_frame_round_trip_ms=0.0,
+        group_states=(),
+        group_causes=(),
+        group_details=(),
+    )
+    expected = mujoco_policy_observation(
+        env,
+        data,
+        command=np.zeros(3),
+        last_action=np.zeros(env.action_size),
+        step_count=0,
+    )
+    np.testing.assert_allclose(
+        adapter.observation(frame, np.zeros(3)), expected, atol=2e-6
+    )
+    legacy = replace(env, model=replace(env.model, imu_body_name="pelvis_link"))
+    misplaced = mujoco_policy_observation(
+        legacy,
+        data,
+        command=np.zeros(3),
+        last_action=np.zeros(env.action_size),
+        step_count=0,
+    )
+    # Compare physical accelerations in common world axes, not the different yaw frames.
+    training_world = world_from_output @ (
+        np.asarray(expected[:3]) / env.config.observation.scale.base_lin_acc
+    )
+    pelvis_world = data.xmat[pelvis].reshape(3, 3) @ (
+        np.asarray(misplaced[:3]) / env.config.observation.scale.base_lin_acc
+    )
+    assert np.linalg.norm(training_world - pelvis_world) > 0.01
+
+
+def test_legacy_mini_pelvis_checkpoint_keeps_its_frame_rotation(
+    mini_hardware_env,
+) -> None:
+    config = compose_mini_hardware_training_config()
+    config = replace(
+        config,
+        asset_config=replace(
+            config.asset_config,
+            imu_config=replace(config.asset_config.imu_config, body_name="pelvis_link"),
+        ),
+    )
+    env = replace(
+        mini_hardware_env,
+        model=replace(mini_hardware_env.model, imu_body_name="pelvis_link"),
+    )
+    adapter = make_hardware_adapter(env, config)
+    np.testing.assert_allclose(
+        adapter.hardware_imu_to_policy_rotation,
+        np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        atol=1e-8,
+    )
+
+
+def test_bello_mini_adapter_uses_published_imu_axes(
     mini_hardware_env: BelloLocomotionEnv,
 ) -> None:
     config = compose_mini_hardware_training_config()

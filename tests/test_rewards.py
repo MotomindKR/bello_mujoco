@@ -21,6 +21,110 @@ from bello_mujoco.envs.rewards import (
 )
 
 
+def test_standing_alignment_deadband_recovery_and_blend():
+    config = reward_config(
+        stand_foot_foreaft=-4.0,
+        stand_foot_width=-2.0,
+        standing=StandingRewardConfig(recovery_relaxation=True),
+    )
+    inputs = reward_inputs(
+        foot_separation=jnp.asarray(0.22), nominal_stance_width=jnp.asarray(0.22)
+    )
+    compute = jax.jit(lambda inputs: compute_locomotion_reward(config, inputs)[0])
+    assert float(compute(inputs)) == 0.0
+    assert float(compute(inputs.replace(foot_foreaft=jnp.asarray(0.019)))) == 0.0
+    misaligned = inputs.replace(foot_foreaft=jnp.asarray(0.08))
+    assert float(compute(misaligned)) < 0.0
+    assert (
+        float(compute(misaligned.replace(standing_reward_blend=jnp.asarray(0.0))))
+        == 0.0
+    )
+    assert (
+        float(compute(misaligned.replace(foot_contact=jnp.asarray([1.0, 0.0])))) == 0.0
+    )
+    assert float(compute(misaligned.replace(lin_vel_xy=jnp.asarray([0.6, 0.0])))) == 0.0
+
+
+def test_crossing_uses_signed_separation_in_every_mode():
+    config = reward_config(foot_crossing=-8.0)
+    for moving in (False, True):
+        inputs = reward_inputs(
+            minimum_foot_separation=jnp.asarray(0.12),
+            foot_separation=jnp.asarray(0.22),
+            gait_active=jnp.asarray(moving),
+        )
+        normal = compute_locomotion_reward(config, inputs)[0]
+        crossed = compute_locomotion_reward(
+            config, inputs.replace(foot_separation=jnp.asarray(-0.22))
+        )[0]
+        assert float(normal) == 0.0
+        assert float(crossed) < -1.0
+
+
+def test_clearance_peaks_mid_swing_and_checks_each_sole_corner():
+    config = reward_config(
+        gait_swing_clearance=-1.0, gait=GaitRewardConfig(phase_shaped_clearance=True)
+    )
+    inputs = reward_inputs(
+        gait_active=jnp.asarray(True),
+        desired_foot_contact=jnp.asarray([0.0, 1.0]),
+        swing_progress=jnp.asarray([0.5, 0.0]),
+        foot_clearance_samples=jnp.full((2, 4), 0.08),
+    )
+    assert float(compute_locomotion_reward(config, inputs)[0]) == 0.0
+    toe_low = inputs.replace(
+        foot_clearance_samples=inputs.foot_clearance_samples.at[0, 0].set(0.0)
+    )
+    assert float(compute_locomotion_reward(config, toe_low)[0]) < 0.0
+    landing = toe_low.replace(swing_progress=jnp.asarray([1.0, 0.0]))
+    assert float(compute_locomotion_reward(config, landing)[0]) == pytest.approx(
+        0.0, abs=1e-8
+    )
+
+
+def test_stumble_grace_windows_and_contact_load():
+    config = reward_config(foot_stumble=-2.0)
+    inputs = reward_inputs(
+        gait_active=jnp.asarray(True),
+        desired_foot_contact=jnp.asarray([0.0, 1.0]),
+        swing_progress=jnp.asarray([0.5, 0.0]),
+        foot_peak_normal_force=jnp.asarray([0.3, 1.0]),
+    )
+    assert float(compute_locomotion_reward(config, inputs)[0]) < 0.0
+    for phase in (0.05, 0.95):
+        assert (
+            float(
+                compute_locomotion_reward(
+                    config, inputs.replace(swing_progress=jnp.asarray([phase, 0.0]))
+                )[0]
+            )
+            == 0.0
+        )
+    assert (
+        float(
+            compute_locomotion_reward(
+                config, inputs.replace(foot_peak_normal_force=jnp.zeros(2))
+            )[0]
+        )
+        == 0.0
+    )
+
+
+def test_standing_recovery_penalizes_loaded_sliding_not_unloaded_steps():
+    config = reward_config(
+        foot_stumble=-2.0, standing=StandingRewardConfig(recovery_relaxation=True)
+    )
+    inputs = reward_inputs(
+        swing_progress=jnp.zeros(2),
+        lin_vel_xy=jnp.asarray([0.6, 0.0]),
+        foot_linear_velocity=jnp.asarray([[0.3, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+        foot_peak_normal_force=jnp.asarray([0.3, 1.0]),
+    )
+    assert float(compute_locomotion_reward(config, inputs)[0]) < 0.0
+    unloaded = inputs.replace(foot_peak_normal_force=jnp.asarray([0.0, 1.0]))
+    assert float(compute_locomotion_reward(config, unloaded)[0]) == 0.0
+
+
 def reward_config(
     *,
     tracking: TrackingRewardConfig = TrackingRewardConfig(),
@@ -871,6 +975,11 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         weights=RewardWeights(**{field.name: 1.0 for field in fields(RewardWeights)})
     )
     moving_inputs = reward_inputs(
+        swing_progress=jnp.asarray([0.5, 0.0]),
+        foot_foreaft=jnp.asarray(0.08),
+        foot_separation=jnp.asarray(-0.2),
+        nominal_stance_width=jnp.asarray(0.2),
+        minimum_foot_separation=jnp.asarray(0.12),
         command=jnp.asarray([0.5, 0.5, 0.5]),
         lin_vel_z=jnp.asarray(1.0),
         ang_vel_xy=jnp.asarray([1.0, 1.0]),

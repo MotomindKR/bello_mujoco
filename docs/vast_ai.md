@@ -59,7 +59,10 @@ The remote bootstrap uses OSMesa for native diagnostic videos so rendering does
 not depend on a provider's NVIDIA EGL stack or consume training VRAM. Before the
 bounded rollout, it renders one frame and encodes it to MP4. The rollout disables
 W&B; non-TWIST preflights also disable their longer configured videos because the
-dedicated render probe has already exercised that path. The real job forces W&B
+dedicated render probe has already exercised that path. Locomotion preflights
+also require a completed PPO update, restore the saved checkpoint, check finite
+policy parameters, and render 25 native frames from the restored policy before
+starting the full run. The real job forces W&B
 on and assigns the resolved run/checkpoint names. Every produced
 checkpoint records the same full commit selected by the launcher, and W&B logs
 that commit with the run configuration.

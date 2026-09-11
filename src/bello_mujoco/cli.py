@@ -151,8 +151,8 @@ class HardwareCommandConfig:
     remote_endpoint: str | None
     remote_staleness_ms: int
     joystick_command_scale: float
-    joystick_linear_slew_rate_mps2: float
-    joystick_yaw_slew_rate_rps2: float
+    joystick_linear_slew_rate_mps2: float | None
+    joystick_yaw_slew_rate_rps2: float | None
     motion_path: Path | None
     end_effector_payload_mass_kg: float | None
     duration_seconds: float | None

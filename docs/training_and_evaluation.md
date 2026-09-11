@@ -30,6 +30,10 @@ velocity-error shaping, and raises the healthy-survival weight from `1.5` to
 impact terms scale automatically by robot weight or actuator limit. The selected
 robot contract supplies its planar tracking frame and crouched joint defaults.
 Their periodic and final evaluation videos command 0.5 m/s forward motion.
+Mini actor feedback uses the physical IMU position and the published `imu_link`
+axes; command and reward velocity remain pelvis-relative. New Mini runs must be
+trained with this convention. Existing pelvis-origin checkpoints retain their
+saved convention and are not repaired by changing the training profile.
 `motion` is bounded BeyondMimic tracking; the TWIST experiments are documented
 separately. The
 shared `configs/train/locomotion.yaml` layer is internal and is not a public
@@ -62,6 +66,16 @@ public command.
 
 ## Locomotion recipe
 
+Native locomotion evaluation and periodic/final training videos preserve the
+saved observation low-pass filter, noise-before-filter and residual noise, and
+per-episode observation delay. Feedback advances once per policy step and is
+reseeded on episode reset. Re-reading a frame to update a gamepad command does
+not advance the filter or redraw noise. Observation randomness uses the saved
+`env_config.model_randomization.seed`, independently of `action_seed`; deterministic
+actions do not disable configured observation noise. This evaluates the saved
+feedback model. Mini also applies its saved 10 ms motor-command transport delay
+at physics-substep resolution; this is not a complete CAN scheduling simulation.
+
 The Bello profile uses 13 policy joints and holds 12 arm joints. Bello Mini uses
 14 policy joints (waist yaw, waist roll, and 12 leg joints) and holds its 14 arm
 joints. Commands contain pelvis-frame `[lin_vel_x, lin_vel_y, ang_vel_yaw]`.
@@ -80,19 +94,33 @@ staggered across the batch, so only a small fraction resamples on each control
 step instead of changing the whole cohort every ten seconds. Each resample can
 train a transition in either direction between standing and moving commands.
 
-Moving commands activate a fixed per-leg gait clock: 0.90 Hz for both Bello and
-the rounded Mini setting. The legs are offset by half a cycle and use a 60%
+Moving commands activate a per-leg gait clock: 0.90 Hz for Bello and
+`(1.6 + 0.35 * norm(command_xy)) / 2` Hz for Mini. The legs are offset by half a cycle and use a 60%
 stance fraction, which provides short double-support intervals. The actor
 receives sine/cosine phase and a gait-active bit. Moving training resets sample
 uniformly across the full gait cycle to keep parallel environments phase-diverse.
-Native evaluation and the hardware runner initialize this clock at phase zero.
-Once gait is active, zero is a
+Mini native evaluation and hardware starts select the same-side swing leg for
+lateral commands, or alternate starting preference for straight commands.
+In baseline Bello, once gait is active, zero is a
 standing request rather than an immediate policy command. The effective moving
 command remains active until the next scheduled half-cycle boundary, even when
 the request arrives during double support. The step that reaches the boundary
 still receives gait rewards; the following policy step observes a zero command
 and inactive gait component and begins receiving standing rewards. Environments
 initialized in standing start there directly.
+
+Mini extends that baseline stop sequence by one more physical step. Its command
+decelerates while the clock remains active through two half-cycle boundaries,
+then standing rewards ramp in over 0.2 seconds. Its new standing rewards align
+sole fore/aft position and nominal width; signed separation discourages crossing
+in every mode. Phase-shaped toe/heel clearance and unexpected mid-swing contact
+penalties address scuffing. Alignment/stillness pressure relaxes during recovery.
+See [the formulation and configuration](training_configuration.md#locomotion-reward-reward_config).
+The Mini profile halves horizontal command ranges to +/-0.5 m/s per axis and
+enforces the configured actuator effort limits. These changes require fresh
+training; they do not repair existing policy weights. Validate phase-swept stops,
+left/right starts, reversals, turns, and pushes before a long training run or
+deployment. No new trained-policy performance is implied by unit-test success.
 
 The canonical reward combines healthy survival, command tracking, base
 stability, normalized torque costs, moving-only body-weight-normalized lower-body

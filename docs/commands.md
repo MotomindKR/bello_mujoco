@@ -453,8 +453,8 @@ Configuration source: `configs/commands/hardware.yaml`.
 | `remote_endpoint` | string or `null`; `null` | locomotion | Required plaintext URL of the visualizer's `RemoteCommandService`, for example `http://visualizer-host:50054`. |
 | `remote_staleness_ms` | positive integer; `200` | locomotion | Maximum age of the latest remote-command sample before the command becomes zero and the stream reconnects. |
 | `joystick_command_scale` | float in `(0, 1]`; `0.6` | locomotion | Cap each supported direction at this fraction of its checkpoint limit while preserving the trained inner bound and minimum moving speed. Full stick requests 60% of the trained outer limit by default. |
-| `joystick_linear_slew_rate_mps2` | positive float; `1.0` | locomotion | Maximum magnitude of the per-second change in the policy's planar velocity command. |
-| `joystick_yaw_slew_rate_rps2` | positive float; `1.0` | locomotion | Maximum per-second change in the policy's yaw-velocity command. |
+| `joystick_linear_slew_rate_mps2` | positive float or `null`; `1.0` | locomotion | Planar command slew rate. Must match a checkpoint-owned limiter when present; `null` uses its settings, or disables the external limiter for legacy checkpoints. |
+| `joystick_yaw_slew_rate_rps2` | positive float or `null`; `1.0` | locomotion | Yaw command slew rate, with the same checkpoint matching rule. Both rates must be specified or null together. |
 | `motion_path` | path or `null`; `null` | motion | Override the checkpoint's bound motion location. Its schema and content hash must still match. |
 | `end_effector_payload_mass_kg` | nonnegative float or `null`; `null` | motion | Declare the physical mass carried by each hand. `null` uses the checkpoint value; an explicit mismatch is rejected before control is acquired. |
 | `duration_seconds` | positive float or `null`; `null` | all | Maximum post-`RUN` policy duration. `null` runs until operator exit, interruption, or a safety failure. |

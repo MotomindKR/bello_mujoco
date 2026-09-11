@@ -217,6 +217,10 @@ class RewardWeights:
     stand_contact: float = -0.5
     stand_upright: float = -8.0
     stand_waist_deviation: float = 0.0
+    stand_foot_foreaft: float = 0.0
+    stand_foot_width: float = 0.0
+    foot_crossing: float = 0.0
+    foot_stumble: float = 0.0
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
     joint_limit: float = -1.0
@@ -261,6 +265,11 @@ class StandingRewardConfig:
     foot_heading_deadband: float = math.radians(5.0)
     foot_heading_scale: float = math.radians(15.0)
     hip_roll_continuous_torque_limit: float = 10.0
+    position_deadband: float = 0.02
+    position_scale: float = 0.03
+    recovery_relaxation: bool = False
+    recovery_speed: float = 0.25
+    recovery_tilt: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -272,6 +281,12 @@ class GaitRewardConfig:
     joint_force_apply_while_standing: bool = False
     touchdown_force_soft_limit_body_weights: float = 0.6
     touchdown_vertical_speed_scale: float = 0.3
+    phase_shaped_clearance: bool = False
+    crossing_scale: float = 0.02
+    sole_clearance_margin: float = 0.01
+    stumble_grace_fraction: float = 0.15
+    stumble_load_body_weights: float = 0.05
+    stumble_speed_scale: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -329,6 +344,9 @@ class RewardConfig:
                 "stand_contact",
                 "stand_still",
                 "stand_foot_heading",
+                "stand_foot_foreaft",
+                "stand_foot_width",
+                "foot_stumble",
             )
         )
 
@@ -339,6 +357,7 @@ class RewardConfig:
             or self.enabled("gait_swing_clearance")
             or self.enabled("stand_foot_motion")
             or self.enabled("stand_foot_heading")
+            or self.enabled("foot_crossing")
         )
 
     @property
@@ -418,6 +437,22 @@ class RewardInputs:
     done: jax.Array
     control_timestep: jax.Array
     action_clip_limit: jax.Array
+    standing_reward_blend: jax.Array = 1.0
+    foot_foreaft: jax.Array = 0.0
+    foot_separation: jax.Array = 0.0
+    nominal_stance_width: jax.Array = 0.0
+    minimum_foot_separation: jax.Array = 0.0
+    foot_clearance_samples: jax.Array | None = None
+    swing_progress: jax.Array | None = None
+
+
+def positive_huber(value: jax.Array) -> jax.Array:
+    value = jnp.maximum(value, 0.0)
+    return jnp.where(value <= 1.0, 0.5 * value**2, value - 0.5)
+
+
+def deadband_huber(error: jax.Array, deadband: float, scale: float) -> jax.Array:
+    return positive_huber((jnp.abs(error) - deadband) / scale)
 
 
 def compute_locomotion_reward(
@@ -430,7 +465,9 @@ def compute_locomotion_reward(
     if command_config is None:
         command_config = CommandConfig()
 
-    standing_command = command_is_standing(inputs.command, command_config)
+    standing_command = (
+        command_is_standing(inputs.command, command_config) & ~inputs.gait_active
+    )
     standing_double_support = standing_command & jnp.all(inputs.foot_contact)
     linear_still = jnp.abs(inputs.command[:2]) < command_config.linear_deadband
     linear_target = jnp.where(linear_still, 0.0, inputs.command[:2])
@@ -664,6 +701,69 @@ def compute_locomotion_reward(
     gait_swing_clearance = gait_active * jnp.mean(
         desired_swing * normalized_clearance_shortfall**2
     )
+    if config.gait.phase_shaped_clearance:
+        if inputs.swing_progress is None or inputs.foot_clearance_samples is None:
+            raise ValueError(
+                "phase-shaped clearance requires sole samples and swing progress"
+            )
+        target = (
+            config.gait.swing_clearance_target
+            * jnp.sin(jnp.pi * inputs.swing_progress) ** 2
+        )
+        shortfall = jnp.maximum(target[:, None] - inputs.foot_clearance_samples, 0.0)
+        gait_swing_clearance = gait_active * jnp.mean(
+            desired_swing[:, None]
+            * (shortfall / config.gait.swing_clearance_target) ** 2
+        )
+
+    recovery_scale = jnp.asarray(1.0)
+    if config.standing.recovery_relaxation:
+        disturbance = jnp.maximum(
+            jnp.linalg.norm(inputs.lin_vel_xy - inputs.command[:2])
+            / config.standing.recovery_speed,
+            jnp.linalg.norm(inputs.projected_gravity[:2])
+            / math.sin(config.standing.recovery_tilt),
+        )
+        recovery_scale = jnp.clip(2.0 - disturbance, 0.0, 1.0)
+        gait_contact *= recovery_scale
+        stand_foot_motion *= recovery_scale * jnp.all(inputs.foot_contact)
+        stand_foot_heading *= recovery_scale
+        stand_still *= recovery_scale
+    alignment_gate = (standing_double_support & ~inputs.done) * recovery_scale
+    stand_foot_foreaft = alignment_gate * deadband_huber(
+        inputs.foot_foreaft,
+        config.standing.position_deadband,
+        config.standing.position_scale,
+    )
+    stand_foot_width = alignment_gate * deadband_huber(
+        inputs.foot_separation - inputs.nominal_stance_width,
+        config.standing.position_deadband,
+        config.standing.position_scale,
+    )
+    foot_crossing = positive_huber(
+        (inputs.minimum_foot_separation - inputs.foot_separation)
+        / config.gait.crossing_scale
+    )
+    foot_stumble = jnp.asarray(0.0)
+    if config.enabled("foot_stumble"):
+        if inputs.swing_progress is None:
+            raise ValueError("foot_stumble requires swing progress")
+        grace = config.gait.stumble_grace_fraction
+        mid_swing = (inputs.swing_progress > grace) & (
+            inputs.swing_progress < 1.0 - grace
+        )
+        load = jnp.maximum(touchdown_load - config.gait.stumble_load_body_weights, 0.0)
+        severity = jnp.tanh(load / config.gait.stumble_load_body_weights)
+        motion = jnp.tanh((foot_speed / config.gait.stumble_speed_scale) ** 2)
+        # Standing recovery has no scheduled swing; detect loaded sliding instead.
+        foot_stumble = jnp.mean(
+            severity
+            * jnp.where(
+                inputs.gait_active,
+                desired_swing * mid_swing * (0.5 + 0.5 * motion),
+                motion,
+            )
+        )
 
     values = {
         "track_lin_vel_xy": track_lin_vel_xy,
@@ -692,6 +792,10 @@ def compute_locomotion_reward(
         "stand_contact": stand_contact,
         "stand_upright": stand_upright,
         "stand_waist_deviation": stand_waist_deviation,
+        "stand_foot_foreaft": stand_foot_foreaft,
+        "stand_foot_width": stand_foot_width,
+        "foot_crossing": foot_crossing,
+        "foot_stumble": foot_stumble,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
@@ -704,6 +808,9 @@ def compute_locomotion_reward(
         "termination": inputs.done.astype(jnp.float32),
     }
     timestep = jnp.asarray(inputs.control_timestep, dtype=jnp.float32)
+    for name in values:
+        if name.startswith("stand_"):
+            values[name] *= inputs.standing_reward_blend
     weights = reward_terms(config)
     terms = {
         f"reward/{name}": value * weights[name] * timestep
@@ -721,6 +828,25 @@ def reward_terms(config: RewardConfig) -> dict[str, float]:
 
 
 def validate_reward_config(config: RewardConfig) -> None:
+    for name, value in {
+        "standing.position_scale": config.standing.position_scale,
+        "standing.recovery_speed": config.standing.recovery_speed,
+        "standing.recovery_tilt": config.standing.recovery_tilt,
+        "gait.crossing_scale": config.gait.crossing_scale,
+        "gait.stumble_load_body_weights": config.gait.stumble_load_body_weights,
+        "gait.stumble_speed_scale": config.gait.stumble_speed_scale,
+    }.items():
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be positive and finite")
+    for value in (config.standing.position_deadband, config.gait.sole_clearance_margin):
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(
+                "sole margin and position deadband must be finite and nonnegative"
+            )
+    if not 0 <= config.gait.stumble_grace_fraction < 0.5:
+        raise ValueError("gait.stumble_grace_fraction must be in [0, 0.5)")
+    if not config.standing.recovery_tilt < math.pi / 2:
+        raise ValueError("standing.recovery_tilt must be below pi/2")
     for name, weight in reward_terms(config).items():
         if not math.isfinite(weight):
             raise ValueError(f"weights.{name} must be finite, got {weight}")

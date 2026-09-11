@@ -34,6 +34,7 @@ from bello_mujoco.envs.rewards import (
     validate_range,
     validate_reward_config,
 )
+from bello_mujoco.envs.foot_geometry import sole_geometry
 from bello_mujoco.sim import (
     BelloModel,
     ModelRandomizationConfig,
@@ -60,8 +61,9 @@ class BelloState:
     foot_contact_debounce_time: jax.Array
     last_foot_contact: jax.Array
     command: jax.Array
+    command_target: jax.Array
     gait_phase: jax.Array
-    standing_transition_pending: jax.Array
+    standing_transition_pending: jax.Array  # Boundaries left; -1 waits for zero command.
     command_resample_step_count: jax.Array
     step_count: jax.Array
     episode_return: jax.Array
@@ -70,6 +72,8 @@ class BelloState:
     last_episode_return: jax.Array
     last_episode_track_lin_vel_xy: jax.Array
     last_episode_length: jax.Array
+    next_start_left: jax.Array
+    standing_reward_blend: jax.Array
 
 
 @dataclass(frozen=True)
@@ -178,10 +182,20 @@ class TorsoComCurriculumConfig:
 
 @dataclass(frozen=True)
 class GaitConfig:
-    """Fixed alternating gait clock shared by training, evaluation, and hardware."""
+    """Alternating gait clock shared by training, evaluation, and hardware."""
 
     frequency_hz: float = 0.9
     stance_fraction: float = 0.60
+    speed_dependent: bool = False
+    step_frequency_base: float = 1.6
+    step_frequency_speed_gain: float = 0.35
+    stop_extra_steps: int = 0
+    command_slew_enabled: bool = False
+    command_linear_slew_rate: float = 1.0
+    command_yaw_slew_rate: float = 1.0
+    directional_start: bool = False
+    lateral_start_deadband: float = 0.1
+    standing_reward_ramp_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.frequency_hz) or self.frequency_hz <= 0.0:
@@ -190,6 +204,76 @@ class GaitConfig:
             0.5 <= self.stance_fraction < 1.0
         ):
             raise ValueError("gait.stance_fraction must be in [0.5, 1.0)")
+        if type(self.stop_extra_steps) is not int or self.stop_extra_steps < 0:
+            raise ValueError("gait.stop_extra_steps must be a nonnegative integer")
+        for name in (
+            "step_frequency_base",
+            "step_frequency_speed_gain",
+            "lateral_start_deadband",
+            "standing_reward_ramp_seconds",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"gait.{name} must be finite and nonnegative")
+        if self.step_frequency_base <= 0:
+            raise ValueError("gait.step_frequency_base must be positive")
+        for value in (self.command_linear_slew_rate, self.command_yaw_slew_rate):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError("gait command slew rates must be positive and finite")
+
+
+def gait_frequency(command: jax.Array, config: GaitConfig) -> jax.Array:
+    if config.speed_dependent:
+        return 0.5 * (
+            config.step_frequency_base
+            + config.step_frequency_speed_gain
+            * jnp.linalg.norm(command[..., :2], axis=-1)
+        )
+    return jnp.full(command.shape[:-1], config.frequency_hz, dtype=jnp.float32)
+
+
+def gait_is_active(
+    command: jax.Array,
+    command_config: CommandConfig,
+    pending: jax.Array | int = 0,
+    gait_config: GaitConfig = GaitConfig(),
+) -> jax.Array:
+    moving = (
+        jnp.any(command != 0, axis=-1)
+        if gait_config.command_slew_enabled
+        else command_is_moving(command, command_config)
+    )
+    return moving | (jnp.asarray(pending) != 0)
+
+
+def next_start_preference(
+    command: jax.Array,
+    next_command: jax.Array,
+    pending: jax.Array,
+    preference: jax.Array,
+    command_config: CommandConfig,
+    gait_config: GaitConfig = GaitConfig(),
+) -> jax.Array:
+    starting = ~gait_is_active(
+        command, command_config, pending, gait_config
+    ) & gait_is_active(next_command, command_config, 0, gait_config)
+    return jnp.where(starting, ~jnp.asarray(preference), preference)
+
+
+def advance_standing_blend(
+    blend: jax.Array,
+    command: jax.Array,
+    pending: jax.Array,
+    command_config: CommandConfig,
+    gait_config: GaitConfig,
+    dt: float,
+) -> jax.Array:
+    increment = dt / max(gait_config.standing_reward_ramp_seconds, dt)
+    return jnp.where(
+        gait_is_active(command, command_config, pending, gait_config),
+        0.0,
+        jnp.minimum(jnp.asarray(blend) + increment, 1.0),
+    )
 
 
 def advance_gait_phase(
@@ -198,25 +282,38 @@ def advance_gait_phase(
     command_config: CommandConfig,
     gait_config: GaitConfig,
     control_timestep: float,
+    standing_transition_pending: jax.Array = 0,
 ) -> jax.Array:
     """Advance the normalized gait clock, resetting it for standing commands."""
 
     next_phase = jnp.mod(
-        phase
-        + jnp.asarray(gait_config.frequency_hz * control_timestep, dtype=jnp.float32),
+        phase + gait_frequency(command, gait_config) * control_timestep,
         1.0,
     )
-    return jnp.where(command_is_moving(command, command_config), next_phase, 0.0)
+    next_phase = jnp.where(
+        jnp.asarray(standing_transition_pending) < 0, phase, next_phase
+    )
+    return jnp.where(
+        gait_is_active(
+            command, command_config, standing_transition_pending, gait_config
+        ),
+        next_phase,
+        0.0,
+    )
 
 
 def gait_phase_features(
     phase: jax.Array,
     command: jax.Array,
     command_config: CommandConfig,
+    standing_transition_pending: jax.Array = 0,
+    gait_config: GaitConfig = GaitConfig(),
 ) -> jax.Array:
     """Return sin/cos phase plus an explicit active bit; standing is all zero."""
 
-    active = command_is_moving(command, command_config)
+    active = gait_is_active(
+        command, command_config, standing_transition_pending, gait_config
+    )
     angle = 2.0 * jnp.pi * phase
     features = jnp.stack(
         (jnp.sin(angle), jnp.cos(angle), active.astype(jnp.float32)), axis=-1
@@ -242,20 +339,58 @@ def resolve_gait_command_transition(
     next_phase: jax.Array,
     standing_transition_pending: jax.Array,
     command_config: CommandConfig,
+    gait_config: GaitConfig = GaitConfig(),
+    next_start_left: jax.Array = True,
+    left_axis: jax.Array = (0.0, 1.0),
+    elapsed_seconds: float | jax.Array = 0.0,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Resolve a command request without interrupting an active gait step.
 
-    Standing requests remain pending until the next half-cycle phase boundary.
-    Moving requests replace the effective command immediately.
+    Positive pending counts remaining half-cycle boundaries; -1 waits at double
+    support for the command slew to finish. Zero means no stop is pending.
     """
 
     command = jnp.asarray(command, dtype=jnp.float32)
     requested_command = jnp.asarray(requested_command, dtype=jnp.float32)
     previous_phase = jnp.asarray(previous_phase, dtype=jnp.float32)
     next_phase = jnp.asarray(next_phase, dtype=jnp.float32)
-    pending = jnp.asarray(standing_transition_pending, dtype=bool)
+    pending = jnp.asarray(standing_transition_pending, dtype=jnp.int32)
     requested_standing = command_is_standing(requested_command, command_config)
-    command_standing = command_is_standing(command, command_config)
+    command_standing = ~gait_is_active(command, command_config, pending, gait_config)
+    lateral = jnp.sum(requested_command[..., :2] * jnp.asarray(left_axis), axis=-1)
+    start_left = jnp.where(
+        jnp.abs(lateral) > gait_config.lateral_start_deadband,
+        lateral > 0,
+        next_start_left,
+    )
+    start_phase = (
+        jnp.where(start_left, 0.5, 0.0) if gait_config.directional_start else 0.0
+    )
+    if gait_config.command_slew_enabled:
+        target = jnp.where(requested_standing[..., None], 0.0, requested_command)
+        effective = slew_command(command, target, gait_config, elapsed_seconds)
+        crossed = ((previous_phase < 0.5) & (next_phase >= 0.5)) | (
+            next_phase < previous_phase
+        )
+        remaining = jnp.where(pending != 0, pending, 1 + gait_config.stop_extra_steps)
+        remaining -= ((pending > 0) & crossed).astype(jnp.int32)
+        remaining = jnp.where(remaining == 0, -1, remaining)
+        stopping = requested_standing & ~command_standing
+        if not command_config.standing_transitions_enabled:
+            remaining = jnp.full_like(remaining, -1)
+        finished = (remaining < 0) & jnp.all(effective == 0, axis=-1)
+        pending_next = jnp.where(stopping & ~finished, remaining, 0)
+        phase = jnp.where(
+            command_standing & ~requested_standing, start_phase, next_phase
+        )
+        # Buffer complete: hold double support until the velocity slew reaches zero.
+        phase = jnp.where(pending_next < 0, jnp.floor(phase * 2) * 0.5, phase)
+        phase = jnp.where(
+            requested_standing & (pending_next == 0) & jnp.all(effective == 0, axis=-1),
+            0.0,
+            phase,
+        )
+        return effective, phase, pending_next
 
     if not command_config.standing_transitions_enabled:
         reset_phase = requested_standing | command_standing
@@ -265,15 +400,19 @@ def resolve_gait_command_transition(
                 jnp.zeros_like(requested_command),
                 requested_command,
             ),
-            jnp.where(reset_phase, 0.0, next_phase),
+            jnp.where(
+                reset_phase, jnp.where(requested_standing, 0.0, start_phase), next_phase
+            ),
             jnp.zeros_like(pending),
         )
 
     crossed_half_cycle = (previous_phase < 0.5) & (next_phase >= 0.5)
     crossed_cycle = next_phase < previous_phase
-    reached_next_pattern = pending & (crossed_half_cycle | crossed_cycle)
+    remaining = jnp.where(pending > 0, pending, 1 + gait_config.stop_extra_steps)
+    reached_next_pattern = (pending > 0) & (crossed_half_cycle | crossed_cycle)
+    remaining = remaining - reached_next_pattern.astype(jnp.int32)
     finish_standing_transition = (
-        requested_standing & ~command_standing & reached_next_pattern
+        requested_standing & ~command_standing & (remaining == 0)
     )
     keep_moving_until_boundary = (
         requested_standing & ~command_standing & ~finish_standing_transition
@@ -287,8 +426,42 @@ def resolve_gait_command_transition(
         effective_command,
     )
     reset_phase = finish_standing_transition | command_standing
-    effective_phase = jnp.where(reset_phase, 0.0, next_phase)
-    return effective_command, effective_phase, keep_moving_until_boundary
+    effective_phase = jnp.where(
+        reset_phase, jnp.where(requested_standing, 0.0, start_phase), next_phase
+    )
+    return (
+        effective_command,
+        effective_phase,
+        jnp.where(keep_moving_until_boundary, remaining, 0),
+    )
+
+
+def slew_command(
+    command: jax.Array,
+    target: jax.Array,
+    config: GaitConfig,
+    elapsed_seconds: float | jax.Array,
+) -> jax.Array:
+    delta = target - command
+    planar_norm = jnp.linalg.norm(delta[..., :2], axis=-1, keepdims=True)
+    planar_scale = jnp.minimum(
+        1.0,
+        config.command_linear_slew_rate
+        * elapsed_seconds
+        / jnp.maximum(planar_norm, 1e-8),
+    )
+    planar = jnp.where(
+        planar_scale >= 1.0,
+        target[..., :2],
+        command[..., :2] + delta[..., :2] * planar_scale,
+    )
+    yaw_change = config.command_yaw_slew_rate * elapsed_seconds
+    yaw = jnp.where(
+        jnp.abs(delta[..., 2]) <= yaw_change,
+        target[..., 2],
+        command[..., 2] + jnp.clip(delta[..., 2], -yaw_change, yaw_change),
+    )
+    return jnp.concatenate((planar, yaw[..., None]), axis=-1)
 
 
 @dataclass(frozen=True)
@@ -362,6 +535,7 @@ class BelloEnvConfig:
     )
     torso_com_curriculum: TorsoComCurriculumConfig = TorsoComCurriculumConfig()
     observation_latency: ObservationLatencyConfig = ObservationLatencyConfig()
+    command_delay_seconds: float = 0.0
     gait: GaitConfig = GaitConfig()
     critic_observation: ObservationConfig = ObservationConfig(privileged=True)
 
@@ -383,6 +557,11 @@ class BelloLocomotionEnv:
     def __post_init__(self) -> None:
         self._validate_config()
         self._validate_model_metadata()
+        if self.reward_config.gait.phase_shaped_clearance or any(
+            self.reward_config.enabled(name)
+            for name in ("stand_foot_foreaft", "stand_foot_width", "foot_crossing")
+        ):
+            _ = self._sole_reward_geometry
 
     @property
     def task(self) -> Literal["locomotion"]:
@@ -395,7 +574,29 @@ class BelloLocomotionEnv:
     def _validate_config(self) -> None:
         if self.decimation <= 0:
             raise ValueError(f"decimation must be positive, got {self.decimation}")
-        gait_phase_advance = self.config.gait.frequency_hz * self.control_timestep
+        delay = self.config.command_delay_seconds
+        physics_dt = float(self.model.mj_model.opt.timestep)
+        if not math.isfinite(delay) or not 0 <= delay < self.control_timestep:
+            raise ValueError(
+                "command_delay_seconds must be finite and in [0, control_timestep)"
+            )
+        if not math.isclose(
+            delay / physics_dt, round(delay / physics_dt), abs_tol=1e-6
+        ):
+            raise ValueError(
+                "command_delay_seconds must be a whole number of physics substeps"
+            )
+        maximum_command = jnp.asarray(
+            [
+                max(map(abs, self.command_config.lin_vel_x)),
+                max(map(abs, self.command_config.lin_vel_y)),
+                0.0,
+            ]
+        )
+        gait_phase_advance = (
+            float(gait_frequency(maximum_command, self.config.gait))
+            * self.control_timestep
+        )
         if gait_phase_advance >= 0.5:
             raise ValueError(
                 "gait.frequency_hz must advance the gait by less than half a cycle "
@@ -1009,7 +1210,17 @@ class BelloLocomotionEnv:
             feedback_rng = jax.random.fold_in(obs_rng, 1)
             obs_rng = jax.random.fold_in(obs_rng, 2)
         command = self._resolve_command(command, command_rng)
-        gait_phase = jnp.asarray(0.0, dtype=jnp.float32)
+        _, gait_phase, _ = resolve_gait_command_transition(
+            jnp.zeros(3),
+            command,
+            jnp.asarray(0.0),
+            jnp.asarray(0.0),
+            jnp.asarray(0),
+            self.command_config,
+            self.config.gait,
+            jnp.asarray(True),
+            -self._locomotion_right_axis()[:2],
+        )
         if gait_rng is not None:
             sampled_phase = jax.random.uniform(gait_rng, (), dtype=jnp.float32)
             gait_phase = jnp.where(
@@ -1041,8 +1252,13 @@ class BelloLocomotionEnv:
             ),
             last_foot_contact=jnp.zeros(self.model.foot_body_ids.size, dtype=bool),
             command=command,
+            command_target=command,
             gait_phase=gait_phase,
-            standing_transition_pending=jnp.asarray(False),
+            standing_transition_pending=jnp.asarray(0, dtype=jnp.int32),
+            next_start_left=~command_is_moving(command, self.command_config),
+            standing_reward_blend=(
+                ~command_is_moving(command, self.command_config)
+            ).astype(jnp.float32),
             command_resample_step_count=jnp.asarray(0, dtype=jnp.int32),
             step_count=jnp.asarray(0, dtype=jnp.int32),
             episode_return=jnp.asarray(0.0, dtype=jnp.float32),
@@ -1309,7 +1525,7 @@ class BelloLocomotionEnv:
             self.model.mj_model.opt.timestep, dtype=jnp.float32
         )
 
-        def substep(_, carry):
+        def substep(index, carry):
             (
                 current_data,
                 touchdown,
@@ -1318,6 +1534,9 @@ class BelloLocomotionEnv:
                 touchdown_velocity,
                 requested_force_peak,
             ) = carry
+            current_data = current_data.replace(
+                ctrl=self.delayed_ctrl(state.data.ctrl, data.ctrl, index)
+            )
             current_state = state.replace(data=current_data)
             preimpact_velocity = self._foot_world_linear_velocity(current_state)
             next_data = mjx.step(self.model.mjx_model, current_data)
@@ -1364,7 +1583,7 @@ class BelloLocomotionEnv:
             self.model.mj_model.opt.timestep, dtype=jnp.float32
         )
 
-        def substep(_, carry):
+        def substep(index, carry):
             (
                 current_data,
                 touchdown,
@@ -1373,6 +1592,9 @@ class BelloLocomotionEnv:
                 touchdown_velocity,
                 requested_force_peak,
             ) = carry
+            current_data = current_data.replace(
+                ctrl=self.delayed_ctrl(state.data.ctrl, data.ctrl, index)
+            )
             current_state = state.replace(data=current_data)
             preimpact_velocity = jax.vmap(self._foot_world_linear_velocity)(
                 current_state
@@ -1399,6 +1621,19 @@ class BelloLocomotionEnv:
             )
 
         return jax.lax.fori_loop(0, self.decimation, substep, initial)
+
+    def delayed_ctrl(
+        self,
+        previous_ctrl: jax.Array | np.ndarray,
+        requested_ctrl: jax.Array | np.ndarray,
+        substep: jax.Array | int,
+    ) -> jax.Array:
+        delay_steps = round(
+            self.config.command_delay_seconds / float(self.model.mj_model.opt.timestep)
+        )
+        return jnp.where(
+            jnp.asarray(substep) < delay_steps, previous_ctrl, requested_ctrl
+        )
 
     def step(
         self, state: BelloState, action: jax.Array
@@ -1427,6 +1662,7 @@ class BelloLocomotionEnv:
             self.command_config,
             self.config.gait,
             self.control_timestep,
+            state.standing_transition_pending,
         )
         reward_state = BelloState(
             data=data,
@@ -1443,8 +1679,18 @@ class BelloLocomotionEnv:
             foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
+            command_target=state.command_target,
             gait_phase=next_gait_phase,
             standing_transition_pending=state.standing_transition_pending,
+            next_start_left=state.next_start_left,
+            standing_reward_blend=advance_standing_blend(
+                state.standing_reward_blend,
+                state.command,
+                state.standing_transition_pending,
+                self.command_config,
+                self.config.gait,
+                self.control_timestep,
+            ),
             command_resample_step_count=state.command_resample_step_count + 1,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
@@ -1496,7 +1742,7 @@ class BelloLocomotionEnv:
         pending_command = jnp.where(
             reward_state.standing_transition_pending[..., None],
             jnp.zeros_like(reward_state.command),
-            reward_state.command,
+            reward_state.command_target,
         )
         next_command, next_gait_phase, standing_transition_pending = (
             resolve_gait_command_transition(
@@ -1506,6 +1752,10 @@ class BelloLocomotionEnv:
                 reward_state.gait_phase,
                 reward_state.standing_transition_pending,
                 self.command_config,
+                self.config.gait,
+                state.next_start_left,
+                -self._locomotion_right_axis()[:2],
+                self.control_timestep,
             )
         )
         next_state = BelloState(
@@ -1518,8 +1768,18 @@ class BelloLocomotionEnv:
             foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=foot_contact.astype(bool),
             command=next_command,
+            command_target=pending_command,
             gait_phase=next_gait_phase,
             standing_transition_pending=standing_transition_pending,
+            next_start_left=next_start_preference(
+                state.command,
+                next_command,
+                state.standing_transition_pending,
+                state.next_start_left,
+                self.command_config,
+                self.config.gait,
+            ),
+            standing_reward_blend=reward_state.standing_reward_blend,
             command_resample_step_count=reward_state.command_resample_step_count,
             step_count=reward_state.step_count,
             episode_return=episode_return,
@@ -1552,7 +1812,10 @@ class BelloLocomotionEnv:
             "latency/observation_steps": (
                 next_state.actor_feedback_delay_steps.astype(jnp.float32)
             ),
-            **self._command_diagnostics(reward_state.command),
+            **self._command_diagnostics(
+                reward_state.command, reward_state.standing_transition_pending
+            ),
+            "gait/self_collision_contacts": self_collision,
             **self._gait_diagnostics(
                 state,
                 reward_state,
@@ -1628,6 +1891,7 @@ class BelloLocomotionEnv:
             self.command_config,
             self.config.gait,
             self.control_timestep,
+            state.standing_transition_pending,
         )
         stepped_state = BelloState(
             data=data,
@@ -1642,8 +1906,18 @@ class BelloLocomotionEnv:
             foot_contact_debounce_time=state.foot_contact_debounce_time,
             last_foot_contact=state.last_foot_contact,
             command=state.command,
+            command_target=state.command_target,
             gait_phase=next_gait_phase,
             standing_transition_pending=state.standing_transition_pending,
+            next_start_left=state.next_start_left,
+            standing_reward_blend=advance_standing_blend(
+                state.standing_reward_blend,
+                state.command,
+                state.standing_transition_pending,
+                self.command_config,
+                self.config.gait,
+                self.control_timestep,
+            ),
             command_resample_step_count=state.command_resample_step_count + 1,
             step_count=state.step_count + 1,
             episode_return=state.episode_return,
@@ -1699,7 +1973,7 @@ class BelloLocomotionEnv:
         pending_command = jnp.where(
             reward_state.standing_transition_pending[:, None],
             jnp.zeros_like(reward_state.command),
-            reward_state.command,
+            reward_state.command_target,
         )
         (
             transitioned_command,
@@ -1712,9 +1986,14 @@ class BelloLocomotionEnv:
             reward_state.gait_phase,
             reward_state.standing_transition_pending,
             self.command_config,
+            self.config.gait,
+            state.next_start_left,
+            -self._locomotion_right_axis()[:2],
+            self.control_timestep,
         )
         transitioned_state = reward_state.replace(
             command=transitioned_command,
+            command_target=pending_command,
             gait_phase=transitioned_gait_phase,
             standing_transition_pending=transitioned_standing_pending,
         )
@@ -1724,6 +2003,7 @@ class BelloLocomotionEnv:
             standing_transition_pending,
             command_resample_step_count,
             command_resampled,
+            next_command_target,
         ) = self._maybe_resample_batch_command_and_phase(
             transitioned_state, resample_rng
         )
@@ -1737,8 +2017,18 @@ class BelloLocomotionEnv:
             foot_contact_debounce_time=foot_contact_debounce_time,
             last_foot_contact=foot_contact.astype(bool),
             command=next_command,
+            command_target=next_command_target,
             gait_phase=next_gait_phase,
             standing_transition_pending=standing_transition_pending,
+            next_start_left=next_start_preference(
+                state.command,
+                next_command,
+                state.standing_transition_pending,
+                state.next_start_left,
+                self.command_config,
+                self.config.gait,
+            ),
+            standing_reward_blend=reward_state.standing_reward_blend,
             command_resample_step_count=command_resample_step_count,
             step_count=reward_state.step_count,
             episode_return=episode_return,
@@ -1785,7 +2075,10 @@ class BelloLocomotionEnv:
             "random_push/lin_vel_x": push_velocity[:, 0],
             "random_push/lin_vel_y": push_velocity[:, 1],
             "command/resampled": command_resampled.astype(jnp.float32),
-            **self._command_diagnostics(reward_state.command),
+            **self._command_diagnostics(
+                reward_state.command, reward_state.standing_transition_pending
+            ),
+            "gait/self_collision_contacts": self_collision,
             "returned_episode": done,
             **done_flags,
             **reward_info,
@@ -1795,7 +2088,7 @@ class BelloLocomotionEnv:
             reset_source_command = jnp.where(
                 stepped_state.standing_transition_pending[:, None],
                 jnp.zeros_like(stepped_state.command),
-                stepped_state.command,
+                stepped_state.command_target,
             )
             reset_state, reset_obs = self.reset_batch(
                 batch_size, command=reset_source_command, rng=reset_obs_rng
@@ -1942,7 +2235,13 @@ class BelloLocomotionEnv:
             )
             parts.append(
                 self._observation_component(
-                    gait_phase_features(state.gait_phase, command, self.command_config),
+                    gait_phase_features(
+                        state.gait_phase,
+                        command,
+                        self.command_config,
+                        state.standing_transition_pending,
+                        self.config.gait,
+                    ),
                     noise.gait_phase,
                     scale.gait_phase,
                     keys[4],
@@ -2011,7 +2310,7 @@ class BelloLocomotionEnv:
 
     def _unpack_actor_feedback(
         self, feedback: jax.Array
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         joint_start = 9
         joint_end = joint_start + self.action_size
         return (
@@ -2412,7 +2711,7 @@ class BelloLocomotionEnv:
         self,
         state: BelloState,
         rng: jax.Array | None,
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         resample_steps = self._command_resample_steps()
         if rng is None or not self.command_config.enabled:
             return (
@@ -2421,6 +2720,7 @@ class BelloLocomotionEnv:
                 state.standing_transition_pending,
                 jnp.minimum(state.command_resample_step_count, resample_steps),
                 jnp.zeros_like(state.command_resample_step_count, dtype=bool),
+                state.command_target,
             )
         resample = state.command_resample_step_count >= resample_steps
         sampled = self._resample_batch_command(
@@ -2429,7 +2729,7 @@ class BelloLocomotionEnv:
         pending_command = jnp.where(
             state.standing_transition_pending[:, None],
             jnp.zeros_like(state.command),
-            state.command,
+            state.command_target,
         )
         requested_command = jnp.where(resample[:, None], sampled, pending_command)
         command, gait_phase, standing_transition_pending = (
@@ -2440,6 +2740,9 @@ class BelloLocomotionEnv:
                 state.gait_phase,
                 state.standing_transition_pending,
                 self.command_config,
+                self.config.gait,
+                state.next_start_left,
+                -self._locomotion_right_axis()[:2],
             )
         )
         return (
@@ -2448,6 +2751,7 @@ class BelloLocomotionEnv:
             standing_transition_pending,
             jnp.where(resample, 0, state.command_resample_step_count),
             resample,
+            requested_command,
         )
 
     def _command_resample_steps(self) -> int:
@@ -2961,7 +3265,14 @@ class BelloLocomotionEnv:
                 foot_angular_speed=foot_angular_speed,
                 foot_heading_error=self._foot_heading_error(next_state),
                 foot_height=self._foot_height(next_state, world_id),
-                gait_active=command_is_moving(command, self.command_config),
+                gait_active=gait_is_active(
+                    command,
+                    self.command_config,
+                    next_state.standing_transition_pending,
+                    self.config.gait,
+                ),
+                standing_reward_blend=next_state.standing_reward_blend,
+                **self._foot_placement_inputs(next_state, world_id),
                 desired_foot_contact=desired_gait_foot_contact(
                     next_state.gait_phase, self.config.gait
                 ),
@@ -3210,6 +3521,57 @@ class BelloLocomotionEnv:
             sole_position[:, :2], world_id
         )
 
+    @cached_property
+    def _sole_reward_geometry(self):
+        return sole_geometry(self.model, self.reward_config.gait.sole_clearance_margin)
+
+    def _foot_placement_inputs(
+        self, state: BelloState, world_id: jax.Array | int = 0
+    ) -> dict[str, jax.Array]:
+        foot_phase = jnp.mod(state.gait_phase + jnp.asarray([0.0, 0.5]), 1.0)
+        progress = jnp.clip(
+            (foot_phase - self.config.gait.stance_fraction)
+            / (1.0 - self.config.gait.stance_fraction),
+            0.0,
+            1.0,
+        )
+        result = {"swing_progress": progress}
+        if not (
+            self.reward_config.gait.phase_shaped_clearance
+            or any(
+                self.reward_config.enabled(name)
+                for name in ("stand_foot_foreaft", "stand_foot_width", "foot_crossing")
+            )
+        ):
+            return result
+        geometry = self._sole_reward_geometry
+        bodies = jnp.asarray(self.model.foot_body_ids)
+        quats = state.data.xquat[bodies]
+        positions = state.data.xpos[bodies]
+        centers = positions + jax.vmap(quat_rotate)(
+            quats, jnp.asarray(geometry.centers)
+        )
+        corners = positions[:, None, :] + jax.vmap(
+            lambda q, points: jax.vmap(lambda p: quat_rotate(q, p))(points)
+        )(quats, jnp.asarray(geometry.corners))
+        delta = quat_rotate_inverse(
+            yaw_quat(
+                self._link_quat(state, self._reward_frame_link("track_lin_vel_xy"))
+            ),
+            centers[0] - centers[1],
+        )
+        result.update(
+            foot_foreaft=jnp.dot(
+                delta, jnp.asarray(self.model.robot.locomotion_forward_axis)
+            ),
+            foot_separation=-jnp.dot(delta, self._locomotion_right_axis()),
+            nominal_stance_width=jnp.asarray(geometry.nominal_width),
+            minimum_foot_separation=jnp.asarray(geometry.minimum_separation),
+            foot_clearance_samples=corners[:, :, 2]
+            - self._terrain_height(corners[:, :, :2], world_id),
+        )
+        return result
+
     def _foot_sole_positions(
         self, state: BelloState, world_id: jax.Array | int = 0
     ) -> jax.Array:
@@ -3404,7 +3766,12 @@ class BelloLocomotionEnv:
         initialized = state.step_count > 0
         touchdown = foot_touchdown.astype(bool)
         liftoff = jnp.where(initialized, ~contact & previous, False)
-        moving = command_is_moving(next_state.command, self.command_config)
+        moving = gait_is_active(
+            next_state.command,
+            self.command_config,
+            next_state.standing_transition_pending,
+            self.config.gait,
+        )
         desired_contact = desired_gait_foot_contact(
             next_state.gait_phase, self.config.gait
         ).astype(bool)
@@ -3426,7 +3793,31 @@ class BelloLocomotionEnv:
         foot_heading_error_deg = (
             jnp.abs(self._foot_heading_error(next_state)) * 180.0 / jnp.pi
         )
+        placement = self._foot_placement_inputs(next_state)
+        placement_metrics = {}
+        if "foot_separation" in placement:
+            placement_metrics = {
+                "gait/sole_signed_separation": placement["foot_separation"],
+                "gait/sole_foreaft_error": jnp.abs(placement["foot_foreaft"]),
+                "gait/sole_width_error": jnp.abs(
+                    placement["foot_separation"] - placement["nominal_stance_width"]
+                ),
+                "gait/feet_crossed": (placement["foot_separation"] < 0).astype(
+                    jnp.float32
+                ),
+                "gait/sole_clearance_violation": (
+                    placement["foot_separation"] < placement["minimum_foot_separation"]
+                ).astype(jnp.float32),
+            }
         return {
+            **placement_metrics,
+            "gait/stop_steps_remaining": next_state.standing_transition_pending.astype(
+                jnp.float32
+            ),
+            "gait/standing_reward_blend": jnp.asarray(next_state.standing_reward_blend),
+            "gait/step_frequency_hz": jnp.where(
+                moving, 2 * gait_frequency(next_state.command, self.config.gait), 0.0
+            ),
             "gait/stance_width": self._stance_width(
                 next_state, self._reward_frame_link("track_lin_vel_xy")
             ),
@@ -3464,8 +3855,12 @@ class BelloLocomotionEnv:
             "gait/contact_impulse_max_body_weight": jnp.max(normalized_contact_impulse),
         }
 
-    def _command_diagnostics(self, command: jax.Array) -> dict[str, jax.Array]:
-        standing = command_is_standing(command, self.command_config)
+    def _command_diagnostics(
+        self, command: jax.Array, pending=0
+    ) -> dict[str, jax.Array]:
+        standing = ~gait_is_active(
+            command, self.command_config, pending, self.config.gait
+        )
         return {
             "command/standing": standing.astype(jnp.float32),
             "command/moving": (~standing).astype(jnp.float32),

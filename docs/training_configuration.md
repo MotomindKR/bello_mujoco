@@ -186,7 +186,8 @@ other deviations from that contract.
 | `observation_low_pass_filter` | Training-side low-pass filter for hardware-derived actor feedback. |
 | `torso_com_curriculum` | Optional policy-step ramp for fixed per-world torso COM offsets. |
 | `observation_latency` | Per-episode measured actor-feedback delay range in policy steps. |
-| `gait` | Fixed gait frequency and stance fraction shared by simulation, native evaluation, and hardware. |
+| `gait` | Cadence, stance fraction, directional starts, and stopping schedule shared by simulation, native evaluation, and hardware. |
+| `command_delay_seconds` | Hold the previous actuator target for this many seconds at the start of each policy interval. Default zero; Mini uses `0.01`. Must be a whole number of physics substeps and shorter than one policy interval. |
 | `critic_observation` | Critic-only observation; maintained locomotion profiles use privileged fields. |
 
 ### Simulation physics
@@ -262,13 +263,18 @@ Scale and noise fields are `base_lin_vel`, `base_lin_acc`, `base_ang_vel`,
 noise values are ordered uniform ranges applied before stacking.
 
 With commands enabled, the actor and critic both receive a three-value gait
-component: sine phase, cosine phase, and a gait-active bit. The maintained
-per-leg frequency is 0.90 Hz for both Bello and the rounded Bello Mini setting;
-both use a 60% stance fraction and a half-cycle offset between the feet. Moving
+component: sine phase, cosine phase, and a gait-active bit. Bello uses 0.90 Hz
+per leg. Mini uses `(1.6 + 0.35 * norm(command_xy)) / 2` full cycles/s;
+the numerator is individual alternating footsteps/s, not strides/s.
+Both use a 60% stance fraction and a half-cycle offset between the feet. Moving
 training resets uniformly initialize the clock across the full gait cycle. This
-keeps parallel environments phase-diverse; native evaluation and hardware runs
-initialize it at phase zero. During active gait, a zero input is only a standing
-request. The effective command and gait component remain moving until the next
+keeps parallel environments phase-diverse. Mini starts from standing with the
+left foot swinging first for leftward commands, and the right foot first for
+rightward commands. Below the `0.1 m/s` lateral deadband, the starting preference
+alternates (left initially). This uses the robot's declared forward/left axes,
+not a hard-coded command component, and never resets an active swing.
+During active gait, a zero input is only a standing
+request. In baseline Bello, the effective command and gait component remain moving until the next
 scheduled half-cycle boundary, including when the request arrives during double
 support. The boundary step still receives gait rewards; the following step uses
 the zero effective command, zero gait component, and standing rewards. An
@@ -277,6 +283,30 @@ the complete cycle frequency of each leg, and `stance_fraction` must be in
 `[0.5, 1.0)`. The configured frequency and control timestep must advance the
 clock by less than half a cycle per policy step so no gait boundary can be
 skipped.
+
+Mini overrides the baseline stop behavior: `stop_extra_steps: 1` requires two
+half-cycle boundaries (finish the current step, then one additional step).
+`command_slew_enabled: true` limits every command change, including starts,
+reversals, and stops, to 1 m/s² in planar norm and 1 rad/s² in yaw. Training,
+native evaluation, and hardware use this same checkpoint-owned limiter once.
+The integer pending count keeps the gait active below the command deadband.
+If the two boundaries finish before the command reaches zero, pending becomes
+-1 and the clock holds double support until the slew finishes. If the command
+reaches zero first, the clock completes the remaining boundaries. Standing-only
+rewards then ramp to full weight over `standing_reward_ramp_seconds: 0.2`.
+Moving requests cancel a pending stop without resetting phase. Completion needs
+no foot-contact sensor. Hardware joystick slew rates must match the checkpoint;
+the default rates already match Mini. Setting both to `null` also uses the
+checkpoint limiter, not an unfiltered command.
+
+Additional gait fields are `speed_dependent` (default false),
+`step_frequency_base` (1.6 footsteps/s), `step_frequency_speed_gain` (0.35),
+`stop_extra_steps` (0), `command_slew_enabled` (false),
+`command_linear_slew_rate` (1 m/s²), `command_yaw_slew_rate` (1 rad/s²),
+`directional_start` (false),
+`lateral_start_deadband` (0.1 m/s), and `standing_reward_ramp_seconds` (0).
+The fixed `frequency_hz` is used only when `speed_dependent` is false. Maximum
+cadence at the configured command bounds is validated against the timestep.
 
 Actor observations are the hardware policy input. Hardware locomotion rejects
 a checkpoint whose actor observation is privileged. Critic-only fields do not
@@ -349,7 +379,7 @@ per control step instead of all worlds every ten seconds. Subsequent samples use
 initialization retains its exact standing count. When
 `standing_transitions_enabled` is true, this exposes
 both standing-to-moving and moving-to-standing transitions without a periodic
-batch-wide mode pulse. A zero request during active gait is pending until the
+batch-wide mode pulse. In baseline Bello, a zero request during active gait is pending until the
 next scheduled half-cycle boundary, even when it arrives during double support.
 The effective moving command, gait phase, and moving rewards remain active
 through the boundary step; zero becomes effective and standing rewards begin on
@@ -358,6 +388,9 @@ mode-specific mean reward and planar tracking reward, completed-episode return
 and length, and completed-episode count under the `command/resampled_fraction`,
 `command/standing_*`, `command/moving_*`, and `episode/{standing,moving}_*`
 names.
+
+Mini uses its extra-step stop and reward ramp instead; stopping samples remain
+classified as moving in these metrics even below the command deadband.
 
 The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
 The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
@@ -368,12 +401,66 @@ yaw velocity; standing-command tolerances remain `0.25 m/s` and `0.20 rad/s`.
 
 ## Locomotion reward: `reward_config`
 
+The Mini command ranges are `[-0.5, 0.5] m/s` on each horizontal axis, retaining
+`[-1, 1] rad/s` yaw. Diagonal maximum planar speed is therefore about 0.707 m/s.
+Mini enables `asset_config.enforce_policy_effort_limits`; the existing motor
+and differential transmission force ranges now actually saturate policy torque.
+The unclipped-demand penalty is retained. Its 10 ms command delay is separate
+from observation latency and is also applied in native evaluation/videos; the
+hardware runner does not insert a second artificial delay.
+
+For the new placement terms, `H(z)` is unit Huber loss and
+`D(e)=H(max(abs(e)-0.02,0)/0.03)`. Distances are meters. Let `dx=x_left-x_right`
+and `d=y_left-y_right` in robot forward/left coordinates. The added penalties
+are `-4*D(dx)`, `-2*D(d-d_nominal)`, and
+`-8*H(max(d_min-d,0)/0.02)`. Nominal width and the minimum separation are
+derived from registered sole collision primitives in the default stance;
+`d_min` is the sum of the two half-widths plus a `0.01 m` margin. Geometry is
+validated at initialization, not inferred during rollout. Toe/heel clearance
+uses four conservative footprint corners per foot (including the space outside
+rounded fillets), not the ankle-link origin. The collision model is unchanged.
+
+Mini enables `gait.phase_shaped_clearance`: swing progress `u` requests
+`0.075*sin(pi*u)^2 m` clearance relative to terrain at each corner, with a
+squared normalized shortfall averaged over both feet and all four corners.
+`gait.stumble_grace_fraction: 0.15` excludes the first/last 15% of swing.
+Unexpected load above `0.05` body weight contributes a bounded penalty even
+when the caught foot has stopped; planar speed increases severity using a
+`0.15 m/s` scale. Substep peak force and integrated normal impulse capture
+brief catches. The existing `-8` touchdown-impact weight is unchanged.
+During standing recovery there is no scheduled swing; the same stumble weight
+instead penalizes loaded planar foot sliding, while unloaded recovery motion
+does not incur this term.
+
+All `stand_*` terms receive the standing blend. Position and heading alignment
+require healthy double support. `standing.recovery_relaxation: true` smoothly
+relaxes alignment, foot stillness, and gait contact-pattern pressure as planar
+velocity error exceeds `0.25 m/s` or tilt exceeds approximately `0.15 rad`;
+relaxation reaches zero at twice these normalized thresholds. Crossing, general
+balance, effort limits, and impact penalties remain active. These are initial
+tuning values, not demonstrated policy-performance guarantees.
+
+Additional reward settings are `standing.position_deadband`, `position_scale`,
+`recovery_relaxation`, `recovery_speed`, `recovery_tilt`, and
+`gait.phase_shaped_clearance`, `crossing_scale`, `sole_clearance_margin`,
+`stumble_grace_fraction`, `stumble_load_body_weights`, `stumble_speed_scale`.
+New diagnostics include signed sole separation, fore/aft and width error,
+crossing and clearance-violation fractions, remaining stop steps, standing
+reward blend, and alternating step frequency under `gait/`.
+
+Train a fresh Mini policy for these changes. Old checkpoint inference retains
+fixed cadence, original stopping behavior, no added command delay, and zero new
+reward weights. Exact continuation of old training runs is not supported across
+the scheduler-state change; use their original source revision to resume them.
+
 Every term is computed independently and multiplied by its configured weight.
 The `weights` section is listed below; a zero weight disables metadata and
 computation where possible. In this table, "standing command" means the
 effective standing mode. A raw zero request made during gait does not activate
 standing rewards until the policy step after the next scheduled half-cycle
-boundary.
+boundary. Mini instead uses the extra-step stopping sequence and standing-reward
+ramp described above; gait activity, not the decelerating command's magnitude,
+determines its mode.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
@@ -408,6 +495,10 @@ boundary.
 | `gait_contact` | `-1.0` | Penalize disagreement between measured foot contact and the phase-conditioned stance schedule. |
 | `gait_stance_slip` | `-0.25` | Penalize planar foot motion during the phase-conditioned stance interval. |
 | `gait_swing_clearance` | `-0.5` | Penalize swing-foot clearance below the configured target. |
+| `stand_foot_foreaft` | `0.0` | Mini: `-4.0`, Huber penalty on sole-center fore/aft stagger in the robot heading frame. |
+| `stand_foot_width` | `0.0` | Mini: `-2.0`, Huber penalty on signed sole-center separation relative to the nominal stance. |
+| `foot_crossing` | `0.0` | Mini: `-8.0`, one-sided Huber penalty below the sole-derived minimum signed lateral separation, in every mode. |
+| `foot_stumble` | `0.0` | Mini: `-2.0`, unexpected mid-swing contact load, weighted by planar foot motion. |
 | `undesired_contact` | `0.0` | Optional non-foot terrain-contact penalty. |
 | `self_collision` | `0.0` | Optional self-collision penalty. |
 | `termination` | `-100.0` | Penalize non-timeout terminal failure. |
@@ -442,9 +533,14 @@ contract's canonical locomotion command frame. Both maintained profiles use
 pelvis velocity/yaw and height, with torso angular velocity and orientation.
 Both maintained profiles resolve planar velocity in `pelvis_link`. Their
 robot-specific forward axes differ: Bello uses pelvis `+Y`, while Mini uses
-pelvis `+X`. Mini also configures the simulated actor IMU source as
-`pelvis_link`, aligning actor feedback, critic velocity, command, and reward
-axes for training.
+pelvis `+X`. Mini's actor IMU source is `imu_link`, matching hardwared's
+published sensor position and axes. It is coincident with the physical
+`imu_sensor_link`; hardwared corrects that sensor's upside-down mounting.
+Commands and reward velocity remain in the pelvis frame. Acceleration must be
+measured at the IMU origin: rotating a pelvis-origin measurement does not account
+for the acceleration caused by the sensor's offset during body rotation.
+New training uses this corrected convention. Existing checkpoints keep their
+saved IMU frame; changing the profile does not repair a pelvis-origin checkpoint.
 
 Supporting fields are:
 
@@ -696,7 +792,7 @@ TWIST uses 32 contacts per environment and logs
 | --- | --- |
 | `smoke` | One real two-environment PPO update with checkpointing, W&B, and video disabled. |
 | `bello_locomotion` | Production Bello gait training with 2,048 environments, full planar/yaw commands, graceful standing transitions, slope, reset randomization, pushes, 10 Hz pre-noise observation filtering, plus-or-minus 20% torso mass, a torso COM curriculum reaching plus-or-minus 15 cm, mean-KL adaptive learning with a `0.00003` floor, and periodic checkpoint/video evaluation every 512 updates. Symmetry and action-acceleration losses remain disabled. |
-| `bello_mini_locomotion` | The production Bello PPO, command, reward, randomization, and observation recipe adapted to Bello Mini's 14-action locomotion contract, with pelvis-frame `+X` forward command/reward/actor feedback, flat-sole `-0.15/0.45/-0.30` rad leg crouch, `[0.0, 1.2]` rad knee policy range, outward held shoulder-roll pose, rounded 0.87 m height target, 0.56 m termination floor, 0.90 Hz gait, `2.25` healthy-survival weight, non-saturating moving linear/yaw velocity-error shaping, and independent additive planar velocity pushes from `[-0.5, 0.5]` m/s every five seconds. The profile disables moving knee-pose shaping and independent multiplicative joint-position reset scaling so gait remains free while the coordinated hip/knee/ankle pose stays flat-footed; the remaining randomization is active. |
+| `bello_mini_locomotion` | Mini's 14-action locomotion contract with physical `imu_link` feedback, pelvis-frame `+X` forward commands, flat-sole crouch, 0.87 m target height, 0.56 m termination floor, +/-0.5 m/s horizontal commands, speed-dependent cadence, directional starts, extra-step stopping, standing alignment, crossing/stumble penalties, actuator effort limits, and 10 ms command delay. Keeps the production PPO, observation filtering/latency, randomization, additive +/-0.5 m/s pushes, and `2.25` survival weight. Moving knee-pose shaping and independent multiplicative joint-position reset scaling remain disabled. |
 | `bello_mini_standing` | The complete Bello Mini locomotion profile plus a standing-only overlay. Command sampling and accepted command ranges are exactly zero, standing probability is `1.0`, and standing transitions are disabled. Command and gait-phase observation slots remain present and zero-valued, preserving the Mini locomotion policy dimensions. Moving velocity-error, joint-force-peak, and gait-pattern rewards are disabled; zero-velocity tracking, standing/stability rewards, bounded touchdown impact, randomization, pushes, and the `2.25` survival weight remain active. |
 | `motion` | 3,072-environment bounded motion tracking with observation and value normalization, adaptive failure sampling, pushes, and periodic checkpoint/video evaluation every 500 updates. |
 | `twist_teacher` | 4,096-environment, multi-clip whole-body PPO with released future-reference encoding. |

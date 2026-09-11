@@ -148,6 +148,53 @@ def test_gait_clock_requires_multiple_control_steps_per_half_cycle(
         )
 
 
+def test_mini_new_recipe_steps_batched_with_extra_stop_and_reward_blend(
+    bello_mini_asset,
+):
+    from bello_mujoco.configuration import locomotion_training_profile
+
+    profile = locomotion_training_profile("bello_mini_locomotion")
+    config = replace(
+        profile.env_config,
+        model_randomization=replace(
+            profile.env_config.model_randomization, enabled=False
+        ),
+        torso_com_curriculum=replace(
+            profile.env_config.torso_com_curriculum, enabled=False
+        ),
+        spawn=SpawnConfig(),
+    )
+    env = BelloLocomotionEnv.load_prepared(
+        bello_mini_asset,
+        batch_size=2,
+        env_config=config,
+        reward_config=profile.reward_config,
+        command_config=profile.command_config,
+        done_config=profile.done_config,
+        imu_body_name="imu_link",
+    )
+    state, _ = env.reset_batch(
+        2, command=jnp.asarray([[0.0, 0.4, 0.0], [0.0, -0.4, 0.0]])
+    )
+    np.testing.assert_allclose(state.gait_phase, [0.5, 0.0])
+    state = state.replace(
+        command=state.command.at[1].set(jnp.asarray([0.0, -0.01, 0.0])),
+        gait_phase=jnp.asarray([0.49, 0.99]),
+        standing_transition_pending=jnp.asarray([2, 1], dtype=jnp.int32),
+    )
+    action = jnp.zeros((2, env.action_size))
+    next_state, obs, reward, done, info = env.step_batch(state, action)
+    assert not np.any(done)
+    np.testing.assert_array_equal(next_state.standing_transition_pending, [1, 0])
+    np.testing.assert_array_equal(next_state.standing_reward_blend, [0.0, 0.0])
+    assert np.all(np.isfinite(obs))
+    assert np.all(np.isfinite(reward))
+    assert "reward/foot_crossing" in info
+    assert "gait/sole_signed_separation" in info
+    second, _, _, _, _ = env.step_batch(next_state, action)
+    np.testing.assert_allclose(second.standing_reward_blend, [0.0, 0.1], atol=1e-6)
+
+
 def test_bilateral_mirrors_are_explicit_and_involutive(
     bello_asset: PreparedAsset,
 ) -> None:
@@ -930,7 +977,7 @@ def test_only_expired_command_clocks_resample(
         command_resample_step_count=jnp.asarray([4, 3, 2, 1], dtype=jnp.int32)
     )
 
-    next_command, _, _, next_count, resampled = (
+    next_command, _, _, next_count, resampled, _ = (
         env._maybe_resample_batch_command_and_phase(state, jax.random.PRNGKey(4))
     )
 

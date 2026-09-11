@@ -119,8 +119,11 @@ class FakeEnv:
             foot_contact_debounce_time=foot_zeros,
             last_foot_contact=jnp.zeros((batch_size, 2), dtype=bool),
             command=jnp.zeros((batch_size, 3), dtype=jnp.float32),
+            command_target=jnp.zeros((batch_size, 3), dtype=jnp.float32),
             gait_phase=zeros,
-            standing_transition_pending=jnp.zeros((batch_size,), dtype=bool),
+            standing_transition_pending=jnp.zeros((batch_size,), dtype=jnp.int32),
+            next_start_left=jnp.ones((batch_size,), dtype=bool),
+            standing_reward_blend=jnp.ones((batch_size,), dtype=jnp.float32),
             command_resample_step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
             step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
             episode_return=zeros,
@@ -726,6 +729,37 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     save_checkpoint(path, state, checkpoint_metadata)
     metadata_path = path / checkpoint.METADATA_FILE
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    document["metadata"]["env"].pop("command_delay_seconds")
+    for name in (
+        "speed_dependent",
+        "step_frequency_base",
+        "step_frequency_speed_gain",
+        "stop_extra_steps",
+        "command_slew_enabled",
+        "command_linear_slew_rate",
+        "command_yaw_slew_rate",
+        "directional_start",
+        "lateral_start_deadband",
+        "standing_reward_ramp_seconds",
+    ):
+        document["metadata"]["env"]["gait"].pop(name)
+    for name in (
+        "position_deadband",
+        "position_scale",
+        "recovery_relaxation",
+        "recovery_speed",
+        "recovery_tilt",
+    ):
+        document["metadata"]["reward"]["standing"].pop(name)
+    for name in (
+        "phase_shaped_clearance",
+        "crossing_scale",
+        "sole_clearance_margin",
+        "stumble_grace_fraction",
+        "stumble_load_body_weights",
+        "stumble_speed_scale",
+    ):
+        document["metadata"]["reward"]["gait"].pop(name)
     for name in (
         "moving_lin_vel_xy_error",
         "moving_ang_vel_z_error",
@@ -738,6 +772,10 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
         "stand_foot_heading",
         "stand_upright",
         "stand_waist_deviation",
+        "stand_foot_foreaft",
+        "stand_foot_width",
+        "foot_crossing",
+        "foot_stumble",
     ):
         document["metadata"]["reward"]["weights"].pop(name)
     document["metadata"]["reward"].pop("smoothness")
@@ -768,6 +806,14 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     metadata_path.write_text(json.dumps(document), encoding="utf-8")
 
     _, restored, _ = restore_evaluation_checkpoint(path)
+
+    assert not restored.env.gait.speed_dependent
+    assert not restored.env.gait.directional_start
+    assert restored.env.gait.stop_extra_steps == 0
+    assert restored.env.command_delay_seconds == 0.0
+    assert restored.reward.weights.foot_crossing == 0.0
+    assert restored.reward.weights.foot_stumble == 0.0
+    assert not restored.reward.gait.phase_shaped_clearance
 
     assert restored.reward.weights.action_acceleration == 0.0
     assert restored.reward.weights.moving_lin_vel_xy_error == 0.0

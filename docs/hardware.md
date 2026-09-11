@@ -450,6 +450,14 @@ The resulting planar and yaw requests are slew-limited at
 `joystick_linear_slew_rate_mps2` and
 `joystick_yaw_slew_rate_rps2`, respectively. The defaults cap full stick at 60%
 of each trained outer limit and change commands at 1.0 m/s² or 1.0 rad/s².
+New Mini checkpoints own this limiter in their shared training/evaluation/hardware
+gait scheduler, including speed-dependent cadence, directional starts, and the
+extra-step stop buffer. The default joystick rates match the checkpoint; different
+rates are rejected. Both rates may be `null` to use the checkpoint settings, but
+that does not disable its limiter. Legacy checkpoints retain the separate runner
+limiter (or disable it when both rates are null). Neither option changes hardwared
+motor-target safety checks or torque limits. Test transitions in the emulator
+before deployment.
 Bello maps right/forward to `+X`/`+Y`; Bello Mini maps right/forward to
 `-Y`/`+X`. Hardwared publishes Mini's calibrated logical `imu_link` frame, and
 the runner performs only its fixed logical-IMU-to-pelvis rotation before

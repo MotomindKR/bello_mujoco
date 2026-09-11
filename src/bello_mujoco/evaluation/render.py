@@ -14,7 +14,12 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 
-from bello_mujoco.envs.locomotion import BelloLocomotionEnv, BelloState
+from bello_mujoco.envs.locomotion import (
+    BelloLocomotionEnv,
+    BelloState,
+    gait_frequency,
+    resolve_gait_command_transition,
+)
 from bello_mujoco.envs.rewards import command_is_moving
 from bello_mujoco.policy import (
     apply_actor,
@@ -76,6 +81,77 @@ class NativeDataView:
     actuator_force: jax.Array
     qfrc_constraint: jax.Array
     _impl: NativeDataImplementation
+
+
+class NativeObservationPipeline:
+    """Preserve training feedback filtering, noise, and delay across native steps."""
+
+    def __init__(self, env: BelloLocomotionEnv, *, seed: int) -> None:
+        self.env = env
+        self._key = jax.random.PRNGKey(seed)
+        self.reset()
+
+    def reset(self) -> None:
+        self._history: jax.Array | None = None
+        self._step: int | None = None
+        self._delay = jnp.asarray(0, dtype=jnp.int32)
+        self._observation_key = self._key
+
+    def observe(
+        self,
+        mj_data: mujoco.MjData,
+        *,
+        command: np.ndarray,
+        last_action: np.ndarray,
+        step_count: int,
+        gait_phase: float | jax.Array | None = None,
+        standing_transition_pending: int | jax.Array = 0,
+    ) -> jax.Array:
+        env = self.env
+        state = mujoco_eval_state(
+            env,
+            mj_data,
+            command=command,
+            last_action=last_action,
+            foot_contact_debounce_time=jnp.zeros(env.model.foot_body_ids.size),
+            last_foot_contact=jnp.zeros(env.model.foot_body_ids.size),
+            step_count=step_count,
+            episode_return=jnp.asarray(0.0),
+            episode_track_lin_vel_xy=jnp.asarray(0.0),
+            episode_length=jnp.asarray(0),
+            gait_phase=gait_phase,
+            standing_transition_pending=standing_transition_pending,
+        )
+        if self._step != step_count:
+            expected = 0 if self._step is None else self._step + 1
+            if step_count != expected:
+                raise ValueError(
+                    f"native feedback expected step {expected}, got {step_count}; "
+                    "reset feedback when resetting the episode"
+                )
+            self._key, feedback_key, self._observation_key, delay_key = (
+                jax.random.split(self._key, 4)
+            )
+            if self._history is None:
+                feedback = env._actor_feedback(state)
+                if env.config.observation_low_pass_filter.noise_before_filter:
+                    feedback = env._noisy_actor_feedback(feedback, feedback_key)
+                self._history = jnp.repeat(
+                    feedback[None, :], env.maximum_observation_delay_steps + 1, axis=0
+                )
+                self._delay = env._sample_observation_delay(delay_key)
+            else:
+                self._history = env._advance_actor_feedback_history(
+                    self._history, state, feedback_key
+                )
+            self._step = step_count
+        return env.observation(
+            state.replace(
+                actor_feedback_history=self._history,
+                actor_feedback_delay_steps=self._delay,
+            ),
+            self._observation_key,
+        )
 
 
 class VideoWriter:
@@ -258,8 +334,8 @@ def render_policy_rollout_mujoco(
     command_array = np.asarray(command, dtype=np.float32)
     last_action = np.zeros(env.action_size, dtype=np.float32)
     step_count = 0
-    obs = mujoco_policy_observation(
-        env,
+    feedback = NativeObservationPipeline(env, seed=env.config.model_randomization.seed)
+    obs = feedback.observe(
         mj_data,
         command=command_array,
         last_action=last_action,
@@ -270,6 +346,7 @@ def render_policy_rollout_mujoco(
     stats = init_rollout_stats(
         steps, stochastic_actions=stochastic_actions, action_seed=action_seed
     )
+    stats["observation_seed"] = env.config.model_randomization.seed
     resources, renderer, camera, writer = open_rollout_video_resources(
         mj_model,
         output_path,
@@ -301,8 +378,12 @@ def render_policy_rollout_mujoco(
                 observation_norm_state=observation_norm_state,
             )
             action = np.asarray(jax.device_get(action), dtype=np.float32)
-            mj_data.ctrl[:] = mujoco_action_to_ctrl(env, action)
-            for _ in range(env.decimation):
+            previous_ctrl = mj_data.ctrl.copy()
+            requested_ctrl = mujoco_action_to_ctrl(env, action)
+            for substep in range(env.decimation):
+                mj_data.ctrl[:] = env.delayed_ctrl(
+                    previous_ctrl, requested_ctrl, substep
+                )
                 mujoco.mj_step(mj_model, mj_data)
             last_action = action
             step_count += 1
@@ -317,8 +398,7 @@ def render_policy_rollout_mujoco(
                     control_timestep=env.control_timestep,
                 )
             if done and stop_on_done:
-                obs = mujoco_policy_observation(
-                    env,
+                obs = feedback.observe(
                     mj_data,
                     command=command_array,
                     last_action=last_action,
@@ -339,8 +419,8 @@ def render_policy_rollout_mujoco(
                 reset_mujoco_data(env, mj_data)
                 last_action = np.zeros(env.action_size, dtype=np.float32)
                 step_count = 0
-                obs = mujoco_policy_observation(
-                    env,
+                feedback.reset()
+                obs = feedback.observe(
                     mj_data,
                     command=command_array,
                     last_action=last_action,
@@ -348,8 +428,7 @@ def render_policy_rollout_mujoco(
                 )
                 obs_stack = init_observation_stack(obs, obs_stack_size)
                 continue
-            obs = mujoco_policy_observation(
-                env,
+            obs = feedback.observe(
                 mj_data,
                 command=command_array,
                 last_action=last_action,
@@ -451,6 +530,7 @@ def mujoco_policy_observation(
     last_action_delta: np.ndarray | None = None,
     gait_phase: float | jax.Array | None = None,
 ) -> jax.Array:
+    """Instantaneous noise-free snapshot; rollouts use NativeObservationPipeline."""
     state = mujoco_eval_state(
         env,
         mj_data,
@@ -624,7 +704,8 @@ def mujoco_eval_state(
     episode_track_lin_vel_xy: jax.Array,
     episode_length: jax.Array,
     gait_phase: float | jax.Array | None = None,
-    standing_transition_pending: bool | jax.Array = False,
+    standing_transition_pending: int | jax.Array = 0,
+    standing_reward_blend: float | jax.Array = 1.0,
     last_action_delta: np.ndarray | None = None,
     tracking_ang_vel_z: float | jax.Array | None = None,
 ) -> BelloState:
@@ -632,10 +713,24 @@ def mujoco_eval_state(
         moving = command_is_moving(
             jnp.asarray(command, dtype=jnp.float32), env.command_config
         )
+        _, initial_phase, _ = resolve_gait_command_transition(
+            jnp.zeros(3),
+            jnp.asarray(command),
+            jnp.asarray(0.0),
+            jnp.asarray(0.0),
+            jnp.asarray(0),
+            env.command_config,
+            env.config.gait,
+            jnp.asarray(True),
+            -env._locomotion_right_axis()[:2],
+        )
         gait_phase = jnp.where(
             moving,
             jnp.mod(
-                step_count * env.config.gait.frequency_hz * env.control_timestep,
+                initial_phase
+                + step_count
+                * gait_frequency(jnp.asarray(command), env.config.gait)
+                * env.control_timestep,
                 1.0,
             ),
             0.0,
@@ -697,10 +792,13 @@ def mujoco_eval_state(
         foot_contact_debounce_time=foot_contact_debounce_time,
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
+        command_target=jnp.asarray(command, dtype=jnp.float32),
         gait_phase=jnp.asarray(gait_phase, dtype=jnp.float32),
         standing_transition_pending=jnp.asarray(
-            standing_transition_pending, dtype=bool
+            standing_transition_pending, dtype=jnp.int32
         ),
+        next_start_left=jnp.asarray(True),
+        standing_reward_blend=jnp.asarray(standing_reward_blend, dtype=jnp.float32),
         command_resample_step_count=jnp.asarray(step_count, dtype=jnp.int32),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
         episode_return=episode_return,

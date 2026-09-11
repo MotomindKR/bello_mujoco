@@ -195,6 +195,22 @@ def test_hardware_joystick_limits_are_flat_overrides() -> None:
     assert command.joystick_yaw_slew_rate_rps2 == pytest.approx(1.2)
 
 
+def test_hardware_checkpoint_only_scheduling_has_explicit_null_overrides() -> None:
+    with initialize_config_dir(
+        version_base=None, config_dir=str(CONFIG_ROOT / "commands")
+    ):
+        config = compose(
+            config_name="hardware",
+            overrides=(
+                "joystick_linear_slew_rate_mps2=null",
+                "joystick_yaw_slew_rate_rps2=null",
+            ),
+        )
+    command = command_config(HardwareCommandConfig, config)
+    assert command.joystick_linear_slew_rate_mps2 is None
+    assert command.joystick_yaw_slew_rate_rps2 is None
+
+
 def test_hardware_upper_body_tracking_is_an_explicit_boolean() -> None:
     with initialize_config_dir(
         version_base=None,
@@ -408,11 +424,11 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.checkpoint_config.every_updates == 512
     assert mini.checkpoint_config.every_updates == 512
     assert not bello.asset_config.enforce_policy_effort_limits
-    assert not mini.asset_config.enforce_policy_effort_limits
+    assert mini.asset_config.enforce_policy_effort_limits
     assert len(bello.asset_config.actuator_config.policy_joint_names) == 13
     assert len(mini.asset_config.actuator_config.policy_joint_names) == 14
     assert len(mini.asset_config.actuator_config.hold_joint_names) == 14
-    assert mini.asset_config.imu_config.body_name == "pelvis_link"
+    assert mini.asset_config.imu_config.body_name == "imu_link"
     assert "waist_roll_joint" in mini.asset_config.actuator_config.policy_joint_names
     assert mini.reward_config.weights == replace(
         bello.reward_config.weights,
@@ -423,12 +439,20 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         stand_waist_deviation=-4.0,
         gait_contact=-2.5,
         gait_swing_clearance=-1.0,
+        stand_foot_foreaft=-4.0,
+        stand_foot_width=-2.0,
+        foot_crossing=-8.0,
+        foot_stumble=-2.0,
     )
     assert bello.reward_config.tracking == mini.reward_config.tracking
-    assert bello.reward_config.standing == mini.reward_config.standing
+    assert (
+        replace(bello.reward_config.standing, recovery_relaxation=True)
+        == mini.reward_config.standing
+    )
     assert mini.reward_config.gait == replace(
         bello.reward_config.gait,
         swing_clearance_target=0.075,
+        phase_shaped_clearance=True,
     )
     assert bello.reward_config.smoothness == mini.reward_config.smoothness
     assert bello.reward_config.weights.healthy_survival == pytest.approx(1.5)
@@ -458,7 +482,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.reward_config.standing.foot_heading_deadband == pytest.approx(
         0.0872664626
     )
-    assert bello.command_config == mini.command_config
+    assert (
+        replace(bello.command_config, lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.5, 0.5))
+        == mini.command_config
+    )
     assert bello.command_config.lin_vel_x == (-1.0, 1.0)
     assert bello.command_config.lin_vel_y == (-1.0, 1.0)
     assert bello.command_config.ang_vel_yaw == (-1.0, 1.0)
@@ -491,7 +518,12 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.done_config.base_height.min_height == pytest.approx(0.55)
     assert mini.done_config.base_height.min_height == pytest.approx(0.56)
     assert bello.env_config.gait.frequency_hz == pytest.approx(0.9)
-    assert mini.env_config.gait.frequency_hz == pytest.approx(0.90)
+    assert mini.env_config.gait.speed_dependent
+    assert mini.env_config.gait.step_frequency_base == 1.6
+    assert mini.env_config.gait.step_frequency_speed_gain == 0.35
+    assert mini.env_config.gait.stop_extra_steps == 1
+    assert mini.env_config.gait.directional_start
+    assert mini.env_config.command_delay_seconds == 0.01
     assert bello.warp.contact_budget_per_env == 40
     assert mini.warp.contact_budget_per_env == 40
     assert mini.env_config.spawn == replace(
@@ -504,6 +536,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
             gait=bello.env_config.gait,
             random_push=bello.env_config.random_push,
             spawn=bello.env_config.spawn,
+            command_delay_seconds=bello.env_config.command_delay_seconds,
         )
         == bello.env_config
     )
