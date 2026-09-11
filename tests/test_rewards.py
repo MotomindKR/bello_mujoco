@@ -767,6 +767,36 @@ def test_gait_contact_penalizes_phase_mismatch_only_while_active() -> None:
     assert standing["reward/gait_contact"] == pytest.approx(0.0)
 
 
+@pytest.mark.parametrize("forward_speed", [-0.5, 0.0, 0.25, 0.5])
+@pytest.mark.parametrize("tilt", [0.0, 0.4])
+@pytest.mark.parametrize("requested_speed", [0.0, 0.5])
+def test_recovery_cannot_remove_active_gait_contact_penalty(
+    forward_speed: float, tilt: float, requested_speed: float
+) -> None:
+    config = reward_config(
+        gait_contact=-2.5,
+        standing=StandingRewardConfig(recovery_relaxation=True),
+    )
+    inputs = reward_inputs(
+        command=jnp.asarray([requested_speed, 0.0, 0.0]),
+        lin_vel_xy=jnp.asarray([forward_speed, 0.0]),
+        projected_gravity=jnp.asarray([math.sin(tilt), 0.0, -math.cos(tilt)]),
+        gait_active=jnp.asarray(True),
+        desired_foot_contact=jnp.asarray([1.0, 0.0]),
+        foot_contact=jnp.asarray([1.0, 1.0]),
+    )
+    compute = jax.jit(lambda value: compute_locomotion_reward(config, value)[1])
+    # One incorrectly planted foot costs 2.5 * 0.5 * 0.02, even during a
+    # zero-command extra-step stop buffer or large tracking error/tilt.
+    assert compute(inputs)["reward/gait_contact"] == pytest.approx(-0.025)
+    assert compute(inputs.replace(foot_contact=jnp.asarray([1.0, 0.0])))[
+        "reward/gait_contact"
+    ] == pytest.approx(0.0)
+    assert compute(inputs.replace(gait_active=jnp.asarray(False)))[
+        "reward/gait_contact"
+    ] == pytest.approx(0.0)
+
+
 def test_stance_slip_and_swing_clearance_follow_desired_foot_phase() -> None:
     config = reward_config(
         gait_stance_slip=-1.0,

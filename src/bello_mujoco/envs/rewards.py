@@ -725,7 +725,7 @@ def compute_locomotion_reward(
             / math.sin(config.standing.recovery_tilt),
         )
         recovery_scale = jnp.clip(2.0 - disturbance, 0.0, 1.0)
-        gait_contact *= recovery_scale
+        # Recovery relaxes standing posture, never the active gait schedule.
         stand_foot_motion *= recovery_scale * jnp.all(inputs.foot_contact)
         stand_foot_heading *= recovery_scale
         stand_still *= recovery_scale

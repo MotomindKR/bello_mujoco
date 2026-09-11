@@ -434,9 +434,12 @@ does not incur this term.
 
 All `stand_*` terms receive the standing blend. Position and heading alignment
 require healthy double support. `standing.recovery_relaxation: true` smoothly
-relaxes alignment, foot stillness, and gait contact-pattern pressure as planar
+relaxes standing alignment and foot stillness as planar
 velocity error exceeds `0.25 m/s` or tilt exceeds approximately `0.15 rad`;
-relaxation reaches zero at twice these normalized thresholds. Crossing, general
+relaxation reaches zero at twice these normalized thresholds. Gait contact timing
+is never multiplied by this recovery gate: its full configured penalty remains
+active during moving commands and the extra-step stop buffer, regardless of
+tracking error or tilt. Crossing, general
 balance, effort limits, and impact penalties remain active. These are initial
 tuning values, not demonstrated policy-performance guarantees.
 
