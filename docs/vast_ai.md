@@ -57,6 +57,8 @@ Non-dry execution:
 
 The remote bootstrap uses OSMesa for native diagnostic videos so rendering does
 not depend on a provider's NVIDIA EGL stack or consume training VRAM. Before the
+package install, official Ubuntu archive/security URLs are upgraded to HTTPS to
+avoid hosts with unreliable plain-HTTP routing. Before the
 bounded rollout, it renders one frame and encodes it to MP4. The rollout disables
 W&B; non-TWIST preflights also disable their longer configured videos because the
 dedicated render probe has already exercised that path. Locomotion preflights

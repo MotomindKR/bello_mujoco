@@ -63,7 +63,9 @@ class BelloState:
     command: jax.Array
     command_target: jax.Array
     gait_phase: jax.Array
-    standing_transition_pending: jax.Array  # Boundaries left; -1 waits for zero command.
+    standing_transition_pending: (
+        jax.Array
+    )  # Boundaries left; -1 waits for zero command.
     command_resample_step_count: jax.Array
     step_count: jax.Array
     episode_return: jax.Array
@@ -586,17 +588,20 @@ class BelloLocomotionEnv:
             raise ValueError(
                 "command_delay_seconds must be a whole number of physics substeps"
             )
-        maximum_command = jnp.asarray(
-            [
-                max(map(abs, self.command_config.lin_vel_x)),
-                max(map(abs, self.command_config.lin_vel_y)),
-                0.0,
-            ]
+        maximum_speed = math.hypot(
+            max(map(abs, self.command_config.lin_vel_x)),
+            max(map(abs, self.command_config.lin_vel_y)),
         )
-        gait_phase_advance = (
-            float(gait_frequency(maximum_command, self.config.gait))
-            * self.control_timestep
+        maximum_frequency = (
+            0.5
+            * (
+                self.config.gait.step_frequency_base
+                + self.config.gait.step_frequency_speed_gain * maximum_speed
+            )
+            if self.config.gait.speed_dependent
+            else self.config.gait.frequency_hz
         )
+        gait_phase_advance = maximum_frequency * self.control_timestep
         if gait_phase_advance >= 0.5:
             raise ValueError(
                 "gait.frequency_hz must advance the gait by less than half a cycle "

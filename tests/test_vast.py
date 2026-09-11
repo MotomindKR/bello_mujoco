@@ -946,6 +946,9 @@ def test_remote_command_preflights_software_rendering() -> None:
     assert script.index("export UV_HTTP_TIMEOUT=600") < sync_index
     assert script.index("export UV_HTTP_RETRIES=5") < sync_index
     assert "libosmesa6" in script
+    assert script.index("https://archive.ubuntu.com/ubuntu") < script.index(
+        "apt-get update"
+    )
     assert "export MUJOCO_GL=osmesa" in script
     assert "export PYOPENGL_PLATFORM=osmesa" in script
     assert "mujoco.Renderer" in script

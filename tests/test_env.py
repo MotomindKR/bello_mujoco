@@ -786,13 +786,16 @@ def test_actor_feedback_noise_is_filtered_before_history(
     assert filtered[4] == pytest.approx(previous[4] + 2.0 * alpha)
 
 
+@pytest.mark.parametrize("speed_dependent", [False, True])
 def test_torso_com_curriculum_scales_fixed_world_offsets(
     bello_asset: PreparedAsset,
+    speed_dependent: bool,
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(
         bello_asset,
         batch_size=4,
         env_config=BelloEnvConfig(
+            gait=GaitConfig(speed_dependent=speed_dependent),
             model_randomization=ModelRandomizationConfig(
                 enabled=True,
                 seed=31,
@@ -809,15 +812,12 @@ def test_torso_com_curriculum_scales_fixed_world_offsets(
     )
     full = np.asarray(env.model.mjx_model.body_ipos)[:, torso_id]
     offset = env.model.torso_com_offset
-    zero = np.asarray(
-        env.with_task_state(jnp.asarray([0.0])).model.mjx_model.body_ipos
-    )[:, torso_id]
-    half = np.asarray(
-        env.with_task_state(jnp.asarray([50.0])).model.mjx_model.body_ipos
-    )[:, torso_id]
-    complete = np.asarray(
-        env.with_task_state(jnp.asarray([100.0])).model.mjx_model.body_ipos
-    )[:, torso_id]
+    traced_body_ipos = jax.jit(
+        lambda progress: env.with_task_state(progress).model.mjx_model.body_ipos
+    )
+    zero = np.asarray(traced_body_ipos(jnp.asarray([0.0])))[:, torso_id]
+    half = np.asarray(traced_body_ipos(jnp.asarray([50.0])))[:, torso_id]
+    complete = np.asarray(traced_body_ipos(jnp.asarray([100.0])))[:, torso_id]
 
     np.testing.assert_allclose(zero, full - offset, atol=1.0e-7)
     np.testing.assert_allclose(half, full - 0.5 * offset, atol=1.0e-7)

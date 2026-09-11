@@ -209,6 +209,13 @@ total_timesteps="${13}"
 learning_rate="${14}"
 
 export DEBIAN_FRONTEND=noninteractive
+for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+  [ -f "$apt_source" ] || continue
+  sed -i \
+    -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+    -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+    "$apt_source"
+done
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libgl1 libglib2.0-0 libosmesa6 libxrender1 python3 python3-pip rsync
 
