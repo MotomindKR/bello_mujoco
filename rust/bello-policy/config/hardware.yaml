@@ -1,0 +1,12 @@
+endpoint: http://127.0.0.1:50051
+groups: [lower_body, upper_body]
+imu_name: imu
+connection_timeout_seconds: 3.0
+telemetry_timeout_seconds: 2.0
+max_motor_age_ms: 100.0
+max_imu_age_ms: 100.0
+max_group_age_ms: 100.0
+max_state_sample_span_ms: 40.0
+max_tilt_radians: 0.70
+max_angular_velocity: 20.0
+max_linear_acceleration: 100.0

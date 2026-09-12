@@ -909,7 +909,7 @@ def geom_lower_z(
     data: mujoco.MjData,
     geom_id: int,
 ) -> float:
-    geom_type = mj_model.geom_type[geom_id]
+    geom_type = mujoco.mjtGeom(int(mj_model.geom_type[geom_id]))
     if geom_type == mujoco.mjtGeom.mjGEOM_MESH:
         mesh_id = int(mj_model.geom_dataid[geom_id])
         vert_adr = int(mj_model.mesh_vertadr[mesh_id])
@@ -994,7 +994,7 @@ def logical_actuator_joint_names(
     }
     names: list[str] = []
     for actuator_id in range(mj_model.nu):
-        transmission = mj_model.actuator_trntype[actuator_id]
+        transmission = mujoco.mjtTrn(int(mj_model.actuator_trntype[actuator_id]))
         target_id = int(mj_model.actuator_trnid[actuator_id, 0])
         if transmission in {
             mujoco.mjtTrn.mjTRN_JOINT,

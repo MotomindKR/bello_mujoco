@@ -133,6 +133,15 @@ def actor_onnx(
         )
         delta = op("Mul", [bounded, span], "motor_delta")
     else:
+        value = op(
+            "Clip",
+            [
+                value,
+                constant("effort_action_low", -action_clip),
+                constant("effort_action_high", action_clip),
+            ],
+            "applied_effort_action",
+        )
         delta = op(
             "Mul", [value, constant("effort_scale", effort_scale)], "motor_delta"
         )
@@ -228,7 +237,15 @@ def export_checkpoint(config: ExportConfig) -> Path:
         "environment": to_builtin(env.config),
     }
     if saved.task == "locomotion":
+        from bello_mujoco.hardware.locomotion import _hardware_imu_to_policy_rotation
+
         metadata["command"] = to_builtin(env.command_config)
+        metadata["hardware_imu_frame"] = model.robot.default_imu_body_name
+        metadata["policy_from_hardware"] = _hardware_imu_to_policy_rotation(
+            env
+        ).tolist()
+        metadata["left_axis"] = (-env._locomotion_right_axis()[:2]).tolist()
+        metadata["action_clip"] = env.action_clip
     effort_scale = (
         np.asarray(env.beyondmimic_action_scale)
         if saved.task == "motion_tracking" and env.config.formulation == "beyondmimic"

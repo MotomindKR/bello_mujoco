@@ -2,7 +2,7 @@
   description = "Minimal Nix shell for a uv-managed MuJoCo/MJX robot-learning stack";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/06a21ded0b150acacc0d132ff61e6693d4c771de";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -94,9 +94,8 @@
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           rust-runtime = pkgs.mkShell {
             packages = with pkgs; [ cargo rustc rustfmt clippy protobuf pkg-config mujoco onnxruntime ];
-            MUJOCO_INCLUDE_DIR = "${pkgs.lib.getDev pkgs.mujoco}/include";
-            MUJOCO_LIB_DIR = "${pkgs.lib.getLib pkgs.mujoco}/lib";
-            LIBCLANG_PATH = "${pkgs.lib.getLib pkgs.llvmPackages.libclang}/lib";
+            MUJOCO_DYNAMIC_LINK_DIR = assert pkgs.mujoco.version == "3.12.0";
+              "${pkgs.lib.getLib pkgs.mujoco}/lib";
             ORT_DYLIB_PATH = "${pkgs.lib.getLib pkgs.onnxruntime}/lib/libonnxruntime.so";
             shellHook = ''
               export CARGO_TARGET_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/bello-mujoco/rust-runtime"

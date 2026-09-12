@@ -279,8 +279,6 @@ def test_public_command_configs_are_strict() -> None:
         (HardwareCommandConfig, {"duration_seconds": True}),
         (HardwareCommandConfig, {"remote_staleness_ms": True}),
         (HardwareCommandConfig, {"joystick_command_scale": True}),
-        (HardwareCommandConfig, {"joystick_linear_slew_rate_mps2": True}),
-        (HardwareCommandConfig, {"joystick_yaw_slew_rate_rps2": True}),
         (HandsCommandConfig, {"arm": 1}),
         (HandsCommandConfig, {"calibration_confirmed": 1}),
         (HandsCommandConfig, {"control_rate_hz": True}),

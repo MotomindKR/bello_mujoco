@@ -23,6 +23,7 @@
 | `motion/` | Reference clip loading and runtime reconstruction |
 | `robots/` | Robot task defaults and coordinate mappings |
 | `deployment.py` | Self-contained ONNX/reference deployment bundles |
+| `rust/bello-policy/` | Task-specific CPU inference, observation assembly, gait, and hardware preflight |
 
 Python paths are relative to `src/bello_mujoco/`. Generated models, checkpoints,
 videos, and caches are local artifacts, not source. Compatibility is the root

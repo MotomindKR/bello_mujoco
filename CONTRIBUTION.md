@@ -69,12 +69,12 @@ tests belong in the default suite. Do not encode robot YAML values, joint counts
 or nominal-pose collision expectations in tests: validate the selected model at
 runtime and test that validator with synthetic geometry.
 
-To check the exported bundle against the Rust CPU consumer, build `bello-policy`
-from the pinned stack, set `BELLO_POLICY_BIN` to the executable and
+To check the exported bundle against the Rust CPU consumer, run
+`cargo build --locked -p bello-policy` from this repository, set `BELLO_POLICY_BIN` to the executable and
 `ORT_DYLIB_PATH` to the ONNX Runtime library, then run:
 
 ```bash
-uv run pytest -m integration tests/test_deployment_runtime.py
+uv run pytest -m integration tests/test_deployment_runtime.py tests/test_native_locomotion.py
 ```
 
 This uses synthetic policies and temporary local Git fixtures, without a robot,

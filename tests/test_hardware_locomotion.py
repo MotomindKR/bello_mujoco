@@ -427,8 +427,6 @@ def test_hardware_uses_generated_motor_impedance_gains(
 def make_hardware_adapter(
     hardware_env: BelloLocomotionEnv,
     config: TrainingRunConfig | None = None,
-    *,
-    command_slew_rates: tuple[float, float] | None = None,
 ) -> HardwarePolicyAdapter:
     config = config or compose_hardware_training_config()
     actor_size = policy_observation_size(
@@ -460,7 +458,6 @@ def make_hardware_adapter(
         policy,
         metadata,
         normalization,
-        command_slew_rates=command_slew_rates,
     )
 
 
@@ -580,30 +577,6 @@ def test_mini_sole_geometry_and_substep_delay(mini_hardware_env):
     np.testing.assert_allclose(
         result, [geometry.nominal_width, -geometry.nominal_width], atol=1e-6
     )
-
-
-def test_mini_uses_checkpoint_slew_and_rejects_mismatched_rates(mini_hardware_env):
-    adapter = make_hardware_adapter(
-        mini_hardware_env,
-        compose_mini_hardware_training_config(),
-        command_slew_rates=(1.0, 1.0),
-    )
-    assert adapter._command_slew_rates is None
-    with pytest.raises(ValueError, match="must match checkpoint"):
-        make_hardware_adapter(
-            mini_hardware_env,
-            compose_mini_hardware_training_config(),
-            command_slew_rates=(2.0, 1.0),
-        )
-    validate_hardware_config(
-        pose_hardware_config(
-            joystick_linear_slew_rate_mps2=None, joystick_yaw_slew_rate_rps2=None
-        )
-    )
-    with pytest.raises(ValueError, match="both joystick slew rates"):
-        validate_hardware_config(
-            pose_hardware_config(joystick_linear_slew_rate_mps2=None)
-        )
 
 
 def test_bello_mini_adapter_supports_live_upper_body(
@@ -1004,58 +977,11 @@ def test_hardware_adapter_defers_stop_requested_inside_double_support(
     assert adapter._gait_phase == pytest.approx(0.0)
 
 
-def test_hardware_adapter_slew_limits_the_policy_observed_command(
-    hardware_env: BelloLocomotionEnv,
-) -> None:
-    adapter = make_hardware_adapter(
-        hardware_env,
-        command_slew_rates=(1.0, 1.0),
-    )
-    adapter._advance_gait_phase_before_step = True
-    timestep = adapter.control_timestep
-
-    def advance(target: tuple[float, float, float]) -> np.ndarray:
-        previous = adapter._effective_command.copy()
-        command = adapter._resolve_effective_command(
-            np.asarray(target, dtype=np.float32)
-        )
-        assert np.linalg.norm(command[:2] - previous[:2]) <= timestep + 1.0e-6
-        assert abs(float(command[2] - previous[2])) <= timestep + 1.0e-6
-        return command
-
-    for _ in range(50):
-        command = advance((0.6, 0.6, 0.6))
-    assert command == pytest.approx((0.6, 0.6, 0.6))
-
-    for _ in range(100):
-        command = advance((-0.6, -0.6, -0.6))
-        if np.linalg.norm(command[:2]) < hardware_env.command_config.linear_deadband:
-            assert adapter._gait_active
-    assert command == pytest.approx((-0.6, -0.6, -0.6))
-
-    saw_zero_slew = False
-    for _ in range(150):
-        previous = command
-        command = advance((0.0, 0.0, 0.0))
-        saw_zero_slew |= adapter._standing_slew_active
-        if np.array_equal(command, np.zeros(3, dtype=np.float32)):
-            break
-        assert adapter._standing_transition_pending
-        if saw_zero_slew:
-            assert not np.array_equal(command, previous)
-    else:
-        pytest.fail("slew-limited standing transition did not finish")
-    assert saw_zero_slew
-    assert not adapter._standing_transition_pending
-    assert adapter._gait_phase == pytest.approx(0.0)
-
-
 def test_hardware_adapter_precompile_warms_slew_gait_transition(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
     adapter = make_hardware_adapter(
         hardware_env,
-        command_slew_rates=(1.0, 1.0),
     )
     resolve_gait_transition = adapter._resolve_gait_transition
     calls = []
@@ -1068,41 +994,6 @@ def test_hardware_adapter_precompile_warms_slew_gait_transition(
     adapter.precompile()
 
     assert len(calls) == 1
-
-
-def test_hardware_adapter_defers_neutral_during_reversal_deadband(
-    hardware_env: BelloLocomotionEnv,
-) -> None:
-    adapter = make_hardware_adapter(
-        hardware_env,
-        command_slew_rates=(1.0, 1.0),
-    )
-    adapter._advance_gait_phase_before_step = True
-    positive = np.asarray((0.4, 0.0, 0.0), dtype=np.float32)
-    negative = -positive
-
-    for _ in range(30):
-        command = adapter._resolve_effective_command(positive)
-    assert command == pytest.approx(positive)
-    assert adapter._gait_active
-
-    for _ in range(30):
-        command = adapter._resolve_effective_command(negative)
-        if not adapter._command_is_moving(command):
-            break
-    else:
-        pytest.fail("reversal never crossed the command deadband")
-
-    assert adapter._gait_active
-    adapter._gait_phase = 0.1
-    for _ in range(5):
-        stopped = adapter._resolve_effective_command(np.zeros(3, dtype=np.float32))
-        assert adapter._standing_transition_pending
-        assert adapter._gait_active
-        assert adapter._command_is_moving(adapter._gait_target_command)
-        assert stopped == pytest.approx(command)
-
-    assert adapter._gait_target_command[0] > 0.0
 
 
 def test_locomotion_overlays_only_slew_limited_upper_body_reference(
@@ -1327,8 +1218,6 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.remote.endpoint == "http://127.0.0.1:50054"
     assert config.hardware.remote.staleness_ms == 200
     assert config.hardware.joystick_command_scale == pytest.approx(0.6)
-    assert config.hardware.joystick_linear_slew_rate_mps2 == pytest.approx(1.0)
-    assert config.hardware.joystick_yaw_slew_rate_rps2 == pytest.approx(1.0)
     assert config.hardware.rtmw_gmr_task_profile == "live_upper_body"
     assert config.hardware.rtmw_reference_qualification_frames == 1
     assert config.hardware.rtmw_min_joint_confidence == pytest.approx(0.0)
@@ -1361,14 +1250,6 @@ def test_hardware_runner_defaults_to_read_only() -> None:
         validate_hardware_config(pose_hardware_config(gain_scale=1.01))
     with pytest.raises(ValueError, match="joystick_command_scale"):
         validate_hardware_config(pose_hardware_config(joystick_command_scale=0.0))
-    with pytest.raises(ValueError, match="joystick_linear_slew_rate_mps2"):
-        validate_hardware_config(
-            pose_hardware_config(joystick_linear_slew_rate_mps2=0.0)
-        )
-    with pytest.raises(ValueError, match="joystick_yaw_slew_rate_rps2"):
-        validate_hardware_config(
-            pose_hardware_config(joystick_yaw_slew_rate_rps2=float("nan"))
-        )
     with pytest.raises(ValueError, match="acknowledgement_timeout_seconds"):
         validate_hardware_config(
             pose_hardware_config(acknowledgement_timeout_seconds=0.08)
@@ -2357,7 +2238,6 @@ def test_read_only_preflight_never_acquires_control(
             Path("unused"),
             {
                 "upper_body_follow": UpperBodyFollowConfig(),
-                "command_slew_rates": (1.0, 1.0),
             },
         ),
     ]

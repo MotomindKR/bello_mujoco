@@ -213,7 +213,7 @@ class BelloRobstrideTransmission:
         mj_model = self.model.mj_model
         result = {}
         for joint_id in range(mj_model.njnt):
-            if mj_model.jnt_type[joint_id] not in {
+            if mujoco.mjtJoint(int(mj_model.jnt_type[joint_id])) not in {
                 mujoco.mjtJoint.mjJNT_HINGE,
                 mujoco.mjtJoint.mjJNT_SLIDE,
             }:

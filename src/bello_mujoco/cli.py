@@ -96,8 +96,6 @@ class HardwareCommandConfig:
     remote_endpoint: str | None
     remote_staleness_ms: int
     joystick_command_scale: float
-    joystick_linear_slew_rate_mps2: float | None
-    joystick_yaw_slew_rate_rps2: float | None
     end_effector_payload_mass_kg: float | None
     duration_seconds: float | None
     ramp_seconds: float | None
@@ -564,11 +562,7 @@ def _hardware_hydra(config: DictConfig) -> None:
         "rtmw_gmr_task_profile",
     )
     smplx_fields = ("smplx_neutral_model_path", "smplx_human_height_m")
-    locomotion_joystick_fields = (
-        "joystick_command_scale",
-        "joystick_linear_slew_rate_mps2",
-        "joystick_yaw_slew_rate_rps2",
-    )
+    locomotion_joystick_fields = ("joystick_command_scale",)
     locomotion_upper_body_fields = ("upper_body_tracking_enabled",)
     if command.task == "motion":
         _reject_explicit_fields(
@@ -670,8 +664,6 @@ def _hardware_hydra(config: DictConfig) -> None:
                 staleness_ms=command.remote_staleness_ms,
             ),
             joystick_command_scale=command.joystick_command_scale,
-            joystick_linear_slew_rate_mps2=(command.joystick_linear_slew_rate_mps2),
-            joystick_yaw_slew_rate_rps2=command.joystick_yaw_slew_rate_rps2,
             max_duration_seconds=command.duration_seconds,
             ramp_seconds=_coalesce(command.ramp_seconds, base.ramp_seconds),
             gain_scale=command.gain_scale,

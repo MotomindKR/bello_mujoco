@@ -20,6 +20,8 @@ from bello_mujoco.models.compiler import (
     compile_robot,
 )
 
+pytest_plugins = ["native_runtime"]
+
 
 class FakeGroupState(Enum):
     IDLE = 1

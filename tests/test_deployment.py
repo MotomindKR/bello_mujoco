@@ -68,7 +68,7 @@ def test_onnx_matches_actor_normalization_and_motor_mapping(
         np.testing.assert_allclose(motors[0], expected_motor, atol=1e-6)
 
 
-def test_onnx_effort_mapping_clips_only_motor_targets():
+def test_onnx_effort_mapping_uses_applied_action_before_motor_limits():
     config = PPOConfig(policy=ActorCriticConfig(hidden_dims=(4,)))
     actor = ActorCritic(3, 2, config.policy, key=jax.random.PRNGKey(5))
     norm = ObservationNormState(jnp.zeros(3), jnp.ones(3), jnp.asarray(1.0))
@@ -86,7 +86,7 @@ def test_onnx_effort_mapping_clips_only_motor_targets():
     obs = np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32)
     action, target = ReferenceEvaluator(graph).run(None, {"observation": obs})
     expected = np.asarray([0.2, 0.3, 0.4])
-    expected[[0, 2]] += action[0] * [4.0, 6.0]
+    expected[[0, 2]] += np.clip(action[0], -1.0, 1.0) * [4.0, 6.0]
     np.testing.assert_allclose(target[0], np.clip(expected, -1.0, 1.0), atol=1e-6)
 
 

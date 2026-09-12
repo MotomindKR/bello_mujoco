@@ -26,7 +26,7 @@ def validate_home_pose(model: mujoco.MjModel) -> None:
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, home)
     for joint in range(model.njnt):
-        if model.jnt_limited[joint] and model.jnt_type[joint] in (
+        if model.jnt_limited[joint] and mujoco.mjtJoint(int(model.jnt_type[joint])) in (
             mujoco.mjtJoint.mjJNT_HINGE,
             mujoco.mjtJoint.mjJNT_SLIDE,
         ):

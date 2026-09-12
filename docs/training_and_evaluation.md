@@ -64,5 +64,5 @@ without visual meshes or external file references. The pinned URDF remains
 canonical; this MJCF is a generated deployment artifact, not a second source.
 Motion tracking also includes `motion.npz`; locomotion does not.
 It is not a resumable checkpoint.
-`bello-stack/components/bello-policy` provides the CPU Rust consumer, validating
+`rust/bello-policy` provides the CPU Rust consumer in this repository, validating
 the source commit and live tensor dimensions before inference.

@@ -22,6 +22,13 @@ Public controls are documented under
 The emulator is intended for hardware-interface and controller integration
 testing. Policy checkpoints are evaluated with `bello-eval`.
 
+Training and native emulation target MuJoCo 3.12.0. The Rust adapter in
+`bello-stack/components/bello-mujoco` uses a pinned, headless `mujoco-rs`
+revision for that engine, retaining native differential-ankle tendons. Its
+full transport/process migration is still in progress; the commands below
+remain the complete Python emulator. The Rust emulator's robot model will
+come from the canonical description, independently of policy bundles.
+
 ## Canonical inventory
 
 The emulated motor contract is:
