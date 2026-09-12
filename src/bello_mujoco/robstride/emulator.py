@@ -612,7 +612,7 @@ def publish_body_pose(
     mujoco.mj_objectVelocity(
         model,
         data,
-        mujoco.mjtObj.mjOBJ_BODY,
+        mujoco.mjtObj.mjOBJ_XBODY,
         body_id,
         world_velocity,
         0,
@@ -621,7 +621,7 @@ def publish_body_pose(
     mujoco.mj_objectVelocity(
         model,
         data,
-        mujoco.mjtObj.mjOBJ_BODY,
+        mujoco.mjtObj.mjOBJ_XBODY,
         body_id,
         local_velocity,
         1,

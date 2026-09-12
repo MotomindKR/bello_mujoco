@@ -7,6 +7,35 @@ from bello_mujoco.hardware import _pose_pb2
 from bello_mujoco.hardware.pose import PoseServiceConfig, PoseServiceServer
 
 
+def test_emulator_publishes_link_origin_velocity_not_inertial_center_velocity():
+    from types import SimpleNamespace
+
+    import mujoco
+    import numpy as np
+
+    from bello_mujoco.robstride.emulator import publish_body_pose
+
+    model = mujoco.MjModel.from_xml_string("""<mujoco>
+      <compiler alignfree="false"/>
+      <worldbody><body name="link" pos="0 0 1"><freejoint/>
+        <inertial pos=".4 0 0" quat=".7071067811865476 .7071067811865476 0 0"
+          mass="1" diaginertia=".1 .2 .3"/>
+        <geom size=".1" contype="0" conaffinity="0"/>
+      </body></worldbody>
+    </mujoco>""")
+    data = mujoco.MjData(model)
+    data.qvel[:] = [1, 2, 3, 0, 0, 2]
+    mujoco.mj_forward(model, data)
+    recorded = []
+    server = SimpleNamespace(publish=lambda *args, **kwargs: recorded.append(args))
+    publish_body_pose(server, model, data, model.body("link").id)
+    position, quaternion, linear, angular = recorded[0]
+    np.testing.assert_allclose(position, [0, 0, 1], atol=1e-12)
+    np.testing.assert_allclose(quaternion, [1, 0, 0, 0], atol=1e-12)
+    np.testing.assert_allclose(linear, [1, 2, 3], atol=1e-12)
+    np.testing.assert_allclose(angular, [0, 0, 2], atol=1e-12)
+
+
 def pose_stream(channel: grpc.Channel):
     return channel.unary_stream(
         "/bello.pose.v1.PoseService/WatchPose",

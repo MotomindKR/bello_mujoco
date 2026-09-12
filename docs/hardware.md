@@ -47,6 +47,8 @@ the mechanical coupling. Motor telemetry is converted to joint kinematics for
 observations and safety, not to reinterpret policy outputs. Gains are explicit
 per-motor values. IMU placement and orientation come from the robot model;
 training and native evaluation use the same observation/filter functions.
+Emulator pose messages report the link origin's world position/linear velocity
+and body-frame angular velocity, not the offset inertial center's velocity.
 
 Remote commands are semantic forward/right/yaw intent mapped into the robot's
 configured command frame. Do not assume Bello and Mini share their forward axis.
@@ -73,7 +75,12 @@ device IDs, side mapping, and emergency stop before enabling hand motion.
 
 ## ONNX
 
-`bello-export-policy` emits one ZIP bundle with `policy.onnx` and, for motion
+`bello-export-policy` emits one ZIP bundle with `policy.onnx`, mesh-free
+`physics.xml`, and, for motion
 tracking, `motion.npz`. `bello-stack/components/bello-policy` provides a Rust CPU consumer.
 Its JSON-line inference tool performs no hardware writes. Resumable training
 state remains a separate checkpoint directory.
+
+The Rust MuJoCo adapter can compile the bundled XML directly from memory without
+Python. The full SocketCAN/IMU/pose-service emulator migration is still in progress;
+use the Python emulator commands above until its retained features are wired.

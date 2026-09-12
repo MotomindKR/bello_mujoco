@@ -15,6 +15,7 @@ from bello_mujoco.model_validation import (
     validate_robot_collision_geometry,
 )
 from bello_mujoco.robot import CoupledActuatorGroup, RobotDefinition
+from bello_mujoco.models.serialization import save_model_xml
 
 TRANSPARENT_COLLISION_RGBA = "0.8 0.8 0.8 0"
 ACCELERATION_STAGE_SITE = "bello_acceleration_stage_site"
@@ -42,18 +43,8 @@ def compile_urdf_to_mjcf(
     end_effector_payload_mass_kg: float = 0.0,
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
-    mujoco.mj_saveLastXML(str(viewer_mjcf_path), model)
-    tree = ET.parse(viewer_mjcf_path)
+    tree = save_model_xml(viewer_mjcf_path, model)
     root = tree.getroot()
-    root.find("compiler").set("inertiafromgeom", "false")
-    for body in root.findall(".//body"):
-        inertial = body.find("inertial")
-        if inertial is not None:
-            index = model.body(body.attrib["name"]).id
-            inertial.set("mass", f"{model.body_mass[index]:.17g}")
-            inertial.set("pos", format_vec(model.body_ipos[index]))
-            inertial.set("quat", format_vec(model.body_iquat[index]))
-            inertial.set("diaginertia", format_vec(model.body_inertia[index]))
     root.find("compiler").set("meshdir", str(urdf_path.parent.resolve()))
     ensure_option(root)
     ensure_free_root_joint(root, robot)

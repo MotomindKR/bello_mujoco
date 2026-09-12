@@ -58,7 +58,11 @@ uv run bello-export-policy checkpoint_path=checkpoints/RUN output_path=outputs/p
 ```
 
 The ZIP bundle contains `policy.onnx`: the deterministic actor, normalization,
-motor-target mapping, and source/inference metadata. Motion tracking also
-includes `motion.npz`; locomotion does not. It is not a resumable checkpoint.
+motor-target mapping, and source/inference metadata. `physics.xml` contains the
+runtime physics, native joint/tendon transmissions, sensors, and home state,
+without visual meshes or external file references. The pinned URDF remains
+canonical; this MJCF is a generated deployment artifact, not a second source.
+Motion tracking also includes `motion.npz`; locomotion does not.
+It is not a resumable checkpoint.
 `bello-stack/components/bello-policy` provides the CPU Rust consumer, validating
 the source commit and live tensor dimensions before inference.

@@ -1,9 +1,11 @@
 """Opt-in parity against the compiled Rust consumer, without a robot or GPU."""
 
 import json
+from io import BytesIO
 import os
 from pathlib import Path
 import subprocess
+from zipfile import ZipFile
 
 import jax
 import jax.numpy as jnp
@@ -80,7 +82,14 @@ def rust_policy(tmp_path):
         "control_timestep": 0.02,
     }
 
-    def run(observations=(), *, metadata_updates=None, content=None, check=False):
+    def run(
+        observations=(),
+        *,
+        metadata_updates=None,
+        content=None,
+        check=False,
+        omit_physics=False,
+    ):
         if content is None:
             graph = actor_onnx(
                 actor,
@@ -92,7 +101,14 @@ def rust_policy(tmp_path):
                 action_clip=1.0,
                 metadata=metadata | (metadata_updates or {}),
             )
-            content = deployment_bundle(graph.SerializeToString())
+            content = deployment_bundle(graph.SerializeToString(), physics=b"<mujoco/>")
+        if omit_physics:
+            buffer = BytesIO()
+            with ZipFile(BytesIO(content)) as original, ZipFile(buffer, "w") as archive:
+                for name in original.namelist():
+                    if name != "physics.xml":
+                        archive.writestr(name, original.read(name))
+            content = buffer.getvalue()
         bundle = tmp_path / "deployment.zip"
         bundle.write_bytes(content)
         return subprocess.run(
@@ -112,6 +128,13 @@ def rust_policy(tmp_path):
         return action, target
 
     return run, expected, source
+
+
+def test_rust_rejects_incomplete_bundle(rust_policy):
+    run, _, _ = rust_policy
+    result = run(check=True, omit_physics=True)
+    assert result.returncode != 0
+    assert "missing physics.xml" in result.stderr
 
 
 def test_rust_bundle_inference_matches_training(rust_policy):

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import numpy as np
@@ -216,6 +217,7 @@ def export_checkpoint(config: ExportConfig) -> Path:
         "observation_stack_size": saved.ppo.policy.obs_stack_size,
         "observation_max_abs": saved.ppo.rollout_observation_max_abs,
         "coordinates": model.actuator_coordinate_names,
+        "actuators": model.actuator_names,
         "policy_indices": model.policy_ctrl_indices.tolist(),
         "default_position": model.default_ctrl.tolist(),
         "kp": model.mj_model.actuator_gainprm[:, 0].tolist(),
@@ -245,6 +247,7 @@ def export_checkpoint(config: ExportConfig) -> Path:
     )
     content = deployment_bundle(
         graph.SerializeToString(),
+        physics=physics_mjcf(model),
         motion=env.motion if saved.task == "motion_tracking" else None,
     )
     require_repository_commit(git_commit)
@@ -252,12 +255,45 @@ def export_checkpoint(config: ExportConfig) -> Path:
     return output
 
 
-def deployment_bundle(policy: bytes, *, motion=None) -> bytes:
+def physics_mjcf(model) -> bytes:
+    """Snapshot the runtime physics and home state without external assets."""
+    import mujoco
+
+    from bello_mujoco.models.serialization import save_model_xml
+
+    if model.mj_model.nmesh or model.mj_model.ntex:
+        raise ValueError("deployment physics must be loaded without visual assets")
+    with tempfile.TemporaryDirectory(prefix="bello-physics-") as directory:
+        # Restore the matching topology: mj_saveLastXML uses the last XML loaded.
+        mujoco.MjModel.from_xml_path(str(model.xml_path))
+        tree = save_model_xml(Path(directory) / "physics.xml", model.mj_model)
+    root = tree.getroot()
+    for attribute in ("meshdir", "texturedir", "assetdir"):
+        root.find("compiler").attrib.pop(attribute, None)
+    if any("file" in element.attrib for element in root.iter()):
+        raise ValueError("deployment physics must not reference external files")
+    key = root.find("keyframe/key[@name='home']")
+    if key is None:
+        raise ValueError("deployment physics is missing its home keyframe")
+    for attribute, values in (
+        ("qpos", model.default_qpos),
+        ("qvel", model.default_qvel),
+        ("ctrl", model.default_ctrl),
+    ):
+        key.set(attribute, " ".join(f"{value:.17g}" for value in values))
+    content = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    # No asset dictionary or source directory: the bundle must stand alone.
+    mujoco.MjModel.from_xml_string(content.decode("utf-8"))
+    return content
+
+
+def deployment_bundle(policy: bytes, *, physics: bytes, motion=None) -> bytes:
     from bello_mujoco.motion.clip import save_motion_clip
 
     buffer = BytesIO()
     with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("policy.onnx", policy)
+        archive.writestr("physics.xml", physics)
         if motion is not None:
             clip = BytesIO()
             save_motion_clip(clip, motion)

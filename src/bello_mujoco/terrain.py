@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-import os
 import random
+from tempfile import NamedTemporaryFile
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -65,21 +63,18 @@ def runtime_mjcf_path(robot_mjcf_path: Path, config: TerrainConfig) -> Path:
     if config.mode not in {"plane", "rough"}:
         raise ValueError(f"unsupported terrain mode: {config.mode!r}")
 
-    scene_path = robot_mjcf_path.with_name(
-        f"{robot_mjcf_path.stem}.scene."
-        f"{robot_mjcf_hash(robot_mjcf_path)}.{terrain_config_hash(config)}.xml"
-    )
-
     root = ET.parse(robot_mjcf_path).getroot()
     if config.mode == "plane":
         add_plane(root, config)
     else:
         add_hfield(root, config)
     ET.indent(root, space="  ")
-    tmp_path = scene_path.with_suffix(f".{os.getpid()}.tmp")
-    ET.ElementTree(root).write(tmp_path, encoding="utf-8", xml_declaration=True)
-    tmp_path.replace(scene_path)
-    return scene_path
+    # The compiler owns this temporary directory and removes it at process exit.
+    with NamedTemporaryFile(
+        dir=robot_mjcf_path.parent, prefix="scene-", suffix=".xml", delete=False
+    ) as stream:
+        ET.ElementTree(root).write(stream, encoding="utf-8", xml_declaration=True)
+    return Path(stream.name)
 
 
 def add_plane(root: ET.Element, config: TerrainConfig) -> None:
@@ -105,12 +100,6 @@ def add_plane(root: ET.Element, config: TerrainConfig) -> None:
             },
         ),
     )
-
-
-def robot_mjcf_hash(path: Path) -> str:
-    hasher = hashlib.sha256()
-    hasher.update(Path(path).read_bytes())
-    return hasher.hexdigest()[:16]
 
 
 def add_hfield(root: ET.Element, config: TerrainConfig) -> None:
@@ -367,12 +356,6 @@ def random_slope_quat(config: TerrainConfig) -> tuple[float, float, float, float
     """Return the MuJoCo wxyz quaternion for the seeded terrain incline."""
 
     return slope_quat(*random_slope_angles(config))
-
-
-def terrain_config_hash(config: TerrainConfig) -> str:
-    payload = asdict(config)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def format_vec(values: tuple[float, ...]) -> str:

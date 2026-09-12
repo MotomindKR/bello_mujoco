@@ -2,7 +2,9 @@ import jax
 from io import BytesIO
 from types import SimpleNamespace
 from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 import jax.numpy as jnp
+import mujoco
 import numpy as np
 import pytest
 from onnx.reference import ReferenceEvaluator
@@ -112,19 +114,123 @@ def test_bundle_contains_policy_and_only_required_reference(with_motion):
         foot_contacts=np.zeros((2, 2)),
     )
     content = deployment.deployment_bundle(
-        b"actor", motion=motion if with_motion else None
+        b"actor", physics=b"physics", motion=motion if with_motion else None
     )
     with ZipFile(BytesIO(content)) as archive:
-        assert archive.namelist() == ["policy.onnx"] + (
+        assert archive.namelist() == ["policy.onnx", "physics.xml"] + (
             ["motion.npz"] if with_motion else []
         )
         assert archive.read("policy.onnx") == b"actor"
+        assert archive.read("physics.xml") == b"physics"
         if with_motion:
             with np.load(
                 BytesIO(archive.read("motion.npz")), allow_pickle=False
             ) as clip:
                 np.testing.assert_array_equal(clip["qpos"], motion.qpos)
                 assert float(clip["fps"]) == motion.fps
+
+
+@pytest.mark.parametrize("rough_terrain", [False, True])
+def test_physics_snapshot_preserves_runtime_dynamics_and_needs_no_source(
+    tmp_path, rough_terrain
+):
+    source = tmp_path / "source.xml"
+    source.write_text("""<mujoco>
+      <compiler angle="radian"/>
+      <option integrator="implicitfast"/>
+      <worldbody>
+        <geom name="floor" type="plane" size="2 2 .1"/>
+        <body name="link" pos="0 0 1">
+          <joint name="pitch" axis="0 1 0" range="-1 1"/>
+          <inertial pos=".01 0 0" mass="1" diaginertia=".000012345678912 .000023456789123 .00003"/>
+          <geom name="sole" type="box" size=".1 .05 .03"/>
+          <site name="imu" pos=".02 0 0"/>
+          <body name="child" pos="0 0 -.2">
+            <joint name="roll" axis="1 0 0" range="-.5 .5"/>
+            <inertial pos="0 0 0" mass=".2" diaginertia=".001 .002 .002"/>
+            <geom type="sphere" size=".04"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon><fixed name="sum"><joint joint="pitch" coef="1"/><joint joint="roll" coef="1"/></fixed></tendon>
+      <actuator><position name="motor" tendon="sum" kp="2" kv=".2" ctrllimited="true" ctrlrange="-1 1" forcelimited="true" forcerange="-3 3"/></actuator>
+      <sensor><gyro name="gyro" site="imu"/><framequat name="orientation" objtype="site" objname="imu"/></sensor>
+      <keyframe><key name="home" qpos=".1 .2" ctrl=".3"/></keyframe>
+    </mujoco>""")
+    if rough_terrain:
+        tree = ET.parse(source)
+        root = tree.getroot()
+        asset = ET.SubElement(root, "asset")
+        ET.SubElement(
+            asset,
+            "hfield",
+            name="terrain",
+            nrow="2",
+            ncol="2",
+            size="2 2 .1 .01",
+            elevation="0 .25 .5 1",
+        )
+        floor = root.find("worldbody/geom")
+        floor.set("type", "hfield")
+        floor.set("hfield", "terrain")
+        floor.attrib.pop("size")
+        tree.write(source)
+    native = mujoco.MjModel.from_xml_path(str(source))
+    native.opt.timestep = 0.0015
+    native.body_mass[1] = 1.23456789123
+    native.body_ipos[1] = [0.012345678912, 0, 0]
+    native.geom_friction[:, 0] = 0.73
+    native.geom_margin[0] = 0.001
+    native.geom_solref[:] = [0.012, 1.2]
+    native.actuator_gainprm[0, 0] = 3
+    native.actuator_biasprm[0, 1:3] = [-3, -0.4]
+    mujoco.mj_setConst(native, mujoco.MjData(native))
+    home = dict(
+        default_qpos=np.array([0.15, 0.05]),
+        default_qvel=np.array([0.1, -0.1]),
+        default_ctrl=np.array([0.22]),
+    )
+    # A different model may have been loaded by checkpoint/actor setup.
+    mujoco.MjModel.from_xml_string("<mujoco/>")
+    content = deployment.physics_mjcf(
+        SimpleNamespace(mj_model=native, xml_path=source, **home)
+    )
+    source.unlink()
+    restored = mujoco.MjModel.from_xml_string(content.decode())
+    assert restored.nmesh == restored.ntex == 0
+    assert restored.opt.timestep == native.opt.timestep
+    for name in (
+        "body_mass",
+        "body_inertia",
+        "body_ipos",
+        "geom_friction",
+        "geom_margin",
+        "geom_solref",
+        "actuator_gainprm",
+        "actuator_biasprm",
+        "tendon_lengthspring",
+        "sensor_type",
+        "hfield_data",
+    ):
+        np.testing.assert_allclose(
+            getattr(restored, name), getattr(native, name), rtol=1e-12, atol=1e-15
+        )
+    for attribute, values in home.items():
+        np.testing.assert_array_equal(
+            getattr(restored, "key_" + attribute.removeprefix("default_"))[0], values
+        )
+    original_data, restored_data = mujoco.MjData(native), mujoco.MjData(restored)
+    for data in (original_data, restored_data):
+        data.qpos[:] = home["default_qpos"]
+        data.qvel[:] = home["default_qvel"]
+        data.ctrl[:] = home["default_ctrl"]
+    for _ in range(30):
+        mujoco.mj_step(native, original_data)
+        mujoco.mj_step(restored, restored_data)
+    np.testing.assert_allclose(restored_data.qpos, original_data.qpos, atol=1e-10)
+    np.testing.assert_allclose(
+        restored_data.sensordata, original_data.sensordata, atol=1e-10
+    )
 
 
 @pytest.mark.parametrize("failure_call", [1, 2])
