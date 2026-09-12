@@ -444,7 +444,13 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         foot_crossing=-8.0,
         foot_stumble=-2.0,
     )
-    assert bello.reward_config.tracking == mini.reward_config.tracking
+    assert mini.reward_config.tracking == replace(
+        bello.reward_config.tracking,
+        lin_vel_xy_moving_std=0.5,
+        lin_vel_xy_still_std=0.5,
+        ang_vel_z_moving_std=0.5,
+        ang_vel_z_still_std=0.5,
+    )
     assert (
         replace(bello.reward_config.standing, recovery_relaxation=True)
         == mini.reward_config.standing
@@ -538,7 +544,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert mini.env_config.spawn == replace(
         bello.env_config.spawn,
         joint_pos_scale_range=(1.0, 1.0),
+        root_vel_range=(0.0, 0.0),
     )
+    assert mini.env_config.model_randomization == bello.env_config.model_randomization
+    assert mini.env_config.model_randomization.torso_com_offset_range == (-0.15, 0.15)
     assert (
         replace(
             mini.env_config,

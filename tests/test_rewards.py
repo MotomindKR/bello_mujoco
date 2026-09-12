@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from bello_mujoco.configuration import locomotion_training_profile
 from bello_mujoco.envs.rewards import (
     CommandConfig,
     GaitRewardConfig,
@@ -404,6 +405,32 @@ def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> N
     )
     assert tiny_command["reward/track_lin_vel_xy"] == pytest.approx(0.02)
     assert tiny_command["reward/track_ang_vel_z"] == pytest.approx(0.02)
+
+
+@pytest.mark.parametrize("experiment", ["bello_mini_locomotion", "bello_mini_standing"])
+@pytest.mark.parametrize("error", [0.0, 0.25, 0.5])
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_mini_tracking_retains_reward_during_single_support_recovery(
+    experiment, error, axis
+):
+    profile = locomotion_training_profile(experiment)
+    velocity = jnp.zeros(3).at[axis].set(error)
+    inputs = reward_inputs(
+        lin_vel_xy=velocity[:2],
+        yaw_vel_z=velocity[2],
+        foot_contact=jnp.asarray([1.0, 0.0]),
+        foot_clearance_samples=jnp.zeros((2, 4)),
+        swing_progress=jnp.zeros(2),
+    )
+    compute = jax.jit(
+        lambda value: compute_locomotion_reward(
+            profile.reward_config, value, profile.command_config
+        )[1]
+    )
+    terms = compute(inputs)
+    key = "reward/track_lin_vel_xy" if axis < 2 else "reward/track_ang_vel_z"
+    assert float(terms[key]) == pytest.approx(0.04 * math.exp(-(error**2) / 0.25))
+    assert float(compute(inputs.replace(foot_contact=jnp.zeros(2)))[key]) == 0.0
 
 
 def test_standing_tracking_remains_available_during_recovery_steps() -> None:

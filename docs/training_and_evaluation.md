@@ -24,7 +24,8 @@ twist2
 `bello_mini_locomotion` select their respective robot contracts after composing
 the same production PPO, command, randomization, and observation recipe. The
 Mini profile changes its asset, rounded height thresholds, exact-pose reset,
-gait shaping, and output names, adds non-saturating moving linear and yaw
+tracking tolerances, gait shaping, and output names,
+adds non-saturating moving linear and yaw
 velocity-error shaping, and raises the healthy-survival weight from `1.5` to
 `2.25` so the dense penalties do not erase the early survival margin. Force and
 impact terms scale automatically by robot weight or actuator limit. The selected
@@ -123,6 +124,13 @@ walking and standing-push evaluation videos expose recovery failures separately
 from aggregate training reward. These changes require a newly trained policy;
 they do not establish push robustness on their own.
 See [the formulation and configuration](training_configuration.md#locomotion-reward-reward_config).
+Mini's reference-aligned profile uses `0.5 m/s` planar and `0.5 rad/s` yaw
+tracking tolerances in both standing and moving components. It starts with zero
+floating-base velocity and retains torso COM randomization at `+/-0.15 m` per
+axis, with the existing curriculum retained. Reward weights, 25% standing
+sampling, sensor noise/filter/latency, and hard limits are unchanged. The
+[reference comparison](training_configuration.md#mini-reference-alignment)
+documents which Unitree/Booster choices were adopted and which were not.
 The Mini profile halves horizontal command ranges to +/-0.5 m/s per axis and
 enforces the configured actuator effort limits. These changes require fresh
 training; they do not repair existing policy weights. Validate phase-swept stops,
@@ -158,8 +166,9 @@ moving-only smooth-L1 planar velocity-error penalty with weight `-1.0` and a
 `0.25 m/s` Huber delta. Unlike the Gaussian tracker, this retains a signed,
 nonzero corrective gradient when velocity is far from or opposite the command.
 The rounded height settings are a 0.87 m pelvis target and 0.56 m termination
-floor, versus 0.86 m and 0.55 m for Bello. Both profiles preserve the successful
-baseline's unclipped policy-effort dynamics. The over-peak torque term still uses the
+floor, versus 0.86 m and 0.55 m for Bello. Bello preserves the baseline's
+unclipped policy-effort dynamics; Mini saturates torque at its configured motor
+limits during training. The over-peak torque term still uses the
 reconstructed servo demand to expose infeasible policy requests. Emulator and
 hardware execution continue to enforce physical motor effort limits.
 

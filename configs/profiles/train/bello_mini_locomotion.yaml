@@ -27,7 +27,15 @@ env_config:
   spawn:
     # Independent scaling would break the coordinated flat-sole crouch.
     joint_pos_scale_range: [1.0, 1.0]
+    # Learn recovery from scheduled disturbances, not six-axis reset kicks.
+    root_vel_range: [0.0, 0.0]
 reward_config:
+  tracking:
+    # exp(-error^2 / std^2): match the reference 0.25 denominator.
+    lin_vel_xy_moving_std: 0.5
+    lin_vel_xy_still_std: 0.5
+    ang_vel_z_moving_std: 0.5
+    ang_vel_z_still_std: 0.5
   weights:
     healthy_survival: 2.25
     moving_lin_vel_xy_error: -1.0

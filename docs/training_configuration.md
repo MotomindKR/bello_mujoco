@@ -240,6 +240,13 @@ increases during training.
 | `joint_vel_range`, `root_vel_range` | Initial joint and floating-base velocity ranges. |
 | `stagger_initial_step_count` | Spread initial timeout progress across a batch. |
 
+Mini overrides `spawn.root_vel_range` to `[0, 0]` for all six floating-base
+velocity components, while keeping its coordinated joint reset pose. It retains
+random root XY/yaw placement and scheduled pushes. Its per-axis torso COM offset
+range remains `[-0.15, 0.15] m`, shared with Bello and ramped by the existing
+torso COM curriculum. This is a torso inertial-frame offset, not a
+whole-robot COM displacement; torso mass scaling remains `[0.8, 1.2]`.
+
 Contact and disturbance fields are:
 
 | Section | Fields |
@@ -395,9 +402,36 @@ classified as moving in these metrics even below the command deadband.
 The yaw-rate tracking reward uses a first-order low-pass-filtered measurement.
 The maintained recipe uses a 5 Hz cutoff at the 50 Hz policy rate; the raw IMU
 observation is unchanged. Planar and yaw tracking each have weight `2.0`, so
-their maximum contribution is `0.04` per control step. Moving-command tracking
-uses standard deviations of `0.30 m/s` for planar velocity and `0.25 rad/s` for
-yaw velocity; standing-command tolerances remain `0.25 m/s` and `0.20 rad/s`.
+their maximum contribution is `0.04` per control step. Bello's moving-command
+tracking uses standard deviations of `0.30 m/s` for planar velocity and
+`0.25 rad/s` for yaw velocity; its standing-command tolerances are `0.25 m/s`
+and `0.20 rad/s`. Mini uses `0.50 m/s` planar and `0.50 rad/s` yaw tolerances
+for both moving and zero-command components. Its Gaussian denominator is
+therefore `0.25`, not `0.50`: at a single-axis error of `0.5`, the corresponding
+tracking kernel retains `exp(-1)`, about 36.8% of its maximum. Tracking weights
+remain `2.0`; the existing moving-only smooth-L1 costs and recovery gate are
+unchanged. The standing-only Mini overlay inherits these tolerances.
+
+### Mini reference alignment
+
+This is a scoped adaptation of public locomotion examples, not a copy of their
+complete recipe or a claim about commercial controller training:
+
+- [Unitree RL Lab G1 configuration](https://github.com/unitreerobotics/unitree_rl_lab/blob/main/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/g1/29dof/velocity_env_cfg.py)
+  supplies the `0.5` tracking standard deviations and zero base-velocity reset.
+- [Booster T1 configuration](https://github.com/BoosterRobotics/booster_gym/blob/main/envs/T1.yaml)
+  also uses a `0.25` tracking denominator, but tracks filtered X/Y velocities
+  separately. Mini retains its joint planar kernel and existing yaw filter.
+
+Mini intentionally keeps `+/-0.15 m` torso COM randomization and its curriculum,
+25% standing commands, the existing horizontal/yaw
+command ranges, additive push semantics and curriculum, observation noise/filter/
+latency, motor limits, reward weights, and gait/foot-safety terms. Reference
+reward coefficients have different normalizations and are not copied. Sustained
+force/torque pushes from Booster are not added by this profile alignment; the
+paired standing-push video still tests a velocity kick. Profile/reward tests do
+not demonstrate trained push robustness. Use fresh training; old checkpoint
+metadata is not rewritten by editing this profile.
 
 ## Locomotion reward: `reward_config`
 
