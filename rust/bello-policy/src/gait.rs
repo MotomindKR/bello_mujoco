@@ -19,6 +19,9 @@ pub struct GaitConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CommandConfig {
+    pub enabled: bool,
+    pub minimum_moving_linear_speed: f32,
+    pub minimum_moving_yaw_speed: f32,
     pub linear_deadband: f32,
     pub yaw_deadband: f32,
     pub standing_transitions_enabled: bool,

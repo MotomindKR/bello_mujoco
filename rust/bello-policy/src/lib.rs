@@ -12,9 +12,11 @@ use ort::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod control;
 pub mod gait;
 pub mod hardware;
 pub mod locomotion;
+pub mod remote;
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyMetadata {

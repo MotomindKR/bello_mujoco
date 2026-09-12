@@ -39,7 +39,21 @@ cargo run --locked -p bello-policy -- --policy /path/to/policy.zip \
 
 Preflight checks inventory, coordinate coverage, nominal targets/gains, IMU
 frames, telemetry timestamps and freshness, group state, and IMU plausibility.
-It performs no lease acquisition or motor writes. Armed operation, remote-command
-transport, motion reference sampling, and live upper-body following still use
-the Python runner until native migration and safety parity are complete.
+It performs no lease acquisition or motor writes.
+
+For isolated emulator validation, add `--arm` and configure the `control` section
+in the hardware YAML. This locomotion-only path requires an interactive terminal:
+`HOLD` acquires control and ramps to nominal, `RUN` starts inference, and `IDLE`
+confirms motor disable after stopping. Failures, remote abort, SIGINT, or SIGTERM
+request damping first. Without an `IDLE` confirmation, it sends no explicit
+disable; hardwared's watchdog and lease-expiry safety remain authoritative.
+
+Remote commands require a neutral sample before accepting an armed controller;
+stale/disconnected input requests standing. The checkpoint owns command mapping
+and slewing. Optional JSONL policy logs use a new file, never overwrite one.
+
+Synthetic lifecycle checks cover rejection, stale feedback, remote abort,
+signals, and ambiguous start timeouts. Full policy-driven Lima parity is still
+pending: keep the Python runner for regular operation. Motion reference sampling
+and live upper-body following have not migrated to Rust yet.
 ONNX Runtime must provide the API supported by the pinned `ort` crate.

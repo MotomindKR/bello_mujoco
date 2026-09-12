@@ -18,9 +18,12 @@ struct Args {
     /// Read raw hardwared feedback JSON, assembling checkpoint-defined observations.
     #[arg(long, conflicts_with = "check")]
     telemetry: bool,
-    /// Read-only hardware preflight; does not acquire a lease or enable motors.
+    /// Hardware settings; read-only preflight unless --arm is also supplied.
     #[arg(long, conflicts_with_all = ["check", "telemetry"])]
     hardware_config: Option<PathBuf>,
+    /// Requires interactive HOLD/RUN/IDLE confirmation and explicit control settings.
+    #[arg(long, requires = "hardware_config")]
+    arm: bool,
 }
 
 #[tokio::main(worker_threads = 2)]
@@ -40,9 +43,19 @@ async fn main() -> Result<()> {
         use bello_hardware_client::raw::proto::GroupState;
         use bello_policy::hardware::{Config, Hardware};
 
-        let config: Config = serde_yaml::from_reader(std::fs::File::open(path)?)?;
+        let mut config: Config = serde_yaml::from_reader(std::fs::File::open(path)?)?;
+        let control = config.control.take();
         let mut runtime = Locomotion::new(policy)?;
         let hardware = Hardware::connect(config, &runtime).await?;
+        if args.arm {
+            return bello_policy::control::run(
+                hardware,
+                runtime,
+                control
+                    .ok_or_else(|| anyhow::anyhow!("armed execution requires control settings"))?,
+            )
+            .await;
+        }
         let sample = hardware.feedback(GroupState::Idle).await?;
         let preview = runtime.step(&sample)?;
         println!(

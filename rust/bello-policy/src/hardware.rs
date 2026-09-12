@@ -14,6 +14,7 @@ use crate::locomotion::{Feedback, Locomotion, projected_gravity};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub control: Option<crate::control::Config>,
     pub endpoint: String,
     pub groups: Vec<String>,
     pub imu_name: String,
@@ -338,6 +339,7 @@ mod tests {
 
     fn fixture() -> (Config, proto::GetStateFrameResponse, Vec<String>) {
         let config = Config {
+            control: None,
             endpoint: "http://localhost:1".into(),
             groups: vec!["limb".into()],
             imu_name: "sensor".into(),

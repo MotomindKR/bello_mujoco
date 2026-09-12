@@ -43,7 +43,7 @@ struct Settings {
     hardware_imu_frame: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Feedback {
     pub motor_position: Vec<f64>,
     pub motor_velocity: Vec<f64>,
@@ -163,6 +163,72 @@ impl Locomotion {
         self.gait = GaitState::default();
         self.history.clear();
         self.last_action.fill(0.);
+    }
+
+    pub fn nominal_tolerance(&self, index: usize, direct: f64, coupled: f64) -> f64 {
+        if self
+            .settings
+            .joint_from_motor
+            .iter()
+            .filter(|row| row[index].abs() > 1e-12)
+            .count()
+            > 1
+        {
+            coupled
+        } else {
+            direct
+        }
+    }
+
+    pub fn remote_command(&self, axes: [f32; 3], scale: f32) -> Result<[f32; 3]> {
+        ensure!(
+            axes.iter()
+                .all(|v| v.is_finite() && (-1. ..=1.).contains(v))
+                && scale.is_finite()
+                && scale > 0.
+                && scale <= 1.,
+            "invalid joystick intent/scale"
+        );
+        let c = &self.settings.command;
+        if !c.enabled {
+            return Ok([0.; 3]);
+        }
+        let [lx, ly] = self.settings.left_axis;
+        let normalized = [
+            axes[0] * ly - axes[1] * lx,
+            -axes[0] * lx - axes[1] * ly,
+            axes[2],
+        ];
+        let mut output = [0.; 3];
+        for (i, (bounds, minimum)) in [c.lin_vel_x, c.lin_vel_y, c.ang_vel_yaw]
+            .into_iter()
+            .zip([
+                c.minimum_moving_linear_speed,
+                c.minimum_moving_linear_speed,
+                c.minimum_moving_yaw_speed,
+            ])
+            .enumerate()
+        {
+            ensure!(
+                minimum.is_finite() && minimum >= 0.,
+                "invalid minimum command speed"
+            );
+            let [low, high] = bounds.map(|v| v * scale);
+            ensure!(
+                !(bounds[0] <= -minimum && low > -minimum)
+                    && !(bounds[1] >= minimum && high < minimum),
+                "joystick scale removes a trained moving range"
+            );
+            let value = normalized[i].clamp(-1., 1.);
+            output[i] = if value > 0. && high >= minimum {
+                minimum + value * (high - minimum)
+            } else if value < 0. && low <= -minimum {
+                -minimum - value * (low + minimum)
+            } else {
+                0.
+            };
+        }
+        Ok(output)
     }
 
     pub fn step(&mut self, sample: &Feedback) -> Result<Step> {

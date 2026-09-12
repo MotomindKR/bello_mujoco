@@ -10,3 +10,17 @@ max_state_sample_span_ms: 40.0
 max_tilt_radians: 0.70
 max_angular_velocity: 20.0
 max_linear_acceleration: 100.0
+control:
+  client_name: bello-policy
+  remote: {endpoint: http://127.0.0.1:50054, staleness_ms: 200}
+  command_validity_seconds: 0.08
+  acknowledgement_timeout_seconds: 0.5
+  rpc_timeout_seconds: 2.0
+  ramp_seconds: 10.0
+  gain_scale: 1.0
+  joystick_command_scale: 1.0
+  max_loop_lag_seconds: 0.10
+  max_duration_seconds: null
+  max_nominal_error_radians: 0.25
+  max_coupled_nominal_error_radians: 1.0
+  policy_log_path: null

@@ -13,6 +13,7 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 bello-hardware-client = { path = "deps/bello-stack/components/bello-hardware-client" }
+bello-remote-api = { path = "deps/bello-stack/components/bello-remote-api" }
 clap = "4"
 serde = "1"
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }

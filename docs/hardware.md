@@ -90,4 +90,7 @@ and video migration are still pending. See [emulator usage](emulator.md).
 
 The native policy tool supports `--telemetry` for stateful observation/inference
 parity and `--hardware-config rust/bello-policy/config/hardware.yaml` for read-only
-preflight. Neither mode acquires control. See its [usage guide](../rust/bello-policy/README.md).
+preflight. Neither mode acquires control. An explicit `--arm` enables the
+experimental locomotion HOLD/RUN/IDLE lifecycle for isolated emulator validation;
+motion and live upper-body tracking remain on Python until migrated and checked.
+See its [usage guide](../rust/bello-policy/README.md).
