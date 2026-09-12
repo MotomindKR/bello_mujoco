@@ -4,7 +4,6 @@ from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-import math
 import time
 
 import jax
@@ -246,10 +245,6 @@ def test_motion_config_rejects_unsafe_ranges() -> None:
                 max_action_abs=2.0, max_raw_action_abs=1.0
             )
         )
-    with pytest.raises(ValueError, match="action_lpf_cutoff_hz"):
-        motion_hardware.validate_hardware_motion_config(
-            motion_hardware.HardwareMotionConfig(action_lpf_cutoff_hz=0.0)
-        )
     with pytest.raises(ValueError, match="telemetry age limits"):
         motion_hardware.validate_hardware_motion_config(
             motion_hardware.HardwareMotionConfig(max_group_age_ms=0)
@@ -342,7 +337,10 @@ def test_motion_alignment_reuses_cached_start_reference() -> None:
     np.testing.assert_array_equal(adapter._alignment_xy, first_alignment)
 
 
-def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> None:
+@pytest.mark.parametrize("timestep", [0.005, 0.02, 0.1])
+def test_fused_motion_inference_updates_stack_without_action_smoothing(
+    monkeypatch, timestep
+) -> None:
     class FakeEnv:
         sampling_bin_count = 1
         observation_size = 2
@@ -384,6 +382,7 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
         ppo=SimpleNamespace(policy=SimpleNamespace(obs_stack_size=2))
     )
     env = FakeEnv()
+    env.control_timestep = timestep
     env.model = SimpleNamespace(mj_model=SimpleNamespace(nq=2, nv=2, nu=2, nbody=1))
     inference = motion_hardware._build_motion_inference(
         env,
@@ -413,10 +412,7 @@ def test_fused_motion_inference_updates_stack_and_clips_action(monkeypatch) -> N
         ((0.85, -0.05), (0.85, -0.05)),
     )
     assert result.raw_action == pytest.approx((0.85, -0.05))
-    alpha = 1.0 - math.exp(-2.0 * math.pi * 15.0 * env.control_timestep)
-    expected_action = np.asarray((0.1, 0.2)) + alpha * (
-        np.asarray((0.5, -0.05)) - np.asarray((0.1, 0.2))
-    )
+    expected_action = np.asarray((0.5, -0.05))
     assert result.action == pytest.approx(expected_action)
     assert result.physical_target == pytest.approx(expected_action)
     assert not bool(result.done_flags["done/any"])

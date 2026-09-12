@@ -103,7 +103,6 @@ class HardwareCommandConfig:
     max_linear_acceleration: float | None
     policy_transition_seconds: float | None
     max_motion_tilt_radians: float | None
-    action_lpf_cutoff_hz: float | None
     status_interval_seconds: float | None
     policy_log_path: Path | None
     arm: bool
@@ -626,10 +625,6 @@ def _hardware_hydra(config: DictConfig) -> None:
                     command.max_motion_tilt_radians,
                     base.max_motion_tilt_radians,
                 ),
-                action_lpf_cutoff_hz=_coalesce(
-                    command.action_lpf_cutoff_hz,
-                    base.action_lpf_cutoff_hz,
-                ),
                 status_interval_seconds=command.status_interval_seconds,
                 policy_log_path=policy_log_path,
                 arm=command.arm,
@@ -650,7 +645,6 @@ def _hardware_hydra(config: DictConfig) -> None:
             "end_effector_payload_mass_kg",
             "policy_transition_seconds",
             "max_motion_tilt_radians",
-            "action_lpf_cutoff_hz",
         ),
         context="task=locomotion",
     )

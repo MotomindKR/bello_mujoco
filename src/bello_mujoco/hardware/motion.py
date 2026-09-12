@@ -73,7 +73,6 @@ class HardwareMotionConfig(HardwareControlConfig):
     start_time_seconds: float = 0.0
     max_action_abs: float = 1.0
     max_raw_action_abs: float = 5.0
-    action_lpf_cutoff_hz: float = 15.0
     max_pose_imu_orientation_error: float = 0.25
     max_base_linear_velocity: float = 5.0
     max_motion_tilt_radians: float = math.radians(70.0)
@@ -254,15 +253,7 @@ def _build_motion_inference(
             metadata.ppo,
         )
         raw_action = apply_actor(policy, normalized)
-        clipped_action = jnp.clip(
-            raw_action, -config.max_action_abs, config.max_action_abs
-        )
-        action_lpf_alpha = 1.0 - math.exp(
-            -2.0 * math.pi * config.action_lpf_cutoff_hz * env.control_timestep
-        )
-        action = state.last_action + action_lpf_alpha * (
-            clipped_action - state.last_action
-        )
+        action = jnp.clip(raw_action, -config.max_action_abs, config.max_action_abs)
         physical_target = env.action_target(state, action)
         reference = env.aligned_reference(
             state.reference_time,
@@ -792,7 +783,6 @@ def validate_hardware_motion_config(
         "pose_timeout_seconds": config.pose_timeout_seconds,
         "max_action_abs": config.max_action_abs,
         "max_raw_action_abs": config.max_raw_action_abs,
-        "action_lpf_cutoff_hz": config.action_lpf_cutoff_hz,
         "max_pose_imu_orientation_error": config.max_pose_imu_orientation_error,
         "max_base_linear_velocity": config.max_base_linear_velocity,
         "max_motion_tilt_radians": config.max_motion_tilt_radians,
@@ -915,7 +905,6 @@ def run_hardware_motion(
                 "motion_policy_joints": motion_adapter.env.action_size,
                 "standing_policy_joints": standing_adapter.env.action_size,
                 "motion_control_rate_hz": (1.0 / motion_adapter.control_timestep),
-                "motion_action_lpf_cutoff_hz": config.action_lpf_cutoff_hz,
                 "standing_control_rate_hz": (1.0 / standing_adapter.control_timestep),
                 "jax_backend": jax.default_backend(),
                 "motion_start_seconds": motion_adapter.start_time,

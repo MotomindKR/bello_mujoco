@@ -22,6 +22,9 @@ by configured motor effort and stiffness. Both retain native ankle tendons and
 joint-space kinematic/limit rewards. The older reference-residual formulation
 no longer exists.
 
+Training and deployment apply actions without an action low-pass filter.
+Action/target bounds remain enforced; hardwared still filters sensor feedback.
+
 Edit `configs/train_motion/default.yaml` and `configs/profiles/train/motion.yaml`
 for recipes. Tracked bodies live in `src/bello_mujoco/robots/*_motion.yaml`.
 Mini motion training still requires its own tuned experiment.
