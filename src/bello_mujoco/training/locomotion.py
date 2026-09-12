@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+import math
 import warnings
 
 import jax
@@ -70,6 +71,9 @@ class TrainingVideoConfig:
     stop_on_done: bool = True
     stochastic_actions: bool = False
     action_seed: int = 0
+    standing_push_enabled: bool = False
+    standing_push_at_seconds: float = 5.0
+    standing_push_speed: float = 0.5
     log_wandb: bool = True
     wandb_name: str = "train/rollout"
     camera_config: CameraConfig = CameraConfig()
@@ -103,6 +107,14 @@ def run_training(run_config: TrainingRunConfig) -> None:
 
     validate_ppo_config(config)
     validate_video_config(video_config)
+    if video_config.enabled and video_config.standing_push_enabled:
+        dt = env_config.decimation * env_config.simulation_physics.timestep
+        if (
+            not 0
+            < round(video_config.standing_push_at_seconds / dt)
+            < video_config.steps
+        ):
+            raise ValueError("standing push must occur inside the evaluation video")
     validate_checkpoint_config(checkpoint_config)
     validate_action_limit_contract(config, env_config.action_clip)
     git_commit = None
@@ -433,6 +445,48 @@ def render_training_video(
             step=env_steps,
             caption=video_rollout_caption(update, rollout_stats),
         )
+    if config.standing_push_enabled:
+        # Cycle through all four directions at successive evaluations.
+        direction = max(0, update // config.every_updates - 1) % 4
+        speed = config.standing_push_speed
+        velocity = ((speed, 0.0), (-speed, 0.0), (0.0, speed), (0.0, -speed))[direction]
+        push_path = output_path.with_stem(output_path.stem + "_standing_push")
+        push_step = round(config.standing_push_at_seconds / env.control_timestep)
+        push_stats = render_policy_rollout(
+            env,
+            train_state.policy,
+            output_path=push_path,
+            command=(0.0, 0.0, 0.0),
+            steps=config.steps,
+            width=config.width,
+            height=config.height,
+            fps=config.fps,
+            stop_on_done=True,
+            camera_config=config.camera_config,
+            ppo_config=ppo_config,
+            observation_norm_state=runner_state.observation_norm_state,
+            obs_stack_size=obs_stack_size,
+            stochastic_actions=False,
+            action_seed=config.action_seed,
+            push_at_step=push_step,
+            push_velocity=velocity,
+        )
+        if config.log_wandb:
+            track_video(
+                run,
+                push_path,
+                name="eval/standing_push/video",
+                step=env_steps,
+                caption=f"dv={velocity} m/s at {config.standing_push_at_seconds}s; "
+                + video_rollout_caption(update, push_stats),
+            )
+            track_metric_snapshot(
+                run,
+                push_stats,
+                env_steps=env_steps,
+                update=update,
+                context={"phase": "eval/standing_push"},
+            )
     return output_path
 
 
@@ -486,6 +540,15 @@ def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:
 
 
 def validate_video_config(config: TrainingVideoConfig) -> None:
+    if (
+        not math.isfinite(config.standing_push_at_seconds)
+        or config.standing_push_at_seconds <= 0
+    ):
+        raise ValueError(
+            "video_config.standing_push_at_seconds must be positive and finite"
+        )
+    if not math.isfinite(config.standing_push_speed) or config.standing_push_speed <= 0:
+        raise ValueError("video_config.standing_push_speed must be positive and finite")
     if not config.enabled:
         return
     if config.every_updates <= 0:

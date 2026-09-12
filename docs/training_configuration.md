@@ -245,7 +245,7 @@ Contact and disturbance fields are:
 | Section | Fields |
 | --- | --- |
 | `contact` | `foot_contact_on_seconds`, `foot_contact_off_seconds`, `foot_contact_force_threshold`, `undesired_contact_force_threshold`, `self_collision_force_threshold` |
-| `random_push` | `enabled`, `interval_seconds`, `lin_vel_x`, `lin_vel_y` |
+| `random_push` | `enabled`, `interval_seconds`, `lin_vel_x`, `lin_vel_y`, `curriculum_steps`, `initial_scale` |
 | `numerical_safety` | `max_abs_position`, `max_abs_velocity`, `max_abs_acceleration`, `max_abs_actuator_force`, `max_abs_constraint_force`, `max_abs_reward_term` |
 
 Contact on/off durations debounce raw force-threshold contact. Random pushes add
@@ -366,7 +366,7 @@ filter to training, native evaluation, or the hardware runner.
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
 The gait-capable maintained locomotion profiles override `standing_probability`
-to `0.25`. `bello_mini_standing` instead sets it to `1.0` and fixes every
+to `0.25` for Bello and `0.40` for Mini. `bello_mini_standing` instead sets it to `1.0` and fixes every
 command range to zero, so gait probability is exactly zero without changing the
 observation layout.
 Training assigns an exact standing cohort at batch reset. Failure resets
@@ -434,7 +434,8 @@ does not incur this term.
 
 All `stand_*` terms receive the standing blend. Position and heading alignment
 require healthy double support. `standing.recovery_relaxation: true` smoothly
-relaxes standing alignment and foot stillness as planar
+relaxes standing alignment, foot stillness/contact pressure, hip/knee posture,
+waist posture, and the soft hip-roll continuous-torque cost as planar
 velocity error exceeds `0.25 m/s` or tilt exceeds approximately `0.15 rad`;
 relaxation reaches zero at twice these normalized thresholds. Gait contact timing
 is never multiplied by this recovery gate: its full configured penalty remains
@@ -467,9 +468,9 @@ determines its mode.
 
 | Weight | Baseline | Effect |
 | --- | ---: | --- |
-| `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. At a standing command it is awarded only in double support. |
+| `track_lin_vel_xy` | `2.0` | Gaussian command tracking for planar velocity. Standing requires at least one supporting foot, so corrective steps retain tracking reward; flight earns none. |
 | `moving_lin_vel_xy_error` | `0.0` | Moving-only smooth-L1 error between signed planar velocity and command. Its constant far-field gradient remains corrective after the Gaussian tracker saturates. Bello Mini sets this to `-1.0`; Bello leaves it disabled. |
-| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate command tracking. At a standing command it is awarded only in double support. |
+| `track_ang_vel_z` | `2.0` | Gaussian yaw-rate tracking with the same single-support standing gate. |
 | `moving_ang_vel_z_error` | `0.0` | Moving-only smooth-L1 error between signed yaw velocity and command. It uses the same non-saturating far-field behavior as the planar error term. Bello Mini sets this to `-1.0`; Bello leaves it disabled. |
 | `healthy_survival` | `1.5` | Reward each non-terminal control step so early negative shaping costs cannot make immediate failure preferable to continued control. Bello Mini sets this to `2.25`, or `+0.045` per healthy 50 Hz step, to offset its additional dense moving penalties. |
 | `lin_vel_z` | `-2.0` | Penalize vertical base velocity. |
@@ -760,6 +761,25 @@ Locomotion video fields are `enabled`, `every_updates`, `render_initial`,
 `height`, `fps`, `stop_on_done`, `stochastic_actions`, `action_seed`,
 `log_wandb`, `wandb_name`, and `camera_config`. The camera contains `mode`,
 `distance`, `azimuth`, `elevation`, and `lookat_offset`.
+
+Optional `standing_push_enabled` (default false), `standing_push_at_seconds`
+(5.0), and `standing_push_speed` (0.5 m/s) add a second deterministic,
+zero-command video. Each evaluation applies one full-strength additive velocity
+kick, cycling +X, -X, +Y, -Y on successive video intervals. Early falls end the
+test; `eval/standing_push` records push application, direction, survival and
+post-push seconds, alongside the video. This is a seed-0 nominal native test,
+not a statistical robustness certificate or an external-force simulation.
+Mini renders these paired walking/push videos every 4096 updates; checkpoints
+remain every 512 updates to reduce synchronous rendering overhead.
+
+Mini ramps training pushes from `initial_scale: 0.2` to 1 over
+`curriculum_steps: 488282` per-world control steps (approximately 1B transitions
+at 2048 worlds). The persistent PPO task clock survives episode resets and
+checkpoint continuation, independently of the torso COM ramp. Zero curriculum
+steps disable ramping and require scale 1. The logged `curriculum/push_scale`
+is distinct from the fixed full-strength evaluation challenge. Push timing and
+per-axis bounds are unchanged. Hard actuator effort/position limits, impact
+costs, crossing costs and termination remain active throughout recovery.
 
 Motion video fields are `enabled`, `every_updates`, `render_initial`,
 `render_final`, `output_dir`, `filename_prefix`, `steps`, `width`, `height`,

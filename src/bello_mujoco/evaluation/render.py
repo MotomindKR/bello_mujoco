@@ -289,6 +289,8 @@ def render_policy_rollout(
     obs_stack_size: int = 1,
     stochastic_actions: bool = False,
     action_seed: int = 0,
+    push_at_step: int | None = None,
+    push_velocity: tuple[float, float] = (0.0, 0.0),
 ) -> RolloutStats:
     return render_policy_rollout_mujoco(
         env,
@@ -306,6 +308,8 @@ def render_policy_rollout(
         obs_stack_size=obs_stack_size,
         stochastic_actions=stochastic_actions,
         action_seed=action_seed,
+        push_at_step=push_at_step,
+        push_velocity=push_velocity,
     )
 
 
@@ -326,7 +330,13 @@ def render_policy_rollout_mujoco(
     obs_stack_size: int = 1,
     stochastic_actions: bool = False,
     action_seed: int = 0,
+    push_at_step: int | None = None,
+    push_velocity: tuple[float, float] = (0.0, 0.0),
 ) -> RolloutStats:
+    if push_at_step is not None and not 0 < push_at_step < steps:
+        raise ValueError("push_at_step must be inside the rollout")
+    if len(push_velocity) != 2 or not np.all(np.isfinite(push_velocity)):
+        raise ValueError("push_velocity must contain two finite values")
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     reset_mujoco_data(env, mj_data)
@@ -347,6 +357,9 @@ def render_policy_rollout_mujoco(
         steps, stochastic_actions=stochastic_actions, action_seed=action_seed
     )
     stats["observation_seed"] = env.config.model_randomization.seed
+    stats["push_applied"] = 0
+    stats["push_velocity_x"] = float(push_velocity[0])
+    stats["push_velocity_y"] = float(push_velocity[1])
     resources, renderer, camera, writer = open_rollout_video_resources(
         mj_model,
         output_path,
@@ -378,6 +391,10 @@ def render_policy_rollout_mujoco(
                 observation_norm_state=observation_norm_state,
             )
             action = np.asarray(jax.device_get(action), dtype=np.float32)
+            if push_at_step is not None and step_index == push_at_step:
+                root_qvel = int(env.model.root_qvel_adr)
+                mj_data.qvel[root_qvel : root_qvel + 2] += push_velocity
+                stats["push_applied"] = 1
             previous_ctrl = mj_data.ctrl.copy()
             requested_ctrl = mujoco_action_to_ctrl(env, action)
             for substep in range(env.decimation):
@@ -437,6 +454,11 @@ def render_policy_rollout_mujoco(
             obs_stack = update_observation_stack(obs_stack, obs, jnp.asarray(False))
     finally:
         resources.close()
+    stats["survived_rollout"] = int(stats["completed_episodes"] == 0)
+    if push_at_step is not None:
+        first_done = int(stats["first_done_step"])
+        end = first_done if first_done >= 0 else steps
+        stats["post_push_seconds"] = max(0, end - push_at_step) * env.control_timestep
     return finalize_rollout_stats(stats, current_episode_length=step_count)
 
 

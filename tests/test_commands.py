@@ -483,7 +483,12 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         0.0872664626
     )
     assert (
-        replace(bello.command_config, lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.5, 0.5))
+        replace(
+            bello.command_config,
+            lin_vel_x=(-0.5, 0.5),
+            lin_vel_y=(-0.5, 0.5),
+            standing_probability=0.4,
+        )
         == mini.command_config
     )
     assert bello.command_config.lin_vel_x == (-1.0, 1.0)
@@ -496,6 +501,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.env_config.random_push.lin_vel_y == (-2.0, 2.0)
     assert mini.env_config.random_push.lin_vel_x == (-0.5, 0.5)
     assert mini.env_config.random_push.lin_vel_y == (-0.5, 0.5)
+    assert mini.env_config.random_push.curriculum_steps == 488282
+    assert mini.env_config.random_push.initial_scale == pytest.approx(0.2)
+    assert mini.video_config.every_updates == 4096
+    assert mini.video_config.standing_push_enabled
     assert not bello.reward_config.gait.joint_force_apply_while_standing
     assert bello.reward_config.gait.touchdown_force_soft_limit_body_weights == (
         pytest.approx(1.0)

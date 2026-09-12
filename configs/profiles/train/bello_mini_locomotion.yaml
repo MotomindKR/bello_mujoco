@@ -19,6 +19,9 @@ env_config:
     lateral_start_deadband: 0.1
     standing_reward_ramp_seconds: 0.2
   random_push:
+    # Per-world control steps: 488282 * 2048 is approximately 1B transitions.
+    curriculum_steps: 488282
+    initial_scale: 0.2
     lin_vel_x: [-0.5, 0.5]
     lin_vel_y: [-0.5, 0.5]
   spawn:
@@ -56,6 +59,7 @@ reward_config:
     hip_deviation_command_indices: [0]
     knee_deviation_apply_while_moving: false
 command_config:
+  standing_probability: 0.4
   lin_vel_x: [-0.5, 0.5]
   lin_vel_y: [-0.5, 0.5]
 done_config:
@@ -69,6 +73,8 @@ wandb_config:
   run_name: bello_mini_locomotion_seed0
   tags: [locomotion, bello-mini, ideal-differential-ankle, seeded-plane-slope, additive-push-xy05]
 video_config:
+  standing_push_enabled: true
+  every_updates: 4096
   filename_prefix: bello_mini_locomotion
   command: [0.5, 0.0, 0.0]
   steps: 500

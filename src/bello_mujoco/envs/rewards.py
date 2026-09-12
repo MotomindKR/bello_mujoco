@@ -505,7 +505,9 @@ def compute_locomotion_reward(
     moving_ang_vel_z_error = jnp.where(standing_command, 0.0, moving_ang_vel_z_error)
     track_lin_vel_xy = jnp.exp(-lin_vel_error)
     track_ang_vel_z = jnp.exp(-yaw_vel_error)
-    tracking_supported = ~standing_command | standing_double_support
+    # Recovery steps must retain the incentive to arrest velocity. Unsupported
+    # flight still earns no standing tracking reward.
+    tracking_supported = ~standing_command | jnp.any(inputs.foot_contact)
     track_lin_vel_xy = jnp.where(tracking_supported, track_lin_vel_xy, 0.0)
     track_ang_vel_z = jnp.where(tracking_supported, track_ang_vel_z, 0.0)
     lin_vel_z = inputs.lin_vel_z**2
@@ -729,6 +731,11 @@ def compute_locomotion_reward(
         stand_foot_motion *= recovery_scale * jnp.all(inputs.foot_contact)
         stand_foot_heading *= recovery_scale
         stand_still *= recovery_scale
+        stand_contact *= recovery_scale
+        stand_hip_roll_continuous_torque_excess *= recovery_scale
+        stand_waist_deviation *= recovery_scale
+        hip_deviation *= jnp.where(standing_command, recovery_scale, 1.0)
+        knee_deviation *= jnp.where(standing_command, recovery_scale, 1.0)
     alignment_gate = (standing_double_support & ~inputs.done) * recovery_scale
     stand_foot_foreaft = alignment_gate * deadband_huber(
         inputs.foot_foreaft,

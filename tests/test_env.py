@@ -1342,6 +1342,49 @@ def test_random_push_adds_root_xy_velocity_on_interval(
     )
 
 
+@pytest.mark.parametrize("torso_enabled", [False, True])
+def test_push_curriculum_uses_persistent_training_clock(bello_asset, torso_enabled):
+    env = BelloLocomotionEnv.load_prepared(
+        bello_asset,
+        batch_size=2,
+        env_config=BelloEnvConfig(
+            random_push=RandomPushConfig(
+                enabled=True,
+                curriculum_steps=100,
+                initial_scale=0.2,
+                interval_seconds=0.02,
+                lin_vel_x=(0.5, 0.5),
+                lin_vel_y=(0.0, 0.0),
+            ),
+            model_randomization=ModelRandomizationConfig(enabled=torso_enabled),
+            torso_com_curriculum=TorsoComCurriculumConfig(
+                enabled=torso_enabled, ramp_steps=50
+            ),
+        ),
+    )
+    state, _ = env.reset_batch(2)
+
+    def pushed(clock):
+        current = env.with_task_state(clock)
+        _, applied, velocity = current._maybe_apply_random_push_batch(
+            state.data, jnp.ones(2, dtype=jnp.int32), jax.random.PRNGKey(0)
+        )
+        return current.random_push_scale, applied, velocity
+
+    compute = jax.jit(pushed)
+    for clock, scale in ((0.0, 0.2), (50.0, 0.6), (100.0, 1.0), (200.0, 1.0)):
+        actual, applied, velocity = compute(jnp.asarray([clock]))
+        assert float(actual) == pytest.approx(scale)
+        assert applied.tolist() == [True, True]
+        assert velocity[:, 0] == pytest.approx(jnp.full(2, 0.5 * scale))
+    assert env.update_task_state(jnp.asarray([99.0]), {}) == pytest.approx(
+        jnp.asarray([100.0])
+    )
+    assert env.task_state_metrics(jnp.asarray([0.0]))[
+        "curriculum/push_scale"
+    ] == pytest.approx(0.2)
+
+
 def test_rough_terrain_foot_height_queries_local_elevation(
     bello_asset: PreparedAsset,
 ) -> None:

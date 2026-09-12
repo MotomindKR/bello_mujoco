@@ -114,8 +114,9 @@ def test_native_feedback_noise_is_seeded_and_not_redrawn_on_reread(bello_asset) 
 
 
 @pytest.mark.parametrize("command_delay", [0.0, 0.01])
+@pytest.mark.parametrize("push", [False, True])
 def test_training_video_preserves_feedback_delay_across_physics_steps(
-    monkeypatch, bello_asset, tmp_path, command_delay
+    monkeypatch, bello_asset, tmp_path, command_delay, push
 ) -> None:
     env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
     env = replace(
@@ -134,11 +135,15 @@ def test_training_video_preserves_feedback_delay_across_physics_steps(
     )
     captured = []
     applied_controls = []
+    root_velocities = []
     mj_step = render.mujoco.mj_step
 
     def record_step(model, data):
+        adr = int(env.model.root_qvel_adr)
+        root_velocities.append((data.qvel[adr : adr + 2].copy(), None))
         applied_controls.append(data.ctrl.copy())
         mj_step(model, data)
+        root_velocities[-1] = (root_velocities[-1][0], data.qvel[adr : adr + 2].copy())
 
     monkeypatch.setattr(render.mujoco, "mj_step", record_step)
 
@@ -161,7 +166,7 @@ def test_training_video_preserves_feedback_delay_across_physics_steps(
             SimpleNamespace(append_data=lambda _frame: None),
         ),
     )
-    render.render_policy_rollout_mujoco(
+    stats = render.render_policy_rollout_mujoco(
         env,
         object(),
         output_path=tmp_path / "unused.mp4",
@@ -174,7 +179,15 @@ def test_training_video_preserves_feedback_delay_across_physics_steps(
         camera_config=render.CameraConfig(),
         ppo_config=PPOConfig(),
         observation_norm_state=init_observation_norm_state(env.observation_size),
+        push_at_step=2 if push else None,
+        push_velocity=(0.5, -0.25) if push else (0.0, 0.0),
     )
+    assert stats["push_applied"] == int(push)
+    assert stats["survived_rollout"] == 1
+    for index in range(1, len(root_velocities)):
+        delta = root_velocities[index][0] - root_velocities[index - 1][1]
+        expected = (0.5, -0.25) if push and index == 2 * env.decimation else (0.0, 0.0)
+        np.testing.assert_allclose(delta, expected, atol=1e-7)
     previous = render.mujoco_action_to_ctrl(env, np.zeros(env.action_size))
     requested = render.mujoco_action_to_ctrl(env, np.full(env.action_size, 0.2))
     for index in range(env.decimation):
@@ -417,6 +430,42 @@ def test_training_video_passes_runner_normalization_to_rollout(monkeypatch) -> N
 
     assert rollout_calls[0]["ppo_config"] is ppo_config
     assert rollout_calls[0]["observation_norm_state"] is normalization
+
+
+@pytest.mark.parametrize(
+    "index,velocity",
+    [(1, (0.5, 0.0)), (2, (-0.5, 0.0)), (3, (0.0, 0.5)), (4, (0.0, -0.5))],
+)
+def test_standing_push_video_cycles_directions(monkeypatch, index, velocity):
+    calls = []
+    runner = SimpleNamespace(
+        update=jnp.asarray(index * 4096), observation_norm_state=object()
+    )
+    monkeypatch.setattr(
+        training, "runner_train_state", lambda *_: SimpleNamespace(policy=object())
+    )
+    monkeypatch.setattr(
+        training,
+        "render_policy_rollout",
+        lambda *args, **kwargs: calls.append(kwargs) or {},
+    )
+    training.render_training_video(
+        SimpleNamespace(control_timestep=0.02),
+        runner,
+        object(),
+        TrainingVideoConfig(
+            standing_push_enabled=True, every_updates=4096, steps=500, log_wandb=False
+        ),
+        None,
+        env_steps=10,
+        ppo_config=PPOConfig(),
+    )
+    assert len(calls) == 2
+    assert calls[1]["command"] == (0.0, 0.0, 0.0)
+    assert calls[1]["push_at_step"] == 250
+    assert calls[1]["push_velocity"] == velocity
+    assert calls[1]["stop_on_done"]
+    assert not calls[1]["stochastic_actions"]
 
 
 def test_training_video_failure_is_nonfatal(monkeypatch) -> None:
