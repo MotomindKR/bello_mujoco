@@ -22,12 +22,27 @@ Public controls are documented under
 The emulator is intended for hardware-interface and controller integration
 testing. Policy checkpoints are evaluated with `bello-eval`.
 
-Training and native emulation target MuJoCo 3.12.0. The Rust adapter in
-`bello-stack/components/bello-mujoco` uses a pinned, headless `mujoco-rs`
-revision for that engine, retaining native differential-ankle tendons. Its
-full transport/process migration is still in progress; the commands below
-remain the complete Python emulator. The Rust emulator's robot model will
-come from the canonical description, independently of policy bundles.
+Training and native emulation target MuJoCo 3.12.0. The Rust executable in
+`deps/bello-stack/components/bello-mujoco` builds its model directly from the
+canonical URDF/hardware description, independently of policy bundles. It uses
+published `mujoco-rs` 6.0.1 without rendering features and retains native ankle
+tendons, EBIMU serial output, pose gRPC, and the interactive torso guide.
+
+In the Linux `nix develop .#rust-runtime` shell:
+
+```bash
+cargo run --manifest-path deps/bello-stack/Cargo.toml -p bello-mujoco -- \
+  check --config deps/bello-stack/components/bello-mujoco/config/bello_mini.yaml
+
+cargo run --manifest-path deps/bello-stack/Cargo.toml -p bello-mujoco -- \
+  run --config deps/bello-stack/components/bello-mujoco/config/emulator_mini.yaml
+```
+
+Use the corresponding `bello.yaml` / `emulator_bello.yaml` profiles for Bello.
+See the [native runtime guide](../deps/bello-stack/components/bello-mujoco/README.md)
+for isolated transport tests and runtime settings. The Python workflow below
+remains available pending policy-driven parity and native video-workflow migration.
+Never run both emulators on the same CAN/serial endpoints.
 
 ## Canonical inventory
 

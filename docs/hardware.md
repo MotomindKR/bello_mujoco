@@ -84,9 +84,9 @@ tracking, `motion.npz`. This repository's `rust/bello-policy` provides the Rust 
 Its JSON-line inference tool performs no hardware writes. Resumable training
 state remains a separate checkpoint directory.
 
-The Rust MuJoCo adapter can compile the bundled XML directly from memory without
-Python. The full SocketCAN/IMU/pose-service emulator migration is still in progress;
-use the Python emulator commands above until its retained features are wired.
+The Rust emulator builds from canonical robot descriptions, not the policy bundle.
+Its CAN/IMU/pose process is available for isolated testing; policy-driven parity
+and video migration are still pending. See [emulator usage](emulator.md).
 
 The native policy tool supports `--telemetry` for stateful observation/inference
 parity and `--hardware-config rust/bello-policy/config/hardware.yaml` for read-only
