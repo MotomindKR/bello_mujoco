@@ -487,7 +487,6 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
             bello.command_config,
             lin_vel_x=(-0.5, 0.5),
             lin_vel_y=(-0.5, 0.5),
-            standing_probability=0.4,
         )
         == mini.command_config
     )
@@ -495,6 +494,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.command_config.lin_vel_y == (-1.0, 1.0)
     assert bello.command_config.ang_vel_yaw == (-1.0, 1.0)
     assert bello.command_config.standing_probability == pytest.approx(0.25)
+    assert mini.command_config.standing_probability == pytest.approx(0.25)
     assert bello.command_config.standing_transitions_enabled
     assert bello.env_config.random_push.enabled
     assert bello.env_config.random_push.lin_vel_x == (-2.0, 2.0)

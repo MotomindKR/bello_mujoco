@@ -366,7 +366,7 @@ filter to training, native evaluation, or the hardware runner.
 Moving samples are conditioned so at least one available axis lies outside its
 minimum moving speed. The minimums must exceed their respective deadbands.
 The gait-capable maintained locomotion profiles override `standing_probability`
-to `0.25` for Bello and `0.40` for Mini. `bello_mini_standing` instead sets it to `1.0` and fixes every
+to `0.25` for both Bello and Mini. `bello_mini_standing` instead sets it to `1.0` and fixes every
 command range to zero, so gait probability is exactly zero without changing the
 observation layout.
 Training assigns an exact standing cohort at batch reset. Failure resets

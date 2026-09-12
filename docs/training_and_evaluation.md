@@ -117,7 +117,7 @@ in every mode. Phase-shaped toe/heel clearance and unexpected mid-swing contact
 penalties address scuffing. Alignment/stillness pressure relaxes during recovery.
 Recovery also relaxes soft hip/knee/waist posture and hip-roll thermal pressure;
 single-support corrective steps retain standing velocity-tracking rewards.
-Hard motor limits are never relaxed. Mini reserves 40% of commands for standing
+Hard motor limits are never relaxed. Mini retains 25% of commands for standing
 and ramps random pushes over the first approximately 1B transitions. Paired
 walking and standing-push evaluation videos expose recovery failures separately
 from aggregate training reward. These changes require a newly trained policy;

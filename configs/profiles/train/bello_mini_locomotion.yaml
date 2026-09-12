@@ -59,7 +59,6 @@ reward_config:
     hip_deviation_command_indices: [0]
     knee_deviation_apply_while_moving: false
 command_config:
-  standing_probability: 0.4
   lin_vel_x: [-0.5, 0.5]
   lin_vel_y: [-0.5, 0.5]
 done_config:
