@@ -14,10 +14,10 @@ if TYPE_CHECKING:
     from mujoco import mjx
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.prepare import (
-    AssetPrepConfig,
-    PreparedAsset,
-    prepare_asset,
+from bello_mujoco.models.compiler import (
+    ModelConfig,
+    CompiledRobot,
+    compile_robot,
 )
 from bello_mujoco.contracts import (
     DEFAULT_SPAWN_CLEARANCE,
@@ -232,6 +232,25 @@ class BelloModel:
     root_qpos_adr: int
     root_qvel_adr: int
 
+    @property
+    def actuator_coordinate_names(self) -> tuple[str, ...]:
+        names = []
+        for index in range(self.mj_model.nu):
+            transmission = self.mj_model.actuator_trntype[index]
+            if transmission == mujoco.mjtTrn.mjTRN_JOINT:
+                kind = mujoco.mjtObj.mjOBJ_JOINT
+            elif transmission == mujoco.mjtTrn.mjTRN_TENDON:
+                kind = mujoco.mjtObj.mjOBJ_TENDON
+            else:
+                raise ValueError(f"unsupported actuator transmission: {transmission}")
+            name = mujoco.mj_id2name(
+                self.mj_model, kind, int(self.mj_model.actuator_trnid[index, 0])
+            )
+            if name is None:
+                raise ValueError(f"actuator {index} has an unnamed coordinate")
+            names.append(name)
+        return tuple(names)
+
     def make_data(self) -> mjx.Data:
         if self.mjx_model is None:
             raise RuntimeError(
@@ -289,8 +308,8 @@ def resolve_imu_body_name(
     return body_name
 
 
-def load_bello_model(
-    config: AssetPrepConfig = AssetPrepConfig(),
+def load_model(
+    config: ModelConfig = ModelConfig(),
     *,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
@@ -302,8 +321,8 @@ def load_bello_model(
     load_mjx: bool = True,
     simulation_timestep: float | None = None,
 ) -> BelloModel:
-    prepared = prepare_asset(config)
-    return load_prepared_bello_model(
+    prepared = compile_robot(config)
+    return load_compiled_model(
         prepared,
         warp=warp,
         batch_size=batch_size,
@@ -319,8 +338,8 @@ def load_bello_model(
     )
 
 
-def load_prepared_bello_model(
-    prepared: PreparedAsset,
+def load_compiled_model(
+    prepared: CompiledRobot,
     *,
     warp: WarpConfig = WarpConfig(),
     batch_size: int = 1,
@@ -338,7 +357,7 @@ def load_prepared_bello_model(
     if actuator_config is None:
         actuator_config = ActuatorConfig.for_asset(prepared.name)
     xml_path = prepared.viewer_mjcf_path if use_viewer_model else prepared.mjcf_path
-    return _load_bello_model_from_path(
+    return _load_model_from_path(
         xml_path,
         robot=robot,
         warp=warp,
@@ -354,7 +373,7 @@ def load_prepared_bello_model(
     )
 
 
-def _load_bello_model_from_path(
+def _load_model_from_path(
     xml_path: Path,
     *,
     robot: RobotDefinition,

@@ -5,12 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import redirect_stdout
 from dataclasses import dataclass
-import hashlib
 import importlib.util
 import io
 import math
 from pathlib import Path
-import subprocess
 import sys
 import threading
 import time
@@ -20,18 +18,16 @@ from typing import Any, Protocol
 import mujoco
 import numpy as np
 
-from bello_mujoco.assets_pipeline import robot_descriptions_root
 from bello_mujoco.hardware.smplx_contract import (
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
 )
-from bello_mujoco.hardware.twist2 import (
+from bello_mujoco.hardware.reference import (
     ReferenceDiscontinuity,
     ReferenceUnavailable,
-    Twist2ReferenceFrame,
+    RobotReferenceFrame,
 )
 from bello_mujoco.repository import repository_root
-from bello_mujoco.robot import AssetName, robot_definition
 from bello_mujoco.robot_tasks import GmrRetargetDefinition, motion_task_definition
 
 # SMPL-X's model frame has +y up. This proper rotation produces the same
@@ -82,14 +78,6 @@ class SmplxTargetFrame:
     source_age_ms: int
     received_at: float
     foot_contacts: np.ndarray | None = None
-
-
-@dataclass(frozen=True)
-class GmrSourceIdentity:
-    """Pinned solver and canonical robot identities used by live GMR."""
-
-    revision: str
-    robot_fingerprint: str
 
 
 class SmplxTargetStream(Protocol):
@@ -257,14 +245,12 @@ class GmrRetargeter:
     def __init__(
         self,
         env: Any,
-        source_identity: GmrSourceIdentity,
         config: GmrLiveRetargetConfig = GmrLiveRetargetConfig(),
-        validate_reference: Callable[[Twist2ReferenceFrame], None] | None = None,
+        validate_reference: Callable[[RobotReferenceFrame], None] | None = None,
     ) -> None:
         asset = env.model.robot.asset
         profile = motion_task_definition(asset).gmr
-        gmr_root = require_pinned_gmr_revision(source_identity.revision)
-        require_robot_fingerprint(source_identity.robot_fingerprint, asset)
+        gmr_root = repository_root() / "deps" / "GMR"
         _configure_pinned_gmr_profile(profile, gmr_root)
         retargeter_type = import_pinned_gmr_retargeter()
         with redirect_stdout(io.StringIO()):
@@ -288,7 +274,6 @@ class GmrRetargeter:
         )
         self.env = env
         self.profile = profile
-        self.source_identity = source_identity
         self.config = config
         self.validate_reference = validate_reference
         self.retargeter = retargeter
@@ -306,10 +291,10 @@ class GmrRetargeter:
         self._source_floor_height: float | None = None
         self._live_ground_offset: float | None = None
         self._last_sequence: int | None = None
-        self._cached: Twist2ReferenceFrame | None = None
+        self._cached: RobotReferenceFrame | None = None
         self._standing_qpos: np.ndarray | None = None
 
-    def standing(self, frame: SmplxTargetFrame) -> Twist2ReferenceFrame:
+    def standing(self, frame: SmplxTargetFrame) -> RobotReferenceFrame:
         """Settle the canonical SMPL-X standing sample through pinned GMR."""
 
         targets = validate_smplx_target_frame(
@@ -327,7 +312,7 @@ class GmrRetargeter:
         self.retargeter.configuration.update(previous)
         self._standing_qpos = previous.copy()
         self._reset_live_state()
-        return Twist2ReferenceFrame(
+        return RobotReferenceFrame(
             qpos=previous,
             qvel=np.zeros(self.model.nv, dtype=np.float64),
             sequence=frame.sequence,
@@ -335,7 +320,7 @@ class GmrRetargeter:
             received_at=frame.received_at,
         )
 
-    def retarget(self, frame: SmplxTargetFrame) -> Twist2ReferenceFrame:
+    def retarget(self, frame: SmplxTargetFrame) -> RobotReferenceFrame:
         """Retarget one new live source frame, caching repeated source frames."""
 
         source_targets = validate_smplx_target_frame(
@@ -389,7 +374,7 @@ class GmrRetargeter:
                 )
             if not np.all(np.isfinite(qpos)) or not np.all(np.isfinite(qvel)):
                 raise ReferenceDiscontinuity("GMR produced a non-finite reference")
-            result = Twist2ReferenceFrame(
+            result = RobotReferenceFrame(
                 qpos=qpos,
                 qvel=qvel,
                 sequence=frame.sequence,
@@ -545,8 +530,8 @@ class LiveGmrReferenceSource:
         self._condition = threading.Condition()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._standing: Twist2ReferenceFrame | None = None
-        self._latest: Twist2ReferenceFrame | None = None
+        self._standing: RobotReferenceFrame | None = None
+        self._latest: RobotReferenceFrame | None = None
         self._unavailable: ReferenceUnavailable | None = None
         self._terminal_error: BaseException | None = None
 
@@ -573,12 +558,12 @@ class LiveGmrReferenceSource:
         self._thread = None
         return False
 
-    def standing(self) -> Twist2ReferenceFrame:
+    def standing(self) -> RobotReferenceFrame:
         if self._standing is None:
             raise RuntimeError("live GMR source is not running")
         return self._standing
 
-    def latest(self) -> Twist2ReferenceFrame:
+    def latest(self) -> RobotReferenceFrame:
         with self._condition:
             if self._terminal_error is not None:
                 raise RuntimeError("live GMR worker failed") from self._terminal_error
@@ -588,7 +573,7 @@ class LiveGmrReferenceSource:
                 raise self._unavailable
             raise ReferenceUnavailable("no live SMPL-X frame has been retargeted")
 
-    def wait_until_ready(self, timeout_seconds: float) -> Twist2ReferenceFrame:
+    def wait_until_ready(self, timeout_seconds: float) -> RobotReferenceFrame:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
             raise ValueError("GMR ready timeout must be positive and finite")
         deadline = time.monotonic() + timeout_seconds
@@ -681,65 +666,6 @@ def validate_smplx_target_frame(
             )
         result[name] = (position.copy(), (quaternion / norm).copy())
     return result
-
-
-def require_pinned_gmr_revision(expected: str) -> Path:
-    root = repository_root()
-    gmr_root = root / "deps" / "GMR"
-    if len(expected) != 40 or any(
-        character not in "0123456789abcdef" for character in expected
-    ):
-        raise ValueError("checkpoint GMR revision must be 40 lowercase hex digits")
-    gitlink = _git_output(root, "ls-tree", "HEAD", "--", "deps/GMR").split()
-    if len(gitlink) < 3 or gitlink[1] != "commit":
-        raise RuntimeError("deps/GMR is not a pinned Git submodule")
-    pinned = gitlink[2]
-    current = _git_output(gmr_root, "rev-parse", "HEAD")
-    if pinned != expected or current != expected:
-        raise ValueError(
-            "live-pose source identity, repository gitlink, and checked-out GMR "
-            f"revision differ: expected={expected}, gitlink={pinned}, "
-            f"checkout={current}"
-        )
-    status = _git_output(
-        gmr_root,
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
-    )
-    if status:
-        raise RuntimeError("hardware GMR submodule must be clean")
-    return gmr_root
-
-
-def require_robot_fingerprint(expected: str, asset: AssetName) -> Path:
-    robot = robot_definition(asset)
-    path = robot.source_urdf_path(robot_descriptions_root())
-    actual = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-    if actual != expected:
-        raise ValueError(
-            f"live-pose robot fingerprint differs from asset {asset!r}: "
-            f"description: expected={expected}, current={actual}"
-        )
-    return path
-
-
-def repository_gmr_source_identity(asset: AssetName) -> GmrSourceIdentity:
-    """Resolve and validate the GMR/robot identity pinned by this checkout."""
-
-    root = repository_root()
-    gitlink = _git_output(root, "ls-tree", "HEAD", "--", "deps/GMR").split()
-    if len(gitlink) < 3 or gitlink[1] != "commit":
-        raise RuntimeError("deps/GMR is not a pinned Git submodule")
-    robot_path = robot_definition(asset).source_urdf_path(robot_descriptions_root())
-    identity = GmrSourceIdentity(
-        revision=gitlink[2],
-        robot_fingerprint="sha256:"
-        + hashlib.sha256(robot_path.read_bytes()).hexdigest(),
-    )
-    require_pinned_gmr_revision(identity.revision)
-    require_robot_fingerprint(identity.robot_fingerprint, asset)
-    return identity
 
 
 def _configure_pinned_gmr_profile(
@@ -867,19 +793,3 @@ def _copy_targets(
         name: (position.copy(), quaternion.copy())
         for name, (position, quaternion) in targets.items()
     }
-
-
-def _git_output(root: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ("git", "-C", str(root), *arguments),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"git {' '.join(arguments)} failed" + (f": {detail}" if detail else "")
-        )
-    return result.stdout.strip()

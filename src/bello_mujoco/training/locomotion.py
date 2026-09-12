@@ -3,11 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-import warnings
 
 import jax
 
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     LocomotionCheckpointMetadata,
@@ -16,10 +15,12 @@ from bello_mujoco.training.checkpoint import (
     save_training_checkpoint,
     validate_checkpoint_options,
 )
-from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, DoneConfig
+from bello_mujoco.envs.locomotion_config import BelloEnvConfig, DoneConfig
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.policy import policy_observation_size
-from bello_mujoco.evaluation.render import CameraConfig, render_policy_rollout
+from bello_mujoco.evaluation.render import CameraConfig, render_policy_rollout_isolated
+from bello_mujoco.evaluation.software import require_linux_software_rendering
 from bello_mujoco.sim import (
     WarpConfig,
 )
@@ -78,7 +79,7 @@ class TrainingVideoConfig:
 @dataclass(frozen=True)
 class TrainingRunConfig:
     config: PPOConfig = PPOConfig()
-    asset_config: AssetPrepConfig = AssetPrepConfig()
+    asset_config: ModelConfig = ModelConfig()
     reward_config: RewardConfig = RewardConfig()
     command_config: CommandConfig = CommandConfig()
     done_config: DoneConfig = DoneConfig()
@@ -103,6 +104,8 @@ def run_training(run_config: TrainingRunConfig) -> None:
 
     validate_ppo_config(config)
     validate_video_config(video_config)
+    if video_config.enabled:
+        require_linux_software_rendering()
     validate_checkpoint_config(checkpoint_config)
     validate_action_limit_contract(config, env_config.action_clip)
     git_commit = None
@@ -166,7 +169,6 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 resume_path,
                 env,
                 metadata,
-                allow_git_commit_mismatch=(checkpoint_config.allow_git_commit_mismatch),
             )
             if resumed_metadata != metadata:
                 raise RuntimeError("resume did not resolve to the requested run")
@@ -249,11 +251,6 @@ def checkpoint_metadata(
     policy_obs_size: int,
     critic_policy_obs_size: int,
 ) -> LocomotionCheckpointMetadata:
-    if run_config.asset_config.output_root is not None:
-        raise ValueError(
-            "training requires asset_config.output_root=null so the exact source "
-            "revision owns asset generation"
-        )
     return LocomotionCheckpointMetadata(
         ppo=run_config.config,
         asset=run_config.asset_config,
@@ -331,9 +328,8 @@ def train_update_loop(
 
     update_fn = jax.jit(update_fn)
     last_metrics = None
-    video_available = video_config.enabled
-    if video_available and video_config.render_initial and start_update == 0:
-        video_available = try_render_training_video(
+    if video_config.enabled and video_config.render_initial and start_update == 0:
+        render_training_video(
             render_env,
             runner_state,
             static_policy,
@@ -365,10 +361,10 @@ def train_update_loop(
             )
         ):
             checkpoint_callback(runner_state)
-        if video_available and should_render_training_video(
+        if video_config.enabled and should_render_training_video(
             update, config.num_updates, video_config
         ):
-            video_available = try_render_training_video(
+            render_training_video(
                 render_env,
                 runner_state,
                 static_policy,
@@ -408,7 +404,7 @@ def render_training_video(
     update = int(jax.device_get(runner_state.update))
     output_path = config.output_dir / f"{config.filename_prefix}_{update:06d}.mp4"
     train_state = runner_train_state(runner_state, static_policy)
-    rollout_stats = render_policy_rollout(
+    rollout_stats = render_policy_rollout_isolated(
         env,
         train_state.policy,
         output_path=output_path,
@@ -434,40 +430,6 @@ def render_training_video(
             caption=video_rollout_caption(update, rollout_stats),
         )
     return output_path
-
-
-def try_render_training_video(
-    env: BelloLocomotionEnv,
-    runner_state: RunnerState,
-    static_policy,
-    config: TrainingVideoConfig,
-    run,
-    *,
-    env_steps: int,
-    ppo_config: PPOConfig,
-    obs_stack_size: int = 1,
-) -> bool:
-    update = int(jax.device_get(runner_state.update))
-    try:
-        render_training_video(
-            env,
-            runner_state,
-            static_policy,
-            config,
-            run,
-            env_steps=env_steps,
-            ppo_config=ppo_config,
-            obs_stack_size=obs_stack_size,
-        )
-    except Exception as error:  # noqa: BLE001 - evaluation video is noncritical
-        warnings.warn(
-            f"locomotion evaluation video failed at update {update}; "
-            f"disabling later videos: {error}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return False
-    return True
 
 
 def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:

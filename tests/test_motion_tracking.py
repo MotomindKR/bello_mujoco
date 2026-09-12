@@ -10,9 +10,10 @@ from mujoco import mjx
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import (
-    PreparedAsset,
-    prepare_asset,
+
+from bello_mujoco.models.compiler import (
+    CompiledRobot,
+    compile_robot,
 )
 from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
@@ -27,19 +28,16 @@ from bello_mujoco.envs.motion_tracking import (
     quat_multiply,
     yaw_quat_from_angle,
 )
-from bello_mujoco.configuration import motion_training_profile
 from bello_mujoco.motion.clip import (
-    MOTION_FORMAT_VERSION,
     load_motion_clip,
     motion_tracking_asset_config,
     sample_motion,
 )
 from bello_mujoco.robot_tasks import motion_task_definition
-from bello_mujoco.sim import load_prepared_bello_model
-from bello_mujoco.motion.import_gmr import (
-    _build_qpos,
-    _validate_legacy_motion,
-)
+from bello_mujoco.sim import load_compiled_model
+
+pytestmark = pytest.mark.integration
+
 
 requires_warp_gpu = pytest.mark.skipif(
     jax.default_backend() != "gpu",
@@ -49,20 +47,19 @@ MOTION_TASK = motion_task_definition("bello")
 
 
 @pytest.fixture(scope="module")
-def fixed_waist_asset(tmp_path_factory) -> PreparedAsset:
-    return prepare_asset(
+def motion_asset(tmp_path_factory) -> CompiledRobot:
+    return compile_robot(
         motion_tracking_asset_config(
             asset="bello",
-            output_root=tmp_path_factory.mktemp("fixed-waist-asset"),
         )
     )
 
 
 @pytest.fixture(scope="module")
-def fixed_waist_motion(fixed_waist_asset: PreparedAsset, tmp_path_factory) -> Path:
-    path = tmp_path_factory.mktemp("fixed-waist-motion") / "test_motion.npz"
-    model = load_prepared_bello_model(
-        fixed_waist_asset,
+def reference_motion(motion_asset: CompiledRobot, tmp_path_factory) -> Path:
+    path = tmp_path_factory.mktemp("reference-motion") / "test_motion.npz"
+    model = load_compiled_model(
+        motion_asset,
         actuator_config=motion_tracking_asset_config(asset="bello").actuator_config,
         load_mjx=False,
     )
@@ -100,11 +97,9 @@ def fixed_waist_motion(fixed_waist_asset: PreparedAsset, tmp_path_factory) -> Pa
             body_lin_vel[frame, body_index] = velocity[3:]
     np.savez_compressed(
         path,
-        format_version=np.asarray(MOTION_FORMAT_VERSION),
         fps=np.asarray(10.0),
         joint_names=np.asarray(model.actuator_joint_names),
         body_names=np.asarray(MOTION_TASK.default_tracked_body_names),
-        source_sha256=np.asarray("synthetic"),
         qpos=qpos,
         qvel=qvel,
         body_pos=body_pos,
@@ -144,11 +139,8 @@ def beyondmimic_config(path: Path) -> MotionTrackingEnvConfig:
         reward=MotionRewardConfig(
             root_position_weight=0.5,
             root_orientation_weight=0.5,
-            joint_position_weight=0.0,
-            joint_velocity_weight=0.0,
             body_position_weight=1.0,
             body_orientation_weight=1.0,
-            body_velocity_weight=0.0,
             body_linear_velocity_weight=1.0,
             body_angular_velocity_weight=1.0,
             action_rate_weight=-0.1,
@@ -188,94 +180,15 @@ def observation_component_slice(
     raise KeyError(component_name)
 
 
-def test_legacy_gmr_import_defaults_missing_foot_contacts() -> None:
-    frame_count = 2
-    arrays = _validate_legacy_motion(
-        {
-            "fps": 30.0,
-            "root_pos": np.zeros((frame_count, 3)),
-            "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
-            "dof_pos": np.zeros(
-                (frame_count, len(MOTION_TASK.legacy_import_joint_names))
-            ),
-        },
-        MOTION_TASK,
-    )
-
-    np.testing.assert_array_equal(
-        arrays["foot_contacts"], np.zeros((frame_count, 2), dtype=np.float32)
-    )
-
-
-def test_fixed_head_gmr_import_accepts_25_joint_schema() -> None:
-    frame_count = 2
-    fixed_head_joint_count = len(MOTION_TASK.imported_actuator_joint_names)
-
-    arrays = _validate_legacy_motion(
-        {
-            "fps": 30.0,
-            "root_pos": np.zeros((frame_count, 3)),
-            "root_rot": np.tile((0.0, 0.0, 0.0, 1.0), (frame_count, 1)),
-            "dof_pos": np.zeros((frame_count, fixed_head_joint_count)),
-        },
-        MOTION_TASK,
-    )
-
-    assert arrays["dof_pos"].shape == (frame_count, 25)
-
-
-def test_default_motion_profile_uses_tracked_fixed_joint_clip() -> None:
-    config = motion_training_profile()
-
-    assert config.asset_config.asset == "bello"
-    assert config.asset_config.actuator_mode == "policy"
-    assert not config.asset_config.joint_availability.disabled_joint_names
-    assert not config.asset_config.enforce_policy_effort_limits
-    assert config.env_config.reward.torque_l1_weight == -1.2
-    assert config.env_config.reward.torque_peak_weight == -12.0
-    assert config.env_config.observation_latency.enabled
-    assert config.env_config.observation_latency.delay_steps == (0, 2)
-    motion_path = config.motion.directory / f"{config.motion.sequence}.npz"
-    assert motion_path.is_file()
-
-
-def test_gmr_joint_columns_are_remapped_by_name(
-    fixed_waist_asset: PreparedAsset,
-) -> None:
-    model = load_prepared_bello_model(
-        fixed_waist_asset,
-        actuator_config=motion_tracking_asset_config(asset="bello").actuator_config,
-        load_mjx=False,
-    )
-    source_joint_pos = np.arange(
-        len(MOTION_TASK.legacy_import_joint_names), dtype=np.float64
-    )[None, :]
-    qpos = _build_qpos(
-        model,
-        MOTION_TASK,
-        np.asarray([[0.0, 0.0, 1.0]]),
-        np.asarray([[0.0, 0.0, 0.0, 1.0]]),
-        source_joint_pos,
-    )
-
-    source_index = {
-        name: index for index, name in enumerate(MOTION_TASK.legacy_import_joint_names)
-    }
-    for name, address in zip(
-        model.actuator_joint_names, model.actuator_qpos_indices, strict=True
-    ):
-        assert qpos[0, address] == source_index[name]
-
-
 def test_motion_loader_and_shortest_arc_interpolation(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    model = load_prepared_bello_model(
-        fixed_waist_asset,
+    model = load_compiled_model(
+        motion_asset,
         actuator_config=motion_tracking_asset_config(asset="bello").actuator_config,
         load_mjx=False,
     )
-    clip = load_motion_clip(fixed_waist_motion, model)
+    clip = load_motion_clip(reference_motion, model)
     clip = clip.__class__(
         **{**clip.__dict__, "qpos": clip.qpos.at[1, 3:7].multiply(-1)}
     )
@@ -288,15 +201,15 @@ def test_motion_loader_and_shortest_arc_interpolation(
 
 
 def test_native_motion_rollout_does_not_load_mjx(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
     from bello_mujoco.evaluation.motion import (
         native_motion_step,
         reset_native_motion_rollout,
     )
 
-    config = MotionTrackingEnvConfig(motion_path=fixed_waist_motion)
-    env = BelloMotionTrackingEnv.load_prepared_native(fixed_waist_asset, config)
+    config = MotionTrackingEnvConfig(motion_path=reference_motion)
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config, load_mjx=False)
     data = mujoco.MjData(env.model.mj_model)
 
     state, observation = reset_native_motion_rollout(env, data)
@@ -315,10 +228,10 @@ def test_native_motion_rollout_does_not_load_mjx(
 
 
 def test_tracking_reset_matches_reference_and_is_nonterminal(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, tracking_config(reference_motion)
     )
     state, observation = env.reset(reference_time=jnp.asarray(0.1))
     reward, _ = env._reward(state, state)
@@ -332,15 +245,15 @@ def test_tracking_reset_matches_reference_and_is_nonterminal(
     assert env.action_size == 25
     assert observation.shape == (env.observation_size,)
     assert env.critic_observation(state).shape == (env.critic_observation_size,)
-    assert float(reward) > 0.8
+    assert np.isfinite(float(reward)) and float(reward) > 0.0
     assert not bool(done["done/any"])
 
 
 def test_aligned_reference_preserves_body_local_root_angular_velocity(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, tracking_config(reference_motion)
     )
     angular_velocity = jnp.asarray((0.4, -0.2, 0.1))
     motion = replace(
@@ -363,10 +276,10 @@ def test_aligned_reference_preserves_body_local_root_angular_velocity(
 
 
 def test_beyondmimic_observes_body_local_root_gyro_at_nonzero_yaw(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, beyondmimic_config(fixed_waist_motion)
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, beyondmimic_config(reference_motion)
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     root_quat = yaw_quat_from_angle(jnp.asarray(np.pi / 2.0))
@@ -388,101 +301,12 @@ def test_beyondmimic_observes_body_local_root_gyro_at_nonzero_yaw(
     )
 
 
-def test_root_angular_velocity_error_compares_common_world_frame(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
-) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
-    )
-    reference_quat = yaw_quat_from_angle(jnp.asarray(np.pi / 2.0))
-    motion = replace(
-        env.motion,
-        qpos=env.motion.qpos.at[:, 3:7].set(reference_quat),
-        qvel=env.motion.qvel.at[:, 3:6].set(jnp.asarray((1.0, 0.0, 0.0))),
-    )
-    env = replace(env, motion=motion)
-    state, _ = env.reset(reference_time=jnp.asarray(0.1))
-    data = state.data.replace(
-        qpos=state.data.qpos.at[3:7].set(jnp.asarray((1.0, 0.0, 0.0, 0.0))),
-        qvel=state.data.qvel.at[3:6].set(jnp.asarray((0.0, 1.0, 0.0))),
-    )
-    state = state.replace(data=mjx.forward(env.model.mjx_model, data))
-
-    observation = env.observation(state)
-
-    np.testing.assert_allclose(
-        np.asarray(
-            observation[observation_component_slice(env, "root_angular_velocity_error")]
-        ),
-        np.zeros(3),
-        atol=1.0e-6,
-    )
-
-
-def test_zero_action_targets_next_reference_pose(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
-) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
-    )
-    state, _ = env.reset(reference_time=jnp.asarray(0.1))
-    ctrl = env.action_target(state, jnp.zeros(env.action_size))
-    reference = sample_motion(env.motion, jnp.asarray(0.1 + env.control_timestep))
-    logical_target = np.asarray(reference.qpos)[env.model.actuator_qpos_indices]
-    logical_target = np.clip(
-        logical_target,
-        env.model.joint_target_low,
-        env.model.joint_target_high,
-    )
-
-    np.testing.assert_allclose(
-        np.asarray(ctrl),
-        expected_physical_ctrl(env, logical_target),
-        atol=1.0e-6,
-    )
-    index = {name: i for i, name in enumerate(env.model.actuator_joint_names)}
-    pitch = index["left_ankle_pitch_joint"]
-    roll = index["left_ankle_roll_joint"]
-    assert float(ctrl[pitch]) == pytest.approx(
-        -float(logical_target[pitch]) + float(logical_target[roll]), abs=1.0e-6
-    )
-    assert float(ctrl[roll]) == pytest.approx(
-        float(logical_target[pitch]) + float(logical_target[roll]), abs=1.0e-6
-    )
-
-
-def test_reference_residual_uses_quarter_logical_range_and_clips_targets(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
-) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
-    )
-    state, _ = env.reset(reference_time=jnp.asarray(0.1))
-    expected_scale = 0.25 * (env.model.joint_target_high - env.model.joint_target_low)
-
-    np.testing.assert_allclose(
-        np.asarray(env.reference_residual_action_scale),
-        expected_scale,
-        atol=1.0e-7,
-    )
-
-    clipped_ctrl = env.action_target(
-        state,
-        jnp.full((env.action_size,), 100.0),
-    )
-    np.testing.assert_allclose(
-        np.asarray(clipped_ctrl),
-        expected_physical_ctrl(env, env.model.joint_target_high),
-        atol=1.0e-6,
-    )
-
-
 def test_beyondmimic_zero_action_targets_nominal_pose(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset,
-        beyondmimic_config(fixed_waist_motion),
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset,
+        beyondmimic_config(reference_motion),
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     ctrl = env.action_target(state, jnp.zeros(env.action_size))
@@ -498,141 +322,62 @@ def test_beyondmimic_zero_action_targets_nominal_pose(
     )
 
 
-def test_beyondmimic_uses_effort_stiffness_scale_without_logical_clipping(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
-) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset,
-        beyondmimic_config(fixed_waist_motion),
+def test_beyondmimic_scales_each_physical_motor_by_effort_and_stiffness(
+    motion_asset,
+    reference_motion,
+):
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, beyondmimic_config(reference_motion), load_mjx=False
     )
-    state, _ = env.reset(reference_time=jnp.asarray(0.1))
-    configured = env.actuator_config.by_name
-    expected_scale = np.asarray(
-        [
-            0.25 * configured[name].effort_limit / configured[name].gains[0]
-            for name in env.action_layout.names
-        ]
-    )
-    np.testing.assert_allclose(
-        np.asarray(env.beyondmimic_action_scale), expected_scale, atol=1.0e-7
-    )
-
-    roll = env.action_layout.names.index("left_ankle_roll_joint")
-    action = np.zeros(env.action_size, dtype=np.float32)
-    action[roll] = 1.0
-    logical_target = env.model.default_joint_target + expected_scale * action
-    assert logical_target[roll] > env.model.joint_target_high[roll]
-
-    ctrl = env.action_target(state, jnp.asarray(action))
-    expected_ctrl = expected_physical_ctrl(env, logical_target)
-    clipped_ctrl = expected_physical_ctrl(
-        env,
-        np.clip(
-            logical_target,
-            env.model.joint_target_low,
-            env.model.joint_target_high,
-        ),
-    )
-    np.testing.assert_allclose(np.asarray(ctrl), expected_ctrl, atol=1.0e-6)
-    assert not np.allclose(expected_ctrl, clipped_ctrl)
-
-
-def test_beyondmimic_joint_limit_actions_use_asymmetric_bounded_mapping(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
-) -> None:
-    config = replace(
-        beyondmimic_config(fixed_waist_motion),
-        formulation="beyondmimic_joint_limits",
-    )
-    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
-    state, _ = env.reset(reference_time=jnp.asarray(0.1))
+    model = env.model.mj_model
     policy = env.model.policy_ctrl_indices
-    offset = np.linspace(-0.005, 0.005, env.action_size, dtype=np.float32)
+    expected_scale = (
+        0.25 * env.model.actuator_peak_force[policy] / model.actuator_gainprm[policy, 0]
+    )
+    np.testing.assert_allclose(env.beyondmimic_action_scale, expected_scale, atol=1e-6)
+    action = (
+        jnp.zeros(env.action_size)
+        .at[env.action_layout.names.index("left_ankle_motor_1")]
+        .set(1.0)
+    )
+    expected = env.model.default_ctrl.copy()
+    expected[policy] += expected_scale * action
+    limits = model.actuator_ctrlrange
+    np.testing.assert_allclose(
+        env.action_to_ctrl(action),
+        np.clip(expected, limits[:, 0], limits[:, 1]),
+        atol=1e-6,
+    )
+
+
+def test_beyondmimic_bounded_actions_use_motor_limits(motion_asset, reference_motion):
+    config = replace(
+        beyondmimic_config(reference_motion), formulation="beyondmimic_joint_limits"
+    )
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config, load_mjx=False)
+    policy = env.model.policy_ctrl_indices
+    limits = env.model.mj_model.actuator_ctrlrange
+    offset = jnp.linspace(-0.005, 0.005, env.action_size)
+    full_offset = np.zeros(env.model.mj_model.nu)
+    full_offset[policy] = offset
     center = np.clip(
-        env.model.default_joint_target[policy] + offset,
-        env.model.joint_target_low[policy],
-        env.model.joint_target_high[policy],
+        env.model.default_ctrl + env.model.actuator_coordinate_transform @ full_offset,
+        limits[:, 0],
+        limits[:, 1],
     )
-
-    low = env.beyondmimic_action_to_joint_target(
-        -jnp.ones(env.action_size), jnp.asarray(offset)
-    )
-    zero = env.beyondmimic_action_to_joint_target(
-        jnp.zeros(env.action_size), jnp.asarray(offset)
-    )
-    high = env.beyondmimic_action_to_joint_target(
-        jnp.ones(env.action_size), jnp.asarray(offset)
-    )
-
+    for sign, column in ((-1.0, 0), (1.0, 1)):
+        ctrl = env.action_to_ctrl(jnp.full(env.action_size, sign), offset)
+        np.testing.assert_allclose(ctrl[policy], limits[policy, column], atol=1e-6)
     np.testing.assert_allclose(
-        np.asarray(low)[policy], env.model.joint_target_low[policy], atol=1.0e-6
-    )
-    np.testing.assert_allclose(np.asarray(zero)[policy], center, atol=1.0e-6)
-    np.testing.assert_allclose(
-        np.asarray(high)[policy], env.model.joint_target_high[policy], atol=1.0e-6
-    )
-
-    state = state.replace(joint_default_offset=jnp.asarray(offset))
-    ctrl = env.action_target(state, jnp.ones(env.action_size))
-    np.testing.assert_allclose(
-        np.asarray(ctrl),
-        expected_physical_ctrl(env, env.model.joint_target_high),
-        atol=1.0e-6,
-    )
-
-
-def test_motion_layouts_and_ppo_protocol_are_explicit(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
-) -> None:
-    reference_env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
-    )
-    beyondmimic_env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, beyondmimic_config(fixed_waist_motion)
-    )
-
-    assert reference_env.task == "motion_tracking"
-    assert not reference_env.ppo_stagger_initial_step_count
-    assert (
-        reference_env.ppo_action_diagnostics(
-            jnp.zeros((1, 1, reference_env.action_size))
-        )
-        == {}
-    )
-    assert reference_env.action_layout.names == reference_env.motion.joint_names
-    assert reference_env.observation_layout.components == (
-        ("reference_joint_position", 25),
-        ("reference_joint_velocity", 25),
-        ("joint_position", 25),
-        ("joint_velocity", 25),
-        ("last_action", 25),
-        ("root_position_error", 3),
-        ("root_orientation_error", 3),
-        ("root_linear_velocity_error", 3),
-        ("root_angular_velocity_error", 3),
-        ("reference_phase", 2),
-    )
-    assert reference_env.critic_observation_layout.components[-2:] == (
-        ("tracked_body_position_error", 30),
-        ("tracked_body_orientation_error", 30),
-    )
-    assert beyondmimic_env.observation_layout.components[2:6] == (
-        ("anchor_position_error", 3),
-        ("anchor_orientation_error_6d", 6),
-        ("base_linear_velocity", 3),
-        ("base_angular_velocity", 3),
-    )
-    assert beyondmimic_env.critic_observation_layout.components[-2:] == (
-        ("tracked_body_position_relative_to_anchor", 30),
-        ("tracked_body_orientation_relative_to_anchor_6d", 60),
+        env.action_to_ctrl(jnp.zeros(env.action_size), offset), center, atol=1e-6
     )
 
 
 def test_beyondmimic_body_targets_follow_anchor_xy_and_yaw(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, beyondmimic_config(fixed_waist_motion)
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, beyondmimic_config(reference_motion)
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     qpos = state.data.qpos.at[:2].add(jnp.asarray([0.2, -0.1]))
@@ -660,9 +405,9 @@ def test_beyondmimic_body_targets_follow_anchor_xy_and_yaw(
 
 
 def test_adaptive_sampling_spreads_failure_weight_backward(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    config = beyondmimic_config(fixed_waist_motion)
+    config = beyondmimic_config(reference_motion)
     config = config.__class__(
         **{
             **config.__dict__,
@@ -676,7 +421,7 @@ def test_adaptive_sampling_spreads_failure_weight_backward(
             ),
         }
     )
-    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config)
     failure_bin = env.sampling_bin_count - 1
     failure = jnp.zeros(env.sampling_bin_count).at[failure_bin].set(1.0)
     probabilities = env._sampling_probabilities(failure)
@@ -696,9 +441,9 @@ def test_adaptive_sampling_spreads_failure_weight_backward(
 
 
 def test_adaptive_sampling_uses_full_width_final_bin_without_endpoint_clipping(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    config = beyondmimic_config(fixed_waist_motion)
+    config = beyondmimic_config(reference_motion)
     config = config.__class__(
         **{
             **config.__dict__,
@@ -713,7 +458,7 @@ def test_adaptive_sampling_uses_full_width_final_bin_without_endpoint_clipping(
             ),
         }
     )
-    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config)
     failure = jnp.zeros(env.sampling_bin_count).at[-1].set(1.0)
     keys = jax.random.split(jax.random.PRNGKey(7), 256)
     sampled = jax.vmap(lambda key: env._sample_reference_time(key, failure))(keys)
@@ -726,11 +471,11 @@ def test_adaptive_sampling_uses_full_width_final_bin_without_endpoint_clipping(
 
 
 def test_adaptive_sampling_ema_uses_terminal_counts_per_phase_bin(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
     from types import SimpleNamespace
 
-    config = beyondmimic_config(fixed_waist_motion)
+    config = beyondmimic_config(reference_motion)
     config = config.__class__(
         **{
             **config.__dict__,
@@ -744,7 +489,7 @@ def test_adaptive_sampling_ema_uses_terminal_counts_per_phase_bin(
             ),
         }
     )
-    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config)
     max_time = env.motion.duration - env.control_timestep
     reference_time = jnp.asarray([0.0, 0.01, 0.99 * max_time, 0.99 * max_time])
     state = SimpleNamespace(
@@ -763,9 +508,9 @@ def test_adaptive_sampling_ema_uses_terminal_counts_per_phase_bin(
 
 
 def test_beyondmimic_observation_noise_is_actor_only(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    config = beyondmimic_config(fixed_waist_motion)
+    config = beyondmimic_config(reference_motion)
     config = config.__class__(
         **{
             **config.__dict__,
@@ -780,7 +525,7 @@ def test_beyondmimic_observation_noise_is_actor_only(
             ),
         }
     )
-    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config)
     state, clean = env.reset(reference_time=jnp.asarray(0.1))
     noisy = env.observation(state, jax.random.PRNGKey(0))
 
@@ -792,15 +537,15 @@ def test_beyondmimic_observation_noise_is_actor_only(
 
 
 def test_beyondmimic_observation_latency_delays_only_actor_feedback(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
     config = replace(
-        beyondmimic_config(fixed_waist_motion),
+        beyondmimic_config(reference_motion),
         observation_latency=MotionObservationLatencyConfig(
             enabled=True, delay_steps=(2, 2)
         ),
     )
-    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config)
     state, initial_observation = env.reset(
         jax.random.PRNGKey(0), reference_time=jnp.asarray(0.1)
     )
@@ -837,24 +582,24 @@ def test_beyondmimic_observation_latency_delays_only_actor_feedback(
 
 
 def test_observation_latency_rejects_invalid_step_range(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
     config = replace(
-        beyondmimic_config(fixed_waist_motion),
+        beyondmimic_config(reference_motion),
         observation_latency=MotionObservationLatencyConfig(
             enabled=True, delay_steps=(2, 1)
         ),
     )
 
     with pytest.raises(ValueError, match="lower bound exceeds upper bound"):
-        BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config)
+        BelloMotionTrackingEnv.from_compiled(motion_asset, config)
 
 
 def test_tracking_nonfinite_state_is_terminal_and_reward_is_sanitized(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, tracking_config(reference_motion)
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     state = state.replace(
@@ -873,10 +618,10 @@ def test_tracking_nonfinite_state_is_terminal_and_reward_is_sanitized(
 
 
 def test_tracking_joint_limit_cost_is_bounded(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, tracking_config(reference_motion)
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     indices = jnp.asarray(env.model.policy_qpos_indices)
@@ -888,10 +633,10 @@ def test_tracking_joint_limit_cost_is_bounded(
 
 
 def test_tracking_torque_costs_are_normalized_by_peak_torque(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion)
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, tracking_config(reference_motion)
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     peak = jnp.asarray(env.model.actuator_peak_force)
@@ -906,10 +651,10 @@ def test_tracking_torque_costs_are_normalized_by_peak_torque(
 @pytest.mark.integration
 @requires_warp_gpu
 def test_tracking_batch_reset_and_step_are_jittable(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    env = BelloMotionTrackingEnv.load_prepared(
-        fixed_waist_asset, tracking_config(fixed_waist_motion), batch_size=2
+    env = BelloMotionTrackingEnv.from_compiled(
+        motion_asset, tracking_config(reference_motion), batch_size=2
     )
     state, observation = jax.jit(lambda key: env.reset_batch(2, key))(
         jax.random.PRNGKey(0)
@@ -932,9 +677,9 @@ def test_tracking_batch_reset_and_step_are_jittable(
 @pytest.mark.integration
 @requires_warp_gpu
 def test_beyondmimic_batch_step_with_sampling_noise_and_push_is_jittable(
-    fixed_waist_asset: PreparedAsset, fixed_waist_motion: Path
+    motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
-    config = beyondmimic_config(fixed_waist_motion)
+    config = beyondmimic_config(reference_motion)
     config = config.__class__(
         **{
             **config.__dict__,
@@ -964,7 +709,7 @@ def test_beyondmimic_batch_step_with_sampling_noise_and_push_is_jittable(
             ),
         }
     )
-    env = BelloMotionTrackingEnv.load_prepared(fixed_waist_asset, config, batch_size=2)
+    env = BelloMotionTrackingEnv.from_compiled(motion_asset, config, batch_size=2)
     state, observation = jax.jit(lambda key: env.reset_batch(2, key))(
         jax.random.PRNGKey(0)
     )

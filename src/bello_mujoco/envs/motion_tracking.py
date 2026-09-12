@@ -15,13 +15,14 @@ from mujoco import mjx
 import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, PreparedAsset
+from bello_mujoco.models.compiler import ModelConfig, CompiledRobot
 from bello_mujoco.contracts import (
     CONTROL_DECIMATION,
     ActionLayout,
     ObservationLayout,
 )
-from bello_mujoco.envs.locomotion import (
+from bello_mujoco.envs.actions import bounded_motor_target, motor_default
+from bello_mujoco.envs.geometry import (
     pair_contains_each,
     quat_rotate,
     quat_rotate_inverse,
@@ -39,8 +40,8 @@ from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import (
     BelloModel,
     WarpConfig,
-    load_bello_model,
-    load_prepared_bello_model,
+    load_model,
+    load_compiled_model,
 )
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 
@@ -117,11 +118,8 @@ class MotionPushConfig:
 class MotionRewardConfig:
     root_position_weight: float = 0.15
     root_orientation_weight: float = 0.15
-    joint_position_weight: float = 0.20
-    joint_velocity_weight: float = 0.05
     body_position_weight: float = 0.20
     body_orientation_weight: float = 0.10
-    body_velocity_weight: float = 0.05
     body_linear_velocity_weight: float = 0.0
     body_angular_velocity_weight: float = 0.0
     action_rate_weight: float = -0.01
@@ -131,11 +129,8 @@ class MotionRewardConfig:
     undesired_contact_weight: float = 0.0
     root_position_sigma: float = 0.20
     root_orientation_sigma: float = 0.35
-    joint_position_sigma: float = 0.35
-    joint_velocity_sigma: float = 3.0
     body_position_sigma: float = 0.15
     body_orientation_sigma: float = 0.45
-    body_velocity_sigma: float = 2.0
     body_linear_velocity_sigma: float = 1.0
     body_angular_velocity_sigma: float = math.pi
     undesired_contact_force_threshold: float = 1.0
@@ -156,10 +151,9 @@ class MotionTrackingEnvConfig:
     decimation: int = CONTROL_DECIMATION
     action_clip: float = 1.0
     formulation: Literal[
-        "reference_residual",
         "beyondmimic",
         "beyondmimic_joint_limits",
-    ] = "reference_residual"
+    ] = "beyondmimic_joint_limits"
     anchor_body_name: str = "pelvis_link"
     terrain: TerrainConfig = FLAT_TERRAIN
     reset: MotionResetConfig = MotionResetConfig()
@@ -224,13 +218,11 @@ class BelloMotionTrackingEnv:
         if not math.isfinite(self.config.action_clip) or self.config.action_clip <= 0:
             raise ValueError("action_clip must be positive and finite")
         if self.config.formulation not in {
-            "reference_residual",
             "beyondmimic",
             "beyondmimic_joint_limits",
         }:
             raise ValueError(
-                "formulation must be 'reference_residual', 'beyondmimic', or "
-                "'beyondmimic_joint_limits'"
+                "formulation must be 'beyondmimic' or 'beyondmimic_joint_limits'"
             )
         self._validate_range("initial_xy_range", self.config.reset.initial_xy_range)
         self._validate_range("initial_yaw_range", self.config.reset.initial_yaw_range)
@@ -269,20 +261,22 @@ class BelloMotionTrackingEnv:
     @classmethod
     def load(
         cls,
-        asset_config: AssetPrepConfig,
+        asset_config: ModelConfig,
         env_config: MotionTrackingEnvConfig,
         *,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         use_viewer_model: bool = False,
+        load_mjx: bool = True,
         simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
-        model = load_bello_model(
+        model = load_model(
             asset_config,
             warp=warp,
             batch_size=batch_size,
             terrain=env_config.terrain,
             use_viewer_model=use_viewer_model,
+            load_mjx=load_mjx,
             simulation_timestep=simulation_timestep,
         )
         return cls(
@@ -293,76 +287,28 @@ class BelloMotionTrackingEnv:
         )
 
     @classmethod
-    def load_native(
+    def from_compiled(
         cls,
-        asset_config: AssetPrepConfig,
-        env_config: MotionTrackingEnvConfig,
-        *,
-        use_viewer_model: bool = False,
-        simulation_timestep: float | None = None,
-    ) -> "BelloMotionTrackingEnv":
-        model = load_bello_model(
-            asset_config,
-            terrain=env_config.terrain,
-            use_viewer_model=use_viewer_model,
-            load_mjx=False,
-            simulation_timestep=simulation_timestep,
-        )
-        return cls(
-            model,
-            load_motion_clip(env_config.motion_path, model),
-            asset_config.actuator_config,
-            env_config,
-        )
-
-    @classmethod
-    def load_prepared(
-        cls,
-        prepared: PreparedAsset,
+        prepared: CompiledRobot,
         env_config: MotionTrackingEnvConfig,
         *,
         actuator_config: ActuatorConfig | None = None,
         warp: WarpConfig = WarpConfig(),
         batch_size: int = 1,
         use_viewer_model: bool = False,
+        load_mjx: bool = True,
         simulation_timestep: float | None = None,
     ) -> "BelloMotionTrackingEnv":
         if actuator_config is None:
             actuator_config = ActuatorConfig.for_asset(prepared.name, mode="policy")
-        model = load_prepared_bello_model(
+        model = load_compiled_model(
             prepared,
             warp=warp,
             batch_size=batch_size,
             terrain=env_config.terrain,
             actuator_config=actuator_config,
             use_viewer_model=use_viewer_model,
-            simulation_timestep=simulation_timestep,
-        )
-        return cls(
-            model,
-            load_motion_clip(env_config.motion_path, model),
-            actuator_config,
-            env_config,
-        )
-
-    @classmethod
-    def load_prepared_native(
-        cls,
-        prepared: PreparedAsset,
-        env_config: MotionTrackingEnvConfig,
-        *,
-        actuator_config: ActuatorConfig | None = None,
-        use_viewer_model: bool = False,
-        simulation_timestep: float | None = None,
-    ) -> "BelloMotionTrackingEnv":
-        if actuator_config is None:
-            actuator_config = ActuatorConfig.for_asset(prepared.name, mode="policy")
-        model = load_prepared_bello_model(
-            prepared,
-            terrain=env_config.terrain,
-            actuator_config=actuator_config,
-            use_viewer_model=use_viewer_model,
-            load_mjx=False,
+            load_mjx=load_mjx,
             simulation_timestep=simulation_timestep,
         )
         return cls(
@@ -389,13 +335,6 @@ class BelloMotionTrackingEnv:
         return self.config.action_clip
 
     @property
-    def uses_beyondmimic_formulation(self) -> bool:
-        return self.config.formulation in {
-            "beyondmimic",
-            "beyondmimic_joint_limits",
-        }
-
-    @property
     def task(self) -> Literal["motion_tracking"]:
         return "motion_tracking"
 
@@ -411,7 +350,7 @@ class BelloMotionTrackingEnv:
     def action_layout(self) -> ActionLayout:
         return ActionLayout(
             tuple(
-                self.model.actuator_joint_names[index]
+                self.model.actuator_coordinate_names[index]
                 for index in self.model.policy_ctrl_indices
             )
         )
@@ -419,48 +358,27 @@ class BelloMotionTrackingEnv:
     @property
     def observation_layout(self) -> ObservationLayout:
         action_size = self.action_size
-        if self.uses_beyondmimic_formulation:
-            return ObservationLayout(
-                (
-                    ("reference_joint_position", action_size),
-                    ("reference_joint_velocity", action_size),
-                    ("anchor_position_error", 3),
-                    ("anchor_orientation_error_6d", 6),
-                    ("base_linear_velocity", 3),
-                    ("base_angular_velocity", 3),
-                    ("joint_position", action_size),
-                    ("joint_velocity", action_size),
-                    ("last_action", action_size),
-                )
-            )
         return ObservationLayout(
             (
                 ("reference_joint_position", action_size),
                 ("reference_joint_velocity", action_size),
+                ("anchor_position_error", 3),
+                ("anchor_orientation_error_6d", 6),
+                ("base_linear_velocity", 3),
+                ("base_angular_velocity", 3),
                 ("joint_position", action_size),
                 ("joint_velocity", action_size),
                 ("last_action", action_size),
-                ("root_position_error", 3),
-                ("root_orientation_error", 3),
-                ("root_linear_velocity_error", 3),
-                ("root_angular_velocity_error", 3),
-                ("reference_phase", 2),
             )
         )
 
     @property
     def critic_observation_layout(self) -> ObservationLayout:
         body_count = len(self.motion.body_names)
-        if self.uses_beyondmimic_formulation:
-            extra = (
-                ("tracked_body_position_relative_to_anchor", 3 * body_count),
-                ("tracked_body_orientation_relative_to_anchor_6d", 6 * body_count),
-            )
-        else:
-            extra = (
-                ("tracked_body_position_error", 3 * body_count),
-                ("tracked_body_orientation_error", 3 * body_count),
-            )
+        extra = (
+            ("tracked_body_position_relative_to_anchor", 3 * body_count),
+            ("tracked_body_orientation_relative_to_anchor_6d", 6 * body_count),
+        )
         return ObservationLayout(self.observation_layout.components + extra)
 
     @property
@@ -489,9 +407,7 @@ class BelloMotionTrackingEnv:
     @property
     def end_effector_names(self) -> tuple[str, ...]:
         task = motion_task_definition(self.model.robot.asset)
-        if self.uses_beyondmimic_formulation:
-            return task.beyondmimic_end_effector_body_names
-        return task.default_end_effector_body_names
+        return task.beyondmimic_end_effector_body_names
 
     @property
     def anchor_body_index(self) -> int:
@@ -600,7 +516,7 @@ class BelloMotionTrackingEnv:
         data = self.model.make_data().replace(
             qpos=qpos,
             qvel=qvel,
-            ctrl=self._initial_ctrl(reference, joint_default_offset),
+            ctrl=self._initial_ctrl(joint_default_offset),
         )
         data = mjx.forward(self.model.mjx_model, data)
         actor_feedback = self._actor_feedback(data)
@@ -801,70 +717,35 @@ class BelloMotionTrackingEnv:
         qvel_indices = jnp.asarray(self.model.policy_qvel_indices)
         policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
         joint_default = jnp.asarray(self.model.default_joint_target)[policy_indices]
-        if self.uses_beyondmimic_formulation:
-            anchor_index = self.anchor_body_index
-            anchor_position_error = quat_rotate_inverse(
-                anchor_quat,
-                reference.body_pos[anchor_index] - anchor_position,
+        anchor_index = self.anchor_body_index
+        anchor_position_error = quat_rotate_inverse(
+            anchor_quat,
+            reference.body_pos[anchor_index] - anchor_position,
+        )
+        anchor_orientation_error = rotation_6d(
+            quat_multiply(
+                quat_conjugate(anchor_quat),
+                reference.body_quat[anchor_index],
             )
-            anchor_orientation_error = rotation_6d(
-                quat_multiply(
-                    quat_conjugate(anchor_quat),
-                    reference.body_quat[anchor_index],
-                )
-            )
-            root_quat = qpos[3:7]
-            base_linear_velocity = quat_rotate_inverse(root_quat, qvel[:3])
-            base_angular_velocity = qvel[3:6]
-            current_joint_position = (
-                qpos[qpos_indices] - joint_default - state.joint_default_offset
-            )
-            terms = (
-                reference.qpos[qpos_indices] - joint_default,
-                reference.qvel[qvel_indices],
-                anchor_position_error,
-                anchor_orientation_error,
-                base_linear_velocity,
-                base_angular_velocity,
-                current_joint_position,
-                qvel[qvel_indices],
-                state.last_action,
-            )
-            return self._corrupt_observation_terms(terms, rng)
-
-        heading = yaw_quat(qpos[3:7])
-        root_position_error = quat_rotate_inverse(
-            heading, reference.qpos[:3] - qpos[:3]
         )
-        root_orientation_error = quat_to_rotvec(
-            quat_multiply(reference.qpos[3:7], quat_conjugate(qpos[3:7]))
+        root_quat = qpos[3:7]
+        base_linear_velocity = quat_rotate_inverse(root_quat, qvel[:3])
+        base_angular_velocity = qvel[3:6]
+        current_joint_position = (
+            qpos[qpos_indices] - joint_default - state.joint_default_offset
         )
-        root_velocity_error = quat_rotate_inverse(
-            heading, reference.qvel[:3] - qvel[:3]
+        terms = (
+            reference.qpos[qpos_indices] - joint_default,
+            reference.qvel[qvel_indices],
+            anchor_position_error,
+            anchor_orientation_error,
+            base_linear_velocity,
+            base_angular_velocity,
+            current_joint_position,
+            qvel[qvel_indices],
+            state.last_action,
         )
-        reference_root_angular_velocity_world = quat_rotate(
-            reference.qpos[3:7], reference.qvel[3:6]
-        )
-        root_angular_velocity_world = quat_rotate(qpos[3:7], qvel[3:6])
-        root_angular_velocity_error = quat_rotate_inverse(
-            heading,
-            reference_root_angular_velocity_world - root_angular_velocity_world,
-        )
-        phase = 2.0 * jnp.pi * state.reference_time / self.motion.duration
-        return jnp.concatenate(
-            [
-                reference.qpos[qpos_indices] - joint_default,
-                reference.qvel[qvel_indices],
-                qpos[qpos_indices] - joint_default,
-                qvel[qvel_indices],
-                state.last_action,
-                root_position_error,
-                root_orientation_error,
-                root_velocity_error,
-                root_angular_velocity_error,
-                jnp.asarray([jnp.sin(phase), jnp.cos(phase)]),
-            ]
-        )
+        return self._corrupt_observation_terms(terms, rng)
 
     def observation_batch(
         self, state: MotionTrackingState, rng: jax.Array | None = None
@@ -878,49 +759,21 @@ class BelloMotionTrackingEnv:
         current_observation = self.observation(
             state, _feedback=self._actor_feedback(state.data)
         )
-        if self.uses_beyondmimic_formulation:
-            ids = jnp.asarray(self.tracked_body_ids)
-            anchor_id = self.anchor_body_id
-            anchor_position = state.data.xpos[anchor_id]
-            anchor_quat = state.data.xquat[anchor_id]
-            body_position = jax.vmap(
-                lambda value: quat_rotate_inverse(anchor_quat, value - anchor_position)
-            )(state.data.xpos[ids])
-            body_orientation = jax.vmap(
-                lambda value: rotation_6d(
-                    quat_multiply(quat_conjugate(anchor_quat), value)
-                )
-            )(state.data.xquat[ids])
-            return jnp.concatenate(
-                [
-                    current_observation,
-                    body_position.reshape(-1),
-                    body_orientation.reshape(-1),
-                ]
-            )
-
-        reference = self.aligned_reference(
-            jnp.minimum(
-                state.reference_time + self.control_timestep, self.motion.duration
-            ),
-            state.alignment_xy,
-            state.alignment_yaw,
-        )
         ids = jnp.asarray(self.tracked_body_ids)
-        current_pos = state.data.xpos[ids]
-        relative_position_error = (reference.body_pos - reference.body_pos[0]) - (
-            current_pos - current_pos[0]
-        )
-        orientation_error = jax.vmap(
-            lambda ref, current: quat_to_rotvec(
-                quat_multiply(ref, quat_conjugate(current))
-            )
-        )(reference.body_quat, state.data.xquat[ids])
+        anchor_id = self.anchor_body_id
+        anchor_position = state.data.xpos[anchor_id]
+        anchor_quat = state.data.xquat[anchor_id]
+        body_position = jax.vmap(
+            lambda value: quat_rotate_inverse(anchor_quat, value - anchor_position)
+        )(state.data.xpos[ids])
+        body_orientation = jax.vmap(
+            lambda value: rotation_6d(quat_multiply(quat_conjugate(anchor_quat), value))
+        )(state.data.xquat[ids])
         return jnp.concatenate(
             [
                 current_observation,
-                relative_position_error.reshape(-1),
-                orientation_error.reshape(-1),
+                body_position.reshape(-1),
+                body_orientation.reshape(-1),
             ]
         )
 
@@ -951,69 +804,6 @@ class BelloMotionTrackingEnv:
             state.alignment_xy,
             state.alignment_yaw,
         )
-        if self.uses_beyondmimic_formulation:
-            return self._beyondmimic_reward(previous, state, reference, world_id)
-        qpos_indices = jnp.asarray(self.model.policy_qpos_indices)
-        qvel_indices = jnp.asarray(self.model.policy_qvel_indices)
-        ids = jnp.asarray(self.tracked_body_ids)
-        current_pos = state.data.xpos[ids]
-        body_position_error = (current_pos - current_pos[0]) - (
-            reference.body_pos - reference.body_pos[0]
-        )
-        body_orientation_error = jax.vmap(quat_distance)(
-            state.data.xquat[ids], reference.body_quat
-        )
-        body_velocity_error = self._body_world_velocity(state, ids) - jnp.concatenate(
-            [reference.body_ang_vel, reference.body_lin_vel], axis=-1
-        )
-        cfg = self.config.reward
-        torque_l1, torque_peak = self._torque_costs(state)
-        components = {
-            "reward/root_position": cfg.root_position_weight
-            * gaussian_reward(
-                state.data.qpos[:3] - reference.qpos[:3], cfg.root_position_sigma
-            ),
-            "reward/root_orientation": cfg.root_orientation_weight
-            * gaussian_reward(
-                quat_distance(state.data.qpos[3:7], reference.qpos[3:7]),
-                cfg.root_orientation_sigma,
-            ),
-            "reward/joint_position": cfg.joint_position_weight
-            * gaussian_reward(
-                state.data.qpos[qpos_indices] - reference.qpos[qpos_indices],
-                cfg.joint_position_sigma,
-            ),
-            "reward/joint_velocity": cfg.joint_velocity_weight
-            * gaussian_reward(
-                state.data.qvel[qvel_indices] - reference.qvel[qvel_indices],
-                cfg.joint_velocity_sigma,
-            ),
-            "reward/body_position": cfg.body_position_weight
-            * gaussian_reward(body_position_error, cfg.body_position_sigma),
-            "reward/body_orientation": cfg.body_orientation_weight
-            * gaussian_reward(body_orientation_error, cfg.body_orientation_sigma),
-            "reward/body_velocity": cfg.body_velocity_weight
-            * gaussian_reward(body_velocity_error, cfg.body_velocity_sigma),
-            "reward/action_rate": cfg.action_rate_weight
-            * jnp.mean((state.last_action - previous.last_action) ** 2),
-            "reward/joint_limit": cfg.joint_limit_weight
-            * self._joint_limit_cost(state),
-            "reward/torque_l1": cfg.torque_l1_weight
-            * self.control_timestep
-            * torque_l1,
-            "reward/torque_peak": cfg.torque_peak_weight
-            * self.control_timestep
-            * torque_peak,
-        }
-        return jnp.sum(jnp.stack(tuple(components.values()))), components
-
-    def _beyondmimic_reward(
-        self,
-        previous: MotionTrackingState,
-        state: MotionTrackingState,
-        reference: MotionSample,
-        world_id: jax.Array | int,
-    ) -> tuple[jax.Array, dict[str, jax.Array]]:
         ids = jnp.asarray(self.tracked_body_ids)
         anchor_id = self.anchor_body_id
         anchor_index = self.anchor_body_index
@@ -1078,50 +868,28 @@ class BelloMotionTrackingEnv:
             state.alignment_yaw,
         )
         ids = jnp.asarray(self.tracked_body_ids)
-        if self.uses_beyondmimic_formulation:
-            anchor_id = self.anchor_body_id
-            anchor_index = self.anchor_body_index
-            target_pos, _ = self._relative_body_targets(state, reference)
-            height = (
-                jnp.abs(
-                    state.data.xpos[anchor_id, 2] - reference.body_pos[anchor_index, 2]
-                )
-                > self.config.done.root_height_error
-            )
-            reference_gravity = quat_rotate_inverse(
-                reference.body_quat[anchor_index],
-                jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
-            )
-            robot_gravity = quat_rotate_inverse(
-                state.data.xquat[anchor_id],
-                jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
-            )
-            orientation = (
-                jnp.abs(reference_gravity[2] - robot_gravity[2])
-                > self.config.done.root_orientation_error
-            )
-            ee_indices = jnp.asarray(self.end_effector_indices)
-            ee_error = jnp.abs(
-                state.data.xpos[ids[ee_indices], 2] - target_pos[ee_indices, 2]
-            )
-            end_effector = jnp.any(
-                ee_error > self.config.done.end_effector_position_error
-            )
-            return self._finish_termination_flags(
-                state, height, orientation, end_effector
-            )
+        anchor_id = self.anchor_body_id
+        anchor_index = self.anchor_body_index
+        target_pos, _ = self._relative_body_targets(state, reference)
         height = (
-            jnp.abs(state.data.qpos[2] - reference.qpos[2])
+            jnp.abs(state.data.xpos[anchor_id, 2] - reference.body_pos[anchor_index, 2])
             > self.config.done.root_height_error
         )
+        reference_gravity = quat_rotate_inverse(
+            reference.body_quat[anchor_index],
+            jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
+        )
+        robot_gravity = quat_rotate_inverse(
+            state.data.xquat[anchor_id],
+            jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
+        )
         orientation = (
-            quat_distance(state.data.qpos[3:7], reference.qpos[3:7])
+            jnp.abs(reference_gravity[2] - robot_gravity[2])
             > self.config.done.root_orientation_error
         )
-        ee_error = jnp.linalg.norm(
-            state.data.xpos[ids[jnp.asarray(self.end_effector_indices)]]
-            - reference.body_pos[jnp.asarray(self.end_effector_indices)],
-            axis=-1,
+        ee_indices = jnp.asarray(self.end_effector_indices)
+        ee_error = jnp.abs(
+            state.data.xpos[ids[ee_indices], 2] - target_pos[ee_indices, 2]
         )
         end_effector = jnp.any(ee_error > self.config.done.end_effector_position_error)
         return self._finish_termination_flags(state, height, orientation, end_effector)
@@ -1269,14 +1037,6 @@ class BelloMotionTrackingEnv:
         return jnp.clip(requested_ctrl, limits[:, 0], limits[:, 1])
 
     @property
-    def reference_residual_action_scale(self) -> jax.Array:
-        policy = jnp.asarray(self.model.policy_ctrl_indices)
-        logical_span = jnp.asarray(self.model.joint_target_high) - jnp.asarray(
-            self.model.joint_target_low
-        )
-        return 0.25 * logical_span[policy]
-
-    @property
     def beyondmimic_action_scale(self) -> jax.Array:
         configured = self.actuator_config.by_name
         scales = []
@@ -1296,76 +1056,30 @@ class BelloMotionTrackingEnv:
             scales.append(0.25 * joint.effort_limit / stiffness)
         return jnp.asarray(scales, dtype=jnp.float32)
 
-    def beyondmimic_action_to_joint_target(
-        self,
-        action: jax.Array,
-        joint_default_offset: jax.Array | None = None,
+    def action_to_ctrl(
+        self, action: jax.Array, joint_default_offset: jax.Array | None = None
     ) -> jax.Array:
-        """Map a BeyondMimic action to logical joint targets."""
         policy = jnp.asarray(self.model.policy_ctrl_indices)
-        logical_target = jnp.asarray(self.model.default_joint_target)
-        if joint_default_offset is None:
-            joint_default_offset = jnp.zeros(self.action_size, dtype=jnp.float32)
-        policy_default = logical_target[policy] + joint_default_offset
-        if not self.uses_beyondmimic_formulation:
-            raise ValueError("BeyondMimic actions require a BeyondMimic formulation")
+        offset = jnp.zeros(self.model.mj_model.nu, dtype=jnp.float32)
+        if joint_default_offset is not None:
+            offset = offset.at[policy].set(joint_default_offset)
+        default = motor_default(self.model, offset)
+        limits = jnp.asarray(self.model.mj_model.actuator_ctrlrange)
         if self.config.formulation == "beyondmimic":
-            policy_target = policy_default + self.beyondmimic_action_scale * action
-            return logical_target.at[policy].set(policy_target)
+            target = default.at[policy].add(self.beyondmimic_action_scale * action)
+            return jnp.clip(target, limits[:, 0], limits[:, 1])
+        return bounded_motor_target(action, default, limits, policy, self.action_clip)
 
-        target_low = jnp.asarray(self.model.joint_target_low)[policy]
-        target_high = jnp.asarray(self.model.joint_target_high)[policy]
-        policy_default = jnp.clip(policy_default, target_low, target_high)
-        normalized_action = jnp.clip(
-            jnp.asarray(action, dtype=jnp.float32) / self.action_clip,
-            -1.0,
-            1.0,
-        )
-        target_span = jnp.where(
-            normalized_action >= 0.0,
-            target_high - policy_default,
-            policy_default - target_low,
-        )
-        policy_target = policy_default + target_span * normalized_action
-        return logical_target.at[policy].set(policy_target)
-
-    def _initial_ctrl(
-        self, reference: MotionSample, joint_default_offset: jax.Array
-    ) -> jax.Array:
-        if self.uses_beyondmimic_formulation:
-            logical_target = jnp.asarray(self.model.default_joint_target)
-            policy = jnp.asarray(self.model.policy_ctrl_indices)
-            logical_target = logical_target.at[policy].add(joint_default_offset)
-            return self._logical_target_to_ctrl(logical_target)
-        return self._reference_ctrl(reference)
+    def _initial_ctrl(self, joint_default_offset: jax.Array) -> jax.Array:
+        logical_target = jnp.asarray(self.model.default_joint_target)
+        policy = jnp.asarray(self.model.policy_ctrl_indices)
+        logical_target = logical_target.at[policy].add(joint_default_offset)
+        return self._logical_target_to_ctrl(logical_target)
 
     def action_target(self, state: MotionTrackingState, action: jax.Array) -> jax.Array:
         """Convert one normalized policy action into native actuator targets."""
 
-        policy = jnp.asarray(self.model.policy_ctrl_indices)
-        if self.uses_beyondmimic_formulation:
-            return self._logical_target_to_ctrl(
-                self.beyondmimic_action_to_joint_target(
-                    action, state.joint_default_offset
-                )
-            )
-        reference = sample_motion(
-            self.motion,
-            jnp.minimum(
-                state.reference_time + self.control_timestep, self.motion.duration
-            ),
-        )
-        logical_target = reference.qpos[jnp.asarray(self.model.actuator_qpos_indices)]
-        policy_target = (
-            logical_target[policy] + self.reference_residual_action_scale * action
-        )
-        logical_target = logical_target.at[policy].set(policy_target)
-        logical_target = jnp.clip(
-            logical_target,
-            jnp.asarray(self.model.joint_target_low),
-            jnp.asarray(self.model.joint_target_high),
-        )
-        return self._logical_target_to_ctrl(logical_target)
+        return self.action_to_ctrl(action, state.joint_default_offset)
 
     def _relative_body_targets(
         self, state: MotionTrackingState, reference: MotionSample
@@ -1741,10 +1455,6 @@ class BelloMotionTrackingEnv:
         )
 
 
-def gaussian_reward(error: jax.Array, sigma: float) -> jax.Array:
-    return jnp.exp(-jnp.mean(jnp.square(error)) / (sigma * sigma))
-
-
 def squared_norm_gaussian_reward(error: jax.Array, sigma: float) -> jax.Array:
     squared_norm = jnp.sum(jnp.square(error), axis=-1)
     return jnp.exp(-jnp.mean(squared_norm) / (sigma * sigma))
@@ -1785,13 +1495,6 @@ def quat_multiply(left: jax.Array, right: jax.Array) -> jax.Array:
 def quat_distance(left: jax.Array, right: jax.Array) -> jax.Array:
     dot = jnp.clip(jnp.abs(jnp.dot(left, right)), 0.0, 1.0)
     return 2.0 * jnp.arccos(dot)
-
-
-def quat_to_rotvec(quat: jax.Array) -> jax.Array:
-    quat = jnp.where(quat[0] < 0.0, -quat, quat)
-    vector_norm = jnp.linalg.norm(quat[1:])
-    angle = 2.0 * jnp.arctan2(vector_norm, jnp.maximum(quat[0], 1.0e-8))
-    return quat[1:] * angle / jnp.maximum(vector_norm, 1.0e-8)
 
 
 def rotation_6d(quat: jax.Array) -> jax.Array:

@@ -24,6 +24,7 @@
         mujocoGl = if pkgs.stdenv.isDarwin then "glfw" else "egl";
         limaRuntimeLibraries = with pkgs; [
           libglvnd
+          mesa
           stdenv.cc.cc.lib
           udev
         ];
@@ -57,6 +58,8 @@
               export MUJOCO_GL=${mujocoGl}
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
                 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
+                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath limaRuntimeLibraries}:''${LD_LIBRARY_PATH:-}"
+                export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
               ''}
 
               uv python install --no-bin
@@ -94,6 +97,17 @@
             '';
           };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          rust-runtime = pkgs.mkShell {
+            packages = with pkgs; [ cargo rustc rustfmt clippy protobuf pkg-config mujoco onnxruntime ];
+            MUJOCO_INCLUDE_DIR = "${pkgs.lib.getDev pkgs.mujoco}/include";
+            MUJOCO_LIB_DIR = "${pkgs.lib.getLib pkgs.mujoco}/lib";
+            LIBCLANG_PATH = "${pkgs.lib.getLib pkgs.llvmPackages.libclang}/lib";
+            ORT_DYLIB_PATH = "${pkgs.lib.getLib pkgs.onnxruntime}/lib/libonnxruntime.so";
+            shellHook = ''
+              export CARGO_TARGET_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/bello-mujoco/rust-runtime"
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.mujoco pkgs.onnxruntime ]}:''${LD_LIBRARY_PATH:-}"
+            '';
+          };
           lima-vcan = pkgs.mkShell {
             packages = with pkgs; [
               buf
@@ -131,6 +145,7 @@
               export CARGO_TARGET_DIR="$lima_cache/cargo-target"
               export PYTHONPYCACHEPREFIX="$lima_cache/pycache"
               export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath limaRuntimeLibraries}:''${LD_LIBRARY_PATH:-}"
+              export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
               export JAX_PLATFORMS=cpu
               export XLA_PYTHON_CLIENT_PREALLOCATE=false
               export MUJOCO_GL=egl

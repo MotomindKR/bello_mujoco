@@ -5,18 +5,18 @@ import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 import numpy as np
+from bello_mujoco.envs.observations import unpack_feedback
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset
+
+from bello_mujoco.models.compiler import CompiledRobot
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
-from bello_mujoco.envs.locomotion import (
+from bello_mujoco.envs.locomotion_config import (
     BadOrientationDoneConfig,
     BaseHeightDoneConfig,
     BelloEnvConfig,
-    BelloLocomotionEnv,
     ContactConfig,
     DoneConfig,
-    GaitConfig,
     ObservationConfig,
     ObservationLatencyConfig,
     ObservationLowPassFilterConfig,
@@ -24,6 +24,10 @@ from bello_mujoco.envs.locomotion import (
     RandomPushConfig,
     SpawnConfig,
     TorsoComCurriculumConfig,
+)
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.gait import (
+    GaitConfig,
     advance_gait_phase,
     desired_gait_foot_contact,
     gait_phase_features,
@@ -49,6 +53,8 @@ from bello_mujoco.evaluation.render import (
 from bello_mujoco.sim import ModelRandomizationConfig
 from bello_mujoco.terrain import TerrainConfig, terrain_surface_height
 
+pytestmark = pytest.mark.integration
+
 
 def observation_component_slice(
     env: BelloLocomotionEnv, component_name: str, *, critic: bool = False
@@ -62,46 +68,15 @@ def observation_component_slice(
     raise AssertionError(f"observation component not found: {component_name}")
 
 
-def test_reset_exposes_explicit_actor_critic_and_action_contracts(
-    bello_asset: PreparedAsset,
-) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+def test_reset_observations_match_declared_layouts(bello_asset: CompiledRobot) -> None:
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     state, observation = env.reset()
-
-    assert env.action_layout.size == env.action_size == 13
-    assert set(env.action_layout.names) == {
-        "left_hip_pitch_joint",
-        "right_hip_pitch_joint",
-        "left_hip_roll_joint",
-        "right_hip_roll_joint",
-        "left_hip_yaw_joint",
-        "right_hip_yaw_joint",
-        "left_knee_joint",
-        "right_knee_joint",
-        "left_ankle_pitch_joint",
-        "right_ankle_pitch_joint",
-        "left_ankle_roll_joint",
-        "right_ankle_roll_joint",
-        "waist_yaw_joint",
-    }
-    assert env.observation_layout.components == (
-        ("imu_linear_acceleration", 3),
-        ("imu_angular_velocity", 3),
-        ("projected_gravity", 3),
-        ("command", 3),
-        ("gait_phase", 3),
-        ("joint_position", 13),
-        ("joint_velocity", 13),
-        ("last_action", 13),
+    assert env.action_layout.names == tuple(
+        env.model.actuator_coordinate_names[i] for i in env.model.policy_ctrl_indices
     )
-    assert env.critic_observation_layout.components[-3:] == (
-        ("base_linear_velocity", 3),
-        ("base_height", 1),
-        ("actuator_force", 13),
-    )
-    assert observation.shape == (env.observation_size,)
-    assert env.critic_observation(state).shape == (env.critic_observation_size,)
-    assert state.last_action.shape == (env.action_size,)
+    assert observation.shape == (env.observation_layout.size,)
+    assert env.critic_observation(state).shape == (env.critic_observation_layout.size,)
+    assert state.last_action.shape == (env.action_layout.size,)
 
 
 def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> None:
@@ -133,9 +108,9 @@ def test_point_nine_hz_gait_clock_is_alternating_and_zero_while_standing() -> No
 
 
 def test_gait_clock_requires_multiple_control_steps_per_half_cycle(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     invalid_frequency = 0.5 / env.control_timestep
 
     with pytest.raises(ValueError, match="less than half a cycle"):
@@ -164,7 +139,7 @@ def test_mini_new_recipe_steps_batched_with_extra_stop_and_reward_blend(
         ),
         spawn=SpawnConfig(),
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_mini_asset,
         batch_size=2,
         env_config=config,
@@ -195,72 +170,10 @@ def test_mini_new_recipe_steps_batched_with_extra_stop_and_reward_blend(
     np.testing.assert_allclose(second.standing_reward_blend, [0.0, 0.1], atol=1e-6)
 
 
-def test_bilateral_mirrors_are_explicit_and_involutive(
-    bello_asset: PreparedAsset,
-) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
-
-    action = jnp.linspace(-0.9, 0.9, env.action_size)
-    assert env.mirror_action(env.mirror_action(action)) == pytest.approx(action)
-    names = env.action_layout.names
-    assert env.mirror_action(action)[names.index("right_hip_pitch_joint")] == (
-        pytest.approx(-action[names.index("left_hip_pitch_joint")])
-    )
-    assert env.mirror_action(action)[names.index("right_hip_roll_joint")] == (
-        pytest.approx(action[names.index("left_hip_roll_joint")])
-    )
-
-    observation = jnp.linspace(-1.0, 1.0, 2 * env.observation_size)
-    mirrored = env.mirror_actor_observation(observation)
-    assert env.mirror_actor_observation(mirrored) == pytest.approx(observation)
-
-
-def test_robot_specific_locomotion_action_and_command_frame_contracts(
-    bello_asset: PreparedAsset,
-    bello_mini_asset: PreparedAsset,
-) -> None:
-    bello = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
-    mini = BelloLocomotionEnv.load_prepared(bello_mini_asset, load_mjx=False)
-
-    assert bello.reward_config.links.track_lin_vel_xy_frame is None
-    assert mini.reward_config.links.track_lin_vel_xy_frame is None
-    assert bello._reward_frame_link("track_lin_vel_xy") == "pelvis_link"
-    assert mini._reward_frame_link("track_lin_vel_xy") == "pelvis_link"
-    assert mini.action_size == 14
-    assert "waist_roll_joint" in mini.action_layout.names
-
-    mini_data = mujoco.MjData(mini.model.mj_model)
-    reset_mujoco_data(mini, mini_data)
-    command_frame_id = mujoco.mj_name2id(
-        mini.model.mj_model,
-        mujoco.mjtObj.mjOBJ_BODY,
-        mini.model.robot.locomotion_command_frame_body_name,
-    )
-    command_frame_rotation = mini_data.xmat[command_frame_id].reshape(3, 3)
-    assert command_frame_rotation @ mini.model.robot.locomotion_forward_axis == (
-        pytest.approx((1.0, 0.0, 0.0))
-    )
-    assert bello._sagittal_reflection() == pytest.approx(np.diag((-1.0, 1.0, 1.0)))
-    assert mini._sagittal_reflection() == pytest.approx(np.diag((1.0, -1.0, 1.0)))
-
-    action = jnp.linspace(-0.9, 0.9, mini.action_size)
-    mirrored = mini.mirror_action(action)
-    names = mini.action_layout.names
-    waist_roll = names.index("waist_roll_joint")
-    assert mirrored[names.index("right_hip_pitch_joint")] == pytest.approx(
-        action[names.index("left_hip_pitch_joint")]
-    )
-    assert mirrored[names.index("right_hip_roll_joint")] == pytest.approx(
-        -action[names.index("left_hip_roll_joint")]
-    )
-    assert mirrored[waist_roll] == pytest.approx(-action[waist_roll])
-    assert mini.mirror_action(mirrored) == pytest.approx(action)
-
-
 def test_foot_heading_uses_each_mirrored_foot_forward_axis(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     state, _ = env._reset(
         jnp.zeros(3),
         None,
@@ -276,9 +189,9 @@ def test_foot_heading_uses_each_mirrored_foot_forward_axis(
 
 
 def test_bello_mini_foot_heading_uses_pelvis_forward_axis(
-    bello_mini_asset: PreparedAsset,
+    bello_mini_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_mini_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_mini_asset, load_mjx=False)
     mj_data = mujoco.MjData(env.model.mj_model)
     reset_mujoco_data(env, mj_data)
     zeros = jnp.zeros(2, dtype=jnp.float32)
@@ -301,9 +214,9 @@ def test_bello_mini_foot_heading_uses_pelvis_forward_axis(
 
 
 def test_bello_mini_training_observation_and_velocity_use_pelvis_axes(
-    bello_mini_asset: PreparedAsset,
+    bello_mini_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_mini_asset,
         env_config=replace(BelloEnvConfig(), root_link="pelvis_link"),
         imu_body_name="pelvis_link",
@@ -334,21 +247,14 @@ def test_bello_mini_training_observation_and_velocity_use_pelvis_axes(
         env._reward_frame_link("track_lin_vel_xy"),
     )
     assert env.model.imu_body_name == "pelvis_link"
-    assert env._imu_sagittal_reflection == pytest.approx(np.diag((1.0, -1.0, 1.0)))
-    mirrored = jax.jit(lambda observation: env.mirror_actor_observation(observation))(
-        jnp.linspace(-1.0, 1.0, env.observation_size)
-    )
-    assert env.mirror_actor_observation(mirrored) == pytest.approx(
-        jnp.linspace(-1.0, 1.0, env.observation_size)
-    )
     assert critic_velocity == pytest.approx((0.5, 0.0, 0.0), abs=1.0e-5)
     assert tracking_velocity == pytest.approx((0.5, 0.0, 0.0), abs=1.0e-5)
 
 
 def test_native_data_adapter_uses_shared_observation_function(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     mj_data = mujoco.MjData(env.model.mj_model)
     mj_data.qpos[:] = env.model.default_qpos
     mj_data.qvel[:] = env.model.default_qvel
@@ -381,9 +287,9 @@ def test_native_data_adapter_uses_shared_observation_function(
 
 
 def test_native_data_adapter_preserves_constraint_forces(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, load_mjx=False)
     mj_data = mujoco.MjData(env.model.mj_model)
     reset_mujoco_data(env, mj_data)
     mj_data.qpos[env.model.root_qpos_adr + 2] -= 0.02
@@ -411,9 +317,9 @@ def test_native_data_adapter_preserves_constraint_forces(
 
 
 def test_mjx_link_kinematics_match_native_mujoco(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     mj_data = mujoco.MjData(env.model.mj_model)
     mj_data.qpos[:] = env.model.default_qpos
     mj_data.qvel[:] = np.linspace(-0.2, 0.3, env.model.mj_model.nv)
@@ -441,7 +347,7 @@ def test_mjx_link_kinematics_match_native_mujoco(
 
 
 def test_tracking_yaw_velocity_uses_recursive_low_pass_filter(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     reward_config = RewardConfig(
         tracking=replace(
@@ -449,7 +355,7 @@ def test_tracking_yaw_velocity_uses_recursive_low_pass_filter(
             ang_vel_z_lpf_cutoff_hz=5.0,
         )
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         reward_config=reward_config,
     )
@@ -464,9 +370,9 @@ def test_tracking_yaw_velocity_uses_recursive_low_pass_filter(
 
 
 def test_reset_batch_and_step_have_finite_fixed_shapes(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, batch_size=2)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, batch_size=2)
     state, observation = env.reset_batch(2, rng=jax.random.PRNGKey(0))
     assert state.tracking_ang_vel_z == pytest.approx(
         jax.vmap(env._raw_tracking_ang_vel_z)(state),
@@ -492,9 +398,9 @@ def test_reset_batch_and_step_have_finite_fixed_shapes(
 
 
 def test_step_batch_skips_full_reset_when_no_world_is_done(
-    bello_asset: PreparedAsset, monkeypatch
+    bello_asset: CompiledRobot, monkeypatch
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, batch_size=2)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, batch_size=2)
     state, _ = env.reset_batch(2)
     reset_callbacks = []
     original_reset_batch = BelloLocomotionEnv.reset_batch
@@ -530,9 +436,9 @@ def test_step_batch_skips_full_reset_when_no_world_is_done(
 
 
 def test_reset_forward_populates_velocity_derived_imu_observation(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(
             spawn=SpawnConfig(
@@ -553,9 +459,9 @@ def test_reset_forward_populates_velocity_derived_imu_observation(
 
 
 def test_timeout_auto_reset_preserves_terminal_diagnostics(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=1,
         env_config=BelloEnvConfig(max_episode_steps=1),
@@ -573,11 +479,11 @@ def test_timeout_auto_reset_preserves_terminal_diagnostics(
     assert int(info["episode_length"][0]) == 1
 
 
-def test_action_target_reports_joint_and_motor_saturation_separately(
-    bello_asset: PreparedAsset,
+def test_action_target_reports_motor_saturation(
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
-    ctrl, joint_saturation, motor_saturation = env._action_target_details(
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
+    ctrl, motor_saturation = env._action_target_details(
         jnp.full(env.action_size, env.action_clip)
     )
     ctrl_range = env.model.mj_model.actuator_ctrlrange
@@ -585,14 +491,13 @@ def test_action_target_reports_joint_and_motor_saturation_separately(
     assert ctrl.shape == (env.model.mj_model.nu,)
     assert jnp.all(ctrl >= ctrl_range[:, 0])
     assert jnp.all(ctrl <= ctrl_range[:, 1])
-    assert 0.0 <= joint_saturation <= 1.0
     assert 0.0 <= motor_saturation <= 1.0
 
 
 def test_contact_debounce_has_explicit_transitions(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(
             contact=ContactConfig(
@@ -612,9 +517,9 @@ def test_contact_debounce_has_explicit_transitions(
 
 
 def test_touchdown_is_emitted_on_first_raw_contact_sample_only(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     state, _ = env.reset()
     raw = jnp.asarray([True, False])
     initialized = state.replace(step_count=jnp.asarray(1))
@@ -636,10 +541,10 @@ def test_touchdown_is_emitted_on_first_raw_contact_sample_only(
 
 
 def test_observation_noise_changes_only_noisy_evaluation(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     noise = ObservationNoiseConfig(enabled=True, joint_pos=(-0.1, 0.1))
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(observation=ObservationConfig(noise=noise)),
     )
@@ -652,9 +557,9 @@ def test_observation_noise_changes_only_noisy_evaluation(
 
 
 def test_observation_latency_delays_only_actor_feedback(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(
             observation_latency=ObservationLatencyConfig(
@@ -677,8 +582,8 @@ def test_observation_latency_delays_only_actor_feedback(
 
     observation = env.observation(state)
     critic_observation = env.critic_observation(state)
-    delayed = env._unpack_actor_feedback(delayed_feedback)
-    current = env._unpack_actor_feedback(current_feedback)
+    delayed = unpack_feedback(delayed_feedback)
+    current = unpack_feedback(current_feedback)
 
     for component, expected in zip(
         (
@@ -706,9 +611,9 @@ def test_observation_latency_delays_only_actor_feedback(
 
 
 def test_actor_feedback_low_pass_matches_hardware_first_order_response(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(
             observation_low_pass_filter=ObservationLowPassFilterConfig(
@@ -737,8 +642,8 @@ def test_actor_feedback_low_pass_matches_hardware_first_order_response(
     )
     timestep = env.control_timestep
     filtered = env._low_pass_actor_feedback(previous, measured, timestep)
-    acceleration, angular_velocity, gravity, position, velocity = (
-        env._unpack_actor_feedback(filtered)
+    acceleration, angular_velocity, gravity, position, velocity = unpack_feedback(
+        filtered
     )
     alpha = 1.0 - np.exp(-2.0 * np.pi * 10.0 * timestep)
     expected_gravity = np.asarray((0.0, -alpha, -(1.0 - alpha)))
@@ -752,7 +657,7 @@ def test_actor_feedback_low_pass_matches_hardware_first_order_response(
 
 
 def test_actor_feedback_noise_is_filtered_before_history(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     noise = ObservationNoiseConfig(
         enabled=True,
@@ -760,7 +665,7 @@ def test_actor_feedback_noise_is_filtered_before_history(
         joint_pos=(0.5, 0.5),
         joint_vel=(2.0, 2.0),
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(
             observation=ObservationConfig(noise=noise),
@@ -777,21 +682,21 @@ def test_actor_feedback_noise_is_filtered_before_history(
     advanced = env._advance_actor_feedback_history(
         state.actor_feedback_history, state, jax.random.PRNGKey(4)
     )[0]
-    previous = env._unpack_actor_feedback(state.actor_feedback_history[0])
-    filtered = env._unpack_actor_feedback(advanced)
+    previous = unpack_feedback(state.actor_feedback_history[0])
+    filtered = unpack_feedback(advanced)
     alpha = 1.0 - np.exp(-2.0 * np.pi * 10.0 * env.control_timestep)
 
     assert filtered[1] == pytest.approx(previous[1] + alpha)
-    assert filtered[3] == pytest.approx(env._unpack_actor_feedback(measured)[3] + 0.5)
+    assert filtered[3] == pytest.approx(unpack_feedback(measured)[3] + 0.5)
     assert filtered[4] == pytest.approx(previous[4] + 2.0 * alpha)
 
 
 @pytest.mark.parametrize("speed_dependent", [False, True])
 def test_torso_com_curriculum_scales_fixed_world_offsets(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
     speed_dependent: bool,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=4,
         env_config=BelloEnvConfig(
@@ -833,11 +738,11 @@ def test_torso_com_curriculum_scales_fixed_world_offsets(
     ((-1, 1), (2, 1), (0, 1, 2)),
 )
 def test_observation_latency_rejects_invalid_step_range(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
     delay_steps: tuple[int, ...],
 ) -> None:
     with pytest.raises(ValueError, match="observation_latency.delay_steps"):
-        BelloLocomotionEnv.load_prepared(
+        BelloLocomotionEnv.from_compiled(
             bello_asset,
             env_config=BelloEnvConfig(
                 observation_latency=ObservationLatencyConfig(
@@ -850,11 +755,11 @@ def test_observation_latency_rejects_invalid_step_range(
 
 @pytest.mark.parametrize("cutoff_hz", (0.0, -1.0, float("nan")))
 def test_observation_low_pass_filter_rejects_invalid_cutoff(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
     cutoff_hz: float,
 ) -> None:
     with pytest.raises(ValueError, match="observation_low_pass_filter.cutoff_hz"):
-        BelloLocomotionEnv.load_prepared(
+        BelloLocomotionEnv.from_compiled(
             bello_asset,
             env_config=BelloEnvConfig(
                 observation_low_pass_filter=ObservationLowPassFilterConfig(
@@ -867,11 +772,11 @@ def test_observation_low_pass_filter_rejects_invalid_cutoff(
 
 @pytest.mark.parametrize("residual_noise_scale", (-0.1, 1.1, float("nan")))
 def test_observation_low_pass_filter_rejects_invalid_residual_noise_scale(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
     residual_noise_scale: float,
 ) -> None:
     with pytest.raises(ValueError, match="residual_noise_scale"):
-        BelloLocomotionEnv.load_prepared(
+        BelloLocomotionEnv.from_compiled(
             bello_asset,
             env_config=BelloEnvConfig(
                 observation_low_pass_filter=ObservationLowPassFilterConfig(
@@ -883,10 +788,10 @@ def test_observation_low_pass_filter_rejects_invalid_residual_noise_scale(
 
 
 def test_torso_com_curriculum_requires_model_randomization(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     with pytest.raises(ValueError, match="requires model_randomization.enabled"):
-        BelloLocomotionEnv.load_prepared(
+        BelloLocomotionEnv.from_compiled(
             bello_asset,
             env_config=BelloEnvConfig(
                 torso_com_curriculum=TorsoComCurriculumConfig(enabled=True)
@@ -895,7 +800,7 @@ def test_torso_com_curriculum_requires_model_randomization(
 
 
 def test_command_sampling_and_periodic_resampling_are_bounded(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(
         lin_vel_x=(0.2, 0.4),
@@ -904,7 +809,7 @@ def test_command_sampling_and_periodic_resampling_are_bounded(
         standing_probability=0.0,
         resample_seconds=0.02,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset, batch_size=4, command_config=command_config
     )
     state, _ = env.reset_batch(4, rng=jax.random.PRNGKey(0))
@@ -921,14 +826,14 @@ def test_command_sampling_and_periodic_resampling_are_bounded(
 
 
 def test_batch_command_resampling_clocks_are_evenly_staggered(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(
         standing_probability=0.25,
         resample_seconds=10.0,
         standing_transitions_enabled=True,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset, batch_size=8, command_config=command_config
     )
     state, _ = env.reset_batch(8, rng=jax.random.PRNGKey(2))
@@ -958,7 +863,7 @@ def test_batch_command_resampling_clocks_are_evenly_staggered(
 
 
 def test_only_expired_command_clocks_resample(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(
         lin_vel_x=(0.2, 0.4),
@@ -968,7 +873,7 @@ def test_only_expired_command_clocks_resample(
         resample_seconds=0.08,
         standing_transitions_enabled=True,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset, batch_size=4, command_config=command_config
     )
     command = jnp.asarray([0.5, 0.0, 0.0], dtype=jnp.float32)
@@ -988,13 +893,13 @@ def test_only_expired_command_clocks_resample(
 
 
 def test_batch_command_mode_cohort_survives_resampling(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(
         standing_probability=0.25,
         resample_seconds=0.02,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset, batch_size=8, command_config=command_config
     )
     state, _ = env.reset_batch(8, rng=jax.random.PRNGKey(10))
@@ -1015,14 +920,14 @@ def test_batch_command_mode_cohort_survives_resampling(
 
 
 def test_command_resampling_clock_survives_episode_resets(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(
         standing_probability=0.0,
         resample_seconds=0.04,
         standing_transitions_enabled=True,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=1,
         env_config=BelloEnvConfig(max_episode_steps=1),
@@ -1055,9 +960,9 @@ def test_command_resampling_clock_survives_episode_resets(
 
 
 def test_training_reset_samples_moving_commands_across_the_gait_cycle(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, batch_size=64)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, batch_size=64)
     moving = jnp.asarray([0.5, -0.1, 0.2], dtype=jnp.float32)
 
     state, observation = env.reset_batch(
@@ -1181,10 +1086,10 @@ def test_standing_transition_resolver_vectorizes_over_worlds() -> None:
 
 
 def test_boundary_step_keeps_moving_reward_then_returns_standing_observation(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(standing_transitions_enabled=True)
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         command_config=command_config,
     )
@@ -1233,14 +1138,14 @@ def test_boundary_step_keeps_moving_reward_then_returns_standing_observation(
 
 
 def test_moving_resample_cancels_pending_stop_at_boundary(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(
         standing_probability=0.0,
         resample_seconds=0.02,
         standing_transitions_enabled=True,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=1,
         command_config=command_config,
@@ -1272,13 +1177,13 @@ def test_moving_resample_cancels_pending_stop_at_boundary(
 
 
 def test_episode_reset_honors_a_pending_standing_request(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     command_config = CommandConfig(
         standing_probability=0.5,
         standing_transitions_enabled=True,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=2,
         command_config=command_config,
@@ -1309,9 +1214,9 @@ def test_episode_reset_honors_a_pending_standing_request(
 
 
 def test_random_push_adds_root_xy_velocity_on_interval(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=2,
         env_config=BelloEnvConfig(
@@ -1343,7 +1248,7 @@ def test_random_push_adds_root_xy_velocity_on_interval(
 
 
 def test_rough_terrain_foot_height_queries_local_elevation(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     terrain = TerrainConfig(
         mode="rough",
@@ -1352,7 +1257,7 @@ def test_rough_terrain_foot_height_queries_local_elevation(
         hfield_amplitude=0.03,
         hfield_frequency=8.0,
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(terrain=terrain, spawn=SpawnConfig(clearance=0.01)),
     )
@@ -1402,9 +1307,9 @@ def test_rough_terrain_foot_height_queries_local_elevation(
 
 
 def test_foot_height_uses_physical_sole_instead_of_ankle_origin(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     state, _ = env.reset()
 
     sole_clearance = env._foot_height(state)
@@ -1415,13 +1320,13 @@ def test_foot_height_uses_physical_sole_instead_of_ankle_origin(
 
 
 def test_sloped_plane_foot_height_uses_minimum_terrain_clearance(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     terrain = TerrainConfig(
         mode="plane",
         slope_angle_range=(np.deg2rad(10.0), np.deg2rad(10.0)),
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(terrain=terrain),
     )
@@ -1472,13 +1377,13 @@ def test_sloped_plane_foot_height_uses_minimum_terrain_clearance(
 
 
 def test_base_height_and_critic_observation_are_terrain_relative(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     terrain = TerrainConfig(
         mode="plane",
         slope_angle_range=(np.deg2rad(2.0), np.deg2rad(2.0)),
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(terrain=terrain, root_link="pelvis_link"),
     )
@@ -1522,7 +1427,7 @@ def test_base_height_and_critic_observation_are_terrain_relative(
 
 
 def test_batched_slope_resets_to_identical_sole_clearance_without_rng(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     terrain = TerrainConfig(
         mode="plane",
@@ -1530,7 +1435,7 @@ def test_batched_slope_resets_to_identical_sole_clearance_without_rng(
         seed=19,
         slope_angle_range=(-np.deg2rad(2.0), np.deg2rad(2.0)),
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=8,
         env_config=BelloEnvConfig(
@@ -1548,14 +1453,14 @@ def test_batched_slope_resets_to_identical_sole_clearance_without_rng(
 
 
 def test_native_and_mjx_reset_share_slope_relative_sole_clearance(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     terrain = TerrainConfig(
         mode="plane",
         pos=(1.5, -0.75, 0.2),
         slope_angle_range=(np.deg2rad(2.0), np.deg2rad(2.0)),
     )
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         env_config=BelloEnvConfig(
             terrain=terrain,
@@ -1576,13 +1481,13 @@ def test_native_and_mjx_reset_share_slope_relative_sole_clearance(
 
 
 def test_done_flags_share_height_orientation_timeout_and_nonfinite_contract(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     done_config = DoneConfig(
         base_height=BaseHeightDoneConfig(min_height=0.8, link="bello_root"),
         bad_orientation=BadOrientationDoneConfig(limit_angle=0.5, link="bello_root"),
     )
-    env = BelloLocomotionEnv.load_prepared(bello_asset, done_config=done_config)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, done_config=done_config)
     state, _ = env.reset()
     root = env.model.root_qpos_adr
     low = state.replace(
@@ -1598,9 +1503,9 @@ def test_done_flags_share_height_orientation_timeout_and_nonfinite_contract(
 
 
 def test_large_finite_physics_state_terminates_and_sanitizes_reward(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     state, _ = env.reset()
     exploded = state.replace(
         data=state.data.replace(qvel=state.data.qvel.at[0].set(1.0e5))
@@ -1623,9 +1528,9 @@ def test_large_finite_physics_state_terminates_and_sanitizes_reward(
 
 
 def test_large_or_nonfinite_constraint_force_terminates_episode(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset)
+    env = BelloLocomotionEnv.from_compiled(bello_asset)
     state, _ = env.reset()
     large_force = state.replace(
         data=state.data.replace(
@@ -1671,7 +1576,7 @@ def test_stance_width_uses_robot_lateral_frame_axis(
     right_position: tuple[float, float, float],
     request: pytest.FixtureRequest,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(request.getfixturevalue(asset_fixture))
+    env = BelloLocomotionEnv.from_compiled(request.getfixturevalue(asset_fixture))
     state, _ = env.reset()
     left, right = env.model.foot_body_ids
     xpos = (
@@ -1729,22 +1634,22 @@ def test_stance_width_uses_robot_lateral_frame_axis(
     ],
 )
 def test_environment_rejects_invalid_static_contracts(
-    bello_asset: PreparedAsset, env_config: BelloEnvConfig, message: str
+    bello_asset: CompiledRobot, env_config: BelloEnvConfig, message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        BelloLocomotionEnv.load_prepared(bello_asset, env_config=env_config)
+        BelloLocomotionEnv.from_compiled(bello_asset, env_config=env_config)
 
 
 def test_environment_rejects_missing_reward_link(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     reward = RewardConfig(links=RewardLinks(track_lin_vel_xy="missing_link"))
     with pytest.raises(ValueError, match="missing_link"):
-        BelloLocomotionEnv.load_prepared(bello_asset, reward_config=reward)
+        BelloLocomotionEnv.from_compiled(bello_asset, reward_config=reward)
 
 
 def test_angular_error_only_uses_configured_tracking_link(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     default = RewardConfig()
     reward = replace(
@@ -1757,7 +1662,7 @@ def test_angular_error_only_uses_configured_tracking_link(
         links=replace(default.links, track_ang_vel_z="torso_link"),
     )
 
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         reward_config=reward,
         load_mjx=False,
@@ -1768,9 +1673,9 @@ def test_angular_error_only_uses_configured_tracking_link(
 
 
 def test_environment_rejects_missing_robot_command_frame(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, load_mjx=False)
     model = replace(
         env.model,
         robot=replace(

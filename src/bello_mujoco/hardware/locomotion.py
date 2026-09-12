@@ -6,14 +6,9 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 import math
-import os
 from pathlib import Path
-import select
-import sys
-import termios
 import time
-import tty
-from typing import Any, TextIO
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -25,8 +20,8 @@ from bello_mujoco.training.checkpoint import (
     CheckpointNormalizationState,
     LocomotionCheckpointMetadata,
 )
-from bello_mujoco.envs.locomotion import (
-    BelloLocomotionEnv,
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.gait import (
     advance_gait_phase,
     gait_frequency,
     resolve_gait_command_transition,
@@ -59,54 +54,20 @@ from bello_mujoco.hardware.runtime import (
     wait_for_operator_confirmation_while_holding,
     wait_for_hardware_frame,
 )
-from bello_mujoco.hardware.twist2 import ReferenceUnavailable, Twist2ReferenceFrame
+from bello_mujoco.hardware.reference import ReferenceUnavailable, RobotReferenceFrame
 from bello_mujoco.policy import infer_policy_action
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.robot import robot_definition
 from bello_mujoco.training.ppo import normalize_observation
 
 
-ELBOW_YAW_JOG_STEP_RADIANS = math.radians(5.0)
-_ELBOW_YAW_JOG_DELTAS = {
-    "q": (ELBOW_YAW_JOG_STEP_RADIANS, 0.0),
-    "a": (-ELBOW_YAW_JOG_STEP_RADIANS, 0.0),
-    "e": (0.0, ELBOW_YAW_JOG_STEP_RADIANS),
-    "d": (0.0, -ELBOW_YAW_JOG_STEP_RADIANS),
-}
-
-_ELBOW_YAW_JOINT_NAMES = tuple(f"{side}_elbow_yaw_joint" for side in ("left", "right"))
-_UPPER_BODY_FOLLOW_JOINT_NAMES_BY_ASSET = {
-    "bello": frozenset(
-        f"{side}_{joint}_joint"
-        for side in ("left", "right")
-        for joint in (
-            "shoulder_pitch",
-            "shoulder_roll",
-            "shoulder_yaw",
-            "elbow_pitch",
-            "elbow_yaw",
-            "wrist_pitch",
-        )
-    ),
-    "bello_mini": frozenset(
-        f"{side}_{joint}_joint"
-        for side in ("left", "right")
-        for joint in (
-            "shoulder_pitch",
-            "shoulder_roll",
-            "shoulder_yaw",
-            "elbow_pitch",
-            "wrist_yaw",
-            "wrist_pitch",
-            "wrist_roll",
-        )
-    ),
-}
-
-
 def _upper_body_follow_supported(asset: str, joint_names: frozenset[str]) -> bool:
-    expected = _UPPER_BODY_FOLLOW_JOINT_NAMES_BY_ASSET.get(asset)
-    return expected is not None and joint_names == expected
+    expected = frozenset(
+        actuator.joint_name
+        for actuator in robot_definition(asset).actuators
+        if actuator.mode == "hold"
+    )
+    return bool(expected) and joint_names == expected
 
 
 def _hardware_imu_to_policy_rotation(env: BelloLocomotionEnv) -> np.ndarray:
@@ -171,88 +132,6 @@ def _transform_hardware_imu_frame(
     )
 
 
-class TerminalElbowYawJogInput:
-    """Read single-key elbow-yaw jog commands without blocking policy control."""
-
-    def __init__(
-        self,
-        stream: TextIO | None = None,
-        *,
-        enabled: bool | None = None,
-    ) -> None:
-        self._stream = sys.stdin if stream is None else stream
-        self._requested_enabled = enabled
-        self._fd: int | None = None
-        self._previous_attributes: list[Any] | None = None
-
-    @property
-    def enabled(self) -> bool:
-        return self._fd is not None
-
-    def __enter__(self) -> TerminalElbowYawJogInput:
-        self.open()
-        return self
-
-    def __exit__(self, *_exception: object) -> bool:
-        self.close()
-        return False
-
-    def open(self) -> None:
-        enabled = (
-            self._stream.isatty()
-            if self._requested_enabled is None
-            else self._requested_enabled
-        )
-        if not enabled:
-            return
-        fd = self._stream.fileno()
-        self._fd = fd
-        self._previous_attributes = termios.tcgetattr(fd)
-        try:
-            tty.setcbreak(fd, termios.TCSANOW)
-        except BaseException:
-            self._restore()
-            raise
-
-    def close(self) -> None:
-        self._restore()
-
-    def poll(self) -> tuple[float, float]:
-        """Return accumulated left and right offset deltas since the last poll."""
-
-        if self._fd is None:
-            return 0.0, 0.0
-        payload = bytearray()
-        try:
-            while select.select((self._fd,), (), (), 0.0)[0]:
-                chunk = os.read(self._fd, 64)
-                if not chunk:
-                    self._restore()
-                    break
-                payload.extend(chunk)
-        except (OSError, ValueError) as error:
-            self._restore()
-            print(f"Terminal elbow-yaw jogging disabled: {error}")
-            return 0.0, 0.0
-        left_delta = 0.0
-        right_delta = 0.0
-        for key in payload.decode(errors="ignore"):
-            left, right = _ELBOW_YAW_JOG_DELTAS.get(key, (0.0, 0.0))
-            left_delta += left
-            right_delta += right
-        return left_delta, right_delta
-
-    def _restore(self) -> None:
-        if self._fd is not None and self._previous_attributes is not None:
-            termios.tcsetattr(
-                self._fd,
-                termios.TCSANOW,
-                self._previous_attributes,
-            )
-        self._fd = None
-        self._previous_attributes = None
-
-
 @dataclass(frozen=True)
 class UpperBodyFollowConfig:
     """Fixed safety envelope for locomotion's pose-driven hold coordinates."""
@@ -262,8 +141,6 @@ class UpperBodyFollowConfig:
     max_reference_joint_limit_violation_radians: float = 0.01
     min_live_joint_limit_margin_radians: float = 1.0e-3
     max_target_speed_rps: float = 3.0 * math.pi
-    left_elbow_yaw_offset_radians: float = 0.0
-    right_elbow_yaw_offset_radians: float = 0.0
     connection_transition_duration_seconds: float = 1.0
 
 
@@ -378,17 +255,6 @@ class HardwarePolicyAdapter:
             env.model.robot.asset,
             frozenset(upper_body_index_by_name),
         )
-        self.upper_body_elbow_yaw_indices = np.asarray(
-            (
-                [upper_body_index_by_name[name] for name in _ELBOW_YAW_JOINT_NAMES]
-                if self.upper_body_follow_supported
-                and all(
-                    name in upper_body_index_by_name for name in _ELBOW_YAW_JOINT_NAMES
-                )
-                else []
-            ),
-            dtype=np.int32,
-        )
         self.default_joint_target = np.asarray(
             env.model.default_joint_target, dtype=np.float64
         )
@@ -494,7 +360,7 @@ class HardwarePolicyAdapter:
             )
 
         self._resolve_gait_transition = jax.jit(resolve_transition)
-        self._standing_reference: Twist2ReferenceFrame | None = None
+        self._standing_reference: RobotReferenceFrame | None = None
         self._upper_body_target: np.ndarray | None = None
         self._upper_body_reference_live = False
         self._upper_body_transition_start: np.ndarray | None = None
@@ -503,10 +369,6 @@ class HardwarePolicyAdapter:
     @property
     def control_timestep(self) -> float:
         return self.env.control_timestep
-
-    @property
-    def elbow_yaw_jog_supported(self) -> bool:
-        return self.upper_body_elbow_yaw_indices.shape == (2,)
 
     @property
     def nominal_physical_target(self) -> np.ndarray:
@@ -525,9 +387,7 @@ class HardwarePolicyAdapter:
         )
         return self._bounded_physical_target(self.transform @ logical_target)
 
-    def set_upper_body_standing_reference(
-        self, reference: Twist2ReferenceFrame
-    ) -> None:
+    def set_upper_body_standing_reference(self, reference: RobotReferenceFrame) -> None:
         """Bind a full fallback frame whose arm joints use the robot nominal pose."""
 
         qpos = np.asarray(reference.qpos, dtype=np.float64).copy()
@@ -541,38 +401,6 @@ class HardwarePolicyAdapter:
         fallback = replace(reference, qpos=qpos, qvel=qvel)
         self.validate_upper_body_reference(fallback, live=False)
         self._standing_reference = fallback
-
-    def jog_elbow_yaw_offsets(
-        self,
-        *,
-        left_delta_radians: float = 0.0,
-        right_delta_radians: float = 0.0,
-    ) -> tuple[float, float]:
-        """Adjust the runtime elbow-yaw offsets and return their new values."""
-
-        if not self.elbow_yaw_jog_supported:
-            raise ValueError(
-                "elbow-yaw jogging is not supported for robot asset "
-                f"{self.env.model.robot.asset!r}"
-            )
-
-        deltas = np.asarray((left_delta_radians, right_delta_radians), dtype=np.float64)
-        if not np.all(np.isfinite(deltas)):
-            raise ValueError("elbow-yaw jog deltas must be finite")
-        current = self.upper_body_follow
-        self.upper_body_follow = replace(
-            current,
-            left_elbow_yaw_offset_radians=(
-                current.left_elbow_yaw_offset_radians + float(deltas[0])
-            ),
-            right_elbow_yaw_offset_radians=(
-                current.right_elbow_yaw_offset_radians + float(deltas[1])
-            ),
-        )
-        return (
-            self.upper_body_follow.left_elbow_yaw_offset_radians,
-            self.upper_body_follow.right_elbow_yaw_offset_radians,
-        )
 
     def reset(self) -> None:
         self._obs_stack = None
@@ -591,7 +419,7 @@ class HardwarePolicyAdapter:
         self._upper_body_transition_start = None
         self._upper_body_transition_elapsed_seconds = 0.0
 
-    def precompile(self, reference: Twist2ReferenceFrame | None = None) -> None:
+    def precompile(self, reference: RobotReferenceFrame | None = None) -> None:
         if self._command_slew_rates is not None:
             zero_command = jnp.zeros(3, dtype=jnp.float32)
             jax.block_until_ready(
@@ -690,7 +518,7 @@ class HardwarePolicyAdapter:
         self,
         frame: HardwareFrame,
         command: np.ndarray,
-        reference: Twist2ReferenceFrame | None = None,
+        reference: RobotReferenceFrame | None = None,
     ) -> HardwarePolicyStep:
         effective_command = self._resolve_effective_command(command)
         policy_frame = self.policy_imu_frame(frame)
@@ -913,7 +741,7 @@ class HardwarePolicyAdapter:
 
     def validate_upper_body_reference(
         self,
-        reference: Twist2ReferenceFrame,
+        reference: RobotReferenceFrame,
         *,
         live: bool = True,
     ) -> None:
@@ -990,7 +818,7 @@ class HardwarePolicyAdapter:
 
     def _reference_upper_body_target(
         self,
-        reference: Twist2ReferenceFrame,
+        reference: RobotReferenceFrame,
         *,
         live: bool,
     ) -> np.ndarray:
@@ -998,13 +826,6 @@ class HardwarePolicyAdapter:
         desired = np.asarray(reference.qpos, dtype=np.float64)[
             self.upper_body_qpos_indices
         ].copy()
-        if live and self.elbow_yaw_jog_supported:
-            desired[self.upper_body_elbow_yaw_indices] += np.asarray(
-                (
-                    self.upper_body_follow.left_elbow_yaw_offset_radians,
-                    self.upper_body_follow.right_elbow_yaw_offset_radians,
-                )
-            )
         low = self.env.model.joint_target_low[self.upper_body_indices]
         high = self.env.model.joint_target_high[self.upper_body_indices]
         return np.clip(desired, low, high)
@@ -1013,7 +834,7 @@ class HardwarePolicyAdapter:
         self,
         physical_target: np.ndarray,
         frame: HardwareFrame,
-        reference: Twist2ReferenceFrame | None,
+        reference: RobotReferenceFrame | None,
     ) -> np.ndarray:
         fallback = self._standing_reference
         desired_reference = reference if reference is not None else fallback
@@ -1079,14 +900,12 @@ class HardwarePolicyAdapter:
 def load_hardware_policy(
     checkpoint_path: Path,
     *,
-    allow_git_commit_mismatch: bool = False,
     upper_body_follow: UpperBodyFollowConfig = UpperBodyFollowConfig(),
     command_slew_rates: tuple[float, float] | None = None,
 ) -> tuple[HardwarePolicyAdapter, LocomotionCheckpointMetadata]:
     runtime = load_locomotion_policy_runtime(
         checkpoint_path,
         use_viewer_model=False,
-        allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
     return HardwarePolicyAdapter(
         runtime.env,
@@ -1103,9 +922,6 @@ def validate_hardware_checkpoint(
 ) -> None:
     if metadata.task != "locomotion":
         raise ValueError("hardware locomotion requires a locomotion checkpoint")
-    availability = metadata.asset.joint_availability
-    if "waist_yaw_joint" in availability.disabled_joint_names:
-        raise ValueError("hardware locomotion requires waist_yaw_joint")
     if env.config.observation.privileged:
         raise ValueError("hardware actor observation must not be privileged")
 
@@ -1203,9 +1019,6 @@ def validate_hardware_config(
             definition.asset,
             hold_names,
         )
-        elbow_yaw_supported = follow_supported and frozenset(
-            _ELBOW_YAW_JOINT_NAMES
-        ).issubset(hold_names)
         if definition.physical_hardware_ready and config.allow_provisional_hardware:
             raise ValueError(
                 "allow_provisional_hardware is only valid for a provisional robot"
@@ -1224,14 +1037,6 @@ def validate_hardware_config(
             raise ValueError(
                 "upper-body pose following is not supported for robot asset "
                 f"{definition.asset!r}; set upper_body_tracking_enabled=false"
-            )
-        if not elbow_yaw_supported and (
-            config.upper_body_follow.left_elbow_yaw_offset_radians != 0.0
-            or config.upper_body_follow.right_elbow_yaw_offset_radians != 0.0
-        ):
-            raise ValueError(
-                "elbow-yaw offsets are not supported for robot asset "
-                f"{definition.asset!r}"
             )
     if config.upper_body_tracking_enabled:
         from bello_mujoco.hardware.rtmw import RtmwGrpcConfig
@@ -1260,13 +1065,6 @@ def validate_hardware_config(
     for name, value in positive.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"upper_body_follow.{name} must be positive and finite")
-    finite = {
-        "left_elbow_yaw_offset_radians": upper.left_elbow_yaw_offset_radians,
-        "right_elbow_yaw_offset_radians": upper.right_elbow_yaw_offset_radians,
-    }
-    for name, value in finite.items():
-        if not math.isfinite(value):
-            raise ValueError(f"upper_body_follow.{name} must be finite")
     if upper.max_reference_age_ms <= 0:
         raise ValueError("upper_body_follow.max_reference_age_ms must be positive")
     if (
@@ -1475,7 +1273,6 @@ def run_hardware_locomotion(
     validate_hardware_config(config)
     adapter, metadata = load_hardware_policy(
         checkpoint_path,
-        allow_git_commit_mismatch=config.allow_git_commit_mismatch,
         upper_body_follow=config.upper_body_follow,
         command_slew_rates=(
             None
@@ -1714,152 +1511,114 @@ def control_physical_robot(
         reference_qualifier = _UpperBodyReferenceQualifier(
             config.rtmw_reference_qualification_frames
         )
-        jog_input = TerminalElbowYawJogInput(
-            enabled=(
-                False
-                if (
-                    operator_input is not None
-                    or not config.upper_body_tracking_enabled
-                    or not adapter.elbow_yaw_jog_supported
-                )
-                else None
+        while (
+            config.max_duration_seconds is None
+            or time.monotonic() - start_time < config.max_duration_seconds
+        ):
+            loop_started = time.monotonic()
+            remote_input = remote.poll()
+            report_remote_connection(remote_input)
+            if remote_input.abort_active:
+                print("Remote controller requested exit; entering damped shutdown.")
+                break
+            command = hardware_command(
+                adapter.metadata,
+                remote_input,
+                joystick_command_scale=config.joystick_command_scale,
             )
-        )
-        jog_input.open()
-        try:
-            if jog_input.enabled:
+            input_finished = time.monotonic()
+            frame = control.read_frame()
+            state_finished = time.monotonic()
+            reference = None
+            if references is not None:
+                reference_error: ReferenceUnavailable | None = None
+                try:
+                    candidate = references.latest()
+                    adapter.validate_upper_body_reference(candidate)
+                    reference = reference_qualifier.accept(candidate)
+                    if reference is None:
+                        reference_error = ReferenceUnavailable(
+                            "qualifying live upper-body pose: "
+                            f"{reference_qualifier.qualified_frames}/"
+                            f"{reference_qualifier.required_frames} distinct frames"
+                        )
+                except ReferenceUnavailable as error:
+                    reference_qualifier.reset()
+                    reference_error = error
+                following = reference is not None
+                if following != pose_following:
+                    if following:
+                        print("Live upper-body pose following is active.")
+                    else:
+                        print(
+                            "Live upper-body pose is unavailable; returning the "
+                            f"arms to their nominal pose: {reference_error}"
+                        )
+                    pose_following = following
+            policy_step = adapter.step(frame, command, reference)
+            policy_finished = time.monotonic()
+            control.send_target(policy_step.physical_target)
+            command_finished = time.monotonic()
+            step += 1
+            now = time.monotonic()
+            if policy_log is not None:
+                policy_log.write_step(
+                    phase="locomotion",
+                    step=step,
+                    elapsed_seconds=now - start_time,
+                    observation=policy_step.observation,
+                    policy_observation=policy_step.policy_observation,
+                    raw_action=policy_step.raw_action,
+                    action=policy_step.action,
+                    physical_target=policy_step.physical_target,
+                    command=policy_step.effective_command,
+                )
+            log_finished = time.monotonic()
+            if next_status is not None and now >= next_status:
                 print(
-                    "Elbow-yaw keyboard jog: q/a = left +/-5 deg, e/d = right +/-5 deg."
-                )
-            while (
-                config.max_duration_seconds is None
-                or time.monotonic() - start_time < config.max_duration_seconds
-            ):
-                loop_started = time.monotonic()
-                remote_input = remote.poll()
-                report_remote_connection(remote_input)
-                if remote_input.abort_active:
-                    print("Remote controller requested exit; entering damped shutdown.")
-                    break
-                left_delta, right_delta = jog_input.poll()
-                if left_delta != 0.0 or right_delta != 0.0:
-                    left_offset, right_offset = adapter.jog_elbow_yaw_offsets(
-                        left_delta_radians=left_delta,
-                        right_delta_radians=right_delta,
-                    )
-                    print(
-                        "Elbow-yaw offsets: "
-                        f"left={math.degrees(left_offset):+.1f} deg, "
-                        f"right={math.degrees(right_offset):+.1f} deg."
-                    )
-                command = hardware_command(
-                    adapter.metadata,
-                    remote_input,
-                    joystick_command_scale=config.joystick_command_scale,
-                )
-                input_finished = time.monotonic()
-                frame = control.read_frame()
-                state_finished = time.monotonic()
-                reference = None
-                if references is not None:
-                    reference_error: ReferenceUnavailable | None = None
-                    try:
-                        candidate = references.latest()
-                        adapter.validate_upper_body_reference(candidate)
-                        reference = reference_qualifier.accept(candidate)
-                        if reference is None:
-                            reference_error = ReferenceUnavailable(
-                                "qualifying live upper-body pose: "
-                                f"{reference_qualifier.qualified_frames}/"
-                                f"{reference_qualifier.required_frames} distinct frames"
-                            )
-                    except ReferenceUnavailable as error:
-                        reference_qualifier.reset()
-                        reference_error = error
-                    following = reference is not None
-                    if following != pose_following:
-                        if following:
-                            print("Live upper-body pose following is active.")
-                        else:
-                            print(
-                                "Live upper-body pose is unavailable; returning the "
-                                f"arms to their nominal pose: {reference_error}"
-                            )
-                        pose_following = following
-                policy_step = adapter.step(frame, command, reference)
-                policy_finished = time.monotonic()
-                control.send_target(policy_step.physical_target)
-                command_finished = time.monotonic()
-                step += 1
-                now = time.monotonic()
-                if policy_log is not None:
-                    policy_log.write_step(
-                        phase="locomotion",
-                        step=step,
-                        elapsed_seconds=now - start_time,
-                        observation=policy_step.observation,
-                        policy_observation=policy_step.policy_observation,
-                        raw_action=policy_step.raw_action,
-                        action=policy_step.action,
-                        physical_target=policy_step.physical_target,
-                        command=policy_step.effective_command,
-                    )
-                log_finished = time.monotonic()
-                if next_status is not None and now >= next_status:
-                    print(
-                        {
-                            "hardware_step": step,
-                            "elapsed_seconds": now - start_time,
-                            "tilt_radians": policy_step.tilt_radians,
-                            "action_abs_max": float(np.max(np.abs(policy_step.action))),
-                            "command": tuple(
-                                float(value) for value in policy_step.effective_command
-                            ),
-                            "standing_transition_pending": (
-                                policy_step.standing_transition_pending
-                            ),
-                            "remote_service_connected": remote_input.service_connected,
-                            "remote_controller_connected": remote_input.controller_connected,
-                            "remote_intent_armed": remote_input.intent_armed,
-                            "remote_sample_age_ms": remote_input.sample_age_ms,
-                            "upper_body_pose_following": (
-                                policy_step.upper_body_following
-                            ),
-                            "reference_sequence": policy_step.reference_sequence,
-                            "reference_age_ms": policy_step.reference_age_ms,
-                            "motor_age_ms": frame.max_motor_age_ms,
-                            "imu_age_ms": frame.imu_age_ms,
-                            "group_age_ms": frame.max_group_age_ms,
-                            "state_sample_span_ms": frame.sample_span_ms,
-                            "state_frame_round_trip_ms": (
-                                frame.state_frame_round_trip_ms
-                            ),
-                            "policy_log_dropped_records": (
-                                None
-                                if policy_log is None
-                                else policy_log.dropped_records
-                            ),
-                        }
-                    )
-                    assert config.status_interval_seconds is not None
-                    next_status = now + config.status_interval_seconds
-                status_finished = time.monotonic()
-                control.pace(
                     {
-                        "input": (input_finished - loop_started) * 1_000.0,
-                        "state": (state_finished - input_finished) * 1_000.0,
-                        "policy": (policy_finished - state_finished) * 1_000.0,
-                        "command": (command_finished - policy_finished) * 1_000.0,
-                        "log": (log_finished - command_finished) * 1_000.0,
-                        "status": (status_finished - log_finished) * 1_000.0,
-                        "before_pace": (status_finished - loop_started) * 1_000.0,
+                        "hardware_step": step,
+                        "elapsed_seconds": now - start_time,
+                        "tilt_radians": policy_step.tilt_radians,
+                        "action_abs_max": float(np.max(np.abs(policy_step.action))),
+                        "command": tuple(
+                            float(value) for value in policy_step.effective_command
+                        ),
+                        "standing_transition_pending": (
+                            policy_step.standing_transition_pending
+                        ),
+                        "remote_service_connected": remote_input.service_connected,
+                        "remote_controller_connected": remote_input.controller_connected,
+                        "remote_intent_armed": remote_input.intent_armed,
+                        "remote_sample_age_ms": remote_input.sample_age_ms,
+                        "upper_body_pose_following": (policy_step.upper_body_following),
+                        "reference_sequence": policy_step.reference_sequence,
+                        "reference_age_ms": policy_step.reference_age_ms,
+                        "motor_age_ms": frame.max_motor_age_ms,
+                        "imu_age_ms": frame.imu_age_ms,
+                        "group_age_ms": frame.max_group_age_ms,
+                        "state_sample_span_ms": frame.sample_span_ms,
+                        "state_frame_round_trip_ms": (frame.state_frame_round_trip_ms),
+                        "policy_log_dropped_records": (
+                            None if policy_log is None else policy_log.dropped_records
+                        ),
                     }
                 )
-            control.drain()
-        except KeyboardInterrupt:
-            print("Hardware locomotion interrupted; entering damped shutdown.")
-        finally:
-            jog_input.close()
+                assert config.status_interval_seconds is not None
+                next_status = now + config.status_interval_seconds
+            status_finished = time.monotonic()
+            control.pace(
+                {
+                    "input": (input_finished - loop_started) * 1_000.0,
+                    "state": (state_finished - input_finished) * 1_000.0,
+                    "policy": (policy_finished - state_finished) * 1_000.0,
+                    "command": (command_finished - policy_finished) * 1_000.0,
+                    "log": (log_finished - command_finished) * 1_000.0,
+                    "status": (status_finished - log_finished) * 1_000.0,
+                    "before_pace": (status_finished - loop_started) * 1_000.0,
+                }
+            )
+        control.drain()
 
 
 @dataclass
@@ -1869,7 +1628,7 @@ class _UpperBodyReferenceQualifier:
     last_sequence: int | None = None
     active: bool = False
 
-    def accept(self, reference: Twist2ReferenceFrame) -> Twist2ReferenceFrame | None:
+    def accept(self, reference: RobotReferenceFrame) -> RobotReferenceFrame | None:
         sequence = reference.sequence
         if self.last_sequence is None:
             self.qualified_frames = 1

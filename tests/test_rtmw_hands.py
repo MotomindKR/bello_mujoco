@@ -693,13 +693,27 @@ def test_target_expiring_during_recovery_probe_sends_no_positions(
     assert commands == []
 
 
-def test_rtmw_outage_suspends_writes_and_recovery_refreshes_and_reseeds() -> None:
+def test_rtmw_outage_suspends_writes_and_recovery_refreshes_and_reseeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Clock:
+        now = 0.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += seconds
+
+    time = Clock()
+    monkeypatch.setattr(rtmw_hands, "time", time)
     stop = threading.Event()
     commands: list[tuple[int, ...]] = []
     refreshes: list[tuple[int, ...]] = []
     calls = 0
     closed = replace(
         target_frame(),
+        received_at=time.monotonic(),
         left=RtmwHandTarget("left", (1.0,) * 6, 0.9),
         right=None,
     )

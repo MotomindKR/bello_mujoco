@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
@@ -14,12 +14,10 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 
-from bello_mujoco.envs.locomotion import (
-    BelloLocomotionEnv,
-    BelloState,
-    gait_frequency,
-    resolve_gait_command_transition,
-)
+from bello_mujoco.envs.foot_geometry import sole_support_positions
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.locomotion_state import BelloState
+from bello_mujoco.envs.gait import gait_frequency, resolve_gait_command_transition
 from bello_mujoco.envs.rewards import command_is_moving
 from bello_mujoco.policy import (
     apply_actor,
@@ -30,6 +28,10 @@ from bello_mujoco.policy import (
 )
 from bello_mujoco.spatial import quat_rotate_inverse_wxyz, quat_rotate_wxyz
 from bello_mujoco.terrain import terrain_surface_height
+from bello_mujoco.evaluation.software import (
+    run_software_evaluation,
+    validate_software_renderer,
+)
 
 if TYPE_CHECKING:
     from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
@@ -259,6 +261,7 @@ def open_rollout_video_resources(
 ):
     """Acquire rollout rendering resources with failure-safe cleanup."""
 
+    validate_software_renderer()
     resources = ExitStack()
     try:
         renderer = mujoco.Renderer(mj_model, height=height, width=width)
@@ -270,6 +273,28 @@ def open_rollout_video_resources(
         resources.close()
         raise
     return resources, renderer, camera, writer
+
+
+def render_policy_rollout_isolated(
+    env: BelloLocomotionEnv,
+    policy,
+    **kwargs,
+) -> RolloutStats:
+    if env.model.mjx_model is not None:
+        raise ValueError("software evaluation requires a native-only rendering model")
+    # Do not serialize cached JAX properties or device arrays from the trainer.
+    env_fields = {field.name: getattr(env, field.name) for field in fields(env)}
+    return run_software_evaluation(
+        _render_host_policy,
+        env_fields,
+        jax.device_get(policy),
+        jax.device_get(kwargs),
+    )
+
+
+def _render_host_policy(env_fields: dict, policy, kwargs: dict) -> RolloutStats:
+    env = BelloLocomotionEnv(**env_fields)
+    return render_policy_rollout(env, jax.device_put(policy), **kwargs)
 
 
 def render_policy_rollout(
@@ -919,101 +944,29 @@ def mujoco_foot_height(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> np.nd
 def mujoco_foot_sole_positions(
     env: BelloLocomotionEnv, mj_data: mujoco.MjData
 ) -> np.ndarray:
-    """Mirror the MJX terrain-relative collision support calculation."""
+    ids = np.asarray(env.model.foot_geom_ids, dtype=np.int32)
+    position = np.asarray(mj_data.geom_xpos[ids], dtype=np.float32)
 
-    geom_ids = np.asarray(env.model.foot_geom_ids, dtype=np.int32)
-    geom_rotation = np.asarray(mj_data.geom_xmat[geom_ids], dtype=np.float32).reshape(
-        (-1, 3, 3)
-    )
-    geom_position = np.asarray(mj_data.geom_xpos[geom_ids], dtype=np.float32)
-    terrain_up = mujoco_terrain_surface_normal(env, geom_position[:, :2])
-    local_down = np.einsum("gji,gj->gi", geom_rotation, -terrain_up)
-    geom_size = np.asarray(env.model.mj_model.geom_size[geom_ids], dtype=np.float32)
-    geom_type = np.asarray(env.model.mj_model.geom_type[geom_ids], dtype=np.int32)
+    def terrain_height(xy):
+        if env.terrain_config.mode == "none":
+            return np.full(xy.shape[:-1], env.terrain_config.pos[2], dtype=np.float32)
+        return terrain_surface_height(
+            env.model.mj_model, int(env.model.terrain_geom_ids[0]), xy
+        )
 
-    radial_direction = local_down[:, :2]
-    radial_norm = np.linalg.norm(radial_direction, axis=1, keepdims=True)
-    unit_radial = np.divide(
-        radial_direction,
-        np.maximum(radial_norm, 1.0e-8),
-        out=np.zeros_like(radial_direction),
-        where=radial_norm > 1.0e-8,
+    return sole_support_positions(
+        geom_position=position,
+        geom_rotation=np.asarray(mj_data.geom_xmat[ids], dtype=np.float32).reshape(
+            (-1, 3, 3)
+        ),
+        geom_size=np.asarray(env.model.mj_model.geom_size[ids], dtype=np.float32),
+        geom_type=np.asarray(env.model.mj_model.geom_type[ids]),
+        geom_body_ids=np.asarray(env.model.geom_body_ids)[ids],
+        foot_body_ids=np.asarray(env.model.foot_body_ids),
+        terrain_up=mujoco_terrain_surface_normal(env, position[:, :2]),
+        terrain_height=terrain_height,
+        array_module=np,
     )
-    sphere_support = geom_size[:, :1] * local_down
-    capsule_support = sphere_support.copy()
-    capsule_support[:, 2] += np.sign(local_down[:, 2]) * geom_size[:, 1]
-    ellipsoid_denominator = np.sqrt(
-        np.sum((geom_size * local_down) ** 2, axis=1, keepdims=True)
-    )
-    ellipsoid_support = (
-        geom_size**2
-        * local_down
-        / np.maximum(ellipsoid_denominator, np.float32(1.0e-8))
-    )
-    cylinder_support = np.concatenate(
-        [
-            geom_size[:, :1] * unit_radial,
-            (np.sign(local_down[:, 2]) * geom_size[:, 1])[:, None],
-        ],
-        axis=1,
-    )
-    support = sphere_support
-    for shape, candidate in (
-        (mujoco.mjtGeom.mjGEOM_CAPSULE, capsule_support),
-        (mujoco.mjtGeom.mjGEOM_ELLIPSOID, ellipsoid_support),
-        (mujoco.mjtGeom.mjGEOM_CYLINDER, cylinder_support),
-    ):
-        support = np.where((geom_type == int(shape))[:, None], candidate, support)
-    support_world = geom_position + np.einsum("gij,gj->gi", geom_rotation, support)
-
-    box_corner_signs = np.asarray(
-        [[x, y, z] for x in (-1.0, 1.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)],
-        dtype=np.float32,
-    )
-    box_corners = box_corner_signs[None, :, :] * geom_size[:, None, :]
-    box_corners_world = geom_position[:, None, :] + np.einsum(
-        "gij,gkj->gki", geom_rotation, box_corners
-    )
-    if env.terrain_config.mode == "none":
-        box_corner_terrain_height = np.full(
-            box_corners_world.shape[:2],
-            env.terrain_config.pos[2],
-            dtype=np.float32,
-        )
-    else:
-        box_corner_terrain_height = terrain_surface_height(
-            env.model.mj_model,
-            int(env.model.terrain_geom_ids[0]),
-            box_corners_world[:, :, :2],
-        )
-    box_corner_clearance = box_corners_world[:, :, 2] - box_corner_terrain_height
-    lowest_box_corner = np.argmin(box_corner_clearance, axis=1)
-    box_support_world = box_corners_world[
-        np.arange(box_corners_world.shape[0]), lowest_box_corner
-    ]
-    support_world = np.where(
-        (geom_type == int(mujoco.mjtGeom.mjGEOM_BOX))[:, None],
-        box_support_world,
-        support_world,
-    )
-    if env.terrain_config.mode == "none":
-        terrain_height = np.full(
-            support_world.shape[0], env.terrain_config.pos[2], dtype=np.float32
-        )
-    else:
-        terrain_height = terrain_surface_height(
-            env.model.mj_model,
-            int(env.model.terrain_geom_ids[0]),
-            support_world[:, :2],
-        )
-    support_clearance = support_world[:, 2] - terrain_height
-
-    geom_body_ids = np.asarray(env.model.geom_body_ids[geom_ids], dtype=np.int32)
-    foot_body_ids = np.asarray(env.model.foot_body_ids, dtype=np.int32)
-    belongs_to_foot = foot_body_ids[:, None] == geom_body_ids[None, :]
-    clearance_by_foot = np.where(belongs_to_foot, support_clearance[None, :], np.inf)
-    lowest_geom = np.argmin(clearance_by_foot, axis=1)
-    return support_world[lowest_geom]
 
 
 def mujoco_terrain_surface_normal(

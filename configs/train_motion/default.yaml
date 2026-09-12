@@ -4,7 +4,6 @@ motion:
 
 asset_config:
   asset: bello
-  collision_mode: box
   target_total_mass_kg: null
   enforce_policy_effort_limits: false
   actuator_mode: policy
@@ -65,22 +64,16 @@ env_config:
   reward:
     root_position_weight: 0.15
     root_orientation_weight: 0.15
-    joint_position_weight: 0.20
-    joint_velocity_weight: 0.05
     body_position_weight: 0.20
     body_orientation_weight: 0.10
-    body_velocity_weight: 0.05
     action_rate_weight: -0.01
     joint_limit_weight: -0.02
     torque_l1_weight: 0.0
     torque_peak_weight: 0.0
     root_position_sigma: 0.20
     root_orientation_sigma: 0.35
-    joint_position_sigma: 0.35
-    joint_velocity_sigma: 3.0
     body_position_sigma: 0.15
     body_orientation_sigma: 0.45
-    body_velocity_sigma: 2.0
   done:
     root_height_error: 0.35
     root_orientation_error: 1.2
@@ -92,7 +85,6 @@ checkpoint_config:
   name: ${motion.sequence}_wholebody
   every_updates: 100
   resume_path: null
-  allow_git_commit_mismatch: false
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint

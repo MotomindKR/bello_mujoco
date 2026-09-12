@@ -1,34 +1,4 @@
 asset: bello_mini
-legacy_import_joint_names:
-  - waist_yaw_joint
-  - waist_roll_joint
-  - left_shoulder_pitch_joint
-  - left_shoulder_roll_joint
-  - left_shoulder_yaw_joint
-  - left_elbow_pitch_joint
-  - left_wrist_yaw_joint
-  - left_wrist_pitch_joint
-  - left_wrist_roll_joint
-  - right_shoulder_pitch_joint
-  - right_shoulder_roll_joint
-  - right_shoulder_yaw_joint
-  - right_elbow_pitch_joint
-  - right_wrist_yaw_joint
-  - right_wrist_pitch_joint
-  - right_wrist_roll_joint
-  - left_hip_pitch_joint
-  - left_hip_roll_joint
-  - left_hip_yaw_joint
-  - left_knee_joint
-  - left_ankle_pitch_joint
-  - left_ankle_roll_joint
-  - right_hip_pitch_joint
-  - right_hip_roll_joint
-  - right_hip_yaw_joint
-  - right_knee_joint
-  - right_ankle_pitch_joint
-  - right_ankle_roll_joint
-fixed_joint_names: []
 reference_root_body_name: pelvis_link
 default_tracked_body_names:
   - pelvis_link
@@ -64,16 +34,7 @@ beyondmimic_end_effector_body_names:
   - right_ankle_roll_link
   - left_wrist_roll_link
   - right_wrist_roll_link
-twist_key_body_names:
-  - left_wrist_roll_link
-  - right_wrist_roll_link
-  - left_ankle_roll_link
-  - right_ankle_roll_link
-  - left_knee_link
-  - right_knee_link
-  - left_elbow_link
-  - right_elbow_link
-  - torso_link
+
 gmr:
   source_human: smplx
   target_robot: bello_mini

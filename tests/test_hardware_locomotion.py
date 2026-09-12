@@ -4,7 +4,6 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-import os
 import threading
 import time
 from types import SimpleNamespace
@@ -15,7 +14,7 @@ import mujoco
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import prepare_asset
+from bello_mujoco.models.compiler import compile_robot
 from bello_mujoco.training.checkpoint import CheckpointNormalizationState
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.evaluation.render import mujoco_policy_observation
@@ -23,10 +22,8 @@ from bello_mujoco.imu import MujocoImu
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware import runtime as hardware_runtime
 from bello_mujoco.hardware.locomotion import (
-    ELBOW_YAW_JOG_STEP_RADIANS,
     HardwareLocomotionConfig,
     HardwarePolicyAdapter,
-    TerminalElbowYawJogInput,
     UpperBodyFollowConfig,
     _UpperBodyReferenceQualifier,
     command_minimum_moving_speeds,
@@ -75,7 +72,7 @@ from bello_mujoco.training.ppo import (
 )
 from bello_mujoco.gamepad import axis_to_range
 from bello_mujoco.hardware.remote import RemoteCommandConfig, RemoteCommandInput
-from bello_mujoco.hardware.twist2 import ReferenceUnavailable, Twist2ReferenceFrame
+from bello_mujoco.hardware.reference import ReferenceUnavailable, RobotReferenceFrame
 
 
 _TEST_SMPLX_MODEL = Path("SMPLX_NEUTRAL.npz")
@@ -281,8 +278,8 @@ def test_group_state_wait_uses_bounded_polling(monkeypatch) -> None:
 @pytest.fixture(scope="module")
 def hardware_env() -> BelloLocomotionEnv:
     config = compose_hardware_training_config()
-    prepared = prepare_asset(config.asset_config)
-    return BelloLocomotionEnv.load_prepared(
+    prepared = compile_robot(config.asset_config)
+    return BelloLocomotionEnv.from_compiled(
         prepared,
         warp=config.warp,
         batch_size=1,
@@ -299,8 +296,8 @@ def hardware_env() -> BelloLocomotionEnv:
 @pytest.fixture(scope="module")
 def mini_hardware_env() -> BelloLocomotionEnv:
     config = compose_mini_hardware_training_config()
-    prepared = prepare_asset(config.asset_config)
-    return BelloLocomotionEnv.load_prepared(
+    prepared = compile_robot(config.asset_config)
+    return BelloLocomotionEnv.from_compiled(
         prepared,
         warp=config.warp,
         batch_size=1,
@@ -328,70 +325,6 @@ def hardware_metadata(
         policy_obs_size=actor_size,
         critic_policy_obs_size=critic_size,
     )
-
-
-def test_hardware_training_recipe_matches_sphere_hand_inventory(
-    hardware_env: BelloLocomotionEnv,
-) -> None:
-    config = compose_hardware_training_config()
-    prepared = prepare_asset(config.asset_config)
-    canonical_model = mujoco.MjModel.from_xml_path(str(prepared.mjcf_path))
-
-    assert config.asset_config.target_total_mass_kg is None
-    assert not config.asset_config.joint_availability.disabled_joint_names
-    assert hardware_env.action_size == 13
-    assert hardware_env.model.mj_model.nu == 25
-    assert np.sum(canonical_model.body_mass) == pytest.approx(55.0683575411785)
-
-    metadata = SimpleNamespace(
-        task="locomotion",
-        asset=config.asset_config,
-        ppo=config.config,
-    )
-    validate_hardware_checkpoint(hardware_env, metadata)
-
-
-def test_hardware_checkpoint_accepts_bello_mini_robot_layout(
-    mini_hardware_env: BelloLocomotionEnv,
-) -> None:
-    config = compose_mini_hardware_training_config()
-    metadata = hardware_metadata(config, mini_hardware_env)
-
-    assert mini_hardware_env.action_size == 14
-    assert mini_hardware_env.model.mj_model.nu == 28
-    assert len(mini_hardware_env.model.hold_ctrl_indices) == 14
-    validate_hardware_checkpoint(mini_hardware_env, metadata)
-    validate_hardware_config(pose_hardware_config(), metadata)
-    validate_hardware_config(
-        HardwareLocomotionConfig(upper_body_tracking_enabled=False),
-        metadata,
-    )
-    validate_hardware_config(
-        HardwareLocomotionConfig(
-            arm=True,
-            smplx_neutral_model_path=_TEST_SMPLX_MODEL,
-        ),
-        metadata,
-    )
-    with pytest.raises(ValueError, match="only valid for a provisional robot"):
-        validate_hardware_config(
-            HardwareLocomotionConfig(
-                arm=True,
-                allow_provisional_hardware=True,
-                upper_body_tracking_enabled=False,
-            ),
-            metadata,
-        )
-    with pytest.raises(ValueError, match="elbow-yaw offsets"):
-        validate_hardware_config(
-            HardwareLocomotionConfig(
-                upper_body_tracking_enabled=False,
-                upper_body_follow=UpperBodyFollowConfig(
-                    left_elbow_yaw_offset_radians=0.1
-                ),
-            ),
-            metadata,
-        )
 
 
 def test_hardware_checkpoint_requires_robot_configured_joint_order(
@@ -532,7 +465,7 @@ def make_hardware_adapter(
 
 
 def test_mini_scheduler_matches_hardware_through_stop_and_restart(mini_hardware_env):
-    from bello_mujoco.envs.locomotion import (
+    from bello_mujoco.envs.gait import (
         advance_gait_phase,
         resolve_gait_command_transition,
         next_start_preference,
@@ -706,8 +639,6 @@ def test_bello_mini_adapter_supports_live_upper_body(
         atol=1.0e-8,
     )
     assert adapter.upper_body_follow_supported
-    assert not adapter.elbow_yaw_jog_supported
-    assert adapter.upper_body_elbow_yaw_indices.size == 0
     assert result.action.shape == (14,)
     assert result.physical_target.shape == (28,)
     assert np.all(np.isfinite(result.physical_target))
@@ -753,8 +684,6 @@ def test_bello_mini_adapter_supports_live_upper_body(
             )
             upper_index = int(np.flatnonzero(upper == actuator_index)[0])
             assert live_target[upper_index] == pytest.approx(desired_upper[upper_index])
-    with pytest.raises(ValueError, match="elbow-yaw jogging"):
-        adapter.jog_elbow_yaw_offsets(left_delta_radians=0.1)
 
 
 def test_bello_mini_training_matches_physical_accelerometer(mini_hardware_env) -> None:
@@ -927,10 +856,10 @@ def hardware_reference(
     sequence: int = 1,
     source_age_ms: int | None = 0,
     received_at: float | None = None,
-) -> Twist2ReferenceFrame:
+) -> RobotReferenceFrame:
     qpos = np.asarray(adapter.env.model.default_qpos, dtype=np.float64).copy()
     qpos[adapter.upper_body_qpos_indices] = upper_body_positions
-    return Twist2ReferenceFrame(
+    return RobotReferenceFrame(
         qpos=qpos,
         qvel=np.zeros(adapter.env.model.mj_model.nv, dtype=np.float64),
         sequence=sequence,
@@ -1284,11 +1213,6 @@ def test_locomotion_standing_fallback_uses_nominal_arms_and_keeps_full_frame(
     hardware_env: BelloLocomotionEnv,
 ) -> None:
     adapter = make_hardware_adapter(hardware_env)
-    adapter.upper_body_follow = replace(
-        adapter.upper_body_follow,
-        left_elbow_yaw_offset_radians=0.3,
-        right_elbow_yaw_offset_radians=-0.3,
-    )
     model = hardware_env.model.mj_model
     qpos = np.asarray(hardware_env.model.default_qpos, dtype=np.float64).copy()
     qvel = np.linspace(-0.2, 0.2, model.nv)
@@ -1305,7 +1229,7 @@ def test_locomotion_standing_fallback_uses_nominal_arms_and_keeps_full_frame(
     qpos[non_arm_qpos] += 0.123
     qvel[non_arm_qvel] = 0.321
     qpos[adapter.upper_body_qpos_indices] += 0.2
-    reference = Twist2ReferenceFrame(
+    reference = RobotReferenceFrame(
         qpos=qpos,
         qvel=qvel,
         sequence=0,
@@ -1330,61 +1254,6 @@ def test_locomotion_standing_fallback_uses_nominal_arms_and_keeps_full_frame(
     assert reference.qpos[adapter.upper_body_qpos_indices] == pytest.approx(
         qpos[adapter.upper_body_qpos_indices]
     )
-
-
-def test_locomotion_applies_configured_and_clipped_elbow_yaw_offset(
-    hardware_env: BelloLocomotionEnv,
-) -> None:
-    adapter = make_hardware_adapter(hardware_env)
-    adapter.upper_body_follow = replace(
-        adapter.upper_body_follow,
-        left_elbow_yaw_offset_radians=np.pi / 2.0,
-        right_elbow_yaw_offset_radians=-np.pi,
-    )
-    upper = adapter.upper_body_indices
-    desired = adapter.default_joint_target[upper]
-    low = hardware_env.model.joint_target_low[upper]
-    high = hardware_env.model.joint_target_high[upper]
-    target = adapter._reference_upper_body_target(
-        hardware_reference(adapter, desired),
-        live=True,
-    )
-    elbow_yaw = adapter.upper_body_elbow_yaw_indices
-    expected = desired.copy()
-    expected[elbow_yaw] += np.asarray((np.pi / 2.0, -np.pi))
-    expected = np.clip(expected, low, high)
-
-    assert target == pytest.approx(expected)
-    assert target[elbow_yaw] == pytest.approx((high[elbow_yaw[0]], low[elbow_yaw[1]]))
-
-
-def test_locomotion_keyboard_jogs_elbow_yaw_offsets(
-    hardware_env: BelloLocomotionEnv,
-) -> None:
-    adapter = make_hardware_adapter(hardware_env)
-
-    offsets = adapter.jog_elbow_yaw_offsets(
-        left_delta_radians=ELBOW_YAW_JOG_STEP_RADIANS,
-        right_delta_radians=-2.0 * ELBOW_YAW_JOG_STEP_RADIANS,
-    )
-
-    assert offsets == pytest.approx(
-        (ELBOW_YAW_JOG_STEP_RADIANS, -2.0 * ELBOW_YAW_JOG_STEP_RADIANS)
-    )
-
-
-def test_terminal_elbow_yaw_jog_reads_single_keys() -> None:
-    master_fd, slave_fd = os.openpty()
-    stream = os.fdopen(slave_fd, "r", closefd=True)
-    try:
-        with TerminalElbowYawJogInput(stream) as jog_input:
-            os.write(master_fd, b"qqaedx\x1b[D")
-            left_delta, right_delta = jog_input.poll()
-            assert left_delta == pytest.approx(ELBOW_YAW_JOG_STEP_RADIANS)
-            assert right_delta == pytest.approx(0.0)
-    finally:
-        stream.close()
-        os.close(master_fd)
 
 
 def test_locomotion_rejects_stale_and_unsafe_upper_body_references(
@@ -1460,8 +1329,6 @@ def test_hardware_runner_defaults_to_read_only() -> None:
     assert config.hardware.joystick_command_scale == pytest.approx(0.6)
     assert config.hardware.joystick_linear_slew_rate_mps2 == pytest.approx(1.0)
     assert config.hardware.joystick_yaw_slew_rate_rps2 == pytest.approx(1.0)
-    assert config.hardware.upper_body_follow.left_elbow_yaw_offset_radians == 0.0
-    assert config.hardware.upper_body_follow.right_elbow_yaw_offset_radians == 0.0
     assert config.hardware.rtmw_gmr_task_profile == "live_upper_body"
     assert config.hardware.rtmw_reference_qualification_frames == 1
     assert config.hardware.rtmw_min_joint_confidence == pytest.approx(0.0)
@@ -1521,15 +1388,6 @@ def test_hardware_runner_defaults_to_read_only() -> None:
                 upper_body_follow=replace(
                     UpperBodyFollowConfig(),
                     min_live_joint_limit_margin_radians=0.0,
-                )
-            )
-        )
-    with pytest.raises(ValueError, match="left_elbow_yaw_offset_radians"):
-        validate_hardware_config(
-            pose_hardware_config(
-                upper_body_follow=replace(
-                    UpperBodyFollowConfig(),
-                    left_elbow_yaw_offset_radians=np.nan,
                 )
             )
         )
@@ -1824,7 +1682,6 @@ def test_locomotion_validates_nominal_pose_through_run_hold(monkeypatch) -> None
         physical_coordinate_names=("left", "right"),
         nominal_physical_target=nominal,
         control_timestep=0.02,
-        elbow_yaw_jog_supported=False,
         reset=lambda: None,
     )
     control_physical_robot(
@@ -2102,7 +1959,7 @@ def test_remote_abort_around_hold_never_acquires_control(
 
     run_hardware_locomotion(
         Path("unused"),
-        pose_hardware_config(arm=True, allow_git_commit_mismatch=True),
+        pose_hardware_config(arm=True),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: remote,
         reference_source_factory=lambda *_args: FakeReferences(),
@@ -2476,7 +2333,7 @@ def test_read_only_preflight_never_acquires_control(
     )
     run_hardware_locomotion(
         Path("unused"),
-        pose_hardware_config(allow_git_commit_mismatch=True),
+        pose_hardware_config(),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: SimpleNamespace(
             wait_until_ready=lambda _timeout: remote_input(
@@ -2499,7 +2356,6 @@ def test_read_only_preflight_never_acquires_control(
         (
             Path("unused"),
             {
-                "allow_git_commit_mismatch": True,
                 "upper_body_follow": UpperBodyFollowConfig(),
                 "command_slew_rates": (1.0, 1.0),
             },
@@ -2567,7 +2423,6 @@ def test_fixed_upper_body_preflight_skips_pose_source(
         Path("unused"),
         HardwareLocomotionConfig(
             upper_body_tracking_enabled=False,
-            allow_git_commit_mismatch=True,
         ),
         hardware_binding=hardware.binding,
         remote_factory=lambda _config: remote,

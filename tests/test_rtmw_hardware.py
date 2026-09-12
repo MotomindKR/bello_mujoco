@@ -24,17 +24,12 @@ from bello_mujoco.hardware.rtmw import (
     RtmwSmplxStream,
     _validate_stream_info,
     import_pinned_rtmw_proto,
-    validate_pinned_rtmw_contract,
 )
 from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_MODEL_TO_WORLD_WXYZ,
     SmplxTargetFrame,
 )
-from bello_mujoco.hardware.twist2 import (
-    ReferenceDiscontinuity,
-    ReferenceUnavailable,
-)
-from bello_mujoco.repository import repository_root
+from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
 from bello_mujoco.robot_tasks import motion_task_definition
 
 
@@ -869,10 +864,8 @@ def test_initial_heading_removes_nonzero_subject_yaw(tmp_path: Path) -> None:
     assert aligned_quaternions[pelvis] == pytest.approx(canonical)
 
 
-def test_pinned_rtmw_contract_and_protobuf_match_consumer(monkeypatch) -> None:
-    submodule = repository_root() / "deps" / "RTMW-SMPLX-Teleop"
-    validate_pinned_rtmw_contract(submodule)
-    monkeypatch.setattr(rtmw, "require_pinned_rtmw_revision", lambda: submodule)
+@pytest.mark.integration
+def test_rtmw_protobuf_import(monkeypatch) -> None:
     for name in tuple(sys.modules):
         if name == "rtmw_teleop" or name.startswith("rtmw_teleop."):
             monkeypatch.delitem(sys.modules, name, raising=False)
@@ -900,7 +893,6 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         human_height_m=1.75,
         max_source_interval_seconds=0.70,
     )
-    identity = object()
     calls: dict[str, object] = {}
 
     class FakeStream:
@@ -932,20 +924,13 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         "from_hardware",
         classmethod(lambda _cls, _config: source_config),
     )
-    monkeypatch.setattr(rtmw, "require_pinned_rtmw_revision", lambda: tmp_path)
-    monkeypatch.setattr(rtmw, "validate_pinned_rtmw_contract", lambda _root: None)
 
     def make_stream(actual_config: object, source_body_names: tuple[str, ...]):
         calls["stream"] = (actual_config, source_body_names)
         return stream
 
-    def source_identity(asset: str) -> object:
-        calls["identity_asset"] = asset
-        return identity
-
     def make_retargeter(
         env: object,
-        actual_identity: object,
         config: object,
         *,
         validate_reference: object,
@@ -953,7 +938,6 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         retargeter = object()
         calls["retargeter"] = (
             env,
-            actual_identity,
             config,
             validate_reference,
             retargeter,
@@ -961,7 +945,6 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         return retargeter
 
     monkeypatch.setattr(rtmw, "RtmwSmplxStream", make_stream)
-    monkeypatch.setattr(rtmw, "repository_gmr_source_identity", source_identity)
     monkeypatch.setattr(rtmw, "GmrRetargeter", make_retargeter)
     monkeypatch.setattr(rtmw, "LiveGmrReferenceSource", FakeSource)
 
@@ -982,16 +965,14 @@ def test_rtmw_reference_source_uses_selected_robot_profile(
         source_config,
         motion_task_definition(asset).gmr.source_body_names,
     )
-    assert calls["identity_asset"] == asset
     retargeter_call = calls["retargeter"]
     assert isinstance(retargeter_call, tuple)
     assert retargeter_call[0] is env
-    assert retargeter_call[1] is identity
-    assert retargeter_call[2].human_height_m == pytest.approx(1.66)
-    assert retargeter_call[2].task_profile == "live_upper_body"
-    assert retargeter_call[2].max_source_interval_seconds == pytest.approx(0.70)
-    assert retargeter_call[3] is validation
-    assert calls["source"] == (stream, retargeter_call[4])
+    assert retargeter_call[1].human_height_m == pytest.approx(1.66)
+    assert retargeter_call[1].task_profile == "live_upper_body"
+    assert retargeter_call[1].max_source_interval_seconds == pytest.approx(0.70)
+    assert retargeter_call[2] is validation
+    assert calls["source"] == (stream, retargeter_call[3])
 
 
 def test_rtmw_rejects_an_invalid_required_rotation(tmp_path: Path) -> None:

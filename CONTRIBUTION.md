@@ -59,5 +59,23 @@ The compiled MJX-Warp integration cases require a GPU backend. Run them on a
 CUDA development host with:
 
 ```bash
-JAX_PLATFORMS=cuda ./scripts/test.sh tests/test_motion_tracking.py
+JAX_PLATFORMS=cuda uv run pytest -m integration tests/test_motion_tracking.py
 ```
+
+The default suite excludes `integration` and sets a CPU backend unless explicitly
+overridden. Full robot dynamics and rollout tests are opt-in; run each module in
+a separate process to bound compiled-state memory. Pure algorithm and validator
+tests belong in the default suite. Do not encode robot YAML values, joint counts,
+or nominal-pose collision expectations in tests: validate the selected model at
+runtime and test that validator with synthetic geometry.
+
+To check the exported bundle against the Rust CPU consumer, build `bello-policy`
+from the pinned stack, set `BELLO_POLICY_BIN` to the executable and
+`ORT_DYLIB_PATH` to the ONNX Runtime library, then run:
+
+```bash
+uv run pytest -m integration tests/test_deployment_runtime.py
+```
+
+This uses synthetic policies and temporary local Git fixtures, without a robot,
+GPU, hardware service, or external repository writes.

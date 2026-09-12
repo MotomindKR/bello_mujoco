@@ -7,7 +7,7 @@ from pathlib import Path
 
 import equinox as eqx
 
-from bello_mujoco.assets_pipeline.prepare import prepare_asset
+from bello_mujoco.models.compiler import compile_robot
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.training.checkpoint import (
@@ -31,16 +31,14 @@ def load_locomotion_policy_runtime(
     checkpoint_path: Path,
     *,
     use_viewer_model: bool,
-    allow_git_commit_mismatch: bool = False,
 ) -> LocomotionPolicyRuntime:
     train_state, metadata, normalization = restore_evaluation_checkpoint(
         checkpoint_path,
-        allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
     if not isinstance(metadata, LocomotionCheckpointMetadata):
         raise ValueError(f"checkpoint task is {metadata.task!r}, not 'locomotion'")
-    prepared = prepare_asset(metadata.asset)
-    env = BelloLocomotionEnv.load_prepared(
+    prepared = compile_robot(metadata.asset)
+    env = BelloLocomotionEnv.from_compiled(
         prepared,
         warp=metadata.warp,
         batch_size=1,

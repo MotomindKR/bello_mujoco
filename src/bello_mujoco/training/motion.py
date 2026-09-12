@@ -1,36 +1,34 @@
-"""Train PPO on the fixed-waist, fixed-head Bello tracking environment."""
+"""Train PPO with BeyondMimic motion tracking."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-import warnings
 
 import jax
 
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
     CheckpointMetadata,
     MotionCheckpointMetadata,
     checkpoint_path,
     load_checkpoint_metadata,
-    motion_clip_contract,
-    motion_metadata_with_runner_state,
+    MOTION_FILE,
     restore_runner_checkpoint,
     save_training_checkpoint,
     validate_checkpoint_options,
-    validate_motion_clip_contract,
 )
 from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingEnvConfig,
 )
+from bello_mujoco.evaluation.software import require_linux_software_rendering
 from bello_mujoco.evaluation.motion import (
     MotionEvaluationRequest,
-    MotionEvaluationWorker,
+    evaluate_motion_video,
 )
-from bello_mujoco.motion.clip import motion_tracking_asset_config
+from bello_mujoco.motion.clip import MotionClip, motion_tracking_asset_config
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.training.runtime import (
@@ -60,8 +58,6 @@ from bello_mujoco.training.ppo import (
 from bello_mujoco.repository import (
     capture_repository_commit,
     require_checkpoint_output_directory,
-    require_tracked_repository_path,
-    resolve_repository_path,
 )
 
 
@@ -89,7 +85,7 @@ class MotionEvalVideoConfig:
 
 @dataclass(frozen=True)
 class MotionTrainingRunConfig:
-    asset_config: AssetPrepConfig
+    asset_config: ModelConfig
     config: PPOConfig = PPOConfig()
     env_config: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
     motion: MotionSelectionConfig = MotionSelectionConfig()
@@ -103,8 +99,10 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
     run_config = resolve_motion_selection(run_config)
     validate_ppo_config(run_config.config)
     validate_action_limit_contract(run_config.config, run_config.env_config.action_clip)
-    _validate_fixed_tracking_asset(run_config.asset_config)
+    _validate_motion_asset(run_config.asset_config)
     validate_motion_video_config(run_config.video_config)
+    if run_config.video_config.enabled:
+        require_linux_software_rendering()
     validate_motion_checkpoint_config(run_config.checkpoint_config)
     if run_config.video_config.enabled and not run_config.checkpoint_config.enabled:
         raise ValueError("motion evaluation requires checkpointing to be enabled")
@@ -120,23 +118,9 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
             ),
         )
         git_commit = capture_repository_commit()
-        tracked_motion = require_tracked_repository_path(
-            run_config.env_config.motion_path
-        )
-        run_config = replace(
-            run_config,
-            env_config=replace(
-                run_config.env_config,
-                motion_path=resolve_repository_path(tracked_motion),
-            ),
-        )
-    evaluation_worker = None
     run = None
     succeeded = False
     try:
-        evaluation_worker = (
-            MotionEvaluationWorker() if run_config.video_config.enabled else None
-        )
         run = create_wandb_run(run_config.wandb_config)
         env = BelloMotionTrackingEnv.load(
             run_config.asset_config,
@@ -186,7 +170,6 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
         )
         out = motion_train_update_loop(
             env,
-            evaluation_worker,
             run_config.config,
             rng,
             run_config.video_config,
@@ -210,6 +193,7 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
                 runner_state,
                 metadata,
                 git_commit,
+                env.motion,
             )
             upload_motion_checkpoint(
                 run,
@@ -222,14 +206,21 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
             print({"checkpoint_path": str(final_checkpoint)})
         succeeded = True
     finally:
-        if evaluation_worker is not None:
-            evaluation_worker.close()
         close_run(run, exit_code=0 if succeeded else 1)
 
 
 def resolve_motion_selection(
     run_config: MotionTrainingRunConfig,
 ) -> MotionTrainingRunConfig:
+    if run_config.checkpoint_config.resume_path is not None:
+        return replace(
+            run_config,
+            env_config=replace(
+                run_config.env_config,
+                motion_path=run_config.checkpoint_config.resume_path.resolve()
+                / MOTION_FILE,
+            ),
+        )
     sequence = run_config.motion.sequence
     if not sequence or Path(sequence).name != sequence or Path(sequence).suffix:
         raise ValueError(
@@ -255,7 +246,6 @@ def resolve_motion_selection(
 
 def motion_train_update_loop(
     env: BelloMotionTrackingEnv,
-    evaluation_worker: MotionEvaluationWorker | None,
     config: PPOConfig,
     rng: jax.Array,
     video_config: MotionEvalVideoConfig,
@@ -279,7 +269,7 @@ def motion_train_update_loop(
         return update_runner_state(state, static_policy, optimizer, env, config)
 
     update_fn = jax.jit(update_fn)
-    if video_config.render_initial:
+    if video_config.enabled and video_config.render_initial:
         if checkpoint_root is None or checkpoint_context is None:
             raise ValueError("initial evaluation requires checkpoint context")
         initial_update = int(jax.device_get(runner_state.update))
@@ -290,9 +280,9 @@ def motion_train_update_loop(
             runner_state,
             metadata,
             git_commit,
+            env.motion,
         )
-        try_render_motion_checkpoint_video(
-            evaluation_worker,
+        render_motion_checkpoint_video(
             initial_checkpoint,
             initial_update,
             video_config,
@@ -335,6 +325,7 @@ def motion_train_update_loop(
                 runner_state,
                 metadata,
                 git_commit,
+                env.motion,
             )
             upload_motion_checkpoint(
                 run,
@@ -357,9 +348,9 @@ def motion_train_update_loop(
                     runner_state,
                     metadata,
                     git_commit,
+                    env.motion,
                 )
-            try_render_motion_checkpoint_video(
-                evaluation_worker,
+            render_motion_checkpoint_video(
                 evaluation_checkpoint,
                 update,
                 video_config,
@@ -404,12 +395,14 @@ def save_motion_checkpoint(
     runner_state: RunnerState,
     metadata: MotionCheckpointMetadata,
     git_commit: str,
+    motion: MotionClip,
 ) -> None:
     save_training_checkpoint(
         path,
         runner_state,
-        motion_metadata_with_runner_state(metadata, runner_state),
+        metadata,
         git_commit,
+        motion=motion,
     )
 
 
@@ -419,14 +412,6 @@ def motion_checkpoint_metadata(
     policy_obs_size: int,
     critic_policy_obs_size: int,
 ) -> MotionCheckpointMetadata:
-    if run_config.asset_config.output_root is not None:
-        raise ValueError(
-            "training requires asset_config.output_root=null so the exact source "
-            "revision owns asset generation"
-        )
-    motion_path = run_config.env_config.motion_path
-    if run_config.checkpoint_config.enabled:
-        motion_path = require_tracked_repository_path(motion_path)
     return MotionCheckpointMetadata(
         ppo=run_config.config,
         asset=run_config.asset_config,
@@ -439,14 +424,7 @@ def motion_checkpoint_metadata(
         action_layout=env.action_layout,
         motion_env=replace(
             run_config.env_config,
-            motion_path=motion_path,
-        ),
-        motion=replace(
-            motion_clip_contract(
-                run_config.env_config.motion_path,
-                env.motion,
-            ),
-            path=motion_path,
+            motion_path=Path(MOTION_FILE),
         ),
     )
 
@@ -463,9 +441,6 @@ def load_motion_resume(
         return None
     metadata = load_checkpoint_metadata(
         path,
-        allow_git_commit_mismatch=(
-            run_config.checkpoint_config.allow_git_commit_mismatch
-        ),
     )
     validate_motion_resume(
         metadata,
@@ -480,9 +455,6 @@ def load_motion_resume(
             path,
             env,
             expected_metadata,
-            allow_git_commit_mismatch=(
-                run_config.checkpoint_config.allow_git_commit_mismatch
-            ),
         )
     )
     if restored_metadata != expected_metadata:
@@ -524,15 +496,9 @@ def validate_motion_resume(
         or metadata.action_layout != env.action_layout
     ):
         raise ValueError("resume checkpoint policy contract does not match this run")
-    validate_motion_clip_contract(
-        run_config.env_config.motion_path,
-        env.motion,
-        metadata.motion,
-    )
 
 
 def render_motion_checkpoint_video(
-    worker: MotionEvaluationWorker,
     checkpoint: Path,
     update: int,
     config: MotionEvalVideoConfig,
@@ -541,7 +507,7 @@ def render_motion_checkpoint_video(
     env_steps: int,
 ) -> Path:
     output_path = config.output_dir / f"{config.filename_prefix}_{update:06d}.mp4"
-    stats = worker.evaluate(
+    stats = evaluate_motion_video(
         MotionEvaluationRequest(
             checkpoint=checkpoint.resolve(),
             output_path=output_path.resolve(),
@@ -597,26 +563,6 @@ def log_motion_evaluation(
     )
 
 
-def try_render_motion_checkpoint_video(*args, **kwargs) -> Path | None:
-    update = int(args[2])
-    if args[0] is None:
-        warnings.warn(
-            f"motion evaluation worker is unavailable at update {update}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return None
-    try:
-        return render_motion_checkpoint_video(*args, **kwargs)
-    except Exception as error:  # noqa: BLE001 - evaluation is noncritical
-        warnings.warn(
-            f"isolated motion evaluation failed at update {update}: {error}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return None
-
-
 def validate_motion_video_config(config: MotionEvalVideoConfig) -> None:
     if not config.enabled:
         return
@@ -642,10 +588,9 @@ def validate_motion_checkpoint_config(config: CheckpointConfig) -> None:
         raise FileNotFoundError(config.resume_path)
 
 
-def _validate_fixed_tracking_asset(config: AssetPrepConfig) -> None:
+def _validate_motion_asset(config: ModelConfig) -> None:
     expected = motion_tracking_asset_config(
         asset=config.asset,
-        output_root=config.output_root,
         end_effector_payload_mass_kg=config.end_effector_payload_mass_kg,
     )
     if config != expected:

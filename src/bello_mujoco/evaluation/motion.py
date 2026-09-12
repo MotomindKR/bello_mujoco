@@ -3,12 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import multiprocessing as mp
-import os
 from pathlib import Path
-from queue import Empty
-import time
-import traceback
 from typing import TypedDict
 
 import jax
@@ -47,8 +42,12 @@ from bello_mujoco.motion.clip import (
 from bello_mujoco.robot import AssetName
 from bello_mujoco.motion.native import NativeContactData, NativeMotionData
 from bello_mujoco.motion.runtime import load_motion_policy_runtime
-from bello_mujoco.sim import load_bello_model
+from bello_mujoco.sim import load_model
 from bello_mujoco.terrain import FLAT_TERRAIN
+from bello_mujoco.evaluation.software import (
+    run_software_evaluation,
+    validate_software_renderer,
+)
 
 
 class MotionRolloutStats(TypedDict):
@@ -71,16 +70,12 @@ def render_checkpoint_with_stats(
     width: int = 640,
     height: int = 480,
     fps: int = 50,
-    motion_path: Path | None = None,
     end_effector_payload_mass_kg: float | None = None,
-    allow_git_commit_mismatch: bool = False,
 ) -> MotionRolloutStats:
     runtime = load_motion_policy_runtime(
         checkpoint,
-        motion_path=motion_path,
         end_effector_payload_mass_kg=end_effector_payload_mass_kg,
         use_viewer_model=True,
-        allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
     metadata = runtime.metadata
     return render_motion_policy(
@@ -146,21 +141,11 @@ def render_motion_policy(
             reference = env.aligned_reference(
                 state.reference_time, state.alignment_xy, state.alignment_yaw
             )
-            root = env.model.root_qpos_adr
             policy_qpos = jax.numpy.asarray(env.model.policy_qpos_indices)
-            if env.config.formulation in {
-                "beyondmimic",
-                "beyondmimic_joint_limits",
-            }:
-                actual_position = state.data.xpos[env.anchor_body_id]
-                actual_orientation = state.data.xquat[env.anchor_body_id]
-                target_position = reference.body_pos[env.anchor_body_index]
-                target_orientation = reference.body_quat[env.anchor_body_index]
-            else:
-                actual_position = state.data.qpos[root : root + 3]
-                actual_orientation = state.data.qpos[root + 3 : root + 7]
-                target_position = reference.qpos[root : root + 3]
-                target_orientation = reference.qpos[root + 3 : root + 7]
+            actual_position = state.data.xpos[env.anchor_body_id]
+            actual_orientation = state.data.xquat[env.anchor_body_id]
+            target_position = reference.body_pos[env.anchor_body_index]
+            target_orientation = reference.body_quat[env.anchor_body_index]
             root_position_errors.append(
                 float(
                     jax.device_get(
@@ -247,7 +232,7 @@ def reset_native_motion_rollout(
     mj_data.qpos[:] = np.asarray(reference.qpos)
     mj_data.qvel[:] = np.asarray(reference.qvel)
     mj_data.ctrl[:] = np.asarray(
-        env._initial_ctrl(reference, joint_default_offset), dtype=np.float64
+        env._initial_ctrl(joint_default_offset), dtype=np.float64
     )
     mujoco.mj_forward(env.model.mj_model, mj_data)
     state = native_motion_state(
@@ -401,7 +386,8 @@ def render_reference(
     fps: int = 30,
     end_effector_payload_mass_kg: float = 0.0,
 ) -> Path:
-    model = load_bello_model(
+    validate_software_renderer()
+    model = load_model(
         motion_tracking_asset_config(
             asset=asset, end_effector_payload_mass_kg=end_effector_payload_mass_kg
         ),
@@ -451,112 +437,13 @@ class MotionEvaluationRequest:
     fps: int
 
 
-@dataclass(frozen=True)
-class MotionEvaluationResponse:
-    stats: MotionRolloutStats | None = None
-    error: str | None = None
-
-
-def _worker_main(request: MotionEvaluationRequest, responses) -> None:
-    try:
-        stats = render_checkpoint_with_stats(
-            request.checkpoint,
-            request.output_path,
-            steps=request.steps,
-            width=request.width,
-            height=request.height,
-            fps=request.fps,
-        )
-        responses.put(MotionEvaluationResponse(stats=stats))
-    except BaseException:  # noqa: BLE001 - report worker failure to PPO
-        responses.put(MotionEvaluationResponse(error=traceback.format_exc()))
-
-
-class MotionEvaluationWorker:
-    def __init__(self) -> None:
-        self._context = mp.get_context("spawn")
-        self._process = None
-        self._responses = None
-
-    def _start(self, request: MotionEvaluationRequest) -> None:
-        if self._process is not None:
-            raise RuntimeError("motion evaluator is already rendering")
-        responses = self._context.Queue(maxsize=1)
-        process = self._context.Process(
-            target=_worker_main,
-            args=(request, responses),
-            name="bello-motion-evaluator",
-        )
-        child_environment = {
-            "JAX_PLATFORMS": "cpu",
-            "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
-        }
-        previous = {name: os.environ.get(name) for name in child_environment}
-        try:
-            os.environ.update(child_environment)
-            process.start()
-        finally:
-            for name, value in previous.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
-        self._process = process
-        self._responses = responses
-
-    def _stop(self) -> None:
-        process = self._process
-        responses = self._responses
-        if process is not None:
-            process.join(timeout=10.0)
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=5.0)
-            process.close()
-        if responses is not None:
-            responses.close()
-            responses.join_thread()
-        self._process = None
-        self._responses = None
-
-    def evaluate(
-        self,
-        request: MotionEvaluationRequest,
-        *,
-        timeout_seconds: float = 300.0,
-    ) -> MotionRolloutStats:
-        self._start(request)
-        try:
-            deadline = time.monotonic() + timeout_seconds
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0.0:
-                    raise TimeoutError(
-                        f"motion evaluation exceeded {timeout_seconds:.0f} seconds"
-                    )
-                try:
-                    response = self._responses.get(timeout=min(1.0, remaining))
-                    break
-                except Empty as error:
-                    if not self._process.is_alive():
-                        raise RuntimeError(
-                            "motion evaluator exited while rendering with code "
-                            f"{self._process.exitcode}"
-                        ) from error
-            if response.error is not None:
-                raise RuntimeError(f"motion evaluator failed:\n{response.error}")
-            if response.stats is None:
-                raise RuntimeError("motion evaluator returned neither stats nor error")
-            return response.stats
-        finally:
-            # A fresh process per video guarantees compiled resources are reclaimed.
-            self._stop()
-
-    def close(self) -> None:
-        self._stop()
-
-    def __enter__(self) -> "MotionEvaluationWorker":
-        return self
-
-    def __exit__(self, *_exc_info) -> None:
-        self.close()
+def evaluate_motion_video(request: MotionEvaluationRequest) -> MotionRolloutStats:
+    return run_software_evaluation(
+        render_checkpoint_with_stats,
+        request.checkpoint,
+        request.output_path,
+        steps=request.steps,
+        width=request.width,
+        height=request.height,
+        fps=request.fps,
+    )

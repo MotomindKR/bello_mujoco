@@ -24,13 +24,11 @@ from bello_mujoco.hardware import rtmw_contract as _rtmw_contract
 from bello_mujoco.hardware.rtmw_contract import (
     RTMW_COORDINATE_SPACE as RTMW_COORDINATE_SPACE,
     RTMW_REPRESENTATION,
-    RTMW_REVISION,
     RTMW_ROTATION_SEMANTICS as RTMW_ROTATION_SEMANTICS,
     RTMW_SCHEMA_ID as RTMW_SCHEMA_ID,
     RTMW_SCHEMA_VERSION,
     RTMW_SMPLX52_NAMES,
     RTMW_SMPLX52_PARENTS,
-    validate_pinned_rtmw_contract,
     validate_stream_info as _validate_stream_info,
 )
 from bello_mujoco.hardware.smplx_retarget import (
@@ -40,12 +38,8 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_MODEL_TO_WORLD_WXYZ,
     SmplxTargetFrame,
     load_smplx_standing_sample,
-    repository_gmr_source_identity,
 )
-from bello_mujoco.hardware.twist2 import (
-    ReferenceDiscontinuity,
-    ReferenceUnavailable,
-)
+from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
 from bello_mujoco.robot_tasks import motion_task_definition
 
 _REQUIRED_RANK_TWO_ROTATION_NAMES = ("pelvis",)
@@ -914,8 +908,6 @@ def rtmw_locomotion_reference_source(
 ) -> Iterator[LiveGmrReferenceSource]:
     """Construct pinned RTMW gRPC -> GMR locomotion references."""
 
-    rtmw_root = require_pinned_rtmw_revision()
-    validate_pinned_rtmw_contract(rtmw_root)
     source_config = RtmwGrpcConfig.from_hardware(config)
     asset = adapter.env.model.robot.asset
     profile = motion_task_definition(asset).gmr
@@ -923,7 +915,6 @@ def rtmw_locomotion_reference_source(
     with stream:
         retargeter = GmrRetargeter(
             adapter.env,
-            repository_gmr_source_identity(asset),
             GmrLiveRetargetConfig(
                 human_height_m=config.smplx_human_height_m,
                 task_profile=config.rtmw_gmr_task_profile,
@@ -939,7 +930,6 @@ def rtmw_locomotion_reference_source(
                     "stream_instance_id": stream.stream_instance_id,
                     "stream_config_sha256": stream.stream_config_sha256,
                     "depth_provenance": stream.depth_provenance,
-                    "rtmw_revision": RTMW_REVISION,
                     "schema_version": RTMW_SCHEMA_VERSION,
                     "representation": RTMW_REPRESENTATION,
                     "gmr_task_profile": config.rtmw_gmr_task_profile,
@@ -951,12 +941,8 @@ def rtmw_locomotion_reference_source(
             yield source
 
 
-def require_pinned_rtmw_revision() -> Path:
-    return _rtmw_contract.require_pinned_rtmw_revision()
-
-
 def import_pinned_rtmw_proto() -> tuple[Any, Any]:
-    return _rtmw_contract.import_pinned_rtmw_proto(require_pinned_rtmw_revision())
+    return _rtmw_contract.import_pinned_rtmw_proto()
 
 
 def _validate_service_status(message: Any) -> None:

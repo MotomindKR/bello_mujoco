@@ -133,41 +133,27 @@ class GmrRetargetDefinition:
 @dataclass(frozen=True)
 class MotionTaskDefinition:
     asset: AssetName
-    legacy_import_joint_names: tuple[str, ...]
-    fixed_joint_names: tuple[str, ...]
     reference_root_body_name: str
     default_tracked_body_names: tuple[str, ...]
     beyondmimic_tracked_body_names: tuple[str, ...]
     default_end_effector_body_names: tuple[str, ...]
     beyondmimic_end_effector_body_names: tuple[str, ...]
-    twist_key_body_names: tuple[str, ...]
     gmr: GmrRetargetDefinition
 
     def __post_init__(self) -> None:
         for field_name in (
-            "legacy_import_joint_names",
-            "fixed_joint_names",
             "default_tracked_body_names",
             "beyondmimic_tracked_body_names",
             "default_end_effector_body_names",
             "beyondmimic_end_effector_body_names",
-            "twist_key_body_names",
         ):
             values = getattr(self, field_name)
-            if (field_name != "fixed_joint_names" and not values) or any(
-                not value for value in values
-            ):
+            if not values or any(not value for value in values):
                 raise ValueError(f"motion task {field_name} must be nonempty")
             if len(set(values)) != len(values):
                 raise ValueError(f"motion task {field_name} must contain unique names")
         if not self.reference_root_body_name:
             raise ValueError("motion task reference_root_body_name must not be empty")
-        if self.fixed_joint_names and not set(self.fixed_joint_names) & set(
-            self.legacy_import_joint_names
-        ):
-            raise ValueError(
-                "motion task fixed_joint_names must include a legacy import joint"
-            )
         for field_name in (
             "default_tracked_body_names",
             "beyondmimic_tracked_body_names",
@@ -188,15 +174,6 @@ class MotionTaskDefinition:
             raise ValueError(
                 "BeyondMimic end effectors must belong to its tracked bodies"
             )
-        if len(self.twist_key_body_names) != 9:
-            raise ValueError("TWIST requires exactly nine key bodies")
-
-    @property
-    def imported_actuator_joint_names(self) -> tuple[str, ...]:
-        fixed = set(self.fixed_joint_names)
-        return tuple(
-            name for name in self.legacy_import_joint_names if name not in fixed
-        )
 
     @property
     def referenced_body_names(self) -> frozenset[str]:
@@ -207,7 +184,6 @@ class MotionTaskDefinition:
                 *self.beyondmimic_tracked_body_names,
                 *self.default_end_effector_body_names,
                 *self.beyondmimic_end_effector_body_names,
-                *self.twist_key_body_names,
                 *self.gmr.output_body_names,
             )
         )
@@ -220,14 +196,11 @@ _MOTION_TASK_CONFIG_FILES: dict[AssetName, str] = {
 _MOTION_TASK_FIELDS = frozenset(
     {
         "asset",
-        "legacy_import_joint_names",
-        "fixed_joint_names",
         "reference_root_body_name",
         "default_tracked_body_names",
         "beyondmimic_tracked_body_names",
         "default_end_effector_body_names",
         "beyondmimic_end_effector_body_names",
-        "twist_key_body_names",
         "gmr",
     }
 )
@@ -271,12 +244,6 @@ def motion_task_definition(asset: AssetName) -> MotionTaskDefinition:
         )
     definition = MotionTaskDefinition(
         asset=asset,
-        legacy_import_joint_names=_string_tuple(
-            document["legacy_import_joint_names"], "legacy_import_joint_names"
-        ),
-        fixed_joint_names=_string_tuple(
-            document["fixed_joint_names"], "fixed_joint_names"
-        ),
         reference_root_body_name=_string(
             document["reference_root_body_name"], "reference_root_body_name"
         ),
@@ -294,9 +261,6 @@ def motion_task_definition(asset: AssetName) -> MotionTaskDefinition:
         beyondmimic_end_effector_body_names=_string_tuple(
             document["beyondmimic_end_effector_body_names"],
             "beyondmimic_end_effector_body_names",
-        ),
-        twist_key_body_names=_string_tuple(
-            document["twist_key_body_names"], "twist_key_body_names"
         ),
         gmr=_gmr_retarget_definition(document["gmr"]),
     )
@@ -318,17 +282,6 @@ def validate_motion_task_source_urdf(
             "motion task profile references links absent from the source URDF: "
             + ", ".join(missing_links)
         )
-    joint_names = {
-        name
-        for joint in root.findall("joint")
-        if (name := joint.get("name")) is not None
-    }
-    missing_joints = sorted(set(task.legacy_import_joint_names) - joint_names)
-    if missing_joints:
-        raise ValueError(
-            "motion task profile references joints absent from the source URDF: "
-            + ", ".join(missing_joints)
-        )
 
 
 def _validate_against_robot(
@@ -336,13 +289,6 @@ def _validate_against_robot(
     robot: RobotDefinition,
 ) -> None:
     actuator_names = tuple(actuator.joint_name for actuator in robot.actuators)
-    if set(task.imported_actuator_joint_names) != set(actuator_names):
-        missing = sorted(set(actuator_names) - set(task.imported_actuator_joint_names))
-        unknown = sorted(set(task.imported_actuator_joint_names) - set(actuator_names))
-        raise ValueError(
-            "motion task imported actuator joints differ from the robot definition: "
-            f"missing={missing}, unknown={unknown}"
-        )
     unknown_standing_joints = sorted(
         set(task.gmr.standing_default_joint_names) - set(actuator_names)
     )

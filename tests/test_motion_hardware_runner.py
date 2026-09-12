@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.hardware import motion as motion_hardware
 from bello_mujoco.hardware.runtime import HardwareFrame
 
@@ -264,7 +264,7 @@ def test_motion_hardware_rejects_payload_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     metadata = SimpleNamespace(
-        asset=AssetPrepConfig(end_effector_payload_mass_kg=4.5359237)
+        asset=ModelConfig(end_effector_payload_mass_kg=4.5359237)
     )
     runtime = SimpleNamespace(
         env=object(),
@@ -471,7 +471,7 @@ def test_read_only_preflight_never_acquires_control(
             adapter,
             SimpleNamespace(
                 task="motion_tracking",
-                asset=AssetPrepConfig(),
+                asset=ModelConfig(),
             ),
         ),
     )

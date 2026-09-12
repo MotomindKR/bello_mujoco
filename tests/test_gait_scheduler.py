@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from bello_mujoco.envs.locomotion import (
+from bello_mujoco.envs.gait import (
     GaitConfig,
     advance_gait_phase,
     advance_standing_blend,

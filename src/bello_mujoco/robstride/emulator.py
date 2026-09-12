@@ -16,13 +16,12 @@ from typing import TextIO
 import mujoco
 import numpy as np
 
-from bello_mujoco.assets_pipeline.prepare import (
-    AssetPrepConfig,
-    canonical_physical_asset_config,
-    prepare_asset,
+from bello_mujoco.models.compiler import (
+    ModelConfig,
+    physical_model_config,
+    compile_robot,
 )
-from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
-from bello_mujoco.assets_pipeline import robot_descriptions_root
+from bello_mujoco.models import robot_descriptions_root
 from bello_mujoco.hardware.ebimu import EbimuSerialEmulator
 from bello_mujoco.imu import (
     ImuNoiseConfig,
@@ -49,7 +48,7 @@ from bello_mujoco.robot import AssetName, robot_definition
 from bello_mujoco.sim import (
     BelloModel,
     SimulationPhysicsConfig,
-    load_prepared_bello_model,
+    load_compiled_model,
     preserve_runtime_physics,
 )
 from bello_mujoco.terrain import FLAT_TERRAIN
@@ -63,8 +62,8 @@ def default_motor_model_catalog(asset: AssetName) -> Path:
     return robot_definition(asset).motor_model_catalog_path(robot_descriptions_root())
 
 
-def default_emulator_asset_config(asset: AssetName = "bello") -> AssetPrepConfig:
-    return canonical_physical_asset_config(asset=asset, imu_enabled=True)
+def default_emulator_asset_config(asset: AssetName = "bello") -> ModelConfig:
+    return physical_model_config(asset=asset, imu_enabled=True)
 
 
 @dataclass(frozen=True)
@@ -72,7 +71,7 @@ class EmulatorConfig:
     """Runtime settings for the RobStride/MuJoCo hardware emulator."""
 
     bus_interfaces: tuple[str, ...] = ("can0=vcan0", "can1=vcan1")
-    asset_config: AssetPrepConfig = field(default_factory=default_emulator_asset_config)
+    asset_config: ModelConfig = field(default_factory=default_emulator_asset_config)
     simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig(
         timestep=0.0025
     )
@@ -240,12 +239,11 @@ def run_emulator(config: EmulatorConfig = EmulatorConfig()) -> None:
     config = _configure_imu_source(config, robstride)
     validate_motor_coverage(
         config.asset_config.asset,
-        config.asset_config.joint_availability,
         robstride.motors,
     )
 
-    prepared = prepare_asset(config.asset_config)
-    model = load_prepared_bello_model(
+    prepared = compile_robot(config.asset_config)
+    model = load_compiled_model(
         prepared,
         terrain=FLAT_TERRAIN,
         simulation_physics=config.simulation_physics,
@@ -388,11 +386,6 @@ def run_simulation(
         )
         if config.video_path is not None:
             print(f"  video: record free-torso motion to {config.video_path}")
-        fixed_joints = sorted(
-            config.asset_config.joint_availability.disabled_joint_names
-        )
-        if fixed_joints:
-            print("  fixed in URDF: " + ", ".join(fixed_joints))
         print(f"  torso: GUIDED (downward travel {torso_hold.drop_limit_m * 100:g} cm)")
         if imu_sensor is not None:
             print(f"  imu: {config.asset_config.imu_config.body_name}")
@@ -818,7 +811,6 @@ def validate_config(config: EmulatorConfig) -> None:
 
 def validate_motor_coverage(
     asset: AssetName,
-    availability: JointAvailabilityConfig,
     motors: tuple[MotorSpec, ...],
 ) -> None:
     mapped: set[str] = set()
@@ -828,20 +820,12 @@ def validate_motor_coverage(
         else:
             mapped.update(motor.target.owned_joints)
     configured = {actuator.joint_name for actuator in robot_definition(asset).actuators}
-    disabled = set(availability.disabled_joint_names)
-    enabled = configured - disabled
-    missing_motors = enabled - mapped
-    disabled_motors = mapped & disabled
+    missing_motors = configured - mapped
     unknown_motors = mapped - configured
     if missing_motors:
         raise ValueError(
             "enabled robot joints require RobStride motor mappings: "
             + ", ".join(sorted(missing_motors))
-        )
-    if disabled_motors:
-        raise ValueError(
-            "RobStride motors target joints fixed by joint availability: "
-            + ", ".join(sorted(disabled_motors))
         )
     if unknown_motors:
         raise ValueError(

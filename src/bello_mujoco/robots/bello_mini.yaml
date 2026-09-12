@@ -1,14 +1,9 @@
 asset: bello_mini
 # The pinned 28-motor binding is approved for physical locomotion deployment.
 source_urdf: bello_mini/urdf/bello_mini.urdf
-source_directories:
-  - bello_mini/urdf
-  - bello_mini/meshes
 hardware_description: bello_mini/hardware.yaml
 physical_hardware_ready: true
 motor_model_catalog: robstride/models.yaml
-output_directory: bello_mini
-output_stem: bello_mini
 root_body_name: bello_mini_root
 root_joint_name: root_free
 default_root_position: [0.0, 0.0, 0.859]
@@ -16,21 +11,6 @@ default_root_quaternion: [1.0, 0.0, 0.0, 0.0]
 default_imu_body_name: imu_link
 locomotion_command_frame_body_name: pelvis_link
 locomotion_forward_axis: [1.0, 0.0, 0.0]
-locomotion_action_mirror:
-  left_hip_pitch_joint: {counterpart: right_hip_pitch_joint, sign: 1}
-  right_hip_pitch_joint: {counterpart: left_hip_pitch_joint, sign: 1}
-  left_hip_roll_joint: {counterpart: right_hip_roll_joint, sign: -1}
-  right_hip_roll_joint: {counterpart: left_hip_roll_joint, sign: -1}
-  left_hip_yaw_joint: {counterpart: right_hip_yaw_joint, sign: -1}
-  right_hip_yaw_joint: {counterpart: left_hip_yaw_joint, sign: -1}
-  left_knee_joint: {counterpart: right_knee_joint, sign: 1}
-  right_knee_joint: {counterpart: left_knee_joint, sign: 1}
-  left_ankle_pitch_joint: {counterpart: right_ankle_pitch_joint, sign: 1}
-  right_ankle_pitch_joint: {counterpart: left_ankle_pitch_joint, sign: 1}
-  left_ankle_roll_joint: {counterpart: right_ankle_roll_joint, sign: -1}
-  right_ankle_roll_joint: {counterpart: left_ankle_roll_joint, sign: -1}
-  waist_yaw_joint: {counterpart: waist_yaw_joint, sign: -1}
-  waist_roll_joint: {counterpart: waist_roll_joint, sign: -1}
 foot_body_names:
   - left_ankle_roll_link
   - right_ankle_roll_link
@@ -113,25 +93,25 @@ actuators:
     mode: policy
     default_pos: -0.30
     soft_limit: null
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 17.0
   - joint_name: right_ankle_pitch_joint
     mode: policy
     default_pos: -0.30
     soft_limit: null
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 17.0
   - joint_name: left_ankle_roll_joint
     mode: policy
     default_pos: 0.0
     soft_limit: null
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 17.0
   - joint_name: right_ankle_roll_joint
     mode: policy
     default_pos: 0.0
     soft_limit: null
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 17.0
   - joint_name: waist_yaw_joint
     mode: policy
@@ -236,38 +216,3 @@ payload_attachments:
   - link_name: right_end_effector_sphere_link
     radius_m: 0.025
     center_m: [0.0, 0.0, -0.025]
-# Observation-derived differential sign/order candidate matching the pinned
-# URDF; validate after this change. Reductions and encoder zeros are uncalibrated.
-coupled_actuator_groups:
-  - name: left_ankle_differential
-    actuators:
-      - tendon_name: left_ankle_motor_1
-        logical_joint_name: left_ankle_pitch_joint
-        joint_coefficients:
-          - joint_name: left_ankle_pitch_joint
-            coefficient: -1.0
-          - joint_name: left_ankle_roll_joint
-            coefficient: 1.0
-      - tendon_name: left_ankle_motor_2
-        logical_joint_name: left_ankle_roll_joint
-        joint_coefficients:
-          - joint_name: left_ankle_pitch_joint
-            coefficient: 1.0
-          - joint_name: left_ankle_roll_joint
-            coefficient: 1.0
-  - name: right_ankle_differential
-    actuators:
-      - tendon_name: right_ankle_motor_1
-        logical_joint_name: right_ankle_pitch_joint
-        joint_coefficients:
-          - joint_name: right_ankle_pitch_joint
-            coefficient: -1.0
-          - joint_name: right_ankle_roll_joint
-            coefficient: 1.0
-      - tendon_name: right_ankle_motor_2
-        logical_joint_name: right_ankle_roll_joint
-        joint_coefficients:
-          - joint_name: right_ankle_pitch_joint
-            coefficient: 1.0
-          - joint_name: right_ankle_roll_joint
-            coefficient: 1.0

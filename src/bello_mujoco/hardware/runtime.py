@@ -16,7 +16,6 @@ import time
 from typing import Any, Protocol
 import warnings
 
-import mujoco
 import numpy as np
 
 from bello_mujoco.hardware.config import HardwareControlConfig
@@ -123,25 +122,7 @@ def validate_hardware_control_config(config: HardwareControlConfig) -> None:
 
 
 def actuator_coordinate_names(env: Any) -> tuple[str, ...]:
-    model = env.model.mj_model
-    result = []
-    for actuator_id in range(model.nu):
-        transmission = int(model.actuator_trntype[actuator_id])
-        object_id = int(model.actuator_trnid[actuator_id, 0])
-        if transmission == int(mujoco.mjtTrn.mjTRN_JOINT):
-            object_type = mujoco.mjtObj.mjOBJ_JOINT
-        elif transmission == int(mujoco.mjtTrn.mjTRN_TENDON):
-            object_type = mujoco.mjtObj.mjOBJ_TENDON
-        else:
-            raise ValueError(
-                "hardware deployment supports only joint and tendon actuators; "
-                f"actuator {actuator_id} uses transmission {transmission}"
-            )
-        name = mujoco.mj_id2name(model, object_type, object_id)
-        if name is None:
-            raise ValueError(f"actuator {actuator_id} has an unnamed coordinate")
-        result.append(name)
-    return tuple(result)
+    return env.model.actuator_coordinate_names
 
 
 def actuator_impedance_gains(env: Any) -> tuple[np.ndarray, np.ndarray]:

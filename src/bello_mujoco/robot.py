@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from omegaconf import OmegaConf
 
+from bello_mujoco.models import robot_descriptions_root
+
 AssetName = Literal["bello", "bello_mini"]
 
 
@@ -132,19 +134,6 @@ class JointActuatorDefinition:
 
 
 @dataclass(frozen=True)
-class JointMirrorDefinition:
-    joint_name: str
-    counterpart_joint_name: str
-    sign: float
-
-    def __post_init__(self) -> None:
-        if not self.joint_name or not self.counterpart_joint_name:
-            raise ValueError("joint mirror names must not be empty")
-        if self.sign not in {-1.0, 1.0}:
-            raise ValueError("joint mirror sign must be -1 or 1")
-
-
-@dataclass(frozen=True)
 class FootSupportGeometry:
     body_name: str
     geom_names: tuple[str, ...]
@@ -162,12 +151,9 @@ class FootSupportGeometry:
 class RobotDefinition:
     asset: AssetName
     source_urdf: Path
-    source_directories: tuple[Path, ...]
     hardware_description: Path | None
     physical_hardware_ready: bool
     motor_model_catalog: Path | None
-    output_directory: Path
-    output_stem: str
     root_body_name: str
     root_joint_name: str
     default_root_position: tuple[float, float, float]
@@ -175,7 +161,6 @@ class RobotDefinition:
     default_imu_body_name: str
     locomotion_command_frame_body_name: str
     locomotion_forward_axis: tuple[float, float, float]
-    locomotion_action_mirror: tuple[JointMirrorDefinition, ...]
     foot_body_names: tuple[str, str]
     foot_support_geometries: tuple[FootSupportGeometry, FootSupportGeometry]
     foot_forward_axes: tuple[
@@ -192,8 +177,6 @@ class RobotDefinition:
     def __post_init__(self) -> None:
         paths = (
             self.source_urdf,
-            *self.source_directories,
-            self.output_directory,
             *(
                 path
                 for path in (self.hardware_description, self.motor_model_catalog)
@@ -202,7 +185,7 @@ class RobotDefinition:
         )
         if any(path.is_absolute() or ".." in path.parts for path in paths):
             raise ValueError("robot definition paths must be relative and contained")
-        if not self.source_urdf.name or not self.source_directories:
+        if not self.source_urdf.name:
             raise ValueError("robot definition requires source paths")
         if self.physical_hardware_ready and (
             self.hardware_description is None or self.motor_model_catalog is None
@@ -212,7 +195,6 @@ class RobotDefinition:
                 "model catalog"
             )
         names = (
-            self.output_stem,
             self.root_body_name,
             self.root_joint_name,
             self.default_imu_body_name,
@@ -302,45 +284,6 @@ class RobotDefinition:
             actuator_joint_names
         ):
             raise ValueError("actuator joint names must be nonempty and unique")
-        policy_joint_names = {
-            actuator.joint_name
-            for actuator in self.actuators
-            if actuator.mode == "policy"
-        }
-        mirror_by_name = {
-            mirror.joint_name: mirror for mirror in self.locomotion_action_mirror
-        }
-        if len(mirror_by_name) != len(self.locomotion_action_mirror):
-            raise ValueError("locomotion action mirror joint names must be unique")
-        if set(mirror_by_name) != policy_joint_names:
-            missing = sorted(policy_joint_names - set(mirror_by_name))
-            unknown = sorted(set(mirror_by_name) - policy_joint_names)
-            details = []
-            if missing:
-                details.append("missing " + ", ".join(missing))
-            if unknown:
-                details.append("non-policy " + ", ".join(unknown))
-            raise ValueError(
-                "locomotion action mirror must cover the policy joints exactly: "
-                + "; ".join(details)
-            )
-        for joint_name, mirror in mirror_by_name.items():
-            counterpart = mirror_by_name.get(mirror.counterpart_joint_name)
-            if counterpart is None:
-                raise ValueError(
-                    "locomotion action mirror references a missing counterpart: "
-                    f"{joint_name!r} -> {mirror.counterpart_joint_name!r}"
-                )
-            if counterpart.counterpart_joint_name != joint_name:
-                raise ValueError(
-                    "locomotion action mirror counterparts must be involutive: "
-                    f"{joint_name!r} -> {mirror.counterpart_joint_name!r}"
-                )
-            if mirror.sign * counterpart.sign != 1.0:
-                raise ValueError(
-                    "locomotion action mirror signs must be involutive: "
-                    f"{joint_name!r} and {mirror.counterpart_joint_name!r}"
-                )
         payload_link_names = tuple(
             attachment.link_name for attachment in self.payload_attachments
         )
@@ -416,9 +359,6 @@ class RobotDefinition:
     def source_urdf_path(self, description_root: Path) -> Path:
         return description_root / self.source_urdf
 
-    def source_directory_paths(self, description_root: Path) -> tuple[Path, ...]:
-        return tuple(description_root / path for path in self.source_directories)
-
     def hardware_description_path(self, description_root: Path) -> Path:
         if self.hardware_description is None:
             raise ValueError(f"robot asset {self.asset!r} has no hardware description")
@@ -428,18 +368,6 @@ class RobotDefinition:
         if self.motor_model_catalog is None:
             raise ValueError(f"robot asset {self.asset!r} has no motor model catalog")
         return description_root / self.motor_model_catalog
-
-    def generated_urdf_path(self, output_root: Path) -> Path:
-        return output_root / self.output_directory / "urdf" / f"{self.output_stem}.urdf"
-
-    def generated_mjcf_path(self, output_root: Path, *, viewer: bool = False) -> Path:
-        suffix = "_viewer" if viewer else ""
-        return (
-            output_root
-            / self.output_directory
-            / "mjcf"
-            / f"{self.output_stem}{suffix}.xml"
-        )
 
 
 def validate_robot_source_urdf(
@@ -497,89 +425,6 @@ def validate_robot_source_urdf(
             + ", ".join(missing_joints)
         )
 
-    source_couplings: dict[str, dict[str, dict[str, float]]] = {}
-    for transmission in root.findall("transmission"):
-        kind = transmission.findtext("type", default="")
-        if not kind.endswith("DifferentialTransmission"):
-            continue
-        name = transmission.get("name")
-        if not name or name in source_couplings:
-            raise ValueError(
-                "source URDF differential transmission names must be unique"
-            )
-
-        members: dict[str, tuple[str, float]] = {}
-        for tag, role_prefix in (("actuator", "actuator"), ("joint", "joint")):
-            for index in (1, 2):
-                role = f"{role_prefix}{index}"
-                member = transmission.find(f"{tag}[@role='{role}']")
-                if member is None or not member.get("name"):
-                    raise ValueError(
-                        f"source URDF transmission {name!r} is missing {role}"
-                    )
-                reduction_text = member.findtext("mechanical_reduction", default="1")
-                try:
-                    reduction = float(reduction_text)
-                except ValueError as error:
-                    raise ValueError(
-                        f"source URDF transmission {name!r} has invalid {role} "
-                        "mechanical_reduction"
-                    ) from error
-                if not math.isfinite(reduction) or reduction == 0.0:
-                    raise ValueError(
-                        f"source URDF transmission {name!r} has invalid {role} "
-                        "mechanical_reduction"
-                    )
-                members[role] = (member.get("name", ""), reduction)
-
-        actuator_1, actuator_1_reduction = members["actuator1"]
-        actuator_2, actuator_2_reduction = members["actuator2"]
-        joint_1, joint_1_reduction = members["joint1"]
-        joint_2, joint_2_reduction = members["joint2"]
-        source_couplings[name] = {
-            actuator_1: {
-                joint_1: actuator_1_reduction * joint_1_reduction,
-                joint_2: actuator_1_reduction * joint_2_reduction,
-            },
-            actuator_2: {
-                joint_1: actuator_2_reduction * joint_1_reduction,
-                joint_2: -actuator_2_reduction * joint_2_reduction,
-            },
-        }
-
-    configured_couplings = {
-        group.name: {
-            actuator.tendon_name: dict(actuator.joint_coefficients)
-            for actuator in group.actuators
-        }
-        for group in definition.coupled_actuator_groups
-    }
-    if source_couplings.keys() != configured_couplings.keys():
-        raise ValueError(
-            "robot definition differential transmissions do not match the source URDF"
-        )
-    for name, source_actuators in source_couplings.items():
-        configured_actuators = configured_couplings[name]
-        if source_actuators.keys() != configured_actuators.keys():
-            raise ValueError(
-                f"robot definition differential transmission {name!r} actuator "
-                "names do not match the source URDF"
-            )
-        for actuator_name, source_coefficients in source_actuators.items():
-            configured_coefficients = configured_actuators[actuator_name]
-            if source_coefficients.keys() != configured_coefficients.keys() or any(
-                not math.isclose(
-                    coefficient,
-                    configured_coefficients[joint_name],
-                    abs_tol=1.0e-9,
-                )
-                for joint_name, coefficient in source_coefficients.items()
-            ):
-                raise ValueError(
-                    f"robot definition differential actuator {actuator_name!r} "
-                    "coefficients do not match the source URDF"
-                )
-
 
 _ROBOT_CONFIG_FILES: dict[AssetName, str] = {
     "bello": "bello.yaml",
@@ -589,12 +434,9 @@ _ROBOT_CONFIG_FIELDS = frozenset(
     {
         "asset",
         "source_urdf",
-        "source_directories",
         "hardware_description",
         "physical_hardware_ready",
         "motor_model_catalog",
-        "output_directory",
-        "output_stem",
         "root_body_name",
         "root_joint_name",
         "default_root_position",
@@ -602,7 +444,6 @@ _ROBOT_CONFIG_FIELDS = frozenset(
         "default_imu_body_name",
         "locomotion_command_frame_body_name",
         "locomotion_forward_axis",
-        "locomotion_action_mirror",
         "foot_body_names",
         "foot_support_geometries",
         "foot_forward_axes",
@@ -611,7 +452,6 @@ _ROBOT_CONFIG_FIELDS = frozenset(
         "randomization_central_body_names",
         "actuators",
         "payload_attachments",
-        "coupled_actuator_groups",
     }
 )
 
@@ -641,10 +481,6 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
     return RobotDefinition(
         asset=asset,
         source_urdf=Path(_string(data["source_urdf"], "source_urdf")),
-        source_directories=tuple(
-            Path(_string(value, "source_directories"))
-            for value in _list(data["source_directories"], "source_directories")
-        ),
         hardware_description=_optional_path(
             data["hardware_description"], "hardware_description"
         ),
@@ -654,8 +490,6 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
         motor_model_catalog=_optional_path(
             data["motor_model_catalog"], "motor_model_catalog"
         ),
-        output_directory=Path(_string(data["output_directory"], "output_directory")),
-        output_stem=_string(data["output_stem"], "output_stem"),
         root_body_name=_string(data["root_body_name"], "root_body_name"),
         root_joint_name=_string(data["root_joint_name"], "root_joint_name"),
         default_root_position=_float_tuple(
@@ -673,9 +507,6 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
         ),
         locomotion_forward_axis=_float_tuple(
             data["locomotion_forward_axis"], 3, "locomotion_forward_axis"
-        ),
-        locomotion_action_mirror=_locomotion_action_mirror(
-            data["locomotion_action_mirror"]
         ),
         foot_body_names=_string_tuple(data["foot_body_names"], 2, "foot_body_names"),
         foot_support_geometries=_foot_support_geometries(
@@ -705,14 +536,11 @@ def robot_definition(asset: AssetName) -> RobotDefinition:
                 _list(data["payload_attachments"], "payload_attachments")
             )
         ),
-        coupled_actuator_groups=tuple(
-            _coupled_actuator_group(value, index)
-            for index, value in enumerate(
-                _list(
-                    data["coupled_actuator_groups"],
-                    "coupled_actuator_groups",
-                )
-            )
+        coupled_actuator_groups=urdf_coupled_actuators(
+            robot_descriptions_root() / _string(data["source_urdf"], "source_urdf"),
+            tuple(
+                value["joint_name"] for value in _list(data["actuators"], "actuators")
+            ),
         ),
     )
 
@@ -834,32 +662,6 @@ def _foot_support_geometries(
     return tuple(result)
 
 
-def _locomotion_action_mirror(value: Any) -> tuple[JointMirrorDefinition, ...]:
-    items = _mapping(value, path="locomotion_action_mirror")
-    result = []
-    for joint_name, item in items.items():
-        path = f"locomotion_action_mirror.{joint_name}"
-        data = _mapping(item, path=path)
-        _require_exact_fields(
-            data,
-            frozenset({"counterpart", "sign"}),
-            path=path,
-        )
-        sign = data["sign"]
-        if isinstance(sign, bool) or not isinstance(sign, (int, float)):
-            raise TypeError(f"{path}.sign must be -1 or 1")
-        result.append(
-            JointMirrorDefinition(
-                joint_name=_string(joint_name, f"{path}.joint_name"),
-                counterpart_joint_name=_string(
-                    data["counterpart"], f"{path}.counterpart"
-                ),
-                sign=float(sign),
-            )
-        )
-    return tuple(result)
-
-
 def _payload_attachment(value: Any, index: int) -> PayloadAttachment:
     path = f"payload_attachments[{index}]"
     data = _mapping(value, path=path)
@@ -924,56 +726,49 @@ def _optional_float(value: Any, path: str) -> float | None:
     return float(value)
 
 
-def _coupled_actuator_group(value: Any, index: int) -> CoupledActuatorGroup:
-    path = f"coupled_actuator_groups[{index}]"
-    data = _mapping(value, path=path)
-    _require_exact_fields(data, frozenset({"name", "actuators"}), path=path)
-    return CoupledActuatorGroup(
-        name=_string(data["name"], f"{path}.name"),
-        actuators=tuple(
-            _coupled_actuator(item, path, actuator_index)
-            for actuator_index, item in enumerate(
-                _list(data["actuators"], f"{path}.actuators")
+def urdf_coupled_actuators(
+    path: Path, joint_order: tuple[str, ...]
+) -> tuple[CoupledActuatorGroup, ...]:
+    """Translate URDF differential reductions into native fixed-tendon rows."""
+    groups = []
+    for transmission in ET.parse(path).getroot().findall("transmission"):
+        kind = transmission.findtext("type", default="")
+        if kind != "transmission_interface/DifferentialTransmission":
+            raise ValueError(f"unsupported URDF transmission type {kind!r}")
+        members = {}
+        for tag in ("actuator", "joint"):
+            for index in (1, 2):
+                role = f"{tag}{index}"
+                member = transmission.find(f"{tag}[@role='{role}']")
+                if member is None or not member.get("name"):
+                    raise ValueError(f"URDF transmission is missing {role}")
+                reduction = float(member.findtext("mechanical_reduction", default="1"))
+                if not math.isfinite(reduction) or reduction == 0:
+                    raise ValueError(f"URDF transmission has invalid {role} reduction")
+                if float(member.findtext("offset", default="0")) != 0:
+                    raise ValueError(
+                        "native differential tendons require zero URDF joint offsets"
+                    )
+                members[role] = (member.attrib["name"], reduction)
+        j1, r1 = members["joint1"]
+        j2, r2 = members["joint2"]
+        ordered = tuple(joint for joint in joint_order if joint in (j1, j2))
+        if len(ordered) != 2:
+            raise ValueError("URDF transmission must reference two configured joints")
+        actuators = []
+        for index, sign in ((1, 1), (2, -1)):
+            motor, reduction = members[f"actuator{index}"]
+            row = {j1: reduction * r1, j2: sign * reduction * r2}
+            actuators.append(
+                CoupledActuator(
+                    tendon_name=motor,
+                    logical_joint_name=ordered[index - 1],
+                    joint_coefficients=tuple((joint, row[joint]) for joint in ordered),
+                )
             )
-        ),
-    )
-
-
-def _coupled_actuator(value: Any, group_path: str, index: int) -> CoupledActuator:
-    path = f"{group_path}.actuators[{index}]"
-    data = _mapping(value, path=path)
-    _require_exact_fields(
-        data,
-        frozenset({"tendon_name", "logical_joint_name", "joint_coefficients"}),
-        path=path,
-    )
-    coefficients = []
-    for coefficient_index, item in enumerate(
-        _list(data["joint_coefficients"], f"{path}.joint_coefficients")
-    ):
-        coefficient_path = f"{path}.joint_coefficients[{coefficient_index}]"
-        coefficient_data = _mapping(item, path=coefficient_path)
-        _require_exact_fields(
-            coefficient_data,
-            frozenset({"joint_name", "coefficient"}),
-            path=coefficient_path,
-        )
-        coefficient = coefficient_data["coefficient"]
-        if isinstance(coefficient, bool) or not isinstance(coefficient, (int, float)):
-            raise TypeError(f"{coefficient_path}.coefficient must be a number")
-        coefficients.append(
-            (
-                _string(
-                    coefficient_data["joint_name"],
-                    f"{coefficient_path}.joint_name",
-                ),
-                float(coefficient),
+        groups.append(
+            CoupledActuatorGroup(
+                name=transmission.get("name", ""), actuators=tuple(actuators)
             )
         )
-    return CoupledActuator(
-        tendon_name=_string(data["tendon_name"], f"{path}.tendon_name"),
-        logical_joint_name=_string(
-            data["logical_joint_name"], f"{path}.logical_joint_name"
-        ),
-        joint_coefficients=tuple(coefficients),
-    )
+    return tuple(groups)

@@ -1,77 +1,45 @@
 # bello_mujoco
 
-Simulation, reinforcement learning, evaluation, hardware emulation, and robot
-deployment for the Bello humanoid. The repository supports locomotion and
-motion-tracking policies built from the robot descriptions pinned through
-`deps/bello-stack`. Registered static assets are `bello` and `bello_mini`;
-both have maintained locomotion-training profiles. Bello Mini also has
-calibrated offline and live-upper-body SMPL-X GMR profiles for repository
-tooling and locomotion deployment.
-The reviewed Mini hardware description supports both the vCAN emulator and
-physical locomotion deployment; maintained Mini motion/TWIST training remains
-task-tuning-gated. A separate RTMW-driven command controls Linker O6/L6 hands
-over classic CAN without routing hand targets through `bello-hardwared`.
+MJX-Warp PPO training, native MuJoCo evaluation, and hardware integration for
+Bello and Bello Mini. Single-motion tracking uses BeyondMimic. Canonical URDFs,
+meshes, motor descriptions, and hardware clients come from pinned `deps/bello-stack`.
 
-## Setup
-
-Use the reproducible development environment:
+## Setup and run
 
 ```bash
 git submodule update --init --recursive
 nix develop
+uv run bello-train experiment=bello_mini_locomotion
+uv run bello-eval task=locomotion checkpoint_path=checkpoints/RUN gamepad_enabled=false steps=1500
+uv run bello-export-policy checkpoint_path=checkpoints/RUN output_path=outputs/policy.zip
 ```
 
-Direnv may enter it automatically. Outside that environment, run commands
-through `uv run` after `uv sync --frozen`. The uv workspace installs the pinned
-`bello-hardware` Python binding from the submodule; no sibling checkout is
-required.
+Training requires CUDA. Evaluation uses CPU inference, native CPU simulation,
+and Mesa llvmpipe software rasterization on Linux; use Lima on macOS.
 
-## Commands
+Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
+`bello_mini_standing`, and `motion`. Values live in YAML, not documentation tables.
+Checkpoints require their exact clean root Git commit and pinned dependencies.
+Historical policies run from historical checkouts, without compatibility fallbacks.
 
-Invoke commands as `uv run <command> field=value`.
+## Guides
 
-| Command | Purpose |
-| --- | --- |
-| `bello-prepare-assets` | Generate the Bello URDF and MuJoCo models. |
-| `bello-train` | Train maintained Bello or Bello Mini locomotion, or Bello motion, TWIST, and one-stage TWIST2 policies. |
-| `bello-eval` | Evaluate maintained Bello or Bello Mini locomotion, or Bello motion and TWIST/TWIST2 policies. |
-| `bello-motion` | Import, inspect, validate, and render motion data. |
-| `bello-twist-data` | Validate licensed manifests and build packed TWIST datasets. |
-| `bello-vast-train` | Run a bounded Vast.ai training job. |
-| `bello-run-emulator` | Run the RobStride hardware-interface emulator. |
-| `bello-run-hardware` | Run checkpoint preflight or an armed robot policy. |
-| `bello-run-hands` | Validate RTMW hand tracking or directly control Linker O6/L6 hands over classic CAN. |
+- [Commands](docs/commands.md) and [configuration locations](docs/training_configuration.md)
+- [Training, evaluation, and checkpoints](docs/training_and_evaluation.md)
+- [Robot descriptions](docs/robot_assets.md) and [motion tracking](docs/motion_tracking.md)
+- [Hardware](docs/hardware.md), [emulator](docs/emulator.md), and [Lima](docs/macos_vcan.md)
+- [Vast.ai](docs/vast_ai.md)
+- [Contributing and validation](CONTRIBUTION.md)
 
-Training profiles live under `configs/profiles/train/`; shared task settings
-live under `configs/train/`, `configs/train_motion/`, and
-`configs/train_twist/` or `configs/train_twist2/`. Read the
-[TWIST guide](docs/twist.md) and [TWIST2 guide](docs/twist2.md) before supplying
-licensed datasets.
-
-## Documentation
-
-- [Documentation index](docs/index.md)
-- [Command and argument reference](docs/commands.md)
-- [Training configuration](docs/training_configuration.md)
-- [Training and evaluation](docs/training_and_evaluation.md)
-- [Motion tracking](docs/motion_tracking.md)
-- [TWIST teacher and student](docs/twist.md)
-- [One-stage TWIST2](docs/twist2.md)
-- [Hardware runner](docs/hardware.md)
-- [Emulator](docs/emulator.md)
-- [macOS Lima vCAN environment](docs/macos_vcan.md)
-- [Vast.ai training](docs/vast_ai.md)
-
-Contributor workflow is documented in
-[CONTRIBUTION.md](CONTRIBUTION.md). Repository-specific agent guidance is in
-[AGENTS.md](AGENTS.md).
-
-## Validation
+## Validate
 
 ```bash
 uv lock --check
-uv run bash scripts/protobuf.sh --check
-uv run ruff format --check src tests
 uv run ruff check src tests
+uv run ruff format --check src tests
 ./scripts/test.sh
 ```
+
+The default suite is CPU-only; full robot dynamics and compiled rollouts are
+opt-in. Runtime initialization validates the actual description and nominal
+pose instead of tests hard-coding robot configuration values.

@@ -13,7 +13,6 @@ from bello_mujoco.hardware.fastsam import (
     FastSamSmplxStream,
     _validate_service_status,
     _validate_stream_info,
-    fastsam_reference_source,
     import_pinned_fastsam_proto,
 )
 from bello_mujoco.hardware.smplx_retarget import (
@@ -21,10 +20,7 @@ from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_BODY_JOINT_PARENTS,
     load_smplx_standing_sample,
 )
-from bello_mujoco.hardware.twist2 import (
-    ReferenceDiscontinuity,
-    ReferenceUnavailable,
-)
+from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
 from bello_mujoco.robot_tasks import motion_task_definition
 
 
@@ -181,15 +177,10 @@ def test_stream_info_requires_corrected_smplx_contract() -> None:
         _validate_stream_info(stream_info(global_quaternion_semantics="unknown"))
 
 
+@pytest.mark.integration
 def test_fastsam_protobuf_is_loaded_from_pinned_submodule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from bello_mujoco.hardware import fastsam
-    from bello_mujoco.repository import repository_root
-
-    submodule = repository_root() / "deps/Fast-SAM-3D-Body"
-    monkeypatch.setattr(fastsam, "require_pinned_fastsam_revision", lambda: submodule)
-
     skeleton_pb2, skeleton_pb2_grpc = import_pinned_fastsam_proto()
 
     assert skeleton_pb2.StreamInfo.DESCRIPTOR.fields_by_name["converter"].number == 17
@@ -220,67 +211,6 @@ def test_service_status_must_enable_tracking() -> None:
                 terminal_failure="",
             )
         )
-
-
-def test_reference_factory_defers_live_target_check_until_motion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from bello_mujoco.hardware import fastsam
-    from bello_mujoco.hardware.twist2 import HardwareTwist2Config
-
-    grpc_config = SimpleNamespace(endpoint="127.0.0.1:50055")
-
-    class FakeStream:
-        stream_instance_id = "stream-1"
-        stream_config_sha256 = "a" * 64
-        inference_profile = "large"
-        inference_mode = "body"
-        neutral_model_sha256 = "b" * 64
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exception):
-            return False
-
-    class FakeSource:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exception):
-            return False
-
-        def wait_until_ready(self, _timeout_seconds):
-            raise AssertionError("live target was checked before MOTION")
-
-    stream = FakeStream()
-    source = FakeSource()
-    monkeypatch.setattr(
-        fastsam.FastSamGrpcConfig,
-        "from_hardware",
-        classmethod(lambda _cls, _config: grpc_config),
-    )
-    monkeypatch.setattr(
-        fastsam, "FastSamSmplxStream", lambda _config, _body_names: stream
-    )
-    monkeypatch.setattr(fastsam, "GmrRetargeter", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(
-        fastsam,
-        "LiveGmrReferenceSource",
-        lambda _stream, _retargeter, **_kwargs: source,
-    )
-
-    adapter = SimpleNamespace(
-        env=SimpleNamespace(
-            model=SimpleNamespace(robot=SimpleNamespace(asset="bello"))
-        ),
-        metadata=SimpleNamespace(
-            dataset=SimpleNamespace(gmr_revision="a" * 40),
-            robot_fingerprint="sha256:" + "b" * 64,
-        ),
-    )
-    with fastsam_reference_source(adapter, HardwareTwist2Config()) as result:
-        assert result is source
 
 
 def test_camera_adapter_preserves_live_translation_after_initial_alignment(

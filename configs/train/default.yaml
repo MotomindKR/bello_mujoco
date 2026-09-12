@@ -31,7 +31,6 @@ config:
   rollout_value_max_abs: 10000.0
   target_max_abs: 10000.0
   gradient_norm_max: 10000.0
-  symmetry_loss_coef: 0.0
   policy:
     hidden_dims: [256, 256]
     activation: tanh
@@ -43,20 +42,12 @@ config:
     action_limit: 1.0
 asset_config:
   asset: bello
-  collision_mode: box
-  mesh_face_budget: 1000
-  visual_mesh_face_budget: 200000
   target_total_mass_kg: null
   end_effector_payload_mass_kg: 0.0
   neighbor_exclusion_depth: 2
   # Match hardware saturation in dynamics. The reward separately measures the
   # unclipped servo demand before this physical limit is applied.
   enforce_policy_effort_limits: true
-  ankle_differential_config:
-    motor_gain_scale: 0.5
-    motor_effort_limit_scale: 1.0
-  joint_availability:
-    disabled_joint_names: []
 env_config:
   decimation: 4
   max_episode_steps: 1000
@@ -241,7 +232,6 @@ checkpoint_config:
   name: null
   every_updates: null
   resume_path: null
-  allow_git_commit_mismatch: false
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint

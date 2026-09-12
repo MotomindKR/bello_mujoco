@@ -6,8 +6,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset
-from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv, SpawnConfig
+from bello_mujoco.models.compiler import CompiledRobot
+from bello_mujoco.envs.locomotion_config import BelloEnvConfig, SpawnConfig
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.policy import (
     ActorCriticConfig,
     apply_actor,
@@ -81,13 +82,6 @@ def test_every_ppo_field_declares_local_validation() -> None:
     ]
 
     assert invalid == []
-
-
-def test_symmetry_loss_requires_physical_observation_coordinates() -> None:
-    with pytest.raises(ValueError, match="normalize_observations=false"):
-        validate_ppo_config(
-            small_config(symmetry_loss_coef=0.1, normalize_observations=True)
-        )
 
 
 def test_command_and_gait_metrics_split_standing_from_moving() -> None:
@@ -436,10 +430,10 @@ def test_disabled_normalization_preserves_locomotion_values() -> None:
 
 
 def test_staggered_initial_step_counts_match_actor_and_critic_observations(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     num_envs = 4
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         batch_size=num_envs,
         env_config=replace(
@@ -606,27 +600,6 @@ def test_finite_ppo_update_changes_parameters() -> None:
     assert metrics["nonfinite_update"] == 0
     assert metrics["ppo_update_fraction"] > 0
     assert jnp.isfinite(metrics["loss"])
-
-
-def test_ppo_update_reports_configured_symmetry_consistency_loss() -> None:
-    config = small_config(symmetry_loss_coef=0.1)
-    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
-    batch = transitions(config, train_state.policy)
-    advantages = jnp.ones((config.num_steps, config.num_envs))
-    _, metrics = update_ppo(
-        train_state,
-        optimizer,
-        batch,
-        advantages,
-        jnp.ones_like(advantages),
-        jax.random.PRNGKey(1),
-        config,
-        mirror_observation=lambda value: value[..., ::-1],
-        mirror_action=lambda value: value[..., ::-1],
-    )
-
-    assert metrics["symmetry_loss"] >= 0.0
-    assert jnp.isfinite(metrics["symmetry_loss"])
 
 
 def test_nonfinite_training_input_is_identified_and_skipped() -> None:

@@ -64,7 +64,6 @@ class HardwareMotionConfig(HardwareControlConfig):
     """Hardware, pose-estimator, and fail-closed motion deployment settings."""
 
     client_name: str = "bello-motion-policy"
-    motion_path: Path | None = None
     end_effector_payload_mass_kg: float | None = None
     pose_endpoint: str = "127.0.0.1:50053"
     pose_reference_frame: str = "odom"
@@ -770,11 +769,6 @@ def validate_hardware_motion_checkpoint(
             "bounded BeyondMimic hardware deployment requires "
             "'tanh_gaussian' policy actions"
         )
-    availability = metadata.asset.joint_availability
-    if availability.disabled_joint_names:
-        raise ValueError(
-            "motion hardware runner requires every configured actuator joint"
-        )
     if env.action_size != 25:
         raise ValueError(
             f"motion hardware runner requires 25 policy joints, got {env.action_size}"
@@ -831,9 +825,7 @@ def load_hardware_motion_policy(
 ) -> tuple[HardwareMotionPolicyAdapter, MotionCheckpointMetadata]:
     runtime = load_motion_policy_runtime(
         checkpoint_path,
-        motion_path=config.motion_path,
         use_viewer_model=False,
-        allow_git_commit_mismatch=config.allow_git_commit_mismatch,
     )
     checkpoint_payload_mass = runtime.metadata.asset.end_effector_payload_mass_kg
     if config.end_effector_payload_mass_kg is not None and not math.isclose(
@@ -872,7 +864,6 @@ def run_hardware_motion(
     motion_adapter, metadata = load_hardware_motion_policy(checkpoint_path, config)
     standing_adapter, standing_metadata = load_hardware_policy(
         standing_checkpoint_path,
-        allow_git_commit_mismatch=config.allow_git_commit_mismatch,
     )
     validate_hardware_motion_config(config, motion_adapter.env)
     validate_motion_transition_adapters(standing_adapter, motion_adapter)

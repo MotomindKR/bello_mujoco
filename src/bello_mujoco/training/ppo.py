@@ -21,7 +21,6 @@ import optax
 from bello_mujoco.policy import (
     ActorCritic,
     ActorCriticConfig,
-    apply_actor,
     apply_policy,
     clamp_policy_log_std,
     evaluate_actions,
@@ -145,10 +144,6 @@ class PPOEnvironment(Protocol):
 
     def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]: ...
 
-    def mirror_actor_observation(self, observation: jax.Array) -> jax.Array: ...
-
-    def mirror_action(self, action: jax.Array) -> jax.Array: ...
-
 
 @dataclass(frozen=True)
 class PPOConfig:
@@ -200,7 +195,6 @@ class PPOConfig:
     rollout_value_max_abs: float = _validated(1.0e4, _positive_finite)
     target_max_abs: float = _validated(1.0e4, _positive_finite)
     gradient_norm_max: float = _validated(1.0e4, _positive_finite)
-    symmetry_loss_coef: float = _validated(0.0, _nonnegative_finite)
     policy: ActorCriticConfig = _validated(
         ActorCriticConfig(),
         _no_scalar_constraint,
@@ -217,31 +211,6 @@ class PPOConfig:
     @property
     def minibatch_size(self) -> int:
         return self.batch_size // self.num_minibatches
-
-
-@dataclass(frozen=True)
-class DistillationContext:
-    """Frozen teacher and schedule for a TWIST student PPO update."""
-
-    teacher_policy: ActorCritic
-    teacher_observation_size: int
-    teacher_observation_norm_state: ObservationNormState
-    teacher_config: PPOConfig
-    start_weight: float = 0.1
-    end_weight: float = 0.01
-    anneal_updates: int = 60_000
-
-    def __post_init__(self) -> None:
-        if self.teacher_policy.action_distribution != "gaussian":
-            raise ValueError("TWIST teacher must use an unsquashed Gaussian policy")
-        if self.teacher_observation_size <= 0:
-            raise ValueError("teacher_observation_size must be positive")
-        if self.start_weight < self.end_weight or self.end_weight < 0.0:
-            raise ValueError(
-                "distillation weights must be nonnegative and decrease over time"
-            )
-        if self.anneal_updates <= 0:
-            raise ValueError("distillation anneal_updates must be positive")
 
 
 @chex.dataclass(frozen=True)
@@ -557,61 +526,6 @@ def normalize_advantages(advantages: jax.Array) -> jax.Array:
     return (advantages - advantages.mean()) / (advantages.std() + 1.0e-8)
 
 
-def cosine_distillation_weight(
-    update: jax.Array | int,
-    *,
-    start: float = 0.1,
-    end: float = 0.01,
-    anneal_updates: int = 60_000,
-) -> jax.Array:
-    """Correct decreasing cosine schedule, including both endpoints."""
-
-    if start < end or end < 0.0:
-        raise ValueError("cosine distillation weights must satisfy start >= end >= 0")
-    if anneal_updates <= 0:
-        raise ValueError("anneal_updates must be positive")
-    progress = jnp.clip(
-        jnp.asarray(update, dtype=jnp.float32) / float(anneal_updates), 0.0, 1.0
-    )
-    return end + (start - end) * 0.5 * (1.0 + jnp.cos(jnp.pi * progress))
-
-
-def gaussian_policy_kl_student_teacher(
-    student: ActorCritic,
-    teacher: ActorCritic,
-    student_observation: jax.Array,
-    teacher_observation: jax.Array,
-) -> jax.Array:
-    """KL(student || teacher) in latent Gaussian space.
-
-    The released TWIST actor uses an ordinary diagonal Gaussian.
-    """
-
-    student_mean = (
-        student.actor(student_observation)
-        if student_observation.ndim == 1
-        else jax.vmap(student.actor)(student_observation)
-    )
-    teacher_mean = (
-        teacher.actor(teacher_observation)
-        if teacher_observation.ndim == 1
-        else jax.vmap(teacher.actor)(teacher_observation)
-    )
-    teacher_mean = jax.lax.stop_gradient(teacher_mean)
-    student_log_std = policy_log_std(student)
-    teacher_log_std = jax.lax.stop_gradient(policy_log_std(teacher))
-    student_variance = jnp.exp(2.0 * student_log_std)
-    teacher_variance = jnp.exp(2.0 * teacher_log_std)
-    elementwise = (
-        teacher_log_std
-        - student_log_std
-        + (student_variance + jnp.square(student_mean - teacher_mean))
-        / (2.0 * teacher_variance)
-        - 0.5
-    )
-    return jnp.mean(elementwise, axis=-1)
-
-
 def ppo_loss(
     model: ActorCritic,
     transitions: Transition,
@@ -620,12 +534,7 @@ def ppo_loss(
     config: PPOConfig,
     entropy_rng: jax.Array | None = None,
     value_norm_state: ValueNormState | None = None,
-    distillation: DistillationContext | None = None,
-    distillation_weight: jax.Array | float = 0.0,
-    mirror_observation: Callable[[jax.Array], jax.Array] | None = None,
-    mirror_action: Callable[[jax.Array], jax.Array] | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    network_rng = entropy_rng if model.stochastic_actor else None
     log_prob, entropy, value = evaluate_actions(
         model,
         transitions.obs,
@@ -633,7 +542,6 @@ def ppo_loss(
         transitions.critic_obs,
         latent_action=transitions.latent_action,
         entropy_rng=entropy_rng,
-        network_rng=network_rng,
     )
 
     log_ratio = log_prob - transitions.log_prob
@@ -663,32 +571,8 @@ def ppo_loss(
     )
     value_loss_raw = config.value_loss_scale * ((raw_value - targets) ** 2).mean()
     entropy_loss = entropy.mean()
-    distillation_kl = jnp.asarray(0.0, dtype=jnp.float32)
-    if distillation is not None:
-        teacher_observation = transitions.info["_distillation_teacher_observation"]
-        distillation_kl = gaussian_policy_kl_student_teacher(
-            model,
-            distillation.teacher_policy,
-            transitions.obs,
-            teacher_observation,
-        ).mean()
-    distillation_weight = jnp.asarray(distillation_weight, dtype=jnp.float32)
-    symmetry_loss = jnp.asarray(0.0, dtype=actor_loss.dtype)
-    if config.symmetry_loss_coef > 0.0:
-        if mirror_observation is None or mirror_action is None:
-            raise ValueError(
-                "symmetry_loss_coef requires observation and action mirror functions"
-            )
-        current_action_mean = apply_actor(model, transitions.obs)
-        mirrored_action_mean = apply_actor(model, mirror_observation(transitions.obs))
-        symmetry_target = mirror_action(current_action_mean)
-        symmetry_loss = jnp.mean((mirrored_action_mean - symmetry_target) ** 2)
     total_loss = (
-        actor_loss
-        + config.vf_coef * value_loss
-        - config.ent_coef * entropy_loss
-        + distillation_weight * distillation_kl
-        + config.symmetry_loss_coef * symmetry_loss
+        actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy_loss
     )
     metrics = {
         "loss": total_loss,
@@ -696,9 +580,6 @@ def ppo_loss(
         "value_loss": value_loss,
         "value_loss_raw": value_loss_raw,
         "entropy": entropy_loss,
-        "distillation/kl_student_teacher": distillation_kl,
-        "distillation/weight": distillation_weight,
-        "symmetry_loss": symmetry_loss,
         "approx_kl": ((ratio - 1.0) - safe_log_ratio).mean(),
         "policy_clip_fraction": jnp.mean(
             (jnp.abs(ratio - 1.0) > config.clip_eps).astype(jnp.float32)
@@ -721,10 +602,6 @@ def update_ppo(
     config: PPOConfig,
     learning_rate: jax.Array | float | None = None,
     value_norm_state: ValueNormState | None = None,
-    distillation: DistillationContext | None = None,
-    distillation_weight: jax.Array | float = 0.0,
-    mirror_observation: Callable[[jax.Array], jax.Array] | None = None,
-    mirror_action: Callable[[jax.Array], jax.Array] | None = None,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
     bounded_policy = config.policy.action_distribution == "tanh_gaussian"
     policy_action_max_abs = (
@@ -830,10 +707,6 @@ def update_ppo(
                     config,
                     entropy_rng=entropy_key,
                     value_norm_state=value_norm_state,
-                    distillation=distillation,
-                    distillation_weight=distillation_weight,
-                    mirror_observation=mirror_observation,
-                    mirror_action=mirror_action,
                 )
 
             (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
@@ -1254,7 +1127,6 @@ def collect_rollout(
     value_norm_state: ValueNormState | None = None,
     observation_norm_state: ObservationNormState | None = None,
     critic_observation_norm_state: ObservationNormState | None = None,
-    distillation: DistillationContext | None = None,
     task_state: Any = None,
 ) -> tuple[
     tuple[
@@ -1393,17 +1265,6 @@ def collect_rollout(
             for name, value in info.items()
             if name not in {"bootstrap_observation", "bootstrap_critic_observation"}
         }
-        if distillation is not None:
-            raw_teacher_observation = raw_critic_policy_obs[
-                ..., : distillation.teacher_observation_size
-            ]
-            transition_info["_distillation_teacher_observation"] = (
-                normalize_observation(
-                    raw_teacher_observation,
-                    distillation.teacher_observation_norm_state,
-                    distillation.teacher_config,
-                )
-            )
         transition = Transition(
             done,
             terminal,
@@ -1523,7 +1384,6 @@ def update_runner_state(
     optimizer: optax.GradientTransformation,
     env: PPOEnvironment,
     config: PPOConfig,
-    distillation: DistillationContext | None = None,
 ) -> tuple[RunnerState, dict[str, jax.Array]]:
     validate_action_limit_contract(config, env.action_clip)
     key, rollout_key, update_key = jax.random.split(runner_state.rng, 3)
@@ -1555,7 +1415,6 @@ def update_runner_state(
         runner_state.value_norm_state,
         runner_state.observation_norm_state,
         runner_state.critic_observation_norm_state,
-        distillation,
         runner_state.task_state,
     )
     _, _, last_value = apply_policy(
@@ -1577,16 +1436,6 @@ def update_runner_state(
     learning_rate = learning_rate_for_update(
         config, runner_state.update, runner_state.learning_rate
     )
-    distillation_weight = (
-        cosine_distillation_weight(
-            runner_state.update,
-            start=distillation.start_weight,
-            end=distillation.end_weight,
-            anneal_updates=distillation.anneal_updates,
-        )
-        if distillation is not None
-        else jnp.asarray(0.0, dtype=jnp.float32)
-    )
     train_state, metrics = update_ppo(
         train_state,
         optimizer,
@@ -1597,12 +1446,6 @@ def update_runner_state(
         config,
         learning_rate=learning_rate,
         value_norm_state=value_norm_state,
-        distillation=distillation,
-        distillation_weight=distillation_weight,
-        mirror_observation=(
-            env.mirror_actor_observation if config.symmetry_loss_coef > 0.0 else None
-        ),
-        mirror_action=env.mirror_action if config.symmetry_loss_coef > 0.0 else None,
     )
     next_learning_rate = adapt_learning_rate(
         learning_rate,
@@ -1707,11 +1550,6 @@ def _validate_declared_fields(config: PPOConfig) -> None:
 
 def validate_ppo_config(config: PPOConfig) -> None:
     _validate_declared_fields(config)
-    if config.symmetry_loss_coef > 0.0 and config.normalize_observations:
-        raise ValueError(
-            "symmetry_loss_coef requires normalize_observations=false so reflection "
-            "is applied in the physical observation coordinates"
-        )
     if config.num_updates <= 0:
         raise ValueError(
             "total_timesteps must cover at least one rollout batch, got "
@@ -1754,27 +1592,6 @@ def validate_ppo_config(config: PPOConfig) -> None:
             "policy.action_distribution must be 'gaussian' or 'tanh_gaussian', got "
             f"{config.policy.action_distribution!r}"
         )
-    if config.policy.architecture not in {
-        "mlp",
-        "twist_teacher",
-        "twist_student",
-        "twist2",
-    }:
-        raise ValueError(
-            "policy.architecture must be 'mlp', 'twist_teacher', "
-            f"'twist_student', or 'twist2', got {config.policy.architecture!r}"
-        )
-    if config.policy.architecture != "mlp":
-        if config.policy.hidden_dims != (512, 512, 256, 128):
-            raise ValueError("TWIST policy.hidden_dims must be [512, 512, 256, 128]")
-        if config.policy.activation != "swish":
-            raise ValueError("TWIST policy.activation must be swish")
-        if config.policy.obs_stack_size != 1:
-            raise ValueError(
-                "TWIST histories are explicit; policy.obs_stack_size must be 1"
-            )
-        if not config.policy.layer_norm_final_hidden:
-            raise ValueError("TWIST requires final-hidden LayerNorm")
     if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
         raise ValueError(
             "policy.action_limit must be positive and finite, got "

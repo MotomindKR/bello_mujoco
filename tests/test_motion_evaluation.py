@@ -1,91 +1,22 @@
 from pathlib import Path
+from types import SimpleNamespace
 
-from bello_mujoco.evaluation import motion as motion_evaluation
-from bello_mujoco.evaluation.motion import (
-    MotionEvaluationRequest,
-    MotionEvaluationWorker,
-)
+import jax.numpy as jnp
+import pytest
 
-
-class _FakeQueue:
-    def __init__(self) -> None:
-        self.values = []
-        self.closed = False
-
-    def put(self, value) -> None:
-        self.values.append(value)
-
-    def get(self, *, timeout: float):
-        del timeout
-        return self.values.pop(0)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def join_thread(self) -> None:
-        pass
+from bello_mujoco.evaluation import motion as evaluation
+from bello_mujoco.training import motion as training
+from bello_mujoco.training.ppo import PPOConfig
 
 
-class _FakeProcess:
-    def __init__(self, target, args, name: str) -> None:
-        self.target = target
-        self.args = args
-        self.name = name
-        self.exitcode = None
-        self.closed = False
-
-    def start(self) -> None:
-        self.target(*self.args)
-        self.exitcode = 0
-
-    def is_alive(self) -> bool:
-        return self.exitcode is None
-
-    def join(self, timeout: float) -> None:
-        del timeout
-
-    def terminate(self) -> None:
-        self.exitcode = -15
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _FakeContext:
-    def __init__(self) -> None:
-        self.processes = []
-        self.queues = []
-
-    def Queue(self, *, maxsize: int):
-        assert maxsize == 1
-        queue = _FakeQueue()
-        self.queues.append(queue)
-        return queue
-
-    def Process(self, *, target, args, name: str):
-        process = _FakeProcess(target, args, name)
-        self.processes.append(process)
-        return process
-
-
-def test_motion_evaluation_uses_a_fresh_process_per_video(monkeypatch) -> None:
-    context = _FakeContext()
-    monkeypatch.setattr(motion_evaluation.mp, "get_context", lambda method: context)
+def test_motion_evaluation_dispatches_checkpoint_to_software_worker(monkeypatch):
+    calls = []
     monkeypatch.setattr(
-        motion_evaluation,
-        "render_checkpoint_with_stats",
-        lambda *args, **kwargs: {
-            "rendered_steps": 1,
-            "episode_return": 0.0,
-            "terminal": False,
-            "timeout": False,
-            "completion_fraction": 1.0,
-            "root_position_rms_m": 0.0,
-            "root_orientation_rms_deg": 0.0,
-            "joint_position_rms_rad": 0.0,
-        },
+        evaluation,
+        "run_software_evaluation",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"rendered_steps": 1},
     )
-    request = MotionEvaluationRequest(
+    request = evaluation.MotionEvaluationRequest(
         checkpoint=Path("checkpoint"),
         output_path=Path("video.mp4"),
         steps=1,
@@ -93,12 +24,31 @@ def test_motion_evaluation_uses_a_fresh_process_per_video(monkeypatch) -> None:
         height=24,
         fps=20,
     )
-    worker = MotionEvaluationWorker()
+    assert evaluation.evaluate_motion_video(request) == {"rendered_steps": 1}
+    args, kwargs = calls[0]
+    assert args == (
+        evaluation.render_checkpoint_with_stats,
+        request.checkpoint,
+        request.output_path,
+    )
+    assert kwargs == {"steps": 1, "width": 32, "height": 24, "fps": 20}
 
-    worker.evaluate(request)
-    worker.evaluate(request)
 
-    assert len(context.processes) == 2
-    assert all(process.closed for process in context.processes)
-    assert all(queue.closed for queue in context.queues)
-    assert worker._process is None
+def test_motion_video_failure_stops_training(monkeypatch, tmp_path):
+    monkeypatch.setattr(training, "save_motion_checkpoint", lambda *args: None)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("software renderer unavailable")
+
+    monkeypatch.setattr(training, "evaluate_motion_video", fail)
+    with pytest.raises(RuntimeError, match="software renderer unavailable"):
+        training.motion_train_update_loop(
+            SimpleNamespace(motion=object()),
+            PPOConfig(),
+            object(),
+            training.MotionEvalVideoConfig(enabled=True, render_initial=True),
+            None,
+            checkpoint_root=tmp_path,
+            checkpoint_context=(object(), "commit", object()),
+            initial_runner=(SimpleNamespace(update=jnp.asarray(0)), object(), object()),
+        )

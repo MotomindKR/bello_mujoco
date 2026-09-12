@@ -13,5 +13,14 @@ fi
 
 for test_file in "${test_files[@]}"; do
   echo "pytest $test_file"
-  uv run pytest "$test_file"
+  if uv run pytest "$test_file"; then
+    continue
+  else
+    status=$?
+  fi
+  if (( status == 5 )); then
+    echo "No selected tests in $test_file (integration cases are opt-in)."
+  else
+    exit "$status"
+  fi
 done

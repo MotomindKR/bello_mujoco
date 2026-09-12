@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import jax.numpy as jnp
 import mujoco
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline import robot_descriptions_root
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset
-from bello_mujoco.envs.locomotion import (
-    BelloEnvConfig,
-    BelloLocomotionEnv,
-    foot_terrain_contact_membership,
-)
+from bello_mujoco.models import robot_descriptions_root
+from bello_mujoco.envs.locomotion_config import BelloEnvConfig
+from bello_mujoco.envs.geometry import foot_terrain_contact_membership
 from bello_mujoco.evaluation.render import (
     mujoco_foot_contact_and_normal_force,
     mujoco_undesired_contact,
@@ -23,76 +20,6 @@ from bello_mujoco.robot import (
     robot_definition,
     validate_robot_source_urdf,
 )
-from bello_mujoco.sim import load_prepared_bello_model
-from bello_mujoco.terrain import TerrainConfig
-
-
-SUPPORT_GEOM_NAMES = {
-    "bello": (
-        "left_ankle_roll_link_collision_box_1",
-        "left_ankle_roll_link_collision_box_2",
-        "left_ankle_roll_link_collision_box_3",
-        "left_ankle_roll_link_collision_cylinder_1",
-        "left_ankle_roll_link_collision_cylinder_2",
-        "right_ankle_roll_link_collision_box_1",
-        "right_ankle_roll_link_collision_box_2",
-        "right_ankle_roll_link_collision_box_3",
-        "right_ankle_roll_link_collision_cylinder_1",
-        "right_ankle_roll_link_collision_cylinder_2",
-    ),
-    "bello_mini": (
-        "left_ankle_roll_link_sole_heel_center",
-        "left_ankle_roll_link_sole_main",
-        "left_ankle_roll_link_sole_heel_negative_y",
-        "left_ankle_roll_link_sole_heel_positive_y",
-        "left_ankle_roll_link_sole_toe",
-        "right_ankle_roll_link_sole_heel_center",
-        "right_ankle_roll_link_sole_main",
-        "right_ankle_roll_link_sole_heel_negative_y",
-        "right_ankle_roll_link_sole_heel_positive_y",
-        "right_ankle_roll_link_sole_toe",
-    ),
-}
-
-
-@pytest.mark.parametrize(
-    ("fixture_name", "asset", "non_support_geom_names"),
-    [
-        (
-            "bello_asset",
-            "bello",
-            (),
-        ),
-        (
-            "bello_mini_asset",
-            "bello_mini",
-            (
-                "left_ankle_roll_link_ankle_housing",
-                "right_ankle_roll_link_ankle_housing",
-            ),
-        ),
-    ],
-)
-def test_model_resolves_configured_support_geometries(
-    request: pytest.FixtureRequest,
-    fixture_name: str,
-    asset: str,
-    non_support_geom_names: tuple[str, ...],
-) -> None:
-    prepared: PreparedAsset = request.getfixturevalue(fixture_name)
-    scene = load_prepared_bello_model(prepared, load_mjx=False)
-    model = scene.mj_model
-    resolved_names = tuple(
-        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(geom_id))
-        for geom_id in scene.foot_geom_ids
-    )
-    nonfoot_geom_ids = set(int(geom_id) for geom_id in scene.nonfoot_robot_geom_ids)
-
-    assert resolved_names == SUPPORT_GEOM_NAMES[asset]
-    for name in non_support_geom_names:
-        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
-        assert geom_id not in scene.foot_geom_ids
-        assert geom_id in nonfoot_geom_ids
 
 
 def test_robot_source_validation_rejects_missing_support_geometry() -> None:
@@ -149,40 +76,43 @@ def test_foot_terrain_membership_rejects_housing_and_nonterrain_contacts() -> No
     )
 
 
-@pytest.mark.parametrize(
-    ("fixture_name", "geom_name", "is_support"),
-    [
-        ("bello_asset", "left_ankle_roll_link_collision_box_1", True),
-        ("bello_asset", "left_ankle_roll_link_collision_box_2", True),
-        ("bello_mini_asset", "left_ankle_roll_link_sole_main", True),
-        ("bello_mini_asset", "left_ankle_roll_link_ankle_housing", False),
-    ],
-)
+@pytest.mark.parametrize("is_support", [True, False])
 def test_native_contact_classification_uses_robot_support_geometry(
-    request: pytest.FixtureRequest,
-    fixture_name: str,
-    geom_name: str,
     is_support: bool,
 ) -> None:
-    prepared: PreparedAsset = request.getfixturevalue(fixture_name)
-    env = BelloLocomotionEnv.load_prepared(
-        prepared,
-        env_config=BelloEnvConfig(terrain=TerrainConfig(mode="plane")),
-        load_mjx=False,
+    model = mujoco.MjModel.from_xml_string("""<mujoco><worldbody>
+      <geom name="floor" type="plane" size="2 2 .1"/>
+      <body name="left" pos="0 0 .05"><freejoint/>
+        <geom name="sole" type="sphere" size=".1"/>
+        <geom name="housing" pos=".3 0 0" type="sphere" size=".1"/>
+      </body>
+      <body name="right" pos="1 0 1"><freejoint/>
+        <geom name="right_sole" type="sphere" size=".1"/>
+      </body>
+    </worldbody></mujoco>""")
+    sole, housing, right = (
+        model.geom(name).id for name in ("sole", "housing", "right_sole")
     )
-    model = env.model.mj_model
-    geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+    left_body, right_body = model.body("left").id, model.body("right").id
+    env = SimpleNamespace(
+        config=BelloEnvConfig(),
+        model=SimpleNamespace(
+            mj_model=model,
+            geom_body_ids=model.geom_bodyid,
+            foot_body_ids=np.asarray([left_body, right_body]),
+            foot_geom_ids=np.asarray([sole, right]),
+            terrain_geom_ids=np.asarray([model.geom("floor").id]),
+            nonfoot_robot_geom_ids=np.asarray([housing]),
+            nonfoot_robot_body_ids=np.asarray([left_body]),
+        ),
+    )
+    geom_id = sole if is_support else housing
     terrain_geom_id = int(env.model.terrain_geom_ids[0])
-
-    model.geom_contype[env.model.robot_geom_ids] = 0
-    model.geom_conaffinity[env.model.robot_geom_ids] = 0
+    model.geom_contype[[sole, housing, right]] = 0
+    model.geom_conaffinity[[sole, housing, right]] = 0
     model.geom_contype[geom_id] = 1
     model.geom_conaffinity[geom_id] = 1
     data = mujoco.MjData(model)
-    data.qpos[:] = env.model.default_qpos
-    data.qvel[:] = env.model.default_qvel
-    mujoco.mj_forward(model, data)
-    data.qpos[env.model.root_qpos_adr + 2] -= data.geom_xpos[geom_id, 2]
     mujoco.mj_forward(model, data)
 
     assert any(

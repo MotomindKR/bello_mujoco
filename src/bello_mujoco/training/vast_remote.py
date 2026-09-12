@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
-from pathlib import Path
 import shlex
 import subprocess
 import sys
@@ -112,13 +110,6 @@ class SshExecutor:
         )
 
 
-class RsyncExecutor:
-    """Resumable local-to-instance transfer boundary."""
-
-    def run(self, command: list[str], *, timeout_seconds: float) -> None:
-        subprocess.run(command, check=True, timeout=timeout_seconds)
-
-
 def wait_for_ssh(
     api: VastApi,
     instance_id: int,
@@ -163,34 +154,6 @@ def wait_for_ssh(
     raise TimeoutError(f"direct SSH did not become ready: {last_error}")
 
 
-def measure_upload_mib_per_second(
-    target: tuple[str, str, int],
-    *,
-    size_mib: int,
-    timeout_seconds: int,
-    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
-) -> float:
-    """Measure the direct-SSH upload route before staging large inputs."""
-
-    payload = bytes(size_mib * 1024 * 1024)
-    started_at = time.monotonic()
-    try:
-        result = runner(
-            ssh_command(target, "cat >/dev/null"),
-            input=payload,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=min(timeout_seconds, 60),
-        )
-    except subprocess.TimeoutExpired:
-        return 0.0
-    if result.returncode != 0:
-        stderr = result.stderr.decode(errors="replace") if result.stderr else ""
-        raise RuntimeError(f"Vast upload route probe failed: {stderr.strip()}")
-    elapsed = max(time.monotonic() - started_at, 1e-6)
-    return size_mib / elapsed
-
-
 REMOTE_TRAIN_SCRIPT = r"""set -Eeuo pipefail
 
 branch="$1"
@@ -201,12 +164,8 @@ experiment="$5"
 motion_path="$6"
 end_effector_payload_mass_kg="$7"
 run_name="$8"
-dataset_path="$9"
-teacher_checkpoint_path="${10}"
-warm_start_checkpoint_path="${11}"
-allow_git_commit_mismatch="${12}"
-total_timesteps="${13}"
-learning_rate="${14}"
+total_timesteps="${9}"
+learning_rate="${10}"
 
 export DEBIAN_FRONTEND=noninteractive
 for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
@@ -217,7 +176,7 @@ for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/
     "$apt_source"
 done
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libgl1 libglib2.0-0 libosmesa6 libxrender1 python3 python3-pip rsync
+apt-get install -y --no-install-recommends ca-certificates ffmpeg git libegl1 libegl-mesa0 libgl1-mesa-dri libgl1 libglib2.0-0 libxrender1 python3 python3-pip
 
 python3 -m pip install --break-system-packages --disable-pip-version-check uv==0.11.25
 command -v uv >/dev/null 2>&1 || { echo "uv installation failed" >&2; exit 1; }
@@ -234,7 +193,6 @@ esac
 ASKPASS
 chmod 700 "$askpass"
 
-rm -rf "$remote_dir"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --recurse-submodules --single-branch --branch "$branch" "$repo_url" "$remote_dir"
 submodule_status="$(git -C "$remote_dir" submodule status --recursive)"
 if [ -z "$submodule_status" ] || printf '%s\n' "$submodule_status" | grep -Eq '^[-+U]'; then
@@ -256,8 +214,9 @@ export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
 export UV_HTTP_TIMEOUT=600
 export UV_HTTP_RETRIES=5
 export WARP_CACHE_PATH="$PWD/.warp-cache"
-export MUJOCO_GL=osmesa
-export PYOPENGL_PLATFORM=osmesa
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
 export TF_GPU_ALLOCATOR=cuda_malloc_async
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
@@ -270,9 +229,12 @@ uv run python - <<'PY'
 from contextlib import ExitStack
 from pathlib import Path
 
+from bello_mujoco.evaluation.software import configure_software_rendering, validate_software_renderer
+configure_software_rendering()
 import mujoco
 
 from bello_mujoco.evaluation.render import VideoWriter
+validate_software_renderer()
 
 output_path = Path("/tmp/bello-render-smoke.mp4")
 output_path.unlink(missing_ok=True)
@@ -291,7 +253,7 @@ with ExitStack() as resources:
     writer.append_data(frame)
 if frame.shape != (64, 64, 3) or not output_path.is_file():
     raise RuntimeError("headless render-and-encode preflight produced no video")
-print({"render_backend": "osmesa", "frame_shape": frame.shape})
+print({"render_backend": "llvmpipe", "frame_shape": frame.shape})
 output_path.unlink()
 PY
 
@@ -301,18 +263,6 @@ if [ -n "$motion_path" ]; then
 fi
 if [ -n "$end_effector_payload_mass_kg" ]; then
   training_overrides+=("end_effector_payload_mass_kg=$end_effector_payload_mass_kg")
-fi
-if [ -n "$dataset_path" ]; then
-  training_overrides+=("dataset_path=$dataset_path")
-fi
-if [ -n "$teacher_checkpoint_path" ]; then
-  training_overrides+=("teacher_checkpoint_path=$teacher_checkpoint_path")
-fi
-if [ -n "$warm_start_checkpoint_path" ]; then
-  training_overrides+=("warm_start_path=$warm_start_checkpoint_path")
-fi
-if [ "$allow_git_commit_mismatch" = "true" ]; then
-  training_overrides+=("allow_git_commit_mismatch=true")
 fi
 if [ -n "$total_timesteps" ]; then
   training_overrides+=("total_timesteps=$total_timesteps")
@@ -327,9 +277,7 @@ preflight_overrides=(
   num_envs=32
   wandb_enabled=false
 )
-if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]; then
-  preflight_overrides+=(video_enabled=false)
-fi
+preflight_overrides+=(video_enabled=false)
 if [[ "$experiment" == bello_* ]]; then
   preflight_overrides+=("checkpoint_directory=checkpoints/vast-preflight-$run_name" checkpoint_name=smoke)
 fi
@@ -382,268 +330,6 @@ uv run bello-train \
 """
 
 
-def stage_twist_inputs(
-    target: tuple[str, str, int],
-    selection: GitSelection,
-    config: VastTrainConfig,
-    *,
-    executor: SshExecutor,
-    rsync_executor: RsyncExecutor,
-    sleep: Callable[[float], None] = time.sleep,
-) -> tuple[str, str, str]:
-    """Transfer and verify explicit TWIST inputs before remote training starts."""
-
-    if not selection.dataset_files:
-        return "", "", ""
-    dataset_path = _stage_files(
-        target,
-        selection.dataset_files,
-        remote_root=config.remote_dataset_dir,
-        timeout_seconds=config.transfer_timeout_seconds,
-        retries=config.transfer_retries,
-        executor=executor,
-        rsync_executor=rsync_executor,
-        sleep=sleep,
-        expected_dataset_fingerprint=selection.dataset_fingerprint,
-    )
-    teacher_checkpoint_path = ""
-    if selection.teacher_checkpoint_path is not None:
-        teacher_checkpoint_path = _stage_directory(
-            target,
-            selection.teacher_checkpoint_path,
-            remote_root=config.remote_teacher_checkpoint_dir,
-            timeout_seconds=config.transfer_timeout_seconds,
-            retries=config.transfer_retries,
-            executor=executor,
-            rsync_executor=rsync_executor,
-            sleep=sleep,
-        )
-    warm_start_checkpoint_path = ""
-    if selection.warm_start_checkpoint_path is not None:
-        warm_start_checkpoint_path = _stage_directory(
-            target,
-            selection.warm_start_checkpoint_path,
-            remote_root=config.remote_warm_start_checkpoint_dir,
-            timeout_seconds=config.transfer_timeout_seconds,
-            retries=config.transfer_retries,
-            executor=executor,
-            rsync_executor=rsync_executor,
-            sleep=sleep,
-        )
-    return (
-        f"{dataset_path}/index.json",
-        teacher_checkpoint_path,
-        warm_start_checkpoint_path,
-    )
-
-
-def _stage_files(
-    target: tuple[str, str, int],
-    paths: tuple[Path, ...],
-    *,
-    remote_root: str,
-    timeout_seconds: int,
-    retries: int,
-    executor: SshExecutor,
-    rsync_executor: RsyncExecutor,
-    sleep: Callable[[float], None],
-    expected_dataset_fingerprint: str | None = None,
-) -> str:
-    manifests = {path.name: _sha256(path) for path in paths}
-    _prepare_remote_directory(target, remote_root, executor, timeout_seconds)
-    command = _rsync_command(target, [str(path) for path in paths], remote_root)
-    _run_rsync_with_retries(
-        command,
-        timeout_seconds=timeout_seconds,
-        retries=retries,
-        executor=rsync_executor,
-        sleep=sleep,
-    )
-    _verify_remote_files(
-        target,
-        remote_root,
-        manifests,
-        executor=executor,
-        timeout_seconds=timeout_seconds,
-        expected_dataset_fingerprint=expected_dataset_fingerprint,
-    )
-    return remote_root
-
-
-def _stage_directory(
-    target: tuple[str, str, int],
-    source: Path,
-    *,
-    remote_root: str,
-    timeout_seconds: int,
-    retries: int,
-    executor: SshExecutor,
-    rsync_executor: RsyncExecutor,
-    sleep: Callable[[float], None],
-) -> str:
-    files = tuple(sorted(path for path in source.rglob("*") if path.is_file()))
-    if not files:
-        raise ValueError(f"transfer source contains no files: {source}")
-    manifests = {path.relative_to(source).as_posix(): _sha256(path) for path in files}
-    _prepare_remote_directory(target, remote_root, executor, timeout_seconds)
-    command = _rsync_command(target, [f"{source}/"], remote_root)
-    _run_rsync_with_retries(
-        command,
-        timeout_seconds=timeout_seconds,
-        retries=retries,
-        executor=rsync_executor,
-        sleep=sleep,
-    )
-    _verify_remote_files(
-        target,
-        remote_root,
-        manifests,
-        executor=executor,
-        timeout_seconds=timeout_seconds,
-    )
-    return remote_root
-
-
-def _prepare_remote_directory(
-    target: tuple[str, str, int],
-    remote_root: str,
-    executor: SshExecutor,
-    timeout_seconds: int,
-) -> None:
-    bootstrap = (
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "command -v rsync >/dev/null 2>&1 || "
-        "(apt-get update && apt-get install -y --no-install-recommends rsync); "
-        + shlex.join(["mkdir", "-p", remote_root])
-    )
-    result = executor.run(
-        target,
-        bootstrap,
-        timeout_seconds=min(300, timeout_seconds),
-    )
-    if result.returncode != 0:
-        _raise_remote_failure(result)
-
-
-def _rsync_command(
-    target: tuple[str, str, int], sources: list[str], remote_root: str
-) -> list[str]:
-    user, host, port = target
-    transport = shlex.join(
-        [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "ServerAliveInterval=30",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-p",
-            str(port),
-        ]
-    )
-    return [
-        "rsync",
-        "--archive",
-        "--partial",
-        "--append-verify",
-        "--human-readable",
-        "--info=progress2",
-        "--rsh",
-        transport,
-        *sources,
-        f"{user}@{host}:{remote_root}/",
-    ]
-
-
-def _run_rsync_with_retries(
-    command: list[str],
-    *,
-    timeout_seconds: int,
-    retries: int,
-    executor: RsyncExecutor,
-    sleep: Callable[[float], None],
-) -> None:
-    deadline = time.monotonic() + timeout_seconds
-    last_error: Exception | None = None
-    for attempt in range(1, retries + 1):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            executor.run(command, timeout_seconds=remaining)
-            return
-        except (
-            OSError,
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-        ) as exc:
-            last_error = exc
-            if attempt < retries and time.monotonic() < deadline:
-                print(f"TWIST input transfer attempt {attempt} failed; resuming.")
-                sleep(5)
-    raise RuntimeError(f"TWIST input transfer failed: {last_error}") from last_error
-
-
-def _verify_remote_files(
-    target: tuple[str, str, int],
-    remote_root: str,
-    manifests: dict[str, str],
-    *,
-    executor: SshExecutor,
-    timeout_seconds: int,
-    expected_dataset_fingerprint: str | None = None,
-) -> None:
-    verifier = r"""import hashlib, json, pathlib, sys
-root = pathlib.Path(sys.argv[1]).resolve()
-manifest = json.loads(sys.argv[2])
-for relative, expected in manifest.items():
-    path = (root / relative).resolve()
-    if root not in path.parents or not path.is_file():
-        raise RuntimeError(f"invalid or missing staged file: {relative}")
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    if digest.hexdigest() != expected:
-        raise RuntimeError(f"staged file checksum mismatch: {relative}")
-fingerprint = sys.argv[3]
-if fingerprint:
-    index = json.loads((root / "index.json").read_text())
-    if index.get("dataset_fingerprint") != fingerprint:
-        raise RuntimeError("staged TWIST dataset fingerprint mismatch")
-print(f"Verified {len(manifest)} staged files under {root}.")
-"""
-    command = shlex.join(
-        [
-            "python3",
-            "-c",
-            verifier,
-            remote_root,
-            json.dumps(manifests, sort_keys=True),
-            expected_dataset_fingerprint or "",
-        ]
-    )
-    result = executor.run(
-        target,
-        command,
-        timeout_seconds=timeout_seconds,
-    )
-    if result.returncode != 0:
-        _raise_remote_failure(result)
-    _print_remote_output(result)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def run_remote_training(
     target: tuple[str, str, int],
     selection: GitSelection,
@@ -654,22 +340,9 @@ def run_remote_training(
     github_token: str,
     sleep: Callable[[float], None] = time.sleep,
     executor: SshExecutor | None = None,
-    rsync_executor: RsyncExecutor | None = None,
 ) -> None:
     if executor is None:
         executor = SshExecutor()
-    if rsync_executor is None:
-        rsync_executor = RsyncExecutor()
-    dataset_path, teacher_checkpoint_path, warm_start_checkpoint_path = (
-        stage_twist_inputs(
-            target,
-            selection,
-            config,
-            executor=executor,
-            rsync_executor=rsync_executor,
-            sleep=sleep,
-        )
-    )
     payload = json.dumps(
         {
             "environment": {
@@ -677,17 +350,15 @@ def run_remote_training(
                 "GITHUB_TOKEN": github_token,
             },
             "script": REMOTE_TRAIN_SCRIPT,
+            "timeout_seconds": config.job_timeout_seconds,
         }
     )
-    job_dir = f"/workspace/.bello-vast-jobs/{run_name}"
+    job_dir = f"/workspace/.bello-vast/{run_name}"
     start_command = remote_start_command(
         job_dir,
         selection,
         config,
         run_name,
-        dataset_path=dataset_path,
-        teacher_checkpoint_path=teacher_checkpoint_path,
-        warm_start_checkpoint_path=warm_start_checkpoint_path,
     )
     started_at = time.monotonic()
     ssh_start_deadline = started_at + config.ssh_timeout_seconds
@@ -835,17 +506,19 @@ def remote_start_command(
     selection: GitSelection,
     config: VastTrainConfig,
     run_name: str,
-    *,
-    dataset_path: str = "",
-    teacher_checkpoint_path: str = "",
-    warm_start_checkpoint_path: str = "",
 ) -> str:
-    bootstrap = r"""import json, os, pathlib, subprocess, sys
+    bootstrap = r"""import fcntl, json, os, pathlib, subprocess, sys
 payload = json.load(sys.stdin)
 env = payload["environment"]
 script = payload["script"]
 job_dir = pathlib.Path(sys.argv[1])
+supervisor_root = job_dir.parent
+if not (supervisor_root / "armed").is_file():
+    raise RuntimeError("Vast host teardown supervisor is not armed")
+os.kill(int((supervisor_root / "supervisor_pid").read_text()), 0)
 job_dir.mkdir(parents=True, exist_ok=True)
+launch_lock = (supervisor_root / "launch.lock").open("a")
+fcntl.flock(launch_lock, fcntl.LOCK_EX)
 script_path = job_dir / "train.sh"
 log_path = job_dir / "output.log"
 pid_path = job_dir / "pid"
@@ -865,17 +538,21 @@ script_path.write_text(script)
 wrapper = r'''set +e
 script_path="$1"
 status_path="$2"
-shift 2
-bash "$script_path" "$@"
+supervisor_root="$3"
+timeout_seconds="$4"
+shift 4
+timeout --signal=TERM --kill-after=30s "$timeout_seconds" bash "$script_path" "$@"
 status=$?
 status_tmp="$status_path.$$"
 printf '%s\n' "$status" > "$status_tmp"
 mv "$status_tmp" "$status_path"
+cp "$status_path" "$supervisor_root/status.tmp"
+mv "$supervisor_root/status.tmp" "$supervisor_root/status"
 exit "$status"
 '''
 with log_path.open("ab", buffering=0) as log:
     process = subprocess.Popen(
-        ["bash", "-c", wrapper, "bello-vast-job", str(script_path), str(status_path), *sys.argv[2:]],
+        ["bash", "-c", wrapper, "bello-vast-job", str(script_path), str(status_path), str(supervisor_root), str(payload["timeout_seconds"]), *sys.argv[2:]],
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -883,7 +560,12 @@ with log_path.open("ab", buffering=0) as log:
         start_new_session=True,
         close_fds=True,
     )
-pid_path.write_text(f"{process.pid}\n")
+pid_tmp = job_dir / "pid.tmp"
+pid_tmp.write_text(f"{process.pid}\n")
+pid_tmp.replace(pid_path)
+supervisor_pid_path = supervisor_root / "job_pid.tmp"
+supervisor_pid_path.write_text(str(process.pid))
+supervisor_pid_path.replace(supervisor_root / "job_pid")
 print(f"Started detached remote job {process.pid} in {job_dir}.")
 """
     return shlex.join(
@@ -904,10 +586,6 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
                 else f"{config.end_effector_payload_mass_kg:.17g}"
             ),
             run_name,
-            dataset_path,
-            teacher_checkpoint_path,
-            warm_start_checkpoint_path,
-            str(config.allow_git_commit_mismatch).lower(),
             str(config.total_timesteps or ""),
             str(config.learning_rate or ""),
         ]

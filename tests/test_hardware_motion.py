@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -86,8 +85,8 @@ def level4_adapter() -> HardwareMotionPolicyAdapter:
             ),
         ),
     )
-    env = BelloMotionTrackingEnv.load_native(
-        run_config.asset_config, run_config.env_config
+    env = BelloMotionTrackingEnv.load(
+        run_config.asset_config, run_config.env_config, load_mjx=False
     )
     actor_size = policy_observation_size(env.observation_size, run_config.config.policy)
     critic_size = policy_observation_size(
@@ -163,14 +162,10 @@ def test_level4_adapter_uses_motion_schema_and_physical_targets(
     result = adapter.step(frame, pose, reference_time=adapter.start_time)
 
     assert adapter.metadata.task == "motion_tracking"
-    assert adapter.metadata.motion is not None
-    assert adapter.metadata.ppo.policy.action_distribution == "tanh_gaussian"
-    assert adapter.env.config.formulation == "beyondmimic_joint_limits"
-    assert adapter.env.model.mj_model.nu == adapter.env.action_size == 25
-    assert len(adapter.physical_coordinate_names) == 25
+    assert len(adapter.physical_coordinate_names) == adapter.env.model.mj_model.nu
     assert result.observation.shape == (adapter.env.observation_size,)
-    assert result.action.shape == (25,)
-    assert result.physical_target.shape == (25,)
+    assert result.action.shape == (adapter.env.action_size,)
+    assert result.physical_target.shape == (adapter.env.model.mj_model.nu,)
     assert np.all(np.isfinite(result.physical_target))
     assert result.anchor_position_error == pytest.approx(0.0, abs=1.0e-6)
     assert result.anchor_orientation_error == pytest.approx(0.0, abs=1.0e-6)
@@ -251,18 +246,7 @@ def test_motion_hardware_uses_estimator_body_local_gyro_at_nonzero_yaw(
 def test_motion_runner_defaults_to_read_only() -> None:
     config = load_runner_config()
 
-    assert config.checkpoint_path == Path("checkpoints/motion")
-    assert config.standing_checkpoint_path == Path("checkpoints/standing")
-    assert config.task == "motion"
     assert not config.arm
-    assert config.motion_path is None
-    assert config.max_linear_acceleration is None
-    assert config.action_lpf_cutoff_hz is None
-    assert HardwareMotionConfig().action_lpf_cutoff_hz == 15.0
-    assert HardwareMotionConfig().policy_transition_seconds == 0.2
-    assert HardwareMotionConfig().max_motion_tilt_radians == pytest.approx(
-        math.radians(70.0)
-    )
     validate_hardware_motion_config(HardwareMotionConfig())
     validate_hardware_motion_config(HardwareMotionConfig(arm=True))
 

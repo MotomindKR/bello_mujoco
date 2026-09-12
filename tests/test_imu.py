@@ -5,26 +5,24 @@ import mujoco
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline.mjcf import ImuSensorConfig
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig, prepare_asset
+from bello_mujoco.models.urdf import ImuSensorConfig
+from bello_mujoco.models.compiler import ModelConfig, compile_robot
 from bello_mujoco.imu import ImuNoiseConfig, ImuNoiseInjector, ImuSample, MujocoImu
-from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
+from bello_mujoco.envs.locomotion_config import BelloEnvConfig
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.evaluation.render import mujoco_eval_state
-from bello_mujoco.sim import load_prepared_bello_model
+from bello_mujoco.sim import load_compiled_model
 from bello_mujoco.terrain import ROBOT_ONLY_TERRAIN
 
 
 def test_generated_mujoco_imu_is_bound_to_pelvis(tmp_path: Path) -> None:
-    prepared = prepare_asset(
-        AssetPrepConfig(
+    prepared = compile_robot(
+        ModelConfig(
             asset="bello",
-            output_root=tmp_path,
-            mesh_face_budget=100,
-            visual_mesh_face_budget=100,
             imu_config=ImuSensorConfig(enabled=True, body_name="pelvis_link"),
         )
     )
-    model = load_prepared_bello_model(prepared, load_mjx=False)
+    model = load_compiled_model(prepared, load_mjx=False)
     imu = MujocoImu.bind(model.mj_model)
     data = mujoco.MjData(model.mj_model)
     data.qpos[:] = model.default_qpos
@@ -122,18 +120,17 @@ def test_invalid_imu_noise_config_is_rejected(config: ImuNoiseConfig) -> None:
 
 
 def test_model_imu_frame_is_derived_from_generated_sensor_site(tmp_path: Path) -> None:
-    prepared = prepare_asset(
-        AssetPrepConfig(
+    prepared = compile_robot(
+        ModelConfig(
             asset="bello",
-            output_root=tmp_path / "generated-sensor",
             imu_config=ImuSensorConfig(enabled=True, body_name="torso_link"),
         )
     )
-    model = load_prepared_bello_model(prepared, load_mjx=False)
+    model = load_compiled_model(prepared, load_mjx=False)
 
     assert model.imu_body_name == "torso_link"
     with pytest.raises(ValueError, match="does not match the generated sensor site"):
-        load_prepared_bello_model(
+        load_compiled_model(
             prepared,
             imu_body_name="pelvis_link",
             load_mjx=False,
@@ -142,9 +139,8 @@ def test_model_imu_frame_is_derived_from_generated_sensor_site(tmp_path: Path) -
 
 def test_disabled_sensor_carries_asset_configured_imu_frame(tmp_path: Path) -> None:
     env = BelloLocomotionEnv.load(
-        AssetPrepConfig(
+        ModelConfig(
             asset="bello",
-            output_root=tmp_path / "disabled-sensor",
             imu_config=ImuSensorConfig(enabled=False, body_name="torso_link"),
         ),
         env_config=BelloEnvConfig(terrain=ROBOT_ONLY_TERRAIN),

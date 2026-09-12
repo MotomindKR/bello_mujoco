@@ -10,7 +10,6 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "chex>=0.1.90",
   "equinox>=0.12.0",
-  "fast-simplification>=0.1.12",
   "grpcio>=1.83,<2",
   "hydra-core>=1.3.2",
   "imageio-ffmpeg>=0.6.0",
@@ -21,6 +20,7 @@ dependencies = [
   "mujoco-mjx[warp]>=3.3.0",
   "numpy>=2.0",
   "omegaconf>=2.3.0",
+  "onnx>=1.19,<2",
   "optax>=0.2.4",
   "orbax-checkpoint>=0.11.0",
   "pygame-ce>=2.5.7",
@@ -36,11 +36,9 @@ dependencies = [
 Repository = "https://github.com/MotomindKR/bello_mujoco"
 
 [project.scripts]
-bello-prepare-assets = "bello_mujoco.cli:prepare_assets_entrypoint"
 bello-train = "bello_mujoco.cli:train_entrypoint"
 bello-eval = "bello_mujoco.cli:eval_entrypoint"
-bello-motion = "bello_mujoco.cli:motion_entrypoint"
-bello-twist-data = "bello_mujoco.cli:twist_data_entrypoint"
+bello-export-policy = "bello_mujoco.cli:export_entrypoint"
 bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
 bello-run-emulator = "bello_mujoco.cli:emulator_entrypoint"
 bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
@@ -66,14 +64,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/bello_mujoco"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"configs" = "bello_mujoco/configs"
-"deps/bello-stack/descriptions/bello/urdf" = "bello_mujoco/descriptions/bello/urdf"
-"deps/bello-stack/descriptions/bello/lower_body/meshes" = "bello_mujoco/descriptions/bello/lower_body/meshes"
-"deps/bello-stack/descriptions/bello/upper_body/meshes" = "bello_mujoco/descriptions/bello/upper_body/meshes"
-"deps/bello-stack/descriptions/bello_mini/urdf" = "bello_mujoco/descriptions/bello_mini/urdf"
-"deps/bello-stack/descriptions/bello_mini/meshes" = "bello_mujoco/descriptions/bello_mini/meshes"
-
 [tool.uv]
 default-groups = ["dev", "hardware"]
 environments = [
@@ -94,9 +84,12 @@ bello-hardware = { workspace = true }
 members = ["deps/bello-stack/components/bello-hardware-python"]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not integration'"
+testpaths = ["tests"]
+norecursedirs = ["deps", "outputs", ".venv", ".uv-python"]
 tmp_path_retention_policy = "failed"
 markers = [
-  "integration: slower end-to-end tests that compile and run training loops",
+  "integration: full robot dynamics, compiled rollouts, or external runtime checks; opt in explicitly",
 ]
 
 [tool.ruff]

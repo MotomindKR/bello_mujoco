@@ -61,6 +61,8 @@ provision:
         git
         iproute2
         kmod
+        libegl-mesa0
+        libgl1-mesa-dri
         socat
         xz-utils
         "linux-modules-extra-$(uname -r)"

@@ -12,7 +12,6 @@ config:
   gamma: 0.995
   gae_lambda: 0.98
   ent_coef: 0.005
-  symmetry_loss_coef: 0.0
   policy:
     hidden_dims: [512, 256, 128]
     activation: swish

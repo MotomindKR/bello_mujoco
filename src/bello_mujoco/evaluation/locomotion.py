@@ -17,8 +17,8 @@ import rerun as rr
 import rerun.blueprint as rrb
 from rerun.urdf import UrdfTree
 
-from bello_mujoco.envs.locomotion import (
-    BelloLocomotionEnv,
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.gait import (
     advance_gait_phase,
     advance_standing_blend,
     next_start_preference,
@@ -209,16 +209,15 @@ class RerunEvaluationLogger:
         self.recording.log(
             "metrics/actuator/force", rr.Scalars(np.asarray(mj_data.actuator_force))
         )
-        joint_target = np.asarray(self.env.action_to_joint_target(action))
+        motor_target = np.asarray(self.env.action_to_ctrl(action))
         for action_index, actuator_name in enumerate(self.action_names):
             actuator_index = self.env.model.policy_ctrl_indices[action_index]
-            qpos_index = self.env.model.actuator_qpos_indices[actuator_index]
             self.recording.log(
                 f"metrics/policy_actuators/{actuator_name}",
                 rr.Scalars(
                     [
-                        mj_data.qpos[qpos_index],
-                        joint_target[actuator_index],
+                        mj_data.actuator_length[actuator_index],
+                        motor_target[actuator_index],
                         action[action_index],
                         mj_data.actuator_force[actuator_index],
                     ]
@@ -869,7 +868,6 @@ class EvalPolicyConfig:
     stochastic_actions: bool = False
     action_seed: int = 0
     gamepad: GamepadConfig = GamepadConfig()
-    allow_git_commit_mismatch: bool = False
 
 
 def evaluate_locomotion_checkpoint(
@@ -880,7 +878,6 @@ def evaluate_locomotion_checkpoint(
     runtime = load_locomotion_policy_runtime(
         checkpoint_path,
         use_viewer_model=True,
-        allow_git_commit_mismatch=eval_config.allow_git_commit_mismatch,
     )
     run_rerun_evaluation(
         runtime.env,

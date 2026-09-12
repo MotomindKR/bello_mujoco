@@ -122,7 +122,7 @@ def test_lima_nix_setup_is_retry_safe_and_idempotent() -> None:
     assert 'sh "$installer_path" --daemon --yes' in setup
     assert "Nix installation completed without creating" in setup
     assert "experimental-features = nix-command flakes" in setup
-    assert 'systemctl enable --now nix-daemon.socket' in setup
+    assert "systemctl enable --now nix-daemon.socket" in setup
 
 
 def test_legacy_networking_blocks_operations_but_allows_status_and_delete(

@@ -7,7 +7,6 @@ import importlib.util
 import math
 from pathlib import Path
 import string
-import subprocess
 import sys
 from typing import Any, Protocol
 
@@ -19,7 +18,6 @@ from bello_mujoco.repository import repository_root
 
 
 RTMW_SCHEMA_VERSION = 1
-RTMW_REVISION = "8bef0df43393ec9c755443e9a183451a06f2bf4f"
 RTMW_REPRESENTATION = "smplx52_landmark_fit"
 RTMW_SCHEMA_ID = "smplx_55_without_jaw_and_eyes_v1"
 RTMW_ROTATION_SEMANTICS = (
@@ -96,54 +94,14 @@ class RtmwStreamConfig(Protocol):
     human_height_m: float
 
 
-def require_pinned_rtmw_revision() -> Path:
-    """Require the reviewed RTMW source checkout pinned by this repository."""
-
-    root = repository_root()
-    relative = "deps/RTMW-SMPLX-Teleop"
-    submodule = root / relative
-    gitlink = _git_output(root, "ls-tree", "HEAD", "--", relative).split()
-    if len(gitlink) < 3 or gitlink[1] != "commit":
-        raise RuntimeError(f"{relative} is not a pinned Git submodule")
-    current = _git_output(submodule, "rev-parse", "HEAD")
-    if gitlink[2] != RTMW_REVISION or current != RTMW_REVISION:
-        raise ValueError(
-            "RTMW gitlink and checkout must both equal the reviewed protocol "
-            f"revision {RTMW_REVISION}"
-        )
-    if _git_output(submodule, "status", "--porcelain=v1", "--untracked-files=all"):
-        raise RuntimeError("hardware RTMW submodule must be clean")
-    return submodule
-
-
-def validate_pinned_rtmw_contract(submodule: Path) -> None:
-    """Match the consumer's structural constants to the pinned producer source."""
-
-    module_name = "_bello_pinned_rtmw_contracts"
-    contract_path = submodule / "src" / "rtmw_teleop" / "contracts.py"
-    spec = importlib.util.spec_from_file_location(module_name, contract_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load the pinned RTMW contract module")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(module_name, None)
-    if tuple(module.SMPLX52_NAMES) != RTMW_SMPLX52_NAMES:
-        raise ValueError("pinned RTMW SMPL-X joint order is incompatible")
-    if tuple(int(value) for value in module.SMPLX52_PARENTS) != RTMW_SMPLX52_PARENTS:
-        raise ValueError("pinned RTMW SMPL-X hierarchy is incompatible")
-    if tuple(module.SMPLX_FINGER_TIP_NAMES) != RTMW_FINGER_TIP_NAMES:
-        raise ValueError("pinned RTMW fingertip order is incompatible")
-    if module.DERIVED_ROTATION_SEMANTICS != RTMW_ROTATION_SEMANTICS:
-        raise ValueError("pinned RTMW rotation semantics are incompatible")
-
-
 def import_pinned_rtmw_proto(submodule: Path | None = None) -> tuple[Any, Any]:
     """Import generated protobuf modules only from the reviewed submodule."""
 
-    submodule = require_pinned_rtmw_revision() if submodule is None else submodule
+    submodule = (
+        (repository_root() / "deps" / "RTMW-SMPLX-Teleop")
+        if submodule is None
+        else submodule
+    )
     source_root = submodule / "src"
     source_string = str(source_root)
     if source_string not in sys.path:
@@ -212,27 +170,10 @@ def validate_stream_info(message: Any, config: RtmwStreamConfig) -> None:
         )
 
 
-def _git_output(root: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ("git", "-C", str(root), *arguments),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"git {' '.join(arguments)} failed" + (f": {detail}" if detail else "")
-        )
-    return result.stdout.strip()
-
-
 __all__ = (
     "RTMW_COORDINATE_SPACE",
     "RTMW_FINGER_TIP_NAMES",
     "RTMW_REPRESENTATION",
-    "RTMW_REVISION",
     "RTMW_ROTATION_SEMANTICS",
     "RTMW_SCHEMA_ID",
     "RTMW_SCHEMA_VERSION",
@@ -240,7 +181,5 @@ __all__ = (
     "RTMW_SMPLX52_PARENTS",
     "RtmwStreamConfig",
     "import_pinned_rtmw_proto",
-    "require_pinned_rtmw_revision",
-    "validate_pinned_rtmw_contract",
     "validate_stream_info",
 )

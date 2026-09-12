@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import warnings
 from pathlib import Path
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
@@ -12,36 +11,19 @@ _BELLO_STACK_SUBMODULE = "deps/bello-stack"
 
 
 def capture_repository_commit() -> str:
-    """Capture a clean HEAD represented by a local origin-tracking branch."""
+    """Capture the clean root commit that pins this source checkout."""
 
     root = repository_root()
     _require_clean_worktree(root)
     _require_pinned_submodules(root)
     commit = _head_commit(root)
-    remote_refs = _git_output(
-        root,
-        "for-each-ref",
-        "--format=%(refname)",
-        f"--contains={commit}",
-        "refs/remotes/origin",
-    ).splitlines()
-    if not any(
-        ref.startswith("refs/remotes/origin/") and ref != "refs/remotes/origin/HEAD"
-        for ref in remote_refs
-    ):
-        raise RuntimeError(
-            f"HEAD {commit} is not contained by a local origin-tracking "
-            "branch; fetch or push the training commit before creating checkpoints"
-        )
     return commit
 
 
 def require_repository_commit(
     expected: str,
-    *,
-    allow_mismatch: bool = False,
 ) -> None:
-    """Validate a clean checkout and, by default, its exact commit."""
+    """Require the exact recorded commit with clean, pinned dependencies."""
 
     validate_repository_commit(expected)
     root = repository_root()
@@ -49,15 +31,6 @@ def require_repository_commit(
     _require_pinned_submodules(root)
     current_commit = _head_commit(root)
     if current_commit != expected:
-        if allow_mismatch:
-            warnings.warn(
-                "Git commit mismatch override enabled: "
-                f"checkpoint={expected}, current={current_commit}. Compatibility "
-                "is not guaranteed.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return
         raise ValueError(
             "checkpoint source commit does not match this checkout: "
             f"checkpoint={expected}, current={current_commit}. Create a separate "

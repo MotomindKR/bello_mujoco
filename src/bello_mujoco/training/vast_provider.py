@@ -54,8 +54,6 @@ class VastApi(Protocol):
 
     def show_instances(self) -> list[Mapping[str, Any]]: ...
 
-    def destroy_instance(self, instance_id: int) -> None: ...
-
 
 class VastSdkClient:
     """Validate the response shapes used from the lock-pinned Vast SDK."""
@@ -104,9 +102,6 @@ class VastSdkClient:
         ):
             raise RuntimeError(f"unexpected Vast instances response: {value!r}")
         return value
-
-    def destroy_instance(self, instance_id: int) -> None:
-        self._client.destroy_instance(id=instance_id)
 
 
 def exception_http_status(exc: BaseException) -> int | None:

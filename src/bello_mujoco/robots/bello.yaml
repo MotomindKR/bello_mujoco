@@ -1,14 +1,8 @@
 asset: bello
 source_urdf: bello/urdf/bello.urdf
-source_directories:
-  - bello/urdf
-  - bello/lower_body/meshes
-  - bello/upper_body/meshes
 hardware_description: bello/hardware.yaml
 physical_hardware_ready: true
 motor_model_catalog: robstride/models.yaml
-output_directory: bello
-output_stem: bello
 root_body_name: bello_root
 root_joint_name: root_free
 default_root_position: [0.0, 0.0, 0.91]
@@ -16,20 +10,6 @@ default_root_quaternion: [1.0, 0.0, 0.0, 0.0]
 default_imu_body_name: pelvis_link
 locomotion_command_frame_body_name: pelvis_link
 locomotion_forward_axis: [0.0, 1.0, 0.0]
-locomotion_action_mirror:
-  left_hip_pitch_joint: {counterpart: right_hip_pitch_joint, sign: -1}
-  right_hip_pitch_joint: {counterpart: left_hip_pitch_joint, sign: -1}
-  left_hip_roll_joint: {counterpart: right_hip_roll_joint, sign: 1}
-  right_hip_roll_joint: {counterpart: left_hip_roll_joint, sign: 1}
-  left_hip_yaw_joint: {counterpart: right_hip_yaw_joint, sign: -1}
-  right_hip_yaw_joint: {counterpart: left_hip_yaw_joint, sign: -1}
-  left_knee_joint: {counterpart: right_knee_joint, sign: 1}
-  right_knee_joint: {counterpart: left_knee_joint, sign: 1}
-  left_ankle_pitch_joint: {counterpart: right_ankle_pitch_joint, sign: 1}
-  right_ankle_pitch_joint: {counterpart: left_ankle_pitch_joint, sign: 1}
-  left_ankle_roll_joint: {counterpart: right_ankle_roll_joint, sign: -1}
-  right_ankle_roll_joint: {counterpart: left_ankle_roll_joint, sign: -1}
-  waist_yaw_joint: {counterpart: waist_yaw_joint, sign: -1}
 foot_body_names:
   - left_ankle_roll_link
   - right_ankle_roll_link
@@ -112,25 +92,25 @@ actuators:
     mode: policy
     default_pos: 0.30
     soft_limit: [-0.44506, 0.96866]
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 36.0
   - joint_name: right_ankle_pitch_joint
     mode: policy
     default_pos: 0.30
     soft_limit: [-0.44506, 0.96866]
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 36.0
   - joint_name: left_ankle_roll_joint
     mode: policy
     default_pos: 0.0
     soft_limit: [-0.07857, 0.07857]
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 36.0
   - joint_name: right_ankle_roll_joint
     mode: policy
     default_pos: 0.0
     soft_limit: [-0.07857, 0.07857]
-    gains: [22.0, 1.0]
+    gains: [11.0, 0.5]
     effort_limit: 36.0
   - joint_name: waist_yaw_joint
     mode: policy
@@ -146,7 +126,7 @@ actuators:
     effort_limit: 120.0
   - joint_name: right_shoulder_roll_joint
     mode: hold
-    default_pos: 0.0
+    default_pos: 0.15
     soft_limit: null
     gains: [70.0, 2.0]
     effort_limit: 60.0
@@ -182,7 +162,7 @@ actuators:
     effort_limit: 120.0
   - joint_name: left_shoulder_roll_joint
     mode: hold
-    default_pos: 0.0
+    default_pos: 0.15
     soft_limit: null
     gains: [70.0, 2.0]
     effort_limit: 60.0
@@ -217,36 +197,3 @@ payload_attachments:
   - link_name: r_end_effector_sphere_link
     radius_m: 0.0325
     center_m: [0.0, 0.0, -0.02]
-coupled_actuator_groups:
-  - name: left_ankle_differential
-    actuators:
-      - tendon_name: left_ankle_motor_1
-        logical_joint_name: left_ankle_pitch_joint
-        joint_coefficients:
-          - joint_name: left_ankle_pitch_joint
-            coefficient: -1.0
-          - joint_name: left_ankle_roll_joint
-            coefficient: 1.0
-      - tendon_name: left_ankle_motor_2
-        logical_joint_name: left_ankle_roll_joint
-        joint_coefficients:
-          - joint_name: left_ankle_pitch_joint
-            coefficient: 1.0
-          - joint_name: left_ankle_roll_joint
-            coefficient: 1.0
-  - name: right_ankle_differential
-    actuators:
-      - tendon_name: right_ankle_motor_1
-        logical_joint_name: right_ankle_pitch_joint
-        joint_coefficients:
-          - joint_name: right_ankle_pitch_joint
-            coefficient: -1.0
-          - joint_name: right_ankle_roll_joint
-            coefficient: 1.0
-      - tendon_name: right_ankle_motor_2
-        logical_joint_name: right_ankle_roll_joint
-        joint_coefficients:
-          - joint_name: right_ankle_pitch_joint
-            coefficient: 1.0
-          - joint_name: right_ankle_roll_joint
-            coefficient: 1.0

@@ -7,7 +7,7 @@ import pytest
 
 import bello_mujoco.evaluation.motion as eval_motion
 import bello_mujoco.motion.runtime as motion_runtime
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.policy import ActorCriticConfig
@@ -23,12 +23,11 @@ def motion_metadata(
     motion_path: Path,
     *,
     ppo: PPOConfig = PPOConfig(),
-    motion_contract=None,
 ) -> MotionCheckpointMetadata:
     stack_size = ppo.policy.obs_stack_size
     return MotionCheckpointMetadata(
         ppo=ppo,
-        asset=AssetPrepConfig(),
+        asset=ModelConfig(),
         warp=object(),
         obs_size=ACTOR_LAYOUT.size * stack_size,
         critic_obs_size=CRITIC_LAYOUT.size * stack_size,
@@ -37,7 +36,6 @@ def motion_metadata(
         critic_observation_layout=CRITIC_LAYOUT,
         action_layout=ACTION_LAYOUT,
         motion_env=MotionTrackingEnvConfig(motion_path=motion_path),
-        motion=motion_contract or SimpleNamespace(path=motion_path),
     )
 
 
@@ -86,18 +84,14 @@ def test_render_checkpoint_rejects_non_motion_task(monkeypatch, tmp_path: Path) 
         )
 
 
-def test_relocated_motion_is_loaded_validated_and_rendered(
-    monkeypatch, tmp_path: Path
-) -> None:
-    relocated = tmp_path / "relocated.npz"
+def test_bundled_motion_is_loaded_and_rendered(monkeypatch, tmp_path: Path) -> None:
+    bundled = tmp_path / "checkpoint" / "motion.npz"
     original = tmp_path / "original.npz"
-    motion_contract = SimpleNamespace(path=original)
     ppo = PPOConfig(policy=ActorCriticConfig(obs_stack_size=3))
     normalization = SimpleNamespace(observation=object())
     metadata = motion_metadata(
         original,
         ppo=ppo,
-        motion_contract=motion_contract,
     )
     policy = object()
     env = motion_runtime_env()
@@ -111,17 +105,19 @@ def test_relocated_motion_is_loaded_validated_and_rendered(
     prepared = object()
     monkeypatch.setattr(
         motion_runtime,
-        "prepare_asset",
+        "compile_robot",
         lambda asset: prepared,
     )
 
-    def load_prepared_native(
+    def from_compiled(
         loaded_prepared,
         env_config,
         *,
         actuator_config,
         use_viewer_model,
+        load_mjx,
     ):
+        assert not load_mjx
         calls["load"] = (
             loaded_prepared,
             env_config,
@@ -132,15 +128,8 @@ def test_relocated_motion_is_loaded_validated_and_rendered(
 
     monkeypatch.setattr(
         motion_runtime.BelloMotionTrackingEnv,
-        "load_prepared_native",
-        staticmethod(load_prepared_native),
-    )
-    monkeypatch.setattr(
-        motion_runtime,
-        "validate_motion_clip_contract",
-        lambda path, clip, contract: calls.setdefault(
-            "validate", (path, clip, contract)
-        ),
+        "from_compiled",
+        staticmethod(from_compiled),
     )
 
     def render(loaded_env, loaded_policy, output_path, **kwargs):
@@ -153,25 +142,20 @@ def test_relocated_motion_is_loaded_validated_and_rendered(
     result = eval_motion.render_checkpoint_with_stats(
         tmp_path / "checkpoint",
         output,
-        motion_path=relocated,
         width=80,
         height=60,
         fps=25,
-        allow_git_commit_mismatch=True,
     )
 
     assert calls["restore"] == (
         tmp_path / "checkpoint",
-        {
-            "allow_git_commit_mismatch": True,
-        },
+        {},
     )
     loaded_prepared, loaded_config, actuator_config, use_viewer_model = calls["load"]
     assert loaded_prepared is prepared
-    assert loaded_config.motion_path == relocated
+    assert loaded_config.motion_path == bundled
     assert actuator_config is metadata.asset.actuator_config
     assert use_viewer_model is True
-    assert calls["validate"] == (relocated, env.motion, motion_contract)
     loaded_env, loaded_policy, loaded_output, render_kwargs = calls["render"]
     assert loaded_env is env
     assert loaded_policy is policy
@@ -200,23 +184,17 @@ def test_motion_runtime_can_override_payload_mass_for_evaluation(
     )
     monkeypatch.setattr(
         motion_runtime,
-        "prepare_asset",
+        "compile_robot",
         lambda asset: loaded_assets.append(asset) or object(),
     )
     monkeypatch.setattr(
         motion_runtime.BelloMotionTrackingEnv,
-        "load_prepared_native",
+        "from_compiled",
         staticmethod(lambda *args, **kwargs: env),
-    )
-    monkeypatch.setattr(
-        motion_runtime,
-        "validate_motion_clip_contract",
-        lambda *args: None,
     )
 
     motion_runtime.load_motion_policy_runtime(
         tmp_path / "checkpoint",
-        motion_path=motion_path,
         end_effector_payload_mass_kg=4.5359237,
         use_viewer_model=True,
     )
@@ -225,45 +203,36 @@ def test_motion_runtime_can_override_payload_mass_for_evaluation(
     assert metadata.asset.end_effector_payload_mass_kg == 0.0
 
 
-def test_relocated_motion_validation_failure_prevents_rollout(
-    monkeypatch, tmp_path: Path
-) -> None:
-    relocated = tmp_path / "tampered.npz"
-    metadata = motion_metadata(relocated)
-    env = motion_runtime_env()
+def test_missing_bundled_motion_prevents_rollout(monkeypatch, tmp_path):
+    metadata = motion_metadata(Path("motion.npz"))
     monkeypatch.setattr(
         motion_runtime,
         "restore_evaluation_checkpoint",
-        lambda *args, **kwargs: (
+        lambda *args: (
             SimpleNamespace(policy=object()),
             metadata,
             SimpleNamespace(observation=object()),
         ),
     )
-    monkeypatch.setattr(motion_runtime, "prepare_asset", lambda asset: object())
+    monkeypatch.setattr(motion_runtime, "compile_robot", lambda asset: object())
+
+    def load(_compiled, config, **kwargs):
+        assert config.motion_path == tmp_path / "checkpoint" / "motion.npz"
+        raise FileNotFoundError(config.motion_path)
+
     monkeypatch.setattr(
         motion_runtime.BelloMotionTrackingEnv,
-        "load_prepared_native",
-        staticmethod(lambda *args, **kwargs: env),
-    )
-    monkeypatch.setattr(
-        motion_runtime,
-        "validate_motion_clip_contract",
-        lambda *args: (_ for _ in ()).throw(
-            ValueError("motion clip does not match checkpoint content/schema")
-        ),
+        "from_compiled",
+        staticmethod(load),
     )
     monkeypatch.setattr(
         eval_motion,
         "render_motion_policy",
-        lambda *args, **kwargs: pytest.fail("invalid motion must not be rendered"),
+        lambda *args, **kwargs: pytest.fail("missing motion must not render"),
     )
-
-    with pytest.raises(ValueError, match="content/schema"):
+    with pytest.raises(FileNotFoundError):
         eval_motion.render_checkpoint_with_stats(
-            tmp_path / "checkpoint",
-            tmp_path / "rollout.mp4",
-            motion_path=relocated,
+            tmp_path / "checkpoint", tmp_path / "rollout.mp4"
         )
 
 
@@ -332,12 +301,14 @@ def install_native_rollout_fakes(monkeypatch):
         dtype=jnp.float32,
     )
     state = SimpleNamespace(
-        data=SimpleNamespace(qpos=qpos),
+        data=SimpleNamespace(qpos=qpos, xpos=qpos[None, :3], xquat=qpos[None, 3:7]),
         reference_time=jnp.asarray(0.0),
         alignment_xy=jnp.zeros(2),
         alignment_yaw=jnp.asarray(0.0),
     )
-    reference = SimpleNamespace(qpos=qpos)
+    reference = SimpleNamespace(
+        qpos=qpos, body_pos=qpos[None, :3], body_quat=qpos[None, 3:7]
+    )
     env = SimpleNamespace(
         model=SimpleNamespace(
             mj_model=object(),
@@ -345,7 +316,8 @@ def install_native_rollout_fakes(monkeypatch):
             root_qpos_adr=0,
             policy_qpos_indices=np.asarray([7, 8]),
         ),
-        config=SimpleNamespace(formulation="reference_residual"),
+        anchor_body_id=0,
+        anchor_body_index=0,
         max_episode_steps=4,
         aligned_reference=lambda *args: reference,
     )

@@ -42,11 +42,8 @@ env_config:
   reward:
     root_position_weight: 0.5
     root_orientation_weight: 0.5
-    joint_position_weight: 0.0
-    joint_velocity_weight: 0.0
     body_position_weight: 1.0
     body_orientation_weight: 1.0
-    body_velocity_weight: 0.0
     body_linear_velocity_weight: 1.0
     body_angular_velocity_weight: 1.0
     action_rate_weight: -0.1

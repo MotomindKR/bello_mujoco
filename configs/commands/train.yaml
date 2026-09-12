@@ -5,12 +5,8 @@ num_envs: null
 learning_rate: null
 contact_budget_per_env: null
 motion_path: null
-dataset_path: null
-teacher_checkpoint_path: null
 end_effector_payload_mass_kg: null
 resume_path: null
-warm_start_path: null
-allow_git_commit_mismatch: false
 checkpoint_directory: null
 checkpoint_name: null
 wandb_enabled: null

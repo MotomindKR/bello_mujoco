@@ -15,7 +15,6 @@ class HardwareControlConfig:
     imu_name: str = "imu"
     client_name: str = "bello-policy"
     arm: bool = False
-    allow_git_commit_mismatch: bool = False
     connection_timeout_seconds: float = 3.0
     telemetry_timeout_seconds: float = 2.0
     command_validity_seconds: float = 0.08

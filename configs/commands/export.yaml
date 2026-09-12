@@ -1,0 +1,9 @@
+checkpoint_path: null
+output_path: null
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

@@ -1,4 +1,5 @@
-from dataclasses import replace
+from dataclasses import fields, replace
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,10 +8,10 @@ import mujoco
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset
-from bello_mujoco.envs.locomotion import (
-    BelloLocomotionEnv,
-    GaitConfig,
+from bello_mujoco.models.compiler import CompiledRobot
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.gait import GaitConfig
+from bello_mujoco.envs.locomotion_config import (
     ObservationLatencyConfig,
     ObservationLowPassFilterConfig,
 )
@@ -36,7 +37,7 @@ def component_slice(env: BelloLocomotionEnv, name: str) -> slice:
 
 
 def test_native_feedback_retains_filter_delay_and_resets(bello_asset) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, load_mjx=False)
     env = replace(
         env,
         config=replace(
@@ -82,7 +83,7 @@ def test_native_feedback_retains_filter_delay_and_resets(bello_asset) -> None:
 
 
 def test_native_feedback_noise_is_seeded_and_not_redrawn_on_reread(bello_asset) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, load_mjx=False)
     env = replace(
         env,
         config=replace(
@@ -117,7 +118,7 @@ def test_native_feedback_noise_is_seeded_and_not_redrawn_on_reread(bello_asset) 
 def test_training_video_preserves_feedback_delay_across_physics_steps(
     monkeypatch, bello_asset, tmp_path, command_delay
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, load_mjx=False)
     env = replace(
         env,
         config=replace(
@@ -192,9 +193,9 @@ def test_training_video_preserves_feedback_delay_across_physics_steps(
 
 def test_gamepad_command_is_used_by_same_step_policy_and_log(
     monkeypatch,
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, load_mjx=False)
     commands = [
         np.zeros(3, dtype=np.float32),
         np.asarray((0.4, 0.0, 0.0), dtype=np.float32),
@@ -269,9 +270,9 @@ def test_gamepad_command_is_used_by_same_step_policy_and_log(
 
 def test_gamepad_standing_waits_for_next_gait_boundary_and_logs_effective_command(
     monkeypatch,
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    env = BelloLocomotionEnv.from_compiled(bello_asset, load_mjx=False)
     env = replace(
         env,
         config=replace(env.config, gait=GaitConfig(frequency_hz=12.5)),
@@ -397,7 +398,7 @@ def test_training_video_passes_runner_normalization_to_rollout(monkeypatch) -> N
     )
     monkeypatch.setattr(
         training,
-        "render_policy_rollout",
+        "render_policy_rollout_isolated",
         lambda *_args, **kwargs: (
             rollout_calls.append(kwargs)
             or {"first_done_step": -1, "completed_episodes": 0}
@@ -419,8 +420,8 @@ def test_training_video_passes_runner_normalization_to_rollout(monkeypatch) -> N
     assert rollout_calls[0]["observation_norm_state"] is normalization
 
 
-def test_training_video_failure_is_nonfatal(monkeypatch) -> None:
-    runner_state = SimpleNamespace(update=jnp.asarray(512))
+def test_training_video_failure_stops_training(monkeypatch) -> None:
+    runner_state = SimpleNamespace(update=jnp.asarray(0))
     monkeypatch.setattr(
         training,
         "render_training_video",
@@ -429,18 +430,54 @@ def test_training_video_failure_is_nonfatal(monkeypatch) -> None:
         ),
     )
 
-    with pytest.warns(
-        RuntimeWarning,
-        match="evaluation video failed at update 512.*disabling later videos",
-    ):
-        available = training.try_render_training_video(
+    with pytest.raises(RuntimeError, match="framebuffer unavailable"):
+        training.train_update_loop(
             object(),
-            runner_state,
             object(),
-            TrainingVideoConfig(),
+            PPOConfig(),
+            object(),
+            TrainingVideoConfig(enabled=True, render_initial=True),
             None,
-            env_steps=0,
-            ppo_config=PPOConfig(),
+            initial_runner=(runner_state, object(), object()),
         )
 
-    assert available is False
+
+def test_isolated_video_sends_host_policy_without_environment_caches(monkeypatch):
+    env = object.__new__(BelloLocomotionEnv)
+    model = SimpleNamespace(
+        mjx_model=None,
+        mj_model=mujoco.MjModel.from_xml_string("<mujoco/>"),
+    )
+    for field in fields(env):
+        object.__setattr__(
+            env, field.name, model if field.name == "model" else field.default
+        )
+    object.__setattr__(env, "cached_device_value", jnp.ones(1))
+    captured = []
+
+    def capture(function, env_fields, policy, kwargs):
+        # Native MuJoCo models must also survive the spawn serialization boundary.
+        payload = pickle.loads(pickle.dumps((env_fields, policy, kwargs)))
+        captured.append(payload)
+        return {"rendered_steps": 1}
+
+    monkeypatch.setattr(render, "run_software_evaluation", capture)
+    stats = render.render_policy_rollout_isolated(
+        env,
+        jnp.ones(2),
+        observation_norm_state=init_observation_norm_state(2),
+    )
+    assert stats == {"rendered_steps": 1}
+    env_fields, policy, kwargs = captured[0]
+    assert "cached_device_value" not in env_fields
+    assert env_fields["model"].mj_model.nq == 0
+    assert isinstance(policy, np.ndarray)
+    assert isinstance(kwargs["observation_norm_state"].mean, np.ndarray)
+
+
+def test_isolated_video_rejects_training_model():
+    with pytest.raises(ValueError, match="native-only"):
+        render.render_policy_rollout_isolated(
+            SimpleNamespace(model=SimpleNamespace(mjx_model=object())),
+            object(),
+        )

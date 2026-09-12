@@ -1,22 +1,23 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
 from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
-import shutil
-import tempfile
 import time
-from collections.abc import Iterator
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import (
-    AssetPrepConfig,
-    PreparedAsset,
-    prepare_asset,
+from bello_mujoco.models.compiler import (
+    ModelConfig,
+    CompiledRobot,
+    compile_robot,
 )
 
 
@@ -139,20 +140,10 @@ def hardware_preflight_factory():
 
 
 @pytest.fixture(scope="session")
-def bello_asset() -> Iterator[PreparedAsset]:
-    output_root = Path(tempfile.mkdtemp(prefix="bello-mujoco-test-assets-"))
-    try:
-        yield prepare_asset(AssetPrepConfig(output_root=output_root))
-    finally:
-        shutil.rmtree(output_root, ignore_errors=True)
+def bello_asset() -> CompiledRobot:
+    return compile_robot(ModelConfig())
 
 
 @pytest.fixture(scope="session")
-def bello_mini_asset() -> Iterator[PreparedAsset]:
-    output_root = Path(tempfile.mkdtemp(prefix="bello-mini-test-assets-"))
-    try:
-        yield prepare_asset(
-            AssetPrepConfig(asset="bello_mini", output_root=output_root)
-        )
-    finally:
-        shutil.rmtree(output_root, ignore_errors=True)
+def bello_mini_asset() -> CompiledRobot:
+    return compile_robot(ModelConfig(asset="bello_mini"))

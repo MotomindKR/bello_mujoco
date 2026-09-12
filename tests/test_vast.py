@@ -11,13 +11,11 @@ import bello_mujoco.training.vast as vast
 import bello_mujoco.training.vast_remote as vast_remote
 from bello_mujoco.training.vast import (
     GitSelection,
-    VastLifecycle,
     VastOffer,
     VastSdkClient,
     VastTrainConfig,
     credential,
     create_available_instance,
-    destroy_with_retries,
     find_offers,
     launch_pipeline,
     offer_query,
@@ -160,39 +158,6 @@ def motion_selection() -> GitSelection:
     )
 
 
-def twist_dataset(tmp_path: Path) -> Path:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name in (
-        "train.npz",
-        "evaluation.npz",
-        "heldout_manifest.json",
-        "conversion_report.json",
-    ):
-        (tmp_path / name).write_bytes(name.encode())
-    index = {
-        "schema_version": 3,
-        "dataset_fingerprint": "sha256:" + "c" * 64,
-        "train_sampling": "frame_count_times_manifest_weight",
-        "split_files": {
-            "train": "train.npz",
-            "evaluation": "evaluation.npz",
-        },
-    }
-    path = tmp_path / "index.json"
-    path.write_text(json.dumps(index), encoding="utf-8")
-    return path
-
-
-def twist_config(tmp_path: Path, *, stage: str = "teacher", **kwargs):
-    dataset_path = twist_dataset(tmp_path / "dataset")
-    values = {
-        "experiment": f"twist_{stage}",
-        "dataset_path": dataset_path,
-    }
-    values.update(kwargs)
-    return valid_config(**values)
-
-
 @pytest.mark.parametrize("max_price", [None, 0.0, float("nan"), float("inf")])
 def test_validate_config_requires_finite_positive_price(max_price) -> None:
     with pytest.raises(ValueError, match="max-price"):
@@ -211,68 +176,6 @@ def test_vast_defaults_to_bello_and_accepts_mini_locomotion_profiles() -> None:
     assert VastTrainConfig().experiment == "bello_locomotion"
     validate_config(valid_config(experiment="bello_mini_locomotion"))
     validate_config(valid_config(experiment="bello_mini_standing"))
-
-
-def test_twist_vast_config_requires_explicit_stage_inputs(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="dataset-path is required"):
-        validate_config(valid_config(experiment="twist_teacher"))
-    with pytest.raises(ValueError, match="teacher-checkpoint-path is required"):
-        validate_config(twist_config(tmp_path, stage="student"))
-    with pytest.raises(ValueError, match="only valid for TWIST"):
-        validate_config(valid_config(dataset_path=Path("dataset/index.json")))
-    validate_config(
-        valid_config(
-            experiment="twist2",
-            dataset_path=twist_dataset(tmp_path / "twist2_dataset"),
-        )
-    )
-
-
-def test_twist_dataset_selection_is_strict_and_portable(tmp_path: Path) -> None:
-    index_path = twist_dataset(tmp_path)
-
-    fingerprint, paths = vast._twist_dataset_files(index_path)
-
-    assert fingerprint == "sha256:" + "c" * 64
-    assert {path.name for path in paths} == {
-        "index.json",
-        "train.npz",
-        "evaluation.npz",
-        "heldout_manifest.json",
-        "conversion_report.json",
-    }
-    (tmp_path / "train.npz").unlink()
-    with pytest.raises(ValueError, match="files are missing"):
-        vast._twist_dataset_files(index_path)
-
-
-def test_twist_teacher_selection_binds_dataset_fingerprint(tmp_path: Path) -> None:
-    checkpoint = tmp_path / "teacher"
-    checkpoint.mkdir()
-    (checkpoint / "state").mkdir()
-    (checkpoint / "continuation").mkdir()
-    (checkpoint / "metadata.json").write_text(
-        json.dumps(
-            {
-                "metadata": {
-                    "task": "twist_teacher",
-                    "dataset": {"dataset_fingerprint": "sha256:" + "c" * 64},
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert (
-        vast._twist_teacher_checkpoint(
-            checkpoint, dataset_fingerprint="sha256:" + "c" * 64
-        )
-        == checkpoint.resolve()
-    )
-    with pytest.raises(ValueError, match="dataset fingerprint differs"):
-        vast._twist_teacher_checkpoint(
-            checkpoint, dataset_fingerprint="sha256:" + "d" * 64
-        )
 
 
 def test_motion_git_selection_verifies_clip_at_selected_commit(
@@ -334,63 +237,6 @@ def test_validate_config_accepts_normalized_workspace_children(
     remote_dir: str,
 ) -> None:
     validate_config(valid_config(remote_dir=remote_dir))
-
-
-@pytest.mark.parametrize(
-    "state_dir",
-    [Path("/tmp/vast-state"), Path("."), Path("state"), Path(".vast/../state")],
-)
-def test_validate_config_restricts_lifecycle_state_to_vast_directory(
-    state_dir: Path,
-) -> None:
-    with pytest.raises(ValueError, match="lifecycle-state-dir"):
-        validate_config(valid_config(lifecycle_state_dir=state_dir))
-
-
-def test_launch_pipeline_isolates_lifecycle_state_directory(
-    monkeypatch, tmp_path: Path
-) -> None:
-    original_state = tmp_path / ".vast" / "active_instance.json"
-    original_state.parent.mkdir(parents=True)
-    original_state.write_text("original-controller")
-    observed = {}
-
-    class Lock:
-        def __enter__(self):
-            return None
-
-        def __exit__(self, *args):
-            return False
-
-    class Lifecycle:
-        def __init__(self, api, config, state_path, label):
-            observed["state_path"] = state_path
-
-        def run(self, *args, **kwargs):
-            return None
-
-    def fake_pipeline_lock(state_dir):
-        observed["state_dir"] = state_dir
-        return Lock()
-
-    monkeypatch.setattr(vast, "resolve_git_selection", lambda *args: selection())
-    monkeypatch.setattr(vast, "credential", lambda *args, **kwargs: "secret")
-    monkeypatch.setattr(vast, "pipeline_lock", fake_pipeline_lock)
-    monkeypatch.setattr(vast, "VastLifecycle", Lifecycle)
-
-    assert (
-        launch_pipeline(
-            tmp_path,
-            valid_config(lifecycle_state_dir=Path(".vast/yaw-run")),
-            api_factory=lambda key: object(),
-        )
-        == 0
-    )
-    assert observed == {
-        "state_dir": tmp_path / ".vast" / "yaw-run",
-        "state_path": tmp_path / ".vast" / "yaw-run" / "active_instance.json",
-    }
-    assert original_state.read_text() == "original-controller"
 
 
 def test_validate_config_requires_bounded_job_timeouts() -> None:
@@ -457,8 +303,6 @@ def test_create_available_instance_tries_next_explicitly_unavailable_offer() -> 
             offers,
             valid_config(),
             "test-label",
-            on_before_create=lambda: None,
-            on_offer_unavailable=lambda: None,
             sleep=lambda _: None,
         )
         == 456
@@ -487,9 +331,6 @@ def test_nominal_64_gb_offer_accepts_vast_usable_ram_reporting() -> None:
 
 def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
     class PinnedClient:
-        def __init__(self):
-            self.destroyed = []
-
         def search_offers(self, **kwargs):
             assert kwargs["storage"] == 80.0
             return [make_offer()]
@@ -504,9 +345,6 @@ def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
         def show_instances(self):
             return [{"id": 456}]
 
-        def destroy_instance(self, **kwargs):
-            self.destroyed.append(kwargs["id"])
-
     raw_client = PinnedClient()
     client = object.__new__(VastSdkClient)
     client._client = raw_client
@@ -517,8 +355,6 @@ def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
     assert client.create_instance(123, image="test") == 456
     assert client.show_instance(456)["actual_status"] == "running"
     assert client.show_instances() == [{"id": 456}]
-    client.destroy_instance(456)
-    assert raw_client.destroyed == [456]
 
 
 def test_credential_prefers_environment_over_keyring(monkeypatch) -> None:
@@ -571,55 +407,6 @@ def test_wait_for_ssh_uses_direct_port_mapping(monkeypatch) -> None:
     assert commands == [vast_remote.ssh_command(target, "true")]
 
 
-def test_upload_route_probe_measures_payload_throughput(monkeypatch) -> None:
-    moments = iter((10.0, 12.0))
-    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: next(moments))
-    calls = []
-
-    def runner(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, b"", b"")
-
-    speed = vast_remote.measure_upload_mib_per_second(
-        ("root", "example.com", 22001),
-        size_mib=8,
-        timeout_seconds=30,
-        runner=runner,
-    )
-
-    assert speed == 4.0
-    assert len(calls[0][1]["input"]) == 8 * 1024 * 1024
-    assert calls[0][1]["timeout"] == 30
-
-
-def test_upload_route_probe_treats_timeout_as_zero_speed() -> None:
-    def runner(command, **kwargs):
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-
-    assert (
-        vast_remote.measure_upload_mib_per_second(
-            ("root", "example.com", 22001),
-            size_mib=1,
-            timeout_seconds=30,
-            runner=runner,
-        )
-        == 0.0
-    )
-
-
-def test_destroy_treats_not_found_after_api_error_as_success() -> None:
-    class AlreadyGoneApi:
-        def destroy_instance(self, instance_id):
-            error = RuntimeError("not found")
-            error.response = type("Response", (), {"status_code": 404})()
-            raise error
-
-        def show_instance(self, instance_id):
-            return None
-
-    assert destroy_with_retries(AlreadyGoneApi(), 123, retries=1)
-
-
 def test_vast_error_classification_prefers_structured_http_status() -> None:
     class Response:
         status_code = 404
@@ -627,7 +414,6 @@ def test_vast_error_classification_prefers_structured_http_status() -> None:
     error = RuntimeError("unrelated message")
     error.response = Response()
 
-    assert vast._is_explicit_not_found(error)
     assert vast._is_explicit_offer_unavailable(error)
 
 
@@ -645,35 +431,6 @@ def test_vast_auth_rate_and_server_errors_remain_ambiguous(status) -> None:
     error.response = type("Response", (), {"status_code": status})()
 
     assert not vast._is_explicit_offer_unavailable(error)
-
-
-def test_destroy_does_not_treat_transient_api_errors_as_success() -> None:
-    class UnreachableApi:
-        def destroy_instance(self, instance_id):
-            raise TimeoutError("gateway timed out")
-
-        def show_instance(self, instance_id):
-            raise TimeoutError("gateway timed out")
-
-        def show_instances(self):
-            raise TimeoutError("gateway timed out")
-
-    assert not destroy_with_retries(UnreachableApi(), 123, retries=1)
-
-
-def test_destroy_requires_status_or_canonical_absence_confirmation() -> None:
-    class Api:
-        def __init__(self, response):
-            self.response = response
-
-        def destroy_instance(self, instance_id):
-            pass
-
-        def show_instance(self, instance_id):
-            return self.response
-
-    assert not destroy_with_retries(Api({"id": 123}), 123, retries=1)
-    assert destroy_with_retries(Api(None), 123, retries=1)
 
 
 def test_ambiguous_create_never_rents_a_second_offer() -> None:
@@ -697,8 +454,6 @@ def test_ambiguous_create_never_rents_a_second_offer() -> None:
             offers,
             valid_config(),
             "test-label",
-            on_before_create=lambda: None,
-            on_offer_unavailable=lambda: None,
             sleep=lambda _: None,
         )
 
@@ -726,8 +481,6 @@ def test_ambiguous_create_with_empty_listing_never_rents_again() -> None:
             offers,
             valid_config(),
             "test-label",
-            on_before_create=lambda: None,
-            on_offer_unavailable=lambda: None,
             sleep=lambda _: None,
         )
 
@@ -751,36 +504,11 @@ def test_ambiguous_create_recovers_exact_labeled_instance() -> None:
             [VastOffer.from_mapping(make_offer(1))],
             valid_config(),
             "test-label",
-            on_before_create=lambda: None,
-            on_offer_unavailable=lambda: None,
             sleep=lambda _: None,
         )
         == 789
     )
     assert len(api.created) == 1
-
-
-def test_active_state_write_is_atomic_and_round_trips(tmp_path) -> None:
-    state_path = tmp_path / ".vast" / "active_instance.json"
-
-    vast.write_active_state(state_path, 123, "test-label")
-
-    state = vast.read_lifecycle_state(state_path)
-    assert state is not None
-    assert state.phase == "active"
-    assert state.instance_id == 123
-    assert state.label == "test-label"
-    assert list(state_path.parent.glob("*.tmp")) == []
-
-
-def test_creating_state_is_durable(tmp_path) -> None:
-    state_path = tmp_path / "active_instance.json"
-    vast.write_creating_state(state_path, "pending-label")
-
-    pending = vast.read_lifecycle_state(state_path)
-    assert pending is not None
-    assert pending.phase == "creating"
-    assert pending.instance_id is None
 
 
 def test_watchdog_uses_restricted_container_credentials_and_absolute_deadline(
@@ -795,46 +523,15 @@ def test_watchdog_uses_restricted_container_credentials_and_absolute_deadline(
     )
 
     script = vast.watchdog_onstart_script(config)
-    expected_deadline = (
-        1_000
-        + 10
-        + 20
-        + config.transfer_timeout_seconds
-        + 30
-        + vast.WATCHDOG_TEARDOWN_GRACE_SECONDS
-    )
+    expected_deadline = 1_000 + 10 + 20 + 30 + vast.WATCHDOG_TEARDOWN_GRACE_SECONDS
 
-    assert f"deadline = {expected_deadline}" in script
+    assert f"supervise({expected_deadline})" in script
     assert "CONTAINER_ID" in script
     assert "CONTAINER_API_KEY" in script
     assert "Authorization" in script
     assert "VAST_API_KEY" not in script
     assert "nohup" in script
     assert script.rstrip().endswith("&")
-
-
-def test_termination_handler_covers_hangup_and_quit(monkeypatch) -> None:
-    installed = {}
-    restored = {}
-
-    monkeypatch.setattr(vast.signal, "getsignal", lambda candidate: candidate.value)
-
-    def capture(candidate, handler):
-        if callable(handler):
-            installed[candidate] = handler
-        else:
-            restored[candidate] = handler
-
-    monkeypatch.setattr(vast.signal, "signal", capture)
-
-    with vast.termination_handler():
-        assert set(installed) == {
-            vast.signal.SIGTERM,
-            vast.signal.SIGHUP,
-            vast.signal.SIGQUIT,
-        }
-
-    assert restored == {candidate: candidate.value for candidate in installed}
 
 
 def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
@@ -878,16 +575,30 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
     assert "start_new_session=True" in calls[0][0][-1]
 
 
-def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("script", "timeout", "exit_code", "output"),
+    [
+        ('printf "%s\\n" "$DETACHED_TEST_VALUE"; exit 7\n', 5, 7, "available\n"),
+        ("sleep 2\n", 0.05, 124, ""),
+    ],
+)
+def test_remote_start_command_detaches_and_records_status(
+    tmp_path, script, timeout, exit_code, output
+) -> None:
+    import os
+
+    (tmp_path / "armed").write_text("100")
+    (tmp_path / "supervisor_pid").write_text(str(os.getpid()))
     job_dir = tmp_path / "job"
     command = vast_remote.remote_start_command(
         str(job_dir), selection(), valid_config(), "test-run"
     )
-    assert shlex.split(command)[-7] == "test-run"
+    assert shlex.split(command)[-3] == "test-run"
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
-            "script": 'printf "%s\\n" "$DETACHED_TEST_VALUE"; exit 7\n',
+            "script": script,
+            "timeout_seconds": timeout,
         }
     )
 
@@ -902,11 +613,17 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
 
     assert "Started detached remote job" in result.stdout
     for _ in range(100):
-        if (job_dir / "status").exists():
+        if (tmp_path / "status").exists():
             break
         time.sleep(0.01)
-    assert (job_dir / "status").read_text() == "7\n"
-    assert (job_dir / "output.log").read_text() == "available\n"
+    assert (job_dir / "status").read_text() == f"{exit_code}\n"
+    assert (tmp_path / "status").read_text() == f"{exit_code}\n"
+    assert (job_dir / "output.log").read_text() == output
+    retry = subprocess.run(
+        shlex.split(command), input=payload, text=True, check=True, capture_output=True
+    )
+    assert "already completed" in retry.stdout
+    assert (job_dir / "output.log").read_text() == output
 
 
 def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> None:
@@ -917,8 +634,8 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
         "motion-test",
     )
 
-    assert shlex.split(command)[-7] == "motion-test"
-    assert float(shlex.split(command)[-8]) == pytest.approx(4.5359237)
+    assert shlex.split(command)[-3] == "motion-test"
+    assert float(shlex.split(command)[-4]) == pytest.approx(4.5359237)
     assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
     assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
@@ -945,12 +662,12 @@ def test_remote_command_preflights_software_rendering() -> None:
     sync_index = script.index("uv sync --frozen")
     assert script.index("export UV_HTTP_TIMEOUT=600") < sync_index
     assert script.index("export UV_HTTP_RETRIES=5") < sync_index
-    assert "libosmesa6" in script
+    assert "libegl-mesa0" in script
     assert script.index("https://archive.ubuntu.com/ubuntu") < script.index(
         "apt-get update"
     )
-    assert "export MUJOCO_GL=osmesa" in script
-    assert "export PYOPENGL_PLATFORM=osmesa" in script
+    assert "configure_software_rendering()" in script
+    assert "validate_software_renderer()" in script
     assert "mujoco.Renderer" in script
     assert "VideoWriter" in script
     assert script.index("mujoco.Renderer") < script.index("total_timesteps=768")
@@ -959,147 +676,6 @@ def test_remote_command_preflights_software_rendering() -> None:
     assert script.index("preflight_checkpoint_restored") < script.rindex(
         "uv run bello-train"
     )
-
-
-def test_twist_remote_command_uses_staged_inputs_and_allocator_flags() -> None:
-    command = vast_remote.remote_start_command(
-        "/workspace/.bello-vast-jobs/twist",
-        selection(),
-        valid_config(experiment="twist_student", allow_git_commit_mismatch=True),
-        "twist-test",
-        dataset_path="/workspace/datasets/twist/index.json",
-        teacher_checkpoint_path="/workspace/checkpoints/twist_teacher",
-    )
-    arguments = shlex.split(command)
-
-    assert arguments[-6:] == [
-        "/workspace/datasets/twist/index.json",
-        "/workspace/checkpoints/twist_teacher",
-        "",
-        "true",
-        "",
-        "",
-    ]
-    assert "TF_GPU_ALLOCATOR=cuda_malloc_async" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert (
-        'if [[ "$experiment" != twist_* && "$experiment" != twist2 ]]'
-        in vast_remote.REMOTE_TRAIN_SCRIPT
-    )
-    assert 'training_overrides+=("dataset_path=$dataset_path")' in (
-        vast_remote.REMOTE_TRAIN_SCRIPT
-    )
-
-
-def test_rsync_transfer_is_resumable_and_retried(monkeypatch) -> None:
-    attempts = []
-    sleeps = []
-
-    class Executor:
-        def run(self, command, *, timeout_seconds):
-            attempts.append((command, timeout_seconds))
-            if len(attempts) == 1:
-                raise subprocess.CalledProcessError(12, command)
-
-    moments = iter((0.0, 1.0, 1.0, 2.0))
-    monkeypatch.setattr(vast_remote.time, "monotonic", lambda: next(moments))
-    command = vast_remote._rsync_command(
-        ("root", "example.com", 22001),
-        ["/data/index.json", "/data/train.npz"],
-        "/workspace/datasets/twist",
-    )
-
-    vast_remote._run_rsync_with_retries(
-        command,
-        timeout_seconds=30,
-        retries=3,
-        executor=Executor(),
-        sleep=sleeps.append,
-    )
-
-    assert len(attempts) == 2
-    assert sleeps == [5]
-    assert "--partial" in command
-    assert "--append-verify" in command
-    assert command[-1] == "root@example.com:/workspace/datasets/twist/"
-
-
-def test_twist_staging_verifies_dataset_before_job_start(tmp_path: Path) -> None:
-    dataset_path = twist_dataset(tmp_path)
-    fingerprint, paths = vast._twist_dataset_files(dataset_path)
-    selected = GitSelection(
-        branch="main",
-        commit="a" * 40,
-        config_path=PurePosixPath("configs/profiles/train/twist_teacher.yaml"),
-        repo_url="https://github.com/MotomindKR/bello_mujoco.git",
-        dataset_fingerprint=fingerprint,
-        dataset_files=paths,
-    )
-    remote_commands = []
-    rsync_commands = []
-
-    class Executor:
-        def run(self, target, remote_command, *, timeout_seconds, input_text=None):
-            remote_commands.append(remote_command)
-            return subprocess.CompletedProcess(
-                remote_command, 0, stdout="verified\n", stderr=""
-            )
-
-    class Transfer:
-        def run(self, command, *, timeout_seconds):
-            rsync_commands.append(command)
-
-    dataset_index, teacher, warm_start = vast_remote.stage_twist_inputs(
-        ("root", "example.com", 22001),
-        selected,
-        valid_config(experiment="twist_teacher", dataset_path=dataset_path),
-        executor=Executor(),
-        rsync_executor=Transfer(),
-        sleep=lambda _: None,
-    )
-
-    assert dataset_index == "/workspace/datasets/twist/index.json"
-    assert teacher == ""
-    assert warm_start == ""
-    assert len(rsync_commands) == 1
-    assert {Path(path).name for path in rsync_commands[0] if path.startswith("/")} >= {
-        "index.json",
-        "train.npz",
-        "evaluation.npz",
-    }
-    assert fingerprint in remote_commands[-1]
-
-
-def test_remote_checksum_verifier_detects_corruption(tmp_path: Path) -> None:
-    payload = tmp_path / "payload.bin"
-    payload.write_bytes(b"expected")
-    expected = vast_remote._sha256(payload)
-
-    class LocalExecutor:
-        def run(self, target, remote_command, *, timeout_seconds, input_text=None):
-            return subprocess.run(
-                remote_command,
-                shell=True,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-
-    vast_remote._verify_remote_files(
-        ("root", "localhost", 22),
-        str(tmp_path),
-        {"payload.bin": expected},
-        executor=LocalExecutor(),
-        timeout_seconds=30,
-    )
-    payload.write_bytes(b"corrupted")
-    with pytest.raises(subprocess.CalledProcessError):
-        vast_remote._verify_remote_files(
-            ("root", "localhost", 22),
-            str(tmp_path),
-            {"payload.bin": expected},
-            executor=LocalExecutor(),
-            timeout_seconds=30,
-        )
 
 
 @pytest.mark.parametrize("payload_mass", [-1.0, float("nan"), float("inf")])
@@ -1212,134 +788,6 @@ def test_remote_runner_enforces_hard_deadline_while_starting(monkeypatch) -> Non
         )
 
 
-@pytest.mark.parametrize(
-    "remote_failure",
-    [
-        None,
-        RuntimeError("training failed"),
-        vast.PipelineInterrupted("received SIGTERM"),
-    ],
-)
-def test_pipeline_always_destroys_created_instance(
-    monkeypatch, tmp_path, remote_failure
-) -> None:
-    api = LifecycleApi()
-    monkeypatch.setattr(vast, "resolve_git_selection", lambda *args: selection())
-    monkeypatch.setattr(
-        vast,
-        "credential",
-        lambda env_name, *args, **kwargs: {
-            "VAST_API_KEY": "vast-secret",
-            "WANDB_API_KEY": "wandb-secret",
-            "GITHUB_TOKEN": "",
-        }[env_name],
-    )
-    monkeypatch.setattr(
-        vast,
-        "find_offers",
-        lambda *args: [VastOffer.from_mapping(make_offer())],
-    )
-    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        vast,
-        "wait_for_ssh",
-        lambda *args, **kwargs: ("root", "example.com", 22),
-    )
-
-    def remote_runner(*args, **kwargs):
-        if remote_failure is not None:
-            raise remote_failure
-
-    if remote_failure is None:
-        assert (
-            launch_pipeline(
-                tmp_path,
-                valid_config(),
-                api_factory=lambda key: api,
-                remote_runner=remote_runner,
-            )
-            == 0
-        )
-    else:
-        with pytest.raises(type(remote_failure), match=str(remote_failure)):
-            launch_pipeline(
-                tmp_path,
-                valid_config(),
-                api_factory=lambda key: api,
-                remote_runner=remote_runner,
-            )
-
-    assert api.destroyed == [456]
-    assert api.created[0][1]["label"].startswith("bello-")
-    assert api.created[0][1]["runtype"] == "ssh_direc"
-    assert "CONTAINER_ID" in api.created[0][1]["onstart_cmd"]
-    assert "CONTAINER_API_KEY" in api.created[0][1]["onstart_cmd"]
-    assert "ssh" not in api.created[0][1]
-    assert "direct" not in api.created[0][1]
-    assert not (tmp_path / ".vast" / "active_instance.json").exists()
-
-
-def test_twist_lifecycle_rejects_slow_route_and_tries_next_offer(
-    monkeypatch, tmp_path
-) -> None:
-    class Api(LifecycleApi):
-        def create_instance(self, offer_id, **kwargs):
-            self.created.append((offer_id, kwargs))
-            return offer_id
-
-    api = Api()
-    config = valid_config(
-        experiment="twist_teacher",
-        dataset_path=tmp_path / "index.json",
-    )
-    twist_selection = GitSelection(
-        branch="main",
-        commit="a" * 40,
-        config_path=PurePosixPath("configs/profiles/train/twist_teacher.yaml"),
-        repo_url="https://github.com/MotomindKR/bello_mujoco.git",
-        dataset_files=(tmp_path / "index.json",),
-    )
-    monkeypatch.setattr(
-        vast,
-        "find_offers",
-        lambda *args: [
-            VastOffer.from_mapping(make_offer(1, location="Seoul, KR")),
-            VastOffer.from_mapping(make_offer(2, location="Tokyo, JP")),
-        ],
-    )
-    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        vast,
-        "wait_for_ssh",
-        lambda api, instance_id, timeout: ("root", f"host-{instance_id}", 22),
-    )
-    speeds = iter((0.3, 20.0))
-    monkeypatch.setattr(
-        vast, "measure_upload_mib_per_second", lambda *args, **kwargs: next(speeds)
-    )
-    remote_targets = []
-
-    def remote_runner(target, *args, **kwargs):
-        remote_targets.append(target)
-
-    VastLifecycle(
-        api,
-        config,
-        tmp_path / ".vast" / "active_instance.json",
-        "route-test",
-    ).run(
-        twist_selection,
-        "route-test",
-        remote_runner,
-        wandb_key="secret",
-        github_token="",
-    )
-
-    assert [offer_id for offer_id, _ in api.created] == [1, 2]
-    assert api.destroyed == [1, 2]
-    assert remote_targets == [("root", "host-2", 22)]
-
-
 def test_motion_dry_run_never_reads_credentials_or_rents(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -1369,163 +817,3 @@ def test_motion_dry_run_never_reads_credentials_or_rents(
     assert str(motion_selection().motion_path) in output
     assert "no instance was rented" in output
     assert not (tmp_path / ".vast").exists()
-
-
-def test_lifecycle_retains_ambiguous_create_and_refuses_another_rental(
-    monkeypatch, tmp_path
-) -> None:
-    class AmbiguousApi(LifecycleApi):
-        def create_instance(self, offer_id, **kwargs):
-            self.created.append((offer_id, kwargs))
-            raise TimeoutError("response lost")
-
-        def show_instances(self):
-            return []
-
-    api = AmbiguousApi()
-    state_path = tmp_path / ".vast" / "active_instance.json"
-    config = valid_config(reconcile_retries=1)
-    monkeypatch.setattr(
-        vast,
-        "find_offers",
-        lambda *args: [VastOffer.from_mapping(make_offer())],
-    )
-    lifecycle = VastLifecycle(api, config, state_path, "bello-pending")
-
-    with pytest.raises(RuntimeError, match="ambiguous"):
-        lifecycle.run(
-            selection(),
-            "pending",
-            lambda *args, **kwargs: None,
-            wandb_key="wandb-secret",
-            github_token="",
-        )
-
-    pending = vast.read_lifecycle_state(state_path)
-    assert pending is not None
-    assert pending.phase == "creating"
-    assert pending.label == "bello-pending"
-    assert len(api.created) == 1
-
-    with pytest.raises(RuntimeError, match="still unresolved"):
-        lifecycle.run(
-            selection(),
-            "pending",
-            lambda *args, **kwargs: None,
-            wandb_key="wandb-secret",
-            github_token="",
-        )
-
-    assert len(api.created) == 1
-
-
-def test_lifecycle_recovers_and_destroys_pending_labeled_instance(
-    monkeypatch, tmp_path
-) -> None:
-    pending_id = 789
-
-    class PendingApi(LifecycleApi):
-        def show_instances(self):
-            if pending_id in self.destroyed:
-                return []
-            return [{"id": pending_id, "label": "bello-pending"}]
-
-    api = PendingApi()
-    state_path = tmp_path / ".vast" / "active_instance.json"
-    vast.write_creating_state(state_path, "bello-pending")
-    monkeypatch.setattr(
-        vast,
-        "find_offers",
-        lambda *args: (_ for _ in ()).throw(RuntimeError("stop after reconciliation")),
-    )
-
-    with pytest.raises(RuntimeError, match="stop after reconciliation"):
-        VastLifecycle(
-            api,
-            valid_config(reconcile_retries=1),
-            state_path,
-            "bello-new",
-        ).run(
-            selection(),
-            "new",
-            lambda *args, **kwargs: None,
-            wandb_key="wandb-secret",
-            github_token="",
-        )
-
-    assert api.destroyed == [pending_id]
-    assert not state_path.exists()
-
-
-def test_lifecycle_reconciles_stale_labeled_instance_before_rental(
-    monkeypatch, tmp_path
-) -> None:
-    stale_id = 111
-    stale_label = "bello-stale"
-
-    class RecoveringApi(LifecycleApi):
-        def show_instances(self):
-            if stale_id in self.destroyed:
-                return []
-            return [{"id": stale_id, "label": stale_label}]
-
-    api = RecoveringApi()
-    state_path = tmp_path / ".vast" / "active_instance.json"
-    state_path.parent.mkdir(parents=True)
-    vast.write_active_state(state_path, stale_id, stale_label)
-    monkeypatch.setattr(
-        vast,
-        "find_offers",
-        lambda *args: [VastOffer.from_mapping(make_offer())],
-    )
-    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        vast,
-        "wait_for_ssh",
-        lambda *args, **kwargs: ("root", "example.com", 22),
-    )
-    remote_calls = []
-
-    VastLifecycle(api, valid_config(), state_path, "bello-new").run(
-        selection(),
-        "new",
-        lambda *args, **kwargs: remote_calls.append((args, kwargs)),
-        wandb_key="wandb-secret",
-        github_token="",
-    )
-
-    assert api.destroyed == [stale_id, 456]
-    assert api.created[0][1]["label"] == "bello-new"
-    assert len(remote_calls) == 1
-    assert not state_path.exists()
-
-
-def test_pipeline_retains_recovery_state_when_destroy_fails(
-    monkeypatch, tmp_path
-) -> None:
-    api = LifecycleApi()
-    monkeypatch.setattr(vast, "resolve_git_selection", lambda *args: selection())
-    monkeypatch.setattr(vast, "credential", lambda *args, **kwargs: "secret")
-    monkeypatch.setattr(
-        vast,
-        "find_offers",
-        lambda *args: [VastOffer.from_mapping(make_offer())],
-    )
-    monkeypatch.setattr(vast, "wait_for_instance", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        vast,
-        "wait_for_ssh",
-        lambda *args, **kwargs: ("root", "example.com", 22),
-    )
-    monkeypatch.setattr(vast, "destroy_with_retries", lambda *args, **kwargs: False)
-
-    with pytest.raises(RuntimeError, match="could not confirm destruction"):
-        launch_pipeline(
-            tmp_path,
-            valid_config(),
-            api_factory=lambda key: api,
-            remote_runner=lambda *args, **kwargs: None,
-        )
-
-    state_path = tmp_path / ".vast" / "active_instance.json"
-    assert json.loads(state_path.read_text())["instance_id"] == 456

@@ -7,15 +7,14 @@ from pathlib import Path
 
 import equinox as eqx
 
-from bello_mujoco.assets_pipeline.prepare import prepare_asset
+from bello_mujoco.models.compiler import compile_robot
 from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
 from bello_mujoco.policy import policy_observation_size
-from bello_mujoco.repository import resolve_repository_path
 from bello_mujoco.training.checkpoint import (
     CheckpointNormalizationState,
     MotionCheckpointMetadata,
     restore_evaluation_checkpoint,
-    validate_motion_clip_contract,
+    MOTION_FILE,
 )
 from bello_mujoco.training.ppo import critic_observation_size
 
@@ -32,22 +31,15 @@ class MotionPolicyRuntime:
 def load_motion_policy_runtime(
     checkpoint_path: Path,
     *,
-    motion_path: Path | None = None,
     end_effector_payload_mass_kg: float | None = None,
     use_viewer_model: bool,
-    allow_git_commit_mismatch: bool = False,
 ) -> MotionPolicyRuntime:
     train_state, metadata, normalization = restore_evaluation_checkpoint(
         checkpoint_path,
-        allow_git_commit_mismatch=allow_git_commit_mismatch,
     )
     if not isinstance(metadata, MotionCheckpointMetadata):
         raise ValueError(f"checkpoint task is {metadata.task!r}, not 'motion_tracking'")
-    resolved_motion_path = (
-        resolve_repository_path(metadata.motion.path)
-        if motion_path is None
-        else Path(motion_path)
-    )
+    resolved_motion_path = Path(checkpoint_path).resolve() / MOTION_FILE
     env_config = replace(metadata.motion_env, motion_path=resolved_motion_path)
     asset = metadata.asset
     if end_effector_payload_mass_kg is not None:
@@ -55,15 +47,15 @@ def load_motion_policy_runtime(
             asset,
             end_effector_payload_mass_kg=end_effector_payload_mass_kg,
         )
-    prepared = prepare_asset(asset)
-    env = BelloMotionTrackingEnv.load_prepared_native(
+    prepared = compile_robot(asset)
+    env = BelloMotionTrackingEnv.from_compiled(
         prepared,
         env_config,
         actuator_config=asset.actuator_config,
         use_viewer_model=use_viewer_model,
+        load_mjx=False,
     )
     validate_motion_checkpoint_runtime(env, metadata)
-    validate_motion_clip_contract(resolved_motion_path, env.motion, metadata.motion)
     return MotionPolicyRuntime(
         env=env,
         policy=train_state.policy,

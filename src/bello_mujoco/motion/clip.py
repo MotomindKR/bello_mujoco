@@ -1,9 +1,10 @@
-"""Versioned, runtime-independent motion clips for whole-body tracking."""
+"""Runtime-independent reference arrays for whole-body tracking."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 import chex
 import jax
@@ -11,12 +12,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
-from bello_mujoco.assets_pipeline.mjcf import CollisionMode
-from bello_mujoco.assets_pipeline.prepare import AssetPrepConfig
+from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.robot import AssetName
 from bello_mujoco.sim import BelloModel
-
-MOTION_FORMAT_VERSION = 1
 
 
 def motion_tracking_actuator_config(asset: AssetName) -> ActuatorConfig:
@@ -28,16 +26,12 @@ def motion_tracking_actuator_config(asset: AssetName) -> ActuatorConfig:
 def motion_tracking_asset_config(
     *,
     asset: AssetName,
-    collision_mode: CollisionMode = "box",
-    output_root: Path | None = None,
     end_effector_payload_mass_kg: float = 0.0,
-) -> AssetPrepConfig:
+) -> ModelConfig:
     """Return the fixed-head, sphere-hand asset used by motion workflows."""
 
-    return AssetPrepConfig(
+    return ModelConfig(
         asset=asset,
-        output_root=output_root,
-        collision_mode=collision_mode,
         target_total_mass_kg=None,
         end_effector_payload_mass_kg=end_effector_payload_mass_kg,
         enforce_policy_effort_limits=False,
@@ -61,7 +55,6 @@ class MotionClip:
     fps: float
     joint_names: tuple[str, ...]
     body_names: tuple[str, ...]
-    source_sha256: str
     qpos: jax.Array
     qvel: jax.Array
     body_pos: jax.Array
@@ -85,11 +78,9 @@ def load_motion_clip(path: Path | str, model: BelloModel) -> MotionClip:
         raise FileNotFoundError(path)
     with np.load(path, allow_pickle=False) as archive:
         required = {
-            "format_version",
             "fps",
             "joint_names",
             "body_names",
-            "source_sha256",
             "qpos",
             "qvel",
             "body_pos",
@@ -101,16 +92,9 @@ def load_motion_clip(path: Path | str, model: BelloModel) -> MotionClip:
         missing = sorted(required - set(archive.files))
         if missing:
             raise ValueError(f"motion clip is missing fields: {missing}")
-        version = int(_scalar(archive["format_version"]))
-        if version != MOTION_FORMAT_VERSION:
-            raise ValueError(
-                f"unsupported motion format version {version}; "
-                f"expected {MOTION_FORMAT_VERSION}"
-            )
         fps = float(_scalar(archive["fps"]))
         joint_names = tuple(str(name) for name in archive["joint_names"].tolist())
         body_names = tuple(str(name) for name in archive["body_names"].tolist())
-        source_sha256 = str(_scalar(archive["source_sha256"]))
         arrays = {
             "qpos": np.asarray(archive["qpos"], dtype=np.float32),
             "qvel": np.asarray(archive["qvel"], dtype=np.float32),
@@ -125,8 +109,24 @@ def load_motion_clip(path: Path | str, model: BelloModel) -> MotionClip:
         fps=fps,
         joint_names=joint_names,
         body_names=body_names,
-        source_sha256=source_sha256,
         **{name: jnp.asarray(value) for name, value in arrays.items()},
+    )
+
+
+def save_motion_clip(path: Path | BinaryIO, clip: MotionClip) -> None:
+    """Store the in-memory reference actually used by training, not its source path."""
+    np.savez_compressed(
+        path,
+        fps=clip.fps,
+        joint_names=np.asarray(clip.joint_names),
+        body_names=np.asarray(clip.body_names),
+        qpos=np.asarray(clip.qpos),
+        qvel=np.asarray(clip.qvel),
+        body_pos=np.asarray(clip.body_pos),
+        body_quat_wxyz=np.asarray(clip.body_quat),
+        body_lin_vel=np.asarray(clip.body_lin_vel),
+        body_ang_vel=np.asarray(clip.body_ang_vel),
+        foot_contacts=np.asarray(clip.foot_contacts),
     )
 
 

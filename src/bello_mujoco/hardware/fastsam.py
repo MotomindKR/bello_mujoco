@@ -1,4 +1,4 @@
-"""Pinned Fast-SAM gRPC source for live TWIST2 hardware references."""
+"""Pinned Fast-SAM gRPC source for live hardware references."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import importlib
 import math
 from pathlib import Path
 import string
-import subprocess
 import sys
 import threading
 import time
@@ -27,25 +26,17 @@ from bello_mujoco.fastsam_conditioning import (
 from bello_mujoco.hardware.smplx_retarget import (
     GmrLiveRetargetConfig,
     GmrRetargeter,
-    GmrSourceIdentity,
     LiveGmrReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     SmplxTargetFrame,
     load_smplx_standing_sample,
 )
-from bello_mujoco.hardware.twist2 import (
-    HardwareTwist2Config,
-    HardwareTwist2PolicyAdapter,
-    ReferenceDiscontinuity,
-    ReferenceUnavailable,
-    validate_twist2_reference,
-)
+from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
 from bello_mujoco.repository import repository_root
 from bello_mujoco.robot_tasks import motion_task_definition
 
 
-FASTSAM_REVISION = "bc5e5ffb7dbab305bf24373b06535d285692a00e"
 _ACTIVE_TRACKING_STATES = frozenset(("ACQUIRED", "TRACKING", "REACQUIRED"))
 _ALL_TRACKING_STATES = _ACTIVE_TRACKING_STATES | frozenset(
     ("UNLOCKED", "OCCLUDED", "AMBIGUOUS", "LOST")
@@ -580,32 +571,8 @@ class FastSamSmplxStream:
 
 @contextmanager
 def fastsam_reference_source(
-    adapter: HardwareTwist2PolicyAdapter,
-    config: HardwareTwist2Config,
-) -> Iterator[LiveGmrReferenceSource]:
-    """Construct the pinned gRPC -> SMPL-X -> GMR hardware source."""
-
-    identity = GmrSourceIdentity(
-        revision=adapter.metadata.dataset.gmr_revision,
-        robot_fingerprint=adapter.metadata.robot_fingerprint,
-    )
-    with _fastsam_reference_source(
-        adapter,
-        config,
-        identity,
-        validate_reference=lambda reference: validate_twist2_reference(
-            reference, adapter.env, config
-        ),
-        live_target_check="deferred_until_MOTION",
-    ) as source:
-        yield source
-
-
-@contextmanager
-def _fastsam_reference_source(
     adapter: Any,
     config: Any,
-    source_identity: GmrSourceIdentity,
     *,
     validate_reference: Any,
     live_target_check: str,
@@ -618,7 +585,6 @@ def _fastsam_reference_source(
     with stream:
         retargeter = GmrRetargeter(
             adapter.env,
-            source_identity,
             GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),
             validate_reference=validate_reference,
         )
@@ -640,27 +606,8 @@ def _fastsam_reference_source(
             yield source
 
 
-def require_pinned_fastsam_revision() -> Path:
-    root = repository_root()
-    submodule = root / "deps" / "Fast-SAM-3D-Body"
-    gitlink = _git_output(
-        root, "ls-tree", "HEAD", "--", "deps/Fast-SAM-3D-Body"
-    ).split()
-    if len(gitlink) < 3 or gitlink[1] != "commit":
-        raise RuntimeError("deps/Fast-SAM-3D-Body is not a pinned Git submodule")
-    current = _git_output(submodule, "rev-parse", "HEAD")
-    if gitlink[2] != FASTSAM_REVISION or current != FASTSAM_REVISION:
-        raise ValueError(
-            "Fast-SAM gitlink and checkout must both equal the reviewed SMPL-X "
-            f"revision {FASTSAM_REVISION}"
-        )
-    if _git_output(submodule, "status", "--porcelain=v1", "--untracked-files=all"):
-        raise RuntimeError("hardware Fast-SAM submodule must be clean")
-    return submodule
-
-
 def import_pinned_fastsam_proto() -> tuple[Any, Any]:
-    submodule = require_pinned_fastsam_revision()
+    submodule = repository_root() / "deps" / "Fast-SAM-3D-Body"
     root_string = str(submodule)
     if root_string not in sys.path:
         sys.path.insert(0, root_string)
@@ -776,22 +723,6 @@ def _quat_rotate(quaternion: np.ndarray, vectors: np.ndarray) -> np.ndarray:
 def _yaw_wxyz(quaternion: np.ndarray) -> float:
     w, x, y, z = np.asarray(quaternion, dtype=np.float64)
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-def _git_output(root: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ("git", "-C", str(root), *arguments),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"git {' '.join(arguments)} failed" + (f": {detail}" if detail else "")
-        )
-    return result.stdout.strip()
 
 
 def _file_sha256(path: Path) -> str:

@@ -7,9 +7,8 @@ import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
-from bello_mujoco.assets_pipeline import stack_description_path
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset, prepare_asset
-from bello_mujoco.assets_pipeline.mesh import JointAvailabilityConfig
+from bello_mujoco.models import stack_description_path
+from bello_mujoco.models.compiler import CompiledRobot, compile_robot
 from bello_mujoco.robstride.can import (
     CAN_FRAME,
     BusSpec,
@@ -40,7 +39,7 @@ from bello_mujoco.robstride.sim import (
     BelloRobstrideTransmission,
     configure_robstride_actuators,
 )
-from bello_mujoco.sim import SimulationPhysicsConfig, load_prepared_bello_model
+from bello_mujoco.sim import SimulationPhysicsConfig, load_compiled_model
 from bello_mujoco.terrain import FLAT_TERRAIN
 from bello_mujoco.robstride.emulator import (
     _CommandLatencyQueue,
@@ -289,11 +288,11 @@ def test_protocol_only_motor_uses_known_limits() -> None:
 
 
 def test_emulator_video_capture_samples_only_free_torso_state(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
     from bello_mujoco.robstride.emulator import EmulatorVideoCapture
 
-    model = load_prepared_bello_model(bello_asset, load_mjx=False)
+    model = load_compiled_model(bello_asset, load_mjx=False)
     data = mujoco.MjData(model.mj_model)
     capture = EmulatorVideoCapture(fps=20)
 
@@ -451,12 +450,11 @@ def test_bello_mini_hardware_description_drives_emulator_inventory() -> None:
     }
     validate_motor_coverage(
         "bello_mini",
-        asset_config.joint_availability,
         robstride.motors,
     )
 
-    prepared = prepare_asset(emulator_config.asset_config)
-    model = load_prepared_bello_model(
+    prepared = compile_robot(emulator_config.asset_config)
+    model = load_compiled_model(
         prepared,
         terrain=FLAT_TERRAIN,
         simulation_physics=emulator_config.simulation_physics,
@@ -537,14 +535,12 @@ def test_emulator_robot_joints_require_matching_motor_assignments() -> None:
     )
     validate_motor_coverage(
         "bello",
-        JointAvailabilityConfig(),
         config.motors,
     )
 
     with pytest.raises(ValueError, match="require RobStride motor mappings"):
         validate_motor_coverage(
             "bello",
-            JointAvailabilityConfig(),
             tuple(
                 motor
                 for motor in config.motors
@@ -553,12 +549,6 @@ def test_emulator_robot_joints_require_matching_motor_assignments() -> None:
                     and motor.target.name == "waist_yaw_joint"
                 )
             ),
-        )
-    with pytest.raises(ValueError, match="fixed by joint availability"):
-        validate_motor_coverage(
-            "bello",
-            JointAvailabilityConfig(disabled_joint_names=("waist_yaw_joint",)),
-            config.motors,
         )
 
 
@@ -570,8 +560,8 @@ def test_default_emulator_sphere_hands_preserve_all_motor_coordinates() -> None:
         default_motor_model_catalog("bello"),
         {"can0": "vcan0", "can1": "vcan1"},
     )
-    prepared = prepare_asset(config.asset_config)
-    model = load_prepared_bello_model(
+    prepared = compile_robot(config.asset_config)
+    model = load_compiled_model(
         prepared,
         terrain=FLAT_TERRAIN,
         simulation_physics=config.simulation_physics,
@@ -619,8 +609,8 @@ def test_emulator_end_effector_payload_is_configurable_per_hand() -> None:
             end_effector_payload_mass_kg=payload_mass,
         )
     )
-    prepared = prepare_asset(config.asset_config)
-    model = load_prepared_bello_model(
+    prepared = compile_robot(config.asset_config)
+    model = load_compiled_model(
         prepared,
         terrain=FLAT_TERRAIN,
         simulation_physics=config.simulation_physics,
@@ -641,9 +631,9 @@ def test_emulator_end_effector_payload_is_configurable_per_hand() -> None:
 
 
 def test_torso_guide_allows_five_centimeter_drop_without_sideways_motion(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    original = load_prepared_bello_model(
+    original = load_compiled_model(
         bello_asset,
         simulation_physics=SimulationPhysicsConfig(timestep=0.0025),
         load_mjx=False,
@@ -699,9 +689,9 @@ def test_terminal_enter_is_detected_without_blocking() -> None:
 
 
 def test_bello_transmission_maps_knee_and_differential_ankle(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    model = load_prepared_bello_model(bello_asset, load_mjx=False)
+    model = load_compiled_model(bello_asset, load_mjx=False)
     specs = (
         motor_spec("left_knee_mix_1", motor_id=64, direction=1),
         motor_spec("left_ankle_1", motor_id=67, model="ROBSTRIDE_06"),
@@ -767,9 +757,9 @@ def test_bello_transmission_maps_knee_and_differential_ankle(
 
 
 def test_bello_transmission_scales_effective_mit_gains(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    model = load_prepared_bello_model(bello_asset, load_mjx=False)
+    model = load_compiled_model(bello_asset, load_mjx=False)
     motor = RobstrideMotor(motor_spec())
     model = configure_robstride_actuators(model, (motor.spec,))
     transmission = BelloRobstrideTransmission(model, (motor,))
@@ -793,9 +783,9 @@ def test_bello_transmission_scales_effective_mit_gains(
 
 
 def test_ankle_motors_require_configured_native_actuator_banks(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    model = load_prepared_bello_model(bello_asset, load_mjx=False)
+    model = load_compiled_model(bello_asset, load_mjx=False)
     motors = tuple(
         RobstrideMotor(spec)
         for spec in (
@@ -809,9 +799,9 @@ def test_ankle_motors_require_configured_native_actuator_banks(
 
 
 def test_native_actuator_triple_uses_one_common_dynamic_torque_limit(
-    bello_asset: PreparedAsset,
+    bello_asset: CompiledRobot,
 ) -> None:
-    model = load_prepared_bello_model(bello_asset, load_mjx=False)
+    model = load_compiled_model(bello_asset, load_mjx=False)
     motor = RobstrideMotor(motor_spec())
     original_nu = model.mj_model.nu
     other_actuator_name = "left_hip_pitch_joint_pos"

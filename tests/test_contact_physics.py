@@ -7,15 +7,19 @@ from mujoco import mjx
 import numpy as np
 import pytest
 
-from bello_mujoco.assets_pipeline.prepare import PreparedAsset
-from bello_mujoco.envs.locomotion import BelloEnvConfig, BelloLocomotionEnv
+
+from bello_mujoco.models.compiler import CompiledRobot
+from bello_mujoco.envs.locomotion_config import BelloEnvConfig
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.sim import (
     BelloModel,
     SimulationPhysicsConfig,
     WarpConfig,
-    load_prepared_bello_model,
+    load_compiled_model,
 )
 from bello_mujoco.terrain import TerrainConfig, terrain_surface_height
+
+pytestmark = pytest.mark.integration
 
 
 MAX_SOLE_PENETRATION = 0.005
@@ -90,9 +94,9 @@ def dropped_native_rollout(model: BelloModel) -> np.ndarray:
 
 @pytest.mark.parametrize("terrain_mode", ["plane", "rough"])
 def test_native_rollout_limits_geometric_sole_penetration(
-    bello_asset: PreparedAsset, terrain_mode: str
+    bello_asset: CompiledRobot, terrain_mode: str
 ) -> None:
-    model = load_prepared_bello_model(
+    model = load_compiled_model(
         bello_asset,
         terrain=terrain_config(terrain_mode),
         simulation_physics=contact_physics(),
@@ -109,9 +113,9 @@ def test_native_rollout_limits_geometric_sole_penetration(
 @pytest.mark.integration
 @pytest.mark.parametrize("terrain_mode", ["plane", "rough"])
 def test_mjx_warp_rollout_limits_geometric_sole_penetration(
-    bello_asset: PreparedAsset, terrain_mode: str
+    bello_asset: CompiledRobot, terrain_mode: str
 ) -> None:
-    env = BelloLocomotionEnv.load_prepared(
+    env = BelloLocomotionEnv.from_compiled(
         bello_asset,
         warp=WarpConfig(contact_budget_per_env=64, njmax=2048),
         env_config=BelloEnvConfig(
