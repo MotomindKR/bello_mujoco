@@ -53,7 +53,31 @@ stale/disconnected input requests standing. The checkpoint owns command mapping
 and slewing. Optional JSONL policy logs use a new file, never overwrite one.
 
 Synthetic lifecycle checks cover rejection, stale feedback, remote abort,
-signals, and ambiguous start timeouts. Full policy-driven Lima parity is still
-pending: keep the Python runner for regular operation. Motion reference sampling
-and live upper-body following have not migrated to Rust yet.
+signals, and ambiguous start timeouts. A synthetic hold actor has completed the
+native policy/hardwared/MuJoCo lifecycle on isolated Lima vCAN. Trained-policy
+dynamics parity and motion reference sampling remain pending; keep the Python
+runner for regular operation until those checks finish.
 ONNX Runtime must provide the API supported by the pinned `ort` crate.
+
+## Live upper-body references
+
+Run RTMW/GMR retargeting as a separate CPU producer:
+
+```bash
+uv run bello-run-reference asset=bello_mini rtmw.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz
+```
+
+Producer settings live in `configs/commands/reference.yaml`. Enable
+`control.following.enabled` in the Rust hardware YAML and point its endpoint at
+the producer. The protocol is `proto/reference.proto`: named URDF joint angles
+and velocities, not motor commands or world-space poses. The producer never
+connects to hardwared and does not load policy weights.
+
+Rust follows only checkpoint-held coordinates, validates robot/joint names and
+numeric shape, and owns speed limits plus connection/outage blending. Missing,
+stale, or unsafe references transition to the checkpoint nominal pose. Malformed
+messages or terminal producer errors stop control. The polling worker stores
+only the latest result and cannot block the policy loop. Joint references and
+policy motor ownership must be disjoint. Synthetic tests cover live following,
+producer outage, malformed references, and unchanged policy-owned targets;
+live camera/retargeter commissioning is separate.

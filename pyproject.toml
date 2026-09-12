@@ -42,6 +42,7 @@ bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
 bello-run-emulator = "bello_mujoco.cli:emulator_entrypoint"
 bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
 bello-run-hands = "bello_mujoco.cli:hands_entrypoint"
+bello-run-reference = "bello_mujoco.cli:reference_entrypoint"
 
 [dependency-groups]
 training = [
@@ -98,6 +99,7 @@ markers = [
 extend-exclude = [
   "src/bello_mujoco/hardware/_pose_pb2.py",
   "src/bello_mujoco/hardware/_remote_pb2.py",
+  "src/bello_mujoco/hardware/reference_pb2.py",
 ]
 target-version = "py312"
 

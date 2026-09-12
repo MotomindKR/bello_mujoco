@@ -186,11 +186,14 @@ dependencies = [
  "futures-util",
  "nix",
  "ort",
+ "prost",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "tokio",
  "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
  "zip",
 ]
 

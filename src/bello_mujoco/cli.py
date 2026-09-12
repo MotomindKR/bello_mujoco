@@ -434,6 +434,23 @@ def _emulator_hydra(config: DictConfig) -> None:
     )
 
 
+def reference_entrypoint() -> None:
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    _expand_path_overrides(
+        ("rtmw.neutral_model_path=", "rtmw.tls_root_certificate_path=")
+    )
+    _reference_hydra()
+
+
+@hydra.main(
+    version_base=None, config_path=config_path("commands"), config_name="reference"
+)
+def _reference_hydra(config: DictConfig) -> None:
+    from bello_mujoco.hardware.reference_producer import ProducerConfig, run
+
+    run(command_config(ProducerConfig, config))
+
+
 def hands_entrypoint() -> None:
     os.environ["JAX_PLATFORMS"] = "cpu"
     os.environ["JAX_PLATFORM_NAME"] = "cpu"

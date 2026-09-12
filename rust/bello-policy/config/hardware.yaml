@@ -11,6 +11,16 @@ max_tilt_radians: 0.70
 max_angular_velocity: 20.0
 max_linear_acceleration: 100.0
 control:
+  following:
+    enabled: false
+    endpoint: http://127.0.0.1:50056
+    rpc_timeout_seconds: 0.1
+    poll_period_seconds: 0.02
+    max_reference_age_ms: 1000.0
+    max_reference_joint_speed_rps: 25.0
+    min_live_joint_limit_margin_radians: 0.001
+    max_target_speed_rps: 9.42477796076938
+    connection_transition_duration_seconds: 1.0
   client_name: bello-policy
   remote: {endpoint: http://127.0.0.1:50054, staleness_ms: 200}
   command_validity_seconds: 0.08

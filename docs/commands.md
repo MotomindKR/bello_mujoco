@@ -13,6 +13,7 @@ The YAML files linked below are the authoritative field/default reference.
 | `bello-run-emulator` | [emulator.yaml](../configs/commands/emulator.yaml) | MuJoCo/vCAN hardware emulation |
 | `bello-run-hardware` | [hardware.yaml](../configs/commands/hardware.yaml) | Read-only preflight or explicitly armed policy |
 | `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | RTMW-driven Linker hand control |
+| `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Independent RTMW/GMR joint-reference producer |
 
 ## Training and evaluation
 

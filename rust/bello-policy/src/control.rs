@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub following: crate::following::Config,
     pub client_name: String,
     pub remote: remote::Config,
     pub command_validity_seconds: f64,
@@ -222,6 +223,14 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
     policy.remote_command([0.; 3], config.joystick_command_scale)?;
     let rpc = Duration::from_secs_f64(config.rpc_timeout_seconds);
     let remote = remote::Source::connect(&config.remote, rpc).await?;
+    let mut following = if config.following.enabled {
+        Some(crate::following::Following::new(
+            config.following.clone(),
+            &policy.policy,
+        )?)
+    } else {
+        None
+    };
     let mut log: Option<File> = config
         .policy_log_path
         .as_ref()
@@ -320,13 +329,22 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
             let mut sample = hardware.feedback(proto::GroupState::Running).await?;
             sample.command =
                 policy.remote_command(remote.sample()?, config.joystick_command_scale)?;
-            let step = policy.step(&sample)?;
+            let mut step = policy.step(&sample)?;
+            let following_live = if let Some(following) = &mut following {
+                following.apply(
+                    &mut step.motor_target,
+                    &sample.motor_position,
+                    period.as_secs_f64(),
+                )?
+            } else {
+                false
+            };
             let target: Vec<f64> = step.motor_target.iter().map(|v| *v as f64).collect();
             send(&mut controls, &policy, &target, &config).await?;
             if let Some(log) = &mut log {
                 serde_json::to_writer(
                     &mut *log,
-                    &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "policy": step}),
+                    &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "policy": step, "following_live": following_live}),
                 )?;
                 log.write_all(b"\n")?;
                 log.flush()?;

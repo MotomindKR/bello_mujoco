@@ -234,6 +234,10 @@ def export_checkpoint(config: ExportConfig) -> Path:
         "control_timestep": env.control_timestep,
         "joint_from_motor": np.linalg.inv(model.actuator_coordinate_transform).tolist(),
         "default_joint_position": model.default_joint_target.tolist(),
+        "joint_names": model.actuator_joint_names,
+        "joint_limits": model.mj_model.jnt_range[model.actuator_joint_ids].tolist(),
+        "motor_from_joint": model.actuator_coordinate_transform.tolist(),
+        "motor_limits": model.mj_model.actuator_ctrlrange.tolist(),
         "environment": to_builtin(env.config),
     }
     if saved.task == "locomotion":

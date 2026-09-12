@@ -25,6 +25,7 @@ from bello_mujoco.deployment import deployment_bundle
 from bello_mujoco.envs.locomotion_config import BelloEnvConfig
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware import _remote_pb2 as remote_pb
+from bello_mujoco.hardware import reference_pb2 as reference_pb
 from bello_mujoco.training.tracking import to_builtin
 
 pytestmark = pytest.mark.integration
@@ -66,6 +67,9 @@ class SyntheticHardware:
         self.failure = None
         self.abort = False
         self.closed = threading.Event()
+        self.reference_mode = None
+        self.reference_started = None
+        self.targets = []
 
     def ListHardware(self, request, context):
         p = self.pb
@@ -198,6 +202,26 @@ class SyntheticHardware:
         assert {c.motor_name for c in commands} == {f"motor_{i}" for i in range(3)}
         for command in commands:
             self.positions[int(command.motor_name[-1])] = command.position
+        self.targets.append(self.positions.copy())
+
+    def reference(self, request, context):
+        if self.reference_started is None:
+            self.reference_started = time.monotonic()
+        live = self.reference_mode is not None
+        if (
+            self.reference_mode == "outage"
+            and time.monotonic() - self.reference_started > 0.3
+        ):
+            context.abort(grpc.StatusCode.UNAVAILABLE, "synthetic producer outage")
+        return reference_pb.GetReferenceResponse(
+            robot="synthetic",
+            available=live,
+            sequence=time.monotonic_ns(),
+            source_age_ms=0,
+            joint_names=["wrong" if self.reference_mode == "bad_reference" else "held"],
+            position=[-0.1],
+            velocity=[0.0],
+        )
 
     def StreamCommands(self, requests, context):
         context.send_initial_metadata(())
@@ -251,6 +275,16 @@ def start_services(fake):
                 "bello.hardware.v1.HardwareService", methods
             ),
             grpc.method_handlers_generic_handler(
+                "bello.reference.v1.ReferenceService",
+                {
+                    "GetReference": grpc.unary_unary_rpc_method_handler(
+                        fake.reference,
+                        request_deserializer=reference_pb.GetReferenceRequest.FromString,
+                        response_serializer=lambda m: m.SerializeToString(),
+                    )
+                },
+            ),
+            grpc.method_handlers_generic_handler(
                 "bello.remote.v1.RemoteCommandService",
                 {
                     "WatchCommand": grpc.unary_stream_rpc_method_handler(
@@ -285,6 +319,10 @@ def bundle(source):
         kd=[0.1] * 3,
         control_timestep=0.02,
         joint_from_motor=np.eye(3).tolist(),
+        motor_from_joint=np.eye(3).tolist(),
+        joint_names=["first", "held", "last"],
+        joint_limits=[[-3, 3]] * 3,
+        motor_limits=[[-3, 3]] * 3,
         default_joint_position=[0.2, -0.3, 0.4],
         policy_from_hardware=np.eye(3).tolist(),
         left_axis=[0, 1],
@@ -322,7 +360,18 @@ def bundle(source):
 
 @pytest.mark.parametrize(
     "failure",
-    [None, "reject", "stale", "abort", "interrupt", "terminate", "start_timeout"],
+    [
+        None,
+        "reject",
+        "stale",
+        "abort",
+        "interrupt",
+        "terminate",
+        "start_timeout",
+        "follow",
+        "outage",
+        "bad_reference",
+    ],
 )
 def test_native_operator_lifecycle_and_failure_cleanup(
     rust_policy, hardware_proto, tmp_path, failure
@@ -340,6 +389,21 @@ def test_native_operator_lifecycle_and_failure_cleanup(
     settings.update(endpoint=endpoint, groups=["limb"])
     settings["control"].update(ramp_seconds=0.08, max_duration_seconds=0.15)
     settings["control"]["remote"]["endpoint"] = endpoint
+    if failure in ("follow", "outage", "bad_reference"):
+        settings["control"].update(
+            max_duration_seconds=0.8,
+            following=dict(
+                enabled=True,
+                endpoint=endpoint,
+                rpc_timeout_seconds=0.05,
+                poll_period_seconds=0.01,
+                max_reference_age_ms=100.0,
+                max_reference_joint_speed_rps=2.0,
+                min_live_joint_limit_margin_radians=0.001,
+                max_target_speed_rps=1.0,
+                connection_transition_duration_seconds=0.1,
+            ),
+        )
     if failure == "start_timeout":
         settings["control"]["rpc_timeout_seconds"] = 0.2
         fake.failure = failure
@@ -382,6 +446,9 @@ def test_native_operator_lifecycle_and_failure_cleanup(
             assert "start" in fake.calls and "disable" not in fake.calls
             fake.failure = failure if failure in ("reject", "stale") else None
             fake.abort = failure == "abort"
+            if failure in ("follow", "outage", "bad_reference"):
+                fake.reference_mode = failure
+                fake.reference_started = time.monotonic()
             os.write(master, b"RUN\n")
             if failure in ("interrupt", "terminate"):
                 os.kill(
@@ -395,8 +462,17 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         assert "disable" not in fake.calls
         os.write(master, b"IDLE\n")
         code = process.wait(timeout=3)
-        assert (code == 0) == (failure is None), transcript.decode(errors="replace")
+        assert (code == 0) == (failure in (None, "follow", "outage")), (
+            transcript.decode(errors="replace")
+        )
         assert fake.calls[-2:] == ["disable", "release"]
+        if failure in ("follow", "outage"):
+            targets = np.asarray(fake.targets)
+            np.testing.assert_allclose(targets[:, 0], 0.2)
+            np.testing.assert_allclose(targets[:, 2], 0.4)
+            assert targets[:, 1].max() > -0.25
+            assert np.abs(np.diff(targets[:, 1])).max() <= 0.020001
+            assert abs(targets[-1, 1] - (-0.3 if failure == "outage" else -0.1)) < 0.02
     finally:
         if process.poll() is None:
             os.kill(process.pid, signal.SIGKILL)

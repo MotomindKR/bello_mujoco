@@ -1,0 +1,18 @@
+syntax = "proto3";
+package bello.reference.v1;
+
+// Latest retargeted URDF joint reference. This service never owns motor control.
+service ReferenceService {
+  rpc GetReference(GetReferenceRequest) returns (GetReferenceResponse);
+}
+message GetReferenceRequest { string robot = 1; }
+message GetReferenceResponse {
+  string robot = 1;
+  bool available = 2;
+  uint64 sequence = 3;
+  // Includes vision/retargeting age; consumer adds RPC and local residence time.
+  double source_age_ms = 4;
+  repeated string joint_names = 5;
+  repeated double position = 6; // URDF joint coordinates, radians.
+  repeated double velocity = 7; // Radians/second.
+}

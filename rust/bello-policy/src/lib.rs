@@ -13,6 +13,7 @@ use ort::{
 use serde::{Deserialize, Serialize};
 
 pub mod control;
+pub mod following;
 pub mod gait;
 pub mod hardware;
 pub mod locomotion;
