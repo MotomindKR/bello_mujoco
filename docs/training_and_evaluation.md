@@ -2,11 +2,14 @@
 
 ## Train and resume
 
+Use `nix develop .#training` on a Linux x86 CUDA host. The training dependency
+group is opt-in; the default shell and Lima do not install JAX's CUDA stack.
+
 ```bash
-uv run bello-train experiment=bello_mini_locomotion
-uv run bello-train experiment=bello_mini_standing
-uv run bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
-uv run bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
+uv run --group training bello-train experiment=bello_mini_locomotion
+uv run --group training bello-train experiment=bello_mini_standing
+uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
+uv run --group training bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
 ```
 
 Training uses MJX-Warp on CUDA. Run `experiment=smoke` before a long job.

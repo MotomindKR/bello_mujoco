@@ -18,7 +18,7 @@ edit the selected recipe for nested reward/physics changes.
 
 ```bash
 uv run bello-train --cfg job
-uv run bello-train experiment=bello_mini_locomotion seed=1 num_envs=4096
+uv run --group training bello-train experiment=bello_mini_locomotion seed=1 num_envs=4096
 ```
 
 Hydra documents decode into frozen dataclasses, validating fields, dimensions,

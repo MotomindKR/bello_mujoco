@@ -28,48 +28,43 @@
           stdenv.cc.cc.lib
           udev
         ];
+        pythonShell = training: pkgs.mkShell {
+          packages = [ pkgs.git pkgs.socat pkgs.uv ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.iproute2 pkgs.kmod ];
+          UV_PROJECT_ENVIRONMENT = if training then ".venv-training" else ".venv";
+          JAX_PLATFORMS = if training then "cuda" else "cpu";
+          shellHook = ''
+            if [ ! -f deps/bello-stack/components/bello-hardware-python/pyproject.toml ]; then
+              echo "The pinned bello-stack submodule is not initialized." >&2
+              echo "Run: git submodule update --init --recursive" >&2
+              exit 1
+            fi
+
+            export UV_CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/uv"
+            export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+            export WARP_CACHE_PATH="$PWD/.warp-cache"
+            export XLA_PYTHON_CLIENT_PREALLOCATE="''${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+            export MUJOCO_GL=${mujocoGl}
+            ${pkgs.lib.optionalString training ''
+              export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
+              export TF_GPU_ALLOCATOR=cuda_malloc_async
+            ''}
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath limaRuntimeLibraries}:''${LD_LIBRARY_PATH:-}"
+              export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
+            ''}
+
+            uv python install --no-bin || exit 1
+            uv sync --frozen ${pkgs.lib.optionalString training "--group training"} || exit 1
+            source "$UV_PROJECT_ENVIRONMENT/bin/activate"
+          '';
+        };
       in
       {
         devShells = {
-          default = pkgs.mkShell {
-            packages = [
-              pkgs.git
-              pkgs.socat
-              pkgs.uv
-            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-              pkgs.iproute2
-              pkgs.kmod
-            ];
-
-            UV_PROJECT_ENVIRONMENT = ".venv";
-
-            shellHook = ''
-              if [ ! -f deps/bello-stack/components/bello-hardware-python/pyproject.toml ]; then
-                echo "The pinned bello-stack submodule is not initialized." >&2
-                echo "Run: git submodule update --init --recursive" >&2
-                exit 1
-              fi
-
-              export UV_CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/uv"
-              export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
-              export WARP_CACHE_PATH="$PWD/.warp-cache"
-              export XLA_PYTHON_CLIENT_PREALLOCATE="''${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
-              export TF_GPU_ALLOCATOR="''${TF_GPU_ALLOCATOR:-cuda_malloc_async}"
-              export MUJOCO_GL=${mujocoGl}
-              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
-                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath limaRuntimeLibraries}:''${LD_LIBRARY_PATH:-}"
-                export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
-              ''}
-
-              uv python install --no-bin
-              uv sync --frozen
-
-              if [ -f .venv/bin/activate ]; then
-                source .venv/bin/activate
-              fi
-            '';
-          };
+          default = pythonShell false;
+        } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          training = pythonShell true;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
           macos-visualizer = pkgs.mkShell {
             packages = with pkgs; [
@@ -153,12 +148,9 @@
               export no_proxy="$NO_PROXY"
 
               mkdir -p "$lima_state" "$lima_cache"
-              uv python install --no-bin
-              uv sync --frozen
-
-              if [ -f "$UV_PROJECT_ENVIRONMENT/bin/activate" ]; then
-                source "$UV_PROJECT_ENVIRONMENT/bin/activate"
-              fi
+              uv python install --no-bin || exit 1
+              uv sync --frozen || exit 1
+              source "$UV_PROJECT_ENVIRONMENT/bin/activate"
             '';
           };
         };

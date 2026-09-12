@@ -9,13 +9,21 @@ meshes, motor descriptions, and hardware clients come from pinned `deps/bello-st
 ```bash
 git submodule update --init --recursive
 nix develop
-uv run bello-train experiment=bello_mini_locomotion
 uv run bello-eval task=locomotion checkpoint_path=checkpoints/RUN gamepad_enabled=false steps=1500
 uv run bello-export-policy checkpoint_path=checkpoints/RUN output_path=outputs/policy.zip
 ```
 
-Training requires CUDA. Evaluation uses CPU inference, native CPU simulation,
-and Mesa llvmpipe software rasterization on Linux; use Lima on macOS.
+The default environment installs CPU dependencies. For GPU training on Linux x86:
+
+```bash
+nix develop .#training
+uv run --group training bello-train experiment=bello_mini_locomotion
+```
+
+The training shell uses a separate `.venv-training` with CUDA dependencies.
+Vast.ai enables the same training group automatically. Evaluation uses CPU
+inference, native CPU simulation, and Mesa llvmpipe software rasterization on
+Linux; use Lima on macOS.
 
 Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 `bello_mini_standing`, and `motion`. Values live in YAML, not documentation tables.

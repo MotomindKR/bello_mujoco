@@ -5,7 +5,7 @@ reference using BeyondMimic. Offline import/editing, dataset generation, TWIST,
 and TWIST2 are removed. Prepare reference data outside this repository.
 
 ```bash
-uv run bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
+uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
 uv run bello-eval task=motion checkpoint_path=checkpoints/RUN output_path=outputs/motion.mp4
 ```
 

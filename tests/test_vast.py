@@ -636,7 +636,10 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
 
     assert shlex.split(command)[-3] == "motion-test"
     assert float(shlex.split(command)[-4]) == pytest.approx(4.5359237)
-    assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run bello-train") == 2
+    assert (
+        vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run --group training bello-train")
+        == 2
+    )
     assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
@@ -674,7 +677,7 @@ def test_remote_command_preflights_software_rendering() -> None:
     assert "load_locomotion_policy_runtime(checkpoint, use_viewer_model=True)" in script
     assert "load_checkpoint_update(checkpoint) < 1" in script
     assert script.index("preflight_checkpoint_restored") < script.rindex(
-        "uv run bello-train"
+        "uv run --group training bello-train"
     )
 
 

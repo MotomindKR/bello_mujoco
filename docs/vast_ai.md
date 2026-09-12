@@ -20,8 +20,8 @@ only for explicitly approved unattended launches. See
 ## Remote lifecycle
 
 The instance's onstart hook installs a supervisor before dependency setup.
-Training starts only when it is armed. The detached job installs dependencies,
-checks GPU training and software rendering, runs a short PPO preflight, then
+Training starts only when it is armed. The detached job installs the CUDA
+training dependency group, checks GPU training and software rendering, runs a short PPO preflight, then
 starts the selected profile with W&B enabled.
 
 - Completion, setup/training failure, or a disappearing job process triggers

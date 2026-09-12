@@ -16,11 +16,14 @@ The YAML files linked below are the authoritative field/default reference.
 
 ## Training and evaluation
 
+Training commands assume the Linux x86 `nix develop .#training` shell.
+Use the default `nix develop` shell for CPU evaluation and development.
+
 ```bash
-uv run bello-train experiment=bello_mini_locomotion seed=1
-uv run bello-train experiment=bello_mini_standing
-uv run bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
-uv run bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
+uv run --group training bello-train experiment=bello_mini_locomotion seed=1
+uv run --group training bello-train experiment=bello_mini_standing
+uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
+uv run --group training bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
 uv run bello-eval task=locomotion checkpoint_path=checkpoints/RUN gamepad_enabled=false steps=1500
 uv run bello-eval task=motion checkpoint_path=checkpoints/RUN output_path=outputs/motion.mp4
 uv run bello-export-policy checkpoint_path=checkpoints/RUN output_path=outputs/policy.zip

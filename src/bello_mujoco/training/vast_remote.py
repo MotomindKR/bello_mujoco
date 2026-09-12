@@ -220,12 +220,13 @@ export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
 export TF_GPU_ALLOCATOR=cuda_malloc_async
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export JAX_PLATFORMS=cuda
 export JAX_DEFAULT_MATMUL_PRECISION=highest
 
 uv python install
-uv sync --frozen
-uv run python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
-uv run python - <<'PY'
+uv sync --frozen --group training
+uv run --group training python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
+uv run --group training python - <<'PY'
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -282,11 +283,11 @@ if [[ "$experiment" == bello_* ]]; then
   preflight_overrides+=("checkpoint_directory=checkpoints/vast-preflight-$run_name" checkpoint_name=smoke)
 fi
 
-uv run bello-train \
+uv run --group training bello-train \
   "${preflight_overrides[@]}"
 
 if [[ "$experiment" == bello_* ]]; then
-  uv run python - "checkpoints/vast-preflight-$run_name" <<'PY'
+  uv run --group training python - "checkpoints/vast-preflight-$run_name" <<'PY'
 import sys
 from pathlib import Path
 
@@ -322,7 +323,7 @@ print({"preflight_checkpoint_restored": str(checkpoint), "policy_video": str(vid
 PY
 fi
 
-uv run bello-train \
+uv run --group training bello-train \
   "${training_overrides[@]}" \
   wandb_enabled=true \
   run_name="$run_name" \

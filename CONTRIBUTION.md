@@ -59,7 +59,7 @@ The compiled MJX-Warp integration cases require a GPU backend. Run them on a
 CUDA development host with:
 
 ```bash
-JAX_PLATFORMS=cuda uv run pytest -m integration tests/test_motion_tracking.py
+JAX_PLATFORMS=cuda uv run --group training pytest -m integration tests/test_motion_tracking.py
 ```
 
 The default suite excludes `integration` and sets a CPU backend unless explicitly

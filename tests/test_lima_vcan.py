@@ -5,7 +5,6 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
-import tomllib
 
 import yaml
 
@@ -216,24 +215,3 @@ def test_macos_visualizer_shell_uses_host_local_cargo_cache() -> None:
     assert 'export CARGO_HOME="$macos_visualizer_cache/cargo-home"' in flake
     assert 'export CARGO_TARGET_DIR="$macos_visualizer_cache/cargo-target"' in flake
     assert "deps/bello-stack/components/bello-visualizer/Cargo.toml" in flake
-
-
-def test_linux_arm_lock_uses_cpu_jax_while_x86_training_keeps_cuda() -> None:
-    project = tomllib.loads((_ROOT / "pyproject.toml").read_text())["project"]
-    dependencies = project["dependencies"]
-
-    assert any(
-        dependency.startswith("jax>=")
-        and "sys_platform == 'linux' and platform_machine == 'aarch64'" in dependency
-        for dependency in dependencies
-    )
-    assert any(
-        dependency.startswith("jax[cuda13]>=")
-        and "sys_platform == 'linux' and platform_machine == 'x86_64'" in dependency
-        for dependency in dependencies
-    )
-    assert not any(
-        dependency.startswith("jax[cuda13]>=")
-        and "platform_machine == 'aarch64'" in dependency
-        for dependency in dependencies
-    )
