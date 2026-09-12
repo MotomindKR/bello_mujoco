@@ -66,6 +66,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     if args.telemetry {
+        if policy.metadata.task == "motion_tracking" {
+            let mut runtime = bello_policy::motion::Motion::new(policy)?;
+            for line in io::stdin().lock().lines() {
+                let sample = serde_json::from_str(&line?)?;
+                println!("{}", serde_json::to_string(&runtime.step(&sample)?)?);
+            }
+            return Ok(());
+        }
         let mut runtime = Locomotion::new(policy)?;
         for line in io::stdin().lock().lines() {
             let sample: Feedback = serde_json::from_str(&line?)?;

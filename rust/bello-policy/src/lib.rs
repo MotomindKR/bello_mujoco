@@ -17,6 +17,7 @@ pub mod following;
 pub mod gait;
 pub mod hardware;
 pub mod locomotion;
+pub mod motion;
 pub mod remote;
 
 #[derive(Debug, Deserialize)]

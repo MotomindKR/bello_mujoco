@@ -71,10 +71,11 @@ runtime and test that validator with synthetic geometry.
 
 To check the exported bundle against the Rust CPU consumer, run
 `cargo build --locked -p bello-policy` from this repository, set `BELLO_POLICY_BIN` to the executable and
-`ORT_DYLIB_PATH` to the ONNX Runtime library, then run:
+`ORT_DYLIB_PATH` to the ONNX Runtime library. Build inside
+`nix develop .#rust-runtime` on Linux for the matching MuJoCo library, then run:
 
 ```bash
-uv run pytest -m integration tests/test_deployment_runtime.py tests/test_native_locomotion.py
+uv run pytest -m integration tests/test_deployment_runtime.py tests/test_native_locomotion.py tests/test_native_motion.py
 ```
 
 This uses synthetic policies and temporary local Git fixtures, without a robot,

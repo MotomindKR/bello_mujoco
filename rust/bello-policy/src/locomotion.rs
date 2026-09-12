@@ -1,6 +1,7 @@
 //! Stateful hardware observations from already-filtered hardwared telemetry.
 
 use anyhow::{Context, Result, bail, ensure};
+use glam::{DMat3, DQuat, DVec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -102,21 +103,13 @@ impl Locomotion {
             "missing hardware IMU frame"
         );
         let r = settings.policy_from_hardware;
-        for i in 0..3 {
-            for j in 0..3 {
-                ensure!(
-                    (dot(r[i], r[j]) - if i == j { 1. } else { 0. }).abs() < 1e-8,
-                    "invalid IMU rotation"
-                );
-            }
-        }
-        let cross = [
-            r[1][1] * r[2][2] - r[1][2] * r[2][1],
-            r[1][2] * r[2][0] - r[1][0] * r[2][2],
-            r[1][0] * r[2][1] - r[1][1] * r[2][0],
-        ];
+        let rotation = DMat3::from_cols_array_2d(&r).transpose();
         ensure!(
-            (dot(r[0], cross) - 1.).abs() < 1e-8,
+            (rotation * rotation.transpose()).abs_diff_eq(DMat3::IDENTITY, 1e-8),
+            "invalid IMU rotation"
+        );
+        ensure!(
+            (rotation.determinant() - 1.).abs() < 1e-8,
             "IMU rotation must be proper"
         );
         ensure!(
@@ -248,7 +241,8 @@ impl Locomotion {
             "nonfinite motor/IMU feedback"
         );
         let gravity = projected_gravity(sample.orientation_xyzw)?;
-        let rotate = |v| self.settings.policy_from_hardware.map(|row| dot(row, v));
+        let rotation = DMat3::from_cols_array_2d(&self.settings.policy_from_hardware).transpose();
+        let rotate = |v| (rotation * DVec3::from_array(v)).to_array();
         let gravity = rotate(gravity);
         let acceleration = rotate(sample.linear_acceleration);
         let angular_velocity = rotate(sample.angular_velocity);
@@ -337,20 +331,11 @@ impl Locomotion {
     }
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
 pub fn projected_gravity(q: [f64; 4]) -> Result<[f64; 3]> {
-    let norm = q.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let q = DQuat::from_array(q);
     ensure!(
-        q.iter().all(|x| x.is_finite()) && (0.9..=1.1).contains(&norm),
+        q.is_finite() && (0.9..=1.1).contains(&q.length()),
         "invalid IMU quaternion"
     );
-    let [x, y, z, w] = q.map(|v| v / norm);
-    Ok([
-        2. * (w * y - x * z),
-        -2. * (y * z + w * x),
-        -(1. - 2. * (x * x + y * y)),
-    ])
+    Ok((q.normalize().conjugate() * DVec3::NEG_Z).to_array())
 }

@@ -239,6 +239,7 @@ def export_checkpoint(config: ExportConfig) -> Path:
         "motor_from_joint": model.actuator_coordinate_transform.tolist(),
         "motor_limits": model.mj_model.actuator_ctrlrange.tolist(),
         "environment": to_builtin(env.config),
+        "action_clip": env.action_clip,
     }
     if saved.task == "locomotion":
         from bello_mujoco.hardware.locomotion import _hardware_imu_to_policy_rotation
@@ -249,7 +250,8 @@ def export_checkpoint(config: ExportConfig) -> Path:
             env
         ).tolist()
         metadata["left_axis"] = (-env._locomotion_right_axis()[:2]).tolist()
-        metadata["action_clip"] = env.action_clip
+    else:
+        metadata["end_effector_names"] = env.end_effector_names
     effort_scale = (
         np.asarray(env.beyondmimic_action_scale)
         if saved.task == "motion_tracking" and env.config.formulation == "beyondmimic"

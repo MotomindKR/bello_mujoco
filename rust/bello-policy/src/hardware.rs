@@ -7,6 +7,7 @@ use anyhow::{Context, Result, ensure};
 use bello_hardware_client::{
     ConnectOptions, DeviceState, GroupState, MotorGroup, Robot, raw::proto,
 };
+use glam::DVec3;
 use serde::Deserialize;
 
 use crate::locomotion::{Feedback, Locomotion, projected_gravity};
@@ -310,12 +311,12 @@ fn decode_feedback(
     );
     let vector = |value: &Option<proto::Vector3>, limit: f64| -> Result<[f64; 3]> {
         let value = value.as_ref().context("missing IMU vector")?;
-        let v = [value.x, value.y, value.z];
+        let v = DVec3::new(value.x, value.y, value.z);
         ensure!(
-            v.iter().all(|x| x.is_finite()) && v.iter().map(|x| x * x).sum::<f64>().sqrt() <= limit,
+            v.is_finite() && v.length() <= limit,
             "IMU vector exceeds safety limit"
         );
-        Ok(v)
+        Ok(v.to_array())
     };
     Ok(Feedback {
         motor_position: motor_names
