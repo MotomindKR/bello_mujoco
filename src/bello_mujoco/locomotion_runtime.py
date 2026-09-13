@@ -15,7 +15,6 @@ from bello_mujoco.training.checkpoint import (
     LocomotionCheckpointMetadata,
     restore_evaluation_checkpoint,
 )
-from bello_mujoco.training.ppo import critic_observation_size
 
 
 @dataclass(frozen=True)
@@ -69,7 +68,7 @@ def validate_locomotion_checkpoint_shape(
         env.observation_size, metadata.ppo.policy
     )
     expected_critic_obs_size = policy_observation_size(
-        critic_observation_size(env), metadata.ppo.policy
+        env.critic_observation_size, metadata.ppo.policy
     )
     if expected_obs_size != metadata.obs_size:
         raise ValueError(

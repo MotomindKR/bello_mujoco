@@ -12,7 +12,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import numpy as np
 
 from bello_mujoco.policy import ActorCritic
-from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
+from bello_mujoco.training.ppo_types import ObservationNormState
+from bello_mujoco.training.ppo_config import PPOConfig
 
 
 @dataclass(frozen=True)

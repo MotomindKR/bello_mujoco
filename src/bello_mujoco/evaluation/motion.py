@@ -21,18 +21,13 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
-from bello_mujoco.training.ppo import (
-    ObservationNormState,
-    PPOConfig,
-    init_observation_norm_state,
-    normalize_observation,
-)
-from bello_mujoco.evaluation.render import (
+from bello_mujoco.training.ppo_types import ObservationNormState
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.normalization import normalize_observation
+from bello_mujoco.evaluation.video import (
     CameraConfig,
-    VideoWriter,
-    make_camera,
     open_rollout_video_resources,
-    update_camera,
+    write_video_frame,
 )
 from bello_mujoco.motion.clip import (
     load_motion_clip,
@@ -104,8 +99,8 @@ def render_motion_policy(
     height: int,
     fps: int,
     obs_stack_size: int,
-    ppo_config: PPOConfig | None = None,
-    observation_norm_state: ObservationNormState | None = None,
+    ppo_config: PPOConfig,
+    observation_norm_state: ObservationNormState,
 ) -> MotionRolloutStats:
     if steps <= 0:
         raise ValueError("steps must be positive")
@@ -113,11 +108,6 @@ def render_motion_policy(
     mj_data = mujoco.MjData(mj_model)
     state, observation = reset_native_motion_rollout(env, mj_data)
     observation_stack = init_observation_stack(observation, obs_stack_size)
-    ppo_config = PPOConfig() if ppo_config is None else ppo_config
-    if observation_norm_state is None:
-        observation_norm_state = init_observation_norm_state(
-            int(observation_stack.size)
-        )
     camera_config = CameraConfig(
         mode="follow", distance=3.0, azimuth=135.0, elevation=-16.0
     )
@@ -167,15 +157,15 @@ def render_motion_policy(
                     )
                 )
             )
-            update_camera(
+            write_video_frame(
+                renderer,
                 camera,
+                writer,
                 mj_model,
                 mj_data,
                 camera_config,
                 root_body_name=env.model.robot.root_body_name,
             )
-            renderer.update_scene(mj_data, camera=camera)
-            writer.append_data(renderer.render())
             policy_observation = normalize_observation(
                 stacked_observation(observation_stack),
                 observation_norm_state,
@@ -398,13 +388,17 @@ def render_reference(
     motion = load_motion_clip(motion_path, model)
     mj_model = model.mj_model
     mj_data = mujoco.MjData(mj_model)
-    renderer = mujoco.Renderer(mj_model, width=width, height=height)
     camera_config = CameraConfig(
         mode="follow", distance=3.0, azimuth=135.0, elevation=-16.0
     )
-    camera = make_camera(mj_model, camera_config)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = VideoWriter(output_path, width=width, height=height, fps=fps)
+    resources, renderer, camera, writer = open_rollout_video_resources(
+        mj_model,
+        output_path,
+        width=width,
+        height=height,
+        fps=fps,
+        camera_config=camera_config,
+    )
     frame_count = int(np.floor(motion.duration * fps)) + 1
     try:
         for frame in range(frame_count):
@@ -412,18 +406,17 @@ def render_reference(
             mj_data.qpos[:] = np.asarray(reference.qpos)
             mj_data.qvel[:] = np.asarray(reference.qvel)
             mujoco.mj_forward(mj_model, mj_data)
-            update_camera(
+            write_video_frame(
+                renderer,
                 camera,
+                writer,
                 mj_model,
                 mj_data,
                 camera_config,
                 root_body_name=model.robot.root_body_name,
             )
-            renderer.update_scene(mj_data, camera=camera)
-            writer.append_data(renderer.render())
     finally:
-        writer.close()
-        renderer.close()
+        resources.close()
     return output_path
 
 

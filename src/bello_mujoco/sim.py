@@ -669,9 +669,6 @@ def _randomized_model_fields(
     )
     body_inertia[:, joint_body_ids] *= inertia_scale
 
-    # Preserve the established random stream for the original joint fields.
-    # TWIST-only physical draws are intentionally appended after these draws so
-    # enabling the new neutral ranges cannot change legacy environments.
     offset_indices = (
         np.arange(mj_model.nu, dtype=np.int32)
         if config.joint_angle_offset_scope == "all"

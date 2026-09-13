@@ -10,10 +10,8 @@ import jax
 from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.training.checkpoint import (
     CheckpointConfig,
-    CheckpointMetadata,
     MotionCheckpointMetadata,
     checkpoint_path,
-    load_checkpoint_metadata,
     MOTION_FILE,
     restore_runner_checkpoint,
     save_training_checkpoint,
@@ -33,9 +31,8 @@ from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.training.runtime import (
     RunnerInitialization,
-    raise_on_invalid_training_metrics,
     should_render_training_video,
-    training_update_range,
+    training_updates,
 )
 from bello_mujoco.training.tracking import (
     WandbConfig,
@@ -46,15 +43,13 @@ from bello_mujoco.training.tracking import (
     track_metric_snapshot,
     track_video,
 )
-from bello_mujoco.training.ppo import (
+from bello_mujoco.training.ppo_config import (
     PPOConfig,
-    RunnerState,
-    critic_observation_size,
-    init_runner_state,
-    update_runner_state,
     validate_action_limit_contract,
     validate_ppo_config,
 )
+from bello_mujoco.training.ppo_types import RunnerState
+from bello_mujoco.training.ppo import init_runner_state
 from bello_mujoco.repository import (
     capture_repository_commit,
     require_checkpoint_output_directory,
@@ -131,7 +126,7 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
         policy_obs_size = policy_observation_size(
             env.observation_size, run_config.config.policy
         )
-        critic_obs_size = critic_observation_size(env)
+        critic_obs_size = env.critic_observation_size
         critic_policy_obs_size = policy_observation_size(
             critic_obs_size, run_config.config.policy
         )
@@ -162,11 +157,8 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
         )
         initial_runner = load_motion_resume(
             run_config.checkpoint_config.resume_path,
-            run_config,
             env,
             metadata,
-            policy_obs_size,
-            critic_policy_obs_size,
         )
         out = motion_train_update_loop(
             env,
@@ -265,10 +257,6 @@ def motion_train_update_loop(
     else:
         runner_state, static_policy, optimizer = initial_runner
 
-    def update_fn(state):
-        return update_runner_state(state, static_policy, optimizer, env, config)
-
-    update_fn = jax.jit(update_fn)
     if video_config.enabled and video_config.render_initial:
         if checkpoint_root is None or checkpoint_context is None:
             raise ValueError("initial evaluation requires checkpoint context")
@@ -290,28 +278,12 @@ def motion_train_update_loop(
             env_steps=0,
         )
     last_metrics = None
-    start_update = int(jax.device_get(runner_state.update))
-    if not 0 <= start_update < config.num_updates:
-        raise ValueError(
-            "runner update must be within the unfinished training range, got "
-            f"update={start_update}, num_updates={config.num_updates}"
-        )
-    for _ in training_update_range(start_update, config.num_updates):
-        runner_state, metrics = update_fn(runner_state)
-        metrics = jax.tree_util.tree_map(
-            lambda value: value.block_until_ready(), metrics
-        )
+    updates = training_updates(
+        env, config, (runner_state, static_policy, optimizer), run
+    )
+    for runner_state, metrics, env_steps in updates:
         update = int(jax.device_get(runner_state.update))
-        raise_on_invalid_training_metrics(metrics, update)
         last_metrics = metrics
-        env_steps = update * config.num_envs * config.num_steps
-        track_metric_snapshot(
-            run,
-            metrics,
-            env_steps=env_steps,
-            update=update,
-            context={"phase": "train"},
-        )
         scheduled_checkpoint = None
         if (
             checkpoint_root is not None
@@ -431,71 +403,15 @@ def motion_checkpoint_metadata(
 
 def load_motion_resume(
     path: Path | None,
-    run_config: MotionTrainingRunConfig,
     env: BelloMotionTrackingEnv,
     expected_metadata: MotionCheckpointMetadata,
-    policy_obs_size: int,
-    critic_policy_obs_size: int,
 ) -> RunnerInitialization | None:
     if path is None:
         return None
-    metadata = load_checkpoint_metadata(
-        path,
+    runner_state, static_policy, optimizer, _ = restore_runner_checkpoint(
+        path, env, expected_metadata
     )
-    validate_motion_resume(
-        metadata,
-        run_config,
-        env,
-        expected_metadata,
-        policy_obs_size,
-        critic_policy_obs_size,
-    )
-    runner_state, static_policy, optimizer, restored_metadata = (
-        restore_runner_checkpoint(
-            path,
-            env,
-            expected_metadata,
-        )
-    )
-    if restored_metadata != expected_metadata:
-        raise RuntimeError("resume did not resolve to the requested run")
     return runner_state, static_policy, optimizer
-
-
-def validate_motion_resume(
-    metadata: CheckpointMetadata,
-    run_config: MotionTrainingRunConfig,
-    env: BelloMotionTrackingEnv,
-    expected_metadata: MotionCheckpointMetadata,
-    policy_obs_size: int,
-    critic_policy_obs_size: int,
-) -> None:
-    if not isinstance(metadata, MotionCheckpointMetadata):
-        raise ValueError("resume checkpoint is not a motion-tracking checkpoint")
-    if metadata.asset != expected_metadata.asset:
-        raise ValueError("resume checkpoint asset config does not match this run")
-    if metadata.warp != run_config.warp:
-        raise ValueError("resume checkpoint Warp config does not match this run")
-    expected_motion_env = replace(
-        run_config.env_config,
-        motion_path=metadata.motion_env.motion_path,
-    )
-    if metadata.motion_env != expected_motion_env:
-        raise ValueError("resume checkpoint motion environment does not match this run")
-    expected_ppo = replace(
-        run_config.config, total_timesteps=metadata.ppo.total_timesteps
-    )
-    if metadata.ppo != expected_ppo:
-        raise ValueError("resume checkpoint PPO config differs beyond total_timesteps")
-    if (
-        metadata.obs_size != policy_obs_size
-        or metadata.critic_obs_size != critic_policy_obs_size
-        or metadata.action_size != env.action_size
-        or metadata.actor_observation_layout != env.observation_layout
-        or metadata.critic_observation_layout != env.critic_observation_layout
-        or metadata.action_layout != env.action_layout
-    ):
-        raise ValueError("resume checkpoint policy contract does not match this run")
 
 
 def render_motion_checkpoint_video(

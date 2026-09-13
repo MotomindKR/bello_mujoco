@@ -98,7 +98,7 @@ wandb_config:
   run_name: null
   mode: online
   dir: .wandb
-  tags: [bello, fixed-waist, fixed-head, gmr]
+  tags: [bello, beyondmimic]
 
 video_config:
   enabled: true

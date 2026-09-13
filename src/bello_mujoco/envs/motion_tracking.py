@@ -1,4 +1,4 @@
-"""Whole-body reference-motion tracking for fixed-waist, fixed-head Bello."""
+"""BeyondMimic reference-motion tracking for canonical robot descriptions."""
 
 from __future__ import annotations
 
@@ -16,11 +16,7 @@ import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.models.compiler import ModelConfig, CompiledRobot
-from bello_mujoco.contracts import (
-    CONTROL_DECIMATION,
-    ActionLayout,
-    ObservationLayout,
-)
+from bello_mujoco.contracts import CONTROL_DECIMATION, ActionLayout, ObservationLayout
 from bello_mujoco.envs.actions import bounded_motor_target, motor_default
 from bello_mujoco.envs.geometry import (
     pair_contains_each,
@@ -37,12 +33,7 @@ from bello_mujoco.motion.clip import (
     sample_motion,
 )
 from bello_mujoco.robot_tasks import motion_task_definition
-from bello_mujoco.sim import (
-    BelloModel,
-    WarpConfig,
-    load_model,
-    load_compiled_model,
-)
+from bello_mujoco.sim import BelloModel, WarpConfig, load_model, load_compiled_model
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 
 
@@ -341,6 +332,24 @@ class BelloMotionTrackingEnv:
     @property
     def ppo_stagger_initial_step_count(self) -> bool:
         return False
+
+    def initial_task_state(self) -> jax.Array:
+        # Adaptive clip sampling lives in MotionTrackingState, not PPO task state.
+        return jnp.zeros((0,), dtype=jnp.float32)
+
+    def with_task_state(self, task_state: jax.Array) -> BelloMotionTrackingEnv:
+        return self
+
+    def update_task_state(self, task_state: jax.Array, info: dict) -> jax.Array:
+        return task_state
+
+    def task_state_metrics(self, task_state: jax.Array) -> dict:
+        return {}
+
+    def with_initial_step_counts(
+        self, state: MotionTrackingState, step_count: jax.Array
+    ) -> MotionTrackingState:
+        return state.replace(step_count=step_count, episode_length=step_count)
 
     @property
     def action_size(self) -> int:

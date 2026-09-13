@@ -39,6 +39,12 @@ uv run bash scripts/protobuf.sh generate
 
 ## Validation
 
+Implement the explicit `training/ppo_types.py:PPOEnvironment` contract for each
+task, including initialization, task-state updates, and metrics. Task-neutral
+normalization and metric reducers live outside PPO optimization. Keep scalar and
+batched locomotion transitions on their shared post-physics path; test changes
+with synthetic JIT/vmap fixtures before GPU rollouts.
+
 Run focused tests while iterating:
 
 ```bash

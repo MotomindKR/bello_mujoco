@@ -42,6 +42,8 @@ uv run bello-eval task=motion checkpoint_path=checkpoints/RUN output_path=output
 Commands use the configured robot command frame; Bello and Mini do not share
 their forward axis. Evaluation reconstructs saved normalization and feedback
 settings rather than silently cleaning observations.
+Low-level policy-video calls also require the checkpoint's PPO settings and
+normalization explicitly; they do not create replacement statistics.
 
 Policy inference and simulation run on CPU. Rasterization uses Mesa
 llvmpipe through EGL only. The Nix shells supply Mesa; on Ubuntu install

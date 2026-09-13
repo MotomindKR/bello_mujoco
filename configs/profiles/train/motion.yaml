@@ -65,7 +65,7 @@ checkpoint_config:
 wandb_config:
   enabled: true
   run_name: ${motion.sequence}-bello-motion-seed0
-  tags: [bello, fixed-waist, fixed-head, bounded-motion]
+  tags: [bello, beyondmimic, bounded-motion]
 video_config:
   every_updates: 500
   filename_prefix: ${motion.sequence}_motion

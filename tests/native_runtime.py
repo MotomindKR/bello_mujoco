@@ -14,11 +14,9 @@ import pytest
 from bello_mujoco.deployment import actor_onnx, deployment_bundle
 from bello_mujoco.envs.actions import bounded_motor_target
 from bello_mujoco.policy import ActorCritic, ActorCriticConfig
-from bello_mujoco.training.ppo import (
-    ObservationNormState,
-    PPOConfig,
-    normalize_observation,
-)
+from bello_mujoco.training.ppo_types import ObservationNormState
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.normalization import normalize_observation
 
 
 @pytest.fixture

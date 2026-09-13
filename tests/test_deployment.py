@@ -14,11 +14,9 @@ from bello_mujoco.deployment import actor_onnx
 from bello_mujoco.envs.actions import bounded_motor_target
 from bello_mujoco.policy import ActorCritic, ActorCriticConfig
 from bello_mujoco.sim import hardware_imu_to_policy_rotation
-from bello_mujoco.training.ppo import (
-    PPOConfig,
-    ObservationNormState,
-    normalize_observation,
-)
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.ppo_types import ObservationNormState
+from bello_mujoco.training.normalization import normalize_observation
 
 
 def test_export_imu_rotation_uses_fixed_body_frames_not_inertial_frames():

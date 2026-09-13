@@ -47,10 +47,8 @@ from bello_mujoco.evaluation.render import (
     reset_mujoco_data,
 )
 from bello_mujoco.spatial import quat_rotate_inverse_wxyz, quat_rotate_wxyz
-from bello_mujoco.training.ppo import (
-    ObservationNormState,
-    PPOConfig,
-)
+from bello_mujoco.training.ppo_types import ObservationNormState
+from bello_mujoco.training.ppo_config import PPOConfig
 
 DONE_KEYS = (
     "done/any",

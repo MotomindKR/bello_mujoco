@@ -16,9 +16,9 @@
 | `configs/profiles/train/` | Experiment recipes |
 | `deps/bello-stack/` | Pinned robot, protocol, hardware client, and Rust runtime |
 | `models/` | Thin canonical URDF-to-MuJoCo compilation |
-| `envs/` | Task stepping, actions, observations, gait, geometry, randomization, rewards |
-| `training/` | PPO, resumable state, W&B, remote training |
-| `evaluation/` | Native CPU rollouts and isolated software video workers |
+| `envs/` | Task stepping, shared scalar/batch transitions, observations, gait, geometry, rewards, diagnostics |
+| `training/` | PPO optimization/rollouts, explicit environment contract, normalization, metrics, shared host update loop, checkpoints and remote training |
+| `evaluation/` | Native CPU rollouts, shared video resources, isolated software workers |
 | `hardware/` | Live FastSAM/RTMW retargeting, reference/neutral-command producers, pose diagnostics, and independent hands |
 | `motion/` | Reference clip loading and runtime reconstruction |
 | `robots/` | Robot task defaults and coordinate mappings |

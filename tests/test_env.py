@@ -516,30 +516,6 @@ def test_contact_debounce_has_explicit_transitions(
     assert jnp.array_equal(second.astype(bool), jnp.asarray([True, False]))
 
 
-def test_touchdown_is_emitted_on_first_raw_contact_sample_only(
-    bello_asset: CompiledRobot,
-) -> None:
-    env = BelloLocomotionEnv.from_compiled(bello_asset)
-    state, _ = env.reset()
-    raw = jnp.asarray([True, False])
-    initialized = state.replace(step_count=jnp.asarray(1))
-
-    touchdown = env._foot_touchdown(initialized, raw)
-    debouncing = env._foot_touchdown(
-        initialized.replace(
-            foot_contact_debounce_time=jnp.asarray([0.02, 0.0], dtype=jnp.float32)
-        ),
-        raw,
-    )
-    filtered = env._foot_touchdown(
-        initialized.replace(last_foot_contact=jnp.asarray([True, False])), raw
-    )
-
-    assert jnp.array_equal(touchdown, jnp.asarray([True, False]))
-    assert not jnp.any(debouncing)
-    assert not jnp.any(filtered)
-
-
 def test_observation_noise_changes_only_noisy_evaluation(
     bello_asset: CompiledRobot,
 ) -> None:

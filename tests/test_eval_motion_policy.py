@@ -12,7 +12,8 @@ from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.policy import ActorCriticConfig
 from bello_mujoco.training.checkpoint import MotionCheckpointMetadata
-from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
+from bello_mujoco.training.ppo_types import ObservationNormState
+from bello_mujoco.training.ppo_config import PPOConfig
 
 ACTOR_LAYOUT = ObservationLayout((("actor", 2),))
 CRITIC_LAYOUT = ObservationLayout((("critic", 3),))
@@ -335,7 +336,10 @@ def install_native_rollout_fakes(monkeypatch):
         "open_rollout_video_resources",
         lambda *args, **kwargs: (resources, renderer, object(), writer),
     )
-    monkeypatch.setattr(eval_motion, "update_camera", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "bello_mujoco.evaluation.video.update_camera",
+        lambda *args, **kwargs: None,
+    )
     return env, state, resources, renderer, writer
 
 
@@ -429,6 +433,10 @@ def test_native_rollout_closes_video_resources_when_step_fails(
             height=3,
             fps=20,
             obs_stack_size=1,
+            ppo_config=PPOConfig(),
+            observation_norm_state=ObservationNormState(
+                mean=jnp.zeros(2), var=jnp.ones(2), count=jnp.asarray(0.0)
+            ),
         )
 
     assert len(writer.frames) == 1

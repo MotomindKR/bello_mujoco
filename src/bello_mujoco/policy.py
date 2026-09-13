@@ -12,7 +12,8 @@ import jax
 import jax.numpy as jnp
 
 if TYPE_CHECKING:
-    from bello_mujoco.training.ppo import ObservationNormState, PPOConfig
+    from bello_mujoco.training.ppo_types import ObservationNormState
+    from bello_mujoco.training.ppo_config import PPOConfig
 
 LOG_2PI = math.log(2.0 * math.pi)
 
@@ -356,7 +357,7 @@ def infer_policy_action(
     rng: jax.Array | None = None,
 ) -> PolicyInferenceStep:
     """Evaluate the actor with the same input and action contract used by PPO."""
-    from bello_mujoco.training.ppo import normalize_observation
+    from bello_mujoco.training.normalization import normalize_observation
 
     policy_observation = normalize_observation(observation, normalization, config)
     action_mean = apply_actor(policy, policy_observation)

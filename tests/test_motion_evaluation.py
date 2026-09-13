@@ -6,7 +6,7 @@ import pytest
 
 from bello_mujoco.evaluation import motion as evaluation
 from bello_mujoco.training import motion as training
-from bello_mujoco.training.ppo import PPOConfig
+from bello_mujoco.training.ppo_config import PPOConfig
 
 
 def test_motion_evaluation_dispatches_checkpoint_to_software_worker(monkeypatch):

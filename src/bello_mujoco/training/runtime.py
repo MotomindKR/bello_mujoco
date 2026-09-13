@@ -9,8 +9,12 @@ import jax
 import jax.numpy as jnp
 import optax
 from tqdm.auto import tqdm
+from bello_mujoco.training.ppo import update_runner_state
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.ppo_types import PPOEnvironment
+from bello_mujoco.training.tracking import track_metric_snapshot
 
-from bello_mujoco.training.ppo import RunnerState
+from bello_mujoco.training.ppo_types import RunnerState
 
 RunnerInitialization: TypeAlias = tuple[
     RunnerState,
@@ -25,15 +29,46 @@ class VideoSchedule(Protocol):
     render_final: bool
 
 
-def training_update_range(start_update: int, num_updates: int):
-    return tqdm(
-        range(start_update, num_updates),
+def training_updates(
+    env: PPOEnvironment,
+    config: PPOConfig,
+    initial_runner: RunnerInitialization,
+    run,
+):
+    """Yield synchronized, validated updates after recording training metrics."""
+    runner_state, static_policy, optimizer = initial_runner
+    start_update = int(jax.device_get(runner_state.update))
+    if not 0 <= start_update < config.num_updates:
+        raise ValueError(
+            "runner update must be within the unfinished training range, got "
+            f"update={start_update}, num_updates={config.num_updates}"
+        )
+
+    @jax.jit
+    def update_fn(state):
+        return update_runner_state(state, static_policy, optimizer, env, config)
+
+    for _ in tqdm(
+        range(start_update, config.num_updates),
         desc="PPO updates",
         unit="update",
         dynamic_ncols=True,
         initial=start_update,
-        total=num_updates,
-    )
+        total=config.num_updates,
+    ):
+        runner_state, metrics = update_fn(runner_state)
+        metrics = jax.block_until_ready(metrics)
+        update = int(jax.device_get(runner_state.update))
+        raise_on_invalid_training_metrics(metrics, update)
+        env_steps = update * config.num_envs * config.num_steps
+        track_metric_snapshot(
+            run,
+            metrics,
+            env_steps=env_steps,
+            update=update,
+            context={"phase": "train"},
+        )
+        yield runner_state, metrics, env_steps
 
 
 def should_render_training_video(

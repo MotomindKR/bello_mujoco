@@ -1,269 +1,65 @@
-"""PureJaxRL-style PPO for the Bello MJX environment.
-
-This module keeps the training loop end-to-end JAX: rollout collection uses
-`lax.scan`, batching uses `vmap`, and optimization uses Optax. It intentionally
-does not depend on PureJaxRL as a package; the structure follows the same
-single-file implementation style while using Equinox for the actor-critic.
-"""
+"""JAX PPO optimization and rollout collection."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
 import math
-from typing import Any, Callable, Literal, NamedTuple, Protocol, get_args
+from typing import Any
 
-import chex
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+from bello_mujoco.training.ppo_metrics import (
+    safe_returned_mean,
+    safe_returned_max,
+    environment_metric_means,
+    command_conditioned_metrics,
+    physics_diagnostics,
+    gait_diagnostics,
+    action_diagnostics,
+)
+from bello_mujoco.training.normalization import (
+    init_value_norm_state,
+    init_observation_norm_state,
+    normalize_observation,
+    normalize_critic_observation,
+    update_observation_norm_state,
+    update_critic_observation_norm_state,
+    value_norm_std,
+    normalize_value,
+    denormalize_value,
+    update_value_norm_state,
+    array_is_plausible,
+    sanitize_array,
+)
+from bello_mujoco.training.ppo_types import (
+    PPOEnvironment,
+    TrainState,
+    Transition,
+    ValueNormState,
+    ObservationNormState,
+    RunnerState,
+)
+from bello_mujoco.training.ppo_config import (
+    PPOConfig,
+    validate_action_limit_contract,
+    validate_ppo_config,
+)
 
 from bello_mujoco.policy import (
     ActorCritic,
-    ActorCriticConfig,
     apply_policy,
     clamp_policy_log_std,
     evaluate_actions,
     init_observation_stack,
     init_actor_critic,
     policy_observation_size,
-    policy_log_std,
     sample_action_with_latent_and_mean,
     stacked_observation,
     update_observation_stack,
 )
 
-LearningRateSchedule = Literal["constant", "linear", "adaptive"]
-AdaptiveKLStatistic = Literal["mean", "max"]
-ObservationNormUpdateMode = Literal["online", "rollout"]
-ObservationNormEpsilonMode = Literal["variance_floor", "std_offset"]
 LOG_RATIO_CLIP = 20.0
-_VALIDATOR_METADATA_KEY = "validator"
-
-
-FieldValidator = Callable[[str, Any], None]
-
-
-def _validated(default: Any, validator: FieldValidator):
-    return field(
-        default=default,
-        metadata={_VALIDATOR_METADATA_KEY: validator},
-    )
-
-
-def _no_scalar_constraint(_name: str, _value: Any) -> None:
-    pass
-
-
-def _positive_integer(name: str, value: int) -> None:
-    if value <= 0:
-        raise ValueError(f"{name} must be positive, got {value}")
-
-
-def _positive_finite(name: str, value: float) -> None:
-    if not math.isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be positive and finite, got {value}")
-
-
-def _optional_positive_finite(name: str, value: float | None) -> None:
-    if value is not None:
-        _positive_finite(name, value)
-
-
-def _optional_positive_integer(name: str, value: int | None) -> None:
-    if value is not None:
-        _positive_integer(name, value)
-
-
-def _nonnegative_finite(name: str, value: float) -> None:
-    if not math.isfinite(value) or value < 0:
-        raise ValueError(f"{name} must be nonnegative and finite, got {value}")
-
-
-def _unit_interval(name: str, value: float) -> None:
-    if not 0.0 <= value <= 1.0:
-        raise ValueError(f"{name} must be in [0, 1], got {value}")
-
-
-def _greater_than_one_finite(name: str, value: float) -> None:
-    if not math.isfinite(value) or value <= 1:
-        raise ValueError(f"{name} must be finite and > 1, got {value}")
-
-
-def _one_of(*choices: str) -> FieldValidator:
-    allowed = frozenset(choices)
-
-    def validate(name: str, value: str) -> None:
-        if value not in allowed:
-            options = ", ".join(repr(choice) for choice in choices)
-            raise ValueError(f"{name} must be one of {options}, got {value!r}")
-
-    return validate
-
-
-class PPOEnvironment(Protocol):
-    """Explicit environment surface consumed by the shared PPO runner."""
-
-    @property
-    def observation_size(self) -> int: ...
-
-    @property
-    def critic_observation_size(self) -> int: ...
-
-    @property
-    def action_size(self) -> int: ...
-
-    @property
-    def action_clip(self) -> float: ...
-
-    @property
-    def control_timestep(self) -> float: ...
-
-    @property
-    def ppo_stagger_initial_step_count(self) -> bool: ...
-
-    def reset_batch(
-        self, batch_size: int, rng: jax.Array | None = None
-    ) -> tuple[Any, jax.Array]: ...
-
-    def initial_step_counts(
-        self, batch_size: int, rng: jax.Array | None = None
-    ) -> jax.Array: ...
-
-    def observation_batch(
-        self, state: Any, rng: jax.Array | None = None
-    ) -> jax.Array: ...
-
-    def critic_observation_batch(
-        self, state: Any, rng: jax.Array | None = None
-    ) -> jax.Array: ...
-
-    def step_batch(
-        self, state: Any, action: jax.Array, rng: jax.Array | None = None
-    ) -> tuple[Any, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]: ...
-
-    def ppo_action_diagnostics(self, env_action: jax.Array) -> dict[str, jax.Array]: ...
-
-
-@dataclass(frozen=True)
-class PPOConfig:
-    seed: int = _validated(0, _no_scalar_constraint)
-    total_timesteps: int = _validated(1_000_000, _positive_integer)
-    num_envs: int = _validated(64, _positive_integer)
-    num_steps: int = _validated(24, _positive_integer)
-    update_epochs: int = _validated(5, _positive_integer)
-    num_minibatches: int = _validated(4, _positive_integer)
-    learning_rate: float = _validated(1.0e-3, _positive_finite)
-    schedule: LearningRateSchedule = _validated(
-        "adaptive",
-        _one_of(*get_args(LearningRateSchedule)),
-    )
-    desired_kl: float = _validated(0.01, _positive_finite)
-    target_kl: float | None = _validated(None, _optional_positive_finite)
-    min_learning_rate: float = _validated(1.0e-5, _positive_finite)
-    max_learning_rate: float = _validated(1.0e-2, _positive_finite)
-    adaptive_lr_factor: float = _validated(1.5, _greater_than_one_finite)
-    adaptive_kl_statistic: AdaptiveKLStatistic = _validated(
-        "max",
-        _one_of(*get_args(AdaptiveKLStatistic)),
-    )
-    gamma: float = _validated(0.99, _unit_interval)
-    gae_lambda: float = _validated(0.95, _unit_interval)
-    clip_eps: float = _validated(0.2, _positive_finite)
-    ent_coef: float = _validated(0.01, _nonnegative_finite)
-    vf_coef: float = _validated(1.0, _nonnegative_finite)
-    max_grad_norm: float = _validated(1.0, _positive_finite)
-    adam_epsilon: float = _validated(1.0e-5, _positive_finite)
-    value_loss_scale: float = _validated(0.5, _positive_finite)
-    normalize_value: bool = _validated(False, _no_scalar_constraint)
-    value_norm_eps: float = _validated(1.0e-8, _positive_finite)
-    normalize_observations: bool = _validated(False, _no_scalar_constraint)
-    normalize_critic_observations: bool = _validated(True, _no_scalar_constraint)
-    observation_norm_update_mode: ObservationNormUpdateMode = _validated(
-        "online", _one_of("online", "rollout")
-    )
-    observation_norm_update_updates: int | None = _validated(
-        None, _optional_positive_integer
-    )
-    observation_norm_epsilon_mode: ObservationNormEpsilonMode = _validated(
-        "variance_floor", _one_of("variance_floor", "std_offset")
-    )
-    observation_norm_eps: float = _validated(1.0e-5, _positive_finite)
-    observation_norm_clip: float = _validated(10.0, _positive_finite)
-    rollout_observation_max_abs: float = _validated(1.0e4, _positive_finite)
-    rollout_reward_max_abs: float = _validated(1.0e3, _positive_finite)
-    rollout_value_max_abs: float = _validated(1.0e4, _positive_finite)
-    target_max_abs: float = _validated(1.0e4, _positive_finite)
-    gradient_norm_max: float = _validated(1.0e4, _positive_finite)
-    policy: ActorCriticConfig = _validated(
-        ActorCriticConfig(),
-        _no_scalar_constraint,
-    )
-
-    @property
-    def num_updates(self) -> int:
-        return self.total_timesteps // (self.num_envs * self.num_steps)
-
-    @property
-    def batch_size(self) -> int:
-        return self.num_envs * self.num_steps
-
-    @property
-    def minibatch_size(self) -> int:
-        return self.batch_size // self.num_minibatches
-
-
-@chex.dataclass(frozen=True)
-class TrainState:
-    policy: ActorCritic
-    opt_state: optax.OptState
-    update: jax.Array
-
-
-class Transition(NamedTuple):
-    done: jax.Array
-    terminal: jax.Array
-    bootstrap_value: jax.Array
-    # Action sampled from the policy distribution for PPO log-prob/ratio calculations.
-    action: jax.Array
-    # Exact pre-transform Gaussian sample; tanh saturation is not invertible in float32.
-    latent_action: jax.Array
-    # Action actually sent to the env after optional env-level clipping.
-    env_action: jax.Array
-    action_mean: jax.Array
-    value: jax.Array
-    reward: jax.Array
-    log_prob: jax.Array
-    obs: jax.Array
-    critic_obs: jax.Array
-    info: dict[str, jax.Array]
-
-
-class ValueNormState(NamedTuple):
-    mean: jax.Array
-    var: jax.Array
-    count: jax.Array
-
-
-class ObservationNormState(NamedTuple):
-    mean: jax.Array
-    var: jax.Array
-    count: jax.Array
-
-
-class RunnerState(NamedTuple):
-    params: eqx.Module
-    opt_state: optax.OptState
-    update: jax.Array
-    env_state: Any
-    obs_stack: jax.Array
-    critic_obs_stack: jax.Array
-    rng: jax.Array
-    learning_rate: jax.Array
-    value_norm_state: ValueNormState
-    observation_norm_state: ObservationNormState
-    critic_observation_norm_state: ObservationNormState
-    task_state: Any
 
 
 def init_train_state(
@@ -294,16 +90,12 @@ def make_optimizer(config: PPOConfig) -> optax.GradientTransformation:
     )
 
 
-def effective_learning_rate_schedule(config: PPOConfig) -> LearningRateSchedule:
-    return config.schedule
-
-
 def learning_rate_for_update(
     config: PPOConfig,
     update: jax.Array,
     current_learning_rate: jax.Array,
 ) -> jax.Array:
-    schedule = effective_learning_rate_schedule(config)
+    schedule = config.schedule
     if schedule == "linear":
         frac = 1.0 - update.astype(jnp.float32) / jnp.maximum(config.num_updates, 1)
         return jnp.asarray(config.learning_rate, dtype=jnp.float32) * jnp.maximum(
@@ -321,7 +113,7 @@ def adapt_learning_rate(
     *,
     target_kl_exceeded: jax.Array | bool = False,
 ) -> jax.Array:
-    if effective_learning_rate_schedule(config) != "adaptive":
+    if config.schedule != "adaptive":
         return learning_rate
     min_learning_rate = jnp.asarray(config.min_learning_rate, dtype=jnp.float32)
     max_learning_rate = jnp.asarray(config.max_learning_rate, dtype=jnp.float32)
@@ -344,149 +136,6 @@ def adapt_learning_rate(
         max_learning_rate,
     )
     return jnp.where(high_kl, decreased, jnp.where(low_kl, increased, learning_rate))
-
-
-def init_value_norm_state() -> ValueNormState:
-    return ValueNormState(
-        mean=jnp.asarray(0.0, dtype=jnp.float32),
-        var=jnp.asarray(1.0, dtype=jnp.float32),
-        count=jnp.asarray(0.0, dtype=jnp.float32),
-    )
-
-
-def init_observation_norm_state(size: int) -> ObservationNormState:
-    return ObservationNormState(
-        mean=jnp.zeros((size,), dtype=jnp.float32),
-        var=jnp.ones((size,), dtype=jnp.float32),
-        count=jnp.asarray(0.0, dtype=jnp.float32),
-    )
-
-
-def normalize_observation(
-    observation: jax.Array,
-    state: ObservationNormState,
-    config: PPOConfig,
-) -> jax.Array:
-    if not config.normalize_observations:
-        return observation
-    if config.observation_norm_epsilon_mode == "std_offset":
-        denominator = jnp.sqrt(jnp.maximum(state.var, 1.0e-8))
-        denominator = denominator + config.observation_norm_eps
-    else:
-        denominator = jnp.sqrt(jnp.maximum(state.var, config.observation_norm_eps))
-    normalized = (observation - state.mean) / denominator
-    clipped = jnp.clip(
-        normalized,
-        -config.observation_norm_clip,
-        config.observation_norm_clip,
-    )
-    valid = array_is_plausible(observation, config.rollout_observation_max_abs)
-    return jnp.where(valid, clipped, observation)
-
-
-def normalize_critic_observation(
-    observation: jax.Array,
-    state: ObservationNormState,
-    config: PPOConfig,
-) -> jax.Array:
-    if not config.normalize_critic_observations:
-        return observation
-    return normalize_observation(observation, state, config)
-
-
-def update_observation_norm_state(
-    state: ObservationNormState,
-    observation: jax.Array,
-    config: PPOConfig,
-    *,
-    max_count: float | None = None,
-) -> ObservationNormState:
-    if not config.normalize_observations:
-        return state
-    valid = array_is_plausible(observation, config.rollout_observation_max_abs)
-    safe_observation = sanitize_array(observation, config.rollout_observation_max_abs)
-    values = safe_observation.reshape((-1, safe_observation.shape[-1]))
-    batch_count = jnp.asarray(values.shape[0], dtype=jnp.float32)
-    batch_mean = jnp.mean(values, axis=0)
-    batch_var = jnp.var(values, axis=0)
-    delta = batch_mean - state.mean
-    total_count = state.count + batch_count
-    mean = state.mean + delta * batch_count / total_count
-    state_m2 = state.var * state.count
-    batch_m2 = batch_var * batch_count
-    correction = delta**2 * state.count * batch_count / total_count
-    var = (state_m2 + batch_m2 + correction) / total_count
-    updated = ObservationNormState(
-        mean=jnp.where(valid, mean, state.mean),
-        var=jnp.where(valid, var, state.var),
-        count=jnp.where(valid, total_count, state.count),
-    )
-    if max_count is None:
-        return updated
-    should_update = state.count < jnp.asarray(max_count, dtype=state.count.dtype)
-    return jax.tree.map(
-        lambda new, old: jnp.where(should_update, new, old), updated, state
-    )
-
-
-def update_critic_observation_norm_state(
-    state: ObservationNormState,
-    observation: jax.Array,
-    config: PPOConfig,
-) -> ObservationNormState:
-    if not config.normalize_critic_observations:
-        return state
-    return update_observation_norm_state(state, observation, config)
-
-
-def value_norm_std(state: ValueNormState, config: PPOConfig) -> jax.Array:
-    return jnp.sqrt(jnp.maximum(state.var, config.value_norm_eps))
-
-
-def normalize_value(
-    value: jax.Array,
-    state: ValueNormState,
-    config: PPOConfig,
-) -> jax.Array:
-    if not config.normalize_value:
-        return value
-    return (value - state.mean) / value_norm_std(state, config)
-
-
-def denormalize_value(
-    value: jax.Array,
-    state: ValueNormState,
-    config: PPOConfig,
-) -> jax.Array:
-    if not config.normalize_value:
-        return value
-    return value * value_norm_std(state, config) + state.mean
-
-
-def update_value_norm_state(
-    state: ValueNormState,
-    targets: jax.Array,
-    config: PPOConfig,
-) -> ValueNormState:
-    if not config.normalize_value:
-        return state
-    valid = array_is_plausible(targets, config.target_max_abs)
-    safe_targets = sanitize_array(targets, config.target_max_abs)
-    batch_count = jnp.asarray(safe_targets.size, dtype=jnp.float32)
-    batch_mean = jnp.mean(safe_targets)
-    batch_var = jnp.var(safe_targets)
-    delta = batch_mean - state.mean
-    total_count = state.count + batch_count
-    mean = state.mean + delta * batch_count / total_count
-    state_m2 = state.var * state.count
-    batch_m2 = batch_var * batch_count
-    correction = delta**2 * state.count * batch_count / total_count
-    var = (state_m2 + batch_m2 + correction) / total_count
-    return ValueNormState(
-        mean=jnp.where(valid, mean, state.mean),
-        var=jnp.where(valid, var, state.var),
-        count=jnp.where(valid, total_count, state.count),
-    )
 
 
 def compute_gae(
@@ -831,18 +480,6 @@ def update_ppo(
     return train_state, metrics
 
 
-def array_is_plausible(value: jax.Array, max_abs: float) -> jax.Array:
-    return jnp.all(jnp.isfinite(value)) & jnp.all(jnp.abs(value) <= max_abs)
-
-
-def sanitize_array(value: jax.Array, max_abs: float) -> jax.Array:
-    return jnp.clip(
-        jnp.nan_to_num(value, nan=0.0, posinf=max_abs, neginf=-max_abs),
-        -max_abs,
-        max_abs,
-    )
-
-
 def aggregate_ppo_metrics(
     metrics: dict[str, jax.Array],
 ) -> dict[str, jax.Array]:
@@ -878,244 +515,6 @@ def flatten_batch(batch):
     )
 
 
-def safe_returned_mean(
-    info: dict[str, jax.Array], key: str = "episode_return"
-) -> jax.Array:
-    value = info.get(key)
-    returned_episode = info.get("returned_episode")
-    if value is None or returned_episode is None:
-        return jnp.asarray(0.0, dtype=jnp.float32)
-    mask = returned_episode.astype(jnp.float32)
-    return jnp.sum(value.astype(jnp.float32) * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-
-
-def safe_returned_max(
-    info: dict[str, jax.Array], key: str = "episode_return"
-) -> jax.Array:
-    value = info.get(key)
-    returned_episode = info.get("returned_episode")
-    if value is None or returned_episode is None:
-        return jnp.asarray(jnp.nan, dtype=jnp.float32)
-    mask = returned_episode.astype(bool)
-    masked_value = jnp.where(mask, value.astype(jnp.float32), -jnp.inf)
-    return jnp.where(jnp.any(mask), jnp.max(masked_value), jnp.nan)
-
-
-def reward_component_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return {
-        f"mean_{name}": value.mean()
-        for name, value in info.items()
-        if name.startswith("reward/")
-    }
-
-
-def done_reason_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return {
-        f"mean_{name}": value.astype(jnp.float32).mean()
-        for name, value in info.items()
-        if name.startswith("done/")
-    }
-
-
-def random_push_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return {
-        f"mean_{name}": value.astype(jnp.float32).mean()
-        for name, value in info.items()
-        if name.startswith("random_push/")
-    }
-
-
-def sampling_diagnostic_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return {
-        name: value.astype(jnp.float32).mean()
-        for name, value in info.items()
-        if name.startswith("sampling/")
-    }
-
-
-def command_diagnostic_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return {
-        f"{name}_fraction": value.astype(jnp.float32).mean()
-        for name, value in info.items()
-        if name.startswith("command/")
-    }
-
-
-def command_conditioned_metrics(
-    info: dict[str, jax.Array], reward: jax.Array
-) -> dict[str, jax.Array]:
-    """Report reward and completed-episode outcomes for each command mode."""
-
-    standing = info.get("command/standing")
-    moving = info.get("command/moving")
-    if standing is None or moving is None:
-        return {}
-
-    metrics = {
-        "command/standing_mean_reward": masked_mean_or_zero(reward, standing),
-        "command/standing_positive_reward_fraction": masked_mean_or_zero(
-            (reward > 0.0).astype(jnp.float32), standing
-        ),
-        "command/moving_mean_reward": masked_mean_or_zero(reward, moving),
-    }
-    track_lin_vel_xy = info.get("reward/track_lin_vel_xy")
-    if track_lin_vel_xy is not None:
-        metrics["command/standing_track_lin_vel_xy"] = masked_mean_or_zero(
-            track_lin_vel_xy, standing
-        )
-        metrics["command/moving_track_lin_vel_xy"] = masked_mean_or_zero(
-            track_lin_vel_xy, moving
-        )
-    track_ang_vel_z = info.get("reward/track_ang_vel_z")
-    if track_ang_vel_z is not None:
-        metrics["command/standing_track_ang_vel_z"] = masked_mean_or_zero(
-            track_ang_vel_z, standing
-        )
-        metrics["command/moving_track_ang_vel_z"] = masked_mean_or_zero(
-            track_ang_vel_z, moving
-        )
-    moving_lin_vel_xy_error = info.get("reward/moving_lin_vel_xy_error")
-    if moving_lin_vel_xy_error is not None:
-        metrics["command/moving_lin_vel_xy_error"] = masked_mean_or_zero(
-            moving_lin_vel_xy_error, moving
-        )
-    moving_ang_vel_z_error = info.get("reward/moving_ang_vel_z_error")
-    if moving_ang_vel_z_error is not None:
-        metrics["command/moving_ang_vel_z_error"] = masked_mean_or_zero(
-            moving_ang_vel_z_error, moving
-        )
-    returned = info.get("returned_episode")
-    episode_return = info.get("episode_return")
-    episode_length = info.get("episode_length")
-    if returned is None or episode_return is None or episode_length is None:
-        return metrics
-
-    for name, mode in (("standing", standing), ("moving", moving)):
-        completed = returned.astype(bool) & mode.astype(bool)
-        metrics[f"episode/{name}_count"] = jnp.sum(completed.astype(jnp.float32))
-        metrics[f"episode/{name}_return"] = masked_mean_or_zero(
-            episode_return, completed
-        )
-        metrics[f"episode/{name}_length"] = masked_mean_or_zero(
-            episode_length, completed
-        )
-    return metrics
-
-
-def foot_contact_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return {
-        f"mean_{name}": value.astype(jnp.float32).mean()
-        for name, value in info.items()
-        if name.startswith("foot_contact/")
-    }
-
-
-def target_saturation_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return {
-        f"mean_{name}": value.astype(jnp.float32).mean()
-        for name, value in info.items()
-        if name.startswith("target/")
-    }
-
-
-def physics_diagnostics(info: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    diagnostics = {}
-    for name, value in info.items():
-        if not name.startswith("physics/"):
-            continue
-        value = value.astype(jnp.float32)
-        if name.endswith("_overflow"):
-            diagnostics[f"mean_{name}"] = value.mean()
-        else:
-            diagnostics[f"max_{name}"] = value.max()
-    return diagnostics
-
-
-def gait_diagnostics(
-    info: dict[str, jax.Array], control_timestep: float
-) -> dict[str, jax.Array]:
-    metrics = {
-        f"mean_{name}": value.astype(jnp.float32).mean()
-        for name, value in info.items()
-        if name.startswith("gait/")
-    }
-    standing = info.get("command/standing")
-    moving = info.get("command/moving")
-    if standing is not None and moving is not None:
-        for name, value in info.items():
-            if not name.startswith("gait/"):
-                continue
-            suffix = name.removeprefix("gait/")
-            metrics[f"gait/standing_{suffix}"] = masked_mean_or_zero(value, standing)
-            metrics[f"gait/moving_{suffix}"] = masked_mean_or_zero(value, moving)
-
-    touchdown = info.get("gait/touchdown")
-    liftoff = info.get("gait/liftoff")
-    if touchdown is not None:
-        metrics["gait/footfalls_per_second"] = (
-            touchdown.astype(jnp.float32).mean() / control_timestep
-        )
-        if standing is not None and moving is not None:
-            metrics["gait/standing_footfalls_per_second"] = (
-                masked_mean_or_zero(touchdown, standing) / control_timestep
-            )
-            metrics["gait/moving_footfalls_per_second"] = (
-                masked_mean_or_zero(touchdown, moving) / control_timestep
-            )
-    if liftoff is not None:
-        metrics["gait/liftoffs_per_second"] = (
-            liftoff.astype(jnp.float32).mean() / control_timestep
-        )
-    for force_name in ("joint_force", "contact_force", "contact_impulse"):
-        rollout_max = info.get(f"gait/{force_name}_max_body_weight")
-        if rollout_max is None:
-            continue
-        rollout_max = rollout_max.astype(jnp.float32).reshape(-1)
-        metrics[f"gait/{force_name}_p95_body_weight"] = jnp.quantile(rollout_max, 0.95)
-        metrics[f"gait/{force_name}_p99_body_weight"] = jnp.quantile(rollout_max, 0.99)
-        metrics[f"gait/{force_name}_worst_body_weight"] = jnp.max(rollout_max)
-    return metrics
-
-
-def masked_mean_or_zero(value: jax.Array, mask: jax.Array) -> jax.Array:
-    value = value.astype(jnp.float32)
-    mask = mask.astype(jnp.float32)
-    return jnp.sum(value * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-
-
-def action_diagnostics(
-    transitions: Transition,
-    env: PPOEnvironment,
-    policy: ActorCritic,
-) -> dict[str, jax.Array]:
-    action = transitions.action
-    env_action = transitions.env_action
-    action_mean = transitions.action_mean
-    log_std = policy_log_std(policy)
-    metrics = {
-        "action_rms": jnp.sqrt(jnp.mean(action**2)),
-        "action_abs_max": jnp.max(jnp.abs(action)),
-        "action_mean_rms": jnp.sqrt(jnp.mean(action_mean**2)),
-        "action_mean_abs_max": jnp.max(jnp.abs(action_mean)),
-        "action_std_mean": jnp.mean(jnp.exp(log_std)),
-        "action_std_min": jnp.min(jnp.exp(log_std)),
-        "action_std_max": jnp.max(jnp.exp(log_std)),
-        "action_clip_fraction": jnp.mean(
-            (jnp.abs(action - env_action) > 1.0e-6).astype(jnp.float32)
-        ),
-    }
-    if policy.action_distribution == "tanh_gaussian":
-        action_limit = jnp.asarray(policy.action_limit, dtype=action_mean.dtype)
-        metrics["action_bound_saturation_fraction"] = jnp.mean(
-            (jnp.abs(action_mean) >= 0.98 * action_limit).astype(jnp.float32)
-        )
-    return {
-        **metrics,
-        "env_action_abs_max": jnp.max(jnp.abs(env_action)),
-        **env.ppo_action_diagnostics(env_action),
-    }
-
-
 def collect_rollout(
     env: PPOEnvironment,
     policy: ActorCritic,
@@ -1124,10 +523,10 @@ def collect_rollout(
     critic_obs_stack: jax.Array,
     rng: jax.Array,
     config: PPOConfig,
-    value_norm_state: ValueNormState | None = None,
-    observation_norm_state: ObservationNormState | None = None,
-    critic_observation_norm_state: ObservationNormState | None = None,
-    task_state: Any = None,
+    value_norm_state: ValueNormState,
+    observation_norm_state: ObservationNormState,
+    critic_observation_norm_state: ObservationNormState,
+    task_state: Any,
 ) -> tuple[
     tuple[
         Any,
@@ -1140,18 +539,6 @@ def collect_rollout(
     ],
     Transition,
 ]:
-    if value_norm_state is None:
-        value_norm_state = init_value_norm_state()
-    if observation_norm_state is None:
-        observation_norm_state = init_observation_norm_state(
-            int(obs_stack.shape[-2] * obs_stack.shape[-1])
-        )
-    if critic_observation_norm_state is None:
-        critic_observation_norm_state = init_observation_norm_state(
-            int(critic_obs_stack.shape[-2] * critic_obs_stack.shape[-1])
-        )
-    if task_state is None:
-        task_state = jnp.zeros((0,), dtype=jnp.float32)
     observation_norm_max_count = (
         None
         if config.observation_norm_update_updates is None
@@ -1210,21 +597,13 @@ def collect_rollout(
                 critic_obs=critic_policy_obs,
             )
         )
-        current_env = (
-            env.with_task_state(current_task_state)
-            if hasattr(env, "with_task_state")
-            else env
-        )
+        current_env = env.with_task_state(current_task_state)
         env_action = jnp.clip(action, -current_env.action_clip, current_env.action_clip)
         value = denormalize_value(value, value_norm_state, config)
         next_state, next_obs, reward, done, info = current_env.step_batch(
             state, action, rng=env_key
         )
-        next_task_state = (
-            current_env.update_task_state(current_task_state, info)
-            if hasattr(current_env, "update_task_state")
-            else current_task_state
-        )
+        next_task_state = current_env.update_task_state(current_task_state, info)
         next_critic_obs = current_env.critic_observation_batch(next_state)
         next_obs_stack = update_observation_stack(last_obs_stack, next_obs, done)
         next_critic_obs_stack = update_observation_stack(
@@ -1319,24 +698,15 @@ def init_runner_state(
         env.action_size,
         config,
         critic_obs_size=policy_observation_size(
-            critic_observation_size(env), config.policy
+            env.critic_observation_size, config.policy
         ),
     )
     params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
-    task_state = (
-        env.initial_task_state()
-        if hasattr(env, "initial_task_state")
-        else jnp.zeros((0,), dtype=jnp.float32)
-    )
-    initial_env = (
-        env.with_task_state(task_state) if hasattr(env, "with_task_state") else env
-    )
+    task_state = env.initial_task_state()
+    initial_env = env.with_task_state(task_state)
     env_state, obs = initial_env.reset_batch(config.num_envs, rng=env_key)
     step_count = env.initial_step_counts(config.num_envs, step_count_key)
-    if hasattr(env, "with_initial_step_counts"):
-        env_state = env.with_initial_step_counts(env_state, step_count)
-    else:
-        env_state = env_state.replace(step_count=step_count, episode_length=step_count)
+    env_state = initial_env.with_initial_step_counts(env_state, step_count)
     if env.ppo_stagger_initial_step_count:
         rng, staggered_obs_key = jax.random.split(rng)
         obs = initial_env.observation_batch(env_state, staggered_obs_key)
@@ -1358,7 +728,7 @@ def init_runner_state(
                 policy_observation_size(env.observation_size, config.policy)
             ),
             critic_observation_norm_state=init_observation_norm_state(
-                policy_observation_size(critic_observation_size(env), config.policy)
+                policy_observation_size(env.critic_observation_size, config.policy)
             ),
             task_state=task_state,
         ),
@@ -1454,10 +824,7 @@ def update_runner_state(
         target_kl_exceeded=metrics["target_kl_exceeded"] > 0,
     )
     params, _ = eqx.partition(train_state.policy, eqx.is_array)
-    reward_means = reward_component_means(transitions.info)
-    task_metrics = (
-        env.task_state_metrics(task_state) if hasattr(env, "task_state_metrics") else {}
-    )
+    task_metrics = env.task_state_metrics(task_state)
     metrics = {
         **metrics,
         "learning_rate": learning_rate,
@@ -1488,16 +855,10 @@ def update_runner_state(
         ),
         "max_episode_length": safe_returned_max(transitions.info, key="episode_length"),
         **action_diagnostics(transitions, env, policy),
-        **done_reason_means(transitions.info),
-        **random_push_means(transitions.info),
-        **sampling_diagnostic_means(transitions.info),
-        **command_diagnostic_means(transitions.info),
+        **environment_metric_means(transitions.info),
         **command_conditioned_metrics(transitions.info, transitions.reward),
-        **foot_contact_means(transitions.info),
-        **target_saturation_means(transitions.info),
         **physics_diagnostics(transitions.info),
         **gait_diagnostics(transitions.info, env.control_timestep),
-        **reward_means,
         **task_metrics,
     }
     return (
@@ -1517,111 +878,3 @@ def update_runner_state(
         ),
         metrics,
     )
-
-
-def validate_action_limit_contract(config: PPOConfig, env_action_clip: float) -> None:
-    if config.policy.action_distribution == "gaussian":
-        return
-    if config.policy.action_limit != env_action_clip:
-        raise ValueError(
-            "config.policy.action_limit must equal env.action_clip so PPO "
-            "log-probabilities describe the actions applied by the environment, got "
-            f"{config.policy.action_limit} != {env_action_clip}"
-        )
-
-
-def critic_observation_size(env: PPOEnvironment) -> int:
-    return env.critic_observation_size
-
-
-def _validate_declared_fields(config: PPOConfig) -> None:
-    for config_field in fields(config):
-        if _VALIDATOR_METADATA_KEY not in config_field.metadata:
-            raise RuntimeError(
-                f"PPOConfig.{config_field.name} has no declared validation"
-            )
-        validator = config_field.metadata[_VALIDATOR_METADATA_KEY]
-        if not callable(validator):
-            raise RuntimeError(
-                f"PPOConfig.{config_field.name} has an invalid validator"
-            )
-        validator(config_field.name, getattr(config, config_field.name))
-
-
-def validate_ppo_config(config: PPOConfig) -> None:
-    _validate_declared_fields(config)
-    if config.num_updates <= 0:
-        raise ValueError(
-            "total_timesteps must cover at least one rollout batch, got "
-            f"total_timesteps={config.total_timesteps}, "
-            f"num_envs={config.num_envs}, num_steps={config.num_steps}"
-        )
-    if config.batch_size % config.num_minibatches != 0:
-        raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
-    if config.min_learning_rate > config.max_learning_rate:
-        raise ValueError(
-            "min_learning_rate must be <= max_learning_rate, got "
-            f"{config.min_learning_rate} > {config.max_learning_rate}"
-        )
-    if effective_learning_rate_schedule(config) == "adaptive" and not (
-        config.min_learning_rate <= config.learning_rate <= config.max_learning_rate
-    ):
-        raise ValueError(
-            "adaptive learning_rate must be within "
-            "[min_learning_rate, max_learning_rate], got "
-            f"{config.learning_rate} outside "
-            f"[{config.min_learning_rate}, {config.max_learning_rate}]"
-        )
-    if any(hidden_dim <= 0 for hidden_dim in config.policy.hidden_dims):
-        raise ValueError(
-            "policy.hidden_dims entries must be positive, got "
-            f"{config.policy.hidden_dims}"
-        )
-    if config.policy.obs_stack_size <= 0:
-        raise ValueError(
-            "policy.obs_stack_size must be positive, got "
-            f"{config.policy.obs_stack_size}"
-        )
-    if config.policy.activation not in {"tanh", "relu", "elu", "swish"}:
-        raise ValueError(
-            "policy.activation must be 'tanh', 'relu', 'elu', or 'swish', got "
-            f"{config.policy.activation!r}"
-        )
-    if config.policy.action_distribution not in {"gaussian", "tanh_gaussian"}:
-        raise ValueError(
-            "policy.action_distribution must be 'gaussian' or 'tanh_gaussian', got "
-            f"{config.policy.action_distribution!r}"
-        )
-    if not math.isfinite(config.policy.action_limit) or config.policy.action_limit <= 0:
-        raise ValueError(
-            "policy.action_limit must be positive and finite, got "
-            f"{config.policy.action_limit}"
-        )
-    if not math.isfinite(config.policy.init_log_std):
-        raise ValueError(
-            f"policy.init_log_std must be finite, got {config.policy.init_log_std}"
-        )
-    if not math.isfinite(config.policy.min_log_std):
-        raise ValueError(
-            f"policy.min_log_std must be finite, got {config.policy.min_log_std}"
-        )
-    if not math.isfinite(config.policy.max_log_std):
-        raise ValueError(
-            f"policy.max_log_std must be finite, got {config.policy.max_log_std}"
-        )
-    if config.policy.min_log_std > config.policy.max_log_std:
-        raise ValueError(
-            "policy.min_log_std must be <= policy.max_log_std, got "
-            f"{config.policy.min_log_std} > {config.policy.max_log_std}"
-        )
-    if not (
-        config.policy.min_log_std
-        <= config.policy.init_log_std
-        <= config.policy.max_log_std
-    ):
-        raise ValueError(
-            "policy.init_log_std must be within "
-            "[policy.min_log_std, policy.max_log_std], got "
-            f"{config.policy.init_log_std} outside "
-            f"[{config.policy.min_log_std}, {config.policy.max_log_std}]"
-        )

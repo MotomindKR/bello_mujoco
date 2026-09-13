@@ -234,7 +234,7 @@ from bello_mujoco.evaluation.software import configure_software_rendering, valid
 configure_software_rendering()
 import mujoco
 
-from bello_mujoco.evaluation.render import VideoWriter
+from bello_mujoco.evaluation.video import VideoWriter
 validate_software_renderer()
 
 output_path = Path("/tmp/bello-render-smoke.mp4")
@@ -295,7 +295,8 @@ import equinox as eqx
 import jax
 import numpy as np
 
-from bello_mujoco.evaluation.render import CameraConfig, render_policy_rollout
+from bello_mujoco.evaluation.video import CameraConfig
+from bello_mujoco.evaluation.render import render_policy_rollout
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.training.checkpoint import load_checkpoint_update
 

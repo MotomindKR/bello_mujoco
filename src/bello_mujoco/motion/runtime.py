@@ -16,7 +16,6 @@ from bello_mujoco.training.checkpoint import (
     restore_evaluation_checkpoint,
     MOTION_FILE,
 )
-from bello_mujoco.training.ppo import critic_observation_size
 
 
 @dataclass(frozen=True)
@@ -73,7 +72,7 @@ def validate_motion_checkpoint_runtime(
         env.observation_size, metadata.ppo.policy
     )
     expected_critic_obs_size = policy_observation_size(
-        critic_observation_size(env), metadata.ppo.policy
+        env.critic_observation_size, metadata.ppo.policy
     )
     if expected_obs_size != metadata.obs_size:
         raise ValueError(

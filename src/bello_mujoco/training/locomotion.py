@@ -19,35 +19,29 @@ from bello_mujoco.envs.locomotion_config import BelloEnvConfig, DoneConfig
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.policy import policy_observation_size
-from bello_mujoco.evaluation.render import CameraConfig, render_policy_rollout_isolated
+from bello_mujoco.evaluation.video import CameraConfig
+from bello_mujoco.evaluation.render import render_policy_rollout_isolated
 from bello_mujoco.evaluation.software import require_linux_software_rendering
-from bello_mujoco.sim import (
-    WarpConfig,
-)
+from bello_mujoco.sim import WarpConfig
 from bello_mujoco.training.tracking import (
     WandbConfig,
     close_run,
     create_wandb_run,
     log_config,
-    track_metric_snapshot,
     track_checkpoint_artifact,
     track_video,
 )
-from bello_mujoco.training.ppo import (
+from bello_mujoco.training.ppo_config import (
     PPOConfig,
-    RunnerState,
-    critic_observation_size,
-    init_runner_state,
-    runner_train_state,
-    update_runner_state,
     validate_ppo_config,
     validate_action_limit_contract,
 )
+from bello_mujoco.training.ppo_types import RunnerState
+from bello_mujoco.training.ppo import init_runner_state, runner_train_state
 from bello_mujoco.training.runtime import (
     RunnerInitialization,
-    raise_on_invalid_training_metrics,
     should_render_training_video,
-    training_update_range,
+    training_updates,
 )
 from bello_mujoco.repository import (
     capture_repository_commit,
@@ -144,7 +138,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
         )
         rng = jax.random.PRNGKey(config.seed)
         policy_obs_size = policy_observation_size(env.observation_size, config.policy)
-        critic_obs_size = critic_observation_size(env)
+        critic_obs_size = env.critic_observation_size
         critic_policy_obs_size = policy_observation_size(critic_obs_size, config.policy)
         metadata = checkpoint_metadata(
             run_config,
@@ -317,16 +311,7 @@ def train_update_loop(
     else:
         runner_state, static_policy, optimizer = initial_runner
     start_update = int(jax.device_get(runner_state.update))
-    if not 0 <= start_update < config.num_updates:
-        raise ValueError(
-            "runner update must be within the unfinished training range, got "
-            f"update={start_update}, num_updates={config.num_updates}"
-        )
 
-    def update_fn(state):
-        return update_runner_state(state, static_policy, optimizer, env, config)
-
-    update_fn = jax.jit(update_fn)
     last_metrics = None
     if video_config.enabled and video_config.render_initial and start_update == 0:
         render_training_video(
@@ -339,20 +324,12 @@ def train_update_loop(
             ppo_config=config,
             obs_stack_size=config.policy.obs_stack_size,
         )
-    for _ in training_update_range(start_update, config.num_updates):
-        runner_state, metrics = update_fn(runner_state)
-        metrics = jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
+    updates = training_updates(
+        env, config, (runner_state, static_policy, optimizer), run
+    )
+    for runner_state, metrics, env_steps in updates:
         update = int(jax.device_get(runner_state.update))
-        raise_on_invalid_training_metrics(metrics, update)
         last_metrics = metrics
-        env_steps = update * config.num_envs * config.num_steps
-        track_metric_snapshot(
-            run,
-            metrics,
-            env_steps=env_steps,
-            update=update,
-            context={"phase": "train"},
-        )
         if (
             checkpoint_callback is not None
             and checkpoint_every_updates is not None

@@ -23,32 +23,25 @@ from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.configuration import coerce_value as coerce_value
 from bello_mujoco.configuration import dataclass_from_dict
-from bello_mujoco.envs.locomotion_config import (
-    BelloEnvConfig,
-    DoneConfig,
-)
-from bello_mujoco.envs.motion_tracking import (
-    MotionTrackingEnvConfig,
-)
+from bello_mujoco.envs.locomotion_config import BelloEnvConfig, DoneConfig
+from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.motion.clip import MotionClip, save_motion_clip
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.sim import WarpConfig
-from bello_mujoco.training.ppo import (
+from bello_mujoco.training.ppo_types import (
     ObservationNormState,
-    PPOConfig,
     PPOEnvironment,
     RunnerState,
     TrainState,
     ValueNormState,
+)
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.normalization import (
     init_observation_norm_state,
-    init_runner_state,
-    init_train_state,
     init_value_norm_state,
 )
-from bello_mujoco.repository import (
-    capture_repository_commit,
-    require_repository_commit,
-)
+from bello_mujoco.training.ppo import init_runner_state, init_train_state
+from bello_mujoco.repository import capture_repository_commit, require_repository_commit
 from bello_mujoco.training.tracking import to_builtin
 
 METADATA_FILE = "metadata.json"

@@ -23,33 +23,39 @@ from bello_mujoco.policy import (
     stacked_observation,
     update_observation_stack,
 )
-from bello_mujoco.training.ppo import (
+from bello_mujoco.training.ppo_config import (
     PPOConfig,
-    Transition,
+    validate_action_limit_contract,
+    validate_ppo_config,
+)
+from bello_mujoco.training.ppo_types import Transition
+from bello_mujoco.training.ppo_metrics import (
     action_diagnostics,
+    command_conditioned_metrics,
+    environment_metric_means,
+    gait_diagnostics,
+)
+from bello_mujoco.training.ppo import (
     adapt_learning_rate,
     adaptive_learning_rate_kl,
     aggregate_ppo_metrics,
-    command_conditioned_metrics,
-    command_diagnostic_means,
     compute_gae,
-    denormalize_value,
     flatten_batch,
-    gait_diagnostics,
-    init_observation_norm_state,
     init_runner_state,
     init_train_state,
-    init_value_norm_state,
     learning_rate_for_update,
     normalize_advantages,
+    ppo_loss,
+    update_ppo,
+)
+from bello_mujoco.training.normalization import (
+    denormalize_value,
+    init_observation_norm_state,
+    init_value_norm_state,
     normalize_observation,
     normalize_value,
-    ppo_loss,
     update_observation_norm_state,
-    update_ppo,
     update_value_norm_state,
-    validate_action_limit_contract,
-    validate_ppo_config,
 )
 
 
@@ -102,7 +108,7 @@ def test_command_and_gait_metrics_split_standing_from_moving() -> None:
         "gait/contact_force_max_body_weight": jnp.asarray([[0.4, 0.8, 1.2, 1.6]]),
     }
 
-    command_metrics = command_diagnostic_means(info)
+    command_metrics = environment_metric_means(info)
     conditioned = command_conditioned_metrics(info, jnp.asarray([[1.0, 2.0, 3.0, 4.0]]))
     gait_metrics = gait_diagnostics(info, control_timestep=0.02)
 

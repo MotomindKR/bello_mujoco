@@ -26,7 +26,8 @@ from bello_mujoco.envs.locomotion_config import (
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.envs.observations import build_observation
 from bello_mujoco.policy import ActorCritic, ActorCriticConfig, infer_policy_action
-from bello_mujoco.training.ppo import PPOConfig, ObservationNormState
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.ppo_types import ObservationNormState
 from bello_mujoco.training.tracking import to_builtin
 
 pytestmark = pytest.mark.integration

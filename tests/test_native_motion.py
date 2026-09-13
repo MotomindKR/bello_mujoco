@@ -20,11 +20,9 @@ from bello_mujoco.envs.motion_tracking import (
 )
 from bello_mujoco.motion.clip import MotionClip, sample_motion
 from bello_mujoco.policy import ActorCritic, ActorCriticConfig
-from bello_mujoco.training.ppo import (
-    ObservationNormState,
-    PPOConfig,
-    normalize_observation,
-)
+from bello_mujoco.training.ppo_types import ObservationNormState
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.normalization import normalize_observation
 from bello_mujoco.training.tracking import to_builtin
 
 pytestmark = pytest.mark.integration

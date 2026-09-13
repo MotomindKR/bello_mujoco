@@ -21,10 +21,8 @@ from bello_mujoco.gamepad import GamepadInput
 from bello_mujoco.policy import PolicyInferenceStep
 from bello_mujoco.training import locomotion as training
 from bello_mujoco.training.locomotion import TrainingVideoConfig
-from bello_mujoco.training.ppo import (
-    PPOConfig,
-    init_observation_norm_state,
-)
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.normalization import init_observation_norm_state
 
 
 def component_slice(env: BelloLocomotionEnv, name: str) -> slice:
@@ -149,7 +147,10 @@ def test_training_video_preserves_feedback_delay_across_physics_steps(
 
     monkeypatch.setattr(render, "rollout_policy_action", action)
     monkeypatch.setattr(render, "mujoco_done_flags", lambda *_args: {"done/any": False})
-    monkeypatch.setattr(render, "update_camera", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "bello_mujoco.evaluation.video.update_camera",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(
         render,
         "open_rollout_video_resources",
@@ -162,7 +163,7 @@ def test_training_video_preserves_feedback_delay_across_physics_steps(
             SimpleNamespace(append_data=lambda _frame: None),
         ),
     )
-    render.render_policy_rollout_mujoco(
+    render.render_policy_rollout(
         env,
         object(),
         output_path=tmp_path / "unused.mp4",

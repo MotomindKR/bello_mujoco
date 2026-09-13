@@ -36,19 +36,15 @@ from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.motion.clip import MotionClip
-from bello_mujoco.policy import (
-    ActorCriticConfig,
-    apply_policy,
-    policy_observation_size,
-)
+from bello_mujoco.policy import ActorCriticConfig, apply_policy, policy_observation_size
 from bello_mujoco.sim import WarpConfig
-from bello_mujoco.training.ppo import (
+from bello_mujoco.training.ppo_types import (
     ObservationNormState,
-    PPOConfig,
     RunnerState,
     ValueNormState,
-    init_runner_state,
 )
+from bello_mujoco.training.ppo_config import PPOConfig
+from bello_mujoco.training.ppo import init_runner_state
 
 ACTOR_LAYOUT = ObservationLayout((("actor_observation", 4),))
 CRITIC_LAYOUT = ObservationLayout((("critic_observation", 5),))
@@ -137,6 +133,15 @@ def exact_source_checkout(monkeypatch: pytest.MonkeyPatch):
 
 
 class FakeEnv:
+    def initial_task_state(self):
+        return jnp.zeros((0,), dtype=jnp.float32)
+
+    def with_task_state(self, task_state):
+        return self
+
+    def with_initial_step_counts(self, state, step_count):
+        return state.replace(step_count=step_count, episode_length=step_count)
+
     task = "locomotion"
     config = BelloEnvConfig()
     action_clip = 1.0
