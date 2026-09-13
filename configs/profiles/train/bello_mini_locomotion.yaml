@@ -44,8 +44,8 @@ reward_config:
     stand_waist_deviation: -4.0
     gait_contact: -2.5
     gait_swing_clearance: -1.0
-    stand_foot_foreaft: -4.0
-    stand_foot_width: -2.0
+    stand_foot_foreaft: -0.25
+    stand_foot_width: -0.25
     foot_crossing: -8.0
     foot_stumble: -2.0
   standing:
@@ -54,6 +54,8 @@ reward_config:
     recovery_relaxation: true
     recovery_speed: 0.25
     recovery_tilt: 0.15
+    continuous_bounded_alignment: true
+    recovery_geometry_floor: 0.25
   gait:
     swing_clearance_target: 0.075
     phase_shaped_clearance: true
@@ -73,6 +75,7 @@ done_config:
   base_height:
     min_height: 0.56
 checkpoint_config:
+  every_updates: 1024
   name: bello_mini_locomotion_seed0
   wandb_artifact_name: bello_mini_locomotion_seed0
 wandb_config:
@@ -81,7 +84,8 @@ wandb_config:
   tags: [locomotion, bello-mini, ideal-differential-ankle, seeded-plane-slope, additive-push-xy05]
 video_config:
   standing_push_enabled: true
-  every_updates: 4096
+  standing_suite_enabled: true
+  every_updates: 8192
   filename_prefix: bello_mini_locomotion
   command: [0.5, 0.0, 0.0]
   steps: 500

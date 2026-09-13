@@ -74,6 +74,7 @@ class TrainingVideoConfig:
     standing_push_enabled: bool = False
     standing_push_at_seconds: float = 5.0
     standing_push_speed: float = 0.5
+    standing_suite_enabled: bool = False
     log_wandb: bool = True
     wandb_name: str = "train/rollout"
     camera_config: CameraConfig = CameraConfig()
@@ -445,7 +446,20 @@ def render_training_video(
             step=env_steps,
             caption=video_rollout_caption(update, rollout_stats),
         )
-    if config.standing_push_enabled:
+    if config.standing_suite_enabled:
+        _render_standing_suite(
+            env,
+            train_state.policy,
+            runner_state,
+            config,
+            run,
+            output_path,
+            env_steps=env_steps,
+            update=update,
+            ppo_config=ppo_config,
+            obs_stack_size=obs_stack_size,
+        )
+    elif config.standing_push_enabled:
         # Cycle through all four directions at successive evaluations.
         direction = max(0, update // config.every_updates - 1) % 4
         speed = config.standing_push_speed
@@ -488,6 +502,75 @@ def render_training_video(
                 context={"phase": "eval/standing_push"},
             )
     return output_path
+
+
+def _render_standing_suite(
+    env,
+    policy,
+    runner_state,
+    config,
+    run,
+    output_path,
+    *,
+    env_steps,
+    update,
+    ppo_config,
+    obs_stack_size,
+):
+    speed = config.standing_push_speed
+    cases = [("quiet", None, (0.0, 0.0))]
+    push_step = round(config.standing_push_at_seconds / env.control_timestep)
+    cases += [
+        (name, push_step, velocity)
+        for name, velocity in (
+            ("forward", (speed, 0.0)),
+            ("backward", (-speed, 0.0)),
+            ("left", (0.0, speed)),
+            ("right", (0.0, -speed)),
+        )
+    ]
+    for name, push_at, velocity in cases:
+        path = output_path.with_stem(output_path.stem + "_standing_" + name)
+        duration = 30.0 if push_at is None else config.standing_push_at_seconds + 15.0
+        stats = render_policy_rollout(
+            env,
+            policy,
+            output_path=path,
+            command=(0.0, 0.0, 0.0),
+            steps=round(duration / env.control_timestep),
+            width=config.width,
+            height=config.height,
+            fps=config.fps,
+            stop_on_done=True,
+            camera_config=replace(config.camera_config, mode="fixed"),
+            ppo_config=ppo_config,
+            observation_norm_state=runner_state.observation_norm_state,
+            obs_stack_size=obs_stack_size,
+            stochastic_actions=False,
+            action_seed=config.action_seed,
+            push_at_step=push_at,
+            push_velocity=velocity,
+            record_standing=True,
+        )
+        if config.log_wandb:
+            prefix = f"eval/standing_{name}"
+            track_video(
+                run,
+                path,
+                name=prefix + "/video",
+                step=env_steps,
+                caption=video_rollout_caption(update, stats),
+            )
+            track_metric_snapshot(
+                run,
+                stats,
+                env_steps=env_steps,
+                update=update,
+                context={"phase": prefix},
+            )
+            trace = path.with_suffix(".jsonl")
+            if run is not None:
+                run.save(str(trace), base_path=str(config.output_dir), policy="now")
 
 
 def try_render_training_video(

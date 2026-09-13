@@ -466,12 +466,20 @@ During standing recovery there is no scheduled swing; the same stumble weight
 instead penalizes loaded planar foot sliding, while unloaded recovery motion
 does not incur this term.
 
-All `stand_*` terms receive the standing blend. Position and heading alignment
-require healthy double support. `standing.recovery_relaxation: true` smoothly
+All `stand_*` terms receive the standing blend. Legacy position and heading alignment
+require healthy double support. Mini instead enables
+`standing.continuous_bounded_alignment`: position costs use `h/(1+h)` for
+deadband-Huber error `h`, with weights `-0.25` each (at most `0.005` per term
+per 20 ms step), and position/heading alignment remain active during single
+support. `standing.recovery_geometry_floor: 0.25` retains geometry, foot-motion,
+contact and stillness shaping during recovery; foot motion no longer requires
+double support. These defaults are false/zero for existing checkpoint semantics.
+`standing.recovery_relaxation: true` smoothly
 relaxes standing alignment, foot stillness/contact pressure, hip/knee posture,
 waist posture, and the soft hip-roll continuous-torque cost as planar
 velocity error exceeds `0.25 m/s` or tilt exceeds approximately `0.15 rad`;
-relaxation reaches zero at twice these normalized thresholds. Gait contact timing
+the original posture relaxation reaches zero at twice these normalized thresholds,
+while Mini geometry/contact shaping never falls below its 25% floor. Gait contact timing
 is never multiplied by this recovery gate: its full configured penalty remains
 active during moving commands and the extra-step stop buffer, regardless of
 tracking error or tilt. Crossing, general
@@ -479,7 +487,8 @@ balance, effort limits, and impact penalties remain active. These are initial
 tuning values, not demonstrated policy-performance guarantees.
 
 Additional reward settings are `standing.position_deadband`, `position_scale`,
-`recovery_relaxation`, `recovery_speed`, `recovery_tilt`, and
+`recovery_relaxation`, `recovery_speed`, `recovery_tilt`,
+`continuous_bounded_alignment`, `recovery_geometry_floor`, and
 `gait.phase_shaped_clearance`, `crossing_scale`, `sole_clearance_margin`,
 `stumble_grace_fraction`, `stumble_load_body_weights`, `stumble_speed_scale`.
 New diagnostics include signed sole separation, fore/aft and width error,
@@ -533,8 +542,8 @@ determines its mode.
 | `gait_contact` | `-1.0` | Penalize disagreement between measured foot contact and the phase-conditioned stance schedule. |
 | `gait_stance_slip` | `-0.25` | Penalize planar foot motion during the phase-conditioned stance interval. |
 | `gait_swing_clearance` | `-0.5` | Penalize swing-foot clearance below the configured target. |
-| `stand_foot_foreaft` | `0.0` | Mini: `-4.0`, Huber penalty on sole-center fore/aft stagger in the robot heading frame. |
-| `stand_foot_width` | `0.0` | Mini: `-2.0`, Huber penalty on signed sole-center separation relative to the nominal stance. |
+| `stand_foot_foreaft` | `0.0` | Mini: `-0.25`, bounded Huber penalty on sole-center fore/aft stagger in the robot heading frame, including single support. |
+| `stand_foot_width` | `0.0` | Mini: `-0.25`, bounded Huber penalty on signed sole-center separation relative to the nominal stance, including single support. |
 | `foot_crossing` | `0.0` | Mini: `-8.0`, one-sided Huber penalty below the sole-derived minimum signed lateral separation, in every mode. |
 | `foot_stumble` | `0.0` | Mini: `-2.0`, unexpected mid-swing contact load, weighted by planar foot motion. |
 | `undesired_contact` | `0.0` | Optional non-foot terrain-contact penalty. |
@@ -803,8 +812,27 @@ kick, cycling +X, -X, +Y, -Y on successive video intervals. Early falls end the
 test; `eval/standing_push` records push application, direction, survival and
 post-push seconds, alongside the video. This is a seed-0 nominal native test,
 not a statistical robustness certificate or an external-force simulation.
-Mini renders these paired walking/push videos every 4096 updates; checkpoints
-remain every 512 updates to reduce synchronous rendering overhead.
+Mini saves checkpoints every 1024 updates and evaluates videos every 8192 updates.
+Its `standing_suite_enabled` (default false) replaces the cycling push clip with
+a fixed-checkpoint suite: 30 seconds quiet standing, then four separate
+0.5 m/s directional kicks at 5 seconds with 15 seconds of post-push observation.
+The walking clip remains. Every standing test uses a fixed-world camera,
+deterministic actions and the saved observation noise/filter/latency. Physical
+failures stop each test; training episode timeouts are ignored in this suite.
+This seed-0 nominal suite is not a multi-seed robustness certificate.
+
+Standing videos include diagnostic overlays and JSONL state summaries uploaded
+beside the videos. W&B namespaces are `eval/standing_quiet`, `standing_forward`,
+`standing_backward`, `standing_left`, and `standing_right` (each under `eval/`).
+Settling requires one uninterrupted second of two-foot support (40 ms debounce),
+speed below 0.05 m/s, yaw rate below 0.1 rad/s, tilt below 10 degrees, fore/aft
+and width errors below 3 cm, and foot-heading errors below 10 degrees.
+Survival and settling are separate: push recovery success requires settled
+support immediately before the push and at the end, without physical failure.
+Drift, RMS speeds, support fractions, geometry errors, gate scales, saturation,
+and self-collision contact counts are also recorded. Training adds per-mode
+recovery/geometry scales, fully-relaxed fraction, velocity squared errors,
+torso tilt, and left/right-only support. See [the settling change](mini_settling.md).
 
 Mini ramps training pushes from `initial_scale: 0.2` to 1 over
 `curriculum_steps: 488282` per-world control steps (approximately 1B transitions

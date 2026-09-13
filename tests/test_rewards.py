@@ -62,6 +62,53 @@ def test_crossing_uses_signed_separation_in_every_mode():
         assert float(crossed) < -1.0
 
 
+def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
+    cfg = locomotion_training_profile("bello_mini_locomotion")
+    inputs = reward_inputs(
+        base_height=jnp.asarray(0.87),
+        foot_foreaft=jnp.asarray(0.18),
+        foot_separation=jnp.asarray(0.22),
+        nominal_stance_width=jnp.asarray(0.22),
+        minimum_foot_separation=jnp.asarray(0.12),
+        swing_progress=jnp.zeros(2),
+        foot_clearance_samples=jnp.zeros((2, 4)),
+    )
+    compute = jax.jit(
+        lambda x: compute_locomotion_reward(cfg.reward_config, x, cfg.command_config)
+    )
+    two, terms = compute(inputs)
+    one, one_terms = compute(inputs.replace(foot_contact=jnp.asarray([True, False])))
+    assert float(two) > float(one) > 0
+    assert float(terms["reward/stand_foot_foreaft"]) == pytest.approx(
+        float(one_terms["reward/stand_foot_foreaft"])
+    )
+    assert -0.005 <= float(terms["reward/stand_foot_foreaft"]) < 0
+    tilt = math.radians(18)
+    leaned, lean_terms = compute(
+        inputs.replace(
+            projected_gravity=jnp.asarray([math.sin(tilt), 0, -math.cos(tilt)])
+        )
+    )
+    assert float(leaned) < float(two)
+    assert float(lean_terms["reward/stand_foot_foreaft"]) < 0
+    _, fast_terms = compute(inputs.replace(lin_vel_xy=jnp.asarray([0.6, 0])))
+    assert float(fast_terms["reward/stand_foot_foreaft"]) < 0
+    aligned, _ = compute(inputs.replace(foot_foreaft=jnp.asarray(0.0)))
+    assert float(aligned) > float(two)
+    # Returning a recovery foot progressively reduces cost, including before contact.
+    costs = []
+    for stagger in (0.18, 0.10, 0.05, 0.02):
+        _, result = compute(
+            inputs.replace(
+                foot_contact=jnp.asarray([True, False]),
+                foot_foreaft=jnp.asarray(stagger),
+            )
+        )
+        costs.append(float(result["reward/stand_foot_foreaft"]))
+    assert costs == sorted(costs)
+    assert costs[-1] == 0
+
+
 def test_clearance_peaks_mid_swing_and_checks_each_sole_corner():
     config = reward_config(
         gait_swing_clearance=-1.0, gait=GaitRewardConfig(phase_shaped_clearance=True)

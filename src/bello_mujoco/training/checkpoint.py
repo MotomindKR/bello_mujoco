@@ -943,6 +943,8 @@ def _with_checkpoint_metadata_defaults(
                     "recovery_relaxation": False,
                     "recovery_speed": 0.25,
                     "recovery_tilt": 0.15,
+                    "continuous_bounded_alignment": False,
+                    "recovery_geometry_floor": 0.0,
                 }.items():
                     normalized_standing.setdefault(name, default)
                 normalized_reward["standing"] = normalized_standing

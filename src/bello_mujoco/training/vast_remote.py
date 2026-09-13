@@ -363,13 +363,16 @@ if not all(np.all(np.isfinite(np.asarray(leaf))) for leaf in leaves):
 video = Path(sys.argv[1]) / "restored-policy.mp4"
 render_policy_rollout(
     runtime.env, runtime.policy, output_path=video, command=(0.0, 0.0, 0.0),
-    steps=25, width=256, height=192, fps=50, stop_on_done=False,
+    steps=25, width=256, height=192, fps=50, stop_on_done=True,
     camera_config=CameraConfig(), ppo_config=runtime.metadata.ppo,
     observation_norm_state=runtime.normalization.observation,
     obs_stack_size=runtime.metadata.ppo.policy.obs_stack_size,
+    record_standing=True,
 )
 if not video.is_file() or video.stat().st_size == 0:
     raise RuntimeError("restored policy produced no video")
+if not video.with_suffix(".jsonl").is_file():
+    raise RuntimeError("restored policy produced no settling diagnostics")
 print({"preflight_checkpoint_restored": str(checkpoint), "policy_video": str(video)})
 PY
 fi
@@ -735,6 +738,7 @@ def run_remote_training(
     offset = 0
     disconnected_at: float | None = None
     last_progress_at = time.monotonic()
+    lost_checks = 0
     while True:
         now = time.monotonic()
         if now >= job_deadline:
@@ -801,10 +805,33 @@ def run_remote_training(
             last_progress_at = time.monotonic()
         offset = update.offset
         if update.state == "running":
+            lost_checks = 0
             sleep(10)
             continue
         if update.state == "lost":
-            raise RuntimeError("detached remote training exited without a status")
+            lost_checks += 1
+            print(
+                f"Detached job process group missing ({lost_checks}/3); retaining rental for recheck."
+            )
+            if lost_checks < 3:
+                sleep(10)
+                continue
+            try:
+                diagnostics = executor.run(
+                    target,
+                    remote_job_diagnostics_command(job_dir),
+                    timeout_seconds=max(
+                        1.0, min(15.0, job_deadline - time.monotonic())
+                    ),
+                )
+                _print_remote_output(diagnostics)
+            except (subprocess.SubprocessError, OSError) as exc:
+                print(
+                    f"Could not capture final process diagnostics: {type(exc).__name__}"
+                )
+            raise RuntimeError(
+                "detached remote training process group lost after three checks without a status"
+            )
         if update.returncode:
             raise subprocess.CalledProcessError(
                 update.returncode,
@@ -884,6 +911,9 @@ with log_path.open("ab", buffering=0) as log:
         close_fds=True,
     )
 pid_path.write_text(f"{process.pid}\n")
+proc_stat = pathlib.Path(f"/proc/{process.pid}/stat")
+if proc_stat.exists():
+    (job_dir / "process_start").write_text(proc_stat.read_text().rsplit(") ", 1)[1].split()[19])
 print(f"Started detached remote job {process.pid} in {job_dir}.")
 """
     return shlex.join(
@@ -938,7 +968,14 @@ elif returncode is not None:
 else:
     try:
         pid = int(pid_path.read_text())
-        os.kill(pid, 0)
+        identity = job_dir / "process_start"
+        proc_stat = pathlib.Path(f"/proc/{pid}/stat")
+        if identity.exists() and proc_stat.exists():
+            current_start = proc_stat.read_text().rsplit(") ", 1)[1].split()[19]
+            if current_start != identity.read_text():
+                raise ValueError("wrapper PID was reused")
+        # Children retain the detached process group if its wrapper exits.
+        os.killpg(pid, 0)
     except (OSError, ValueError):
         state = "lost"
     else:
@@ -951,6 +988,23 @@ print(json.dumps({
 }))
 """
     return shlex.join(["python3", "-c", status_reader, job_dir, str(offset)])
+
+
+def remote_job_diagnostics_command(job_dir: str) -> str:
+    script = r"""import pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1])
+print("Final detached-job diagnostics (no environment or command arguments):")
+for name in ("pid", "process_start", "status"):
+    path = root / name
+    print(name, path.read_text()[:512] if path.exists() else "missing")
+for name in ("/proc/meminfo", "/sys/fs/cgroup/memory.events"):
+    path = pathlib.Path(name)
+    if path.exists():
+        print(name, path.read_text()[:4096])
+result = subprocess.run(["ps", "-eo", "pid,ppid,pgid,sid,stat,comm"], capture_output=True, text=True, timeout=5)
+print(result.stdout[-16384:])
+"""
+    return shlex.join(["python3", "-c", script, job_dir])
 
 
 def parse_remote_job_update(value: str) -> RemoteJobUpdate:

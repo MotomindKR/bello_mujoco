@@ -53,7 +53,15 @@ Non-dry execution:
 11. relies on the configured W&B run for checkpoint artifacts;
 12. attempts and verifies instance teardown after success, error, timeout, or
     handled interruption; unconfirmed destruction retains durable state and
-    fails closed.
+   fails closed.
+
+Monitoring checks the detached process group, not only the wrapper PID, so a
+surviving orphan trainer remains monitored. Linux wrapper start time guards
+against PID reuse. A missing group is rechecked three times before failure;
+the final check captures PID/status, memory/OOM counters and process names
+(never environment variables or command arguments) in the launch log before
+teardown. Progress, SSH and hard billing deadlines remain enforced. GPU
+preflight also exercises the standing diagnostic overlay and JSONL writer.
 
 The remote bootstrap uses OSMesa for native diagnostic videos so rendering does
 not depend on a provider's NVIDIA EGL stack or consume training VRAM. Before the

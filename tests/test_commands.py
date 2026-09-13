@@ -422,7 +422,7 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.config.min_learning_rate == pytest.approx(3.0e-5)
     assert bello.config.adaptive_kl_statistic == "mean"
     assert bello.checkpoint_config.every_updates == 512
-    assert mini.checkpoint_config.every_updates == 512
+    assert mini.checkpoint_config.every_updates == 1024
     assert not bello.asset_config.enforce_policy_effort_limits
     assert mini.asset_config.enforce_policy_effort_limits
     assert len(bello.asset_config.actuator_config.policy_joint_names) == 13
@@ -439,8 +439,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         stand_waist_deviation=-4.0,
         gait_contact=-2.5,
         gait_swing_clearance=-1.0,
-        stand_foot_foreaft=-4.0,
-        stand_foot_width=-2.0,
+        stand_foot_foreaft=-0.25,
+        stand_foot_width=-0.25,
         foot_crossing=-8.0,
         foot_stumble=-2.0,
     )
@@ -452,7 +452,12 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         ang_vel_z_still_std=0.5,
     )
     assert (
-        replace(bello.reward_config.standing, recovery_relaxation=True)
+        replace(
+            bello.reward_config.standing,
+            recovery_relaxation=True,
+            continuous_bounded_alignment=True,
+            recovery_geometry_floor=0.25,
+        )
         == mini.reward_config.standing
     )
     assert mini.reward_config.gait == replace(
@@ -509,7 +514,9 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert mini.env_config.random_push.lin_vel_y == (-0.5, 0.5)
     assert mini.env_config.random_push.curriculum_steps == 488282
     assert mini.env_config.random_push.initial_scale == pytest.approx(0.2)
-    assert mini.video_config.every_updates == 4096
+    assert mini.video_config.every_updates == 8192
+    assert mini.checkpoint_config.every_updates == 1024
+    assert mini.video_config.standing_suite_enabled
     assert mini.video_config.standing_push_enabled
     assert not bello.reward_config.gait.joint_force_apply_while_standing
     assert bello.reward_config.gait.touchdown_force_soft_limit_body_weights == (

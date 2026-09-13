@@ -749,6 +749,8 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
         "recovery_relaxation",
         "recovery_speed",
         "recovery_tilt",
+        "continuous_bounded_alignment",
+        "recovery_geometry_floor",
     ):
         document["metadata"]["reward"]["standing"].pop(name)
     for name in (

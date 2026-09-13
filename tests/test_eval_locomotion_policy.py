@@ -81,6 +81,51 @@ def test_native_feedback_retains_filter_delay_and_resets(bello_asset) -> None:
         feedback.observe(data, step_count=2, **kwargs)
 
 
+def test_native_standing_sample_uses_sole_geometry(bello_asset):
+    env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
+    data = mujoco.MjData(env.model.mj_model)
+    render.reset_mujoco_data(env, data)
+    result = render.mujoco_standing_sample(env, data, False)
+    assert all(np.isfinite(value) for value in result.values())
+    assert result["width_error"] < 1e-5
+    assert result["speed"] == pytest.approx(0.0)
+
+
+def test_standing_suite_uses_one_checkpoint_and_all_directions(monkeypatch):
+    calls = []
+    policy = object()
+    monkeypatch.setattr(
+        training, "runner_train_state", lambda *_: SimpleNamespace(policy=policy)
+    )
+    monkeypatch.setattr(
+        training,
+        "render_policy_rollout",
+        lambda env, p, **kwargs: calls.append((p, kwargs)) or {},
+    )
+    training.render_training_video(
+        SimpleNamespace(control_timestep=0.02),
+        SimpleNamespace(update=jnp.asarray(8192), observation_norm_state=object()),
+        object(),
+        TrainingVideoConfig(standing_suite_enabled=True, log_wandb=False),
+        None,
+        env_steps=8192 * 40960,
+        ppo_config=PPOConfig(),
+    )
+    assert len(calls) == 6
+    assert all(p is policy for p, _ in calls)
+    assert calls[1][1]["steps"] == 1500
+    assert [kwargs["push_velocity"] for _, kwargs in calls[2:]] == [
+        (0.5, 0),
+        (-0.5, 0),
+        (0, 0.5),
+        (0, -0.5),
+    ]
+    assert all(
+        kwargs["record_standing"] and kwargs["stop_on_done"] for _, kwargs in calls[1:]
+    )
+    assert all(kwargs["steps"] == 1000 for _, kwargs in calls[2:])
+
+
 def test_native_feedback_noise_is_seeded_and_not_redrawn_on_reread(bello_asset) -> None:
     env = BelloLocomotionEnv.load_prepared(bello_asset, load_mjx=False)
     env = replace(

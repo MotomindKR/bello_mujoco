@@ -6,6 +6,7 @@ guides define the supported interfaces and contracts:
 - [Command reference](commands.md)
 - [Training configuration](training_configuration.md)
 - [Training and evaluation contracts](training_and_evaluation.md)
+- [Mini standing/recovery correction](mini_settling.md)
 - [Motion data and tracking](motion_tracking.md)
 - [TWIST teacher, student, and dataset pipeline](twist.md)
 - [One-stage TWIST2](twist2.md)

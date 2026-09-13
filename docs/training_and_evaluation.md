@@ -115,12 +115,14 @@ decelerates while the clock remains active through two half-cycle boundaries,
 then standing rewards ramp in over 0.2 seconds. Its new standing rewards align
 sole fore/aft position and nominal width; signed separation discourages crossing
 in every mode. Phase-shaped toe/heel clearance and unexpected mid-swing contact
-penalties address scuffing. Alignment/stillness pressure relaxes during recovery.
+penalties address scuffing. Bounded alignment costs remain active in single
+support, so putting the second foot down does not switch on a large penalty.
+Alignment/stillness/contact pressure relaxes only to a 25% floor during recovery.
 Recovery also relaxes soft hip/knee/waist posture and hip-roll thermal pressure;
 single-support corrective steps retain standing velocity-tracking rewards.
 Hard motor limits are never relaxed. Mini retains 25% of commands for standing
 and ramps random pushes over the first approximately 1B transitions. Paired
-walking and standing-push evaluation videos expose recovery failures separately
+walking and fixed-checkpoint standing/push evaluation videos expose recovery failures separately
 from aggregate training reward. These changes require a newly trained policy;
 they do not establish push robustness on their own.
 See [the formulation and configuration](training_configuration.md#locomotion-reward-reward_config).

@@ -909,6 +909,76 @@ def test_remote_start_command_detaches_and_records_status(tmp_path) -> None:
     assert (job_dir / "output.log").read_text() == "available\n"
 
 
+def test_remote_status_checks_detached_group_not_only_wrapper(tmp_path):
+    import os
+    import signal
+
+    group = subprocess.Popen(
+        ["bash", "-c", "sleep 30 & echo ready; wait"],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert group.stdout.readline().strip() == "ready"
+        (tmp_path / "pid").write_text(str(group.pid))
+        (tmp_path / "output.log").write_text("progress\n")
+        group.terminate()
+        group.wait(timeout=5)
+        command = vast_remote.remote_status_command(str(tmp_path), 0)
+        result = subprocess.run(
+            shlex.split(command), capture_output=True, text=True, check=True
+        )
+        assert vast_remote.parse_remote_job_update(result.stdout).state == "running"
+        # The monitor intentionally checks the process group, preserving orphan trainers.
+        assert "os.killpg(pid, 0)" in command
+    finally:
+        os.killpg(group.pid, signal.SIGTERM)
+        group.wait(timeout=5)
+        group.stdout.close()
+
+
+@pytest.mark.parametrize("recover", [True, False])
+def test_remote_runner_rechecks_loss_and_captures_diagnostics(recover, capfd):
+    states = iter(["lost", "running", "complete"] if recover else ["lost"] * 3)
+    diagnostics = []
+
+    class Executor:
+        def run(self, target, command, *, timeout_seconds, input_text=None):
+            if input_text is not None:
+                output = "started\n"
+            elif "Final detached-job diagnostics" in command:
+                diagnostics.append(command)
+                output = "memory.events: oom_kill 0\n"
+            else:
+                state = next(states)
+                output = json.dumps(
+                    dict(
+                        state=state,
+                        offset=0,
+                        output="",
+                        returncode=0 if state == "complete" else None,
+                    )
+                )
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    kwargs = dict(
+        wandb_key="test", github_token="", sleep=lambda _: None, executor=Executor()
+    )
+    if recover:
+        run_remote_training(
+            ("root", "test", 22), selection(), valid_config(), "test-run", **kwargs
+        )
+        assert not diagnostics
+    else:
+        with pytest.raises(RuntimeError, match="after three checks"):
+            run_remote_training(
+                ("root", "test", 22), selection(), valid_config(), "test-run", **kwargs
+            )
+        assert len(diagnostics) == 1
+        assert "oom_kill 0" in capfd.readouterr().out
+
+
 def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> None:
     command = vast_remote.remote_start_command(
         str(tmp_path / "job"),
