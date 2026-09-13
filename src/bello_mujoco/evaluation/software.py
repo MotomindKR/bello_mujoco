@@ -122,6 +122,21 @@ def run_software_evaluation(
         process.close()
 
 
+def _select_software_device() -> None:
+    from mujoco.egl import egl_ext as EGL
+    from OpenGL.EGL.EXT.device_query import eglQueryDeviceStringEXT
+
+    software = [
+        index
+        for index, device in enumerate(EGL.eglQueryDevicesEXT())
+        if b"EGL_MESA_device_software"
+        in (eglQueryDeviceStringEXT(device, EGL.EGL_EXTENSIONS) or b"").split()
+    ]
+    if len(software) != 1:
+        raise RuntimeError(f"Expected one Mesa software EGL device, found {software}")
+    os.environ["MUJOCO_EGL_DEVICE_ID"] = str(software[0])
+
+
 def validate_software_renderer() -> None:
     """Reject incorrectly initialized backends instead of silently using a GPU."""
     require_linux_software_rendering()
@@ -138,6 +153,8 @@ def validate_software_renderer() -> None:
         )
     from OpenGL import GL
 
+    # LIBGL_ALWAYS_SOFTWARE does not override EGL_PLATFORM_DEVICE_EXT selection.
+    _select_software_device()
     context = mujoco.GLContext(1, 1)
     try:
         context.make_current()

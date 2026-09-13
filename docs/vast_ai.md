@@ -1,8 +1,8 @@
 # Vast.ai training
 
 `bello-vast-train` rents one instance, clones a pinned root commit and its
-submodules, and starts detached training. The Vast host owns shutdown; your
-computer only launches and monitors it.
+required `bello-stack` submodule, and starts detached training. The Vast host owns
+shutdown; your computer only launches and monitors it.
 
 ```bash
 uv run bello-vast-train \

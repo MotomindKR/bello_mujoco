@@ -93,6 +93,9 @@ def test_renderer_checks_actual_device_and_frees_context(monkeypatch, renderer):
 
     monkeypatch.setattr(software, "require_linux_software_rendering", lambda: None)
     monkeypatch.setitem(sys.modules, "mujoco", SimpleNamespace(GLContext=Context))
+    monkeypatch.setattr(
+        software, "_select_software_device", lambda: calls.append("select")
+    )
     monkeypatch.setitem(
         sys.modules,
         "jax",
@@ -112,4 +115,43 @@ def test_renderer_checks_actual_device_and_frees_context(monkeypatch, renderer):
     else:
         with pytest.raises(RuntimeError, match="CPU llvmpipe"):
             software.validate_software_renderer()
-    assert calls == ["current", "free"]
+    assert calls == ["select", "current", "free"]
+
+
+@pytest.mark.parametrize(
+    "extensions, selected",
+    [
+        ([b"EGL_EXT_device_drm", b"EGL_MESA_device_software"], "1"),
+        ([b"EGL_MESA_device_software EGL_EXT_device_drm_render_node"], "0"),
+        ([b"EGL_EXT_device_drm", None], None),
+        ([b"EGL_MESA_device_software_extra"], None),
+        ([b"EGL_MESA_device_software"] * 2, None),
+    ],
+)
+def test_software_device_selection_never_tries_hardware(
+    monkeypatch, extensions, selected
+):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("MUJOCO_EGL_DEVICE_ID", "0")
+    monkeypatch.setitem(
+        sys.modules,
+        "mujoco.egl",
+        SimpleNamespace(
+            egl_ext=SimpleNamespace(
+                eglQueryDevicesEXT=lambda: range(len(extensions)),
+                EGL_EXTENSIONS=1,
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "OpenGL.EGL.EXT.device_query",
+        SimpleNamespace(eglQueryDeviceStringEXT=lambda device, _: extensions[device]),
+    )
+    if selected is None:
+        with pytest.raises(RuntimeError, match="one Mesa software EGL device"):
+            software._select_software_device()
+    else:
+        software._select_software_device()
+        assert os.environ["MUJOCO_EGL_DEVICE_ID"] == selected

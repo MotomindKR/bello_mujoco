@@ -49,8 +49,9 @@ Policy inference and simulation run on CPU. Rasterization uses Mesa
 llvmpipe through EGL only. The Nix shells supply Mesa; on Ubuntu install
 `libegl1 libegl-mesa0 libgl1-mesa-dri`. The actual GL renderer is checked before
 recording, and a GPU renderer fails initialization. There is no GPU or
-native-macOS rasterizer fallback. Training videos run in a fresh software worker
-per video. Enabled video failure, crash, or timeout fails the training run.
+native-macOS rasterizer fallback. The Mesa software EGL device is selected
+explicitly, even on hosts with physical GPUs. Training videos run in a fresh
+software worker per video. Enabled video failure, crash, or timeout fails the training run.
 Set `video_enabled=false` explicitly when videos are unwanted.
 
 ## Deployment artifact

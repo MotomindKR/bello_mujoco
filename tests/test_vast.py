@@ -640,8 +640,15 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
         vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run --group training bello-train")
         == 2
     )
-    assert "git clone --recurse-submodules" in vast_remote.REMOTE_TRAIN_SCRIPT
-    assert "submodule status --recursive" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert "git clone --single-branch" in vast_remote.REMOTE_TRAIN_SCRIPT
+    assert (
+        "submodule update --init --recursive -- deps/bello-stack"
+        in vast_remote.REMOTE_TRAIN_SCRIPT
+    )
+    assert (
+        "submodule status --recursive -- deps/bello-stack"
+        in vast_remote.REMOTE_TRAIN_SCRIPT
+    )
     assert (
         'training_overrides+=("end_effector_payload_mass_kg='
         '$end_effector_payload_mass_kg")' in vast_remote.REMOTE_TRAIN_SCRIPT
@@ -677,7 +684,7 @@ def test_remote_command_preflights_software_rendering() -> None:
     assert "load_locomotion_policy_runtime(checkpoint, use_viewer_model=True)" in script
     assert "load_checkpoint_update(checkpoint) < 1" in script
     checkpoint_render = script.split(
-        'python - "checkpoints/vast-preflight-$run_name" <<\'PY\'', 1
+        "python - \"checkpoints/vast-preflight-$run_name\" <<'PY'", 1
     )[1]
     assert checkpoint_render.index("configure_software_rendering()") < (
         checkpoint_render.index("import jax")
