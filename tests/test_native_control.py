@@ -26,6 +26,7 @@ from bello_mujoco.envs.locomotion_config import BelloEnvConfig
 from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware import _remote_pb2 as remote_pb
 from bello_mujoco.hardware import reference_pb2 as reference_pb
+from bello_mujoco.hardware import _pose_pb2 as pose_pb
 from bello_mujoco.training.tracking import to_builtin
 
 pytestmark = pytest.mark.integration
@@ -296,12 +297,29 @@ def start_services(fake):
             ),
         ]
     )
+    if hasattr(fake, "pose"):
+        server.add_generic_rpc_handlers(
+            [
+                grpc.method_handlers_generic_handler(
+                    "bello.pose.v1.PoseService",
+                    {
+                        "WatchPose": grpc.unary_stream_rpc_method_handler(
+                            fake.pose,
+                            request_deserializer=pose_pb.WatchPoseRequest.FromString,
+                            response_serializer=lambda m: m.SerializeToString(),
+                        ),
+                    },
+                ),
+            ]
+        )
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     return server, pool, f"http://127.0.0.1:{port}"
 
 
-def bundle(source):
+def bundle(
+    source, *, metadata_updates=None, physics=b"<mujoco/>", motion=None, target=None
+):
     metadata = dict(
         git_commit=subprocess.check_output(
             ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
@@ -331,6 +349,8 @@ def bundle(source):
         environment=to_builtin(BelloEnvConfig()),
         command=to_builtin(CommandConfig()),
     )
+    metadata.update(metadata_updates or {})
+    count = len(metadata["policy_indices"])
     nodes = [
         helper.make_node(
             "Constant",
@@ -338,14 +358,21 @@ def bundle(source):
             [name],
             value=numpy_helper.from_array(np.asarray([values], dtype=np.float32)),
         )
-        for name, values in [("action", [0, 0]), ("motor_target", [0.2, -0.3, 0.4])]
+        for name, values in [
+            ("action", [0] * count),
+            ("motor_target", target or [0.2, -0.3, 0.4]),
+        ]
     ]
     graph = helper.make_graph(
         nodes,
         "synthetic-hold",
-        [helper.make_tensor_value_info("observation", onnx.TensorProto.FLOAT, [1, 2])],
         [
-            helper.make_tensor_value_info("action", onnx.TensorProto.FLOAT, [1, 2]),
+            helper.make_tensor_value_info(
+                "observation", onnx.TensorProto.FLOAT, [1, metadata["observation_size"]]
+            )
+        ],
+        [
+            helper.make_tensor_value_info("action", onnx.TensorProto.FLOAT, [1, count]),
             helper.make_tensor_value_info(
                 "motor_target", onnx.TensorProto.FLOAT, [1, 3]
             ),
@@ -355,7 +382,7 @@ def bundle(source):
         graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10
     )
     helper.set_model_props(model, {"bello": json.dumps(metadata)})
-    return deployment_bundle(model.SerializeToString(), physics=b"<mujoco/>")
+    return deployment_bundle(model.SerializeToString(), physics=physics, motion=motion)
 
 
 @pytest.mark.parametrize(

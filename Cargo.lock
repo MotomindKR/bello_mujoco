@@ -181,6 +181,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bello-hardware-client",
+ "bello-pose-api",
  "bello-remote-api",
  "clap",
  "futures-util",
@@ -198,6 +199,16 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "zip",
+]
+
+[[package]]
+name = "bello-pose-api"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

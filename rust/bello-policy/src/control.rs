@@ -211,12 +211,28 @@ async fn pace(deadline: &mut tokio::time::Instant, period: Duration, lag: Durati
     Ok(())
 }
 
-pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> Result<()> {
+pub async fn run(
+    hardware: Hardware,
+    mut policy: Locomotion,
+    config: Config,
+    mut motion: Option<crate::motion::live::Live>,
+) -> Result<()> {
     config.validate()?;
     ensure!(
         config.command_validity_seconds > policy.policy.metadata.control_timestep,
         "command validity must exceed the policy period"
     );
+    if let Some(motion) = &motion {
+        ensure!(
+            !config.following.enabled,
+            "motion control cannot enable upper-body following"
+        );
+        ensure!(
+            config.command_validity_seconds > motion.motion_period(),
+            "command validity must exceed the motion period"
+        );
+    }
+    let motion_interrupt = motion.as_ref().map(|motion| motion.interrupt.clone());
     let mut operator = Operator::new()?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -237,6 +253,9 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
         .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
         .transpose()?;
     let preflight = hardware.feedback(proto::GroupState::Idle).await?;
+    if let Some(motion) = &motion {
+        motion.check_feedback(&preflight)?;
+    }
     nominal(&policy, &preflight, &config)?;
     // Warm up ONNX before acquiring control; discard its history before RUN.
     policy.step(&preflight)?;
@@ -247,6 +266,9 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
     let operation = async {
         remote.sample()?;
         let initial = hardware.feedback(proto::GroupState::Idle).await?;
+        if let Some(motion) = &motion {
+            motion.check_feedback(&initial)?;
+        }
         nominal(&policy, &initial, &config)?;
         for group in &hardware.groups {
             let options = ControlOptions::new(&config.client_name)
@@ -295,7 +317,10 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
         let mut deadline = tokio::time::Instant::now();
         for step in 1..=steps {
             remote.sample()?;
-            hardware.feedback(proto::GroupState::Running).await?;
+            let sample = hardware.feedback(proto::GroupState::Running).await?;
+            if let Some(motion) = &motion {
+                motion.check_feedback(&sample)?;
+            }
             let ramp: Vec<f64> = initial
                 .motor_position
                 .iter()
@@ -311,6 +336,9 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
         loop {
             remote.sample()?;
             let sample = hardware.feedback(proto::GroupState::Running).await?;
+            if let Some(motion) = &motion {
+                motion.check_feedback(&sample)?;
+            }
             nominal(&policy, &sample, &config)?;
             send(&mut controls, &policy, &target, &config).await?;
             if let Some(line) = operator.line()? {
@@ -322,11 +350,52 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
         policy.reset();
         deadline = tokio::time::Instant::now();
         let started = Instant::now();
+        let mut previous_target = policy.policy.metadata.default_position.clone();
+        let mut active_period = period;
+        if motion.is_some() {
+            operator.prompt(
+                "Standing policy is active with zero command. Type MOTION to begin the clip:",
+            )?;
+        }
         while config
             .max_duration_seconds
             .is_none_or(|s| started.elapsed().as_secs_f64() < s)
         {
-            let mut sample = hardware.feedback(proto::GroupState::Running).await?;
+            let max_tilt = motion
+                .as_ref()
+                .map_or(hardware.config.max_tilt_radians, |motion| {
+                    motion.tilt_limit(hardware.config.max_tilt_radians)
+                });
+            let mut sample = hardware
+                .feedback_with_tilt(proto::GroupState::Running, max_tilt)
+                .await?;
+            if let Some(motion) = &mut motion {
+                remote.sample()?;
+                let request = operator.line()?;
+                ensure!(
+                    request.as_deref().is_none_or(|s| s == "MOTION"),
+                    "expected exact MOTION"
+                );
+                let step =
+                    motion.step(&mut policy, &sample, request.is_some(), &previous_target)?;
+                if step.period != active_period {
+                    deadline = tokio::time::Instant::now();
+                    active_period = step.period;
+                }
+                let target: Vec<f64> = step.target.iter().map(|v| *v as f64).collect();
+                send(&mut controls, &policy, &target, &config).await?;
+                previous_target = step.target;
+                if let Some(log) = &mut log {
+                    serde_json::to_writer(
+                        &mut *log,
+                        &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "motion": step.log}),
+                    )?;
+                    log.write_all(b"\n")?;
+                    log.flush()?;
+                }
+                pace(&mut deadline, active_period, lag).await?;
+                continue;
+            }
             sample.command =
                 policy.remote_command(remote.sample()?, config.joystick_command_scale)?;
             let mut step = policy.step(&sample)?;
@@ -353,7 +422,20 @@ pub async fn run(hardware: Hardware, mut policy: Locomotion, config: Config) -> 
         }
         Ok::<_, anyhow::Error>(())
     };
-    let result = tokio::select! { result = operation => result, _ = interrupt.recv() => Err(anyhow::anyhow!("operator interrupted control")), _ = terminate.recv() => Err(anyhow::anyhow!("process termination requested")) };
+    let result = {
+        tokio::pin!(operation);
+        loop {
+            tokio::select! {
+                result = &mut operation => break result,
+                _ = interrupt.recv() => {
+                    if motion_interrupt.as_ref().is_some_and(|motion| motion.request_return()) {
+                        eprintln!("Motion interrupted: requesting return to standing.");
+                    } else { break Err(anyhow::anyhow!("operator interrupted control")); }
+                },
+                _ = terminate.recv() => break Err(anyhow::anyhow!("process termination requested")),
+            }
+        }
+    };
     if let Err(error) = &result {
         eprintln!("Control stopped: {error:#}");
     }

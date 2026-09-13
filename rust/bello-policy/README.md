@@ -45,9 +45,6 @@ Output contains the stacked observation, raw/clipped action, and motor target.
 No action low-pass filter is applied. Quaternion/vector operations use `glam`;
 `npyz` reads the bundled NumPy arrays without a Python process.
 
-Motion telemetry is read-only: live pose streaming and the standing/motion
-operator transitions are not yet connected to the native hardware path.
-
 Read-only hardware preflight:
 
 ```bash
@@ -60,7 +57,7 @@ frames, telemetry timestamps and freshness, group state, and IMU plausibility.
 It performs no lease acquisition or motor writes.
 
 For isolated emulator validation, add `--arm` and configure the `control` section
-in the hardware YAML. This locomotion-only path requires an interactive terminal:
+in the hardware YAML. Control requires an interactive terminal:
 `HOLD` acquires control and ramps to nominal, `RUN` starts inference, and `IDLE`
 confirms motor disable after stopping. Failures, remote abort, SIGINT, or SIGTERM
 request damping first. Without an `IDLE` confirmation, it sends no explicit
@@ -73,12 +70,54 @@ and slewing. Optional JSONL policy logs use a new file, never overwrite one.
 Synthetic lifecycle checks cover rejection, stale feedback, remote abort,
 signals, and ambiguous start timeouts. A synthetic hold actor has completed the
 native policy/hardwared/MuJoCo lifecycle on isolated Lima vCAN. Trained-policy
-dynamics parity and the motion operator lifecycle remain pending; keep the Python
+dynamics parity remains pending; keep the Python
 runner for regular operation until those checks finish.
 Synthetic motion telemetry checks compare observations/actions/targets against
 JAX through root alignment, coupled coordinates, history reset, quaternion sign
 changes, clip-end lookahead, and both BeyondMimic action mappings.
 ONNX Runtime must provide the API supported by the pinned `ort` crate.
+
+## Live motion control
+
+Pass the motion bundle to `--policy`. In a local copy of the hardware YAML,
+replace `motion: null` with a motion mapping such as:
+
+```yaml
+motion:
+  standing_policy: /absolute/path/to/standing.zip
+  start_time_seconds: 0.0
+  transition_seconds: 0.2
+  max_tilt_radians: 1.22
+  max_raw_action_abs: 5.0
+  pose:
+    endpoint: http://127.0.0.1:50053
+    reference_frame: odom
+    tracked_frame: pelvis_link
+    timeout_seconds: 2.0
+    max_age_ms: 100.0
+    max_linear_velocity: 5.0
+    max_angular_velocity: 20.0
+    max_imu_orientation_error: 0.25
+```
+
+Use the actual pose producer endpoint and floating-base frame. The stream must
+provide world-frame linear velocity and root-local angular velocity, not just
+position/orientation. Preflight checks both bundles' motor mapping and gains,
+pose freshness, and pose/IMU agreement using the model's fixed IMU mounting
+rotation. Both bundles must match the checked-out source commit.
+
+`HOLD` ramps to the standing policy's nominal pose; `RUN` starts standing with
+zero velocity command. Type `MOTION` to blend into the clip. Completion or the
+first Ctrl-C during motion blends back to standing; another Ctrl-C stops and
+requests damping. SIGTERM, remote abort, malformed/stale pose, hardware faults,
+or rejected commands take the STOP path, not a standing recovery. `IDLE` remains
+required for explicit disable. Standing and motion retain their own control
+periods and histories. The remote is monitored for aborts, but its velocity
+axes are ignored in this workflow. Upper-body following must be disabled.
+
+Synthetic gRPC tests cover both transitions, different policy periods, mounted
+IMU rotation, pose failures, rejection/abort, interruptions, and read-only
+preflight. They do not establish trained-policy stability on the full emulator.
 
 ## Live upper-body references
 

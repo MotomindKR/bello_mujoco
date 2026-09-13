@@ -16,6 +16,7 @@ use crate::locomotion::{Feedback, Locomotion, projected_gravity};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub control: Option<crate::control::Config>,
+    pub motion: Option<crate::motion::live::Config>,
     pub endpoint: String,
     pub groups: Vec<String>,
     pub imu_name: String,
@@ -166,6 +167,15 @@ impl Hardware {
     }
 
     pub async fn feedback(&self, expected: proto::GroupState) -> Result<Feedback> {
+        self.feedback_with_tilt(expected, self.config.max_tilt_radians)
+            .await
+    }
+
+    pub async fn feedback_with_tilt(
+        &self,
+        expected: proto::GroupState,
+        max_tilt: f64,
+    ) -> Result<Feedback> {
         let start = Instant::now();
         let deadline = Duration::from_secs_f64(self.config.telemetry_timeout_seconds);
         let mut client = self.robot.raw_client().grpc_client();
@@ -196,6 +206,7 @@ impl Hardware {
             &self.config,
             expected,
             start.elapsed(),
+            max_tilt,
         )
     }
 }
@@ -220,6 +231,7 @@ fn decode_feedback(
     config: &Config,
     expected: proto::GroupState,
     transport: Duration,
+    max_tilt: f64,
 ) -> Result<Feedback> {
     let motors = unique(&frame.motors, |motor| &motor.motor_name)?;
     let groups = unique(&frame.groups, |group| &group.group)?;
@@ -306,7 +318,7 @@ fn decode_feedback(
     let orientation_xyzw = [orientation.x, orientation.y, orientation.z, orientation.w];
     let gravity = projected_gravity(orientation_xyzw)?;
     ensure!(
-        (-gravity[2]).clamp(-1., 1.).acos() <= config.max_tilt_radians,
+        (-gravity[2]).clamp(-1., 1.).acos() <= max_tilt,
         "robot tilt exceeds safety limit"
     );
     let vector = |value: &Option<proto::Vector3>, limit: f64| -> Result<[f64; 3]> {
@@ -341,6 +353,7 @@ mod tests {
     fn fixture() -> (Config, proto::GetStateFrameResponse, Vec<String>) {
         let config = Config {
             control: None,
+            motion: None,
             endpoint: "http://localhost:1".into(),
             groups: vec!["limb".into()],
             imu_name: "sensor".into(),
@@ -399,6 +412,7 @@ mod tests {
                 &config,
                 proto::GroupState::Idle,
                 Duration::from_millis(latency),
+                config.max_tilt_radians,
             )
         };
         assert_eq!(decode(1).unwrap().motor_position, vec![0.2]);
@@ -415,6 +429,7 @@ mod tests {
                 &config,
                 proto::GroupState::Idle,
                 Duration::ZERO,
+                config.max_tilt_radians,
             )
         };
         let mut bad = frame.clone();

@@ -10,6 +10,7 @@ max_state_sample_span_ms: 40.0
 max_tilt_radians: 0.70
 max_angular_velocity: 20.0
 max_linear_acceleration: 100.0
+motion: null
 control:
   following:
     enabled: false

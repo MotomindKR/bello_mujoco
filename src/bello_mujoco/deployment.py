@@ -240,12 +240,12 @@ def export_checkpoint(config: ExportConfig) -> Path:
         "motor_limits": model.mj_model.actuator_ctrlrange.tolist(),
         "environment": to_builtin(env.config),
         "action_clip": env.action_clip,
+        "hardware_imu_frame": model.robot.default_imu_body_name,
     }
     if saved.task == "locomotion":
         from bello_mujoco.hardware.locomotion import _hardware_imu_to_policy_rotation
 
         metadata["command"] = to_builtin(env.command_config)
-        metadata["hardware_imu_frame"] = model.robot.default_imu_body_name
         metadata["policy_from_hardware"] = _hardware_imu_to_policy_rotation(
             env
         ).tolist()

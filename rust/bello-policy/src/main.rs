@@ -45,18 +45,49 @@ async fn main() -> Result<()> {
 
         let mut config: Config = serde_yaml::from_reader(std::fs::File::open(path)?)?;
         let control = config.control.take();
-        let mut runtime = Locomotion::new(policy)?;
+        let (mut runtime, live) = if policy.metadata.task == "motion_tracking" {
+            let settings = config.motion.take().ok_or_else(|| {
+                anyhow::anyhow!("motion hardware control requires motion settings")
+            })?;
+            let standing = Locomotion::new(Policy::load(&settings.standing_policy, &args.source)?)?;
+            let live = bello_policy::motion::live::Live::connect(
+                bello_policy::motion::Motion::new(policy)?,
+                &standing,
+                settings,
+            )
+            .await?;
+            (standing, Some(live))
+        } else {
+            anyhow::ensure!(
+                config.motion.is_none(),
+                "motion settings require a motion bundle"
+            );
+            (Locomotion::new(policy)?, None)
+        };
         let hardware = Hardware::connect(config, &runtime).await?;
+        if let Some(live) = &live {
+            anyhow::ensure!(
+                hardware
+                    .groups
+                    .iter()
+                    .all(|group| group.control_rate_hz() + 1e-6 >= 1. / live.motion_period()),
+                "hardware control rate is slower than the motion policy"
+            );
+        }
         if args.arm {
             return bello_policy::control::run(
                 hardware,
                 runtime,
                 control
                     .ok_or_else(|| anyhow::anyhow!("armed execution requires control settings"))?,
+                live,
             )
             .await;
         }
         let sample = hardware.feedback(GroupState::Idle).await?;
+        if let Some(live) = &live {
+            live.check_feedback(&sample)?;
+        }
         let preview = runtime.step(&sample)?;
         println!(
             "{}",

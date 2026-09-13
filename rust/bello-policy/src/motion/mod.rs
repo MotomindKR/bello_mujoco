@@ -2,6 +2,8 @@
 //! The bundled physics model is used only for kinematics, never as an emulator.
 
 mod clip;
+pub mod live;
+mod pose;
 mod rotation;
 
 use anyhow::{Context, Result, ensure};
@@ -205,6 +207,31 @@ impl Motion {
 
     pub fn duration(&self) -> f64 {
         self.clip.duration()
+    }
+
+    pub fn root_frame(&self) -> Result<&str> {
+        let model = self.data.model();
+        model
+            .id_to_name(MjtObj::mjOBJ_BODY, model.jnt_bodyid()[0] as usize)
+            .context("motion root body must be named")
+    }
+
+    pub fn root_from_fixed_frame(&mut self, name: &str) -> Result<DQuat> {
+        let model = self.data.model();
+        let root = model.jnt_bodyid()[0] as usize;
+        let frame = model
+            .name_to_id(MjtObj::mjOBJ_BODY, name)
+            .context("IMU frame is missing from motion model")?;
+        let mut body = frame;
+        while body != root {
+            ensure!(
+                body != 0 && model.body_jntnum()[body] == 0,
+                "motion IMU frame must be fixed to the root body"
+            );
+            body = model.body_parentid()[body] as usize;
+        }
+        self.data.kinematics();
+        Ok(from_wxyz(self.data.xquat()[root]).conjugate() * from_wxyz(self.data.xquat()[frame]))
     }
 
     pub fn reset(&mut self) {

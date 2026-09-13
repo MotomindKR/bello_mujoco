@@ -25,10 +25,10 @@ no longer exists.
 Training and deployment apply actions without an action low-pass filter.
 Action/target bounds remain enforced; hardwared still filters sensor feedback.
 
-The [Rust policy runtime](../rust/bello-policy/README.md) supports read-only
-motion telemetry inference using the bundled clip and headless MuJoCo kinematics.
-Its native standing/motion operator lifecycle is not yet connected; use the
-Python hardware runner for live motion control during this migration.
+The [Rust policy runtime](../rust/bello-policy/README.md) supports motion telemetry
+and the standing/motion hardware lifecycle using bundled clips and headless
+MuJoCo kinematics. Synthetic inference and lifecycle checks pass; keep the Python
+runner available until full-emulator trained-policy parity is validated.
 
 Edit `configs/train_motion/default.yaml` and `configs/profiles/train/motion.yaml`
 for recipes. Tracked bodies live in `src/bello_mujoco/robots/*_motion.yaml`.
