@@ -86,8 +86,8 @@ state remains a separate checkpoint directory.
 
 The Rust emulator builds from canonical robot descriptions, not the policy bundle.
 Its CAN/IMU/pose process has completed an isolated Lima lifecycle with hardwared
-and a synthetic ONNX hold actor. Trained-policy parity and video migration are
-still pending. See [emulator usage](emulator.md).
+and a synthetic ONNX hold actor. Software video and isolated transport checks
+cover both robots; trained-policy stability is still pending. See [emulator usage](emulator.md).
 
 The native policy tool supports `--telemetry` for stateful observation/inference
 parity and `--hardware-config rust/bello-policy/config/hardware.yaml` for read-only
@@ -95,5 +95,7 @@ preflight. Neither mode acquires control. An explicit `--arm` enables the
 experimental locomotion HOLD/RUN/IDLE lifecycle for isolated emulator validation.
 Live retargeting runs separately with `bello-run-reference`; Rust consumes its
 joint references and owns outage-to-nominal blending. Native motion tracking
-remains pending.
+supports standing-to-clip transitions and a first-interrupt return to standing;
+malformed/stale feedback stops control. Synthetic integration checks cover these
+paths; physical commissioning remains separate.
 See its [usage guide](../rust/bello-policy/README.md).

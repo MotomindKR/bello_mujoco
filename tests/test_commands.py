@@ -10,12 +10,9 @@ from omegaconf import OmegaConf
 import pytest
 
 from bello_mujoco.cli import (
-    EmulatorCommandConfig,
-    EvalCommandConfig,
     HandsCommandConfig,
     HardwareCommandConfig,
     TrainCommandConfig,
-    VastTrainCommandConfig,
     _hardware_policy_log_path,
     _reject_explicit_fields,
     _warp_overrides,
@@ -28,15 +25,6 @@ from bello_mujoco.configuration import (
     motion_training_profile,
     structured_config,
 )
-
-COMMAND_SCHEMAS = {
-    "train": TrainCommandConfig,
-    "eval": EvalCommandConfig,
-    "vast_train": VastTrainCommandConfig,
-    "emulator": EmulatorCommandConfig,
-    "hardware": HardwareCommandConfig,
-    "hands": HandsCommandConfig,
-}
 
 
 def test_importing_command_surface_does_not_import_jax() -> None:

@@ -102,7 +102,7 @@ git status --short
 git submodule status --recursive
 ```
 
-Do not use `allow_git_commit_mismatch=true` as part of the normal Lima workflow.
+There is no Git-commit mismatch override.
 Place a local checkpoint under the ignored `checkpoints/` directory so it is
 both visible in the guest and does not dirty the checkout. The commands below
 use `checkpoints/bello_mini_locomotion` as an example; replace it with the
@@ -134,7 +134,9 @@ lsof -nP \
 
 ```bash
 ./scripts/lima_vcan.sh run \
-  uv run bello-run-emulator asset=bello_mini
+  nix develop .#rust-runtime --command cargo run --locked \
+  --manifest-path deps/bello-stack/Cargo.toml -p bello-mujoco -- \
+  run --config deps/bello-stack/components/bello-mujoco/config/emulator_mini.yaml
 ```
 
 The torso guide starts engaged. Leave this terminal open and do not press Enter
@@ -192,7 +194,7 @@ nix develop .#macos-visualizer --command \
   --config deps/bello-stack/components/bello-visualizer/config/bello-mini.yaml
 ```
 
-The dedicated shell supplies Rust 1.95 and `protoc`, and keeps Cargo downloads
+The dedicated shell supplies Rust and `protoc`, and keeps Cargo downloads
 and build output below the Mac's cache directory instead of the shared source
 tree. Keep the visualizer's direct group control disabled while the policy owns
 the lower-body control lease; use its monitoring and gamepad remote-command

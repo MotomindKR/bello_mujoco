@@ -13,11 +13,39 @@ from bello_mujoco import deployment
 from bello_mujoco.deployment import actor_onnx
 from bello_mujoco.envs.actions import bounded_motor_target
 from bello_mujoco.policy import ActorCritic, ActorCriticConfig
+from bello_mujoco.sim import hardware_imu_to_policy_rotation
 from bello_mujoco.training.ppo import (
     PPOConfig,
     ObservationNormState,
     normalize_observation,
 )
+
+
+def test_export_imu_rotation_uses_fixed_body_frames_not_inertial_frames():
+    model = mujoco.MjModel.from_xml_string("""<mujoco><compiler fusestatic="false"/>
+      <worldbody><body name="base"><freejoint/>
+        <inertial pos=".2 0 0" quat=".7071067811865476 .7071067811865476 0 0"
+          mass="1" diaginertia=".1 .2 .3"/>
+        <body name="sensor" quat=".7071067811865476 0 0 .7071067811865476"/>
+        <body name="moving"><joint/><geom size=".1"/></body>
+      </body></worldbody></mujoco>""")
+    description = SimpleNamespace(
+        mj_model=model,
+        default_qpos=model.qpos0.copy(),
+        robot=SimpleNamespace(default_imu_body_name="base"),
+        imu_body_name="sensor",
+    )
+    np.testing.assert_allclose(
+        hardware_imu_to_policy_rotation(description),
+        [[0, 1, 0], [-1, 0, 0], [0, 0, 1]],
+        atol=1e-12,
+    )
+    description.imu_body_name = "moving"
+    with pytest.raises(ValueError, match="rigidly attached"):
+        hardware_imu_to_policy_rotation(description)
+    description.imu_body_name = "missing"
+    with pytest.raises(ValueError, match="must exist"):
+        hardware_imu_to_policy_rotation(description)
 
 
 @pytest.mark.parametrize("activation", ["tanh", "relu", "elu", "swish"])

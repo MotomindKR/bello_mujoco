@@ -93,13 +93,14 @@
           };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           rust-runtime = pkgs.mkShell {
-            packages = with pkgs; [ cargo rustc rustfmt clippy protobuf pkg-config mujoco onnxruntime ];
+            packages = with pkgs; [ cargo rustc rustfmt clippy protobuf pkg-config mujoco onnxruntime ffmpeg ];
             MUJOCO_DYNAMIC_LINK_DIR = assert pkgs.mujoco.version == "3.12.0";
               "${pkgs.lib.getLib pkgs.mujoco}/lib";
             ORT_DYLIB_PATH = "${pkgs.lib.getLib pkgs.onnxruntime}/lib/libonnxruntime.so";
             shellHook = ''
               export CARGO_TARGET_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/bello-mujoco/rust-runtime"
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.mujoco pkgs.onnxruntime ]}:''${LD_LIBRARY_PATH:-}"
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath ([ pkgs.mujoco pkgs.onnxruntime ] ++ limaRuntimeLibraries)}:''${LD_LIBRARY_PATH:-}"
+              export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
             '';
           };
           lima-vcan = pkgs.mkShell {

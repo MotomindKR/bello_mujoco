@@ -10,7 +10,6 @@ The YAML files linked below are the authoritative field/default reference.
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
-| `bello-run-emulator` | [emulator.yaml](../configs/commands/emulator.yaml) | MuJoCo/vCAN hardware emulation |
 | `bello-run-hardware` | [hardware.yaml](../configs/commands/hardware.yaml) | Read-only preflight or explicitly armed policy |
 | `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | RTMW-driven Linker hand control |
 | `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Independent RTMW/GMR joint-reference producer |
@@ -39,12 +38,16 @@ video failures are fatal; use `video_enabled=false` to disable videos explicitly
 ## Hardware workflow
 
 ```bash
-uv run bello-run-emulator asset=bello_mini
+nix develop .#rust-runtime --command cargo run --locked \
+  --manifest-path deps/bello-stack/Cargo.toml -p bello-mujoco -- \
+  run --config deps/bello-stack/components/bello-mujoco/config/emulator_mini.yaml
 uv run bello-run-hardware task=locomotion checkpoint_path=checkpoints/RUN \
   remote_endpoint=http://127.0.0.1:50054 upper_body_tracking_enabled=false
 ```
 
 Start hardwared and the visualizer/remote service separately; see [Lima](macos_vcan.md).
+The emulator is a native stack command, not a Hydra/Python entrypoint; see
+[emulator configuration](emulator.md).
 Hardware commands default to read-only preflight. `arm=true` enables the staged
 operator-confirmed control workflow. It is not an authorization substitute for
 physical safety checks. See [hardware](hardware.md) before arming.

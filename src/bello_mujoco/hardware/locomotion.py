@@ -57,6 +57,7 @@ from bello_mujoco.hardware.reference import ReferenceUnavailable, RobotReference
 from bello_mujoco.policy import infer_policy_action
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.robot import robot_definition
+from bello_mujoco.sim import hardware_imu_to_policy_rotation
 from bello_mujoco.training.ppo import normalize_observation
 
 
@@ -67,48 +68,6 @@ def _upper_body_follow_supported(asset: str, joint_names: frozenset[str]) -> boo
         if actuator.mode == "hold"
     )
     return bool(expected) and joint_names == expected
-
-
-def _hardware_imu_to_policy_rotation(env: BelloLocomotionEnv) -> np.ndarray:
-    model = env.model.mj_model
-    hardware_body_name = env.model.robot.default_imu_body_name
-    policy_body_name = env.model.imu_body_name
-    hardware_body_id = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_BODY, hardware_body_name
-    )
-    policy_body_id = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_BODY, policy_body_name
-    )
-    if hardware_body_id < 0 or policy_body_id < 0:
-        raise ValueError(
-            "hardware and policy IMU bodies must exist in the checkpoint model: "
-            f"hardware={hardware_body_name!r}, policy={policy_body_name!r}"
-        )
-    if model.body_weldid[hardware_body_id] != model.body_weldid[policy_body_id]:
-        raise ValueError(
-            "hardware and policy IMU frames must be rigidly attached: "
-            f"hardware={hardware_body_name!r}, policy={policy_body_name!r}"
-        )
-
-    data = mujoco.MjData(model)
-    data.qpos[:] = env.model.default_qpos
-    mujoco.mj_forward(model, data)
-    world_from_hardware = data.xmat[hardware_body_id].reshape(3, 3)
-    world_from_policy = data.xmat[policy_body_id].reshape(3, 3)
-    policy_from_hardware = world_from_policy.T @ world_from_hardware
-    if (
-        not np.all(np.isfinite(policy_from_hardware))
-        or not np.allclose(
-            policy_from_hardware.T @ policy_from_hardware,
-            np.eye(3),
-            atol=1.0e-8,
-        )
-        or not math.isclose(
-            float(np.linalg.det(policy_from_hardware)), 1.0, abs_tol=1.0e-8
-        )
-    ):
-        raise ValueError("hardware-to-policy IMU rotation is invalid")
-    return policy_from_hardware
 
 
 def _transform_hardware_imu_frame(
@@ -209,7 +168,9 @@ class HardwarePolicyAdapter:
         self.env = env
         self.metadata = metadata
         self.hardware_imu_frame_name = env.model.robot.default_imu_body_name
-        self.hardware_imu_to_policy_rotation = _hardware_imu_to_policy_rotation(env)
+        self.hardware_imu_to_policy_rotation = hardware_imu_to_policy_rotation(
+            env.model
+        )
         self.physical_coordinate_names = actuator_coordinate_names(env)
         self.coordinate_index = {
             name: index for index, name in enumerate(self.physical_coordinate_names)

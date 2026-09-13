@@ -1,11 +1,11 @@
 """CPU cross-language behavior checks with synthetic motors and observations."""
 
-from types import SimpleNamespace
 import json
 import subprocess
 
 import jax
 import jax.numpy as jnp
+import mujoco
 import numpy as np
 import pytest
 
@@ -14,6 +14,8 @@ from bello_mujoco.deployment import actor_onnx, deployment_bundle
 from bello_mujoco.envs.gait import (
     GaitConfig,
     advance_gait_phase,
+    gait_is_active,
+    gait_phase_features,
     resolve_gait_command_transition,
 )
 from bello_mujoco.envs.locomotion_config import (
@@ -22,11 +24,7 @@ from bello_mujoco.envs.locomotion_config import (
     ObservationScaleConfig,
 )
 from bello_mujoco.envs.rewards import CommandConfig
-from bello_mujoco.hardware.locomotion import (
-    HardwarePolicyAdapter,
-    _transform_hardware_imu_frame,
-)
-from bello_mujoco.hardware.runtime import HardwareFrame
+from bello_mujoco.envs.observations import build_observation
 from bello_mujoco.policy import ActorCritic, ActorCriticConfig, infer_policy_action
 from bello_mujoco.training.ppo import PPOConfig, ObservationNormState
 from bello_mujoco.training.tracking import to_builtin
@@ -117,15 +115,7 @@ def test_native_telemetry_matches_python_through_command_transitions(
         metadata=metadata,
     )
     bundle = deployment_bundle(graph.SerializeToString(), physics=b"<mujoco/>")
-    adapter = HardwarePolicyAdapter.__new__(HardwarePolicyAdapter)
-    adapter.env = SimpleNamespace(
-        config=env_config, command_config=command_config, observation_layout=layout
-    )
-    adapter.inverse_transform = inverse
-    adapter.default_joint_target = default
-    adapter.policy_indices = indices
-    adapter._last_action = np.zeros(2, dtype=np.float32)
-    adapter._gait_phase = 0.0
+    last_action = np.zeros(2, dtype=np.float32)
     requests = (
         [[0, 0, 0]] * 3
         + [[0, 0.4, 0]] * 90
@@ -180,36 +170,42 @@ def test_native_telemetry_matches_python_through_command_transitions(
             command=request,
         )
         samples.append(sample)
-        active = (
-            adapter._gait_command_is_moving(np.asarray(current)) or int(pending) != 0
-        )
+        active = bool(gait_is_active(current, command_config, pending, gait))
         current, phase, pending = transition(
             current, jnp.array(request), phase, pending, preference, index > 0
         )
-        next_active = (
-            adapter._gait_command_is_moving(np.asarray(current)) or int(pending) != 0
-        )
+        next_active = bool(gait_is_active(current, command_config, pending, gait))
         if not active and next_active:
             preference = not preference
-        adapter._gait_phase = float(phase)
-        frame = HardwareFrame(
-            positions=np.array(sample["motor_position"]),
-            velocities=np.array(sample["motor_velocity"]),
-            orientation_xyzw=np.array(sample["orientation_xyzw"]),
-            angular_velocity=np.array(sample["angular_velocity"]),
-            linear_acceleration=np.array(sample["linear_acceleration"]),
-            max_motor_age_ms=0,
-            imu_age_ms=0,
-            group_states=(),
-            group_causes=(),
-            group_details=(),
-            max_group_age_ms=0,
-            sample_span_ms=0.0,
-            state_frame_round_trip_ms=0.0,
+        world_from_hardware = np.empty(9)
+        quaternion = np.asarray(sample["orientation_xyzw"])[[3, 0, 1, 2]]
+        mujoco.mju_quat2Mat(world_from_hardware, quaternion)
+        world_from_policy = world_from_hardware.reshape(3, 3) @ rotation.T
+        gravity = world_from_policy.T @ np.array([0.0, 0.0, -1.0])
+        # Restore specific force from hardwared's gravity-removed acceleration,
+        # then exercise the actual training observation assembler.
+        terms = tuple(
+            jnp.asarray(value, dtype=jnp.float32)
+            for value in (
+                np.zeros(3),
+                rotation @ sample["linear_acceleration"] - 9.80665 * gravity,
+                rotation @ sample["angular_velocity"],
+                gravity,
+                np.zeros(1),
+                current,
+                (inverse @ sample["motor_position"] - default)[indices],
+                (inverse @ sample["motor_velocity"])[indices],
+                np.zeros(2),
+                last_action,
+            )
         )
-        frame = _transform_hardware_imu_frame(frame, rotation)
-        observation = adapter._policy_frame_observation(
-            frame, np.asarray(current), gait_active=next_active
+        observation = np.asarray(
+            build_observation(
+                terms,
+                gait_phase_features(phase, current, command_config, pending, gait),
+                env_config.observation,
+                None,
+            )
         )
         history = (
             np.repeat(observation[None], 3, axis=0)
@@ -217,14 +213,14 @@ def test_native_telemetry_matches_python_through_command_transitions(
             else np.concatenate((history[1:], observation[None]))
         )
         result = infer(jnp.array(history.reshape(-1)))
-        adapter._last_action = np.asarray(result.applied_action)
+        last_action = np.asarray(result.applied_action)
         span = np.where(
-            adapter._last_action >= 0,
+            last_action >= 0,
             limits[indices, 1] - nominal[indices],
             nominal[indices] - limits[indices, 0],
         )
         target = nominal.copy()
-        target[indices] += np.clip(adapter._last_action, -1, 1) * span
+        target[indices] += np.clip(last_action, -1, 1) * span
         expected.append(
             (
                 observation,

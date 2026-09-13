@@ -243,11 +243,11 @@ def export_checkpoint(config: ExportConfig) -> Path:
         "hardware_imu_frame": model.robot.default_imu_body_name,
     }
     if saved.task == "locomotion":
-        from bello_mujoco.hardware.locomotion import _hardware_imu_to_policy_rotation
+        from bello_mujoco.sim import hardware_imu_to_policy_rotation
 
         metadata["command"] = to_builtin(env.command_config)
-        metadata["policy_from_hardware"] = _hardware_imu_to_policy_rotation(
-            env
+        metadata["policy_from_hardware"] = hardware_imu_to_policy_rotation(
+            model
         ).tolist()
         metadata["left_axis"] = (-env._locomotion_right_axis()[:2]).tolist()
     else:

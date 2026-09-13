@@ -268,25 +268,23 @@ class BelloModel:
         )
 
 
-def preserve_runtime_physics(source: mujoco.MjModel, target: mujoco.MjModel) -> None:
-    """Copy runtime physics overrides across a topology-preserving rebuild."""
-
-    if source.ngeom != target.ngeom:
-        raise ValueError("model rebuild unexpectedly changed the geom count")
-    if target.nbody < source.nbody or any(
-        source.body(i).name != target.body(i).name
-        or source.body_parentid[i] != target.body_parentid[i]
-        for i in range(source.nbody)
-    ):
-        raise ValueError("model rebuild unexpectedly changed existing body topology")
-    # XML round-trips otherwise round CAD masses, centres, and principal inertias.
-    for field in ("body_mass", "body_inertia", "body_ipos", "body_iquat"):
-        getattr(target, field)[: source.nbody] = getattr(source, field)
-    target.opt.timestep = source.opt.timestep
-    target.geom_margin[:] = source.geom_margin
-    target.geom_solref[:] = source.geom_solref
-    target.geom_solimp[:] = source.geom_solimp
-    mujoco.mj_setConst(target, mujoco.MjData(target))
+def hardware_imu_to_policy_rotation(model: BelloModel) -> np.ndarray:
+    """Resolve the rigid CAD rotation from hardwared's frame to the actor IMU."""
+    mj_model = model.mj_model
+    hardware_name = model.robot.default_imu_body_name
+    policy_name = model.imu_body_name
+    hardware_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, hardware_name)
+    policy_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, policy_name)
+    if hardware_id < 0 or policy_id < 0:
+        raise ValueError("hardware and policy IMU bodies must exist in the model")
+    if mj_model.body_weldid[hardware_id] != mj_model.body_weldid[policy_id]:
+        raise ValueError("hardware and policy IMU frames must be rigidly attached")
+    data = mujoco.MjData(mj_model)
+    data.qpos[:] = model.default_qpos
+    mujoco.mj_kinematics(mj_model, data)
+    world_from_hardware = data.xmat[hardware_id].reshape(3, 3)
+    world_from_policy = data.xmat[policy_id].reshape(3, 3)
+    return world_from_policy.T @ world_from_hardware
 
 
 def resolve_imu_body_name(

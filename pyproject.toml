@@ -39,7 +39,6 @@ bello-train = "bello_mujoco.cli:train_entrypoint"
 bello-eval = "bello_mujoco.cli:eval_entrypoint"
 bello-export-policy = "bello_mujoco.cli:export_entrypoint"
 bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
-bello-run-emulator = "bello_mujoco.cli:emulator_entrypoint"
 bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
 bello-run-hands = "bello_mujoco.cli:hands_entrypoint"
 bello-run-reference = "bello_mujoco.cli:reference_entrypoint"
@@ -109,7 +108,3 @@ ignore = [
   # Frozen configuration values are intentionally safe shared defaults.
   "B008",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-# The predicate is invoked synchronously while last_sequence remains in scope.
-"src/bello_mujoco/hardware/pose.py" = ["B023"]

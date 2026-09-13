@@ -20,7 +20,6 @@ from bello_mujoco.configuration import (
     locomotion_training_profile,
     motion_training_profile,
 )
-from bello_mujoco.robot import AssetName
 
 if TYPE_CHECKING:
     from bello_mujoco.training.tracking import WandbConfig
@@ -74,17 +73,6 @@ class VastTrainCommandConfig:
     skip_confirmation: bool
     dry_run: bool
     preferred_countries: list[str]
-
-
-@dataclass(frozen=True)
-class EmulatorCommandConfig:
-    asset: AssetName
-    bus_interfaces: tuple[str, ...]
-    command_latency_seconds: float
-    motor_kp_scale: float
-    motor_kd_scale: float
-    video_path: Path | None
-    end_effector_payload_mass_kg: float
 
 
 @dataclass(frozen=True)
@@ -402,35 +390,6 @@ def _vast_train_hydra(config: DictConfig) -> None:
         print(f"error: {safe_exception_message(exc)}", file=sys.stderr)
         raise SystemExit(1) from None
     raise SystemExit(status)
-
-
-def emulator_entrypoint() -> None:
-    _expand_path_overrides(("video_path=",))
-    _emulator_hydra()
-
-
-@hydra.main(
-    version_base=None,
-    config_path=config_path("commands"),
-    config_name="emulator",
-)
-def _emulator_hydra(config: DictConfig) -> None:
-    command = command_config(EmulatorCommandConfig, config)
-    from bello_mujoco.robstride import emulator
-
-    emulator.run_emulator(
-        emulator.EmulatorConfig(
-            bus_interfaces=command.bus_interfaces,
-            command_latency_seconds=command.command_latency_seconds,
-            motor_kp_scale=command.motor_kp_scale,
-            motor_kd_scale=command.motor_kd_scale,
-            video_path=command.video_path,
-            asset_config=replace(
-                emulator.default_emulator_asset_config(command.asset),
-                end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
-            ),
-        )
-    )
 
 
 def reference_entrypoint() -> None:
