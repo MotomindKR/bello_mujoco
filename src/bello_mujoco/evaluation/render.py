@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import mujoco
@@ -23,7 +25,9 @@ from bello_mujoco.envs.gait import gait_frequency, resolve_gait_command_transiti
 from bello_mujoco.envs.rewards import command_is_moving
 from bello_mujoco.policy import (
     apply_actor,
+    init_actor_critic,
     init_observation_stack,
+    policy_observation_size,
     sample_actor_action,
     stacked_observation,
     update_observation_stack,
@@ -156,17 +160,28 @@ def render_policy_rollout_isolated(
         raise ValueError("software evaluation requires a native-only rendering model")
     # Do not serialize cached JAX properties or device arrays from the trainer.
     env_fields = {field.name: getattr(env, field.name) for field in fields(env)}
+    weights = BytesIO()
+    eqx.tree_serialise_leaves(weights, policy)
     return run_software_evaluation(
         _render_host_policy,
         env_fields,
-        jax.device_get(policy),
+        weights.getvalue(),
         jax.device_get(kwargs),
     )
 
 
-def _render_host_policy(env_fields: dict, policy, kwargs: dict) -> RolloutStats:
+def _render_host_policy(env_fields: dict, weights: bytes, kwargs: dict) -> RolloutStats:
     env = BelloLocomotionEnv(**env_fields)
-    return render_policy_rollout(env, jax.device_put(policy), **kwargs)
+    config = kwargs["ppo_config"].policy
+    policy = init_actor_critic(
+        jax.random.PRNGKey(0),
+        policy_observation_size(env.observation_size, config),
+        env.action_size,
+        config,
+        critic_obs_size=policy_observation_size(env.critic_observation_size, config),
+    )
+    policy = eqx.tree_deserialise_leaves(BytesIO(weights), policy)
+    return render_policy_rollout(env, policy, **kwargs)
 
 
 def render_policy_rollout(

@@ -3,6 +3,8 @@ import pickle
 from pathlib import Path
 from types import SimpleNamespace
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import mujoco
 import numpy as np
@@ -18,7 +20,7 @@ from bello_mujoco.envs.locomotion_config import (
 from bello_mujoco.evaluation import locomotion as evaluation
 from bello_mujoco.evaluation import render
 from bello_mujoco.gamepad import GamepadInput
-from bello_mujoco.policy import PolicyInferenceStep
+from bello_mujoco.policy import ActorCritic, ActorCriticConfig, PolicyInferenceStep
 from bello_mujoco.training import locomotion as training
 from bello_mujoco.training.locomotion import TrainingVideoConfig
 from bello_mujoco.training.ppo_config import PPOConfig
@@ -443,7 +445,10 @@ def test_training_video_failure_stops_training(monkeypatch) -> None:
         )
 
 
-def test_isolated_video_sends_host_policy_without_environment_caches(monkeypatch):
+@pytest.mark.parametrize("activation", ["swish", "elu", "tanh"])
+def test_isolated_video_sends_host_policy_without_environment_caches(
+    monkeypatch, activation
+):
     env = object.__new__(BelloLocomotionEnv)
     model = SimpleNamespace(
         mjx_model=None,
@@ -455,25 +460,55 @@ def test_isolated_video_sends_host_policy_without_environment_caches(monkeypatch
         )
     object.__setattr__(env, "cached_device_value", jnp.ones(1))
     captured = []
+    config = PPOConfig(
+        policy=ActorCriticConfig(
+            hidden_dims=(4,), activation=activation, obs_stack_size=2
+        )
+    )
+    actor = ActorCritic(
+        6, 2, config.policy, critic_obs_size=10, key=jax.random.PRNGKey(9)
+    )
 
     def capture(function, env_fields, policy, kwargs):
         # Native MuJoCo models must also survive the spawn serialization boundary.
         payload = pickle.loads(pickle.dumps((env_fields, policy, kwargs)))
         captured.append(payload)
-        return {"rendered_steps": 1}
+        return function(*payload)
 
     monkeypatch.setattr(render, "run_software_evaluation", capture)
+    monkeypatch.setattr(
+        render,
+        "BelloLocomotionEnv",
+        lambda **_: SimpleNamespace(
+            observation_size=3,
+            critic_observation_size=5,
+            action_size=2,
+        ),
+    )
+    restored = []
+    monkeypatch.setattr(
+        render,
+        "render_policy_rollout",
+        lambda _, policy, **kwargs: restored.append(policy) or {"rendered_steps": 1},
+    )
     stats = render.render_policy_rollout_isolated(
         env,
-        jnp.ones(2),
+        actor,
+        ppo_config=config,
         observation_norm_state=init_observation_norm_state(2),
     )
     assert stats == {"rendered_steps": 1}
     env_fields, policy, kwargs = captured[0]
     assert "cached_device_value" not in env_fields
     assert env_fields["model"].mj_model.nq == 0
-    assert isinstance(policy, np.ndarray)
+    assert isinstance(policy, bytes)
     assert isinstance(kwargs["observation_norm_state"].mean, np.ndarray)
+    for expected, actual in zip(
+        jax.tree.leaves(eqx.filter(actor, eqx.is_array)),
+        jax.tree.leaves(eqx.filter(restored[0], eqx.is_array)),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(expected, actual)
 
 
 def test_isolated_video_rejects_training_model():
