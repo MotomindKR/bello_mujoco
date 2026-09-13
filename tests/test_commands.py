@@ -44,6 +44,50 @@ def test_importing_command_surface_does_not_import_jax() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_export_cli_logging_preserves_clean_checkout(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("outputs/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from bello_mujoco import cli, deployment; "
+            "deployment.export_checkpoint = lambda config: 'export-dispatched'; "
+            "cli.export_entrypoint()",
+            "checkpoint_path=checkpoints/sample",
+            "output_path=outputs/policy.zip",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "export-dispatched" in result.stdout
+    assert (
+        subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=tmp_path,
+            text=True,
+        )
+        == ""
+    )
+
+
 def test_training_entrypoint_uses_memory_sharing_jax_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
