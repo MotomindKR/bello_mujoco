@@ -39,6 +39,9 @@ uv run bello-eval task=locomotion checkpoint_path=checkpoints/RUN gamepad_enable
 uv run bello-eval task=motion checkpoint_path=checkpoints/RUN output_path=outputs/motion.mp4
 ```
 
+Locomotion evaluation streams to Rerun; motion evaluation writes video to
+`output_path`.
+
 Commands use the configured robot command frame; Bello and Mini do not share
 their forward axis. Evaluation reconstructs saved normalization and feedback
 settings rather than silently cleaning observations.

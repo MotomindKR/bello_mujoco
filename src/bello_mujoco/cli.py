@@ -49,7 +49,6 @@ class EvalCommandConfig:
     checkpoint_path: Path | None
     end_effector_payload_mass_kg: float | None
     output_path: Path
-    video_path: Path | None
     command: tuple[float, float, float]
     steps: int | None
     stop_on_done: bool
@@ -199,7 +198,7 @@ def eval_entrypoint() -> None:
     from bello_mujoco.evaluation.software import configure_software_rendering
 
     configure_software_rendering()
-    _expand_path_overrides(("checkpoint_path=", "output_path=", "video_path="))
+    _expand_path_overrides(("checkpoint_path=", "output_path="))
     _eval_hydra()
 
 
@@ -233,7 +232,6 @@ def _eval_hydra(config: DictConfig) -> None:
                 "stochastic_actions",
                 "action_seed",
                 "gamepad_enabled",
-                "video_path",
             ),
             context="task=motion",
         )
@@ -249,7 +247,7 @@ def _eval_hydra(config: DictConfig) -> None:
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
     _reject_explicit_fields(
-        ("output_path", "video_path", "end_effector_payload_mass_kg"),
+        ("output_path", "end_effector_payload_mass_kg"),
         context="task=locomotion",
     )
     if command.gamepad_enabled:
