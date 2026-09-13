@@ -676,6 +676,12 @@ def test_remote_command_preflights_software_rendering() -> None:
     assert script.index("mujoco.Renderer") < script.index("total_timesteps=768")
     assert "load_locomotion_policy_runtime(checkpoint, use_viewer_model=True)" in script
     assert "load_checkpoint_update(checkpoint) < 1" in script
+    checkpoint_render = script.split(
+        'python - "checkpoints/vast-preflight-$run_name" <<\'PY\'', 1
+    )[1]
+    assert checkpoint_render.index("configure_software_rendering()") < (
+        checkpoint_render.index("import jax")
+    )
     assert script.index("preflight_checkpoint_restored") < script.rindex(
         "uv run --group training bello-train"
     )

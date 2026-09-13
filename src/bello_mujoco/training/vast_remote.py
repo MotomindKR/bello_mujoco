@@ -291,6 +291,9 @@ if [[ "$experiment" == bello_* ]]; then
 import sys
 from pathlib import Path
 
+from bello_mujoco.evaluation.software import configure_software_rendering
+configure_software_rendering()
+
 import equinox as eqx
 import jax
 import numpy as np
