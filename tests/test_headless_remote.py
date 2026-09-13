@@ -8,7 +8,6 @@ import pytest
 
 from bello_mujoco.hardware import _remote_pb2
 from bello_mujoco.hardware import headless_remote
-from bello_mujoco.hardware.remote import RemoteCommandConfig, RemoteCommandSource
 
 
 def _completed_process(links: object) -> subprocess.CompletedProcess[str]:
@@ -143,19 +142,6 @@ def test_service_stream_is_armed_and_permanently_neutral(monkeypatch) -> None:
             assert response.normalized_lateral == 0.0
             assert response.normalized_yaw == 0.0
             assert not response.abort_active
-
-        source = RemoteCommandSource(
-            RemoteCommandConfig(endpoint=f"http://127.0.0.1:{service.port}")
-        )
-        try:
-            first = source.wait_until_ready(1.0)
-            assert first.controller_connected
-            assert first.intent_armed
-            assert first.controller_name == "headless-neutral"
-            assert first.normalized_command == (0.0, 0.0, 0.0)
-            assert not first.abort_active
-        finally:
-            source.close()
 
 
 def test_service_uses_loopback_fixed_port() -> None:

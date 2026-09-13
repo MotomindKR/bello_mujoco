@@ -30,6 +30,11 @@ Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 Checkpoints require their exact clean root Git commit and pinned dependencies.
 Historical policies run from historical checkouts, without compatibility fallbacks.
 
+Policy control uses `rust/bello-policy`; there is no Python policy runner or
+Python hardware-client dependency. Live retargeting dependencies remain in the
+default `retargeting` dependency group.
+Physical deployment remains gated on [trained-policy commissioning](docs/hardware.md).
+
 ## Guides
 
 - [Commands](docs/commands.md) and [configuration locations](docs/training_configuration.md)

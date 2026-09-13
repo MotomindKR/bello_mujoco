@@ -70,8 +70,10 @@ and slewing. Optional JSONL policy logs use a new file, never overwrite one.
 Synthetic lifecycle checks cover rejection, stale feedback, remote abort,
 signals, and ambiguous start timeouts. A synthetic hold actor has completed the
 native policy/hardwared/MuJoCo lifecycle on isolated Lima vCAN. Trained-policy
-dynamics parity remains pending; keep the Python
-runner for regular operation until those checks finish.
+dynamics commissioning remains pending. This is the only policy runner;
+physical deployment stays gated on the trained-policy checks in
+[the deployment guide](../../docs/hardware.md). Synthetic success is not
+physical-deployment approval.
 Synthetic motion telemetry checks compare observations/actions/targets against
 JAX through root alignment, coupled coordinates, history reset, quaternion sign
 changes, clip-end lookahead, and both BeyondMimic action mappings.

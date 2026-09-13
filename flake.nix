@@ -34,7 +34,7 @@
           UV_PROJECT_ENVIRONMENT = if training then ".venv-training" else ".venv";
           JAX_PLATFORMS = if training then "cuda" else "cpu";
           shellHook = ''
-            if [ ! -f deps/bello-stack/components/bello-hardware-python/pyproject.toml ]; then
+            if [ ! -f deps/bello-stack/Cargo.toml ]; then
               echo "The pinned bello-stack submodule is not initialized." >&2
               echo "Run: git submodule update --init --recursive" >&2
               exit 1
@@ -125,7 +125,7 @@
             RUST_BACKTRACE = "1";
 
             shellHook = ''
-              if [ ! -f deps/bello-stack/components/bello-hardware-python/pyproject.toml ]; then
+              if [ ! -f deps/bello-stack/Cargo.toml ]; then
                 echo "The pinned bello-stack submodule is not initialized." >&2
                 echo "Run on the Mac: git submodule update --init --recursive" >&2
                 exit 1

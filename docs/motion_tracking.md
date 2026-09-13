@@ -27,8 +27,9 @@ Action/target bounds remain enforced; hardwared still filters sensor feedback.
 
 The [Rust policy runtime](../rust/bello-policy/README.md) supports motion telemetry
 and the standing/motion hardware lifecycle using bundled clips and headless
-MuJoCo kinematics. Synthetic inference and lifecycle checks pass; keep the Python
-runner available until full-emulator trained-policy parity is validated.
+MuJoCo kinematics. Synthetic inference and lifecycle checks pass. The Python
+policy runner is removed; physical deployment remains gated on trained-policy
+commissioning in the full emulator, as described in [hardware deployment](hardware.md).
 
 Edit `configs/train_motion/default.yaml` and `configs/profiles/train/motion.yaml`
 for recipes. Tracked bodies live in `src/bello_mujoco/robots/*_motion.yaml`.

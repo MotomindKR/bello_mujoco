@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import importlib
@@ -12,21 +11,17 @@ import string
 import sys
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any
 
 import grpc
 from google.protobuf import empty_pb2
 import numpy as np
 
 from bello_mujoco.fastsam_conditioning import (
-    FASTSAM_ROOT_CONDITIONING_VERSION,
     CausalFootConditionedRoot,
     FootConditionedRootConfig,
 )
 from bello_mujoco.hardware.smplx_retarget import (
-    GmrLiveRetargetConfig,
-    GmrRetargeter,
-    LiveGmrReferenceSource,
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     SmplxTargetFrame,
@@ -34,7 +29,6 @@ from bello_mujoco.hardware.smplx_retarget import (
 )
 from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
 from bello_mujoco.repository import repository_root
-from bello_mujoco.robot_tasks import motion_task_definition
 
 
 _ACTIVE_TRACKING_STATES = frozenset(("ACQUIRED", "TRACKING", "REACQUIRED"))
@@ -66,30 +60,6 @@ class FastSamGrpcConfig:
     root_conditioning: FootConditionedRootConfig = field(
         default_factory=FootConditionedRootConfig
     )
-
-    @classmethod
-    def from_hardware(cls, config: Any) -> FastSamGrpcConfig:
-        if config.smplx_neutral_model_path is None:
-            raise ValueError(
-                "smplx_neutral_model_path is required for live Fast-SAM hardware pose"
-            )
-        return cls(
-            endpoint=config.fastsam_endpoint,
-            neutral_model_path=config.smplx_neutral_model_path,
-            tls_root_certificate_path=config.fastsam_tls_root_certificate_path,
-            tls_server_name_override=config.fastsam_tls_server_name_override,
-            connect_timeout_seconds=config.fastsam_connect_timeout_seconds,
-            rpc_timeout_seconds=config.fastsam_rpc_timeout_seconds,
-            min_tracking_confidence=config.fastsam_min_tracking_confidence,
-            min_joint_confidence=config.fastsam_min_joint_confidence,
-            max_pipeline_latency_ms=config.fastsam_max_pipeline_latency_ms,
-            transport_latency_budget_ms=config.fastsam_transport_latency_budget_ms,
-            camera_to_world_quaternion_xyzw=(
-                config.fastsam_camera_to_world_quaternion_xyzw
-            ),
-            align_initial_heading=config.fastsam_align_initial_heading,
-            align_initial_floor=config.fastsam_align_initial_floor,
-        )
 
     def __post_init__(self) -> None:
         if not self.endpoint or "://" in self.endpoint:
@@ -567,43 +537,6 @@ class FastSamSmplxStream:
         self._channel = None
         if channel is not None:
             channel.close()
-
-
-@contextmanager
-def fastsam_reference_source(
-    adapter: Any,
-    config: Any,
-    *,
-    validate_reference: Any,
-    live_target_check: str,
-) -> Iterator[LiveGmrReferenceSource]:
-    """Build the shared Fast-SAM transport and source-rate GMR worker."""
-
-    grpc_config = FastSamGrpcConfig.from_hardware(config)
-    profile = motion_task_definition(adapter.env.model.robot.asset).gmr
-    stream = FastSamSmplxStream(grpc_config, profile.source_body_names)
-    with stream:
-        retargeter = GmrRetargeter(
-            adapter.env,
-            GmrLiveRetargetConfig(human_height_m=config.smplx_human_height_m),
-            validate_reference=validate_reference,
-        )
-        with LiveGmrReferenceSource(stream, retargeter) as source:
-            print(
-                {
-                    "fastsam_connection_preflight": "passed",
-                    "endpoint": grpc_config.endpoint,
-                    "stream_instance_id": stream.stream_instance_id,
-                    "stream_config_sha256": stream.stream_config_sha256,
-                    "inference_profile": stream.inference_profile,
-                    "inference_mode": stream.inference_mode,
-                    "body_representation": "smplx_body_22",
-                    "neutral_model_sha256": stream.neutral_model_sha256,
-                    "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
-                    "live_target_check": live_target_check,
-                }
-            )
-            yield source
 
 
 def import_pinned_fastsam_proto() -> tuple[Any, Any]:

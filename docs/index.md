@@ -19,7 +19,7 @@
 | `envs/` | Task stepping, actions, observations, gait, geometry, randomization, rewards |
 | `training/` | PPO, resumable state, W&B, remote training |
 | `evaluation/` | Native CPU rollouts and isolated software video workers |
-| `hardware/` | Hardware adapters and live FastSAM/RTMW retargeting |
+| `hardware/` | Live FastSAM/RTMW retargeting, reference/neutral-command producers, pose diagnostics, and independent hands |
 | `motion/` | Reference clip loading and runtime reconstruction |
 | `robots/` | Robot task defaults and coordinate mappings |
 | `deployment.py` | Self-contained ONNX/reference deployment bundles |

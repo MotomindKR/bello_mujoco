@@ -41,7 +41,7 @@ Create the Ubuntu guest, build the Linux Nix environment, and verify it:
 
 The first `start` downloads the Ubuntu image and installs Nix in the guest.
 `bootstrap` verifies or repairs that guest-local Nix installation, then downloads
-and builds the Rust/CAN and Python policy environment, so its first run can take
+and builds the Rust/CAN and Python tooling environment, so its first run can take
 several minutes. A transient installer download failure does not require deleting
 the VM: rerun `bootstrap`, which downloads the complete installer with retries
 before executing it. `doctor` must report both vCAN links, both IMU
@@ -103,10 +103,15 @@ git submodule status --recursive
 ```
 
 There is no Git-commit mismatch override.
-Place a local checkpoint under the ignored `checkpoints/` directory so it is
-both visible in the guest and does not dirty the checkout. The commands below
-use `checkpoints/bello_mini_locomotion` as an example; replace it with the
-checkpoint's actual path.
+Export a deployment bundle from the checkpoint's exact source revision:
+
+```bash
+uv run bello-export-policy checkpoint_path=checkpoints/RUN output_path=outputs/policy.zip
+```
+
+The ignored `outputs/` directory is visible in the guest without dirtying the
+checkout. The native runner consumes the bundle, not a training checkpoint
+directory. Physical deployment remains gated on [trained-policy commissioning](hardware.md).
 
 The `lima-vcan` Nix shell keeps platform-specific state off the shared source
 tree. Its Python environment and interpreter live below
@@ -220,26 +225,31 @@ a mistaken endpoint can select the wrong one.
 
 ### Terminal 5: read-only policy preflight
 
+Copy the native hardware profile to ignored local configuration:
+
+```bash
+mkdir -p outputs
+cp rust/bello-policy/config/hardware.yaml outputs/policy-hardware.yaml
+```
+
+In that YAML, set `control.remote.endpoint` to
+`http://host.lima.internal:50054` for the Mac visualizer, or
+`http://127.0.0.1:50054` for the zero-only guest service. Set
+`control.max_duration_seconds: 30` for a bounded commissioning run and keep
+`control.following.enabled: false` unless the reference producer is running.
 Run preflight before every armed simulated run:
 
 ```bash
-./scripts/lima_vcan.sh run uv run bello-run-hardware \
-  task=locomotion \
-  checkpoint_path=checkpoints/bello_mini_locomotion \
-  endpoint=http://127.0.0.1:50051 \
-  remote_endpoint=http://host.lima.internal:50054 \
-  upper_body_tracking_enabled=false
+./scripts/lima_vcan.sh run nix develop .#rust-runtime --command \
+  cargo run --locked -p bello-policy -- \
+  --policy outputs/policy.zip --source . \
+  --hardware-config outputs/policy-hardware.yaml
 ```
 
-That remote endpoint selects the native Mac visualizer. When intentionally
-using the zero-only guest service from Terminal 4B, replace it with
-`remote_endpoint=http://127.0.0.1:50054`.
-
-The default `arm=false` validates the checkpoint, policy, services, motor
+Without `--arm`, the runner validates the bundle, policy, services, motor
 inventory, IMU frame, and a complete state sample. It acquires no control lease
 and sends no motor command. Do not continue unless its result contains
-`'hardware_preflight': 'passed'` and reports that no lease or command was
-issued.
+`"hardware_preflight": "passed"` and `"armed": false`.
 
 ## Run an armed simulation
 
@@ -247,18 +257,13 @@ Keep Terminals 1, 2, and exactly one Terminal 4 option running. Start a bounded
 simulated run in Terminal 5:
 
 ```bash
-./scripts/lima_vcan.sh run uv run bello-run-hardware \
-  task=locomotion \
-  checkpoint_path=checkpoints/bello_mini_locomotion \
-  endpoint=http://127.0.0.1:50051 \
-  remote_endpoint=http://host.lima.internal:50054 \
-  upper_body_tracking_enabled=false \
-  duration_seconds=30 \
-  arm=true
+./scripts/lima_vcan.sh run nix develop .#rust-runtime --command \
+  cargo run --locked -p bello-policy -- \
+  --policy outputs/policy.zip --source . \
+  --hardware-config outputs/policy-hardware.yaml --arm
 ```
 
-When using Terminal 4B instead, replace the armed command's remote endpoint
-with `remote_endpoint=http://127.0.0.1:50054`, just as in preflight.
+Use the same local hardware YAML and command authority validated during preflight.
 
 Follow the interactive sequence exactly:
 

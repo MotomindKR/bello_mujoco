@@ -10,7 +10,6 @@ The YAML files linked below are the authoritative field/default reference.
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
-| `bello-run-hardware` | [hardware.yaml](../configs/commands/hardware.yaml) | Read-only preflight or explicitly armed policy |
 | `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | RTMW-driven Linker hand control |
 | `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Independent RTMW/GMR joint-reference producer |
 
@@ -41,16 +40,18 @@ video failures are fatal; use `video_enabled=false` to disable videos explicitly
 nix develop .#rust-runtime --command cargo run --locked \
   --manifest-path deps/bello-stack/Cargo.toml -p bello-mujoco -- \
   run --config deps/bello-stack/components/bello-mujoco/config/emulator_mini.yaml
-uv run bello-run-hardware task=locomotion checkpoint_path=checkpoints/RUN \
-  remote_endpoint=http://127.0.0.1:50054 upper_body_tracking_enabled=false
+nix develop .#rust-runtime --command cargo run --locked -p bello-policy -- \
+  --policy outputs/policy.zip --source . \
+  --hardware-config rust/bello-policy/config/hardware.yaml
 ```
 
 Start hardwared and the visualizer/remote service separately; see [Lima](macos_vcan.md).
-The emulator is a native stack command, not a Hydra/Python entrypoint; see
-[emulator configuration](emulator.md).
-Hardware commands default to read-only preflight. `arm=true` enables the staged
-operator-confirmed control workflow. It is not an authorization substitute for
-physical safety checks. See [hardware](hardware.md) before arming.
+The emulator and policy runner are native commands, not Hydra/Python entrypoints.
+See [emulator configuration](emulator.md) and the
+[policy runtime](../rust/bello-policy/README.md).
+Policy control defaults to read-only preflight. `--arm` enables the staged
+operator-confirmed workflow for authorized commissioning. Physical deployment
+remains gated on trained-policy validation; see [hardware](hardware.md).
 
 RTMW upper-body following requires the live service and licensed SMPL-X model.
 Independent hand control uses classic CAN directly, not hardwared motor targets.

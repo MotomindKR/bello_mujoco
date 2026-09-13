@@ -14,7 +14,6 @@ import pytest
 from bello_mujoco.hardware import rtmw
 from bello_mujoco.hardware.rtmw import (
     RTMW_COORDINATE_SPACE,
-    RTMW_REPRESENTATION,
     RTMW_ROTATION_SEMANTICS,
     RTMW_SCHEMA_ID,
     RTMW_SMPLX52_NAMES,
@@ -25,6 +24,7 @@ from bello_mujoco.hardware.rtmw import (
     _validate_stream_info,
     import_pinned_rtmw_proto,
 )
+from bello_mujoco.hardware.rtmw_contract import RTMW_REPRESENTATION
 from bello_mujoco.hardware.smplx_retarget import (
     SMPLX_MODEL_TO_WORLD_WXYZ,
     SmplxTargetFrame,
@@ -874,105 +874,6 @@ def test_rtmw_protobuf_import(monkeypatch) -> None:
 
     assert skeleton_pb2.StreamInfo.DESCRIPTOR.full_name == "rtmw.teleop.v1.StreamInfo"
     assert hasattr(skeleton_pb2_grpc, "SkeletonServiceStub")
-
-
-@pytest.mark.parametrize(
-    "asset",
-    (
-        pytest.param("bello", id="bello"),
-        pytest.param("bello_mini", id="bello-mini"),
-    ),
-)
-def test_rtmw_reference_source_uses_selected_robot_profile(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    asset: str,
-) -> None:
-    source_config = SimpleNamespace(
-        endpoint="127.0.0.1:50055",
-        human_height_m=1.75,
-        max_source_interval_seconds=0.70,
-    )
-    calls: dict[str, object] = {}
-
-    class FakeStream:
-        neutral_model_sha256 = "a" * 64
-        stream_instance_id = "test-stream"
-        stream_config_sha256 = "b" * 64
-        depth_provenance = "test-depth"
-
-        def __enter__(self) -> FakeStream:
-            return self
-
-        def __exit__(self, *_exception: object) -> bool:
-            return False
-
-    stream = FakeStream()
-
-    class FakeSource:
-        def __init__(self, actual_stream: object, retargeter: object) -> None:
-            calls["source"] = (actual_stream, retargeter)
-
-        def __enter__(self) -> FakeSource:
-            return self
-
-        def __exit__(self, *_exception: object) -> bool:
-            return False
-
-    monkeypatch.setattr(
-        rtmw.RtmwGrpcConfig,
-        "from_hardware",
-        classmethod(lambda _cls, _config: source_config),
-    )
-
-    def make_stream(actual_config: object, source_body_names: tuple[str, ...]):
-        calls["stream"] = (actual_config, source_body_names)
-        return stream
-
-    def make_retargeter(
-        env: object,
-        config: object,
-        *,
-        validate_reference: object,
-    ) -> object:
-        retargeter = object()
-        calls["retargeter"] = (
-            env,
-            config,
-            validate_reference,
-            retargeter,
-        )
-        return retargeter
-
-    monkeypatch.setattr(rtmw, "RtmwSmplxStream", make_stream)
-    monkeypatch.setattr(rtmw, "GmrRetargeter", make_retargeter)
-    monkeypatch.setattr(rtmw, "LiveGmrReferenceSource", FakeSource)
-
-    validation = object()
-    env = SimpleNamespace(model=SimpleNamespace(robot=SimpleNamespace(asset=asset)))
-    adapter = SimpleNamespace(
-        env=env,
-        validate_upper_body_reference=validation,
-    )
-    hardware_config = SimpleNamespace(
-        rtmw_gmr_task_profile="live_upper_body",
-        smplx_human_height_m=1.66,
-    )
-    with rtmw.rtmw_locomotion_reference_source(adapter, hardware_config) as result:
-        assert isinstance(result, FakeSource)
-
-    assert calls["stream"] == (
-        source_config,
-        motion_task_definition(asset).gmr.source_body_names,
-    )
-    retargeter_call = calls["retargeter"]
-    assert isinstance(retargeter_call, tuple)
-    assert retargeter_call[0] is env
-    assert retargeter_call[1].human_height_m == pytest.approx(1.66)
-    assert retargeter_call[1].task_profile == "live_upper_body"
-    assert retargeter_call[1].max_source_interval_seconds == pytest.approx(0.70)
-    assert retargeter_call[2] is validation
-    assert calls["source"] == (stream, retargeter_call[3])
 
 
 def test_rtmw_rejects_an_invalid_required_rotation(tmp_path: Path) -> None:

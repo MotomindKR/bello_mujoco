@@ -17,12 +17,12 @@ import pytest
 from bello_mujoco.hardware import rtmw_hands
 from bello_mujoco.hardware.rtmw import (
     RTMW_COORDINATE_SPACE,
-    RTMW_REPRESENTATION,
     RTMW_ROTATION_SEMANTICS,
     RTMW_SCHEMA_ID,
     RTMW_SMPLX52_NAMES,
     RTMW_SMPLX52_PARENTS,
 )
+from bello_mujoco.hardware.rtmw_contract import RTMW_REPRESENTATION
 from bello_mujoco.hardware.rtmw_hands import (
     RTMW_FINGER_TIP_NAMES,
     HandRawCalibration,

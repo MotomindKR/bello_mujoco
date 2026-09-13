@@ -11,9 +11,7 @@ import pytest
 
 from bello_mujoco.cli import (
     HandsCommandConfig,
-    HardwareCommandConfig,
     TrainCommandConfig,
-    _hardware_policy_log_path,
     _reject_explicit_fields,
     _warp_overrides,
 )
@@ -74,33 +72,6 @@ def test_training_entrypoint_preserves_explicit_allocator_setting(
 
     assert cli.os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "true"
     assert cli.os.environ["TF_GPU_ALLOCATOR"] == "platform"
-
-
-def test_hardware_entrypoint_forces_cpu_backend() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import os, sys; "
-                "os.environ['JAX_PLATFORMS'] = 'gpu'; "
-                "os.environ['JAX_PLATFORM_NAME'] = 'gpu'; "
-                "sys.argv = ['bello-run-hardware']; "
-                "import bello_mujoco.cli as cli; "
-                "cli._hardware_hydra = lambda: None; "
-                "cli.hardware_entrypoint(); "
-                "import jax; "
-                "assert os.environ['JAX_PLATFORMS'] == 'cpu'; "
-                "assert os.environ['JAX_PLATFORM_NAME'] == 'cpu'; "
-                "assert jax.default_backend() == 'cpu'"
-            ),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
 
 
 def test_hands_entrypoint_forces_cpu_backend(
@@ -181,21 +152,6 @@ def test_hands_command_wires_rtmw_mapping_and_l6_transport(
     assert runtime.geometry.thumb_adduction_range_degrees == pytest.approx(60.0)
 
 
-def test_hardware_policy_log_is_disabled_by_null() -> None:
-    assert _hardware_policy_log_path(None) is None
-
-
-def test_hardware_policy_log_expands_explicit_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-    assert _hardware_policy_log_path(Path("~/policy.jsonl")) == (
-        tmp_path / "policy.jsonl"
-    )
-
-
 @pytest.mark.parametrize(
     "value",
     (
@@ -263,10 +219,6 @@ def test_public_command_configs_are_strict() -> None:
             raise AssertionError(f"invalid public command config was accepted: {raw}")
 
     for config_type, raw in (
-        (HardwareCommandConfig, {"arm": 1}),
-        (HardwareCommandConfig, {"duration_seconds": True}),
-        (HardwareCommandConfig, {"remote_staleness_ms": True}),
-        (HardwareCommandConfig, {"joystick_command_scale": True}),
         (HandsCommandConfig, {"arm": 1}),
         (HandsCommandConfig, {"calibration_confirmed": 1}),
         (HandsCommandConfig, {"control_rate_hz": True}),

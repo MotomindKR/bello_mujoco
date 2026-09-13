@@ -2,45 +2,37 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import math
 from pathlib import Path
 import threading
 import time
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 import grpc
 from google.protobuf import empty_pb2
 import numpy as np
 
 from bello_mujoco.fastsam_conditioning import (
-    FASTSAM_ROOT_CONDITIONING_VERSION,
     CausalFootConditionedRoot,
     FootConditionedRootConfig,
 )
 from bello_mujoco.hardware import rtmw_contract as _rtmw_contract
 from bello_mujoco.hardware.rtmw_contract import (
     RTMW_COORDINATE_SPACE as RTMW_COORDINATE_SPACE,
-    RTMW_REPRESENTATION,
     RTMW_ROTATION_SEMANTICS as RTMW_ROTATION_SEMANTICS,
     RTMW_SCHEMA_ID as RTMW_SCHEMA_ID,
-    RTMW_SCHEMA_VERSION,
     RTMW_SMPLX52_NAMES,
     RTMW_SMPLX52_PARENTS,
     validate_stream_info as _validate_stream_info,
 )
 from bello_mujoco.hardware.smplx_retarget import (
-    GmrLiveRetargetConfig,
-    GmrRetargeter,
-    LiveGmrReferenceSource,
     SMPLX_MODEL_TO_WORLD_WXYZ,
     SmplxTargetFrame,
     load_smplx_standing_sample,
 )
 from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
-from bello_mujoco.robot_tasks import motion_task_definition
 
 _REQUIRED_RANK_TWO_ROTATION_NAMES = ("pelvis",)
 _RETRYABLE_GRPC_CODES = frozenset(
@@ -89,36 +81,6 @@ class RtmwGrpcConfig:
     root_conditioning: FootConditionedRootConfig = field(
         default_factory=FootConditionedRootConfig
     )
-
-    @classmethod
-    def from_hardware(cls, config: Any) -> RtmwGrpcConfig:
-        if config.smplx_neutral_model_path is None:
-            raise ValueError(
-                "smplx_neutral_model_path is required for live RTMW hardware pose"
-            )
-        return cls(
-            endpoint=config.rtmw_endpoint,
-            neutral_model_path=config.smplx_neutral_model_path,
-            tls_root_certificate_path=config.rtmw_tls_root_certificate_path,
-            tls_server_name_override=config.rtmw_tls_server_name_override,
-            connect_timeout_seconds=config.rtmw_connect_timeout_seconds,
-            rpc_timeout_seconds=config.rtmw_rpc_timeout_seconds,
-            human_height_m=config.rtmw_human_height_m,
-            min_joint_confidence=config.rtmw_min_joint_confidence,
-            min_rotation_confidence=config.rtmw_min_rotation_confidence,
-            max_required_rotation_residual_degrees=(
-                config.rtmw_max_required_rotation_residual_degrees
-            ),
-            max_pipeline_latency_ms=config.rtmw_max_pipeline_latency_ms,
-            transport_latency_budget_ms=config.rtmw_transport_latency_budget_ms,
-            max_source_interval_seconds=config.rtmw_max_source_interval_seconds,
-            max_source_age_ms=config.upper_body_follow.max_reference_age_ms,
-            camera_to_world_quaternion_xyzw=(
-                config.rtmw_camera_to_world_quaternion_xyzw
-            ),
-            align_initial_heading=config.rtmw_align_initial_heading,
-            align_initial_floor=config.rtmw_align_initial_floor,
-        )
 
     def __post_init__(self) -> None:
         if not self.endpoint or "://" in self.endpoint:
@@ -899,46 +861,6 @@ class RtmwSmplxStream:
             ready_future.cancel()
         if channel is not None:
             channel.close()
-
-
-@contextmanager
-def rtmw_locomotion_reference_source(
-    adapter: Any,
-    config: Any,
-) -> Iterator[LiveGmrReferenceSource]:
-    """Construct pinned RTMW gRPC -> GMR locomotion references."""
-
-    source_config = RtmwGrpcConfig.from_hardware(config)
-    asset = adapter.env.model.robot.asset
-    profile = motion_task_definition(asset).gmr
-    stream = RtmwSmplxStream(source_config, profile.source_body_names)
-    with stream:
-        retargeter = GmrRetargeter(
-            adapter.env,
-            GmrLiveRetargetConfig(
-                human_height_m=config.smplx_human_height_m,
-                task_profile=config.rtmw_gmr_task_profile,
-                max_source_interval_seconds=source_config.max_source_interval_seconds,
-            ),
-            validate_reference=adapter.validate_upper_body_reference,
-        )
-        with LiveGmrReferenceSource(stream, retargeter) as source:
-            print(
-                {
-                    "rtmw_connection_preflight": "passed",
-                    "endpoint": source_config.endpoint,
-                    "stream_instance_id": stream.stream_instance_id,
-                    "stream_config_sha256": stream.stream_config_sha256,
-                    "depth_provenance": stream.depth_provenance,
-                    "schema_version": RTMW_SCHEMA_VERSION,
-                    "representation": RTMW_REPRESENTATION,
-                    "gmr_task_profile": config.rtmw_gmr_task_profile,
-                    "neutral_model_sha256": stream.neutral_model_sha256,
-                    "root_conditioning": FASTSAM_ROOT_CONDITIONING_VERSION,
-                    "live_target_check": "deferred_until_after_RUN",
-                }
-            )
-            yield source
 
 
 def import_pinned_rtmw_proto() -> tuple[Any, Any]:

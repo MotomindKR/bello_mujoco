@@ -1,101 +1,74 @@
-# Hardware deployment
+# Policy control and deployment gate
 
-The Python hardware adapter reconstructs a checkpoint's saved observations and
-motor targets, and communicates through `bello-hardwared`'s client API. The
-visualizer and gRPC transport are unchanged. Canonical hardware mappings,
-directions, IDs, and limits live in pinned `bello-stack` descriptions.
+`rust/bello-policy` is the only policy-control runner. It uses CPU ONNX Runtime
+and the pinned `bello-stack` hardware client. Python remains responsible for
+training, evaluation, export, live retargeting, and independent hand control;
+there is no Python policy runner or compatibility launcher.
 
-## Read-only preflight
+**Physical policy deployment is not yet commissioned.** Synthetic inference and
+safety-lifecycle checks pass, but these do not establish trained-policy stability.
+Before physical deployment, a trained bundle from the exact clean refactor
+commit must pass CPU evaluation and isolated Lima/vCAN standing, walking,
+transitions, perturbations, and shutdown checks. Motion deployment also requires
+clip entry/completion/interruption checks. Review logs and videos for oscillation,
+rejections, stale observations, and timing failures. Then separately verify
+physical calibration, emergency stop, and support arrangements. Do not bypass
+hardwared protections. This is a commissioning requirement, not a new artifact
+version or compatibility flag; `--arm` alone is not evidence of approval.
 
-Start hardwared and the remote-command service, then:
+## Export and read-only preflight
+
+From the bundle's exact clean source checkout:
 
 ```bash
-uv run bello-run-hardware task=locomotion checkpoint_path=checkpoints/RUN \
-  endpoint=http://127.0.0.1:50051 remote_endpoint=http://127.0.0.1:50054 \
-  upper_body_tracking_enabled=false
+uv run bello-export-policy checkpoint_path=checkpoints/RUN output_path=outputs/policy.zip
+nix develop .#rust-runtime
+cargo run --locked -p bello-policy -- --policy outputs/policy.zip --source . \
+  --hardware-config rust/bello-policy/config/hardware.yaml
 ```
 
-Preflight validates the exact source commit, robot inventory, motor-coordinate
-mapping, IMU frame, fresh telemetry, and nominal pose without acquiring control.
-Use [Lima/vCAN](macos_vcan.md) before physical hardware. In Lima, the native Mac
-remote service is reached through `host.lima.internal`, not guest loopback.
+Start hardwared and the remote-command service first. Preflight checks source,
+inventory, coordinate coverage, nominal targets/gains, IMU frames, group state,
+and telemetry freshness without acquiring control or writing motor targets.
+Use [Lima/vCAN](macos_vcan.md) for commissioning, not physical CAN.
 
-## Armed operation
+For local settings, copy the hardware YAML to ignored `outputs/` and point
+`--hardware-config` at that file. Keep the tracked checkout clean. In Lima,
+set `control.remote.endpoint` to `http://host.lima.internal:50054` for the native
+Mac visualizer. The reference endpoint, limits, and logging controls live in
+the [Rust configuration](../rust/bello-policy/config/hardware.yaml).
 
-Only add `arm=true` after reviewing the robot, calibration, emergency stop, and
-support arrangements. Follow the prompts:
+## Isolated emulator control
 
-1. Support the robot and confirm `HOLD` to acquire control and ramp to nominal.
-2. After the ramp and settling, confirm `RUN` to start policy control.
-3. On shutdown, support the damped robot and confirm `IDLE` to disable/release.
+Add `--arm` only for an explicitly authorized commissioning run. Follow the
+interactive sequence: `HOLD` acquires control and ramps to nominal; `RUN` starts
+inference; after stopping, `IDLE` explicitly disables motors. Errors and
+interruptions request damping first. Without `IDLE`, hardwared's watchdog and
+lease-expiry safety remain authoritative.
 
-Motion deployment additionally uses a standing checkpoint and the `MOTION`
-transition. Its pose-estimator/reference requirements are checked before entry.
-Checkpoint defaults and public overrides are in
-[`configs/commands/hardware.yaml`](../configs/commands/hardware.yaml).
+Motion control uses a motion bundle plus a standing bundle and a fresh pose
+stream. `MOTION` blends from standing into the clip. Completion or the first
+Ctrl-C during motion returns to standing; another interrupt stops control.
+Malformed/stale feedback, rejected commands, remote abort, and SIGTERM stop
+control instead of attempting a standing recovery. See the
+[native runtime guide](../rust/bello-policy/README.md) for settings and commands.
 
-The runner continuously checks group state, command rejection, telemetry age,
-finite observations/actions, orientation/acceleration plausibility, target
-bounds, and control-loop deadlines. Errors follow the damp/disable/release
-safety path; do not bypass hardwared position-step or thermal protections.
-Optional `policy_log_path` records policy steps for diagnosis.
+The checkpoint owns normalization, motor targets, gait timing, command slew,
+and observation history. Motor feedback is converted to joint kinematics for
+observations. CAD frames define the IMU transform. Hardwared owns sensor filters;
+the policy runner does not apply another action/observation low-pass filter.
+The [emulator](emulator.md) owns its robot model independently of policy bundles.
 
-## Coordinates and observations
+## Live references and hands
 
-Policy actions target physical motor coordinates. Native ankle tendons encode
-the mechanical coupling. Motor telemetry is converted to joint kinematics for
-observations and safety, not to reinterpret policy outputs. Gains are explicit
-per-motor values. IMU placement and orientation come from the robot model;
-training and native evaluation use the same observation/filter functions.
-Emulator pose messages report the link origin's world position/linear velocity
-and body-frame angular velocity, not the offset inertial center's velocity.
-Command slew comes exclusively from the checkpoint's gait scheduler. The runner
-has no separate joystick slew limiter; hardwared feedback filtering is not
-reapplied in the policy process.
+`bello-run-reference` runs RTMW/GMR retargeting separately and publishes named
+joint references. It requires the live producer and a licensed SMPL-X model.
+Rust owns arm following, target speed/limit checks, and the transition to nominal
+when references are unavailable. Malformed messages or terminal producer errors
+stop control. FastSAM/RTMW integration libraries and their live shape/frame,
+confidence, and freshness checks remain available.
 
-Remote commands are semantic forward/right/yaw intent mapped into the robot's
-configured command frame. Do not assume Bello and Mini share their forward axis.
-
-## Live upper body
-
-RTMW upper-body following requires the producer endpoint and a licensed local
-`SMPLX_NEUTRAL.npz`. The live GMR bridge retains frame/shape, confidence,
-freshness, monotonic-time, joint-speed, and limit checks. Temporarily missing
-references blend arms to nominal; malformed/incompatible references fail.
-The lower-body policy remains responsible for locomotion.
-
-FastSAM/RTMW live integration libraries are retained. Offline motion conversion,
-TWIST/TWIST2 deployment, single-joint chirp tools, and elbow-yaw keyboard jogging
-are removed. Per-source revision fingerprints are replaced by the root commit.
-
-## Independent hands
-
-`bello-run-hands` validates RTMW hand mapping without arming by default. Explicit
-arming controls Linker hands over classic CAN directly; it does not route hand
-targets through hardwared. Configuration is in
-[`configs/commands/hands.yaml`](../configs/commands/hands.yaml). Verify bus,
-device IDs, side mapping, and emergency stop before enabling hand motion.
-
-## ONNX
-
-`bello-export-policy` emits one ZIP bundle with `policy.onnx`, mesh-free
-`physics.xml`, and, for motion
-tracking, `motion.npz`. This repository's `rust/bello-policy` provides the Rust CPU consumer.
-Its JSON-line inference tool performs no hardware writes. Resumable training
-state remains a separate checkpoint directory.
-
-The Rust emulator builds from canonical robot descriptions, not the policy bundle.
-Its CAN/IMU/pose process has completed an isolated Lima lifecycle with hardwared
-and a synthetic ONNX hold actor. Software video and isolated transport checks
-cover both robots; trained-policy stability is still pending. See [emulator usage](emulator.md).
-
-The native policy tool supports `--telemetry` for stateful observation/inference
-parity and `--hardware-config rust/bello-policy/config/hardware.yaml` for read-only
-preflight. Neither mode acquires control. An explicit `--arm` enables the
-experimental locomotion HOLD/RUN/IDLE lifecycle for isolated emulator validation.
-Live retargeting runs separately with `bello-run-reference`; Rust consumes its
-joint references and owns outage-to-nominal blending. Native motion tracking
-supports standing-to-clip transitions and a first-interrupt return to standing;
-malformed/stale feedback stops control. Synthetic integration checks cover these
-paths; physical commissioning remains separate.
-See its [usage guide](../rust/bello-policy/README.md).
+`bello-run-hands` independently controls Linker hands over classic CAN, not
+hardwared motor targets. It defaults to read-only validation; see
+[hands.yaml](../configs/commands/hands.yaml). Hand arming is separate from policy
+arming and requires its own bus, device, calibration, and safety review.

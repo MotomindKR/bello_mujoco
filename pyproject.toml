@@ -39,7 +39,6 @@ bello-train = "bello_mujoco.cli:train_entrypoint"
 bello-eval = "bello_mujoco.cli:eval_entrypoint"
 bello-export-policy = "bello_mujoco.cli:export_entrypoint"
 bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
-bello-run-hardware = "bello_mujoco.cli:hardware_entrypoint"
 bello-run-hands = "bello_mujoco.cli:hands_entrypoint"
 bello-run-reference = "bello_mujoco.cli:reference_entrypoint"
 
@@ -52,8 +51,7 @@ dev = [
   "pytest>=8.0.0",
   "ruff>=0.8.0",
 ]
-hardware = [
-  "bello-hardware",
+retargeting = [
   "daqp==0.8.7",
   "mink==1.2.0",
   "qpsolvers==4.12.0",
@@ -67,7 +65,7 @@ build-backend = "hatchling.build"
 packages = ["src/bello_mujoco"]
 
 [tool.uv]
-default-groups = ["dev", "hardware"]
+default-groups = ["dev", "retargeting"]
 environments = [
   "sys_platform == 'darwin' and platform_machine == 'arm64'",
   "sys_platform == 'linux' and platform_machine == 'aarch64'",
@@ -78,12 +76,6 @@ required-environments = [
   "sys_platform == 'linux' and platform_machine == 'aarch64'",
   "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
-
-[tool.uv.sources]
-bello-hardware = { workspace = true }
-
-[tool.uv.workspace]
-members = ["deps/bello-stack/components/bello-hardware-python"]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"
