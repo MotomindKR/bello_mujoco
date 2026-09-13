@@ -273,10 +273,20 @@ def preserve_runtime_physics(source: mujoco.MjModel, target: mujoco.MjModel) -> 
 
     if source.ngeom != target.ngeom:
         raise ValueError("model rebuild unexpectedly changed the geom count")
+    if target.nbody < source.nbody or any(
+        source.body(i).name != target.body(i).name
+        or source.body_parentid[i] != target.body_parentid[i]
+        for i in range(source.nbody)
+    ):
+        raise ValueError("model rebuild unexpectedly changed existing body topology")
+    # XML round-trips otherwise round CAD masses, centres, and principal inertias.
+    for field in ("body_mass", "body_inertia", "body_ipos", "body_iquat"):
+        getattr(target, field)[: source.nbody] = getattr(source, field)
     target.opt.timestep = source.opt.timestep
     target.geom_margin[:] = source.geom_margin
     target.geom_solref[:] = source.geom_solref
     target.geom_solimp[:] = source.geom_solimp
+    mujoco.mj_setConst(target, mujoco.MjData(target))
 
 
 def resolve_imu_body_name(

@@ -28,6 +28,13 @@ canonical URDF/hardware description, independently of policy bundles. It uses
 published `mujoco-rs` 6.0.1 without rendering features and retains native ankle
 tendons, EBIMU serial output, pose gRPC, and the interactive torso guide.
 
+Native model profiles accept explicit payload entries (`frame`, `mass_kg`,
+`radius_m`) at inertial-free attachment frames. See the
+[native runtime guide](../deps/bello-stack/components/bello-mujoco/README.md).
+Python actuator/torso-guide rebuilds preserve the loaded inertias without XML
+rounding. Common-model Python/Rust motor-command replay agrees numerically;
+this does not establish trained-policy stability through the live transport stack.
+
 In the Linux `nix develop .#rust-runtime` shell:
 
 ```bash
