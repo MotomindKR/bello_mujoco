@@ -14,6 +14,7 @@ import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.models.compiler import ModelConfig, CompiledRobot
+from bello_mujoco.models.ratings import motor_continuous_torque
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.observations import (
     build_observation,
@@ -85,6 +86,8 @@ class BelloLocomotionEnv:
             physics_dt=float(self.model.mj_model.opt.timestep),
         )
         self._validate_model_metadata()
+        if self.reward_config.enabled("stand_motor_continuous_torque_excess"):
+            _ = self._motor_continuous_torque
         if self.reward_config.gait.phase_shaped_clearance or any(
             self.reward_config.enabled(name)
             for name in ("stand_foot_foreaft", "stand_foot_width", "foot_crossing")
@@ -360,28 +363,6 @@ class BelloLocomotionEnv:
             raise ValueError(
                 "policy actuators require positive finite peak-force metadata"
             )
-        if self.reward_config.enabled("stand_hip_roll_continuous_torque_excess"):
-            hip_roll_indices = self._actuator_indices_named("hip_roll_joint")
-            policy_indices = np.asarray(model.policy_ctrl_indices, dtype=np.int32)
-            if hip_roll_indices.shape != (2,) or not np.all(
-                np.isin(hip_roll_indices, policy_indices, assume_unique=True)
-            ):
-                raise ValueError(
-                    "stand_hip_roll_continuous_torque_excess requires exactly two "
-                    "policy-controlled hip-roll actuators"
-                )
-        if self.reward_config.enabled("stand_waist_deviation"):
-            waist_indices = self._actuator_indices_named(
-                "waist_yaw_joint", "waist_roll_joint"
-            )
-            policy_indices = np.asarray(model.policy_ctrl_indices, dtype=np.int32)
-            if waist_indices.shape != (2,) or not np.all(
-                np.isin(waist_indices, policy_indices, assume_unique=True)
-            ):
-                raise ValueError(
-                    "stand_waist_deviation requires policy-controlled waist yaw "
-                    "and waist roll actuators"
-                )
         if self.reward_config.enabled("torque_peak") and (
             np.any(mj_model.actuator_gaintype != mujoco.mjtGain.mjGAIN_FIXED)
             or np.any(mj_model.actuator_biastype != mujoco.mjtBias.mjBIAS_AFFINE)
@@ -407,6 +388,8 @@ class BelloLocomotionEnv:
             "policy_qvel_indices", model.policy_qvel_indices, mj_model.nv
         )
         require_index_range("foot_body_ids", model.foot_body_ids, mj_model.nbody)
+        if self.reward_config.limits_pose.joint_pose_weights:
+            self._joint_pose_weights()
         if self.command_config.enabled and model.foot_body_ids.size != 2:
             raise ValueError(
                 "gait-conditioned locomotion requires exactly two foot bodies"
@@ -428,7 +411,9 @@ class BelloLocomotionEnv:
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
             }
-            if self.reward_config.enabled("stand_foot_heading"):
+            if self.reward_config.enabled(
+                "stand_foot_heading"
+            ) or self.reward_config.enabled("foot_heading"):
                 required_link_names.update(
                     name for name, _ in self.model.robot.foot_forward_axes
                 )
@@ -579,6 +564,7 @@ class BelloLocomotionEnv:
             ).astype(jnp.float32),
             command_resample_step_count=jnp.asarray(0, dtype=jnp.int32),
             step_count=jnp.asarray(0, dtype=jnp.int32),
+            push_steps_remaining=jnp.asarray(-1, dtype=jnp.int32),
             episode_return=jnp.asarray(0.0, dtype=jnp.float32),
             episode_track_lin_vel_xy=jnp.asarray(0.0, dtype=jnp.float32),
             episode_length=jnp.asarray(0, dtype=jnp.int32),
@@ -1080,13 +1066,13 @@ class BelloLocomotionEnv:
         moving = self.command_config.sample_moving(rng, (batch_size,))
         return jnp.where(standing[:, None], jnp.zeros_like(moving), moving)
 
-    def _maybe_apply_random_push_batch(self, data, step_count, rng):
+    def _maybe_apply_random_push_batch(self, data, steps_remaining, rng):
         return apply_push_batch(
             self.model,
             self.config.random_push,
             self.control_timestep,
             data,
-            step_count,
+            steps_remaining,
             rng,
             scale=self.random_push_scale,
         )
@@ -1173,12 +1159,34 @@ class BelloLocomotionEnv:
 
     def _joint_pose_weights(self) -> jax.Array:
         weights = np.zeros(self.model.mj_model.nu, dtype=np.float32)
+        configured = self.reward_config.limits_pose.joint_pose_weights
+        if configured:
+            policy_indices = np.asarray(self.model.policy_ctrl_indices)
+            policy_names = {
+                self.model.actuator_joint_names[index] for index in policy_indices
+            }
+            configured_weights = dict(configured)
+            if set(configured_weights) != policy_names:
+                raise ValueError(
+                    "joint_pose_weights must name every policy joint exactly once; "
+                    f"missing={sorted(policy_names - configured_weights.keys())}, "
+                    f"extra={sorted(configured_weights.keys() - policy_names)}"
+                )
+            for index in policy_indices:
+                weights[index] = configured_weights[
+                    self.model.actuator_joint_names[index]
+                ]
+            return jnp.asarray(weights)
         weights[np.asarray(self.model.policy_ctrl_indices)] = 1.0
         low_weight_indices = self._actuator_indices_named(
             "hip_pitch_joint", "knee_joint"
         )
         weights[low_weight_indices] = 0.01
         return jnp.asarray(weights)
+
+    @cached_property
+    def _motor_continuous_torque(self) -> jax.Array:
+        return jnp.asarray(motor_continuous_torque(self.model), dtype=jnp.float32)
 
     def _action_smoothness_weights(self) -> jax.Array:
         names = self.action_layout.names
@@ -1438,7 +1446,6 @@ class BelloLocomotionEnv:
         state: BelloState,
         next_state: BelloState,
         action: jax.Array,
-        requested_action: jax.Array,
         done: jax.Array,
         foot_contact: jax.Array,
         foot_touchdown: jax.Array,
@@ -1448,9 +1455,6 @@ class BelloLocomotionEnv:
         requested_actuator_force: jax.Array,
         foot_linear_velocity: jax.Array,
         foot_angular_speed: jax.Array,
-        undesired_contact: jax.Array,
-        self_collision: jax.Array,
-        joint_angle_offset: jax.Array | None = None,
         world_id: jax.Array | int = 0,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         command = next_state.command
@@ -1489,23 +1493,24 @@ class BelloLocomotionEnv:
                 joint_pos=next_state.data.qpos[qpos_idx],
                 joint_pos_rel=joint_pos_rel,
                 action=action,
-                requested_action=requested_action,
                 last_action=state.last_action,
                 last_action_delta=state.last_action_delta,
                 action_smoothness_weights=self._action_smoothness_weights(),
                 actuator_force=next_state.data.actuator_force,
                 requested_actuator_force=requested_actuator_force,
                 actuator_peak_force=jnp.asarray(self.model.actuator_peak_force),
+                motor_continuous_torque=(
+                    self._motor_continuous_torque
+                    if self.reward_config.enabled(
+                        "stand_motor_continuous_torque_excess"
+                    )
+                    else None
+                ),
                 joint_force=self._leg_joint_force(next_state),
                 robot_weight=self._robot_weight(),
                 joint_limit_low=self._actuator_joint_limit_low(),
                 joint_limit_high=self._actuator_joint_limit_high(),
                 policy_joint_indices=jnp.asarray(self.model.policy_ctrl_indices),
-                action_target_default=self._policy_action_target_default(
-                    joint_angle_offset
-                ),
-                action_target_low=self._policy_action_target_low(),
-                action_target_high=self._policy_action_target_high(),
                 foot_contact=foot_contact,
                 foot_touchdown=foot_touchdown,
                 foot_normal_impulse=foot_normal_impulse,
@@ -1527,16 +1532,10 @@ class BelloLocomotionEnv:
                     next_state.gait_phase, self.config.gait
                 ),
                 joint_pose_weights=self._joint_pose_weights(),
-                hip_roll_joint_indices=self._actuator_indices_named("hip_roll_joint"),
-                waist_joint_indices=self._actuator_indices_named(
-                    "waist_yaw_joint", "waist_roll_joint"
-                ),
                 hip_joint_indices=self._actuator_indices_named(
                     "hip_roll_joint", "hip_yaw_joint"
                 ),
                 knee_joint_indices=self._actuator_indices_named("knee_joint"),
-                undesired_contact=undesired_contact,
-                self_collision=self_collision,
                 done=done,
                 control_timestep=jnp.asarray(self.control_timestep, dtype=jnp.float32),
                 action_clip_limit=jnp.asarray(self.action_clip, dtype=jnp.float32),
@@ -1934,27 +1933,6 @@ class BelloLocomotionEnv:
     def _actuator_joint_limit_high(self) -> jax.Array:
         joint_ids = jnp.asarray(self.model.actuator_joint_ids)
         return jnp.asarray(self.model.mj_model.jnt_range)[joint_ids, 1]
-
-    def _policy_action_target_default(
-        self, joint_angle_offset: jax.Array | None = None
-    ) -> jax.Array:
-        if joint_angle_offset is None:
-            joint_angle_offset = jnp.asarray(self.model.joint_angle_offset[0])
-        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        target = motor_default(self.model, joint_angle_offset)[policy_indices]
-        return jnp.clip(
-            target,
-            self._policy_action_target_low(),
-            self._policy_action_target_high(),
-        )
-
-    def _policy_action_target_low(self) -> jax.Array:
-        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        return jnp.asarray(self.model.mj_model.actuator_ctrlrange)[policy_indices, 0]
-
-    def _policy_action_target_high(self) -> jax.Array:
-        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
-        return jnp.asarray(self.model.mj_model.actuator_ctrlrange)[policy_indices, 1]
 
 
 def require_index_range(name: str, indices: np.ndarray, upper_bound: int) -> None:

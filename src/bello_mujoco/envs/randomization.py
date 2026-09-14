@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 from bello_mujoco.envs.geometry import yaw_quat_from_angle
@@ -88,20 +90,27 @@ def randomize_spawn(model, config, terrain_height, data, rng, world_id=0):
 
 
 def apply_push_batch(
-    model, config, control_timestep, data, step_count, rng, *, scale=1.0
+    model, config, control_timestep, data, steps_remaining, rng, *, scale=1.0
 ):
-    batch_size = int(step_count.shape[0])
+    """Sample independent inter-push countdowns; -1 starts a fresh episode."""
+    batch_size = int(steps_remaining.shape[0])
     push_applied = jnp.zeros((batch_size,), dtype=bool)
     push_velocity = jnp.zeros((batch_size, 2), dtype=jnp.float32)
     if rng is None or not config.enabled:
-        return data, push_applied, push_velocity
+        return data, steps_remaining, push_applied, push_velocity
 
-    interval_steps = max(
-        1,
-        int(round(config.interval_seconds / control_timestep)),
+    timing_key, x_key, y_key = jax.random.split(rng, 3)
+    interval_steps = jax.random.randint(
+        timing_key,
+        (batch_size,),
+        minval=math.ceil(config.interval_seconds[0] / control_timestep),
+        maxval=math.floor(config.interval_seconds[1] / control_timestep) + 1,
+        dtype=jnp.int32,
     )
-    push_applied = (step_count > 0) & (step_count % interval_steps == 0)
-    x_key, y_key = jax.random.split(rng)
+    push_applied = steps_remaining == 0
+    steps_remaining = (
+        jnp.where(steps_remaining <= 0, interval_steps, steps_remaining) - 1
+    )
     push_velocity = jnp.stack(
         [
             jax.random.uniform(
@@ -133,4 +142,4 @@ def apply_push_batch(
     push_velocity = jnp.where(
         push_applied[:, None], push_velocity, jnp.zeros_like(push_velocity)
     )
-    return data, push_applied, push_velocity
+    return data, steps_remaining, push_applied, push_velocity

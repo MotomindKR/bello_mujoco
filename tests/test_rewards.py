@@ -1,11 +1,13 @@
 from dataclasses import fields
 import math
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
 import pytest
+import numpy as np
 
-from bello_mujoco.configuration import locomotion_training_profile
+from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import (
     CommandConfig,
     GaitRewardConfig,
@@ -19,14 +21,15 @@ from bello_mujoco.envs.rewards import (
     command_is_moving,
     command_is_standing,
     compute_locomotion_reward,
+    validate_reward_config,
 )
 
 
-def test_standing_alignment_deadband_recovery_and_blend():
+def test_standing_alignment_deadband_support_and_blend():
     config = reward_config(
         stand_foot_foreaft=-4.0,
         stand_foot_width=-2.0,
-        standing=StandingRewardConfig(recovery_relaxation=True),
+        standing=StandingRewardConfig(),
     )
     inputs = reward_inputs(
         foot_separation=jnp.asarray(0.22), nominal_stance_width=jnp.asarray(0.22)
@@ -43,7 +46,9 @@ def test_standing_alignment_deadband_recovery_and_blend():
     assert (
         float(compute(misaligned.replace(foot_contact=jnp.asarray([1.0, 0.0])))) == 0.0
     )
-    assert float(compute(misaligned.replace(lin_vel_xy=jnp.asarray([0.6, 0.0])))) == 0.0
+    assert float(
+        compute(misaligned.replace(lin_vel_xy=jnp.asarray([0.6, 0.0])))
+    ) == pytest.approx(float(compute(misaligned)))
 
 
 def test_crossing_uses_signed_separation_in_every_mode():
@@ -63,7 +68,13 @@ def test_crossing_uses_signed_separation_in_every_mode():
 
 
 def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
-    cfg = locomotion_training_profile("bello_mini_locomotion")
+    config = reward_config(
+        stand_foot_foreaft=-0.25,
+        flat_orientation=-5.0,
+        standing=StandingRewardConfig(
+            position_scale=0.05, contact_independent_alignment=True
+        ),
+    )
     inputs = reward_inputs(
         base_height=jnp.asarray(0.87),
         foot_foreaft=jnp.asarray(0.18),
@@ -73,16 +84,14 @@ def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
         swing_progress=jnp.zeros(2),
         foot_clearance_samples=jnp.zeros((2, 4)),
     )
-    compute = jax.jit(
-        lambda x: compute_locomotion_reward(cfg.reward_config, x, cfg.command_config)
-    )
+    compute = jax.jit(lambda x: compute_locomotion_reward(config, x))
     two, terms = compute(inputs)
     one, one_terms = compute(inputs.replace(foot_contact=jnp.asarray([True, False])))
-    assert float(two) > float(one) > 0
+    assert float(two) == pytest.approx(float(one))
     assert float(terms["reward/stand_foot_foreaft"]) == pytest.approx(
         float(one_terms["reward/stand_foot_foreaft"])
     )
-    assert -0.005 <= float(terms["reward/stand_foot_foreaft"]) < 0
+    assert float(terms["reward/stand_foot_foreaft"]) == pytest.approx(-0.0135)
     tilt = math.radians(18)
     leaned, lean_terms = compute(
         inputs.replace(
@@ -130,6 +139,92 @@ def test_clearance_peaks_mid_swing_and_checks_each_sole_corner():
     )
 
 
+@pytest.mark.parametrize("moving", [False, True])
+def test_shared_heading_and_contact_slip_ignore_gait_and_support_gates(moving):
+    config = reward_config(foot_heading=-1.0, foot_slip=-0.5)
+    inputs = reward_inputs(
+        gait_active=jnp.asarray(moving),
+        command=jnp.asarray([0.5 if moving else 0.0, 0.0, 0.0]),
+        standing_reward_blend=jnp.asarray(0.0),
+        lin_vel_xy=jnp.asarray([0.6, 0.0]),
+        projected_gravity=jnp.asarray([0.5, 0.0, -0.866]),
+        foot_contact=jnp.asarray([True, False]),
+        desired_foot_contact=jnp.asarray([False, True]),
+        foot_heading_error=jnp.asarray([0.3, -0.3]),
+        foot_linear_velocity=jnp.asarray([[0.2, 0.0, 3.0], [2.0, 0.0, 0.0]]),
+    )
+    compute = jax.jit(lambda x: compute_locomotion_reward(config, x)[1])
+    terms = compute(inputs)
+    assert float(terms["reward/foot_heading"]) == pytest.approx(-0.0018)
+    assert float(terms["reward/foot_slip"]) == pytest.approx(-0.0004)
+    airborne = compute(inputs.replace(foot_contact=jnp.zeros(2, dtype=bool)))
+    assert float(airborne["reward/foot_slip"]) == 0
+    assert airborne["reward/foot_heading"] == terms["reward/foot_heading"]
+
+
+def test_alignment_keeps_linear_tail_instead_of_saturating():
+    config = reward_config(
+        stand_foot_foreaft=-0.25,
+        standing=StandingRewardConfig(
+            position_scale=0.05, contact_independent_alignment=True
+        ),
+    )
+    compute = jax.jit(lambda x: compute_locomotion_reward(config, x)[0])
+    costs = [
+        float(
+            compute(
+                reward_inputs(
+                    foot_foreaft=jnp.asarray(distance),
+                    foot_contact=jnp.asarray([True, False]),
+                )
+            )
+        )
+        for distance in (0.1, 0.2, 0.3)
+    ]
+    assert costs[1] - costs[0] == pytest.approx(-0.01)
+    assert costs[2] - costs[1] == pytest.approx(-0.01)
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        (("a", -1.0),),
+        (("a", float("nan")),),
+        (("a", 1.0), ("a", 2.0)),
+        (("", 1.0),),
+    ],
+)
+def test_invalid_explicit_posture_weights_are_rejected(weights):
+    with pytest.raises(ValueError, match="joint_pose_weights"):
+        validate_reward_config(
+            reward_config(
+                limits_pose=LimitsPoseRewardConfig(joint_pose_weights=weights)
+            )
+        )
+
+
+@pytest.mark.parametrize("names", [("b", "a"), ("a",), ("a", "b", "held")])
+def test_explicit_pose_weights_map_by_joint_name_and_require_policy_coverage(names):
+    weights = tuple((name, float(index + 1)) for index, name in enumerate(names))
+    env = SimpleNamespace(
+        model=SimpleNamespace(
+            mj_model=SimpleNamespace(nu=3),
+            actuator_joint_names=("a", "held", "b"),
+            policy_ctrl_indices=np.asarray([2, 0]),
+        ),
+        reward_config=reward_config(
+            limits_pose=LimitsPoseRewardConfig(joint_pose_weights=weights)
+        ),
+    )
+    if set(names) != {"a", "b"}:
+        with pytest.raises(ValueError, match="every policy joint exactly once"):
+            BelloLocomotionEnv._joint_pose_weights(env)
+    else:
+        np.testing.assert_array_equal(
+            BelloLocomotionEnv._joint_pose_weights(env), [2.0, 0.0, 1.0]
+        )
+
+
 def test_stumble_grace_windows_and_contact_load():
     config = reward_config(foot_stumble=-2.0)
     inputs = reward_inputs(
@@ -159,9 +254,7 @@ def test_stumble_grace_windows_and_contact_load():
 
 
 def test_standing_recovery_penalizes_loaded_sliding_not_unloaded_steps():
-    config = reward_config(
-        foot_stumble=-2.0, standing=StandingRewardConfig(recovery_relaxation=True)
-    )
+    config = reward_config(foot_stumble=-2.0, standing=StandingRewardConfig())
     inputs = reward_inputs(
         swing_progress=jnp.zeros(2),
         lin_vel_xy=jnp.asarray([0.6, 0.0]),
@@ -206,21 +299,18 @@ def reward_inputs(**updates) -> RewardInputs:
         joint_pos=jnp.zeros(2, dtype=jnp.float32),
         joint_pos_rel=jnp.zeros(2, dtype=jnp.float32),
         action=jnp.zeros(2, dtype=jnp.float32),
-        requested_action=jnp.zeros(2, dtype=jnp.float32),
         last_action=jnp.zeros(2, dtype=jnp.float32),
         last_action_delta=jnp.zeros(2, dtype=jnp.float32),
         action_smoothness_weights=jnp.ones(2, dtype=jnp.float32),
         actuator_force=jnp.zeros(2, dtype=jnp.float32),
         requested_actuator_force=jnp.zeros(2, dtype=jnp.float32),
         actuator_peak_force=jnp.ones(2, dtype=jnp.float32),
+        motor_continuous_torque=jnp.full(2, 20.0, dtype=jnp.float32),
         joint_force=jnp.zeros(2, dtype=jnp.float32),
         robot_weight=jnp.asarray(1.0, dtype=jnp.float32),
         joint_limit_low=jnp.asarray([-1.0, -1.0], dtype=jnp.float32),
         joint_limit_high=jnp.asarray([1.0, 1.0], dtype=jnp.float32),
         policy_joint_indices=jnp.asarray([0, 1], dtype=jnp.int32),
-        action_target_default=jnp.zeros(2, dtype=jnp.float32),
-        action_target_low=jnp.asarray([-1.0, -1.0], dtype=jnp.float32),
-        action_target_high=jnp.asarray([1.0, 1.0], dtype=jnp.float32),
         foot_contact=jnp.ones(2, dtype=jnp.float32),
         foot_touchdown=jnp.zeros(2, dtype=bool),
         foot_normal_impulse=jnp.zeros(2, dtype=jnp.float32),
@@ -233,12 +323,8 @@ def reward_inputs(**updates) -> RewardInputs:
         gait_active=jnp.asarray(False),
         desired_foot_contact=jnp.ones(2, dtype=jnp.float32),
         joint_pose_weights=jnp.ones(2, dtype=jnp.float32),
-        hip_roll_joint_indices=jnp.asarray([0], dtype=jnp.int32),
-        waist_joint_indices=jnp.asarray([0], dtype=jnp.int32),
         hip_joint_indices=jnp.asarray([0], dtype=jnp.int32),
         knee_joint_indices=jnp.asarray([1], dtype=jnp.int32),
-        undesired_contact=jnp.asarray(0.0, dtype=jnp.float32),
-        self_collision=jnp.asarray(0.0, dtype=jnp.float32),
         done=jnp.asarray(False),
         control_timestep=jnp.asarray(0.02, dtype=jnp.float32),
         action_clip_limit=jnp.asarray(1.0, dtype=jnp.float32),
@@ -454,13 +540,16 @@ def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> N
     assert tiny_command["reward/track_ang_vel_z"] == pytest.approx(0.02)
 
 
-@pytest.mark.parametrize("experiment", ["bello_mini_locomotion", "bello_mini_standing"])
 @pytest.mark.parametrize("error", [0.0, 0.25, 0.5])
 @pytest.mark.parametrize("axis", [0, 1, 2])
-def test_mini_tracking_retains_reward_during_single_support_recovery(
-    experiment, error, axis
-):
-    profile = locomotion_training_profile(experiment)
+def test_tracking_retains_reward_during_single_support_recovery(error, axis):
+    config = reward_config(
+        track_lin_vel_xy=2.0,
+        track_ang_vel_z=2.0,
+        tracking=TrackingRewardConfig(
+            lin_vel_xy_still_std=0.5, ang_vel_z_still_std=0.5
+        ),
+    )
     velocity = jnp.zeros(3).at[axis].set(error)
     inputs = reward_inputs(
         lin_vel_xy=velocity[:2],
@@ -469,11 +558,7 @@ def test_mini_tracking_retains_reward_during_single_support_recovery(
         foot_clearance_samples=jnp.zeros((2, 4)),
         swing_progress=jnp.zeros(2),
     )
-    compute = jax.jit(
-        lambda value: compute_locomotion_reward(
-            profile.reward_config, value, profile.command_config
-        )[1]
-    )
+    compute = jax.jit(lambda value: compute_locomotion_reward(config, value)[1])
     terms = compute(inputs)
     key = "reward/track_lin_vel_xy" if axis < 2 else "reward/track_ang_vel_z"
     assert float(terms[key]) == pytest.approx(0.04 * math.exp(-(error**2) / 0.25))
@@ -510,17 +595,16 @@ def test_standing_tracking_remains_available_during_recovery_steps() -> None:
     assert moving["reward/track_ang_vel_z"] > 0.0
 
 
-@pytest.mark.parametrize("speed,scale", [(0.0, 1.0), (0.375, 0.5), (0.5, 0.0)])
-def test_recovery_relaxes_soft_posture_and_thermal_penalties_not_safety(speed, scale):
+@pytest.mark.parametrize("speed", [0.0, 0.375, 0.5])
+def test_speed_cannot_relax_posture_thermal_or_safety_penalties(speed):
     config = reward_config(
-        stand_hip_roll_continuous_torque_excess=-8.0,
-        stand_waist_deviation=-4.0,
+        stand_motor_continuous_torque_excess=-8.0,
         stand_contact=-0.5,
         hip_deviation=-0.25,
         knee_deviation=-0.1,
         torque_peak=-12.0,
         termination=-100.0,
-        standing=StandingRewardConfig(recovery_relaxation=True),
+        standing=StandingRewardConfig(),
     )
     inputs = reward_inputs(
         actuator_force=jnp.asarray([15.0, 15.0]),
@@ -533,14 +617,13 @@ def test_recovery_relaxes_soft_posture_and_thermal_penalties_not_safety(speed, s
     normal = compute(inputs)
     recovery = compute(inputs.replace(lin_vel_xy=jnp.asarray([speed, 0.0])))
     for name in (
-        "stand_hip_roll_continuous_torque_excess",
-        "stand_waist_deviation",
+        "stand_motor_continuous_torque_excess",
         "stand_contact",
         "hip_deviation",
         "knee_deviation",
     ):
         assert recovery[f"reward/{name}"] == pytest.approx(
-            float(normal[f"reward/{name}"]) * scale
+            float(normal[f"reward/{name}"])
         )
     assert recovery["reward/torque_peak"] == normal["reward/torque_peak"]
     assert compute(
@@ -662,31 +745,6 @@ def test_knee_deviation_moving_gate_is_explicit(apply_while_moving: bool) -> Non
     )
 
 
-def test_waist_deviation_penalty_applies_only_while_standing() -> None:
-    config = reward_config(stand_waist_deviation=-4.0)
-    inputs = reward_inputs(
-        joint_pos_rel=jnp.asarray([-0.2, 9.0, 0.3]),
-        joint_pose_weights=jnp.ones(3),
-        waist_joint_indices=jnp.asarray([0, 2], dtype=jnp.int32),
-    )
-
-    _, standing = compute_locomotion_reward(config, inputs)
-    _, moving = compute_locomotion_reward(
-        config,
-        inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0])),
-    )
-    _, mirrored = compute_locomotion_reward(
-        config,
-        inputs.replace(joint_pos_rel=jnp.asarray([0.2, 9.0, -0.3])),
-    )
-
-    assert standing["reward/stand_waist_deviation"] == pytest.approx(-0.0104)
-    assert mirrored["reward/stand_waist_deviation"] == pytest.approx(
-        standing["reward/stand_waist_deviation"]
-    )
-    assert moving["reward/stand_waist_deviation"] == pytest.approx(0.0)
-
-
 def test_stand_upright_penalty_is_gated_by_standing_command() -> None:
     config = reward_config(stand_upright=-8.0)
     inputs = reward_inputs(
@@ -758,41 +816,6 @@ def test_torque_penalty_normalizes_each_actuator_and_emphasizes_over_peak() -> N
     assert over_peak["reward/torque_peak"] == pytest.approx(-0.1)
 
 
-def test_standing_hip_roll_continuous_torque_penalty_is_joint_specific() -> None:
-    config = reward_config(
-        stand_hip_roll_continuous_torque_excess=-8.0,
-        standing=StandingRewardConfig(hip_roll_continuous_torque_limit=10.0),
-    )
-    inputs = reward_inputs(
-        actuator_force=jnp.asarray([15.0, 500.0, 15.0]),
-        requested_actuator_force=jnp.zeros(3),
-        actuator_peak_force=jnp.asarray([60.0, 1.0, 60.0]),
-        policy_joint_indices=jnp.asarray([0, 2], dtype=jnp.int32),
-        hip_roll_joint_indices=jnp.asarray([0, 2], dtype=jnp.int32),
-        foot_contact=jnp.asarray([1.0, 0.0]),
-    )
-
-    _, standing = compute_locomotion_reward(config, inputs)
-    _, at_limit = compute_locomotion_reward(
-        config,
-        inputs.replace(actuator_force=jnp.asarray([-10.0, 500.0, 10.0])),
-    )
-    _, one_motor_over = compute_locomotion_reward(
-        config,
-        inputs.replace(actuator_force=jnp.asarray([-15.0, 500.0, 5.0])),
-    )
-    _, moving = compute_locomotion_reward(
-        config,
-        inputs.replace(command=jnp.asarray([0.5, 0.0, 0.0])),
-    )
-
-    term = "reward/stand_hip_roll_continuous_torque_excess"
-    assert standing[term] == pytest.approx(-0.08)
-    assert at_limit[term] == pytest.approx(0.0)
-    assert one_motor_over[term] == pytest.approx(-0.04)
-    assert moving[term] == pytest.approx(0.0)
-
-
 def test_joint_force_peak_uses_top_loads_only_during_commanded_gait() -> None:
     config = reward_config(
         joint_force_peak=-2.0,
@@ -848,18 +871,6 @@ def test_touchdown_impact_uses_normal_impulse_and_preimpact_vertical_speed() -> 
     assert no_touchdown["reward/touchdown_impact"] == pytest.approx(0.0)
 
 
-def test_invalid_action_checks_requested_target_and_policy_clip() -> None:
-    config = reward_config(invalid_action=-1.0)
-    _, terms = compute_locomotion_reward(
-        config,
-        reward_inputs(
-            requested_action=jnp.asarray([1.5, 0.0]),
-            action=jnp.asarray([1.0, 0.0]),
-        ),
-    )
-    assert terms["reward/invalid_action"] == pytest.approx(-0.01)
-
-
 def test_gait_contact_penalizes_phase_mismatch_only_while_active() -> None:
     config = reward_config(gait_contact=-1.0)
     inputs = reward_inputs(
@@ -892,7 +903,7 @@ def test_recovery_cannot_remove_active_gait_contact_penalty(
 ) -> None:
     config = reward_config(
         gait_contact=-2.5,
-        standing=StandingRewardConfig(recovery_relaxation=True),
+        standing=StandingRewardConfig(),
     )
     inputs = reward_inputs(
         command=jnp.asarray([requested_speed, 0.0, 0.0]),
@@ -1135,7 +1146,6 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         joint_pos=jnp.asarray([1.2, -1.2]),
         joint_pos_rel=jnp.asarray([0.5, 0.5]),
         action=jnp.asarray([0.9, 0.5]),
-        requested_action=jnp.asarray([1.5, 0.0]),
         actuator_force=jnp.asarray([1.0, 2.0]),
         requested_actuator_force=jnp.asarray([1.0, 2.0]),
         joint_force=jnp.asarray([1.0, 2.0]),
@@ -1149,8 +1159,6 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         foot_height=jnp.asarray([0.0, 0.0]),
         foot_linear_velocity=jnp.asarray([[0.3, 0.1, 0.2], [0.2, 0.4, 0.1]]),
         foot_angular_speed=jnp.asarray([1.0, 1.0]),
-        undesired_contact=jnp.asarray(1.0),
-        self_collision=jnp.asarray(1.0),
         done=jnp.asarray(True),
     )
     standing_inputs = moving_inputs.replace(
@@ -1261,10 +1269,6 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
         )
     with pytest.raises(ValueError, match="foot_linear_speed_scale"):
         RewardConfig(standing=StandingRewardConfig(foot_linear_speed_scale=0.0))
-    with pytest.raises(ValueError, match="hip_roll_continuous_torque_limit"):
-        RewardConfig(
-            standing=StandingRewardConfig(hip_roll_continuous_torque_limit=0.0)
-        )
     with pytest.raises(ValueError, match="ang_vel_z_lpf_cutoff_hz"):
         RewardConfig(tracking=TrackingRewardConfig(ang_vel_z_lpf_cutoff_hz=0.0))
     with pytest.raises(ValueError, match="lin_vel_xy_error_delta"):
@@ -1307,3 +1311,35 @@ def test_command_validation_requires_a_separate_moving_range() -> None:
             lin_vel_y=(-0.1, 0.1),
             ang_vel_yaw=(-0.1, 0.1),
         )
+
+
+def test_standing_motor_penalty_covers_held_motors_and_half_rated_thresholds():
+    config = reward_config(
+        stand_motor_continuous_torque_excess=-8.0,
+        standing=StandingRewardConfig(),
+    )
+    inputs = reward_inputs(
+        policy_joint_indices=jnp.asarray([0]),
+        motor_continuous_torque=jnp.asarray([40.0, 5.0]),
+        actuator_force=jnp.asarray([20.0, -2.5]),
+    )
+    compute = jax.jit(lambda x: compute_locomotion_reward(config, x)[1])
+    key = "reward/stand_motor_continuous_torque_excess"
+    assert compute(inputs)[key] == 0.0
+    overloaded = inputs.replace(actuator_force=jnp.asarray([20.0, -5.0]))
+    assert compute(overloaded)[key] == pytest.approx(-0.08)
+    assert compute(overloaded.replace(standing_reward_blend=jnp.asarray(0.5)))[
+        key
+    ] == pytest.approx(-0.04)
+    assert compute(overloaded.replace(command=jnp.asarray([0.5, 0.0, 0.0])))[key] == 0.0
+    assert compute(
+        overloaded.replace(
+            lin_vel_xy=jnp.asarray([1.0, 0.0]),
+            projected_gravity=jnp.asarray([0.5, 0.0, -0.866]),
+            foot_contact=jnp.asarray([True, False]),
+        )
+    )[key] == pytest.approx(-0.08)
+    with pytest.raises(ValueError, match="continuous ratings"):
+        compute(overloaded.replace(motor_continuous_torque=None))
+    with pytest.raises(ValueError, match="cover all actuator"):
+        compute(overloaded.replace(motor_continuous_torque=jnp.ones(1)))

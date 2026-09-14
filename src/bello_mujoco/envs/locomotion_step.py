@@ -151,10 +151,8 @@ def step_outcome(
     env: BelloLocomotionEnv,
     state: BelloState,
     reward_state: BelloState,
-    requested_action: jax.Array,
     impacts: tuple,
     motor_saturation: jax.Array,
-    joint_angle_offset: jax.Array | None = None,
     world_id: jax.Array | int = 0,
 ):
     """Shared post-physics transition, vmapped by the batched Warp path."""
@@ -184,7 +182,6 @@ def step_outcome(
         state,
         reward_state,
         action,
-        requested_action,
         terminal,
         foot_contact,
         foot_touchdown,
@@ -194,10 +191,7 @@ def step_outcome(
         requested_actuator_force,
         foot_linear_velocity,
         foot_angular_speed,
-        undesired_contact,
-        self_collision,
-        joint_angle_offset,
-        world_id,
+        world_id=world_id,
     )
     reward, reward_info = env.sanitize_nonfinite_reward(reward, reward_info, done_flags)
     episode_return = state.episode_return + reward
@@ -257,6 +251,7 @@ def step_outcome(
             env, reward_state.command, reward_state.standing_transition_pending
         ),
         "gait/self_collision_contacts": self_collision,
+        "gait/undesired_contacts": undesired_contact,
         **gait_diagnostics(
             env,
             state,
@@ -307,7 +302,6 @@ def step(
         env,
         state,
         reward_state,
-        requested_action,
         (
             foot_touchdown,
             foot_normal_impulse,
@@ -360,9 +354,10 @@ def step_batch(
         ctrl=ctrl,
         _impl=state.data._impl.replace(nworld=batch_size),
     )
-    data, push_applied, push_velocity = env._maybe_apply_random_push_batch(
-        data, state.step_count, push_rng
+    data, push_steps_remaining, push_applied, push_velocity = (
+        env._maybe_apply_random_push_batch(data, state.push_steps_remaining, push_rng)
     )
+    state = state.replace(push_steps_remaining=push_steps_remaining)
     (
         data,
         foot_touchdown,
@@ -393,7 +388,6 @@ def step_batch(
     transitioned_state, reward, done, info = jax.vmap(partial(step_outcome, env))(
         state,
         reward_state,
-        requested_action,
         (
             foot_touchdown,
             foot_normal_impulse,
@@ -402,7 +396,6 @@ def step_batch(
             requested_actuator_force,
         ),
         motor_saturation,
-        joint_angle_offset,
         world_ids,
     )
     (

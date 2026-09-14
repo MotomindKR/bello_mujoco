@@ -37,16 +37,29 @@ owning dataclass and YAML together, without aliases or parallel CLI defaults.
 The motor-coordinate action convention requires fresh training. Keep training,
 native evaluation, and hardware observation/filter conventions aligned.
 
-Mini's settling recipe keeps standing velocity tracking active during recovery
-steps with either foot supporting. Its bounded alignment costs remain active in
-single support, while a geometry floor prevents disturbances from eliminating
-all settling incentives. Soft posture/thermal rewards can relax during recovery;
-hard joint and motor limits do not. Settings live in the Mini training profile.
+Mini uses shared joint-posture, torso-orientation, foot-heading, and contact-slip
+penalties across walking and standing. Standing alignment uses deadband Huber
+costs, including during single support; speed and lean do not relax posture,
+alignment, or thermal penalties. Explicit per-joint posture weights live in the
+Mini training profile. Full-size Bello retains its active standing-specific terms.
+
+Mini's standing motor-torque cost covers every physical actuator, including held
+arms and each differential-ankle motor, above half its model's rated output
+torque. Ratings live in `robots/motor_torque_ratings.yaml`; motor identities and
+coordinate assignments come from the pinned hardware description. Missing
+coverage or non-unit actuator gears fail at initialization. This replaces the
+hip-roll-only penalty; it does not change servo limits or model a thermal sensor.
 
 `env_config.random_push.curriculum_steps` ramps disturbance strength from
 `initial_scale` to full strength using the persistent per-world training clock,
 shared with the torso COM curriculum. Episode resets do not restart this clock;
 checkpoint resume restores it. A zero duration disables the push curriculum.
+
+`env_config.random_push.interval_seconds` is a [minimum, maximum] range.
+Training independently samples a control-step countdown per environment, both
+for the first push after reset and after each push. Countdown state resumes with
+the checkpoint and is independent of the episode/gait clocks. Fixed evaluation
+push scenarios remain deterministic for repeatable comparisons.
 
 Runtime initialization validates the selected robot, including default-pose
 collisions. Unit tests exercise algorithms and invalid-input handling with

@@ -206,7 +206,7 @@ class RewardWeights:
     action_acceleration: float = -0.005
     action_limit: float = -1.0
     torque_l1: float = -1.2
-    stand_hip_roll_continuous_torque_excess: float = 0.0
+    stand_motor_continuous_torque_excess: float = 0.0
     torque_peak: float = -12.0
     joint_force_peak: float = -4.0
     touchdown_impact: float = -4.0
@@ -216,20 +216,18 @@ class RewardWeights:
     stand_foot_heading: float = -0.5
     stand_contact: float = -0.5
     stand_upright: float = -8.0
-    stand_waist_deviation: float = 0.0
     stand_foot_foreaft: float = 0.0
     stand_foot_width: float = 0.0
+    foot_heading: float = 0.0
+    foot_slip: float = 0.0
     foot_crossing: float = 0.0
     foot_stumble: float = 0.0
     hip_deviation: float = -0.25
     knee_deviation: float = -0.1
     joint_limit: float = -1.0
-    invalid_action: float = 0.0
     gait_contact: float = -1.0
     gait_stance_slip: float = -0.25
     gait_swing_clearance: float = -0.5
-    undesired_contact: float = 0.0
-    self_collision: float = 0.0
     termination: float = -100.0
 
 
@@ -264,14 +262,9 @@ class StandingRewardConfig:
     foot_angular_weight: float = 0.25
     foot_heading_deadband: float = math.radians(5.0)
     foot_heading_scale: float = math.radians(15.0)
-    hip_roll_continuous_torque_limit: float = 10.0
     position_deadband: float = 0.02
     position_scale: float = 0.03
-    recovery_relaxation: bool = False
-    recovery_speed: float = 0.25
-    recovery_tilt: float = 0.15
-    continuous_bounded_alignment: bool = False
-    recovery_geometry_floor: float = 0.0
+    contact_independent_alignment: bool = False
 
 
 @dataclass(frozen=True)
@@ -305,6 +298,7 @@ class LimitsPoseRewardConfig:
     hip_deviation_command_indices: tuple[int, ...] = (0,)
     hip_deviation_command_threshold: float = 0.1
     knee_deviation_apply_while_moving: bool = False
+    joint_pose_weights: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -349,6 +343,7 @@ class RewardConfig:
                 "stand_foot_foreaft",
                 "stand_foot_width",
                 "foot_stumble",
+                "foot_slip",
             )
         )
 
@@ -360,6 +355,7 @@ class RewardConfig:
             or self.enabled("stand_foot_motion")
             or self.enabled("stand_foot_heading")
             or self.enabled("foot_crossing")
+            or self.enabled("foot_heading")
         )
 
     @property
@@ -403,7 +399,6 @@ class RewardInputs:
     joint_pos: jax.Array
     joint_pos_rel: jax.Array
     action: jax.Array
-    requested_action: jax.Array
     last_action: jax.Array
     last_action_delta: jax.Array
     action_smoothness_weights: jax.Array
@@ -415,9 +410,6 @@ class RewardInputs:
     joint_limit_low: jax.Array
     joint_limit_high: jax.Array
     policy_joint_indices: jax.Array
-    action_target_default: jax.Array
-    action_target_low: jax.Array
-    action_target_high: jax.Array
     foot_contact: jax.Array
     foot_touchdown: jax.Array
     foot_normal_impulse: jax.Array
@@ -430,12 +422,8 @@ class RewardInputs:
     gait_active: jax.Array
     desired_foot_contact: jax.Array
     joint_pose_weights: jax.Array
-    hip_roll_joint_indices: jax.Array
-    waist_joint_indices: jax.Array
     hip_joint_indices: jax.Array
     knee_joint_indices: jax.Array
-    undesired_contact: jax.Array
-    self_collision: jax.Array
     done: jax.Array
     control_timestep: jax.Array
     action_clip_limit: jax.Array
@@ -446,6 +434,7 @@ class RewardInputs:
     minimum_foot_separation: jax.Array = 0.0
     foot_clearance_samples: jax.Array | None = None
     swing_progress: jax.Array | None = None
+    motor_continuous_torque: jax.Array | None = None
 
 
 def positive_huber(value: jax.Array) -> jax.Array:
@@ -455,21 +444,6 @@ def positive_huber(value: jax.Array) -> jax.Array:
 
 def deadband_huber(error: jax.Array, deadband: float, scale: float) -> jax.Array:
     return positive_huber((jnp.abs(error) - deadband) / scale)
-
-
-def standing_recovery_scale(
-    config: StandingRewardConfig,
-    velocity: jax.Array,
-    command: jax.Array,
-    gravity: jax.Array,
-) -> jax.Array:
-    if not config.recovery_relaxation:
-        return jnp.asarray(1.0)
-    disturbance = jnp.maximum(
-        jnp.linalg.norm(velocity - command[:2]) / config.recovery_speed,
-        jnp.linalg.norm(gravity[:2]) / math.sin(config.recovery_tilt),
-    )
-    return jnp.clip(2.0 - disturbance, 0.0, 1.0)
 
 
 def compute_locomotion_reward(
@@ -554,16 +528,20 @@ def compute_locomotion_reward(
     policy_peak_force = inputs.actuator_peak_force[inputs.policy_joint_indices]
     normalized_torque = policy_force / policy_peak_force
     torque_l1 = jnp.mean(normalized_torque)
-    hip_roll_force = jnp.abs(inputs.actuator_force[inputs.hip_roll_joint_indices])
-    hip_roll_continuous_torque_excess = jnp.maximum(
-        hip_roll_force / config.standing.hip_roll_continuous_torque_limit - 1.0,
-        0.0,
-    )
-    stand_hip_roll_continuous_torque_excess = jnp.where(
-        standing_command,
-        jnp.mean(hip_roll_continuous_torque_excess),
-        0.0,
-    )
+    stand_motor_continuous_torque_excess = jnp.asarray(0.0)
+    if config.enabled("stand_motor_continuous_torque_excess"):
+        if inputs.motor_continuous_torque is None:
+            raise ValueError("standing motor torque reward requires continuous ratings")
+        if inputs.motor_continuous_torque.shape != inputs.actuator_force.shape:
+            raise ValueError("continuous torque ratings must cover all actuator forces")
+        excess = jnp.maximum(
+            jnp.abs(inputs.actuator_force) / (0.5 * inputs.motor_continuous_torque)
+            - 1.0,
+            0.0,
+        )
+        stand_motor_continuous_torque_excess = jnp.where(
+            standing_command, jnp.mean(excess), 0.0
+        )
     requested_policy_force = jnp.abs(
         inputs.requested_actuator_force[inputs.policy_joint_indices]
     )
@@ -659,12 +637,6 @@ def compute_locomotion_reward(
         jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.knee_joint_indices])),
         0.0,
     )
-    stand_waist_deviation = jnp.where(
-        standing_command,
-        jnp.sum(inputs.joint_pos_rel[inputs.waist_joint_indices] ** 2),
-        0.0,
-    )
-
     joint_limit_center = 0.5 * (inputs.joint_limit_low + inputs.joint_limit_high)
     joint_limit_radius = (
         0.5
@@ -678,30 +650,11 @@ def compute_locomotion_reward(
         + jnp.maximum(inputs.joint_pos - joint_limit_high, 0.0)
     )
 
-    normalized_requested_action = inputs.requested_action / inputs.action_clip_limit
-    requested_target_span = jnp.where(
-        normalized_requested_action >= 0.0,
-        inputs.action_target_high - inputs.action_target_default,
-        inputs.action_target_default - inputs.action_target_low,
-    )
-    requested_target = (
-        inputs.action_target_default
-        + requested_target_span * normalized_requested_action
-    )
-    target_violation = jnp.maximum(
-        inputs.action_target_low - requested_target, 0.0
-    ) + jnp.maximum(requested_target - inputs.action_target_high, 0.0)
-    unit_violation = target_violation / jnp.maximum(
-        jnp.abs(requested_target_span), 1.0e-6
-    )
-    clip_violation = jnp.maximum(
-        jnp.abs(inputs.requested_action) - inputs.action_clip_limit, 0.0
-    )
-    invalid_action = jnp.sum(unit_violation**2 + clip_violation**2)
-
     desired_contact = inputs.desired_foot_contact.astype(jnp.float32)
     gait_contact = gait_active * jnp.mean(jnp.abs(actual_contact - desired_contact))
     foot_speed = jnp.linalg.norm(inputs.foot_linear_velocity[:, :2], axis=1)
+    foot_slip = jnp.sum(actual_contact * foot_speed**2)
+    foot_heading = jnp.mean(inputs.foot_heading_error**2)
     gait_stance_slip = gait_active * jnp.sum(
         desired_contact
         * (
@@ -735,39 +688,12 @@ def compute_locomotion_reward(
             * (shortfall / config.gait.swing_clearance_target) ** 2
         )
 
-    recovery_scale = standing_recovery_scale(
-        config.standing, inputs.lin_vel_xy, inputs.command, inputs.projected_gravity
-    )
-    geometry_scale = jnp.maximum(
-        recovery_scale, config.standing.recovery_geometry_floor
-    )
-    if config.standing.continuous_bounded_alignment:
-        stand_foot_heading = jnp.where(
-            standing_command & ~inputs.done,
-            jnp.mean(bounded_foot_heading_error),
-            0.0,
-        )
-    if config.standing.recovery_relaxation:
-        # Recovery relaxes standing posture, never the active gait schedule.
-        motion_support = (
-            jnp.asarray(1.0)
-            if config.standing.continuous_bounded_alignment
-            else jnp.all(inputs.foot_contact)
-        )
-        stand_foot_motion *= geometry_scale * motion_support
-        stand_foot_heading *= geometry_scale
-        stand_still *= geometry_scale
-        stand_contact *= geometry_scale
-        stand_hip_roll_continuous_torque_excess *= recovery_scale
-        stand_waist_deviation *= recovery_scale
-        hip_deviation *= jnp.where(standing_command, recovery_scale, 1.0)
-        knee_deviation *= jnp.where(standing_command, recovery_scale, 1.0)
     alignment_active = (
         standing_command
-        if config.standing.continuous_bounded_alignment
+        if config.standing.contact_independent_alignment
         else standing_double_support
     )
-    alignment_gate = (alignment_active & ~inputs.done) * geometry_scale
+    alignment_gate = alignment_active & ~inputs.done
     stand_foot_foreaft = deadband_huber(
         inputs.foot_foreaft,
         config.standing.position_deadband,
@@ -778,9 +704,6 @@ def compute_locomotion_reward(
         config.standing.position_deadband,
         config.standing.position_scale,
     )
-    if config.standing.continuous_bounded_alignment:
-        stand_foot_foreaft /= 1.0 + stand_foot_foreaft
-        stand_foot_width /= 1.0 + stand_foot_width
     stand_foot_foreaft *= alignment_gate
     stand_foot_width *= alignment_gate
     foot_crossing = positive_huber(
@@ -822,9 +745,7 @@ def compute_locomotion_reward(
         "action_acceleration": action_acceleration,
         "action_limit": action_limit,
         "torque_l1": torque_l1,
-        "stand_hip_roll_continuous_torque_excess": (
-            stand_hip_roll_continuous_torque_excess
-        ),
+        "stand_motor_continuous_torque_excess": stand_motor_continuous_torque_excess,
         "torque_peak": torque_peak,
         "joint_force_peak": joint_force_peak,
         "touchdown_impact": touchdown_impact,
@@ -834,20 +755,18 @@ def compute_locomotion_reward(
         "stand_foot_heading": stand_foot_heading,
         "stand_contact": stand_contact,
         "stand_upright": stand_upright,
-        "stand_waist_deviation": stand_waist_deviation,
         "stand_foot_foreaft": stand_foot_foreaft,
         "stand_foot_width": stand_foot_width,
         "foot_crossing": foot_crossing,
+        "foot_heading": foot_heading,
+        "foot_slip": foot_slip,
         "foot_stumble": foot_stumble,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
         "joint_limit": joint_limit,
-        "invalid_action": invalid_action,
         "gait_contact": gait_contact,
         "gait_stance_slip": gait_stance_slip,
         "gait_swing_clearance": gait_swing_clearance,
-        "undesired_contact": inputs.undesired_contact,
-        "self_collision": inputs.self_collision,
         "termination": inputs.done.astype(jnp.float32),
     }
     timestep = jnp.asarray(inputs.control_timestep, dtype=jnp.float32)
@@ -871,17 +790,25 @@ def reward_terms(config: RewardConfig) -> dict[str, float]:
 
 
 def validate_reward_config(config: RewardConfig) -> None:
-    floor = config.standing.recovery_geometry_floor
-    if not math.isfinite(floor) or not 0 <= floor <= 1:
-        raise ValueError("standing.recovery_geometry_floor must be in [0, 1]")
-    if config.standing.continuous_bounded_alignment and floor <= 0:
-        raise ValueError(
-            "continuous bounded alignment requires a positive geometry floor"
-        )
+    if type(config.standing.contact_independent_alignment) is not bool:
+        raise TypeError("standing.contact_independent_alignment must be a boolean")
+    pose_weights = config.limits_pose.joint_pose_weights
+    if type(pose_weights) is not tuple:
+        raise TypeError("limits_pose.joint_pose_weights must be a tuple")
+    names = set()
+    for entry in pose_weights:
+        if type(entry) is not tuple or len(entry) != 2:
+            raise ValueError("joint_pose_weights entries must be (joint_name, weight)")
+        name, weight = entry
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError("joint_pose_weights requires unique nonempty joint names")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise TypeError("joint_pose_weights values must be numbers")
+        if not math.isfinite(weight) or weight < 0:
+            raise ValueError("joint_pose_weights values must be finite and nonnegative")
+        names.add(name)
     for name, value in {
         "standing.position_scale": config.standing.position_scale,
-        "standing.recovery_speed": config.standing.recovery_speed,
-        "standing.recovery_tilt": config.standing.recovery_tilt,
         "gait.crossing_scale": config.gait.crossing_scale,
         "gait.stumble_load_body_weights": config.gait.stumble_load_body_weights,
         "gait.stumble_speed_scale": config.gait.stumble_speed_scale,
@@ -895,8 +822,6 @@ def validate_reward_config(config: RewardConfig) -> None:
             )
     if not 0 <= config.gait.stumble_grace_fraction < 0.5:
         raise ValueError("gait.stumble_grace_fraction must be in [0, 0.5)")
-    if not config.standing.recovery_tilt < math.pi / 2:
-        raise ValueError("standing.recovery_tilt must be below pi/2")
     for name, weight in reward_terms(config).items():
         if not math.isfinite(weight):
             raise ValueError(f"weights.{name} must be finite, got {weight}")
@@ -940,10 +865,6 @@ def validate_reward_config(config: RewardConfig) -> None:
         (
             "standing.foot_heading_scale",
             config.standing.foot_heading_scale,
-        ),
-        (
-            "standing.hip_roll_continuous_torque_limit",
-            config.standing.hip_roll_continuous_torque_limit,
         ),
         (
             "gait.swing_clearance_target",

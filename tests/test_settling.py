@@ -23,9 +23,7 @@ def sample(**changes):
         ),
         0.0,
     )
-    values.update(
-        left_contact=1.0, right_contact=1.0, recovery_scale=1.0, geometry_scale=1.0
-    )
+    values.update(left_contact=1.0, right_contact=1.0)
     values.update(changes)
     return values
 

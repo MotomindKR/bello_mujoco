@@ -20,7 +20,6 @@ def annotate_standing_frame(frame, sample, push_at_seconds):
         f"speed={sample['speed']:.2f}m/s yaw={sample['yaw_rate']:.2f}rad/s "
         f"contact L/R={int(sample['left_contact'])}/{int(sample['right_contact'])}\n"
         f"stagger={sample['foreaft_error'] * 100:.1f}cm width error={sample['width_error'] * 100:.1f}cm\n"
-        f"recovery={sample['recovery_scale']:.2f} geometry={sample['geometry_scale']:.2f} "
         f"torque sat={sample['torque_saturation']:.0%}"
     )
     font = ImageFont.load_default(size=14)
@@ -98,8 +97,6 @@ class SettlingDiagnostics:
                 "width_error",
                 "heading_error",
                 "tilt",
-                "recovery_scale",
-                "geometry_scale",
                 "torque_saturation",
                 "self_collision_contacts",
             ):

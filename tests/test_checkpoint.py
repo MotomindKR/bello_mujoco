@@ -184,6 +184,7 @@ class FakeEnv:
             standing_reward_blend=jnp.ones((batch_size,), dtype=jnp.float32),
             command_resample_step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
             step_count=jnp.zeros((batch_size,), dtype=jnp.int32),
+            push_steps_remaining=jnp.full((batch_size,), 37, dtype=jnp.int32),
             episode_return=zeros,
             episode_track_lin_vel_xy=zeros,
             episode_length=jnp.zeros((batch_size,), dtype=jnp.int32),

@@ -147,7 +147,7 @@ class ContactConfig:
 @dataclass(frozen=True)
 class RandomPushConfig:
     enabled: bool = False
-    interval_seconds: float = 5.0
+    interval_seconds: tuple[float, float] = (3.0, 7.0)
     lin_vel_x: tuple[float, float] = (-0.5, 0.5)
     lin_vel_y: tuple[float, float] = (-0.5, 0.5)
     curriculum_steps: int = 0
@@ -283,13 +283,14 @@ def validate_locomotion_config(
             raise ValueError(
                 f"contact.{field.name} must be finite and nonnegative, got {value}"
             )
-    if (
-        not math.isfinite(config.random_push.interval_seconds)
-        or config.random_push.interval_seconds <= 0.0
+    validate_range("random_push.interval_seconds", config.random_push.interval_seconds)
+    low, high = config.random_push.interval_seconds
+    if low < control_timestep or math.ceil(low / control_timestep) > math.floor(
+        high / control_timestep
     ):
         raise ValueError(
-            "random_push.interval_seconds must be positive and finite, got "
-            f"{config.random_push.interval_seconds}"
+            "random_push.interval_seconds must contain at least one control step "
+            "and start at or above the control timestep"
         )
     validate_range("random_push.lin_vel_x", config.random_push.lin_vel_x)
     validate_range("random_push.lin_vel_y", config.random_push.lin_vel_y)

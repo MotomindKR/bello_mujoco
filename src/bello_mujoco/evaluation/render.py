@@ -424,22 +424,6 @@ def mujoco_standing_sample(
     speed = float(np.linalg.norm(velocity[3:5]))
     torso = model.body(env._reward_link("flat_orientation")).id
     gravity = data.xmat[torso].reshape(3, 3).T @ np.array([0, 0, -1])
-    standing = env.reward_config.standing
-    recovery = (
-        float(
-            np.clip(
-                2
-                - max(
-                    speed / standing.recovery_speed,
-                    np.linalg.norm(gravity[:2]) / math.sin(standing.recovery_tilt),
-                ),
-                0,
-                1,
-            )
-        )
-        if standing.recovery_relaxation
-        else 1.0
-    )
     contacts = mujoco_foot_contact(env, data)
     indices = env.model.policy_ctrl_indices
     saturation = (
@@ -455,8 +439,6 @@ def mujoco_standing_sample(
         "foreaft_error": abs(float(delta @ forward)),
         "width_error": abs(float(delta @ left) - geometry.nominal_width),
         "heading_error": max(headings),
-        "recovery_scale": recovery,
-        "geometry_scale": max(recovery, standing.recovery_geometry_floor),
         "left_contact": float(contacts[0]),
         "right_contact": float(contacts[1]),
         "x": float(data.xpos[frame, 0]),
@@ -829,6 +811,7 @@ def mujoco_eval_state(
         standing_reward_blend=jnp.asarray(standing_reward_blend, dtype=jnp.float32),
         command_resample_step_count=jnp.asarray(step_count, dtype=jnp.int32),
         step_count=jnp.asarray(step_count, dtype=jnp.int32),
+        push_steps_remaining=jnp.asarray(-1, dtype=jnp.int32),
         episode_return=episode_return,
         episode_track_lin_vel_xy=episode_track_lin_vel_xy,
         episode_length=episode_length,

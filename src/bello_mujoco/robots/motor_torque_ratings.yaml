@@ -1,0 +1,10 @@
+# Rated output torque (Nm), ported from reward recipe 42aa11d, not peak torque.
+# Manufacturer product specifications: https://www.robstride.com/products/robStride00
+# Corresponding product pages: robStride02, robStride03, robStride04, robStride06.
+# These are rating references, not guarantees of indefinite static holding.
+# Motor identities/models remain owned by the pinned hardware description.
+ROBSTRIDE_00: 5.0
+ROBSTRIDE_02: 6.0
+ROBSTRIDE_03: 20.0
+ROBSTRIDE_04: 40.0
+ROBSTRIDE_06: 11.0

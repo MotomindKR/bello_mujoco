@@ -649,12 +649,8 @@ def run_rerun_evaluation(
             if stochastic_actions:
                 action_key, action_rng = jax.random.split(action_key)
             policy_step = infer_action(stacked_observation(obs_stack), action_rng)
-            requested_action = policy_step.requested_action
             action_mean_np = np.asarray(
                 jax.device_get(policy_step.action_mean), dtype=np.float32
-            )
-            requested_action_np = np.asarray(
-                jax.device_get(requested_action), dtype=np.float32
             )
             action_np = np.asarray(
                 jax.device_get(policy_step.applied_action), dtype=np.float32
@@ -769,8 +765,8 @@ def run_rerun_evaluation(
                 foot_normal_force,
                 foot_linear_velocity,
                 angular_speed,
-                undesired,
-                self_collision,
+                _undesired,
+                _self_collision,
             ) = mujoco_contact_terms(env, mj_data)
             foot_touchdown = jnp.asarray(foot_touchdown_np)
             foot_contact, foot_contact_debounce_time = env.debounce_foot_contact(
@@ -780,7 +776,6 @@ def run_rerun_evaluation(
                 state,
                 next_state,
                 jnp.asarray(action_np),
-                jnp.asarray(requested_action_np),
                 jnp.asarray(done_flags["done/terminal"]),
                 foot_contact,
                 foot_touchdown,
@@ -790,8 +785,6 @@ def run_rerun_evaluation(
                 jnp.asarray(requested_actuator_force_np),
                 foot_linear_velocity,
                 angular_speed,
-                undesired,
-                self_collision,
             )
             done_info = {key: jnp.asarray(value) for key, value in done_flags.items()}
             reward, reward_info = env.sanitize_nonfinite_reward(

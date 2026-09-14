@@ -10,7 +10,6 @@ from bello_mujoco.envs.gait import (
     desired_gait_foot_contact,
 )
 from bello_mujoco.envs.locomotion_state import BelloState
-from bello_mujoco.envs.rewards import standing_recovery_scale
 
 if TYPE_CHECKING:
     from bello_mujoco.envs.locomotion import BelloLocomotionEnv
@@ -66,9 +65,6 @@ def gait_diagnostics(
     gravity = env._link_projected_gravity(
         next_state, env._reward_link("flat_orientation")
     )
-    recovery = standing_recovery_scale(
-        env.reward_config.standing, velocity, next_state.command, gravity
-    )
     placement_metrics = {}
     if "foot_separation" in placement:
         placement_metrics = {
@@ -84,11 +80,6 @@ def gait_diagnostics(
         }
     return {
         **placement_metrics,
-        "gait/recovery_scale": recovery,
-        "gait/recovery_fully_relaxed": (recovery == 0).astype(jnp.float32),
-        "gait/geometry_scale": jnp.maximum(
-            recovery, env.reward_config.standing.recovery_geometry_floor
-        ),
         "gait/linear_velocity_error_sq": jnp.sum(
             (velocity - next_state.command[:2]) ** 2
         ),

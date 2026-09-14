@@ -1198,7 +1198,7 @@ def test_random_push_adds_root_xy_velocity_on_interval(
         env_config=BelloEnvConfig(
             random_push=RandomPushConfig(
                 enabled=True,
-                interval_seconds=0.02,
+                interval_seconds=(0.02, 0.02),
                 lin_vel_x=(0.5, 0.5),
                 lin_vel_y=(-0.25, -0.25),
             )
@@ -1210,9 +1210,9 @@ def test_random_push_adds_root_xy_velocity_on_interval(
     data = state.data.replace(
         qvel=state.data.qvel.at[:, root_qvel : root_qvel + 2].set(initial_velocity)
     )
-    data, applied, velocity = env._maybe_apply_random_push_batch(
+    data, remaining, applied, velocity = env._maybe_apply_random_push_batch(
         data,
-        jnp.ones(2, dtype=jnp.int32),
+        jnp.zeros(2, dtype=jnp.int32),
         jax.random.PRNGKey(0),
     )
 

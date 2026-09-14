@@ -61,7 +61,7 @@ class ToyEnv(BelloLocomotionEnv):
             "done/nonfinite": jnp.asarray(False),
         }
 
-    def reward(self, state, next_state, action, requested_action, *args):
+    def reward(self, state, next_state, action, *args, world_id=0):
         return jnp.sum(action), {"reward/track_lin_vel_xy": jnp.asarray(0.25)}
 
     def sanitize_nonfinite_reward(self, reward, info, flags):
@@ -164,7 +164,7 @@ def test_post_physics_episode_accounting_matches_vmap(monkeypatch, done):
         jnp.zeros((2, 3)),
         jnp.zeros(1),
     )
-    args = (state, reward_state, jnp.asarray([2.0]), impacts, jnp.asarray(0.0))
+    args = (state, reward_state, impacts, jnp.asarray(0.0))
     scalar = jax.jit(partial(step_outcome, env))(*args)
     batch = jax.jit(jax.vmap(partial(step_outcome, env)))(*batched(args))
     assert_batched_equal(batch, scalar)

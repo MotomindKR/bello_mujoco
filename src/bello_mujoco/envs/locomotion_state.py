@@ -24,6 +24,7 @@ class BelloState:
     )  # Boundaries left; -1 waits for zero command.
     command_resample_step_count: jax.Array
     step_count: jax.Array
+    push_steps_remaining: jax.Array
     episode_return: jax.Array
     episode_track_lin_vel_xy: jax.Array
     episode_length: jax.Array
